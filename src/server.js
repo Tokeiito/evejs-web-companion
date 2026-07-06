@@ -91,6 +91,57 @@ async function requireAuth(req, res, next) {
   }
 }
 
+async function blockOnlineCharacterPost(req, res, next) {
+  if (req.method !== "POST") {
+    next();
+    return;
+  }
+
+  const characterID = Number(req.params.characterID || 0);
+  if (!characterID) {
+    res.status(400).json({ ok: false, error: "INVALID_CHARACTER" });
+    return;
+  }
+
+  try {
+    const status = await eveStore.getCharacterStatus(req.account.accountID, characterID);
+    if (!status) {
+      res.status(404).json({ ok: false, error: "CHARACTER_NOT_FOUND" });
+      return;
+    }
+
+    if (status.online === true) {
+      res.status(409).json({
+        ok: false,
+        error: "CHARACTER_ONLINE",
+        message: "Character is currently logged in. Log out of the game before making changes from the companion.",
+      });
+      return;
+    }
+
+    if (status.online !== false) {
+      res.status(503).json({
+        ok: false,
+        error: "CHARACTER_STATUS_UNAVAILABLE",
+        message: "Cannot confirm whether the character is online. EveJS must be reachable before the companion can write character data.",
+      });
+      return;
+    }
+
+    next();
+  } catch (error) {
+    if (error && (error.name === "EveBridgeError" || error.fallbackAllowed === true)) {
+      res.status(503).json({
+        ok: false,
+        error: "CHARACTER_STATUS_UNAVAILABLE",
+        message: "Cannot confirm whether the character is online. EveJS must be reachable before the companion can write character data.",
+      });
+      return;
+    }
+    next(error);
+  }
+}
+
 app.get("/api/health", async (req, res) => {
   try {
     const storeStatus = await eveStore.getStatus();
@@ -170,7 +221,9 @@ app.get("/api/characters", requireAuth, async (req, res, next) => {
   }
 });
 
-app.get("/api/characters/:characterID/skills", requireAuth, async (req, res, next) => {
+app.use("/api/characters/:characterID", requireAuth, blockOnlineCharacterPost);
+
+app.get("/api/characters/:characterID/skills", async (req, res, next) => {
   try {
   const characterID = Number(req.params.characterID || 0);
   const dashboard = await eveStore.getSkillDashboard(req.account.accountID, characterID);
@@ -184,7 +237,7 @@ app.get("/api/characters/:characterID/skills", requireAuth, async (req, res, nex
   }
 });
 
-app.post("/api/characters/:characterID/skills/queue", requireAuth, async (req, res, next) => {
+app.post("/api/characters/:characterID/skills/queue", async (req, res, next) => {
   try {
     const characterID = Number(req.params.characterID || 0);
     const dashboard = await eveStore.saveSkillQueue(
@@ -205,7 +258,7 @@ app.post("/api/characters/:characterID/skills/queue", requireAuth, async (req, r
   }
 });
 
-app.get("/api/characters/:characterID/overview", requireAuth, async (req, res, next) => {
+app.get("/api/characters/:characterID/overview", async (req, res, next) => {
   try {
   const characterID = Number(req.params.characterID || 0);
   const overview = await eveStore.getCharacterOverview(req.account.accountID, characterID);
@@ -219,7 +272,7 @@ app.get("/api/characters/:characterID/overview", requireAuth, async (req, res, n
   }
 });
 
-app.get("/api/characters/:characterID/inventory", requireAuth, async (req, res, next) => {
+app.get("/api/characters/:characterID/inventory", async (req, res, next) => {
   try {
   const characterID = Number(req.params.characterID || 0);
   const dashboard = await eveStore.getInventoryDashboard(req.account.accountID, characterID);
@@ -233,7 +286,7 @@ app.get("/api/characters/:characterID/inventory", requireAuth, async (req, res, 
   }
 });
 
-app.get("/api/characters/:characterID/industry", requireAuth, async (req, res, next) => {
+app.get("/api/characters/:characterID/industry", async (req, res, next) => {
   try {
   const characterID = Number(req.params.characterID || 0);
   const dashboard = await eveStore.getIndustryDashboard(req.account.accountID, characterID);
@@ -247,7 +300,7 @@ app.get("/api/characters/:characterID/industry", requireAuth, async (req, res, n
   }
 });
 
-app.get("/api/characters/:characterID/status", requireAuth, async (req, res, next) => {
+app.get("/api/characters/:characterID/status", async (req, res, next) => {
   try {
     const characterID = Number(req.params.characterID || 0);
     const status = await eveStore.getCharacterStatus(req.account.accountID, characterID);
@@ -261,7 +314,7 @@ app.get("/api/characters/:characterID/status", requireAuth, async (req, res, nex
   }
 });
 
-app.get("/api/characters/:characterID/pi", requireAuth, async (req, res, next) => {
+app.get("/api/characters/:characterID/pi", async (req, res, next) => {
   try {
   const characterID = Number(req.params.characterID || 0);
   const dashboard = await eveStore.getPlanetDashboard(req.account.accountID, characterID);
@@ -275,7 +328,7 @@ app.get("/api/characters/:characterID/pi", requireAuth, async (req, res, next) =
   }
 });
 
-app.post("/api/characters/:characterID/pi/restart", requireAuth, async (req, res, next) => {
+app.post("/api/characters/:characterID/pi/restart", async (req, res, next) => {
   try {
     const characterID = Number(req.params.characterID || 0);
     const planetID = Number(req.body && req.body.planetID) || 0;
@@ -294,7 +347,7 @@ app.post("/api/characters/:characterID/pi/restart", requireAuth, async (req, res
   }
 });
 
-app.get("/api/characters/:characterID/market", requireAuth, async (req, res, next) => {
+app.get("/api/characters/:characterID/market", async (req, res, next) => {
   try {
     const characterID = Number(req.params.characterID || 0);
     const character = await eveStore.getCharacterForAccount(req.account.accountID, characterID);
