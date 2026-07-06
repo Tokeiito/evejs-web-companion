@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>EveJS Web POC</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body data-theme="caldari">
+    <main class="app-shell">
+      <section id="login-view" class="login-view" hidden>
+        <form id="login-form" class="login-panel">
+          <div class="login-mark">EVEJS</div>
+          <h1>Capsuleer Access</h1>
+          <label>
+            <span>Account</span>
+            <input id="username" name="username" autocomplete="username" required>
+          </label>
+          <label>
+            <span>Web password</span>
+            <input id="password" name="password" type="password" autocomplete="current-password" required>
+          </label>
+          <button type="submit">Sign in</button>
+          <p id="login-error" class="error-text" role="alert"></p>
+        </form>
+      </section>
+
+      <section id="app-view" class="workspace" hidden>
+        <aside class="sidebar">
+          <div class="brand-row">
+            <div>
+              <span class="eyebrow">EVEJS WEB</span>
+              <h1>Capsuleer Console</h1>
+              <p id="account-label"></p>
+            </div>
+          </div>
+          <nav id="character-list" class="character-list" aria-label="Characters"></nav>
+        </aside>
+
+        <section class="main-pane">
+          <header class="topbar">
+            <nav id="page-tabs" class="page-tabs" aria-label="Pages">
+              <button type="button" data-page="overview">Overview</button>
+              <button type="button" data-page="skills">Skills</button>
+              <button type="button" data-page="market">Market</button>
+              <button type="button" data-page="inventory">Inventory</button>
+              <button type="button" data-page="industry">Industry</button>
+              <button type="button" data-page="pi">PI</button>
+            </nav>
+            <div class="topbar-actions">
+              <label class="theme-picker">
+                <span>Theme</span>
+                <select id="theme-select" aria-label="Theme">
+                  <option value="caldari">Caldari</option>
+                  <option value="amarr">Amarr</option>
+                  <option value="gallente">Gallente</option>
+                  <option value="minmatar">Minmatar</option>
+                </select>
+              </label>
+              <button id="refresh-button" type="button">Refresh</button>
+              <button id="logout-button" class="ghost-button" type="button">Sign out</button>
+            </div>
+          </header>
+
+          <div id="readonly-banner" class="readonly-banner" role="status" hidden></div>
+
+          <section class="page-title">
+            <div>
+              <h2 id="page-title">Overview</h2>
+              <p id="page-subtitle"></p>
+            </div>
+            <span id="page-status" class="status-pill"></span>
+          </section>
+
+          <section id="metrics-grid" class="metrics-grid" aria-label="Summary"></section>
+          <section id="page-content" class="page-content"></section>
+        </section>
+      </section>
+    </main>
+    <script src="/app.js"></script>
+  </body>
+</html>
