@@ -1,10 +1,6 @@
 "use strict";
 
-const fs = require("fs");
-const Database = require("better-sqlite3");
-const config = require("./config");
 const eveBridgeClient = require("./eveBridgeClient");
-const eveQueueService = require("./eveQueueService");
 const staticData = require("./staticData");
 
 const ROW_KEY_SEP = "\u001f";
@@ -148,6 +144,9 @@ const INDUSTRY_STATUS_NAMES = Object.freeze({
   103: "Reverted",
 });
 
+const PI_GROUP_EXTRACTION_CONTROL_UNIT = 1063;
+const PI_STATE_ACTIVE = 1;
+
 function quoteTable(table) {
   if (!RUNTIME_TABLES.has(table)) {
     throw new Error(`Unsupported EveJS table: ${table}`);
@@ -155,57 +154,45 @@ function quoteTable(table) {
   return `"${table}"`;
 }
 
-function parseJsonRow(row) {
-  if (!row || typeof row.json !== "string") {
-    return null;
-  }
-  return JSON.parse(row.json);
+function cloneValue(value) {
+  return value === undefined || value === null
+    ? value
+    : JSON.parse(JSON.stringify(value));
 }
 
-function openDb(options = {}) {
-  const dbPath = options.dbPath || config.gamestorePath;
-  if (!fs.existsSync(dbPath)) {
-    throw new Error(`EveJS gamestore not found at ${dbPath}`);
+function getSnapshotTable(db, table) {
+  quoteTable(table);
+  const snapshot = db && db.__snapshot;
+  if (!snapshot || typeof snapshot !== "object") {
+    throw new Error("EveJS bridge snapshot is required for gameplay data reads.");
   }
-  const db = new Database(dbPath, {
-    readonly: true,
-    fileMustExist: true,
-  });
-  db.pragma("query_only = ON");
-  return db;
+  const value = snapshot[table];
+  return value && typeof value === "object" ? value : {};
 }
 
-function withDb(callback, options = {}) {
-  const db = openDb(options);
-  try {
-    return callback(db);
-  } finally {
-    db.close();
-  }
+async function withDb(callback, options = {}) {
+  const snapshot = options.snapshot || await eveBridgeClient.getSnapshot(
+    options.accountID,
+    options.characterID,
+  );
+  return callback({ __snapshot: snapshot || {} });
 }
 
 function readRow(db, table, key) {
-  const row = db
-    .prepare(`SELECT json FROM ${quoteTable(table)} WHERE key = ?`)
-    .get(String(key));
-  return parseJsonRow(row);
+  return cloneValue(getSnapshotTable(db, table)[String(key)] || null);
 }
 
 function listRows(db, table) {
-  return db
-    .prepare(`SELECT key, json FROM ${quoteTable(table)} ORDER BY key`)
-    .all()
-    .map((row) => ({
-      key: row.key,
-      value: parseJsonRow(row),
+  return Object.entries(getSnapshotTable(db, table))
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, value]) => ({
+      key,
+      value: cloneValue(value),
     }));
 }
 
 function readWholeTable(db, table) {
-  const rows = Object.fromEntries(
-    listRows(db, table).map((row) => [row.key, row.value]),
-  );
-  return assembleWrapperRows(table, rows);
+  return cloneValue(assembleWrapperRows(table, getSnapshotTable(db, table)));
 }
 
 function assembleWrapperRows(table, rows) {
@@ -266,6 +253,18 @@ function filetimeToMs(value) {
 function filetimeToIso(value) {
   const ms = filetimeToMs(value);
   return ms === null ? null : new Date(ms).toISOString();
+}
+
+function filetimeTicksToMs(value) {
+  const ticks = normalizeBigIntLike(value, 0n);
+  if (ticks <= 0n) {
+    return null;
+  }
+  return Number(ticks / FILETIME_TICKS_PER_MS);
+}
+
+function clampNumber(value, min, max) {
+  return Math.max(min, Math.min(max, value));
 }
 
 function getSkillPointsForLevel(rank, level) {
@@ -346,23 +345,21 @@ function normalizeAccount(username, record) {
   };
 }
 
-function getAccount(username, options = {}) {
+async function getAccount(username, options = {}) {
   const normalizedUsername = String(username || "").trim();
   if (!normalizedUsername) {
     return null;
   }
-  return withDb((db) => {
-    const record = readRow(db, "accounts", normalizedUsername);
-    return normalizeAccount(normalizedUsername, record);
-  }, options);
+  const account = await eveBridgeClient.getAccount(normalizedUsername);
+  return normalizeAccount(normalizedUsername, account);
 }
 
-function listAccounts(options = {}) {
-  return withDb((db) =>
-    listRows(db, "accounts")
-      .map((row) => normalizeAccount(row.key, row.value))
-      .filter(Boolean),
-  options);
+async function listAccounts(options = {}) {
+  void options;
+  const accounts = await eveBridgeClient.listAccounts();
+  return accounts
+    .map((account) => normalizeAccount(account.username, account))
+    .filter(Boolean);
 }
 
 function normalizeCharacter(characterID, record) {
@@ -400,20 +397,20 @@ function normalizeCharacter(characterID, record) {
   };
 }
 
-function listCharactersForAccount(accountID, options = {}) {
+async function listCharactersForAccount(accountID, options = {}) {
   const numericAccountID = Number(accountID || 0);
   if (!numericAccountID) {
     return [];
   }
-  return withDb((db) =>
-    listRows(db, "characters")
-      .map((row) => normalizeCharacter(row.key, row.value))
-      .filter((character) => character && character.accountID === numericAccountID)
-      .sort((left, right) => left.characterName.localeCompare(right.characterName)),
-  options);
+  void options;
+  const characters = await eveBridgeClient.listCharacters(numericAccountID);
+  return characters
+    .map((record) => normalizeCharacter(record.characterID || record.charID, record))
+    .filter((character) => character && character.accountID === numericAccountID)
+    .sort((left, right) => left.characterName.localeCompare(right.characterName));
 }
 
-function getCharacterForAccount(accountID, characterID, options = {}) {
+async function getCharacterForAccount(accountID, characterID, options = {}) {
   const numericAccountID = Number(accountID || 0);
   const numericCharacterID = Number(characterID || 0);
   if (!numericAccountID || !numericCharacterID) {
@@ -425,7 +422,7 @@ function getCharacterForAccount(accountID, characterID, options = {}) {
       readRow(db, "characters", numericCharacterID),
     );
     return character && character.accountID === numericAccountID ? character : null;
-  }, options);
+  }, { ...options, accountID: numericAccountID, characterID: numericCharacterID });
 }
 
 function normalizeSkill(typeID, record, character = null) {
@@ -481,28 +478,24 @@ function getSkillsForCharacter(db, characterID, character = null) {
 }
 
 function getSkillQueueForCharacter(db, characterID, skillsByTypeID) {
-  try {
-    const snapshot = eveQueueService.getQueueSnapshot(characterID);
-    return normalizeQueueSnapshot(snapshot, skillsByTypeID);
-  } catch (error) {
-    const rawQueue = readRow(db, "skillQueues", characterID) || {};
-    const queue = Array.isArray(rawQueue.queue) ? rawQueue.queue : [];
-    return {
-      active: rawQueue.active === true,
-      activeStartTime: rawQueue.activeStartTime || null,
-      queueEndTime: null,
-      queue: queue.map((entry, index) => {
-        const typeID = Number(entry.typeID || entry.trainingTypeID || 0);
-        const skill = skillsByTypeID.get(typeID);
-        return normalizeQueueEntry({
-          index,
-          typeID,
-          toLevel: Number(entry.toLevel || entry.trainingToLevel || 0) || null,
-        }, skillsByTypeID, skill);
-      }),
-      warning: error.message,
-    };
-  }
+  const rawQueue = readRow(db, "skillQueues", characterID) || {};
+  const queue = Array.isArray(rawQueue.queue) ? rawQueue.queue : [];
+  return {
+    active: rawQueue.active === true,
+    activeStartTime: rawQueue.activeStartTime || null,
+    queueEndTime: rawQueue.queueEndTime || null,
+    queueEndIso: rawQueue.queueEndTime ? filetimeToIso(rawQueue.queueEndTime) : null,
+    freeSkillPoints: Math.max(0, Number(rawQueue.freeSkillPoints) || 0),
+    queue: queue.map((entry, index) => {
+      const typeID = Number(entry.typeID || entry.trainingTypeID || 0);
+      const skill = skillsByTypeID.get(typeID);
+      return normalizeQueueEntry({
+        index,
+        typeID,
+        toLevel: Number(entry.toLevel || entry.trainingToLevel || 0) || null,
+      }, skillsByTypeID, skill);
+    }),
+  };
 }
 
 function normalizeQueueSnapshot(snapshot, skillsByTypeID) {
@@ -581,7 +574,7 @@ function buildGroupSummary(skills) {
   });
 }
 
-function getSkillDashboard(accountID, characterID, options = {}) {
+async function getSkillDashboard(accountID, characterID, options = {}) {
   const numericAccountID = Number(accountID || 0);
   const numericCharacterID = Number(characterID || 0);
   if (!numericAccountID || !numericCharacterID) {
@@ -602,12 +595,11 @@ function getSkillDashboard(accountID, characterID, options = {}) {
         ? options.queueSnapshot
         : null;
     let queueSnapshotWarning = null;
-    if (!queueSnapshot) {
-      try {
-        queueSnapshot = eveQueueService.getQueueSnapshot(numericCharacterID);
-      } catch (error) {
-        queueSnapshotWarning = error.message;
-      }
+    if (!queueSnapshot && db.__snapshot && db.__snapshot.queueSnapshot) {
+      queueSnapshot = db.__snapshot.queueSnapshot;
+    }
+    if (!queueSnapshot && db.__snapshot && db.__snapshot.queueSnapshotWarning) {
+      queueSnapshotWarning = db.__snapshot.queueSnapshotWarning;
     }
 
     const skills = getSkillsForCharacter(db, numericCharacterID, character);
@@ -638,7 +630,7 @@ function getSkillDashboard(accountID, characterID, options = {}) {
         plexBalance: character.plexBalance,
       },
       summary: {
-        source: "evejs-gamestore.sqlite",
+        source: "evejs-web-bridge",
         trainedSkillCount: skills.length,
         trainableSkillCount: skills.filter((skill) => skill.nextLevel !== null).length,
         totalSkillPoints: character.skillPoints || computedSkillPoints,
@@ -653,7 +645,7 @@ function getSkillDashboard(accountID, characterID, options = {}) {
       groups: buildGroupSummary(skills).slice(0, 12),
       skills,
     };
-  }, options);
+  }, { ...options, accountID: numericAccountID, characterID: numericCharacterID });
 }
 
 function resolveItemLocation(record, itemByID, depth = 0) {
@@ -774,7 +766,7 @@ function normalizeItem(record, itemByID = new Map()) {
   };
 }
 
-function getInventoryDashboard(accountID, characterID, options = {}) {
+async function getInventoryDashboard(accountID, characterID, options = {}) {
   const numericAccountID = Number(accountID || 0);
   const numericCharacterID = Number(characterID || 0);
   if (!numericAccountID || !numericCharacterID) {
@@ -841,7 +833,7 @@ function getInventoryDashboard(accountID, characterID, options = {}) {
       groups: [...byGroup.values()].sort((left, right) => right.itemCount - left.itemCount),
       items,
     };
-  }, options);
+  }, { ...options, accountID: numericAccountID, characterID: numericCharacterID });
 }
 
 function normalizeColony(key, record) {
@@ -852,31 +844,86 @@ function normalizeColony(key, record) {
   const ownerID = Number(record.ownerID || String(key).split(":")[1] || 0);
   const pins = Array.isArray(record.pins) ? record.pins : [];
   const extractors = pins.filter((pin) => {
-    const groupName = staticData.getType(pin && pin.typeID)?.groupName || "";
-    return groupName.toLowerCase().includes("extraction");
+    const type = staticData.getType(pin && pin.typeID);
+    const groupName = String(type && type.groupName || "").toLowerCase();
+    const typeName = String(type && type.name || "").toLowerCase();
+    return (
+      Number(type && type.groupID) === PI_GROUP_EXTRACTION_CONTROL_UNIT ||
+      groupName.includes("extractor") ||
+      typeName.includes("extractor control unit")
+    );
   });
   const nowMs = Date.now();
   const extractorRows = extractors.map((pin) => {
     const programType = pin.programType || null;
     const state = Number(pin.state || 0);
+    const installMs = filetimeToMs(pin.installTime);
     const expiryMs = filetimeToMs(pin.expiryTime);
     const expired = expiryMs !== null && expiryMs <= nowMs;
+    const durationMs = installMs !== null && expiryMs !== null && expiryMs > installMs
+      ? expiryMs - installMs
+      : null;
+    const elapsedMs = durationMs !== null
+      ? clampNumber(nowMs - installMs, 0, durationMs)
+      : null;
+    const remainingMs = expiryMs !== null
+      ? Math.max(0, expiryMs - nowMs)
+      : null;
+    const progress = durationMs && elapsedMs !== null
+      ? clampNumber(elapsedMs / durationMs, 0, 1)
+      : null;
+    const cycleTimeMs = filetimeTicksToMs(pin.cycleTime);
+    const cycleCount = durationMs && cycleTimeMs
+      ? Math.max(1, Math.round(durationMs / cycleTimeMs))
+      : null;
+    const cyclesCompleted = cycleCount !== null && cycleTimeMs && elapsedMs !== null
+      ? clampNumber(Math.floor(elapsedMs / cycleTimeMs), 0, cycleCount)
+      : null;
     // Mirrors the server restart rule (planetRuntimeStore.restartExtractorsForCharacter):
     // a configured ECU that is idle or past its expiry gets reinstalled on "restart".
-    const needsRestart = Boolean(programType) && (state !== 1 || expired);
+    const needsRestart = Boolean(programType) && (state !== PI_STATE_ACTIVE || expired);
+    const active = Boolean(programType) && state === PI_STATE_ACTIVE && !expired;
     return {
       pinID: Number(pin.pinID || 0),
       typeID: Number(pin.typeID || 0),
       typeName: staticData.getTypeName(pin.typeID),
+      iconUrl: staticData.getTypeIconUrl(pin.typeID, 64, "icon"),
       programType,
       programName: programType ? staticData.getTypeName(programType) : null,
+      programIconUrl: programType ? staticData.getTypeIconUrl(programType, 64, "icon") : null,
       state,
+      active,
       expiryTime: pin.expiryTime || null,
       expiryIso: filetimeToIso(pin.expiryTime),
+      expiryMs,
+      installTime: pin.installTime || null,
+      installIso: filetimeToIso(pin.installTime),
+      installMs,
       expired,
       needsRestart,
+      durationMs,
+      elapsedMs,
+      remainingMs,
+      progress,
+      cycleTime: pin.cycleTime || 0,
+      cycleTimeMs,
+      cycleCount,
+      cyclesCompleted,
       qtyPerCycle: Number(pin.qtyPerCycle || 0),
+      headCount: Array.isArray(pin.heads) ? pin.heads.length : 0,
+      headRadius: Number(pin.headRadius || 0) || null,
+      statusName: !programType
+        ? "No program"
+        : needsRestart
+          ? "Needs restart"
+          : active
+            ? "Extracting"
+            : "Configured",
     };
+  }).sort((left, right) => {
+    return Number(right.needsRestart) - Number(left.needsRestart) ||
+      Number(right.active) - Number(left.active) ||
+      String(left.programName || left.typeName).localeCompare(String(right.programName || right.typeName));
   });
   return {
     key,
@@ -895,7 +942,7 @@ function normalizeColony(key, record) {
   };
 }
 
-function getPlanetDashboard(accountID, characterID, options = {}) {
+async function getPlanetDashboard(accountID, characterID, options = {}) {
   const numericAccountID = Number(accountID || 0);
   const numericCharacterID = Number(characterID || 0);
   if (!numericAccountID || !numericCharacterID) {
@@ -934,13 +981,22 @@ function getPlanetDashboard(accountID, characterID, options = {}) {
       summary: {
         colonyCount: colonies.length,
         extractorCount: colonies.reduce((total, colony) => total + colony.extractorCount, 0),
+        activeExtractorCount: colonies.reduce(
+          (total, colony) => total + colony.extractors.filter((extractor) => extractor.active).length,
+          0,
+        ),
+        expiredExtractorCount: colonies.reduce(
+          (total, colony) => total + colony.extractors.filter((extractor) => extractor.expired).length,
+          0,
+        ),
         needsRestartCount: colonies.reduce((total, colony) => total + colony.needsRestartCount, 0),
         launchCount: launches.length,
+        generatedAt: new Date().toISOString(),
       },
       colonies,
       launches,
     };
-  }, options);
+  }, { ...options, accountID: numericAccountID, characterID: numericCharacterID });
 }
 
 function normalizeIndustryJob(record) {
@@ -1019,7 +1075,7 @@ function normalizeIndustryJob(record) {
   };
 }
 
-function getIndustryDashboard(accountID, characterID, options = {}) {
+async function getIndustryDashboard(accountID, characterID, options = {}) {
   const numericAccountID = Number(accountID || 0);
   const numericCharacterID = Number(characterID || 0);
   if (!numericAccountID || !numericCharacterID) {
@@ -1097,51 +1153,36 @@ function getIndustryDashboard(accountID, characterID, options = {}) {
       jobs,
       blueprints,
     };
-  }, options);
+  }, { ...options, accountID: numericAccountID, characterID: numericCharacterID });
 }
 
 async function saveSkillQueue(accountID, characterID, entries, options = {}) {
-  const character = getCharacterForAccount(accountID, characterID, options);
+  const character = await getCharacterForAccount(accountID, characterID, options);
   if (!character) {
     return null;
   }
 
   let queueSnapshot = null;
   let queueSaveSource = "evejs-web-bridge";
-  let queueSaveWarning = null;
-
-  try {
-    const bridgeResult = await eveBridgeClient.saveSkillQueue(
-      accountID,
-      character.characterID,
-      entries,
-      {
-        activate: options.activate !== false,
-      },
-    );
-    queueSnapshot = bridgeResult.snapshot || null;
-  } catch (error) {
-    if (!error || error.fallbackAllowed !== true) {
-      throw error;
-    }
-    queueSaveSource = "web-process-fallback";
-    queueSaveWarning = error.message || "EveJS bridge unavailable; used local fallback.";
-    queueSnapshot = eveQueueService.saveQueue(character.characterID, entries, {
+  const bridgeResult = await eveBridgeClient.saveSkillQueue(
+    accountID,
+    character.characterID,
+    entries,
+    {
       activate: options.activate !== false,
-      emitNotifications: false,
-    });
-  }
+    },
+  );
+  queueSnapshot = bridgeResult.snapshot || null;
 
   return getSkillDashboard(accountID, character.characterID, {
     ...options,
     queueSnapshot,
     queueSaveSource,
-    queueSaveWarning,
   });
 }
 
 async function getCharacterStatus(accountID, characterID, options = {}) {
-  const character = getCharacterForAccount(accountID, characterID, options);
+  const character = await getCharacterForAccount(accountID, characterID, options);
   if (!character) {
     return null;
   }
@@ -1165,7 +1206,7 @@ async function getCharacterStatus(accountID, characterID, options = {}) {
 }
 
 async function restartExtractors(accountID, characterID, options = {}) {
-  const character = getCharacterForAccount(accountID, characterID, options);
+  const character = await getCharacterForAccount(accountID, characterID, options);
   if (!character) {
     return null;
   }
@@ -1178,21 +1219,23 @@ async function restartExtractors(accountID, characterID, options = {}) {
     { planetID: options.planetID },
   );
 
-  const dashboard = getPlanetDashboard(accountID, character.characterID, options);
+  const dashboard = await getPlanetDashboard(accountID, character.characterID, options);
   if (dashboard) {
     dashboard.restartSummary = (bridgeResult && bridgeResult.summary) || null;
   }
   return dashboard;
 }
 
-function getCharacterOverview(accountID, characterID, options = {}) {
-  const skillDashboard = getSkillDashboard(accountID, characterID, options);
+async function getCharacterOverview(accountID, characterID, options = {}) {
+  const skillDashboard = await getSkillDashboard(accountID, characterID, options);
   if (!skillDashboard) {
     return null;
   }
-  const inventoryDashboard = getInventoryDashboard(accountID, characterID, options);
-  const planetDashboard = getPlanetDashboard(accountID, characterID, options);
-  const industryDashboard = getIndustryDashboard(accountID, characterID, options);
+  const [inventoryDashboard, planetDashboard, industryDashboard] = await Promise.all([
+    getInventoryDashboard(accountID, characterID, options),
+    getPlanetDashboard(accountID, characterID, options),
+    getIndustryDashboard(accountID, characterID, options),
+  ]);
   return {
     character: {
       ...skillDashboard.character,
@@ -1229,21 +1272,13 @@ function getCharacterOverview(accountID, characterID, options = {}) {
   };
 }
 
-function getStatus(options = {}) {
-  return withDb((db) => {
-    const tables = db
-      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
-      .all()
-      .map((row) => row.name);
-    return {
-      dbPath: options.dbPath || config.gamestorePath,
-      hasAccounts: tables.includes("accounts"),
-      hasCharacters: tables.includes("characters"),
-      hasSkills: tables.includes("skills"),
-      accountCount: db.prepare('SELECT COUNT(*) AS count FROM "accounts"').get().count,
-      characterCount: db.prepare('SELECT COUNT(*) AS count FROM "characters"').get().count,
-    };
-  }, options);
+async function getStatus(options = {}) {
+  void options;
+  return eveBridgeClient.getStatus();
+}
+
+function openDb() {
+  throw new Error("Direct SQLite access is disabled; use the EveJS web bridge.");
 }
 
 module.exports = {

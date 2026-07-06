@@ -1548,6 +1548,114 @@ function renderBlueprintLibrary(blueprints) {
   `;
 }
 
+function getPiStatusClass(extractor) {
+  if (extractor.needsRestart) {
+    return "warning";
+  }
+  if (extractor.active) {
+    return "ok";
+  }
+  return "";
+}
+
+function renderPiExtractorCountdown(extractor) {
+  if (!extractor.programType) {
+    return `<strong>No program</strong><span>Configure in-game</span>`;
+  }
+  if (extractor.needsRestart || extractor.expired) {
+    return `
+      <strong>Expired</strong>
+      <span>${extractor.expiryIso ? `Ended ${formatDateTime(extractor.expiryIso)}` : "No end time"}</span>
+    `;
+  }
+  if (!extractor.expiryIso) {
+    return `<strong>No timer</strong><span>Missing expiry</span>`;
+  }
+  return `
+    <strong data-countdown-to="${escapeHtml(extractor.expiryIso)}" data-countdown-expired-label="Expired">${formatDurationMs(extractor.remainingMs)}</strong>
+    <span>Ends ${formatDateTime(extractor.expiryIso)}</span>
+  `;
+}
+
+function renderPiProgress(extractor) {
+  if (extractor.progress === null || extractor.progress === undefined || !extractor.installIso || !extractor.expiryIso) {
+    return `<div class="progress-track pi-progress-track unavailable"><i style="width: 0%"></i></div>`;
+  }
+  const progressPercent = Math.round(Math.max(0, Math.min(1, Number(extractor.progress || 0))) * 100);
+  return `
+    <div class="progress-track pi-progress-track" data-progress-start="${escapeHtml(extractor.installIso)}" data-progress-end="${escapeHtml(extractor.expiryIso)}" aria-label="Extraction progress">
+      <i style="width: ${progressPercent}%"></i>
+    </div>
+  `;
+}
+
+function renderPiExtractor(extractor) {
+  const statusClass = getPiStatusClass(extractor);
+  const resourceName = extractor.programName || "No resource selected";
+  const cycleText = extractor.cycleTimeMs ? formatDurationMs(extractor.cycleTimeMs) : "-";
+  const cycleCountText = extractor.cycleCount
+    ? `${formatInteger(extractor.cyclesCompleted || 0)} / ${formatInteger(extractor.cycleCount)} cycles`
+    : "No cycle plan";
+  const quantityText = extractor.qtyPerCycle
+    ? `${formatInteger(extractor.qtyPerCycle)} / cycle`
+    : "No yield";
+  const rowClass = [
+    "pi-extractor",
+    extractor.needsRestart ? "needs-restart" : "",
+    extractor.active ? "active" : "",
+  ].filter(Boolean).join(" ");
+  return `
+    <article class="${rowClass}">
+      ${typeIcon(extractor.programType || extractor.typeID, extractor.programIconUrl || extractor.iconUrl, resourceName)}
+      <div class="pi-extractor-main">
+        <div class="pi-extractor-title">
+          <strong>${escapeHtml(resourceName)}</strong>
+          <span>${escapeHtml(extractor.typeName)} #${formatInteger(extractor.pinID)}</span>
+        </div>
+        <div class="pi-extractor-meta">
+          <span>${quantityText}</span>
+          <span>${cycleText} cycle</span>
+          <span>${cycleCountText}</span>
+          <span>${formatInteger(extractor.headCount)} heads</span>
+        </div>
+        ${renderPiProgress(extractor)}
+      </div>
+      <div class="pi-extractor-time">
+        <span class="pi-status ${statusClass}">${escapeHtml(extractor.statusName || "-")}</span>
+        ${renderPiExtractorCountdown(extractor)}
+      </div>
+    </article>
+  `;
+}
+
+function renderPiColony(colony, readOnly) {
+  const restartButton = colony.needsRestartCount > 0
+    ? `<button class="pi-planet-restart-button" type="button" data-pi-restart-planet="${Number(colony.planetID) || 0}" ${readOnly ? "disabled" : ""}>Restart planet</button>`
+    : "";
+  return `
+    <article class="pi-colony">
+      <header class="pi-colony-heading">
+        <div>
+          <strong>${escapeHtml(colony.planetName)}</strong>
+          <span>${escapeHtml(colony.solarSystemName || "-")}</span>
+        </div>
+        <div class="pi-colony-stats">
+          <span>${formatInteger(colony.pinCount)} pins</span>
+          <span>${formatInteger(colony.extractorCount)} extractors</span>
+          <span>${formatInteger(colony.routeCount)} routes</span>
+          ${colony.needsRestartCount > 0
+            ? `<span class="pi-needs-restart">${formatInteger(colony.needsRestartCount)} restart</span>`
+            : ""}
+          ${restartButton}
+        </div>
+      </header>
+      ${colony.extractors.length
+        ? `<div class="pi-extractor-list">${colony.extractors.map(renderPiExtractor).join("")}</div>`
+        : `<div class="empty-state">No extractor control units on this planet.</div>`}
+    </article>
+  `;
+}
+
 function renderPi(payload) {
   const dashboard = payload.dashboard;
   const summary = dashboard.summary;
@@ -1563,6 +1671,8 @@ function renderPi(payload) {
   setMetrics([
     { label: "Colonies", value: formatInteger(summary.colonyCount) },
     { label: "Extractors", value: formatInteger(summary.extractorCount) },
+    { label: "Active", value: formatInteger(summary.activeExtractorCount) },
+    { label: "Expired", value: formatInteger(summary.expiredExtractorCount) },
     { label: "Needs restart", value: formatInteger(needsRestart) },
     { label: "Launches", value: formatInteger(summary.launchCount) },
   ]);
@@ -1588,39 +1698,24 @@ function renderPi(payload) {
   elements.pageContent.innerHTML = `
     <section class="panel">
       <div class="panel-heading">
-        <h3>Colonies</h3>
+        <h3>Planets</h3>
         <button id="restart-extractors-button" type="button" ${restartDisabled ? "disabled" : ""}>${escapeHtml(restartLabel)}</button>
       </div>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>Planet</th><th>System</th><th>Pins</th><th>Extractors</th><th>Needs restart</th><th>Routes</th></tr></thead>
-          <tbody>
-            ${dashboard.colonies.map((colony) => `
-              <tr>
-                <td>${escapeHtml(colony.planetName)}</td>
-                <td>${escapeHtml(colony.solarSystemName || "-")}</td>
-                <td>${formatInteger(colony.pinCount)}</td>
-                <td>${formatInteger(colony.extractorCount)}</td>
-                <td>${colony.needsRestartCount > 0
-                  ? `<span class="pi-needs-restart">${formatInteger(colony.needsRestartCount)}</span>`
-                  : formatInteger(colony.needsRestartCount)}</td>
-                <td>${formatInteger(colony.routeCount)}</td>
-              </tr>
-            `).join("")}
-          </tbody>
-        </table>
+      <div class="pi-colony-list">
+        ${dashboard.colonies.map((colony) => renderPiColony(colony, readOnly)).join("")}
       </div>
       <p class="pi-restart-hint">Reinstalls expired extractor programs with the same resource and head layout. After restarting, log out and back in for the game client to pick up the change.</p>
     </section>
   `;
 
   bindPiEvents();
+  updateCountdowns();
 }
 
-async function restartExtractorsAction() {
+async function restartExtractorsAction(planetID = 0) {
   const payload = await requestJson(`/api/characters/${state.selectedCharacterID}/pi/restart`, {
     method: "POST",
-    body: JSON.stringify({}),
+    body: JSON.stringify({ planetID }),
   });
   state.data = payload;
   renderCurrentPage();
@@ -1641,27 +1736,49 @@ async function restartExtractorsAction() {
 
 function bindPiEvents() {
   const button = document.getElementById("restart-extractors-button");
-  if (!button) {
-    return;
-  }
-  button.addEventListener("click", () => {
-    if (isReadOnly()) {
-      return;
-    }
-    button.disabled = true;
-    setPageStatus("Restarting extractors...", "");
-    restartExtractorsAction().catch((error) => {
-      console.error(error);
-      const message = (error.payload && error.payload.message) || error.message || "Restart failed";
-      // The character may have logged in since the page loaded; flip to read-only.
-      if (error.payload && error.payload.error === "CHARACTER_ONLINE") {
-        state.characterOnline = true;
-        renderReadOnlyBanner();
-        renderCurrentPage();
-      } else {
-        button.disabled = false;
+  if (button) {
+    button.addEventListener("click", () => {
+      if (isReadOnly()) {
+        return;
       }
-      setPageStatus(message, "");
+      button.disabled = true;
+      setPageStatus("Restarting extractors...", "");
+      restartExtractorsAction().catch((error) => {
+        console.error(error);
+        const message = (error.payload && error.payload.message) || error.message || "Restart failed";
+        // The character may have logged in since the page loaded; flip to read-only.
+        if (error.payload && error.payload.error === "CHARACTER_ONLINE") {
+          state.characterOnline = true;
+          renderReadOnlyBanner();
+          renderCurrentPage();
+        } else {
+          button.disabled = false;
+        }
+        setPageStatus(message, "");
+      });
+    });
+  }
+
+  document.querySelectorAll("[data-pi-restart-planet]").forEach((planetButton) => {
+    planetButton.addEventListener("click", () => {
+      if (isReadOnly()) {
+        return;
+      }
+      const planetID = Number(planetButton.dataset.piRestartPlanet || 0);
+      planetButton.disabled = true;
+      setPageStatus("Restarting planet extractors...", "");
+      restartExtractorsAction(planetID).catch((error) => {
+        console.error(error);
+        const message = (error.payload && error.payload.message) || error.message || "Restart failed";
+        if (error.payload && error.payload.error === "CHARACTER_ONLINE") {
+          state.characterOnline = true;
+          renderReadOnlyBanner();
+          renderCurrentPage();
+        } else {
+          planetButton.disabled = false;
+        }
+        setPageStatus(message, "");
+      });
     });
   });
 }
@@ -1679,7 +1796,23 @@ function updateCountdowns() {
     if (!Number.isFinite(targetMs)) {
       return;
     }
-    element.textContent = formatDurationMs(Math.max(0, targetMs - Date.now()));
+    const remainingMs = Math.max(0, targetMs - Date.now());
+    element.textContent = remainingMs <= 0 && element.dataset.countdownExpiredLabel
+      ? element.dataset.countdownExpiredLabel
+      : formatDurationMs(remainingMs);
+  });
+  document.querySelectorAll("[data-progress-start][data-progress-end]").forEach((element) => {
+    const startMs = Date.parse(element.dataset.progressStart || "");
+    const endMs = Date.parse(element.dataset.progressEnd || "");
+    if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) {
+      return;
+    }
+    const percent = Math.max(0, Math.min(100, ((Date.now() - startMs) / (endMs - startMs)) * 100));
+    const fill = element.querySelector("i");
+    if (fill) {
+      fill.style.width = `${percent}%`;
+    }
+    element.setAttribute("aria-valuenow", String(Math.round(percent)));
   });
 }
 

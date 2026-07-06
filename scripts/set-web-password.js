@@ -12,8 +12,8 @@ if (!username || !password) {
   process.exit(1);
 }
 
-try {
-  const account = eveStore.getAccount(username);
+async function main() {
+  const account = await eveStore.getAccount(username);
   if (!account) {
     console.error(`EveJS account not found: ${username}`);
     process.exit(1);
@@ -23,7 +23,9 @@ try {
     `Web password set for ${record.username} (EveJS account ${record.eveAccountID}).`,
   );
   console.log(`Stored outside EveJS at ${webAuth.USERS_PATH}`);
-} catch (error) {
+}
+
+main().catch((error) => {
   console.error(error.message);
   process.exit(1);
-}
+});

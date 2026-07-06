@@ -1,67 +1,11 @@
 "use strict";
 
-const net = require("net");
+const eveBridgeClient = require("./eveBridgeClient");
 const staticData = require("./staticData");
 
-const DEFAULT_HOST = process.env.EVEJS_MARKET_HOST || "127.0.0.1";
-const DEFAULT_PORT = Number.parseInt(process.env.EVEJS_MARKET_PORT || "40111", 10) || 40111;
-const DEFAULT_TIMEOUT_MS = 5000;
 const JITA_REGION_ID = 10000002;
 const JITA_SOLAR_SYSTEM_ID = 30000142;
 const JITA_4_4_STATION_ID = 60003760;
-
-function callMarketDaemon(method, params = {}, options = {}) {
-  const host = options.host || DEFAULT_HOST;
-  const port = Number(options.port || DEFAULT_PORT);
-  const timeoutMs = Number(options.timeoutMs || DEFAULT_TIMEOUT_MS);
-
-  return new Promise((resolve, reject) => {
-    const socket = net.createConnection({ host, port });
-    let buffer = "";
-    let settled = false;
-    const timer = setTimeout(() => {
-      finish(new Error(`market daemon timeout after ${timeoutMs} ms`));
-    }, timeoutMs);
-
-    function finish(error, value) {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      clearTimeout(timer);
-      socket.destroy();
-      if (error) {
-        reject(error);
-      } else {
-        resolve(value);
-      }
-    }
-
-    socket.setEncoding("utf8");
-    socket.on("connect", () => {
-      socket.write(`${JSON.stringify({ id: "web-poc", method, params })}\n`);
-    });
-    socket.on("data", (chunk) => {
-      buffer += chunk;
-      const newlineIndex = buffer.indexOf("\n");
-      if (newlineIndex < 0) {
-        return;
-      }
-      const line = buffer.slice(0, newlineIndex).trim();
-      try {
-        const response = JSON.parse(line);
-        if (response.ok === false) {
-          finish(new Error(response.error || "market daemon request failed"));
-        } else {
-          finish(null, Object.prototype.hasOwnProperty.call(response, "result") ? response.result : null);
-        }
-      } catch (error) {
-        finish(error);
-      }
-    });
-    socket.on("error", finish);
-  });
-}
 
 async function getMarketOverview(regionID) {
   const requestedRegionID = Number(regionID || 0) || null;
@@ -76,14 +20,14 @@ async function getMarketOverview(regionID) {
     stationShortName: staticData.getStationShortName(JITA_4_4_STATION_ID),
   };
   const status = {
-    host: DEFAULT_HOST,
-    port: DEFAULT_PORT,
+    source: "evejs-web-bridge",
     online: false,
     error: null,
   };
 
+  let rows = [];
   try {
-    await callMarketDaemon("StartupCheck", {});
+    rows = await eveBridgeClient.getStationAsks(JITA_4_4_STATION_ID);
     status.online = true;
   } catch (error) {
     status.error = error.message;
@@ -101,9 +45,6 @@ async function getMarketOverview(regionID) {
     };
   }
 
-  const rows = await callMarketDaemon("GetStationAsks", {
-    station_id: JITA_4_4_STATION_ID,
-  });
   const normalizedRows = (Array.isArray(rows) ? rows : [])
     .map((row) => {
       const typeID = Number(row.type_id || row.typeID || 0);
@@ -174,6 +115,5 @@ async function getMarketOverview(regionID) {
 }
 
 module.exports = {
-  callMarketDaemon,
   getMarketOverview,
 };

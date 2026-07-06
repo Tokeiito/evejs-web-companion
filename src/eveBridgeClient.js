@@ -202,6 +202,44 @@ async function getCharacterStatus(accountID, characterID) {
   });
 }
 
+async function getStatus() {
+  return getJson("/status");
+}
+
+async function listAccounts() {
+  const result = await getJson("/accounts");
+  return Array.isArray(result.accounts) ? result.accounts : [];
+}
+
+async function getAccount(username) {
+  const result = await getJson("/account", {
+    username: String(username || "").trim(),
+  });
+  return result.account || null;
+}
+
+async function listCharacters(accountID) {
+  const result = await getJson("/characters", {
+    accountID: Number(accountID) || 0,
+  });
+  return Array.isArray(result.characters) ? result.characters : [];
+}
+
+async function getSnapshot(accountID, characterID) {
+  const result = await getJson("/snapshot", {
+    accountID: Number(accountID) || 0,
+    characterID: Number(characterID) || 0,
+  });
+  return result.snapshot || null;
+}
+
+async function getStationAsks(stationID) {
+  const result = await getJson("/market/station-asks", {
+    stationID: Number(stationID) || 0,
+  });
+  return Array.isArray(result.rows) ? result.rows : [];
+}
+
 async function saveSkillQueue(accountID, characterID, entries, options = {}) {
   return postJson("/skill-queue", {
     accountID: Number(accountID) || 0,
@@ -223,7 +261,13 @@ async function restartExtractors(accountID, characterID, options = {}) {
 
 module.exports = {
   EveBridgeError,
+  getAccount,
+  getSnapshot,
   getCharacterStatus,
+  getStationAsks,
+  getStatus,
+  listAccounts,
+  listCharacters,
   saveSkillQueue,
   restartExtractors,
 };

@@ -3,10 +3,10 @@
 const express = require("express");
 const fs = require("fs");
 const path = require("path");
-const config = require("./config");
 const eveStore = require("./eveStore");
 const marketClient = require("./marketClient");
 const webAuth = require("./webAuth");
+const config = require("./config");
 
 const app = express();
 fs.mkdirSync(config.iconCacheDir, { recursive: true });
@@ -64,7 +64,7 @@ function publicAccount(account) {
   };
 }
 
-function requireAuth(req, res, next) {
+async function requireAuth(req, res, next) {
   const cookies = parseCookies(req.headers.cookie);
   const payload = webAuth.verifySessionToken(cookies[config.sessionCookieName]);
   if (!payload) {
@@ -72,68 +72,74 @@ function requireAuth(req, res, next) {
     return;
   }
 
-  const account = eveStore.getAccount(payload.username);
-  if (!account || account.accountID !== Number(payload.accountID)) {
-    clearSessionCookie(res);
-    res.status(401).json({ ok: false, error: "ACCOUNT_NOT_FOUND" });
-    return;
+  try {
+    const account = await eveStore.getAccount(payload.username);
+    if (!account || account.accountID !== Number(payload.accountID)) {
+      clearSessionCookie(res);
+      res.status(401).json({ ok: false, error: "ACCOUNT_NOT_FOUND" });
+      return;
+    }
+    if (account.banned) {
+      clearSessionCookie(res);
+      res.status(403).json({ ok: false, error: "ACCOUNT_BANNED" });
+      return;
+    }
+    req.account = account;
+    next();
+  } catch (error) {
+    next(error);
   }
-  if (account.banned) {
-    clearSessionCookie(res);
-    res.status(403).json({ ok: false, error: "ACCOUNT_BANNED" });
-    return;
-  }
-
-  req.account = account;
-  next();
 }
 
-app.get("/api/health", (req, res) => {
+app.get("/api/health", async (req, res) => {
   try {
-    const storeStatus = eveStore.getStatus();
+    const storeStatus = await eveStore.getStatus();
     res.json({
       ok: true,
       eveRoot: config.eveRoot,
-      gamestorePath: config.gamestorePath,
       webUsersConfigured: webAuth.countConfiguredUsers(),
-      store: storeStatus,
+      bridge: storeStatus,
     });
   } catch (error) {
     res.status(500).json({
       ok: false,
       error: error.message,
-      gamestorePath: config.gamestorePath,
+      bridgeUrl: process.env.EVEJS_BRIDGE_URL || "http://127.0.0.1:26002/_evejs-web",
     });
   }
 });
 
-app.post("/api/login", (req, res) => {
+app.post("/api/login", async (req, res, next) => {
   const username = String(req.body && req.body.username || "").trim();
   const password = String(req.body && req.body.password || "");
-  const account = eveStore.getAccount(username);
-  if (!account || account.banned) {
-    res.status(401).json({ ok: false, error: "INVALID_LOGIN" });
-    return;
-  }
+  try {
+    const account = await eveStore.getAccount(username);
+    if (!account || account.banned) {
+      res.status(401).json({ ok: false, error: "INVALID_LOGIN" });
+      return;
+    }
 
-  const verification = webAuth.verifyWebPassword(username, password);
-  if (!verification.ok) {
-    const status = verification.reason === "WEB_PASSWORD_NOT_SET" ? 428 : 401;
-    res.status(status).json({ ok: false, error: verification.reason });
-    return;
-  }
+    const verification = webAuth.verifyWebPassword(username, password);
+    if (!verification.ok) {
+      const status = verification.reason === "WEB_PASSWORD_NOT_SET" ? 428 : 401;
+      res.status(status).json({ ok: false, error: verification.reason });
+      return;
+    }
 
-  if (Number(verification.user.eveAccountID) !== Number(account.accountID)) {
-    res.status(409).json({ ok: false, error: "WEB_ACCOUNT_MAPPING_MISMATCH" });
-    return;
-  }
+    if (Number(verification.user.eveAccountID) !== Number(account.accountID)) {
+      res.status(409).json({ ok: false, error: "WEB_ACCOUNT_MAPPING_MISMATCH" });
+      return;
+    }
 
-  setSessionCookie(res, webAuth.createSessionToken(account));
-  res.json({
-    ok: true,
-    account: publicAccount(account),
-    characters: eveStore.listCharactersForAccount(account.accountID),
-  });
+    setSessionCookie(res, webAuth.createSessionToken(account));
+    res.json({
+      ok: true,
+      account: publicAccount(account),
+      characters: await eveStore.listCharactersForAccount(account.accountID),
+    });
+  } catch (error) {
+    next(error);
+  }
 });
 
 app.post("/api/logout", (req, res) => {
@@ -141,29 +147,41 @@ app.post("/api/logout", (req, res) => {
   res.json({ ok: true });
 });
 
-app.get("/api/me", requireAuth, (req, res) => {
+app.get("/api/me", requireAuth, async (req, res, next) => {
+  try {
   res.json({
     ok: true,
     account: publicAccount(req.account),
-    characters: eveStore.listCharactersForAccount(req.account.accountID),
+    characters: await eveStore.listCharactersForAccount(req.account.accountID),
   });
+  } catch (error) {
+    next(error);
+  }
 });
 
-app.get("/api/characters", requireAuth, (req, res) => {
+app.get("/api/characters", requireAuth, async (req, res, next) => {
+  try {
   res.json({
     ok: true,
-    characters: eveStore.listCharactersForAccount(req.account.accountID),
+    characters: await eveStore.listCharactersForAccount(req.account.accountID),
   });
+  } catch (error) {
+    next(error);
+  }
 });
 
-app.get("/api/characters/:characterID/skills", requireAuth, (req, res) => {
+app.get("/api/characters/:characterID/skills", requireAuth, async (req, res, next) => {
+  try {
   const characterID = Number(req.params.characterID || 0);
-  const dashboard = eveStore.getSkillDashboard(req.account.accountID, characterID);
+  const dashboard = await eveStore.getSkillDashboard(req.account.accountID, characterID);
   if (!dashboard) {
     res.status(404).json({ ok: false, error: "CHARACTER_NOT_FOUND" });
     return;
   }
   res.json({ ok: true, dashboard });
+  } catch (error) {
+    next(error);
+  }
 });
 
 app.post("/api/characters/:characterID/skills/queue", requireAuth, async (req, res, next) => {
@@ -187,34 +205,46 @@ app.post("/api/characters/:characterID/skills/queue", requireAuth, async (req, r
   }
 });
 
-app.get("/api/characters/:characterID/overview", requireAuth, (req, res) => {
+app.get("/api/characters/:characterID/overview", requireAuth, async (req, res, next) => {
+  try {
   const characterID = Number(req.params.characterID || 0);
-  const overview = eveStore.getCharacterOverview(req.account.accountID, characterID);
+  const overview = await eveStore.getCharacterOverview(req.account.accountID, characterID);
   if (!overview) {
     res.status(404).json({ ok: false, error: "CHARACTER_NOT_FOUND" });
     return;
   }
   res.json({ ok: true, overview });
+  } catch (error) {
+    next(error);
+  }
 });
 
-app.get("/api/characters/:characterID/inventory", requireAuth, (req, res) => {
+app.get("/api/characters/:characterID/inventory", requireAuth, async (req, res, next) => {
+  try {
   const characterID = Number(req.params.characterID || 0);
-  const dashboard = eveStore.getInventoryDashboard(req.account.accountID, characterID);
+  const dashboard = await eveStore.getInventoryDashboard(req.account.accountID, characterID);
   if (!dashboard) {
     res.status(404).json({ ok: false, error: "CHARACTER_NOT_FOUND" });
     return;
   }
   res.json({ ok: true, dashboard });
+  } catch (error) {
+    next(error);
+  }
 });
 
-app.get("/api/characters/:characterID/industry", requireAuth, (req, res) => {
+app.get("/api/characters/:characterID/industry", requireAuth, async (req, res, next) => {
+  try {
   const characterID = Number(req.params.characterID || 0);
-  const dashboard = eveStore.getIndustryDashboard(req.account.accountID, characterID);
+  const dashboard = await eveStore.getIndustryDashboard(req.account.accountID, characterID);
   if (!dashboard) {
     res.status(404).json({ ok: false, error: "CHARACTER_NOT_FOUND" });
     return;
   }
   res.json({ ok: true, dashboard });
+  } catch (error) {
+    next(error);
+  }
 });
 
 app.get("/api/characters/:characterID/status", requireAuth, async (req, res, next) => {
@@ -231,14 +261,18 @@ app.get("/api/characters/:characterID/status", requireAuth, async (req, res, nex
   }
 });
 
-app.get("/api/characters/:characterID/pi", requireAuth, (req, res) => {
+app.get("/api/characters/:characterID/pi", requireAuth, async (req, res, next) => {
+  try {
   const characterID = Number(req.params.characterID || 0);
-  const dashboard = eveStore.getPlanetDashboard(req.account.accountID, characterID);
+  const dashboard = await eveStore.getPlanetDashboard(req.account.accountID, characterID);
   if (!dashboard) {
     res.status(404).json({ ok: false, error: "CHARACTER_NOT_FOUND" });
     return;
   }
   res.json({ ok: true, dashboard });
+  } catch (error) {
+    next(error);
+  }
 });
 
 app.post("/api/characters/:characterID/pi/restart", requireAuth, async (req, res, next) => {
@@ -263,7 +297,7 @@ app.post("/api/characters/:characterID/pi/restart", requireAuth, async (req, res
 app.get("/api/characters/:characterID/market", requireAuth, async (req, res, next) => {
   try {
     const characterID = Number(req.params.characterID || 0);
-    const character = eveStore.getCharacterForAccount(req.account.accountID, characterID);
+    const character = await eveStore.getCharacterForAccount(req.account.accountID, characterID);
     if (!character) {
       res.status(404).json({ ok: false, error: "CHARACTER_NOT_FOUND" });
       return;
@@ -305,7 +339,7 @@ app.use((error, req, res, next) => {
 
 const server = app.listen(config.port, config.host, () => {
   console.log(`EveJS Web POC listening on http://${config.host}:${config.port}`);
-  console.log(`Reading EveJS gamestore: ${config.gamestorePath}`);
+  console.log(`Using EveJS bridge: ${process.env.EVEJS_BRIDGE_URL || "http://127.0.0.1:26002/_evejs-web"}`);
 });
 
 module.exports = {
