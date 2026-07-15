@@ -166,6 +166,17 @@ function cloneValue(value) {
     : JSON.parse(JSON.stringify(value));
 }
 
+function requireStateVersion(snapshot) {
+  const stateVersion = snapshot && snapshot.stateVersion;
+  if (typeof stateVersion !== "string" || stateVersion.length === 0) {
+    throw new eveGatewayClient.EveGatewayError(
+      "EveJS returned a snapshot without a state version.",
+      { code: "EVE_GATEWAY_UNSUPPORTED", statusCode: 502 },
+    );
+  }
+  return stateVersion;
+}
+
 function getSnapshotTable(db, table) {
   quoteTable(table);
   const snapshot = db && db.__snapshot;
@@ -416,6 +427,7 @@ function normalizeCharacterControl(result, expectedCharacterID) {
   const leaseExpiresAt = source && source.leaseExpiresAt === null
     ? null
     : source && source.leaseExpiresAt;
+  const stateVersion = source && source.stateVersion;
   const expected = Number(expectedCharacterID);
   const validExpiry =
     leaseExpiresAt === null ||
@@ -432,6 +444,8 @@ function normalizeCharacterControl(result, expectedCharacterID) {
     !CHARACTER_CONTROL_STATES.has(controlState) ||
     !CHARACTER_CONTROL_TRANSPORTS.has(transport) ||
     typeof online !== "boolean" ||
+    typeof stateVersion !== "string" ||
+    stateVersion.length === 0 ||
     !validExpiry ||
     !stateShapeValid
   ) {
@@ -447,6 +461,7 @@ function normalizeCharacterControl(result, expectedCharacterID) {
     controlState,
     transport,
     leaseExpiresAt,
+    stateVersion,
   };
 }
 
@@ -666,6 +681,7 @@ async function getSkillDashboard(accountID, characterID, options = {}) {
     const computedSkillPoints = sumSkillPoints(skills);
 
     return {
+      stateVersion: requireStateVersion(db.__snapshot),
       character: {
         characterID: character.characterID,
         characterName: character.characterName,
@@ -1029,6 +1045,7 @@ async function getPlanetDashboard(accountID, characterID, options = {}) {
         deleted: launch.deleted === true,
       }));
     return {
+      stateVersion: requireStateVersion(db.__snapshot),
       character,
       summary: {
         colonyCount: colonies.length,
@@ -1214,19 +1231,21 @@ async function saveSkillQueue(accountID, characterID, entries, options = {}) {
     return null;
   }
 
-  const gatewayResult = await eveGatewayClient.saveSkillQueue(
+  await eveGatewayClient.saveSkillQueue(
     accountID,
     character.characterID,
     entries,
     {
-      activate: options.activate !== false,
+      activate: options.activate === true,
+      commandID: options.commandID,
+      expectedStateVersion: options.expectedStateVersion,
+      controllerID: options.controllerID,
     },
   );
-  const queueSnapshot = gatewayResult.snapshot || null;
-
   return getSkillDashboard(accountID, character.characterID, {
     ...options,
-    queueSnapshot,
+    snapshot: undefined,
+    queueSnapshot: undefined,
     queueSaveSource: "evejs-web-gateway",
   });
 }
@@ -1320,12 +1339,27 @@ async function restartExtractors(accountID, characterID, options = {}) {
   const gatewayResult = await eveGatewayClient.restartExtractors(
     accountID,
     character.characterID,
-    { planetID: options.planetID },
+    {
+      planetID: options.planetID,
+      commandID: options.commandID,
+      expectedStateVersion: options.expectedStateVersion,
+      controllerID: options.controllerID,
+    },
   );
 
-  const dashboard = await getPlanetDashboard(accountID, character.characterID, options);
+  const dashboard = await getPlanetDashboard(accountID, character.characterID, {
+    ...options,
+    snapshot: undefined,
+  });
   if (dashboard) {
-    dashboard.restartSummary = (gatewayResult && gatewayResult.summary) || null;
+    const summary = gatewayResult && gatewayResult.summary;
+    dashboard.restartSummary = summary && typeof summary === "object"
+      ? {
+        colonyCount: Number(summary.colonyCount) || 0,
+        restartedCount: Number(summary.restartedCount) || 0,
+        failedCount: Number(summary.failedCount) || 0,
+      }
+      : null;
   }
   return dashboard;
 }

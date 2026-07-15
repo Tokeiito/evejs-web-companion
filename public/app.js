@@ -18,8 +18,14 @@ const CHARACTER_CONTROL_CONFLICTS = new Set([
   "CHARACTER_CONTROL_RETAIL_CLIENT",
   "CHARACTER_CONTROL_BROWSER_PILOT",
 ]);
+const CHARACTER_STATE_VERSION_MISMATCH = "CHARACTER_STATE_VERSION_MISMATCH";
+const commandClient = globalThis.EveCommandClient;
+const mutationScope = globalThis.EveMutationScope;
 
 const state = {
+  authGeneration: 0,
+  authTransitionPending: false,
+  viewGeneration: 0,
   account: null,
   characters: [],
   selectedCharacterID: null,
@@ -39,6 +45,7 @@ const state = {
   marketCategoryFilter: "all",
   marketGroupFilter: null,
   marketTypeFilter: null,
+  commandRequests: new Map(),
 };
 
 const elements = {
@@ -282,6 +289,156 @@ async function requestJson(url, options = {}) {
   return payload;
 }
 
+function getCommandKey(kind, characterID = state.selectedCharacterID) {
+  return `${kind}:${Number(characterID) || 0}`;
+}
+
+function getRetainedCommand(kind, characterID = state.selectedCharacterID) {
+  return state.commandRequests.get(getCommandKey(kind, characterID)) || null;
+}
+
+function getDisplayedStateVersion() {
+  const dashboard = state.data && state.data.dashboard;
+  return dashboard && typeof dashboard.stateVersion === "string"
+    ? dashboard.stateVersion
+    : "";
+}
+
+function localCommandError(message, code) {
+  const error = new Error(message);
+  error.code = code;
+  error.payload = { error: code, message };
+  error.uncertain = false;
+  return error;
+}
+
+function beginAuthBoundary() {
+  state.authGeneration += 1;
+  state.viewGeneration += 1;
+  state.commandRequests.clear();
+  state.skillQueueDraft = null;
+  state.skillQueueDirty = false;
+  return state.authGeneration;
+}
+
+function retainTypedCommand(
+  kind,
+  payload,
+  identity = {},
+  originCharacterID = state.selectedCharacterID,
+) {
+  const characterID = Number(originCharacterID) || 0;
+  const key = getCommandKey(kind, characterID);
+  const payloadKey = JSON.stringify(payload);
+  const retained = state.commandRequests.get(key);
+  if (retained) {
+    if (retained.payloadKey !== payloadKey) {
+      throw localCommandError(
+        "A previous request still has an uncertain outcome. Retry that exact request or refresh before changing it.",
+        "COMMAND_OUTCOME_UNCERTAIN",
+      );
+    }
+    return retained;
+  }
+
+  const request = commandClient.createRetainedCommand(
+    getDisplayedStateVersion(),
+    payload,
+  );
+  const record = {
+    ...identity,
+    characterID,
+    payloadKey,
+    request,
+    inFlight: false,
+  };
+  state.commandRequests.set(key, record);
+  return record;
+}
+
+async function executeTypedCommand(
+  kind,
+  url,
+  payload,
+  identity = {},
+  originCharacterID = state.selectedCharacterID,
+) {
+  const key = getCommandKey(kind, originCharacterID);
+  const record = retainTypedCommand(kind, payload, identity, originCharacterID);
+  if (record.inFlight) {
+    throw localCommandError("This command request is already in progress.", "COMMAND_REQUEST_IN_FLIGHT");
+  }
+
+  record.inFlight = true;
+  syncMutationControls();
+  try {
+    const response = await commandClient.sendRetainedCommand(url, record.request, {
+      validateSuccess: (candidate) => mutationScope.validateMutationDashboardPayload(
+        candidate,
+        kind,
+        record.characterID,
+        { expectedStateVersion: record.request.expectedStateVersion },
+      ),
+    });
+    mutationScope.deleteMapEntryIfRecordMatches(state.commandRequests, key, record);
+    return response;
+  } catch (error) {
+    if (!commandClient.isUncertainCommandError(error)) {
+      mutationScope.deleteMapEntryIfRecordMatches(state.commandRequests, key, record);
+    }
+    throw error;
+  } finally {
+    record.inFlight = false;
+    syncMutationControls();
+  }
+}
+
+function syncMutationControls() {
+  syncSkillCommandControls();
+  syncPiCommandControls();
+}
+
+async function reconcileSuccessfulMutation(kind, origin) {
+  const preserveSkillDraft = kind === "skill-queue" &&
+    mutationScope.shouldPreserveSkillDraftAfterSuccess(state, origin);
+  let loaded = false;
+  try {
+    loaded = await loadPage({ preserveSkillDraft });
+  } catch (error) {
+    console.error(error);
+    if (
+      mutationScope.classifyMutationOrigin(state, origin) !==
+      mutationScope.ORIGIN_CLASSIFICATION.DETACHED
+    ) {
+      setPageStatus(
+        kind === "skill-queue"
+          ? "Queue saved, but the latest data could not be loaded. Refresh to reconcile it."
+          : "Extractor restart completed, but the latest PI data could not be loaded. Refresh to reconcile it.",
+        "",
+      );
+    }
+    return false;
+  }
+  if (!loaded) {
+    return false;
+  }
+  setPageStatus(
+    kind === "skill-queue"
+      ? preserveSkillDraft
+        ? "Queue saved. Latest data loaded; your newer unsaved queue is preserved."
+        : "Queue saved. Latest data loaded."
+      : "Extractor restart completed. Latest PI data loaded.",
+    "ok",
+  );
+  return true;
+}
+
+function getCommandErrorCode(error) {
+  return error && error.payload && error.payload.error
+    ? error.payload.error
+    : error && error.code;
+}
+
 function setView(view) {
   elements.loginView.hidden = view !== "login";
   elements.appView.hidden = view !== "app";
@@ -408,10 +565,15 @@ function renderOverview(payload) {
 
 function renderSkills(payload) {
   const dashboard = payload.dashboard;
+  const retainedCommand = getRetainedCommand("skill-queue");
   elements.pageTitle.textContent = "Skills";
   elements.pageSubtitle.textContent = `${dashboard.character.characterName} | Queue planner and trained skills`;
   setPageStatus(
-    state.skillQueueDirty
+    retainedCommand
+      ? retainedCommand.inFlight
+        ? "Saving queue..."
+        : "Queue save outcome uncertain — retry the same save"
+      : state.skillQueueDirty
       ? "Unsaved queue"
       : dashboard.summary.queueActive
         ? "Queue active"
@@ -453,7 +615,7 @@ function renderSkills(payload) {
             <input id="skill-filter" type="search" placeholder="Filter skills" value="${escapeHtml(state.skillFilter)}" aria-label="Filter skills">
           </div>
         </div>
-        ${renderSkillBrowser(browserSkills, projectedLevels)}
+        ${renderSkillBrowser(browserSkills, projectedLevels, Boolean(retainedCommand))}
       </section>
 
       <section class="panel skill-queue-panel">
@@ -461,11 +623,11 @@ function renderSkills(payload) {
           <h3>Training Queue</h3>
           <span>${dashboard.queue.active ? "Active" : "Paused"}</span>
         </div>
-        ${renderQueuePlanner(dashboard, draft)}
+        ${renderQueuePlanner(dashboard, draft, Boolean(retainedCommand))}
         <div class="queue-actions">
-          <button id="save-queue-button" type="button" ${state.skillQueueDirty && !isReadOnly() ? "" : "disabled"}>Save Queue</button>
-          <button id="save-paused-queue-button" class="ghost-button" type="button" ${state.skillQueueDirty && !isReadOnly() ? "" : "disabled"}>Save Paused</button>
-          <button id="clear-queue-button" class="ghost-button" type="button" ${draft.length ? "" : "disabled"}>Clear</button>
+          <button id="save-queue-button" type="button" ${canSubmitSkillQueue(true) ? "" : "disabled"}>${retainedCommand && retainedCommand.activate === true ? "Retry Save Queue" : "Save Queue"}</button>
+          <button id="save-paused-queue-button" class="ghost-button" type="button" ${canSubmitSkillQueue(false) ? "" : "disabled"}>${retainedCommand && retainedCommand.activate === false ? "Retry Save Paused" : "Save Paused"}</button>
+          <button id="clear-queue-button" class="ghost-button" type="button" ${draft.length && !retainedCommand ? "" : "disabled"}>Clear</button>
         </div>
         ${renderQueueSaveStatus(dashboard)}
       </section>
@@ -491,6 +653,7 @@ function renderSkills(payload) {
     renderPreservingScroll(() => renderSkills(payload));
   });
   bindSkillQueueEvents(payload);
+  syncSkillCommandControls();
 }
 
 function renderQueueSaveStatus(dashboard) {
@@ -508,11 +671,57 @@ function ensureSkillQueueDraft(dashboard) {
   if (Array.isArray(state.skillQueueDraft)) {
     return;
   }
+  const retainedCommand = getRetainedCommand("skill-queue");
+  if (retainedCommand) {
+    state.skillQueueDraft = retainedCommand.entries.map((entry) => ({ ...entry }));
+    state.skillQueueDirty = true;
+    return;
+  }
   state.skillQueueDraft = (dashboard.queue.queue || []).map((entry) => ({
     typeID: entry.typeID,
     toLevel: entry.toLevel,
   }));
   state.skillQueueDirty = false;
+}
+
+function canSubmitSkillQueue(activate) {
+  if (isReadOnly() || !state.skillQueueDirty || !getDisplayedStateVersion()) {
+    return false;
+  }
+  const retainedCommand = getRetainedCommand("skill-queue");
+  return !retainedCommand || (
+    retainedCommand.activate === activate && retainedCommand.inFlight === false
+  );
+}
+
+function syncSkillCommandControls() {
+  const retainedCommand = getRetainedCommand("skill-queue");
+  const locked = Boolean(retainedCommand);
+  const saveButton = document.getElementById("save-queue-button");
+  const savePausedButton = document.getElementById("save-paused-queue-button");
+  const clearButton = document.getElementById("clear-queue-button");
+  if (saveButton) {
+    saveButton.disabled = !canSubmitSkillQueue(true);
+  }
+  if (savePausedButton) {
+    savePausedButton.disabled = !canSubmitSkillQueue(false);
+  }
+  if (clearButton) {
+    clearButton.disabled = locked || !(state.skillQueueDraft && state.skillQueueDraft.length);
+  }
+  elements.pageContent.querySelectorAll("[data-add-skill]").forEach((button) => {
+    const row = button.closest(".skill-row");
+    button.disabled = locked || Boolean(row && row.classList.contains("maxed"));
+  });
+  elements.pageContent.querySelectorAll("[data-move-queue], [data-remove-queue]").forEach((button) => {
+    button.disabled = locked;
+  });
+  elements.pageContent.querySelectorAll(".skill-row").forEach((row) => {
+    row.draggable = !locked && !row.classList.contains("maxed");
+  });
+  elements.pageContent.querySelectorAll(".queue-row").forEach((row) => {
+    row.draggable = !locked;
+  });
 }
 
 function buildProjectedLevelMap(skills, draft) {
@@ -558,7 +767,7 @@ function getSkillBrowserTrainingText(skill, targetLevel) {
   return `Training time ${formatDurationMs(getSkillTrainingTimeMs(skill, targetLevel))} to level ${targetLevel}`;
 }
 
-function renderSkillBrowser(skills, projectedLevels) {
+function renderSkillBrowser(skills, projectedLevels, commandLocked = false) {
   if (!skills.length) {
     return `<div class="empty-state">No matching trainable skills.</div>`;
   }
@@ -575,14 +784,14 @@ function renderSkillBrowser(skills, projectedLevels) {
             const targetLevel = getNextTrainableLevel(skill, projectedLevels);
             const trainable = targetLevel !== null;
             return `
-              <div class="skill-row${trainable ? "" : " maxed"}" draggable="${trainable ? "true" : "false"}" data-skill-type-id="${skill.typeID}" title="${trainable ? "Drag to skill queue" : "Max trained"}">
+              <div class="skill-row${trainable ? "" : " maxed"}" draggable="${trainable && !commandLocked ? "true" : "false"}" data-skill-type-id="${skill.typeID}" title="${trainable ? "Drag to skill queue" : "Max trained"}">
                 ${typeIcon(skill.typeID, skill.iconUrl, skill.name)}
                 <div class="skill-row-main">
                   <strong>${escapeHtml(skill.name)}</strong>
                   <span>Rank ${skill.rank} | ${getSkillBrowserTrainingText(skill, targetLevel)}</span>
                   ${levelPips(skill.level, targetLevel)}
                 </div>
-                <button class="icon-command" type="button" data-add-skill="${skill.typeID}" title="Add to queue" ${trainable ? "" : "disabled"}>+</button>
+                <button class="icon-command" type="button" data-add-skill="${skill.typeID}" title="Add to queue" ${trainable && !commandLocked ? "" : "disabled"}>+</button>
               </div>
             `;
           }).join("")}
@@ -592,7 +801,7 @@ function renderSkillBrowser(skills, projectedLevels) {
   `;
 }
 
-function renderQueuePlanner(dashboard, draft) {
+function renderQueuePlanner(dashboard, draft, commandLocked = false) {
   const skillsByTypeID = new Map(dashboard.skills.map((skill) => [Number(skill.typeID), skill]));
   const liveEntriesByKey = new Map(
     (dashboard.queue.queue || []).map((entry) => [`${entry.typeID}:${entry.toLevel}`, entry]),
@@ -614,7 +823,7 @@ function renderQueuePlanner(dashboard, draft) {
           ? "Pending save"
           : formatDurationMs(liveEntry.remainingMs);
         return `
-          <div class="queue-row" draggable="true" data-queue-index="${index}">
+          <div class="queue-row" draggable="${commandLocked ? "false" : "true"}" data-queue-index="${index}">
             <span class="queue-position">${index + 1}</span>
             ${typeIcon(entry.typeID, skill && skill.iconUrl, label)}
             <div class="queue-row-main">
@@ -623,9 +832,9 @@ function renderQueuePlanner(dashboard, draft) {
               ${levelPips(skill ? skill.level : 0, entry.toLevel)}
             </div>
             <div class="queue-row-actions">
-              <button class="icon-command ghost-button" type="button" data-move-queue="${index}" data-direction="-1" title="Move up">^</button>
-              <button class="icon-command ghost-button" type="button" data-move-queue="${index}" data-direction="1" title="Move down">v</button>
-              <button class="icon-command ghost-button" type="button" data-remove-queue="${index}" title="Remove">x</button>
+              <button class="icon-command ghost-button" type="button" data-move-queue="${index}" data-direction="-1" title="Move up" ${commandLocked ? "disabled" : ""}>^</button>
+              <button class="icon-command ghost-button" type="button" data-move-queue="${index}" data-direction="1" title="Move down" ${commandLocked ? "disabled" : ""}>v</button>
+              <button class="icon-command ghost-button" type="button" data-remove-queue="${index}" title="Remove" ${commandLocked ? "disabled" : ""}>x</button>
             </div>
           </div>
         `;
@@ -751,17 +960,98 @@ async function saveSkillQueueDraft(activate) {
     setPageStatus("Read-only — character is logged in", "");
     return;
   }
-  const payload = await requestJson(`/api/characters/${state.selectedCharacterID}/skills/queue`, {
-    method: "POST",
-    body: JSON.stringify({
-      activate,
-      entries: state.skillQueueDraft || [],
-    }),
+  const entries = (state.skillQueueDraft || []).map((entry) => ({
+    typeID: Number(entry.typeID),
+    toLevel: Number(entry.toLevel),
+  }));
+  const origin = mutationScope.captureMutationOrigin(state, {
+    expectedPage: "skills",
+    draftProperty: "skillQueueDraft",
+    submittedSkillDraft: entries,
   });
-  state.data = payload;
-  state.skillQueueDraft = null;
-  state.skillQueueDirty = false;
-  renderCurrentPage();
+  try {
+    const payload = await executeTypedCommand(
+      "skill-queue",
+      `/api/characters/${origin.characterID}/skills/queue`,
+      { activate: activate === true, entries },
+      { activate: activate === true, entries },
+      origin.characterID,
+    );
+    const classification = mutationScope.classifyMutationOrigin(state, origin);
+    if (classification === mutationScope.ORIGIN_CLASSIFICATION.DETACHED) {
+      return;
+    }
+    if (classification === mutationScope.ORIGIN_CLASSIFICATION.SAME_VIEW_STALE) {
+      await reconcileSuccessfulMutation("skill-queue", origin);
+      return;
+    }
+    state.data = payload;
+    if (
+      mutationScope.canonicalSkillDraftKey(state.skillQueueDraft) ===
+      origin.submittedSkillDraftKey
+    ) {
+      state.skillQueueDraft = null;
+      state.skillQueueDirty = false;
+    }
+    renderCurrentPage();
+  } catch (error) {
+    const classification = mutationScope.classifyMutationOrigin(state, origin);
+    if (classification !== mutationScope.ORIGIN_CLASSIFICATION.DETACHED) {
+      await handleSkillQueueCommandError(error, origin, {
+        reconcileCurrentView:
+          classification === mutationScope.ORIGIN_CLASSIFICATION.SAME_VIEW_STALE,
+      });
+    }
+  }
+}
+
+async function handleSkillQueueCommandError(error, origin = null, options = {}) {
+  console.error(error);
+  const code = getCommandErrorCode(error);
+  if (code === CHARACTER_STATE_VERSION_MISMATCH) {
+    try {
+      const refreshed = await loadPage({ preserveSkillDraft: true });
+      if (refreshed) {
+        setPageStatus("Character state changed. Latest data loaded; your unsaved queue is preserved.", "");
+      }
+    } catch (refreshError) {
+      console.error(refreshError);
+      if (
+        !origin ||
+        mutationScope.classifyMutationOrigin(state, origin) !==
+          mutationScope.ORIGIN_CLASSIFICATION.DETACHED
+      ) {
+        setPageStatus("Character state changed. Your unsaved queue is preserved; refresh before saving again.", "");
+      }
+    }
+    return;
+  }
+  if (commandClient.isUncertainCommandError(error)) {
+    setPageStatus("Queue save outcome is uncertain. Retry will reuse the same command.", "");
+    syncSkillCommandControls();
+    return;
+  }
+  if (mutationScope.shouldReconcileDefinitiveCommandError(
+    error,
+    options.reconcileCurrentView === true,
+  )) {
+    try {
+      await loadPage({ preserveSkillDraft: true });
+    } catch (refreshError) {
+      console.error(refreshError);
+    }
+    if (
+      origin &&
+      mutationScope.classifyMutationOrigin(state, origin) ===
+        mutationScope.ORIGIN_CLASSIFICATION.DETACHED
+    ) {
+      return;
+    }
+  }
+  const message = (error.payload && error.payload.message) || error.message || "Queue save failed";
+  applyCharacterControlConflict(error);
+  setPageStatus(message, "");
+  syncSkillCommandControls();
 }
 
 function bindSkillQueueEvents(payload) {
@@ -786,26 +1076,10 @@ function bindSkillQueueEvents(payload) {
   const savePausedButton = document.getElementById("save-paused-queue-button");
   const clearButton = document.getElementById("clear-queue-button");
   saveButton.addEventListener("click", () => {
-    saveButton.disabled = true;
-    saveSkillQueueDraft(true).catch((error) => {
-      console.error(error);
-      const message = (error.payload && error.payload.message) || error.message || "Queue save failed";
-      if (!applyCharacterControlConflict(error)) {
-        saveButton.disabled = false;
-      }
-      setPageStatus(message, "");
-    });
+    void saveSkillQueueDraft(true);
   });
   savePausedButton.addEventListener("click", () => {
-    savePausedButton.disabled = true;
-    saveSkillQueueDraft(false).catch((error) => {
-      console.error(error);
-      const message = (error.payload && error.payload.message) || error.message || "Queue save failed";
-      if (!applyCharacterControlConflict(error)) {
-        savePausedButton.disabled = false;
-      }
-      setPageStatus(message, "");
-    });
+    void saveSkillQueueDraft(false);
   });
   clearButton.addEventListener("click", () => {
     state.skillQueueDraft = [];
@@ -1645,9 +1919,14 @@ function renderPiExtractor(extractor) {
   `;
 }
 
-function renderPiColony(colony, readOnly) {
-  const restartButton = colony.needsRestartCount > 0
-    ? `<button class="pi-planet-restart-button" type="button" data-pi-restart-planet="${Number(colony.planetID) || 0}" ${readOnly ? "disabled" : ""}>Restart planet</button>`
+function renderPiColony(colony, options = {}) {
+  const planetID = Number(colony.planetID) || 0;
+  const retainedForPlanet = options.retainedCommand && options.retainedCommand.planetID === planetID;
+  const commandBlocked = options.retainedCommand && (
+    !retainedForPlanet || options.retainedCommand.inFlight
+  );
+  const restartButton = colony.needsRestartCount > 0 || retainedForPlanet
+    ? `<button class="pi-planet-restart-button" type="button" data-pi-restart-planet="${planetID}" data-pi-can-restart="${colony.needsRestartCount > 0 ? "true" : "false"}" ${options.readOnly || !options.hasStateVersion || commandBlocked ? "disabled" : ""}>${retainedForPlanet ? "Retry planet restart" : "Restart planet"}</button>`
     : "";
   return `
     <article class="pi-colony">
@@ -1677,10 +1956,17 @@ function renderPi(payload) {
   const dashboard = payload.dashboard;
   const summary = dashboard.summary;
   const needsRestart = Number(summary.needsRestartCount || 0);
+  const retainedCommand = getRetainedCommand("pi-restart");
+  const hasStateVersion = Boolean(getDisplayedStateVersion());
+  const readOnly = isReadOnly();
   elements.pageTitle.textContent = "Planetary Industry";
   elements.pageSubtitle.textContent = `${dashboard.character.characterName} | Colonies and extractor programs`;
   setPageStatus(
-    needsRestart > 0
+    retainedCommand
+      ? retainedCommand.inFlight
+        ? "Restarting extractors..."
+        : "Restart outcome uncertain — retry the same command"
+      : needsRestart > 0
       ? `${needsRestart} extractor${needsRestart === 1 ? "" : "s"} need restart`
       : "All extractors active",
     needsRestart > 0 ? "" : "ok",
@@ -1695,60 +1981,172 @@ function renderPi(payload) {
   ]);
 
   if (!dashboard.colonies.length) {
+    const retainedButton = retainedCommand
+      ? retainedCommand.planetID === 0
+        ? `<button id="restart-extractors-button" type="button" data-pi-command-planet="0" data-pi-can-restart="false">Retry same extractor restart</button>`
+        : `<button class="pi-planet-restart-button" type="button" data-pi-restart-planet="${retainedCommand.planetID}" data-pi-can-restart="false">Retry same planet restart</button>`
+      : "";
     elements.pageContent.innerHTML = `
       <section class="panel">
-        <div class="panel-heading"><h3>Colonies</h3></div>
+        <div class="panel-heading"><h3>Colonies</h3>${retainedButton}</div>
         <div class="empty-state">No PI colonies exist for this character yet. This page is wired to the EveJS PI runtime table and will populate once colonies are created in-game.</div>
       </section>
     `;
+    bindPiEvents();
+    syncPiCommandControls();
     return;
   }
 
-  const readOnly = isReadOnly();
-  const restartLabel = readOnly
+  const restartLabel = retainedCommand && retainedCommand.planetID === 0
+    ? retainedCommand.inFlight
+      ? "Restarting extractors..."
+      : "Retry same extractor restart"
+    : readOnly
     ? "Read-only (character online)"
     : needsRestart > 0
       ? `Restart ${needsRestart} expired extractor${needsRestart === 1 ? "" : "s"}`
       : "No extractors to restart";
-  const restartDisabled = readOnly || needsRestart === 0;
+  const restartDisabled = readOnly || !hasStateVersion || (
+    retainedCommand
+      ? retainedCommand.planetID !== 0 || retainedCommand.inFlight
+      : needsRestart === 0
+  );
 
   elements.pageContent.innerHTML = `
     <section class="panel">
       <div class="panel-heading">
         <h3>Planets</h3>
-        <button id="restart-extractors-button" type="button" ${restartDisabled ? "disabled" : ""}>${escapeHtml(restartLabel)}</button>
+        <button id="restart-extractors-button" type="button" data-pi-command-planet="0" data-pi-can-restart="${needsRestart > 0 ? "true" : "false"}" ${restartDisabled ? "disabled" : ""}>${escapeHtml(restartLabel)}</button>
       </div>
       <div class="pi-colony-list">
-        ${dashboard.colonies.map((colony) => renderPiColony(colony, readOnly)).join("")}
+        ${dashboard.colonies.map((colony) => renderPiColony(colony, {
+          readOnly,
+          hasStateVersion,
+          retainedCommand,
+        })).join("")}
       </div>
       <p class="pi-restart-hint">Reinstalls expired extractor programs with the same resource and head layout. After restarting, log out and back in for the game client to pick up the change.</p>
     </section>
   `;
 
   bindPiEvents();
+  syncPiCommandControls();
   updateCountdowns();
 }
 
 async function restartExtractorsAction(planetID = 0) {
-  const payload = await requestJson(`/api/characters/${state.selectedCharacterID}/pi/restart`, {
-    method: "POST",
-    body: JSON.stringify({ planetID }),
+  const origin = mutationScope.captureMutationOrigin(state, {
+    expectedPage: "pi",
   });
-  state.data = payload;
-  renderCurrentPage();
-  const summary = payload.dashboard && payload.dashboard.restartSummary;
-  const restarted = summary ? Number(summary.restartedCount || 0) : 0;
-  const failed = summary ? Number(summary.failedCount || 0) : 0;
-  if (restarted > 0) {
-    setPageStatus(
-      `Restarted ${restarted} extractor${restarted === 1 ? "" : "s"}${failed ? `, ${failed} planet(s) failed` : ""} — log out and back in to see it in-game`,
-      failed ? "" : "ok",
+  const numericPlanetID = Number(planetID) || 0;
+  try {
+    const payload = await executeTypedCommand(
+      "pi-restart",
+      `/api/characters/${origin.characterID}/pi/restart`,
+      { planetID: numericPlanetID },
+      { planetID: numericPlanetID },
+      origin.characterID,
     );
-  } else if (failed > 0) {
-    setPageStatus(`Restart failed on ${failed} planet(s)`, "");
-  } else {
-    setPageStatus("No expired extractors to restart", "");
+    const classification = mutationScope.classifyMutationOrigin(state, origin);
+    if (classification === mutationScope.ORIGIN_CLASSIFICATION.DETACHED) {
+      return;
+    }
+    if (classification === mutationScope.ORIGIN_CLASSIFICATION.SAME_VIEW_STALE) {
+      await reconcileSuccessfulMutation("pi-restart", origin);
+      return;
+    }
+    state.data = payload;
+    renderCurrentPage();
+    const summary = payload.dashboard && payload.dashboard.restartSummary;
+    const restarted = summary ? Number(summary.restartedCount || 0) : 0;
+    const failed = summary ? Number(summary.failedCount || 0) : 0;
+    if (restarted > 0) {
+      setPageStatus(
+        `Restarted ${restarted} extractor${restarted === 1 ? "" : "s"}${failed ? `, ${failed} planet(s) failed` : ""} — log out and back in to see it in-game`,
+        failed ? "" : "ok",
+      );
+    } else if (failed > 0) {
+      setPageStatus(`Restart failed on ${failed} planet(s)`, "");
+    } else {
+      setPageStatus("No expired extractors to restart", "");
+    }
+  } catch (error) {
+    const classification = mutationScope.classifyMutationOrigin(state, origin);
+    if (classification !== mutationScope.ORIGIN_CLASSIFICATION.DETACHED) {
+      await handlePiCommandError(error, origin, {
+        reconcileCurrentView:
+          classification === mutationScope.ORIGIN_CLASSIFICATION.SAME_VIEW_STALE,
+      });
+    }
   }
+}
+
+function syncPiCommandControls() {
+  const retainedCommand = getRetainedCommand("pi-restart");
+  const unavailable = isReadOnly() || !getDisplayedStateVersion();
+  const buttons = elements.pageContent.querySelectorAll(
+    "#restart-extractors-button, [data-pi-restart-planet]",
+  );
+  buttons.forEach((button) => {
+    const planetID = button.id === "restart-extractors-button"
+      ? 0
+      : Number(button.dataset.piRestartPlanet) || 0;
+    const canRestart = button.dataset.piCanRestart === "true";
+    button.disabled = unavailable || (
+      retainedCommand
+        ? retainedCommand.planetID !== planetID || retainedCommand.inFlight
+        : !canRestart
+    );
+  });
+}
+
+async function handlePiCommandError(error, origin = null, options = {}) {
+  console.error(error);
+  const code = getCommandErrorCode(error);
+  if (code === CHARACTER_STATE_VERSION_MISMATCH) {
+    try {
+      const refreshed = await loadPage();
+      if (refreshed) {
+        setPageStatus("Character state changed. Latest PI data loaded; review before retrying.", "");
+      }
+    } catch (refreshError) {
+      console.error(refreshError);
+      if (
+        !origin ||
+        mutationScope.classifyMutationOrigin(state, origin) !==
+          mutationScope.ORIGIN_CLASSIFICATION.DETACHED
+      ) {
+        setPageStatus("Character state changed. Refresh PI before retrying.", "");
+      }
+    }
+    return;
+  }
+  if (commandClient.isUncertainCommandError(error)) {
+    setPageStatus("Restart outcome is uncertain. Retry will reuse the same command.", "");
+    syncPiCommandControls();
+    return;
+  }
+  if (mutationScope.shouldReconcileDefinitiveCommandError(
+    error,
+    options.reconcileCurrentView === true,
+  )) {
+    try {
+      await loadPage();
+    } catch (refreshError) {
+      console.error(refreshError);
+    }
+    if (
+      origin &&
+      mutationScope.classifyMutationOrigin(state, origin) ===
+        mutationScope.ORIGIN_CLASSIFICATION.DETACHED
+    ) {
+      return;
+    }
+  }
+  const message = (error.payload && error.payload.message) || error.message || "Restart failed";
+  applyCharacterControlConflict(error);
+  setPageStatus(message, "");
+  syncPiCommandControls();
 }
 
 function bindPiEvents() {
@@ -1758,17 +2156,8 @@ function bindPiEvents() {
       if (isReadOnly()) {
         return;
       }
-      button.disabled = true;
       setPageStatus("Restarting extractors...", "");
-      restartExtractorsAction().catch((error) => {
-        console.error(error);
-        const message = (error.payload && error.payload.message) || error.message || "Restart failed";
-        // Control may have changed since the page loaded; flip to read-only.
-        if (!applyCharacterControlConflict(error)) {
-          button.disabled = false;
-        }
-        setPageStatus(message, "");
-      });
+      void restartExtractorsAction();
     });
   }
 
@@ -1778,16 +2167,8 @@ function bindPiEvents() {
         return;
       }
       const planetID = Number(planetButton.dataset.piRestartPlanet || 0);
-      planetButton.disabled = true;
       setPageStatus("Restarting planet extractors...", "");
-      restartExtractorsAction(planetID).catch((error) => {
-        console.error(error);
-        const message = (error.payload && error.payload.message) || error.message || "Restart failed";
-        if (!applyCharacterControlConflict(error)) {
-          planetButton.disabled = false;
-        }
-        setPageStatus(message, "");
-      });
+      void restartExtractorsAction(planetID);
     });
   });
 }
@@ -1850,17 +2231,30 @@ function renderCurrentPage() {
   }
 }
 
-async function loadPage() {
-  if (!state.selectedCharacterID) {
+async function loadPage(options = {}) {
+  const page = PAGES[state.page] ? state.page : "overview";
+  const characterID = Number(state.selectedCharacterID) || 0;
+  state.page = page;
+  const context = mutationScope.beginViewLoad(state);
+  const preserveSkillDraft = page === "skills" &&
+    options.preserveSkillDraft === true &&
+    state.skillQueueDirty === true &&
+    Array.isArray(state.skillQueueDraft);
+  const preservedSkillDraft = preserveSkillDraft
+    ? state.skillQueueDraft.map((entry) => ({
+        typeID: Number(entry.typeID),
+        toLevel: Number(entry.toLevel),
+      }))
+    : null;
+
+  if (!characterID) {
     state.data = null;
     state.characterOnline = null;
     renderReadOnlyBanner();
     renderCurrentPage();
-    return;
+    return false;
   }
 
-  const page = PAGES[state.page] ? state.page : "overview";
-  state.page = page;
   localStorage.setItem("evejs-web-page", page);
   renderChrome();
   state.data = null;
@@ -1868,25 +2262,57 @@ async function loadPage() {
   elements.refreshButton.disabled = true;
   try {
     const [payload, status] = await Promise.all([
-      requestJson(`/api/characters/${state.selectedCharacterID}/${page}`),
-      requestJson(`/api/characters/${state.selectedCharacterID}/status`).catch(() => null),
+      requestJson(`/api/characters/${characterID}/${page}`),
+      requestJson(`/api/characters/${characterID}/status`).catch(() => null),
     ]);
+    if (!mutationScope.isViewLoadCurrent(state, context)) {
+      return false;
+    }
+    if (
+      (page === "skills" && !mutationScope.validateMutationDashboardPayload(
+        payload,
+        "skill-queue",
+        characterID,
+      )) ||
+      (page === "pi" && !mutationScope.validateMutationDashboardPayload(
+        payload,
+        "pi-restart",
+        characterID,
+      ))
+    ) {
+      throw localCommandError(
+        "The character page response was incomplete.",
+        "COMMAND_RESPONSE_INVALID",
+      );
+    }
     state.characterOnline = status ? status.online === true : null;
     if (page === "skills") {
-      state.skillQueueDraft = null;
-      state.skillQueueDirty = false;
+      state.skillQueueDraft = preservedSkillDraft;
+      state.skillQueueDirty = preserveSkillDraft;
     }
     state.data = payload;
     renderReadOnlyBanner();
     renderCurrentPage();
+    return true;
+  } catch (error) {
+    if (!mutationScope.isViewLoadCurrent(state, context)) {
+      return false;
+    }
+    throw error;
   } finally {
-    elements.refreshButton.disabled = false;
+    if (mutationScope.isViewLoadCurrent(state, context)) {
+      elements.refreshButton.disabled = false;
+    }
   }
 }
 
 async function loadMe() {
+  const authGeneration = beginAuthBoundary();
   try {
     const payload = await requestJson("/api/me");
+    if (state.authGeneration !== authGeneration) {
+      return;
+    }
     state.account = payload.account;
     state.characters = payload.characters || [];
     state.selectedCharacterID = state.selectedCharacterID ||
@@ -1896,6 +2322,9 @@ async function loadMe() {
     renderChrome();
     await loadPage();
   } catch (error) {
+    if (state.authGeneration !== authGeneration) {
+      return;
+    }
     state.account = null;
     state.characters = [];
     state.data = null;
@@ -1905,9 +2334,13 @@ async function loadMe() {
 
 elements.loginForm.addEventListener("submit", async (event) => {
   event.preventDefault();
+  if (state.authTransitionPending) {
+    return;
+  }
   elements.loginError.textContent = "";
   const button = elements.loginForm.querySelector("button");
   button.disabled = true;
+  const authGeneration = beginAuthBoundary();
   try {
     const payload = await requestJson("/api/login", {
       method: "POST",
@@ -1916,6 +2349,9 @@ elements.loginForm.addEventListener("submit", async (event) => {
         password: elements.password.value,
       }),
     });
+    if (state.authGeneration !== authGeneration) {
+      return;
+    }
     state.account = payload.account;
     state.characters = payload.characters || [];
     state.selectedCharacterID = (state.characters[0] && state.characters[0].characterID) || null;
@@ -1924,18 +2360,38 @@ elements.loginForm.addEventListener("submit", async (event) => {
     renderChrome();
     await loadPage();
   } catch (error) {
-    elements.loginError.textContent = friendlyLoginError(error);
+    if (state.authGeneration === authGeneration) {
+      elements.loginError.textContent = friendlyLoginError(error);
+    }
   } finally {
     button.disabled = false;
   }
 });
 
 elements.logoutButton.addEventListener("click", async () => {
-  await requestJson("/api/logout", { method: "POST" }).catch(() => null);
+  const authGeneration = beginAuthBoundary();
+  await mutationScope.runPendingAuthTransition(
+    () => requestJson("/api/logout", { method: "POST" }).catch(() => null),
+    () => {
+      state.authTransitionPending = true;
+      elements.logoutButton.disabled = true;
+      // Keep both authenticated controls and the login form unavailable until
+      // the response that clears the current cookie has settled.
+      setView("auth-pending");
+    },
+    () => {
+      state.authTransitionPending = false;
+      elements.logoutButton.disabled = false;
+    },
+  );
+  if (state.authGeneration !== authGeneration) {
+    return;
+  }
   state.account = null;
   state.characters = [];
   state.data = null;
   state.selectedCharacterID = null;
+  state.characterOnline = null;
   setView("login");
 });
 

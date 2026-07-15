@@ -293,112 +293,204 @@ test("logout best-effort releases every session lease and always clears local cr
   assert.match(result.response.headers.get("set-cookie") || "", /evejs_web_poc=;/);
 });
 
-test("skill queue and PI mutations require authoritative offline control", async () => {
-  let control = {
-    ...BROWSER_CONTROL,
-    controlState: "retail_client",
-    transport: "tcp",
-    leaseExpiresAt: null,
+test("command routes forward canonical DTOs with only the signed session controller", async () => {
+  const calls = [];
+  const store = fakeStore({
+    async saveSkillQueue(accountID, characterID, entries, options) {
+      calls.push({ operation: "skill", accountID, characterID, entries, options });
+      return { stateVersion: "runtime-a:5", queue: [] };
+    },
+    async restartExtractors(accountID, characterID, options) {
+      calls.push({ operation: "pi", accountID, characterID, options });
+      return { stateVersion: "runtime-a:6", colonies: [] };
+    },
+  });
+  const harness = await startTestServer(store);
+  const maliciousFields = {
+    controllerID: COOKIE_TOKEN,
+    type: "arbitrary.dispatch",
+    payload: { leaseSecret: "browser-supplied-secret" },
+    leaseSecret: "browser-supplied-secret",
+    gatewayToken: "browser-supplied-token",
   };
-  const mutations = [];
-  const store = fakeStore({
-    async getCharacterStatus() {
-      return { ...control };
-    },
-    async saveSkillQueue() {
-      mutations.push("skill-queue");
-      return { queue: [] };
-    },
-    async restartExtractors() {
-      mutations.push("pi");
-      return { colonies: [] };
+
+  const skill = await apiRequest(harness.baseUrl, "/api/characters/7/skills/queue", {
+    method: "POST",
+    body: {
+      commandID: "queue-command",
+      expectedStateVersion: "runtime-a:4",
+      entries: [{ typeID: 3300, toLevel: 4 }],
+      activate: false,
+      ...maliciousFields,
     },
   });
-  const harness = await startTestServer(store);
+  const pi = await apiRequest(harness.baseUrl, "/api/characters/7/pi/restart", {
+    method: "POST",
+    body: {
+      commandID: "pi-command",
+      expectedStateVersion: "runtime-a:5",
+      planetID: 99,
+      ...maliciousFields,
+    },
+  });
 
-  const retail = await apiRequest(
-    harness.baseUrl,
-    "/api/characters/7/skills/queue",
-    { method: "POST", body: { entries: [] } },
-  );
-  assert.equal(retail.response.status, 409);
-  assert.equal(retail.payload.error, "CHARACTER_CONTROL_RETAIL_CLIENT");
-
-  control = { ...BROWSER_CONTROL };
-  const browser = await apiRequest(
-    harness.baseUrl,
-    "/api/characters/7/pi/restart",
-    { method: "POST", body: {} },
-  );
-  assert.equal(browser.response.status, 409);
-  assert.equal(browser.payload.error, "CHARACTER_CONTROL_BROWSER_PILOT");
-  assert.deepEqual(mutations, []);
-
-  control = { ...OFFLINE_CONTROL };
-  const offlineSkill = await apiRequest(
-    harness.baseUrl,
-    "/api/characters/7/skills/queue",
-    { method: "POST", body: { entries: [] } },
-  );
-  const offlinePi = await apiRequest(
-    harness.baseUrl,
-    "/api/characters/7/pi/restart",
-    { method: "POST", body: {} },
-  );
-  assert.equal(offlineSkill.response.status, 200);
-  assert.equal(offlinePi.response.status, 200);
-  assert.deepEqual(mutations, ["skill-queue", "pi"]);
+  assert.equal(skill.response.status, 200);
+  assert.equal(skill.payload.stateVersion, "runtime-a:5");
+  assert.equal(pi.response.status, 200);
+  assert.equal(pi.payload.stateVersion, "runtime-a:6");
+  assert.deepEqual(calls, [
+    {
+      operation: "skill",
+      accountID: 4,
+      characterID: 7,
+      entries: [{ typeID: 3300, toLevel: 4 }],
+      options: {
+        activate: false,
+        commandID: "queue-command",
+        expectedStateVersion: "runtime-a:4",
+        controllerID: SESSION_ID,
+      },
+    },
+    {
+      operation: "pi",
+      accountID: 4,
+      characterID: 7,
+      options: {
+        planetID: 99,
+        commandID: "pi-command",
+        expectedStateVersion: "runtime-a:5",
+        controllerID: SESSION_ID,
+      },
+    },
+  ]);
+  const browserPayloads = JSON.stringify([skill.payload, pi.payload]);
+  for (const secret of [COOKIE_TOKEN, SESSION_ID, "browser-supplied-secret", "browser-supplied-token"]) {
+    assert.equal(browserPayloads.includes(secret), false);
+  }
 });
 
-test("mutation authority outages after an offline precheck use the stable unavailable error", async () => {
-  function gatewayOutage(code) {
-    const error = new Error("character-control authority disappeared");
-    error.name = "EveGatewayError";
-    error.code = code;
-    error.statusCode = 503;
-    return error;
-  }
+test("command routes reject missing or malformed client envelopes without invoking the store", async () => {
+  let mutations = 0;
   const store = fakeStore({
-    async getCharacterStatus() {
-      return { ...OFFLINE_CONTROL };
-    },
     async saveSkillQueue() {
-      throw gatewayOutage("EVE_GATEWAY_UNREACHABLE");
+      mutations += 1;
     },
     async restartExtractors() {
-      throw gatewayOutage("GATEWAY_RUNTIME_NOT_READY");
+      mutations += 1;
     },
   });
   const harness = await startTestServer(store);
+  const cases = [
+    ["/api/characters/7/skills/queue", { expectedStateVersion: "runtime-a:4", entries: [], activate: true }],
+    ["/api/characters/7/skills/queue", { commandID: "x", expectedStateVersion: "runtime-a:4", entries: [], activate: "yes" }],
+    ["/api/characters/7/skills/queue", { commandID: "x", expectedStateVersion: "runtime-a:4", entries: [{ typeID: 3300, toLevel: 6 }], activate: true }],
+    ["/api/characters/7/pi/restart", { commandID: "x", expectedStateVersion: "", planetID: 0 }],
+    ["/api/characters/7/pi/restart", { commandID: "x", expectedStateVersion: "runtime-a:4", planetID: -1 }],
+  ];
+  for (const [path, body] of cases) {
+    const result = await apiRequest(harness.baseUrl, path, { method: "POST", body });
+    assert.equal(result.response.status, 400);
+    assert.equal(result.payload.error, "CHARACTER_COMMAND_INVALID");
+  }
+  assert.equal(mutations, 0);
+});
 
-  for (const [path, body] of [
-    ["/api/characters/7/skills/queue", { entries: [] }],
-    ["/api/characters/7/pi/restart", {}],
-  ]) {
-    const result = await apiRequest(harness.baseUrl, path, {
+test("BFF retries preserve the browser envelope and command errors stay stable and secret-free", async () => {
+  const calls = [];
+  let attempt = 0;
+  const store = fakeStore({
+    async saveSkillQueue(accountID, characterID, entries, options) {
+      calls.push({ accountID, characterID, entries, options });
+      attempt += 1;
+      if (attempt === 1) {
+        const error = new Error(`do not expose ${SESSION_ID} or lease-secret`);
+        error.name = "EveGatewayError";
+        error.code = "CHARACTER_COMMAND_UNAVAILABLE";
+        error.statusCode = 503;
+        throw error;
+      }
+      return { stateVersion: "runtime-a:5", queue: [] };
+    },
+  });
+  const harness = await startTestServer(store);
+  const body = {
+    commandID: "retained-command",
+    expectedStateVersion: "runtime-a:4",
+    entries: [],
+    activate: true,
+  };
+
+  const first = await apiRequest(harness.baseUrl, "/api/characters/7/skills/queue", {
+    method: "POST",
+    body,
+  });
+  const retry = await apiRequest(harness.baseUrl, "/api/characters/7/skills/queue", {
+    method: "POST",
+    body,
+  });
+
+  assert.equal(first.response.status, 503);
+  assert.equal(first.payload.error, "CHARACTER_COMMAND_UNAVAILABLE");
+  assert.equal(JSON.stringify(first.payload).includes(SESSION_ID), false);
+  assert.equal(JSON.stringify(first.payload).includes("lease-secret"), false);
+  assert.equal(retry.response.status, 200);
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls[0], calls[1]);
+  assert.equal(calls[0].options.controllerID, SESSION_ID);
+  assert.notEqual(calls[0].options.controllerID, COOKIE_TOKEN);
+});
+
+test("all stable command and control errors survive BFF normalization", async () => {
+  let failure = null;
+  const store = fakeStore({
+    async saveSkillQueue() {
+      const error = new Error(`internal fingerprint lease-secret ${SESSION_ID}`);
+      error.name = "EveGatewayError";
+      error.code = failure.code;
+      error.statusCode = failure.status;
+      throw error;
+    },
+  });
+  const harness = await startTestServer(store);
+  const cases = [
+    { code: "CHARACTER_COMMAND_INVALID", status: 400 },
+    { code: "CHARACTER_COMMAND_ID_REUSED", status: 409 },
+    { code: "CHARACTER_STATE_VERSION_MISMATCH", status: 409 },
+    { code: "CHARACTER_COMMAND_UNAVAILABLE", status: 503 },
+    { code: "CHARACTER_CONTROL_RETAIL_CLIENT", status: 409 },
+    { code: "CHARACTER_CONTROL_BROWSER_PILOT", status: 409 },
+    { code: "CHARACTER_CONTROL_UNAVAILABLE", status: 503 },
+    { code: "GATEWAY_RUNTIME_NOT_READY", status: 503, expected: "CHARACTER_COMMAND_UNAVAILABLE" },
+  ];
+
+  for (const entry of cases) {
+    failure = entry;
+    const result = await apiRequest(harness.baseUrl, "/api/characters/7/skills/queue", {
       method: "POST",
-      body,
+      body: {
+        commandID: `command-${entry.code}`,
+        expectedStateVersion: "runtime-a:4",
+        entries: [],
+        activate: true,
+      },
     });
-    assert.equal(result.response.status, 503);
-    assert.equal(result.payload.error, "CHARACTER_CONTROL_UNAVAILABLE");
+    assert.equal(result.response.status, entry.status);
+    assert.equal(result.payload.error, entry.expected || entry.code);
+    const serialized = JSON.stringify(result.payload);
+    assert.equal(serialized.includes("fingerprint"), false);
+    assert.equal(serialized.includes("lease-secret"), false);
+    assert.equal(serialized.includes(SESSION_ID), false);
   }
 });
 
-test("authority failures and expired leases use stable fail-closed errors", async () => {
-  let mode = "unavailable";
+test("expired leases use the stable fail-closed error", async () => {
+  const mode = "expired";
   const leaseStore = createBrowserLeaseStore();
   leaseStore.put(SESSION_ID, 4, 7, {
     leaseID: "lease-id",
     leaseSecret: "lease-secret",
   });
   const store = fakeStore({
-    async getCharacterStatus() {
-      const error = new Error("runtime not ready");
-      error.name = "EveGatewayError";
-      error.code = "GATEWAY_RUNTIME_NOT_READY";
-      error.statusCode = 503;
-      throw error;
-    },
     async getCharacterForAccount(accountID, characterID) {
       return { accountID, characterID };
     },
@@ -412,15 +504,6 @@ test("authority failures and expired leases use stable fail-closed errors", asyn
   });
   const harness = await startTestServer(store, leaseStore);
 
-  const unavailable = await apiRequest(
-    harness.baseUrl,
-    "/api/characters/7/skills/queue",
-    { method: "POST", body: { entries: [] } },
-  );
-  assert.equal(unavailable.response.status, 503);
-  assert.equal(unavailable.payload.error, "CHARACTER_CONTROL_UNAVAILABLE");
-
-  mode = "expired";
   const expired = await apiRequest(
     harness.baseUrl,
     "/api/characters/7/control/renew",

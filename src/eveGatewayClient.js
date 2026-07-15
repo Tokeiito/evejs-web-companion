@@ -1,7 +1,5 @@
 "use strict";
 
-const config = require("./config");
-
 const DEFAULT_GATEWAY_BASE_URL = "http://127.0.0.1:26002/_evejs-web/v1";
 const DEFAULT_TIMEOUT_MS = 1500;
 const GATEWAY_SOURCE = "evejs-web-gateway";
@@ -55,14 +53,12 @@ function getGatewayToken() {
 
 function normalizeQueueEntries(entries) {
   if (!Array.isArray(entries)) {
-    return [];
+    return entries;
   }
-  return entries
-    .map((entry) => ({
-      typeID: Number(entry && (entry.typeID ?? entry.trainingTypeID)) || 0,
-      toLevel: Number(entry && (entry.toLevel ?? entry.trainingToLevel)) || 0,
-    }))
-    .filter((entry) => entry.typeID > 0 && entry.toLevel > 0 && entry.toLevel <= 5);
+  return entries.map((entry) => ({
+    typeID: entry && entry.typeID,
+    toLevel: entry && entry.toLevel,
+  }));
 }
 
 function assertGatewayEnvelope(data, statusCode) {
@@ -95,7 +91,7 @@ function gatewayRequestError(error) {
   );
 }
 
-async function postJson(path, payload) {
+async function postSerializedJson(path, serializedPayload) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
   const headers = {
@@ -110,7 +106,7 @@ async function postJson(path, payload) {
     const response = await fetch(`${getGatewayBaseUrl()}${path}`, {
       method: "POST",
       headers,
-      body: JSON.stringify(payload),
+      body: serializedPayload,
       signal: controller.signal,
     });
     const contentType = String(response.headers.get("content-type") || "");
@@ -137,6 +133,30 @@ async function postJson(path, payload) {
     throw gatewayRequestError(error);
   } finally {
     clearTimeout(timeout);
+  }
+}
+
+async function postJson(path, payload) {
+  return postSerializedJson(path, JSON.stringify(payload));
+}
+
+function isUncertainCommandError(error) {
+  return error instanceof EveGatewayError && (
+    error.statusCode === 503 ||
+    error.code === "EVE_GATEWAY_TIMEOUT" ||
+    error.code === "EVE_GATEWAY_UNREACHABLE"
+  );
+}
+
+async function postCommandJson(path, payload) {
+  const serializedPayload = JSON.stringify(payload);
+  try {
+    return await postSerializedJson(path, serializedPayload);
+  } catch (error) {
+    if (!isUncertainCommandError(error)) {
+      throw error;
+    }
+    return postSerializedJson(path, serializedPayload);
   }
 }
 
@@ -315,21 +335,35 @@ async function getStationAsks(stationID) {
 }
 
 async function saveSkillQueue(accountID, characterID, entries, options = {}) {
-  return postJson("/skill-queue", {
+  return postCommandJson("/skill-queue", {
     accountID: Number(accountID) || 0,
     characterID: Number(characterID) || 0,
-    activate: options.activate !== false,
-    entries: normalizeQueueEntries(entries),
-    webHost: `${config.host}:${config.port}`,
+    command: {
+      commandID: String(options.commandID || ""),
+      expectedStateVersion: String(options.expectedStateVersion || ""),
+      controllerID: String(options.controllerID || ""),
+      type: "offline.skill_queue.save",
+      payload: {
+        entries: normalizeQueueEntries(entries),
+        activate: options.activate === true,
+      },
+    },
   });
 }
 
 async function restartExtractors(accountID, characterID, options = {}) {
-  return postJson("/pi/restart-extractors", {
+  return postCommandJson("/pi/restart-extractors", {
     accountID: Number(accountID) || 0,
     characterID: Number(characterID) || 0,
-    planetID: Number(options.planetID) || 0,
-    webHost: `${config.host}:${config.port}`,
+    command: {
+      commandID: String(options.commandID || ""),
+      expectedStateVersion: String(options.expectedStateVersion || ""),
+      controllerID: String(options.controllerID || ""),
+      type: "offline.pi.extractors.restart",
+      payload: {
+        planetID: Number(options.planetID) || 0,
+      },
+    },
   });
 }
 

@@ -263,7 +263,7 @@ Every goal prompt should include:
 - a definition of done;
 - targeted verification commands or test expectations;
 - instructions to preserve unrelated worktree changes;
-- instructions not to commit or push unless separately requested.
+- instructions to commit each repository's completed work while forbidding push unless separately requested.
 
 Phase 0 is divided into the following sequential goals:
 
@@ -272,7 +272,7 @@ Phase 0 is divided into the following sequential goals:
 | 0A | Complete | Explicit EveJS runtime-context injection and versioned web-gateway shell | Existing Express secondary | Every web operation uses the authenticated v1 gateway backed by live context, and unversioned routes are absent |
 | 0A.1 | Complete | Authoritative gateway runtime façade and fail-closed hardening | 0A | Proxy-only or incomplete mounts cannot load or touch gameplay state; authenticated non-health v1 routes return stable runtime-not-ready responses |
 | 0B | Complete | Exclusive character leases and transport-neutral online presence | 0A.1 | Offline, retail-client, and browser-pilot ownership states are authoritative inside EveJS |
-| 0C | Pending | Per-character command queue, idempotency, and state-version preconditions | 0B | Duplicate or overlapping web commands cannot apply a mutation twice |
+| 0C | Complete | Per-character command queue, idempotency, and state-version preconditions | 0B | Duplicate or overlapping web commands cannot apply a mutation twice |
 | 0D | Pending | Sequenced browser event stream and reconnect snapshots | 0C | The browser can disconnect and resume from a known event sequence |
 | 0E | Pending | Narrow versioned query projections replacing broad snapshots | 0A, 0D | Required pages read bounded DTOs instead of the full character snapshot |
 | 0F | Pending | EveJS-backed web authentication and removal of duplicate gameplay credentials | 0E | The web backend authenticates through EveJS and never receives direct database authority |
@@ -374,7 +374,60 @@ Verification evidence:
 - A final ephemeral cross-stack process used temporary ports `51478` (real EveJS gateway), `51481` (web BFF), and `51491` (proxy-only gateway). The BFF traversed the authenticated real gateway and live authority for offline status, claim, renew, release, and final offline status. The signed session ID—not the raw cookie—reached EveJS as controller identity; credentials stayed in backend memory; no status or browser response exposed a lease ID, secret, controller ID, or credentials object; and release cleared the backend store.
 - In the same smoke, unauthenticated full-gateway health returned `401`, authenticated health reported ready with character control, proxy-only health reported `ready: false` with every dependency false, and proxy-only status and claim returned `503 GATEWAY_RUNTIME_NOT_READY`. All three listeners were closed, the test authority was shut down, and the process confirmed zero live listening server handles.
 
-Consciously deferred to Goal 0C: browser-pilot gameplay commands, per-character command queues, idempotency keys, and state-version preconditions. Persistent leases, browser space sessions, WebSockets/event replay, travel jobs, broad snapshot replacement, authentication redesign, and substantial UI work remain outside Goal 0B. No Goal 0C implementation was started.
+The command work deferred from Goal 0B is now completed in Goal 0C below. Persistent leases, browser space sessions, WebSockets/event replay, travel jobs, broad snapshot replacement, authentication redesign, and substantial UI work remain outside Goal 0B.
+
+### Goal 0C execution status — Complete
+
+**Completed:** 2026-07-15
+
+EveJS now owns one in-memory FIFO command lane per character while allowing different characters to execute independently. Every admitted command uses a strict five-field envelope containing an opaque client command ID, the exact displayed state version, the BFF-supplied controller ID, an explicit registered type, and a normalized typed payload. State versions combine a random runtime epoch with a monotonic per-character revision, advance when an admitted handler starts or character control changes, and make every pre-restart version stale. Completed receipts are globally bounded, contain only normalized fingerprints and sanitized outcomes, and are consulted before stale-version checks so identical in-flight or completed retries cannot rerun a mutation. Command-ID reuse with different normalized data is a stable conflict, and receipt eviction remains safe because the character revision does not roll back.
+
+Authorization is rechecked inside each character lane. Offline companion commands require authoritative `offline` control immediately before invocation, while the runtime also supports browser-pilot commands that validate the active lease at their lane turn. No browser gameplay command was registered in this goal. Skill-queue save and PI extractor restart are now the two strict offline command types; their existing URLs call only the queued façade and retain no direct mutation or precheck bypass. Successful handlers synchronously verify durable flush results. Unexpected post-admission failures are cached and exposed only as canonical `CHARACTER_COMMAND_UNAVAILABLE` 503 outcomes, while narrow allowlists preserve safe skill-queue and PI domain errors. Existing snapshots, mutating-page DTOs, and character-control status now carry the authoritative state version.
+
+The web BFF accepts only a browser command ID, expected version, and typed endpoint payload, then injects the verified signed session ID as controller identity. It never forwards the raw cookie and never exposes the controller, gateway token, lease credentials, command fingerprint, or runtime queue state. Gateway network and 503 retries reuse one byte-identical serialized EveJS envelope. Post-command DTOs come from a fresh authoritative snapshot and retain only sanitized command result metadata.
+
+The browser creates command IDs with secure `crypto.randomUUID()`, retains the exact serialized request after an uncertain network, 503, or malformed-success outcome, rejects concurrent use of the same record, and retries only that same envelope. A response can settle the request only when its typed skill or PI dashboard is complete, belongs to the expected character, pairs matching top-level and dashboard versions, carries a version different from the submitted precondition, and contains the command-specific result marker. Character, page, authentication, view-load, and semantic skill-draft generations prevent delayed completions from overwriting another view or deleting a replacement request. Same-view races reconcile through a latest-only post-settlement reload; changed skill drafts survive, definitive remote domain failures refresh the advanced version, and mismatches reload without discarding the unsaved queue. Logout keeps login unavailable until the response clearing the old session cookie has settled.
+
+Files changed in EveJS:
+
+- `server/src/services/online/characterCommandRuntime.js` (new)
+- `server/src/services/online/characterControlRuntime.js`
+- `server/src/_secondary/express/evejsWebGatewayRuntime.js`
+- `server/src/_secondary/express/evejsWebGateway.js`
+- `server/tests/characterCommandRuntime.test.js` (new)
+- `server/tests/webGatewayV1.test.js`
+- `server/tests/planetRestartExtractors.test.js`
+
+Files changed in the web app:
+
+- `public/commandClient.js` (new)
+- `public/mutationScope.js` (new)
+- `public/app.js`
+- `public/index.html`
+- `src/eveGatewayClient.js`
+- `src/eveStore.js`
+- `src/server.js`
+- `test/commandClient.test.js` (new)
+- `test/mutationScope.test.js` (new)
+- `test/eveStoreCommandDtos.test.js` (new)
+- `test/frontendCommandUi.test.js` (new)
+- `test/eveGatewayClient.test.js`
+- `test/eveStoreControl.test.js`
+- `test/serverCharacterControl.test.js`
+- `docs/web-client-scope-and-roadmap.md`
+
+Verification evidence:
+
+- Every changed or new JavaScript file passed `node --check`: seven files in EveJS and thirteen files in the web app.
+- `npm run test:isolated -- server/tests/characterCommandRuntime.test.js server/tests/characterControlRuntime.test.js server/tests/characterControlLifecycle.test.js server/tests/webGatewayV1.test.js server/tests/planetRestartExtractors.test.js server/tests/runtimeContextPropagation.test.js server/tests/skillQueueAndPlanParity.test.js` passed 59 of 59 tests across seven isolated files.
+- `npm run test:manifest:check` passed 3 of 3 tests.
+- The web app's full `npm test` passed 68 of 68 tests, including exact-body retry, malformed-success retention, concurrent submission, BFF envelope injection, fresh post-command DTOs, delayed navigation/auth/refresh races, renderer-safe DTO validation, version mismatch draft preservation, and logout-cookie serialization.
+- A final ephemeral cross-stack process used `127.0.0.1:58496` for the real EveJS gateway with the actual command runtime and `127.0.0.1:58497` for the actual web BFF with its default store. The first EveJS success was changed to a wire 503; the BFF retried one byte-identical body (SHA-256 `a7a5ccc3bddd33982d077f791a8daeed39f49ff5abb54e551dca99d69cc57569`), the completed receipt replay returned 200 at `smoke-epoch-final.1`, and the handler mutation count remained exactly one. The nested Eve command had exactly the required five keys, used the signed session controller rather than the raw cookie, and returned a paired complete skill DTO without credentials, controller data, token material, or fingerprints.
+- Both smoke listeners were closed, the command runtime was shut down, no listeners remained on either port, and the process reported zero live listening `Server` handles.
+- A final independent review found no remaining high- or medium-severity Goal 0C issues after the error-sanitization, malformed-response, authentication, delayed-completion, draft-preservation, and reconciliation regressions were addressed.
+- `git diff --check` passed in both repositories.
+
+Consciously deferred: command lanes and receipts remain process memory only; the random epoch safely rejects pre-restart versions but cannot replay a receipt across restart. The browser retains an uncertain envelope only for the current application lifetime, so a hard reload requires the user to inspect fresh state before deliberately issuing a new command. Replayed terminal 503 receipts remain unavailable by design rather than risking a duplicate mutation. Concrete browser-pilot gameplay commands, persistent command queues, WebSockets and event replay (Goal 0D), narrow query projections replacing broad snapshots (Goal 0E), EveJS-backed authentication (Goal 0F), travel jobs, and additional gameplay/UI commands remain outside Goal 0C.
 
 The copy/paste prompt for the first run is maintained in [`goal-prompts/phase-0a-runtime-context-and-gateway.md`](goal-prompts/phase-0a-runtime-context-and-gateway.md).
 

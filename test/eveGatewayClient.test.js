@@ -239,7 +239,9 @@ test("every gameplay operation uses only the v1 gateway", async () => {
       return jsonResponse(200, gatewayResponse({ characters: [{ characterID: 7 }] }));
     }
     if (pathname.endsWith("/snapshot")) {
-      return jsonResponse(200, gatewayResponse({ snapshot: { characters: {} } }));
+      return jsonResponse(200, gatewayResponse({
+        snapshot: { stateVersion: "runtime-a:4", characters: {} },
+      }));
     }
     if (pathname.endsWith("/character-status")) {
       return jsonResponse(200, gatewayResponse({
@@ -248,6 +250,7 @@ test("every gameplay operation uses only the v1 gateway", async () => {
         controlState: "offline",
         transport: null,
         leaseExpiresAt: null,
+        stateVersion: "runtime-a:4",
       }));
     }
     if (pathname.endsWith("/character-control/claim")) {
@@ -257,6 +260,7 @@ test("every gameplay operation uses only the v1 gateway", async () => {
         controlState: "browser_pilot",
         transport: "web",
         leaseExpiresAt: "2026-07-15T12:01:00.000Z",
+        stateVersion: "runtime-a:5",
         leaseID: "opaque-lease-id",
         leaseSecret: "opaque-lease-secret",
       }));
@@ -268,6 +272,7 @@ test("every gameplay operation uses only the v1 gateway", async () => {
         controlState: "browser_pilot",
         transport: "web",
         leaseExpiresAt: "2026-07-15T12:02:00.000Z",
+        stateVersion: "runtime-a:6",
       }));
     }
     if (pathname.endsWith("/character-control/release")) {
@@ -277,6 +282,7 @@ test("every gameplay operation uses only the v1 gateway", async () => {
         controlState: "offline",
         transport: null,
         leaseExpiresAt: null,
+        stateVersion: "runtime-a:7",
       }));
     }
     if (pathname.endsWith("/market/station-asks")) {
@@ -294,7 +300,10 @@ test("every gameplay operation uses only the v1 gateway", async () => {
   assert.deepEqual(await gatewayClient.listAccounts(), [{ username: "pilot" }]);
   assert.deepEqual(await gatewayClient.getAccount("pilot one"), { username: "pilot one" });
   assert.deepEqual(await gatewayClient.listCharacters(4), [{ characterID: 7 }]);
-  assert.deepEqual(await gatewayClient.getSnapshot(4, 7), { characters: {} });
+  assert.deepEqual(await gatewayClient.getSnapshot(4, 7), {
+    stateVersion: "runtime-a:4",
+    characters: {},
+  });
   assert.equal((await gatewayClient.getCharacterStatus(4, 7)).online, false);
   await gatewayClient.claimCharacterControl(4, 7, "signed-session-id");
   await gatewayClient.renewCharacterControl(4, 7, "signed-session-id", {
@@ -308,10 +317,19 @@ test("every gameplay operation uses only the v1 gateway", async () => {
   assert.deepEqual(await gatewayClient.getStationAsks(60003760), [{ typeID: 34 }]);
   await gatewayClient.saveSkillQueue(4, 7, [
     { typeID: 3300, toLevel: 4 },
-    { trainingTypeID: 3301, trainingToLevel: 3 },
-    { typeID: 0, toLevel: 1 },
-  ], { activate: false });
-  await gatewayClient.restartExtractors(4, 7, { planetID: 99 });
+    { typeID: 3301, toLevel: 3 },
+  ], {
+    activate: false,
+    commandID: "queue-command",
+    expectedStateVersion: "runtime-a:4",
+    controllerID: "signed-session-id",
+  });
+  await gatewayClient.restartExtractors(4, 7, {
+    planetID: 99,
+    commandID: "pi-command",
+    expectedStateVersion: "runtime-a:5",
+    controllerID: "signed-session-id",
+  });
 
   assert.deepEqual(calls.map((call) => call.url), [
     "http://gateway.test/_evejs-web/v1/accounts",
@@ -352,19 +370,113 @@ test("every gameplay operation uses only the v1 gateway", async () => {
   }
 
   const queueBody = JSON.parse(calls[9].options.body);
-  assert.equal(queueBody.accountID, 4);
-  assert.equal(queueBody.characterID, 7);
-  assert.equal(queueBody.activate, false);
-  assert.deepEqual(queueBody.entries, [
-    { typeID: 3300, toLevel: 4 },
-    { typeID: 3301, toLevel: 3 },
-  ]);
-  assert.match(queueBody.webHost, /^.+:\d+$/);
+  assert.deepEqual(queueBody, {
+    accountID: 4,
+    characterID: 7,
+    command: {
+      commandID: "queue-command",
+      expectedStateVersion: "runtime-a:4",
+      controllerID: "signed-session-id",
+      type: "offline.skill_queue.save",
+      payload: {
+        entries: [
+          { typeID: 3300, toLevel: 4 },
+          { typeID: 3301, toLevel: 3 },
+        ],
+        activate: false,
+      },
+    },
+  });
 
   const piBody = JSON.parse(calls[10].options.body);
-  assert.equal(piBody.accountID, 4);
-  assert.equal(piBody.characterID, 7);
-  assert.equal(piBody.planetID, 99);
+  assert.deepEqual(piBody, {
+    accountID: 4,
+    characterID: 7,
+    command: {
+      commandID: "pi-command",
+      expectedStateVersion: "runtime-a:5",
+      controllerID: "signed-session-id",
+      type: "offline.pi.extractors.restart",
+      payload: { planetID: 99 },
+    },
+  });
+});
+
+test("command POST retries a 503 once with the byte-identical envelope", async () => {
+  const calls = [];
+  global.fetch = async (url, options) => {
+    calls.push({ url, body: options.body });
+    if (calls.length === 1) {
+      return jsonResponse(503, {
+        ok: false,
+        source: "evejs-web-gateway",
+        apiVersion: 1,
+        error: "CHARACTER_COMMAND_UNAVAILABLE",
+        message: "Command runtime unavailable",
+      });
+    }
+    return jsonResponse(200, gatewayResponse({
+      snapshot: { queue: [] },
+      stateVersion: "runtime-a:5",
+    }));
+  };
+
+  const result = await gatewayClient.saveSkillQueue(4, 7, [], {
+    activate: true,
+    commandID: "retry-command",
+    expectedStateVersion: "runtime-a:4",
+    controllerID: "signed-session-id",
+  });
+
+  assert.equal(result.stateVersion, "runtime-a:5");
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].url, calls[1].url);
+  assert.equal(calls[0].body, calls[1].body);
+});
+
+test("command POST retries a network failure but never retries a definitive mismatch", async () => {
+  const networkBodies = [];
+  global.fetch = async (url, options) => {
+    networkBodies.push(options.body);
+    if (networkBodies.length === 1) {
+      throw new TypeError("connection reset");
+    }
+    return jsonResponse(200, gatewayResponse({
+      summary: { restartedCount: 1 },
+      stateVersion: "runtime-a:5",
+    }));
+  };
+
+  await gatewayClient.restartExtractors(4, 7, {
+    planetID: 99,
+    commandID: "network-command",
+    expectedStateVersion: "runtime-a:4",
+    controllerID: "signed-session-id",
+  });
+  assert.equal(networkBodies.length, 2);
+  assert.equal(networkBodies[0], networkBodies[1]);
+
+  let mismatchCalls = 0;
+  global.fetch = async () => {
+    mismatchCalls += 1;
+    return jsonResponse(409, {
+      ok: false,
+      source: "evejs-web-gateway",
+      apiVersion: 1,
+      error: "CHARACTER_STATE_VERSION_MISMATCH",
+      message: "State changed",
+    });
+  };
+  await assert.rejects(
+    gatewayClient.restartExtractors(4, 7, {
+      planetID: 99,
+      commandID: "stale-command",
+      expectedStateVersion: "runtime-a:4",
+      controllerID: "signed-session-id",
+    }),
+    (error) => error.code === "CHARACTER_STATE_VERSION_MISMATCH",
+  );
+  assert.equal(mismatchCalls, 1);
 });
 
 test("GET and POST reject non-gateway response sources", async () => {

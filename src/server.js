@@ -82,6 +82,7 @@ function publicControlStatus(status) {
       typeof status.leaseExpiresAt === "string"
         ? status.leaseExpiresAt
         : null,
+    stateVersion: typeof status.stateVersion === "string" ? status.stateVersion : undefined,
   };
 }
 
@@ -173,53 +174,103 @@ function normalizeControlError(error) {
   return error;
 }
 
-function sendControlStateConflict(res, status) {
-  if (status.controlState === "retail_client") {
-    res.status(409).json({
-      ok: false,
-      error: "CHARACTER_CONTROL_RETAIL_CLIENT",
-      message: "Character is controlled by a retail client and must be offline for this mutation.",
-    });
-    return true;
-  }
-  if (status.controlState === "browser_pilot") {
-    res.status(409).json({
-      ok: false,
-      error: "CHARACTER_CONTROL_BROWSER_PILOT",
-      message: "Character is controlled by a browser pilot and must be offline for this mutation.",
-    });
-    return true;
-  }
-  return false;
+const COMMAND_ERROR_DETAILS = Object.freeze({
+  CHARACTER_COMMAND_INVALID: {
+    statusCode: 400,
+    message: "The character command request is invalid.",
+  },
+  CHARACTER_COMMAND_ID_REUSED: {
+    statusCode: 409,
+    message: "This command identifier was already used for a different request.",
+  },
+  CHARACTER_STATE_VERSION_MISMATCH: {
+    statusCode: 409,
+    message: "Character state changed after this page was loaded.",
+  },
+  CHARACTER_COMMAND_UNAVAILABLE: {
+    statusCode: 503,
+    message: "The EveJS character-command runtime is unavailable.",
+  },
+  CHARACTER_CONTROL_RETAIL_CLIENT: {
+    statusCode: 409,
+    message: "Character is controlled by a retail client and must be offline for this mutation.",
+  },
+  CHARACTER_CONTROL_BROWSER_PILOT: {
+    statusCode: 409,
+    message: "Character is controlled by a browser pilot and must be offline for this mutation.",
+  },
+  CHARACTER_CONTROL_UNAVAILABLE: {
+    statusCode: 503,
+    message: "The EveJS character-control authority is unavailable.",
+  },
+});
+
+function commandError(code) {
+  const details = COMMAND_ERROR_DETAILS[code] || COMMAND_ERROR_DETAILS.CHARACTER_COMMAND_INVALID;
+  const error = new Error(details.message);
+  error.code = code;
+  error.statusCode = details.statusCode;
+  return error;
 }
 
-async function requireOfflineCharacter(req, res, next) {
-  const characterID = Number(req.params.characterID || 0);
-  if (!characterID) {
-    res.status(400).json({ ok: false, error: "INVALID_CHARACTER" });
-    return;
+function normalizeCommandError(error) {
+  if (error && COMMAND_ERROR_DETAILS[error.code]) {
+    return commandError(error.code);
   }
-
-  try {
-    const status = await store.getCharacterStatus(req.account.accountID, characterID);
-    if (!status) {
-      res.status(404).json({ ok: false, error: "CHARACTER_NOT_FOUND" });
-      return;
+  if (error && error.name === "EveGatewayError") {
+    const code = String(error.code || "");
+    const isGatewayFailure = code.startsWith("EVE_GATEWAY_") || code.startsWith("GATEWAY_");
+    if (!isGatewayFailure && Number(error.statusCode) >= 400 && Number(error.statusCode) < 500) {
+      return error;
     }
-
-    if (sendControlStateConflict(res, status)) {
-      return;
-    }
-
-    if (status.controlState !== "offline" || status.online !== false) {
-      next(controlUnavailableError());
-      return;
-    }
-
-    next();
-  } catch (error) {
-    next(normalizeControlError(error));
+    return commandError("CHARACTER_COMMAND_UNAVAILABLE");
   }
+  return commandError("CHARACTER_COMMAND_UNAVAILABLE");
+}
+
+function readClientCommandMetadata(body) {
+  const commandID = body && body.commandID;
+  const expectedStateVersion = body && body.expectedStateVersion;
+  if (
+    typeof commandID !== "string" ||
+    commandID.length === 0 ||
+    commandID.length > 256 ||
+    typeof expectedStateVersion !== "string" ||
+    expectedStateVersion.length === 0 ||
+    expectedStateVersion.length > 512
+  ) {
+    throw commandError("CHARACTER_COMMAND_INVALID");
+  }
+  return { commandID, expectedStateVersion };
+}
+
+function readSkillQueuePayload(body) {
+  if (!body || !Array.isArray(body.entries) || typeof body.activate !== "boolean") {
+    throw commandError("CHARACTER_COMMAND_INVALID");
+  }
+  const entries = body.entries.map((entry) => {
+    if (
+      !entry ||
+      typeof entry !== "object" ||
+      Array.isArray(entry) ||
+      !Number.isSafeInteger(entry.typeID) ||
+      entry.typeID <= 0 ||
+      !Number.isSafeInteger(entry.toLevel) ||
+      entry.toLevel < 1 ||
+      entry.toLevel > 5
+    ) {
+      throw commandError("CHARACTER_COMMAND_INVALID");
+    }
+    return { typeID: entry.typeID, toLevel: entry.toLevel };
+  });
+  return { entries, activate: body.activate };
+}
+
+function readPlanetRestartPayload(body) {
+  if (!body || !Number.isSafeInteger(body.planetID) || body.planetID < 0) {
+    throw commandError("CHARACTER_COMMAND_INVALID");
+  }
+  return { planetID: body.planetID };
 }
 
 app.get("/api/health", async (req, res) => {
@@ -324,30 +375,35 @@ app.get("/api/characters/:characterID/skills", async (req, res, next) => {
     res.status(404).json({ ok: false, error: "CHARACTER_NOT_FOUND" });
     return;
   }
-  res.json({ ok: true, dashboard });
+  res.json({ ok: true, stateVersion: dashboard.stateVersion, dashboard });
   } catch (error) {
     next(error);
   }
 });
 
-app.post("/api/characters/:characterID/skills/queue", requireOfflineCharacter, async (req, res, next) => {
+app.post("/api/characters/:characterID/skills/queue", async (req, res, next) => {
   try {
     const characterID = Number(req.params.characterID || 0);
+    const command = readClientCommandMetadata(req.body);
+    const payload = readSkillQueuePayload(req.body);
     const dashboard = await store.saveSkillQueue(
       req.account.accountID,
       characterID,
-      Array.isArray(req.body && req.body.entries) ? req.body.entries : [],
+      payload.entries,
       {
-        activate: !req.body || req.body.activate !== false,
+        activate: payload.activate,
+        commandID: command.commandID,
+        expectedStateVersion: command.expectedStateVersion,
+        controllerID: req.webSessionID,
       },
     );
     if (!dashboard) {
       res.status(404).json({ ok: false, error: "CHARACTER_NOT_FOUND" });
       return;
     }
-    res.json({ ok: true, dashboard });
+    res.json({ ok: true, stateVersion: dashboard.stateVersion, dashboard });
   } catch (error) {
-    next(normalizeControlError(error));
+    next(normalizeCommandError(error));
   }
 });
 
@@ -516,28 +572,34 @@ app.get("/api/characters/:characterID/pi", async (req, res, next) => {
     res.status(404).json({ ok: false, error: "CHARACTER_NOT_FOUND" });
     return;
   }
-  res.json({ ok: true, dashboard });
+  res.json({ ok: true, stateVersion: dashboard.stateVersion, dashboard });
   } catch (error) {
     next(error);
   }
 });
 
-app.post("/api/characters/:characterID/pi/restart", requireOfflineCharacter, async (req, res, next) => {
+app.post("/api/characters/:characterID/pi/restart", async (req, res, next) => {
   try {
     const characterID = Number(req.params.characterID || 0);
-    const planetID = Number(req.body && req.body.planetID) || 0;
+    const command = readClientCommandMetadata(req.body);
+    const payload = readPlanetRestartPayload(req.body);
     const dashboard = await store.restartExtractors(
       req.account.accountID,
       characterID,
-      { planetID },
+      {
+        planetID: payload.planetID,
+        commandID: command.commandID,
+        expectedStateVersion: command.expectedStateVersion,
+        controllerID: req.webSessionID,
+      },
     );
     if (!dashboard) {
       res.status(404).json({ ok: false, error: "CHARACTER_NOT_FOUND" });
       return;
     }
-    res.json({ ok: true, dashboard });
+    res.json({ ok: true, stateVersion: dashboard.stateVersion, dashboard });
   } catch (error) {
-    next(normalizeControlError(error));
+    next(normalizeCommandError(error));
   }
 });
 

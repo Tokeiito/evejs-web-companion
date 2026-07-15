@@ -35,6 +35,7 @@ function gatewayResponse(body = {}) {
 function snapshotResponse(accountID = 4) {
   return gatewayResponse({
     snapshot: {
+      stateVersion: "runtime-a:4",
       characters: {
         "7": {
           characterID: 7,
@@ -72,6 +73,7 @@ test("character status preserves only the transport-neutral control projection",
         controlState: "browser_pilot",
         transport: "web",
         leaseExpiresAt: "2026-07-15T12:01:00.000Z",
+        stateVersion: "runtime-a:5",
         leaseID: "must-not-leak",
         leaseSecret: "must-not-leak",
         controllerID: "must-not-leak",
@@ -86,6 +88,7 @@ test("character status preserves only the transport-neutral control projection",
     controlState: "browser_pilot",
     transport: "web",
     leaseExpiresAt: "2026-07-15T12:01:00.000Z",
+    stateVersion: "runtime-a:5",
   });
 });
 
@@ -102,6 +105,7 @@ test("claim separates internal credentials from sanitized control", async () => 
         controlState: "browser_pilot",
         transport: "web",
         leaseExpiresAt: "2026-07-15T12:01:00.000Z",
+        stateVersion: "runtime-a:5",
         leaseID: "lease-id",
         leaseSecret: "lease-secret",
       }));
@@ -116,6 +120,7 @@ test("claim separates internal credentials from sanitized control", async () => 
     controlState: "browser_pilot",
     transport: "web",
     leaseExpiresAt: "2026-07-15T12:01:00.000Z",
+    stateVersion: "runtime-a:5",
   });
   assert.deepEqual(result.credentials, {
     leaseID: "lease-id",
@@ -155,6 +160,7 @@ test("an inconsistent control projection fails closed", async () => {
       controlState: "browser_pilot",
       transport: "web",
       leaseExpiresAt: null,
+      stateVersion: "runtime-a:5",
     }));
   };
 
