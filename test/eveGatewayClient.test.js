@@ -200,6 +200,30 @@ test("runtime-not-ready is propagated without retry or fallback", async () => {
   ]);
 });
 
+test("character-control calls fail closed when the gateway runtime is not ready", async () => {
+  const calls = [];
+  global.fetch = async (url) => {
+    calls.push(url);
+    return jsonResponse(503, {
+      ok: false,
+      source: "evejs-web-gateway",
+      apiVersion: 1,
+      error: "GATEWAY_RUNTIME_NOT_READY",
+      message: "Authoritative EveJS gateway runtime is not ready.",
+    });
+  };
+
+  await assert.rejects(
+    gatewayClient.claimCharacterControl(4, 7, "signed-session-id"),
+    (error) => error instanceof gatewayClient.EveGatewayError &&
+      error.code === "GATEWAY_RUNTIME_NOT_READY" &&
+      error.statusCode === 503,
+  );
+  assert.deepEqual(calls, [
+    "http://gateway.test/_evejs-web/v1/character-control/claim",
+  ]);
+});
+
 test("every gameplay operation uses only the v1 gateway", async () => {
   const calls = [];
   global.fetch = async (url, options) => {
@@ -218,7 +242,42 @@ test("every gameplay operation uses only the v1 gateway", async () => {
       return jsonResponse(200, gatewayResponse({ snapshot: { characters: {} } }));
     }
     if (pathname.endsWith("/character-status")) {
-      return jsonResponse(200, gatewayResponse({ online: false }));
+      return jsonResponse(200, gatewayResponse({
+        characterID: 7,
+        online: false,
+        controlState: "offline",
+        transport: null,
+        leaseExpiresAt: null,
+      }));
+    }
+    if (pathname.endsWith("/character-control/claim")) {
+      return jsonResponse(200, gatewayResponse({
+        characterID: 7,
+        online: true,
+        controlState: "browser_pilot",
+        transport: "web",
+        leaseExpiresAt: "2026-07-15T12:01:00.000Z",
+        leaseID: "opaque-lease-id",
+        leaseSecret: "opaque-lease-secret",
+      }));
+    }
+    if (pathname.endsWith("/character-control/renew")) {
+      return jsonResponse(200, gatewayResponse({
+        characterID: 7,
+        online: true,
+        controlState: "browser_pilot",
+        transport: "web",
+        leaseExpiresAt: "2026-07-15T12:02:00.000Z",
+      }));
+    }
+    if (pathname.endsWith("/character-control/release")) {
+      return jsonResponse(200, gatewayResponse({
+        characterID: 7,
+        online: false,
+        controlState: "offline",
+        transport: null,
+        leaseExpiresAt: null,
+      }));
     }
     if (pathname.endsWith("/market/station-asks")) {
       return jsonResponse(200, gatewayResponse({ rows: [{ typeID: 34 }] }));
@@ -237,6 +296,15 @@ test("every gameplay operation uses only the v1 gateway", async () => {
   assert.deepEqual(await gatewayClient.listCharacters(4), [{ characterID: 7 }]);
   assert.deepEqual(await gatewayClient.getSnapshot(4, 7), { characters: {} });
   assert.equal((await gatewayClient.getCharacterStatus(4, 7)).online, false);
+  await gatewayClient.claimCharacterControl(4, 7, "signed-session-id");
+  await gatewayClient.renewCharacterControl(4, 7, "signed-session-id", {
+    leaseID: "opaque-lease-id",
+    leaseSecret: "opaque-lease-secret",
+  });
+  await gatewayClient.releaseCharacterControl(4, 7, "signed-session-id", {
+    leaseID: "opaque-lease-id",
+    leaseSecret: "opaque-lease-secret",
+  });
   assert.deepEqual(await gatewayClient.getStationAsks(60003760), [{ typeID: 34 }]);
   await gatewayClient.saveSkillQueue(4, 7, [
     { typeID: 3300, toLevel: 4 },
@@ -251,15 +319,39 @@ test("every gameplay operation uses only the v1 gateway", async () => {
     "http://gateway.test/_evejs-web/v1/characters?accountID=4",
     "http://gateway.test/_evejs-web/v1/snapshot?accountID=4&characterID=7",
     "http://gateway.test/_evejs-web/v1/character-status?accountID=4&characterID=7",
+    "http://gateway.test/_evejs-web/v1/character-control/claim",
+    "http://gateway.test/_evejs-web/v1/character-control/renew",
+    "http://gateway.test/_evejs-web/v1/character-control/release",
     "http://gateway.test/_evejs-web/v1/market/station-asks?stationID=60003760",
     "http://gateway.test/_evejs-web/v1/skill-queue",
     "http://gateway.test/_evejs-web/v1/pi/restart-extractors",
   ]);
   assert.equal(calls.every((call) => call.options.headers["x-evejs-web-token"] === "server-secret"), true);
-  assert.equal(calls.slice(0, 6).every((call) => call.options.method === "GET"), true);
-  assert.equal(calls.slice(6).every((call) => call.options.method === "POST"), true);
+  assert.deepEqual(calls.map((call) => call.options.method), [
+    "GET", "GET", "GET", "GET", "GET",
+    "POST", "POST", "POST", "GET", "POST", "POST",
+  ]);
 
-  const queueBody = JSON.parse(calls[6].options.body);
+  const claimBody = JSON.parse(calls[5].options.body);
+  assert.deepEqual(claimBody, {
+    accountID: 4,
+    characterID: 7,
+    controllerID: "signed-session-id",
+  });
+
+  for (const index of [6, 7]) {
+    const leaseBody = JSON.parse(calls[index].options.body);
+    assert.deepEqual(leaseBody, {
+      accountID: 4,
+      characterID: 7,
+      controllerID: "signed-session-id",
+      leaseID: "opaque-lease-id",
+      leaseSecret: "opaque-lease-secret",
+    });
+    assert.equal(JSON.stringify(leaseBody).includes("evejs_web_poc"), false);
+  }
+
+  const queueBody = JSON.parse(calls[9].options.body);
   assert.equal(queueBody.accountID, 4);
   assert.equal(queueBody.characterID, 7);
   assert.equal(queueBody.activate, false);
@@ -269,7 +361,7 @@ test("every gameplay operation uses only the v1 gateway", async () => {
   ]);
   assert.match(queueBody.webHost, /^.+:\d+$/);
 
-  const piBody = JSON.parse(calls[7].options.body);
+  const piBody = JSON.parse(calls[10].options.body);
   assert.equal(piBody.accountID, 4);
   assert.equal(piBody.characterID, 7);
   assert.equal(piBody.planetID, 99);

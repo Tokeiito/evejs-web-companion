@@ -146,6 +146,12 @@ const INDUSTRY_STATUS_NAMES = Object.freeze({
 
 const PI_GROUP_EXTRACTION_CONTROL_UNIT = 1063;
 const PI_STATE_ACTIVE = 1;
+const CHARACTER_CONTROL_STATES = new Set([
+  "offline",
+  "retail_client",
+  "browser_pilot",
+]);
+const CHARACTER_CONTROL_TRANSPORTS = new Set([null, "tcp", "web"]);
 
 function quoteTable(table) {
   if (!RUNTIME_TABLES.has(table)) {
@@ -394,6 +400,53 @@ function normalizeCharacter(characterID, record) {
     skillPoints: Number(record.skillPoints || 0),
     plexBalance: Number(record.plexBalance || 0),
     raw: record,
+  };
+}
+
+function normalizeCharacterControl(result, expectedCharacterID) {
+  const source = result && result.control && typeof result.control === "object"
+    ? result.control
+    : result;
+  const characterID = Number(source && source.characterID);
+  const controlState = source && source.controlState;
+  const transport = source && source.transport === null
+    ? null
+    : source && source.transport;
+  const online = source && source.online;
+  const leaseExpiresAt = source && source.leaseExpiresAt === null
+    ? null
+    : source && source.leaseExpiresAt;
+  const expected = Number(expectedCharacterID);
+  const validExpiry =
+    leaseExpiresAt === null ||
+    (typeof leaseExpiresAt === "string" && !Number.isNaN(Date.parse(leaseExpiresAt)));
+  const stateShapeValid =
+    (controlState === "offline" && online === false && transport === null && leaseExpiresAt === null) ||
+    (controlState === "retail_client" && online === true && transport === "tcp" && leaseExpiresAt === null) ||
+    (controlState === "browser_pilot" && online === true && transport === "web" && typeof leaseExpiresAt === "string");
+
+  if (
+    !Number.isSafeInteger(characterID) ||
+    characterID <= 0 ||
+    characterID !== expected ||
+    !CHARACTER_CONTROL_STATES.has(controlState) ||
+    !CHARACTER_CONTROL_TRANSPORTS.has(transport) ||
+    typeof online !== "boolean" ||
+    !validExpiry ||
+    !stateShapeValid
+  ) {
+    throw new eveGatewayClient.EveGatewayError(
+      "EveJS returned an invalid character-control status.",
+      { code: "EVE_GATEWAY_UNSUPPORTED", statusCode: 502 },
+    );
+  }
+
+  return {
+    characterID,
+    online,
+    controlState,
+    transport,
+    leaseExpiresAt,
   };
 }
 
@@ -1184,22 +1237,78 @@ async function getCharacterStatus(accountID, characterID, options = {}) {
     return null;
   }
 
-  try {
-    const result = await eveGatewayClient.getCharacterStatus(accountID, character.characterID);
-    return {
-      characterID: character.characterID,
-      online: result.online === true,
-      gatewayAvailable: true,
-    };
-  } catch (error) {
-    // If the gateway is unreachable we cannot know live login state. Report it as
-    // unknown rather than failing the page; write endpoints stay guarded server-side.
-    return {
-      characterID: character.characterID,
-      online: null,
-      gatewayAvailable: false,
-    };
+  const result = await eveGatewayClient.getCharacterStatus(accountID, character.characterID);
+  return normalizeCharacterControl(result, character.characterID);
+}
+
+async function claimCharacterControl(accountID, characterID, controllerID, options = {}) {
+  const character = await getCharacterForAccount(accountID, characterID, options);
+  if (!character) {
+    return null;
   }
+  const result = await eveGatewayClient.claimCharacterControl(
+    accountID,
+    character.characterID,
+    controllerID,
+  );
+  const credentialSource = result && result.credentials && typeof result.credentials === "object"
+    ? result.credentials
+    : result;
+  const leaseID = String(credentialSource && credentialSource.leaseID || "").trim();
+  const leaseSecret = String(credentialSource && credentialSource.leaseSecret || "").trim();
+  if (!leaseID || !leaseSecret) {
+    throw new eveGatewayClient.EveGatewayError(
+      "EveJS returned incomplete browser lease credentials.",
+      { code: "EVE_GATEWAY_UNSUPPORTED", statusCode: 502 },
+    );
+  }
+  return {
+    control: normalizeCharacterControl(result, character.characterID),
+    credentials: {
+      leaseID,
+      leaseSecret,
+    },
+  };
+}
+
+async function renewCharacterControl(
+  accountID,
+  characterID,
+  controllerID,
+  credentials,
+  options = {},
+) {
+  const character = await getCharacterForAccount(accountID, characterID, options);
+  if (!character) {
+    return null;
+  }
+  const result = await eveGatewayClient.renewCharacterControl(
+    accountID,
+    character.characterID,
+    controllerID,
+    credentials,
+  );
+  return normalizeCharacterControl(result, character.characterID);
+}
+
+async function releaseCharacterControl(
+  accountID,
+  characterID,
+  controllerID,
+  credentials,
+  options = {},
+) {
+  const character = await getCharacterForAccount(accountID, characterID, options);
+  if (!character) {
+    return null;
+  }
+  const result = await eveGatewayClient.releaseCharacterControl(
+    accountID,
+    character.characterID,
+    controllerID,
+    credentials,
+  );
+  return normalizeCharacterControl(result, character.characterID);
 }
 
 async function restartExtractors(accountID, characterID, options = {}) {
@@ -1273,6 +1382,7 @@ async function getStatus(options = {}) {
 }
 
 module.exports = {
+  claimCharacterControl,
   getAccount,
   getCharacterForAccount,
   getCharacterOverview,
@@ -1284,6 +1394,8 @@ module.exports = {
   getCharacterStatus,
   listAccounts,
   listCharactersForAccount,
+  releaseCharacterControl,
   restartExtractors,
+  renewCharacterControl,
   saveSkillQueue,
 };

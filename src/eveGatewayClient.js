@@ -197,6 +197,44 @@ async function getCharacterStatus(accountID, characterID) {
   });
 }
 
+async function claimCharacterControl(accountID, characterID, controllerID) {
+  return postJson("/character-control/claim", {
+    accountID: Number(accountID) || 0,
+    characterID: Number(characterID) || 0,
+    controllerID: String(controllerID || ""),
+  });
+}
+
+async function renewCharacterControl(
+  accountID,
+  characterID,
+  controllerID,
+  credentials = {},
+) {
+  return postJson("/character-control/renew", {
+    accountID: Number(accountID) || 0,
+    characterID: Number(characterID) || 0,
+    controllerID: String(controllerID || ""),
+    leaseID: String(credentials.leaseID || ""),
+    leaseSecret: String(credentials.leaseSecret || ""),
+  });
+}
+
+async function releaseCharacterControl(
+  accountID,
+  characterID,
+  controllerID,
+  credentials = {},
+) {
+  return postJson("/character-control/release", {
+    accountID: Number(accountID) || 0,
+    characterID: Number(characterID) || 0,
+    controllerID: String(controllerID || ""),
+    leaseID: String(credentials.leaseID || ""),
+    leaseSecret: String(credentials.leaseSecret || ""),
+  });
+}
+
 async function getGatewayHealth() {
   const health = await getJson("/health");
   const hasStableShape =
@@ -297,6 +335,7 @@ async function restartExtractors(accountID, characterID, options = {}) {
 
 module.exports = {
   EveGatewayError,
+  claimCharacterControl,
   getAccount,
   getGatewayHealth,
   getSnapshot,
@@ -305,6 +344,8 @@ module.exports = {
   getStatus,
   listAccounts,
   listCharacters,
+  releaseCharacterControl,
+  renewCharacterControl,
   saveSkillQueue,
   restartExtractors,
 };

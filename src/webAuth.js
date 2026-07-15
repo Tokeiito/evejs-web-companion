@@ -136,6 +136,7 @@ function createSessionToken(account) {
   const payload = {
     username: normalizeUsername(account.username),
     accountID: Number(account.accountID),
+    sessionID: crypto.randomBytes(32).toString("base64url"),
     iat: now,
     exp: now + config.sessionTtlMs,
   };
@@ -160,7 +161,12 @@ function verifySessionToken(token) {
   } catch {
     return null;
   }
-  if (!payload || Number(payload.exp || 0) < Date.now()) {
+  if (
+    !payload ||
+    typeof payload.sessionID !== "string" ||
+    payload.sessionID.length < 32 ||
+    Number(payload.exp || 0) < Date.now()
+  ) {
     return null;
   }
   return payload;

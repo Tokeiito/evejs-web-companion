@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
-    "test": "node --test test/eveGatewayClient.test.js",
+    "test": "node --test",
     "webpass": "node scripts/set-web-password.js",
     "cache-icons": "node scripts/cache-icons.js",
     "check": "node scripts/check.js"

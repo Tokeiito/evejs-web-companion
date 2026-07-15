@@ -14,6 +14,10 @@ const MARKET_VISIBLE_ROW_LIMIT = 500;
 const MARKET_BROWSER_ITEM_LIMIT = 700;
 const SKILL_POINTS_BY_LEVEL = Object.freeze([0, 250, 1415, 8000, 45255, 256000]);
 const SKILL_QUEUE_DRAG_MIME = "application/x-evejs-skill-queue";
+const CHARACTER_CONTROL_CONFLICTS = new Set([
+  "CHARACTER_CONTROL_RETAIL_CLIENT",
+  "CHARACTER_CONTROL_BROWSER_PILOT",
+]);
 
 const state = {
   account: null,
@@ -65,6 +69,17 @@ function isReadOnly() {
   return state.characterOnline === true;
 }
 
+function applyCharacterControlConflict(error) {
+  const code = error && error.payload && error.payload.error;
+  if (!CHARACTER_CONTROL_CONFLICTS.has(code)) {
+    return false;
+  }
+  state.characterOnline = true;
+  renderReadOnlyBanner();
+  renderCurrentPage();
+  return true;
+}
+
 function renderReadOnlyBanner() {
   const banner = elements.readonlyBanner;
   if (!banner) {
@@ -74,7 +89,7 @@ function renderReadOnlyBanner() {
     const character = getSelectedCharacter();
     const name = (character && character.characterName) || "This character";
     banner.textContent =
-      `Read-only — ${name} is logged in. Log out of the game to make changes from the companion.`;
+      `Read-only — ${name} is currently controlled. Release that control before making companion changes.`;
     banner.hidden = false;
   } else {
     banner.hidden = true;
@@ -774,16 +789,22 @@ function bindSkillQueueEvents(payload) {
     saveButton.disabled = true;
     saveSkillQueueDraft(true).catch((error) => {
       console.error(error);
-      setPageStatus(error.message || "Queue save failed");
-      saveButton.disabled = false;
+      const message = (error.payload && error.payload.message) || error.message || "Queue save failed";
+      if (!applyCharacterControlConflict(error)) {
+        saveButton.disabled = false;
+      }
+      setPageStatus(message, "");
     });
   });
   savePausedButton.addEventListener("click", () => {
     savePausedButton.disabled = true;
     saveSkillQueueDraft(false).catch((error) => {
       console.error(error);
-      setPageStatus(error.message || "Queue save failed");
-      savePausedButton.disabled = false;
+      const message = (error.payload && error.payload.message) || error.message || "Queue save failed";
+      if (!applyCharacterControlConflict(error)) {
+        savePausedButton.disabled = false;
+      }
+      setPageStatus(message, "");
     });
   });
   clearButton.addEventListener("click", () => {
@@ -1742,12 +1763,8 @@ function bindPiEvents() {
       restartExtractorsAction().catch((error) => {
         console.error(error);
         const message = (error.payload && error.payload.message) || error.message || "Restart failed";
-        // The character may have logged in since the page loaded; flip to read-only.
-        if (error.payload && error.payload.error === "CHARACTER_ONLINE") {
-          state.characterOnline = true;
-          renderReadOnlyBanner();
-          renderCurrentPage();
-        } else {
+        // Control may have changed since the page loaded; flip to read-only.
+        if (!applyCharacterControlConflict(error)) {
           button.disabled = false;
         }
         setPageStatus(message, "");
@@ -1766,11 +1783,7 @@ function bindPiEvents() {
       restartExtractorsAction(planetID).catch((error) => {
         console.error(error);
         const message = (error.payload && error.payload.message) || error.message || "Restart failed";
-        if (error.payload && error.payload.error === "CHARACTER_ONLINE") {
-          state.characterOnline = true;
-          renderReadOnlyBanner();
-          renderCurrentPage();
-        } else {
+        if (!applyCharacterControlConflict(error)) {
           planetButton.disabled = false;
         }
         setPageStatus(message, "");

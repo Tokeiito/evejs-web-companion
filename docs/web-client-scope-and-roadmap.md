@@ -271,7 +271,7 @@ Phase 0 is divided into the following sequential goals:
 | --- | --- | --- | --- | --- |
 | 0A | Complete | Explicit EveJS runtime-context injection and versioned web-gateway shell | Existing Express secondary | Every web operation uses the authenticated v1 gateway backed by live context, and unversioned routes are absent |
 | 0A.1 | Complete | Authoritative gateway runtime façade and fail-closed hardening | 0A | Proxy-only or incomplete mounts cannot load or touch gameplay state; authenticated non-health v1 routes return stable runtime-not-ready responses |
-| 0B | Pending | Exclusive character leases and transport-neutral online presence | 0A | Offline, retail-client, and browser-pilot ownership states are authoritative inside EveJS |
+| 0B | Complete | Exclusive character leases and transport-neutral online presence | 0A.1 | Offline, retail-client, and browser-pilot ownership states are authoritative inside EveJS |
 | 0C | Pending | Per-character command queue, idempotency, and state-version preconditions | 0B | Duplicate or overlapping web commands cannot apply a mutation twice |
 | 0D | Pending | Sequenced browser event stream and reconnect snapshots | 0C | The browser can disconnect and resume from a known event sequence |
 | 0E | Pending | Narrow versioned query projections replacing broad snapshots | 0A, 0D | Required pages read bounded DTOs instead of the full character snapshot |
@@ -346,7 +346,35 @@ Implementation evidence:
 - Proxy-only coverage asserts that mounting the route module does not place `gameStore`, skill queue, PI, online-presence, or market runtime modules in `require.cache`.
 - Focused EveJS isolated tests passed 16 of 16 tests across `webGatewayV1`, `runtimeContextPropagation`, and `planetRestartExtractors`; web gateway-client tests passed 10 of 10. Syntax and diff checks passed in both repositories.
 
-Consciously deferred: character leases and new presence semantics remain Goal 0B and are still pending. Command queues, idempotency, state versions, WebSockets, narrow projections, authentication redesign, and new gameplay/UI work remain in their later goals. No Goal 0B implementation was started.
+Character leases and new presence semantics were consciously deferred from 0A.1 to Goal 0B; their completed implementation is recorded below. Command queues, idempotency, state versions, WebSockets, narrow projections, authentication redesign, and new gameplay/UI work remain in their later goals.
+
+### Goal 0B execution status — Complete
+
+**Completed:** 2026-07-15
+
+EveJS now owns the single authoritative character-control model with exactly three public states: `offline`, `retail_client`, and `browser_pilot`. Retail control continues to derive from the existing session registry rather than a second retail-presence store. Browser control is a focused in-memory lease runtime with an injectable clock, randomness, and timers; cryptographically random opaque credentials; a 60-second default TTL; automatic expiry; and claim, renew, and release operations. EveJS retains only the SHA-256 digest of each lease secret, status projections never include credentials, and a fresh runtime starts without leases.
+
+Retail selection, logout, socket disconnect, character clearing, same-socket character changes, closing-socket races, and retail takeover now update that authority through one lifecycle. A closing indexed socket remains authoritative until canonical cleanup, auxiliary cleanup failures cannot strand retail control, and late stale-session events do not create false online edges. Browser-pilot presence feeds online status, corporation-member status, and true social online/offline transitions without constructing a TCP session, joining chat or guest lists, or attaching to space. Character deletion, skill-queue writes, and PI restarts fail closed unless the authority reports `offline`.
+
+The injected v1 gateway façade declares character control as a required dependency and exposes ownership-checked status, claim, renew, and release operations. Status includes only `online`, `controlState`, `transport`, and sanitized lease-expiry metadata; only a successful claim response sent to the web backend contains credentials. Stable conflicts distinguish retail control, browser control, expired credentials, invalid credentials, and unavailable authority. Proxy-only mounts remain authenticated health-only and do not import gameplay runtimes.
+
+Signed web sessions now contain independent cryptorandom session IDs, and the BFF uses that authenticated ID as the controller identity without forwarding the raw cookie. Lease credentials remain in a backend-only, session-and-character-keyed memory store; expiry timers and lazy pruning erase expired secrets while a bounded, secret-free marker preserves the distinct expired-lease error. Authenticated BFF status, claim, renew, and release routes expose only the transport-neutral projection, validate ownership before credential use, and clear invalid or expired local state. Logout best-effort releases every unexpired lease held by that signed session, clears local credentials regardless of release failures, and relies on the EveJS TTL after crashes.
+
+Implementation evidence:
+
+- EveJS: new `server/src/services/online/characterControlRuntime.js`; lifecycle and presence integration in `sessionRegistry`, `characterState`, `charService`, `sessionDisconnect`, `authenticationService`, `onlineStatusRuntime`, `corpMemberQueryState`, and `characterDeletionRuntime`; and v1 façade/route changes in `evejsWebGatewayRuntime` and `evejsWebGateway`.
+- EveJS tests: new focused runtime and lifecycle suites plus expanded duplicate-login, logout, online-status, deletion, gateway, skill-queue, and PI coverage.
+- Web app: new `src/browserLeaseStore.js`; signed-session, gateway-client, store, server/BFF, frontend error, and test-runner updates; and focused session, store, route, credential-expiry, and gateway-client tests.
+
+Verification evidence:
+
+- Every changed JavaScript file in both repositories passed `node --check`, and `git diff --check` passed in both repositories.
+- `npm run test:isolated -- server/tests/characterControlRuntime.test.js server/tests/characterControlLifecycle.test.js server/tests/webGatewayV1.test.js server/tests/characterDuplicateLogin.test.js server/tests/onlineStatusService.test.js server/tests/planetRestartExtractors.test.js server/tests/runtimeContextPropagation.test.js server/tests/authenticationServiceParity.test.js server/tests/sessionRegistryIndex.test.js server/tests/corpAuditMemberParity.test.js server/tests/characterDeletionParity.test.js` passed 60 of 60 tests across 11 isolated files.
+- `npm run test:manifest:check` passed 3 of 3 tests, and the web app's full `npm test` passed 29 of 29 tests.
+- A final ephemeral cross-stack process used temporary ports `51478` (real EveJS gateway), `51481` (web BFF), and `51491` (proxy-only gateway). The BFF traversed the authenticated real gateway and live authority for offline status, claim, renew, release, and final offline status. The signed session ID—not the raw cookie—reached EveJS as controller identity; credentials stayed in backend memory; no status or browser response exposed a lease ID, secret, controller ID, or credentials object; and release cleared the backend store.
+- In the same smoke, unauthenticated full-gateway health returned `401`, authenticated health reported ready with character control, proxy-only health reported `ready: false` with every dependency false, and proxy-only status and claim returned `503 GATEWAY_RUNTIME_NOT_READY`. All three listeners were closed, the test authority was shut down, and the process confirmed zero live listening server handles.
+
+Consciously deferred to Goal 0C: browser-pilot gameplay commands, per-character command queues, idempotency keys, and state-version preconditions. Persistent leases, browser space sessions, WebSockets/event replay, travel jobs, broad snapshot replacement, authentication redesign, and substantial UI work remain outside Goal 0B. No Goal 0C implementation was started.
 
 The copy/paste prompt for the first run is maintained in [`goal-prompts/phase-0a-runtime-context-and-gateway.md`](goal-prompts/phase-0a-runtime-context-and-gateway.md).
 
