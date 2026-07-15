@@ -270,6 +270,7 @@ Phase 0 is divided into the following sequential goals:
 | Goal | Status | Scope | Depends on | Exit condition |
 | --- | --- | --- | --- | --- |
 | 0A | Complete | Explicit EveJS runtime-context injection and versioned web-gateway shell | Existing Express secondary | Every web operation uses the authenticated v1 gateway backed by live context, and unversioned routes are absent |
+| 0A.1 | Complete | Authoritative gateway runtime façade and fail-closed hardening | 0A | Proxy-only or incomplete mounts cannot load or touch gameplay state; authenticated non-health v1 routes return stable runtime-not-ready responses |
 | 0B | Pending | Exclusive character leases and transport-neutral online presence | 0A | Offline, retail-client, and browser-pilot ownership states are authoritative inside EveJS |
 | 0C | Pending | Per-character command queue, idempotency, and state-version preconditions | 0B | Duplicate or overlapping web commands cannot apply a mutation twice |
 | 0D | Pending | Sequenced browser event stream and reconnect snapshots | 0C | The browser can disconnect and resume from a known event sequence |
@@ -329,6 +330,23 @@ Verification evidence:
 Consciously deferred to later goals: character leases and online-status changes (0B); command execution, serialization, idempotency, and state versions (0C); WebSockets and event streaming (0D); narrow query projections and removal of broad snapshots (0E); and EveJS-backed web authentication (0F). Proxy-only startup remains supported and reports the v1 gateway as present but its EveJS runtime dependency as not ready because that mode intentionally has no live gameplay `serviceManager`.
 
 Goals 0B through 0F should receive their own reviewed prompts after the preceding goal is complete. Do not pre-implement later goals during an earlier run merely because their future interfaces are known.
+
+### Goal 0A.1 execution status — Complete
+
+**Completed:** 2026-07-15
+
+The gateway route module no longer imports `gameStore`, skill-queue runtime, PI runtime, online presence, or the market runtime. The full EveJS startup path constructs a frozen authoritative gateway façade with those live dependencies and injects it through the runtime context. A proxy-only or incomplete mount therefore exposes only authenticated health with `runtime.ready: false`; every authenticated non-health v1 route returns the stable `503 GATEWAY_RUNTIME_NOT_READY` envelope before any façade method can run. Health becomes ready only when the façade contract and every reported dependency are present.
+
+Character-scoped routes now require positive integer `accountID` and `characterID` values. Missing or invalid identity returns `400`, unknown characters return `404`, and ownership mismatch returns `403`; the former zero-ID bypass is gone. Skill-queue and PI mutations still reject online characters before mutation. Unversioned paths remain absent. The web backend propagates `GATEWAY_RUNTIME_NOT_READY` without retry, alternate routes, or gameplay-persistence access.
+
+Implementation evidence:
+
+- EveJS: `server/index.js`, `server/src/runtimeContext.js`, new `server/src/_secondary/express/evejsWebGatewayRuntime.js`, refactored `server/src/_secondary/express/evejsWebGateway.js`, and focused updates in `server/tests/webGatewayV1.test.js` and `server/tests/planetRestartExtractors.test.js`.
+- Web app: `src/eveGatewayClient.js` preserves the complete sanitized readiness dependency map, and `test/eveGatewayClient.test.js` proves runtime-not-ready propagation performs exactly one v1 request with no fallback.
+- Proxy-only coverage asserts that mounting the route module does not place `gameStore`, skill queue, PI, online-presence, or market runtime modules in `require.cache`.
+- Focused EveJS isolated tests passed 16 of 16 tests across `webGatewayV1`, `runtimeContextPropagation`, and `planetRestartExtractors`; web gateway-client tests passed 10 of 10. Syntax and diff checks passed in both repositories.
+
+Consciously deferred: character leases and new presence semantics remain Goal 0B and are still pending. Command queues, idempotency, state versions, WebSockets, narrow projections, authentication redesign, and new gameplay/UI work remain in their later goals. No Goal 0B implementation was started.
 
 The copy/paste prompt for the first run is maintained in [`goal-prompts/phase-0a-runtime-context-and-gateway.md`](goal-prompts/phase-0a-runtime-context-and-gateway.md).
 

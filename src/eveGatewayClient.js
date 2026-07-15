@@ -216,15 +216,17 @@ async function getGatewayHealth() {
 
 function normalizeGatewayHealth(health) {
   const runtimeReady = health.runtime.ready === true;
+  const dependencies = Object.fromEntries(
+    Object.entries(health.runtime.dependencies)
+      .map(([name, ready]) => [name, ready === true]),
+  );
   return {
     available: true,
     ready: runtimeReady,
     capabilities: { ...health.capabilities },
     runtime: {
       ready: runtimeReady,
-      dependencies: {
-        serviceManager: health.runtime.dependencies.serviceManager === true,
-      },
+      dependencies,
     },
   };
 }

@@ -176,6 +176,30 @@ test("getStatus fails when either required v1 endpoint is unhealthy", async () =
   assert.equal(calls.every((url) => url.startsWith("http://gateway.test/_evejs-web/v1/")), true);
 });
 
+test("runtime-not-ready is propagated without retry or fallback", async () => {
+  const calls = [];
+  global.fetch = async (url) => {
+    calls.push(url);
+    return jsonResponse(503, {
+      ok: false,
+      source: "evejs-web-gateway",
+      apiVersion: 1,
+      error: "GATEWAY_RUNTIME_NOT_READY",
+      message: "Authoritative EveJS gateway runtime is not ready.",
+    });
+  };
+
+  await assert.rejects(
+    gatewayClient.getSnapshot(4, 7),
+    (error) => error instanceof gatewayClient.EveGatewayError &&
+      error.code === "GATEWAY_RUNTIME_NOT_READY" &&
+      error.statusCode === 503,
+  );
+  assert.deepEqual(calls, [
+    "http://gateway.test/_evejs-web/v1/snapshot?accountID=4&characterID=7",
+  ]);
+});
+
 test("every gameplay operation uses only the v1 gateway", async () => {
   const calls = [];
   global.fetch = async (url, options) => {
