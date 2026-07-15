@@ -150,6 +150,7 @@ app.get("/api/health", async (req, res) => {
       eveRoot: config.eveRoot,
       webUsersConfigured: webAuth.countConfiguredUsers(),
       bridge: storeStatus,
+      gateway: storeStatus.gateway,
     });
   } catch (error) {
     res.status(500).json({

@@ -4,6 +4,9 @@ const config = require("./config");
 
 const DEFAULT_BRIDGE_BASE_URL = "http://127.0.0.1:26002/_evejs-web";
 const DEFAULT_TIMEOUT_MS = 1500;
+const LEGACY_BRIDGE_SOURCE = "evejs-web-bridge";
+const GATEWAY_SOURCE = "evejs-web-gateway";
+const GATEWAY_API_VERSION = 1;
 
 class EveBridgeError extends Error {
   constructor(message, options = {}) {
@@ -118,7 +121,7 @@ async function postJson(path, payload) {
   }
 }
 
-async function getJson(path, query = {}) {
+async function getJson(path, query = {}, options = {}) {
   const baseUrl = getBridgeBaseUrl();
   if (!baseUrl) {
     throw new EveBridgeError("EveJS bridge is disabled.", {
@@ -160,7 +163,8 @@ async function getJson(path, query = {}) {
         statusCode: response.status || 502,
       });
     }
-    if (!data || data.source !== "evejs-web-bridge") {
+    const expectedSource = options.expectedSource || LEGACY_BRIDGE_SOURCE;
+    if (!data || data.source !== expectedSource) {
       throw new EveBridgeError("EveJS bridge endpoint is not available.", {
         code: "EVE_BRIDGE_NOT_AVAILABLE",
         statusCode: response.status || 502,
@@ -202,8 +206,86 @@ async function getCharacterStatus(accountID, characterID) {
   });
 }
 
+async function getGatewayHealth() {
+  const health = await getJson("/v1/health", {}, {
+    expectedSource: GATEWAY_SOURCE,
+  });
+  const hasStableShape =
+    Number(health.apiVersion) === GATEWAY_API_VERSION &&
+    health.capabilities &&
+    typeof health.capabilities === "object" &&
+    health.runtime &&
+    typeof health.runtime === "object" &&
+    health.runtime.dependencies &&
+    typeof health.runtime.dependencies === "object";
+  if (!hasStableShape) {
+    throw new EveBridgeError("EveJS v1 gateway response is not supported.", {
+      code: "EVE_GATEWAY_UNSUPPORTED",
+      fallbackAllowed: true,
+    });
+  }
+  return health;
+}
+
+function normalizeGatewayStatus(health) {
+  const runtimeReady = health.runtime.ready === true;
+  const serviceManagerReady =
+    health.runtime.dependencies.serviceManager === true;
+  return {
+    available: true,
+    ready: runtimeReady,
+    source: health.source,
+    apiVersion: GATEWAY_API_VERSION,
+    capabilities: {
+      health: health.capabilities.health === true,
+      legacyBridge: health.capabilities.legacyBridge === true,
+    },
+    runtime: {
+      ready: runtimeReady,
+      dependencies: {
+        serviceManager: serviceManagerReady,
+      },
+    },
+  };
+}
+
+function unavailableGatewayStatus(error) {
+  return {
+    available: false,
+    ready: false,
+    source: null,
+    apiVersion: null,
+    capabilities: {},
+    runtime: {
+      ready: false,
+      dependencies: {
+        serviceManager: false,
+      },
+    },
+    error: error && error.code ? error.code : "EVE_GATEWAY_NOT_AVAILABLE",
+  };
+}
+
+async function detectGateway() {
+  try {
+    return normalizeGatewayStatus(await getGatewayHealth());
+  } catch (error) {
+    if (error instanceof EveBridgeError) {
+      return unavailableGatewayStatus(error);
+    }
+    throw error;
+  }
+}
+
 async function getStatus() {
-  return getJson("/status");
+  const [legacyStatus, gateway] = await Promise.all([
+    getJson("/status"),
+    detectGateway(),
+  ]);
+  return {
+    ...legacyStatus,
+    gateway,
+  };
 }
 
 async function listAccounts() {
@@ -260,8 +342,10 @@ async function restartExtractors(accountID, characterID, options = {}) {
 }
 
 module.exports = {
+  detectGateway,
   EveBridgeError,
   getAccount,
+  getGatewayHealth,
   getSnapshot,
   getCharacterStatus,
   getStationAsks,
