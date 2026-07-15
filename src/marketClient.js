@@ -1,6 +1,6 @@
 "use strict";
 
-const eveBridgeClient = require("./eveBridgeClient");
+const eveGatewayClient = require("./eveGatewayClient");
 const staticData = require("./staticData");
 
 const JITA_REGION_ID = 10000002;
@@ -20,14 +20,14 @@ async function getMarketOverview(regionID) {
     stationShortName: staticData.getStationShortName(JITA_4_4_STATION_ID),
   };
   const status = {
-    source: "evejs-web-bridge",
+    source: "evejs-web-gateway",
     online: false,
     error: null,
   };
 
   let rows = [];
   try {
-    rows = await eveBridgeClient.getStationAsks(JITA_4_4_STATION_ID);
+    rows = await eveGatewayClient.getStationAsks(JITA_4_4_STATION_ID);
     status.online = true;
   } catch (error) {
     status.error = error.message;

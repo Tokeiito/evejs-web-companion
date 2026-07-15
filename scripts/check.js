@@ -6,16 +6,15 @@ const webAuth = require("../src/webAuth");
 async function main() {
   const status = await eveStore.getStatus();
   const accounts = await eveStore.listAccounts();
-  const gateway = status.gateway || {};
 
   console.log("EveJS Web POC check");
-  console.log("Data source: EveJS web bridge");
+  console.log("Data source: EveJS web gateway v1");
   console.log(`Accounts: ${status.accountCount}`);
   console.log(`Characters: ${status.characterCount}`);
   console.log(`Web users configured: ${webAuth.countConfiguredUsers()}`);
   console.log(
-    `Gateway v1: ${gateway.available === true ? "available" : "unavailable"}; ` +
-      `runtime ${gateway.ready === true ? "ready" : "not ready"}`,
+    `Gateway v1: ${status.available === true ? "available" : "unavailable"}; ` +
+      `runtime ${status.ready === true ? "ready" : "not ready"}`,
   );
 
   if (!status.hasAccounts || !status.hasCharacters || !status.hasSkills) {
@@ -23,12 +22,12 @@ async function main() {
   }
 
   if (
-    gateway.available !== true ||
-    gateway.apiVersion !== 1 ||
-    gateway.ready !== true ||
-    !gateway.runtime ||
-    !gateway.runtime.dependencies ||
-    gateway.runtime.dependencies.serviceManager !== true
+    status.available !== true ||
+    status.apiVersion !== 1 ||
+    status.ready !== true ||
+    !status.runtime ||
+    !status.runtime.dependencies ||
+    status.runtime.dependencies.serviceManager !== true
   ) {
     throw new Error("EveJS v1 gateway is unavailable or its runtime is not ready.");
   }

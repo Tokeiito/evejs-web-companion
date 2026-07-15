@@ -37,7 +37,7 @@ Added the first multi-page console:
 - Skill browser upgraded to an Eve-like workbench with visible skill icons, group/search filters, drag/drop queue planning, queue reorder/remove controls, and save/save-paused actions.
 - Skill browser now renders grouped skill sections instead of one flat list.
 - Queue saves route through EveJS' existing `skillQueueRuntime.saveQueue` validation instead of direct SQLite writes.
-- Queue saves now prefer an EveJS-side web companion bridge on the existing Express secondary service at `/_evejs-web/skill-queue`, with local runtime fallback when the bridge is not available.
+- Queue saves use the authenticated EveJS web gateway on the existing Express secondary service at `/_evejs-web/v1/skill-queue`; there is no local gameplay-runtime fallback.
 - Inventory location translation now resolves fitted modules and drones through their parent ship/container to station and solar-system names.
 - Inventory now has a location selector so the item table can be viewed per station/root location.
 - Item, skill, market, blueprint, and product icons use CCP's EVE Image Server type icon URLs.
@@ -51,8 +51,8 @@ Verified after the page update:
 - Authenticated API smoke test for Farmer returned 511 skills, 18 inventory rows, 0 PI colonies, and 80 market rows.
 - Server restarted successfully on `http://127.0.0.1:26500`.
 - Authenticated API smoke test after the usability update returned 0 current queue entries, 18 inventory rows with translated locations such as `Algos / Drone Bay`, 0 industry jobs, 0 blueprints, and 80 market rows.
-- Authenticated API smoke test after the bridge/filter update returned queue save source `evejs-web-bridge`, 18 inventory rows across 2 root locations, and 19,351 Jita 4-4 market rows across 32 item categories.
-- Controlled EveJS bridge queue mutation test saved one paused `Hull Upgrades IV` queue entry for `Test Pilot` through `/_evejs-web/skill-queue`, verified the bridge snapshot contained it, then restored that queue to empty.
+- Authenticated API smoke test after the gateway/filter update returned queue save source `evejs-web-gateway`, 18 inventory rows across 2 root locations, and 19,351 Jita 4-4 market rows across 32 item categories.
+- Controlled EveJS gateway queue mutation test saved one paused `Hull Upgrades IV` queue entry for `Test Pilot` through `/_evejs-web/v1/skill-queue`, verified the gateway snapshot contained it, then restored that queue to empty.
 
 Local setup:
 
@@ -60,10 +60,10 @@ Local setup:
 
 Intentional limits:
 
-- No direct EveJS SQLite writes yet.
+- The web process performs no direct gameplay SQLite reads or writes.
 - No market, inventory, or PI mutation endpoints yet.
 - Market, inventory, industry, and PI dashboards are read-only for the first POC.
-- Skill queue save is available through the EveJS-side bridge when the existing Express secondary service is running; the web-process runtime path remains only as a development fallback.
+- Skill queue save is available only through the v1 EveJS gateway on the existing Express secondary service.
 
 Next good step:
 

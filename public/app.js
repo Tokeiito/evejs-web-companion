@@ -479,16 +479,12 @@ function renderSkills(payload) {
 }
 
 function renderQueueSaveStatus(dashboard) {
-  if (!dashboard.queueSaveSource && !dashboard.queueSaveWarning) {
+  if (!dashboard.queueSaveSource) {
     return "";
   }
-  const sourceLabel = dashboard.queueSaveSource === "evejs-web-bridge"
-    ? "Saved through EveJS live bridge"
-    : "Saved through web fallback";
   return `
     <div class="queue-save-status">
-      <span>${escapeHtml(sourceLabel)}</span>
-      ${dashboard.queueSaveWarning ? `<span>${escapeHtml(dashboard.queueSaveWarning)}</span>` : ""}
+      <span>Saved through EveJS gateway</span>
     </div>
   `;
 }

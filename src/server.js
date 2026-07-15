@@ -130,7 +130,7 @@ async function blockOnlineCharacterPost(req, res, next) {
 
     next();
   } catch (error) {
-    if (error && (error.name === "EveBridgeError" || error.fallbackAllowed === true)) {
+    if (error && error.name === "EveGatewayError") {
       res.status(503).json({
         ok: false,
         error: "CHARACTER_STATUS_UNAVAILABLE",
@@ -149,14 +149,13 @@ app.get("/api/health", async (req, res) => {
       ok: true,
       eveRoot: config.eveRoot,
       webUsersConfigured: webAuth.countConfiguredUsers(),
-      bridge: storeStatus,
-      gateway: storeStatus.gateway,
+      gateway: storeStatus,
     });
   } catch (error) {
     res.status(500).json({
       ok: false,
       error: error.message,
-      bridgeUrl: process.env.EVEJS_BRIDGE_URL || "http://127.0.0.1:26002/_evejs-web",
+      gatewayUrl: process.env.EVEJS_GATEWAY_URL || "http://127.0.0.1:26002/_evejs-web/v1",
     });
   }
 });
@@ -393,7 +392,7 @@ app.use((error, req, res, next) => {
 
 const server = app.listen(config.port, config.host, () => {
   console.log(`EveJS Web POC listening on http://${config.host}:${config.port}`);
-  console.log(`Using EveJS bridge: ${process.env.EVEJS_BRIDGE_URL || "http://127.0.0.1:26002/_evejs-web"}`);
+  console.log(`Using EveJS gateway: ${process.env.EVEJS_GATEWAY_URL || "http://127.0.0.1:26002/_evejs-web/v1"}`);
 });
 
 module.exports = {

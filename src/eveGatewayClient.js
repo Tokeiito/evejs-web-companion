@@ -2,36 +2,55 @@
 
 const config = require("./config");
 
-const DEFAULT_BRIDGE_BASE_URL = "http://127.0.0.1:26002/_evejs-web";
+const DEFAULT_GATEWAY_BASE_URL = "http://127.0.0.1:26002/_evejs-web/v1";
 const DEFAULT_TIMEOUT_MS = 1500;
-const LEGACY_BRIDGE_SOURCE = "evejs-web-bridge";
 const GATEWAY_SOURCE = "evejs-web-gateway";
 const GATEWAY_API_VERSION = 1;
 
-class EveBridgeError extends Error {
+class EveGatewayError extends Error {
   constructor(message, options = {}) {
     super(message);
-    this.name = "EveBridgeError";
-    this.code = options.code || "EVE_BRIDGE_ERROR";
+    this.name = "EveGatewayError";
+    this.code = options.code || "EVE_GATEWAY_ERROR";
     this.statusCode = options.statusCode || 502;
-    this.fallbackAllowed = options.fallbackAllowed === true;
   }
 }
 
-function isBridgeDisabled() {
-  const value = String(process.env.EVEJS_WEB_BRIDGE_DISABLED || "").trim().toLowerCase();
-  return ["1", "true", "yes", "on"].includes(value);
-}
-
-function getBridgeBaseUrl() {
-  if (isBridgeDisabled()) {
-    return null;
+function getGatewayBaseUrl() {
+  const configured = String(
+    process.env.EVEJS_GATEWAY_URL || DEFAULT_GATEWAY_BASE_URL,
+  ).trim();
+  let url;
+  try {
+    url = new URL(configured);
+  } catch (error) {
+    throw new EveGatewayError(
+      "EVEJS_GATEWAY_URL must be an absolute v1 gateway URL.",
+      { code: "EVE_GATEWAY_CONFIGURATION", statusCode: 500 },
+    );
   }
-  return String(process.env.EVEJS_BRIDGE_URL || DEFAULT_BRIDGE_BASE_URL).replace(/\/+$/, "");
+
+  const gatewayPath = url.pathname.replace(/\/+$/, "");
+  const valid =
+    (url.protocol === "http:" || url.protocol === "https:") &&
+    !url.username &&
+    !url.password &&
+    !url.search &&
+    !url.hash &&
+    gatewayPath === "/_evejs-web/v1";
+  if (!valid) {
+    throw new EveGatewayError(
+      "EVEJS_GATEWAY_URL must target the /_evejs-web/v1 gateway namespace.",
+      { code: "EVE_GATEWAY_CONFIGURATION", statusCode: 500 },
+    );
+  }
+
+  url.pathname = gatewayPath;
+  return url.toString().replace(/\/$/, "");
 }
 
-function getBridgeToken() {
-  return String(process.env.EVEJS_WEB_BRIDGE_TOKEN || "").trim();
+function getGatewayToken() {
+  return String(process.env.EVEJS_WEB_GATEWAY_TOKEN || "").trim();
 }
 
 function normalizeQueueEntries(entries) {
@@ -46,27 +65,49 @@ function normalizeQueueEntries(entries) {
     .filter((entry) => entry.typeID > 0 && entry.toLevel > 0 && entry.toLevel <= 5);
 }
 
-async function postJson(path, payload) {
-  const baseUrl = getBridgeBaseUrl();
-  if (!baseUrl) {
-    throw new EveBridgeError("EveJS bridge is disabled.", {
-      code: "EVE_BRIDGE_DISABLED",
-      fallbackAllowed: true,
+function assertGatewayEnvelope(data, statusCode) {
+  if (!data || data.source !== GATEWAY_SOURCE) {
+    throw new EveGatewayError("EveJS gateway endpoint is not available.", {
+      code: "EVE_GATEWAY_NOT_AVAILABLE",
+      statusCode: statusCode || 502,
     });
   }
+  if (Number(data.apiVersion) !== GATEWAY_API_VERSION) {
+    throw new EveGatewayError("EveJS gateway response version is not supported.", {
+      code: "EVE_GATEWAY_UNSUPPORTED",
+      statusCode: statusCode || 502,
+    });
+  }
+}
 
+function gatewayRequestError(error) {
+  if (error instanceof EveGatewayError) {
+    return error;
+  }
+  const code = error.name === "AbortError"
+    ? "EVE_GATEWAY_TIMEOUT"
+    : "EVE_GATEWAY_UNREACHABLE";
+  return new EveGatewayError(
+    code === "EVE_GATEWAY_TIMEOUT"
+      ? "EveJS gateway timed out."
+      : "EveJS gateway is unreachable.",
+    { code },
+  );
+}
+
+async function postJson(path, payload) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
   const headers = {
     "content-type": "application/json",
   };
-  const token = getBridgeToken();
+  const token = getGatewayToken();
   if (token) {
     headers["x-evejs-web-token"] = token;
   }
 
   try {
-    const response = await fetch(`${baseUrl}${path}`, {
+    const response = await fetch(`${getGatewayBaseUrl()}${path}`, {
       method: "POST",
       headers,
       body: JSON.stringify(payload),
@@ -77,63 +118,33 @@ async function postJson(path, payload) {
       ? await response.json()
       : null;
 
-    if (data && data.ok === false) {
-      throw new EveBridgeError(data.message || "EveJS bridge request failed.", {
-        code: data.error || "EVE_BRIDGE_REQUEST_FAILED",
+    assertGatewayEnvelope(data, response.status);
+    if (data.ok === false) {
+      throw new EveGatewayError(data.message || "EveJS gateway request failed.", {
+        code: data.error || "EVE_GATEWAY_REQUEST_FAILED",
         statusCode: response.status || 502,
       });
     }
-
-    if (!data || data.source !== "evejs-web-bridge") {
-      throw new EveBridgeError("EveJS bridge endpoint is not available.", {
-        code: "EVE_BRIDGE_NOT_AVAILABLE",
-        statusCode: response.status || 502,
-        fallbackAllowed: true,
-      });
-    }
-
     if (!response.ok || data.ok !== true) {
-      throw new EveBridgeError(data.message || "EveJS bridge request failed.", {
-        code: data.error || "EVE_BRIDGE_REQUEST_FAILED",
+      throw new EveGatewayError(data.message || "EveJS gateway request failed.", {
+        code: data.error || "EVE_GATEWAY_REQUEST_FAILED",
         statusCode: response.status || 502,
       });
     }
 
     return data;
   } catch (error) {
-    if (error instanceof EveBridgeError) {
-      throw error;
-    }
-    const code = error.name === "AbortError"
-      ? "EVE_BRIDGE_TIMEOUT"
-      : "EVE_BRIDGE_UNREACHABLE";
-    throw new EveBridgeError(
-      code === "EVE_BRIDGE_TIMEOUT"
-        ? "EveJS bridge timed out."
-        : "EveJS bridge is unreachable.",
-      {
-      code,
-      fallbackAllowed: true,
-      },
-    );
+    throw gatewayRequestError(error);
   } finally {
     clearTimeout(timeout);
   }
 }
 
-async function getJson(path, query = {}, options = {}) {
-  const baseUrl = getBridgeBaseUrl();
-  if (!baseUrl) {
-    throw new EveBridgeError("EveJS bridge is disabled.", {
-      code: "EVE_BRIDGE_DISABLED",
-      fallbackAllowed: true,
-    });
-  }
-
+async function getJson(path, query = {}) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
   const headers = {};
-  const token = getBridgeToken();
+  const token = getGatewayToken();
   if (token) {
     headers["x-evejs-web-token"] = token;
   }
@@ -147,7 +158,7 @@ async function getJson(path, query = {}, options = {}) {
   const suffix = search.toString() ? `?${search.toString()}` : "";
 
   try {
-    const response = await fetch(`${baseUrl}${path}${suffix}`, {
+    const response = await fetch(`${getGatewayBaseUrl()}${path}${suffix}`, {
       method: "GET",
       headers,
       signal: controller.signal,
@@ -157,43 +168,23 @@ async function getJson(path, query = {}, options = {}) {
       ? await response.json()
       : null;
 
-    if (data && data.ok === false) {
-      throw new EveBridgeError(data.message || "EveJS bridge request failed.", {
-        code: data.error || "EVE_BRIDGE_REQUEST_FAILED",
+    assertGatewayEnvelope(data, response.status);
+    if (data.ok === false) {
+      throw new EveGatewayError(data.message || "EveJS gateway request failed.", {
+        code: data.error || "EVE_GATEWAY_REQUEST_FAILED",
         statusCode: response.status || 502,
-      });
-    }
-    const expectedSource = options.expectedSource || LEGACY_BRIDGE_SOURCE;
-    if (!data || data.source !== expectedSource) {
-      throw new EveBridgeError("EveJS bridge endpoint is not available.", {
-        code: "EVE_BRIDGE_NOT_AVAILABLE",
-        statusCode: response.status || 502,
-        fallbackAllowed: true,
       });
     }
     if (!response.ok || data.ok !== true) {
-      throw new EveBridgeError(data.message || "EveJS bridge request failed.", {
-        code: data.error || "EVE_BRIDGE_REQUEST_FAILED",
+      throw new EveGatewayError(data.message || "EveJS gateway request failed.", {
+        code: data.error || "EVE_GATEWAY_REQUEST_FAILED",
         statusCode: response.status || 502,
       });
     }
+
     return data;
   } catch (error) {
-    if (error instanceof EveBridgeError) {
-      throw error;
-    }
-    const code = error.name === "AbortError"
-      ? "EVE_BRIDGE_TIMEOUT"
-      : "EVE_BRIDGE_UNREACHABLE";
-    throw new EveBridgeError(
-      code === "EVE_BRIDGE_TIMEOUT"
-        ? "EveJS bridge timed out."
-        : "EveJS bridge is unreachable.",
-      {
-        code,
-        fallbackAllowed: true,
-      },
-    );
+    throw gatewayRequestError(error);
   } finally {
     clearTimeout(timeout);
   }
@@ -207,11 +198,8 @@ async function getCharacterStatus(accountID, characterID) {
 }
 
 async function getGatewayHealth() {
-  const health = await getJson("/v1/health", {}, {
-    expectedSource: GATEWAY_SOURCE,
-  });
+  const health = await getJson("/health");
   const hasStableShape =
-    Number(health.apiVersion) === GATEWAY_API_VERSION &&
     health.capabilities &&
     typeof health.capabilities === "object" &&
     health.runtime &&
@@ -219,72 +207,36 @@ async function getGatewayHealth() {
     health.runtime.dependencies &&
     typeof health.runtime.dependencies === "object";
   if (!hasStableShape) {
-    throw new EveBridgeError("EveJS v1 gateway response is not supported.", {
+    throw new EveGatewayError("EveJS gateway health response is not supported.", {
       code: "EVE_GATEWAY_UNSUPPORTED",
-      fallbackAllowed: true,
     });
   }
   return health;
 }
 
-function normalizeGatewayStatus(health) {
+function normalizeGatewayHealth(health) {
   const runtimeReady = health.runtime.ready === true;
-  const serviceManagerReady =
-    health.runtime.dependencies.serviceManager === true;
   return {
     available: true,
     ready: runtimeReady,
-    source: health.source,
-    apiVersion: GATEWAY_API_VERSION,
-    capabilities: {
-      health: health.capabilities.health === true,
-      legacyBridge: health.capabilities.legacyBridge === true,
-    },
+    capabilities: { ...health.capabilities },
     runtime: {
       ready: runtimeReady,
       dependencies: {
-        serviceManager: serviceManagerReady,
+        serviceManager: health.runtime.dependencies.serviceManager === true,
       },
     },
   };
-}
-
-function unavailableGatewayStatus(error) {
-  return {
-    available: false,
-    ready: false,
-    source: null,
-    apiVersion: null,
-    capabilities: {},
-    runtime: {
-      ready: false,
-      dependencies: {
-        serviceManager: false,
-      },
-    },
-    error: error && error.code ? error.code : "EVE_GATEWAY_NOT_AVAILABLE",
-  };
-}
-
-async function detectGateway() {
-  try {
-    return normalizeGatewayStatus(await getGatewayHealth());
-  } catch (error) {
-    if (error instanceof EveBridgeError) {
-      return unavailableGatewayStatus(error);
-    }
-    throw error;
-  }
 }
 
 async function getStatus() {
-  const [legacyStatus, gateway] = await Promise.all([
+  const [status, health] = await Promise.all([
     getJson("/status"),
-    detectGateway(),
+    getGatewayHealth(),
   ]);
   return {
-    ...legacyStatus,
-    gateway,
+    ...status,
+    ...normalizeGatewayHealth(health),
   };
 }
 
@@ -342,8 +294,7 @@ async function restartExtractors(accountID, characterID, options = {}) {
 }
 
 module.exports = {
-  detectGateway,
-  EveBridgeError,
+  EveGatewayError,
   getAccount,
   getGatewayHealth,
   getSnapshot,

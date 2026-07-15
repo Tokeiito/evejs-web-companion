@@ -1,6 +1,6 @@
 "use strict";
 
-const eveBridgeClient = require("./eveBridgeClient");
+const eveGatewayClient = require("./eveGatewayClient");
 const staticData = require("./staticData");
 
 const ROW_KEY_SEP = "\u001f";
@@ -164,14 +164,14 @@ function getSnapshotTable(db, table) {
   quoteTable(table);
   const snapshot = db && db.__snapshot;
   if (!snapshot || typeof snapshot !== "object") {
-    throw new Error("EveJS bridge snapshot is required for gameplay data reads.");
+    throw new Error("EveJS gateway snapshot is required for gameplay data reads.");
   }
   const value = snapshot[table];
   return value && typeof value === "object" ? value : {};
 }
 
 async function withDb(callback, options = {}) {
-  const snapshot = options.snapshot || await eveBridgeClient.getSnapshot(
+  const snapshot = options.snapshot || await eveGatewayClient.getSnapshot(
     options.accountID,
     options.characterID,
   );
@@ -350,13 +350,13 @@ async function getAccount(username, options = {}) {
   if (!normalizedUsername) {
     return null;
   }
-  const account = await eveBridgeClient.getAccount(normalizedUsername);
+  const account = await eveGatewayClient.getAccount(normalizedUsername);
   return normalizeAccount(normalizedUsername, account);
 }
 
 async function listAccounts(options = {}) {
   void options;
-  const accounts = await eveBridgeClient.listAccounts();
+  const accounts = await eveGatewayClient.listAccounts();
   return accounts
     .map((account) => normalizeAccount(account.username, account))
     .filter(Boolean);
@@ -403,7 +403,7 @@ async function listCharactersForAccount(accountID, options = {}) {
     return [];
   }
   void options;
-  const characters = await eveBridgeClient.listCharacters(numericAccountID);
+  const characters = await eveGatewayClient.listCharacters(numericAccountID);
   return characters
     .map((record) => normalizeCharacter(record.characterID || record.charID, record))
     .filter((character) => character && character.accountID === numericAccountID)
@@ -630,7 +630,7 @@ async function getSkillDashboard(accountID, characterID, options = {}) {
         plexBalance: character.plexBalance,
       },
       summary: {
-        source: "evejs-web-bridge",
+        source: "evejs-web-gateway",
         trainedSkillCount: skills.length,
         trainableSkillCount: skills.filter((skill) => skill.nextLevel !== null).length,
         totalSkillPoints: character.skillPoints || computedSkillPoints,
@@ -641,7 +641,6 @@ async function getSkillDashboard(accountID, characterID, options = {}) {
       },
       queue: skillQueue,
       queueSaveSource: options.queueSaveSource || null,
-      queueSaveWarning: options.queueSaveWarning || null,
       groups: buildGroupSummary(skills).slice(0, 12),
       skills,
     };
@@ -1162,9 +1161,7 @@ async function saveSkillQueue(accountID, characterID, entries, options = {}) {
     return null;
   }
 
-  let queueSnapshot = null;
-  let queueSaveSource = "evejs-web-bridge";
-  const bridgeResult = await eveBridgeClient.saveSkillQueue(
+  const gatewayResult = await eveGatewayClient.saveSkillQueue(
     accountID,
     character.characterID,
     entries,
@@ -1172,12 +1169,12 @@ async function saveSkillQueue(accountID, characterID, entries, options = {}) {
       activate: options.activate !== false,
     },
   );
-  queueSnapshot = bridgeResult.snapshot || null;
+  const queueSnapshot = gatewayResult.snapshot || null;
 
   return getSkillDashboard(accountID, character.characterID, {
     ...options,
     queueSnapshot,
-    queueSaveSource,
+    queueSaveSource: "evejs-web-gateway",
   });
 }
 
@@ -1188,19 +1185,19 @@ async function getCharacterStatus(accountID, characterID, options = {}) {
   }
 
   try {
-    const result = await eveBridgeClient.getCharacterStatus(accountID, character.characterID);
+    const result = await eveGatewayClient.getCharacterStatus(accountID, character.characterID);
     return {
       characterID: character.characterID,
       online: result.online === true,
-      bridgeAvailable: true,
+      gatewayAvailable: true,
     };
   } catch (error) {
-    // If the bridge is unreachable we cannot know live login state. Report it as
+    // If the gateway is unreachable we cannot know live login state. Report it as
     // unknown rather than failing the page; write endpoints stay guarded server-side.
     return {
       characterID: character.characterID,
       online: null,
-      bridgeAvailable: false,
+      gatewayAvailable: false,
     };
   }
 }
@@ -1211,9 +1208,7 @@ async function restartExtractors(accountID, characterID, options = {}) {
     return null;
   }
 
-  // There is no local fallback for PI: the companion's SQLite handle is read-only and the
-  // EveJS runtime owns the colony simulation. If the bridge is unavailable, surface the error.
-  const bridgeResult = await eveBridgeClient.restartExtractors(
+  const gatewayResult = await eveGatewayClient.restartExtractors(
     accountID,
     character.characterID,
     { planetID: options.planetID },
@@ -1221,7 +1216,7 @@ async function restartExtractors(accountID, characterID, options = {}) {
 
   const dashboard = await getPlanetDashboard(accountID, character.characterID, options);
   if (dashboard) {
-    dashboard.restartSummary = (bridgeResult && bridgeResult.summary) || null;
+    dashboard.restartSummary = (gatewayResult && gatewayResult.summary) || null;
   }
   return dashboard;
 }
@@ -1274,11 +1269,7 @@ async function getCharacterOverview(accountID, characterID, options = {}) {
 
 async function getStatus(options = {}) {
   void options;
-  return eveBridgeClient.getStatus();
-}
-
-function openDb() {
-  throw new Error("Direct SQLite access is disabled; use the EveJS web bridge.");
+  return eveGatewayClient.getStatus();
 }
 
 module.exports = {
@@ -1293,7 +1284,6 @@ module.exports = {
   getCharacterStatus,
   listAccounts,
   listCharactersForAccount,
-  openDb,
   restartExtractors,
   saveSkillQueue,
 };

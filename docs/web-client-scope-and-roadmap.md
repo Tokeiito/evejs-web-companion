@@ -167,7 +167,7 @@ flowchart LR
 - All gameplay reads and writes go through authenticated HTTP requests to EveJS.
 - EveJS reads and mutates its authoritative in-memory state.
 - EveJS alone decides when state is flushed to SQLite.
-- The browser bridge token is server-to-server and is never exposed to browser JavaScript.
+- The gateway token is server-to-server and is never exposed to browser JavaScript.
 
 ### 4.2 Commands, queries, and events
 
@@ -259,7 +259,7 @@ Every goal prompt should include:
 
 - one concrete objective;
 - explicit in-scope and out-of-scope work;
-- required compatibility behavior;
+- required cutover or removal behavior;
 - a definition of done;
 - targeted verification commands or test expectations;
 - instructions to preserve unrelated worktree changes;
@@ -269,7 +269,7 @@ Phase 0 is divided into the following sequential goals:
 
 | Goal | Status | Scope | Depends on | Exit condition |
 | --- | --- | --- | --- | --- |
-| 0A | Complete | Explicit EveJS runtime-context injection and versioned web-gateway shell | Current bridge | EveJS and the web app can verify a versioned gateway backed by the live service context without breaking legacy routes |
+| 0A | Complete | Explicit EveJS runtime-context injection and versioned web-gateway shell | Existing Express secondary | Every web operation uses the authenticated v1 gateway backed by live context, and unversioned routes are absent |
 | 0B | Pending | Exclusive character leases and transport-neutral online presence | 0A | Offline, retail-client, and browser-pilot ownership states are authoritative inside EveJS |
 | 0C | Pending | Per-character command queue, idempotency, and state-version preconditions | 0B | Duplicate or overlapping web commands cannot apply a mutation twice |
 | 0D | Pending | Sequenced browser event stream and reconnect snapshots | 0C | The browser can disconnect and resume from a known event sequence |
@@ -280,9 +280,9 @@ Phase 0 is divided into the following sequential goals:
 
 **Completed:** 2026-07-15
 
-EveJS now creates one frozen runtime-context boundary containing the live `serviceManager`, passes that exact context through the secondary-service loader and existing Express secondary service, and mounts an authenticated `GET /_evejs-web/v1/health` route. The route reports API version 1, gateway capabilities, and sanitized runtime-dependency readiness without exposing the manager, request credentials, or other internal objects. All pre-existing `/_evejs-web` routes retain their paths and response behavior.
+EveJS now creates one frozen runtime-context boundary containing the live `serviceManager`, passes that exact context through the secondary-service loader and existing Express secondary service, and mounts every web endpoint exclusively under `/_evejs-web/v1`. The health route reports API version 1, gateway capabilities, and sanitized runtime-dependency readiness without exposing the manager, request credentials, or other internal objects. A namespace guard returns a gateway-shaped 404 for unversioned and unknown `/_evejs-web` paths before they can reach the generic proxy fallback.
 
-The web backend continues to use the legacy bridge for existing account, character, snapshot, skill queue, PI, and market behavior. Its bridge client now probes `/v1/health` independently and reports whether the gateway is available and whether its injected runtime is ready. Missing, unsupported, or unhealthy v1 endpoints do not invalidate a successful legacy bridge status response.
+The web backend requires the v1 gateway for account, character, snapshot, skill queue, PI, status, and market behavior. It validates the gateway source and API version on every response and does not retain unversioned aliases, compatibility retries, or a local gameplay-runtime fallback.
 
 Files changed in EveJS:
 
@@ -290,30 +290,43 @@ Files changed in EveJS:
 - `server/src/runtimeContext.js`
 - `server/src/secondaryServiceLoader.js`
 - `server/src/_secondary/express/server.js`
-- `server/src/_secondary/express/webCompanionBridge.js`
+- `server/src/_secondary/express/evejsWebGateway.js`
+- `server/src/_secondary/express/webCompanionBridge.js` (removed)
+- `server/tests/planetRestartExtractors.test.js`
 - `server/tests/runtimeContextPropagation.test.js`
 - `server/tests/webGatewayV1.test.js`
 
 Files changed in the web app:
 
-- `src/eveBridgeClient.js`
+- `src/eveGatewayClient.js`
+- `src/eveBridgeClient.js` (removed)
+- `src/eveQueueService.js` (removed)
+- `src/eveStore.js`
+- `src/marketClient.js`
 - `src/server.js`
+- `public/app.js`
 - `scripts/check.js`
-- `test/eveBridgeClient.test.js`
+- `test/eveGatewayClient.test.js`
+- `test/eveBridgeClient.test.js` (removed)
+- `.env.example`
+- `README.md`
+- `docs/progress.md`
+- `docs/goal-prompts/phase-0a-runtime-context-and-gateway.md`
 - `package.json`
 - `docs/web-client-scope-and-roadmap.md`
 
 Verification evidence:
 
 - EveJS syntax checks passed for all seven scoped source and test files.
-- `npm run test:isolated -- server/tests/runtimeContextPropagation.test.js server/tests/webGatewayV1.test.js server/tests/planetRestartExtractors.test.js` passed 12 of 12 tests across three isolated files.
+- `npm run test:isolated -- server/tests/runtimeContextPropagation.test.js server/tests/webGatewayV1.test.js server/tests/planetRestartExtractors.test.js` passed 13 of 13 tests across three isolated files.
 - `npm run test:manifest:check` passed 3 of 3 tests.
-- Web-app syntax checks passed for `src/eveBridgeClient.js`, `src/server.js`, `scripts/check.js`, and `test/eveBridgeClient.test.js`.
-- `npm test` passed all focused web-client gateway tests, including ready, not-ready, absent, unhealthy, unsupported-version, wrong-source, legacy-compatibility, URL, and server-side-token handling checks.
-- A temporary instance of the existing Express secondary service on `127.0.0.1:27602`, using an injected real `ServiceManager`, returned the authenticated v1 health shape with runtime readiness. The web client's `detectGateway()` verified the same endpoint over HTTP. The temporary process was stopped and the port was confirmed free afterward.
+- Web-app syntax checks passed for the gateway client, store, market, server, frontend, check script, and focused test.
+- `npm test` passed 9 of 9 gateway-only client tests, including the complete v1 URL matrix, rejection of unversioned configuration before fetch, strict failure behavior, source/version validation, ready and not-ready runtime states, and server-side-token handling.
+- `npm run check` passed against the temporary live gateway and exercised status, account, character, and character-snapshot reads exclusively through v1.
+- A temporary instance of the existing Express secondary service on `127.0.0.1:27602`, using an injected real `ServiceManager`, returned `200` for authenticated v1 health and `401` without the token. The web client's strict `getStatus()` path verified the v1 status and health endpoints over HTTP; all 11 removed unversioned route shapes and an unknown v1 route returned gateway-shaped `404` responses, while malformed JSON and an oversized payload returned versioned `400` and `413` envelopes. The temporary process was stopped and the port was confirmed free afterward.
 - `git diff --check` passed in both repositories.
 
-Consciously deferred to later goals: character leases and online-status changes (0B); command execution, serialization, idempotency, and state versions (0C); WebSockets and event streaming (0D); narrow query projections and removal of broad legacy snapshots (0E); and EveJS-backed web authentication (0F). Proxy-only startup remains supported and reports the v1 gateway as present but its EveJS runtime dependency as not ready because that mode intentionally has no live gameplay `serviceManager`.
+Consciously deferred to later goals: character leases and online-status changes (0B); command execution, serialization, idempotency, and state versions (0C); WebSockets and event streaming (0D); narrow query projections and removal of broad snapshots (0E); and EveJS-backed web authentication (0F). Proxy-only startup remains supported and reports the v1 gateway as present but its EveJS runtime dependency as not ready because that mode intentionally has no live gameplay `serviceManager`.
 
 Goals 0B through 0F should receive their own reviewed prompts after the preceding goal is complete. Do not pre-implement later goals during an earlier run merely because their future interfaces are known.
 
