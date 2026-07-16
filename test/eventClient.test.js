@@ -4,6 +4,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const eventClient = require("../public/eventClient");
+const mutationScope = require("../public/mutationScope");
 
 const SOURCE = "evejs-web-gateway";
 
@@ -193,6 +194,18 @@ test("the parser enforces the exact versioned snapshot and event schemas", () =>
     7,
   );
   assert.equal(repeatedOutcomes.commandOutcomes.length, 2);
+  const maximumOutcomes = eventClient.parseCharacterEventFrame(
+    JSON.stringify(snapshot(
+      7,
+      "epoch_A",
+      2,
+      Array.from({ length: 256 }, (_, index) => outcome({
+        commandID: `maximum-command-${index}`,
+      })),
+    )),
+    7,
+  );
+  assert.equal(maximumOutcomes.commandOutcomes.length, 256);
   const browserSnapshot = snapshot(7, "epoch_A", 2);
   browserSnapshot.control = browserControl();
   assert.equal(
@@ -211,7 +224,7 @@ test("the parser enforces the exact versioned snapshot and event schemas", () =>
     snapshot(7, "epoch_A", 0, [outcome({ success: false, errorCode: null })]),
     snapshot(7, "epoch_A", 0, [outcome({ success: false, errorCode: "bad-code" })]),
     snapshot(7, "epoch_A", 0, [outcome({ admissionStatus: "rejected" })]),
-    snapshot(7, "epoch_A", 0, Array.from({ length: 65 }, (_, index) => outcome({
+    snapshot(7, "epoch_A", 0, Array.from({ length: 257 }, (_, index) => outcome({
       commandID: `command-${index}`,
     }))),
     eventFrame(7, "epoch_A", 1, { ...settlementEvent(), rawError: "secret" }),
@@ -232,7 +245,7 @@ test("the parser enforces the exact versioned snapshot and event schemas", () =>
     /envelope/i,
   );
   assert.throws(
-    () => eventClient.parseCharacterEventFrame("x".repeat(64 * 1024 + 1), 7),
+    () => eventClient.parseCharacterEventFrame("x".repeat(2 * 1024 * 1024 + 1), 7),
     /size/i,
   );
 });
@@ -322,6 +335,48 @@ test("cursors are isolated per account and character and resume with only epoch 
   assert.deepEqual(client.getCursor(5, 7), { epoch: "epoch_C", sequence: 1 });
   assert.equal(snapshots.length, 3);
 
+  client.dispose();
+});
+
+test("a gap snapshot reconciles the exact retained browser command record", () => {
+  const retained = new Map();
+  const key = "skill-queue:7";
+  const record = {
+    request: Object.freeze({
+      commandID: "retention-gap-target-command-0001",
+      serializedBody: '{"commandID":"retention-gap-target-command-0001"}',
+    }),
+  };
+  retained.set(key, record);
+  const client = createClient({
+    onSnapshot(frame) {
+      for (const settled of frame.commandOutcomes) {
+        mutationScope.reconcileRetainedCommandSettlement(retained, key, settled);
+      }
+    },
+  });
+  client.select({
+    accountID: 4,
+    characterID: 7,
+    authGeneration: 1,
+    characterGeneration: 1,
+  });
+  const exactOutcome = Object.freeze(outcome({
+    commandID: record.request.commandID,
+    stateVersion: "state-after-target:3",
+  }));
+  FakeWebSocket.instances[0].message(snapshot(
+    7,
+    "gap_epoch",
+    9,
+    [
+      outcome({ commandID: "unrelated-command" }),
+      exactOutcome,
+    ],
+  ));
+  assert.equal(retained.has(key), false);
+  assert.deepEqual(record.authoritativeSettlement, exactOutcome);
+  assert.deepEqual(client.getCursor(4, 7), { epoch: "gap_epoch", sequence: 9 });
   client.dispose();
 });
 

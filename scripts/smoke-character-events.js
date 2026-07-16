@@ -19,6 +19,7 @@ const ACCOUNT = Object.freeze({
   banned: false,
 });
 const CHARACTER_ID = 7;
+const OTHER_CHARACTER_ID = 8;
 const COMMAND_TYPE = "offline.skill_queue.save";
 const TIMEOUT_MS = 4_000;
 
@@ -505,7 +506,11 @@ async function executeSmoke(state, evidence, tempDataDir) {
     firstPayload: randomCanary("payload-one"),
     secondPayload: randomCanary("payload-two"),
     livePayload: randomCanary("payload-live"),
+    otherCharacterPayload: randomCanary("other-character-payload"),
+    maliciousReusePayload: randomCanary("malicious-reuse"),
   };
+  state.mutationExecutions = 0;
+  state.settlementPublications = 0;
 
   state.controlTimers = createTimerTracker();
   state.controlCore = createCharacterControlRuntime({
@@ -517,6 +522,13 @@ async function executeSmoke(state, evidence, tempDataDir) {
 
   state.commandRuntime = createCharacterCommandRuntime({
     controlRuntime: state.controlRuntime,
+    completedReceiptLimit: 1,
+    isCommandIDRetained(characterID, commandID) {
+      return Boolean(
+        state.eventRuntime &&
+        state.eventRuntime.hasRetainedCommandID(characterID, commandID)
+      );
+    },
     commandDefinitions: {
       [COMMAND_TYPE]: {
         authorizationPolicy: AUTHORIZATION_POLICIES.OFFLINE_COMPANION,
@@ -533,11 +545,13 @@ async function executeSmoke(state, evidence, tempDataDir) {
           return { canary: payload.canary, ordinal: payload.ordinal };
         },
         async handler({ payload }) {
+          state.mutationExecutions += 1;
           return { accepted: true, ordinal: payload.ordinal };
         },
       },
     },
     onReceiptCached(settlement) {
+      state.settlementPublications += 1;
       if (state.eventRuntime) {
         state.eventRuntime.publishCommandSettlement(settlement);
       }
@@ -548,8 +562,8 @@ async function executeSmoke(state, evidence, tempDataDir) {
     return createCharacterEventRuntime({
       controlRuntime: state.controlRuntime,
       getStateVersion: state.commandRuntime.getStateVersion,
-      historyLimit: 16,
-      commandOutcomeLimit: 8,
+      historyLimit: 4,
+      commandOutcomeLimit: 2,
     });
   }
 
@@ -654,28 +668,40 @@ async function executeSmoke(state, evidence, tempDataDir) {
       runtime.subscriberCount === 0;
   }, "the initial disconnect to remove every subscription");
 
-  async function submitCommand(commandID, canary, ordinal) {
-    const stateVersion = state.commandRuntime.getStateVersion(CHARACTER_ID);
+  async function submitCommand(
+    commandID,
+    canary,
+    ordinal,
+    characterID = CHARACTER_ID,
+  ) {
+    const stateVersion = state.commandRuntime.getStateVersion(characterID);
+    const envelope = {
+      commandID,
+      controllerID: sessionPayload.sessionID,
+      expectedStateVersion: stateVersion,
+      payload: { canary, ordinal },
+      type: COMMAND_TYPE,
+    };
     const result = await state.commandRuntime.submitCommand(
-      CHARACTER_ID,
-      {
-        commandID,
-        controllerID: sessionPayload.sessionID,
-        expectedStateVersion: stateVersion,
-        payload: { canary, ordinal },
-        type: COMMAND_TYPE,
-      },
+      characterID,
+      envelope,
       { requiredType: COMMAND_TYPE },
     );
     assert.equal(result.result.accepted, true);
-    return result;
+    return { envelope, result };
   }
 
   const missedCommandIDs = ["smoke-command-0001", "smoke-command-0002"];
-  await submitCommand(
+  const targetSubmission = await submitCommand(
     missedCommandIDs[0],
     state.secretValues.firstPayload,
     1,
+  );
+  await submitCommand(
+    "smoke-global-receipt-evictor-0001",
+    state.secretValues.otherCharacterPayload,
+    1,
+    OTHER_CHARACTER_ID,
   );
   await submitCommand(
     missedCommandIDs[1],
@@ -696,8 +722,8 @@ async function executeSmoke(state, evidence, tempDataDir) {
   );
   const missedDiagnostics = state.eventRuntime.getDiagnostics();
   assert.equal(missedDiagnostics.subscriberCount, 0);
-  assert.equal(missedDiagnostics.historyEventCount, 4);
-  assert.equal(missedDiagnostics.commandOutcomeCount, 2);
+  assert.equal(missedDiagnostics.historyEventCount, 5);
+  assert.equal(missedDiagnostics.commandOutcomeCount, 3);
 
   const replayConnection = await openCollector(
     eventUrl(webAuthority, initialSnapshot.cursor),
@@ -759,12 +785,102 @@ async function executeSmoke(state, evidence, tempDataDir) {
     duplicateFrameCount: replayConnection.frames.length - 5,
   };
 
+  const executionsBeforeReuse = state.mutationExecutions;
+  const publicationsBeforeReuse = state.settlementPublications;
+  await assert.rejects(
+    state.commandRuntime.submitCommand(
+      CHARACTER_ID,
+      targetSubmission.envelope,
+      { requiredType: COMMAND_TYPE },
+    ),
+    (error) => error.code === "CHARACTER_COMMAND_ID_REUSED",
+  );
+  await assert.rejects(
+    state.commandRuntime.submitCommand(
+      CHARACTER_ID,
+      {
+        ...targetSubmission.envelope,
+        expectedStateVersion: state.commandRuntime.getStateVersion(CHARACTER_ID),
+        payload: {
+          canary: state.secretValues.maliciousReusePayload,
+          ordinal: 999,
+        },
+      },
+      { requiredType: COMMAND_TYPE },
+    ),
+    (error) => error.code === "CHARACTER_COMMAND_ID_REUSED",
+  );
+  assert.equal(state.mutationExecutions, executionsBeforeReuse);
+  assert.equal(state.settlementPublications, publicationsBeforeReuse);
+
   await closeWebSocket(replayConnection.webSocket, state.clients);
   await waitFor(() => {
     return state.eventRuntime.getDiagnostics().subscriberCount === 0 &&
       state.eveUpgrades.getDiagnostics().subscriptionCount === 0 &&
       state.webServer.characterEventProxy.getDiagnostics().sessions === 0;
   }, "the live connection to disconnect before the epoch change");
+
+  const gapConnection = await openCollector(
+    eventUrl(webAuthority, initialSnapshot.cursor),
+    browserOptions,
+    state.clients,
+  );
+  await waitForFrames(gapConnection, 1, "the retention-gap snapshot");
+  assert.equal(gapConnection.frames.length, 1);
+  const gapSnapshot = gapConnection.frames[0];
+  assert.equal(gapSnapshot.type, "snapshot");
+  assert.equal(gapSnapshot.cursor.sequence, 5);
+  const targetOutcome = gapSnapshot.commandOutcomes.find(
+    (outcome) => outcome.commandID === targetSubmission.envelope.commandID,
+  );
+  assert.ok(targetOutcome, "the retained target outcome must cross the snapshot");
+
+  const eventClient = require(path.join(WEB_ROOT, "public/eventClient"));
+  const mutationScope = require(path.join(WEB_ROOT, "public/mutationScope"));
+  const retainedBrowserCommands = new Map();
+  const retainedKey = `skill-queue:${CHARACTER_ID}`;
+  const retainedRecord = {
+    request: Object.freeze({
+      commandID: targetSubmission.envelope.commandID,
+      serializedBody: JSON.stringify(targetSubmission.envelope),
+    }),
+  };
+  retainedBrowserCommands.set(retainedKey, retainedRecord);
+  const parsedGapSnapshot = eventClient.parseCharacterEventFrame(
+    JSON.stringify(gapSnapshot),
+    CHARACTER_ID,
+  );
+  for (const outcome of parsedGapSnapshot.commandOutcomes) {
+    mutationScope.reconcileRetainedCommandSettlement(
+      retainedBrowserCommands,
+      retainedKey,
+      outcome,
+    );
+  }
+  assert.equal(retainedBrowserCommands.has(retainedKey), false);
+  assert.deepEqual(retainedRecord.authoritativeSettlement, targetOutcome);
+  evidence.retentionGapRecovery = {
+    configuredReceiptLimit: 1,
+    configuredHistoryLimit: 4,
+    configuredOutcomeLimit: 2,
+    normalizedOutcomeLimit: 4,
+    requestedCursor: initialSnapshot.cursor,
+    snapshotCursor: gapSnapshot.cursor,
+    recoveredCommandID: targetOutcome.commandID,
+    globalEvictingCharacterID: OTHER_CHARACTER_ID,
+    mutationExecutions: state.mutationExecutions,
+    settlementPublications: state.settlementPublications,
+    conflictingReuseExecutions: state.mutationExecutions - executionsBeforeReuse,
+    conflictingReusePublications:
+      state.settlementPublications - publicationsBeforeReuse,
+    browserExactRecordReconciled: true,
+  };
+  await closeWebSocket(gapConnection.webSocket, state.clients);
+  await waitFor(() => {
+    return state.eventRuntime.getDiagnostics().subscriberCount === 0 &&
+      state.eveUpgrades.getDiagnostics().subscriptionCount === 0 &&
+      state.webServer.characterEventProxy.getDiagnostics().sessions === 0;
+  }, "the retention-gap connection to disconnect before the epoch change");
 
   const oldCursor = liveFrame.cursor;
   const oldEventRuntime = state.eventRuntime;
@@ -822,6 +938,7 @@ async function executeSmoke(state, evidence, tempDataDir) {
   const forwardedFrames = [
     initialSnapshot,
     ...replayConnection.frames,
+    gapSnapshot,
     epochSnapshot,
   ];
   evidence.sanitization = assertSanitized(

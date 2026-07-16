@@ -13,8 +13,8 @@
     source: "evejs-web-gateway",
     apiVersion: 1,
     streamVersion: 1,
-    maxFrameCharacters: 64 * 1024,
-    maxCommandOutcomes: 64,
+    maxFrameCharacters: 2 * 1024 * 1024,
+    maxCommandOutcomes: 256,
     snapshotKeys: Object.freeze([
       "source",
       "apiVersion",

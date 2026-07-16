@@ -274,6 +274,7 @@ Phase 0 is divided into the following sequential goals:
 | 0B | Complete | Exclusive character leases and transport-neutral online presence | 0A.1 | Offline, retail-client, and browser-pilot ownership states are authoritative inside EveJS |
 | 0C | Complete | Per-character command queue, idempotency, and state-version preconditions | 0B | Duplicate or overlapping web commands cannot apply a mutation twice |
 | 0D | Complete | Sequenced browser event stream and reconnect snapshots | 0C | The browser can disconnect and resume from a known event sequence |
+| 0D.1 | Complete | Correct bounded settlement recovery across every event-retention horizon | 0D | Every retained command ID is recoverable by replay or the exact snapshot outcome without unbounded storage |
 | 0E | Pending | Narrow versioned query projections replacing broad snapshots | 0A, 0D | Required pages read bounded DTOs instead of the full character snapshot |
 | 0F | Pending | EveJS-backed web authentication and removal of duplicate gameplay credentials | 0E | The web backend authenticates through EveJS and never receives direct database authority |
 
@@ -498,6 +499,49 @@ Verification evidence:
 - `node --check` passed for every changed or new JavaScript file, and `git diff --check` passed in both repositories. A final independent adversarial review found no remaining high- or medium-severity Goal 0D issue.
 
 Consciously deferred: event history, recent outcomes, cursor epochs, and command receipts remain process memory only; a restart therefore produces a new-epoch snapshot rather than persistent replay. Once all bounded receipt and event-retention horizons have expired, random command IDs are not remembered indefinitely, although the old exact envelope remains protected by its stale state-version precondition. Existing broad gameplay snapshots remain the source for coalesced page refresh and BFF ownership reads until Goal 0E replaces them with narrow projections. Cross-tab/server-side logout revocation and removal of duplicate web credentials remain Goal 0F authentication work; established sockets are currently bounded by the signed session's expiry and the active browser closes its own socket at an auth boundary. No new gameplay command, browser-pilot gameplay, persistent queue, query projection, travel job, autopilot, space-session adapter, mail/market mutation, or direct SQLite access was added.
+
+### Goal 0D.1 corrective execution status — Complete
+
+**Completed:** 2026-07-15
+
+Audit finding and invariant:
+
+Goal 0D gave event replay history and recent snapshot outcomes independent limits: 256 history frames and 64 outcomes. `hasRetainedCommandID` treated a settlement in either collection as a conflict, but a gap snapshot carried only the outcome collection. A receipt could therefore be evicted globally, its outcome could be evicted by newer command settlements while the settlement remained replay-retained, and a subscriber forced to snapshot could advance beyond the settlement without receiving it. The retained command ID then continued to return `CHARACTER_COMMAND_ID_REUSED` with no recovery record until unrelated future events finally removed the replay frame.
+
+Goal 0D.1 makes the following invariant explicit: while a command ID is retained as a conflict, its exact sanitized settlement is available either in replay or in every snapshot that can replace replay; and no command ID becomes reusable while an older settlement with that ID remains replayable. EveJS enforces this with `commandOutcomeLimit >= historyLimit`, because one history frame contains at most one settlement. Both limits are capped at the coordinated v1 maximum of 256, invalid smaller outcome configurations are safely raised to the bounded history limit, and oversized configured limits are capped. Thus every settlement still in history also remains in snapshot outcomes, while outcomes may safely outlive replay frames and keep the conflict snapshot-recoverable. Receipt, history, and outcome collections remain strictly bounded; no permanent ID map was added.
+
+The default snapshot outcome horizon is now 256. EveJS, the BFF validator, and the browser parser all enforce that same v1-only maximum and reject 257 outcomes. The coordinated frame/output bounds are 2 MiB per server-to-browser frame and 4 MiB buffered output, large enough for 256 maximally escaped protocol-valid outcomes while remaining finite. No compatibility branch, fallback protocol, or legacy route was added.
+
+Command safety remains unchanged across receipt eviction: a retained exact retry and a different-payload reuse both fail before the handler and before settlement publication. Once replay and snapshot outcome retention both expire, the old exact envelope is no longer remembered by ID, but its old state-version precondition fails before handler execution. The browser now says that Header Refresh only reloads displayed state and cannot clear an uncertain request; it separately identifies an exact retry and a full browser reload after authoritative-state inspection. Ordinary Header Refresh still performs only `loadPage()` and never clears the retained request map.
+
+Files changed in EveJS:
+
+- `server/src/services/online/characterEventRuntime.js`
+- `server/src/_secondary/express/evejsWebGateway.js`
+- `server/tests/characterEventRuntime.test.js`
+- `server/tests/webGatewayEvents.test.js`
+
+Files changed in the web app:
+
+- `src/characterEventProxy.js`
+- `public/eventClient.js`
+- `public/app.js`
+- `test/characterEventProxy.test.js`
+- `test/eventClient.test.js`
+- `test/frontendCommandUi.test.js`
+- `scripts/smoke-character-events.js`
+- `docs/web-client-scope-and-roadmap.md`
+
+Verification evidence:
+
+- `npm run test:isolated -- server/tests/characterEventRuntime.test.js server/tests/characterControlRuntime.test.js server/tests/characterControlLifecycle.test.js server/tests/characterCommandRuntime.test.js server/tests/webGatewayEvents.test.js server/tests/webGatewayV1.test.js server/tests/planetRestartExtractors.test.js server/tests/runtimeContextPropagation.test.js` passed 65 of 65 tests across eight isolated files. The corrective cases use receipt/history/outcome limits `1/4/2`, normalize outcomes to 4, force global receipt eviction from another character, prove a snapshot contains the exact settlement while it is retained, block exact and malicious reuse without a second mutation or settlement, create a real cursor gap, and prove the stale original envelope cannot execute after final bounded expiry.
+- `npm run test:manifest:check` passed 3 of 3 tests.
+- The web app's full `npm test` passed 105 of 105 tests. The additions prove 256/257 outcome enforcement and malformed/oversized handling through the BFF and browser, exact retained-record reconciliation from a gap snapshot, the corrected recovery message, and that Header Refresh cannot silently clear uncertainty.
+- The final ephemeral cross-stack smoke used the production Eve control, command, and event runtimes, Eve upgrade handler, BFF server/proxy, browser frame parser/reconciler, signed temporary session, and `ws` client on ports 60180 and 60181. With receipt/history/configured-outcome limits `1/4/2`, character 8 globally evicted character 7's target receipt; character 7 replayed sequences `[1,2,3,4]`, continued live at sequence 5, and then requested its old sequence-0 cursor. Because sequence 1 was no longer replayable, the response was a sequence-5 snapshot containing exact outcome `smoke-command-0001`; browser reconciliation cleared that exact retained record. Four legitimate commands produced four mutations and four settlements, while exact and malicious reuse produced zero additional mutations and zero additional settlements.
+- The smoke inspected eight forwarded frames and two rejection bodies against ten secret canaries with no leaks or forbidden fields. Teardown left zero BFF pending upgrades/sessions/sockets/timers, zero Eve sockets/subscriptions/heartbeat/shutdown timers, zero current or retired event-runtime characters/subscribers/history/outcomes, zero control subscriptions/timers and client sockets, zero upgrade/close listeners, both ports closed, and the temporary authentication directory removed.
+- `node --check` passed for every changed JavaScript file and `git diff --check` passed in both repositories.
+
+Remaining deferrals are unchanged. Event state and command receipts remain process memory, so restart recovery still uses a new epoch rather than persistence. Goal 0E remains pending for narrow query projections and broad-snapshot removal; Goal 0F remains pending for EveJS-backed authentication and duplicate-credential removal. No gameplay command, persistence, travel, autopilot, legacy route, protocol fallback, or direct SQLite access was added.
 
 The copy/paste prompt for the first run is maintained in [`goal-prompts/phase-0a-runtime-context-and-gateway.md`](goal-prompts/phase-0a-runtime-context-and-gateway.md).
 

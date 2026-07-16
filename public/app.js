@@ -474,7 +474,7 @@ function retainTypedCommand(
   if (retained) {
     if (retained.payloadKey !== payloadKey) {
       throw localCommandError(
-        "A previous request still has an uncertain outcome. Retry that exact request or refresh before changing it.",
+        "A previous request still has an uncertain outcome. Retry that exact request. Header Refresh only reloads displayed state and cannot clear it; after inspecting authoritative state, a full browser reload starts a new application session.",
         "COMMAND_OUTCOME_UNCERTAIN",
       );
     }

@@ -19,11 +19,11 @@ const COMMAND_TYPES = new Set([
   "offline.skill_queue.save",
   "offline.pi.extractors.restart",
 ]);
-const DEFAULT_MAX_FRAME_BYTES = 64 * 1024;
-const DEFAULT_MAX_BUFFERED_BYTES = 256 * 1024;
+const DEFAULT_MAX_FRAME_BYTES = 2 * 1024 * 1024;
+const DEFAULT_MAX_BUFFERED_BYTES = 4 * 1024 * 1024;
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 30 * 1000;
 const DEFAULT_UPGRADE_TIMEOUT_MS = 5 * 1000;
-const MAX_COMMAND_OUTCOMES = 64;
+const MAX_COMMAND_OUTCOMES = 256;
 const MAX_TIMER_DELAY_MS = 0x7fffffff;
 
 class EventProxyError extends Error {

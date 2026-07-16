@@ -349,8 +349,14 @@ test("strict frame validation accepts only the versioned sanitized schemas", () 
     assert.equal(validateGatewayFrame(candidate, CHARACTER_ID), false);
   }
 
+  const maximumOutcomes = snapshotFrame(7, {
+    commandOutcomes: Array.from({ length: 256 }, (_, index) =>
+      commandOutcome({ commandID: `command-${index}` })),
+  });
+  assert.equal(validateGatewayFrame(maximumOutcomes, CHARACTER_ID), true);
+
   const tooManyOutcomes = snapshotFrame(7, {
-    commandOutcomes: Array.from({ length: 65 }, (_, index) =>
+    commandOutcomes: Array.from({ length: 257 }, (_, index) =>
       commandOutcome({ commandID: `command-${index}` })),
   });
   assert.equal(validateGatewayFrame(tooManyOutcomes, CHARACTER_ID), false);
@@ -482,6 +488,52 @@ test("validated frames are canonically serialized before browser delivery", asyn
   assert.equal(browser.messages[0].includes(GATEWAY_TOKEN), false);
   browser.webSocket.close();
   await once(browser.webSocket, "close");
+});
+
+test("the BFF forwards 256 snapshot outcomes and rejects 257", async (t) => {
+  const maximumFrame = snapshotFrame(0, {
+    commandOutcomes: Array.from({ length: 256 }, (_, index) =>
+      commandOutcome({ commandID: `maximum-command-${index}` })),
+  });
+  const maximumGateway = await startGateway((webSocket) => {
+    webSocket.send(JSON.stringify(maximumFrame));
+  });
+  process.env.EVEJS_GATEWAY_URL = maximumGateway.url;
+  process.env.EVEJS_WEB_GATEWAY_TOKEN = GATEWAY_TOKEN;
+  const maximumBff = await startBff(fakeStore());
+  t.after(async () => {
+    await maximumBff.close();
+    await maximumGateway.close();
+  });
+  const accepted = await openBrowserSocket(
+    `${maximumBff.url}/api/characters/${CHARACTER_ID}/events`,
+    { origin: maximumBff.origin },
+  );
+  await waitFor(() => accepted.messages.length === 1, "maximum snapshot forwarding");
+  assert.equal(JSON.parse(accepted.messages[0]).commandOutcomes.length, 256);
+  accepted.webSocket.close();
+  await once(accepted.webSocket, "close");
+
+  const oversizedFrame = snapshotFrame(0, {
+    commandOutcomes: Array.from({ length: 257 }, (_, index) =>
+      commandOutcome({ commandID: `oversized-command-${index}` })),
+  });
+  const oversizedGateway = await startGateway((webSocket) => {
+    webSocket.send(JSON.stringify(oversizedFrame));
+  });
+  process.env.EVEJS_GATEWAY_URL = oversizedGateway.url;
+  const oversizedBff = await startBff(fakeStore());
+  t.after(async () => {
+    await oversizedBff.close();
+    await oversizedGateway.close();
+  });
+  const rejected = await openBrowserSocket(
+    `${oversizedBff.url}/api/characters/${CHARACTER_ID}/events`,
+    { origin: oversizedBff.origin },
+  );
+  const [closeCode] = await once(rejected.webSocket, "close");
+  assert.equal(closeCode, 1002);
+  assert.deepEqual(rejected.messages, []);
 });
 
 test("an accepted socket expires with its signed session and clears both tracked timers", async (t) => {

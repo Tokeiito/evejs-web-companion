@@ -127,6 +127,10 @@ test("Header Refresh cannot clear a genuinely uncertain retained request", () =>
     appSource,
     /refreshButton\.addEventListener\("click", \(\) => \{\s*loadPage\(\)/,
   );
+  assert.match(
+    appSource,
+    /Retry that exact request\. Header Refresh only reloads displayed state and cannot clear it; after inspecting authoritative state, a full browser reload starts a new application session\./,
+  );
 });
 
 test("version mismatch reloads current data while explicitly preserving the skill draft", () => {
