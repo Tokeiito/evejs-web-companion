@@ -273,7 +273,7 @@ Phase 0 is divided into the following sequential goals:
 | 0A.1 | Complete | Authoritative gateway runtime façade and fail-closed hardening | 0A | Proxy-only or incomplete mounts cannot load or touch gameplay state; authenticated non-health v1 routes return stable runtime-not-ready responses |
 | 0B | Complete | Exclusive character leases and transport-neutral online presence | 0A.1 | Offline, retail-client, and browser-pilot ownership states are authoritative inside EveJS |
 | 0C | Complete | Per-character command queue, idempotency, and state-version preconditions | 0B | Duplicate or overlapping web commands cannot apply a mutation twice |
-| 0D | Pending | Sequenced browser event stream and reconnect snapshots | 0C | The browser can disconnect and resume from a known event sequence |
+| 0D | Complete | Sequenced browser event stream and reconnect snapshots | 0C | The browser can disconnect and resume from a known event sequence |
 | 0E | Pending | Narrow versioned query projections replacing broad snapshots | 0A, 0D | Required pages read bounded DTOs instead of the full character snapshot |
 | 0F | Pending | EveJS-backed web authentication and removal of duplicate gameplay credentials | 0E | The web backend authenticates through EveJS and never receives direct database authority |
 
@@ -428,6 +428,76 @@ Verification evidence:
 - `git diff --check` passed in both repositories.
 
 Consciously deferred: command lanes and receipts remain process memory only; the random epoch safely rejects pre-restart versions but cannot replay a receipt across restart. The browser retains an uncertain envelope only for the current application lifetime, so a hard reload requires the user to inspect fresh state before deliberately issuing a new command. Replayed terminal 503 receipts remain unavailable by design rather than risking a duplicate mutation. Concrete browser-pilot gameplay commands, persistent command queues, WebSockets and event replay (Goal 0D), narrow query projections replacing broad snapshots (Goal 0E), EveJS-backed authentication (Goal 0F), travel jobs, and additional gameplay/UI commands remain outside Goal 0C.
+
+### Goal 0D execution status — Complete
+
+**Completed:** 2026-07-15
+
+EveJS now owns a dedicated in-memory character-event runtime. Each EveJS process creates a cryptographically random base64url stream epoch; each observed character has an independent monotonic sequence, a bounded 256-frame replay history, and 64 recent sanitized command outcomes. A valid retained cursor receives every later event in order before the subscription becomes live, with publication during replay queued behind the initial batch. Missing, future, wrong-epoch, and evicted cursors instead receive one current snapshot at the post-read high-water cursor. That snapshot contains only sanitized control state, the authoritative state version, and bounded recent command outcomes. Shutdown removes the control listener, closes every subscriber, and clears all per-character history.
+
+The command runtime publishes a settlement only after its normalized receipt has entered the completed-receipt cache. Completed or in-flight duplicates do not notify the event runtime again. If the global receipt cache evicts a command while its settlement remains in replay or outcome retention, the command ID remains a stable conflict and cannot execute again; the event runtime also suppresses a second settlement defensively. Settlement frames contain only the command ID/type, success or stable error code, admission status, state version, and the character ID in the frame envelope. Control transitions advance the character state version in the command runtime before the event runtime publishes `control_changed`.
+
+Protocol decisions:
+
+- The only new EveJS path is `/_evejs-web/v1/events`; the only new BFF path is `/api/characters/:characterID/events`. Both are WebSocket-only, use `ws` 8.21.1, and retain no unversioned alias or SSE fallback.
+- Every frame uses `source: "evejs-web-gateway"`, `apiVersion: 1`, and `streamVersion: 1`. A cursor is exactly `{ epoch, sequence }` and is supplied on reconnect only as the paired `epoch` and canonical decimal `sequence` query values.
+- A snapshot is exactly the common version fields plus `type`, `characterID`, `cursor`, `control`, `stateVersion`, and `commandOutcomes`. An event is the common fields plus `type`, `characterID`, `cursor`, and one strict `event`; Goal 0D defines only `control_changed` and `command_settled` events.
+- EveJS upgrades require a configured server-to-server gateway token, a ready authoritative runtime, positive account and character IDs, and live account ownership. Health advertises `capabilities.characterEvents`, `dependencies.characterEvents`, and a token-aware `runtime.characterEvents` readiness/dependency projection. The BFF preserves that projection and reports its combined status as not ready when the event transport lacks its token, without disabling the existing loopback HTTP behavior.
+- The BFF accepts only a same-origin WebSocket upgrade with one valid signed HttpOnly session cookie. It verifies the signature and expiry, re-fetches the account and character ownership through EveJS, rechecks expiry across asynchronous authorization and the upstream handshake, and places only the gateway token in the upstream request. Live sockets close at signed-session expiry.
+- Every upstream frame is decoded as strict UTF-8, parsed, checked for exact source/version/character/schema and cursor continuity, then serialized again from the validated object before browser delivery. Canonical serialization prevents duplicate JSON keys or unvalidated raw bytes from crossing the BFF. Invalid continuity/schema uses close code 1002 and size/backpressure uses 1009, causing the browser's next reconnect to omit its cursor and demand a snapshot.
+- EveJS and the BFF enforce inbound-frame, outbound-frame, and buffered-output limits; reject client application messages; ping both sides; bound pending upgrades; and deterministically clear sockets, subscriptions, heartbeat/expiry/shutdown timers, and server listeners. A closing peer that withholds its close acknowledgement is terminated before it can be untracked.
+- The browser owns one generation-guarded socket for the authenticated selected character. It persists only the last accepted epoch and sequence under the account/character pair, applies callbacks before acknowledging a cursor, ignores exact duplicates, rejects gaps and malformed frames without advancing, and reconnects with bounded exponential backoff. Authentication/character generations make stale callbacks inert, and initial-load failures either close an unauthenticated bootstrap or retain a legitimately authenticated stream for recovery.
+- Snapshot and event data never replace broad page state directly. They reconcile exact retained skill/PI command IDs and schedule one coalesced authoritative page/status refresh. A successful skill settlement clears only the identical submitted draft; a newer draft is preserved.
+
+Goal 0C recovery finding and resolution:
+
+Goal 0C treated every final HTTP 503 as uncertain, even when the new stream had already delivered a matching terminal settlement. That left the exact request retained, blocked a new command, and prevented the normal authoritative reconciliation path. Goal 0D records a matching settlement on the exact in-memory request even when it arrives before or during the HTTP failure. The HTTP path then converts the error to a definitive result, compare-deletes only that record, and refreshes authoritative state. A settlement arriving after the HTTP error performs the same exact-ID reconciliation and coalesced refresh. A retained-ID 409 without its settlement remains uncertain and keeps the byte-identical envelope until replay or a reconnect snapshot supplies the authoritative outcome. Network/malformed outcomes without any authoritative settlement also retain the exact envelope, and Header Refresh never clears it.
+
+Files changed in EveJS:
+
+- `server/package.json`
+- `server/package-lock.json`
+- `server/src/services/online/characterEventRuntime.js` (new)
+- `server/src/services/online/characterCommandRuntime.js`
+- `server/src/_secondary/express/evejsWebGatewayRuntime.js`
+- `server/src/_secondary/express/evejsWebGateway.js`
+- `server/src/_secondary/express/server.js`
+- `server/tests/characterEventRuntime.test.js` (new)
+- `server/tests/webGatewayEvents.test.js` (new)
+- `server/tests/webGatewayV1.test.js`
+
+Files changed in the web app:
+
+- `package.json`
+- `package-lock.json`
+- `src/characterEventProxy.js` (new)
+- `src/eveGatewayClient.js`
+- `src/server.js`
+- `public/eventClient.js` (new)
+- `public/commandClient.js`
+- `public/mutationScope.js`
+- `public/app.js`
+- `public/index.html`
+- `test/characterEventProxy.test.js` (new)
+- `test/eventClient.test.js` (new)
+- `test/commandClient.test.js`
+- `test/eveGatewayClient.test.js`
+- `test/frontendCommandUi.test.js`
+- `test/mutationScope.test.js`
+- `scripts/smoke-character-events.js` (new)
+- `docs/web-client-scope-and-roadmap.md`
+
+Verification evidence:
+
+- `npm run test:isolated -- server/tests/characterEventRuntime.test.js server/tests/characterControlRuntime.test.js server/tests/characterControlLifecycle.test.js server/tests/characterCommandRuntime.test.js server/tests/webGatewayEvents.test.js server/tests/webGatewayV1.test.js server/tests/planetRestartExtractors.test.js server/tests/runtimeContextPropagation.test.js` passed all 62 tests across eight isolated files. This includes sequence isolation, replay/overflow/epoch behavior, atomic replay-to-live delivery, settlement caching/deduplication/sanitization, retained-ID conflicts, real WebSocket auth and ownership, protocol limits, heartbeat, non-acknowledging peers, and deterministic shutdown.
+- `npm run test:manifest:check` passed 3 of 3 tests.
+- The web app's full `npm test` passed 103 of 103 tests. Coverage includes signed-session/expiry races, ownership, token secrecy, canonical strict frame forwarding, gap close signaling, backpressure, cleanup, cursor persistence, cursorless recovery, generation guards, callback-before-cursor acknowledgement, reconnect backoff, refresh coalescing, settlement timing, retained-ID uncertainty, exact-envelope preservation, terminal-503 recovery, and unchanged/newer skill-draft handling.
+- The final ephemeral cross-stack smoke used the production Eve control/command/event runtimes, Eve upgrade handler, BFF server/proxy, signed web session, and `ws` client on temporary ports 55766 and 55767. It observed an offline snapshot at sequence 0; disconnected with zero subscribers; replayed missed sequences `[1, 2, 3, 4]` as two settlements and browser-pilot/offline control changes; continued live at sequence 5 with zero duplicate frames; and answered the prior epoch's sequence-5 cursor from a fresh event runtime with a new-epoch sequence-0 snapshot.
+- The same smoke returned `401 UNAUTHORIZED` for a direct tokenless EveJS upgrade and `401 AUTH_REQUIRED` for an unsigned BFF upgrade. Seven forwarded frames and two rejection bodies were scanned against eight token/session/controller/payload/lease canaries with no leaked values or forbidden fields.
+- Smoke teardown reported zero BFF pending upgrades, sessions, sockets, and timers; zero Eve sockets, subscriptions, heartbeat, and shutdown timers; zero current or retired event-runtime characters/subscribers/history/outcomes; zero control subscriptions/timers and client sockets; zero upgrade/close listeners; both ports closed; and the temporary authentication directory removed.
+- `node --check` passed for every changed or new JavaScript file, and `git diff --check` passed in both repositories. A final independent adversarial review found no remaining high- or medium-severity Goal 0D issue.
+
+Consciously deferred: event history, recent outcomes, cursor epochs, and command receipts remain process memory only; a restart therefore produces a new-epoch snapshot rather than persistent replay. Once all bounded receipt and event-retention horizons have expired, random command IDs are not remembered indefinitely, although the old exact envelope remains protected by its stale state-version precondition. Existing broad gameplay snapshots remain the source for coalesced page refresh and BFF ownership reads until Goal 0E replaces them with narrow projections. Cross-tab/server-side logout revocation and removal of duplicate web credentials remain Goal 0F authentication work; established sockets are currently bounded by the signed session's expiry and the active browser closes its own socket at an auth boundary. No new gameplay command, browser-pilot gameplay, persistent queue, query projection, travel job, autopilot, space-session adapter, mail/market mutation, or direct SQLite access was added.
 
 The copy/paste prompt for the first run is maintained in [`goal-prompts/phase-0a-runtime-context-and-gateway.md`](goal-prompts/phase-0a-runtime-context-and-gateway.md).
 

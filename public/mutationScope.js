@@ -241,6 +241,25 @@
     return map.delete(key);
   }
 
+  function reconcileRetainedCommandSettlement(map, key, settlement) {
+    if (!map || typeof map.get !== "function") {
+      throw new TypeError("A Map-like value is required.");
+    }
+    const record = map.get(key);
+    const commandID = record && record.request && record.request.commandID;
+    if (
+      !record ||
+      !settlement ||
+      typeof settlement !== "object" ||
+      typeof commandID !== "string" ||
+      settlement.commandID !== commandID
+    ) {
+      return null;
+    }
+    record.authoritativeSettlement = settlement;
+    return deleteMapEntryIfRecordMatches(map, key, record) ? record : null;
+  }
+
   function shouldPreserveSkillDraftAfterSuccess(state, origin) {
     return Boolean(
       state &&
@@ -284,6 +303,7 @@
     deleteMapEntryIfRecordMatches,
     isMutationOriginCurrent,
     isViewLoadCurrent,
+    reconcileRetainedCommandSettlement,
     runPendingAuthTransition,
     shouldReconcileDefinitiveCommandError,
     shouldPreserveSkillDraftAfterSuccess,

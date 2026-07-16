@@ -2,12 +2,14 @@
 
 const express = require("express");
 const fs = require("fs");
+const http = require("http");
 const path = require("path");
 const eveStore = require("./eveStore");
 const marketClient = require("./marketClient");
 const webAuth = require("./webAuth");
 const config = require("./config");
 const { createBrowserLeaseStore } = require("./browserLeaseStore");
+const { createCharacterEventProxy } = require("./characterEventProxy");
 
 function createApp(options = {}) {
 const app = express();
@@ -17,6 +19,12 @@ const auth = options.webAuth || webAuth;
 const leaseStore = options.browserLeaseStore || createBrowserLeaseStore();
 const errorLogger = options.errorLogger || ((error) => console.error(error));
 app.locals.browserLeaseStore = leaseStore;
+app.locals.characterEventProxyOptions = {
+  eveStore: store,
+  webAuth: auth,
+  sessionCookieName: config.sessionCookieName,
+  ...(options.characterEventProxyOptions || {}),
+};
 fs.mkdirSync(config.iconCacheDir, { recursive: true });
 
 app.disable("x-powered-by");
@@ -367,6 +375,13 @@ app.get("/api/characters", requireAuth, async (req, res, next) => {
 
 app.use("/api/characters/:characterID", requireAuth);
 
+app.get("/api/characters/:characterID/events", (req, res) => {
+  res.status(426).json({
+    ok: false,
+    error: "WEBSOCKET_UPGRADE_REQUIRED",
+  });
+});
+
 app.get("/api/characters/:characterID/skills", async (req, res, next) => {
   try {
   const characterID = Number(req.params.characterID || 0);
@@ -653,11 +668,25 @@ function startServer(options = {}) {
   const appToStart = options.app || createApp(options);
   const host = options.host || config.host;
   const port = options.port === undefined ? config.port : Number(options.port);
-  const server = appToStart.listen(port, host, () => {
+  const server = http.createServer(appToStart);
+  const characterEventProxy = createCharacterEventProxy({
+    ...(appToStart.locals.characterEventProxyOptions || {}),
+    ...(options.characterEventProxyOptions || {}),
+  });
+  characterEventProxy.attach(server);
+  Object.defineProperty(server, "characterEventProxy", {
+    configurable: false,
+    enumerable: false,
+    value: characterEventProxy,
+    writable: false,
+  });
+  server.listen(port, host, () => {
     const address = server.address();
     const activePort = address && typeof address === "object" ? address.port : port;
-    console.log(`EveJS Web POC listening on http://${host}:${activePort}`);
-    console.log(`Using EveJS gateway: ${process.env.EVEJS_GATEWAY_URL || "http://127.0.0.1:26002/_evejs-web/v1"}`);
+    if (options.silent !== true) {
+      console.log(`EveJS Web POC listening on http://${host}:${activePort}`);
+      console.log(`Using EveJS gateway: ${process.env.EVEJS_GATEWAY_URL || "http://127.0.0.1:26002/_evejs-web/v1"}`);
+    }
   });
   return server;
 }

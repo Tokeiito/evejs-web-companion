@@ -4,6 +4,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const commandClient = require("../public/commandClient");
+const mutationScope = require("../public/mutationScope");
 
 function jsonResponse(status, payload) {
   return {
@@ -167,6 +168,63 @@ test("a definitive 409 is not retried", async () => {
   assert.equal(fetchCalls, 1);
 });
 
+test("a retained-ID conflict keeps the exact envelope until its settlement arrives", async () => {
+  const request = retainedCommand();
+  const serializedBody = request.serializedBody;
+  let fetchCalls = 0;
+  let conflict;
+  try {
+    await commandClient.sendRetainedCommand("/skills", request, {
+      async fetchImpl(url, options) {
+        void url;
+        fetchCalls += 1;
+        assert.equal(options.body, serializedBody);
+        return jsonResponse(409, {
+          ok: false,
+          error: "CHARACTER_COMMAND_ID_REUSED",
+          message: "Command ID is already retained.",
+        });
+      },
+    });
+  } catch (error) {
+    conflict = error;
+  }
+
+  assert.equal(fetchCalls, 1);
+  assert.equal(conflict.code, "CHARACTER_COMMAND_ID_REUSED");
+  assert.equal(conflict.uncertain, true);
+  assert.equal(request.serializedBody, serializedBody);
+  const key = "skill-queue:7";
+  const record = { request };
+  const retained = new Map([[key, record]]);
+  if (!commandClient.isUncertainCommandError(conflict)) {
+    mutationScope.deleteMapEntryIfRecordMatches(retained, key, record);
+  }
+  assert.equal(retained.get(key), record);
+
+  const settlement = Object.freeze({
+    commandID: request.commandID,
+    commandType: "offline.skill_queue.save",
+    success: true,
+    errorCode: null,
+    admissionStatus: "admitted",
+    stateVersion: "runtime-a:5",
+  });
+  assert.equal(
+    mutationScope.reconcileRetainedCommandSettlement(retained, key, settlement),
+    record,
+  );
+  const resolved = commandClient.resolveCommandErrorWithSettlement(
+    conflict,
+    record.authoritativeSettlement,
+    request.commandID,
+  );
+  assert.equal(resolved.uncertain, false);
+  assert.equal(resolved.code, "CHARACTER_COMMAND_SETTLED");
+  assert.equal(retained.has(key), false);
+  assert.equal(request.serializedBody, serializedBody);
+});
+
 test("two malformed 200 responses remain uncertain", async () => {
   const command = retainedCommand();
   let fetchCalls = 0;
@@ -312,4 +370,96 @@ test("a complete endpoint-validated dashboard succeeds without retry", async () 
 
   assert.equal(fetchCalls, 1);
   assert.equal(result, payload);
+});
+
+test("authoritative settlement resolves terminal-503 races without replacing an uncertain envelope", () => {
+  const cases = ["before-http-error", "after-http-error"];
+  for (const ordering of cases) {
+    const request = retainedCommand();
+    const serializedBody = request.serializedBody;
+    const record = { request, inFlight: ordering === "before-http-error" };
+    const key = "skill-queue:7";
+    const retained = new Map([[key, record]]);
+    const settlement = Object.freeze({
+      commandID: request.commandID,
+      commandType: "offline.skill_queue.save",
+      success: false,
+      errorCode: "CHARACTER_COMMAND_UNAVAILABLE",
+      admissionStatus: "admitted",
+      stateVersion: "runtime-a:5",
+    });
+    const uncertain = Object.assign(new Error("503"), {
+      code: "CHARACTER_COMMAND_UNAVAILABLE",
+      status: 503,
+      uncertain: true,
+    });
+
+    if (ordering === "before-http-error") {
+      assert.equal(
+        mutationScope.reconcileRetainedCommandSettlement(retained, key, settlement),
+        record,
+      );
+    } else {
+      assert.equal(
+        commandClient.resolveCommandErrorWithSettlement(
+          uncertain,
+          record.authoritativeSettlement,
+          request.commandID,
+        ),
+        uncertain,
+      );
+      assert.equal(retained.get(key), record);
+      assert.equal(
+        mutationScope.reconcileRetainedCommandSettlement(retained, key, settlement),
+        record,
+      );
+    }
+
+    const definitive = commandClient.resolveCommandErrorWithSettlement(
+      uncertain,
+      record.authoritativeSettlement,
+      request.commandID,
+    );
+    assert.equal(definitive.code, "CHARACTER_COMMAND_UNAVAILABLE");
+    assert.equal(definitive.status, 503);
+    assert.equal(definitive.uncertain, false);
+    assert.equal(definitive.authoritativeSettlement, settlement);
+    assert.equal(retained.has(key), false);
+    assert.equal(request.serializedBody, serializedBody);
+    assert.equal(Object.isFrozen(request), true);
+  }
+});
+
+test("success settlements are definitive while unknown or mismatched outcomes remain uncertain", () => {
+  const request = retainedCommand();
+  const uncertain = Object.assign(new Error("network"), {
+    code: "COMMAND_NETWORK_ERROR",
+    status: 0,
+    uncertain: true,
+  });
+  const success = {
+    commandID: request.commandID,
+    success: true,
+    errorCode: null,
+  };
+  const resolved = commandClient.resolveCommandErrorWithSettlement(
+    uncertain,
+    success,
+    request.commandID,
+  );
+  assert.equal(resolved.code, "CHARACTER_COMMAND_SETTLED");
+  assert.equal(resolved.uncertain, false);
+  assert.equal(resolved.authoritativeSettlement, success);
+  assert.equal(
+    commandClient.resolveCommandErrorWithSettlement(
+      uncertain,
+      { ...success, commandID: "another-command" },
+      request.commandID,
+    ),
+    uncertain,
+  );
+  assert.equal(
+    commandClient.resolveCommandErrorWithSettlement(uncertain, null, request.commandID),
+    uncertain,
+  );
 });

@@ -321,6 +321,59 @@ test("a delayed A completion cannot compare-delete B's replacement record", asyn
   assert.equal(retained.has(key), false);
 });
 
+test("settlement reconciliation clears only an exact retained command ID", () => {
+  const retained = new Map();
+  const key = "7:skill-queue";
+  const record = {
+    request: Object.freeze({
+      commandID: "command-a",
+      serializedBody: '{"commandID":"command-a"}',
+    }),
+  };
+  retained.set(key, record);
+
+  assert.equal(
+    mutationScope.reconcileRetainedCommandSettlement(retained, key, {
+      commandID: "command-b",
+      success: true,
+    }),
+    null,
+  );
+  assert.equal(retained.get(key), record);
+  const settlement = Object.freeze({ commandID: "command-a", success: true });
+  assert.equal(
+    mutationScope.reconcileRetainedCommandSettlement(retained, key, settlement),
+    record,
+  );
+  assert.equal(record.authoritativeSettlement, settlement);
+  assert.equal(retained.has(key), false);
+  assert.equal(record.request.serializedBody, '{"commandID":"command-a"}');
+
+  // A settlement replay after the HTTP completion is harmless.
+  assert.equal(
+    mutationScope.reconcileRetainedCommandSettlement(retained, key, settlement),
+    null,
+  );
+});
+
+test("a view refresh never clears a genuinely uncertain retained command", () => {
+  const state = skillState();
+  const retained = new Map();
+  const record = {
+    request: Object.freeze({
+      commandID: "uncertain-command",
+      serializedBody: '{"commandID":"uncertain-command"}',
+    }),
+  };
+  retained.set("skill-queue:7", record);
+
+  const context = mutationScope.beginViewLoad(state);
+  state.data = { dashboard: { stateVersion: "epoch.2" } };
+  assert.equal(mutationScope.isViewLoadCurrent(state, context), true);
+  assert.equal(retained.get("skill-queue:7"), record);
+  assert.equal(record.request.serializedBody, '{"commandID":"uncertain-command"}');
+});
+
 test("only the newest generation-guarded view load can apply", async () => {
   const state = skillState();
   const firstGate = deferred();

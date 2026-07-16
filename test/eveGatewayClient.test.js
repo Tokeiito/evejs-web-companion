@@ -38,17 +38,26 @@ function gatewayResponse(body = {}) {
   };
 }
 
-function gatewayHealth(ready = true) {
+function gatewayHealth(ready = true, characterEventsReady = ready) {
   return gatewayResponse({
     capabilities: {
       health: true,
       status: true,
       gameplay: true,
+      characterEvents: true,
     },
     runtime: {
       ready,
       dependencies: {
         serviceManager: ready,
+        characterEvents: ready,
+      },
+      characterEvents: {
+        ready: ready && characterEventsReady,
+        dependencies: {
+          gatewayRuntime: ready,
+          gatewayToken: characterEventsReady,
+        },
       },
     },
   });
@@ -106,11 +115,20 @@ test("getStatus strictly combines v1 status and health", async () => {
       health: true,
       status: true,
       gameplay: true,
+      characterEvents: true,
     },
     runtime: {
       ready: true,
       dependencies: {
         serviceManager: true,
+        characterEvents: true,
+      },
+      characterEvents: {
+        ready: true,
+        dependencies: {
+          gatewayRuntime: true,
+          gatewayToken: true,
+        },
       },
     },
   });
@@ -150,6 +168,37 @@ test("getStatus reports a detected v1 gateway whose runtime is not ready", async
   assert.equal(status.ready, false);
   assert.equal(status.runtime.ready, false);
   assert.equal(status.runtime.dependencies.serviceManager, false);
+  assert.equal(status.capabilities.characterEvents, true);
+  assert.equal(status.runtime.dependencies.characterEvents, false);
+  assert.equal(status.runtime.characterEvents.ready, false);
+});
+
+test("getStatus reports token-aware character-event transport readiness", async () => {
+  global.fetch = async (url) => {
+    if (url.endsWith("/status")) {
+      return jsonResponse(200, gatewayResponse({
+        hasAccounts: true,
+        hasCharacters: true,
+        hasSkills: true,
+        accountCount: 1,
+        characterCount: 1,
+      }));
+    }
+    if (url.endsWith("/health")) {
+      return jsonResponse(200, gatewayHealth(true, false));
+    }
+    throw new Error(`Unexpected URL: ${url}`);
+  };
+
+  const status = await gatewayClient.getStatus();
+  assert.equal(status.runtime.ready, true);
+  assert.equal(status.runtime.dependencies.characterEvents, true);
+  assert.equal(status.runtime.characterEvents.ready, false);
+  assert.deepEqual(status.runtime.characterEvents.dependencies, {
+    gatewayRuntime: true,
+    gatewayToken: false,
+  });
+  assert.equal(status.ready, false);
 });
 
 test("getStatus fails when either required v1 endpoint is unhealthy", async () => {

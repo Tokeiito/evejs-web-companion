@@ -66,13 +66,19 @@
   }
 
   function responseError(response, payload) {
+    const code = payload.error || `HTTP_${response.status}`;
     return commandRequestError(
-      payload.message || payload.error || `HTTP_${response.status}`,
+      payload.message || code,
       {
-        code: payload.error || `HTTP_${response.status}`,
+        code,
         status: response.status,
         payload,
-        uncertain: response.status === 503,
+        // After the bounded receipt cache evicts a command, EveJS preserves
+        // its ID conflict for as long as the settlement remains replayable.
+        // Keep the byte-identical browser envelope until that authoritative
+        // settlement arrives through replay or a reconnect snapshot.
+        uncertain: response.status === 503 ||
+          code === "CHARACTER_COMMAND_ID_REUSED",
       },
     );
   }
@@ -178,9 +184,40 @@
     return Boolean(error && error.uncertain === true);
   }
 
+  function resolveCommandErrorWithSettlement(error, settlement, expectedCommandID) {
+    const validSettlement = settlement &&
+      typeof settlement === "object" &&
+      typeof settlement.commandID === "string" &&
+      settlement.commandID === expectedCommandID &&
+      typeof settlement.success === "boolean" &&
+      (
+        settlement.success === true ||
+        (typeof settlement.errorCode === "string" && settlement.errorCode.length > 0)
+      );
+    if (!validSettlement) {
+      return error;
+    }
+    const code = settlement.success
+      ? "CHARACTER_COMMAND_SETTLED"
+      : settlement.errorCode;
+    const message = settlement.success
+      ? "The command settled successfully. Refreshing authoritative state."
+      : `The command settled with ${code}.`;
+    const resolved = commandRequestError(message, {
+      code,
+      status: Number(error && error.status) || 503,
+      payload: { error: code, message },
+      uncertain: false,
+    });
+    resolved.authoritativeSettlement = settlement;
+    resolved.cause = error;
+    return resolved;
+  }
+
   return Object.freeze({
     createRetainedCommand,
     isUncertainCommandError,
+    resolveCommandErrorWithSettlement,
     sendRetainedCommand,
   });
 });

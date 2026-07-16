@@ -51,6 +51,32 @@ function getGatewayToken() {
   return String(process.env.EVEJS_WEB_GATEWAY_TOKEN || "").trim();
 }
 
+function buildEventStreamRequest(accountID, characterID, cursor = null) {
+  const token = getGatewayToken();
+  if (!token) {
+    throw new EveGatewayError(
+      "EVEJS_WEB_GATEWAY_TOKEN is required for the character event stream.",
+      { code: "EVE_GATEWAY_CONFIGURATION", statusCode: 503 },
+    );
+  }
+
+  const url = new URL(`${getGatewayBaseUrl()}/events`);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  url.searchParams.set("accountID", String(Number(accountID) || 0));
+  url.searchParams.set("characterID", String(Number(characterID) || 0));
+  if (cursor) {
+    url.searchParams.set("epoch", cursor.epoch);
+    url.searchParams.set("sequence", String(cursor.sequence));
+  }
+
+  return {
+    url: url.toString(),
+    headers: {
+      "x-evejs-web-token": token,
+    },
+  };
+}
+
 function normalizeQueueEntries(entries) {
   if (!Array.isArray(entries)) {
     return entries;
@@ -263,7 +289,11 @@ async function getGatewayHealth() {
     health.runtime &&
     typeof health.runtime === "object" &&
     health.runtime.dependencies &&
-    typeof health.runtime.dependencies === "object";
+    typeof health.runtime.dependencies === "object" &&
+    health.runtime.characterEvents &&
+    typeof health.runtime.characterEvents === "object" &&
+    health.runtime.characterEvents.dependencies &&
+    typeof health.runtime.characterEvents.dependencies === "object";
   if (!hasStableShape) {
     throw new EveGatewayError("EveJS gateway health response is not supported.", {
       code: "EVE_GATEWAY_UNSUPPORTED",
@@ -278,13 +308,25 @@ function normalizeGatewayHealth(health) {
     Object.entries(health.runtime.dependencies)
       .map(([name, ready]) => [name, ready === true]),
   );
+  const characterEventDependencies = Object.fromEntries(
+    Object.entries(health.runtime.characterEvents.dependencies)
+      .map(([name, ready]) => [name, ready === true]),
+  );
+  const characterEventsReady =
+    health.capabilities.characterEvents === true &&
+    health.runtime.characterEvents.ready === true &&
+    Object.values(characterEventDependencies).every(Boolean);
   return {
     available: true,
-    ready: runtimeReady,
+    ready: runtimeReady && characterEventsReady,
     capabilities: { ...health.capabilities },
     runtime: {
       ready: runtimeReady,
       dependencies,
+      characterEvents: {
+        ready: characterEventsReady,
+        dependencies: characterEventDependencies,
+      },
     },
   };
 }
@@ -369,6 +411,7 @@ async function restartExtractors(accountID, characterID, options = {}) {
 
 module.exports = {
   EveGatewayError,
+  buildEventStreamRequest,
   claimCharacterControl,
   getAccount,
   getGatewayHealth,

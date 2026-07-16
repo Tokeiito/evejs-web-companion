@@ -19,12 +19,18 @@ const CHARACTER_CONTROL_CONFLICTS = new Set([
   "CHARACTER_CONTROL_BROWSER_PILOT",
 ]);
 const CHARACTER_STATE_VERSION_MISMATCH = "CHARACTER_STATE_VERSION_MISMATCH";
+const EVENT_COMMAND_KINDS = Object.freeze({
+  "offline.skill_queue.save": "skill-queue",
+  "offline.pi.extractors.restart": "pi-restart",
+});
 const commandClient = globalThis.EveCommandClient;
 const mutationScope = globalThis.EveMutationScope;
+const eventClientApi = globalThis.EveCharacterEventClient;
 
 const state = {
   authGeneration: 0,
   authTransitionPending: false,
+  characterGeneration: 0,
   viewGeneration: 0,
   account: null,
   characters: [],
@@ -46,6 +52,8 @@ const state = {
   marketGroupFilter: null,
   marketTypeFilter: null,
   commandRequests: new Map(),
+  eventRefreshGeneration: 0,
+  eventRefreshPending: false,
 };
 
 const elements = {
@@ -68,6 +76,24 @@ const elements = {
   pageContent: document.getElementById("page-content"),
   readonlyBanner: document.getElementById("readonly-banner"),
 };
+
+const eventRefreshTask = eventClientApi.createCoalescedTask(
+  runEventDrivenRefresh,
+  {
+    delayMs: 50,
+    onError(error) {
+      console.error(error);
+    },
+  },
+);
+const characterEventClient = eventClientApi.createCharacterEventClient({
+  isCurrent: isCharacterEventSelectionCurrent,
+  onSnapshot: handleCharacterEventSnapshot,
+  onEvent: handleCharacterEvent,
+  onProtocolError(error) {
+    console.error(error);
+  },
+});
 
 // The companion is read-only whenever the selected character is logged into the
 // game: writing colony/queue state underneath a live client would race it. Server
@@ -289,6 +315,114 @@ async function requestJson(url, options = {}) {
   return payload;
 }
 
+function isCharacterEventSelectionCurrent(selection) {
+  return Boolean(selection && state.account) &&
+    Number(state.account.accountID) === selection.accountID &&
+    Number(state.selectedCharacterID) === selection.characterID &&
+    state.authGeneration === selection.authGeneration &&
+    state.characterGeneration === selection.characterGeneration &&
+    state.authTransitionPending === false;
+}
+
+function startCharacterEventStream() {
+  const accountID = Number(state.account && state.account.accountID) || 0;
+  const characterID = Number(state.selectedCharacterID) || 0;
+  if (!accountID || !characterID || state.authTransitionPending) {
+    characterEventClient.stop();
+    return false;
+  }
+  characterEventClient.select({
+    accountID,
+    characterID,
+    authGeneration: state.authGeneration,
+    characterGeneration: state.characterGeneration,
+  });
+  return true;
+}
+
+function cancelEventDrivenRefresh() {
+  state.eventRefreshGeneration += 1;
+  state.eventRefreshPending = false;
+  eventRefreshTask.cancel();
+}
+
+function scheduleEventDrivenRefresh(selection) {
+  if (!isCharacterEventSelectionCurrent(selection)) {
+    return false;
+  }
+  state.eventRefreshGeneration += 1;
+  state.eventRefreshPending = true;
+  const refreshGeneration = state.eventRefreshGeneration;
+  syncMutationControls();
+  return eventRefreshTask.schedule(Object.freeze({
+    ...selection,
+    refreshGeneration,
+  }));
+}
+
+async function runEventDrivenRefresh(request) {
+  if (!isCharacterEventSelectionCurrent(request)) {
+    return;
+  }
+  try {
+    await loadPage({
+      preserveSkillDraft: state.page === "skills" && state.skillQueueDirty === true,
+    });
+  } finally {
+    if (
+      isCharacterEventSelectionCurrent(request) &&
+      state.eventRefreshGeneration === request.refreshGeneration
+    ) {
+      state.eventRefreshPending = false;
+      syncMutationControls();
+    }
+  }
+}
+
+function reconcileEventCommandOutcome(outcome, selection) {
+  const kind = outcome && EVENT_COMMAND_KINDS[outcome.commandType];
+  if (!kind || !isCharacterEventSelectionCurrent(selection)) {
+    return false;
+  }
+  const key = getCommandKey(kind, selection.characterID);
+  const record = mutationScope.reconcileRetainedCommandSettlement(
+    state.commandRequests,
+    key,
+    outcome,
+  );
+  if (!record) {
+    return false;
+  }
+  if (
+    kind === "skill-queue" &&
+    outcome.success === true &&
+    state.skillQueueDirty === true &&
+    Array.isArray(state.skillQueueDraft) &&
+    Array.isArray(record.entries) &&
+    mutationScope.canonicalSkillDraftKey(state.skillQueueDraft) ===
+      mutationScope.canonicalSkillDraftKey(record.entries)
+  ) {
+    state.skillQueueDraft = null;
+    state.skillQueueDirty = false;
+  }
+  syncMutationControls();
+  return true;
+}
+
+function handleCharacterEventSnapshot(frame, selection) {
+  for (const outcome of frame.commandOutcomes) {
+    reconcileEventCommandOutcome(outcome, selection);
+  }
+  scheduleEventDrivenRefresh(selection);
+}
+
+function handleCharacterEvent(frame, selection) {
+  if (frame.event.kind === "command_settled") {
+    reconcileEventCommandOutcome(frame.event, selection);
+  }
+  scheduleEventDrivenRefresh(selection);
+}
+
 function getCommandKey(kind, characterID = state.selectedCharacterID) {
   return `${kind}:${Number(characterID) || 0}`;
 }
@@ -298,6 +432,9 @@ function getRetainedCommand(kind, characterID = state.selectedCharacterID) {
 }
 
 function getDisplayedStateVersion() {
+  if (state.eventRefreshPending) {
+    return "";
+  }
   const dashboard = state.data && state.data.dashboard;
   return dashboard && typeof dashboard.stateVersion === "string"
     ? dashboard.stateVersion
@@ -314,7 +451,10 @@ function localCommandError(message, code) {
 
 function beginAuthBoundary() {
   state.authGeneration += 1;
+  state.characterGeneration += 1;
   state.viewGeneration += 1;
+  characterEventClient.stop();
+  cancelEventDrivenRefresh();
   state.commandRequests.clear();
   state.skillQueueDraft = null;
   state.skillQueueDirty = false;
@@ -383,10 +523,15 @@ async function executeTypedCommand(
     mutationScope.deleteMapEntryIfRecordMatches(state.commandRequests, key, record);
     return response;
   } catch (error) {
-    if (!commandClient.isUncertainCommandError(error)) {
+    const resolvedError = commandClient.resolveCommandErrorWithSettlement(
+      error,
+      record.authoritativeSettlement,
+      record.request.commandID,
+    );
+    if (!commandClient.isUncertainCommandError(resolvedError)) {
       mutationScope.deleteMapEntryIfRecordMatches(state.commandRequests, key, record);
     }
-    throw error;
+    throw resolvedError;
   } finally {
     record.inFlight = false;
     syncMutationControls();
@@ -1007,6 +1152,10 @@ async function saveSkillQueueDraft(activate) {
 
 async function handleSkillQueueCommandError(error, origin = null, options = {}) {
   console.error(error);
+  if (error.authoritativeSettlement && error.authoritativeSettlement.success === true) {
+    await reconcileSuccessfulMutation("skill-queue", origin);
+    return;
+  }
   const code = getCommandErrorCode(error);
   if (code === CHARACTER_STATE_VERSION_MISMATCH) {
     try {
@@ -2102,6 +2251,10 @@ function syncPiCommandControls() {
 
 async function handlePiCommandError(error, origin = null, options = {}) {
   console.error(error);
+  if (error.authoritativeSettlement && error.authoritativeSettlement.success === true) {
+    await reconcileSuccessfulMutation("pi-restart", origin);
+    return;
+  }
   const code = getCommandErrorCode(error);
   if (code === CHARACTER_STATE_VERSION_MISMATCH) {
     try {
@@ -2320,13 +2473,21 @@ async function loadMe() {
       null;
     setView("app");
     renderChrome();
-    await loadPage();
+    const loaded = await loadPage();
+    if (loaded && state.authGeneration === authGeneration) {
+      startCharacterEventStream();
+    }
   } catch (error) {
     if (state.authGeneration !== authGeneration) {
       return;
     }
+    characterEventClient.stop();
+    cancelEventDrivenRefresh();
+    state.characterGeneration += 1;
     state.account = null;
     state.characters = [];
+    state.selectedCharacterID = null;
+    state.characterOnline = null;
     state.data = null;
     setView("login");
   }
@@ -2355,6 +2516,9 @@ elements.loginForm.addEventListener("submit", async (event) => {
     state.account = payload.account;
     state.characters = payload.characters || [];
     state.selectedCharacterID = (state.characters[0] && state.characters[0].characterID) || null;
+    // A successful login is an authenticated selection even if the first page
+    // read is transiently unavailable. Keep its stream alive for recovery.
+    startCharacterEventStream();
     elements.password.value = "";
     setView("app");
     renderChrome();
@@ -2400,7 +2564,13 @@ elements.characterList.addEventListener("click", (event) => {
   if (!button) {
     return;
   }
-  state.selectedCharacterID = Number(button.dataset.characterId);
+  const nextCharacterID = Number(button.dataset.characterId);
+  if (nextCharacterID !== Number(state.selectedCharacterID)) {
+    state.characterGeneration += 1;
+    cancelEventDrivenRefresh();
+    state.selectedCharacterID = nextCharacterID;
+    startCharacterEventStream();
+  }
   state.data = null;
   renderChrome();
   loadPage().catch((error) => console.error(error));
@@ -2422,6 +2592,11 @@ elements.themeSelect.addEventListener("change", (event) => {
 
 elements.refreshButton.addEventListener("click", () => {
   loadPage().catch((error) => console.error(error));
+});
+
+window.addEventListener("beforeunload", () => {
+  eventRefreshTask.dispose();
+  characterEventClient.dispose();
 });
 
 setTheme(state.theme);
