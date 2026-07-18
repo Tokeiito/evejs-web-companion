@@ -10,13 +10,12 @@ This repo is intentionally separate from `eve.js`. The web process never reads o
 
 ```powershell
 npm install
-npm run webpass -- <evejs-username> <web-password>
 npm start
 ```
 
 Open `http://127.0.0.1:26500`.
 
-The `webpass` step is transitional: login will become emulator-style (any password accepted) when the retail-call bridge lands. Until then web credentials live in this repo's own ignored `data/` folder.
+Login is emulator-style "who cares" (since R1): enter an existing EveJS account username and **any password, including none** — passwords are not checked. Unknown usernames are rejected. The old `npm run webpass` scrypt store still exists but is bypassed and no longer needed.
 
 ## TS web stack (R1b scaffold)
 
