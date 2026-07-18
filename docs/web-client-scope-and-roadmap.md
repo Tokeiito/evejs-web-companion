@@ -43,7 +43,9 @@ Login and character selection on the retail path: `handshake.js` `_handleAuthent
 
 ## 4. Architecture
 
-Browser → web BFF (this repo) → thin EveJS bridge endpoint → the same `Handle_*` handlers the retail client hits.
+Browser → web BFF (this repo) → thin EveJS bridge → the same `Handle_*` handlers the retail client hits.
+
+The bridge is **not new server infrastructure**: it is the **existing** web gateway (`server/src/_secondary/express/evejsWebGateway.js`, HTTP/WS on :26002, already separate from the machoNet game listener on :26000) extended with a whitelisted `callMethod` invocation path — the only eve.js edit in the entire plan (landed in Goal R1).
 
 ```mermaid
 flowchart LR
@@ -59,7 +61,7 @@ flowchart LR
 Rules:
 
 - **The bridge translates transport only.** It turns a browser request into `serviceManager.lookup(service).callMethod(method, args, session, kwargs)` against a browser-backed session, and turns handler results and `sendServiceNotification` traffic back into browser responses/events. It must not reimplement, fork, or "improve" game mechanics.
-- **eve.js changes are restricted to bridge/interface endpoints.** Never modify game-mechanics code — the same server concurrently serves real retail clients, and their behavior must stay untouched.
+- **eve.js changes are restricted to bridge/interface endpoints** — concretely, the `_secondary/express` gateway files (plus their tests under `server/tests/`). Never modify game-mechanics code — the same server concurrently serves real retail clients, and their behavior must stay untouched.
 - **A browser session is a real client session.** It carries the same duck-typed fields the parity tests use, participates in the same online-character and duplicate-login rules as a retail session, and receives handler notifications for forwarding. Long-term, EveJS's own session registry arbitrates control; the web-side lease machinery is stripped as that takes over (section 5).
 - **The web process never reads or writes gameplay SQLite.** Read-only static reference data (names, icons, SDE JSON) may stay local to the web app.
 - Retail `Handle_*` handlers expect retail argument shapes (positional tuples, kwargs, occasionally typed/coerced values) and may emit retail-shaped notifications. That is now the point, not a prohibition: the browser mirrors the retail call sites mined from the decompiled client, and the parity tests are the oracle for argument shapes.
@@ -81,7 +83,7 @@ The web app began as a slim read-only companion — a single ~2,600-line vanilla
 - **TypeScript** — the project reproduces *typed* retail call/row contracts (`(service, method, args, kwargs)`, marshaled rowsets, flag constants, positional tuples). Types make the bridge compiler-checked; this is the highest-ROI change and the reason to move at all.
 - **Vite** — a light build for TS + ES modules + the view layer.
 - **A small reactive view layer** — Svelte 5 (recommended) or SolidJS; deliberately not a heavy SPA, to keep the UI text/data-driven and EVE-styled. The exact library is finalized by a spike on the first migrated page.
-- **One client-state store** — a single source of truth mirroring the relevant EveJS session/space/inventory/journal state, updated by the sequenced WS event stream, with the UI **and** the browser autopilot loop as pure readers. Keep it framework-agnostic (plain signals) so the view lib isn't load-bearing. This replaces the ad-hoc `eventClient`/`mutationScope` sprawl as pages migrate.
+- **One client-state store** — a single source of truth mirroring the relevant EveJS session/space/inventory/journal state, with the UI **and** the browser autopilot loop as pure readers. It is fed by whatever event transport exists at the time: initially the legacy sequenced WS event stream, transitioning to bridge-forwarded session notifications (§9/G6) as the legacy machinery retires — the store's interface hides which. Keep it framework-agnostic (plain signals) so the view lib isn't load-bearing. This replaces the ad-hoc `eventClient`/`mutationScope` sprawl as pages migrate.
 
 Applied **page-by-page on the R2–R6 rail** — each page rewrite to retail calls also moves it onto the new stack; no big-bang migration. R2 (character sheet/skills) is the proving ground and locks the exact view library.
 
@@ -104,7 +106,7 @@ The milestone is complete only when a player can do all of this without opening 
 5. Move mission cargo into the active ship when required.
 6. Verify the active ship has sufficient cargo capacity.
 7. Take browser control of the character and start the route.
-8. Undock and travel through every required gate using server-owned autopilot.
+8. Undock and travel through every required gate using the browser-run (client-side) autopilot.
 9. Dock at the destination station.
 10. Deliver the required cargo.
 11. Complete the mission through the agent interface.
@@ -129,8 +131,9 @@ This project runs with a **master orchestrator session** and **worker sessions**
 
 | Goal | Status | Scope | Exit condition |
 | --- | --- | --- | --- |
-| R0 | Complete | Courier-path call inventory: mine the decompiled client for the (service, method, args) sequences behind login, character select, station UI, agent/courier flow, and travel | Done — [retail-call-inventory.md](retail-call-inventory.md) maps all 12 milestone steps to their retail calls with client file refs and EveJS coverage verdicts; key gaps: no server-owned travel job (G1) and courier remote-acceptance parity failing (G3) |
+| R0 | Complete | Courier-path call inventory: mine the decompiled client for the (service, method, args) sequences behind login, character select, station UI, agent/courier flow, and travel | Done — [retail-call-inventory.md](retail-call-inventory.md) maps all 12 milestone steps to their retail calls with client file refs and EveJS coverage verdicts; key findings: autopilot/route are client-side browser work by design (G1/G2, reframed in the inventory's Direction section) and the courier remote-acceptance parity oracle fails 4 test-side assertions (G3 — own goal prompt; fix before R4) |
 | R1 | Pending | Thin bridge endpoint (extend the existing `server/src/_secondary/express/evejsWebGateway.js` web interface; no game-mechanics change) + who-cares web login: browser-backed session creation and a whitelisted `(service, method, args, kwargs)` invocation path through `callMethod`. This is the only eve.js edit in the plan. | Browser logs in with any password and drives at least one real `Handle_*` call end to end; retail clients (machoNet :26000) unaffected |
+| R1b | Pending | Web stack scaffold (web repo only): TS + Vite build alongside the existing app, the framework-agnostic client-state store skeleton, and a browser-side TS `callMethod` client consuming R1's bridge route through a thin BFF proxy. No page migration, no view library. | Build/dev scripts work; store + TS client unit-tested; existing vanilla app untouched and web tests green |
 | R2 | Pending | First migrated page (character sheet/skills) served entirely by retail calls, and the first page rebuilt on the new web stack (TS + Vite + reactive view + client-state store) — this spike locks the exact view library | Page works via the bridge on the new stack; its `eveStore`/snapshot path is deleted |
 | R3 | Pending | Station inventory and ship operations via the same services retail uses (`invbroker`, ship/station services) | Move/stack/split cargo and board a ship from the browser |
 | R4 | Pending | Agents and courier missions (`agentMgr` and mission services) | Accept a courier mission in the browser |
@@ -167,3 +170,4 @@ After R6: expand the client surface as practical — mail, market transactions, 
 - **Localhost-only rule and the security-hardening backlog** — retired. Trusted dev environment, WAN-hosted, PlayerConnect out of scope.
 - **"Text-first companion app" framing and the hard combat exclusion** — superseded. The ambition is the client surface, courier first; combat is deferred, not forbidden. The UI remains text/data-driven.
 - **The Goal 0A–0D.1 ladder and its execution records** — completed work, preserved in git history (this file at `8dccc5d` and earlier). The machinery it built is transitional (section 5).
+- **Server-owned autopilot / server travel-job orchestrator, and the "browser timers must never drive movement" rule** — retired 2026-07-18 (same day it was written, reversed after R0). Autopilot is client surface: the browser runs the decide-loop and sequences the authoritative atomic calls (section 7); EveJS gains no travel-job code; the BFF never drives movement with no client connected. Do not reintroduce a server travel job.

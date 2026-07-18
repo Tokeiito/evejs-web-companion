@@ -1,76 +1,83 @@
 # Goal R1: Thin bridge endpoint + who-cares web login
 
-**Issued:** 2026-07-18 by the orchestrator session. **Status:** Ready to run.
+**Issued:** 2026-07-18 by the orchestrator session. **Amended (v2)** the same day after review: the TS + Vite scaffold moved to its own goal (R1b); the allowlist seed, session wire contract, login semantics, and DoD were sharpened. **Status:** Ready to run.
 
 You are a worker session. Read `docs/web-client-scope-and-roadmap.md` (source of truth) and `docs/retail-call-inventory.md` (the courier call spec, produced by R0) first. Execute exactly this goal, then stop.
 
 ## Objective
 
-Stand up the transport seam that lets the browser drive **real EveJS `Handle_*` calls**, and put the web app on the TypeScript + Vite foundation the R2–R6 migration will use. Concretely:
+Stand up the transport seam that lets the browser drive **real EveJS `Handle_*` calls**:
 
-1. Extend the **existing** EveJS web gateway with a **deny-by-default, whitelisted** `(service, method, args, kwargs) → callMethod` invocation path, executed against a **browser-backed session**. This is the *only* eve.js edit in the whole roadmap — interface/gateway files only, **no game-mechanics change**.
-2. **Who-cares web login**: any username + any password logs in (matching the emulator, roadmap §6).
-3. **Prove it end to end**: after login, the browser drives at least one real, whitelisted, **read-only** `Handle_*` call through the gateway and renders the live result.
-4. Establish the web-app **TS + Vite scaffold** and a **framework-agnostic client-state store skeleton** — foundation only: no page migration, existing `app.js` keeps working, and the view library (Svelte vs Solid) stays deferred to the R2 spike.
+1. Extend the **existing** EveJS web gateway with a **deny-by-default, whitelisted** `(service, method, args, kwargs) → callMethod` invocation path, executed against a **gateway-materialized browser-backed session**. This is the *only* eve.js edit in the whole roadmap — gateway/interface files (plus their test) only, **no game-mechanics change**.
+2. **Who-cares web login**: any password — including empty — logs into an **existing** EveJS account (see login semantics below).
+3. **Prove it end to end** with in-process tests, and via the live app if a server happens to be running.
+
+The TS + Vite scaffold and client-state store are **not** in this goal (they are Goal R1b). All web-side code in R1 stays plain CommonJS/vanilla, consistent with the existing BFF.
 
 ## Repositories
 
 - **Web client (commit here):** `C:\Users\ryanf\Documents\GitHub\evejs-web-poc` (branch `master`).
-- **EveJS server — WRITABLE THIS GOAL, gateway/interface files ONLY:** `C:\Users\ryanf\Documents\GitHub\eve.js` (branch `main`). **Other agents are actively working this repo.** Keep your change small and confined to the web gateway, land it as an early self-contained commit, and keep the worktree otherwise clean so you stay out of their way.
+- **EveJS server — WRITABLE THIS GOAL, gateway files + their test ONLY:** `C:\Users\ryanf\Documents\GitHub\eve.js` (branch `main`). **Other agents are actively working this repo.** Keep your change small, land it as an early self-contained commit, keep the worktree otherwise clean.
 - **Decompiled retail client (spec, read-only):** `C:\Users\ryanf\Documents\GitHub\eve.js\tools\ClientCodeGrabber\Latest`.
-- **The call spec / whitelist source:** `docs/retail-call-inventory.md` — its appendix maps the courier-path client service names to EveJS files; seed the allowlist from there.
 
-## Verified background facts (from R0)
+## Verified background facts (from R0 + orchestrator review)
 
-- **Dispatch seam:** `serviceManager.lookup(service).callMethod(method, args, session, kwargs)` → `Handle_<method>(args, session, kwargs)` (`server/src/services/baseService.js`, `serviceManager.js`). This one call is the entire retail dispatch below the wire protocol.
-- **Sessions are duck-typed:** handlers accept a plain object with the right fields (`characterID`/`charid`, `shipid`, `stationid`, `sendServiceNotification`, …). The 500+ parity tests under `server/tests/` invoke `Handle_*` directly with hand-built plain-object sessions and no socket. A browser-backed session is exactly such an object.
-- **The web gateway already exists:** `server/src/_secondary/express/evejsWebGateway.js` (+ `evejsWebGatewayRuntime.js`), HTTP/WS on **:26002** at `/_evejs-web/v1`. It is a **secondary Express interface, entirely separate from the machoNet game server (:26000)** that retail clients use. Today it serves broad `/snapshot` + `eveStore` emulation — **not** a `callMethod` path.
-- **The BFF already talks to it:** `src/eveGatewayClient.js` (`EVEJS_GATEWAY_URL`, default `http://127.0.0.1:26002/_evejs-web/v1`; optional `EVEJS_WEB_GATEWAY_TOKEN`). Existing web login is `src/webAuth.js` (a separate, ignored password store); leases `src/browserLeaseStore.js`; event stream `src/eventClient.js`.
-- **Reference end-to-end call (safe, read-only, courier-path):** `charUnboundMgr.GetCharacterSelectionData()` → `character/charService.js:595`, returns the account's character list. Ideal R1 proof: who-cares login → gateway `callMethod` → render the real character list. (`map.GetStationInfo` is a fine alternative.)
+- **Dispatch seam:** `serviceManager.lookup(service).callMethod(method, args, session, kwargs)` → `Handle_<method>(args, session, kwargs)` (`server/src/services/baseService.js`, `serviceManager.js`).
+- **Sessions are duck-typed:** handlers accept a plain object with the right fields. The parity tests under `server/tests/` invoke `Handle_*` with hand-built plain-object sessions and no socket.
+- **The web gateway already exists:** `server/src/_secondary/express/evejsWebGateway.js` (+ `evejsWebGatewayRuntime.js`), HTTP/WS on **:26002** at `/_evejs-web/v1` — a secondary Express interface, entirely separate from machoNet (:26000). `serviceManager` is already a declared gateway dependency (`evejsWebGateway.js:71`). **Model for your new test: `server/tests/webGatewayV1.test.js`** (in-process gateway tests already exist). New tests must follow `doc/TEST_RULEBOOK.md`; run `npm run test:manifest:check` after adding the test file.
+- **The BFF already talks to the gateway:** `src/eveGatewayClient.js` (CommonJS; `EVEJS_GATEWAY_URL` default `http://127.0.0.1:26002/_evejs-web/v1`; optional `EVEJS_WEB_GATEWAY_TOKEN`). Existing web login: `src/webAuth.js` + `/api/login` in `src/server.js`. Event stream client: `public/eventClient.js`.
+- **Reference end-to-end call (safe, read-only, courier-path):** `charUnboundMgr.GetCharacterSelectionData()` → `Handle_GetCharacterSelectionData` at `character/charService.js:595`. **It reads `session.userid`** (`charService.js:604`) — your browser-backed session must carry it. (`map.GetStationInfo` → `map/mapService.js:601` is the approved second whitelist entry.)
+
+## The allowlist (read carefully — this was a review blocker)
+
+- The allowlist is a set of explicit **(service, method) pairs**. **Never whitelist a whole service.** Concrete hazard: service-granular whitelisting of `charUnboundMgr` would expose `Handle_DeleteCharacter` / `Handle_PrepareCharacterForDelete` — destructive mutations in a goal whose proof is read-only.
+- **R1 seed = exactly these read-only pairs:** `charUnboundMgr.GetCharacterSelectionData` and `map.GetStationInfo`. Nothing else. Later goals extend the list pair-by-pair from the inventory's step tables (not from its appendix, which maps services to files without methods).
+- The allowlist is **scope control** (keep the bridge narrow and faithful), **not** a security measure — no auth hardening (roadmap §6).
+
+## The session wire contract (review blocker — build it exactly this way)
+
+- A live session object cannot cross HTTP. **The gateway materializes the browser-backed session server-side.** The BFF sends only JSON: the account/character identifiers and session fields (`userid`, and later `characterID`/`charid`, `stationid`, …). The gateway builds the duck-typed session object around them — including a `sendServiceNotification` capture hook — and passes it to `callMethod`.
+- Captured notifications: return them in the call response (a `notifications` array) for now; full event-channel forwarding is R4/G6 — do not build it out here.
+- **Document the request/response schema** (route, JSON fields, error shape, notification array) in a short new file `docs/bridge-wire-contract.md` in the web repo. R2+ builds on this contract; it must be written down, not implied by code.
+
+## Login semantics (who-cares, precisely)
+
+- `/api/login` accepts an existing EveJS account username with **any password, including empty** — the password is not checked at all. The scrypt check is **bypassed, not deleted**: leave `src/webAuth.js`, `data/web-users.json`, and `npm run webpass` in place and untouched (data-preservation rule); a deprecation comment is fine.
+- **Unknown usernames: return a clear 401** ("unknown EveJS account") in R1. Account auto-create (the `devAutoCreateAccounts` analogue) is deferred to R2 alongside `SelectCharacterID` — do not add account-creation routes to eve.js here.
 
 ## Required work
 
-1. **Baseline first** (record counts): web `npm test`; EveJS `npm run test:manifest:check` plus a focused slice. eve.js is writable now, so confirm a clean starting point and note anything already in flight (do not touch it).
+1. **Baseline first** (record counts): web `npm test` (expect 105/105); eve.js `npm run test:manifest:check` (expect 3/3) and `npm run test:agent-parity` (expect 5/6 files — **4 known pre-existing `agentMissionRuntime.test.js` failures; do not fix them, a separate G3 goal owns that**). Confirm both worktrees start clean; note (and don't touch) anything already in flight.
 2. **eve.js — the gateway `callMethod` path (do this first; commit it early and small):**
-   - In `evejsWebGateway.js` (+ runtime), add a route that takes `(service, method, args, kwargs)`, resolves the service via `serviceManager.lookup`, checks `(service, method)` against an **explicit allowlist (deny by default)**, and invokes `service.callMethod(method, args, browserSession, kwargs)`; return the marshaled result. If a handler emits `sendServiceNotification`, capture it on the session and forward it over the gateway's existing event channel where practical; otherwise record the gap for R4/G6 (do not build notification forwarding out fully here).
-   - Seed the allowlist from the manifest appendix (the courier-path services), at minimum the reference call. **The allowlist is scope-control** (keep the bridge narrow and faithful), **not** a security measure — do not add auth hardening (roadmap §6).
-   - **Interface-only:** do not modify any `Handle_*` or other game-mechanics/service logic. The change lives entirely in `_secondary/express`. Retail clients on machoNet (:26000) must be provably unaffected.
+   - In `evejsWebGateway.js` (+ runtime as needed): a route taking `(service, method, args, kwargs)` + session-fields JSON; allowlist check on the (service, method) pair (deny by default); materialize the browser-backed session; `serviceManager.lookup(service).callMethod(method, args, session, kwargs)`; return the result + captured notifications.
+   - **An eve.js in-process test** (model: `server/tests/webGatewayV1.test.js`): drives `charUnboundMgr.GetCharacterSelectionData` through the new path with a plain browser-backed session, asserts a real result, asserts an off-allowlist call (e.g. `charUnboundMgr.DeleteCharacter`) is refused, and asserts an unknown service/method is refused. The footprint rule is: **`_secondary/express` files + this test file under `server/tests/` — nothing else.**
    - Commit in eve.js — separate, early, tightly scoped (e.g. `feat(web-gateway): whitelisted callMethod bridge path`). Report the hash. Do **not** push.
-3. **web — who-cares login + browser-backed session:**
-   - Accept any username + any password. Resolve the EveJS account + character mapping (via the gateway) and construct a **browser-backed session object** (duck-typed) that the gateway uses for `callMethod`. Reuse `webAuth.js` / `browserLeaseStore.js` where sensible.
-4. **web — transport client + end-to-end proof:**
-   - Add a `callMethod` client (extend `src/eveGatewayClient.js` or a sibling) that hits the new gateway route. After login, drive the reference call and render the real result. This is the DoD proof (see the note on test level below).
-5. **web — TS + Vite scaffold (foundation only, no migration):**
-   - Add Vite + TypeScript (dev/build scripts). Author the new `callMethod` client and a **framework-agnostic client-state store skeleton** (plain signals) in TS. Do **not** migrate existing pages and do **not** add the view library — that is the R2 spike. The existing vanilla `public/app.js` keeps working.
-   - Add/adjust tests for the `callMethod` client and who-cares login.
-6. **Commit the web work** (a single web commit is fine, or a few focused ones). Report hash(es). Do **not** push.
-7. **Update the roadmap:** set the R1 row to Complete with a one-line evidence pointer. Report both repo hashes.
-
-### Proving end-to-end without starting servers
-
-You may **not** start servers/processes you did not start (ports below belong to others), and the live browser round-trip needs EveJS reachable on :26002. So make the **primary DoD proof an automated test** at the tightest honest level:
-- An **eve.js-side test** that drives the reference real `Handle_*` through the new gateway invocation function with a plain browser-backed session and the allowlist enforced (no socket — same style as the parity tests); assert a real result and that an off-allowlist call is refused.
-- A **web-side test** of the `callMethod` client against an in-process / stubbed gateway.
-- If the EveJS server is already running on :26002 (started by others), also demonstrate the live browser round-trip — but treat that as a bonus, not a requirement.
+3. **web — who-cares login + BFF bridge client:**
+   - Rework `/api/login` per the login semantics above; resolve the account and its characters via the gateway.
+   - Extend `src/eveGatewayClient.js` (or a CommonJS sibling) with a `callMethod(service, method, args, kwargs, sessionFields)` client for the new route, and expose a thin BFF API route the frontend can call (R1b's TS client will consume this same route later).
+   - After login, the existing vanilla frontend drives the reference call and renders the live character-selection result (a minimal panel/section is enough).
+   - Web-side tests: the callMethod client against a stubbed gateway; the login-accepts-anything and unknown-username-401 behaviors. "Existing app keeps working" is proven by `npm test` staying green — do not start servers (port 26500 belongs to other processes).
+4. **Commit the web work.** Report hash(es). Do **not** push.
+5. **Update the roadmap:** set the R1 row to Complete with evidence phrased as "in-process end-to-end test; live browser round-trip [demonstrated / not available this session]". Report both repo hashes.
 
 ## Out of scope
 
-- Any game-mechanics change in eve.js (`Handle_*` / service logic). Gateway/interface files only.
-- Bringing a character online (`SelectCharacterID`) and the station / inventory / agent / travel flows — R2+.
-- Migrating existing pages to the new stack or choosing the view library — R2.
-- Notification-forwarding build-out (G6), autopilot/travel (R5).
-- Auth hardening, token schemes, security gates (roadmap §6).
+- TS, Vite, the client-state store (R1b). Any page migration or view library (R2).
+- Bringing a character online (`SelectCharacterID`), account auto-create, station/inventory/agent/travel flows — R2+.
+- Notification event-channel forwarding build-out (G6), autopilot/travel (R5).
+- Fixing the 4 known `agentMissionRuntime.test.js` failures (separate G3 goal).
+- Any game-mechanics change in eve.js. Auth hardening or security gates (roadmap §6).
 
 ## Definition of done
 
-- **eve.js:** the web gateway exposes a deny-by-default whitelisted `callMethod` path against a browser-backed session; off-allowlist calls are refused; no game-mechanics files touched; EveJS focused/manifest tests still pass (retail path unaffected). Committed separately, early, tightly scoped; hash reported; not pushed.
-- **web:** any username + any password logs in; an automated test drives the reference real `Handle_*` end to end through the gateway (and the browser renders it live if a server is available); TS + Vite scaffold + client-state store skeleton in place with the existing app still working; tests green. Committed; hash(es) reported; not pushed.
-- Roadmap R1 row set to Complete with an evidence pointer. Both repo hashes reported.
+- **eve.js:** gateway exposes the deny-by-default whitelisted `callMethod` path against a gateway-materialized browser-backed session; off-allowlist and unknown calls are refused; the in-process test proves the reference call end to end; footprint = `_secondary/express` + the one test file; **no regressions vs the recorded baseline** (manifest 3/3; agent-parity still 5/6 with the same 4 known failures). Committed separately, early; hash reported; not pushed.
+- **web:** any password (incl. empty) logs into an existing account; unknown username → 401; the BFF `callMethod` client + route work against a stubbed gateway in tests; the vanilla frontend renders the reference call's live result when a server is available; `docs/bridge-wire-contract.md` exists; web `npm test` green (105 + your new tests). Committed; hash(es) reported; not pushed.
+- Roadmap R1 row set to Complete with the evidence phrasing above. Both repo hashes reported.
 
 ## Constraints
 
-- **eve.js coordination (other agents are active here):** keep the change small and confined to the gateway/interface; land it as an **early, self-contained commit** and keep the eve.js worktree otherwise clean so you are out of others' way; **never revert, reset, or clobber** others' work or uncommitted changes; if a file you need has others' work in flight, pause and surface it rather than overwrite. Commit eve.js and web **separately**; report both hashes; **never push**.
+- **eve.js coordination (other agents are active):** small, early, self-contained commit; never revert, reset, or clobber others' work or uncommitted changes; if a file you need has someone's work in flight, pause and surface it. Commit eve.js and web **separately**; **never push**.
 - Preserve all unrelated worktree changes in both repos.
 - Never start or stop servers/processes you did not start; ports 443, 26000, 26001, 26002, 26003, 26500, 40110 belong to other processes.
 - Do not delete or rewrite `_local` gameplay data, web `data/`, icon caches, manifests, or ignored credentials.
-- Security hardening is out of scope by policy (roadmap §6) — do not raise or fix security findings, and do not treat the allowlist as a security control.
+- Security hardening is out of scope by policy (roadmap §6); the allowlist is not a security control.
