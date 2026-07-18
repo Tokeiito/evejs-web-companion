@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>EveJS Web — TS stack scaffold (R1b)</title>
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+      body {
+        margin: 0;
+        padding: 2rem;
+        background: #0b0e13;
+        color: #cfd8e3;
+        font-family: "Segoe UI", system-ui, sans-serif;
+        font-size: 14px;
+      }
+      h1 {
+        font-size: 1.1rem;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: #7fb4d9;
+      }
+      section {
+        border: 1px solid #223142;
+        background: #101722;
+        padding: 0.75rem 1rem;
+        margin-bottom: 1rem;
+        max-width: 46rem;
+      }
+      h2 {
+        font-size: 0.85rem;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: #8fa3b8;
+        margin-top: 0;
+      }
+      pre {
+        white-space: pre-wrap;
+        word-break: break-word;
+        margin: 0;
+        font-size: 12px;
+        color: #a9c3d6;
+      }
+      button {
+        background: #16273a;
+        color: #cfe3f5;
+        border: 1px solid #2f4a66;
+        padding: 0.4rem 0.9rem;
+        cursor: pointer;
+        font: inherit;
+      }
+      button:hover {
+        background: #1d334f;
+      }
+      .error {
+        color: #e08a8a;
+      }
+      p.note {
+        max-width: 46rem;
+        color: #8fa3b8;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>EveJS web — TS + Vite scaffold (goal R1b)</h1>
+    <p class="note">
+      Foundation smoke page, not a migrated page. It proves the built TS stack
+      loads alongside the untouched vanilla app: the client-state store with a
+      feed adapter attached, and the typed browser <code>callMethod</code>
+      client driving the R1 reference call through
+      <code>POST /api/bridge/call</code> (sign in on the vanilla app first so
+      the BFF session cookie exists).
+    </p>
+    <section>
+      <h2>Client-state store (live)</h2>
+      <pre id="store-state">(store not started)</pre>
+    </section>
+    <section>
+      <h2>Typed reference call — charUnboundMgr.GetCharacterSelectionData</h2>
+      <button id="run-reference-call" type="button">Run reference call</button>
+      <pre id="bridge-output"></pre>
+    </section>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

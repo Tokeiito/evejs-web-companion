@@ -18,6 +18,19 @@ Open `http://127.0.0.1:26500`.
 
 The `webpass` step is transitional: login will become emulator-style (any password accepted) when the retail-call bridge lands. Until then web credentials live in this repo's own ignored `data/` folder.
 
+## TS web stack (R1b scaffold)
+
+The R2+ page migrations build on a TypeScript + Vite stack under `web/`, living alongside the vanilla `public/` app (roadmap section 5). Node >= 22.18 is required (the TS unit tests run natively under `node --test` via type stripping).
+
+```powershell
+npm run typecheck   # tsc, no emit
+npm run build:web   # typecheck + Vite build into public/dist/ (git-ignored), served at /dist/
+npm run dev:web     # Vite dev server; proxies /api to the BFF (EVEJS_WEB_BFF_URL overrides)
+npm test            # node --test: vanilla JS tests + web/**/*.test.ts together
+```
+
+After `npm run build:web`, the scaffold smoke page is at `http://127.0.0.1:26500/dist/` (sign in on the vanilla app first so the bridge call has a session). See the "Consuming the bridge from TypeScript" section of [docs/bridge-wire-contract.md](docs/bridge-wire-contract.md) for the client/store layout and how R2 adds a page.
+
 ## Configuration
 
 Defaults assume both repos live under `C:\Users\ryanf\Documents\GitHub`:
