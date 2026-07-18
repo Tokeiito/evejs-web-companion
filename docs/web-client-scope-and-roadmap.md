@@ -105,7 +105,16 @@ Autopilot remains **server-owned**: retail autopilot is a client-side loop (`eve
 
 ## 8. Roadmap
 
-Goal-mode execution: each run implements one independently verifiable unit, leaves both repositories working, updates this table with status and evidence, commits each repository separately (report both hashes; never push unless separately requested), and stops.
+### Orchestrated execution
+
+This project runs with a **master orchestrator session** and **worker sessions**:
+
+1. The orchestrator writes each goal prompt and checks it into `docs/goal-prompts/`.
+2. The operator hands the prompt to a fresh worker session.
+3. The worker implements exactly that goal, leaves both repositories working, updates this table with status and evidence, and commits.
+4. The operator returns to the orchestrator, which reviews the committed work against the prompt's definition of done before issuing the next goal.
+
+**Every iteration commits its work** — including documentation-only iterations. No iteration ends with uncommitted changes. eve.js and web commits stay separate, both hashes are reported, and nothing is pushed unless separately requested.
 
 | Goal | Status | Scope | Exit condition |
 | --- | --- | --- | --- |
@@ -136,7 +145,7 @@ After R6: expand the client surface as practical — mail, market transactions, 
 - Never start or stop processes you did not start. Before server work, check ports 443, 26000, 26001, 26002, 26003, 26500, and 40110.
 - Never delete or rewrite `_local` gameplay data, web `data/`, icon caches, manifests, or ignored credential files.
 - Preserve all unrelated EveJS parity and emulator work; never reset or revert it. Stay on `main` (eve.js) and `master` (web).
-- Commit eve.js and web changes separately and report both hashes. Never push unless explicitly requested.
+- Commit every iteration's work in the repo it touches — documentation included; no iteration ends with uncommitted changes. Commit eve.js and web changes separately and report both hashes. Never push unless explicitly requested.
 - `eve.js/doc/PHASE_0E_ITEM_CUSTODY.md` belongs to EveJS's internal phase numbering and has nothing to do with this roadmap.
 
 ## 11. Retired decisions (recorded 2026-07-18 — do not resurrect)
