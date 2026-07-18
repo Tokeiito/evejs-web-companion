@@ -42,7 +42,17 @@ Legend: **Covered** = a matching `Handle_*` exists and fits the call. **Partial*
 
 **Minor caveats (non-blocking):** `agentMgr.GetMissionObjectiveInfo`/`GetMissionJournalInfo` ignore the client's optional `charID`/`contentID`/`ignoreLocateCheck` kwargs (fine for own-character courier; would not serve fleet-member reads). `beyonce.CmdTurboDock` missing (GML/admin-only). LP store has a dead-stub `Handle_GetAvailableOffersFromCorp` on the wrong service (`lpService.js:154`), shadowed by the real one on `LPStoreMgr` — harmless. `agentMgr.IsCheatingWithAgent`/`ShouldAlwaysAllowReplay` are `return false` stubs — non-blocking.
 
-**Otherwise: coverage is strong.** Steps 1, 2, 4, 5 (move/stack/merge), 6, 10, and 12 are fully served by existing handlers. The courier loop is buildable; travel (G1/G2) is the real net-new server work, and Step 3/11 remote-acceptance (G3) is the correctness risk.
+**Otherwise: coverage is strong.** Steps 1, 2, 4, 5 (move/stack/merge), 6, 10, and 12 are fully served by existing handlers.
+
+### Direction (decided 2026-07-18, after R0)
+
+The **client** — not the server — owns behavior. This reframes the gaps above:
+
+- **G1/G2 are not server work.** Autopilot and route/pathfinding stay client-side, exactly as in retail. The web **BFF** hosts a port of `autopilot.py`'s ~2-second decide-loop and issues the atomic moves EveJS already handles (`beyonce.Cmd*`, `structureJumpBridgeMgr.CmdJumpThroughStructureStargate`). EveJS gets **no** travel-job code — the earlier "server-owned travel job" idea is dropped. The loop runs in the BFF (a long-lived process), never in browser-tab timers, so travel survives reconnects. So G1/G2 are client responsibilities we already have the calls for, not missing server handlers.
+- **Transport is the existing thin gateway.** The only eve.js change in the whole plan is extending `server/src/_secondary/express/evejsWebGateway.js` (:26002, already present) with a whitelisted `(service, method, args) → callMethod` path — interface glue, no game mechanics, retail on machoNet :26000 untouched.
+- **G3 is EveJS's own correctness item**, not client work. The browser-backed character is docked *at the agent's station*, so it should count as **in-person** (not a remote accept). Before R4, validate that the mission runtime treats a co-located browser session as in-person; the failing parity assertions are eve.js's to fix.
+
+Net: the courier loop is buildable almost entirely against existing handlers; the real net-new work is **client-side** (the BFF autopilot loop + page migrations), not server code.
 
 ---
 

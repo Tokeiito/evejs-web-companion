@@ -101,7 +101,7 @@ The milestone is complete only when a player can do all of this without opening 
 
 The browser shows a compact live travel panel (current system, next system, target gate/station, travel state, remaining jumps, elapsed time, failure reason). No map or rendered scene.
 
-Autopilot remains **server-owned**: retail autopilot is a client-side loop (`eve/client/script/parklife/autopilot.py` in the dump), so EveJS needs an authoritative travel-job orchestrator over its existing `beyonceService.js` / `shipService.js` / space runtime operations. The browser may start, pause, resume, or abort a travel job; browser timers must never drive movement. Travel pauses instead of guessing on any unsafe condition (invalid route, failed transition, lost control, restart without resumable state).
+Autopilot stays **client-side, hosted in the web BFF** (decided 2026-07-18): retail autopilot is a client loop (`eve/client/script/parklife/autopilot.py` in the dump), and we keep it client-side by porting that ~2-second decide-loop into the BFF — a long-lived process — which issues the same atomic movement calls the retail client does (`beyonce.CmdWarpToStuffAutopilot` / `CmdFollowBall` / `CmdStargateJump` / `CmdDock`, `structureJumpBridgeMgr.CmdJumpThroughStructureStargate`). **EveJS gains no travel-job code**; its existing handlers stay authoritative for each atomic move. Route and pathfinding are likewise client-side (retail's `clientPathfinderService`), owned by the BFF. The loop runs in the BFF, never in browser-tab timers, so travel survives tab close/reconnect; the browser only starts, pauses, resumes, or aborts it. Travel pauses instead of guessing on any unsafe condition (invalid route, failed transition, lost control, restart without resumable state).
 
 ## 8. Roadmap
 
@@ -119,11 +119,11 @@ This project runs with a **master orchestrator session** and **worker sessions**
 | Goal | Status | Scope | Exit condition |
 | --- | --- | --- | --- |
 | R0 | Complete | Courier-path call inventory: mine the decompiled client for the (service, method, args) sequences behind login, character select, station UI, agent/courier flow, and travel | Done — [retail-call-inventory.md](retail-call-inventory.md) maps all 12 milestone steps to their retail calls with client file refs and EveJS coverage verdicts; key gaps: no server-owned travel job (G1) and courier remote-acceptance parity failing (G3) |
-| R1 | Pending | Thin bridge endpoint in eve.js + who-cares web login: browser-backed session creation and a whitelisted `(service, method, args, kwargs)` invocation path through `callMethod` | Browser logs in with any password and drives at least one real `Handle_*` call end to end; retail clients unaffected |
+| R1 | Pending | Thin bridge endpoint (extend the existing `server/src/_secondary/express/evejsWebGateway.js` web interface; no game-mechanics change) + who-cares web login: browser-backed session creation and a whitelisted `(service, method, args, kwargs)` invocation path through `callMethod`. This is the only eve.js edit in the plan. | Browser logs in with any password and drives at least one real `Handle_*` call end to end; retail clients (machoNet :26000) unaffected |
 | R2 | Pending | First migrated page (character sheet/skills) served entirely by retail calls | Page works via the bridge; its `eveStore`/snapshot path is deleted |
 | R3 | Pending | Station inventory and ship operations via the same services retail uses (`invbroker`, ship/station services) | Move/stack/split cargo and board a ship from the browser |
 | R4 | Pending | Agents and courier missions (`agentMgr` and mission services) | Accept a courier mission in the browser |
-| R5 | Pending | Undock, server-owned autopilot travel, dock | Full multi-jump route completed from the browser |
+| R5 | Pending | Undock, **client-side (BFF) autopilot** travel, dock — port `autopilot.py`'s decide-loop into the BFF, issuing the existing atomic `beyonce`/jump/dock calls; BFF owns route + pathfinding | Full multi-jump route completed from the browser, driven by the BFF autopilot loop; EveJS travel handlers unchanged |
 | R6 | Pending | Courier milestone end to end + legacy cleanup | The 12-step milestone passes; broad snapshot, eveStore emulation, and redundant lease/command machinery removed |
 
 After R6: expand the client surface as practical — mail, market transactions, fitting, chat, contracts, corp tools — each area starting from its mined retail calls. Mining and combat are reconsidered only after the courier loop is solid.
@@ -136,7 +136,7 @@ After R6: expand the client surface as practical — mail, market transactions, 
 | Handlers emit session/TCP-style notifications | The browser-backed session captures notifications and the bridge forwards them as browser events |
 | Retail client and browser control the same character | EveJS's own duplicate-login/session rules plus the existing control runtime until it is redundant |
 | A mechanics change sneaks into eve.js | Bridge-only rule: eve.js diffs may touch bridge/interface files only, and reviews enforce it |
-| Retail autopilot logic is client-side | Server-owned travel job orchestrator; browser only starts/pauses/resumes/aborts |
+| Retail autopilot logic is client-side | Keep it client-side: the BFF hosts the autopilot decide-loop and issues atomic moves; EveJS travel handlers stay authoritative and unchanged. Browser only starts/pauses/resumes/aborts; the BFF (not browser-tab timers) drives it |
 | Mission content coverage is limited | Start with one deterministic courier fixture; expose only missions EveJS can actually issue |
 | Legacy gateway and bridge drift apart mid-migration | Migrate page by page, deleting each legacy path as its page moves; no new features on the v1 gateway |
 
