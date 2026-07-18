@@ -17,8 +17,8 @@
             <input id="username" name="username" autocomplete="username" required>
           </label>
           <label>
-            <span>Web password</span>
-            <input id="password" name="password" type="password" autocomplete="current-password" required>
+            <span>Password (any — not checked)</span>
+            <input id="password" name="password" type="password" autocomplete="current-password">
           </label>
           <button type="submit">Sign in</button>
           <p id="login-error" class="error-text" role="alert"></p>
@@ -35,6 +35,11 @@
             </div>
           </div>
           <nav id="character-list" class="character-list" aria-label="Characters"></nav>
+          <section id="bridge-panel" class="bridge-panel" aria-label="Live EveJS bridge">
+            <span class="eyebrow">Live bridge</span>
+            <p class="bridge-call-name">charUnboundMgr.GetCharacterSelectionData</p>
+            <div id="bridge-content" class="bridge-content"></div>
+          </section>
         </aside>
 
         <section class="main-pane">

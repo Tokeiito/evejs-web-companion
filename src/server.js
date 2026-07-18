@@ -5,6 +5,7 @@ const fs = require("fs");
 const http = require("http");
 const path = require("path");
 const eveStore = require("./eveStore");
+const eveGatewayClient = require("./eveGatewayClient");
 const marketClient = require("./marketClient");
 const webAuth = require("./webAuth");
 const config = require("./config");
@@ -14,6 +15,7 @@ const { createCharacterEventProxy } = require("./characterEventProxy");
 function createApp(options = {}) {
 const app = express();
 const store = options.eveStore || eveStore;
+const gateway = options.eveGatewayClient || eveGatewayClient;
 const market = options.marketClient || marketClient;
 const auth = options.webAuth || webAuth;
 const leaseStore = options.browserLeaseStore || createBrowserLeaseStore();
@@ -299,25 +301,35 @@ app.get("/api/health", async (req, res) => {
   }
 });
 
+// Who-cares web login (roadmap section 6, goal R1): an existing EveJS account
+// username signs in with ANY password, including an empty one — the password
+// is not checked at all. This deliberately mirrors the emulator's retail-path
+// devSkipPasswordValidation behavior. The scrypt web-password store is
+// BYPASSED, NOT DELETED: src/webAuth.js verifyWebPassword/upsertWebPassword,
+// data/web-users.json, and `npm run webpass` stay in place (data-preservation
+// rule) but are deprecated for login. Unknown usernames get a clear 401;
+// account auto-create is deferred to R2.
 app.post("/api/login", async (req, res, next) => {
   const username = String(req.body && req.body.username || "").trim();
-  const password = String(req.body && req.body.password || "");
   try {
-    const account = await store.getAccount(username);
-    if (!account || account.banned) {
-      res.status(401).json({ ok: false, error: "INVALID_LOGIN" });
+    let account = null;
+    try {
+      account = await store.getAccount(username);
+    } catch (error) {
+      if (!(error && error.code === "ACCOUNT_NOT_FOUND")) {
+        throw error;
+      }
+    }
+    if (!account) {
+      res.status(401).json({
+        ok: false,
+        error: "UNKNOWN_EVEJS_ACCOUNT",
+        message: "Unknown EveJS account.",
+      });
       return;
     }
-
-    const verification = auth.verifyWebPassword(username, password);
-    if (!verification.ok) {
-      const status = verification.reason === "WEB_PASSWORD_NOT_SET" ? 428 : 401;
-      res.status(status).json({ ok: false, error: verification.reason });
-      return;
-    }
-
-    if (Number(verification.user.eveAccountID) !== Number(account.accountID)) {
-      res.status(409).json({ ok: false, error: "WEB_ACCOUNT_MAPPING_MISMATCH" });
+    if (account.banned) {
+      res.status(403).json({ ok: false, error: "ACCOUNT_BANNED" });
       return;
     }
 
@@ -368,6 +380,39 @@ app.get("/api/characters", requireAuth, async (req, res, next) => {
     ok: true,
     characters: await store.listCharactersForAccount(req.account.accountID),
   });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Thin bridge proxy for the whitelisted EveJS callMethod path (goal R1).
+// Forwards the retail call tuple (service, method, args, kwargs) to the
+// gateway's POST /_evejs-web/v1/call; the gateway enforces the deny-by-default
+// (service, method) allowlist and materializes the browser-backed session.
+// The BFF pins the session identity: `userid` always comes from the signed
+// login session, never from the browser payload. Wire contract:
+// docs/bridge-wire-contract.md.
+app.post("/api/bridge/call", requireAuth, async (req, res, next) => {
+  const body = req.body || {};
+  const clientSessionFields =
+    body.session && typeof body.session === "object" && !Array.isArray(body.session)
+      ? body.session
+      : {};
+  try {
+    const outcome = await gateway.callMethod(
+      body.service,
+      body.method,
+      body.args,
+      body.kwargs,
+      { ...clientSessionFields, userid: Number(req.account.accountID) },
+    );
+    res.json({
+      ok: true,
+      service: outcome.service,
+      method: outcome.method,
+      result: outcome.result,
+      notifications: outcome.notifications,
+    });
   } catch (error) {
     next(error);
   }

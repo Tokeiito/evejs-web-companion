@@ -75,6 +75,7 @@ const elements = {
   metricsGrid: document.getElementById("metrics-grid"),
   pageContent: document.getElementById("page-content"),
   readonlyBanner: document.getElementById("readonly-banner"),
+  bridgeContent: document.getElementById("bridge-content"),
 };
 
 const eventRefreshTask = eventClientApi.createCoalescedTask(
@@ -589,8 +590,99 @@ function setView(view) {
   elements.appView.hidden = view !== "app";
 }
 
+// --- Live bridge panel (goal R1) -------------------------------------------
+// Drives the reference retail call charUnboundMgr.GetCharacterSelectionData
+// through the BFF bridge route (/api/bridge/call -> gateway /call ->
+// Handle_GetCharacterSelectionData) and renders the live result.
+
+function readBridgeKeyVal(keyVal, key) {
+  const entries = keyVal &&
+    keyVal.type === "object" &&
+    keyVal.name === "util.KeyVal" &&
+    keyVal.args &&
+    keyVal.args.type === "dict" &&
+    Array.isArray(keyVal.args.entries)
+    ? keyVal.args.entries
+    : [];
+  const entry = entries.find((candidate) =>
+    Array.isArray(candidate) && candidate[0] === key,
+  );
+  return entry ? entry[1] : undefined;
+}
+
+function renderBridgeStatus(text, isError = false) {
+  if (!elements.bridgeContent) {
+    return;
+  }
+  elements.bridgeContent.innerHTML =
+    `<p class="bridge-status${isError ? " error-text" : ""}">${escapeHtml(text)}</p>`;
+}
+
+function clearBridgePanel() {
+  if (elements.bridgeContent) {
+    elements.bridgeContent.innerHTML = "";
+  }
+}
+
+async function loadBridgePanel() {
+  if (!elements.bridgeContent) {
+    return;
+  }
+  renderBridgeStatus("Calling EveJS…");
+  try {
+    const payload = await requestJson("/api/bridge/call", {
+      method: "POST",
+      body: JSON.stringify({
+        service: "charUnboundMgr",
+        method: "GetCharacterSelectionData",
+        args: [],
+        kwargs: null,
+      }),
+    });
+    // Handler contract: 4-tuple (userDetails, trainingDetails,
+    // characterDetails, wars); characterDetails is a list of util.KeyVal rows.
+    const tuple = Array.isArray(payload.result) ? payload.result : [];
+    const rows = tuple[2] && Array.isArray(tuple[2].items) ? tuple[2].items : [];
+    if (!rows.length) {
+      renderBridgeStatus("EveJS returned no characters for this account.");
+      return;
+    }
+    elements.bridgeContent.innerHTML = rows.map((row) => {
+      const name = readBridgeKeyVal(row, "characterName") || "Unknown";
+      const ship = readBridgeKeyVal(row, "shipName") || "-";
+      const balance = readBridgeKeyVal(row, "balance");
+      const skillPoints = readBridgeKeyVal(row, "skillPoints");
+      return `
+        <div class="bridge-row">
+          <strong>${escapeHtml(name)}</strong>
+          <small>${escapeHtml(ship)} | ${formatIsk(balance)} | ${formatInteger(skillPoints)} SP</small>
+        </div>
+      `;
+    }).join("");
+  } catch (error) {
+    renderBridgeStatus(friendlyBridgeError(error), true);
+  }
+}
+
+function friendlyBridgeError(error) {
+  const code = error && error.message;
+  if (code === "CALL_NOT_ALLOWED") {
+    return "That call is not on the bridge allowlist.";
+  }
+  if (code === "EVE_GATEWAY_UNREACHABLE" || code === "EVE_GATEWAY_TIMEOUT") {
+    return "EveJS gateway is unreachable.";
+  }
+  return `Bridge call failed (${code || "unknown error"}).`;
+}
+
 function friendlyLoginError(error) {
   const code = error && error.message;
+  if (code === "UNKNOWN_EVEJS_ACCOUNT") {
+    return "Unknown EveJS account.";
+  }
+  if (code === "ACCOUNT_BANNED") {
+    return "That EveJS account is banned.";
+  }
   if (code === "WEB_PASSWORD_NOT_SET") {
     return "No web password has been set for that EveJS account.";
   }
@@ -2473,6 +2565,7 @@ async function loadMe() {
       null;
     setView("app");
     renderChrome();
+    loadBridgePanel().catch((error) => console.error(error));
     const loaded = await loadPage();
     if (loaded && state.authGeneration === authGeneration) {
       startCharacterEventStream();
@@ -2522,6 +2615,7 @@ elements.loginForm.addEventListener("submit", async (event) => {
     elements.password.value = "";
     setView("app");
     renderChrome();
+    loadBridgePanel().catch((error) => console.error(error));
     await loadPage();
   } catch (error) {
     if (state.authGeneration === authGeneration) {
@@ -2556,6 +2650,7 @@ elements.logoutButton.addEventListener("click", async () => {
   state.data = null;
   state.selectedCharacterID = null;
   state.characterOnline = null;
+  clearBridgePanel();
   setView("login");
 });
 

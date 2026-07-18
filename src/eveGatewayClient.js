@@ -376,6 +376,33 @@ async function getStationAsks(stationID) {
   return Array.isArray(result.rows) ? result.rows : [];
 }
 
+/**
+ * Invoke a whitelisted EveJS service method through the bridge route
+ * (POST /_evejs-web/v1/call). Mirrors the retail call tuple
+ * (service, method, args, kwargs); `sessionFields` are the JSON scalars the
+ * gateway materializes into the browser-backed session (`userid` required).
+ * See docs/bridge-wire-contract.md for the full wire contract.
+ */
+async function callMethod(service, method, args = [], kwargs = null, sessionFields = {}) {
+  const data = await postJson("/call", {
+    service: String(service || ""),
+    method: String(method || ""),
+    args: Array.isArray(args) ? args : [],
+    kwargs: kwargs && typeof kwargs === "object" && !Array.isArray(kwargs)
+      ? kwargs
+      : null,
+    session: sessionFields && typeof sessionFields === "object" && !Array.isArray(sessionFields)
+      ? sessionFields
+      : {},
+  });
+  return {
+    service: data.service,
+    method: data.method,
+    result: data.result === undefined ? null : data.result,
+    notifications: Array.isArray(data.notifications) ? data.notifications : [],
+  };
+}
+
 async function saveSkillQueue(accountID, characterID, entries, options = {}) {
   return postCommandJson("/skill-queue", {
     accountID: Number(accountID) || 0,
@@ -412,6 +439,7 @@ async function restartExtractors(accountID, characterID, options = {}) {
 module.exports = {
   EveGatewayError,
   buildEventStreamRequest,
+  callMethod,
   claimCharacterControl,
   getAccount,
   getGatewayHealth,
