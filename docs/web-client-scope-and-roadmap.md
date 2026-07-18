@@ -74,6 +74,17 @@ What exists today (built under the previous roadmap, working, tested last on 202
 
 Direction: **strip toward the thin bridge.** Pages migrate one at a time to retail calls. As each migrates, delete its `eveStore` emulation path and its dependence on the broad snapshot. Retire the lease/idempotency/event machinery when the session-based bridge covers the same guarantees the way retail does. The v1 gateway remains until its last consumer is gone — but no new feature should be built on it.
 
+### Web app tech stack (decided 2026-07-18)
+
+The web app began as a slim read-only companion — a single ~2,600-line vanilla `public/app.js` plus hand-rolled WS/event/command layers, no types, no build. That fit the original scope; the client-surface ambition makes the browser a genuinely stateful client (a live session/space/inventory/journal mirror plus the client-side autopilot loop), so the stack moves. **This is web-app-only; eve.js is unaffected, and the Node + Express 5 + `ws` backend stays.**
+
+- **TypeScript** — the project reproduces *typed* retail call/row contracts (`(service, method, args, kwargs)`, marshaled rowsets, flag constants, positional tuples). Types make the bridge compiler-checked; this is the highest-ROI change and the reason to move at all.
+- **Vite** — a light build for TS + ES modules + the view layer.
+- **A small reactive view layer** — Svelte 5 (recommended) or SolidJS; deliberately not a heavy SPA, to keep the UI text/data-driven and EVE-styled. The exact library is finalized by a spike on the first migrated page.
+- **One client-state store** — a single source of truth mirroring the relevant EveJS session/space/inventory/journal state, updated by the sequenced WS event stream, with the UI **and** the browser autopilot loop as pure readers. Keep it framework-agnostic (plain signals) so the view lib isn't load-bearing. This replaces the ad-hoc `eventClient`/`mutationScope` sprawl as pages migrate.
+
+Applied **page-by-page on the R2–R6 rail** — each page rewrite to retail calls also moves it onto the new stack; no big-bang migration. R2 (character sheet/skills) is the proving ground and locks the exact view library.
+
 ## 6. Security posture (deliberate — do not "fix")
 
 This is an emulator run in a trusted development environment.
@@ -120,7 +131,7 @@ This project runs with a **master orchestrator session** and **worker sessions**
 | --- | --- | --- | --- |
 | R0 | Complete | Courier-path call inventory: mine the decompiled client for the (service, method, args) sequences behind login, character select, station UI, agent/courier flow, and travel | Done — [retail-call-inventory.md](retail-call-inventory.md) maps all 12 milestone steps to their retail calls with client file refs and EveJS coverage verdicts; key gaps: no server-owned travel job (G1) and courier remote-acceptance parity failing (G3) |
 | R1 | Pending | Thin bridge endpoint (extend the existing `server/src/_secondary/express/evejsWebGateway.js` web interface; no game-mechanics change) + who-cares web login: browser-backed session creation and a whitelisted `(service, method, args, kwargs)` invocation path through `callMethod`. This is the only eve.js edit in the plan. | Browser logs in with any password and drives at least one real `Handle_*` call end to end; retail clients (machoNet :26000) unaffected |
-| R2 | Pending | First migrated page (character sheet/skills) served entirely by retail calls | Page works via the bridge; its `eveStore`/snapshot path is deleted |
+| R2 | Pending | First migrated page (character sheet/skills) served entirely by retail calls, and the first page rebuilt on the new web stack (TS + Vite + reactive view + client-state store) — this spike locks the exact view library | Page works via the bridge on the new stack; its `eveStore`/snapshot path is deleted |
 | R3 | Pending | Station inventory and ship operations via the same services retail uses (`invbroker`, ship/station services) | Move/stack/split cargo and board a ship from the browser |
 | R4 | Pending | Agents and courier missions (`agentMgr` and mission services) | Accept a courier mission in the browser |
 | R5 | Pending | Undock, **client-side (browser) autopilot** travel, dock — the browser runs `autopilot.py`'s decide-loop, issuing the existing atomic `beyonce`/jump/dock calls; browser owns route + pathfinding. Closing the tab stops autopilot (client closed), like retail. | Full multi-jump route completed from the browser; EveJS travel handlers unchanged; closing the tab halts progression with the ship left where its last command finished |
