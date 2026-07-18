@@ -1,8 +1,10 @@
-# EveJS Web POC
+# EveJS Web Client
 
-Minimal browser companion for a local EveJS server.
+Browser client for a local or WAN-hosted EveJS server.
 
-This repo is intentionally separate from `eve.js`. All gameplay state is read and mutated through the authenticated EveJS v1 web gateway. Web credentials remain in this repo's own ignored `data/` folder.
+The goal is to reimplement as much of the EVE Online client as practical in the browser, by driving the **same service calls the retail client makes** against the same EveJS handlers. EveJS is the game server and sole authority; this app is an alternate client, not another simulation. The full scope, architecture, and roadmap live in [docs/web-client-scope-and-roadmap.md](docs/web-client-scope-and-roadmap.md) — read that first.
+
+This repo is intentionally separate from `eve.js`. The web process never reads or writes gameplay SQLite; all gameplay state flows through EveJS.
 
 ## Run
 
@@ -13,6 +15,8 @@ npm start
 ```
 
 Open `http://127.0.0.1:26500`.
+
+The `webpass` step is transitional: login will become emulator-style (any password accepted) when the retail-call bridge lands. Until then web credentials live in this repo's own ignored `data/` folder.
 
 ## Configuration
 
@@ -33,6 +37,8 @@ EVEJS_GATEWAY_URL=http://127.0.0.1:26002/_evejs-web/v1
 EVEJS_WEB_GATEWAY_TOKEN=
 EVEJS_ICON_CACHE_DIR=C:\Users\ryanf\Documents\GitHub\evejs-web-poc\data\icon-cache
 ```
+
+Set `HOST=0.0.0.0` for WAN hosting; this is a trusted-environment emulator and hardening is deliberately out of scope (see roadmap section 6).
 
 ## Local Icon Cache
 
@@ -63,36 +69,24 @@ If running through npm, pass an extra separator before script options:
 npm run cache-icons -- -- --dry-run
 ```
 
-## Current POC Function
+## Current Function
 
 After web login, the app lists characters for the EveJS account and opens a dark Eve-style capsuleer console with selectable Caldari, Amarr, Gallente, and Minmatar header themes.
 
 Current pages:
 
-- overview summary
-- skill browser with drag/drop queue planner and save controls
-- grouped skill browser sections with group filter/search and drag/drop queue planning
-- Jita 4-4 market orders through the EveJS v1 gateway, browsed by category
-- inventory/assets with a location selector and item group summaries
-- read-only industry jobs and blueprint library
-- PI colony and extractor overview
+- overview summary (wallet, location, PLEX, skill points, queue state, inventory and industry summaries)
+- skill browser with drag/drop queue planner and save / save-paused controls
+- grouped skill browser sections with group filter/search
+- Jita 4-4 market orders, browsed by category (read-only)
+- inventory/assets with a location selector, item group summaries, and fitted-item location translation (ship slots, drone bay, station, system)
+- read-only industry jobs and blueprint library with timers, ETA, and progress
+- PI colony and extractor overview with extractor restart
 
-The dashboards currently show:
+The two registered gameplay mutations are skill-queue save (with a save-paused variant) and PI extractor restart. Both run through EveJS's authoritative validation and runtime code; EveJS owns persistence.
 
-- wallet, location, PLEX, and character context
-- total skill points
-- trained skill count
-- current skill queue state
-- top skill groups
-- searchable trained skills
-- grouped skill browsing by skill group
-- owned inventory rows
-- location-filtered inventory browsing
-- translated fitted-item locations such as ship slots, drone bay, station, and system
-- manufacturing/research job status, timers, ETA, and progress when jobs exist
-- PI colony/extractor counts
-- read-only Jita 4-4 market rows grouped by item category
+## Current plumbing (transitional)
 
-Gameplay dashboards are read through the EveJS v1 gateway. The web app also uses local EveJS static-data JSON and CCP's EVE Image Server for names and icons. No EveJS account password hashes are modified.
+Today the app talks to EveJS through the versioned `/_evejs-web/v1` gateway: broad character snapshots for reads, exclusive browser character-control leases, per-character serialized commands with idempotency keys and expected state versions, and a sequenced WebSocket event stream with replay and reconnect snapshots. Lease, receipt, and event state is process-memory; an EveJS restart starts a new event epoch and clients recover via snapshot.
 
-The EveJS gateway is required. Account, character, snapshot, market, skill-queue, and PI requests use only the versioned `/_evejs-web/v1` namespace. Skill queue saves therefore run through EveJS' authoritative queue validation/runtime code, emit normal queue notifications, and let EveJS own persistence.
+This plumbing is being **replaced, not extended**: the roadmap's direction is a thin bridge in eve.js that invokes the same `Handle_*` service handlers the retail client uses, with pages migrating one at a time and each legacy path deleted as its page moves. Do not build new features on the v1 gateway. See the roadmap for the R0–R6 goal ladder.
