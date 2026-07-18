@@ -118,7 +118,7 @@ This project runs with a **master orchestrator session** and **worker sessions**
 
 | Goal | Status | Scope | Exit condition |
 | --- | --- | --- | --- |
-| R0 | Pending | Courier-path call inventory: mine the decompiled client for the (service, method, args) sequences behind login, character select, station UI, agent/courier flow, and travel | A checked-in manifest doc mapping each courier-path UI action to its retail calls, with client file references |
+| R0 | Complete | Courier-path call inventory: mine the decompiled client for the (service, method, args) sequences behind login, character select, station UI, agent/courier flow, and travel | Done — [retail-call-inventory.md](retail-call-inventory.md) maps all 12 milestone steps to their retail calls with client file refs and EveJS coverage verdicts; key gaps: no server-owned travel job (G1) and courier remote-acceptance parity failing (G3) |
 | R1 | Pending | Thin bridge endpoint in eve.js + who-cares web login: browser-backed session creation and a whitelisted `(service, method, args, kwargs)` invocation path through `callMethod` | Browser logs in with any password and drives at least one real `Handle_*` call end to end; retail clients unaffected |
 | R2 | Pending | First migrated page (character sheet/skills) served entirely by retail calls | Page works via the bridge; its `eveStore`/snapshot path is deleted |
 | R3 | Pending | Station inventory and ship operations via the same services retail uses (`invbroker`, ship/station services) | Move/stack/split cargo and board a ship from the browser |
