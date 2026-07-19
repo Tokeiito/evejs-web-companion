@@ -160,3 +160,31 @@ test("GET /api/map/resolve/:id reports an unknown ID as kind:unknown", async () 
   assert.equal(payload.kind, "unknown");
   assert.equal(payload.solarSystemID, null);
 });
+
+// R6b: the read-only static station-identity route the docked-station-change
+// refresh uses to re-point the Station panel after the character docks somewhere
+// new (autopilot arrival / manual dock) — same client-local resolution the
+// select route returns, keyed by station ID.
+test("GET /api/map/station/:id returns the static station identity", async () => {
+  const { baseUrl } = await startTestServer();
+  const { response, payload } = await apiRequest(baseUrl, `/api/map/station/${JITA_STATION}`);
+  assert.equal(response.status, 200);
+  assert.equal(payload.ok, true);
+  assert.equal(payload.source, "static-data");
+  assert.equal(payload.station.stationID, JITA_STATION);
+  assert.equal(payload.station.stationName, "Jita IV - Moon 4 - Caldari Navy Assembly Plant");
+});
+
+test("GET /api/map/station/:id 404s an unknown station", async () => {
+  const { baseUrl } = await startTestServer();
+  const { response, payload } = await apiRequest(baseUrl, "/api/map/station/999999");
+  assert.equal(response.status, 404);
+  assert.equal(payload.error, "STATION_NOT_FOUND");
+});
+
+test("GET /api/map/station/:id requires the web login session", async () => {
+  const { baseUrl } = await startTestServer();
+  const { response, payload } = await apiRequest(baseUrl, `/api/map/station/${JITA_STATION}`, { authenticated: false });
+  assert.equal(response.status, 401);
+  assert.equal(payload.error, "AUTH_REQUIRED");
+});

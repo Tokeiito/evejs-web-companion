@@ -315,6 +315,31 @@ export function createClientStore(): ClientStore {
         flight.set(INITIAL_FLIGHT);
         travel.set(INITIAL_TRAVEL);
         break;
+      case "station/relocated": {
+        // The docked station changed on the same live session (autopilot
+        // arrival / manual dock). Re-point the online location + static identity
+        // and drop the prior station's reads (bits/guests/info/error) so the
+        // flow's follow-up refresh repopulates them for the new station. No-op
+        // if nobody is online.
+        const current = station.get();
+        if (!current.online) {
+          break;
+        }
+        station.set({
+          ...current,
+          online: {
+            ...current.online,
+            stationID: event.stationID,
+            solarSystemID: event.solarSystemID,
+          },
+          station: event.station,
+          bits: null,
+          guests: [],
+          stationInfoCached: null,
+          readError: null,
+        });
+        break;
+      }
       case "station/bits":
         station.set({ ...station.get(), bits: event.bits });
         break;

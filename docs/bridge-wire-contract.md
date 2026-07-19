@@ -503,12 +503,34 @@ Web-only; no eve.js change.
   match set deterministically by `(level, agentID)`, and returns the first `limit`
   as compact summaries — so the ~11k-agent dataset never crosses the wire whole.
   `total` is the full match count before the cap; `capped` is `total > limit`.
-  Each agent summary is `{ agentID, name (ownerName), level, missionKind,
-  missionTypeLabel, corporationID, factionID, stationID, stationName,
-  solarSystemID, solarSystemName }` — station/system **names resolved
-  server-side** via `staticData.getStationName` / `getSolarSystemName`. Backed by
-  `staticData.findAgents({ kind, level, limit })` reading
-  `_local/gameStore/data/agentAuthority/data.json` (`agentsByID`).
+  Each agent summary is `{ agentID, name (ownerName), level, divisionID,
+  agentTypeID, missionKind, missionTypeLabel, corporationID, factionID,
+  stationID, stationName, solarSystemID, solarSystemName }` — station/system
+  **names resolved server-side** via `staticData.getStationName` /
+  `getSolarSystemName`. Backed by `staticData.findAgents({ kind, level, limit })`
+  reading `_local/gameStore/data/agentAuthority/data.json` (`agentsByID`).
+
+**Kind is classified by `(divisionID, agentTypeID)`, not the raw `missionKind`
+(R6b).** The static export stamps `missionKind:"courier"` on special agents too
+— Paragon (e.g. "IRIS - Jita" agentID 3020034: `divisionID 37`, `agentTypeID
+13`), off-division epic (division 25, type 12), plus career/storyline/event
+placeholders in division 22 — none of which are ordinary courier agents. So the
+finder classifies each exposed kind by its retail agent division + standard
+agent type, and every other `(division, type)` is excluded:
+
+  | kind | division | agentType | real agents (of 10,941) |
+  | --- | --- | --- | --- |
+  | `courier` | 22 Distribution | 2 basic | 3,725 (was 4,421 by raw missionKind) |
+  | `encounter` | 24 Security | 2 basic | 3,655 |
+  | `mining` | 23 Mining | 2 basic | 1,371 |
+  | `research` | 18 R&D | 4 research | 244 |
+
+  `all`/`any` returns the union of these real mission agents (still excluding the
+  specials); a `kind` the finder does not classify matches nothing (an empty
+  finder beats a mislabeled Paragon). Every export row is a
+  `conversationMetadata.placeholder:true` with empty `missionTemplateIDs` — the
+  runnable mission *content* lives in the mission runtime — so the finder filters
+  to the right *kind* only, not to guaranteed content.
 
 **Distance is computed client-side.** The route solver gains `distancesFrom(graph,
 originSystemID)` (`web/src/nav/routeSolver.ts`): a **single BFS** over the
@@ -524,6 +546,39 @@ covers any single courier level (the largest, L1, is ~1531) so choosing a level
 yields the complete, correctly-nearest-sorted set, while staying bounded well
 under the 11k dataset; for all-courier (no level) the client renders a capped
 page and the UI surfaces `total`/`capped` to prompt for a narrower filter.
+
+## Docked-station-change refresh (R6b)
+
+When the character's **docked station changes on the same live session**
+(autopilot arrival, a manual dock, or select), the station-scoped panels — the
+Station panel, the Agents & Missions agent list, and the Inventory & Ship panel
+— must reflect the new station **without a page reload**. This is a web-side
+reactivity concern: the flow already learns the new location from every
+flight-status snapshot (manual step, autopilot tick, route-origin read), which
+all funnel through one `observeFlightStatus(status)` choke point in
+`web/src/app/flow.ts`. That pushes the snapshot to the `flight` slice and then
+reconciles the docked station:
+
+- It tracks the station the panels are synced to (`syncedStationID`, anchored on
+  select). When a snapshot shows the character **docked at a different station**,
+  it relocates once (guarded against re-entry and redundant same-station
+  refetches; a lost session still unwinds to character select).
+- Relocating applies a `station/relocated` store event — re-pointing the online
+  location (`stationID` + `solarSystemID`, so the finder's distance origin and
+  the panel header track the new station) and the static station identity — then
+  re-runs the docked reads: `refreshStationPanel` always, and `loadAgents` /
+  `loadInventory` only if their tab has already loaded (an unopened tab
+  re-fetches on open via its own `onMount`). The autopilot tick voids the
+  reconcile (the loop must not block on a panel refresh); a manual movement step
+  awaits it (its busy state covers the refresh).
+
+- `GET /api/map/station/:id` (requires the web login session; **no bridge
+  session**) → `{ ok, source:"static-data", station: <StationStatic> }`. The
+  same client-local static identity the select route returns (name / system /
+  region / type / operation / security), keyed by station ID, so the flow can
+  refresh the Station panel identity after the docked station changes. An unknown
+  ID is a `404 STATION_NOT_FOUND`. Read-only static reference data like
+  `/api/map/graph` and `/api/map/resolve` — NOT a gateway/bridge call.
 
 ## BFF routes (this repo)
 

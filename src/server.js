@@ -1447,6 +1447,31 @@ app.get("/api/map/resolve/:id", requireAuth, async (req, res, next) => {
   }
 });
 
+// Read-only static station identity by ID (goal R6b): the same client-local
+// resolution the select route returns for the docked station, exposed so the
+// web app can refresh the Station panel's identity (name / system / region /
+// type / security) after the docked station changes (autopilot arrival, manual
+// dock) without a full page reload. Read-only static reference data like
+// /api/map/graph and /api/map/resolve — NOT a gateway/bridge call.
+app.get("/api/map/station/:id", requireAuth, async (req, res, next) => {
+  try {
+    const id = Number(req.params.id) || 0;
+    if (id <= 0) {
+      res.status(400).json({ ok: false, error: "INVALID_ID", message: "A positive id is required." });
+      return;
+    }
+    // Only resolve a real station record (buildStationStatic otherwise returns a
+    // "Station <id>" fallback for any positive ID); an unknown ID is a 404.
+    if (!staticData.getStation(id)) {
+      res.status(404).json({ ok: false, error: "STATION_NOT_FOUND" });
+      return;
+    }
+    res.json({ ok: true, source: "static-data", station: buildStationStatic(id) });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // Agent Finder (goal R6a): list agents from the static agentAuthority reference
 // table so the player can find a courier agent to travel to (the per-station
 // GetAgents roster is unreliable for this). Read-only static reference data —

@@ -153,14 +153,16 @@ The Agent Finder (goal R6a). What it proves: a player can **find a courier agent
 2. Click the **Agent Finder** tab. It loads couriers by default, each row showing **name, level, mission kind, station, system, and jumps away**, sorted **nearest-first** from your current system. The render is capped (first 60, with a "showing X of Y" count) so the ~11k-agent dataset stays responsive.
 3. Set **Level** to `1` to narrow to level-1 couriers (the full level is fetched, so the sort is complete). Use **Search** (name / system) to jump to a system, e.g. type `Jita`.
 4. Pick a **nearby** L1 courier and click **Set destination**. The **Autopilot target** panel names who you're flying to, and the app switches you to the **Travel** tab where the R5b autopilot is already running.
-5. Watch it drive itself (undock → warp → jump → … → dock), exactly as the R5b spot test. On arrival, open **Agents & Missions** to talk to the agent and accept a courier (R4/R6).
+5. Watch it drive itself (undock → warp → jump → … → dock), exactly as the R5b spot test. On arrival, the **Agents & Missions**, **Station**, and **Inventory & Ship** panels reflect the new station **without a page reload** (R6b) — open **Agents & Missions** to talk to the agent and accept a courier (R4/R6).
 
 What to expect:
 
 - **Static reference data, not a gateway call.** `GET /api/agents/find?kind=courier[&level=N]` reads `agentAuthority/data.json` through `src/staticData.js` — the same read-only static-data pattern as `/api/map/graph`. It filters by kind (default courier) + optional level and caps the result server-side; the browser sorts by jumps and renders a page.
+- **Real distribution agents only (R6b).** The finder classifies each kind by its retail agent division + type — courier = Distribution division 22 / basic agent type 2 — not the raw `missionKind` the static export also stamps on special agents. So Paragon (e.g. "IRIS - Jita" 3020034), epic, career, storyline, and event placeholders no longer appear under Courier.
+- **Panels refresh on dock (R6b).** When the docked station changes (autopilot arrival, manual dock, select), the flow learns it from flight status and re-fetches the Station panel, agent list, and inventory for the new station without a reload; opening the Agents tab always shows the current station.
 - **One BFS, not one route per agent.** `distancesFrom(originSystemID)` runs a single breadth-first sweep over the already-loaded gate graph, giving the jump distance to every system at once; the finder looks each agent's system up. Unreachable systems sort last.
 - **Set destination reuses the R5b autopilot** (`startRoute(agent.stationID)`) — no new movement code.
-- Proven in-process by `test/agentFinder.test.js` (staticData read/filter + the `/api/agents/find` route), `web/src/nav/routeSolver.test.ts` (`distancesFrom`), and `web/src/app/finderFlow.test.ts` (the finder flow); this spot test is the live end-to-end run.
+- Proven in-process by `test/agentFinder.test.js` (staticData read/filter + classification + the `/api/agents/find` route), `web/src/nav/routeSolver.test.ts` (`distancesFrom`), `web/src/app/finderFlow.test.ts` (the finder flow), and `web/src/app/dockRefreshFlow.test.ts` (the dock refresh); this spot test is the live end-to-end run.
 
 ## Configuration
 

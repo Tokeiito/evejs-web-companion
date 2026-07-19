@@ -57,6 +57,16 @@ export type FeedEvent =
     }
   // ...or went offline (release, TTL expiry, session lost).
   | { readonly type: "character/offline" }
+  // Goal R6b — the docked station changed on the SAME live session (autopilot
+  // arrival / manual dock), learned from a flight-status snapshot. Re-points the
+  // docked identity (online station/system + static station identity) and clears
+  // the previous station's panel reads so the flow's re-fetch repopulates them.
+  | {
+      readonly type: "station/relocated";
+      readonly stationID: number;
+      readonly solarSystemID: number | null;
+      readonly station: StationStatic | null;
+    }
   // Docked station-panel reads on the live session.
   | { readonly type: "station/bits"; readonly bits: StationServiceBits }
   | { readonly type: "station/guests"; readonly guests: readonly StationGuest[] }

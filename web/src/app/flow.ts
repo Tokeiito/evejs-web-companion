@@ -27,7 +27,7 @@ import type { FlightStepResult } from "./api.ts";
 import { BridgeCallError } from "../bridge/callMethod.ts";
 import * as api from "./api.ts";
 import type { ClientStore } from "../store/clientStore.ts";
-import type { AgentAction } from "../store/types.ts";
+import type { AgentAction, FlightStatus, StationStatic } from "../store/types.ts";
 import {
   buildSystemGraph,
   distancesFrom,
@@ -152,6 +152,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     ...(options.baseUrl !== undefined ? { baseUrl: options.baseUrl } : {}),
     ...(options.fetch !== undefined ? { fetch: options.fetch } : {}),
   };
+
+  // R6b — the docked station the station-scoped panels are currently synced to,
+  // and a guard so an in-flight relocate is not re-entered. Set on select and
+  // updated whenever a flight-status snapshot reveals the character docked at a
+  // different station (autopilot arrival / manual dock); see observeFlightStatus.
+  let syncedStationID: number | null = null;
+  let relocating = false;
 
   async function refreshStationPanel(): Promise<void> {
     // Retail issues these when the docked UI loads; the page issues them after
@@ -285,6 +292,16 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     });
   }
 
+  // Load the docked station's agent roster (agentMgr.GetAgents, filtered to the
+  // held session's station by the BFF). Standalone so both the tab (onMount /
+  // Refresh) and the R6b docked-station-change refresh can call it.
+  async function loadAgents(): Promise<void> {
+    await runAgentAction(async () => {
+      const list = await api.loadAgents(callOptions);
+      store.apply({ type: "agents/list", stationID: list.stationID, agents: list.agents });
+    });
+  }
+
   // Run an agent read/action, unwinding to offline on a lost session and
   // surfacing any other failure through the store (the page stays put and shows
   // the reason) rather than throwing into the UI handler.
@@ -316,14 +333,91 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     return readErrorReason(error);
   }
 
-  // Push a step's decoded flight snapshot into the store.
-  function applyFlight(step: FlightStepResult): void {
-    store.apply({ type: "flight/status", status: decodeFlightStatus(step.flight) });
+  // --- R6b docked-station-change refresh -----------------------------------
+
+  // Re-run the station-scoped reads for a newly-docked station. The Station
+  // panel identity is re-pointed immediately (so the header/finder-origin track
+  // the new station before the async reads land), then the docked reads refresh:
+  // the station panel always (it IS the docked context), and agents/inventory
+  // only if their tab has already loaded (an unopened tab re-fetches on open via
+  // its own onMount). A lost session inside any read unwinds to character select
+  // (rethrown); any other per-read failure rides that read's own slice.
+  async function relocateStationContext(
+    stationID: number,
+    solarSystemID: number | null,
+  ): Promise<void> {
+    let station: StationStatic | null = null;
+    try {
+      station = await api.loadStationStatic(stationID, callOptions);
+    } catch {
+      // Static identity is a display nicety; fall back to ID-only rather than
+      // fail the whole relocate if the read hiccups.
+      station = null;
+    }
+    store.apply({ type: "station/relocated", stationID, solarSystemID, station });
+
+    await refreshStationPanel();
+    if (store.agents.get().loaded) {
+      await loadAgents();
+    }
+    if (store.inventory.get().loaded) {
+      try {
+        await loadInventory();
+      } catch (error) {
+        if (isSessionLost(error)) {
+          throw error;
+        }
+        store.apply({ type: "inventory/action-error", message: readErrorReason(error) });
+      }
+    }
+  }
+
+  // Observe a flight-status snapshot: when it reveals the character docked at a
+  // station DIFFERENT from the one the panels are synced to, refresh the
+  // station-scoped context (autopilot arrival, manual dock). Guarded so the
+  // autopilot loop's per-tick reads relocate exactly once per change, and so an
+  // in-flight relocate is never re-entered. Never rejects: a lost session has
+  // already flipped the store offline inside the reads, so the swallowed
+  // rejection is safe to `void` from an autopilot tick or to await from a step.
+  async function syncDockedStation(status: FlightStatus): Promise<void> {
+    // Only a docked, online character has a station context to reconcile; skip
+    // otherwise (in space, or a flight read taken before a character is online).
+    if (store.station.get().online === null) {
+      return;
+    }
+    const stationID = status.docked ? status.stationID : null;
+    if (stationID === null || stationID === syncedStationID || relocating) {
+      return;
+    }
+    syncedStationID = stationID;
+    relocating = true;
+    try {
+      await relocateStationContext(stationID, status.solarSystemID);
+    } catch {
+      // Session-loss already unwound to offline; nothing more to do here.
+    } finally {
+      relocating = false;
+    }
+  }
+
+  // The single choke point for a decoded flight-status snapshot: push it to the
+  // flight slice, then reconcile the docked-station context. Every flight read
+  // (manual step, autopilot tick, route-origin read) flows through here. Returns
+  // the reconcile promise so a manual step can await the refresh; the autopilot
+  // tick voids it (the loop must not block on a panel refresh).
+  function observeFlightStatus(status: FlightStatus): Promise<void> {
+    store.apply({ type: "flight/status", status });
+    return syncDockedStation(status);
+  }
+
+  // Push a step's decoded flight snapshot into the store (+ docked-context sync).
+  function applyFlight(step: FlightStepResult): Promise<void> {
+    return observeFlightStatus(decodeFlightStatus(step.flight));
   }
 
   async function loadFlightStatus(): Promise<void> {
     try {
-      applyFlight(await api.getFlightStatus(callOptions));
+      await applyFlight(await api.getFlightStatus(callOptions));
     } catch (error) {
       if (isSessionLost(error)) {
         store.apply({ type: "character/offline" });
@@ -354,14 +448,16 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // Re-read the true state so the page shows where the ship actually is,
       // not a stale optimistic guess (best-effort; ignore a follow-up failure).
       try {
-        applyFlight(await api.getFlightStatus(callOptions));
+        await applyFlight(await api.getFlightStatus(callOptions));
       } catch {
         // The refusal reason is already surfaced; a failed re-read changes nothing.
       }
       return;
     }
     store.apply({ type: "flight/action", action: label });
-    applyFlight(result);
+    // Await the docked-context reconcile so a step that changes the docked
+    // station (dock) doesn't resolve before the new station's panels refresh.
+    await applyFlight(result);
   }
 
   // --- R5b Travel (browser autopilot decide-loop) --------------------------
@@ -390,7 +486,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       getStatus: async () => {
         const step = await api.getFlightStatus(callOptions);
         const status = decodeFlightStatus(step.flight);
-        store.apply({ type: "flight/status", status });
+        // Reconcile the docked station in the background — the tick must not
+        // block on a panel refresh (the loop owns its own cadence).
+        void observeFlightStatus(status);
         return status;
       },
       undock: async () => {
@@ -459,7 +557,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     try {
       const step = await api.getFlightStatus(callOptions);
       const status = decodeFlightStatus(step.flight);
-      store.apply({ type: "flight/status", status });
+      void observeFlightStatus(status);
       originSystem = status.solarSystemID;
     } catch (error) {
       if (isSessionLost(error)) {
@@ -675,6 +773,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         character: result.character,
         station: result.station,
       });
+      // Anchor the docked-station sync to where select landed so the first
+      // flight read at this station doesn't trigger a redundant relocate; a
+      // later dock elsewhere on this session will.
+      syncedStationID = result.character.stationID;
       await refreshStationPanel();
     },
 
@@ -694,12 +796,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       await runMutation(() => api.boardShip(shipID, callOptions));
     },
 
-    async loadAgents() {
-      await runAgentAction(async () => {
-        const list = await api.loadAgents(callOptions);
-        store.apply({ type: "agents/list", stationID: list.stationID, agents: list.agents });
-      });
-    },
+    loadAgents,
 
     async openConversation(agentID) {
       await runAgentAction(async () => {
@@ -817,6 +914,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       try {
         await api.releaseSession(callOptions);
       } finally {
+        syncedStationID = null;
         store.apply({ type: "character/offline" });
         store.apply({ type: "character/selected", characterID: null });
       }
@@ -826,6 +924,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       try {
         await api.logout(callOptions);
       } finally {
+        syncedStationID = null;
         store.apply({ type: "session/logged-out" });
       }
     },

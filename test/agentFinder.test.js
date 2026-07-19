@@ -68,6 +68,57 @@ test("staticData.findAgents filters by level and disables kind with 'all'", { sk
   assert.ok(kinds.size >= 1);
 });
 
+test("staticData.findAgents lists only real distribution agents under courier (R6b)", { skip: HAS_REAL_DATA ? false : "agentAuthority data.json not present" }, () => {
+  // The R6b correctness fix: a courier (distribution) agent is division 22 with
+  // a standard agent type (2) — NOT a Paragon/career/storyline/epic/event agent
+  // that merely shares the "courier" missionKind string.
+  const courier = staticData.findAgents({ kind: "courier", limit: 5000 });
+  assert.ok(courier.total > 0);
+  assert.equal(courier.capped, false, "the real courier set fits under the cap");
+  for (const agent of courier.agents) {
+    assert.equal(agent.divisionID, 22, `agent ${agent.agentID} must be Distribution (div 22)`);
+    assert.equal(agent.agentTypeID, 2, `agent ${agent.agentID} must be a basic agent (type 2)`);
+    assert.equal(agent.missionKind, "courier");
+  }
+
+  // The specific live-test regression: "IRIS - Jita" (3020034) is a Paragon
+  // agent (agentTypeID 13, divisionID 37) and must NOT appear under Courier.
+  assert.ok(
+    !courier.agents.some((a) => a.agentID === 3020034),
+    "IRIS - Jita (3020034, Paragon) must be excluded from Courier",
+  );
+
+  // None of the special agent types (Paragon 13, epic 12, event 11, storyline
+  // 10, career 5/6/7/8, research-type 3) leak into the courier list, and no
+  // off-Distribution division (25 Paragon-epic, 37 Paragon) does either.
+  assert.ok(courier.agents.every((a) => a.agentTypeID === 2 && a.divisionID === 22));
+});
+
+test("staticData.findAgents classifies encounter/mining/research by division+type (R6b)", { skip: HAS_REAL_DATA ? false : "agentAuthority data.json not present" }, () => {
+  const encounter = staticData.findAgents({ kind: "encounter", limit: 5000 });
+  assert.ok(encounter.total > 0);
+  assert.ok(encounter.agents.every((a) => a.divisionID === 24 && a.agentTypeID === 2));
+
+  const mining = staticData.findAgents({ kind: "mining", limit: 5000 });
+  assert.ok(mining.total > 0);
+  assert.ok(mining.agents.every((a) => a.divisionID === 23 && a.agentTypeID === 2));
+
+  const research = staticData.findAgents({ kind: "research", limit: 5000 });
+  assert.ok(research.total > 0);
+  assert.ok(research.agents.every((a) => a.divisionID === 18 && a.agentTypeID === 4));
+
+  // "all" spans the real mission agents of every kind but still excludes the
+  // Paragon/special placeholders (IRIS - Jita among them).
+  const all = staticData.findAgents({ kind: "all", limit: 20000 });
+  assert.ok(!all.agents.some((a) => a.agentID === 3020034), "Paragon excluded from 'all' too");
+  assert.ok(all.total > encounter.total, "'all' spans more than one kind");
+
+  // A kind the finder does not classify matches nothing (no mislabeling).
+  const unknown = staticData.findAgents({ kind: "paragon", limit: 100 });
+  assert.equal(unknown.total, 0);
+  assert.equal(unknown.agents.length, 0);
+});
+
 // --- 2. GET /api/agents/find route (injected fake staticData) ---------------
 
 const COOKIE_TOKEN = "raw-signed-login-cookie";

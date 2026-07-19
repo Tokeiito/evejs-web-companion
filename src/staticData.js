@@ -423,6 +423,49 @@ function getSolarSystemGraph() {
 const AGENT_FIND_DEFAULT_LIMIT = 500;
 const AGENT_FIND_MAX_LIMIT = 5000;
 
+// A "real" mission agent of an exposed kind is the STANDARD agent of that kind's
+// retail division — NOT a Paragon / career / storyline / epic / event placeholder
+// that happens to share the same `missionKind` string. The static export's
+// `missionKind` is right for ordinary agents but is ALSO stamped on special
+// agents (e.g. "IRIS - Jita" agentID 3020034 is a Paragon agent — division 37,
+// agentType 13 — yet carries missionKind "courier"), so filtering on the raw
+// `missionKind` mislabels them. The finder instead classifies by
+// (divisionID, agentTypeID), the retail agent-division scheme:
+//   courier   → Distribution division 22, basic agent type 2  (real couriers)
+//   encounter → Security division 24, basic agent type 2
+//   mining    → Mining division 23, basic agent type 2
+//   research  → R&D division 18, research agent type 4
+// Verified against agentAuthority/data.json (10,941 agents): of 4,421
+// missionKind:"courier" rows, exactly the 3,725 div-22/type-2 rows are ordinary
+// distribution agents; the other 696 are career types 5/6/7/8, storyline 10,
+// event 11, research-type 3 (all still division 22), plus off-division epic
+// (division 25, type 12) and Paragon (division 37, type 13) — none of which are
+// ordinary courier agents. Every export row is a placeholder with empty
+// missionTemplateIDs (the runnable mission content lives in the mission
+// runtime), so the finder can only filter to the right KIND, not the content.
+const AGENT_KIND_CLASSIFICATION = Object.freeze({
+  courier: Object.freeze({ divisionID: 22, agentTypeID: 2 }),
+  encounter: Object.freeze({ divisionID: 24, agentTypeID: 2 }),
+  mining: Object.freeze({ divisionID: 23, agentTypeID: 2 }),
+  research: Object.freeze({ divisionID: 18, agentTypeID: 4 }),
+});
+const AGENT_STANDARD_CLASSIFICATIONS = Object.freeze(
+  Object.values(AGENT_KIND_CLASSIFICATION),
+);
+
+/** True when the agent is the standard mission agent matching one classification. */
+function matchesClassification(agent, spec) {
+  return (
+    (Number(agent && agent.divisionID) || 0) === spec.divisionID &&
+    (Number(agent && agent.agentTypeID) || 0) === spec.agentTypeID
+  );
+}
+
+/** True when the agent is a real mission agent of ANY exposed kind (for "all"). */
+function isStandardMissionAgent(agent) {
+  return AGENT_STANDARD_CLASSIFICATIONS.some((spec) => matchesClassification(agent, spec));
+}
+
 function getAgentsByID() {
   const cacheKey = "agentAuthority:agentsByID";
   if (caches.has(cacheKey)) {
@@ -455,6 +498,10 @@ function toAgentSummary(agent) {
     agentID,
     name: String((agent && agent.ownerName) || `Agent ${agentID}`),
     level: Number(agent && agent.level) || null,
+    // The retail classification the finder filters on (division + agent type),
+    // carried through so the wire shape is transparent/testable.
+    divisionID: Number(agent && agent.divisionID) || null,
+    agentTypeID: Number(agent && agent.agentTypeID) || null,
     missionKind: agent && agent.missionKind ? String(agent.missionKind) : null,
     missionTypeLabel: agent && agent.missionTypeLabel ? String(agent.missionTypeLabel) : null,
     corporationID: Number(agent && agent.corporationID) || null,
@@ -468,11 +515,16 @@ function toAgentSummary(agent) {
 
 /**
  * Find agents from the static agentAuthority table, filtered server-side and
- * capped so the ~11k-agent dataset never crosses the wire whole (goal R6a).
+ * capped so the ~11k-agent dataset never crosses the wire whole (goal R6a/R6b).
  * `kind` defaults to "courier" (the milestone); "all"/"any"/"" disables the
- * kind filter. `level` (1..5) is optional. The pre-cap match set is sorted
- * deterministically by (level, agentID) so the cap is stable/reproducible; the
- * client sorts the returned rows by jumps from the current system. Returns
+ * kind filter and returns real mission agents of any exposed kind. Agents are
+ * classified by (divisionID, agentTypeID) — NOT the raw `missionKind` — so
+ * Paragon / career / storyline / epic / event placeholders are never listed
+ * under an ordinary kind (goal R6b, see AGENT_KIND_CLASSIFICATION). A `kind`
+ * the finder does not classify returns no matches rather than mislabel. `level`
+ * (1..5) is optional. The pre-cap match set is sorted deterministically by
+ * (level, agentID) so the cap is stable/reproducible; the client sorts the
+ * returned rows by jumps from the current system. Returns
  * `{ agents, total, capped, kind, level, limit }` where `total` is the full
  * match count before the cap.
  */
@@ -485,9 +537,20 @@ function findAgents(filters = {}) {
     ? Math.min(Math.floor(requestedLimit), AGENT_FIND_MAX_LIMIT)
     : AGENT_FIND_DEFAULT_LIMIT;
 
+  // Resolve the kind to its (division, agentType) predicate. "all" (kind===null)
+  // spans every real mission agent; a requested-but-unclassified kind matches
+  // nothing (better an empty finder than a mislabeled special agent).
+  const spec = kind === null ? null : (AGENT_KIND_CLASSIFICATION[kind] || undefined);
+  const isKindMatch = kind === null
+    ? isStandardMissionAgent
+    : (spec === undefined ? null : (agent) => matchesClassification(agent, spec));
+  if (isKindMatch === null) {
+    return { agents: [], total: 0, capped: false, kind, level, limit };
+  }
+
   const matches = [];
   for (const agent of getAgentsByID().values()) {
-    if (kind !== null && String(agent.missionKind || "").toLowerCase() !== kind) {
+    if (!isKindMatch(agent)) {
       continue;
     }
     if (level !== null && (Number(agent.level) || null) !== level) {

@@ -151,6 +151,23 @@ export async function selectCharacter(
   };
 }
 
+/**
+ * Read-only static station identity by ID (goal R6b): the same client-local
+ * StationStatic the select route returns, fetched so the Station panel can
+ * refresh its identity after the docked station changes (autopilot arrival /
+ * manual dock). Not a gateway/bridge call — read-only static reference data.
+ */
+export async function loadStationStatic(
+  stationID: number,
+  options: ApiOptions = {},
+): Promise<StationStatic | null> {
+  const data = await getJson(`/api/map/station/${stationID}`, options);
+  const station = data.station;
+  return typeof station === "object" && station !== null && !Array.isArray(station)
+    ? (station as unknown as StationStatic)
+    : null;
+}
+
 /** Release the persistent session (character goes offline via the retail disconnect path). */
 export async function releaseSession(
   options: ApiOptions = {},
