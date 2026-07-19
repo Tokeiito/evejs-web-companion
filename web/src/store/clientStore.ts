@@ -19,7 +19,13 @@ import {
   type Unsubscribe,
 } from "./signals.ts";
 import type { FeedAdapter, FeedEvent, FeedSink, FeedStatus } from "./feed.ts";
-import type { CharacterSummary } from "./types.ts";
+import type {
+  CharacterSummary,
+  OnlineCharacterState,
+  StationGuest,
+  StationServiceBits,
+  StationStatic,
+} from "./types.ts";
 
 // --- Typed state slices ----------------------------------------------------
 
@@ -36,6 +42,19 @@ export interface CharacterSlice {
   readonly characters: readonly CharacterSummary[];
 }
 
+/**
+ * The docked station panel (goal R2): who is online on the persistent
+ * browser-backed session and what the docked-entry reads returned.
+ */
+export interface StationSlice {
+  readonly online: OnlineCharacterState | null;
+  readonly station: StationStatic | null;
+  readonly bits: StationServiceBits | null;
+  readonly guests: readonly StationGuest[];
+  /** null until map.GetStationInfo answered; then whether it was the cached envelope. */
+  readonly stationInfoCached: boolean | null;
+}
+
 /** Which feed adapter is attached and its connectivity — not the transport itself. */
 export interface FeedSlice {
   readonly adapter: string | null;
@@ -45,6 +64,7 @@ export interface FeedSlice {
 export interface ClientState {
   readonly session: SessionSlice;
   readonly character: CharacterSlice;
+  readonly station: StationSlice;
   readonly feed: FeedSlice;
 }
 
@@ -59,6 +79,14 @@ const INITIAL_CHARACTER: CharacterSlice = Object.freeze({
   characters: Object.freeze([]) as readonly CharacterSummary[],
 });
 
+const INITIAL_STATION: StationSlice = Object.freeze({
+  online: null,
+  station: null,
+  bits: null,
+  guests: Object.freeze([]) as readonly StationGuest[],
+  stationInfoCached: null,
+});
+
 const INITIAL_FEED: FeedSlice = Object.freeze({
   adapter: null,
   status: "idle" as FeedStatus,
@@ -70,6 +98,7 @@ export interface ClientStore {
   /** Per-slice read/subscribe API for pure readers. */
   readonly session: ReadableSignal<SessionSlice>;
   readonly character: ReadableSignal<CharacterSlice>;
+  readonly station: ReadableSignal<StationSlice>;
   readonly feed: ReadableSignal<FeedSlice>;
 
   /** Whole-state snapshot. */
@@ -95,6 +124,7 @@ export interface ClientStore {
 export function createClientStore(): ClientStore {
   const session = createSignal<SessionSlice>(INITIAL_SESSION);
   const character = createSignal<CharacterSlice>(INITIAL_CHARACTER);
+  const station = createSignal<StationSlice>(INITIAL_STATION);
   const feed = createSignal<FeedSlice>(INITIAL_FEED);
 
   // Whole-store notification: bumped once per applied change so multi-slice
@@ -107,6 +137,7 @@ export function createClientStore(): ClientStore {
   const get = (): ClientState => ({
     session: session.get(),
     character: character.get(),
+    station: station.get(),
     feed: feed.get(),
   });
 
@@ -120,9 +151,10 @@ export function createClientStore(): ClientStore {
         });
         break;
       case "session/logged-out":
-        // Logging out drops the character context with the session.
+        // Logging out drops the character and station context with the session.
         session.set(INITIAL_SESSION);
         character.set(INITIAL_CHARACTER);
+        station.set(INITIAL_STATION);
         break;
       case "character/list": {
         const characters = [...event.characters];
@@ -148,6 +180,27 @@ export function createClientStore(): ClientStore {
         });
         break;
       }
+      case "character/online":
+        // A fresh docked entry: the panel reads (bits/guests/info) repopulate
+        // from their own events on the new live session.
+        station.set({
+          ...INITIAL_STATION,
+          online: event.character,
+          station: event.station,
+        });
+        break;
+      case "character/offline":
+        station.set(INITIAL_STATION);
+        break;
+      case "station/bits":
+        station.set({ ...station.get(), bits: event.bits });
+        break;
+      case "station/guests":
+        station.set({ ...station.get(), guests: [...event.guests] });
+        break;
+      case "station/info-cached":
+        station.set({ ...station.get(), stationInfoCached: event.cached });
+        break;
     }
   };
 
@@ -204,6 +257,7 @@ export function createClientStore(): ClientStore {
   return {
     session: readonlySignal(session),
     character: readonlySignal(character),
+    station: readonlySignal(station),
     feed: readonlySignal(feed),
     get,
     subscribe,

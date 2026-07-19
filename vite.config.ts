@@ -10,11 +10,16 @@
 // while the BFF keeps owning auth, the bridge proxy, and static vanilla pages.
 // Override the proxy target with EVEJS_WEB_BFF_URL if the BFF runs elsewhere.
 import { defineConfig } from "vite";
+// View library (locked by the R2 spike): Svelte 5. Components stay thin pure
+// readers of the framework-agnostic signal store (web/src/store), which
+// implements the Svelte store contract so `$slice` auto-subscription works.
+import { svelte } from "@sveltejs/vite-plugin-svelte";
 
 const bffTarget = process.env.EVEJS_WEB_BFF_URL || "http://127.0.0.1:26500";
 
 export default defineConfig({
   root: "web",
+  plugins: [svelte()],
   // Built asset URLs are absolute under /dist/ so the bundle works when the
   // Express static middleware serves public/dist/ at /dist/.
   base: "/dist/",

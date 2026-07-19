@@ -28,7 +28,25 @@ npm run dev:web     # Vite dev server; proxies /api to the BFF (EVEJS_WEB_BFF_UR
 npm test            # node --test: vanilla JS tests + web/**/*.test.ts together
 ```
 
-After `npm run build:web`, the scaffold smoke page is at `http://127.0.0.1:26500/dist/` (sign in on the vanilla app first so the bridge call has a session). See the "Consuming the bridge from TypeScript" section of [docs/bridge-wire-contract.md](docs/bridge-wire-contract.md) for the client/store layout and how R2 adds a page.
+After `npm run build:web`, the first migrated page (goal R2, Svelte 5) is at `http://127.0.0.1:26500/dist/` — it has its own login form, so no vanilla-app sign-in is needed. See the "Consuming the bridge from TypeScript" section of [docs/bridge-wire-contract.md](docs/bridge-wire-contract.md) for the client/store layout and how to add a page.
+
+## Spot test (R2): log in → pick a character → see your station
+
+The first live end-to-end check of the new stack (goal R2). What it proves: the browser drives the real retail calls (`SelectCharacterID` on a persistent live session, then the docked reads) against the same EveJS handlers the retail client hits.
+
+1. Start EveJS (`eve.js` repo) the way you normally run it, so the web gateway is listening on `:26002`.
+2. In this repo: `npm run build:web` (once, or after pulling), then `npm start`.
+3. Open `http://127.0.0.1:26500/dist/`.
+4. Log in with the EveJS account that owns your test character (any password — it is not checked).
+5. Click the character (e.g. **Farmer**). This brings the character **online on a live EveJS session** — the same duplicate-login and control rules as the retail client apply, so a character already logged in elsewhere is refused with the server's own message.
+6. You should see the docked station panel: station name/system/region (client-local static data, as in retail), the `GetStationItemBits` services row, and the `GetGuests` list with your character in it.
+
+What to expect:
+
+- **Going offline:** the "Go offline" button releases the session (character logs off through the same disconnect path as a retail client closing). Closing the tab does *not* release immediately — the gateway's idle TTL (30 minutes) reaps the session and logs the character off then. Logging out also releases.
+- While the browser session is live, a retail-client login for the same character is refused ("already online") unless login takeover is enabled, in which case the retail client evicts the browser session — faithful behavior; the page will report the session as lost on its next call.
+- `map.GetStationInfo` is issued faithfully but answers with the retail cached-object envelope; the panel notes this rather than decoding rows from it (station identity comes from static data, exactly like retail's client-side static DB).
+- If the panel looks stale after server-side changes, use "Refresh panel" — push forwarding of notifications is a later goal (G6); the backlog is drained into each call response for now.
 
 ## Configuration
 

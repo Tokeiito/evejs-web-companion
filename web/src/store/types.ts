@@ -9,6 +9,55 @@
  * {type:"long"} wrappers (BigInt encoded as decimal string, or plain number)
  * and are decoded to bigint.
  */
+/**
+ * The character brought online on the persistent browser-backed session
+ * (goal R2): the session echo the BFF returns from POST /api/bridge/select.
+ */
+export interface OnlineCharacterState {
+  readonly characterID: number;
+  readonly characterName: string;
+  readonly stationID: number | null;
+  readonly structureID: number | null;
+  readonly solarSystemID: number | null;
+  readonly corporationID: number | null;
+}
+
+/**
+ * Client-local static station identity (names stay client-side, exactly as
+ * the retail client resolves station names from its static DB). Provided by
+ * the BFF's read-only static reference data in the select response.
+ */
+export interface StationStatic {
+  readonly stationID: number;
+  readonly stationName: string;
+  readonly solarSystemName: string;
+  readonly regionName: string;
+  readonly stationTypeID: number | null;
+  readonly stationTypeName: string | null;
+  readonly operationID: number | null;
+  readonly security: number | null;
+}
+
+/**
+ * The docked station-services row from stationSvc.GetStationItemBits:
+ * retail builds Row(ownerID, itemID, operationID, stationTypeID) from this
+ * tuple (eve/client/script/ui/station/base.py:575).
+ */
+export interface StationServiceBits {
+  readonly ownerID: number | null;
+  readonly stationID: number | null;
+  readonly operationID: number | null;
+  readonly stationTypeID: number | null;
+}
+
+/** One docked guest from station.GetGuests: (charID, corp, alliance, warFaction). */
+export interface StationGuest {
+  readonly characterID: number;
+  readonly corporationID: number | null;
+  readonly allianceID: number | null;
+  readonly warFactionID: number | null;
+}
+
 export interface CharacterSummary {
   readonly characterID: number;
   readonly characterName: string;

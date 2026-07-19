@@ -117,9 +117,12 @@ function gatewayRequestError(error) {
   );
 }
 
-async function postSerializedJson(path, serializedPayload) {
+async function postSerializedJson(path, serializedPayload, options = {}) {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
+  const timeoutMs = Number(options.timeoutMs) > 0
+    ? Number(options.timeoutMs)
+    : DEFAULT_TIMEOUT_MS;
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
   const headers = {
     "content-type": "application/json",
   };
@@ -162,8 +165,8 @@ async function postSerializedJson(path, serializedPayload) {
   }
 }
 
-async function postJson(path, payload) {
-  return postSerializedJson(path, JSON.stringify(payload));
+async function postJson(path, payload, options = {}) {
+  return postSerializedJson(path, JSON.stringify(payload), options);
 }
 
 function isUncertainCommandError(error) {
@@ -383,8 +386,8 @@ async function getStationAsks(stationID) {
  * gateway materializes into the browser-backed session (`userid` required).
  * See docs/bridge-wire-contract.md for the full wire contract.
  */
-async function callMethod(service, method, args = [], kwargs = null, sessionFields = {}) {
-  const data = await postJson("/call", {
+async function callMethod(service, method, args = [], kwargs = null, sessionFields = {}, bridgeSessionID = undefined) {
+  const body = {
     service: String(service || ""),
     method: String(method || ""),
     args: Array.isArray(args) ? args : [],
@@ -394,12 +397,71 @@ async function callMethod(service, method, args = [], kwargs = null, sessionFiel
     session: sessionFields && typeof sessionFields === "object" && !Array.isArray(sessionFields)
       ? sessionFields
       : {},
-  });
+  };
+  // Optional persistent-session handle (goal R2): when the BFF holds a
+  // bridgeSessionID for this web session, the call runs on the stored live
+  // session instead of a per-call one. The handle never reaches browser JS.
+  if (typeof bridgeSessionID === "string" && bridgeSessionID) {
+    body.bridgeSessionID = bridgeSessionID;
+  }
+  const data = await postJson("/call", body);
   return {
     service: data.service,
     method: data.method,
     result: data.result === undefined ? null : data.result,
     notifications: Array.isArray(data.notifications) ? data.notifications : [],
+  };
+}
+
+// Persistent-session select-timeout: SelectCharacterID does real work (apply
+// character, guest broadcast, possible space restore), so it gets more room
+// than the default read timeout.
+const SELECT_TIMEOUT_MS = 10_000;
+
+/**
+ * Mint a persistent browser-backed session on the gateway and bring a
+ * character online on it: POST /_evejs-web/v1/session/select dispatches the
+ * retail tuple charUnboundMgr.SelectCharacterID(charID, secondChoiceID,
+ * skipTutorial) on the minted session. Returns the opaque bridgeSessionID
+ * (held server-side only — it must never reach browser JS) plus the session
+ * echo (characterID, stationID, ...). See docs/bridge-wire-contract.md.
+ */
+async function selectCharacter(args = [], kwargs = null, sessionFields = {}) {
+  const data = await postJson("/session/select", {
+    args: Array.isArray(args) ? args : [],
+    kwargs: kwargs && typeof kwargs === "object" && !Array.isArray(kwargs)
+      ? kwargs
+      : null,
+    session: sessionFields && typeof sessionFields === "object" && !Array.isArray(sessionFields)
+      ? sessionFields
+      : {},
+  }, { timeoutMs: SELECT_TIMEOUT_MS });
+  return {
+    bridgeSessionID: String(data.bridgeSessionID || ""),
+    service: data.service,
+    method: data.method,
+    result: data.result === undefined ? null : data.result,
+    notifications: Array.isArray(data.notifications) ? data.notifications : [],
+    session: data.session && typeof data.session === "object" ? data.session : {},
+  };
+}
+
+/**
+ * Release a persistent browser-backed session: POST
+ * /_evejs-web/v1/session/release runs the same disconnect path a retail
+ * socket close runs (character offline, control released). Unknown or expired
+ * sessions surface as SESSION_NOT_FOUND (404) — the TTL already disconnected
+ * them.
+ */
+async function releaseBridgeSession(bridgeSessionID, sessionFields = undefined) {
+  const body = { bridgeSessionID: String(bridgeSessionID || "") };
+  if (sessionFields && typeof sessionFields === "object" && !Array.isArray(sessionFields)) {
+    body.session = sessionFields;
+  }
+  const data = await postJson("/session/release", body);
+  return {
+    released: data.released === true,
+    characterID: data.characterID === undefined ? null : data.characterID,
   };
 }
 
@@ -440,6 +502,8 @@ module.exports = {
   EveGatewayError,
   buildEventStreamRequest,
   callMethod,
+  selectCharacter,
+  releaseBridgeSession,
   claimCharacterControl,
   getAccount,
   getGatewayHealth,

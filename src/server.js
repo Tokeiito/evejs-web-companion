@@ -8,6 +8,7 @@ const eveStore = require("./eveStore");
 const eveGatewayClient = require("./eveGatewayClient");
 const marketClient = require("./marketClient");
 const webAuth = require("./webAuth");
+const staticDataModule = require("./staticData");
 const config = require("./config");
 const { createBrowserLeaseStore } = require("./browserLeaseStore");
 const { createCharacterEventProxy } = require("./characterEventProxy");
@@ -18,9 +19,15 @@ const store = options.eveStore || eveStore;
 const gateway = options.eveGatewayClient || eveGatewayClient;
 const market = options.marketClient || marketClient;
 const auth = options.webAuth || webAuth;
+const staticData = options.staticData || staticDataModule;
 const leaseStore = options.browserLeaseStore || createBrowserLeaseStore();
+// Persistent-session handles (goal R2): webSessionID -> the opaque
+// bridgeSessionID the gateway minted, held server-side only. The browser
+// never sees the handle; it just gets its character/station state back.
+const bridgeSessions = options.bridgeSessionStore || new Map();
 const errorLogger = options.errorLogger || ((error) => console.error(error));
 app.locals.browserLeaseStore = leaseStore;
+app.locals.bridgeSessions = bridgeSessions;
 app.locals.characterEventProxyOptions = {
   eveStore: store,
   webAuth: auth,
@@ -357,6 +364,14 @@ app.post("/api/logout", async (req, res) => {
         lease,
       )));
     leaseStore.clearSession(payload.sessionID);
+    // Logging out closes the client: best-effort release of the persistent
+    // bridge session so the character goes offline (the gateway TTL is the
+    // backstop if this fails).
+    try {
+      await releaseHeldBridgeSession(payload.sessionID);
+    } catch {
+      bridgeSessions.delete(payload.sessionID);
+    }
   }
   clearSessionCookie(res);
   res.json({ ok: true });
@@ -398,6 +413,11 @@ app.post("/api/bridge/call", requireAuth, async (req, res, next) => {
     body.session && typeof body.session === "object" && !Array.isArray(body.session)
       ? body.session
       : {};
+  // When this web session holds a persistent bridge session (goal R2), every
+  // bridge call runs on that live session — one web login is one client
+  // session, like retail. A browser-supplied bridgeSessionID is ignored; only
+  // the server-held handle is ever forwarded.
+  const heldBridgeSession = bridgeSessions.get(req.webSessionID) || null;
   try {
     const outcome = await gateway.callMethod(
       body.service,
@@ -405,6 +425,7 @@ app.post("/api/bridge/call", requireAuth, async (req, res, next) => {
       body.args,
       body.kwargs,
       { ...clientSessionFields, userid: Number(req.account.accountID) },
+      heldBridgeSession ? heldBridgeSession.bridgeSessionID : undefined,
     );
     res.json({
       ok: true,
@@ -413,6 +434,133 @@ app.post("/api/bridge/call", requireAuth, async (req, res, next) => {
       result: outcome.result,
       notifications: outcome.notifications,
     });
+  } catch (error) {
+    // The gateway reaped or lost the persistent session (TTL expiry, retail
+    // takeover, restart): drop the stale handle so the next call is stateless
+    // and surface the typed error so the page can return to character select.
+    if (heldBridgeSession && error && error.code === "SESSION_NOT_FOUND") {
+      bridgeSessions.delete(req.webSessionID);
+    }
+    next(error);
+  }
+});
+
+// Best-effort release of the bridge session a web session holds. Returns true
+// when a held session existed. SESSION_NOT_FOUND from the gateway means the
+// TTL (or a takeover) already disconnected it — the handle is just dropped.
+async function releaseHeldBridgeSession(webSessionID) {
+  const held = bridgeSessions.get(webSessionID);
+  if (!held) {
+    return false;
+  }
+  bridgeSessions.delete(webSessionID);
+  try {
+    await gateway.releaseBridgeSession(held.bridgeSessionID, {
+      userid: Number(held.accountID),
+    });
+  } catch (error) {
+    if (!(error && error.code === "SESSION_NOT_FOUND")) {
+      throw error;
+    }
+  }
+  return true;
+}
+
+// Read-only station identity from the local static reference data (allowed by
+// the roadmap: names/SDE stay client-local, exactly as the retail client
+// resolves station names from its static DB).
+function buildStationStatic(stationID) {
+  const numericStationID = Number(stationID) || 0;
+  if (numericStationID <= 0) {
+    return null;
+  }
+  const record = staticData.getStation(numericStationID) || {};
+  const stationTypeID = Number(record.stationTypeID) || null;
+  return {
+    stationID: numericStationID,
+    stationName: String(record.stationName || `Station ${numericStationID}`),
+    solarSystemName: String(record.solarSystemName || ""),
+    regionName: String(record.regionName || ""),
+    stationTypeID,
+    stationTypeName: stationTypeID ? staticData.getTypeName(stationTypeID) : null,
+    operationID: Number(record.operationID) || null,
+    security: Number(record.security) || null,
+  };
+}
+
+// Select a character onto a persistent browser-backed session (goal R2): the
+// BFF forwards the retail tuple SelectCharacterID(charID, secondChoiceID,
+// skipTutorial) to the gateway's session/select route, pins the identity to
+// the signed login session, and keeps the returned bridgeSessionID
+// server-side in its own session store — it must never reach browser JS.
+app.post("/api/bridge/select", requireAuth, async (req, res, next) => {
+  const characterID = Number(req.body && req.body.characterID || 0);
+  try {
+    if (!Number.isSafeInteger(characterID) || characterID <= 0) {
+      res.status(400).json({
+        ok: false,
+        error: "INVALID_CHARACTER",
+        message: "A positive characterID is required.",
+      });
+      return;
+    }
+    const character = await store.getCharacterForAccount(
+      req.account.accountID,
+      characterID,
+    );
+    if (!character) {
+      res.status(404).json({ ok: false, error: "CHARACTER_NOT_FOUND" });
+      return;
+    }
+    // One client session per web login: switching characters releases the
+    // previous persistent session (retail semantics live on the gateway side;
+    // the handler's own refusals pass through as CALL_REFUSED).
+    await releaseHeldBridgeSession(req.webSessionID);
+    const outcome = await gateway.selectCharacter(
+      [characterID, null, true],
+      null,
+      {
+        userid: Number(req.account.accountID),
+        userName: String(req.account.username || ""),
+      },
+    );
+    bridgeSessions.set(req.webSessionID, {
+      bridgeSessionID: outcome.bridgeSessionID,
+      characterID: Number(outcome.session.characterID) || characterID,
+      accountID: Number(req.account.accountID),
+    });
+    res.json({
+      ok: true,
+      character: {
+        characterID: Number(outcome.session.characterID) || characterID,
+        characterName: String(outcome.session.characterName || ""),
+        stationID: outcome.session.stationID === undefined
+          ? null
+          : outcome.session.stationID,
+        structureID: outcome.session.structureID === undefined
+          ? null
+          : outcome.session.structureID,
+        solarSystemID: outcome.session.solarSystemID === undefined
+          ? null
+          : outcome.session.solarSystemID,
+        corporationID: outcome.session.corporationID === undefined
+          ? null
+          : outcome.session.corporationID,
+      },
+      station: buildStationStatic(outcome.session.stationID),
+      notifications: outcome.notifications,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Release the persistent session this web login holds (character goes offline
+// through the same disconnect path a retail socket close runs).
+app.post("/api/bridge/release", requireAuth, async (req, res, next) => {
+  try {
+    const released = await releaseHeldBridgeSession(req.webSessionID);
+    res.json({ ok: true, released });
   } catch (error) {
     next(error);
   }

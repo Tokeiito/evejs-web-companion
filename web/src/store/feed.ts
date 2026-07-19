@@ -13,7 +13,13 @@
 // smoke page). The legacy-WS adapter and the bridge-notification adapter are
 // R2+ work and implement this same interface.
 
-import type { CharacterSummary } from "./types.ts";
+import type {
+  CharacterSummary,
+  OnlineCharacterState,
+  StationGuest,
+  StationServiceBits,
+  StationStatic,
+} from "./types.ts";
 
 export type FeedStatus = "idle" | "connecting" | "connected" | "disconnected";
 
@@ -28,7 +34,23 @@ export type FeedEvent =
   | { readonly type: "session/logged-in"; readonly accountID: number; readonly username: string }
   | { readonly type: "session/logged-out" }
   | { readonly type: "character/list"; readonly characters: readonly CharacterSummary[] }
-  | { readonly type: "character/selected"; readonly characterID: number | null };
+  | { readonly type: "character/selected"; readonly characterID: number | null }
+  // Goal R2 — the persistent browser-backed session and its docked entry:
+  // a character came online (select-character succeeded) with its client-local
+  // static station identity...
+  | {
+      readonly type: "character/online";
+      readonly character: OnlineCharacterState;
+      readonly station: StationStatic | null;
+    }
+  // ...or went offline (release, TTL expiry, session lost).
+  | { readonly type: "character/offline" }
+  // Docked station-panel reads on the live session.
+  | { readonly type: "station/bits"; readonly bits: StationServiceBits }
+  | { readonly type: "station/guests"; readonly guests: readonly StationGuest[] }
+  // map.GetStationInfo answered with its retail CachedMethodCallResult
+  // envelope (the rowset itself rides the retail object cache).
+  | { readonly type: "station/info-cached"; readonly cached: boolean };
 
 /** What the store hands an adapter: publish events, report connectivity. */
 export interface FeedSink {
