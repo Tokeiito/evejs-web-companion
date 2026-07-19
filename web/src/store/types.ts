@@ -247,6 +247,72 @@ export interface RewardsState {
   readonly error: string | null;
 }
 
+// --- R6a Agent Finder ------------------------------------------------------
+
+/**
+ * One agent from the static agentAuthority reference table (goal R6a), with its
+ * station/system names resolved server-side and its jump distance from the
+ * player's current system computed client-side (a single BFS — distancesFrom).
+ * `jumps` is null when the agent's system is unreachable or the origin is
+ * unknown; the finder sorts those last. The browser addresses the agent by
+ * agentID (to bind it on arrival via the R4 agent flow) and by stationID (for
+ * the R5b "Set destination" autopilot).
+ */
+export interface AgentFinderRow {
+  readonly agentID: number;
+  readonly name: string;
+  readonly level: number | null;
+  readonly missionKind: string | null;
+  readonly missionTypeLabel: string | null;
+  readonly corporationID: number | null;
+  readonly factionID: number | null;
+  readonly stationID: number | null;
+  readonly stationName: string | null;
+  readonly solarSystemID: number | null;
+  readonly solarSystemName: string | null;
+  /** Jumps from the player's current system; null = unreachable / unknown origin. */
+  readonly jumps: number | null;
+}
+
+/**
+ * The agent the player set the autopilot to (so the panel can show who they are
+ * flying to). A projection of the chosen AgentFinderRow.
+ */
+export interface AgentFinderTarget {
+  readonly agentID: number;
+  readonly name: string;
+  readonly level: number | null;
+  readonly stationID: number | null;
+  readonly stationName: string | null;
+  readonly solarSystemID: number | null;
+  readonly solarSystemName: string | null;
+  readonly jumps: number | null;
+}
+
+/**
+ * The Agent Finder page state (goal R6a): the filtered/capped agents (already
+ * annotated with jumps and sorted nearest-first by the flow), the filter echo,
+ * and the currently-selected destination agent. The full ~11k-agent dataset is
+ * never held here — the BFF filters by kind/level and caps; `total`/`capped`
+ * report how much was matched vs returned so the UI can prompt for a narrower
+ * filter. The rendered rows are further capped in the view (like R6's roster).
+ */
+export interface AgentFinderState {
+  readonly kind: string;
+  readonly level: number | null;
+  readonly originSystemID: number | null;
+  readonly agents: readonly AgentFinderRow[];
+  /** Full match count before the server cap. */
+  readonly total: number;
+  /** True when the server cap dropped some matches (narrow the filter). */
+  readonly capped: boolean;
+  /** True once a find has populated the slice. */
+  readonly loaded: boolean;
+  readonly target: AgentFinderTarget | null;
+  /** Non-null when the last find failed (non-fatally). */
+  readonly error: string | null;
+}
+
 // --- R5a Flight (manually-stepped space movement) --------------------------
 
 /**

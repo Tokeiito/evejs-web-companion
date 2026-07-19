@@ -28,7 +28,13 @@ import { BridgeCallError } from "../bridge/callMethod.ts";
 import * as api from "./api.ts";
 import type { ClientStore } from "../store/clientStore.ts";
 import type { AgentAction } from "../store/types.ts";
-import { buildSystemGraph, solveRoute, type SystemGraph } from "../nav/routeSolver.ts";
+import {
+  buildSystemGraph,
+  distancesFrom,
+  solveRoute,
+  type SystemGraph,
+} from "../nav/routeSolver.ts";
+import type { AgentFinderRow } from "../store/types.ts";
 import {
   createAutopilot,
   type AutopilotController,
@@ -95,6 +101,19 @@ export interface AppFlow {
   jump(fromGateID: number, toGateID: number): Promise<void>;
   /** Dock at the destination station. */
   dock(stationID: number): Promise<void>;
+  /**
+   * R6a — find agents from the static reference table (default courier),
+   * annotate each with jumps from the current system (a single client-side
+   * BFS), and sort nearest-first. Surfaces a failure through the finder slice
+   * rather than throwing.
+   */
+  findAgents(filters?: { kind?: string; level?: number | null; limit?: number }): Promise<void>;
+  /**
+   * R6a — set the browser autopilot to a found agent's station (reuses the R5b
+   * route solver + decide-loop via startRoute), and record the target agent so
+   * the player knows who they're flying to.
+   */
+  setDestinationToAgent(agentID: number): Promise<void>;
   /**
    * R5b — start the browser autopilot to a destination (station or system ID):
    * solve the route client-side, then run the decide-loop. Surfaces a plan
@@ -517,6 +536,123 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     void autopilot.run();
   }
 
+  // --- R6a Agent Finder ----------------------------------------------------
+
+  // The finder pulls a bounded set from the static reference table and sorts it
+  // by jumps from the current system. We request a limit that fully covers a
+  // single mission-kind level (the largest, courier L1, is ~1531) so choosing a
+  // level yields the complete, correctly-nearest-sorted set; the browser then
+  // renders only a capped page. Bounded well under the ~11k-agent dataset.
+  const FINDER_REQUEST_LIMIT = 2000;
+
+  // Nearest-first; unreachable / unknown-origin agents (jumps === null) sort
+  // last, then by level, then by name for a stable order.
+  function compareFinderRows(a: AgentFinderRow, b: AgentFinderRow): number {
+    if (a.jumps !== b.jumps) {
+      if (a.jumps === null) {
+        return 1;
+      }
+      if (b.jumps === null) {
+        return -1;
+      }
+      return a.jumps - b.jumps;
+    }
+    if ((a.level ?? 0) !== (b.level ?? 0)) {
+      return (a.level ?? 0) - (b.level ?? 0);
+    }
+    return a.name.localeCompare(b.name);
+  }
+
+  async function findAgents(
+    filters: { kind?: string; level?: number | null; limit?: number } = {},
+  ): Promise<void> {
+    const kind = filters.kind ?? "courier";
+    const level = filters.level ?? null;
+
+    let result: Awaited<ReturnType<typeof api.findAgents>>;
+    try {
+      result = await api.findAgents(
+        { kind, level, limit: filters.limit ?? FINDER_REQUEST_LIMIT },
+        callOptions,
+      );
+    } catch (error) {
+      // The finder reads static reference data (web-login only, no bridge
+      // session), so a failure is a plain read error surfaced in the slice.
+      store.apply({ type: "finder/error", message: `Could not find agents: ${readErrorReason(error)}` });
+      return;
+    }
+
+    // The player's current system is the docked character's system (the finder
+    // is a docked-station tool). Distances come from ONE BFS over the map graph
+    // (client-side, like the route solver) — never a solveRoute per agent.
+    const origin = store.station.get().online?.solarSystemID ?? null;
+    let distances: Map<number, number> | null = null;
+    let distanceNote: string | null = null;
+    if (origin !== null) {
+      try {
+        distances = distancesFrom(await loadRouteGraph(), origin);
+      } catch (error) {
+        // The map graph is the same read-only static data the route solver
+        // uses; if it can't load, still list the agents (jumps null) and note
+        // why rather than failing the whole find.
+        distanceNote = `Agents listed without distances (map graph unavailable: ${readErrorReason(error)}).`;
+      }
+    }
+
+    const rows: AgentFinderRow[] = result.agents
+      .map((agent) => ({
+        ...agent,
+        jumps:
+          distances !== null && agent.solarSystemID !== null
+            ? distances.get(agent.solarSystemID) ?? null
+            : null,
+      }))
+      .sort(compareFinderRows);
+
+    store.apply({
+      type: "finder/results",
+      kind: result.kind,
+      level: result.level,
+      originSystemID: origin,
+      agents: rows,
+      total: result.total,
+      capped: result.capped,
+    });
+    // finder/results clears the error; re-apply the soft distance note after it
+    // so it survives (a hard find error already returned above).
+    if (distanceNote) {
+      store.apply({ type: "finder/error", message: distanceNote });
+    }
+  }
+
+  async function setDestinationToAgent(agentID: number): Promise<void> {
+    const agent = store.finder.get().agents.find((row) => row.agentID === agentID);
+    if (!agent) {
+      store.apply({ type: "finder/error", message: `Agent ${agentID} is not in the current results.` });
+      return;
+    }
+    if (agent.stationID === null) {
+      store.apply({ type: "finder/error", message: `Agent ${agent.name} has no station to route to.` });
+      return;
+    }
+    // Record who we're flying to (the panel shows the target), then reuse the
+    // R5b route solver + browser autopilot via startRoute(agent.stationID).
+    store.apply({
+      type: "finder/target",
+      target: {
+        agentID: agent.agentID,
+        name: agent.name,
+        level: agent.level,
+        stationID: agent.stationID,
+        stationName: agent.stationName,
+        solarSystemID: agent.solarSystemID,
+        solarSystemName: agent.solarSystemName,
+        jumps: agent.jumps,
+      },
+    });
+    await startRoute(agent.stationID);
+  }
+
   return {
     async login(username, password) {
       const result = await api.login(username, password, callOptions);
@@ -655,6 +791,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     async dock(stationID) {
       await runFlightStep("Dock", () => api.dock(stationID, callOptions));
     },
+
+    findAgents,
+
+    setDestinationToAgent,
 
     startRoute,
 

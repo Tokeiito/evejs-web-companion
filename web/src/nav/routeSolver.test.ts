@@ -6,7 +6,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildSystemGraph, solveRoute, type SystemGraphData } from "./routeSolver.ts";
+import {
+  buildSystemGraph,
+  distancesFrom,
+  solveRoute,
+  type SystemGraphData,
+} from "./routeSolver.ts";
 
 // A small line-plus-branch map:
 //   A(1) <-> B(2) <-> C(3) <-> D(4)
@@ -99,6 +104,46 @@ test("solveRoute: invalid endpoints are unreachable, not a throw", () => {
   const graph = buildSystemGraph(FIXTURE);
   assert.equal(solveRoute(graph, 0, 4).reachable, false);
   assert.equal(solveRoute(graph, 1, 0).reachable, false);
+});
+
+// --- distancesFrom (goal R6a): single BFS -> jumps to every system ----------
+
+test("distancesFrom returns the jump distance to every reachable system, origin = 0", () => {
+  const graph = buildSystemGraph(FIXTURE);
+  const distances = distancesFrom(graph, 1); // from Alpha
+  assert.equal(distances.get(1), 0); // origin is zero jumps
+  assert.equal(distances.get(2), 1); // Bravo
+  assert.equal(distances.get(3), 2); // Charlie
+  assert.equal(distances.get(4), 3); // Delta (via C)
+  assert.equal(distances.get(5), 3); // Echo (via C) — the branch
+});
+
+test("distancesFrom picks the fewest-jumps distance on a branch", () => {
+  const graph = buildSystemGraph(FIXTURE);
+  const distances = distancesFrom(graph, 3); // from Charlie (the branch point)
+  assert.equal(distances.get(3), 0);
+  assert.equal(distances.get(2), 1);
+  assert.equal(distances.get(4), 1);
+  assert.equal(distances.get(5), 1);
+  assert.equal(distances.get(1), 2);
+});
+
+test("distancesFrom omits unreachable systems from the map", () => {
+  const graph = buildSystemGraph(FIXTURE);
+  const distances = distancesFrom(graph, 1);
+  // Foxtrot(6) is isolated (no gates): not reachable, so absent from the map.
+  assert.equal(distances.has(6), false);
+  assert.equal(distances.get(6), undefined);
+});
+
+test("distancesFrom on an invalid/unknown origin yields an empty map, not a throw", () => {
+  const graph = buildSystemGraph(FIXTURE);
+  assert.equal(distancesFrom(graph, 0).size, 0);
+  assert.equal(distancesFrom(graph, 999).size, 0); // system not in the graph
+  // The isolated system is a "known" system but reaches nothing but itself.
+  const fromIsolated = distancesFrom(graph, 6);
+  assert.equal(fromIsolated.get(6), 0);
+  assert.equal(fromIsolated.size, 1);
 });
 
 test("buildSystemGraph tolerates malformed edges and keeps endpoint-only systems", () => {

@@ -15,6 +15,8 @@
 
 import type {
   AgentConversation,
+  AgentFinderRow,
+  AgentFinderTarget,
   AgentRow,
   CharacterSummary,
   CharStanding,
@@ -109,6 +111,25 @@ export type FeedEvent =
     }
   // Drop the reward readout (character offline / logged out).
   | { readonly type: "rewards/cleared" }
+  // Goal R6a — the Agent Finder. A find completed: the filtered/capped agents,
+  // already annotated with jumps from the current system and sorted
+  // nearest-first by the flow, plus the filter echo and match/cap counts.
+  | {
+      readonly type: "finder/results";
+      readonly kind: string;
+      readonly level: number | null;
+      readonly originSystemID: number | null;
+      readonly agents: readonly AgentFinderRow[];
+      readonly total: number;
+      readonly capped: boolean;
+    }
+  // The player set the autopilot to an agent (or cleared it): who they're flying
+  // to. null clears the target.
+  | { readonly type: "finder/target"; readonly target: AgentFinderTarget | null }
+  // A find failed non-fatally; null clears the error after a clean find.
+  | { readonly type: "finder/error"; readonly message: string | null }
+  // Drop the finder state (character offline / logged out).
+  | { readonly type: "finder/cleared" }
   // Goal R5a — the Flight page (manually-stepped space movement). A flight-
   // status snapshot: the session's current location + ship movement state.
   | { readonly type: "flight/status"; readonly status: FlightStatus }

@@ -411,6 +411,104 @@ function getSolarSystemGraph() {
   return graph;
 }
 
+// --- Agent reference data (goal R6a) ---------------------------------------
+// The per-station agentMgr.GetAgents roster is unreliable for *finding* an
+// agent to travel to (it returns 0 for a character re-selected directly into a
+// docked station, and only lists the current station). So the Agent Finder
+// lists agents from the static agentAuthority reference table, exactly the way
+// the solar-system graph is served: read-only static reference data, NOT a
+// gateway call and NOT gameplay SQLite. `ownerName` is the agent's name;
+// station/system names resolve through getStationName / getSolarSystemName.
+
+const AGENT_FIND_DEFAULT_LIMIT = 500;
+const AGENT_FIND_MAX_LIMIT = 5000;
+
+function getAgentsByID() {
+  const cacheKey = "agentAuthority:agentsByID";
+  if (caches.has(cacheKey)) {
+    return caches.get(cacheKey);
+  }
+  const table = readStaticTable("agentAuthority");
+  const bucket = (table && table.agentsByID) || {};
+  const index = new Map();
+  for (const [key, agent] of Object.entries(bucket)) {
+    const id = Number(agent && agent.agentID) || Number(key) || 0;
+    if (id > 0) {
+      index.set(id, agent);
+    }
+  }
+  caches.set(cacheKey, index);
+  return index;
+}
+
+/**
+ * The compact agent summary the finder consumes: the agent's identity plus its
+ * station/system with names resolved for display. IDs stay numeric (all fit in
+ * 2^53). Distance-from-current-system is computed client-side (a single BFS
+ * over the map graph — goal R6a), so no distance is baked in here.
+ */
+function toAgentSummary(agent) {
+  const stationID = Number(agent && agent.stationID) || null;
+  const solarSystemID = Number(agent && agent.solarSystemID) || null;
+  const agentID = Number(agent && agent.agentID) || 0;
+  return {
+    agentID,
+    name: String((agent && agent.ownerName) || `Agent ${agentID}`),
+    level: Number(agent && agent.level) || null,
+    missionKind: agent && agent.missionKind ? String(agent.missionKind) : null,
+    missionTypeLabel: agent && agent.missionTypeLabel ? String(agent.missionTypeLabel) : null,
+    corporationID: Number(agent && agent.corporationID) || null,
+    factionID: Number(agent && agent.factionID) || null,
+    stationID,
+    stationName: stationID ? getStationName(stationID) : null,
+    solarSystemID,
+    solarSystemName: solarSystemID ? getSolarSystemName(solarSystemID) : null,
+  };
+}
+
+/**
+ * Find agents from the static agentAuthority table, filtered server-side and
+ * capped so the ~11k-agent dataset never crosses the wire whole (goal R6a).
+ * `kind` defaults to "courier" (the milestone); "all"/"any"/"" disables the
+ * kind filter. `level` (1..5) is optional. The pre-cap match set is sorted
+ * deterministically by (level, agentID) so the cap is stable/reproducible; the
+ * client sorts the returned rows by jumps from the current system. Returns
+ * `{ agents, total, capped, kind, level, limit }` where `total` is the full
+ * match count before the cap.
+ */
+function findAgents(filters = {}) {
+  const rawKind = filters.kind === undefined || filters.kind === null ? "courier" : String(filters.kind).trim().toLowerCase();
+  const kind = rawKind === "all" || rawKind === "any" || rawKind === "" ? null : rawKind;
+  const level = Number(filters.level) || null;
+  const requestedLimit = Number(filters.limit);
+  const limit = Number.isFinite(requestedLimit) && requestedLimit > 0
+    ? Math.min(Math.floor(requestedLimit), AGENT_FIND_MAX_LIMIT)
+    : AGENT_FIND_DEFAULT_LIMIT;
+
+  const matches = [];
+  for (const agent of getAgentsByID().values()) {
+    if (kind !== null && String(agent.missionKind || "").toLowerCase() !== kind) {
+      continue;
+    }
+    if (level !== null && (Number(agent.level) || null) !== level) {
+      continue;
+    }
+    matches.push(agent);
+  }
+  matches.sort((a, b) => {
+    const levelDelta = (Number(a.level) || 0) - (Number(b.level) || 0);
+    if (levelDelta !== 0) {
+      return levelDelta;
+    }
+    return (Number(a.agentID) || 0) - (Number(b.agentID) || 0);
+  });
+
+  const total = matches.length;
+  const capped = total > limit;
+  const agents = (capped ? matches.slice(0, limit) : matches).map(toAgentSummary);
+  return { agents, total, capped, kind: kind, level, limit };
+}
+
 function getIndustryBlueprint(blueprintTypeID) {
   return buildIndex(
     "industryBlueprints",
@@ -428,6 +526,8 @@ function getNpcIndustryFacility(facilityID) {
 }
 
 module.exports = {
+  findAgents,
+  getAgentsByID,
   getAlliance,
   getAllianceName,
   getCategory,

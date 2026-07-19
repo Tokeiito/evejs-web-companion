@@ -20,6 +20,7 @@ import {
 } from "./signals.ts";
 import type { FeedAdapter, FeedEvent, FeedSink, FeedStatus } from "./feed.ts";
 import type {
+  AgentFinderState,
   AgentsState,
   CharacterSummary,
   FlightState,
@@ -75,6 +76,7 @@ export interface ClientState {
   readonly station: StationSlice;
   readonly inventory: InventoryState;
   readonly agents: AgentsState;
+  readonly finder: AgentFinderState;
   readonly rewards: RewardsState;
   readonly flight: FlightState;
   readonly travel: TravelState;
@@ -127,6 +129,18 @@ const INITIAL_AGENTS: AgentsState = Object.freeze({
   actionError: null,
 });
 
+const INITIAL_FINDER: AgentFinderState = Object.freeze({
+  kind: "courier",
+  level: null,
+  originSystemID: null,
+  agents: Object.freeze([]) as AgentFinderState["agents"],
+  total: 0,
+  capped: false,
+  loaded: false,
+  target: null,
+  error: null,
+});
+
 const INITIAL_REWARDS: RewardsState = Object.freeze({
   cashBalance: null,
   lpBalances: Object.freeze([]) as RewardsState["lpBalances"],
@@ -174,6 +188,7 @@ export interface ClientStore {
   readonly station: ReadableSignal<StationSlice>;
   readonly inventory: ReadableSignal<InventoryState>;
   readonly agents: ReadableSignal<AgentsState>;
+  readonly finder: ReadableSignal<AgentFinderState>;
   readonly rewards: ReadableSignal<RewardsState>;
   readonly flight: ReadableSignal<FlightState>;
   readonly travel: ReadableSignal<TravelState>;
@@ -205,6 +220,7 @@ export function createClientStore(): ClientStore {
   const station = createSignal<StationSlice>(INITIAL_STATION);
   const inventory = createSignal<InventoryState>(INITIAL_INVENTORY);
   const agents = createSignal<AgentsState>(INITIAL_AGENTS);
+  const finder = createSignal<AgentFinderState>(INITIAL_FINDER);
   const rewards = createSignal<RewardsState>(INITIAL_REWARDS);
   const flight = createSignal<FlightState>(INITIAL_FLIGHT);
   const travel = createSignal<TravelState>(INITIAL_TRAVEL);
@@ -223,6 +239,7 @@ export function createClientStore(): ClientStore {
     station: station.get(),
     inventory: inventory.get(),
     agents: agents.get(),
+    finder: finder.get(),
     rewards: rewards.get(),
     flight: flight.get(),
     travel: travel.get(),
@@ -245,6 +262,7 @@ export function createClientStore(): ClientStore {
         station.set(INITIAL_STATION);
         inventory.set(INITIAL_INVENTORY);
         agents.set(INITIAL_AGENTS);
+        finder.set(INITIAL_FINDER);
         rewards.set(INITIAL_REWARDS);
         flight.set(INITIAL_FLIGHT);
         travel.set(INITIAL_TRAVEL);
@@ -283,6 +301,7 @@ export function createClientStore(): ClientStore {
         });
         inventory.set(INITIAL_INVENTORY);
         agents.set(INITIAL_AGENTS);
+        finder.set(INITIAL_FINDER);
         rewards.set(INITIAL_REWARDS);
         flight.set(INITIAL_FLIGHT);
         travel.set(INITIAL_TRAVEL);
@@ -291,6 +310,7 @@ export function createClientStore(): ClientStore {
         station.set(INITIAL_STATION);
         inventory.set(INITIAL_INVENTORY);
         agents.set(INITIAL_AGENTS);
+        finder.set(INITIAL_FINDER);
         rewards.set(INITIAL_REWARDS);
         flight.set(INITIAL_FLIGHT);
         travel.set(INITIAL_TRAVEL);
@@ -352,6 +372,29 @@ export function createClientStore(): ClientStore {
         break;
       case "agents/cleared":
         agents.set(INITIAL_AGENTS);
+        break;
+      case "finder/results":
+        finder.set({
+          ...finder.get(),
+          kind: event.kind,
+          level: event.level,
+          originSystemID: event.originSystemID,
+          agents: [...event.agents],
+          total: event.total,
+          capped: event.capped,
+          loaded: true,
+          // A fresh result clears any stale find error.
+          error: null,
+        });
+        break;
+      case "finder/target":
+        finder.set({ ...finder.get(), target: event.target });
+        break;
+      case "finder/error":
+        finder.set({ ...finder.get(), error: event.message });
+        break;
+      case "finder/cleared":
+        finder.set(INITIAL_FINDER);
         break;
       case "rewards/loaded":
         rewards.set({
@@ -471,6 +514,7 @@ export function createClientStore(): ClientStore {
     station: readonlySignal(station),
     inventory: readonlySignal(inventory),
     agents: readonlySignal(agents),
+    finder: readonlySignal(finder),
     rewards: readonlySignal(rewards),
     flight: readonlySignal(flight),
     travel: readonlySignal(travel),

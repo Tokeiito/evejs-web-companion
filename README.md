@@ -143,6 +143,25 @@ What to expect:
 - **The reward reads are pull-refreshes** (`account.GetCashBalance` / `LPSvc.GetAllMyCharacterWalletLPBalances` / `standingMgr.GetCharStandings` / `agentMgr.GetMyJournalDetails`) issued after Complete — deny-by-default, top-level reads on the held session.
 - The full accept→cargo→autopilot→complete path is proven in-process against a deterministic courier fixture (`eve.js server/tests/webGatewayCourierComplete.test.js`); this spot test is the live end-to-end run.
 
+## Spot test (R6a): find a courier agent → set the autopilot to it
+
+The Agent Finder (goal R6a). What it proves: a player can **find a courier agent to travel to** even when the per-station roster is empty. The per-station `agentMgr.GetAgents` returns 0 for a character re-selected directly into a docked station (and only ever lists the current station's agents), so the finder lists agents from **static reference data** (`agentAuthority`), sorts them by **jumps from the current system** (a single client-side BFS over the map graph — no server route call), and sets the **browser autopilot** (R5b) to a chosen agent's station. Traveling there and docking populates the live agents normally, so you can then talk to the agent and accept a courier (R4/R6). Web-only — no eve.js change.
+
+**Setup expectation:** the character is docked (Farmer at Jita 4-4, station `60003760`, system Jita `30000142`). Same server setup as the R2–R6 spot tests (EveJS running, `npm run build:web`, `npm start`).
+
+1. Open `http://127.0.0.1:26500/dist/`, log in, and select the character (R2 flow).
+2. Click the **Agent Finder** tab. It loads couriers by default, each row showing **name, level, mission kind, station, system, and jumps away**, sorted **nearest-first** from your current system. The render is capped (first 60, with a "showing X of Y" count) so the ~11k-agent dataset stays responsive.
+3. Set **Level** to `1` to narrow to level-1 couriers (the full level is fetched, so the sort is complete). Use **Search** (name / system) to jump to a system, e.g. type `Jita`.
+4. Pick a **nearby** L1 courier and click **Set destination**. The **Autopilot target** panel names who you're flying to, and the app switches you to the **Travel** tab where the R5b autopilot is already running.
+5. Watch it drive itself (undock → warp → jump → … → dock), exactly as the R5b spot test. On arrival, open **Agents & Missions** to talk to the agent and accept a courier (R4/R6).
+
+What to expect:
+
+- **Static reference data, not a gateway call.** `GET /api/agents/find?kind=courier[&level=N]` reads `agentAuthority/data.json` through `src/staticData.js` — the same read-only static-data pattern as `/api/map/graph`. It filters by kind (default courier) + optional level and caps the result server-side; the browser sorts by jumps and renders a page.
+- **One BFS, not one route per agent.** `distancesFrom(originSystemID)` runs a single breadth-first sweep over the already-loaded gate graph, giving the jump distance to every system at once; the finder looks each agent's system up. Unreachable systems sort last.
+- **Set destination reuses the R5b autopilot** (`startRoute(agent.stationID)`) — no new movement code.
+- Proven in-process by `test/agentFinder.test.js` (staticData read/filter + the `/api/agents/find` route), `web/src/nav/routeSolver.test.ts` (`distancesFrom`), and `web/src/app/finderFlow.test.ts` (the finder flow); this spot test is the live end-to-end run.
+
 ## Configuration
 
 Defaults assume both repos live under `C:\Users\ryanf\Documents\GitHub`:

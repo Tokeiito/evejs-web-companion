@@ -300,6 +300,87 @@ export async function loadJournal(options: ApiOptions = {}): Promise<JsonValue> 
   return data.result ?? null;
 }
 
+// --- R6a Agent Finder (static agent reference data) ------------------------
+// The Agent Finder lists agents from the static agentAuthority reference table
+// (GET /api/agents/find) — read-only static data like /api/map/graph, NOT a
+// gateway/bridge call. The BFF filters by kind/level and caps; the browser
+// annotates each row with jumps from the current system (client-side BFS) and
+// sorts nearest-first. This raw result carries the server-resolved names.
+
+/** One agent from /api/agents/find (station/system names resolved server-side). */
+export interface FoundAgent {
+  readonly agentID: number;
+  readonly name: string;
+  readonly level: number | null;
+  readonly missionKind: string | null;
+  readonly missionTypeLabel: string | null;
+  readonly corporationID: number | null;
+  readonly factionID: number | null;
+  readonly stationID: number | null;
+  readonly stationName: string | null;
+  readonly solarSystemID: number | null;
+  readonly solarSystemName: string | null;
+}
+
+export interface FindAgentsResult {
+  readonly kind: string;
+  readonly level: number | null;
+  readonly total: number;
+  readonly capped: boolean;
+  readonly agents: readonly FoundAgent[];
+}
+
+export interface FindAgentsFilters {
+  /** Mission kind (default "courier"; "all" disables the kind filter). */
+  readonly kind?: string;
+  readonly level?: number | null;
+  /** Server-side result cap (default 500 on the BFF; clamped to [1, 5000]). */
+  readonly limit?: number;
+}
+
+function asFoundAgent(value: JsonValue): FoundAgent {
+  const row = (value ?? {}) as Record<string, JsonValue>;
+  return {
+    agentID: asNumberOrNull(row.agentID) ?? 0,
+    name: typeof row.name === "string" ? row.name : `Agent ${asNumberOrNull(row.agentID) ?? 0}`,
+    level: asNumberOrNull(row.level),
+    missionKind: typeof row.missionKind === "string" ? row.missionKind : null,
+    missionTypeLabel: typeof row.missionTypeLabel === "string" ? row.missionTypeLabel : null,
+    corporationID: asNumberOrNull(row.corporationID),
+    factionID: asNumberOrNull(row.factionID),
+    stationID: asNumberOrNull(row.stationID),
+    stationName: typeof row.stationName === "string" ? row.stationName : null,
+    solarSystemID: asNumberOrNull(row.solarSystemID),
+    solarSystemName: typeof row.solarSystemName === "string" ? row.solarSystemName : null,
+  };
+}
+
+/** Find agents from the static reference table (filtered + capped server-side). */
+export async function findAgents(
+  filters: FindAgentsFilters = {},
+  options: ApiOptions = {},
+): Promise<FindAgentsResult> {
+  const params = new URLSearchParams();
+  if (filters.kind !== undefined) {
+    params.set("kind", filters.kind);
+  }
+  if (filters.level !== undefined && filters.level !== null) {
+    params.set("level", String(filters.level));
+  }
+  if (filters.limit !== undefined) {
+    params.set("limit", String(filters.limit));
+  }
+  const query = params.toString();
+  const data = await getJson(`/api/agents/find${query ? `?${query}` : ""}`, options);
+  return {
+    kind: typeof data.kind === "string" ? data.kind : "courier",
+    level: asNumberOrNull(data.level),
+    total: asNumberOrNull(data.total) ?? 0,
+    capped: data.capped === true,
+    agents: Array.isArray(data.agents) ? data.agents.map(asFoundAgent) : [],
+  };
+}
+
 // --- R6 Courier-completion reward readout (Step 12) ------------------------
 // The post-completion wallet / LP / standings pull reads (account.GetCashBalance,
 // LPSvc.GetAllMyCharacterWalletLPBalances, standingMgr.GetCharStandings). The

@@ -1447,6 +1447,35 @@ app.get("/api/map/resolve/:id", requireAuth, async (req, res, next) => {
   }
 });
 
+// Agent Finder (goal R6a): list agents from the static agentAuthority reference
+// table so the player can find a courier agent to travel to (the per-station
+// GetAgents roster is unreliable for this). Read-only static reference data —
+// like /api/map/graph, NOT a gateway/bridge call. Filters server-side by kind
+// (default courier) + optional level and caps the result so the ~11k-agent
+// dataset never crosses the wire whole; the client sorts by jumps from the
+// current system (distancesFrom, a single client-side BFS) and renders a page.
+app.get("/api/agents/find", requireAuth, async (req, res, next) => {
+  try {
+    const kind = typeof req.query.kind === "string" ? req.query.kind : "courier";
+    const level = req.query.level !== undefined ? Number(req.query.level) : null;
+    const limit = req.query.limit !== undefined ? Number(req.query.limit) : undefined;
+    const result = staticData.findAgents({ kind, level, limit });
+    res.json({
+      ok: true,
+      source: "static-data",
+      kind: result.kind,
+      level: result.level,
+      total: result.total,
+      capped: result.capped,
+      limit: result.limit,
+      count: result.agents.length,
+      agents: result.agents,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.use("/api/characters/:characterID", requireAuth);
 
 app.get("/api/characters/:characterID/events", (req, res) => {

@@ -196,3 +196,41 @@ export function solveRoute(
   const systems = [fromSystemID, ...hops.map((hop) => hop.toSystemID)];
   return Object.freeze({ reachable: true, hops, systems, jumps: hops.length });
 }
+
+/**
+ * Jump distance (fewest hops) from `originSystemID` to every reachable system,
+ * computed in a SINGLE breadth-first sweep over the gate graph (goal R6a). The
+ * Agent Finder sorts agents by their system's distance from the player's
+ * current system; running one `solveRoute` per agent would re-BFS thousands of
+ * times, so this does the work once and the finder looks each system up.
+ *
+ * The returned map holds `origin -> 0` and one entry per reachable system.
+ * A system NOT in the map is unreachable (or the graph doesn't reach it) — the
+ * finder flags those and sorts them last. An invalid/unknown origin yields an
+ * empty map (every agent then reads as unreachable), never a throw.
+ */
+export function distancesFrom(
+  graph: SystemGraph,
+  originSystemID: number,
+): Map<number, number> {
+  const distances = new Map<number, number>();
+  if (!(originSystemID > 0) || !graph.hasSystem(originSystemID)) {
+    return distances;
+  }
+  distances.set(originSystemID, 0);
+  // A plain array with a moving head index is an O(1) queue (no shift() churn),
+  // which matters over the full ~5k-system / ~14k-edge New Eden graph.
+  const queue: number[] = [originSystemID];
+  let head = 0;
+  while (head < queue.length) {
+    const current = queue[head++] as number;
+    const nextDistance = (distances.get(current) as number) + 1;
+    for (const edge of graph.neighbors(current)) {
+      if (!distances.has(edge.toSystemID)) {
+        distances.set(edge.toSystemID, nextDistance);
+        queue.push(edge.toSystemID);
+      }
+    }
+  }
+  return distances;
+}

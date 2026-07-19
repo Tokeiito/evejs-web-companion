@@ -1,6 +1,6 @@
 # Bridge wire contract (v1) — whitelisted `callMethod` path
 
-**Status:** Active, established by goal R1 (2026-07-18); extended by goal R2 (persistent browser-backed sessions, same date), goal R3 (2026-07-19, the bound-object bridge — see "Bound-object bridge (R3)"), goal R4 (agents/missions + deferred call responses), goal R5a (2026-07-19, the space bridge — see "Space bridge & session-into-space (R5a)"), goal R5b (2026-07-19, the client-side route solver + browser autopilot decide-loop — see "Client-side route solver & browser autopilot (R5b)"), and goal R6 (2026-07-19, courier completion + the Step-12 reward readout — see "Courier completion & reward readout (R6)"). Later goals build on this contract; change it deliberately and update this file with the change.
+**Status:** Active, established by goal R1 (2026-07-18); extended by goal R2 (persistent browser-backed sessions, same date), goal R3 (2026-07-19, the bound-object bridge — see "Bound-object bridge (R3)"), goal R4 (agents/missions + deferred call responses), goal R5a (2026-07-19, the space bridge — see "Space bridge & session-into-space (R5a)"), goal R5b (2026-07-19, the client-side route solver + browser autopilot decide-loop — see "Client-side route solver & browser autopilot (R5b)"), goal R6 (2026-07-19, courier completion + the Step-12 reward readout — see "Courier completion & reward readout (R6)"), and goal R6a (2026-07-19, the Agent Finder — a static agent-list route + client-side jump-distance sort; see "Agent Finder static route (R6a)"). Later goals build on this contract; change it deliberately and update this file with the change.
 
 This is the transport seam that lets the browser drive real EveJS `Handle_*` calls. The unit it mirrors is the retail call tuple **(service, method, args, kwargs)**; the gateway dispatches it through the same seam a retail client hits: `serviceManager.lookup(service).callMethod(method, args, session, kwargs)`.
 
@@ -483,6 +483,48 @@ reads reflect the payout (wallet grows, an LP balance for the agent corp appears
 standing toward the corp grows, the mission leaves the journal). Deny-by-default is
 re-proven for non-allowlisted `account`/`LPSvc`/`standingMgr` siblings.
 
+## Agent Finder static route (R6a)
+
+The per-station `agentMgr.GetAgents` roster is unreliable for *finding* an agent
+to travel to (it returns 0 for a character re-selected directly into a docked
+station, and only ever lists the current station). The Agent Finder instead
+lists agents from the **static `agentAuthority` reference table**, sorted by
+jumps from the player's current system, and sets the R5b browser autopilot to a
+chosen agent's station. This is **read-only static reference data served by
+`src/staticData.js`** — exactly the pattern of `GET /api/map/graph` (R5b):
+**NOT a gateway/bridge call, NOT gameplay SQLite, NOT a server-side travel job.**
+Web-only; no eve.js change.
+
+- `GET /api/agents/find` (requires the web login session; **no bridge session**)
+  → `{ ok, source:"static-data", kind, level, total, capped, limit, count, agents }`.
+  Query params: `kind` (default `courier`; `all`/`any` disables the kind filter),
+  `level` (optional, 1..5), `limit` (server result cap, default **500**, clamped
+  to `[1, 5000]`). The BFF filters server-side by kind + level, sorts the pre-cap
+  match set deterministically by `(level, agentID)`, and returns the first `limit`
+  as compact summaries — so the ~11k-agent dataset never crosses the wire whole.
+  `total` is the full match count before the cap; `capped` is `total > limit`.
+  Each agent summary is `{ agentID, name (ownerName), level, missionKind,
+  missionTypeLabel, corporationID, factionID, stationID, stationName,
+  solarSystemID, solarSystemName }` — station/system **names resolved
+  server-side** via `staticData.getStationName` / `getSolarSystemName`. Backed by
+  `staticData.findAgents({ kind, level, limit })` reading
+  `_local/gameStore/data/agentAuthority/data.json` (`agentsByID`).
+
+**Distance is computed client-side.** The route solver gains `distancesFrom(graph,
+originSystemID)` (`web/src/nav/routeSolver.ts`): a **single BFS** over the
+already-loaded gate graph returning the jump distance to every reachable system
+at once (origin → 0; unreachable systems absent from the map → the finder flags
+and sorts them last; invalid origin → empty map, never a throw). The finder runs
+one BFS from the docked system and looks each returned agent's system up — never
+a `solveRoute` per agent. "Set destination" reuses the R5b `startRoute(agent.
+stationID)` (route solver + browser autopilot) — no new movement code.
+
+**The finder requests `limit=2000`** (not the server default 500): 2000 fully
+covers any single courier level (the largest, L1, is ~1531) so choosing a level
+yields the complete, correctly-nearest-sorted set, while staying bounded well
+under the 11k dataset; for all-courier (no level) the client renders a capped
+page and the UI surfaces `total`/`capped` to prompt for a narrower filter.
+
 ## BFF routes (this repo)
 
 `POST /api/bridge/call` — requires the signed web login session (else 401 `AUTH_REQUIRED`).
@@ -627,6 +669,22 @@ strings), the `rewards` slice + `rewards/loaded`/`rewards/cleared` feed events,
 `web/src/app/agentsFlow.test.ts` (Complete → reward pull, load-package-into-ship),
 and BFF-side by `test/bridgeRewards.test.js`. See "Courier completion & reward
 readout (R6)" above.
+
+R6a page pieces (Agent Finder): the new `finder` store slice + `finder/results`/
+`finder/target`/`finder/error`/`finder/cleared` feed events (`AgentFinderRow`/
+`AgentFinderTarget`/`AgentFinderState` in `web/src/store/types.ts`), `app/api.ts`
+`findAgents` (against `GET /api/agents/find`), `app/flow.ts` `findAgents` (fetch →
+annotate each row with jumps from the docked system via `distancesFrom` → sort
+nearest-first) and `setDestinationToAgent` (records the target, then reuses R5b
+`startRoute(agent.stationID)`), the `distancesFrom` single-BFS helper in
+`web/src/nav/routeSolver.ts`, and `web/src/ui/AgentFinder.svelte` (kind/level
+server-side filters, client-side text search + nearest-sort + capped render, a
+"Set destination" per row, and the current-target readout; a new **Agent Finder**
+tab in `App.svelte`). Kind + level re-run the find (server-side); the browser
+addresses agents by game ID. Unit-tested by `web/src/nav/routeSolver.test.ts`
+(`distancesFrom`), `web/src/app/finderFlow.test.ts` (the finder flow + sort), and
+BFF/staticData-side by `test/agentFinder.test.js`. See "Agent Finder static route
+(R6a)" above.
 
 R5b page pieces (Travel — browser autopilot): `web/src/nav/routeSolver.ts` (pure client-side BFS route solver over the system-adjacency graph), `web/src/nav/autopilotLoop.ts` (the framework-agnostic decide-loop controller — `createAutopilot(deps)` with `start`/`pause`/`resume`/`abort`/`tick`/`run`; the pure `decideAutopilotAction` maps flight-status → next atomic move), `app/api.ts` `loadSystemGraph`/`resolveDestination`, `app/flow.ts` `startRoute`/`pauseRoute`/`resumeRoute`/`abortRoute` (owns the graph cache + the single controller, wires its deps to the R5a flight routes and the store), the `travel` slice + `travel/planned`/`travel/progress`/`travel/plan-error`/`travel/cleared` feed events, and `web/src/ui/Travel.svelte` (Start/Pause/Resume/Abort + live readout, no map). The route solver + loop are unit-tested (`web/src/nav/routeSolver.test.ts`, `web/src/nav/autopilotLoop.test.ts` — a simulated docked→undock→warp→jump→approach→dock timeline proving each atomic call, approach-then-redock, pause-on-refusal, and no bridge call after abort), the flow by `web/src/app/travelFlow.test.ts`, and the BFF map routes by `test/bridgeMapGraph.test.js`. See "Client-side route solver & browser autopilot (R5b)" above.
 
