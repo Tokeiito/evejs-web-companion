@@ -16,11 +16,14 @@
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
   import type { DestinationMatch } from "../store/types.ts";
+  import { displayName, type NameRef } from "../store/names.ts";
 
   let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
 
   // svelte-ignore state_referenced_locally
   const travel = store.travel;
+  // svelte-ignore state_referenced_locally
+  const names = store.names;
 
   // R7a — set a destination anywhere by NAME (primary), with the raw-ID input
   // kept as a fallback. The search box hits the static /api/map/find route; a
@@ -34,6 +37,31 @@
   let busy = $state(false);
   let error = $state("");
   let now = $state(Date.now());
+
+  // R7c — the travel readout already resolves most names (from the route graph /
+  // startRoute), but a bare ID can still leak through as a fallback. Request the
+  // current/next/destination IDs (and any search-result system that lacks a name)
+  // so those fallbacks attempt a name first.
+  $effect(() => {
+    const refs: NameRef[] = [];
+    const t = $travel;
+    for (const systemID of [t.currentSystemID, t.nextSystemID, t.destinationSystemID]) {
+      if (systemID) {
+        refs.push({ kind: "system", id: systemID });
+      }
+    }
+    if (t.destinationStationID) {
+      refs.push({ kind: "station", id: t.destinationStationID });
+    }
+    for (const match of searchResults) {
+      if (match.solarSystemName === null && match.solarSystemID) {
+        refs.push({ kind: "system", id: match.solarSystemID });
+      }
+    }
+    if (refs.length > 0) {
+      flow.requestNames(refs);
+    }
+  });
 
   let timer: ReturnType<typeof setInterval> | null = null;
   $effect(() => {
@@ -125,7 +153,9 @@
     if (id === null) {
       return "—";
     }
-    return name ? `${name} (${id})` : String(id);
+    // The graph name if the loop supplied one, else the name cache (R7c), else ID.
+    const resolved = name ?? displayName($names.resolved, "system", id, "");
+    return resolved && resolved !== String(id) ? `${resolved} (${id})` : String(id);
   }
 
   const destinationText = $derived.by(() => {
@@ -135,10 +165,13 @@
         ? `${t.destinationName} · station ${t.destinationStationID}`
         : t.destinationName;
     }
+    // R7c — no destinationName recorded: attempt the name cache before a bare ID.
     if (t.destinationStationID) {
-      return `Station ${t.destinationStationID}`;
+      return displayName($names.resolved, "station", t.destinationStationID, `Station ${t.destinationStationID}`);
     }
-    return t.destinationSystemID ? `System ${t.destinationSystemID}` : "—";
+    return t.destinationSystemID
+      ? displayName($names.resolved, "system", t.destinationSystemID, `System ${t.destinationSystemID}`)
+      : "—";
   });
 </script>
 
@@ -200,7 +233,7 @@
               <tr>
                 <td>{match.name}</td>
                 <td>{match.kind}</td>
-                <td>{match.solarSystemName ?? (match.solarSystemID ?? "—")}</td>
+                <td>{match.solarSystemName ?? displayName($names.resolved, "system", match.solarSystemID, "—")}</td>
                 <td>{jumpsText(match.jumps)}</td>
                 <td>
                   <button type="button" disabled={busy} onclick={() => setDestination(match)}>

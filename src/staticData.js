@@ -191,6 +191,85 @@ function getAlliance(allianceID) {
   return buildIndex("alliances", "records", "allianceID").get(numericAllianceID) || null;
 }
 
+// --- Faction / character / agent name resolvers (goal R7c) -----------------
+// The names-everywhere UI pass resolves every raw ID to a name. Corp / alliance
+// / type / station / system already had resolvers; factions, characters, and
+// agents did not. These read the same read-only gameStore reference tables
+// (factions.records, the characterID-keyed characters table, and the
+// agentAuthority roster whose `ownerName` is the agent's name). NPC/unknown IDs
+// return null so the batch route can report a definitive "unknown" (the client
+// then keeps the raw ID) — see resolveNames.
+
+function getFaction(factionID) {
+  const numericFactionID = Number(factionID) || 0;
+  if (!numericFactionID) {
+    return null;
+  }
+  return buildIndex("factions", "records", "factionID").get(numericFactionID) || null;
+}
+
+function getFactionName(factionID) {
+  const numericFactionID = Number(factionID) || 0;
+  if (!numericFactionID) {
+    return null;
+  }
+  const entry = getFaction(numericFactionID);
+  return entry ? getLocalizedName(entry, `Faction ${numericFactionID}`) : `Faction ${numericFactionID}`;
+}
+
+// The characters table is keyed by characterID at the top level (no `records`
+// bucket, and the entries carry `characterName` but not `characterID`), so the
+// index takes the object key as the ID.
+function getCharactersByID() {
+  const cacheKey = "characters:byID";
+  if (caches.has(cacheKey)) {
+    return caches.get(cacheKey);
+  }
+  const table = readStaticTable("characters");
+  const bucket = table.characters || table.records || table;
+  const index = new Map();
+  for (const [key, entry] of Object.entries(bucket)) {
+    if (!entry || typeof entry !== "object") {
+      continue;
+    }
+    const id = Number(entry.characterID) || Number(key) || 0;
+    if (id > 0) {
+      index.set(id, entry);
+    }
+  }
+  caches.set(cacheKey, index);
+  return index;
+}
+
+function getCharacter(characterID) {
+  const numericCharacterID = Number(characterID) || 0;
+  if (!numericCharacterID) {
+    return null;
+  }
+  return getCharactersByID().get(numericCharacterID) || null;
+}
+
+function getCharacterName(characterID) {
+  const numericCharacterID = Number(characterID) || 0;
+  if (!numericCharacterID) {
+    return null;
+  }
+  const entry = getCharacter(numericCharacterID);
+  // No fallback echo: an unknown character (an NPC or another player not in the
+  // local table) returns null so callers keep whatever live name they have or
+  // the raw ID.
+  return entry ? String(entry.characterName || entry.name || `Character ${numericCharacterID}`) : null;
+}
+
+function getAgentName(agentID) {
+  const numericAgentID = Number(agentID) || 0;
+  if (!numericAgentID) {
+    return null;
+  }
+  const agent = getAgentsByID().get(numericAgentID);
+  return agent ? String(agent.ownerName || `Agent ${numericAgentID}`) : null;
+}
+
 function getAllianceName(allianceID) {
   const numericAllianceID = Number(allianceID) || 0;
   if (!numericAllianceID) {
@@ -660,6 +739,109 @@ function findMapLocations(filters = {}) {
   return { matches, total, capped, q, kind, limit };
 }
 
+// --- Batch name resolution (goal R7c) --------------------------------------
+// The names-everywhere UI pass turns raw IDs into names across every tab. So an
+// inventory list of many typeIDs (or a guest list of corp IDs) resolves in ONE
+// round-trip, the BFF exposes a batch resolver over the existing static
+// getters. This is read-only static reference data (like findMapLocations /
+// findAgents), NOT a gateway/bridge call. Each requested `{kind, id}` resolves
+// to a name STRING, or null for a definitive "unknown" (an NPC/type not in the
+// static tables) — the client caches null too so it never refetches, and shows
+// the raw ID as its own fallback.
+
+const NAMES_MAX_ITEMS = 500;
+
+// The `owner` kind resolves an ownership/standing ID whose entity type is not
+// known at the call site (a station owner, or a standings `fromID`, is a corp,
+// faction, character, or alliance). It tries each in turn and returns the first
+// that resolves, so one request covers all four.
+function resolveOwnerName(id) {
+  if (getCorporation(id)) {
+    return getCorporationName(id);
+  }
+  if (getFaction(id)) {
+    return getFactionName(id);
+  }
+  if (getCharacter(id)) {
+    return getCharacterName(id);
+  }
+  if (getAlliance(id)) {
+    return getAllianceName(id);
+  }
+  return null;
+}
+
+/**
+ * Resolve one `{kind, id}` to a display name string, or null when the entity is
+ * genuinely not in the static tables (a definitive "unknown" the caller caches
+ * without refetching). The name getters that echo an ID fallback (getTypeName,
+ * getStationName, ...) are guarded by their entry getter so an unknown returns
+ * null rather than "Type 99999999".
+ */
+function resolveOneName(kind, id) {
+  const numericID = Number(id) || 0;
+  if (numericID <= 0) {
+    return null;
+  }
+  switch (String(kind)) {
+    case "type":
+      return getType(numericID) ? getTypeName(numericID) : null;
+    case "typeGroup":
+      return getType(numericID) ? getTypeGroupName(numericID) : null;
+    case "typeCategory":
+      return getType(numericID) ? getTypeCategoryName(numericID) : null;
+    case "category":
+      return getCategory(numericID) ? getCategoryName(numericID) : null;
+    case "corporation":
+      return getCorporation(numericID) ? getCorporationName(numericID) : null;
+    case "alliance":
+      return getAlliance(numericID) ? getAllianceName(numericID) : null;
+    case "faction":
+      return getFaction(numericID) ? getFactionName(numericID) : null;
+    case "character":
+      return getCharacterName(numericID);
+    case "agent":
+      return getAgentName(numericID);
+    case "station":
+      return getStation(numericID) ? getStationName(numericID) : null;
+    case "system":
+      return getSolarSystem(numericID) ? getSolarSystemName(numericID) : null;
+    case "region":
+      return getRegion(numericID) ? getRegionName(numericID) : null;
+    case "owner":
+      return resolveOwnerName(numericID);
+    default:
+      return null;
+  }
+}
+
+/**
+ * Batch-resolve `{ items: [{kind, id}, ...] }` to `{ names: { "kind:id": name },
+ * capped, limit }`. Every requested item is echoed into `names` (a resolved
+ * string, or null for a definitive unknown) so the client can cache the outcome
+ * for every key. Duplicate `(kind,id)` pairs resolve once. Capped at
+ * NAMES_MAX_ITEMS so an oversized request never scans the whole item table.
+ */
+function resolveNames(input = {}) {
+  const items = Array.isArray(input.items) ? input.items : [];
+  const capped = items.length > NAMES_MAX_ITEMS;
+  const slice = capped ? items.slice(0, NAMES_MAX_ITEMS) : items;
+  const names = {};
+  for (const item of slice) {
+    const kind = item && item.kind !== undefined && item.kind !== null ? String(item.kind) : "";
+    const id = Number(item && item.id) || 0;
+    if (!kind || id <= 0) {
+      continue;
+    }
+    const key = `${kind}:${id}`;
+    if (Object.prototype.hasOwnProperty.call(names, key)) {
+      continue;
+    }
+    names[key] = resolveOneName(kind, id);
+  }
+  return { names, capped, limit: NAMES_MAX_ITEMS };
+}
+
 function getIndustryBlueprint(blueprintTypeID) {
   return buildIndex(
     "industryBlueprints",
@@ -679,14 +861,20 @@ function getNpcIndustryFacility(facilityID) {
 module.exports = {
   findAgents,
   findMapLocations,
+  getAgentName,
   getAgentsByID,
   getAlliance,
   getAllianceName,
   getCategory,
   getCategoryName,
+  getCharacter,
+  getCharacterName,
   getCorporation,
   getCorporationName,
+  getFaction,
+  getFactionName,
   getIndustryBlueprint,
+  resolveNames,
   getMarketGroup,
   getMarketGroupName,
   getMarketGroupPath,

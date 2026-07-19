@@ -11,15 +11,57 @@
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
   import type { InventoryItemRow } from "../store/types.ts";
+  import { displayName, nameKey, type NameRef } from "../store/names.ts";
 
   let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
 
   // svelte-ignore state_referenced_locally
   const inventory = store.inventory;
+  // svelte-ignore state_referenced_locally
+  const names = store.names;
 
   let busy = $state(false);
   let error = $state("");
   let moveQty = $state("");
+
+  // R7c — resolve every row's typeID → type name and categoryID → category name
+  // (batched + cached by the flow's name cache). Fire-and-forget in an effect so
+  // the rows render immediately (raw IDs) and swap to names as they arrive.
+  $effect(() => {
+    const refs: NameRef[] = [];
+    for (const row of [...$inventory.hangar.rows, ...$inventory.cargo.rows]) {
+      refs.push({ kind: "type", id: row.typeID });
+      if (row.categoryID) {
+        refs.push({ kind: "category", id: row.categoryID });
+      }
+    }
+    if (refs.length > 0) {
+      flow.requestNames(refs);
+    }
+  });
+
+  // The active ship's typeID (it sits in the hangar/cargo rows as the row whose
+  // itemID is the active ship), so its header can show the SHIP TYPE name.
+  const activeShipTypeID = $derived.by<number | null>(() => {
+    const id = $inventory.activeShipID;
+    if (id === null) {
+      return null;
+    }
+    const row =
+      $inventory.hangar.rows.find((r) => r.itemID === id) ??
+      $inventory.cargo.rows.find((r) => r.itemID === id);
+    return row ? row.typeID : null;
+  });
+
+  function activeShipHeader(): string {
+    const id = $inventory.activeShipID;
+    if (id === null) {
+      return "—";
+    }
+    const typeName = activeShipTypeID !== null ? $names.resolved[nameKey("type", activeShipTypeID)] : null;
+    // Ship TYPE name (e.g. "Ibis"), with the item ID kept as secondary detail.
+    return typeName ? `${typeName} (ship ${id})` : `ship ${id}`;
+  }
 
   async function run(action: () => Promise<void>): Promise<void> {
     if (busy) {
@@ -111,8 +153,8 @@
         {#each $inventory.hangar.rows as row (row.itemID)}
           <tr class={row.itemID === $inventory.activeShipID ? "self" : ""}>
             <td>{row.itemID}</td>
-            <td>{row.typeID}</td>
-            <td>{row.categoryID ?? "—"}</td>
+            <td title={String(row.typeID)}>{displayName($names.resolved, "type", row.typeID)}</td>
+            <td title={row.categoryID ? String(row.categoryID) : ""}>{displayName($names.resolved, "category", row.categoryID, "—")}</td>
             <td>{row.singleton ? "(assembled)" : row.quantity}</td>
             <td>
               {#if isShip(row)}
@@ -140,7 +182,7 @@
   <h2>
     Active ship cargo
     <small class="note">
-      ship {$inventory.activeShipID ?? "—"} · capacity {capacityText($inventory.cargo.capacity)}
+      {activeShipHeader()} · capacity {capacityText($inventory.cargo.capacity)}
     </small>
   </h2>
   <p>
@@ -164,8 +206,8 @@
         {#each $inventory.cargo.rows as row (row.itemID)}
           <tr>
             <td>{row.itemID}</td>
-            <td>{row.typeID}</td>
-            <td>{row.categoryID ?? "—"}</td>
+            <td title={String(row.typeID)}>{displayName($names.resolved, "type", row.typeID)}</td>
+            <td title={row.categoryID ? String(row.categoryID) : ""}>{displayName($names.resolved, "category", row.categoryID, "—")}</td>
             <td>{row.singleton ? "(assembled)" : row.quantity}</td>
             <td>
               <button type="button" disabled={busy} onclick={() => run(() => flow.moveItem(row.itemID, "toHangar", qtyArg()))}>

@@ -207,7 +207,16 @@ export type FeedEvent =
   // A chat read/send failed non-fatally; null clears it after success.
   | { readonly type: "chat/error"; readonly message: string | null }
   // Drop the chat state (character offline / logged out).
-  | { readonly type: "chat/cleared" };
+  | { readonly type: "chat/cleared" }
+  // Goal R7c — the names-everywhere cache. A batch of `{kind, id}` refs resolved
+  // (through the static /api/names route): each entry is a name string, or null
+  // for a definitive "unknown". Merged into the `names` slice so pure-reader
+  // components render names in place of raw IDs. Static reference data, so these
+  // are never cleared on offline/logout (they can't change and are safe to keep).
+  | {
+      readonly type: "names/resolved";
+      readonly entries: Readonly<Record<string, string | null>>;
+    };
 
 /** What the store hands an adapter: publish events, report connectivity. */
 export interface FeedSink {

@@ -35,6 +35,7 @@ import type {
   StationStatic,
   TravelState,
 } from "./types.ts";
+import type { NamesState } from "./names.ts";
 
 // --- Typed state slices ----------------------------------------------------
 
@@ -83,6 +84,7 @@ export interface ClientState {
   readonly flight: FlightState;
   readonly travel: TravelState;
   readonly chat: ChatState;
+  readonly names: NamesState;
   readonly feed: FeedSlice;
 }
 
@@ -196,6 +198,14 @@ const INITIAL_CHAT: ChatState = Object.freeze({
   error: null,
 });
 
+// Static reference names (goal R7c): resolved once, kept for the app's life
+// (they can't change). Not reset on offline/logout — the flow's name cache is
+// kept in step, and re-resolving immutable data would only cause needless
+// refetches.
+const INITIAL_NAMES: NamesState = Object.freeze({
+  resolved: Object.freeze({}) as NamesState["resolved"],
+});
+
 const INITIAL_FEED: FeedSlice = Object.freeze({
   adapter: null,
   status: "idle" as FeedStatus,
@@ -215,6 +225,7 @@ export interface ClientStore {
   readonly flight: ReadableSignal<FlightState>;
   readonly travel: ReadableSignal<TravelState>;
   readonly chat: ReadableSignal<ChatState>;
+  readonly names: ReadableSignal<NamesState>;
   readonly feed: ReadableSignal<FeedSlice>;
 
   /** Whole-state snapshot. */
@@ -248,6 +259,7 @@ export function createClientStore(): ClientStore {
   const flight = createSignal<FlightState>(INITIAL_FLIGHT);
   const travel = createSignal<TravelState>(INITIAL_TRAVEL);
   const chat = createSignal<ChatState>(INITIAL_CHAT);
+  const names = createSignal<NamesState>(INITIAL_NAMES);
   const feed = createSignal<FeedSlice>(INITIAL_FEED);
 
   // Whole-store notification: bumped once per applied change so multi-slice
@@ -268,6 +280,7 @@ export function createClientStore(): ClientStore {
     flight: flight.get(),
     travel: travel.get(),
     chat: chat.get(),
+    names: names.get(),
     feed: feed.get(),
   });
 
@@ -567,6 +580,13 @@ export function createClientStore(): ClientStore {
       case "chat/cleared":
         chat.set(INITIAL_CHAT);
         break;
+      case "names/resolved": {
+        // Merge the freshly-resolved batch into the names cache (static
+        // reference data — a name only ever gets more resolved, never cleared).
+        const current = names.get();
+        names.set({ resolved: { ...current.resolved, ...event.entries } });
+        break;
+      }
     }
   };
 
@@ -631,6 +651,7 @@ export function createClientStore(): ClientStore {
     flight: readonlySignal(flight),
     travel: readonlySignal(travel),
     chat: readonlySignal(chat),
+    names: readonlySignal(names),
     feed: readonlySignal(feed),
     get,
     subscribe,

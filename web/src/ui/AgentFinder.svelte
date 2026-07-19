@@ -19,6 +19,7 @@
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
   import type { AgentFinderRow } from "../store/types.ts";
+  import { displayName } from "../store/names.ts";
 
   let {
     store,
@@ -28,6 +29,25 @@
 
   // svelte-ignore state_referenced_locally
   const finder = store.finder;
+  // svelte-ignore state_referenced_locally
+  const names = store.names;
+
+  // R7c — the finder rows already carry server-resolved station/system names; the
+  // one bare ID left is the origin system in the summary note. Resolve it.
+  $effect(() => {
+    const origin = $finder.originSystemID;
+    if (origin) {
+      flow.requestNames([{ kind: "system", id: origin }]);
+    }
+  });
+
+  function originText(): string {
+    const origin = $finder.originSystemID;
+    if (origin === null) {
+      return "your current system";
+    }
+    return displayName($names.resolved, "system", origin, `system ${origin}`);
+  }
 
   const RENDER_CAP = 60;
   let kind = $state("courier");
@@ -186,8 +206,7 @@
     <p class="note">
       Showing {cappedAgents.length} of {filteredAgents.length} matching
       ({$finder.total}{$finder.capped ? "+" : ""} in the dataset for this filter),
-      sorted nearest-first from
-      {$finder.originSystemID === null ? "your current system" : `system ${$finder.originSystemID}`}.
+      sorted nearest-first from {originText()}.
       {#if $finder.capped}
         The dataset was capped server-side — add a level to narrow it.
       {:else if filteredAgents.length > cappedAgents.length}

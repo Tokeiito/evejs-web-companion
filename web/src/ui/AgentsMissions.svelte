@@ -14,6 +14,7 @@
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
   import type { AgentAction, AgentRow, JournalMission } from "../store/types.ts";
+  import { displayName, type NameRef } from "../store/names.ts";
 
   let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
 
@@ -21,6 +22,8 @@
   const agents = store.agents;
   // svelte-ignore state_referenced_locally
   const rewards = store.rewards;
+  // svelte-ignore state_referenced_locally
+  const names = store.names;
 
   let busy = $state(false);
   let error = $state("");
@@ -62,6 +65,54 @@
   });
   const cappedAgents = $derived(filteredAgents.slice(0, RENDER_CAP));
 
+  // R7c — resolve names for everything the page shows by ID: the rendered agents
+  // + the open conversation + journal agents (→ agent names), the briefing's
+  // cargo type / pickup / destination (→ type + station + system names), and the
+  // reward LP corps + standings (→ corp / owner names). Batched + cached by the
+  // flow; fire-and-forget so IDs render immediately and swap to names as they land.
+  $effect(() => {
+    const refs: NameRef[] = [];
+    for (const agent of cappedAgents) {
+      refs.push({ kind: "agent", id: agent.agentID });
+    }
+    if ($agents.activeAgentID) {
+      refs.push({ kind: "agent", id: $agents.activeAgentID });
+    }
+    const journal = $agents.journal;
+    if (journal) {
+      for (const mission of [...journal.active, ...journal.offered]) {
+        if (mission.agentID) {
+          refs.push({ kind: "agent", id: mission.agentID });
+        }
+      }
+    }
+    const briefing = $agents.briefing;
+    if (briefing) {
+      if (briefing.cargoTypeID) {
+        refs.push({ kind: "type", id: briefing.cargoTypeID });
+      }
+      for (const stationID of [briefing.pickupLocationID, briefing.destinationLocationID]) {
+        if (stationID) {
+          refs.push({ kind: "station", id: stationID });
+        }
+      }
+      for (const systemID of [briefing.pickupSystemID, briefing.destinationSystemID]) {
+        if (systemID) {
+          refs.push({ kind: "system", id: systemID });
+        }
+      }
+    }
+    for (const lp of $rewards.lpBalances) {
+      refs.push({ kind: "corporation", id: lp.issuerCorpID });
+    }
+    for (const standing of $rewards.standings) {
+      refs.push({ kind: "owner", id: standing.fromID });
+    }
+    if (refs.length > 0) {
+      flow.requestNames(refs);
+    }
+  });
+
   async function run(action: () => Promise<void>): Promise<void> {
     if (busy) {
       return;
@@ -89,14 +140,31 @@
     });
   });
 
+  // Agent name (R7c) from the name cache, falling back to `agent <id>` until it
+  // resolves (or `—` when there is no id).
+  function agentName(agentID: number | null): string {
+    return displayName($names.resolved, "agent", agentID, agentID ? `agent ${agentID}` : "—");
+  }
+
   function agentLabel(agent: AgentRow): string {
     const kind = agent.missionKind ? ` · ${agent.missionKind}` : "";
-    return `Agent ${agent.agentID} (L${agent.level ?? "?"}${kind})`;
+    const name = displayName($names.resolved, "agent", agent.agentID, `Agent ${agent.agentID}`);
+    return `${name} (L${agent.level ?? "?"}${kind})`;
+  }
+
+  function stationText(id: number | null): string {
+    return displayName($names.resolved, "station", id, id ? `station ${id}` : "—");
+  }
+
+  function systemText(id: number | null): string {
+    return displayName($names.resolved, "system", id, id ? `system ${id}` : "—");
   }
 
   function missionLabel(mission: JournalMission): string {
     const type = mission.missionTypeLabel ? mission.missionTypeLabel.split("/").pop() : "Mission";
-    return `${type} · title ${mission.missionTitleID ?? "—"} · agent ${mission.agentID ?? "—"}`;
+    // missionTitleID is a localization message id with no static name table, so
+    // it stays an ID (justified in the R7c completeness sweep).
+    return `${type} · title ${mission.missionTitleID ?? "—"} · ${agentName(mission.agentID)}`;
   }
 </script>
 
@@ -178,7 +246,7 @@
 
 {#if $agents.conversation}
   <section>
-    <h2>Conversation · agent {$agents.activeAgentID}</h2>
+    <h2>Conversation · {agentName($agents.activeAgentID)}</h2>
     <p class="agent-says">{$agents.conversation.agentSays}</p>
     <p>
       {#each $agents.conversation.actions as action (action.actionID)}
@@ -208,11 +276,11 @@
     <h2>Courier briefing</h2>
     <table class="guests">
       <tbody>
-        <tr><th>Cargo type</th><td>{$agents.briefing.cargoTypeID ?? "—"}</td></tr>
+        <tr><th>Cargo type</th><td title={$agents.briefing.cargoTypeID ? String($agents.briefing.cargoTypeID) : ""}>{displayName($names.resolved, "type", $agents.briefing.cargoTypeID, "—")}</td></tr>
         <tr><th>Quantity</th><td>{$agents.briefing.cargoQuantity ?? "—"}</td></tr>
         <tr><th>Volume (m³)</th><td>{$agents.briefing.cargoVolume ?? "—"}</td></tr>
-        <tr><th>Pickup</th><td>station {$agents.briefing.pickupLocationID ?? "—"} · system {$agents.briefing.pickupSystemID ?? "—"}</td></tr>
-        <tr><th>Destination</th><td>station {$agents.briefing.destinationLocationID ?? "—"} · system {$agents.briefing.destinationSystemID ?? "—"}</td></tr>
+        <tr><th>Pickup</th><td>{stationText($agents.briefing.pickupLocationID)} · {systemText($agents.briefing.pickupSystemID)}</td></tr>
+        <tr><th>Destination</th><td>{stationText($agents.briefing.destinationLocationID)} · {systemText($agents.briefing.destinationSystemID)}</td></tr>
         <tr><th>Reward (ISK)</th><td>{$agents.briefing.rewardISK ?? "—"}</td></tr>
         <tr><th>Time bonus (ISK)</th><td>{$agents.briefing.bonusISK ?? "—"}</td></tr>
         <tr><th>Loyalty points</th><td>{$agents.briefing.loyaltyPoints ?? "—"}</td></tr>
@@ -258,7 +326,7 @@
     {:else}
       <ul class="journal">
         {#each $rewards.lpBalances as lp (lp.issuerCorpID)}
-          <li>corp {lp.issuerCorpID} · {lp.loyaltyPoints} LP</li>
+          <li title={String(lp.issuerCorpID)}>{displayName($names.resolved, "corporation", lp.issuerCorpID, `corp ${lp.issuerCorpID}`)} · {lp.loyaltyPoints} LP</li>
         {/each}
       </ul>
     {/if}
@@ -268,7 +336,7 @@
     {:else}
       <ul class="journal">
         {#each $rewards.standings as standing (standing.fromID)}
-          <li>toward {standing.fromID} · {standing.standing}</li>
+          <li title={String(standing.fromID)}>toward {displayName($names.resolved, "owner", standing.fromID, `ID ${standing.fromID}`)} · {standing.standing}</li>
         {/each}
       </ul>
     {/if}

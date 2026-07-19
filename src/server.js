@@ -1600,6 +1600,32 @@ app.get("/api/map/find", requireAuth, async (req, res, next) => {
   }
 });
 
+// Batch name resolution (goal R7c): the names-everywhere UI pass turns raw IDs
+// into names across every tab, so a list of many IDs (an inventory of typeIDs,
+// a guest list of corp IDs, ...) resolves in ONE round-trip. POST /api/names
+// takes { items: [{kind, id}] } and returns { names: { "kind:id": name } } over
+// the existing static getters. Read-only static reference data — like
+// /api/map/find and /api/agents/find, NOT a gateway/bridge call. Each item is
+// echoed (a name string, or null for a definitive unknown the client caches);
+// the batch is capped server-side so an oversized request can't scan the whole
+// item table.
+app.post("/api/names", requireAuth, async (req, res, next) => {
+  try {
+    const items = Array.isArray(req.body && req.body.items) ? req.body.items : [];
+    const result = staticData.resolveNames({ items });
+    res.json({
+      ok: true,
+      source: "static-data",
+      count: Object.keys(result.names).length,
+      capped: result.capped,
+      limit: result.limit,
+      names: result.names,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // Agent Finder (goal R6a): list agents from the static agentAuthority reference
 // table so the player can find a courier agent to travel to (the per-station
 // GetAgents roster is unreliable for this). Read-only static reference data —

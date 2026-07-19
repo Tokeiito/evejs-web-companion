@@ -10,11 +10,47 @@
   import { isSessionLost } from "../app/flow.ts";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
+  import { nameKey } from "../store/names.ts";
 
   let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
 
   // svelte-ignore state_referenced_locally
   const flight = store.flight;
+  // svelte-ignore state_referenced_locally
+  const inventory = store.inventory;
+  // svelte-ignore state_referenced_locally
+  const names = store.names;
+
+  // R7c — the flight status carries the active ship's ITEM id but no typeID, so
+  // resolve the ship TYPE name by cross-referencing the inventory slice (the
+  // active ship sits in the docked hangar/cargo rows, which carry the typeID).
+  // Best-effort: in space, or before the inventory tab has loaded, we fall back
+  // to the raw ship item ID.
+  const activeShipTypeID = $derived.by<number | null>(() => {
+    const shipID = $flight.status?.shipID ?? null;
+    if (shipID === null || $inventory.activeShipID !== shipID) {
+      return null;
+    }
+    const row =
+      $inventory.hangar.rows.find((r) => r.itemID === shipID) ??
+      $inventory.cargo.rows.find((r) => r.itemID === shipID);
+    return row ? row.typeID : null;
+  });
+
+  $effect(() => {
+    if (activeShipTypeID !== null) {
+      flow.requestNames([{ kind: "type", id: activeShipTypeID }]);
+    }
+  });
+
+  function activeShipText(): string {
+    const shipID = $flight.status?.shipID ?? null;
+    if (shipID === null) {
+      return "—";
+    }
+    const typeName = activeShipTypeID !== null ? $names.resolved[nameKey("type", activeShipTypeID)] : null;
+    return typeName ? `${typeName} (${shipID})` : String(shipID);
+  }
 
   let busy = $state(false);
   let error = $state("");
@@ -130,7 +166,7 @@
       <tbody>
         <tr><th>Location</th><td>{locationText()}</td></tr>
         <tr><th>Solar system</th><td>{solarSystemText()}</td></tr>
-        <tr><th>Active ship</th><td>{$flight.status?.shipID ?? "—"}</td></tr>
+        <tr><th>Active ship</th><td>{activeShipText()}</td></tr>
         <tr><th>Ship state</th><td>{shipStateText()}</td></tr>
         <tr><th>Last action</th><td>{$flight.lastAction ?? "—"}</td></tr>
         <tr>

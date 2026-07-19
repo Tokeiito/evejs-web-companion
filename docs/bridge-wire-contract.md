@@ -427,6 +427,32 @@ system-adjacency graph and runs a pure BFS solver over it
   `/api/agents/find` — **NOT a gateway/bridge call**. The client annotates each
   match with jumps-away from the current system using the already-loaded route
   graph (`distancesFrom`, a single BFS), like the Agent Finder.
+- `POST /api/names` (same auth; **no bridge session**; **R7c**) → batch-resolves a
+  set of `{ kind, id }` refs to display names so a list of many IDs (an inventory
+  of typeIDs, a station's guest corps, an agent roster, ...) resolves in **one
+  round-trip**. Body `{ items: [{ kind, id }, ...] }` with
+  `kind ∈ type | typeGroup | typeCategory | category | corporation | alliance |
+  faction | character | agent | station | system | region | owner`; response
+  `{ ok, source:"static-data", count, capped, limit, names }` where `names` is
+  keyed by `"kind:id"` and each value is the resolved **name string** or **null**
+  for a definitive "unknown" (an NPC / type not in the static tables). Every
+  requested item is echoed (so the client can cache the outcome for every key,
+  including the nulls, and never refetch); duplicate `(kind,id)` pairs resolve
+  once; the batch is **capped server-side** (`limit` 500) so an oversized request
+  never scans the whole item table. `owner` resolves an ID whose entity type is
+  unknown at the call site (a station owner, a standings `fromID`) by trying
+  corp → faction → character → alliance in turn. Read-only static reference data
+  over `src/staticData.js` `resolveNames` (which layers on the existing
+  `getTypeName` / `getStationName` / `getCorporationName` / new `getFactionName` /
+  `getCharacterName` / `getAgentName` getters) — mirrors `/api/map/find` and
+  `/api/agents/find`, **NOT a gateway/bridge call**. The client name cache lives
+  in `app/flow.ts` (`requestNames`): components ask for names by `(kind,id)`; the
+  cache batches all unresolved refs raised in one microtask into a single POST,
+  caches each result (name or definitive null), pushes them into the store's
+  `names` slice for pure-reader components, never refetches a cached key, and
+  does **not** cache a transient failure (so it can retry). Fire-and-forget — it
+  never throws and never blocks a UI interaction; a component shows the raw ID
+  until the name lands.
 
 None of these routes touch a live bridge session or the gateway; they are not a
 server-side travel job (the roadmap forbids reintroducing one).

@@ -9,15 +9,56 @@
   import { isSessionLost } from "../app/flow.ts";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
+  import { displayName, type NameKind, type NameRef } from "../store/names.ts";
 
   let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
 
   // Stable store identity; slice signals are Svelte-store-contract objects.
   // svelte-ignore state_referenced_locally
   const station = store.station;
+  // svelte-ignore state_referenced_locally
+  const names = store.names;
 
   let busy = $state(false);
   let error = $state("");
+
+  // R7c — resolve the station owner (corp/faction) + services-row station type,
+  // and each guest's character / corporation / alliance. Batched + cached by the
+  // flow; fire-and-forget so the raw tuple renders immediately and gains names.
+  $effect(() => {
+    const refs: NameRef[] = [];
+    const bits = $station.bits;
+    if (bits) {
+      if (bits.ownerID) {
+        refs.push({ kind: "owner", id: bits.ownerID });
+      }
+      if (bits.stationTypeID) {
+        refs.push({ kind: "type", id: bits.stationTypeID });
+      }
+    }
+    for (const guest of $station.guests) {
+      refs.push({ kind: "character", id: guest.characterID });
+      if (guest.corporationID) {
+        refs.push({ kind: "corporation", id: guest.corporationID });
+      }
+      if (guest.allianceID) {
+        refs.push({ kind: "alliance", id: guest.allianceID });
+      }
+    }
+    if (refs.length > 0) {
+      flow.requestNames(refs);
+    }
+  });
+
+  // A raw-retail-data cell: keep the ID (the section shows the real tuple) and
+  // append the resolved name once it lands.
+  function idWithName(id: number | null, kind: NameKind): string {
+    if (id === null || id === undefined) {
+      return "—";
+    }
+    const name = displayName($names.resolved, kind, id, "");
+    return name && name !== String(id) ? `${id} · ${name}` : String(id);
+  }
 
   async function run(action: () => Promise<void>): Promise<void> {
     if (busy) {
@@ -76,14 +117,14 @@
     <h2>Station services — stationSvc.GetStationItemBits</h2>
     {#if $station.bits}
       <dl class="kv">
-        <dt>Owner ID</dt>
-        <dd>{$station.bits.ownerID ?? "—"}</dd>
+        <dt>Owner</dt>
+        <dd>{idWithName($station.bits.ownerID, "owner")}</dd>
         <dt>Station item ID</dt>
-        <dd>{$station.bits.stationID ?? "—"}</dd>
+        <dd>{idWithName($station.bits.stationID, "station")}</dd>
         <dt>Operation ID</dt>
         <dd>{$station.bits.operationID ?? "—"}</dd>
-        <dt>Station type ID</dt>
-        <dd>{$station.bits.stationTypeID ?? "—"}</dd>
+        <dt>Station type</dt>
+        <dd>{idWithName($station.bits.stationTypeID, "type")}</dd>
       </dl>
     {:else}
       <p class="note">Loading services row…</p>
@@ -116,13 +157,13 @@
         <tbody>
           {#each $station.guests as guest (guest.characterID)}
             <tr class={guest.characterID === $station.online.characterID ? "self" : ""}>
-              <td>
+              <td title={String(guest.characterID)}>
                 {guest.characterID === $station.online.characterID
                   ? `${$station.online.characterName} (you)`
-                  : guest.characterID}
+                  : displayName($names.resolved, "character", guest.characterID)}
               </td>
-              <td>{guest.corporationID ?? "—"}</td>
-              <td>{guest.allianceID ?? "—"}</td>
+              <td title={guest.corporationID ? String(guest.corporationID) : ""}>{displayName($names.resolved, "corporation", guest.corporationID, "—")}</td>
+              <td title={guest.allianceID ? String(guest.allianceID) : ""}>{displayName($names.resolved, "alliance", guest.allianceID, "—")}</td>
             </tr>
           {/each}
         </tbody>

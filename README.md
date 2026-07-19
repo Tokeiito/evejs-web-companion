@@ -201,6 +201,25 @@ What to expect:
 - **Search anywhere by name (Fix 2).** `GET /api/map/find?q=<text>[&kind=system|station]` searches the static solar-system + station tables (read-only static data, mirroring `/api/agents/find` — **not** a gateway call), ranks by match quality (exact → prefix → substring) so "Jita" surfaces the Jita system first, and caps the result. **Set destination** reuses the R5b autopilot (`startRoute(id)`) — no new movement code; jumps-away come from the already-loaded map graph (`distancesFrom`).
 - Proven in-process by `test/bridgeMapFind.test.js` (the name search + `/api/map/find` route against real + fixture data), `web/src/app/flightFlow.test.ts` (the Flight status resolves and caches names), and `web/src/app/travelFlow.test.ts` (search → jumps annotation → Set-destination via startRoute); this spot test is the live end-to-end run.
 
+## Spot test (R7c): names everywhere — no raw IDs across the tabs
+
+Display pass (goal R7c). What it proves: across every tab, raw numeric IDs are shown as **names** — ships/items as **type names**, agents as **agent names**, corps/alliances/factions/characters as **names**, and locations as **station/system names** — with the ID kept only as a secondary detail or an unresolved fallback. Web-only — no eve.js change.
+
+**Setup expectation:** the character is docked (Farmer at Jita 4-4). Same server setup as the R2–R7a spot tests (EveJS running, `npm run build:web`, `npm start`).
+
+1. Open `http://127.0.0.1:26500/dist/`, log in, and select the character (R2 flow).
+2. **Inventory & Ship** tab: the **Type** column reads item names (e.g. `Tritanium`) and the **Cat** column category names (e.g. `Ship`) — not `34` / `6`; the active-ship cargo header reads the **ship type name** (e.g. `Ibis (ship …)`). The raw typeID/categoryID stay on the cell tooltip and the Item column keeps the itemID.
+3. **Station** tab: the services row shows **Owner** as the corp/faction name (`… · School of Applied Knowledge`) and **Station type** as the type name; the **Guests** table shows character / corporation / alliance **names** (IDs on the tooltip).
+4. **Agents & Missions** tab: agent buttons and the conversation heading read the **agent name** (e.g. `Antaken Kamola`), the courier briefing shows the **cargo type name** and **station + system names** for pickup/destination, and the reward LP/standings rows show **corp / owner names**.
+5. **Agent Finder / Travel** tabs: still name-resolved (R6a/R7a); the finder's "sorted nearest-first from …" note now names the origin system, and any leftover `System {id}` fallback attempts a name first.
+
+What to expect:
+
+- **One batched round-trip, cached, non-blocking.** Components ask for names by `(kind,id)`; the client name cache (`app/flow.ts` `requestNames`) batches every unresolved ref raised in a tick into one `POST /api/names` and caches each result — including a definitive **null** (unknown) so it never refetches. IDs render instantly and swap to names as they arrive; nothing blocks on resolution.
+- **Static, not a bridge call.** `POST /api/names` resolves `{kind,id}` refs over `src/staticData.js` (read-only gameStore reference tables, like `/api/map/find`) — **not** a gateway/bridge call.
+- **IDs kept where they still matter.** A field with no name in any available data stays an ID: the mission `title` (a localization message id), route-hop warp/jump **gate** IDs, the services **operationID**, and the labeled **Station ID** reference row (its name is the panel header).
+- Proven in-process by `test/bridgeNames.test.js` (the `resolveNames` batch across kinds + the `/api/names` route shape/unknown/empty/auth) and `web/src/app/namesFlow.test.ts` (batching, cache-no-refetch, definitive-unknown, transient-retry, and a previously-ID cell rendering the name); this spot test is the live end-to-end run.
+
 ## Configuration
 
 Defaults assume both repos live under `C:\Users\ryanf\Documents\GitHub`:

@@ -35,6 +35,7 @@ import type {
   StationStatic,
 } from "../store/types.ts";
 import { decodeChatChannel, decodeChatChannelName } from "../bridge/chat.ts";
+import { nameKey, type NameRef } from "../store/names.ts";
 import {
   buildSystemGraph,
   distancesFrom,
@@ -154,6 +155,16 @@ export interface AppFlow {
   sendChatMessage(channel: ChatChannel, message: string): Promise<void>;
   /** R7 — switch the active chat tab (Local <-> Corp). */
   setChatChannel(channel: ChatChannel): void;
+  /**
+   * R7c — request display names for a set of `{kind, id}` refs (names-everywhere).
+   * Fire-and-forget: unresolved refs are batched into one /api/names round-trip,
+   * cached (including a definitive "unknown" so they never refetch), and pushed
+   * into the store's `names` slice for pure-reader components. Already-cached or
+   * in-flight refs are skipped; a transient failure is not cached (it can retry).
+   * Never throws and never blocks interaction (the UI shows the ID until the name
+   * lands).
+   */
+  requestNames(refs: readonly NameRef[]): void;
   /** Release the persistent session (character offline), back to the select list. */
   releaseSession(): Promise<void>;
   logout(): Promise<void>;
@@ -796,6 +807,75 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }));
   }
 
+  // --- R7c Names everywhere (batch name cache) -----------------------------
+
+  // The generalized R7a location-name cache: every tab asks for names by
+  // (kind, id) and this cache resolves them in ONE batched /api/names round-trip
+  // per microtask, caches each outcome (a name, or null for a definitive
+  // "unknown" so it never refetches), and pushes them into the store's `names`
+  // slice for pure-reader components. A transient network failure is NOT cached
+  // (the pending marks are released so a later request retries). Fire-and-forget:
+  // requestNames never throws and never blocks a UI interaction — the component
+  // shows the raw ID until the name lands. Chunked to the route's server-side cap
+  // so a large list is never silently truncated.
+  const NAMES_REQUEST_CAP = 500;
+  const nameCache = new Map<string, string | null>();
+  const namePending = new Set<string>();
+  let nameQueue: NameRef[] = [];
+  let nameFlushScheduled = false;
+
+  async function flushNameQueue(): Promise<void> {
+    nameFlushScheduled = false;
+    const batch = nameQueue;
+    nameQueue = [];
+    for (let start = 0; start < batch.length; start += NAMES_REQUEST_CAP) {
+      const chunk = batch.slice(start, start + NAMES_REQUEST_CAP);
+      let result: Awaited<ReturnType<typeof api.resolveNames>>;
+      try {
+        result = await api.resolveNames(chunk, callOptions);
+      } catch {
+        // Best-effort: release the pending marks so these refs can be retried
+        // by a later requestNames (a transient failure must not cache "unknown").
+        for (const ref of chunk) {
+          namePending.delete(nameKey(ref.kind, ref.id));
+        }
+        continue;
+      }
+      const entries: Record<string, string | null> = {};
+      for (const ref of chunk) {
+        const key = nameKey(ref.kind, ref.id);
+        const name = key in result.names ? result.names[key] : null;
+        nameCache.set(key, name ?? null);
+        namePending.delete(key);
+        entries[key] = name ?? null;
+      }
+      store.apply({ type: "names/resolved", entries });
+    }
+  }
+
+  function requestNames(refs: readonly NameRef[]): void {
+    let queued = false;
+    for (const ref of refs) {
+      const id = ref.id;
+      if (!Number.isSafeInteger(id) || id <= 0) {
+        continue;
+      }
+      const key = nameKey(ref.kind, id);
+      if (nameCache.has(key) || namePending.has(key)) {
+        continue;
+      }
+      namePending.add(key);
+      nameQueue.push({ kind: ref.kind, id });
+      queued = true;
+    }
+    if (queued && !nameFlushScheduled) {
+      nameFlushScheduled = true;
+      queueMicrotask(() => {
+        void flushNameQueue();
+      });
+    }
+  }
+
   // --- R6a Agent Finder ----------------------------------------------------
 
   // The finder pulls a bounded set from the static reference table and sorts it
@@ -1081,6 +1161,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     setChatChannel(channel) {
       store.apply({ type: "chat/active", channel });
     },
+
+    requestNames,
 
     async releaseSession() {
       try {

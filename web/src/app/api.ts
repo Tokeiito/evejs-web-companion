@@ -9,6 +9,7 @@
 import { BridgeCallError } from "../bridge/callMethod.ts";
 import type { JsonValue } from "../bridge/wire.ts";
 import type { AgentRow, OnlineCharacterState, StationStatic } from "../store/types.ts";
+import type { NameRef } from "../store/names.ts";
 
 export interface LoginResult {
   readonly accountID: number;
@@ -633,4 +634,33 @@ export async function findMapLocations(
     capped: data.capped === true,
     matches: Array.isArray(data.matches) ? data.matches.map(asMapLocation) : [],
   };
+}
+
+// --- R7c Batch name resolution (names everywhere) --------------------------
+// Turn raw IDs into names across every tab in ONE round-trip. POST /api/names
+// takes { items: [{kind, id}] } and returns { names: { "kind:id": name|null } }
+// over the static reference getters — read-only, like /api/map/find, NOT a
+// gateway/bridge call. A null value is a definitive "unknown" (an NPC/type not
+// in the static tables); the client name-cache caches it so it never refetches.
+
+export interface ResolveNamesResult {
+  /** Keyed by `${kind}:${id}`; value is the resolved name or null (unknown). */
+  readonly names: Readonly<Record<string, string | null>>;
+}
+
+/** Batch-resolve a set of `{kind, id}` refs to names (kind:id → name | null). */
+export async function resolveNames(
+  items: readonly NameRef[],
+  options: ApiOptions = {},
+): Promise<ResolveNamesResult> {
+  const data = await postJson("/api/names", { items }, options);
+  const raw =
+    typeof data.names === "object" && data.names !== null && !Array.isArray(data.names)
+      ? (data.names as Record<string, JsonValue>)
+      : {};
+  const names: Record<string, string | null> = {};
+  for (const [key, value] of Object.entries(raw)) {
+    names[key] = typeof value === "string" ? value : null;
+  }
+  return { names };
 }
