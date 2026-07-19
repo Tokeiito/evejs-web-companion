@@ -1,11 +1,13 @@
 <script lang="ts">
-  // R2 page flow, a pure reader of the client-state store: login form ->
-  // character selection -> docked station panel. All fetch/decode logic lives
-  // in app/flow.ts; the store slices are Svelte-store-contract signals, so
-  // $-auto-subscription reads them directly.
+  // R2/R3 page flow, a pure reader of the client-state store: login form ->
+  // character selection -> docked station panel, with a tab to the R3
+  // Inventory & Ship page. All fetch/decode logic lives in app/flow.ts; the
+  // store slices are Svelte-store-contract signals, so $-auto-subscription
+  // reads them directly.
   import LoginForm from "./LoginForm.svelte";
   import CharacterSelect from "./CharacterSelect.svelte";
   import StationPanel from "./StationPanel.svelte";
+  import InventoryShip from "./InventoryShip.svelte";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
 
@@ -17,6 +19,10 @@
   const session = store.session;
   // svelte-ignore state_referenced_locally
   const station = store.station;
+
+  // Which docked page is showing. Local UI state only (the store mirrors EveJS
+  // state, not view navigation).
+  let page = $state<"station" | "inventory">("station");
 </script>
 
 <h1>EveJS Web</h1>
@@ -25,5 +31,17 @@
 {:else if $station.online === null}
   <CharacterSelect {store} {flow} />
 {:else}
-  <StationPanel {store} {flow} />
+  <nav class="tabs">
+    <button type="button" class:active={page === "station"} onclick={() => (page = "station")}>
+      Station
+    </button>
+    <button type="button" class:active={page === "inventory"} onclick={() => (page = "inventory")}>
+      Inventory &amp; Ship
+    </button>
+  </nav>
+  {#if page === "station"}
+    <StationPanel {store} {flow} />
+  {:else}
+    <InventoryShip {store} {flow} />
+  {/if}
 {/if}

@@ -58,6 +58,52 @@ export interface StationGuest {
   readonly warFactionID: number | null;
 }
 
+/**
+ * One decoded inventory row from an invbroker List (goal R3), from either a
+ * packedrow list or an (empty) python set. The bound OID that produced it never
+ * reaches the browser; the BFF holds it and the browser addresses items by
+ * these game IDs.
+ */
+export interface InventoryItemRow {
+  readonly itemID: number;
+  readonly typeID: number;
+  readonly groupID: number | null;
+  readonly categoryID: number | null;
+  readonly flagID: number | null;
+  readonly quantity: number;
+  readonly singleton: boolean;
+}
+
+/** Decoded invbroker.GetCapacity result (util.KeyVal {capacity, used}). */
+export interface CapacityInfo {
+  readonly capacity: number;
+  readonly used: number;
+}
+
+/** One inventory container's decoded reads (hangar or active-ship cargo). */
+export interface InventoryContainerState {
+  readonly rows: readonly InventoryItemRow[];
+  readonly capacity: CapacityInfo | null;
+  /** Non-null when this container's read failed (the other container still shows). */
+  readonly error: string | null;
+}
+
+/**
+ * The Inventory & Ship page state (goal R3): the docked station hangar and the
+ * active ship's cargo, plus which ships in the hangar can be boarded (derived
+ * from the hangar rows: category 6 items that are not already active).
+ */
+export interface InventoryState {
+  readonly stationID: number | null;
+  readonly activeShipID: number | null;
+  readonly hangar: InventoryContainerState;
+  readonly cargo: InventoryContainerState;
+  /** True once a panel load has populated the slice. */
+  readonly loaded: boolean;
+  /** Non-null when the last mutation (move/stack/board) failed. */
+  readonly actionError: string | null;
+}
+
 export interface CharacterSummary {
   readonly characterID: number;
   readonly characterName: string;

@@ -28,19 +28,17 @@ export interface ApiOptions {
   readonly fetch?: typeof fetch;
 }
 
-async function postJson(
+async function requestJson(
   path: string,
-  body: unknown,
+  init: RequestInit,
   options: ApiOptions,
 ): Promise<Record<string, JsonValue>> {
   const doFetch = options.fetch ?? globalThis.fetch;
   let response: Response;
   try {
     response = await doFetch(`${options.baseUrl ?? ""}${path}`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
       credentials: "same-origin",
-      body: JSON.stringify(body),
+      ...init,
     });
   } catch (cause) {
     throw new BridgeCallError(
@@ -75,6 +73,29 @@ async function postJson(
     );
   }
   return data as Record<string, JsonValue>;
+}
+
+async function postJson(
+  path: string,
+  body: unknown,
+  options: ApiOptions,
+): Promise<Record<string, JsonValue>> {
+  return requestJson(
+    path,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    },
+    options,
+  );
+}
+
+async function getJson(
+  path: string,
+  options: ApiOptions,
+): Promise<Record<string, JsonValue>> {
+  return requestJson(path, { method: "GET" }, options);
 }
 
 function asNumberOrNull(value: JsonValue | undefined): number | null {
@@ -136,4 +157,76 @@ export async function releaseSession(
 ): Promise<{ released: boolean }> {
   const data = await postJson("/api/bridge/release", {}, options);
   return { released: data.released === true };
+}
+
+// --- R3 Inventory & Ship (bound-object bridge) -----------------------------
+// The browser addresses items/ships by their game IDs; the BFF holds the
+// bound-object handles and returns the raw retail-shaped List/GetCapacity
+// results, which app/flow.ts decodes with bridge/inventoryShip.ts.
+
+/** One inventory container's raw reads (retail-shaped; decoded in the flow). */
+export interface RawContainer {
+  readonly list: JsonValue;
+  readonly capacity: JsonValue;
+  readonly error: string | null;
+}
+
+export interface RawInventoryPanel {
+  readonly stationID: number | null;
+  readonly activeShipID: number | null;
+  readonly hangar: RawContainer;
+  readonly cargo: RawContainer & { readonly shipID: number | null };
+}
+
+function readRawContainer(value: JsonValue | undefined): RawContainer {
+  const container = (value ?? {}) as Record<string, JsonValue>;
+  return {
+    list: container.list ?? null,
+    capacity: container.capacity ?? null,
+    error: typeof container.error === "string" ? container.error : null,
+  };
+}
+
+/** Load the full Inventory & Ship panel (station hangar + active-ship cargo). */
+export async function loadInventory(
+  options: ApiOptions = {},
+): Promise<RawInventoryPanel> {
+  const data = await getJson("/api/bridge/inventory", options);
+  const cargo = (data.cargo ?? {}) as Record<string, JsonValue>;
+  return {
+    stationID: asNumberOrNull(data.stationID),
+    activeShipID: asNumberOrNull(data.activeShipID),
+    hangar: readRawContainer(data.hangar),
+    cargo: { ...readRawContainer(data.cargo), shipID: asNumberOrNull(cargo.shipID) },
+  };
+}
+
+/** Move one item hangar <-> active-ship cargo. */
+export async function moveItem(
+  itemID: number,
+  direction: "toCargo" | "toHangar",
+  qty: number | null,
+  options: ApiOptions = {},
+): Promise<void> {
+  const body: Record<string, JsonValue> = { itemID, direction };
+  if (qty !== null) {
+    body.qty = qty;
+  }
+  await postJson("/api/bridge/inventory/move", body, options);
+}
+
+/** Stack all loose stacks in the hangar or the active-ship cargo. */
+export async function stackItems(
+  target: "hangar" | "cargo",
+  options: ApiOptions = {},
+): Promise<void> {
+  await postJson("/api/bridge/inventory/stack", { target }, options);
+}
+
+/** Board a ship sitting in the station hangar (it becomes the active ship). */
+export async function boardShip(
+  shipID: number,
+  options: ApiOptions = {},
+): Promise<void> {
+  await postJson("/api/bridge/ship/board", { shipID }, options);
 }

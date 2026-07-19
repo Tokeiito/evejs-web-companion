@@ -474,6 +474,68 @@ async function releaseBridgeSession(bridgeSessionID, sessionFields = undefined) 
   };
 }
 
+/**
+ * Bound-object bridge (goal R3) — step 1. Dispatch an allowlisted bind method
+ * (invbroker.GetInventory/GetInventoryFromId/MachoBindObject,
+ * ship.MachoBindObject) on the persistent session; the gateway registers the
+ * bound OID and returns an opaque boundHandle. The handle is held BFF-side and
+ * must never reach browser JS (same rule as bridgeSessionID). See
+ * docs/bridge-wire-contract.md.
+ */
+async function bindObject(service, method, args = [], kwargs = null, sessionFields = {}, bridgeSessionID = undefined) {
+  const body = {
+    service: String(service || ""),
+    method: String(method || ""),
+    args: Array.isArray(args) ? args : [],
+    kwargs: kwargs && typeof kwargs === "object" && !Array.isArray(kwargs)
+      ? kwargs
+      : null,
+    session: sessionFields && typeof sessionFields === "object" && !Array.isArray(sessionFields)
+      ? sessionFields
+      : {},
+  };
+  if (typeof bridgeSessionID === "string" && bridgeSessionID) {
+    body.bridgeSessionID = bridgeSessionID;
+  }
+  const data = await postJson("/bound/bind", body, { timeoutMs: BRIDGE_CALL_TIMEOUT_MS });
+  return {
+    boundHandle: String(data.boundHandle || ""),
+    service: data.service,
+    method: data.method,
+    notifications: Array.isArray(data.notifications) ? data.notifications : [],
+  };
+}
+
+/**
+ * Bound-object bridge (goal R3) — step 2. Dispatch an allowlisted bound method
+ * (List/Add/GetCapacity/StackAll/MultiMerge/Board) on a held handle. Deny by
+ * default and session confinement are enforced by the gateway.
+ */
+async function callBoundMethod(service, method, args = [], kwargs = null, sessionFields = {}, bridgeSessionID = undefined, boundHandle = undefined) {
+  const body = {
+    service: String(service || ""),
+    method: String(method || ""),
+    args: Array.isArray(args) ? args : [],
+    kwargs: kwargs && typeof kwargs === "object" && !Array.isArray(kwargs)
+      ? kwargs
+      : null,
+    session: sessionFields && typeof sessionFields === "object" && !Array.isArray(sessionFields)
+      ? sessionFields
+      : {},
+    boundHandle: String(boundHandle || ""),
+  };
+  if (typeof bridgeSessionID === "string" && bridgeSessionID) {
+    body.bridgeSessionID = bridgeSessionID;
+  }
+  const data = await postJson("/bound/call", body, { timeoutMs: BRIDGE_CALL_TIMEOUT_MS });
+  return {
+    service: data.service,
+    method: data.method,
+    result: data.result === undefined ? null : data.result,
+    notifications: Array.isArray(data.notifications) ? data.notifications : [],
+  };
+}
+
 async function saveSkillQueue(accountID, characterID, entries, options = {}) {
   return postCommandJson("/skill-queue", {
     accountID: Number(accountID) || 0,
@@ -511,6 +573,8 @@ module.exports = {
   EveGatewayError,
   buildEventStreamRequest,
   callMethod,
+  bindObject,
+  callBoundMethod,
   selectCharacter,
   releaseBridgeSession,
   claimCharacterControl,

@@ -21,6 +21,8 @@ import {
 import type { FeedAdapter, FeedEvent, FeedSink, FeedStatus } from "./feed.ts";
 import type {
   CharacterSummary,
+  InventoryContainerState,
+  InventoryState,
   OnlineCharacterState,
   StationGuest,
   StationServiceBits,
@@ -67,6 +69,7 @@ export interface ClientState {
   readonly session: SessionSlice;
   readonly character: CharacterSlice;
   readonly station: StationSlice;
+  readonly inventory: InventoryState;
   readonly feed: FeedSlice;
 }
 
@@ -90,6 +93,21 @@ const INITIAL_STATION: StationSlice = Object.freeze({
   readError: null,
 });
 
+const EMPTY_CONTAINER: InventoryContainerState = Object.freeze({
+  rows: Object.freeze([]) as InventoryContainerState["rows"],
+  capacity: null,
+  error: null,
+});
+
+const INITIAL_INVENTORY: InventoryState = Object.freeze({
+  stationID: null,
+  activeShipID: null,
+  hangar: EMPTY_CONTAINER,
+  cargo: EMPTY_CONTAINER,
+  loaded: false,
+  actionError: null,
+});
+
 const INITIAL_FEED: FeedSlice = Object.freeze({
   adapter: null,
   status: "idle" as FeedStatus,
@@ -102,6 +120,7 @@ export interface ClientStore {
   readonly session: ReadableSignal<SessionSlice>;
   readonly character: ReadableSignal<CharacterSlice>;
   readonly station: ReadableSignal<StationSlice>;
+  readonly inventory: ReadableSignal<InventoryState>;
   readonly feed: ReadableSignal<FeedSlice>;
 
   /** Whole-state snapshot. */
@@ -128,6 +147,7 @@ export function createClientStore(): ClientStore {
   const session = createSignal<SessionSlice>(INITIAL_SESSION);
   const character = createSignal<CharacterSlice>(INITIAL_CHARACTER);
   const station = createSignal<StationSlice>(INITIAL_STATION);
+  const inventory = createSignal<InventoryState>(INITIAL_INVENTORY);
   const feed = createSignal<FeedSlice>(INITIAL_FEED);
 
   // Whole-store notification: bumped once per applied change so multi-slice
@@ -141,6 +161,7 @@ export function createClientStore(): ClientStore {
     session: session.get(),
     character: character.get(),
     station: station.get(),
+    inventory: inventory.get(),
     feed: feed.get(),
   });
 
@@ -158,6 +179,7 @@ export function createClientStore(): ClientStore {
         session.set(INITIAL_SESSION);
         character.set(INITIAL_CHARACTER);
         station.set(INITIAL_STATION);
+        inventory.set(INITIAL_INVENTORY);
         break;
       case "character/list": {
         const characters = [...event.characters];
@@ -191,9 +213,11 @@ export function createClientStore(): ClientStore {
           online: event.character,
           station: event.station,
         });
+        inventory.set(INITIAL_INVENTORY);
         break;
       case "character/offline":
         station.set(INITIAL_STATION);
+        inventory.set(INITIAL_INVENTORY);
         break;
       case "station/bits":
         station.set({ ...station.get(), bits: event.bits });
@@ -206,6 +230,23 @@ export function createClientStore(): ClientStore {
         break;
       case "station/read-error":
         station.set({ ...station.get(), readError: event.message });
+        break;
+      case "inventory/loaded":
+        inventory.set({
+          stationID: event.stationID,
+          activeShipID: event.activeShipID,
+          hangar: event.hangar,
+          cargo: event.cargo,
+          loaded: true,
+          // A successful load clears any stale mutation error.
+          actionError: null,
+        });
+        break;
+      case "inventory/action-error":
+        inventory.set({ ...inventory.get(), actionError: event.message });
+        break;
+      case "inventory/cleared":
+        inventory.set(INITIAL_INVENTORY);
         break;
     }
   };
@@ -264,6 +305,7 @@ export function createClientStore(): ClientStore {
     session: readonlySignal(session),
     character: readonlySignal(character),
     station: readonlySignal(station),
+    inventory: readonlySignal(inventory),
     feed: readonlySignal(feed),
     get,
     subscribe,

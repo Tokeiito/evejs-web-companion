@@ -48,6 +48,23 @@ What to expect:
 - `map.GetStationInfo` is issued faithfully but answers with the retail cached-object envelope; the panel notes this rather than decoding rows from it (station identity comes from static data, exactly like retail's client-side static DB).
 - If the panel looks stale after server-side changes, use "Refresh panel" — push forwarding of notifications is a later goal (G6); the backlog is drained into each call response for now.
 
+## Spot test (R3): station inventory + ship operations
+
+The second live check (goal R3). What it proves: the browser drives the retail **two-step bound-object** call pattern (`invbroker` / `ship` moniker → `MachoBindObject` → `List`/`Add`/`StackAll`/`Board`) against the same handlers the retail client hits. The bound-object handles live only in the BFF and gateway — the browser moves items and boards ships by their game IDs.
+
+1. Same setup as the R2 spot test (EveJS running, `npm run build:web`, `npm start`).
+2. Open `http://127.0.0.1:26500/dist/`, log in as the account that owns **Farmer**, and select the character (R2 flow).
+3. Click the **Inventory & Ship** tab. You should see two panels: the **station hangar** (all hangar items, with a capacity readout) and the **active-ship cargo** (its items + cargo capacity).
+4. **Move an item:** click **→ Cargo** on a non-ship hangar item (optionally type a quantity first for a partial move). The item should disappear from the hangar and appear in the cargo, and cargo "used" should rise. **→ Hangar** moves it back. **Stack all** consolidates loose stacks.
+5. **Board a ship:** a ship sitting in the hangar shows a **Board** button. Click it — that ship becomes the active ship, and the cargo panel now shows *its* cargo.
+
+What to expect:
+
+- Every move/board is validated server-side by the real handlers, exactly as retail — an over-capacity move, an unfittable item, or a ship you cannot board is refused with the handler's own reason (shown under "Last action failed"), and nothing relocates.
+- Reads refresh after each mutation (push forwarding is still G6). A slow or failed read of one container never blanks the other (`Promise.allSettled`).
+- There is no separate "split stack" call (gap G4); a partial quantity folds into the move.
+- Moving cargo requires an active ship with a cargo hold. If your active ship is a **Capsule**, board a real ship first — a capsule has no cargo.
+
 ## Configuration
 
 Defaults assume both repos live under `C:\Users\ryanf\Documents\GitHub`:

@@ -528,6 +528,13 @@ app.post("/api/bridge/select", requireAuth, async (req, res, next) => {
       bridgeSessionID: outcome.bridgeSessionID,
       characterID: Number(outcome.session.characterID) || characterID,
       accountID: Number(req.account.accountID),
+      // R3: the docked-entry state the page needs to address inventories/ships
+      // by their game IDs, plus the server-held bound-object handles keyed by a
+      // semantic key (hangar/cargo/ship). Handles live here only — never in
+      // browser JS — exactly like the bridgeSessionID.
+      stationID: Number(outcome.session.stationID) || null,
+      activeShipID: Number(outcome.session.shipID) || null,
+      boundHandles: new Map(),
     });
     res.json({
       ok: true,
@@ -561,6 +568,285 @@ app.post("/api/bridge/release", requireAuth, async (req, res, next) => {
   try {
     const released = await releaseHeldBridgeSession(req.webSessionID);
     res.json({ ok: true, released });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// --- R3 Inventory & Ship (bound-object bridge) -----------------------------
+// The browser refers to inventories and ships by their GAME IDs; the BFF maps
+// those to bound-object handles it holds server-side and drives the retail
+// two-step (bind then bound method) on the gateway. Handles never reach the
+// browser. Wire contract: docs/bridge-wire-contract.md.
+
+const ITEM_FLAG_HANGAR = 4;
+const ITEM_FLAG_CARGO_HOLD = 5;
+// A placeholder groupStation bind tuple for ship.MachoBindObject; EveJS's ship
+// bind mints an OID and ignores bindParams (the retail moniker is
+// Moniker('ship',(stationID,groupStation))).
+const SHIP_BIND_GROUP_STATION = 5;
+
+function requireHeldBridgeSession(req, res) {
+  const held = bridgeSessions.get(req.webSessionID) || null;
+  if (!held) {
+    res.status(409).json({
+      ok: false,
+      error: "NO_LIVE_SESSION",
+      message: "No character is online; select a character first.",
+    });
+    return null;
+  }
+  return held;
+}
+
+// Bind spec factories for the semantic targets the page addresses.
+function hangarBindSpec(held) {
+  return {
+    key: `hangar:${held.stationID}`,
+    service: "invbroker",
+    method: "GetInventory",
+    args: [held.stationID],
+    kwargs: null,
+  };
+}
+
+function cargoBindSpec(held, shipID) {
+  return {
+    key: `cargo:${shipID}`,
+    service: "invbroker",
+    method: "GetInventoryFromId",
+    args: [shipID],
+    kwargs: { passive: 0 },
+  };
+}
+
+function shipBindSpec(held) {
+  return {
+    key: `ship:${held.stationID}`,
+    service: "ship",
+    method: "MachoBindObject",
+    args: [[held.stationID, SHIP_BIND_GROUP_STATION]],
+    kwargs: null,
+  };
+}
+
+// Dispatch a bound method, binding the target on demand and caching the bind
+// under its semantic key. The cache holds the in-flight bind PROMISE, so the
+// concurrent reads of one panel load (List + GetCapacity per container) share a
+// single bind instead of racing to create duplicate OIDs. A reaped OID
+// (BOUND_HANDLE_NOT_FOUND) rebinds once; a lost persistent session drops the
+// whole held session (as /api/bridge/call).
+async function boundCall(held, webSessionID, bindSpec, method, args, kwargs) {
+  const sessionFields = { userid: held.accountID };
+  function ensureHandle(forceRebind) {
+    if (!forceRebind && held.boundHandles.has(bindSpec.key)) {
+      return held.boundHandles.get(bindSpec.key);
+    }
+    const bindPromise = gateway
+      .bindObject(
+        bindSpec.service,
+        bindSpec.method,
+        bindSpec.args,
+        bindSpec.kwargs,
+        sessionFields,
+        held.bridgeSessionID,
+      )
+      .then((bound) => bound.boundHandle)
+      .catch((error) => {
+        // Never cache a failed bind.
+        if (held.boundHandles.get(bindSpec.key) === bindPromise) {
+          held.boundHandles.delete(bindSpec.key);
+        }
+        throw error;
+      });
+    held.boundHandles.set(bindSpec.key, bindPromise);
+    return bindPromise;
+  }
+  try {
+    return await gateway.callBoundMethod(
+      bindSpec.service,
+      method,
+      args,
+      kwargs,
+      sessionFields,
+      held.bridgeSessionID,
+      await ensureHandle(false),
+    );
+  } catch (error) {
+    if (error && error.code === "SESSION_NOT_FOUND") {
+      bridgeSessions.delete(webSessionID);
+      throw error;
+    }
+    if (error && error.code === "BOUND_HANDLE_NOT_FOUND") {
+      held.boundHandles.delete(bindSpec.key);
+      return gateway.callBoundMethod(
+        bindSpec.service,
+        method,
+        args,
+        kwargs,
+        sessionFields,
+        held.bridgeSessionID,
+        await ensureHandle(true),
+      );
+    }
+    throw error;
+  }
+}
+
+// Load the full Inventory & Ship panel: station hangar + active-ship cargo,
+// each with its List and GetCapacity. The four reads are INDEPENDENT
+// (Promise.allSettled) so one failed read never blanks the rest (R2's rule).
+app.get("/api/bridge/inventory", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  try {
+    const shipID = held.activeShipID;
+    const hangarSpec = hangarBindSpec(held);
+    const cargoSpec = shipID ? cargoBindSpec(held, shipID) : null;
+    const [hangarList, hangarCap, cargoList, cargoCap] = await Promise.allSettled([
+      boundCall(held, req.webSessionID, hangarSpec, "List", [ITEM_FLAG_HANGAR], null),
+      boundCall(held, req.webSessionID, hangarSpec, "GetCapacity", [ITEM_FLAG_HANGAR], null),
+      cargoSpec
+        ? boundCall(held, req.webSessionID, cargoSpec, "List", [ITEM_FLAG_CARGO_HOLD], null)
+        : Promise.reject(Object.assign(new Error("No active ship."), { code: "NO_ACTIVE_SHIP" })),
+      cargoSpec
+        ? boundCall(held, req.webSessionID, cargoSpec, "GetCapacity", [ITEM_FLAG_CARGO_HOLD], null)
+        : Promise.reject(Object.assign(new Error("No active ship."), { code: "NO_ACTIVE_SHIP" })),
+    ]);
+
+    // A lost live session can't be recovered by any read; surface it so the
+    // page returns to character select.
+    for (const settled of [hangarList, hangarCap, cargoList, cargoCap]) {
+      if (settled.status === "rejected" && settled.reason && settled.reason.code === "SESSION_NOT_FOUND") {
+        next(settled.reason);
+        return;
+      }
+    }
+
+    const settledCode = (settled) =>
+      settled.status === "rejected"
+        ? String((settled.reason && settled.reason.code) || "READ_FAILED")
+        : null;
+    const settledValue = (settled) =>
+      settled.status === "fulfilled" ? settled.value.result : null;
+
+    res.json({
+      ok: true,
+      stationID: held.stationID,
+      activeShipID: shipID,
+      hangar: {
+        list: settledValue(hangarList),
+        capacity: settledValue(hangarCap),
+        error: settledCode(hangarList) || settledCode(hangarCap),
+      },
+      cargo: {
+        shipID,
+        list: settledValue(cargoList),
+        capacity: settledValue(cargoCap),
+        error: settledCode(cargoList) || settledCode(cargoCap),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Move one item hangar <-> active-ship cargo. The bound object is the
+// DESTINATION; retail's Add(itemID, sourceLocationID, qty, flag) carries the
+// source location and the destination flag.
+app.post("/api/bridge/inventory/move", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const body = req.body || {};
+  const itemID = Number(body.itemID) || 0;
+  const direction = String(body.direction || "");
+  const qty = Number(body.qty);
+  if (itemID <= 0 || (direction !== "toCargo" && direction !== "toHangar")) {
+    res.status(400).json({ ok: false, error: "INVALID_MOVE", message: "itemID and a valid direction are required." });
+    return;
+  }
+  const shipID = held.activeShipID;
+  if (!shipID) {
+    res.status(409).json({ ok: false, error: "NO_ACTIVE_SHIP", message: "No active ship to move cargo to or from." });
+    return;
+  }
+  const kwargs = { flag: direction === "toCargo" ? ITEM_FLAG_CARGO_HOLD : ITEM_FLAG_HANGAR };
+  if (Number.isSafeInteger(qty) && qty > 0) {
+    kwargs.qty = qty;
+  }
+  const destSpec = direction === "toCargo" ? cargoBindSpec(held, shipID) : hangarBindSpec(held);
+  const sourceLocationID = direction === "toCargo" ? held.stationID : shipID;
+  try {
+    const outcome = await boundCall(
+      held,
+      req.webSessionID,
+      destSpec,
+      "Add",
+      [itemID, sourceLocationID],
+      kwargs,
+    );
+    res.json({ ok: true, notifications: outcome.notifications });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Stack all loose stacks in the hangar or the active-ship cargo.
+app.post("/api/bridge/inventory/stack", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const target = String((req.body && req.body.target) || "");
+  if (target !== "hangar" && target !== "cargo") {
+    res.status(400).json({ ok: false, error: "INVALID_TARGET", message: "target must be 'hangar' or 'cargo'." });
+    return;
+  }
+  const shipID = held.activeShipID;
+  if (target === "cargo" && !shipID) {
+    res.status(409).json({ ok: false, error: "NO_ACTIVE_SHIP", message: "No active ship cargo to stack." });
+    return;
+  }
+  const spec = target === "cargo" ? cargoBindSpec(held, shipID) : hangarBindSpec(held);
+  const flag = target === "cargo" ? ITEM_FLAG_CARGO_HOLD : ITEM_FLAG_HANGAR;
+  try {
+    const outcome = await boundCall(held, req.webSessionID, spec, "StackAll", [flag], null);
+    res.json({ ok: true, notifications: outcome.notifications });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Board a ship sitting in the station hangar (the retail
+// Moniker('ship',(stationID,groupStation)).Board(shipID, oldShipID)). On
+// success the newly boarded ship becomes the active ship for cargo reads.
+app.post("/api/bridge/ship/board", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const shipID = Number((req.body && req.body.shipID) || 0);
+  if (shipID <= 0) {
+    res.status(400).json({ ok: false, error: "INVALID_SHIP", message: "A positive shipID is required." });
+    return;
+  }
+  try {
+    const outcome = await boundCall(
+      held,
+      req.webSessionID,
+      shipBindSpec(held),
+      "Board",
+      [shipID, held.activeShipID || null],
+      null,
+    );
+    // The boarded ship is now active; cargo reads bind against it, and its
+    // old cargo handle is stale.
+    held.activeShipID = shipID;
+    res.json({ ok: true, activeShipID: shipID, notifications: outcome.notifications });
   } catch (error) {
     next(error);
   }

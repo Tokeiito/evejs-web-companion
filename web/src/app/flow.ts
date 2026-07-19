@@ -10,6 +10,7 @@ import {
   getStationInfoCached,
   getStationItemBits,
 } from "../bridge/stationPanel.ts";
+import { decodeContainer } from "../bridge/inventoryShip.ts";
 import { BridgeCallError } from "../bridge/callMethod.ts";
 import * as api from "./api.ts";
 import type { ClientStore } from "../store/clientStore.ts";
@@ -26,6 +27,14 @@ export interface AppFlow {
   selectCharacter(characterID: number): Promise<void>;
   /** Refresh the docked station-panel reads on the live session. */
   refreshStationPanel(): Promise<void>;
+  /** Load the Inventory & Ship panel (station hangar + active-ship cargo). */
+  loadInventory(): Promise<void>;
+  /** Move a selected item hangar <-> active-ship cargo, then refresh. */
+  moveItem(itemID: number, direction: "toCargo" | "toHangar", qty?: number | null): Promise<void>;
+  /** Stack all loose stacks in the hangar or active-ship cargo, then refresh. */
+  stackContainer(target: "hangar" | "cargo"): Promise<void>;
+  /** Board a hangar ship (it becomes active), then refresh. */
+  boardShip(shipID: number): Promise<void>;
   /** Release the persistent session (character offline), back to the select list. */
   releaseSession(): Promise<void>;
   logout(): Promise<void>;
@@ -106,6 +115,39 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     });
   }
 
+  // Load the Inventory & Ship panel. The two containers are decoded
+  // independently (their own error is preserved) so one failed read never
+  // blanks the other — R2's Promise.allSettled rule, applied here on the BFF's
+  // already-settled per-container results. A lost session unwinds to select.
+  async function loadInventory(): Promise<void> {
+    const panel = await api.loadInventory(callOptions);
+    store.apply({
+      type: "inventory/loaded",
+      stationID: panel.stationID,
+      activeShipID: panel.activeShipID,
+      hangar: decodeContainer(panel.hangar.list, panel.hangar.capacity, panel.hangar.error),
+      cargo: decodeContainer(panel.cargo.list, panel.cargo.capacity, panel.cargo.error),
+    });
+  }
+
+  // Run a mutation, then refresh the panel. A lost session is rethrown to
+  // unwind the flow; any other failure is surfaced through the store (the page
+  // stays put and shows the reason) rather than thrown into the UI handler.
+  async function runMutation(action: () => Promise<void>): Promise<void> {
+    try {
+      await action();
+      store.apply({ type: "inventory/action-error", message: null });
+    } catch (error) {
+      if (isSessionLost(error)) {
+        store.apply({ type: "character/offline" });
+        throw error;
+      }
+      store.apply({ type: "inventory/action-error", message: readErrorReason(error) });
+      return;
+    }
+    await loadInventory();
+  }
+
   return {
     async login(username, password) {
       const result = await api.login(username, password, callOptions);
@@ -132,6 +174,20 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     },
 
     refreshStationPanel,
+
+    loadInventory,
+
+    async moveItem(itemID, direction, qty = null) {
+      await runMutation(() => api.moveItem(itemID, direction, qty ?? null, callOptions));
+    },
+
+    async stackContainer(target) {
+      await runMutation(() => api.stackItems(target, callOptions));
+    },
+
+    async boardShip(shipID) {
+      await runMutation(() => api.boardShip(shipID, callOptions));
+    },
 
     async releaseSession() {
       try {

@@ -15,6 +15,7 @@
 
 import type {
   CharacterSummary,
+  InventoryContainerState,
   OnlineCharacterState,
   StationGuest,
   StationServiceBits,
@@ -54,7 +55,22 @@ export type FeedEvent =
   // One or more docked reads failed non-fatally (e.g. a slow GetStationInfo):
   // surfaced so the panel shows the reason instead of a perpetual "Loading…".
   // A null message clears the error after a clean refresh.
-  | { readonly type: "station/read-error"; readonly message: string | null };
+  | { readonly type: "station/read-error"; readonly message: string | null }
+  // Goal R3 — the Inventory & Ship page (bound-object bridge). A full panel
+  // load: the docked station hangar and the active ship's cargo, each already
+  // decoded (its own error preserved, so one failed container never blanks the
+  // other).
+  | {
+      readonly type: "inventory/loaded";
+      readonly stationID: number | null;
+      readonly activeShipID: number | null;
+      readonly hangar: InventoryContainerState;
+      readonly cargo: InventoryContainerState;
+    }
+  // A mutation (move/stack/board) failed; null clears the error after success.
+  | { readonly type: "inventory/action-error"; readonly message: string | null }
+  // Drop the inventory state (character offline / logged out).
+  | { readonly type: "inventory/cleared" };
 
 /** What the store hands an adapter: publish events, report connectivity. */
 export interface FeedSink {

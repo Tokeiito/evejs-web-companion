@@ -1,6 +1,6 @@
 # Bridge wire contract (v1) — whitelisted `callMethod` path
 
-**Status:** Active, established by goal R1 (2026-07-18); extended by goal R2 (persistent browser-backed sessions, same date). R3+ builds on this contract; change it deliberately and update this file with the change.
+**Status:** Active, established by goal R1 (2026-07-18); extended by goal R2 (persistent browser-backed sessions, same date) and goal R3 (2026-07-19, the bound-object bridge — see "Bound-object bridge (R3)"). R4+ builds on this contract; change it deliberately and update this file with the change.
 
 This is the transport seam that lets the browser drive real EveJS `Handle_*` calls. The unit it mirrors is the retail call tuple **(service, method, args, kwargs)**; the gateway dispatches it through the same seam a retail client hits: `serviceManager.lookup(service).callMethod(method, args, session, kwargs)`.
 
@@ -50,6 +50,18 @@ Current pairs (defined in `eve.js` `server/src/_secondary/express/evejsWebGatewa
 | `map` | `GetStationInfo` | R1 |
 | `station` | `GetGuests` | R2 |
 | `stationSvc` | `GetStationItemBits` | R2 |
+| `invbroker` | `MachoBindObject` | R3 (bind) |
+| `invbroker` | `GetInventory` | R3 (bind) |
+| `invbroker` | `GetInventoryFromId` | R3 (bind) |
+| `invbroker` | `List` | R3 (bound method) |
+| `invbroker` | `Add` | R3 (bound method) |
+| `invbroker` | `MultiMerge` | R3 (bound method) |
+| `invbroker` | `StackAll` | R3 (bound method) |
+| `invbroker` | `GetCapacity` | R3 (bound method) |
+| `ship` | `MachoBindObject` | R3 (bind) |
+| `ship` | `Board` | R3 (bound method) |
+
+Deny-by-default governs **bound-object methods too**: a method invoked on a bound handle whose `(service, method)` is not on this list is refused with `CALL_NOT_ALLOWED` before the handle's OID is resolved. See "Bound-object bridge (R3)" below.
 
 ### Success response (200)
 
@@ -98,6 +110,8 @@ Standard gateway error envelope:
 | 502 | `CALL_FAILED` | The handler threw a non-refusal error (message carries a truncated detail), or the result was not JSON-serializable. |
 | 409 | `CALL_REFUSED` | **R2.** The handler itself refused with a retail user-facing error (a macho-wrapped `UserError`, e.g. "X is already online.", "not available on this account", the browser-pilot control refusal). The `message` is the handler's own text — the gateway never pre-empts or reimplements the check. |
 | 404 | `SESSION_NOT_FOUND` | **R2.** The `bridgeSessionID` is unknown, expired (idle TTL already ran the disconnect), released, evicted by a retail takeover, or owned by a different `userid` (deliberately opaque). |
+| 404 | `BOUND_HANDLE_NOT_FOUND` | **R3.** The `boundHandle` is unknown on this session, belongs to a different service than requested, or its OID was released/evicted. Handles are confined to the session that minted them (a handle from another session is unknown here). |
+| 502 | `BOUND_NO_OBJECT` | **R3.** A bind method dispatched but returned no bound object (no OID substruct). |
 | 502 | `SESSION_SELECT_FAILED` | **R2.** `SelectCharacterID` completed without binding a character to the session (e.g. unknown characterID — the handler logs and returns null on apply-failure). The minted session is discarded. |
 | 401 | `UNAUTHORIZED` | Gateway authorization failed (shared with all gateway routes). |
 | 503 | `GATEWAY_RUNTIME_NOT_READY` | Gateway runtime not ready (shared with all gateway routes). |
@@ -120,10 +134,12 @@ Success (200): the `/call` envelope plus:
   "session": {
     "userid": 2, "characterID": 140000003, "characterName": "Test Three",
     "stationID": 60003760, "structureID": null,
-    "solarSystemID": 30000142, "corporationID": 98000000
+    "solarSystemID": 30000142, "corporationID": 98000000, "shipID": 9988400022009
   }
 }
 ```
+
+`shipID` (**R3**) is the docked character's active ship (`session.shipid`, set by `applyCharacterToSession`); the BFF uses it to bind the active ship's cargo with `invbroker.GetInventoryFromId`.
 
 - `bridgeSessionID` is an opaque gateway-minted handle for the stored live session. **It exists only between the gateway and the BFF: the BFF keeps it server-side keyed by its cookie session, and it must never reach browser JS** (same rule as the gateway token).
 - `session` echoes the scalar docked-entry state `applyCharacterToSession` put on the live session (where the character is), so the BFF/page need not re-derive it.
@@ -140,6 +156,82 @@ Subsequent calls carry the handle (plus the normal `session.userid`, which must 
 - **Retail takeover:** if EveJS's own mechanics evict the browser session (login takeover), the store notices the defunct session on next use and reports `SESSION_NOT_FOUND`.
 - Gateway shutdown releases all persistent sessions through the same path.
 
+## Bound-object bridge (R3)
+
+Retail drives inventory and ship operations with a **two-step bound-object
+(moniker/`MachoBindObject`) call**: a first call returns a *bound object* (a
+moniker/OID), and subsequent methods dispatch on that bound object rather than
+on the service by name. R3 mirrors this on the persistent session, and R4
+(agents are `Moniker('agentMgr', agentID)`) and R5 (travel is
+`Moniker('beyonce', solarsystemID)`) reuse the same two routes.
+
+**Handle confinement.** A bind returns an opaque `boundHandle` that the gateway
+holds on the persistent session (alongside the bound OID, which is registered
+in the shared service manager exactly as `network/packetDispatcher`'s
+`_scanAndRegisterOIDs` does after a real `MachoBindObject`). Like the
+`bridgeSessionID`, **the bound OID and the boundHandle are gateway↔BFF only —
+neither ever reaches browser JS.** The browser refers to inventories and ships
+by their game IDs (inventoryID / shipID / itemID); the BFF maps those to the
+handles it holds. A handle is confined to the session that minted it: presented
+to another session, it is `BOUND_HANDLE_NOT_FOUND`. When the session ends, its
+OIDs are released from the service manager.
+
+### `POST /_evejs-web/v1/bound/bind`
+
+Request: `{ "service", "method", "args"?, "kwargs"?, "session": { "userid" }, "bridgeSessionID" }`
+— dispatches an **allowlisted bind method** (`invbroker.GetInventory` /
+`GetInventoryFromId` / `MachoBindObject`, `ship.MachoBindObject`) on the stored
+live session, registers the returned bound OID(s), and mints a handle for the
+primary OID.
+
+Success (200): `{ "ok": true, "boundHandle": "<opaque>", "service", "method", "notifications": [...] }`.
+The bind's raw result is **not** returned (it carries the OID); only the opaque
+handle and the drained notification backlog cross back. Deny-by-default applies
+to the bind pair before any service lookup.
+
+### `POST /_evejs-web/v1/bound/call`
+
+Request: `{ "service", "method", "args"?, "kwargs"?, "session": { "userid" }, "bridgeSessionID", "boundHandle" }`
+— resolves the handle on **this session only**, enforces the deny-by-default
+`(service, method)` allowlist on the **bound method BEFORE resolving the OID**
+(a non-allowlisted bound method is refused before any dispatch), sets the
+session's `currentBoundObjectID` to the OID so the handler resolves its bound
+context exactly as on a socket, and dispatches through the same `callMethod`
+seam. The `service` must match the handle's service (else `BOUND_HANDLE_NOT_FOUND`).
+
+Success (200): the `/call` envelope (`result` is the bound method's
+retail-shaped return; `notifications` drains the backlog).
+
+### BFF bound-object routes (this repo)
+
+The browser never calls `/bound/*` directly; it hits semantic BFF routes keyed
+by game IDs, and the BFF holds the handles (cached per web session by a semantic
+key — `hangar:<stationID>`, `cargo:<shipID>`, `ship:<stationID>` — re-binding on
+`BOUND_HANDLE_NOT_FOUND`). All require the signed web login session.
+
+- `GET /api/bridge/inventory` → the full Inventory & Ship panel:
+  `{ ok, stationID, activeShipID, hangar: { list, capacity, error }, cargo: { shipID, list, capacity, error } }`.
+  Binds the station hangar (`invbroker.GetInventory`) and the active-ship cargo
+  (`invbroker.GetInventoryFromId`), then `List(flag)` + `GetCapacity(flag)` on
+  each. The four reads are independent (`Promise.allSettled`) so one failed read
+  never blanks the rest; each container carries its own `error` code. `list` and
+  `capacity` are the raw retail-shaped results, decoded browser-side
+  (`web/src/bridge/inventoryShip.ts`).
+- `POST /api/bridge/inventory/move` `{ itemID, direction: "toCargo"|"toHangar", qty? }`
+  → `invbroker.Add(itemID, sourceLocationID, {qty?, flag})` on the **destination**
+  binding (retail `Add` carries the source location and destination flag; a
+  partial `qty` folds the split into the move — no separate `SplitStack`, gap
+  G4).
+- `POST /api/bridge/inventory/stack` `{ target: "hangar"|"cargo" }` → `invbroker.StackAll(flag)`.
+- `POST /api/bridge/ship/board` `{ shipID }` → `ship.MachoBindObject` then
+  `Board(shipID, oldShipID)`; on success the boarded ship becomes the active
+  ship the BFF binds cargo against.
+
+Errors pass through with the gateway's status (`CALL_NOT_ALLOWED` → 403,
+`BOUND_HANDLE_NOT_FOUND` → 404, `CALL_REFUSED` → 409); a `SESSION_NOT_FOUND`
+drops the held bridge session (the page returns to character select). With no
+character online the routes answer 409 `NO_LIVE_SESSION`.
+
 ## BFF routes (this repo)
 
 `POST /api/bridge/call` — requires the signed web login session (else 401 `AUTH_REQUIRED`).
@@ -153,7 +245,7 @@ Success response: `{ "ok": true, "service", "method", "result", "notifications" 
 - `POST /api/bridge/select` with `{ "characterID" }`: validates ownership against the logged-in account, releases any previously held bridge session (character switch), then forwards the retail tuple `[characterID, null, true]` to the gateway's `session/select` with the pinned `userid`. The returned `bridgeSessionID` is stored **server-side only** (keyed by the signed web session); the browser gets `{ "ok": true, "character": {characterID, characterName, stationID, structureID, solarSystemID, corporationID}, "station": <client-local static identity or null>, "notifications": [...] }`. `station` is read-only static reference data (name/system/region/type/operation/security) — the same client-local resolution retail does from its static DB. Handler refusals pass through as `CALL_REFUSED` with the handler's message.
 - `POST /api/bridge/release` with `{}`: releases the held bridge session (if any) → `{ "ok": true, "released": <bool> }`. `POST /api/logout` also best-effort releases it.
 
-The server-side client is `src/eveGatewayClient.js`: `callMethod(service, method, args, kwargs, sessionFields, bridgeSessionID?)`, `selectCharacter(args, kwargs, sessionFields)`, `releaseBridgeSession(bridgeSessionID, sessionFields?)`. The TS browser client consumes the BFF routes only and never sees the handle.
+The server-side client is `src/eveGatewayClient.js`: `callMethod(service, method, args, kwargs, sessionFields, bridgeSessionID?)`, `selectCharacter(args, kwargs, sessionFields)`, `releaseBridgeSession(bridgeSessionID, sessionFields?)`, and the R3 bound-object pair `bindObject(service, method, args, kwargs, sessionFields, bridgeSessionID)` / `callBoundMethod(service, method, args, kwargs, sessionFields, bridgeSessionID, boundHandle)`. The TS browser client consumes the BFF routes only and never sees the bridgeSessionID or any boundHandle.
 
 ## Login semantics (who-cares, R1)
 
@@ -188,6 +280,8 @@ R2 replaced the R1b smoke page with the first migrated page — login → charac
 - `web/src/svelte-files.d.ts` shims `.svelte` imports for `tsc` (the Svelte compiler handles `lang="ts"` scripts itself).
 
 R2 page pieces, per the recipe below: `web/src/bridge/stationPanel.ts` (decoders for `GetStationItemBits`, `GetGuests`, and the `GetStationInfo` cached envelope), the `station` slice + `character/online`/`character/offline`/`station/*` feed events, and the flow controller driving login (who-cares) → typed `GetCharacterSelectionData` list → `/api/bridge/select` → docked reads.
+
+R3 page pieces (bound-object bridge): `web/src/bridge/inventoryShip.ts` (decoders for the invbroker `List` packed-row list / empty python set and the `GetCapacity` KeyVal), the `inventory` slice + `inventory/loaded`/`inventory/action-error`/`inventory/cleared` feed events, `app/flow.ts` `loadInventory`/`moveItem`/`stackContainer`/`boardShip`, and `web/src/ui/InventoryShip.svelte`. The browser addresses items/ships by game ID only; the BFF's `/api/bridge/inventory*` and `/api/bridge/ship/board` routes hold the bound-object handles (see "Bound-object bridge (R3)" above).
 
 ### How to add a page on the new stack (R2+)
 
