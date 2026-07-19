@@ -45,6 +45,7 @@ export interface RoutePlan {
 export type AutopilotAction =
   | { readonly kind: "undock" }
   | { readonly kind: "warp"; readonly destinationID: number; readonly label: string }
+  | { readonly kind: "approach"; readonly gateID: number; readonly label: string }
   | { readonly kind: "jump"; readonly fromGateID: number; readonly toGateID: number; readonly label: string }
   | { readonly kind: "dock"; readonly stationID: number; readonly label: string }
   | { readonly kind: "wait"; readonly reason: string }
@@ -69,6 +70,8 @@ export interface AutopilotDeps {
   getStatus(): Promise<FlightStatus>;
   undock(): Promise<void>;
   warp(destinationID: number): Promise<void>;
+  /** Approach a gate at full speed (CmdSetSpeedFraction + CmdFollowBall) to close into jump range. */
+  approach(destinationID: number): Promise<void>;
   jump(fromGateID: number, toGateID: number): Promise<void>;
   dock(stationID: number): Promise<void>;
   sleep(ms: number): Promise<void>;
@@ -104,10 +107,19 @@ export interface AutopilotController {
 export const AUTOPILOT_CADENCE_MS = 2000;
 const SETTLE_UNDOCK = 2;
 const SETTLE_WARP = 2;
+const SETTLE_APPROACH = 2;
 const SETTLE_JUMP = 5;
 const SETTLE_DOCK = 2;
 const MAX_DOCK_ATTEMPTS = 30;
 const MAX_JUMP_ATTEMPTS = 6;
+// A flight-status read can time out transiently while the server loads a
+// system scene during a jump handoff — the ship is fine, so retry a few cycles
+// before pausing rather than giving up on the first slow read.
+const MAX_STATUS_READ_FAILURES = 5;
+// A gate approach from an autopilot-warp landing point can take many ticks to
+// close into jump range; bound it generously (separate from MAX_JUMP_ATTEMPTS,
+// which guards genuinely-fatal jump refusals).
+const MAX_APPROACH_CYCLES = 45;
 
 interface CompiledPlan extends RoutePlan {
   readonly hopsByFromSystem: ReadonlyMap<number, RouteHop>;
@@ -118,9 +130,13 @@ interface LoopMemory {
   status: AutopilotStatus;
   warpedInSystem: number | null;
   jumpedFromSystem: number | null;
+  /** Set when a jump refused NotWithinMaxJumpDist: approach this gate, then retry the jump. */
+  pendingApproachGate: number | null;
+  approachCycles: number;
   completedHops: number;
   dockAttempts: number;
   jumpAttempts: number;
+  statusReadFailures: number;
   settleTicks: number;
   action: string | null;
   phase: string | null;
@@ -134,9 +150,12 @@ function freshMemory(): LoopMemory {
     status: "idle",
     warpedInSystem: null,
     jumpedFromSystem: null,
+    pendingApproachGate: null,
+    approachCycles: 0,
     completedHops: 0,
     dockAttempts: 0,
     jumpAttempts: 0,
+    statusReadFailures: 0,
     settleTicks: 0,
     action: null,
     phase: null,
@@ -174,7 +193,7 @@ function isAtDestination(status: FlightStatus, plan: CompiledPlan): boolean {
 export function decideAutopilotAction(
   status: FlightStatus,
   plan: CompiledPlan,
-  memory: Pick<LoopMemory, "warpedInSystem" | "jumpedFromSystem">,
+  memory: Pick<LoopMemory, "warpedInSystem" | "jumpedFromSystem" | "pendingApproachGate">,
 ): AutopilotAction {
   // Docked: arrival check, else leave the station.
   if (status.docked) {
@@ -227,6 +246,14 @@ export function decideAutopilotAction(
     return { kind: "pause", reason: `Off route: no planned hop from system ${sys}.` };
   }
   if (memory.warpedInSystem === sys) {
+    // A prior jump refused for range: approach the gate to close in, then jump.
+    if (memory.pendingApproachGate === hop.gateToWarpID) {
+      return {
+        kind: "approach",
+        gateID: hop.gateToWarpID,
+        label: `Approach gate ${hop.gateToWarpID}`,
+      };
+    }
     return {
       kind: "jump",
       fromGateID: hop.gateToWarpID,
@@ -243,11 +270,17 @@ export function decideAutopilotAction(
 
 /** Classify a jump refusal into a recovery path. */
 function classifyJumpRefusal(reason: string): "approach" | "pause" {
-  // "NotCloseEnoughToJump" (retail): we thought we were at the gate but aren't
-  // — re-approach by re-warping to the gate. Everything else the retail
-  // `_HandleJumpUserErrors` treats as fatal (Stuck, StandingsTooLow, gate
-  // restricted, no link, too heavy, no charge) → pause and show why.
-  return /close enough|not close|notcloseenough/i.test(reason) ? "approach" : "pause";
+  // The ship is near the gate but outside jump range — close in with an
+  // approach, then retry. EveJS/retail phrase this as `NotWithinMaxJumpDist`
+  // (client hint `UI/Menusvc/MenuHints/NotWithingMaxJumpDist`, sic) or
+  // `NotCloseEnoughToJump`. Everything else `_HandleJumpUserErrors` treats as
+  // fatal (Stuck, StandingsTooLow, gate restricted, no link, too heavy, no
+  // charge) → pause and show why.
+  return /close enough|not close|notcloseenough|within.?max.?jump|max.?jump.?dist|jump.?dist/i.test(
+    reason,
+  )
+    ? "approach"
+    : "pause";
 }
 
 /** True when a dock refusal is the normal out-of-range docking-approach. */
@@ -315,6 +348,8 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotController {
       memory.jumpedFromSystem = null;
       memory.warpedInSystem = null;
       memory.jumpAttempts = 0;
+      memory.pendingApproachGate = null;
+      memory.approachCycles = 0;
     }
     if (plan) {
       const hop =
@@ -344,11 +379,22 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotController {
         case "warp":
           await deps.warp(action.destinationID);
           memory.warpedInSystem = sys;
+          memory.pendingApproachGate = null;
+          memory.approachCycles = 0;
           memory.settleTicks = SETTLE_WARP;
+          return;
+        case "approach":
+          await deps.approach(action.gateID);
+          // Approached; clear the pending flag so the next decision retries the
+          // jump (which will re-request an approach if still short of range).
+          memory.pendingApproachGate = null;
+          memory.settleTicks = SETTLE_APPROACH;
           return;
         case "jump":
           await deps.jump(action.fromGateID, action.toGateID);
           memory.jumpedFromSystem = sys;
+          memory.pendingApproachGate = null;
+          memory.approachCycles = 0;
           memory.settleTicks = SETTLE_JUMP;
           return;
         case "dock":
@@ -359,11 +405,11 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotController {
           return;
       }
     } catch (error) {
-      handleActionError(action, error);
+      handleActionError(action, error, sys);
     }
   }
 
-  function handleActionError(action: AutopilotAction, error: unknown): void {
+  function handleActionError(action: AutopilotAction, error: unknown, sys: number): void {
     if (deps.isSessionLost(error)) {
       setError("The live session ended (idle timeout or another client took over).");
       return;
@@ -377,18 +423,32 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotController {
     }
 
     if (action.kind === "jump") {
+      if (classifyJumpRefusal(reason) === "approach") {
+        // Near the gate but outside jump range: approach (CmdFollowBall) to
+        // close in, then retry the jump. Bounded by MAX_APPROACH_CYCLES (an
+        // approach from an autopilot-warp landing takes many ticks).
+        memory.approachCycles += 1;
+        if (memory.approachCycles > MAX_APPROACH_CYCLES) {
+          setPause(`Could not close to jump range after ${memory.approachCycles} approach cycles: ${reason}`);
+          return;
+        }
+        memory.pendingApproachGate = action.fromGateID;
+        memory.settleTicks = 1;
+        return;
+      }
+      // A genuinely fatal jump refusal (stuck, standings, restricted, ...).
       memory.jumpAttempts += 1;
       if (memory.jumpAttempts > MAX_JUMP_ATTEMPTS) {
         setPause(`Could not jump after ${memory.jumpAttempts} attempts: ${reason}`);
         return;
       }
-      if (classifyJumpRefusal(reason) === "approach") {
-        // Not at the gate yet: re-approach by re-warping to it next cycle.
-        memory.warpedInSystem = null;
-        memory.settleTicks = SETTLE_WARP;
-        return;
-      }
       setPause(`Jump refused: ${reason}`);
+      return;
+    }
+
+    if (action.kind === "approach") {
+      // Approach itself refusing is unusual (scrambled / can't move): pause.
+      setPause(`Approach refused: ${reason}`);
       return;
     }
 
@@ -407,8 +467,20 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotController {
       return;
     }
 
-    // Warp (or any other) refusal — scrambled/disrupted/invalid target/lost
-    // control: pause and show the handler's own reason. Don't guess.
+    if (action.kind === "warp") {
+      if (/already within warp|within warp distance|already in warp|too close to warp/i.test(reason)) {
+        // Already within warp range of the target gate (e.g. sitting near it):
+        // treat as arrived at the gate and proceed to approach/jump.
+        memory.warpedInSystem = sys;
+        memory.settleTicks = SETTLE_APPROACH;
+        return;
+      }
+      setPause(`Warp refused: ${reason}`);
+      return;
+    }
+
+    // Any other refusal — scrambled/disrupted/invalid target/lost control:
+    // pause and show the handler's own reason. Don't guess.
     setPause(`${labelFor(action)} refused: ${reason}`);
   }
 
@@ -416,6 +488,8 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotController {
     switch (action.kind) {
       case "warp":
         return "Warp";
+      case "approach":
+        return "Approach";
       case "jump":
         return "Jump";
       case "dock":
@@ -441,14 +515,28 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotController {
     let status: FlightStatus;
     try {
       status = await deps.getStatus();
+      memory.statusReadFailures = 0;
     } catch (error) {
       if (deps.isSessionLost(error)) {
         setError("The live session ended (idle timeout or another client took over).");
-      } else {
-        setPause(`Could not read flight status: ${deps.refusalReason(error)}`);
+        emit();
+        return { kind: "pause", reason: memory.failureReason ?? "session lost" };
       }
+      // A transient status-read timeout (e.g. the heavy system-scene load during
+      // a jump handoff) is not fatal — the ship is fine. Retry a few cycles
+      // before pausing; issue nothing this cycle.
+      memory.statusReadFailures += 1;
+      if (memory.statusReadFailures > MAX_STATUS_READ_FAILURES) {
+        setPause(
+          `Could not read flight status after ${memory.statusReadFailures} tries: ${deps.refusalReason(error)}`,
+        );
+        emit();
+        return { kind: "pause", reason: memory.failureReason ?? "status read failed" };
+      }
+      memory.phase = "Reconnecting";
+      memory.action = "Waiting for flight status";
       emit();
-      return { kind: "pause", reason: memory.failureReason ?? "status read failed" };
+      return { kind: "wait", reason: "status read retry" };
     }
 
     // Abort/pause may have fired during the status await: never issue after it.
@@ -504,6 +592,8 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotController {
         return "Undocking";
       case "warp":
         return action.label;
+      case "approach":
+        return action.label;
       case "jump":
         return action.label;
       case "dock":
@@ -525,6 +615,9 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotController {
     }
     if (action.kind === "warp") {
       return "Warping";
+    }
+    if (action.kind === "approach") {
+      return "Approaching gate";
     }
     if (action.kind === "jump") {
       return "Jumping";

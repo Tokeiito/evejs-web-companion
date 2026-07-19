@@ -43,7 +43,7 @@ const PLAN: RoutePlan = {
 };
 
 interface Call {
-  readonly m: "undock" | "warp" | "jump" | "dock";
+  readonly m: "undock" | "warp" | "approach" | "jump" | "dock";
   readonly a?: readonly number[];
 }
 
@@ -59,7 +59,14 @@ function refusal(message: string, code = "CALL_REFUSED"): Error {
  * poll), so the loop observes real transitions. Docking refuses `DockingApproach`
  * `dockRefusals` times (entering a FOLLOW approach) before it docks.
  */
-function makeMock(opts: { dockRefusals?: number; warpBehavior?: (dest: number) => void } = {}) {
+function makeMock(
+  opts: {
+    dockRefusals?: number;
+    jumpRangeRefusals?: number;
+    statusReadFailures?: number;
+    warpBehavior?: (dest: number) => void;
+  } = {},
+) {
   const state = {
     docked: true,
     inSpace: false,
@@ -70,6 +77,12 @@ function makeMock(opts: { dockRefusals?: number; warpBehavior?: (dest: number) =
     jumpTicks: 0,
     jumpTarget: null as number | null,
     dockRefusalsRemaining: opts.dockRefusals ?? 1,
+    // The ship lands near the gate but out of jump range: jump refuses
+    // NotWithinMaxJumpDist until this many approaches close the distance.
+    jumpRangeRefusalsRemaining: opts.jumpRangeRefusals ?? 0,
+    // Flight-status reads time out this many times (e.g. jump-handoff scene
+    // load) before succeeding — transient, not fatal.
+    statusReadFailuresRemaining: opts.statusReadFailures ?? 0,
   };
   const calls: Call[] = [];
 
@@ -102,7 +115,13 @@ function makeMock(opts: { dockRefusals?: number; warpBehavior?: (dest: number) =
   return {
     calls,
     state,
-    getStatus: async (): Promise<FlightStatus> => snapshot(),
+    getStatus: async (): Promise<FlightStatus> => {
+      if (state.statusReadFailuresRemaining > 0) {
+        state.statusReadFailuresRemaining -= 1;
+        throw refusal("EveJS gateway timed out.", "EVE_GATEWAY_TIMEOUT");
+      }
+      return snapshot();
+    },
     undock: async (): Promise<void> => {
       calls.push({ m: "undock" });
       state.docked = false;
@@ -118,8 +137,19 @@ function makeMock(opts: { dockRefusals?: number; warpBehavior?: (dest: number) =
       state.shipMode = "WARP";
       state.warpTicks = 1;
     },
+    approach: async (dest: number): Promise<void> => {
+      calls.push({ m: "approach", a: [dest] });
+      if (state.jumpRangeRefusalsRemaining > 0) {
+        state.jumpRangeRefusalsRemaining -= 1; // closed some distance
+      }
+      state.shipMode = "FOLLOW";
+    },
     jump: async (from: number, to: number): Promise<void> => {
       calls.push({ m: "jump", a: [from, to] });
+      if (state.jumpRangeRefusalsRemaining > 0) {
+        state.shipMode = "FOLLOW";
+        throw refusal("CmdStargateJump refused: 101,UI/Menusvc/MenuHints/NotWithingMaxJumpDist");
+      }
       state.jumpTicks = 1;
       state.jumpTarget = DEST_SYSTEM;
       state.shipMode = "STOP";
@@ -150,6 +180,7 @@ function makeDeps(mock: ReturnType<typeof makeMock>): {
       getStatus: mock.getStatus,
       undock: mock.undock,
       warp: mock.warp,
+      approach: mock.approach,
       jump: mock.jump,
       dock: mock.dock,
       sleep: async () => {},
@@ -210,6 +241,52 @@ test("approach-then-redock: dock is re-issued repeatedly until in range", async 
   const dockCalls = mock.calls.filter((c) => c.m === "dock");
   assert.equal(dockCalls.length, 4, "3 approach refusals + 1 successful dock");
   assert.equal(controller.snapshot().status, "arrived");
+});
+
+test("NotWithinMaxJumpDist: the loop approaches the gate, then jumps (does not pause)", async () => {
+  // The autopilot-warp lands the ship near the gate but out of jump range; the
+  // jump refuses NotWithinMaxJumpDist twice, an approach closes in each time.
+  const mock = makeMock({ jumpRangeRefusals: 2 });
+  const { deps } = makeDeps(mock);
+  const controller = createAutopilot(deps);
+
+  controller.start(PLAN);
+  await drive(controller, 120);
+
+  const seq = mock.calls.map((c) => c.m);
+  // warp to the gate, then jump(refused)->approach cycles until the jump takes.
+  assert.ok(seq.includes("approach"), "the loop must approach, not pause, on a range refusal");
+  const firstJump = seq.indexOf("jump");
+  const firstApproach = seq.indexOf("approach");
+  assert.ok(firstApproach > firstJump && firstJump !== -1, "approach follows the first refused jump");
+  assert.equal(mock.calls.filter((c) => c.m === "approach").length, 2, "one approach per range refusal");
+  assert.equal(controller.snapshot().status, "arrived", "the route completes after approaching into range");
+});
+
+test("transient flight-status timeouts are retried, not treated as fatal", async () => {
+  // Three status reads time out (a slow jump-handoff scene load) then recover;
+  // the route must still complete rather than pausing on the first slow read.
+  const mock = makeMock({ statusReadFailures: 3 });
+  const { deps } = makeDeps(mock);
+  const controller = createAutopilot(deps);
+
+  controller.start(PLAN);
+  await drive(controller, 120);
+
+  assert.equal(controller.snapshot().status, "arrived", "a transient status timeout must not end the route");
+});
+
+test("a persistent flight-status timeout eventually pauses (bounded retries)", async () => {
+  const mock = makeMock({ statusReadFailures: 999 });
+  const { deps } = makeDeps(mock);
+  const controller = createAutopilot(deps);
+
+  controller.start(PLAN);
+  await drive(controller, 30);
+
+  const snap = controller.snapshot();
+  assert.equal(snap.status, "paused");
+  assert.match(snap.failureReason ?? "", /flight status/i);
 });
 
 test("the loop pauses (does not guess) on an injected warp-scramble refusal", async () => {
@@ -328,6 +405,7 @@ test("decide: docked away from destination -> undock; docked at destination -> a
     decideAutopilotAction(status({ docked: true, solarSystemID: ORIGIN_SYSTEM, stationID: ORIGIN_STATION }), COMPILED, {
       warpedInSystem: null,
       jumpedFromSystem: null,
+      pendingApproachGate: null,
     }).kind,
     "undock",
   );
@@ -335,7 +413,7 @@ test("decide: docked away from destination -> undock; docked at destination -> a
     decideAutopilotAction(
       status({ docked: true, solarSystemID: DEST_SYSTEM, stationID: DEST_STATION }),
       COMPILED,
-      { warpedInSystem: null, jumpedFromSystem: null },
+      { warpedInSystem: null, jumpedFromSystem: null, pendingApproachGate: null },
     ).kind,
     "arrived",
   );
@@ -346,13 +424,14 @@ test("decide: in warp -> wait; at gate system already warped -> jump", () => {
     decideAutopilotAction(status({ inSpace: true, shipMode: "WARP", solarSystemID: ORIGIN_SYSTEM }), COMPILED, {
       warpedInSystem: null,
       jumpedFromSystem: null,
+      pendingApproachGate: null,
     }).kind,
     "wait",
   );
   const jump = decideAutopilotAction(
     status({ inSpace: true, shipMode: "STOP", solarSystemID: ORIGIN_SYSTEM }),
     COMPILED,
-    { warpedInSystem: ORIGIN_SYSTEM, jumpedFromSystem: null },
+    { warpedInSystem: ORIGIN_SYSTEM, jumpedFromSystem: null, pendingApproachGate: null },
   );
   assert.equal(jump.kind, "jump");
   if (jump.kind === "jump") {
@@ -365,7 +444,7 @@ test("decide: jump handoff (still in old system) waits", () => {
   const action = decideAutopilotAction(
     status({ inSpace: true, shipMode: "STOP", solarSystemID: ORIGIN_SYSTEM }),
     COMPILED,
-    { warpedInSystem: ORIGIN_SYSTEM, jumpedFromSystem: ORIGIN_SYSTEM },
+    { warpedInSystem: ORIGIN_SYSTEM, jumpedFromSystem: ORIGIN_SYSTEM, pendingApproachGate: null },
   );
   assert.equal(action.kind, "wait");
 });
@@ -374,7 +453,7 @@ test("decide: off-route system pauses", () => {
   const action = decideAutopilotAction(
     status({ inSpace: true, shipMode: "STOP", solarSystemID: 39999999 }),
     COMPILED,
-    { warpedInSystem: null, jumpedFromSystem: null },
+    { warpedInSystem: null, jumpedFromSystem: null, pendingApproachGate: null },
   );
   assert.equal(action.kind, "pause");
 });

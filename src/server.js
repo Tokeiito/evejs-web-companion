@@ -1291,6 +1291,41 @@ app.post("/api/bridge/flight/dock", requireAuth, async (req, res, next) => {
   }
 });
 
+// Approach a gate/target at full speed — the autopilot's close-the-gap step:
+// beyonce.CmdSetSpeedFraction(1.0) + CmdFollowBall(destinationID, 0.0), exactly
+// as autopilot.py does. An autopilot-warp lands the ship NEAR a gate but often
+// outside jump range, so CmdStargateJump refuses NotWithinMaxJumpDist until the
+// ship follows the gate into range. (Both methods were allowlisted in R5a.)
+app.post("/api/bridge/flight/approach", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const destinationID = Number(req.body && req.body.destinationID) || 0;
+  if (destinationID <= 0) {
+    res.status(400).json({ ok: false, error: "INVALID_TARGET", message: "A positive destinationID is required." });
+    return;
+  }
+  try {
+    const before = await readHeldFlight(held, req.webSessionID);
+    if (!requireInSpace(res, before.flight)) {
+      return;
+    }
+    const spec = parkBindSpec(before.flight.solarSystemID);
+    await boundCall(held, req.webSessionID, spec, "CmdSetSpeedFraction", [1.0], null);
+    const outcome = await boundCall(held, req.webSessionID, spec, "CmdFollowBall", [destinationID, 0.0], null);
+    const after = await readHeldFlight(held, req.webSessionID);
+    res.json({
+      ok: true,
+      result: outcome.result,
+      flight: after.flight,
+      notifications: [...outcome.notifications, ...after.notifications],
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // --- R5b Travel: client-side route solver static data ----------------------
 // The browser autopilot's route solver is client-side (roadmap §7 / G2): the
 // system-adjacency graph it runs BFS over is read-only static reference data

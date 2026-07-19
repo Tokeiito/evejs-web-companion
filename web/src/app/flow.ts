@@ -340,6 +340,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       warp: async (destinationID) => {
         await api.warpTo(destinationID, callOptions);
       },
+      approach: async (destinationID) => {
+        await api.approach(destinationID, callOptions);
+      },
       jump: async (fromGateID, toGateID) => {
         await api.jump(fromGateID, toGateID, callOptions);
       },

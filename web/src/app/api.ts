@@ -336,6 +336,18 @@ export async function warpTo(
   return readFlightStep(await postJson("/api/bridge/flight/warp", { destinationID }, options));
 }
 
+/**
+ * Approach a gate/target at full speed (beyonce.CmdSetSpeedFraction(1) +
+ * CmdFollowBall) — the autopilot's close-the-gap step when a warp lands the
+ * ship near a gate but outside jump range.
+ */
+export async function approach(
+  destinationID: number,
+  options: ApiOptions = {},
+): Promise<FlightStepResult> {
+  return readFlightStep(await postJson("/api/bridge/flight/approach", { destinationID }, options));
+}
+
 /** Jump through an NPC stargate (beyonce.CmdStargateJump). */
 export async function jump(
   fromGateID: number,
