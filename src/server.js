@@ -1070,6 +1070,227 @@ app.get("/api/bridge/journal", requireAuth, async (req, res, next) => {
   }
 });
 
+// R5a flight (manually-stepped space movement): undock -> warp -> jump -> dock,
+// each an explicit step the browser issues (no timer loop — the autopilot
+// decide-loop is R5b). EveJS's space handlers stay authoritative for every
+// move; the BFF only relays the atomic calls the retail client's client-side
+// autopilot issues, holding the beyonce bound handle server-side. Movement
+// refusals (scrambled, invalid target, docking-approach, lost control, ship
+// destroyed) pass through as the handler's own CALL_REFUSED message so the page
+// can surface a real reason — never a silent no-op or a fake success.
+
+// beyonce remote park moniker: Moniker('beyonce', solarSystemID) via
+// michelle.GetRemotePark(). Keyed by system so a jump (which changes the
+// system) rebinds the park for the new system rather than reusing a stale OID.
+const BEYONCE_BIND_GROUP = 5;
+function parkBindSpec(solarSystemID) {
+  return {
+    key: `park:${solarSystemID}`,
+    service: "beyonce",
+    method: "MachoBindObject",
+    args: [[Number(solarSystemID), BEYONCE_BIND_GROUP]],
+    kwargs: null,
+  };
+}
+
+// Read the held session's current flight status (location + ship movement
+// state). A lost persistent session drops the held session (the page returns to
+// character select), as with every held call.
+async function readHeldFlight(held, webSessionID) {
+  try {
+    return await gateway.readFlightStatus(held.bridgeSessionID, {
+      userid: held.accountID,
+    });
+  } catch (error) {
+    if (error && error.code === "SESSION_NOT_FOUND") {
+      bridgeSessions.delete(webSessionID);
+    }
+    throw error;
+  }
+}
+
+function requireInSpace(res, flight) {
+  if (!flight || flight.inSpace !== true) {
+    res.status(409).json({
+      ok: false,
+      error: "NOT_IN_SPACE",
+      message: "The ship is not in space; undock first.",
+    });
+    return false;
+  }
+  return true;
+}
+
+// Current flight status snapshot for the page's status readout + "Refresh
+// flight status" button.
+app.get("/api/bridge/flight/status", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  try {
+    const outcome = await readHeldFlight(held, req.webSessionID);
+    res.json({ ok: true, flight: outcome.flight, notifications: outcome.notifications });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Undock: ship.Undock(shipID, ignoreContraband, onlineModules=[]) — a top-level
+// call on the docked session (Handle_Undock resolves the ship + attaches the
+// session to space). onlineModules is a kwarg (never positional).
+app.post("/api/bridge/flight/undock", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  try {
+    const before = await readHeldFlight(held, req.webSessionID);
+    if (before.flight.inSpace === true) {
+      res.status(409).json({
+        ok: false,
+        error: "ALREADY_IN_SPACE",
+        message: "The ship is already in space.",
+      });
+      return;
+    }
+    const shipID = Number(before.flight.shipID) || Number(held.activeShipID) || 0;
+    const outcome = await heldTopLevelCall(
+      held,
+      req.webSessionID,
+      "ship",
+      "Undock",
+      [shipID, false],
+      { onlineModules: [] },
+    );
+    const after = await readHeldFlight(held, req.webSessionID);
+    res.json({
+      ok: true,
+      flight: after.flight,
+      notifications: [...outcome.notifications, ...after.notifications],
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Warp to a chosen gate/celestial through the bound park:
+// beyonce.CmdWarpToStuffAutopilot(destinationID).
+app.post("/api/bridge/flight/warp", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const destinationID = Number(req.body && req.body.destinationID) || 0;
+  if (destinationID <= 0) {
+    res.status(400).json({ ok: false, error: "INVALID_TARGET", message: "A positive destinationID is required." });
+    return;
+  }
+  try {
+    const before = await readHeldFlight(held, req.webSessionID);
+    if (!requireInSpace(res, before.flight)) {
+      return;
+    }
+    const outcome = await boundCall(
+      held,
+      req.webSessionID,
+      parkBindSpec(before.flight.solarSystemID),
+      "CmdWarpToStuffAutopilot",
+      [destinationID],
+      null,
+    );
+    const after = await readHeldFlight(held, req.webSessionID);
+    res.json({
+      ok: true,
+      result: outcome.result,
+      flight: after.flight,
+      notifications: [...outcome.notifications, ...after.notifications],
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Jump through an NPC stargate: beyonce.CmdStargateJump(fromGateID, toGateID,
+// shipID). The system transition completes after a short handoff delay; the
+// page polls flight status to see the new system.
+app.post("/api/bridge/flight/jump", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const fromGateID = Number(req.body && req.body.fromGateID) || 0;
+  const toGateID = Number(req.body && req.body.toGateID) || 0;
+  if (fromGateID <= 0 || toGateID <= 0) {
+    res.status(400).json({ ok: false, error: "INVALID_GATE", message: "Positive fromGateID and toGateID are required." });
+    return;
+  }
+  try {
+    const before = await readHeldFlight(held, req.webSessionID);
+    if (!requireInSpace(res, before.flight)) {
+      return;
+    }
+    const shipID = Number(before.flight.shipID) || 0;
+    const outcome = await boundCall(
+      held,
+      req.webSessionID,
+      parkBindSpec(before.flight.solarSystemID),
+      "CmdStargateJump",
+      [fromGateID, toGateID, shipID],
+      null,
+    );
+    const after = await readHeldFlight(held, req.webSessionID);
+    res.json({
+      ok: true,
+      result: outcome.result,
+      flight: after.flight,
+      notifications: [...outcome.notifications, ...after.notifications],
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Dock at the destination station: beyonce.CmdDock(stationID, shipID). If the
+// ship is out of docking range the handler refuses with a DockingApproach user
+// error (surfaced as the reason); on the live server the sim completes the
+// pending dock, so the page polls flight status to see the docked state.
+app.post("/api/bridge/flight/dock", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const stationID = Number(req.body && req.body.stationID) || 0;
+  if (stationID <= 0) {
+    res.status(400).json({ ok: false, error: "INVALID_STATION", message: "A positive stationID is required." });
+    return;
+  }
+  try {
+    const before = await readHeldFlight(held, req.webSessionID);
+    if (!requireInSpace(res, before.flight)) {
+      return;
+    }
+    const shipID = Number(before.flight.shipID) || 0;
+    const outcome = await boundCall(
+      held,
+      req.webSessionID,
+      parkBindSpec(before.flight.solarSystemID),
+      "CmdDock",
+      [stationID, shipID],
+      null,
+    );
+    const after = await readHeldFlight(held, req.webSessionID);
+    res.json({
+      ok: true,
+      result: outcome.result,
+      flight: after.flight,
+      notifications: [...outcome.notifications, ...after.notifications],
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.use("/api/characters/:characterID", requireAuth);
 
 app.get("/api/characters/:characterID/events", (req, res) => {

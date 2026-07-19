@@ -18,6 +18,7 @@ import type {
   AgentRow,
   CharacterSummary,
   CourierBriefing,
+  FlightStatus,
   InventoryContainerState,
   JournalState,
   OnlineCharacterState,
@@ -91,7 +92,17 @@ export type FeedEvent =
   // An agent action/read failed; null clears the error after success.
   | { readonly type: "agents/action-error"; readonly message: string | null }
   // Drop the agents state (character offline / logged out).
-  | { readonly type: "agents/cleared" };
+  | { readonly type: "agents/cleared" }
+  // Goal R5a — the Flight page (manually-stepped space movement). A flight-
+  // status snapshot: the session's current location + ship movement state.
+  | { readonly type: "flight/status"; readonly status: FlightStatus }
+  // The last movement step issued (undock / warp / jump / dock) — for the
+  // status readout. A successful step clears any stale action error.
+  | { readonly type: "flight/action"; readonly action: string }
+  // A movement step failed (the handler's own refusal reason); null clears it.
+  | { readonly type: "flight/action-error"; readonly message: string | null }
+  // Drop the flight state (character offline / logged out).
+  | { readonly type: "flight/cleared" };
 
 /** What the store hands an adapter: publish events, report connectivity. */
 export interface FeedSink {

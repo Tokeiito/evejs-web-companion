@@ -22,6 +22,7 @@ import type { FeedAdapter, FeedEvent, FeedSink, FeedStatus } from "./feed.ts";
 import type {
   AgentsState,
   CharacterSummary,
+  FlightState,
   InventoryContainerState,
   InventoryState,
   OnlineCharacterState,
@@ -72,6 +73,7 @@ export interface ClientState {
   readonly station: StationSlice;
   readonly inventory: InventoryState;
   readonly agents: AgentsState;
+  readonly flight: FlightState;
   readonly feed: FeedSlice;
 }
 
@@ -121,6 +123,13 @@ const INITIAL_AGENTS: AgentsState = Object.freeze({
   actionError: null,
 });
 
+const INITIAL_FLIGHT: FlightState = Object.freeze({
+  status: null,
+  loaded: false,
+  lastAction: null,
+  actionError: null,
+});
+
 const INITIAL_FEED: FeedSlice = Object.freeze({
   adapter: null,
   status: "idle" as FeedStatus,
@@ -135,6 +144,7 @@ export interface ClientStore {
   readonly station: ReadableSignal<StationSlice>;
   readonly inventory: ReadableSignal<InventoryState>;
   readonly agents: ReadableSignal<AgentsState>;
+  readonly flight: ReadableSignal<FlightState>;
   readonly feed: ReadableSignal<FeedSlice>;
 
   /** Whole-state snapshot. */
@@ -163,6 +173,7 @@ export function createClientStore(): ClientStore {
   const station = createSignal<StationSlice>(INITIAL_STATION);
   const inventory = createSignal<InventoryState>(INITIAL_INVENTORY);
   const agents = createSignal<AgentsState>(INITIAL_AGENTS);
+  const flight = createSignal<FlightState>(INITIAL_FLIGHT);
   const feed = createSignal<FeedSlice>(INITIAL_FEED);
 
   // Whole-store notification: bumped once per applied change so multi-slice
@@ -178,6 +189,7 @@ export function createClientStore(): ClientStore {
     station: station.get(),
     inventory: inventory.get(),
     agents: agents.get(),
+    flight: flight.get(),
     feed: feed.get(),
   });
 
@@ -197,6 +209,7 @@ export function createClientStore(): ClientStore {
         station.set(INITIAL_STATION);
         inventory.set(INITIAL_INVENTORY);
         agents.set(INITIAL_AGENTS);
+        flight.set(INITIAL_FLIGHT);
         break;
       case "character/list": {
         const characters = [...event.characters];
@@ -232,11 +245,13 @@ export function createClientStore(): ClientStore {
         });
         inventory.set(INITIAL_INVENTORY);
         agents.set(INITIAL_AGENTS);
+        flight.set(INITIAL_FLIGHT);
         break;
       case "character/offline":
         station.set(INITIAL_STATION);
         inventory.set(INITIAL_INVENTORY);
         agents.set(INITIAL_AGENTS);
+        flight.set(INITIAL_FLIGHT);
         break;
       case "station/bits":
         station.set({ ...station.get(), bits: event.bits });
@@ -295,6 +310,19 @@ export function createClientStore(): ClientStore {
         break;
       case "agents/cleared":
         agents.set(INITIAL_AGENTS);
+        break;
+      case "flight/status":
+        flight.set({ ...flight.get(), status: event.status, loaded: true });
+        break;
+      case "flight/action":
+        // A successful movement step: record it and clear any stale refusal.
+        flight.set({ ...flight.get(), lastAction: event.action, actionError: null });
+        break;
+      case "flight/action-error":
+        flight.set({ ...flight.get(), actionError: event.message });
+        break;
+      case "flight/cleared":
+        flight.set(INITIAL_FLIGHT);
         break;
     }
   };
@@ -355,6 +383,7 @@ export function createClientStore(): ClientStore {
     station: readonlySignal(station),
     inventory: readonlySignal(inventory),
     agents: readonlySignal(agents),
+    flight: readonlySignal(flight),
     feed: readonlySignal(feed),
     get,
     subscribe,

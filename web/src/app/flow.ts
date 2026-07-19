@@ -17,6 +17,8 @@ import {
   decodeConversation,
   decodeJournal,
 } from "../bridge/agents.ts";
+import { decodeFlightStatus } from "../bridge/flight.ts";
+import type { FlightStepResult } from "./api.ts";
 import { BridgeCallError } from "../bridge/callMethod.ts";
 import * as api from "./api.ts";
 import type { ClientStore } from "../store/clientStore.ts";
@@ -56,6 +58,16 @@ export interface AppFlow {
   loadBriefing(agentID: number): Promise<void>;
   /** Load the mission journal (agentMgr.GetMyJournalDetails). */
   loadJournal(): Promise<void>;
+  /** Refresh the flight status (location + ship movement state). */
+  loadFlightStatus(): Promise<void>;
+  /** Undock from the station (the session enters space). */
+  undock(): Promise<void>;
+  /** Warp to a chosen gate/celestial through the bound park. */
+  warpTo(destinationID: number): Promise<void>;
+  /** Jump through an NPC stargate (fromGate -> toGate). */
+  jump(fromGateID: number, toGateID: number): Promise<void>;
+  /** Dock at the destination station. */
+  dock(stationID: number): Promise<void>;
   /** Release the persistent session (character offline), back to the select list. */
   releaseSession(): Promise<void>;
   logout(): Promise<void>;
@@ -211,6 +223,69 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
   }
 
+  // --- R5a Flight (manually-stepped space movement) ------------------------
+
+  // A movement refusal (CALL_REFUSED, 409) carries the handler's OWN
+  // user-facing text as the message (scrambled, invalid target,
+  // docking-approach, lost control, ship destroyed). Surface it so the operator
+  // sees the real reason, not just the code — "pause on unsafe" must show why.
+  function flightErrorReason(error: unknown): string {
+    if (error instanceof BridgeCallError) {
+      return error.message && error.message !== error.code
+        ? `${error.code}: ${error.message}`
+        : error.code;
+    }
+    return readErrorReason(error);
+  }
+
+  // Push a step's decoded flight snapshot into the store.
+  function applyFlight(step: FlightStepResult): void {
+    store.apply({ type: "flight/status", status: decodeFlightStatus(step.flight) });
+  }
+
+  async function loadFlightStatus(): Promise<void> {
+    try {
+      applyFlight(await api.getFlightStatus(callOptions));
+    } catch (error) {
+      if (isSessionLost(error)) {
+        store.apply({ type: "character/offline" });
+      }
+      throw error;
+    }
+  }
+
+  // Run one movement step, record it as the last action, and refresh the flight
+  // snapshot the step returned. A lost session unwinds to the character list; a
+  // movement refusal (scrambled, invalid target, docking-approach, lost control,
+  // ship destroyed) is surfaced through the store as a visible reason — never a
+  // silent no-op or a fake success. On refusal the flight snapshot is still
+  // refreshed so the readout reflects the real (unchanged) state.
+  async function runFlightStep(
+    label: string,
+    step: () => Promise<FlightStepResult>,
+  ): Promise<void> {
+    let result: FlightStepResult;
+    try {
+      result = await step();
+    } catch (error) {
+      if (isSessionLost(error)) {
+        store.apply({ type: "character/offline" });
+        throw error;
+      }
+      store.apply({ type: "flight/action-error", message: `${label} refused: ${flightErrorReason(error)}` });
+      // Re-read the true state so the page shows where the ship actually is,
+      // not a stale optimistic guess (best-effort; ignore a follow-up failure).
+      try {
+        applyFlight(await api.getFlightStatus(callOptions));
+      } catch {
+        // The refusal reason is already surfaced; a failed re-read changes nothing.
+      }
+      return;
+    }
+    store.apply({ type: "flight/action", action: label });
+    applyFlight(result);
+  }
+
   return {
     async login(username, password) {
       const result = await api.login(username, password, callOptions);
@@ -295,6 +370,24 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     loadBriefing,
 
     loadJournal,
+
+    loadFlightStatus,
+
+    async undock() {
+      await runFlightStep("Undock", () => api.undock(callOptions));
+    },
+
+    async warpTo(destinationID) {
+      await runFlightStep("Warp", () => api.warpTo(destinationID, callOptions));
+    },
+
+    async jump(fromGateID, toGateID) {
+      await runFlightStep("Jump", () => api.jump(fromGateID, toGateID, callOptions));
+    },
+
+    async dock(stationID) {
+      await runFlightStep("Dock", () => api.dock(stationID, callOptions));
+    },
 
     async releaseSession() {
       try {

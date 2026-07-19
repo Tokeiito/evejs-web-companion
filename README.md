@@ -84,6 +84,26 @@ What to expect:
 - Moving the courier cargo into your ship is the R3 inventory move (**Inventory & Ship** tab); completing/turning in the mission (the delivery end) is R6.
 - Reads refresh after each action (push forwarding is still G6). A slow or failed briefing read never blanks the rest (`Promise.allSettled`).
 
+## Spot test (R5a): undock → warp to a gate → jump → dock (manually stepped)
+
+The travel foundation (goal R5a). What it proves: the **persistent browser-backed session participates in space** the way a retail socket session does — `ship.Undock` puts the character in space, and the retail **remote-park** bound calls (`beyonce.CmdWarpToStuffAutopilot` / `CmdStargateJump` / `CmdDock`) move the ship through space against the same handlers the retail client hits. Movement is **manual, one button per step** here; the client-side autopilot decide-loop and route solver are R5b. EveJS gains no travel-job code — the browser only sequences the atomic moves.
+
+**Setup expectation:** the character is docked and has an active ship that can undock, warp, and jump (Farmer's ship works). You need the **game IDs** of the gate/celestial to warp to, the source + destination **stargate IDs** to jump, and the destination **station ID** to dock — R5a has no route solver, so you supply them. From Maurasi (system 30000140, where the orchestrator docks Farmer at station 60003454), a worked example: warp to gate `50000801` (→ Kisogo), or use the neighbours mapped in `docs/retail-call-inventory.md` Steps 7–9. A simple round trip: undock, warp to a gate, dock back at your origin station.
+
+1. Same setup as the R2–R4 spot tests (EveJS running, `npm run build:web`, `npm start`).
+2. Open `http://127.0.0.1:26500/dist/`, log in, and select the character (R2 flow).
+3. Click the **Flight** tab. The **Status** readout shows *Docked · station …*, the solar system, and the active ship.
+4. **Undock:** click **Undock**. Click **Refresh flight status** — the readout flips to *In space · system …* with a ship movement state (e.g. `STOP`).
+5. **Warp:** enter a gate/celestial ID under **Warp to a gate / celestial** and click **Warp to target**. Refresh — the ship state shows `WARP`.
+6. **Jump:** once at the gate, enter the source + destination stargate IDs under **Jump through a stargate** and click **Jump**. Refresh after a moment — the **Solar system** changes to the destination.
+7. **Dock:** once at the destination station, enter its station ID under **Dock at a station** and click **Dock**. Refresh — the readout returns to *Docked · station …*.
+
+What to expect:
+
+- Every move is validated server-side by the real space handlers. The browser never simulates or predicts position; it only issues the atomic calls (exactly like retail's `autopilot.py`, minus the loop).
+- **Pause on unsafe:** a refused move (warp scrambled, invalid target, out-of-docking-range → docking-approach, lost control, ship destroyed) shows as the handler's own reason under **Last failure** — never a silent no-op or a fake success.
+- Warp travel and the jump handoff take time; the ship keeps its last command in flight. Refresh flight status to see where it actually is (push streaming is G6). Closing the tab is closing the client — the ship finishes its last command and sits (R5b autopilot behaviour, faithful to retail).
+
 ## Configuration
 
 Defaults assume both repos live under `C:\Users\ryanf\Documents\GitHub`:

@@ -249,6 +249,28 @@ test("decodeJournal reads the active courier mission and empty offered bucket", 
   assert.equal(mission.expirationTime, "134295222004640000");
 });
 
+test("decodeJournal buckets an OFFERED row (state 1) under offered, not active", () => {
+  // The runtime returns all missions in the first tuple slot (getJournalDetails
+  // -> [allMissions, []]); an offered mission (missionState 1) arrives there
+  // too and must still land in `offered` (seen mis-bucketed live in R4).
+  const offeredRow: JsonValue = {
+    type: "tuple",
+    items: [1, 0, "UI/Agents/MissionTypes/Courier", 111, 222, { type: "long", value: "134" }, { type: "list", items: [] }, 1, 0, 333],
+  };
+  const acceptedRow: JsonValue = {
+    type: "tuple",
+    items: [2, 0, "UI/Agents/MissionTypes/Courier", 444, 555, { type: "long", value: "135" }, { type: "list", items: [] }, 0, 0, 666],
+  };
+  const journal = decodeJournal({
+    type: "tuple",
+    items: [{ type: "list", items: [offeredRow, acceptedRow] }, { type: "list", items: [] }],
+  });
+  assert.equal(journal.offered.length, 1);
+  assert.equal(journal.offered[0]!.missionID, 333);
+  assert.equal(journal.active.length, 1);
+  assert.equal(journal.active[0]!.missionID, 666);
+});
+
 test("agentButtonLabel names the retail dialogue buttons", () => {
   assert.equal(agentButtonLabel(AGENT_BUTTON.ACCEPT), "Accept");
   assert.equal(agentButtonLabel(AGENT_BUTTON.DECLINE), "Decline");

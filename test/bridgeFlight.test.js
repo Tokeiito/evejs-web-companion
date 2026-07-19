@@ -1,0 +1,359 @@
+"use strict";
+
+// Goal R5a: the BFF Flight routes drive manually-stepped space movement.
+// ship.Undock is a top-level call on the held session; warp/jump/dock go
+// through the beyonce remote-park bound-object two-step (the BFF holds the
+// bound park handle server-side, keyed by solar system so a jump rebinds).
+// A movement refusal passes through as the handler's own CALL_REFUSED message.
+// Wire contract: docs/bridge-wire-contract.md.
+
+const test = require("node:test");
+const assert = require("node:assert/strict");
+const { once } = require("events");
+
+const { createApp } = require("../src/server");
+
+const COOKIE_TOKEN = "raw-signed-login-cookie";
+const SESSION_ID = "signed-random-session-id";
+const ACCOUNT = { username: "pilot", accountID: 4, role: "0", banned: false };
+const CHARACTERS = [{ characterID: 7, accountID: 4, characterName: "Test Pilot" }];
+const BRIDGE_SESSION_ID = "opaque-gateway-minted-bridge-session-id";
+const ORIGIN_STATION_ID = 60003760;
+const ORIGIN_SYSTEM_ID = 30000142;
+const DEST_SYSTEM_ID = 30000140;
+const DEST_STATION_ID = 60003454;
+const SHIP_ID = 9001;
+const GATE_ID = 50001248;
+const DEST_GATE_ID = 50000802;
+
+const ORIGINAL_FETCH = global.fetch;
+const activeServers = new Set();
+
+function fakeAuth() {
+  return {
+    createSessionToken() {
+      return COOKIE_TOKEN;
+    },
+    verifySessionToken(token) {
+      return token === COOKIE_TOKEN
+        ? { username: ACCOUNT.username, accountID: ACCOUNT.accountID, sessionID: SESSION_ID }
+        : null;
+    },
+    countConfiguredUsers() {
+      return 1;
+    },
+  };
+}
+
+function fakeStore() {
+  return {
+    async getAccount(username) {
+      return username === ACCOUNT.username ? { ...ACCOUNT } : null;
+    },
+    async getCharacterForAccount(accountID, characterID) {
+      return Number(accountID) === ACCOUNT.accountID &&
+        CHARACTERS.some((c) => c.characterID === Number(characterID))
+        ? { ...CHARACTERS[0] }
+        : null;
+    },
+    async releaseCharacterControl() {
+      return { controlState: "offline" };
+    },
+  };
+}
+
+function fakeStaticData() {
+  return { getStation() { return null; }, getTypeName(id) { return `Type ${id}`; } };
+}
+
+// A fake gateway whose flight state advances the way the real space handlers do:
+// docked -> (undock) in space -> (jump) new system -> (dock) docked. Records the
+// select/call/bind/boundCall traffic so the routes' behaviour is asserted.
+function fakeGateway(overrides = {}) {
+  const calls = { select: [], release: [], call: [], bind: [], boundCall: [], flightStatus: [] };
+  const state = {
+    inSpace: false,
+    solarSystemID: ORIGIN_SYSTEM_ID,
+    stationID: ORIGIN_STATION_ID,
+    shipMode: null,
+  };
+  function flightSnapshot() {
+    return {
+      inSpace: state.inSpace,
+      docked: !state.inSpace && state.stationID !== null,
+      solarSystemID: state.solarSystemID,
+      stationID: state.inSpace ? null : state.stationID,
+      structureID: null,
+      shipID: SHIP_ID,
+      shipMode: state.inSpace ? state.shipMode : null,
+      shipSpeedFraction: state.inSpace && state.shipMode === "WARP" ? 1 : 0,
+    };
+  }
+  const gateway = {
+    calls,
+    state,
+    async selectCharacter(args, kwargs, sessionFields) {
+      calls.select.push({ args, kwargs, sessionFields });
+      return {
+        bridgeSessionID: BRIDGE_SESSION_ID,
+        service: "charUnboundMgr",
+        method: "SelectCharacterID",
+        result: null,
+        notifications: [],
+        session: {
+          userid: 4,
+          characterID: 7,
+          characterName: "Test Pilot",
+          stationID: ORIGIN_STATION_ID,
+          structureID: null,
+          solarSystemID: ORIGIN_SYSTEM_ID,
+          corporationID: 98000000,
+          shipID: SHIP_ID,
+        },
+      };
+    },
+    async releaseBridgeSession(bridgeSessionID, sessionFields) {
+      calls.release.push({ bridgeSessionID, sessionFields });
+      return { released: true, characterID: 7 };
+    },
+    async readFlightStatus(bridgeSessionID, sessionFields) {
+      calls.flightStatus.push({ bridgeSessionID, sessionFields });
+      return { flight: flightSnapshot(), notifications: [] };
+    },
+    async callMethod(service, method, args, kwargs, sessionFields, bridgeSessionID) {
+      calls.call.push({ service, method, args, kwargs, sessionFields, bridgeSessionID });
+      if (service === "ship" && method === "Undock") {
+        state.inSpace = true;
+        state.shipMode = "STOP";
+      }
+      return { service, method, result: null, notifications: [] };
+    },
+    async bindObject(service, method, args, kwargs, sessionFields, bridgeSessionID) {
+      calls.bind.push({ service, method, args, kwargs, sessionFields, bridgeSessionID });
+      return {
+        boundHandle: `handle:${service}:${method}:${JSON.stringify(args)}`,
+        service,
+        method,
+        notifications: [],
+      };
+    },
+    async callBoundMethod(service, method, args, kwargs, sessionFields, bridgeSessionID, boundHandle) {
+      calls.boundCall.push({ service, method, args, kwargs, sessionFields, bridgeSessionID, boundHandle });
+      if (method === "CmdWarpToStuffAutopilot") {
+        state.shipMode = "WARP";
+      } else if (method === "CmdStargateJump") {
+        state.solarSystemID = DEST_SYSTEM_ID;
+        state.shipMode = "STOP";
+      } else if (method === "CmdDock") {
+        state.inSpace = false;
+        state.stationID = Number(args[0]);
+        state.shipMode = null;
+      }
+      return { service, method, result: null, notifications: [] };
+    },
+    ...overrides,
+  };
+  return gateway;
+}
+
+async function startTestServer(options = {}) {
+  const app = createApp({
+    eveStore: options.store || fakeStore(),
+    eveGatewayClient: options.gateway || fakeGateway(),
+    webAuth: fakeAuth(),
+    marketClient: {},
+    staticData: fakeStaticData(),
+    errorLogger() {},
+  });
+  const server = app.listen(0, "127.0.0.1");
+  activeServers.add(server);
+  await once(server, "listening");
+  const { port } = server.address();
+  return { baseUrl: `http://127.0.0.1:${port}` };
+}
+
+async function apiRequest(baseUrl, path, options = {}) {
+  const headers = { "content-type": "application/json", ...(options.headers || {}) };
+  if (options.authenticated !== false) {
+    headers.cookie = `evejs_web_poc=${COOKIE_TOKEN}`;
+  }
+  const response = await ORIGINAL_FETCH(`${baseUrl}${path}`, {
+    method: options.method || "GET",
+    headers,
+    body: options.body === undefined ? undefined : JSON.stringify(options.body),
+  });
+  return { response, payload: await response.json() };
+}
+
+async function selectOnServer(baseUrl) {
+  await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+}
+
+test.afterEach(async () => {
+  global.fetch = ORIGINAL_FETCH;
+  const closing = [];
+  for (const server of activeServers) {
+    activeServers.delete(server);
+    closing.push(new Promise((resolve, reject) => {
+      server.close((error) => (error ? reject(error) : resolve()));
+    }));
+  }
+  await Promise.all(closing);
+});
+
+test("GET /api/bridge/flight/status returns the docked snapshot", async () => {
+  const gateway = fakeGateway();
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+
+  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/flight/status");
+  assert.equal(response.status, 200);
+  assert.equal(payload.ok, true);
+  assert.equal(payload.flight.docked, true);
+  assert.equal(payload.flight.stationID, ORIGIN_STATION_ID);
+  assert.equal(gateway.calls.flightStatus[0].bridgeSessionID, BRIDGE_SESSION_ID);
+});
+
+test("POST /api/bridge/flight/undock calls ship.Undock and returns the in-space snapshot", async () => {
+  const gateway = fakeGateway();
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+
+  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/flight/undock", { method: "POST", body: {} });
+  assert.equal(response.status, 200);
+  assert.equal(payload.ok, true);
+  assert.equal(payload.flight.inSpace, true);
+  const undock = gateway.calls.call.find((c) => c.service === "ship" && c.method === "Undock");
+  assert.ok(undock, "ship.Undock dispatched");
+  assert.equal(undock.args[0], SHIP_ID);
+  assert.deepEqual(undock.kwargs, { onlineModules: [] });
+  assert.equal(undock.bridgeSessionID, BRIDGE_SESSION_ID);
+});
+
+test("undock is refused when already in space", async () => {
+  const gateway = fakeGateway();
+  gateway.state.inSpace = true;
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+
+  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/flight/undock", { method: "POST", body: {} });
+  assert.equal(response.status, 409);
+  assert.equal(payload.error, "ALREADY_IN_SPACE");
+});
+
+test("POST /api/bridge/flight/warp binds the park and dispatches CmdWarpToStuffAutopilot; no handle reaches the browser", async () => {
+  const gateway = fakeGateway();
+  gateway.state.inSpace = true;
+  gateway.state.shipMode = "STOP";
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+
+  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/flight/warp", {
+    method: "POST",
+    body: { destinationID: GATE_ID },
+  });
+  assert.equal(response.status, 200);
+  assert.equal(payload.ok, true);
+  assert.equal(JSON.stringify(payload).includes("handle:"), false, "bound handle must never reach the browser");
+
+  // The park was bound as beyonce.MachoBindObject([[systemID, 5]]).
+  const bind = gateway.calls.bind.find((b) => b.service === "beyonce" && b.method === "MachoBindObject");
+  assert.ok(bind, "beyonce park bound");
+  assert.deepEqual(bind.args, [[ORIGIN_SYSTEM_ID, 5]]);
+  // Warp dispatched on the park handle, riding the held bridge session.
+  const warp = gateway.calls.boundCall.find((c) => c.method === "CmdWarpToStuffAutopilot");
+  assert.ok(warp, "CmdWarpToStuffAutopilot dispatched");
+  assert.deepEqual(warp.args, [GATE_ID]);
+  assert.equal(warp.bridgeSessionID, BRIDGE_SESSION_ID);
+  assert.match(warp.boundHandle, /^handle:beyonce:MachoBindObject/);
+  // The follow-up status shows the ship warping.
+  assert.equal(payload.flight.shipMode, "WARP");
+});
+
+test("warp is refused when docked (NOT_IN_SPACE)", async () => {
+  const gateway = fakeGateway();
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+
+  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/flight/warp", {
+    method: "POST",
+    body: { destinationID: GATE_ID },
+  });
+  assert.equal(response.status, 409);
+  assert.equal(payload.error, "NOT_IN_SPACE");
+  assert.equal(gateway.calls.boundCall.length, 0, "no movement dispatched when docked");
+});
+
+test("POST /api/bridge/flight/jump dispatches CmdStargateJump; the follow-up status shows the new system", async () => {
+  const gateway = fakeGateway();
+  gateway.state.inSpace = true;
+  gateway.state.shipMode = "STOP";
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+
+  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/flight/jump", {
+    method: "POST",
+    body: { fromGateID: GATE_ID, toGateID: DEST_GATE_ID },
+  });
+  assert.equal(response.status, 200);
+  assert.equal(payload.ok, true);
+  const jump = gateway.calls.boundCall.find((c) => c.method === "CmdStargateJump");
+  assert.ok(jump, "CmdStargateJump dispatched");
+  assert.deepEqual(jump.args, [GATE_ID, DEST_GATE_ID, SHIP_ID]);
+  assert.equal(payload.flight.solarSystemID, DEST_SYSTEM_ID);
+});
+
+test("POST /api/bridge/flight/dock dispatches CmdDock and returns docked", async () => {
+  const gateway = fakeGateway();
+  gateway.state.inSpace = true;
+  gateway.state.solarSystemID = DEST_SYSTEM_ID;
+  gateway.state.shipMode = "STOP";
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+
+  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/flight/dock", {
+    method: "POST",
+    body: { stationID: DEST_STATION_ID },
+  });
+  assert.equal(response.status, 200);
+  assert.equal(payload.ok, true);
+  const dock = gateway.calls.boundCall.find((c) => c.method === "CmdDock");
+  assert.ok(dock, "CmdDock dispatched");
+  assert.deepEqual(dock.args, [DEST_STATION_ID, SHIP_ID]);
+  assert.equal(payload.flight.docked, true);
+  assert.equal(payload.flight.stationID, DEST_STATION_ID);
+});
+
+test("a movement refusal passes through as the handler's own CALL_REFUSED message", async () => {
+  const gateway = fakeGateway({
+    async callBoundMethod(service, method) {
+      if (method === "CmdWarpToStuffAutopilot") {
+        const error = new Error("You are warp scrambled.");
+        error.code = "CALL_REFUSED";
+        error.statusCode = 409;
+        throw error;
+      }
+      return { service, method, result: null, notifications: [] };
+    },
+  });
+  gateway.state.inSpace = true;
+  gateway.state.shipMode = "STOP";
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+
+  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/flight/warp", {
+    method: "POST",
+    body: { destinationID: GATE_ID },
+  });
+  assert.equal(response.status, 409);
+  assert.equal(payload.error, "CALL_REFUSED");
+  assert.match(payload.message, /warp scrambled/i);
+});
+
+test("flight routes require a live session (409 NO_LIVE_SESSION with no character online)", async () => {
+  const { baseUrl } = await startTestServer();
+  // No select: no held bridge session.
+  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/flight/status");
+  assert.equal(response.status, 409);
+  assert.equal(payload.error, "NO_LIVE_SESSION");
+});

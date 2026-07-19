@@ -205,6 +205,43 @@ export interface AgentsState {
   readonly actionError: string | null;
 }
 
+// --- R5a Flight (manually-stepped space movement) --------------------------
+
+/**
+ * The flight status snapshot (goal R5a): the persistent session's current
+ * location + ship movement state, read from the gateway's
+ * session/flight-status. IDs decode with unwrapLong (long-aware); system,
+ * station, and ship IDs all fit in 2^53, so they are kept as `number`.
+ * `shipMode` is the scene entity's movement mode (e.g. WARP / STOP), null when
+ * docked or unavailable.
+ */
+export interface FlightStatus {
+  readonly inSpace: boolean;
+  readonly docked: boolean;
+  readonly solarSystemID: number | null;
+  readonly stationID: number | null;
+  readonly structureID: number | null;
+  readonly shipID: number | null;
+  readonly shipMode: string | null;
+  readonly shipSpeedFraction: number | null;
+}
+
+/**
+ * The Flight page state (goal R5a): the current flight status plus the last
+ * movement step issued and any refusal reason. Manual single-step movement —
+ * the browser sequences undock/warp/jump/dock via buttons; the autopilot
+ * decide-loop is R5b.
+ */
+export interface FlightState {
+  readonly status: FlightStatus | null;
+  /** True once a flight-status read has populated the slice. */
+  readonly loaded: boolean;
+  /** The last movement step issued (for the status readout). */
+  readonly lastAction: string | null;
+  /** Non-null when the last movement step failed (the handler's refusal reason). */
+  readonly actionError: string | null;
+}
+
 export interface CharacterSummary {
   readonly characterID: number;
   readonly characterName: string;

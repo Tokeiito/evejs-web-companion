@@ -1,6 +1,6 @@
 # Bridge wire contract (v1) — whitelisted `callMethod` path
 
-**Status:** Active, established by goal R1 (2026-07-18); extended by goal R2 (persistent browser-backed sessions, same date) and goal R3 (2026-07-19, the bound-object bridge — see "Bound-object bridge (R3)"). R4+ builds on this contract; change it deliberately and update this file with the change.
+**Status:** Active, established by goal R1 (2026-07-18); extended by goal R2 (persistent browser-backed sessions, same date), goal R3 (2026-07-19, the bound-object bridge — see "Bound-object bridge (R3)"), goal R4 (agents/missions + deferred call responses), and goal R5a (2026-07-19, the space bridge — see "Space bridge & session-into-space (R5a)"). Later goals build on this contract; change it deliberately and update this file with the change.
 
 This is the transport seam that lets the browser drive real EveJS `Handle_*` calls. The unit it mirrors is the retail call tuple **(service, method, args, kwargs)**; the gateway dispatches it through the same seam a retail client hits: `serviceManager.lookup(service).callMethod(method, args, session, kwargs)`.
 
@@ -69,6 +69,15 @@ Current pairs (defined in `eve.js` `server/src/_secondary/express/evejsWebGatewa
 | `agentMgr` | `GetAgentLocationWrap` | R4 (bound agent-location header) |
 | `agentMgr` | `GetStandingGainsForMission` | R4 (bound standing preview) |
 | `agentMgr` | `GetMyJournalDetails` | R4 (top-level or bound journal) |
+| `ship` | `Undock` | R5a (undock — top-level docked call) |
+| `beyonce` | `MachoBindObject` | R5a (bind the remote park) |
+| `beyonce` | `CmdWarpToStuffAutopilot` | R5a (bound: warp to a gate/celestial) |
+| `beyonce` | `CmdWarpToStuff` | R5a (bound: manual "warp to" with minRange) |
+| `beyonce` | `CmdSetSpeedFraction` | R5a (bound: approach speed) |
+| `beyonce` | `CmdFollowBall` | R5a (bound: approach/follow) |
+| `beyonce` | `CmdStargateJump` | R5a (bound: jump — changes system) |
+| `beyonce` | `CmdDock` | R5a (bound: dock — returns to a station) |
+| `structureJumpBridgeMgr` | `CmdJumpThroughStructureStargate` | R5a (server-tier Upwell jump-gate parity) |
 
 Deny-by-default governs **bound-object methods too**: a method invoked on a bound handle whose `(service, method)` is not on this list is refused with `CALL_NOT_ALLOWED` before the handle's OID is resolved. See "Bound-object bridge (R3)" below.
 
@@ -310,6 +319,64 @@ browser decoders (`web/src/bridge/agents.ts`) decode every numeric with
 `unwrapLong` — never `typeof === "number" ? … : 0`. ISK amounts and FILETIMEs
 (which can exceed 2^53) are kept as **decimal strings**, not lossy `Number`.
 
+## Space bridge & session-into-space (R5a)
+
+R5a bridges the atomic space-movement calls the retail client's **client-side**
+autopilot issues (`autopilot.py`), driven **manually** (one button per move):
+undock → warp to a gate → jump → dock. EveJS's existing space handlers stay
+authoritative for each move; **no server-side travel job is added** (roadmap
+§7). The automated decide-loop + route solver + multi-jump travel panel are
+R5b, out of scope here.
+
+**The persistent browser-backed session participates in space across undock,
+exactly like a retail socket session — and this needs no new session-carry
+code.** `ship.Undock` is a **top-level** call on the docked session:
+`Handle_Undock` resolves the ship from the session and runs
+`undockSession(session)`, which moves the ship to space, applies the character
+to the session (`applyCharacterToSession`), and attaches the session to a space
+scene via `spaceRuntime.attachSession` — setting `session._space`. The
+persistent session (`materializePersistentBrowserSession`) already carries the
+duck-typed fields and all three notification surfaces
+(`sendServiceNotification` / `sendNotification` / `sendSessionChange`) plus a
+duck `socket`, which is the **same shape the space parity tests hand to
+`undockSession`/`dockSession`**. Destiny (graphics) traffic is gated on
+`isReadyForDestiny` (a live socket **and** `initialStateSent`), so a
+browser-backed session — `initialStateSent:false`, no real destiny socket —
+simply receives no destiny frames (graphics are out of scope); the location and
+movement state still transition authoritatively.
+
+- **Undock:** `ship.Undock(shipID, ignoreContraband, onlineModules=[])` —
+  `onlineModules` is a **kwarg** (never positional). Emits an `OnSessionChanged`
+  (drained into the response) the browser can read.
+- **Remote park (bound two-step, reuses R3):** the park is the moniker
+  `Moniker('beyonce', solarSystemID)` (retail `michelle.GetRemotePark()`), bound
+  with `beyonce.MachoBindObject([[solarSystemID, groupStation=5]])`. Its `Cmd*`
+  methods dispatch on the in-space session (they read `session._space`, not the
+  bound OID): `CmdWarpToStuffAutopilot(destinationID)` (warp to a gate/celestial),
+  `CmdStargateJump(fromGateID, toGateID, shipID)` (jump — changes the system
+  after a short handoff delay), `CmdDock(stationID, shipID)` (dock — accepts a
+  pending dock the sim completes, returning the session to the station).
+- **Movement refusals are faithful:** the handler's own refusal (scrambled,
+  invalid target, docking-approach, lost control, ship destroyed) surfaces as a
+  `CALL_REFUSED` (409) with the handler's user-facing text — never a silent
+  no-op or a fake success.
+
+### `POST /_evejs-web/v1/session/flight-status`
+
+Request: `{ "bridgeSessionID", "session"?: { "userid" } }` — a **read-only**
+snapshot of the held session's current location and (in space) ship movement
+state, drained together with the accumulated notification backlog. Full push
+streaming is still G6, so the browser polls this manually between movement
+steps ("Refresh flight status").
+
+Success (200): `{ "ok": true, "flight": { inSpace, docked, solarSystemID,
+stationID, structureID, shipID, shipMode, shipSpeedFraction },
+"notifications": [...] }`. `shipMode`/`shipSpeedFraction` are a best-effort read
+of the scene entity (null when docked or the scene is gone). The read touches
+only the live session scalars the gateway already holds plus a best-effort
+`spaceRuntime.getEntity` (lazy-required, mirroring `teardownBrowserSession`), so
+it stays within the `_secondary/express` footprint.
+
 ## BFF routes (this repo)
 
 `POST /api/bridge/call` — requires the signed web login session (else 401 `AUTH_REQUIRED`).
@@ -349,7 +416,37 @@ re-binding on `BOUND_HANDLE_NOT_FOUND`).
 Errors pass through with the gateway's status; a `SESSION_NOT_FOUND` drops the
 held bridge session (the page returns to character select).
 
-The server-side client is `src/eveGatewayClient.js`: `callMethod(service, method, args, kwargs, sessionFields, bridgeSessionID?)`, `selectCharacter(args, kwargs, sessionFields)`, `releaseBridgeSession(bridgeSessionID, sessionFields?)`, and the R3 bound-object pair `bindObject(service, method, args, kwargs, sessionFields, bridgeSessionID)` / `callBoundMethod(service, method, args, kwargs, sessionFields, bridgeSessionID, boundHandle)`. The TS browser client consumes the BFF routes only and never sees the bridgeSessionID or any boundHandle.
+### Flight routes (R5a)
+
+All require the signed web login session and a held bridge session (else 409
+`NO_LIVE_SESSION`). `ship.Undock` is a top-level call on the held session;
+warp/jump/dock go through the beyonce remote-park bound-object two-step — the
+BFF holds the bound park handle server-side, cached under `park:<solarSystemID>`
+so a jump (which changes the system) rebinds the park for the new system. Each
+movement route reads the current flight status first (to resolve the live
+system + ship and guard `NOT_IN_SPACE`), and returns the refreshed snapshot.
+
+- `GET /api/bridge/flight/status` → `{ ok, flight, notifications }`. The
+  read-only flight snapshot for the status readout + "Refresh flight status".
+- `POST /api/bridge/flight/undock` `{}` → `{ ok, flight, notifications }`.
+  Dispatches `ship.Undock(shipID, false, onlineModules=[])`; refuses
+  `ALREADY_IN_SPACE` if not docked.
+- `POST /api/bridge/flight/warp` `{ destinationID }` → `{ ok, result, flight,
+  notifications }`. Binds the park and dispatches
+  `beyonce.CmdWarpToStuffAutopilot([destinationID])`.
+- `POST /api/bridge/flight/jump` `{ fromGateID, toGateID }` →
+  `beyonce.CmdStargateJump([fromGateID, toGateID, shipID])`. The system
+  transition completes after a handoff delay; poll flight status to see it.
+- `POST /api/bridge/flight/dock` `{ stationID }` →
+  `beyonce.CmdDock([stationID, shipID])`. Out-of-range docking refuses with a
+  docking-approach reason; poll flight status to confirm the docked state.
+
+Errors pass through with the gateway's status; a movement `CALL_REFUSED` (409)
+carries the handler's own reason, which the page shows as the last failure. A
+`SESSION_NOT_FOUND` drops the held bridge session (the page returns to character
+select).
+
+The server-side client is `src/eveGatewayClient.js`: `callMethod(service, method, args, kwargs, sessionFields, bridgeSessionID?)`, `selectCharacter(args, kwargs, sessionFields)`, `releaseBridgeSession(bridgeSessionID, sessionFields?)`, `readFlightStatus(bridgeSessionID, sessionFields)` (R5a), and the R3 bound-object pair `bindObject(service, method, args, kwargs, sessionFields, bridgeSessionID)` / `callBoundMethod(service, method, args, kwargs, sessionFields, bridgeSessionID, boundHandle)`. The TS browser client consumes the BFF routes only and never sees the bridgeSessionID or any boundHandle.
 
 ## Login semantics (who-cares, R1)
 
@@ -388,6 +485,8 @@ R2 page pieces, per the recipe below: `web/src/bridge/stationPanel.ts` (decoders
 R3 page pieces (bound-object bridge): `web/src/bridge/inventoryShip.ts` (decoders for the invbroker `List` packed-row list / empty python set and the `GetCapacity` KeyVal), the `inventory` slice + `inventory/loaded`/`inventory/action-error`/`inventory/cleared` feed events, `app/flow.ts` `loadInventory`/`moveItem`/`stackContainer`/`boardShip`, and `web/src/ui/InventoryShip.svelte`. The browser addresses items/ships by game ID only; the BFF's `/api/bridge/inventory*` and `/api/bridge/ship/board` routes hold the bound-object handles (see "Bound-object bridge (R3)" above).
 
 R4 page pieces (Agents & Missions): `web/src/bridge/agents.ts` (decoders for the `DoAction` conversation tuple, the `GetMissionBriefingInfo`/`GetMissionObjectiveInfo` courier briefing, and the `GetMyJournalDetails` journal — all `unwrapLong`, ISK/FILETIME kept as decimal strings), the `agents` slice + `agents/list`/`agents/conversation`/`agents/briefing`/`agents/journal`/`agents/action-error`/`agents/cleared` feed events, `app/flow.ts` `loadAgents`/`openConversation`/`chooseAction`/`loadBriefing`/`loadJournal`, and `web/src/ui/AgentsMissions.svelte`. The browser addresses agents by game ID; the BFF's `/api/bridge/agents*` and `/api/bridge/journal` routes hold the bound agent handles (see "Agent conversation, briefing, and journal (R4)" above).
+
+R5a page pieces (Flight): `web/src/bridge/flight.ts` (the flight-status decoder — `unwrapLong`-aware IDs, docked/in-space derivation), the `flight` slice + `flight/status`/`flight/action`/`flight/action-error`/`flight/cleared` feed events, `app/flow.ts` `loadFlightStatus`/`undock`/`warpTo`/`jump`/`dock` (each surfaces a movement refusal as a visible reason and re-reads the true state — never a silent no-op), and `web/src/ui/Flight.svelte` (status readout + explicit undock/warp/jump/dock buttons, manual only). The browser picks each gate/destination by game ID (the route solver is R5b); the BFF's `/api/bridge/flight/*` routes hold the beyonce bound park handle (see "Space bridge & session-into-space (R5a)" above). Proven browser-side by `web/src/bridge/flight.test.ts` + `web/src/app/flightFlow.test.ts` and BFF-side by `test/bridgeFlight.test.js`.
 
 ### How to add a page on the new stack (R2+)
 

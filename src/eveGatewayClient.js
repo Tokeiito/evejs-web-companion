@@ -475,6 +475,27 @@ async function releaseBridgeSession(bridgeSessionID, sessionFields = undefined) 
 }
 
 /**
+ * Flight status (goal R5a) — a read-only snapshot of the held persistent
+ * session's current location + ship movement state, plus the drained
+ * notification backlog. POST /_evejs-web/v1/session/flight-status. The browser
+ * polls this manually between movement steps (push streaming is still G6). See
+ * docs/bridge-wire-contract.md.
+ */
+async function readFlightStatus(bridgeSessionID, sessionFields = {}) {
+  const body = { bridgeSessionID: String(bridgeSessionID || "") };
+  if (sessionFields && typeof sessionFields === "object" && !Array.isArray(sessionFields)) {
+    body.session = sessionFields;
+  }
+  const data = await postJson("/session/flight-status", body, {
+    timeoutMs: BRIDGE_CALL_TIMEOUT_MS,
+  });
+  return {
+    flight: data.flight && typeof data.flight === "object" ? data.flight : {},
+    notifications: Array.isArray(data.notifications) ? data.notifications : [],
+  };
+}
+
+/**
  * Bound-object bridge (goal R3) — step 1. Dispatch an allowlisted bind method
  * (invbroker.GetInventory/GetInventoryFromId/MachoBindObject,
  * ship.MachoBindObject) on the persistent session; the gateway registers the
@@ -577,6 +598,7 @@ module.exports = {
   callBoundMethod,
   selectCharacter,
   releaseBridgeSession,
+  readFlightStatus,
   claimCharacterControl,
   getAccount,
   getGatewayHealth,

@@ -252,11 +252,31 @@ function decodeJournalRow(row: JsonValue): JournalMission {
   };
 }
 
-/** Decode GetMyJournalDetails: tuple(activeMissions, offeredMissions). */
+// Retail mission-state values (agentMissionRuntime.js), the journal row's
+// missionState (item[0]): 1=Offered, 2=Accepted, 4=Completed, 7=CantReplay.
+export const AGENT_MISSION_STATE = Object.freeze({
+  OFFERED: 1,
+  ACCEPTED: 2,
+  COMPLETED: 4,
+  CANT_REPLAY: 7,
+});
+
+/**
+ * Decode GetMyJournalDetails: tuple(activeMissions, offeredMissions). The
+ * retail runtime returns every mission in the first tuple slot (the second is
+ * empty — `getJournalDetails` yields `[allMissions, []]`), so bucketing by
+ * tuple position renders an OFFERED mission under "Active" (seen live in R4).
+ * The retail journal classifies by the row's missionState, not by server slot;
+ * mirror that — a row in state OFFERED (1) is offered, everything else active.
+ */
 export function decodeJournal(result: JsonValue): JournalState {
   const buckets = seqItems(result);
+  const rows = [
+    ...seqItems(buckets[0]).map(decodeJournalRow),
+    ...seqItems(buckets[1]).map(decodeJournalRow),
+  ];
   return {
-    active: seqItems(buckets[0]).map(decodeJournalRow),
-    offered: seqItems(buckets[1]).map(decodeJournalRow),
+    active: rows.filter((row) => row.missionState !== AGENT_MISSION_STATE.OFFERED),
+    offered: rows.filter((row) => row.missionState === AGENT_MISSION_STATE.OFFERED),
   };
 }

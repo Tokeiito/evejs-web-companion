@@ -299,3 +299,58 @@ export async function loadJournal(options: ApiOptions = {}): Promise<JsonValue> 
   const data = await getJson("/api/bridge/journal", options);
   return data.result ?? null;
 }
+
+// --- R5a Flight (manually-stepped space movement) --------------------------
+// The BFF holds the beyonce bound park handle server-side and returns the raw
+// flight-status snapshot (decoded in the flow with bridge/flight.ts). Movement
+// refusals pass through as the handler's own CALL_REFUSED message.
+
+/** One flight step's outcome: the raw flight snapshot after the step + notifications. */
+export interface FlightStepResult {
+  readonly flight: JsonValue;
+  readonly notifications: readonly JsonValue[];
+}
+
+function readFlightStep(data: Record<string, JsonValue>): FlightStepResult {
+  return {
+    flight: data.flight ?? null,
+    notifications: Array.isArray(data.notifications) ? data.notifications : [],
+  };
+}
+
+/** Read the current flight status (location + ship movement state). */
+export async function getFlightStatus(options: ApiOptions = {}): Promise<FlightStepResult> {
+  return readFlightStep(await getJson("/api/bridge/flight/status", options));
+}
+
+/** Undock from the station (ship.Undock; the session enters space). */
+export async function undock(options: ApiOptions = {}): Promise<FlightStepResult> {
+  return readFlightStep(await postJson("/api/bridge/flight/undock", {}, options));
+}
+
+/** Warp to a chosen gate/celestial (beyonce.CmdWarpToStuffAutopilot). */
+export async function warpTo(
+  destinationID: number,
+  options: ApiOptions = {},
+): Promise<FlightStepResult> {
+  return readFlightStep(await postJson("/api/bridge/flight/warp", { destinationID }, options));
+}
+
+/** Jump through an NPC stargate (beyonce.CmdStargateJump). */
+export async function jump(
+  fromGateID: number,
+  toGateID: number,
+  options: ApiOptions = {},
+): Promise<FlightStepResult> {
+  return readFlightStep(
+    await postJson("/api/bridge/flight/jump", { fromGateID, toGateID }, options),
+  );
+}
+
+/** Dock at the destination station (beyonce.CmdDock). */
+export async function dock(
+  stationID: number,
+  options: ApiOptions = {},
+): Promise<FlightStepResult> {
+  return readFlightStep(await postJson("/api/bridge/flight/dock", { stationID }, options));
+}
