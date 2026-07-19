@@ -25,11 +25,19 @@ const HANGAR_LIST: JsonValue = {
   ],
 };
 
-const EMPTY_SET: JsonValue = {
-  type: "object",
-  name: "__builtin__.set",
-  args: [{ type: "list", items: [] }],
-};
+// The real wire shape of a python set (objectex1 with a __builtin__.set token
+// header wrapping the inner list) — what invbroker List actually emits for the
+// empty/flag-scoped case, not the {type:"object"} shape a prior fixture assumed.
+function pythonSet(inner: JsonValue): JsonValue {
+  return {
+    type: "objectex1",
+    header: [{ type: "token", value: "__builtin__.set" }, [inner]],
+    list: [],
+    dict: [],
+  };
+}
+
+const EMPTY_SET: JsonValue = pythonSet({ type: "list", items: [] });
 
 const CAPACITY: JsonValue = {
   type: "object",
@@ -56,6 +64,34 @@ test("decodeInventoryRows decodes a packed-row list, dropping rows without an it
 
 test("decodeInventoryRows unwraps an empty python set to no rows", () => {
   assert.deepEqual(decodeInventoryRows(EMPTY_SET), []);
+});
+
+test("decodeInventoryRows unwraps a NON-empty python set (real objectex1 shape)", () => {
+  const set = pythonSet({
+    type: "list",
+    items: [packedRow({ itemID: 300, typeID: 34, flagID: 5, quantity: 10, singleton: 0 })],
+  });
+  const rows = decodeInventoryRows(set);
+  assert.equal(rows.length, 1, "a populated docked-ship set must not silently drop its rows");
+  assert.equal(rows[0]!.itemID, 300);
+  assert.equal(rows[0]!.quantity, 10);
+});
+
+test("decodeInventoryRows decodes long-encoded numeric fields (no silent zero)", () => {
+  const rows = decodeInventoryRows({
+    type: "list",
+    items: [
+      packedRow({
+        itemID: { type: "long", value: "1002000300040005" },
+        typeID: 34,
+        flagID: 5,
+        quantity: { type: "long", value: 250 },
+        singleton: 0,
+      }),
+    ],
+  });
+  assert.equal(rows[0]!.itemID, 1002000300040005, "a {type:long} id must not read as 0");
+  assert.equal(rows[0]!.quantity, 250);
 });
 
 test("decodeInventoryRows falls back to stacksize when quantity is absent", () => {

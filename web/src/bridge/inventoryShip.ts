@@ -8,31 +8,59 @@
 // {capacity, used}. See docs/retail-call-inventory.md Steps 5-6 and
 // docs/bridge-wire-contract.md.
 
-import { isKeyValValue, isListValue, readKeyVal, type JsonValue } from "./wire.ts";
+import {
+  isKeyValValue,
+  isListValue,
+  readKeyVal,
+  unwrapLong,
+  type JsonValue,
+} from "./wire.ts";
 import type {
   CapacityInfo,
   InventoryContainerState,
   InventoryItemRow,
 } from "../store/types.ts";
 
+// Numeric fields may cross the wire as a plain number OR a retail long
+// ({type:"long"} / BigInt→decimal string). Decode both so a long-encoded id or
+// quantity never silently reads as 0 (a trap R4/R5 rows would otherwise inherit).
 function toNumber(value: JsonValue | undefined): number {
-  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  const long = unwrapLong(value);
+  return long === null ? 0 : Number(long);
 }
 
 function toNumberOrNull(value: JsonValue | undefined): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  const long = unwrapLong(value);
+  return long === null ? null : Number(long);
 }
 
-/** Unwrap a python-set-wrapped list ({type:"object", args:[list]}) to the list. */
+/**
+ * Unwrap a python-set-wrapped list to the inner list. The empty/flag-scoped
+ * List case answers with a __builtin__.set, whose real wire shape is
+ * `{type:"objectex1", header:[{type:"token",value:"__builtin__.set"}, [innerList]]}`.
+ * (An older `{type:"object", args:[list]}` shape is also tolerated.)
+ */
 function unwrapRowList(result: JsonValue): JsonValue {
-  if (
-    typeof result === "object" &&
-    result !== null &&
-    !Array.isArray(result) &&
-    (result as { type?: unknown }).type === "object" &&
-    Array.isArray((result as { args?: unknown }).args)
-  ) {
-    const args = (result as { args: readonly JsonValue[] }).args;
+  if (typeof result !== "object" || result === null || Array.isArray(result)) {
+    return result;
+  }
+  const obj = result as { type?: unknown; header?: unknown; args?: unknown };
+  if (obj.type === "objectex1" && Array.isArray(obj.header)) {
+    const header = obj.header as readonly JsonValue[];
+    const token = header[0] as { value?: unknown } | undefined;
+    if (token && token.value === "__builtin__.set" && Array.isArray(header[1])) {
+      const inner = (header[1] as readonly JsonValue[])[0];
+      return inner ?? { type: "list", items: [] };
+    }
+  }
+  if (obj.type === "object" && Array.isArray(obj.args)) {
+    const args = obj.args as readonly JsonValue[];
     return args.length > 0 ? args[0]! : { type: "list", items: [] };
   }
   return result;

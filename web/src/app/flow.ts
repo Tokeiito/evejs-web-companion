@@ -120,7 +120,18 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // blanks the other — R2's Promise.allSettled rule, applied here on the BFF's
   // already-settled per-container results. A lost session unwinds to select.
   async function loadInventory(): Promise<void> {
-    const panel = await api.loadInventory(callOptions);
+    let panel: Awaited<ReturnType<typeof api.loadInventory>>;
+    try {
+      panel = await api.loadInventory(callOptions);
+    } catch (error) {
+      if (isSessionLost(error)) {
+        // The live session ended out from under the inventory tab: unwind to
+        // the character list like refreshStationPanel/runMutation, so the page
+        // doesn't stay mounted with stale rows on a dead session.
+        store.apply({ type: "character/offline" });
+      }
+      throw error;
+    }
     store.apply({
       type: "inventory/loaded",
       stationID: panel.stationID,

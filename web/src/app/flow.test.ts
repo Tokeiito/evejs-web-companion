@@ -289,6 +289,30 @@ test("a lost live session surfaces SESSION_NOT_FOUND and flips the store offline
   assert.equal(store.station.get().online, null, "session loss flips the slice offline");
 });
 
+test("a lost session on the inventory tab unwinds to character select", async () => {
+  let killInventory = false;
+  const { fetch } = makeFakeFetch((path, body) => {
+    if (path === "/api/bridge/inventory" && killInventory) {
+      return { status: 404, body: { ok: false, error: "SESSION_NOT_FOUND", message: "gone" } };
+    }
+    return bridgeCallResponder(path, body);
+  });
+  const store = createClientStore();
+  const flow = createAppFlow(store, { fetch });
+
+  await flow.login("test2", "");
+  await flow.selectCharacter(140000003);
+  assert.equal(store.station.get().online?.characterID, 140000003);
+
+  killInventory = true;
+  await assert.rejects(flow.loadInventory(), (error: unknown) => isSessionLost(error));
+  assert.equal(
+    store.station.get().online,
+    null,
+    "a dead session on the inventory tab must flip offline, not leave stale rows mounted",
+  );
+});
+
 test("select refusals propagate the handler's message and leave the flow at character select", async () => {
   const { fetch } = makeFakeFetch((path, body) => {
     if (path === "/api/bridge/select") {
