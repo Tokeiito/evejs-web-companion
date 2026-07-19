@@ -354,3 +354,58 @@ export async function dock(
 ): Promise<FlightStepResult> {
   return readFlightStep(await postJson("/api/bridge/flight/dock", { stationID }, options));
 }
+
+// --- R5b Travel (client-side route solver static data) ---------------------
+// The system-adjacency graph the browser route solver runs BFS over is served
+// as read-only static reference data (GET /api/map/graph) — NOT a gateway call
+// and NOT a server-side travel job (roadmap §7 / G2).
+
+/** The compact system-adjacency graph payload (systems name map + edge tuples). */
+export interface SystemGraphResult {
+  readonly systems: Readonly<Record<string, string>>;
+  readonly edges: ReadonlyArray<readonly [number, number, number, number]>;
+}
+
+/** Fetch the system-adjacency graph for the client-side route solver. */
+export async function loadSystemGraph(options: ApiOptions = {}): Promise<SystemGraphResult> {
+  const data = await getJson("/api/map/graph", options);
+  return {
+    systems:
+      typeof data.systems === "object" && data.systems !== null && !Array.isArray(data.systems)
+        ? (data.systems as Record<string, string>)
+        : {},
+    edges: Array.isArray(data.edges)
+      ? (data.edges as ReadonlyArray<readonly [number, number, number, number]>)
+      : [],
+  };
+}
+
+/** A destination resolved from static reference data (station or system → system). */
+export interface ResolvedDestination {
+  readonly id: number;
+  readonly kind: "station" | "system" | "unknown";
+  readonly solarSystemID: number | null;
+  readonly systemName: string | null;
+  readonly stationID: number | null;
+  readonly stationName: string | null;
+}
+
+/**
+ * Resolve a picked destination ID to its solar system (a courier destination is
+ * a station; the route solver works on systems). Read-only static reference
+ * data, like station identity — not a route or gateway call.
+ */
+export async function resolveDestination(
+  id: number,
+  options: ApiOptions = {},
+): Promise<ResolvedDestination> {
+  const data = await getJson(`/api/map/resolve/${id}`, options);
+  return {
+    id,
+    kind: data.kind === "station" || data.kind === "system" ? data.kind : "unknown",
+    solarSystemID: asNumberOrNull(data.solarSystemID),
+    systemName: typeof data.systemName === "string" ? data.systemName : null,
+    stationID: asNumberOrNull(data.stationID),
+    stationName: typeof data.stationName === "string" ? data.stationName : null,
+  };
+}

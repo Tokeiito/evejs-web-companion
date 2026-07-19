@@ -29,6 +29,7 @@ import type {
   StationGuest,
   StationServiceBits,
   StationStatic,
+  TravelState,
 } from "./types.ts";
 
 // --- Typed state slices ----------------------------------------------------
@@ -74,6 +75,7 @@ export interface ClientState {
   readonly inventory: InventoryState;
   readonly agents: AgentsState;
   readonly flight: FlightState;
+  readonly travel: TravelState;
   readonly feed: FeedSlice;
 }
 
@@ -130,6 +132,24 @@ const INITIAL_FLIGHT: FlightState = Object.freeze({
   actionError: null,
 });
 
+const INITIAL_TRAVEL: TravelState = Object.freeze({
+  status: "idle" as TravelState["status"],
+  destinationSystemID: null,
+  destinationStationID: null,
+  destinationName: null,
+  route: Object.freeze([]) as TravelState["route"],
+  currentSystemID: null,
+  currentSystemName: null,
+  nextSystemID: null,
+  nextSystemName: null,
+  action: null,
+  phase: null,
+  remainingJumps: 0,
+  totalJumps: 0,
+  startedAt: null,
+  failureReason: null,
+});
+
 const INITIAL_FEED: FeedSlice = Object.freeze({
   adapter: null,
   status: "idle" as FeedStatus,
@@ -145,6 +165,7 @@ export interface ClientStore {
   readonly inventory: ReadableSignal<InventoryState>;
   readonly agents: ReadableSignal<AgentsState>;
   readonly flight: ReadableSignal<FlightState>;
+  readonly travel: ReadableSignal<TravelState>;
   readonly feed: ReadableSignal<FeedSlice>;
 
   /** Whole-state snapshot. */
@@ -174,6 +195,7 @@ export function createClientStore(): ClientStore {
   const inventory = createSignal<InventoryState>(INITIAL_INVENTORY);
   const agents = createSignal<AgentsState>(INITIAL_AGENTS);
   const flight = createSignal<FlightState>(INITIAL_FLIGHT);
+  const travel = createSignal<TravelState>(INITIAL_TRAVEL);
   const feed = createSignal<FeedSlice>(INITIAL_FEED);
 
   // Whole-store notification: bumped once per applied change so multi-slice
@@ -190,6 +212,7 @@ export function createClientStore(): ClientStore {
     inventory: inventory.get(),
     agents: agents.get(),
     flight: flight.get(),
+    travel: travel.get(),
     feed: feed.get(),
   });
 
@@ -210,6 +233,7 @@ export function createClientStore(): ClientStore {
         inventory.set(INITIAL_INVENTORY);
         agents.set(INITIAL_AGENTS);
         flight.set(INITIAL_FLIGHT);
+        travel.set(INITIAL_TRAVEL);
         break;
       case "character/list": {
         const characters = [...event.characters];
@@ -246,12 +270,14 @@ export function createClientStore(): ClientStore {
         inventory.set(INITIAL_INVENTORY);
         agents.set(INITIAL_AGENTS);
         flight.set(INITIAL_FLIGHT);
+        travel.set(INITIAL_TRAVEL);
         break;
       case "character/offline":
         station.set(INITIAL_STATION);
         inventory.set(INITIAL_INVENTORY);
         agents.set(INITIAL_AGENTS);
         flight.set(INITIAL_FLIGHT);
+        travel.set(INITIAL_TRAVEL);
         break;
       case "station/bits":
         station.set({ ...station.get(), bits: event.bits });
@@ -324,6 +350,40 @@ export function createClientStore(): ClientStore {
       case "flight/cleared":
         flight.set(INITIAL_FLIGHT);
         break;
+      case "travel/planned":
+        travel.set({
+          ...INITIAL_TRAVEL,
+          status: "running",
+          destinationSystemID: event.destinationSystemID,
+          destinationStationID: event.destinationStationID,
+          destinationName: event.destinationName,
+          route: [...event.route],
+          remainingJumps: event.totalJumps,
+          totalJumps: event.totalJumps,
+          startedAt: event.startedAt,
+        });
+        break;
+      case "travel/progress":
+        travel.set({
+          ...travel.get(),
+          status: event.status,
+          action: event.action,
+          phase: event.phase,
+          currentSystemID: event.currentSystemID,
+          currentSystemName: event.currentSystemName,
+          nextSystemID: event.nextSystemID,
+          nextSystemName: event.nextSystemName,
+          remainingJumps: event.remainingJumps,
+          totalJumps: event.totalJumps,
+          failureReason: event.failureReason,
+        });
+        break;
+      case "travel/plan-error":
+        travel.set({ ...travel.get(), status: "idle", failureReason: event.message });
+        break;
+      case "travel/cleared":
+        travel.set(INITIAL_TRAVEL);
+        break;
     }
   };
 
@@ -384,6 +444,7 @@ export function createClientStore(): ClientStore {
     inventory: readonlySignal(inventory),
     agents: readonlySignal(agents),
     flight: readonlySignal(flight),
+    travel: readonlySignal(travel),
     feed: readonlySignal(feed),
     get,
     subscribe,

@@ -25,6 +25,8 @@ import type {
   StationGuest,
   StationServiceBits,
   StationStatic,
+  TravelRouteStep,
+  TravelStatus,
 } from "./types.ts";
 
 export type FeedStatus = "idle" | "connecting" | "connected" | "disconnected";
@@ -102,7 +104,37 @@ export type FeedEvent =
   // A movement step failed (the handler's own refusal reason); null clears it.
   | { readonly type: "flight/action-error"; readonly message: string | null }
   // Drop the flight state (character offline / logged out).
-  | { readonly type: "flight/cleared" };
+  | { readonly type: "flight/cleared" }
+  // Goal R5b — the Travel panel (browser autopilot decide-loop). A route was
+  // computed (client-side solver) and the loop started.
+  | {
+      readonly type: "travel/planned";
+      readonly destinationSystemID: number;
+      readonly destinationStationID: number | null;
+      readonly destinationName: string | null;
+      readonly route: readonly TravelRouteStep[];
+      readonly totalJumps: number;
+      readonly startedAt: number;
+    }
+  // A live progress push from the decide-loop (system/next/phase/remaining/…).
+  | {
+      readonly type: "travel/progress";
+      readonly status: TravelStatus;
+      readonly action: string | null;
+      readonly phase: string | null;
+      readonly currentSystemID: number | null;
+      readonly currentSystemName: string | null;
+      readonly nextSystemID: number | null;
+      readonly nextSystemName: string | null;
+      readonly remainingJumps: number;
+      readonly totalJumps: number;
+      readonly failureReason: string | null;
+    }
+  // Starting a route failed before the loop began (unreachable / not in space /
+  // graph load); null clears a stale plan error.
+  | { readonly type: "travel/plan-error"; readonly message: string | null }
+  // Drop the travel state (character offline / logged out / new route).
+  | { readonly type: "travel/cleared" };
 
 /** What the store hands an adapter: publish events, report connectivity. */
 export interface FeedSink {

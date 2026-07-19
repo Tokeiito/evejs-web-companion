@@ -1,6 +1,6 @@
 # Bridge wire contract (v1) — whitelisted `callMethod` path
 
-**Status:** Active, established by goal R1 (2026-07-18); extended by goal R2 (persistent browser-backed sessions, same date), goal R3 (2026-07-19, the bound-object bridge — see "Bound-object bridge (R3)"), goal R4 (agents/missions + deferred call responses), and goal R5a (2026-07-19, the space bridge — see "Space bridge & session-into-space (R5a)"). Later goals build on this contract; change it deliberately and update this file with the change.
+**Status:** Active, established by goal R1 (2026-07-18); extended by goal R2 (persistent browser-backed sessions, same date), goal R3 (2026-07-19, the bound-object bridge — see "Bound-object bridge (R3)"), goal R4 (agents/missions + deferred call responses), goal R5a (2026-07-19, the space bridge — see "Space bridge & session-into-space (R5a)"), and goal R5b (2026-07-19, the client-side route solver + browser autopilot decide-loop — see "Client-side route solver & browser autopilot (R5b)"). Later goals build on this contract; change it deliberately and update this file with the change.
 
 This is the transport seam that lets the browser drive real EveJS `Handle_*` calls. The unit it mirrors is the retail call tuple **(service, method, args, kwargs)**; the gateway dispatches it through the same seam a retail client hits: `serviceManager.lookup(service).callMethod(method, args, session, kwargs)`.
 
@@ -377,6 +377,67 @@ only the live session scalars the gateway already holds plus a best-effort
 `spaceRuntime.getEntity` (lazy-required, mirroring `teardownBrowserSession`), so
 it stays within the `_secondary/express` footprint.
 
+## Client-side route solver & browser autopilot (R5b)
+
+R5b automates the R5a atomic moves. It is **web-only — no eve.js/gateway change**:
+R5a already allowlisted every atomic call (undock/warp/jump/dock) and added
+`flight-status`, which is the whole authoritative surface the loop needs.
+
+**The route solver is client-side (roadmap §7 / G2).** Retail solves routes
+locally from its static map DB (`clientPathfinderService`) — there is **no wire
+call to the game server for a route**. We mirror that: the browser holds a
+system-adjacency graph and runs a pure BFS solver over it
+(`web/src/nav/routeSolver.ts`). The graph is **read-only static reference data**
+(like station names staying client-local, roadmap §4), served by `src/staticData.js`:
+
+- `GET /api/map/graph` (requires the web login session; **no bridge session**) →
+  `{ ok, source:"static-data", systemCount, edgeCount, systems, edges }`. Built by
+  `staticData.getSolarSystemGraph()` from the gameStore **`stargates`** table:
+  each stargate record is **one directed edge** — `edges` is a flat array of
+  `[fromSystemID, toSystemID, fromGateID, toGateID]` where `fromGateID` is the
+  source stargate's `itemID` (the autopilot warps to it and jumps **through** it)
+  and `toGateID` is its `destinationID` (the gate on the far side). That is
+  exactly the pair `beyonce.CmdStargateJump(fromGateID, toGateID, shipID)` (R5a)
+  wants, and the same shape `autopilot.py` derives from
+  `cfg.mapSolarSystemContentCache[sys].stargates` (`sg.destination`). `systems`
+  maps each gate-connected system ID → name (panel readout only). Current data:
+  5268 systems / 13978 edges.
+- `GET /api/map/resolve/:id` (same auth) → resolves a picked destination (a
+  courier destination is a station; the solver routes **systems**) to its solar
+  system from static reference data: `{ ok, id, kind:"station"|"system"|"unknown",
+  solarSystemID, systemName, stationID, stationName }`. The same client-local
+  resolution `select` does for station identity — **not** a route or gateway call.
+
+Neither route touches a live bridge session or the gateway; they are not a
+server-side travel job (the roadmap forbids reintroducing one).
+
+**The decide-loop runs in the BROWSER** (`web/src/nav/autopilotLoop.ts`), a port
+of `autopilot.py`'s `AutoPilot.Update`. Each ~2 s tick it reads `flight-status`
+and issues **one** atomic call (undock / `CmdWarpToStuffAutopilot` /
+`CmdStargateJump` / `CmdDock`) through the R5a BFF flight routes — it never
+simulates or predicts position; each move's truth comes from the next
+`flight-status`. Loop contract:
+
+- **Truth model (no distances).** `flight-status` carries no range readout, so
+  the loop drives off ship **mode** and the server's own **refusals**: warp to a
+  gate; while in warp, wait; when warp ends, jump; a settle window after each
+  warp/jump lets the transition begin before re-deciding (retail's
+  `ignoreTimerCycles`).
+- **Approach-then-redock (verified live).** `CmdDock` out of range refuses
+  `DockingApproach` and the ship enters a FOLLOW approach; the loop **re-issues
+  `CmdDock`** each cycle until `flight-status` shows docked — it does not assume
+  one dock call docks.
+- **Pause, don't guess.** Any unsafe/blocked refusal that is not the normal
+  docking-approach (warp scrambled, gate restricted, invalid target, lost
+  control) **pauses** the loop with the handler's own reason. A jump
+  "not-close-enough" re-warps to the gate; a lost session unwinds to character
+  select.
+- **Tab close = client close.** The loop lives in browser JS; closing the tab
+  kills it and it simply **stops issuing — no "stop" is sent**. The ship
+  completes whatever server-side command was last issued and then sits. After
+  **abort/pause the loop never calls the bridge again**. The BFF is a relay +
+  session holder and **never advances travel with no client connected**.
+
 ## BFF routes (this repo)
 
 `POST /api/bridge/call` — requires the signed web login session (else 401 `AUTH_REQUIRED`).
@@ -487,6 +548,8 @@ R3 page pieces (bound-object bridge): `web/src/bridge/inventoryShip.ts` (decoder
 R4 page pieces (Agents & Missions): `web/src/bridge/agents.ts` (decoders for the `DoAction` conversation tuple, the `GetMissionBriefingInfo`/`GetMissionObjectiveInfo` courier briefing, and the `GetMyJournalDetails` journal — all `unwrapLong`, ISK/FILETIME kept as decimal strings), the `agents` slice + `agents/list`/`agents/conversation`/`agents/briefing`/`agents/journal`/`agents/action-error`/`agents/cleared` feed events, `app/flow.ts` `loadAgents`/`openConversation`/`chooseAction`/`loadBriefing`/`loadJournal`, and `web/src/ui/AgentsMissions.svelte`. The browser addresses agents by game ID; the BFF's `/api/bridge/agents*` and `/api/bridge/journal` routes hold the bound agent handles (see "Agent conversation, briefing, and journal (R4)" above).
 
 R5a page pieces (Flight): `web/src/bridge/flight.ts` (the flight-status decoder — `unwrapLong`-aware IDs, docked/in-space derivation), the `flight` slice + `flight/status`/`flight/action`/`flight/action-error`/`flight/cleared` feed events, `app/flow.ts` `loadFlightStatus`/`undock`/`warpTo`/`jump`/`dock` (each surfaces a movement refusal as a visible reason and re-reads the true state — never a silent no-op), and `web/src/ui/Flight.svelte` (status readout + explicit undock/warp/jump/dock buttons, manual only). The browser picks each gate/destination by game ID (the route solver is R5b); the BFF's `/api/bridge/flight/*` routes hold the beyonce bound park handle (see "Space bridge & session-into-space (R5a)" above). Proven browser-side by `web/src/bridge/flight.test.ts` + `web/src/app/flightFlow.test.ts` and BFF-side by `test/bridgeFlight.test.js`.
+
+R5b page pieces (Travel — browser autopilot): `web/src/nav/routeSolver.ts` (pure client-side BFS route solver over the system-adjacency graph), `web/src/nav/autopilotLoop.ts` (the framework-agnostic decide-loop controller — `createAutopilot(deps)` with `start`/`pause`/`resume`/`abort`/`tick`/`run`; the pure `decideAutopilotAction` maps flight-status → next atomic move), `app/api.ts` `loadSystemGraph`/`resolveDestination`, `app/flow.ts` `startRoute`/`pauseRoute`/`resumeRoute`/`abortRoute` (owns the graph cache + the single controller, wires its deps to the R5a flight routes and the store), the `travel` slice + `travel/planned`/`travel/progress`/`travel/plan-error`/`travel/cleared` feed events, and `web/src/ui/Travel.svelte` (Start/Pause/Resume/Abort + live readout, no map). The route solver + loop are unit-tested (`web/src/nav/routeSolver.test.ts`, `web/src/nav/autopilotLoop.test.ts` — a simulated docked→undock→warp→jump→approach→dock timeline proving each atomic call, approach-then-redock, pause-on-refusal, and no bridge call after abort), the flow by `web/src/app/travelFlow.test.ts`, and the BFF map routes by `test/bridgeMapGraph.test.js`. See "Client-side route solver & browser autopilot (R5b)" above.
 
 ### How to add a page on the new stack (R2+)
 

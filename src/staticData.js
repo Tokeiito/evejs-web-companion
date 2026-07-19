@@ -353,6 +353,64 @@ function getSolarSystemName(solarSystemID) {
   return entry ? String(entry.solarSystemName || `System ${solarSystemID}`) : `System ${solarSystemID}`;
 }
 
+// --- System-adjacency graph (goal R5b) -------------------------------------
+// The browser autopilot's route solver is client-side (retail solves routes
+// locally from its static map DB; there is no wire call to the game server for
+// a route — roadmap §7 / G2). We serve the adjacency it needs as read-only
+// static reference data, exactly as station names stay client-local.
+//
+// The gameStore `stargates` table is the source: each record is one DIRECTED
+// edge with the gate IDs the R5a jump call wants — itemID is the source gate in
+// `solarSystemID` (the autopilot warps to it and jumps through it), and
+// destinationID is the gate on the far side in `destinationSolarSystemID` (the
+// `toGate` of beyonce.CmdStargateJump). This mirrors what autopilot.py reads
+// from `cfg.mapSolarSystemContentCache[sys].stargates` (`sg.destination`).
+
+function getStargates() {
+  const cacheKey = "stargates:list";
+  if (caches.has(cacheKey)) {
+    return caches.get(cacheKey);
+  }
+  const table = readStaticTable("stargates");
+  const list = Array.isArray(table.stargates) ? table.stargates : [];
+  caches.set(cacheKey, list);
+  return list;
+}
+
+/**
+ * The compact system-adjacency graph the browser route solver consumes:
+ * `edges` is a flat array of `[fromSystemID, toSystemID, fromGateID, toGateID]`
+ * tuples (one per stargate), `systems` maps each gate-connected system ID to
+ * its name (for the travel-panel readout only). Cached after the first build.
+ */
+function getSolarSystemGraph() {
+  const cacheKey = "map:solarSystemGraph";
+  if (caches.has(cacheKey)) {
+    return caches.get(cacheKey);
+  }
+  const edges = [];
+  const systemIDs = new Set();
+  for (const gate of getStargates()) {
+    const fromSystemID = Number(gate && gate.solarSystemID) || 0;
+    const toSystemID = Number(gate && gate.destinationSolarSystemID) || 0;
+    const fromGateID = Number(gate && gate.itemID) || 0;
+    const toGateID = Number(gate && gate.destinationID) || 0;
+    if (fromSystemID <= 0 || toSystemID <= 0 || fromGateID <= 0) {
+      continue;
+    }
+    edges.push([fromSystemID, toSystemID, fromGateID, toGateID]);
+    systemIDs.add(fromSystemID);
+    systemIDs.add(toSystemID);
+  }
+  const systems = {};
+  for (const systemID of systemIDs) {
+    systems[systemID] = getSolarSystemName(systemID);
+  }
+  const graph = { systems, edges };
+  caches.set(cacheKey, graph);
+  return graph;
+}
+
 function getIndustryBlueprint(blueprintTypeID) {
   return buildIndex(
     "industryBlueprints",
@@ -384,7 +442,9 @@ module.exports = {
   getRegion,
   getRegionName,
   getSolarSystem,
+  getSolarSystemGraph,
   getSolarSystemName,
+  getStargates,
   getStation,
   getStationName,
   getStationShortName,

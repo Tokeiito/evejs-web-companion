@@ -242,6 +242,58 @@ export interface FlightState {
   readonly actionError: string | null;
 }
 
+// --- R5b Travel (browser autopilot decide-loop) ----------------------------
+
+/**
+ * One hop of a planned route for the travel panel: the systems and, per hop,
+ * the source stargate to warp to (and jump through) and the gate on the far
+ * side, with names resolved for display. Mirrors the route solver's RouteHop.
+ */
+export interface TravelRouteStep {
+  readonly fromSystemID: number;
+  readonly toSystemID: number;
+  readonly gateToWarpID: number;
+  readonly jumpToGateID: number;
+  readonly fromSystemName: string | null;
+  readonly toSystemName: string | null;
+}
+
+export type TravelStatus =
+  | "idle"
+  | "running"
+  | "paused"
+  | "arrived"
+  | "aborted"
+  | "error";
+
+/**
+ * The travel-panel state (goal R5b): the destination, the computed route, and
+ * the live autopilot readout (current/next system, travel state, remaining
+ * jumps, elapsed time, failure reason). The decide-loop runs in the browser and
+ * pushes progress here; the panel is a pure reader. `startedAt` is the loop's
+ * start epoch (the panel ticks elapsed time locally so the store stays quiet).
+ */
+export interface TravelState {
+  readonly status: TravelStatus;
+  readonly destinationSystemID: number | null;
+  readonly destinationStationID: number | null;
+  readonly destinationName: string | null;
+  readonly route: readonly TravelRouteStep[];
+  readonly currentSystemID: number | null;
+  readonly currentSystemName: string | null;
+  readonly nextSystemID: number | null;
+  readonly nextSystemName: string | null;
+  /** The current action label (e.g. "Warp to gate 50000802", "Docking"). */
+  readonly action: string | null;
+  /** The travel-state text (e.g. "In warp", "Jumping", "Docked"). */
+  readonly phase: string | null;
+  readonly remainingJumps: number;
+  readonly totalJumps: number;
+  readonly startedAt: number | null;
+  /** Actionable failure reason (the handler's own refusal, or a plan error). */
+  readonly failureReason: string | null;
+}
+
 export interface CharacterSummary {
   readonly characterID: number;
   readonly characterName: string;

@@ -104,6 +104,25 @@ What to expect:
 - **Pause on unsafe:** a refused move (warp scrambled, invalid target, out-of-docking-range → docking-approach, lost control, ship destroyed) shows as the handler's own reason under **Last failure** — never a silent no-op or a fake success.
 - Warp travel and the jump handoff take time; the ship keeps its last command in flight. Refresh flight status to see where it actually is (push streaming is G6). Closing the tab is closing the client — the ship finishes its last command and sits (R5b autopilot behaviour, faithful to retail).
 
+## Spot test (R5b): pick a destination → the browser autopilots there
+
+The client-side autopilot (goal R5b). What it proves: the **browser** runs the retail autopilot decide-loop — it solves the jump route locally (client-side route solver over the static gate graph, no server route call) and then **sequences** the R5a atomic moves (undock → warp to each gate → jump → warp to the station → dock) autonomously, reading `flight-status` between moves. Movement stays authoritative on the server; the browser only sequences it, exactly as `autopilot.py` does. Closing the tab stops the autopilot (the ship finishes its last move and sits) — faithful to closing the retail client mid-autopilot.
+
+**Setup expectation:** the character is docked with an active ship that can undock/warp/jump (Farmer works). Pick a destination **a few jumps away** — a **station ID** (a courier destination) or a **solar system ID**. From Maurasi (system `30000140`), Jita is one jump: station `60003760` (Jita 4-4) is a good target.
+
+1. Same setup as the R2–R5a spot tests (EveJS running, `npm run build:web`, `npm start`).
+2. Open `http://127.0.0.1:26500/dist/`, log in, and select the character (R2 flow).
+3. Click the **Travel** tab. Under **Start route**, enter the destination ID (e.g. `60003760`) and click **Start route**.
+4. The route is computed from your current location and the **Status** readout goes live: current/next system, target, travel state, **remaining jumps**, and **elapsed time**. The **Planned route** lists each hop (which gate to warp to, which gate to jump through).
+5. Watch it drive itself: undock → warp to the gate → jump → (next system) → … → warp to the station → dock. The dock is re-issued through the approach until the ship is in range (approach-then-redock).
+
+What to expect:
+
+- **Client-side loop, server-authoritative moves.** The ~2-second loop lives in the browser and only sequences the atomic calls; each move's truth comes from `flight-status`. EveJS gains no travel-job code.
+- **Controls:** **Pause** stops issuing (the ship finishes its current move and sits); **Resume** continues from where it stopped; **Abort** stops for good. After abort/pause the loop never calls the bridge again.
+- **Pause on unsafe:** a refusal that is not the normal docking-approach (warp scrambled, gate restricted, invalid target, lost control) pauses the loop and shows the handler's own reason under **Failure** — it does not guess.
+- **Tab close = client close:** closing the tab stops the autopilot with **no "stop" sent** — the ship completes whatever server-side command was last issued and then sits. The BFF is a relay + session holder; it never advances travel with no client connected.
+
 ## Configuration
 
 Defaults assume both repos live under `C:\Users\ryanf\Documents\GitHub`:

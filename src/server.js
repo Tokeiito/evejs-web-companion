@@ -1291,6 +1291,71 @@ app.post("/api/bridge/flight/dock", requireAuth, async (req, res, next) => {
   }
 });
 
+// --- R5b Travel: client-side route solver static data ----------------------
+// The browser autopilot's route solver is client-side (roadmap §7 / G2): the
+// system-adjacency graph it runs BFS over is read-only static reference data
+// (like station names), served here from src/staticData.js. This is NOT a
+// gateway/bridge call and NOT a server-side travel job — no live bridge session
+// is touched. Requires the web login session (as every /api route does).
+app.get("/api/map/graph", requireAuth, async (req, res, next) => {
+  try {
+    const graph = staticData.getSolarSystemGraph();
+    res.json({
+      ok: true,
+      source: "static-data",
+      systemCount: Object.keys(graph.systems).length,
+      edgeCount: graph.edges.length,
+      systems: graph.systems,
+      edges: graph.edges,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Resolve a picked destination (a courier destination is a station; the route
+// solver works on systems) to its solar system, from static reference data —
+// the same client-local resolution the select route does for station identity.
+app.get("/api/map/resolve/:id", requireAuth, async (req, res, next) => {
+  try {
+    const id = Number(req.params.id) || 0;
+    if (id <= 0) {
+      res.status(400).json({ ok: false, error: "INVALID_ID", message: "A positive id is required." });
+      return;
+    }
+    const station = staticData.getStation(id);
+    if (station) {
+      const solarSystemID = Number(station.solarSystemID) || null;
+      res.json({
+        ok: true,
+        id,
+        kind: "station",
+        stationID: id,
+        stationName: String(station.stationName || `Station ${id}`),
+        solarSystemID,
+        systemName: solarSystemID ? staticData.getSolarSystemName(solarSystemID) : null,
+      });
+      return;
+    }
+    const system = staticData.getSolarSystem(id);
+    if (system) {
+      res.json({
+        ok: true,
+        id,
+        kind: "system",
+        stationID: null,
+        stationName: null,
+        solarSystemID: id,
+        systemName: staticData.getSolarSystemName(id),
+      });
+      return;
+    }
+    res.json({ ok: true, id, kind: "unknown", stationID: null, stationName: null, solarSystemID: null, systemName: null });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.use("/api/characters/:characterID", requireAuth);
 
 app.get("/api/characters/:characterID/events", (req, res) => {

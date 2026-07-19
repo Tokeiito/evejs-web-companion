@@ -23,6 +23,13 @@ import { BridgeCallError } from "../bridge/callMethod.ts";
 import * as api from "./api.ts";
 import type { ClientStore } from "../store/clientStore.ts";
 import type { AgentAction } from "../store/types.ts";
+import { buildSystemGraph, solveRoute, type SystemGraph } from "../nav/routeSolver.ts";
+import {
+  createAutopilot,
+  type AutopilotController,
+  type AutopilotDeps,
+  type RoutePlan,
+} from "../nav/autopilotLoop.ts";
 
 export interface AppFlowOptions {
   readonly baseUrl?: string;
@@ -68,6 +75,18 @@ export interface AppFlow {
   jump(fromGateID: number, toGateID: number): Promise<void>;
   /** Dock at the destination station. */
   dock(stationID: number): Promise<void>;
+  /**
+   * R5b — start the browser autopilot to a destination (station or system ID):
+   * solve the route client-side, then run the decide-loop. Surfaces a plan
+   * error (unreachable / unknown) through the travel slice rather than throwing.
+   */
+  startRoute(destinationID: number): Promise<void>;
+  /** Pause the autopilot loop (it stops issuing; the ship finishes its last move). */
+  pauseRoute(): void;
+  /** Resume a paused autopilot loop from where it stopped. */
+  resumeRoute(): void;
+  /** Abort the autopilot loop (it stops and never calls the bridge again). */
+  abortRoute(): void;
   /** Release the persistent session (character offline), back to the select list. */
   releaseSession(): Promise<void>;
   logout(): Promise<void>;
@@ -286,6 +305,175 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     applyFlight(result);
   }
 
+  // --- R5b Travel (browser autopilot decide-loop) --------------------------
+
+  // The client-side route solver's graph (fetched once, then cached) and the
+  // single autopilot controller instance. The loop runs in the browser; closing
+  // the tab kills this JS and the loop simply stops issuing (no "stop" sent) —
+  // the ship completes its last server-side command and sits (roadmap §7).
+  let routeGraph: SystemGraph | null = null;
+  let autopilot: AutopilotController | null = null;
+
+  async function loadRouteGraph(): Promise<SystemGraph> {
+    if (routeGraph) {
+      return routeGraph;
+    }
+    const data = await api.loadSystemGraph(callOptions);
+    routeGraph = buildSystemGraph(data);
+    return routeGraph;
+  }
+
+  // Wire the framework-agnostic controller to the BFF calls and the store. The
+  // loop reads flight-status each cycle (pushed to the flight slice too, so the
+  // Flight readout stays in sync) and pushes its progress into the travel slice.
+  function makeAutopilotDeps(): AutopilotDeps {
+    return {
+      getStatus: async () => {
+        const step = await api.getFlightStatus(callOptions);
+        const status = decodeFlightStatus(step.flight);
+        store.apply({ type: "flight/status", status });
+        return status;
+      },
+      undock: async () => {
+        await api.undock(callOptions);
+      },
+      warp: async (destinationID) => {
+        await api.warpTo(destinationID, callOptions);
+      },
+      jump: async (fromGateID, toGateID) => {
+        await api.jump(fromGateID, toGateID, callOptions);
+      },
+      dock: async (stationID) => {
+        await api.dock(stationID, callOptions);
+      },
+      sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+      now: () => Date.now(),
+      onProgress: (progress) => {
+        const nameFor = (systemID: number | null): string | null =>
+          systemID !== null && routeGraph ? routeGraph.systemName(systemID) : null;
+        store.apply({
+          type: "travel/progress",
+          status: progress.status,
+          action: progress.action,
+          phase: progress.phase,
+          currentSystemID: progress.currentSystemID,
+          currentSystemName: nameFor(progress.currentSystemID),
+          nextSystemID: progress.nextSystemID,
+          nextSystemName: nameFor(progress.nextSystemID),
+          remainingJumps: progress.remainingJumps,
+          totalJumps: progress.totalJumps,
+          failureReason: progress.failureReason,
+        });
+        // A lost session inside the loop unwinds to character select, like every
+        // other held-session flow (R3-R5a).
+        if (progress.status === "error") {
+          store.apply({ type: "character/offline" });
+        }
+      },
+      isSessionLost,
+      refusalReason: (error) => flightErrorReason(error),
+    };
+  }
+
+  async function startRoute(destinationID: number): Promise<void> {
+    store.apply({ type: "travel/plan-error", message: null });
+
+    // 1. The client-side route graph (retail's clientPathfinderService is local;
+    //    this is read-only static reference data, not a gateway/route call).
+    let graph: SystemGraph;
+    try {
+      graph = await loadRouteGraph();
+    } catch (error) {
+      if (isSessionLost(error)) {
+        store.apply({ type: "character/offline" });
+        throw error;
+      }
+      store.apply({ type: "travel/plan-error", message: `Could not load the map graph: ${readErrorReason(error)}` });
+      return;
+    }
+
+    // 2. The current location is the route origin (also validates the session).
+    let originSystem: number | null;
+    try {
+      const step = await api.getFlightStatus(callOptions);
+      const status = decodeFlightStatus(step.flight);
+      store.apply({ type: "flight/status", status });
+      originSystem = status.solarSystemID;
+    } catch (error) {
+      if (isSessionLost(error)) {
+        store.apply({ type: "character/offline" });
+        throw error;
+      }
+      store.apply({ type: "travel/plan-error", message: `Could not read your location: ${readErrorReason(error)}` });
+      return;
+    }
+    if (originSystem === null) {
+      store.apply({ type: "travel/plan-error", message: "Your current solar system is unknown." });
+      return;
+    }
+
+    // 3. Resolve the destination (a courier destination is a station; the solver
+    //    routes systems) from static reference data.
+    let destination: Awaited<ReturnType<typeof api.resolveDestination>>;
+    try {
+      destination = await api.resolveDestination(destinationID, callOptions);
+    } catch (error) {
+      if (isSessionLost(error)) {
+        store.apply({ type: "character/offline" });
+        throw error;
+      }
+      store.apply({ type: "travel/plan-error", message: `Could not resolve the destination: ${readErrorReason(error)}` });
+      return;
+    }
+    if (destination.kind === "unknown" || destination.solarSystemID === null) {
+      store.apply({ type: "travel/plan-error", message: `Unknown destination ${destinationID}.` });
+      return;
+    }
+
+    // 4. Solve the route (fewest jumps).
+    const route = solveRoute(graph, originSystem, destination.solarSystemID);
+    if (!route.reachable) {
+      store.apply({
+        type: "travel/plan-error",
+        message: `No gate route from ${graph.systemName(originSystem) ?? originSystem} to ${destination.systemName ?? destination.solarSystemID}.`,
+      });
+      return;
+    }
+
+    const destinationStationID = destination.kind === "station" ? destination.stationID : null;
+    const destinationName = destination.kind === "station" ? destination.stationName : destination.systemName;
+    const plan: RoutePlan = {
+      destinationSystemID: destination.solarSystemID,
+      destinationStationID,
+      destinationName,
+      hops: route.hops,
+    };
+
+    store.apply({
+      type: "travel/planned",
+      destinationSystemID: destination.solarSystemID,
+      destinationStationID,
+      destinationName,
+      route: route.hops.map((hop) => ({
+        fromSystemID: hop.fromSystemID,
+        toSystemID: hop.toSystemID,
+        gateToWarpID: hop.gateToWarpID,
+        jumpToGateID: hop.jumpToGateID,
+        fromSystemName: graph.systemName(hop.fromSystemID),
+        toSystemName: graph.systemName(hop.toSystemID),
+      })),
+      totalJumps: route.hops.length,
+      startedAt: Date.now(),
+    });
+
+    // 5. Run the decide-loop in the browser.
+    if (!autopilot) {
+      autopilot = createAutopilot(makeAutopilotDeps());
+    }
+    autopilot.start(plan);
+    void autopilot.run();
+  }
+
   return {
     async login(username, password) {
       const result = await api.login(username, password, callOptions);
@@ -387,6 +575,23 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
     async dock(stationID) {
       await runFlightStep("Dock", () => api.dock(stationID, callOptions));
+    },
+
+    startRoute,
+
+    pauseRoute() {
+      autopilot?.pause();
+    },
+
+    resumeRoute() {
+      if (autopilot) {
+        autopilot.resume();
+        void autopilot.run();
+      }
+    },
+
+    abortRoute() {
+      autopilot?.abort();
     },
 
     async releaseSession() {
