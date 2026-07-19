@@ -12,11 +12,30 @@
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
   import type { ChatChannel } from "../store/types.ts";
+  import { resolvedName, type NameRef } from "../store/names.ts";
 
   let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
 
   // svelte-ignore state_referenced_locally
   const chat = store.chat;
+  // svelte-ignore state_referenced_locally
+  const names = store.names;
+
+  // R7d — resolve each channel's identity to a NAME: Local → its solar system,
+  // Corp → the corporation. Batched + cached by the flow; the raw room string
+  // (local_<systemID> / corp_<corpID>) is never rendered.
+  $effect(() => {
+    const refs: NameRef[] = [];
+    if ($chat.local.solarSystemID) {
+      refs.push({ kind: "system", id: $chat.local.solarSystemID });
+    }
+    if ($chat.corp.corporationID) {
+      refs.push({ kind: "corporation", id: $chat.corp.corporationID });
+    }
+    if (refs.length > 0) {
+      flow.requestNames(refs);
+    }
+  });
 
   const POLL_MS = 4000;
   let timer: ReturnType<typeof setInterval> | null = null;
@@ -100,6 +119,15 @@
 
   // The active channel's decoded state (roster + backlog).
   const active = $derived($chat[$chat.activeChannel]);
+
+  // The active channel's resolved name (Local → system, Corp → corporation), or
+  // "" while it resolves — the header then shows just "Local" / "Corp", never the
+  // raw room string.
+  const channelName = $derived(
+    $chat.activeChannel === "corp"
+      ? resolvedName($names.resolved, "corporation", active.corporationID, "")
+      : resolvedName($names.resolved, "system", active.solarSystemID, ""),
+  );
 </script>
 
 <section>
@@ -135,7 +163,7 @@
 <section>
   <h2>
     {$chat.activeChannel === "corp" ? "Corp" : "Local"}
-    {#if active.roomName}<span class="note">· {active.roomName}</span>{/if}
+    {#if channelName}<span class="note">· {channelName}</span>{/if}
   </h2>
   {#if !active.loaded}
     <p class="note">Loading…</p>

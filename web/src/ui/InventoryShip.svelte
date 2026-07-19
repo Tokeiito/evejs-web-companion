@@ -11,7 +11,7 @@
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
   import type { InventoryItemRow } from "../store/types.ts";
-  import { displayName, nameKey, type NameRef } from "../store/names.ts";
+  import { resolvedName, nameKey, type NameRef } from "../store/names.ts";
 
   let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
 
@@ -54,13 +54,13 @@
   });
 
   function activeShipHeader(): string {
-    const id = $inventory.activeShipID;
-    if (id === null) {
+    if ($inventory.activeShipID === null) {
       return "—";
     }
+    // Ship TYPE name only (e.g. "Algos"); the raw item ID is never rendered
+    // (it stays internal for the move/board onclick args).
     const typeName = activeShipTypeID !== null ? $names.resolved[nameKey("type", activeShipTypeID)] : null;
-    // Ship TYPE name (e.g. "Ibis"), with the item ID kept as secondary detail.
-    return typeName ? `${typeName} (ship ${id})` : `ship ${id}`;
+    return typeName ?? "active ship";
   }
 
   async function run(action: () => Promise<void>): Promise<void> {
@@ -147,14 +147,13 @@
   {:else}
     <table class="guests">
       <thead>
-        <tr><th>Item</th><th>Type</th><th>Cat</th><th>Qty</th><th>Action</th></tr>
+        <tr><th>Type</th><th>Cat</th><th>Qty</th><th>Action</th></tr>
       </thead>
       <tbody>
         {#each $inventory.hangar.rows as row (row.itemID)}
           <tr class={row.itemID === $inventory.activeShipID ? "self" : ""}>
-            <td>{row.itemID}</td>
-            <td title={String(row.typeID)}>{displayName($names.resolved, "type", row.typeID)}</td>
-            <td title={row.categoryID ? String(row.categoryID) : ""}>{displayName($names.resolved, "category", row.categoryID, "—")}</td>
+            <td>{resolvedName($names.resolved, "type", row.typeID)}</td>
+            <td>{resolvedName($names.resolved, "category", row.categoryID)}</td>
             <td>{row.singleton ? "(assembled)" : row.quantity}</td>
             <td>
               {#if isShip(row)}
@@ -200,14 +199,13 @@
   {:else}
     <table class="guests">
       <thead>
-        <tr><th>Item</th><th>Type</th><th>Cat</th><th>Qty</th><th>Action</th></tr>
+        <tr><th>Type</th><th>Cat</th><th>Qty</th><th>Action</th></tr>
       </thead>
       <tbody>
         {#each $inventory.cargo.rows as row (row.itemID)}
           <tr>
-            <td>{row.itemID}</td>
-            <td title={String(row.typeID)}>{displayName($names.resolved, "type", row.typeID)}</td>
-            <td title={row.categoryID ? String(row.categoryID) : ""}>{displayName($names.resolved, "category", row.categoryID, "—")}</td>
+            <td>{resolvedName($names.resolved, "type", row.typeID)}</td>
+            <td>{resolvedName($names.resolved, "category", row.categoryID)}</td>
             <td>{row.singleton ? "(assembled)" : row.quantity}</td>
             <td>
               <button type="button" disabled={busy} onclick={() => run(() => flow.moveItem(row.itemID, "toHangar", qtyArg()))}>

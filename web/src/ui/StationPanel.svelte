@@ -9,7 +9,7 @@
   import { isSessionLost } from "../app/flow.ts";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
-  import { displayName, type NameKind, type NameRef } from "../store/names.ts";
+  import { resolvedName, type NameKind, type NameRef } from "../store/names.ts";
 
   let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
 
@@ -50,14 +50,10 @@
     }
   });
 
-  // A raw-retail-data cell: keep the ID (the section shows the real tuple) and
-  // append the resolved name once it lands.
-  function idWithName(id: number | null, kind: NameKind): string {
-    if (id === null || id === undefined) {
-      return "—";
-    }
-    const name = displayName($names.resolved, kind, id, "");
-    return name && name !== String(id) ? `${id} · ${name}` : String(id);
+  // A name-only cell (R7d): the resolved name, or "—" while it resolves / when
+  // it has no static name. The raw ID is never rendered.
+  function nameOnly(id: number | null, kind: NameKind): string {
+    return resolvedName($names.resolved, kind, id, "—");
   }
 
   async function run(action: () => Promise<void>): Promise<void> {
@@ -85,7 +81,7 @@
 
 {#if $station.online}
   <section>
-    <h2>Docked — {$station.station?.stationName ?? `Station ${$station.online.stationID ?? "?"}`}</h2>
+    <h2>Docked — {$station.station?.stationName ?? "the station"}</h2>
     <p class="note">
       <strong>{$station.online.characterName}</strong> is online and docked
       {#if $station.station}
@@ -94,20 +90,10 @@
       — live EveJS session.
     </p>
     <dl class="kv">
-      <dt>Station ID</dt>
-      <dd>{$station.online.stationID ?? "—"}</dd>
       <dt>Station type</dt>
-      <dd>
-        {$station.station?.stationTypeName ?? "unknown"}
-        {#if $station.station?.stationTypeID}
-          (typeID {$station.station.stationTypeID})
-        {/if}
-      </dd>
+      <dd>{$station.station?.stationTypeName ?? "unknown"}</dd>
       <dt>Solar system</dt>
-      <dd>
-        {$station.station?.solarSystemName ?? "?"}
-        (ID {$station.online.solarSystemID ?? "?"})
-      </dd>
+      <dd>{$station.station?.solarSystemName ?? "?"}</dd>
       <dt>Security</dt>
       <dd>{$station.station?.security?.toFixed(2) ?? "—"}</dd>
     </dl>
@@ -118,13 +104,9 @@
     {#if $station.bits}
       <dl class="kv">
         <dt>Owner</dt>
-        <dd>{idWithName($station.bits.ownerID, "owner")}</dd>
-        <dt>Station item ID</dt>
-        <dd>{idWithName($station.bits.stationID, "station")}</dd>
-        <dt>Operation ID</dt>
-        <dd>{$station.bits.operationID ?? "—"}</dd>
+        <dd>{nameOnly($station.bits.ownerID, "owner")}</dd>
         <dt>Station type</dt>
-        <dd>{idWithName($station.bits.stationTypeID, "type")}</dd>
+        <dd>{nameOnly($station.bits.stationTypeID, "type")}</dd>
       </dl>
     {:else}
       <p class="note">Loading services row…</p>
@@ -157,13 +139,13 @@
         <tbody>
           {#each $station.guests as guest (guest.characterID)}
             <tr class={guest.characterID === $station.online.characterID ? "self" : ""}>
-              <td title={String(guest.characterID)}>
+              <td>
                 {guest.characterID === $station.online.characterID
                   ? `${$station.online.characterName} (you)`
-                  : displayName($names.resolved, "character", guest.characterID)}
+                  : nameOnly(guest.characterID, "character")}
               </td>
-              <td title={guest.corporationID ? String(guest.corporationID) : ""}>{displayName($names.resolved, "corporation", guest.corporationID, "—")}</td>
-              <td title={guest.allianceID ? String(guest.allianceID) : ""}>{displayName($names.resolved, "alliance", guest.allianceID, "—")}</td>
+              <td>{nameOnly(guest.corporationID, "corporation")}</td>
+              <td>{nameOnly(guest.allianceID, "alliance")}</td>
             </tr>
           {/each}
         </tbody>

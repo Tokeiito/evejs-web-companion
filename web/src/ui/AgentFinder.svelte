@@ -19,7 +19,7 @@
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
   import type { AgentFinderRow } from "../store/types.ts";
-  import { displayName } from "../store/names.ts";
+  import { resolvedName } from "../store/names.ts";
 
   let {
     store,
@@ -42,11 +42,7 @@
   });
 
   function originText(): string {
-    const origin = $finder.originSystemID;
-    if (origin === null) {
-      return "your current system";
-    }
-    return displayName($names.resolved, "system", origin, `system ${origin}`);
+    return resolvedName($names.resolved, "system", $finder.originSystemID, "your current system");
   }
 
   const RENDER_CAP = 60;
@@ -182,8 +178,8 @@
     <p>
       Flying to <strong>{$finder.target.name}</strong>
       (L{$finder.target.level ?? "?"}) at
-      {$finder.target.stationName ?? `station ${$finder.target.stationID}`}
-      in {$finder.target.solarSystemName ?? `system ${$finder.target.solarSystemID}`}
+      {$finder.target.stationName ?? resolvedName($names.resolved, "station", $finder.target.stationID, "the station")}
+      in {$finder.target.solarSystemName ?? resolvedName($names.resolved, "system", $finder.target.solarSystemID, "its system")}
       — {jumpsText($finder.target.jumps)} jumps.
     </p>
     <p class="note">
@@ -234,8 +230,8 @@
               <td>{agent.name}</td>
               <td>{agent.level ?? "?"}</td>
               <td>{agent.missionKind ?? "—"}</td>
-              <td>{agent.stationName ?? `station ${agent.stationID}`}</td>
-              <td>{agent.solarSystemName ?? `system ${agent.solarSystemID}`}</td>
+              <td>{agent.stationName ?? resolvedName($names.resolved, "station", agent.stationID, "—")}</td>
+              <td>{agent.solarSystemName ?? resolvedName($names.resolved, "system", agent.solarSystemID, "—")}</td>
               <td>{jumpsText(agent.jumps)}</td>
               <td>
                 <button

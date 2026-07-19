@@ -11,7 +11,7 @@ import assert from "node:assert/strict";
 
 import { createAppFlow } from "./flow.ts";
 import { createClientStore } from "../store/clientStore.ts";
-import { displayName } from "../store/names.ts";
+import { displayName, resolvedName } from "../store/names.ts";
 
 interface Recorded {
   readonly path: string;
@@ -180,4 +180,48 @@ test("a previously-ID inventory Type/Cat cell now renders the resolved name", as
   // After resolution the same cells render NAMES instead of IDs.
   assert.equal(displayName(store.names.get().resolved, "type", row.typeID), "Tritanium");
   assert.equal(displayName(store.names.get().resolved, "category", row.categoryID), "Ship");
+});
+
+// --- R7d: the render path must never emit a raw numeric game ID -------------
+
+test("resolvedName renders the name once resolved and never the raw ID (R7d)", async () => {
+  const store = createClientStore();
+  const { fetch } = makeFakeFetch(namesResponder);
+  const flow = createAppFlow(store, { fetch });
+
+  // Before the name lands the cell shows the non-ID fallback — NOT the number.
+  const before = resolvedName(store.names.get().resolved, "type", 34, "—");
+  assert.equal(before, "—");
+  assert.notEqual(before, "34");
+
+  flow.requestNames([{ kind: "type", id: 34 }]);
+  await waitFor(() => store.names.get().resolved["type:34"] !== undefined);
+
+  // Once resolved the cell renders the NAME.
+  assert.equal(resolvedName(store.names.get().resolved, "type", 34, "—"), "Tritanium");
+});
+
+test("resolvedName stays on the fallback for a definitive unknown, never the ID (R7d)", async () => {
+  const store = createClientStore();
+  const { fetch } = makeFakeFetch(namesResponder);
+  const flow = createAppFlow(store, { fetch });
+
+  // A nameless ID resolves to null (definitive unknown); the cell keeps the
+  // non-ID fallback rather than falling back to the number.
+  flow.requestNames([{ kind: "type", id: 999999999 }]);
+  await waitFor(() => "type:999999999" in store.names.get().resolved);
+  assert.equal(store.names.get().resolved["type:999999999"], null);
+
+  const cell = resolvedName(store.names.get().resolved, "type", 999999999, "—");
+  assert.equal(cell, "—");
+  assert.notEqual(cell, "999999999");
+});
+
+test("resolvedName returns the fallback for a null/zero/invalid id, never a number (R7d)", () => {
+  const resolved: Record<string, string | null> = {};
+  assert.equal(resolvedName(resolved, "system", null, "—"), "—");
+  assert.equal(resolvedName(resolved, "system", 0, "—"), "—");
+  assert.equal(resolvedName(resolved, "system", undefined, "your current system"), "your current system");
+  // A resolved name still comes through with a non-default fallback in play.
+  assert.equal(resolvedName({ "system:30000142": "Jita" }, "system", 30000142, "—"), "Jita");
 });

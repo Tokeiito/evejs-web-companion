@@ -16,7 +16,7 @@
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
   import type { DestinationMatch } from "../store/types.ts";
-  import { displayName, type NameRef } from "../store/names.ts";
+  import { resolvedName, type NameRef } from "../store/names.ts";
 
   let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
 
@@ -153,24 +153,22 @@
     if (id === null) {
       return "—";
     }
-    // The graph name if the loop supplied one, else the name cache (R7c), else ID.
-    const resolved = name ?? displayName($names.resolved, "system", id, "");
-    return resolved && resolved !== String(id) ? `${resolved} (${id})` : String(id);
+    // The graph name if the loop supplied one, else the name cache (R7c); the
+    // raw system ID is never rendered.
+    return name ?? resolvedName($names.resolved, "system", id, "—");
   }
 
   const destinationText = $derived.by(() => {
     const t = $travel;
     if (t.destinationName) {
-      return t.destinationStationID
-        ? `${t.destinationName} · station ${t.destinationStationID}`
-        : t.destinationName;
+      return t.destinationName;
     }
-    // R7c — no destinationName recorded: attempt the name cache before a bare ID.
+    // R7c/R7d — no destinationName recorded: resolve to a name, never a bare ID.
     if (t.destinationStationID) {
-      return displayName($names.resolved, "station", t.destinationStationID, `Station ${t.destinationStationID}`);
+      return resolvedName($names.resolved, "station", t.destinationStationID, "—");
     }
     return t.destinationSystemID
-      ? displayName($names.resolved, "system", t.destinationSystemID, `System ${t.destinationSystemID}`)
+      ? resolvedName($names.resolved, "system", t.destinationSystemID, "—")
       : "—";
   });
 </script>
@@ -233,7 +231,7 @@
               <tr>
                 <td>{match.name}</td>
                 <td>{match.kind}</td>
-                <td>{match.solarSystemName ?? displayName($names.resolved, "system", match.solarSystemID, "—")}</td>
+                <td>{match.solarSystemName ?? resolvedName($names.resolved, "system", match.solarSystemID, "—")}</td>
                 <td>{jumpsText(match.jumps)}</td>
                 <td>
                   <button type="button" disabled={busy} onclick={() => setDestination(match)}>
@@ -319,8 +317,8 @@
       <ol class="route">
         {#each $travel.route as hop (hop.fromSystemID + "-" + hop.toSystemID)}
           <li>
-            {hop.fromSystemName ?? hop.fromSystemID} → {hop.toSystemName ?? hop.toSystemID}
-            <span class="note">(warp gate {hop.gateToWarpID}, jump to {hop.jumpToGateID})</span>
+            {hop.fromSystemName ?? resolvedName($names.resolved, "system", hop.fromSystemID, "—")}
+            → {hop.toSystemName ?? resolvedName($names.resolved, "system", hop.toSystemID, "—")}
           </li>
         {/each}
       </ol>

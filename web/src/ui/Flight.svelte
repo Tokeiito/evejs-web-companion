@@ -44,12 +44,12 @@
   });
 
   function activeShipText(): string {
-    const shipID = $flight.status?.shipID ?? null;
-    if (shipID === null) {
+    if (($flight.status?.shipID ?? null) === null) {
       return "—";
     }
+    // Ship TYPE name only (e.g. "Algos"); the raw ship item ID is never rendered.
     const typeName = activeShipTypeID !== null ? $names.resolved[nameKey("type", activeShipTypeID)] : null;
-    return typeName ? `${typeName} (${shipID})` : String(shipID);
+    return typeName ?? "active ship";
   }
 
   let busy = $state(false);
@@ -99,25 +99,23 @@
       return "—";
     }
     if (status.inSpace) {
-      const system = $flight.solarSystemName ?? (status.solarSystemID !== null ? `system ${status.solarSystemID}` : "?");
-      return `In space · ${system}`;
+      return `In space · ${$flight.solarSystemName ?? "unknown system"}`;
     }
     if (status.stationID) {
-      return `Docked · ${$flight.stationName ?? `station ${status.stationID}`}`;
+      return `Docked · ${$flight.stationName ?? "the station"}`;
     }
     if (status.structureID) {
-      return `Docked · ${$flight.structureName ?? `structure ${status.structureID}`}`;
+      return `Docked · ${$flight.structureName ?? "a structure"}`;
     }
     return "—";
   }
 
-  // The "Solar system" row: name (with the ID in parentheses), ID-only fallback.
+  // The "Solar system" row: the resolved system NAME only (never the raw ID).
   function solarSystemText(): string {
-    const id = $flight.status?.solarSystemID ?? null;
-    if (id === null) {
+    if (($flight.status?.solarSystemID ?? null) === null) {
       return "—";
     }
-    return $flight.solarSystemName ? `${$flight.solarSystemName} (${id})` : String(id);
+    return $flight.solarSystemName ?? "unknown system";
   }
 
   function shipStateText(): string {

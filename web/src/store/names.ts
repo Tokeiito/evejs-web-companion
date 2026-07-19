@@ -70,3 +70,24 @@ export function displayName(
   const name = resolved[nameKey(kind, id)];
   return name ?? fallback ?? String(id);
 }
+
+/**
+ * The resolved display name for an ID, or a NON-ID `fallback` (default "—") when
+ * the name has not resolved yet or is a definitive "unknown". Unlike
+ * `displayName`, this NEVER returns the raw numeric ID — the R7d rule that a
+ * player never sees a game ID rendered as data. Use it for every rendered name
+ * cell; the raw ID belongs only in interactive inputs, `{#each}` keys, and
+ * onclick args. Pure — components call it while reading the `names` slice, so
+ * they re-render when a name arrives.
+ */
+export function resolvedName(
+  resolved: Readonly<Record<string, string | null>>,
+  kind: NameKind,
+  id: number | null | undefined,
+  fallback = "—",
+): string {
+  if (id === null || id === undefined || !Number.isFinite(id) || id <= 0) {
+    return fallback;
+  }
+  return resolved[nameKey(kind, id)] ?? fallback;
+}

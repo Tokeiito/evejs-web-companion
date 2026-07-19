@@ -14,7 +14,7 @@
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
   import type { AgentAction, AgentRow, JournalMission } from "../store/types.ts";
-  import { displayName, type NameRef } from "../store/names.ts";
+  import { resolvedName, type NameRef } from "../store/names.ts";
 
   let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
 
@@ -140,31 +140,31 @@
     });
   });
 
-  // Agent name (R7c) from the name cache, falling back to `agent <id>` until it
-  // resolves (or `—` when there is no id).
+  // Agent name (R7c/R7d) from the name cache — never the raw agent ID (it stays
+  // in the onclick / key args); "—" until it resolves.
   function agentName(agentID: number | null): string {
-    return displayName($names.resolved, "agent", agentID, agentID ? `agent ${agentID}` : "—");
+    return resolvedName($names.resolved, "agent", agentID, "—");
   }
 
   function agentLabel(agent: AgentRow): string {
     const kind = agent.missionKind ? ` · ${agent.missionKind}` : "";
-    const name = displayName($names.resolved, "agent", agent.agentID, `Agent ${agent.agentID}`);
+    const name = resolvedName($names.resolved, "agent", agent.agentID, "Agent");
     return `${name} (L${agent.level ?? "?"}${kind})`;
   }
 
   function stationText(id: number | null): string {
-    return displayName($names.resolved, "station", id, id ? `station ${id}` : "—");
+    return resolvedName($names.resolved, "station", id, "—");
   }
 
   function systemText(id: number | null): string {
-    return displayName($names.resolved, "system", id, id ? `system ${id}` : "—");
+    return resolvedName($names.resolved, "system", id, "—");
   }
 
   function missionLabel(mission: JournalMission): string {
     const type = mission.missionTypeLabel ? mission.missionTypeLabel.split("/").pop() : "Mission";
-    // missionTitleID is a localization message id with no static name table, so
-    // it stays an ID (justified in the R7c completeness sweep).
-    return `${type} · title ${mission.missionTitleID ?? "—"} · ${agentName(mission.agentID)}`;
+    // missionTitleID is a localization message id with no static name and no
+    // player value, so it is not rendered (R7d: drop nameless IDs).
+    return `${type} · ${agentName(mission.agentID)}`;
   }
 </script>
 
@@ -276,7 +276,7 @@
     <h2>Courier briefing</h2>
     <table class="guests">
       <tbody>
-        <tr><th>Cargo type</th><td title={$agents.briefing.cargoTypeID ? String($agents.briefing.cargoTypeID) : ""}>{displayName($names.resolved, "type", $agents.briefing.cargoTypeID, "—")}</td></tr>
+        <tr><th>Cargo type</th><td>{resolvedName($names.resolved, "type", $agents.briefing.cargoTypeID, "—")}</td></tr>
         <tr><th>Quantity</th><td>{$agents.briefing.cargoQuantity ?? "—"}</td></tr>
         <tr><th>Volume (m³)</th><td>{$agents.briefing.cargoVolume ?? "—"}</td></tr>
         <tr><th>Pickup</th><td>{stationText($agents.briefing.pickupLocationID)} · {systemText($agents.briefing.pickupSystemID)}</td></tr>
@@ -326,7 +326,7 @@
     {:else}
       <ul class="journal">
         {#each $rewards.lpBalances as lp (lp.issuerCorpID)}
-          <li title={String(lp.issuerCorpID)}>{displayName($names.resolved, "corporation", lp.issuerCorpID, `corp ${lp.issuerCorpID}`)} · {lp.loyaltyPoints} LP</li>
+          <li>{resolvedName($names.resolved, "corporation", lp.issuerCorpID, "—")} · {lp.loyaltyPoints} LP</li>
         {/each}
       </ul>
     {/if}
@@ -336,7 +336,7 @@
     {:else}
       <ul class="journal">
         {#each $rewards.standings as standing (standing.fromID)}
-          <li title={String(standing.fromID)}>toward {displayName($names.resolved, "owner", standing.fromID, `ID ${standing.fromID}`)} · {standing.standing}</li>
+          <li>toward {resolvedName($names.resolved, "owner", standing.fromID, "—")} · {standing.standing}</li>
         {/each}
       </ul>
     {/if}
