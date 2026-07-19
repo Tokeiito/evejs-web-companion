@@ -1571,6 +1571,35 @@ app.get("/api/map/station/:id", requireAuth, async (req, res, next) => {
   }
 });
 
+// Map name search (goal R7a): let a player set a travel destination by NAME
+// instead of a raw EVE ID. Searches the static solar-system + station tables by
+// name and returns capped matches the client hands to startRoute (the R5b route
+// solver + autopilot). Read-only static reference data — like /api/map/graph and
+// /api/agents/find, NOT a gateway/bridge call. Filters by q (min 2 chars) and an
+// optional kind (system|station; default both); caps server-side (default 50 /
+// max 200) so a broad query never dumps the whole table.
+app.get("/api/map/find", requireAuth, async (req, res, next) => {
+  try {
+    const q = typeof req.query.q === "string" ? req.query.q : "";
+    const kind = typeof req.query.kind === "string" ? req.query.kind : undefined;
+    const limit = req.query.limit !== undefined ? Number(req.query.limit) : undefined;
+    const result = staticData.findMapLocations({ q, kind, limit });
+    res.json({
+      ok: true,
+      source: "static-data",
+      q: result.q,
+      kind: result.kind,
+      total: result.total,
+      capped: result.capped,
+      limit: result.limit,
+      count: result.matches.length,
+      matches: result.matches,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // Agent Finder (goal R6a): list agents from the static agentAuthority reference
 // table so the player can find a courier agent to travel to (the per-station
 // GetAgents roster is unreliable for this). Read-only static reference data —

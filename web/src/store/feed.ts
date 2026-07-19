@@ -145,6 +145,19 @@ export type FeedEvent =
   // Goal R5a — the Flight page (manually-stepped space movement). A flight-
   // status snapshot: the session's current location + ship movement state.
   | { readonly type: "flight/status"; readonly status: FlightStatus }
+  // Goal R7a — resolved location NAMES for the current status (system / station /
+  // structure), so the readout shows "Jita" not "30000142". Carries the IDs the
+  // names were resolved for; the reducer applies each name only if the current
+  // status still has that ID (so a stale resolve can never mislabel a new one).
+  | {
+      readonly type: "flight/location";
+      readonly forSolarSystemID: number | null;
+      readonly forStationID: number | null;
+      readonly forStructureID: number | null;
+      readonly solarSystemName: string | null;
+      readonly stationName: string | null;
+      readonly structureName: string | null;
+    }
   // The last movement step issued (undock / warp / jump / dock) — for the
   // status readout. A successful step clears any stale action error.
   | { readonly type: "flight/action"; readonly action: string }

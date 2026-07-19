@@ -572,6 +572,94 @@ function findAgents(filters = {}) {
   return { agents, total, capped, kind: kind, level, limit };
 }
 
+// --- Map location name search (goal R7a) -----------------------------------
+// So a player can set a travel destination by NAME (not a raw EVE ID), the
+// Travel tab searches the static solar-system + station tables by name. This is
+// read-only static reference data exactly like getSolarSystemGraph / findAgents
+// — NOT a gateway/bridge call. The client then reuses startRoute(id) (the R5b
+// route solver + autopilot) on a chosen match. Matches carry the solar system
+// so the client can annotate jumps-away from the current system.
+
+const MAP_FIND_DEFAULT_LIMIT = 50;
+const MAP_FIND_MAX_LIMIT = 200;
+const MAP_FIND_MIN_QUERY = 2;
+
+// Match quality: an exact name beats a prefix beats a substring (-1 = no match).
+// So a search for "Jita" surfaces the Jita SYSTEM before "Jita IV - ..." stations.
+function scoreNameMatch(lowerName, needle) {
+  if (lowerName === needle) {
+    return 0;
+  }
+  if (lowerName.startsWith(needle)) {
+    return 1;
+  }
+  return lowerName.includes(needle) ? 2 : -1;
+}
+
+/**
+ * Search the static solar-system and station tables by name (goal R7a). `q` is
+ * the (trimmed, case-insensitive) query; `kind` optionally narrows to just
+ * "system" or "station" (default: both). Results are ranked by match quality
+ * (exact → prefix → substring), then shorter name, then alphabetically, and
+ * capped (default 50 / max 200) so a broad query stays responsive. A query
+ * shorter than MAP_FIND_MIN_QUERY returns nothing (no whole-table dump). Each
+ * match is `{ id, name, kind, solarSystemID, solarSystemName }` — `id` is the
+ * station or system ID the client hands to startRoute. Returns
+ * `{ matches, total, capped, q, kind, limit }` (`total` = full match count
+ * before the cap).
+ */
+function findMapLocations(filters = {}) {
+  const q = filters.q === undefined || filters.q === null ? "" : String(filters.q).trim();
+  const rawKind = filters.kind === undefined || filters.kind === null ? "" : String(filters.kind).trim().toLowerCase();
+  const kind = rawKind === "system" || rawKind === "station" ? rawKind : null;
+  const requestedLimit = Number(filters.limit);
+  const limit = Number.isFinite(requestedLimit) && requestedLimit > 0
+    ? Math.min(Math.floor(requestedLimit), MAP_FIND_MAX_LIMIT)
+    : MAP_FIND_DEFAULT_LIMIT;
+  if (q.length < MAP_FIND_MIN_QUERY) {
+    return { matches: [], total: 0, capped: false, q, kind, limit };
+  }
+
+  const needle = q.toLowerCase();
+  const scored = [];
+  if (kind === null || kind === "system") {
+    for (const system of buildIndex("solarSystems", "solarSystems", "solarSystemID").values()) {
+      const name = String((system && system.solarSystemName) || "");
+      const score = scoreNameMatch(name.toLowerCase(), needle);
+      if (score < 0) {
+        continue;
+      }
+      const id = Number(system && system.solarSystemID) || 0;
+      scored.push({ score, name, entry: { id, name, kind: "system", solarSystemID: id, solarSystemName: name } });
+    }
+  }
+  if (kind === null || kind === "station") {
+    for (const station of buildIndex("stations", "stations", "stationID").values()) {
+      const name = String((station && station.stationName) || "");
+      const score = scoreNameMatch(name.toLowerCase(), needle);
+      if (score < 0) {
+        continue;
+      }
+      const id = Number(station && station.stationID) || 0;
+      const solarSystemID = Number(station && station.solarSystemID) || null;
+      const solarSystemName = solarSystemID
+        ? getSolarSystemName(solarSystemID)
+        : (station && station.solarSystemName ? String(station.solarSystemName) : null);
+      scored.push({ score, name, entry: { id, name, kind: "station", solarSystemID, solarSystemName } });
+    }
+  }
+  scored.sort((a, b) =>
+    a.score - b.score ||
+    a.name.length - b.name.length ||
+    a.name.localeCompare(b.name) ||
+    a.entry.id - b.entry.id);
+
+  const total = scored.length;
+  const capped = total > limit;
+  const matches = (capped ? scored.slice(0, limit) : scored).map((s) => s.entry);
+  return { matches, total, capped, q, kind, limit };
+}
+
 function getIndustryBlueprint(blueprintTypeID) {
   return buildIndex(
     "industryBlueprints",
@@ -590,6 +678,7 @@ function getNpcIndustryFacility(facilityID) {
 
 module.exports = {
   findAgents,
+  findMapLocations,
   getAgentsByID,
   getAlliance,
   getAllianceName,

@@ -410,8 +410,25 @@ system-adjacency graph and runs a pure BFS solver over it
   system from static reference data: `{ ok, id, kind:"station"|"system"|"unknown",
   solarSystemID, systemName, stationID, stationName }`. The same client-local
   resolution `select` does for station identity — **not** a route or gateway call.
+  R7a also uses this to resolve the **Flight readout's** current system / station
+  ID → name (the browser caches resolved names client-side, so the flight-status
+  poll doesn't refetch; a definitive `kind:"unknown"` — e.g. a player structure —
+  is cached too, a transient failure is not).
+- `GET /api/map/find?q=<text>[&kind=system|station][&limit=N]` (same auth; **R7a**)
+  → searches the static **solar-system + station** tables by name so a player can
+  set a destination by name instead of a raw EVE ID:
+  `{ ok, source:"static-data", q, kind, total, capped, limit, count, matches }`,
+  each match `{ id, name, kind:"system"|"station", solarSystemID, solarSystemName }`.
+  `id` is the ID the client hands to `startRoute`. Matches are ranked by name
+  match quality (exact → prefix → substring, then shorter/alphabetical) so a
+  search for "Jita" surfaces the **Jita system** ahead of "Jita IV - ..." stations;
+  `q` under 2 chars returns nothing (no whole-table dump); capped server-side
+  (default 50 / max 200). Read-only static reference data mirroring
+  `/api/agents/find` — **NOT a gateway/bridge call**. The client annotates each
+  match with jumps-away from the current system using the already-loaded route
+  graph (`distancesFrom`, a single BFS), like the Agent Finder.
 
-Neither route touches a live bridge session or the gateway; they are not a
+None of these routes touch a live bridge session or the gateway; they are not a
 server-side travel job (the roadmap forbids reintroducing one).
 
 **The decide-loop runs in the BROWSER** (`web/src/nav/autopilotLoop.ts`), a port

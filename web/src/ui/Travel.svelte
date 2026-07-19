@@ -15,11 +15,20 @@
   import { isSessionLost } from "../app/flow.ts";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
+  import type { DestinationMatch } from "../store/types.ts";
 
   let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
 
   // svelte-ignore state_referenced_locally
   const travel = store.travel;
+
+  // R7a — set a destination anywhere by NAME (primary), with the raw-ID input
+  // kept as a fallback. The search box hits the static /api/map/find route; a
+  // chosen result reuses flow.startRoute (the R5b route solver + autopilot).
+  let searchQuery = $state("");
+  let searchResults = $state<DestinationMatch[]>([]);
+  let searched = $state(false);
+  let searchTotal = $state(0);
 
   let destinationInput = $state("");
   let busy = $state(false);
@@ -58,6 +67,39 @@
   function parseID(value: string): number {
     const id = Number(value);
     return Number.isSafeInteger(id) && id > 0 ? id : 0;
+  }
+
+  function jumpsText(jumps: number | null): string {
+    if (jumps === null) {
+      return "—";
+    }
+    if (jumps === 0) {
+      return "here";
+    }
+    return jumps === 1 ? "1 jump" : `${jumps} jumps`;
+  }
+
+  // Search the static map by name; results go into local state (a transient
+  // search, not a store slice). A too-short query clears the list.
+  async function search(): Promise<void> {
+    const query = searchQuery.trim();
+    if (query.length < 2) {
+      searchResults = [];
+      searched = false;
+      return;
+    }
+    await run(async () => {
+      searchResults = await flow.searchDestinations(query);
+      searchTotal = searchResults.length;
+      searched = true;
+    });
+  }
+
+  // Set the autopilot to a chosen match — reuse startRoute (resolves the ID to a
+  // system, solves the route, runs the decide-loop). This flips the travel state
+  // to running, so the panel switches to the route readout below.
+  async function setDestination(match: DestinationMatch): Promise<void> {
+    await run(() => flow.startRoute(match.id));
   }
 
   async function run(action: () => Promise<void>): Promise<void> {
@@ -115,7 +157,73 @@
 
 {#if $travel.status === "idle" || $travel.status === "arrived" || $travel.status === "aborted" || $travel.status === "error"}
   <section>
-    <h2>Start route</h2>
+    <h2>Set destination</h2>
+    <p class="note">
+      Search any solar system or station by name, then Set destination to fly
+      there — no EVE IDs needed. The route is computed from your current location.
+    </p>
+    <p>
+      <label>
+        Search
+        <input
+          type="search"
+          bind:value={searchQuery}
+          placeholder="e.g. Jita"
+          onkeydown={(event) => {
+            if (event.key === "Enter") {
+              void search();
+            }
+          }}
+        />
+      </label>
+      <button type="button" disabled={busy || searchQuery.trim().length < 2} onclick={() => void search()}>
+        Search
+      </button>
+    </p>
+    {#if searched}
+      {#if searchResults.length === 0}
+        <p class="note">No systems or stations match “{searchQuery.trim()}”.</p>
+      {:else}
+        <p class="note">Showing {searchResults.length} match{searchTotal === 1 ? "" : "es"}, nearest first where known.</p>
+        <table class="guests">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Kind</th>
+              <th>System</th>
+              <th>Jumps</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each searchResults as match (match.kind + ":" + match.id)}
+              <tr>
+                <td>{match.name}</td>
+                <td>{match.kind}</td>
+                <td>{match.solarSystemName ?? (match.solarSystemID ?? "—")}</td>
+                <td>{jumpsText(match.jumps)}</td>
+                <td>
+                  <button type="button" disabled={busy} onclick={() => setDestination(match)}>
+                    Set destination
+                  </button>
+                </td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      {/if}
+    {/if}
+    {#if $travel.failureReason}
+      <p class="error">{$travel.failureReason}</p>
+    {/if}
+    {#if error}
+      <p class="error">{error}</p>
+    {/if}
+  </section>
+
+  <section>
+    <h2>Start route by ID</h2>
+    <p class="note">Advanced fallback: enter a station or solar system ID directly.</p>
     <p>
       <label>
         Destination
@@ -134,13 +242,6 @@
         Start route
       </button>
     </p>
-    <p class="note">
-      Enter a destination station ID (a courier destination) or a solar system
-      ID. The route is computed from your current location.
-    </p>
-    {#if $travel.failureReason}
-      <p class="error">{$travel.failureReason}</p>
-    {/if}
   </section>
 {:else}
   <section>

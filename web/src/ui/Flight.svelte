@@ -55,21 +55,33 @@
     return Number.isSafeInteger(id) && id > 0 ? id : 0;
   }
 
+  // Show the resolved system/station/structure NAME (goal R7a), falling back to
+  // the raw ID only until the flow resolves it (or when it has no static name).
   function locationText(): string {
     const status = $flight.status;
     if (!status) {
       return "—";
     }
     if (status.inSpace) {
-      return `In space · system ${status.solarSystemID ?? "?"}`;
+      const system = $flight.solarSystemName ?? (status.solarSystemID !== null ? `system ${status.solarSystemID}` : "?");
+      return `In space · ${system}`;
     }
     if (status.stationID) {
-      return `Docked · station ${status.stationID}`;
+      return `Docked · ${$flight.stationName ?? `station ${status.stationID}`}`;
     }
     if (status.structureID) {
-      return `Docked · structure ${status.structureID}`;
+      return `Docked · ${$flight.structureName ?? `structure ${status.structureID}`}`;
     }
     return "—";
+  }
+
+  // The "Solar system" row: name (with the ID in parentheses), ID-only fallback.
+  function solarSystemText(): string {
+    const id = $flight.status?.solarSystemID ?? null;
+    if (id === null) {
+      return "—";
+    }
+    return $flight.solarSystemName ? `${$flight.solarSystemName} (${id})` : String(id);
   }
 
   function shipStateText(): string {
@@ -117,7 +129,7 @@
     <table class="guests">
       <tbody>
         <tr><th>Location</th><td>{locationText()}</td></tr>
-        <tr><th>Solar system</th><td>{$flight.status?.solarSystemID ?? "—"}</td></tr>
+        <tr><th>Solar system</th><td>{solarSystemText()}</td></tr>
         <tr><th>Active ship</th><td>{$flight.status?.shipID ?? "—"}</td></tr>
         <tr><th>Ship state</th><td>{shipStateText()}</td></tr>
         <tr><th>Last action</th><td>{$flight.lastAction ?? "—"}</td></tr>

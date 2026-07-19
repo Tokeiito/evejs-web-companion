@@ -27,7 +27,13 @@ import type { FlightStepResult } from "./api.ts";
 import { BridgeCallError } from "../bridge/callMethod.ts";
 import * as api from "./api.ts";
 import type { ClientStore } from "../store/clientStore.ts";
-import type { AgentAction, ChatChannel, FlightStatus, StationStatic } from "../store/types.ts";
+import type {
+  AgentAction,
+  ChatChannel,
+  DestinationMatch,
+  FlightStatus,
+  StationStatic,
+} from "../store/types.ts";
 import { decodeChatChannel, decodeChatChannelName } from "../bridge/chat.ts";
 import {
   buildSystemGraph,
@@ -121,6 +127,16 @@ export interface AppFlow {
    * error (unreachable / unknown) through the travel slice rather than throwing.
    */
   startRoute(destinationID: number): Promise<void>;
+  /**
+   * R7a — search the static map by name (systems + stations) so a player can set
+   * a destination without knowing EVE IDs. Returns the matches annotated with
+   * jumps from the current system (best-effort). A too-short query returns []
+   * without a request; a read failure throws (the caller surfaces it).
+   */
+  searchDestinations(
+    query: string,
+    kind?: "system" | "station" | null,
+  ): Promise<DestinationMatch[]>;
   /** Pause the autopilot loop (it stops issuing; the ship finishes its last move). */
   pauseRoute(): void;
   /** Resume a paused autopilot loop from where it stopped. */
@@ -453,13 +469,65 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
   }
 
+  // R7a — resolve location IDs to names for the Flight readout, cached so the
+  // status doesn't refetch every poll. The cache holds a resolved name, or null
+  // for a definitive static "unknown" (e.g. a player structure not in the static
+  // tables) so those are not refetched either; a transient network failure is
+  // NOT cached (it can retry). Names resolve through the existing read-only
+  // /api/map/resolve route — no new gateway/bridge call.
+  const locationNames = new Map<number, string | null>();
+
+  async function cachedLocationName(id: number): Promise<string | null> {
+    if (locationNames.has(id)) {
+      return locationNames.get(id) ?? null;
+    }
+    let resolved: Awaited<ReturnType<typeof api.resolveDestination>>;
+    try {
+      resolved = await api.resolveDestination(id, callOptions);
+    } catch {
+      // Best-effort: leave the UI on the raw-ID fallback and allow a later retry.
+      return null;
+    }
+    const name =
+      resolved.kind === "station"
+        ? resolved.stationName
+        : resolved.kind === "system"
+          ? resolved.systemName
+          : null;
+    locationNames.set(id, name);
+    return name;
+  }
+
+  // Resolve the current status's system / station / structure names (from the
+  // cache or a one-off static read) and push them to the flight slice, tagged
+  // with the IDs they were resolved for so a stale resolve can't mislabel a newer
+  // location. Fire-and-forget from observeFlightStatus (never blocks the loop).
+  async function resolveFlightLocation(status: FlightStatus): Promise<void> {
+    const [solarSystemName, stationName, structureName] = await Promise.all([
+      status.solarSystemID !== null ? cachedLocationName(status.solarSystemID) : Promise.resolve(null),
+      status.stationID !== null ? cachedLocationName(status.stationID) : Promise.resolve(null),
+      status.structureID !== null ? cachedLocationName(status.structureID) : Promise.resolve(null),
+    ]);
+    store.apply({
+      type: "flight/location",
+      forSolarSystemID: status.solarSystemID,
+      forStationID: status.stationID,
+      forStructureID: status.structureID,
+      solarSystemName,
+      stationName,
+      structureName,
+    });
+  }
+
   // The single choke point for a decoded flight-status snapshot: push it to the
-  // flight slice, then reconcile the docked-station context. Every flight read
-  // (manual step, autopilot tick, route-origin read) flows through here. Returns
-  // the reconcile promise so a manual step can await the refresh; the autopilot
-  // tick voids it (the loop must not block on a panel refresh).
+  // flight slice, resolve its location names (cached), then reconcile the
+  // docked-station context. Every flight read (manual step, autopilot tick,
+  // route-origin read) flows through here. Returns the reconcile promise so a
+  // manual step can await the refresh; the autopilot tick voids it (the loop must
+  // not block on a panel refresh). Name resolution is always fire-and-forget.
   function observeFlightStatus(status: FlightStatus): Promise<void> {
     store.apply({ type: "flight/status", status });
+    void resolveFlightLocation(status);
     return syncDockedStation(status);
   }
 
@@ -685,6 +753,47 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
     autopilot.start(plan);
     void autopilot.run();
+  }
+
+  // R7a — search the static map by name so a player can set a destination
+  // without knowing EVE IDs. The static /api/map/find read (login-gated, no
+  // bridge session) returns systems + stations; we annotate each with jumps from
+  // the current system using the same single BFS the Agent Finder uses (the map
+  // graph is already the route solver's, loaded once). Jumps are best-effort:
+  // if the origin is unknown or the graph can't load, the row simply has no
+  // distance. A hard read failure throws so the caller can surface it.
+  async function searchDestinations(
+    query: string,
+    kind: "system" | "station" | null = null,
+  ): Promise<DestinationMatch[]> {
+    const trimmed = query.trim();
+    if (trimmed.length < 2) {
+      return [];
+    }
+    const result = await api.findMapLocations(trimmed, kind, callOptions);
+
+    // The origin is the live location if known (in space or docked), else the
+    // docked character's system. Distances come from ONE BFS over the map graph.
+    const origin =
+      store.flight.get().status?.solarSystemID ??
+      store.station.get().online?.solarSystemID ??
+      null;
+    let distances: Map<number, number> | null = null;
+    if (origin !== null) {
+      try {
+        distances = distancesFrom(await loadRouteGraph(), origin);
+      } catch {
+        distances = null;
+      }
+    }
+
+    return result.matches.map((match) => ({
+      ...match,
+      jumps:
+        distances !== null && match.solarSystemID !== null
+          ? distances.get(match.solarSystemID) ?? null
+          : null,
+    }));
   }
 
   // --- R6a Agent Finder ----------------------------------------------------
@@ -947,6 +1056,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     setDestinationToAgent,
 
     startRoute,
+
+    searchDestinations,
 
     pauseRoute() {
       autopilot?.pause();

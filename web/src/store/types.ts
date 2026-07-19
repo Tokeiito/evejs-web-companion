@@ -348,6 +348,15 @@ export interface FlightState {
   readonly lastAction: string | null;
   /** Non-null when the last movement step failed (the handler's refusal reason). */
   readonly actionError: string | null;
+  /**
+   * Resolved location names for the current status (goal R7a), so the readout
+   * shows "Jita" not "30000142". Resolved from the static /api/map routes and
+   * cached client-side by the flow; null until resolved (the UI falls back to
+   * the raw ID) and cleared whenever the corresponding ID changes.
+   */
+  readonly solarSystemName: string | null;
+  readonly stationName: string | null;
+  readonly structureName: string | null;
 }
 
 // --- R5b Travel (browser autopilot decide-loop) ----------------------------
@@ -400,6 +409,24 @@ export interface TravelState {
   readonly startedAt: number | null;
   /** Actionable failure reason (the handler's own refusal, or a plan error). */
   readonly failureReason: string | null;
+}
+
+/**
+ * One destination match from the Travel-tab name search (goal R7a): a solar
+ * system or station resolved from the static /api/map/find route, annotated with
+ * jumps from the current system (best-effort, like the Agent Finder). `id` is
+ * the ID handed to flow.startRoute (the R5b route solver + autopilot). This is a
+ * transient search result (not held in the store); the Travel component keeps it
+ * in local state.
+ */
+export interface DestinationMatch {
+  readonly id: number;
+  readonly name: string;
+  readonly kind: "system" | "station";
+  readonly solarSystemID: number | null;
+  readonly solarSystemName: string | null;
+  /** Jumps from the player's current system; null = unreachable / unknown origin. */
+  readonly jumps: number | null;
 }
 
 // --- R7 Local + Corp chat --------------------------------------------------

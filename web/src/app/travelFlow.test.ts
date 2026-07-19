@@ -141,6 +141,73 @@ test("startRoute surfaces an unknown destination as a plan error", async () => {
   assert.match(travel.failureReason ?? "", /Unknown destination/i);
 });
 
+test("searchDestinations finds systems/stations by name, annotated with jumps (R7a)", async () => {
+  const store = createClientStore();
+  // The player is docked in Alpha(1), so jumps are measured from system 1.
+  store.apply({
+    type: "character/online",
+    character: { characterID: 140000003, characterName: "Test", stationID: 60000001, structureID: null, solarSystemID: 1, corporationID: 98000000 },
+    station: null,
+  });
+  const responder = (path: string) => {
+    if (path.startsWith("/api/map/find")) {
+      return {
+        status: 200,
+        body: {
+          ok: true,
+          source: "static-data",
+          q: "char",
+          kind: null,
+          total: 2,
+          capped: false,
+          matches: [
+            { id: 3, name: "Charlie", kind: "system", solarSystemID: 3, solarSystemName: "Charlie" },
+            { id: 60000003, name: "Charlie Station", kind: "station", solarSystemID: 3, solarSystemName: "Charlie" },
+          ],
+        },
+      };
+    }
+    return defaultResponder(path);
+  };
+  const flow = createAppFlow(store, { fetch: makeFakeFetch(responder) });
+
+  const results = await flow.searchDestinations("char");
+
+  assert.equal(results.length, 2);
+  const system = results.find((r) => r.kind === "system");
+  const station = results.find((r) => r.kind === "station");
+  assert.equal(system?.id, 3);
+  assert.equal(system?.solarSystemName, "Charlie");
+  // Charlie is 2 jumps from Alpha over the 3-system line; both are in Charlie(3).
+  assert.equal(system?.jumps, 2);
+  assert.equal(station?.jumps, 2);
+});
+
+test("searchDestinations ignores a too-short query without a request", async () => {
+  const store = createClientStore();
+  const responder = (path: string) => {
+    throw new Error(`unexpected ${path}`);
+  };
+  const flow = createAppFlow(store, { fetch: makeFakeFetch(responder) });
+
+  const results = await flow.searchDestinations("J");
+  assert.equal(results.length, 0);
+});
+
+test("a searched destination Set via startRoute plans the route (R7a)", async () => {
+  const store = createClientStore();
+  const flow = createAppFlow(store, { fetch: makeFakeFetch(defaultResponder) });
+
+  // Picking a result hands its id to startRoute (the search box → Set destination
+  // wiring). The station in Charlie(3) plans a 2-hop route from Alpha(1).
+  await flow.startRoute(60000003);
+  flow.abortRoute();
+
+  const travel = store.travel.get();
+  assert.equal(travel.destinationStationID, 60000003);
+  assert.equal(travel.totalJumps, 2);
+});
+
 test("abortRoute after start marks the travel state aborted", async () => {
   const store = createClientStore();
   const flow = createAppFlow(store, { fetch: makeFakeFetch(defaultResponder) });

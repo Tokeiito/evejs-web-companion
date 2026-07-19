@@ -36,6 +36,12 @@ function makeFakeFetch(
   return { fetch: fakeFetch, requests };
 }
 
+async function waitFor(cond: () => boolean, tries = 50): Promise<void> {
+  for (let i = 0; i < tries && !cond(); i++) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+}
+
 const DOCKED = { inSpace: false, docked: true, solarSystemID: 30000142, stationID: 60003760, structureID: null, shipID: 9001, shipMode: null, shipSpeedFraction: null };
 const IN_SPACE = { inSpace: true, docked: false, solarSystemID: 30000142, stationID: null, structureID: null, shipID: 9001, shipMode: "WARP", shipSpeedFraction: 1 };
 const JUMPED = { ...IN_SPACE, solarSystemID: 30000140, shipMode: "STOP", shipSpeedFraction: 0 };
@@ -152,6 +158,38 @@ test("a movement refusal is surfaced as a visible reason and the true state re-r
   // The true state was re-read after the refusal (never a fake success).
   assert.equal(flight.status?.inSpace, true);
   assert.ok(requests.some((r) => r.path === "/api/bridge/flight/status"));
+});
+
+test("the flight status resolves system + station NAMES, cached across polls (R7a)", async () => {
+  const store = createClientStore();
+  const { fetch, requests } = makeFakeFetch((path) => {
+    if (path === "/api/bridge/flight/status") {
+      return { status: 200, body: { ok: true, flight: DOCKED, notifications: [] } };
+    }
+    if (path === "/api/map/resolve/30000142") {
+      return { status: 200, body: { ok: true, id: 30000142, kind: "system", solarSystemID: 30000142, systemName: "Jita" } };
+    }
+    if (path === "/api/map/resolve/60003760") {
+      return { status: 200, body: { ok: true, id: 60003760, kind: "station", stationID: 60003760, stationName: "Jita IV - Moon 4 - Caldari Navy Assembly Plant", solarSystemID: 30000142, systemName: "Jita" } };
+    }
+    throw new Error(`unexpected ${path}`);
+  });
+  const flow = createAppFlow(store, { fetch });
+
+  await flow.loadFlightStatus();
+  await waitFor(() => store.flight.get().solarSystemName !== null && store.flight.get().stationName !== null);
+
+  const flight = store.flight.get();
+  assert.equal(flight.solarSystemName, "Jita");
+  assert.equal(flight.stationName, "Jita IV - Moon 4 - Caldari Navy Assembly Plant");
+
+  // A second poll of the same location does NOT refetch the names (cached).
+  const resolveBefore = requests.filter((r) => r.path.startsWith("/api/map/resolve/")).length;
+  assert.equal(resolveBefore, 2);
+  await flow.loadFlightStatus();
+  await waitFor(() => true);
+  const resolveAfter = requests.filter((r) => r.path.startsWith("/api/map/resolve/")).length;
+  assert.equal(resolveAfter, resolveBefore, "names are cached; the second poll issues no resolve calls");
 });
 
 test("a lost session during a movement step unwinds to offline", async () => {

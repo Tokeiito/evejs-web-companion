@@ -157,6 +157,9 @@ const INITIAL_FLIGHT: FlightState = Object.freeze({
   loaded: false,
   lastAction: null,
   actionError: null,
+  solarSystemName: null,
+  stationName: null,
+  structureName: null,
 });
 
 const INITIAL_TRAVEL: TravelState = Object.freeze({
@@ -458,9 +461,49 @@ export function createClientStore(): ClientStore {
       case "rewards/cleared":
         rewards.set(INITIAL_REWARDS);
         break;
-      case "flight/status":
-        flight.set({ ...flight.get(), status: event.status, loaded: true });
+      case "flight/status": {
+        // Preserve a resolved name only while its ID is unchanged; on any ID
+        // change drop the stale name (the UI falls back to the raw ID) until the
+        // flow resolves the new one (goal R7a).
+        const prev = flight.get();
+        const prevStatus = prev.status;
+        const next = event.status;
+        flight.set({
+          ...prev,
+          status: next,
+          loaded: true,
+          solarSystemName:
+            prevStatus && prevStatus.solarSystemID === next.solarSystemID ? prev.solarSystemName : null,
+          stationName:
+            prevStatus && prevStatus.stationID === next.stationID ? prev.stationName : null,
+          structureName:
+            prevStatus && prevStatus.structureID === next.structureID ? prev.structureName : null,
+        });
         break;
+      }
+      case "flight/location": {
+        // Apply each resolved name only if the current status still carries the
+        // ID it was resolved for, so a slow resolve landing after the ship moved
+        // can never mislabel the new location (goal R7a).
+        const cur = flight.get();
+        const s = cur.status;
+        flight.set({
+          ...cur,
+          solarSystemName:
+            s && s.solarSystemID !== null && s.solarSystemID === event.forSolarSystemID
+              ? event.solarSystemName
+              : cur.solarSystemName,
+          stationName:
+            s && s.stationID !== null && s.stationID === event.forStationID
+              ? event.stationName
+              : cur.stationName,
+          structureName:
+            s && s.structureID !== null && s.structureID === event.forStructureID
+              ? event.structureName
+              : cur.structureName,
+        });
+        break;
+      }
       case "flight/action":
         // A successful movement step: record it and clear any stale refusal.
         flight.set({ ...flight.get(), lastAction: event.action, actionError: null });

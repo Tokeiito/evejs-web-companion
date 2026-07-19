@@ -183,6 +183,24 @@ What to expect:
 - **Presence.** The gateway calls `chatHub.joinLocalChannel` on select and `chatHub.moveLocalSession` on a system change; the corp channel record is ensured and the corp roster is derived from the session registry by `corporationID`. Core chat mechanics (`chatRuntime`/`chatHub`/`xmppStubServer`) are untouched — only called.
 - Proven in-process by eve.js `server/tests/webGatewayLocalChat.test.js` (join → visible in `getVisibleLocalSessions` + the read roster, send lands in the backlog + reads back, a second same-system pilot sees the char, a system change moves the room) and `server/tests/webGatewayCorpChat.test.js` (the browser char in the corp roster, session-derived by `corporationID`, corp send to the `corp_<id>` backlog reads back), plus web-side `test/bridgeChat.test.js`, `web/src/bridge/chat.test.ts`, and `web/src/app/chatFlow.test.ts`. This spot test is the live end-to-end run.
 
+## Spot test (R7a): read the Flight tab by name → pilot anywhere by name
+
+Travel usability (goal R7a). What it proves: the **Flight** tab shows system/station **names** (not raw EVE IDs), and the **Travel** tab lets you **search any system or station by name and Set destination** — so you can pilot to Jita (or anywhere) without knowing IDs and without going through the Agent Finder / courier flow. Web-only — no eve.js change.
+
+**Setup expectation:** the character is docked (Farmer at Jita 4-4). Same server setup as the R2–R7 spot tests (EveJS running, `npm run build:web`, `npm start`).
+
+1. Open `http://127.0.0.1:26500/dist/`, log in, and select the character (R2 flow).
+2. Click the **Flight** tab. The **Location** line reads `Docked · Jita IV - Moon 4 - Caldari Navy Assembly Plant` and the **Solar system** row reads `Jita (30000142)` — the resolved **names**, not bare IDs. (Undock and it reads `In space · Jita`.)
+3. Click the **Travel** tab. Under **Set destination**, type a name — e.g. `Jita`, or the name of a system a few jumps away — and click **Search** (or press Enter). A short results list shows each match's **name, kind (system/station), system, and jumps away**, with the exact-name system ranked first.
+4. Click **Set destination** on a result. The R5b autopilot starts immediately (the panel switches to the live route readout) and drives there — undock → warp → jump → … → dock — exactly as the R5b spot test.
+5. The **Start route by ID** block below the search still accepts a raw station/solar-system ID as a fallback.
+
+What to expect:
+
+- **Names, not IDs (Fix 1).** The Flight readout resolves the current system / station ID → name through the existing read-only `/api/map/resolve/:id` route, cached client-side so the flight-status poll doesn't refetch. An ID with no static name (e.g. a player structure) or one not yet resolved falls back to showing the ID.
+- **Search anywhere by name (Fix 2).** `GET /api/map/find?q=<text>[&kind=system|station]` searches the static solar-system + station tables (read-only static data, mirroring `/api/agents/find` — **not** a gateway call), ranks by match quality (exact → prefix → substring) so "Jita" surfaces the Jita system first, and caps the result. **Set destination** reuses the R5b autopilot (`startRoute(id)`) — no new movement code; jumps-away come from the already-loaded map graph (`distancesFrom`).
+- Proven in-process by `test/bridgeMapFind.test.js` (the name search + `/api/map/find` route against real + fixture data), `web/src/app/flightFlow.test.ts` (the Flight status resolves and caches names), and `web/src/app/travelFlow.test.ts` (search → jumps annotation → Set-destination via startRoute); this spot test is the live end-to-end run.
+
 ## Configuration
 
 Defaults assume both repos live under `C:\Users\ryanf\Documents\GitHub`:

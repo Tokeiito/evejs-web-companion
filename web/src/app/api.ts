@@ -577,3 +577,60 @@ export async function resolveDestination(
     stationName: typeof data.stationName === "string" ? data.stationName : null,
   };
 }
+
+// --- R7a Map name search (set a destination by name) -----------------------
+// The Travel tab searches the static solar-system + station tables by name
+// (GET /api/map/find) so a player can set a destination without knowing EVE IDs.
+// Read-only static reference data like /api/map/graph — NOT a gateway/bridge
+// call. The chosen match's `id` is handed to startRoute (the R5b route solver +
+// autopilot); the flow annotates jumps-away client-side from the map graph.
+
+/** One name-search match from /api/map/find (a solar system or a station). */
+export interface MapLocation {
+  readonly id: number;
+  readonly name: string;
+  readonly kind: "system" | "station";
+  readonly solarSystemID: number | null;
+  readonly solarSystemName: string | null;
+}
+
+export interface FindMapLocationsResult {
+  readonly q: string;
+  readonly kind: string | null;
+  readonly total: number;
+  readonly capped: boolean;
+  readonly matches: readonly MapLocation[];
+}
+
+function asMapLocation(value: JsonValue): MapLocation {
+  const row = (value ?? {}) as Record<string, JsonValue>;
+  const kind = row.kind === "station" ? "station" : "system";
+  return {
+    id: asNumberOrNull(row.id) ?? 0,
+    name: typeof row.name === "string" ? row.name : `Location ${asNumberOrNull(row.id) ?? 0}`,
+    kind,
+    solarSystemID: asNumberOrNull(row.solarSystemID),
+    solarSystemName: typeof row.solarSystemName === "string" ? row.solarSystemName : null,
+  };
+}
+
+/** Search the static map by name (systems + stations, or narrowed by kind). */
+export async function findMapLocations(
+  q: string,
+  kind: "system" | "station" | null = null,
+  options: ApiOptions = {},
+): Promise<FindMapLocationsResult> {
+  const params = new URLSearchParams();
+  params.set("q", q);
+  if (kind) {
+    params.set("kind", kind);
+  }
+  const data = await getJson(`/api/map/find?${params.toString()}`, options);
+  return {
+    q: typeof data.q === "string" ? data.q : q,
+    kind: typeof data.kind === "string" ? data.kind : null,
+    total: asNumberOrNull(data.total) ?? 0,
+    capped: data.capped === true,
+    matches: Array.isArray(data.matches) ? data.matches.map(asMapLocation) : [],
+  };
+}
