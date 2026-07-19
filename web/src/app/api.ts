@@ -300,6 +300,39 @@ export async function loadJournal(options: ApiOptions = {}): Promise<JsonValue> 
   return data.result ?? null;
 }
 
+// --- R6 Courier-completion reward readout (Step 12) ------------------------
+// The post-completion wallet / LP / standings pull reads (account.GetCashBalance,
+// LPSvc.GetAllMyCharacterWalletLPBalances, standingMgr.GetCharStandings). The
+// BFF returns the raw retail-shaped results, decoded in the flow with
+// bridge/rewards.ts. The journal (the fourth Step-12 read) uses loadJournal.
+
+export interface RawRewardReads {
+  readonly cash: JsonValue;
+  readonly lp: JsonValue;
+  readonly standings: JsonValue;
+  readonly errors: {
+    readonly cash: string | null;
+    readonly lp: string | null;
+    readonly standings: string | null;
+  };
+}
+
+/** The wallet / LP / standings reward reads (raw; decoded in the flow). */
+export async function loadRewards(options: ApiOptions = {}): Promise<RawRewardReads> {
+  const data = await getJson("/api/bridge/rewards", options);
+  const errors = (data.errors ?? {}) as Record<string, JsonValue>;
+  return {
+    cash: data.cash ?? null,
+    lp: data.lp ?? null,
+    standings: data.standings ?? null,
+    errors: {
+      cash: typeof errors.cash === "string" ? errors.cash : null,
+      lp: typeof errors.lp === "string" ? errors.lp : null,
+      standings: typeof errors.standings === "string" ? errors.standings : null,
+    },
+  };
+}
+
 // --- R5a Flight (manually-stepped space movement) --------------------------
 // The BFF holds the beyonce bound park handle server-side and returns the raw
 // flight-status snapshot (decoded in the flow with bridge/flight.ts). Movement

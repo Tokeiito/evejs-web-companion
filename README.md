@@ -123,6 +123,26 @@ What to expect:
 - **Pause on unsafe:** a refusal that is not the normal docking-approach (warp scrambled, gate restricted, invalid target, lost control) pauses the loop and shows the handler's own reason under **Failure** — it does not guess.
 - **Tab close = client close:** closing the tab stops the autopilot with **no "stop" sent** — the ship completes whatever server-side command was last issued and then sits. The BFF is a relay + session holder; it never advances travel with no client connected.
 
+## Spot test (R6): the full courier run — pick a courier agent → accept → load the package → autopilot to the dropoff → Complete → see the reward
+
+The courier-milestone capstone (goal R6): a player completes a courier mission entirely in the browser. What it proves: the built pieces (agent accept, inventory move, browser autopilot) tie into one run, plus the new gameplay — deliver + **Complete** — and the post-completion wallet/LP/standings/journal readout (inventory Step 12).
+
+**Setup expectation:** the character is docked at a station with courier agents and an active ship with cargo space (Farmer at Jita 4-4, station `60003760`, which has 882 courier agents). Same server setup as the R2–R5b spot tests (EveJS running, `npm run build:web`, `npm start`).
+
+1. Open `http://127.0.0.1:26500/dist/`, log in, and select the character (R2 flow).
+2. Click the **Agents & Missions** tab. The roster is filtered: **Courier only** is on by default, with a **Level** dropdown and a **Search** box, and the render is capped (first 60, with a "showing X of Y" count) so the ~1,700-agent station stays responsive. Narrow to a level-1 courier agent and click it.
+3. In the conversation, click **Request Mission**, then **Accept** (in person — you are docked at the agent's station). The **Courier briefing** shows the package (type / quantity / volume), pickup, **destination station**, reward, time bonus, and loyalty points; the mission appears under **Active** in the journal.
+4. Click **Load package into ship** (the R3 inventory move loads the staged package into the active ship's cargo). Verify capacity on the **Inventory & Ship** tab if you like.
+5. Click **Set autopilot to dropoff** (reuses the R5b route solver + browser autopilot to fly to the dropoff station), then watch it drive on the **Travel** tab (undock → warp → jump → … → dock), exactly as the R5b spot test.
+6. Docked at the dropoff, reopen the agent conversation (or the journal) and click **Complete Mission**. The mission completes.
+7. The **Reward & wallet (post-completion)** panel shows the updated **wallet balance**, the **loyalty points** for the agent's corp, and the **standings** gained; the mission leaves the **Active** journal.
+
+What to expect:
+
+- **Complete is the synchronous `agentMgr.DoAction(<complete>)`** — the same bound two-step accept uses, no new call. Courier delivery has no distinct RPC: `DoAction(Complete)` validates the package at the dropoff and pays out.
+- **The reward reads are pull-refreshes** (`account.GetCashBalance` / `LPSvc.GetAllMyCharacterWalletLPBalances` / `standingMgr.GetCharStandings` / `agentMgr.GetMyJournalDetails`) issued after Complete — deny-by-default, top-level reads on the held session.
+- The full accept→cargo→autopilot→complete path is proven in-process against a deterministic courier fixture (`eve.js server/tests/webGatewayCourierComplete.test.js`); this spot test is the live end-to-end run.
+
 ## Configuration
 
 Defaults assume both repos live under `C:\Users\ryanf\Documents\GitHub`:

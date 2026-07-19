@@ -205,6 +205,48 @@ export interface AgentsState {
   readonly actionError: string | null;
 }
 
+// --- R6 Courier completion reward readout (Step 12) ------------------------
+
+/**
+ * One character loyalty-point balance from
+ * LPSvc.GetAllMyCharacterWalletLPBalances: the issuing corp and the amount.
+ * LP is kept as a bigint-safe decimal string (the decoder rule for LP/ISK).
+ */
+export interface WalletLPBalance {
+  readonly issuerCorpID: number;
+  readonly loyaltyPoints: string;
+}
+
+/**
+ * One character standing row from standingMgr.GetCharStandings: the standing
+ * the character holds toward `fromID`. `standing` is a small float (‑10..10),
+ * kept as a number.
+ */
+export interface CharStanding {
+  readonly fromID: number;
+  readonly standing: number;
+}
+
+/**
+ * The post-completion reward readout (goal R6, inventory Step 12): the pull
+ * reads a wallet/LP/standings panel issues after Complete pays out
+ * (account.GetCashBalance / LPSvc.GetAllMyCharacterWalletLPBalances /
+ * standingMgr.GetCharStandings). The mission journal (the fourth Step-12 read)
+ * lives in the agents slice (`agents.journal`) and refreshes on the same
+ * Complete. Each read is independent (Promise.allSettled on the BFF); a failed
+ * read carries its own error code. ISK/LP are decimal strings (bigint-safe).
+ */
+export interface RewardsState {
+  /** Personal ISK balance (account.GetCashBalance), decimal string; null until read. */
+  readonly cashBalance: string | null;
+  readonly lpBalances: readonly WalletLPBalance[];
+  readonly standings: readonly CharStanding[];
+  /** True once a reward read has populated the slice. */
+  readonly loaded: boolean;
+  /** Non-null when one or more of the reward reads failed (non-fatally). */
+  readonly error: string | null;
+}
+
 // --- R5a Flight (manually-stepped space movement) --------------------------
 
 /**

@@ -1,6 +1,6 @@
 # Bridge wire contract (v1) — whitelisted `callMethod` path
 
-**Status:** Active, established by goal R1 (2026-07-18); extended by goal R2 (persistent browser-backed sessions, same date), goal R3 (2026-07-19, the bound-object bridge — see "Bound-object bridge (R3)"), goal R4 (agents/missions + deferred call responses), goal R5a (2026-07-19, the space bridge — see "Space bridge & session-into-space (R5a)"), and goal R5b (2026-07-19, the client-side route solver + browser autopilot decide-loop — see "Client-side route solver & browser autopilot (R5b)"). Later goals build on this contract; change it deliberately and update this file with the change.
+**Status:** Active, established by goal R1 (2026-07-18); extended by goal R2 (persistent browser-backed sessions, same date), goal R3 (2026-07-19, the bound-object bridge — see "Bound-object bridge (R3)"), goal R4 (agents/missions + deferred call responses), goal R5a (2026-07-19, the space bridge — see "Space bridge & session-into-space (R5a)"), goal R5b (2026-07-19, the client-side route solver + browser autopilot decide-loop — see "Client-side route solver & browser autopilot (R5b)"), and goal R6 (2026-07-19, courier completion + the Step-12 reward readout — see "Courier completion & reward readout (R6)"). Later goals build on this contract; change it deliberately and update this file with the change.
 
 This is the transport seam that lets the browser drive real EveJS `Handle_*` calls. The unit it mirrors is the retail call tuple **(service, method, args, kwargs)**; the gateway dispatches it through the same seam a retail client hits: `serviceManager.lookup(service).callMethod(method, args, session, kwargs)`.
 
@@ -78,6 +78,9 @@ Current pairs (defined in `eve.js` `server/src/_secondary/express/evejsWebGatewa
 | `beyonce` | `CmdStargateJump` | R5a (bound: jump — changes system) |
 | `beyonce` | `CmdDock` | R5a (bound: dock — returns to a station) |
 | `structureJumpBridgeMgr` | `CmdJumpThroughStructureStargate` | R5a (server-tier Upwell jump-gate parity) |
+| `account` | `GetCashBalance` | R6 (Step-12 wallet read — personal `GetCashBalance(0)`) |
+| `LPSvc` | `GetAllMyCharacterWalletLPBalances` | R6 (Step-12 loyalty-point read) |
+| `standingMgr` | `GetCharStandings` | R6 (Step-12 character standings read) |
 
 Deny-by-default governs **bound-object methods too**: a method invoked on a bound handle whose `(service, method)` is not on this list is refused with `CALL_NOT_ALLOWED` before the handle's OID is resolved. See "Bound-object bridge (R3)" below.
 
@@ -438,6 +441,48 @@ simulates or predicts position; each move's truth comes from the next
   **abort/pause the loop never calls the bridge again**. The BFF is a relay +
   session holder and **never advances travel with no client connected**.
 
+## Courier completion & reward readout (R6)
+
+R6 is the courier-milestone capstone. **Complete needs no new call:** completing
+a courier is the already-allowlisted synchronous `agentMgr(bound).DoAction(<complete
+actionID>)` — the same bound two-step accept uses (R4). The retail `DoAction`
+result's `lastActionInfo.missionCompleted` flips to `true` and the mission clears
+from the runtime. A courier Complete is a synchronous outcome and never takes the
+deferred path; if any completion action were deferred, R4's deferred adapter
+already drives it (or refuses `CALL_DEFERRED_UNSUPPORTED`).
+
+**Delivery has no distinct RPC** (inventory Step 10): the courier package is
+ordinary inventory (staged in the pickup hangar on accept, loaded into the ship
+with the R3 invbroker move — Step 5 — and flown to the dropoff by the R5b browser
+autopilot). `DoAction(Complete)` validates delivery server-side (the character is
+at the dropoff with the package in the ship hold or the dropoff hangar) and pays
+out.
+
+**Step-12 reward reads** are the pull-refreshes a wallet/LP/standings/journal
+panel issues after payout. Three are new top-level (non-bound) server-tier reads
+(added to the allowlist above); the fourth (the mission journal) was already
+allowlisted in R4:
+
+- `account.GetCashBalance(0)` → the personal ISK balance (a plain number, or a
+  `{type:"long"}`). Decoded to a bigint-safe decimal string.
+- `LPSvc.GetAllMyCharacterWalletLPBalances()` → a CRowset (`objectex2`) of packed
+  rows `[issuerCorpID, loyaltyPoints]`. LP kept as decimal strings.
+- `standingMgr.GetCharStandings()` → a header/lines Rowset of `[fromID, standing]`
+  (standings are small floats).
+- `agentMgr.GetMyJournalDetails()` (R4) → after completion the mission is no longer
+  in the journal (cleared), the truthful "mission done" signal.
+
+**Decoder rule:** amounts decode long-aware (`unwrapLong`, never
+`typeof === "number" ? … : 0`); ISK/LP are decimal strings, standings numbers
+(`web/src/bridge/rewards.ts`).
+
+Proven in-process end to end by `eve.js server/tests/webGatewayCourierComplete.test.js`:
+in-person accept → deliver the package to the dropoff → `DoAction(Complete)` actually
+completes the mission (runtime record cleared, package consumed) and the Step-12
+reads reflect the payout (wallet grows, an LP balance for the agent corp appears,
+standing toward the corp grows, the mission leaves the journal). Deny-by-default is
+re-proven for non-allowlisted `account`/`LPSvc`/`standingMgr` siblings.
+
 ## BFF routes (this repo)
 
 `POST /api/bridge/call` — requires the signed web login session (else 401 `AUTH_REQUIRED`).
@@ -476,6 +521,22 @@ re-binding on `BOUND_HANDLE_NOT_FOUND`).
 
 Errors pass through with the gateway's status; a `SESSION_NOT_FOUND` drops the
 held bridge session (the page returns to character select).
+
+### Reward-readout route (R6)
+
+Requires the signed web login session and a held bridge session (else 409
+`NO_LIVE_SESSION`). The browser drives Complete through the existing
+`/api/bridge/agents/:agentID/action` route (bound `DoAction(<complete actionID>)`)
+and refreshes the journal via `/api/bridge/journal`; this route covers the other
+three Step-12 reads.
+
+- `GET /api/bridge/rewards` → `{ ok, cash, lp, standings, errors: {...} }`.
+  Dispatches `account.GetCashBalance(0)`, `LPSvc.GetAllMyCharacterWalletLPBalances`,
+  and `standingMgr.GetCharStandings` as top-level calls on the held session. The
+  three reads are independent (`Promise.allSettled`) so one failed read never
+  blanks the rest; each carries its own error code. Raw retail-shaped results are
+  decoded browser-side (`web/src/bridge/rewards.ts`). A `SESSION_NOT_FOUND` drops
+  the held bridge session (the page returns to character select).
 
 ### Flight routes (R5a)
 
@@ -548,6 +609,24 @@ R3 page pieces (bound-object bridge): `web/src/bridge/inventoryShip.ts` (decoder
 R4 page pieces (Agents & Missions): `web/src/bridge/agents.ts` (decoders for the `DoAction` conversation tuple, the `GetMissionBriefingInfo`/`GetMissionObjectiveInfo` courier briefing, and the `GetMyJournalDetails` journal — all `unwrapLong`, ISK/FILETIME kept as decimal strings), the `agents` slice + `agents/list`/`agents/conversation`/`agents/briefing`/`agents/journal`/`agents/action-error`/`agents/cleared` feed events, `app/flow.ts` `loadAgents`/`openConversation`/`chooseAction`/`loadBriefing`/`loadJournal`, and `web/src/ui/AgentsMissions.svelte`. The browser addresses agents by game ID; the BFF's `/api/bridge/agents*` and `/api/bridge/journal` routes hold the bound agent handles (see "Agent conversation, briefing, and journal (R4)" above).
 
 R5a page pieces (Flight): `web/src/bridge/flight.ts` (the flight-status decoder — `unwrapLong`-aware IDs, docked/in-space derivation), the `flight` slice + `flight/status`/`flight/action`/`flight/action-error`/`flight/cleared` feed events, `app/flow.ts` `loadFlightStatus`/`undock`/`warpTo`/`jump`/`dock` (each surfaces a movement refusal as a visible reason and re-reads the true state — never a silent no-op), and `web/src/ui/Flight.svelte` (status readout + explicit undock/warp/jump/dock buttons, manual only). The browser picks each gate/destination by game ID (the route solver is R5b); the BFF's `/api/bridge/flight/*` routes hold the beyonce bound park handle (see "Space bridge & session-into-space (R5a)" above). Proven browser-side by `web/src/bridge/flight.test.ts` + `web/src/app/flightFlow.test.ts` and BFF-side by `test/bridgeFlight.test.js`.
+
+R6 page pieces (courier completion + reward readout): the Agents & Missions page
+(`web/src/ui/AgentsMissions.svelte`) gains a **courier/level/text agent filter with
+a capped render** (default courier-only, first 60 shown with a match count — the
+usability fix for Jita 4-4's ~1,700 agents, a pure store/view change), the mission
+briefing gains **Load package into ship** (`app/flow.ts` `loadPackageIntoShip` — the
+R3 inventory move) and **Set autopilot to dropoff** (`setAutopilotToDropoff` → the
+R5b `startRoute(dropoffStationID)`) controls, and Complete (already a conversation
+action via `chooseAction`) now also pulls the reward readout. The Step-12 wallet/LP/
+standings reads have their own decoder (`web/src/bridge/rewards.ts` — `decodeCashBalance`
+/ `decodeLpBalances` / `decodeCharStandings`, all long-aware, ISK/LP as decimal
+strings), the `rewards` slice + `rewards/loaded`/`rewards/cleared` feed events,
+`app/flow.ts` `loadRewards`, and `app/api.ts` `loadRewards` against the BFF's
+`/api/bridge/rewards`. The journal (the fourth Step-12 read) reuses R4's
+`loadJournal`. Unit-tested by `web/src/bridge/rewards.test.ts`,
+`web/src/app/agentsFlow.test.ts` (Complete → reward pull, load-package-into-ship),
+and BFF-side by `test/bridgeRewards.test.js`. See "Courier completion & reward
+readout (R6)" above.
 
 R5b page pieces (Travel — browser autopilot): `web/src/nav/routeSolver.ts` (pure client-side BFS route solver over the system-adjacency graph), `web/src/nav/autopilotLoop.ts` (the framework-agnostic decide-loop controller — `createAutopilot(deps)` with `start`/`pause`/`resume`/`abort`/`tick`/`run`; the pure `decideAutopilotAction` maps flight-status → next atomic move), `app/api.ts` `loadSystemGraph`/`resolveDestination`, `app/flow.ts` `startRoute`/`pauseRoute`/`resumeRoute`/`abortRoute` (owns the graph cache + the single controller, wires its deps to the R5a flight routes and the store), the `travel` slice + `travel/planned`/`travel/progress`/`travel/plan-error`/`travel/cleared` feed events, and `web/src/ui/Travel.svelte` (Start/Pause/Resume/Abort + live readout, no map). The route solver + loop are unit-tested (`web/src/nav/routeSolver.test.ts`, `web/src/nav/autopilotLoop.test.ts` — a simulated docked→undock→warp→jump→approach→dock timeline proving each atomic call, approach-then-redock, pause-on-refusal, and no bridge call after abort), the flow by `web/src/app/travelFlow.test.ts`, and the BFF map routes by `test/bridgeMapGraph.test.js`. See "Client-side route solver & browser autopilot (R5b)" above.
 

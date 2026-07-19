@@ -26,6 +26,7 @@ import type {
   InventoryContainerState,
   InventoryState,
   OnlineCharacterState,
+  RewardsState,
   StationGuest,
   StationServiceBits,
   StationStatic,
@@ -74,6 +75,7 @@ export interface ClientState {
   readonly station: StationSlice;
   readonly inventory: InventoryState;
   readonly agents: AgentsState;
+  readonly rewards: RewardsState;
   readonly flight: FlightState;
   readonly travel: TravelState;
   readonly feed: FeedSlice;
@@ -125,6 +127,14 @@ const INITIAL_AGENTS: AgentsState = Object.freeze({
   actionError: null,
 });
 
+const INITIAL_REWARDS: RewardsState = Object.freeze({
+  cashBalance: null,
+  lpBalances: Object.freeze([]) as RewardsState["lpBalances"],
+  standings: Object.freeze([]) as RewardsState["standings"],
+  loaded: false,
+  error: null,
+});
+
 const INITIAL_FLIGHT: FlightState = Object.freeze({
   status: null,
   loaded: false,
@@ -164,6 +174,7 @@ export interface ClientStore {
   readonly station: ReadableSignal<StationSlice>;
   readonly inventory: ReadableSignal<InventoryState>;
   readonly agents: ReadableSignal<AgentsState>;
+  readonly rewards: ReadableSignal<RewardsState>;
   readonly flight: ReadableSignal<FlightState>;
   readonly travel: ReadableSignal<TravelState>;
   readonly feed: ReadableSignal<FeedSlice>;
@@ -194,6 +205,7 @@ export function createClientStore(): ClientStore {
   const station = createSignal<StationSlice>(INITIAL_STATION);
   const inventory = createSignal<InventoryState>(INITIAL_INVENTORY);
   const agents = createSignal<AgentsState>(INITIAL_AGENTS);
+  const rewards = createSignal<RewardsState>(INITIAL_REWARDS);
   const flight = createSignal<FlightState>(INITIAL_FLIGHT);
   const travel = createSignal<TravelState>(INITIAL_TRAVEL);
   const feed = createSignal<FeedSlice>(INITIAL_FEED);
@@ -211,6 +223,7 @@ export function createClientStore(): ClientStore {
     station: station.get(),
     inventory: inventory.get(),
     agents: agents.get(),
+    rewards: rewards.get(),
     flight: flight.get(),
     travel: travel.get(),
     feed: feed.get(),
@@ -232,6 +245,7 @@ export function createClientStore(): ClientStore {
         station.set(INITIAL_STATION);
         inventory.set(INITIAL_INVENTORY);
         agents.set(INITIAL_AGENTS);
+        rewards.set(INITIAL_REWARDS);
         flight.set(INITIAL_FLIGHT);
         travel.set(INITIAL_TRAVEL);
         break;
@@ -269,6 +283,7 @@ export function createClientStore(): ClientStore {
         });
         inventory.set(INITIAL_INVENTORY);
         agents.set(INITIAL_AGENTS);
+        rewards.set(INITIAL_REWARDS);
         flight.set(INITIAL_FLIGHT);
         travel.set(INITIAL_TRAVEL);
         break;
@@ -276,6 +291,7 @@ export function createClientStore(): ClientStore {
         station.set(INITIAL_STATION);
         inventory.set(INITIAL_INVENTORY);
         agents.set(INITIAL_AGENTS);
+        rewards.set(INITIAL_REWARDS);
         flight.set(INITIAL_FLIGHT);
         travel.set(INITIAL_TRAVEL);
         break;
@@ -336,6 +352,18 @@ export function createClientStore(): ClientStore {
         break;
       case "agents/cleared":
         agents.set(INITIAL_AGENTS);
+        break;
+      case "rewards/loaded":
+        rewards.set({
+          cashBalance: event.cashBalance,
+          lpBalances: [...event.lpBalances],
+          standings: [...event.standings],
+          loaded: true,
+          error: event.error,
+        });
+        break;
+      case "rewards/cleared":
+        rewards.set(INITIAL_REWARDS);
         break;
       case "flight/status":
         flight.set({ ...flight.get(), status: event.status, loaded: true });
@@ -443,6 +471,7 @@ export function createClientStore(): ClientStore {
     station: readonlySignal(station),
     inventory: readonlySignal(inventory),
     agents: readonlySignal(agents),
+    rewards: readonlySignal(rewards),
     flight: readonlySignal(flight),
     travel: readonlySignal(travel),
     feed: readonlySignal(feed),

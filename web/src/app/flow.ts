@@ -10,13 +10,18 @@ import {
   getStationInfoCached,
   getStationItemBits,
 } from "../bridge/stationPanel.ts";
-import { decodeContainer } from "../bridge/inventoryShip.ts";
+import { decodeContainer, decodeInventoryRows } from "../bridge/inventoryShip.ts";
 import {
   AGENT_BUTTON,
   decodeBriefing,
   decodeConversation,
   decodeJournal,
 } from "../bridge/agents.ts";
+import {
+  decodeCashBalance,
+  decodeCharStandings,
+  decodeLpBalances,
+} from "../bridge/rewards.ts";
 import { decodeFlightStatus } from "../bridge/flight.ts";
 import type { FlightStepResult } from "./api.ts";
 import { BridgeCallError } from "../bridge/callMethod.ts";
@@ -65,6 +70,21 @@ export interface AppFlow {
   loadBriefing(agentID: number): Promise<void>;
   /** Load the mission journal (agentMgr.GetMyJournalDetails). */
   loadJournal(): Promise<void>;
+  /**
+   * Load the accepted courier's package (matching the briefing cargo type) from
+   * the station hangar into the active ship (reuses the R3 inventory move).
+   */
+  loadPackageIntoShip(cargoTypeID: number): Promise<void>;
+  /**
+   * Set the browser autopilot to the mission dropoff (a station): reuses the
+   * R5b route solver + decide-loop via startRoute(dropoffStationID).
+   */
+  setAutopilotToDropoff(dropoffStationID: number): Promise<void>;
+  /**
+   * R6 — the post-completion reward readout (Step 12): wallet / LP / standings.
+   * The journal (the fourth Step-12 read) refreshes via loadJournal.
+   */
+  loadRewards(): Promise<void>;
   /** Refresh the flight status (location + ship movement state). */
   loadFlightStatus(): Promise<void>;
   /** Undock from the station (the session enters space). */
@@ -223,6 +243,26 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     store.apply({
       type: "agents/briefing",
       briefing: decodeBriefing(reads.briefing, reads.objective),
+    });
+  }
+
+  // R6 — the post-completion reward readout (Step 12): wallet / LP / standings.
+  // The three reads are independent on the BFF (Promise.allSettled); a per-read
+  // error rides in the `error` field rather than blanking the whole panel. The
+  // journal (the fourth Step-12 read) is refreshed separately via loadJournal.
+  async function loadRewards(): Promise<void> {
+    const reads = await api.loadRewards(callOptions);
+    const errors = [
+      reads.errors.cash ? `wallet: ${reads.errors.cash}` : null,
+      reads.errors.lp ? `LP: ${reads.errors.lp}` : null,
+      reads.errors.standings ? `standings: ${reads.errors.standings}` : null,
+    ].filter((entry): entry is string => entry !== null);
+    store.apply({
+      type: "rewards/loaded",
+      cashBalance: decodeCashBalance(reads.cash),
+      lpBalances: decodeLpBalances(reads.lp),
+      standings: decodeCharStandings(reads.standings),
+      error: errors.length ? errors.join("; ") : null,
     });
   }
 
@@ -547,10 +587,18 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           conversation: decodeConversation(result),
         });
         // Accepting a courier stages the mission: pull its briefing + journal
-        // entry. Declining clears the briefing; the journal always refreshes so
-        // the offered/accepted/cleared state stays truthful.
+        // entry. Completing it pays out: clear the briefing and pull the Step-12
+        // reward reads (wallet / LP / standings) alongside the journal.
+        // Declining clears the briefing; the journal always refreshes so the
+        // offered/accepted/cleared state stays truthful.
         if (action.buttonType === AGENT_BUTTON.ACCEPT || action.buttonType === AGENT_BUTTON.ACCEPT_REMOTELY) {
           await loadBriefing(agentID);
+        } else if (
+          action.buttonType === AGENT_BUTTON.COMPLETE ||
+          action.buttonType === AGENT_BUTTON.COMPLETE_REMOTELY
+        ) {
+          store.apply({ type: "agents/briefing", briefing: null });
+          await loadRewards();
         } else if (action.buttonType === AGENT_BUTTON.DECLINE) {
           store.apply({ type: "agents/briefing", briefing: null });
         }
@@ -561,6 +609,34 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     loadBriefing,
 
     loadJournal,
+
+    loadRewards,
+
+    async loadPackageIntoShip(cargoTypeID) {
+      await runAgentAction(async () => {
+        // Find the accepted courier's package in the station hangar (the stack
+        // whose type matches the briefing cargo) and move it into the active
+        // ship via the R3 inventory move. The BFF addresses the item by game ID.
+        const panel = await api.loadInventory(callOptions);
+        const item = decodeInventoryRows(panel.hangar.list).find(
+          (row) => row.typeID === cargoTypeID,
+        );
+        if (!item) {
+          // runAgentAction's success path clears the action-error, so signal the
+          // miss by throwing — its catch surfaces the reason through the store.
+          throw new Error(
+            `The mission package (type ${cargoTypeID}) is not in the station hangar.`,
+          );
+        }
+        await api.moveItem(item.itemID, "toCargo", null, callOptions);
+      });
+    },
+
+    async setAutopilotToDropoff(dropoffStationID) {
+      // Reuse the R5b route solver + browser autopilot: startRoute resolves the
+      // dropoff station -> its solar system and runs the decide-loop.
+      await startRoute(dropoffStationID);
+    },
 
     loadFlightStatus,
 

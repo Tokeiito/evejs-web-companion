@@ -1070,6 +1070,62 @@ app.get("/api/bridge/journal", requireAuth, async (req, res, next) => {
   }
 });
 
+// R6 courier-completion reward readout (inventory Step 12): the wallet / LP /
+// standings pull reads a panel issues after Complete pays out. These are plain
+// TOP-LEVEL server-tier reads on the held session (no bind). The mission
+// journal (the fourth Step-12 read) has its own route (/api/bridge/journal) +
+// slice, refreshed on the same Complete. The three reads are INDEPENDENT
+// (Promise.allSettled) so one failed read never blanks the rest; each carries
+// its own error code. Raw retail-shaped results decoded browser side
+// (web/src/bridge/rewards.ts).
+app.get("/api/bridge/rewards", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  try {
+    const [cash, lp, standings] = await Promise.allSettled([
+      heldTopLevelCall(held, req.webSessionID, "account", "GetCashBalance", [0], null),
+      heldTopLevelCall(
+        held,
+        req.webSessionID,
+        "LPSvc",
+        "GetAllMyCharacterWalletLPBalances",
+        [],
+        null,
+      ),
+      heldTopLevelCall(held, req.webSessionID, "standingMgr", "GetCharStandings", [], null),
+    ]);
+    // A lost live session can't be recovered by any read; surface it so the page
+    // returns to character select (as every held call does).
+    for (const settled of [cash, lp, standings]) {
+      if (settled.status === "rejected" && settled.reason && settled.reason.code === "SESSION_NOT_FOUND") {
+        next(settled.reason);
+        return;
+      }
+    }
+    const settledCode = (settled) =>
+      settled.status === "rejected"
+        ? String((settled.reason && settled.reason.code) || "READ_FAILED")
+        : null;
+    const settledValue = (settled) =>
+      settled.status === "fulfilled" ? settled.value.result : null;
+    res.json({
+      ok: true,
+      cash: settledValue(cash),
+      lp: settledValue(lp),
+      standings: settledValue(standings),
+      errors: {
+        cash: settledCode(cash),
+        lp: settledCode(lp),
+        standings: settledCode(standings),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // R5a flight (manually-stepped space movement): undock -> warp -> jump -> dock,
 // each an explicit step the browser issues (no timer loop — the autopilot
 // decide-loop is R5b). EveJS's space handlers stay authoritative for every

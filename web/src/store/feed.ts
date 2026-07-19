@@ -17,6 +17,7 @@ import type {
   AgentConversation,
   AgentRow,
   CharacterSummary,
+  CharStanding,
   CourierBriefing,
   FlightStatus,
   InventoryContainerState,
@@ -27,6 +28,7 @@ import type {
   StationStatic,
   TravelRouteStep,
   TravelStatus,
+  WalletLPBalance,
 } from "./types.ts";
 
 export type FeedStatus = "idle" | "connecting" | "connected" | "disconnected";
@@ -95,6 +97,18 @@ export type FeedEvent =
   | { readonly type: "agents/action-error"; readonly message: string | null }
   // Drop the agents state (character offline / logged out).
   | { readonly type: "agents/cleared" }
+  // Goal R6 — the post-completion reward readout (inventory Step 12). The
+  // wallet/LP/standings pull reads after Complete pays out (the journal, the
+  // fourth Step-12 read, refreshes into the agents slice on the same Complete).
+  | {
+      readonly type: "rewards/loaded";
+      readonly cashBalance: string | null;
+      readonly lpBalances: readonly WalletLPBalance[];
+      readonly standings: readonly CharStanding[];
+      readonly error: string | null;
+    }
+  // Drop the reward readout (character offline / logged out).
+  | { readonly type: "rewards/cleared" }
   // Goal R5a — the Flight page (manually-stepped space movement). A flight-
   // status snapshot: the session's current location + ship movement state.
   | { readonly type: "flight/status"; readonly status: FlightStatus }

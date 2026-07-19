@@ -292,6 +292,166 @@ test("a refused agent action is surfaced through the store, not thrown", async (
   assert.match(store.agents.get().actionError ?? "", /CALL_NOT_ALLOWED/);
 });
 
+// A completed-courier conversation: the agent re-offers (Request(821,2)) and
+// lastActionInfo.missionCompleted is true.
+function completedConversation() {
+  return {
+    ok: true,
+    result: {
+      type: "tuple",
+      items: [
+        {
+          type: "tuple",
+          items: [
+            { type: "tuple", items: [127959, 1383] },
+            { type: "list", items: [{ type: "tuple", items: [821, 2] }] },
+          ],
+        },
+        { type: "dict", entries: [["missionCompleted", true], ["missionDeclined", false], ["loyaltyPoints", 213]] },
+      ],
+    },
+    notifications: [],
+  };
+}
+
+// The reward reads BFF response (wallet / LP / standings), retail-shaped.
+const REWARDS_RESPONSE = {
+  ok: true,
+  cash: 1000165000,
+  lp: {
+    type: "objectex2",
+    header: [],
+    list: [
+      { type: "packedrow", columns: [["issuerCorpID", 3], ["loyaltyPoints", 3]], values: [1000002, 213] },
+    ],
+    dict: [],
+  },
+  standings: {
+    type: "object",
+    name: "eve.common.script.sys.rowset.Rowset",
+    args: {
+      type: "dict",
+      entries: [
+        ["header", { type: "list", items: ["fromID", "standing"] }],
+        ["RowClass", { type: "token", value: "util.Row" }],
+        ["lines", { type: "list", items: [{ type: "list", items: [1000002, 0.42] }] }],
+      ],
+    },
+  },
+  errors: { cash: null, lp: null, standings: null },
+};
+
+test("completing a courier posts DoAction(complete), clears the briefing, and pulls the reward reads + journal", async () => {
+  const store = createClientStore();
+  // Seed a stale briefing so completion must clear it.
+  store.apply({
+    type: "agents/briefing",
+    briefing: {
+      missionTitleID: 58607, cargoTypeID: 3814, cargoQuantity: 1, cargoVolume: 0.1,
+      pickupLocationID: 60000004, pickupSystemID: 30002780, destinationLocationID: 60000256,
+      destinationSystemID: 30001399, rewardISK: "102000", bonusISK: null, loyaltyPoints: 213,
+      expirationTime: null, acceptTimestamp: null,
+    },
+  });
+  const { fetch, requests } = makeFakeFetch((path) => {
+    if (path === "/api/bridge/agents/3008416/action") {
+      return { status: 200, body: completedConversation() };
+    }
+    if (path === "/api/bridge/rewards") {
+      return { status: 200, body: REWARDS_RESPONSE };
+    }
+    if (path === "/api/bridge/journal") {
+      return { status: 200, body: journalResponse([]) };
+    }
+    throw new Error(`unexpected ${path}`);
+  });
+  const flow = createAppFlow(store, { fetch });
+
+  // The Complete button is buttonType 6.
+  await flow.chooseAction(3008416, { actionID: 819, buttonType: 6, label: "Complete Mission" });
+
+  // Complete posted the token, then the reward reads + journal were pulled.
+  const action = requests.find((r) => r.path === "/api/bridge/agents/3008416/action");
+  assert.deepEqual(action!.body, { actionID: 819 });
+  assert.ok(requests.some((r) => r.path === "/api/bridge/rewards"), "rewards pulled");
+  assert.ok(requests.some((r) => r.path === "/api/bridge/journal"), "journal pulled");
+
+  const agents = store.agents.get();
+  assert.equal(agents.briefing, null, "the briefing is cleared after completion");
+  assert.equal(agents.journal!.active.length, 0, "the mission left the journal");
+
+  // The reward readout reflects the payout.
+  const rewards = store.rewards.get();
+  assert.equal(rewards.loaded, true);
+  assert.equal(rewards.cashBalance, "1000165000");
+  assert.deepEqual(rewards.lpBalances, [{ issuerCorpID: 1000002, loyaltyPoints: "213" }]);
+  assert.deepEqual(rewards.standings, [{ fromID: 1000002, standing: 0.42 }]);
+  assert.equal(rewards.error, null);
+});
+
+test("loadPackageIntoShip finds the matching hangar stack and moves it to cargo", async () => {
+  const store = createClientStore();
+  const inventoryResponse = {
+    ok: true,
+    stationID: 60000004,
+    activeShipID: 9001,
+    hangar: {
+      list: {
+        type: "list",
+        items: [
+          { type: "packedrow", fields: { itemID: 7777, typeID: 3814, quantity: 1, flagID: 4 } },
+          { type: "packedrow", fields: { itemID: 8888, typeID: 34, quantity: 500, flagID: 4 } },
+        ],
+      },
+      capacity: null,
+      error: null,
+    },
+    cargo: { shipID: 9001, list: { type: "list", items: [] }, capacity: null, error: null },
+  };
+  const { fetch, requests } = makeFakeFetch((path) => {
+    if (path === "/api/bridge/inventory") {
+      return { status: 200, body: inventoryResponse };
+    }
+    if (path === "/api/bridge/inventory/move") {
+      return { status: 200, body: { ok: true, notifications: [] } };
+    }
+    throw new Error(`unexpected ${path}`);
+  });
+  const flow = createAppFlow(store, { fetch });
+
+  await flow.loadPackageIntoShip(3814);
+
+  const move = requests.find((r) => r.path === "/api/bridge/inventory/move");
+  assert.ok(move, "the matching package was moved");
+  // The itemID whose typeID matches the cargo type is moved into the ship cargo.
+  assert.equal(move!.body.itemID, 7777);
+  assert.equal(move!.body.direction, "toCargo");
+  assert.equal(store.agents.get().actionError, null);
+});
+
+test("loadPackageIntoShip surfaces a clear error when the package is not in the hangar", async () => {
+  const store = createClientStore();
+  const { fetch, requests } = makeFakeFetch((path) => {
+    if (path === "/api/bridge/inventory") {
+      return {
+        status: 200,
+        body: {
+          ok: true, stationID: 60000004, activeShipID: 9001,
+          hangar: { list: { type: "list", items: [] }, capacity: null, error: null },
+          cargo: { shipID: 9001, list: { type: "list", items: [] }, capacity: null, error: null },
+        },
+      };
+    }
+    throw new Error(`unexpected ${path}`);
+  });
+  const flow = createAppFlow(store, { fetch });
+
+  await flow.loadPackageIntoShip(3814);
+
+  assert.ok(!requests.some((r) => r.path === "/api/bridge/inventory/move"), "no move issued");
+  assert.match(store.agents.get().actionError ?? "", /not in the station hangar/);
+});
+
 test("a lost session during an agent read flips the character offline and rethrows", async () => {
   const store = createClientStore();
   store.apply({
