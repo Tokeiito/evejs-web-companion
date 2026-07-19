@@ -22,6 +22,8 @@ import type { FeedAdapter, FeedEvent, FeedSink, FeedStatus } from "./feed.ts";
 import type {
   AgentFinderState,
   AgentsState,
+  ChatChannelState,
+  ChatState,
   CharacterSummary,
   FlightState,
   InventoryContainerState,
@@ -80,6 +82,7 @@ export interface ClientState {
   readonly rewards: RewardsState;
   readonly flight: FlightState;
   readonly travel: TravelState;
+  readonly chat: ChatState;
   readonly feed: FeedSlice;
 }
 
@@ -174,6 +177,22 @@ const INITIAL_TRAVEL: TravelState = Object.freeze({
   failureReason: null,
 });
 
+const EMPTY_CHAT_CHANNEL: ChatChannelState = Object.freeze({
+  roomName: null,
+  corporationID: null,
+  solarSystemID: null,
+  roster: Object.freeze([]) as ChatChannelState["roster"],
+  messages: Object.freeze([]) as ChatChannelState["messages"],
+  loaded: false,
+});
+
+const INITIAL_CHAT: ChatState = Object.freeze({
+  activeChannel: "local" as ChatState["activeChannel"],
+  local: EMPTY_CHAT_CHANNEL,
+  corp: EMPTY_CHAT_CHANNEL,
+  error: null,
+});
+
 const INITIAL_FEED: FeedSlice = Object.freeze({
   adapter: null,
   status: "idle" as FeedStatus,
@@ -192,6 +211,7 @@ export interface ClientStore {
   readonly rewards: ReadableSignal<RewardsState>;
   readonly flight: ReadableSignal<FlightState>;
   readonly travel: ReadableSignal<TravelState>;
+  readonly chat: ReadableSignal<ChatState>;
   readonly feed: ReadableSignal<FeedSlice>;
 
   /** Whole-state snapshot. */
@@ -224,6 +244,7 @@ export function createClientStore(): ClientStore {
   const rewards = createSignal<RewardsState>(INITIAL_REWARDS);
   const flight = createSignal<FlightState>(INITIAL_FLIGHT);
   const travel = createSignal<TravelState>(INITIAL_TRAVEL);
+  const chat = createSignal<ChatState>(INITIAL_CHAT);
   const feed = createSignal<FeedSlice>(INITIAL_FEED);
 
   // Whole-store notification: bumped once per applied change so multi-slice
@@ -243,6 +264,7 @@ export function createClientStore(): ClientStore {
     rewards: rewards.get(),
     flight: flight.get(),
     travel: travel.get(),
+    chat: chat.get(),
     feed: feed.get(),
   });
 
@@ -266,6 +288,7 @@ export function createClientStore(): ClientStore {
         rewards.set(INITIAL_REWARDS);
         flight.set(INITIAL_FLIGHT);
         travel.set(INITIAL_TRAVEL);
+        chat.set(INITIAL_CHAT);
         break;
       case "character/list": {
         const characters = [...event.characters];
@@ -305,6 +328,7 @@ export function createClientStore(): ClientStore {
         rewards.set(INITIAL_REWARDS);
         flight.set(INITIAL_FLIGHT);
         travel.set(INITIAL_TRAVEL);
+        chat.set(INITIAL_CHAT);
         break;
       case "character/offline":
         station.set(INITIAL_STATION);
@@ -314,6 +338,7 @@ export function createClientStore(): ClientStore {
         rewards.set(INITIAL_REWARDS);
         flight.set(INITIAL_FLIGHT);
         travel.set(INITIAL_TRAVEL);
+        chat.set(INITIAL_CHAT);
         break;
       case "station/relocated": {
         // The docked station changed on the same live session (autopilot
@@ -480,6 +505,25 @@ export function createClientStore(): ClientStore {
       case "travel/cleared":
         travel.set(INITIAL_TRAVEL);
         break;
+      case "chat/loaded": {
+        const current = chat.get();
+        chat.set({
+          ...current,
+          [event.channel]: event.channelState,
+          // A successful read clears any stale read/send error.
+          error: null,
+        });
+        break;
+      }
+      case "chat/active":
+        chat.set({ ...chat.get(), activeChannel: event.channel });
+        break;
+      case "chat/error":
+        chat.set({ ...chat.get(), error: event.message });
+        break;
+      case "chat/cleared":
+        chat.set(INITIAL_CHAT);
+        break;
     }
   };
 
@@ -543,6 +587,7 @@ export function createClientStore(): ClientStore {
     rewards: readonlySignal(rewards),
     flight: readonlySignal(flight),
     travel: readonlySignal(travel),
+    chat: readonlySignal(chat),
     feed: readonlySignal(feed),
     get,
     subscribe,

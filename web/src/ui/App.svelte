@@ -12,6 +12,7 @@
   import AgentFinder from "./AgentFinder.svelte";
   import Flight from "./Flight.svelte";
   import Travel from "./Travel.svelte";
+  import Chat from "./Chat.svelte";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
 
@@ -26,7 +27,7 @@
 
   // Which docked page is showing. Local UI state only (the store mirrors EveJS
   // state, not view navigation).
-  let page = $state<"station" | "inventory" | "agents" | "finder" | "flight" | "travel">("station");
+  let page = $state<"station" | "inventory" | "agents" | "finder" | "flight" | "travel" | "chat">("station");
 </script>
 
 <h1>EveJS Web</h1>
@@ -54,6 +55,9 @@
     <button type="button" class:active={page === "travel"} onclick={() => (page = "travel")}>
       Travel
     </button>
+    <button type="button" class:active={page === "chat"} onclick={() => (page = "chat")}>
+      Chat
+    </button>
   </nav>
   {#if page === "station"}
     <StationPanel {store} {flow} />
@@ -65,7 +69,9 @@
     <AgentFinder {store} {flow} showTravel={() => (page = "travel")} />
   {:else if page === "flight"}
     <Flight {store} {flow} />
-  {:else}
+  {:else if page === "travel"}
     <Travel {store} {flow} />
+  {:else}
+    <Chat {store} {flow} />
   {/if}
 {/if}

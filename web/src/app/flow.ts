@@ -27,7 +27,8 @@ import type { FlightStepResult } from "./api.ts";
 import { BridgeCallError } from "../bridge/callMethod.ts";
 import * as api from "./api.ts";
 import type { ClientStore } from "../store/clientStore.ts";
-import type { AgentAction, FlightStatus, StationStatic } from "../store/types.ts";
+import type { AgentAction, ChatChannel, FlightStatus, StationStatic } from "../store/types.ts";
+import { decodeChatChannel, decodeChatChannelName } from "../bridge/chat.ts";
 import {
   buildSystemGraph,
   distancesFrom,
@@ -126,6 +127,17 @@ export interface AppFlow {
   resumeRoute(): void;
   /** Abort the autopilot loop (it stops and never calls the bridge again). */
   abortRoute(): void;
+  /**
+   * R7 — read a chat channel's member roster + recent backlog (Local or Corp)
+   * and push it to the store. The panel polls this while open (READ is a backlog
+   * poll). A lost session unwinds to offline; any other failure surfaces through
+   * the chat slice.
+   */
+  loadChat(channel: ChatChannel): Promise<void>;
+  /** R7 — send a message to a chat channel, then refresh its backlog. */
+  sendChatMessage(channel: ChatChannel, message: string): Promise<void>;
+  /** R7 — switch the active chat tab (Local <-> Corp). */
+  setChatChannel(channel: ChatChannel): void;
   /** Release the persistent session (character offline), back to the select list. */
   releaseSession(): Promise<void>;
   logout(): Promise<void>;
@@ -290,6 +302,47 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       standings: decodeCharStandings(reads.standings),
       error: errors.length ? errors.join("; ") : null,
     });
+  }
+
+  // R7 — read a chat channel's roster + backlog and push it to the store. The
+  // panel polls this while open (READ is a backlog poll). A lost session unwinds
+  // to offline; any other failure surfaces through the chat slice so the panel
+  // stays put and shows the reason.
+  async function loadChat(channel: ChatChannel): Promise<void> {
+    try {
+      const raw = await api.readChat(channel, callOptions);
+      store.apply({
+        type: "chat/loaded",
+        channel: decodeChatChannelName(raw, channel),
+        channelState: decodeChatChannel(raw),
+      });
+    } catch (error) {
+      if (isSessionLost(error)) {
+        store.apply({ type: "character/offline" });
+        throw error;
+      }
+      store.apply({ type: "chat/error", message: readErrorReason(error) });
+    }
+  }
+
+  async function sendChatMessage(channel: ChatChannel, message: string): Promise<void> {
+    const trimmed = message.trim();
+    if (!trimmed) {
+      return;
+    }
+    try {
+      await api.sendChat(channel, trimmed, callOptions);
+    } catch (error) {
+      if (isSessionLost(error)) {
+        store.apply({ type: "character/offline" });
+        throw error;
+      }
+      store.apply({ type: "chat/error", message: readErrorReason(error) });
+      return;
+    }
+    // Reflect the sent message immediately by re-reading the channel backlog
+    // (loadChat clears the error on success).
+    await loadChat(channel);
   }
 
   // Load the docked station's agent roster (agentMgr.GetAgents, filtered to the
@@ -908,6 +961,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
     abortRoute() {
       autopilot?.abort();
+    },
+
+    loadChat,
+
+    sendChatMessage,
+
+    setChatChannel(channel) {
+      store.apply({ type: "chat/active", channel });
     },
 
     async releaseSession() {

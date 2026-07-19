@@ -1134,6 +1134,85 @@ app.get("/api/bridge/rewards", requireAuth, async (req, res, next) => {
   }
 });
 
+// --- R7 Local + Corp chat ---------------------------------------------------
+// The browser reads a channel's member roster + recent backlog and sends
+// messages to Local or Corp on the held session. Chat delivery bypasses the
+// notification drain, so READ is a backlog poll: the panel polls /chat/read on
+// a modest interval while it is open, and stops when it closes. The BFF holds
+// the bridgeSessionID server-side (never in browser JS); the browser addresses
+// channels by name only. Wire contract: docs/bridge-wire-contract.md.
+
+const CHAT_CHANNELS = new Set(["local", "corp"]);
+
+function normalizeChatChannel(res, value) {
+  const channel = typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (!CHAT_CHANNELS.has(channel)) {
+    res.status(400).json({
+      ok: false,
+      error: "INVALID_CHANNEL",
+      message: "channel must be 'local' or 'corp'.",
+    });
+    return null;
+  }
+  return channel;
+}
+
+app.get("/api/bridge/chat/:channel", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const channel = normalizeChatChannel(res, req.params.channel);
+  if (!channel) {
+    return;
+  }
+  try {
+    const outcome = await gateway.readChat(
+      held.bridgeSessionID,
+      channel,
+      { userid: held.accountID },
+      { limit: Number(req.query.limit) || undefined },
+    );
+    res.json({ ok: true, chat: outcome.chat, notifications: outcome.notifications });
+  } catch (error) {
+    if (error && error.code === "SESSION_NOT_FOUND") {
+      bridgeSessions.delete(req.webSessionID);
+    }
+    next(error);
+  }
+});
+
+app.post("/api/bridge/chat/:channel/send", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const channel = normalizeChatChannel(res, req.params.channel);
+  if (!channel) {
+    return;
+  }
+  const message = typeof req.body?.message === "string" ? req.body.message : "";
+  if (!message.trim()) {
+    res.status(400).json({
+      ok: false,
+      error: "EMPTY_MESSAGE",
+      message: "message must be a non-empty string.",
+    });
+    return;
+  }
+  try {
+    const outcome = await gateway.sendChat(held.bridgeSessionID, channel, message, {
+      userid: held.accountID,
+    });
+    res.json({ ok: true, chat: outcome.chat, notifications: outcome.notifications });
+  } catch (error) {
+    if (error && error.code === "SESSION_NOT_FOUND") {
+      bridgeSessions.delete(req.webSessionID);
+    }
+    next(error);
+  }
+});
+
 // R5a flight (manually-stepped space movement): undock -> warp -> jump -> dock,
 // each an explicit step the browser issues (no timer loop — the autopilot
 // decide-loop is R5b). EveJS's space handlers stay authoritative for every

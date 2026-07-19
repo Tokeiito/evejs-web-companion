@@ -18,6 +18,8 @@ import type {
   AgentFinderRow,
   AgentFinderTarget,
   AgentRow,
+  ChatChannel,
+  ChatChannelState,
   CharacterSummary,
   CharStanding,
   CourierBriefing,
@@ -179,7 +181,20 @@ export type FeedEvent =
   // graph load); null clears a stale plan error.
   | { readonly type: "travel/plan-error"; readonly message: string | null }
   // Drop the travel state (character offline / logged out / new route).
-  | { readonly type: "travel/cleared" };
+  | { readonly type: "travel/cleared" }
+  // Goal R7 — the Chat panel (Local + Corp). A channel read completed (roster +
+  // recent backlog) — the panel polls while open (READ is a backlog poll).
+  | {
+      readonly type: "chat/loaded";
+      readonly channel: ChatChannel;
+      readonly channelState: ChatChannelState;
+    }
+  // The active channel tab changed (Local <-> Corp).
+  | { readonly type: "chat/active"; readonly channel: ChatChannel }
+  // A chat read/send failed non-fatally; null clears it after success.
+  | { readonly type: "chat/error"; readonly message: string | null }
+  // Drop the chat state (character offline / logged out).
+  | { readonly type: "chat/cleared" };
 
 /** What the store hands an adapter: publish events, report connectivity. */
 export interface FeedSink {

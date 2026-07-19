@@ -557,6 +557,50 @@ async function callBoundMethod(service, method, args = [], kwargs = null, sessio
   };
 }
 
+/**
+ * Chat read (goal R7) — the held session's Local/Corp member roster + recent
+ * backlog. POST /_evejs-web/v1/chat/read. Chat delivery bypasses the
+ * notification drain, so READ is a backlog poll; the browser polls this while
+ * the Chat panel is open. See docs/bridge-wire-contract.md.
+ */
+async function readChat(bridgeSessionID, channel, sessionFields = {}, options = {}) {
+  const body = { bridgeSessionID: String(bridgeSessionID || ""), channel: String(channel || "") };
+  if (sessionFields && typeof sessionFields === "object" && !Array.isArray(sessionFields)) {
+    body.session = sessionFields;
+  }
+  if (Number.isFinite(Number(options.limit)) && Number(options.limit) > 0) {
+    body.limit = Number(options.limit);
+  }
+  const data = await postJson("/chat/read", body, { timeoutMs: BRIDGE_CALL_TIMEOUT_MS });
+  return {
+    chat: data.chat && typeof data.chat === "object" ? data.chat : {},
+    notifications: Array.isArray(data.notifications) ? data.notifications : [],
+  };
+}
+
+/**
+ * Chat send (goal R7) — broadcast a message to Local or Corp on the held
+ * session. POST /_evejs-web/v1/chat/send. Local goes through
+ * chatRuntime.broadcastLocalMessage; Corp is a session-derived corp broadcast
+ * that writes the corp_<id> backlog (NOT an XMPP send). See
+ * docs/bridge-wire-contract.md.
+ */
+async function sendChat(bridgeSessionID, channel, message, sessionFields = {}) {
+  const body = {
+    bridgeSessionID: String(bridgeSessionID || ""),
+    channel: String(channel || ""),
+    message: String(message === undefined || message === null ? "" : message),
+  };
+  if (sessionFields && typeof sessionFields === "object" && !Array.isArray(sessionFields)) {
+    body.session = sessionFields;
+  }
+  const data = await postJson("/chat/send", body, { timeoutMs: BRIDGE_CALL_TIMEOUT_MS });
+  return {
+    chat: data.chat && typeof data.chat === "object" ? data.chat : {},
+    notifications: Array.isArray(data.notifications) ? data.notifications : [],
+  };
+}
+
 async function saveSkillQueue(accountID, characterID, entries, options = {}) {
   return postCommandJson("/skill-queue", {
     accountID: Number(accountID) || 0,
@@ -599,6 +643,8 @@ module.exports = {
   selectCharacter,
   releaseBridgeSession,
   readFlightStatus,
+  readChat,
+  sendChat,
   claimCharacterControl,
   getAccount,
   getGatewayHealth,
