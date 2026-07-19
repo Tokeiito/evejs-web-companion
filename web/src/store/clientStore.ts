@@ -20,6 +20,7 @@ import {
 } from "./signals.ts";
 import type { FeedAdapter, FeedEvent, FeedSink, FeedStatus } from "./feed.ts";
 import type {
+  AgentsState,
   CharacterSummary,
   InventoryContainerState,
   InventoryState,
@@ -70,6 +71,7 @@ export interface ClientState {
   readonly character: CharacterSlice;
   readonly station: StationSlice;
   readonly inventory: InventoryState;
+  readonly agents: AgentsState;
   readonly feed: FeedSlice;
 }
 
@@ -108,6 +110,17 @@ const INITIAL_INVENTORY: InventoryState = Object.freeze({
   actionError: null,
 });
 
+const INITIAL_AGENTS: AgentsState = Object.freeze({
+  stationID: null,
+  agents: Object.freeze([]) as AgentsState["agents"],
+  activeAgentID: null,
+  conversation: null,
+  briefing: null,
+  journal: null,
+  loaded: false,
+  actionError: null,
+});
+
 const INITIAL_FEED: FeedSlice = Object.freeze({
   adapter: null,
   status: "idle" as FeedStatus,
@@ -121,6 +134,7 @@ export interface ClientStore {
   readonly character: ReadableSignal<CharacterSlice>;
   readonly station: ReadableSignal<StationSlice>;
   readonly inventory: ReadableSignal<InventoryState>;
+  readonly agents: ReadableSignal<AgentsState>;
   readonly feed: ReadableSignal<FeedSlice>;
 
   /** Whole-state snapshot. */
@@ -148,6 +162,7 @@ export function createClientStore(): ClientStore {
   const character = createSignal<CharacterSlice>(INITIAL_CHARACTER);
   const station = createSignal<StationSlice>(INITIAL_STATION);
   const inventory = createSignal<InventoryState>(INITIAL_INVENTORY);
+  const agents = createSignal<AgentsState>(INITIAL_AGENTS);
   const feed = createSignal<FeedSlice>(INITIAL_FEED);
 
   // Whole-store notification: bumped once per applied change so multi-slice
@@ -162,6 +177,7 @@ export function createClientStore(): ClientStore {
     character: character.get(),
     station: station.get(),
     inventory: inventory.get(),
+    agents: agents.get(),
     feed: feed.get(),
   });
 
@@ -180,6 +196,7 @@ export function createClientStore(): ClientStore {
         character.set(INITIAL_CHARACTER);
         station.set(INITIAL_STATION);
         inventory.set(INITIAL_INVENTORY);
+        agents.set(INITIAL_AGENTS);
         break;
       case "character/list": {
         const characters = [...event.characters];
@@ -214,10 +231,12 @@ export function createClientStore(): ClientStore {
           station: event.station,
         });
         inventory.set(INITIAL_INVENTORY);
+        agents.set(INITIAL_AGENTS);
         break;
       case "character/offline":
         station.set(INITIAL_STATION);
         inventory.set(INITIAL_INVENTORY);
+        agents.set(INITIAL_AGENTS);
         break;
       case "station/bits":
         station.set({ ...station.get(), bits: event.bits });
@@ -247,6 +266,35 @@ export function createClientStore(): ClientStore {
         break;
       case "inventory/cleared":
         inventory.set(INITIAL_INVENTORY);
+        break;
+      case "agents/list":
+        agents.set({
+          ...agents.get(),
+          stationID: event.stationID,
+          agents: [...event.agents],
+          loaded: true,
+          actionError: null,
+        });
+        break;
+      case "agents/conversation":
+        agents.set({
+          ...agents.get(),
+          activeAgentID: event.agentID,
+          conversation: event.conversation,
+          actionError: null,
+        });
+        break;
+      case "agents/briefing":
+        agents.set({ ...agents.get(), briefing: event.briefing });
+        break;
+      case "agents/journal":
+        agents.set({ ...agents.get(), journal: event.journal });
+        break;
+      case "agents/action-error":
+        agents.set({ ...agents.get(), actionError: event.message });
+        break;
+      case "agents/cleared":
+        agents.set(INITIAL_AGENTS);
         break;
     }
   };
@@ -306,6 +354,7 @@ export function createClientStore(): ClientStore {
     character: readonlySignal(character),
     station: readonlySignal(station),
     inventory: readonlySignal(inventory),
+    agents: readonlySignal(agents),
     feed: readonlySignal(feed),
     get,
     subscribe,

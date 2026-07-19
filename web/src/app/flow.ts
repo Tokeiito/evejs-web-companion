@@ -11,9 +11,16 @@ import {
   getStationItemBits,
 } from "../bridge/stationPanel.ts";
 import { decodeContainer } from "../bridge/inventoryShip.ts";
+import {
+  AGENT_BUTTON,
+  decodeBriefing,
+  decodeConversation,
+  decodeJournal,
+} from "../bridge/agents.ts";
 import { BridgeCallError } from "../bridge/callMethod.ts";
 import * as api from "./api.ts";
 import type { ClientStore } from "../store/clientStore.ts";
+import type { AgentAction } from "../store/types.ts";
 
 export interface AppFlowOptions {
   readonly baseUrl?: string;
@@ -35,6 +42,20 @@ export interface AppFlow {
   stackContainer(target: "hangar" | "cargo"): Promise<void>;
   /** Board a hangar ship (it becomes active), then refresh. */
   boardShip(shipID: number): Promise<void>;
+  /** Load the docked station's agent roster (agentMgr.GetAgents). */
+  loadAgents(): Promise<void>;
+  /** Open a conversation with an agent (bound DoAction(None)). */
+  openConversation(agentID: number): Promise<void>;
+  /**
+   * Take a conversation action (DoAction on the bound agent): request / accept /
+   * decline. Accepting a courier refreshes the briefing + journal; declining
+   * clears the briefing and refreshes the journal.
+   */
+  chooseAction(agentID: number, action: AgentAction): Promise<void>;
+  /** Load the accepted-courier briefing (bound reads on the agent). */
+  loadBriefing(agentID: number): Promise<void>;
+  /** Load the mission journal (agentMgr.GetMyJournalDetails). */
+  loadJournal(): Promise<void>;
   /** Release the persistent session (character offline), back to the select list. */
   releaseSession(): Promise<void>;
   logout(): Promise<void>;
@@ -159,6 +180,37 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     await loadInventory();
   }
 
+  // --- R4 Agents & Missions ------------------------------------------------
+
+  async function loadJournal(): Promise<void> {
+    const result = await api.loadJournal(callOptions);
+    store.apply({ type: "agents/journal", journal: decodeJournal(result) });
+  }
+
+  async function loadBriefing(agentID: number): Promise<void> {
+    const reads = await api.loadBriefing(agentID, callOptions);
+    store.apply({
+      type: "agents/briefing",
+      briefing: decodeBriefing(reads.briefing, reads.objective),
+    });
+  }
+
+  // Run an agent read/action, unwinding to offline on a lost session and
+  // surfacing any other failure through the store (the page stays put and shows
+  // the reason) rather than throwing into the UI handler.
+  async function runAgentAction(action: () => Promise<void>): Promise<void> {
+    try {
+      await action();
+      store.apply({ type: "agents/action-error", message: null });
+    } catch (error) {
+      if (isSessionLost(error)) {
+        store.apply({ type: "character/offline" });
+        throw error;
+      }
+      store.apply({ type: "agents/action-error", message: readErrorReason(error) });
+    }
+  }
+
   return {
     async login(username, password) {
       const result = await api.login(username, password, callOptions);
@@ -199,6 +251,50 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     async boardShip(shipID) {
       await runMutation(() => api.boardShip(shipID, callOptions));
     },
+
+    async loadAgents() {
+      await runAgentAction(async () => {
+        const list = await api.loadAgents(callOptions);
+        store.apply({ type: "agents/list", stationID: list.stationID, agents: list.agents });
+      });
+    },
+
+    async openConversation(agentID) {
+      await runAgentAction(async () => {
+        const result = await api.agentAction(agentID, null, callOptions);
+        store.apply({
+          type: "agents/conversation",
+          agentID,
+          conversation: decodeConversation(result),
+        });
+        // Opening a conversation clears any stale briefing from a prior agent.
+        store.apply({ type: "agents/briefing", briefing: null });
+      });
+    },
+
+    async chooseAction(agentID, action) {
+      await runAgentAction(async () => {
+        const result = await api.agentAction(agentID, action.actionID, callOptions);
+        store.apply({
+          type: "agents/conversation",
+          agentID,
+          conversation: decodeConversation(result),
+        });
+        // Accepting a courier stages the mission: pull its briefing + journal
+        // entry. Declining clears the briefing; the journal always refreshes so
+        // the offered/accepted/cleared state stays truthful.
+        if (action.buttonType === AGENT_BUTTON.ACCEPT || action.buttonType === AGENT_BUTTON.ACCEPT_REMOTELY) {
+          await loadBriefing(agentID);
+        } else if (action.buttonType === AGENT_BUTTON.DECLINE) {
+          store.apply({ type: "agents/briefing", briefing: null });
+        }
+        await loadJournal();
+      });
+    },
+
+    loadBriefing,
+
+    loadJournal,
 
     async releaseSession() {
       try {

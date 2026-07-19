@@ -104,6 +104,107 @@ export interface InventoryState {
   readonly actionError: string | null;
 }
 
+// --- R4 Agents & Missions --------------------------------------------------
+
+/**
+ * One agent at the docked station (agentMgr.GetAgents, decoded + filtered to
+ * the station by the BFF). The browser addresses the agent by agentID.
+ */
+export interface AgentRow {
+  readonly agentID: number;
+  readonly agentTypeID: number | null;
+  readonly divisionID: number | null;
+  readonly level: number | null;
+  readonly stationID: number | null;
+  readonly corporationID: number | null;
+  readonly missionKind: string | null;
+  readonly missionTypeLabel: string | null;
+}
+
+/**
+ * One available conversation action from a DoAction result. `actionID` is the
+ * server-assigned dialogue token the UI sends back to DoAction; `buttonType` is
+ * the retail dialogue-button constant (2=Request, 3=Accept, 6=Complete,
+ * 9=Decline, 11=Quit, ...) that selects the presentation/label.
+ */
+export interface AgentAction {
+  readonly actionID: number;
+  readonly buttonType: number;
+  readonly label: string;
+}
+
+/** The last-action-info flags a DoAction result carries. */
+export interface AgentLastActionInfo {
+  readonly missionCompleted: boolean | null;
+  readonly missionDeclined: boolean | null;
+  readonly missionQuit: boolean | null;
+  readonly loyaltyPoints: number | null;
+}
+
+/** A decoded agent conversation: what the agent says + the action buttons. */
+export interface AgentConversation {
+  readonly agentSays: string;
+  readonly contentID: number | null;
+  readonly actions: readonly AgentAction[];
+  readonly lastActionInfo: AgentLastActionInfo;
+}
+
+/**
+ * The courier briefing decoded from GetMissionBriefingInfo +
+ * GetMissionObjectiveInfo. ISK amounts and FILETIMEs are kept as decimal
+ * strings (bigint-safe — ISK can exceed 2^53), decoded with unwrapLong; never
+ * the lossy `typeof === "number" ? … : 0` pattern.
+ */
+export interface CourierBriefing {
+  readonly missionTitleID: number | null;
+  readonly cargoTypeID: number | null;
+  readonly cargoQuantity: number | null;
+  readonly cargoVolume: number | null;
+  readonly pickupLocationID: number | null;
+  readonly pickupSystemID: number | null;
+  readonly destinationLocationID: number | null;
+  readonly destinationSystemID: number | null;
+  readonly rewardISK: string | null;
+  readonly bonusISK: string | null;
+  readonly loyaltyPoints: number | null;
+  readonly expirationTime: string | null;
+  readonly acceptTimestamp: string | null;
+}
+
+/** One journal mission row (active or offered) from GetMyJournalDetails. */
+export interface JournalMission {
+  readonly missionState: number | null;
+  readonly missionTypeLabel: string | null;
+  readonly missionTitleID: number | null;
+  readonly agentID: number | null;
+  readonly missionID: number | null;
+  readonly expirationTime: string | null;
+}
+
+/** The decoded mission journal: active + offered missions. */
+export interface JournalState {
+  readonly active: readonly JournalMission[];
+  readonly offered: readonly JournalMission[];
+}
+
+/**
+ * The Agents & Missions page state (goal R4): the station's agents, the open
+ * conversation, the accepted-courier briefing, and the mission journal. The
+ * browser addresses agents by game ID; the BFF holds the bound agent handles.
+ */
+export interface AgentsState {
+  readonly stationID: number | null;
+  readonly agents: readonly AgentRow[];
+  readonly activeAgentID: number | null;
+  readonly conversation: AgentConversation | null;
+  readonly briefing: CourierBriefing | null;
+  readonly journal: JournalState | null;
+  /** True once the agent list has loaded. */
+  readonly loaded: boolean;
+  /** Non-null when the last agent action/read failed (non-fatally). */
+  readonly actionError: string | null;
+}
+
 export interface CharacterSummary {
   readonly characterID: number;
   readonly characterName: string;

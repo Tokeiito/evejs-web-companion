@@ -630,6 +630,18 @@ function shipBindSpec(held) {
   };
 }
 
+// R4 agent moniker: Moniker('agentMgr', agentID) via MachoBindObject. The bound
+// agent is what DoAction / GetMission* / GetAgentLocationWrap dispatch on.
+function agentBindSpec(agentID) {
+  return {
+    key: `agent:${agentID}`,
+    service: "agentMgr",
+    method: "MachoBindObject",
+    args: [Number(agentID)],
+    kwargs: null,
+  };
+}
+
 // Dispatch a bound method, binding the target on demand and caching the bind
 // under its semantic key. The cache holds the in-flight bind PROMISE, so the
 // concurrent reads of one panel load (List + GetCapacity per container) share a
@@ -847,6 +859,212 @@ app.post("/api/bridge/ship/board", requireAuth, async (req, res, next) => {
     // old cargo handle is stale.
     held.activeShipID = shipID;
     res.json({ ok: true, activeShipID: shipID, notifications: outcome.notifications });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// R4 Agents & Missions (agentMgr bridge). Agent list is a top-level read on the
+// held session (retail agentMgr.GetAgents().Clone()); conversation, briefing,
+// and journal use the bound agent (Moniker('agentMgr', agentID)). The browser
+// addresses agents/missions by game ID; the BFF holds the agent bound handles.
+
+// Dispatch a top-level (non-bound) call on the held live session. A lost
+// persistent session drops the whole held session (as /api/bridge/call).
+async function heldTopLevelCall(held, webSessionID, service, method, args, kwargs) {
+  try {
+    return await gateway.callMethod(
+      service,
+      method,
+      args,
+      kwargs,
+      { userid: held.accountID },
+      held.bridgeSessionID,
+    );
+  } catch (error) {
+    if (error && error.code === "SESSION_NOT_FOUND") {
+      bridgeSessions.delete(webSessionID);
+    }
+    throw error;
+  }
+}
+
+// Decode agentMgr.GetAgents' marshaled Rowset (header + lines) into plain agent
+// rows. Filtering to the docked station happens server-side: GetAgents returns
+// the whole ~11k-agent roster, and the retail client itself filters by station
+// client-side; the browser only ever needs the handful at Farmer's station.
+function decodeStationAgents(result, stationID) {
+  const dictEntries =
+    result && result.args && Array.isArray(result.args.entries)
+      ? result.args.entries
+      : [];
+  const header = (dictEntries.find(([key]) => key === "header") || [])[1];
+  const lines = (dictEntries.find(([key]) => key === "lines") || [])[1];
+  const fieldNames = header && Array.isArray(header.items) ? header.items : [];
+  const rows = lines && Array.isArray(lines.items) ? lines.items : [];
+  const indexOf = (name) => fieldNames.indexOf(name);
+  const idx = {
+    agentID: indexOf("agentID"),
+    agentTypeID: indexOf("agentTypeID"),
+    divisionID: indexOf("divisionID"),
+    level: indexOf("level"),
+    stationID: indexOf("stationID"),
+    corporationID: indexOf("corporationID"),
+    missionKind: indexOf("missionKind"),
+    missionTypeLabel: indexOf("missionTypeLabel"),
+  };
+  const numericStationID = Number(stationID) || 0;
+  const agents = [];
+  for (const line of rows) {
+    const values = line && Array.isArray(line.items) ? line.items : [];
+    const rowStationID = Number(values[idx.stationID]) || null;
+    if (numericStationID > 0 && rowStationID !== numericStationID) {
+      continue;
+    }
+    agents.push({
+      agentID: Number(values[idx.agentID]) || 0,
+      agentTypeID: idx.agentTypeID >= 0 ? Number(values[idx.agentTypeID]) || null : null,
+      divisionID: idx.divisionID >= 0 ? Number(values[idx.divisionID]) || null : null,
+      level: idx.level >= 0 ? Number(values[idx.level]) || null : null,
+      stationID: rowStationID,
+      corporationID: idx.corporationID >= 0 ? Number(values[idx.corporationID]) || null : null,
+      missionKind: idx.missionKind >= 0 ? String(values[idx.missionKind] || "") || null : null,
+      missionTypeLabel:
+        idx.missionTypeLabel >= 0 ? String(values[idx.missionTypeLabel] || "") || null : null,
+    });
+  }
+  return agents.filter((agent) => agent.agentID > 0);
+}
+
+// List the agents at the docked station (retail agentMgr.GetAgents, filtered).
+app.get("/api/bridge/agents", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  try {
+    const outcome = await heldTopLevelCall(
+      held,
+      req.webSessionID,
+      "agentMgr",
+      "GetAgents",
+      [],
+      null,
+    );
+    res.json({
+      ok: true,
+      stationID: held.stationID,
+      agents: decodeStationAgents(outcome.result, held.stationID),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Drive the agent conversation: DoAction(actionID). actionID null opens the
+// conversation; a server-assigned action token (from availableActions) requests
+// / accepts / declines. The in-person accept is synchronous; a decline is a
+// deferred outcome the gateway drives to completion (or refuses with a typed
+// CALL_DEFERRED_UNSUPPORTED). The raw retail-shaped result is decoded browser
+// side (web/src/bridge/agents.ts).
+app.post("/api/bridge/agents/:agentID/action", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const agentID = Number(req.params.agentID) || 0;
+  if (agentID <= 0) {
+    res.status(400).json({ ok: false, error: "INVALID_AGENT", message: "A positive agentID is required." });
+    return;
+  }
+  const rawActionID = req.body ? req.body.actionID : undefined;
+  const actionID =
+    rawActionID === undefined || rawActionID === null ? null : Number(rawActionID);
+  if (actionID !== null && !Number.isSafeInteger(actionID)) {
+    res.status(400).json({ ok: false, error: "INVALID_ACTION", message: "actionID must be an integer or null." });
+    return;
+  }
+  try {
+    const outcome = await boundCall(
+      held,
+      req.webSessionID,
+      agentBindSpec(agentID),
+      "DoAction",
+      [actionID],
+      null,
+    );
+    res.json({ ok: true, result: outcome.result, notifications: outcome.notifications });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// The mission briefing on the bound agent: header + objectives + agent location.
+// The three reads are INDEPENDENT (Promise.allSettled) so one failure never
+// blanks the rest; each carries its own error code. Raw results are decoded
+// browser side.
+app.get("/api/bridge/agents/:agentID/briefing", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const agentID = Number(req.params.agentID) || 0;
+  if (agentID <= 0) {
+    res.status(400).json({ ok: false, error: "INVALID_AGENT", message: "A positive agentID is required." });
+    return;
+  }
+  try {
+    const spec = agentBindSpec(agentID);
+    const [briefing, objective, location] = await Promise.allSettled([
+      boundCall(held, req.webSessionID, spec, "GetMissionBriefingInfo", [], null),
+      boundCall(held, req.webSessionID, spec, "GetMissionObjectiveInfo", [], null),
+      boundCall(held, req.webSessionID, spec, "GetAgentLocationWrap", [], null),
+    ]);
+    for (const settled of [briefing, objective, location]) {
+      if (settled.status === "rejected" && settled.reason && settled.reason.code === "SESSION_NOT_FOUND") {
+        next(settled.reason);
+        return;
+      }
+    }
+    const settledCode = (settled) =>
+      settled.status === "rejected"
+        ? String((settled.reason && settled.reason.code) || "READ_FAILED")
+        : null;
+    const settledValue = (settled) => (settled.status === "fulfilled" ? settled.value.result : null);
+    res.json({
+      ok: true,
+      agentID,
+      briefing: settledValue(briefing),
+      objective: settledValue(objective),
+      location: settledValue(location),
+      errors: {
+        briefing: settledCode(briefing),
+        objective: settledCode(objective),
+        location: settledCode(location),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// The mission journal (retail agentMgr.GetMyJournalDetails, top-level): active +
+// offered missions for the character. Raw result decoded browser side.
+app.get("/api/bridge/journal", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  try {
+    const outcome = await heldTopLevelCall(
+      held,
+      req.webSessionID,
+      "agentMgr",
+      "GetMyJournalDetails",
+      [],
+      null,
+    );
+    res.json({ ok: true, result: outcome.result });
   } catch (error) {
     next(error);
   }

@@ -8,7 +8,7 @@
 
 import { BridgeCallError } from "../bridge/callMethod.ts";
 import type { JsonValue } from "../bridge/wire.ts";
-import type { OnlineCharacterState, StationStatic } from "../store/types.ts";
+import type { AgentRow, OnlineCharacterState, StationStatic } from "../store/types.ts";
 
 export interface LoginResult {
   readonly accountID: number;
@@ -229,4 +229,73 @@ export async function boardShip(
   options: ApiOptions = {},
 ): Promise<void> {
   await postJson("/api/bridge/ship/board", { shipID }, options);
+}
+
+// --- R4 Agents & Missions (agentMgr bridge) --------------------------------
+// The BFF holds the bound agent handle; the browser addresses agents by game ID
+// and decodes the raw retail-shaped conversation/briefing/journal results with
+// bridge/agents.ts.
+
+export interface AgentListResult {
+  readonly stationID: number | null;
+  readonly agents: readonly AgentRow[];
+}
+
+/** The station's agents (agentMgr.GetAgents, filtered to the docked station). */
+export async function loadAgents(options: ApiOptions = {}): Promise<AgentListResult> {
+  const data = await getJson("/api/bridge/agents", options);
+  return {
+    stationID: asNumberOrNull(data.stationID),
+    agents: Array.isArray(data.agents) ? (data.agents as unknown as readonly AgentRow[]) : [],
+  };
+}
+
+/**
+ * Drive the agent conversation: DoAction(actionID). `actionID` null opens the
+ * conversation; a token from availableActions requests / accepts / declines.
+ * Returns the raw retail-shaped DoAction result (decoded in the flow).
+ */
+export async function agentAction(
+  agentID: number,
+  actionID: number | null,
+  options: ApiOptions = {},
+): Promise<JsonValue> {
+  const data = await postJson(`/api/bridge/agents/${agentID}/action`, { actionID }, options);
+  return data.result ?? null;
+}
+
+export interface RawBriefingReads {
+  readonly briefing: JsonValue;
+  readonly objective: JsonValue;
+  readonly location: JsonValue;
+  readonly errors: {
+    readonly briefing: string | null;
+    readonly objective: string | null;
+    readonly location: string | null;
+  };
+}
+
+/** The bound-agent mission briefing reads (raw; decoded in the flow). */
+export async function loadBriefing(
+  agentID: number,
+  options: ApiOptions = {},
+): Promise<RawBriefingReads> {
+  const data = await getJson(`/api/bridge/agents/${agentID}/briefing`, options);
+  const errors = (data.errors ?? {}) as Record<string, JsonValue>;
+  return {
+    briefing: data.briefing ?? null,
+    objective: data.objective ?? null,
+    location: data.location ?? null,
+    errors: {
+      briefing: typeof errors.briefing === "string" ? errors.briefing : null,
+      objective: typeof errors.objective === "string" ? errors.objective : null,
+      location: typeof errors.location === "string" ? errors.location : null,
+    },
+  };
+}
+
+/** The mission journal (agentMgr.GetMyJournalDetails; raw, decoded in the flow). */
+export async function loadJournal(options: ApiOptions = {}): Promise<JsonValue> {
+  const data = await getJson("/api/bridge/journal", options);
+  return data.result ?? null;
 }

@@ -14,8 +14,12 @@
 // R2+ work and implement this same interface.
 
 import type {
+  AgentConversation,
+  AgentRow,
   CharacterSummary,
+  CourierBriefing,
   InventoryContainerState,
+  JournalState,
   OnlineCharacterState,
   StationGuest,
   StationServiceBits,
@@ -70,7 +74,24 @@ export type FeedEvent =
   // A mutation (move/stack/board) failed; null clears the error after success.
   | { readonly type: "inventory/action-error"; readonly message: string | null }
   // Drop the inventory state (character offline / logged out).
-  | { readonly type: "inventory/cleared" };
+  | { readonly type: "inventory/cleared" }
+  // Goal R4 — the Agents & Missions page (agentMgr bridge). The station's
+  // agent roster (decoded + filtered to the docked station by the BFF).
+  | { readonly type: "agents/list"; readonly stationID: number | null; readonly agents: readonly AgentRow[] }
+  // An open agent conversation: what the agent says + the action buttons.
+  | {
+      readonly type: "agents/conversation";
+      readonly agentID: number;
+      readonly conversation: AgentConversation;
+    }
+  // The accepted-courier briefing (null clears it, e.g. after a decline).
+  | { readonly type: "agents/briefing"; readonly briefing: CourierBriefing | null }
+  // The mission journal (active + offered missions).
+  | { readonly type: "agents/journal"; readonly journal: JournalState }
+  // An agent action/read failed; null clears the error after success.
+  | { readonly type: "agents/action-error"; readonly message: string | null }
+  // Drop the agents state (character offline / logged out).
+  | { readonly type: "agents/cleared" };
 
 /** What the store hands an adapter: publish events, report connectivity. */
 export interface FeedSink {

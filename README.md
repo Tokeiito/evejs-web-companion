@@ -65,6 +65,25 @@ What to expect:
 - There is no separate "split stack" call (gap G4); a partial quantity folds into the move.
 - Moving cargo requires an active ship with a cargo hold. If your active ship is a **Capsule**, board a real ship first — a capsule has no cargo.
 
+## Spot test (R4): talk to an agent → accept a courier → see it in the journal
+
+The courier milestone's key check (goal R4). What it proves: the browser drives the retail `agentMgr` bound-object flow (`GetAgents` → `MachoBindObject` the agent moniker → `DoAction` → `GetMission*` / `GetMyJournalDetails`) against the same handlers the retail client hits, and **accepts a courier mission entirely in the browser**. The agent bound handle lives only in the BFF and gateway — the browser addresses agents and missions by their game IDs.
+
+**Setup expectation:** the character must be **docked at a station that has an agent offering a courier** (the accept is in person — a co-located accept, the normal path). Not every station has one; pick a character docked at an agent station (level-1 courier agents are common). The orchestrator's live check docks Farmer at such a station.
+
+1. Same setup as the R2/R3 spot tests (EveJS running, `npm run build:web`, `npm start`).
+2. Open `http://127.0.0.1:26500/dist/`, log in, and select the character (R2 flow).
+3. Click the **Agents & Missions** tab. You should see the **station agents** list and your **mission journal** (active + offered).
+4. **Talk to an agent:** click an agent. The **Conversation** panel shows what the agent says and the available action buttons (Request Mission / Accept / Decline / …), rendered from the retail `availableActions`.
+5. **Request + accept a courier:** click **Request Mission** to get an offer, then **Accept**. The conversation advances to the accepted state, the **Courier briefing** panel appears (cargo type/quantity/volume, pickup, destination, reward, time bonus, loyalty points), and the accepted mission shows under **Active** in the journal.
+
+What to expect:
+
+- Everything is validated server-side by the real handlers, exactly as retail. Accepting is the **synchronous in-person path**; **declining** is a retail *deferred* round-trip — the gateway drives it to completion (a direct decline, since the browser has no client YesNo dialog) and the offer clears from the journal.
+- ISK rewards and mission times are decoded bigint-safe (they can exceed 2^53) — no silent zeroes or rounding.
+- Moving the courier cargo into your ship is the R3 inventory move (**Inventory & Ship** tab); completing/turning in the mission (the delivery end) is R6.
+- Reads refresh after each action (push forwarding is still G6). A slow or failed briefing read never blanks the rest (`Promise.allSettled`).
+
 ## Configuration
 
 Defaults assume both repos live under `C:\Users\ryanf\Documents\GitHub`:

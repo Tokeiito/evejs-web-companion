@@ -60,6 +60,15 @@ Current pairs (defined in `eve.js` `server/src/_secondary/express/evejsWebGatewa
 | `invbroker` | `GetCapacity` | R3 (bound method) |
 | `ship` | `MachoBindObject` | R3 (bind) |
 | `ship` | `Board` | R3 (bound method) |
+| `agentMgr` | `GetAgents` | R4 (top-level station roster) |
+| `agentMgr` | `MachoBindObject` | R4 (bind the agent moniker) |
+| `agentMgr` | `DoAction` | R4 (bound: open convo / accept / decline) |
+| `agentMgr` | `GetMissionBriefingInfo` | R4 (bound briefing read) |
+| `agentMgr` | `GetMissionObjectiveInfo` | R4 (bound courier cargo/pickup/dropoff) |
+| `agentMgr` | `GetMissionKeywords` | R4 (bound keyword substitution) |
+| `agentMgr` | `GetAgentLocationWrap` | R4 (bound agent-location header) |
+| `agentMgr` | `GetStandingGainsForMission` | R4 (bound standing preview) |
+| `agentMgr` | `GetMyJournalDetails` | R4 (top-level or bound journal) |
 
 Deny-by-default governs **bound-object methods too**: a method invoked on a bound handle whose `(service, method)` is not on this list is refused with `CALL_NOT_ALLOWED` before the handle's OID is resolved. See "Bound-object bridge (R3)" below.
 
@@ -112,6 +121,7 @@ Standard gateway error envelope:
 | 404 | `SESSION_NOT_FOUND` | **R2.** The `bridgeSessionID` is unknown, expired (idle TTL already ran the disconnect), released, evicted by a retail takeover, or owned by a different `userid` (deliberately opaque). |
 | 404 | `BOUND_HANDLE_NOT_FOUND` | **R3.** The `boundHandle` is unknown on this session, belongs to a different service than requested, or its OID was released/evicted. Handles are confined to the session that minted them (a handle from another session is unknown here). |
 | 502 | `BOUND_NO_OBJECT` | **R3.** A bind method dispatched but returned no bound object (no OID substruct). |
+| 501 | `CALL_DEFERRED_UNSUPPORTED` | **R4.** A handler returned a deferred call response (`buildDeferredCallResponse`) whose completion genuinely needs a client round-trip the synchronous bridge cannot service (e.g. a still-pending `OnAgentProvisionalResponse` confirmation). Refused as a typed error rather than emitting the broken deferred wrapper as a result. See "Deferred call responses (R4)" below. |
 | 502 | `SESSION_SELECT_FAILED` | **R2.** `SelectCharacterID` completed without binding a character to the session (e.g. unknown characterID — the handler logs and returns null on apply-failure). The minted session is discarded. |
 | 401 | `UNAUTHORIZED` | Gateway authorization failed (shared with all gateway routes). |
 | 503 | `GATEWAY_RUNTIME_NOT_READY` | Gateway runtime not ready (shared with all gateway routes). |
@@ -232,6 +242,74 @@ Errors pass through with the gateway's status (`CALL_NOT_ALLOWED` → 403,
 drops the held bridge session (the page returns to character select). With no
 character online the routes answer 409 `NO_LIVE_SESSION`.
 
+## Deferred call responses (R4)
+
+Some retail handlers do not return a value; they return a **deferred call
+response** (`buildDeferredCallResponse(startFn)`, `network/callResponseControl.js`)
+and let the packet dispatcher drive completion — the handler sends its own
+call/error response(s) later, often only after a **client round-trip** (e.g. the
+`OnAgentProvisionalResponse` YesNo confirmation `agentMgr.Handle_DoAction` uses
+on a **decline**). The gateway previously JSON-serialized that wrapper as a
+broken object.
+
+Both dispatch seams (`callServiceMethod` and `callBoundMethod`) now detect
+`isDeferredCallResponse(result)` and drive it with a **gateway-side adapter**:
+the adapter supplies a fake dispatcher + packet, captures the response(s) the
+handler emits, and returns the last non-provisional response as the real result
+(with the session's drained notifications). The browser-backed session has no
+`sendClientCallRequest`, so a decline degrades to the handler's own
+no-client-available fallback and completes synchronously (a direct decline). If
+a deferred flow emits only an interim provisional placeholder and no final
+response — genuinely still waiting on a client round-trip the synchronous bridge
+cannot service — it is refused with `CALL_DEFERRED_UNSUPPORTED` (501) rather than
+returned broken. **The in-person courier accept (`DoAction(<accept>)`) is a
+synchronous outcome and never takes this path.**
+
+Faithful to retail, the gateway now also invokes `service.afterCallResponse(method,
+session, {args, kwargs, result})` after a successful **non-deferred** dispatch (in
+a try/catch, mirroring `network/packetDispatcher.js`) so post-response side
+effects run — invbroker's docked-fitting bootstrap and deferred session-change
+flush, ship's safe-logoff completion. It is skipped for deferred dispatches (as
+retail returns before it) and is a no-op for services that do not define it.
+
+## Agent conversation, briefing, and journal (R4)
+
+The agent flow is the retail bound-object two-step reused for `agentMgr`:
+
+- **Roster:** `agentMgr.GetAgents()` (top-level) returns a Rowset of every agent
+  (~11k). The retail client filters by station client-side; the BFF does the same
+  server-side and returns only the docked station's agents as plain rows
+  (`agentID, agentTypeID, divisionID, level, stationID, corporationID,
+  missionKind, missionTypeLabel`).
+- **Bind:** `agentMgr.MachoBindObject([agentID])` — the agent moniker
+  `Moniker('agentMgr', agentID)` — mints a bound handle (held BFF-side).
+- **Conversation:** bound `DoAction(actionID)`. `actionID` `null` opens the
+  conversation; the result is the marshaled tuple
+  `( ( agentSays, availableActions ), lastActionInfo )` where each available
+  action is a `(actionID token, buttonType)` tuple. The UI renders a button per
+  action (labelled from `buttonType`: 2=Request, 3=Accept, 6=Complete, 9=Decline,
+  11=Quit, …) and sends the **token** back as the next `DoAction(actionID)`
+  (retail sends the first action-tuple value; the handler normalizes token→button).
+- **Accept (in person):** `DoAction(<accept token>)` on a courier the agent
+  offers → the mission moves to accepted (synchronous). Decline is the deferred
+  outcome above.
+- **Briefing reads (bound):** `GetMissionObjectiveInfo` carries the courier
+  transport objective — pickup/dropoff location dicts and a cargo dict
+  (`typeID`, `quantity`, `volume`), `normalRewards` (ISK, `typeID` 29),
+  `bonusRewards` (time bonus), and `loyaltyPoints`; `GetMissionBriefingInfo`
+  carries the title, a `Mission Keywords` summary, and the `AcceptTimestamp` /
+  `Expiration Time` FILETIME longs. `GetAgentLocationWrap` is the agent-location
+  header.
+- **Journal:** `agentMgr.GetMyJournalDetails()` (top-level) returns
+  `(activeMissions, offeredMissions)`; each mission row is
+  `[missionState, _, missionTypeLabel, missionTitleID, agentID, expiry(long),
+  bookmarks, _, _, missionID]`.
+
+**Decoder rule:** mission rows carry long-encoded IDs and ISK/LP amounts. The
+browser decoders (`web/src/bridge/agents.ts`) decode every numeric with
+`unwrapLong` — never `typeof === "number" ? … : 0`. ISK amounts and FILETIMEs
+(which can exceed 2^53) are kept as **decimal strings**, not lossy `Number`.
+
 ## BFF routes (this repo)
 
 `POST /api/bridge/call` — requires the signed web login session (else 401 `AUTH_REQUIRED`).
@@ -244,6 +322,32 @@ Success response: `{ "ok": true, "service", "method", "result", "notifications" 
 
 - `POST /api/bridge/select` with `{ "characterID" }`: validates ownership against the logged-in account, releases any previously held bridge session (character switch), then forwards the retail tuple `[characterID, null, true]` to the gateway's `session/select` with the pinned `userid`. The returned `bridgeSessionID` is stored **server-side only** (keyed by the signed web session); the browser gets `{ "ok": true, "character": {characterID, characterName, stationID, structureID, solarSystemID, corporationID}, "station": <client-local static identity or null>, "notifications": [...] }`. `station` is read-only static reference data (name/system/region/type/operation/security) — the same client-local resolution retail does from its static DB. Handler refusals pass through as `CALL_REFUSED` with the handler's message.
 - `POST /api/bridge/release` with `{}`: releases the held bridge session (if any) → `{ "ok": true, "released": <bool> }`. `POST /api/logout` also best-effort releases it.
+
+### Agent routes (R4)
+
+All require the signed web login session and a held bridge session (else 409
+`NO_LIVE_SESSION`). The browser addresses agents/missions by game ID; the BFF
+holds the bound agent handle (cached per web session under `agent:<agentID>`,
+re-binding on `BOUND_HANDLE_NOT_FOUND`).
+
+- `GET /api/bridge/agents` → `{ ok, stationID, agents: [...] }`. Dispatches
+  `agentMgr.GetAgents` on the held session and returns the plain agent rows at
+  the docked station (decoded + filtered server-side).
+- `POST /api/bridge/agents/:agentID/action` `{ actionID?: number|null }` →
+  `{ ok, result, notifications }`. Binds the agent and dispatches
+  `DoAction([actionID])` on it (the deferred decline is driven to completion by
+  the gateway). `result` is the raw retail-shaped DoAction tuple.
+- `GET /api/bridge/agents/:agentID/briefing` →
+  `{ ok, agentID, briefing, objective, location, errors: {...} }`. Binds the
+  agent and reads `GetMissionBriefingInfo` / `GetMissionObjectiveInfo` /
+  `GetAgentLocationWrap` (independent `Promise.allSettled`; each carries its own
+  error code). Raw results are decoded browser-side.
+- `GET /api/bridge/journal` → `{ ok, result }`. Dispatches
+  `agentMgr.GetMyJournalDetails` on the held session; raw result decoded
+  browser-side.
+
+Errors pass through with the gateway's status; a `SESSION_NOT_FOUND` drops the
+held bridge session (the page returns to character select).
 
 The server-side client is `src/eveGatewayClient.js`: `callMethod(service, method, args, kwargs, sessionFields, bridgeSessionID?)`, `selectCharacter(args, kwargs, sessionFields)`, `releaseBridgeSession(bridgeSessionID, sessionFields?)`, and the R3 bound-object pair `bindObject(service, method, args, kwargs, sessionFields, bridgeSessionID)` / `callBoundMethod(service, method, args, kwargs, sessionFields, bridgeSessionID, boundHandle)`. The TS browser client consumes the BFF routes only and never sees the bridgeSessionID or any boundHandle.
 
@@ -282,6 +386,8 @@ R2 replaced the R1b smoke page with the first migrated page — login → charac
 R2 page pieces, per the recipe below: `web/src/bridge/stationPanel.ts` (decoders for `GetStationItemBits`, `GetGuests`, and the `GetStationInfo` cached envelope), the `station` slice + `character/online`/`character/offline`/`station/*` feed events, and the flow controller driving login (who-cares) → typed `GetCharacterSelectionData` list → `/api/bridge/select` → docked reads.
 
 R3 page pieces (bound-object bridge): `web/src/bridge/inventoryShip.ts` (decoders for the invbroker `List` packed-row list / empty python set and the `GetCapacity` KeyVal), the `inventory` slice + `inventory/loaded`/`inventory/action-error`/`inventory/cleared` feed events, `app/flow.ts` `loadInventory`/`moveItem`/`stackContainer`/`boardShip`, and `web/src/ui/InventoryShip.svelte`. The browser addresses items/ships by game ID only; the BFF's `/api/bridge/inventory*` and `/api/bridge/ship/board` routes hold the bound-object handles (see "Bound-object bridge (R3)" above).
+
+R4 page pieces (Agents & Missions): `web/src/bridge/agents.ts` (decoders for the `DoAction` conversation tuple, the `GetMissionBriefingInfo`/`GetMissionObjectiveInfo` courier briefing, and the `GetMyJournalDetails` journal — all `unwrapLong`, ISK/FILETIME kept as decimal strings), the `agents` slice + `agents/list`/`agents/conversation`/`agents/briefing`/`agents/journal`/`agents/action-error`/`agents/cleared` feed events, `app/flow.ts` `loadAgents`/`openConversation`/`chooseAction`/`loadBriefing`/`loadJournal`, and `web/src/ui/AgentsMissions.svelte`. The browser addresses agents by game ID; the BFF's `/api/bridge/agents*` and `/api/bridge/journal` routes hold the bound agent handles (see "Agent conversation, briefing, and journal (R4)" above).
 
 ### How to add a page on the new stack (R2+)
 
