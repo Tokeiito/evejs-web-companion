@@ -628,8 +628,42 @@ presence explicitly on select and on each read/send:
   real XMPP sockets). R7 adds a session-derived corp path mirroring Local: the
   roster is enumerated from `sessionRegistry.getSessions()` filtered by
   `corporationID` (per-character deduped like Local), and `ensureCorpChannel`
-  ensures the `corp_<id>` record. A browser session no-ops in `xmppStubServer`, so
-  none of the XMPP path is touched.
+  ensures the `corp_<id>` record.
+
+**Retail visibility — the XMPP presence bridge (R7b).** In R7 the web player saw
+everyone but *retail could not see the web player*: retail clients render their
+Local/Corp roster from **XMPP MUC presence**, generated only for a character
+holding a live XMPP socket (`xmppStubServer` `connectedClients`), and the
+socketless browser session emits none. R7b closes that gap **server-side, in
+`eve.js`** (operator-authorized core-chat change; no web-repo code beyond this
+note and the corp emitter reconciliation in the gateway helper):
+
+- `xmppStubServer` subscribes to `chatRuntime.runtimeEmitter` `local-join` /
+  `local-leave` / `local-message` and, for a **socketless** author/member (one
+  with no `connectedClient`), injects the corresponding synthetic MUC stanza —
+  `available` / `unavailable` (+ the Local admin-leave notice) presence, or a
+  `groupchat` message — to the room's XMPP occupants, reusing
+  `buildRoomPresenceXml` / `deliverRoomMessage`. A `moveLocalSession` therefore
+  produces a leave in the old room and a join in the new for XMPP occupants.
+- A **retail-join roster seam** in `handleJoinPresence` additionally seeds a
+  joining retail client's opening roster with `getVisibleLocalSessions` (Local) /
+  session-registry-by-corp (Corp) members that hold no `connectedClient`, so the
+  web player is present from the first render.
+- **Corp** rides the gateway helper's private `corpChatEmitter`: `syncPresence`
+  emits `corp-join`/`corp-leave` on a corp-membership transition and
+  `broadcastCorpMessage` emits `corp-message`; `xmppStubServer.subscribeCorpChat-
+  Bridge(corpChatEmitter)` (registered by the helper — cycle-free, since
+  `xmppStubServer` never requires the helper) injects the matching corp MUC
+  stanzas to `corp_<id>` occupants.
+- **Guardrails:** every bridge handler dedups by `characterID` and returns before
+  any side effect for a character that already holds a live XMPP `connectedClient`
+  (retail's own machinery covers those), so **retail↔retail rooms are byte-for-
+  byte unchanged**; delayed-local rooms (wormhole/Pochven/nolocal) stay
+  hidden-until-you-speak because the runtime only emits a presence-bearing local
+  event for them once a member speaks.
+
+Delivery to the browser itself is unchanged (backlog poll); the bridge only makes
+the socketless member **visible and audible to retail XMPP clients**.
 
 ### `POST /_evejs-web/v1/chat/read`
 
