@@ -53,6 +53,8 @@ export interface StationSlice {
   readonly guests: readonly StationGuest[];
   /** null until map.GetStationInfo answered; then whether it was the cached envelope. */
   readonly stationInfoCached: boolean | null;
+  /** Non-null when the last docked-read refresh had a (non-fatal) failure. */
+  readonly readError: string | null;
 }
 
 /** Which feed adapter is attached and its connectivity — not the transport itself. */
@@ -85,6 +87,7 @@ const INITIAL_STATION: StationSlice = Object.freeze({
   bits: null,
   guests: Object.freeze([]) as readonly StationGuest[],
   stationInfoCached: null,
+  readError: null,
 });
 
 const INITIAL_FEED: FeedSlice = Object.freeze({
@@ -200,6 +203,9 @@ export function createClientStore(): ClientStore {
         break;
       case "station/info-cached":
         station.set({ ...station.get(), stationInfoCached: event.cached });
+        break;
+      case "station/read-error":
+        station.set({ ...station.get(), readError: event.message });
         break;
     }
   };

@@ -36,6 +36,17 @@ export function isSessionLost(error: unknown): boolean {
   return error instanceof BridgeCallError && error.code === "SESSION_NOT_FOUND";
 }
 
+/** Short, human-readable reason for a failed docked read. */
+function readErrorReason(error: unknown): string {
+  if (error instanceof BridgeCallError) {
+    return error.code;
+  }
+  if (error instanceof Error) {
+    return error.message;
+  }
+  return String(error);
+}
+
 export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}): AppFlow {
   const callOptions = {
     ...(options.baseUrl !== undefined ? { baseUrl: options.baseUrl } : {}),
@@ -43,25 +54,56 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   };
 
   async function refreshStationPanel(): Promise<void> {
-    try {
-      // Retail issues these when the docked UI loads; the page issues them
-      // after select succeeds (push forwarding is a later goal, G6).
-      const [bits, guests, cached] = await Promise.all([
-        getStationItemBits(callOptions),
-        getStationGuests(callOptions),
-        getStationInfoCached(callOptions),
-      ]);
-      store.apply({ type: "station/bits", bits });
-      store.apply({ type: "station/guests", guests });
-      store.apply({ type: "station/info-cached", cached });
-    } catch (error) {
-      if (isSessionLost(error)) {
-        // The live session ended out from under us: reflect offline state and
-        // let the view fall back to the character list.
-        store.apply({ type: "character/offline" });
-      }
-      throw error;
+    // Retail issues these when the docked UI loads; the page issues them after
+    // select succeeds (push forwarding is a later goal, G6). The three reads
+    // are INDEPENDENT: a slow or failed map.GetStationInfo (the heavy
+    // full-table marshal) must never blank the services row or the guest list.
+    // And because selectCharacter calls this after the view has already
+    // switched to the panel, a failure is reported through the store (visible
+    // in the panel) rather than thrown into an unmounted caller — except a
+    // lost session, which must unwind the flow back to the character list.
+    const labels = ["GetStationItemBits", "GetGuests", "GetStationInfo"] as const;
+    const [bits, guests, cached] = await Promise.allSettled([
+      getStationItemBits(callOptions),
+      getStationGuests(callOptions),
+      getStationInfoCached(callOptions),
+    ]);
+
+    if (bits.status === "fulfilled") {
+      store.apply({ type: "station/bits", bits: bits.value });
     }
+    if (guests.status === "fulfilled") {
+      store.apply({ type: "station/guests", guests: guests.value });
+    }
+    if (cached.status === "fulfilled") {
+      store.apply({ type: "station/info-cached", cached: cached.value });
+    }
+
+    const failures = [bits, guests, cached]
+      .map((result, index) => ({ result, label: labels[index] }))
+      .filter((entry) => entry.result.status === "rejected") as ReadonlyArray<{
+      result: PromiseRejectedResult;
+      label: string;
+    }>;
+
+    // A lost live session can't be recovered by any read: flip offline and
+    // unwind so the view falls back to the character list.
+    const lost = failures.find((entry) => isSessionLost(entry.result.reason));
+    if (lost) {
+      store.apply({ type: "character/offline" });
+      throw lost.result.reason;
+    }
+
+    // Otherwise keep whatever succeeded and surface the rest (null clears a
+    // stale error after a clean refresh). Never throw here.
+    store.apply({
+      type: "station/read-error",
+      message: failures.length
+        ? failures
+            .map((entry) => `${entry.label}: ${readErrorReason(entry.result.reason)}`)
+            .join("; ")
+        : null,
+    });
   }
 
   return {

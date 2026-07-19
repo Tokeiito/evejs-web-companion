@@ -99,6 +99,9 @@
         answered with an unexpected shape
       {/if}
     </p>
+    {#if $station.readError}
+      <p class="error">Some docked reads failed (panel shows what loaded): {$station.readError}</p>
+    {/if}
   </section>
 
   <section>

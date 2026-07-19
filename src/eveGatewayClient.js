@@ -379,6 +379,15 @@ async function getStationAsks(stationID) {
   return Array.isArray(result.rows) ? result.rows : [];
 }
 
+// Bridge reads can be heavy on a cold gateway: map.GetStationInfo marshals the
+// whole station table and lazily loads a multi-MB world store on first touch,
+// and GetCharacterSelectionData computes per-character skill totals. The 1.5s
+// default read timeout can trip on the first call after a fresh start, so the
+// bridge `/call` path gets the same generous budget as select (dev emulator;
+// a correct slow answer beats a spurious timeout). Legacy paths keep the
+// default.
+const BRIDGE_CALL_TIMEOUT_MS = 10_000;
+
 /**
  * Invoke a whitelisted EveJS service method through the bridge route
  * (POST /_evejs-web/v1/call). Mirrors the retail call tuple
@@ -404,7 +413,7 @@ async function callMethod(service, method, args = [], kwargs = null, sessionFiel
   if (typeof bridgeSessionID === "string" && bridgeSessionID) {
     body.bridgeSessionID = bridgeSessionID;
   }
-  const data = await postJson("/call", body);
+  const data = await postJson("/call", body, { timeoutMs: BRIDGE_CALL_TIMEOUT_MS });
   return {
     service: data.service,
     method: data.method,

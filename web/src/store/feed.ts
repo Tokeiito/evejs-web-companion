@@ -50,7 +50,11 @@ export type FeedEvent =
   | { readonly type: "station/guests"; readonly guests: readonly StationGuest[] }
   // map.GetStationInfo answered with its retail CachedMethodCallResult
   // envelope (the rowset itself rides the retail object cache).
-  | { readonly type: "station/info-cached"; readonly cached: boolean };
+  | { readonly type: "station/info-cached"; readonly cached: boolean }
+  // One or more docked reads failed non-fatally (e.g. a slow GetStationInfo):
+  // surfaced so the panel shows the reason instead of a perpetual "Loading…".
+  // A null message clears the error after a clean refresh.
+  | { readonly type: "station/read-error"; readonly message: string | null };
 
 /** What the store hands an adapter: publish events, report connectivity. */
 export interface FeedSink {
