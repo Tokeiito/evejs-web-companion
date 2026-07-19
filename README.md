@@ -164,6 +164,25 @@ What to expect:
 - **Set destination reuses the R5b autopilot** (`startRoute(agent.stationID)`) — no new movement code.
 - Proven in-process by `test/agentFinder.test.js` (staticData read/filter + classification + the `/api/agents/find` route), `web/src/nav/routeSolver.test.ts` (`distancesFrom`), `web/src/app/finderFlow.test.ts` (the finder flow), and `web/src/app/dockRefreshFlow.test.ts` (the dock refresh); this spot test is the live end-to-end run.
 
+## Spot test (R7): the character shows up in Local and Corp chat — read and send
+
+Local + Corp chat (goal R7). What it proves: the browser character **appears in Local and Corp** (others see it; it sees the roster) and can **read and send** in both, from a **Chat** panel. Retail chat runs over XMPP and its delivery deliberately bypasses the notification drain, so READ is a **poll of the backlog store** (`chatRuntime.getChannelBacklog`), not an RPC that returns messages. Local presence is derived live from the session registry (`getVisibleLocalSessions`); the gateway **joins Local on select** and moves the room on a system change (the browser session's `sendSessionChange` is a capture stub, so retail's auto chat-sync never fires). Corp is XMPP-only in retail, so R7 adds a **session-derived corp path** mirroring Local: the roster is enumerated from the session registry by `corporationID`, and a corp send writes to the `corp_<id>` backlog (not an XMPP send).
+
+**Setup expectation:** the character is docked (Farmer at Jita 4-4, station `60003760`, system Jita `30000142`), in a corporation. Same server setup as the R2–R6 spot tests (EveJS running, `npm run build:web`, `npm start`).
+
+1. Open `http://127.0.0.1:26500/dist/`, log in, and select the character (R2 flow).
+2. Click the **Chat** tab. It opens on **Local**, showing the **member roster** (every pilot in your system, including you) and the **recent messages**. It polls the open channel every ~4s.
+3. Type in the send box and **Send**. Your message appears in the Local backlog (confirm from a second client in the same system, e.g. the retail client or another browser login, that it shows up — and that your character is listed in their Local).
+4. Switch to the **Corp** tab: it shows your **corp roster** (your corp-mates who are online) and the **corp backlog**. Send a corp message; corp-mates polling corp (or the retail client) see it.
+5. Close the tab (switch away): polling stops. Undock and travel (R5b) to another system, then reopen Chat — **Local now reflects the new system** (the poll re-syncs presence on a dock/system-change).
+
+What to expect:
+
+- **READ is a backlog poll.** `POST /_evejs-web/v1/chat/read` returns the channel's live member roster + recent backlog; the BFF exposes it as `GET /api/bridge/chat/:channel`, which the panel polls while open and stops polling when closed. There is no chat push (that is G6).
+- **SEND.** `POST /_evejs-web/v1/chat/send` broadcasts to Local (`chatRuntime.broadcastLocalMessage`) or Corp (the session-derived corp broadcast); the BFF exposes it as `POST /api/bridge/chat/:channel/send`. A channel access failure or mute surfaces as the handler's own `CALL_REFUSED` reason.
+- **Presence.** The gateway calls `chatHub.joinLocalChannel` on select and `chatHub.moveLocalSession` on a system change; the corp channel record is ensured and the corp roster is derived from the session registry by `corporationID`. Core chat mechanics (`chatRuntime`/`chatHub`/`xmppStubServer`) are untouched — only called.
+- Proven in-process by eve.js `server/tests/webGatewayLocalChat.test.js` (join → visible in `getVisibleLocalSessions` + the read roster, send lands in the backlog + reads back, a second same-system pilot sees the char, a system change moves the room) and `server/tests/webGatewayCorpChat.test.js` (the browser char in the corp roster, session-derived by `corporationID`, corp send to the `corp_<id>` backlog reads back), plus web-side `test/bridgeChat.test.js`, `web/src/bridge/chat.test.ts`, and `web/src/app/chatFlow.test.ts`. This spot test is the live end-to-end run.
+
 ## Configuration
 
 Defaults assume both repos live under `C:\Users\ryanf\Documents\GitHub`:

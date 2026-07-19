@@ -1,6 +1,6 @@
 # Bridge wire contract (v1) — whitelisted `callMethod` path
 
-**Status:** Active, established by goal R1 (2026-07-18); extended by goal R2 (persistent browser-backed sessions, same date), goal R3 (2026-07-19, the bound-object bridge — see "Bound-object bridge (R3)"), goal R4 (agents/missions + deferred call responses), goal R5a (2026-07-19, the space bridge — see "Space bridge & session-into-space (R5a)"), goal R5b (2026-07-19, the client-side route solver + browser autopilot decide-loop — see "Client-side route solver & browser autopilot (R5b)"), goal R6 (2026-07-19, courier completion + the Step-12 reward readout — see "Courier completion & reward readout (R6)"), and goal R6a (2026-07-19, the Agent Finder — a static agent-list route + client-side jump-distance sort; see "Agent Finder static route (R6a)"). Later goals build on this contract; change it deliberately and update this file with the change.
+**Status:** Active, established by goal R1 (2026-07-18); extended by goal R2 (persistent browser-backed sessions, same date), goal R3 (2026-07-19, the bound-object bridge — see "Bound-object bridge (R3)"), goal R4 (agents/missions + deferred call responses), goal R5a (2026-07-19, the space bridge — see "Space bridge & session-into-space (R5a)"), goal R5b (2026-07-19, the client-side route solver + browser autopilot decide-loop — see "Client-side route solver & browser autopilot (R5b)"), goal R6 (2026-07-19, courier completion + the Step-12 reward readout — see "Courier completion & reward readout (R6)"), goal R6a (2026-07-19, the Agent Finder — a static agent-list route + client-side jump-distance sort; see "Agent Finder static route (R6a)"), and goal R7 (2026-07-19, Local + Corp chat — presence/read/send for the browser session; see "Local + Corp chat (R7)"). Later goals build on this contract; change it deliberately and update this file with the change.
 
 This is the transport seam that lets the browser drive real EveJS `Handle_*` calls. The unit it mirrors is the retail call tuple **(service, method, args, kwargs)**; the gateway dispatches it through the same seam a retail client hits: `serviceManager.lookup(service).callMethod(method, args, session, kwargs)`.
 
@@ -580,6 +580,70 @@ reconciles the docked station:
   ID is a `404 STATION_NOT_FOUND`. Read-only static reference data like
   `/api/map/graph` and `/api/map/resolve` — NOT a gateway/bridge call.
 
+## Local + Corp chat (R7)
+
+Retail chat runs over XMPP, and its delivery **deliberately bypasses** the
+`sendServiceNotification`/`sendNotification`/`sendSessionChange` surfaces the
+bridge drains — so polling the notification drain yields **zero** chat. Chat
+**READ** therefore comes from the **backlog store** every channel writes to
+(`chatRuntime.getChannelBacklog(roomName)`); there is no RPC that returns
+messages. The browser **polls** the read route on a modest interval (~4s) while
+the Chat panel is open and stops when it closes (full chat push is G6).
+
+This goal has an operator-authorized broader eve.js footprint: the gateway
+runtime/routes **and** a new chat-gateway helper
+(`gatewayServices/webChatGatewayService.js`) for the corp session-derived path.
+Core chat mechanics (`chatRuntime`/`chatHub`/`xmppStubServer`/`channelRules`
+delivery internals) are **not** modified — the helper only *calls* them.
+
+**Presence (a gateway side-effect).** The browser session's `sendSessionChange`
+is a capture stub, so retail's auto chat-sync never fires; the gateway syncs
+presence explicitly on select and on each read/send:
+
+- **Local** membership is derived live from the session registry
+  (`chatRuntime.getVisibleLocalSessions(roomName)`) — the browser session appears
+  once it is registered (it is, from select) and docked in the room's system. The
+  gateway calls `chatHub.joinLocalChannel(session)` on first sync (emits the
+  retail join to other occupants) and `chatHub.moveLocalSession(session,
+  prevSystemID)` when the session's solar system changes (a jump/dock). Local room
+  = `getLocalChatRoomNameForSolarSystemID(solarSystemID)`.
+- **Corp** has no session-derived membership in retail (it is XMPP-only, keyed by
+  real XMPP sockets). R7 adds a session-derived corp path mirroring Local: the
+  roster is enumerated from `sessionRegistry.getSessions()` filtered by
+  `corporationID` (per-character deduped like Local), and `ensureCorpChannel`
+  ensures the `corp_<id>` record. A browser session no-ops in `xmppStubServer`, so
+  none of the XMPP path is touched.
+
+### `POST /_evejs-web/v1/chat/read`
+
+Request: `{ "bridgeSessionID", "session"?: { "userid" }, "channel": "local"|"corp", "limit"? }`.
+Re-syncs presence, then returns the channel's current member roster + recent
+backlog for the held session, plus the drained notification backlog.
+
+Success (200): `{ "ok": true, "chat": { "channel", "roomName", "solarSystemID",
+"corporationID", "roster": [ { "characterID", "name", "corporationID",
+"allianceID", "solarSystemID", ... } ], "messages": [ { "characterID",
+"characterName", "message", "createdAtMs", ... } ] }, "notifications": [...] }`.
+`roster` rows are `chatRuntime.buildCharacterSummary` shapes; `messages` are the
+backlog entries. For Corp with no corporation, `corporationID` is null and the
+roster/messages are empty (no throw).
+
+### `POST /_evejs-web/v1/chat/send`
+
+Request: `{ "bridgeSessionID", "session"?: { "userid" }, "channel": "local"|"corp", "message" }`.
+Re-syncs presence, then broadcasts: **Local** via
+`chatRuntime.broadcastLocalMessage(session, message)`; **Corp** via the
+session-derived corp broadcast — `chatRuntime.sendChannelMessage(session,
+corp_<id>, message)`, which writes to the `corp_<id>` backlog (the same core
+append Local uses) and emits a `corp-message` runtime event — **NOT** an XMPP
+send. A channel access failure or mute surfaces as the core handler's own
+`CALL_REFUSED` (409); an empty message or unknown channel is `CALL_INVALID`
+(400); a corp send with no corporation is `CALL_REFUSED`.
+
+Success (200): `{ "ok": true, "chat": { "channel", "roomName", "sent": true,
+"entry": { "characterID", "characterName", "message", "createdAtMs" } },
+"notifications": [...] }`.
+
 ## BFF routes (this repo)
 
 `POST /api/bridge/call` — requires the signed web login session (else 401 `AUTH_REQUIRED`).
@@ -665,7 +729,25 @@ carries the handler's own reason, which the page shows as the last failure. A
 `SESSION_NOT_FOUND` drops the held bridge session (the page returns to character
 select).
 
-The server-side client is `src/eveGatewayClient.js`: `callMethod(service, method, args, kwargs, sessionFields, bridgeSessionID?)`, `selectCharacter(args, kwargs, sessionFields)`, `releaseBridgeSession(bridgeSessionID, sessionFields?)`, `readFlightStatus(bridgeSessionID, sessionFields)` (R5a), and the R3 bound-object pair `bindObject(service, method, args, kwargs, sessionFields, bridgeSessionID)` / `callBoundMethod(service, method, args, kwargs, sessionFields, bridgeSessionID, boundHandle)`. The TS browser client consumes the BFF routes only and never sees the bridgeSessionID or any boundHandle.
+### Chat routes (R7)
+
+All require the signed web login session and a held bridge session (else 409
+`NO_LIVE_SESSION`). The browser addresses channels by **name** (`local`/`corp`);
+the BFF holds the bridgeSessionID server-side. READ is a backlog poll — the Chat
+panel polls the open channel every ~4s and stops when closed.
+
+- `GET /api/bridge/chat/:channel` → `{ ok, chat, notifications }`. Reads the
+  channel's roster + recent backlog on the held session (gateway `/chat/read`).
+  An unknown `:channel` is `400 INVALID_CHANNEL`.
+- `POST /api/bridge/chat/:channel/send` `{ message }` → `{ ok, chat, notifications }`.
+  Broadcasts to the channel (gateway `/chat/send`). An empty/whitespace message
+  is `400 EMPTY_MESSAGE`; a channel access failure / mute / no-corporation is the
+  gateway's `CALL_REFUSED` (409).
+
+A `SESSION_NOT_FOUND` from either drops the held bridge session (the page returns
+to character select).
+
+The server-side client is `src/eveGatewayClient.js`: `callMethod(service, method, args, kwargs, sessionFields, bridgeSessionID?)`, `selectCharacter(args, kwargs, sessionFields)`, `releaseBridgeSession(bridgeSessionID, sessionFields?)`, `readFlightStatus(bridgeSessionID, sessionFields)` (R5a), `readChat(bridgeSessionID, channel, sessionFields, options?)` / `sendChat(bridgeSessionID, channel, message, sessionFields)` (R7), and the R3 bound-object pair `bindObject(service, method, args, kwargs, sessionFields, bridgeSessionID)` / `callBoundMethod(service, method, args, kwargs, sessionFields, bridgeSessionID, boundHandle)`. The TS browser client consumes the BFF routes only and never sees the bridgeSessionID or any boundHandle.
 
 ## Login semantics (who-cares, R1)
 
@@ -742,6 +824,20 @@ BFF/staticData-side by `test/agentFinder.test.js`. See "Agent Finder static rout
 (R6a)" above.
 
 R5b page pieces (Travel — browser autopilot): `web/src/nav/routeSolver.ts` (pure client-side BFS route solver over the system-adjacency graph), `web/src/nav/autopilotLoop.ts` (the framework-agnostic decide-loop controller — `createAutopilot(deps)` with `start`/`pause`/`resume`/`abort`/`tick`/`run`; the pure `decideAutopilotAction` maps flight-status → next atomic move), `app/api.ts` `loadSystemGraph`/`resolveDestination`, `app/flow.ts` `startRoute`/`pauseRoute`/`resumeRoute`/`abortRoute` (owns the graph cache + the single controller, wires its deps to the R5a flight routes and the store), the `travel` slice + `travel/planned`/`travel/progress`/`travel/plan-error`/`travel/cleared` feed events, and `web/src/ui/Travel.svelte` (Start/Pause/Resume/Abort + live readout, no map). The route solver + loop are unit-tested (`web/src/nav/routeSolver.test.ts`, `web/src/nav/autopilotLoop.test.ts` — a simulated docked→undock→warp→jump→approach→dock timeline proving each atomic call, approach-then-redock, pause-on-refusal, and no bridge call after abort), the flow by `web/src/app/travelFlow.test.ts`, and the BFF map routes by `test/bridgeMapGraph.test.js`. See "Client-side route solver & browser autopilot (R5b)" above.
+
+R7 page pieces (Chat — Local + Corp): the `chat` store slice (`ChatState`
+holding the active tab + per-channel `ChatChannelState`: roster + messages) +
+`chat/loaded`/`chat/active`/`chat/error`/`chat/cleared` feed events (cleared on
+character offline / logout), the decoder `web/src/bridge/chat.ts` (tolerant,
+`unwrapLong`-aware `decodeChatChannel`/`decodeChatChannelName`/`decodeSentMessage`),
+`app/api.ts` `readChat`/`sendChat` (against `GET /api/bridge/chat/:channel` +
+`POST /api/bridge/chat/:channel/send`), `app/flow.ts` `loadChat`/`sendChatMessage`/
+`setChatChannel` (a lost session unwinds to offline; other failures surface
+through the chat slice), and `web/src/ui/Chat.svelte` (Local/Corp sub-channel
+tabs, roster, message list, send box; polls the open channel every 4s via
+`onMount`/`onDestroy` and stops on close). Unit-tested by
+`web/src/bridge/chat.test.ts` (decoder), `web/src/app/chatFlow.test.ts` (flow),
+and BFF-side by `test/bridgeChat.test.js`. See "Local + Corp chat (R7)" above.
 
 ### How to add a page on the new stack (R2+)
 
