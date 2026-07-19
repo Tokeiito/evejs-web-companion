@@ -714,6 +714,10 @@ app.get("/api/bridge/inventory", requireAuth, async (req, res, next) => {
     return;
   }
   try {
+    // Sync held station/ship to the live position first, so the hangar/cargo
+    // binds target the CURRENT station + active ship after a new dock, not the
+    // select-time ones.
+    await readHeldFlight(held, req.webSessionID);
     const shipID = held.activeShipID;
     const hangarSpec = hangarBindSpec(held);
     const cargoSpec = shipID ? cargoBindSpec(held, shipID) : null;
@@ -943,6 +947,10 @@ app.get("/api/bridge/agents", requireAuth, async (req, res, next) => {
     return;
   }
   try {
+    // Sync the held station to the character's live position first, so a dock
+    // at a new station (autopilot arrival) lists THAT station's agents rather
+    // than the select-time station's.
+    await readHeldFlight(held, req.webSessionID);
     const outcome = await heldTopLevelCall(
       held,
       req.webSessionID,
@@ -1154,9 +1162,21 @@ function parkBindSpec(solarSystemID) {
 // character select), as with every held call.
 async function readHeldFlight(held, webSessionID) {
   try {
-    return await gateway.readFlightStatus(held.bridgeSessionID, {
+    const outcome = await gateway.readFlightStatus(held.bridgeSessionID, {
       userid: held.accountID,
     });
+    // Keep the held session's station in sync with the character's LIVE
+    // position. held.stationID is otherwise set only at select, so after the
+    // ship docks somewhere new (e.g. an autopilot arrival) the station-scoped
+    // reads (agents, inventory bind) would still target the select-time station
+    // until a full re-login. Adopt a real docked station here; leave the last
+    // station in place while in space (agents/inventory are docked-only). The
+    // active ship is owned by the board flow, so it is not synced here.
+    const flight = outcome && outcome.flight ? outcome.flight : {};
+    if (flight.docked === true && Number(flight.stationID) > 0) {
+      held.stationID = Number(flight.stationID);
+    }
+    return outcome;
   } catch (error) {
     if (error && error.code === "SESSION_NOT_FOUND") {
       bridgeSessions.delete(webSessionID);

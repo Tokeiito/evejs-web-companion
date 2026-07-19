@@ -101,6 +101,21 @@ function fakeGateway(overrides = {}) {
       calls.release.push({ bridgeSessionID, sessionFields });
       return { released: true, characterID: 7 };
     },
+    async readFlightStatus(bridgeSessionID, sessionFields) {
+      calls.flightStatus = calls.flightStatus || [];
+      calls.flightStatus.push({ bridgeSessionID, sessionFields });
+      // Docked at the same station: the station-sync keeps held.stationID here.
+      return {
+        flight: {
+          docked: true,
+          inSpace: false,
+          stationID: STATION_ID,
+          solarSystemID: 30000142,
+          shipID: ACTIVE_SHIP_ID,
+        },
+        notifications: [],
+      };
+    },
     async bindObject(service, method, args, kwargs, sessionFields, bridgeSessionID) {
       calls.bind.push({ service, method, args, kwargs, sessionFields, bridgeSessionID });
       return {
@@ -203,6 +218,33 @@ test("GET /api/bridge/inventory binds hangar + cargo and lists both; no handle r
   const methods = gateway.calls.boundCall.map((c) => `${c.method}(${c.args[0]})`);
   assert.ok(methods.includes("List(4)") && methods.includes("GetCapacity(4)"));
   assert.ok(methods.includes("List(5)") && methods.includes("GetCapacity(5)"));
+});
+
+test("a dock at a NEW station re-targets station-scoped reads (held station synced from live flight)", async () => {
+  const NEW_STATION = 60011866;
+  const gateway = fakeGateway({
+    // The character has since docked at a different station (e.g. an autopilot
+    // arrival) than the select-time one.
+    async readFlightStatus() {
+      return {
+        flight: { docked: true, inSpace: false, stationID: NEW_STATION, solarSystemID: 30000144, shipID: ACTIVE_SHIP_ID },
+        notifications: [],
+      };
+    },
+  });
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl); // select-time station is STATION_ID
+
+  const { payload } = await apiRequest(baseUrl, "/api/bridge/inventory");
+  assert.equal(payload.stationID, NEW_STATION, "inventory reflects the new docked station, not the select-time one");
+  assert.ok(
+    gateway.calls.bind.some((b) => b.method === "GetInventory" && b.args[0] === NEW_STATION),
+    "hangar bound at the NEW station",
+  );
+  assert.ok(
+    !gateway.calls.bind.some((b) => b.method === "GetInventory" && b.args[0] === STATION_ID),
+    "hangar not bound at the stale select-time station",
+  );
 });
 
 test("a bind handle is reused across reads (cached per semantic key)", async () => {
