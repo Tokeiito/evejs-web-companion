@@ -833,6 +833,367 @@ app.post("/api/bridge/ship/board", requireAuth, async (req, res, next) => {
   }
 });
 
+// --- R12 Ship fitting -------------------------------------------------------
+// Fitting is NOT a dedicated service: it is the SAME bound-object two-step the
+// R3 inventory routes above drive, with a SLOT flag instead of the hangar (4) /
+// cargo (5) flag. So `fit` and `unfit` are literally invbroker.Add through the
+// same boundCall + handle cache, and this section adds no new bind machinery.
+//
+//   read  slots      ship binding . ListByFlags(<every slot flag>)
+//   read  resources  dogmaIM.ShipGetInfo()        [top level, no bind]
+//   read  online     dogmaIM.ShipOnlineModules()  [top level, no bind]
+//   fit              ship binding . Add(moduleID, sourceID, {flag:<slot>})
+//   unfit            hangar/ship binding . Add(moduleID, shipID, {flag:4|5})
+//   online/offline   dogmaIM.SetModuleOnline / TakeModuleOffline
+//   remove a rig     ship binding . DestroyFitting(rigID)  -- DESTRUCTIVE
+//
+// The browser NEVER sends a slot flagID. It addresses a slot by FAMILY and
+// INDEX ("the third high slot"), and this module is the only place that knows
+// the numbers — which is what keeps raw flagIDs out of browser JS entirely.
+
+// Slot flag families (inventorycommon/const.py; mirrored server-side by
+// services/fitting/liveFittingState.js SLOT_FAMILY_FLAGS).
+const SLOT_FAMILY_FLAGS = Object.freeze({
+  high: Object.freeze([27, 28, 29, 30, 31, 32, 33, 34]),
+  mid: Object.freeze([19, 20, 21, 22, 23, 24, 25, 26]),
+  low: Object.freeze([11, 12, 13, 14, 15, 16, 17, 18]),
+  rig: Object.freeze([92, 93, 94, 95, 96, 97, 98, 99]),
+  subsystem: Object.freeze([125, 126, 127, 128, 129, 130, 131, 132]),
+});
+// Deliberately the SERVER's ranges (rig 92-99, subsystem 125-132), which are
+// wider than the retail client's own lists (92-94 / 125-128). The server clamps
+// each family to the ship's actual slot count anyway, so reading the wider
+// range costs nothing and never misses a slot this server considers legal.
+const ALL_SLOT_FLAGS = Object.freeze([
+  ...SLOT_FAMILY_FLAGS.low,
+  ...SLOT_FAMILY_FLAGS.mid,
+  ...SLOT_FAMILY_FLAGS.high,
+  ...SLOT_FAMILY_FLAGS.rig,
+  ...SLOT_FAMILY_FLAGS.subsystem,
+]);
+// flag 0 is flagAutoFit: the SERVER picks the slot. The panel offers this as
+// "first free slot" so a player never has to think in slot numbers at all.
+const ITEM_FLAG_AUTO_FIT = 0;
+
+// The ship's resource attributes (CPU / powergrid / capacitor / calibration)
+// ride back in the raw ShipGetInfo result and are decoded browser side, like
+// every other retail-shaped read here — see web/src/bridge/fitting.ts for the
+// dogma attribute IDs and why the capacitor read is capacity-or-charge.
+
+// Resolve a browser-addressed slot ("high", index 2) to its flagID. `family`
+// "auto" (or a missing index) means let the server choose the slot.
+function resolveSlotFlag(family, index) {
+  if (family === "auto") {
+    return ITEM_FLAG_AUTO_FIT;
+  }
+  const flags = SLOT_FAMILY_FLAGS[family];
+  if (!flags) {
+    return null;
+  }
+  const numericIndex = Number(index);
+  if (!Number.isSafeInteger(numericIndex) || numericIndex < 0 || numericIndex >= flags.length) {
+    return null;
+  }
+  return flags[numericIndex];
+}
+
+// The whole fitting panel: what is in every slot, the ship's resource
+// attributes, and which modules are online. The three reads are INDEPENDENT
+// (Promise.allSettled) so one failed read never blanks the rest — R2's rule,
+// as the inventory and rewards routes apply it.
+app.get("/api/bridge/fitting", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  try {
+    // Sync the held ship/station to the live position first, so the slot read
+    // binds the CURRENT active ship after a board or a dock elsewhere.
+    await readHeldFlight(held, req.webSessionID);
+    const shipID = held.activeShipID;
+    const noShip = () =>
+      Promise.reject(Object.assign(new Error("No active ship."), { code: "NO_ACTIVE_SHIP" }));
+    const [slots, shipInfo, online] = await Promise.allSettled([
+      shipID
+        ? boundCall(held, req.webSessionID, cargoBindSpec(held, shipID), "ListByFlags", [ALL_SLOT_FLAGS], null)
+        : noShip(),
+      shipID
+        ? heldTopLevelCall(held, req.webSessionID, "dogmaIM", "ShipGetInfo", [], null)
+        : noShip(),
+      shipID
+        ? heldTopLevelCall(held, req.webSessionID, "dogmaIM", "ShipOnlineModules", [], null)
+        : noShip(),
+    ]);
+
+    for (const settled of [slots, shipInfo, online]) {
+      if (settled.status === "rejected" && settled.reason && settled.reason.code === "SESSION_NOT_FOUND") {
+        next(settled.reason);
+        return;
+      }
+    }
+    const settledCode = (settled) =>
+      settled.status === "rejected"
+        ? String((settled.reason && settled.reason.code) || "READ_FAILED")
+        : null;
+    const settledValue = (settled) =>
+      settled.status === "fulfilled" ? settled.value.result : null;
+
+    res.json({
+      ok: true,
+      activeShipID: shipID,
+      stationID: held.stationID,
+      slots: settledValue(slots),
+      shipInfo: settledValue(shipInfo),
+      online: settledValue(online),
+      errors: {
+        slots: settledCode(slots),
+        shipInfo: settledCode(shipInfo),
+        online: settledCode(online),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Read just the slot rows — used to VERIFY a mutation actually landed. The
+// server can decline a fit SILENTLY (invbroker's SKILL_REQUIRED branch returns
+// null without raising a UserError), so a 200 from Add is not proof anything
+// moved. Every mutating route below re-reads and reports what really happened
+// rather than echoing an optimistic success.
+async function readFittedItemIDs(held, webSessionID, shipID) {
+  const outcome = await boundCall(
+    held,
+    webSessionID,
+    cargoBindSpec(held, shipID),
+    "ListByFlags",
+    [ALL_SLOT_FLAGS],
+    null,
+  );
+  return decodeFittedSlotMap(outcome.result);
+}
+
+// Decode an invbroker ListByFlags result to itemID -> flagID. Rows arrive as
+// packedrows (or, when empty, a python set wrapping an empty list).
+function decodeFittedSlotMap(result) {
+  let listValue = result;
+  if (listValue && listValue.type === "objectex1" && Array.isArray(listValue.header)) {
+    const token = listValue.header[0];
+    if (token && token.value === "__builtin__.set" && Array.isArray(listValue.header[1])) {
+      listValue = listValue.header[1][0] ?? null;
+    }
+  } else if (listValue && listValue.type === "object" && Array.isArray(listValue.args)) {
+    listValue = listValue.args[0] ?? null;
+  }
+  const items =
+    listValue && listValue.type === "list" && Array.isArray(listValue.items) ? listValue.items : [];
+  const byItemID = new Map();
+  for (const item of items) {
+    const fields = item && item.type === "packedrow" && item.fields ? item.fields : item;
+    if (!fields || typeof fields !== "object") {
+      continue;
+    }
+    const itemID = Number(fields.itemID) || 0;
+    if (itemID > 0) {
+      byItemID.set(itemID, Number(fields.flagID) || 0);
+    }
+  }
+  return byItemID;
+}
+
+// Fit a module from the station hangar or the ship's own cargo into a slot.
+// The bound object is the SHIP (the destination); the source location is the
+// station when fitting from the hangar and the ship when fitting from cargo.
+app.post("/api/bridge/fitting/fit", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const body = req.body || {};
+  const itemID = Number(body.itemID) || 0;
+  const source = String(body.source || "hangar");
+  const family = String(body.family || "auto");
+  const slotFlag = resolveSlotFlag(family, body.index);
+  if (itemID <= 0 || slotFlag === null || (source !== "hangar" && source !== "cargo")) {
+    res.status(400).json({
+      ok: false,
+      error: "INVALID_FIT",
+      message: "A module, a source of 'hangar' or 'cargo', and a real slot are required.",
+    });
+    return;
+  }
+  const shipID = held.activeShipID;
+  if (!shipID) {
+    res.status(409).json({ ok: false, error: "NO_ACTIVE_SHIP", message: "No active ship to fit to." });
+    return;
+  }
+  try {
+    const outcome = await boundCall(
+      held,
+      req.webSessionID,
+      cargoBindSpec(held, shipID),
+      "Add",
+      [itemID, source === "cargo" ? shipID : held.stationID],
+      { qty: 1, flag: slotFlag },
+    );
+    // Verify: a silent decline is indistinguishable from success at the call
+    // seam, so the answer is what the SLOTS say afterwards.
+    const fitted = await readFittedItemIDs(held, req.webSessionID, shipID);
+    res.json({
+      ok: true,
+      applied: fitted.has(itemID),
+      notifications: outcome.notifications,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Unfit a module back to the station hangar (docked) or the ship's cargo. The
+// same Add, reversed: the DESTINATION container is the bound object, the ship
+// is the source location, and the flag is the hangar/cargo flag.
+app.post("/api/bridge/fitting/unfit", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const body = req.body || {};
+  const itemID = Number(body.itemID) || 0;
+  const destination = String(body.destination || "hangar");
+  if (itemID <= 0 || (destination !== "hangar" && destination !== "cargo")) {
+    res.status(400).json({
+      ok: false,
+      error: "INVALID_UNFIT",
+      message: "A module and a destination of 'hangar' or 'cargo' are required.",
+    });
+    return;
+  }
+  const shipID = held.activeShipID;
+  if (!shipID) {
+    res.status(409).json({ ok: false, error: "NO_ACTIVE_SHIP", message: "No active ship to unfit from." });
+    return;
+  }
+  const destSpec =
+    destination === "cargo" ? cargoBindSpec(held, shipID) : hangarBindSpec(held);
+  try {
+    const outcome = await boundCall(
+      held,
+      req.webSessionID,
+      destSpec,
+      "Add",
+      [itemID, shipID],
+      { qty: 1, flag: destination === "cargo" ? ITEM_FLAG_CARGO_HOLD : ITEM_FLAG_HANGAR },
+    );
+    const fitted = await readFittedItemIDs(held, req.webSessionID, shipID);
+    res.json({
+      ok: true,
+      applied: !fitted.has(itemID),
+      notifications: outcome.notifications,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Bring a fitted module online or take it offline. Top-level dogmaIM calls: the
+// handler resolves the ship from the session. The handler ALSO owns the CPU /
+// powergrid / capacitor gating, and answers a refusal with its own reason
+// ("You do not have enough CPU to online that module.") — which arrives here as
+// a typed CALL_REFUSED and is passed through untouched. The BFF never
+// pre-judges whether a module can be onlined.
+app.post("/api/bridge/fitting/state", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const body = req.body || {};
+  const itemID = Number(body.itemID) || 0;
+  const online = body.online === true;
+  if (itemID <= 0) {
+    res.status(400).json({ ok: false, error: "INVALID_MODULE", message: "A module is required." });
+    return;
+  }
+  const shipID = held.activeShipID;
+  if (!shipID) {
+    res.status(409).json({ ok: false, error: "NO_ACTIVE_SHIP", message: "No active ship." });
+    return;
+  }
+  try {
+    const outcome = await heldTopLevelCall(
+      held,
+      req.webSessionID,
+      "dogmaIM",
+      online ? "SetModuleOnline" : "TakeModuleOffline",
+      [shipID, itemID],
+      null,
+    );
+    res.json({ ok: true, online, notifications: outcome.notifications });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// DESTROY a fitted rig. Rigs cannot be unfitted — removing one destroys it —
+// so this route is the only destructive fitting action, and it refuses unless
+// the caller explicitly confirms. That is a second gate behind the web UI's own
+// two-step confirmation: neither a stray click nor a stray POST can lose a rig.
+app.post("/api/bridge/fitting/destroy-rig", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const body = req.body || {};
+  const itemID = Number(body.itemID) || 0;
+  if (itemID <= 0) {
+    res.status(400).json({ ok: false, error: "INVALID_MODULE", message: "A rig is required." });
+    return;
+  }
+  if (body.confirm !== true) {
+    res.status(400).json({
+      ok: false,
+      error: "CONFIRMATION_REQUIRED",
+      message: "Removing a rig destroys it. This action must be confirmed explicitly.",
+    });
+    return;
+  }
+  const shipID = held.activeShipID;
+  if (!shipID) {
+    res.status(409).json({ ok: false, error: "NO_ACTIVE_SHIP", message: "No active ship." });
+    return;
+  }
+  try {
+    // Only a RIG may go through this route: the server refuses a non-rig
+    // anyway, but checking here means a mis-aimed call is a clear 400 rather
+    // than a silent no-op the player has to infer from the panel.
+    const before = await readFittedItemIDs(held, req.webSessionID, shipID);
+    const flagID = before.get(itemID);
+    if (flagID === undefined || !SLOT_FAMILY_FLAGS.rig.includes(flagID)) {
+      res.status(400).json({
+        ok: false,
+        error: "NOT_A_RIG",
+        message: "That module is not a rig on the active ship; unfit it instead.",
+      });
+      return;
+    }
+    const outcome = await boundCall(
+      held,
+      req.webSessionID,
+      cargoBindSpec(held, shipID),
+      "DestroyFitting",
+      [itemID],
+      null,
+    );
+    const after = await readFittedItemIDs(held, req.webSessionID, shipID);
+    res.json({
+      ok: true,
+      applied: !after.has(itemID),
+      notifications: outcome.notifications,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // R4 Agents & Missions (agentMgr bridge). Agent list is a top-level read on the
 // held session (retail agentMgr.GetAgents().Clone()); conversation, briefing,
 // and journal use the bound agent (Moniker('agentMgr', agentID)). The browser

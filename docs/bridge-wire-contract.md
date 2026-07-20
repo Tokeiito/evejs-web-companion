@@ -81,6 +81,19 @@ Current pairs (defined in `eve.js` `server/src/_secondary/express/evejsWebGatewa
 | `account` | `GetCashBalance` | R6 (Step-12 wallet read — personal `GetCashBalance(0)`) |
 | `LPSvc` | `GetAllMyCharacterWalletLPBalances` | R6 (Step-12 loyalty-point read) |
 | `standingMgr` | `GetCharStandings` | R6 (Step-12 character standings read) |
+| `invbroker` | `ListByFlags` | R12 (bound: read what is fitted, per slot flag) |
+| `invbroker` | `DestroyFitting` | R12 (bound: **destroy** a rig — irreversible) |
+| `dogmaIM` | `ShipGetInfo` | R12 (top-level: the ship's dogma attributes) |
+| `dogmaIM` | `ShipOnlineModules` | R12 (top-level: which fitted modules are online) |
+| `dogmaIM` | `SetModuleOnline` | R12 (top-level: bring a module online) |
+| `dogmaIM` | `TakeModuleOffline` | R12 (top-level: take a module offline) |
+
+R12 adds **no** fit/unfit pair: fitting and unfitting are `invbroker.Add` with a
+slot flag, already listed for R3. `dogmaIM.GetAllInfo` is deliberately **not**
+listed even though it would serve the same read — it is the session bootstrap
+call and fires post-response side effects (`afterCallResponse` → post-GetAllInfo
+charge refresh, post-undock dogma multi-event, character dogma state sync), and
+a panel refresh must not replay a session bootstrap.
 
 Deny-by-default governs **bound-object methods too**: a method invoked on a bound handle whose `(service, method)` is not on this list is refused with `CALL_NOT_ALLOWED` before the handle's OID is resolved. See "Bound-object bridge (R3)" below.
 
@@ -379,6 +392,117 @@ of the scene entity (null when docked or the scene is gone). The read touches
 only the live session scalars the gateway already holds plus a best-effort
 `spaceRuntime.getEntity` (lazy-required, mirroring `teardownBrowserSession`), so
 it stays within the `_secondary/express` footprint.
+
+## Ship fitting (R12)
+
+**Fitting is not a dedicated service.** It is the SAME `invbroker` bound-object
+two-step the R3 inventory bridge drives, with a **slot flag** instead of the
+hangar (4) / cargo (5) flag — so it reuses the bind + handle cache verbatim and
+adds no new bind machinery. (`fittingMgr` is saved fitting *templates*, not live
+fitting, and is out of scope.)
+
+| action | call |
+| --- | --- |
+| read the fit | ship binding → `invbroker.ListByFlags([<every slot flag>])` |
+| read resources | `dogmaIM.ShipGetInfo()` — **top level**, no bind |
+| read online state | `dogmaIM.ShipOnlineModules()` — **top level**, no bind |
+| fit a module | ship binding → `invbroker.Add(moduleID, sourceLocationID, {qty:1, flag:<slot>})` |
+| unfit a module | hangar/ship binding → `invbroker.Add(moduleID, shipID, {qty:1, flag:4\|5})` |
+| online / offline | `dogmaIM.SetModuleOnline([shipID, moduleID])` / `TakeModuleOffline` |
+| remove a rig | ship binding → `invbroker.DestroyFitting(rigID)` — **destroys it** |
+
+`sourceLocationID` is the station when fitting from the hangar and the ship when
+fitting from its own cargo; the destination is the bound object and is never
+repeated in the args. The three `dogmaIM` reads/actions are top-level because
+each handler resolves the character's active ship from the **session** itself.
+
+### Slot flags and how the browser addresses a slot
+
+Slot flagIDs (`inventorycommon/const.py`; mirrored by
+`server/src/services/fitting/liveFittingState.js` `SLOT_FAMILY_FLAGS`):
+
+| family | flags |
+| --- | --- |
+| low | 11–18 |
+| mid | 19–26 |
+| high | 27–34 |
+| rig | 92–99 |
+| subsystem | 125–132 |
+| hangar / cargo / auto-fit | 4 / 5 / **0** |
+
+These are the **server's** ranges. The retail client's own rig and subsystem
+lists are narrower (92–94 and 125–128); the server clamps each family to the
+ship's real slot count anyway (`getSlotFlagsForFamily("rig", 597, …)` → `[92,93,94]`
+for a Punisher), so reading the wider range never invents a slot and never
+misses one this server considers legal.
+
+**The browser never sends a flagID.** It addresses a slot by **family + index**
+("the third high slot"), and the BFF is the only place that maps that to a flag
+— which is what keeps raw flagIDs out of browser JS entirely (R7d). `family:
+"auto"` maps to flag 0 (`flagAutoFit`) and lets the **server** pick the slot.
+
+### Dogma attributes the panel reads
+
+From `dogmaIM.ShipGetInfo()`, whose result is
+`{type:"dict", entries:[[shipID, util.KeyVal{itemID, invItem, attributes:{attributeID: value}, …}]]}`.
+IDs cross-checked against this build's `TYPE_DOGMA.attributeTypesByID` names, not
+assumed:
+
+| reading | attribute IDs |
+| --- | --- |
+| CPU | **48** output / **49** load |
+| Powergrid | **11** output / **15** load |
+| Capacitor | **482** capacity, **18** charge, **55** recharge time |
+| Calibration | **1132** capacity / **1152** used (`upgradeLoad`) |
+| Slot counts | **12** low / **13** mid / **14** high / **1137** rig / **1366** subsystem |
+
+⚠ **A docked ship reports 482 and 55 as `null`** and carries its effective
+capacitor in **18** (`charge`). The panel therefore reads capacity-**or**-charge;
+this is pinned by the gateway suite's `ShipGetInfo` test, and it is the
+difference between a working capacitor bar and a blank one in station.
+
+### ⚠ A refusal can be SILENT — never trust a 200
+
+`invbroker`'s fit validation raises a `UserError` for most refusals, but several
+branches (notably `SKILL_REQUIRED`) return `null` **without raising**:
+`_throwFittingMoveUserError` has no case for them, so `Add` simply does nothing
+and the bridge answers 200 with `result: null`. **A successful response is not
+proof a fit happened.** Every mutating BFF route below therefore RE-READS the
+slots afterwards and reports `applied` — what actually changed, not what was
+asked for. A silent decline surfaces to the player as *"The server did not apply
+that change, and gave no reason"*: honest, where naming a cause would be a guess.
+
+A thrown refusal is different and better: it carries the **handler's own** reason
+(`"You do not have enough CPU to online that module."`,
+`NotEnoughCapacitorForOnline`, `CannotOnlineReachedMaxGroupOnline`, …) through as
+a typed `CALL_REFUSED` (409), passed to the browser verbatim.
+
+### BFF fitting routes (this repo)
+
+Handles stay server-side; the slot read reuses the **same** `cargo:<shipID>`
+bind as the R3 cargo read (one cached handle, not two).
+
+- `GET /api/bridge/fitting` → `{ ok, activeShipID, stationID, slots, shipInfo,
+  online, errors: { slots, shipInfo, online } }`. The three reads are independent
+  (`Promise.allSettled`), so a failed resource read still shows the fit and vice
+  versa. Raw retail-shaped results, decoded browser-side
+  (`web/src/bridge/fitting.ts`).
+- `POST /api/bridge/fitting/fit` `{ itemID, source: "hangar"|"cargo", family, index? }`
+  → `Add` with the resolved slot flag; answers `{ ok, applied }`.
+- `POST /api/bridge/fitting/unfit` `{ itemID, destination: "hangar"|"cargo" }`
+  → the same `Add` reversed; answers `{ ok, applied }`.
+- `POST /api/bridge/fitting/state` `{ itemID, online }` →
+  `dogmaIM.SetModuleOnline` / `TakeModuleOffline`.
+- `POST /api/bridge/fitting/destroy-rig` `{ itemID, confirm: true }` →
+  `invbroker.DestroyFitting`. **Refuses with 400 `CONFIRMATION_REQUIRED` unless
+  `confirm === true`**, and with 400 `NOT_A_RIG` for anything not sitting in a
+  rig slot on the active ship. This is the second gate behind the UI's own
+  two-step confirmation: a rig is destroyed, never returned to the hangar, so
+  neither a stray click nor a stray POST can lose one.
+
+Decoded browser side into slots (`FittingSlot` = family + index + the module or
+`null`) and resource readings (`FittingResource` = used / total / `known`), with
+`known: false` rendering as an unknown bar rather than a misleading `0 / 0`.
 
 ## Space snapshot — overview + ship HUD (R11)
 

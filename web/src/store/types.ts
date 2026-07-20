@@ -104,6 +104,66 @@ export interface InventoryState {
   readonly actionError: string | null;
 }
 
+// --- R12 Ship fitting ------------------------------------------------------
+
+/** The slot families a fitting window groups modules into. */
+export type SlotFamily = "high" | "mid" | "low" | "rig" | "subsystem";
+
+/** A module sitting in a slot. Named in the UI by typeID via the name cache. */
+export interface FittedModule {
+  readonly itemID: number;
+  readonly typeID: number;
+  readonly groupID: number | null;
+  /** True when the server reports this module as currently online. */
+  readonly online: boolean;
+}
+
+/**
+ * One slot of the active ship, empty or filled. `index` is the slot's position
+ * within its family — the browser addresses a slot by (family, index) and
+ * never by its flagID, which lives only on the BFF and in bridge/fitting.ts.
+ */
+export interface FittingSlot {
+  readonly family: SlotFamily;
+  readonly index: number;
+  readonly module: FittedModule | null;
+}
+
+/** One used-vs-total reading (CPU, powergrid, capacitor, calibration). */
+export interface FittingResource {
+  readonly used: number;
+  readonly total: number;
+  /** False when the ship reported no total; the bar renders as unknown. */
+  readonly known: boolean;
+}
+
+export interface FittingResources {
+  readonly cpu: FittingResource;
+  readonly powergrid: FittingResource;
+  readonly capacitor: FittingResource;
+  readonly calibration: FittingResource;
+}
+
+/**
+ * The Fitting page state (goal R12): the active ship's slots by family with
+ * what is fitted in each, plus the ship's resource readings. Every read is
+ * independent on the BFF, so a failed one carries its own error and never
+ * blanks the rest.
+ */
+export interface FittingState {
+  readonly activeShipID: number | null;
+  readonly slots: readonly FittingSlot[];
+  readonly resources: FittingResources;
+  /** True once a fitting read has populated the slice. */
+  readonly loaded: boolean;
+  /** Non-null when the slot read failed (the resource bars still show). */
+  readonly slotsError: string | null;
+  /** Non-null when the resource read failed (the slots still show). */
+  readonly resourcesError: string | null;
+  /** Non-null when the last fitting action failed or was declined. */
+  readonly actionError: string | null;
+}
+
 // --- R4 Agents & Missions --------------------------------------------------
 
 /**

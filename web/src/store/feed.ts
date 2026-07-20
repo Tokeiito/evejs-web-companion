@@ -25,6 +25,8 @@ import type {
   CharStanding,
   CourierBriefing,
   FlightStatus,
+  FittingResources,
+  FittingSlot,
   InventoryContainerState,
   JournalState,
   LiveNotification,
@@ -98,6 +100,23 @@ export type FeedEvent =
   | { readonly type: "inventory/action-error"; readonly message: string | null }
   // Drop the inventory state (character offline / logged out).
   | { readonly type: "inventory/cleared" }
+  // Goal R12 — the Fitting page. A full panel load: the active ship's slots by
+  // family with what is fitted in each, plus its CPU / powergrid / capacitor /
+  // calibration readings. The two reads are independent on the BFF, so each
+  // carries its own error and one failure never blanks the other.
+  | {
+      readonly type: "fitting/loaded";
+      readonly activeShipID: number | null;
+      readonly slots: readonly FittingSlot[];
+      readonly resources: FittingResources;
+      readonly slotsError: string | null;
+      readonly resourcesError: string | null;
+    }
+  // A fitting action (fit/unfit/online/offline/destroy) failed or was declined;
+  // null clears the error after a clean action.
+  | { readonly type: "fitting/action-error"; readonly message: string | null }
+  // Drop the fitting state (character offline / logged out).
+  | { readonly type: "fitting/cleared" }
   // Goal R4 — the Agents & Missions page (agentMgr bridge). The station's
   // agent roster (decoded + filtered to the docked station by the BFF).
   | { readonly type: "agents/list"; readonly stationID: number | null; readonly agents: readonly AgentRow[] }

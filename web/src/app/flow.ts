@@ -11,6 +11,7 @@ import {
   getStationItemBits,
 } from "../bridge/stationPanel.ts";
 import { decodeContainer, decodeInventoryRows } from "../bridge/inventoryShip.ts";
+import { buildSlots, decodeResources } from "../bridge/fitting.ts";
 import {
   AGENT_BUTTON,
   decodeBriefing,
@@ -35,6 +36,7 @@ import type {
   ChatChannel,
   DestinationMatch,
   FlightStatus,
+  SlotFamily,
   StationStatic,
 } from "../store/types.ts";
 import {
@@ -82,6 +84,26 @@ export interface AppFlow {
   stackContainer(target: "hangar" | "cargo"): Promise<void>;
   /** Board a hangar ship (it becomes active), then refresh. */
   boardShip(shipID: number): Promise<void>;
+  /** Load the Fitting panel (the active ship's slots + resource readings). */
+  loadFitting(): Promise<void>;
+  /**
+   * Fit a module from the station hangar or the ship's cargo. `slot` picks a
+   * specific slot by family + index, or "auto" to let the SERVER choose one.
+   */
+  fitModule(
+    itemID: number,
+    source: "hangar" | "cargo",
+    slot: { readonly family: SlotFamily; readonly index: number } | "auto",
+  ): Promise<void>;
+  /** Unfit a module back to the station hangar or the ship's cargo. */
+  unfitModule(itemID: number, destination: "hangar" | "cargo"): Promise<void>;
+  /** Bring a fitted module online, or take it offline. */
+  setModuleOnline(itemID: number, online: boolean): Promise<void>;
+  /**
+   * DESTROY a fitted rig. Rigs cannot be unfitted, so this is irreversible —
+   * the panel confirms before calling it and the BFF confirms again.
+   */
+  destroyRig(itemID: number): Promise<void>;
   /** Load the docked station's agent roster (agentMgr.GetAgents). */
   loadAgents(): Promise<void>;
   /** Open a conversation with an agent (bound DoAction(None)). */
@@ -420,6 +442,71 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       return;
     }
     await loadInventory();
+  }
+
+  // --- R12 Ship fitting ----------------------------------------------------
+
+  // Load the Fitting panel. The slot read and the resource read are
+  // INDEPENDENT on the BFF, so each keeps its own error and a failed resource
+  // read still shows the fit (and vice versa). A lost session unwinds to
+  // select, exactly as loadInventory does.
+  async function loadFitting(): Promise<void> {
+    let reads: Awaited<ReturnType<typeof api.loadFitting>>;
+    try {
+      reads = await api.loadFitting(callOptions);
+    } catch (error) {
+      if (isSessionLost(error)) {
+        stopLiveStream();
+        store.apply({ type: "character/offline" });
+      }
+      throw error;
+    }
+    store.apply({
+      type: "fitting/loaded",
+      activeShipID: reads.activeShipID,
+      slots: buildSlots(reads.slots, reads.shipInfo, reads.online),
+      resources: decodeResources(reads.shipInfo),
+      slotsError: reads.errors.slots || reads.errors.online,
+      resourcesError: reads.errors.shipInfo,
+    });
+  }
+
+  /**
+   * Run a fitting action, then reload the panel so it shows SERVER truth.
+   *
+   * Two refusal shapes have to be handled, and they are not the same thing:
+   *  - a THROWN refusal carries the handler's own reason (e.g. "You do not
+   *    have enough CPU to online that module.") and is surfaced verbatim;
+   *  - a SILENT decline returns success while nothing moved (invbroker's
+   *    fit validation does this for a module you lack the skill for). The BFF
+   *    re-reads the slots and reports `applied: false`; saying only that the
+   *    server declined is honest, where naming a cause would be a guess.
+   */
+  async function runFittingAction(
+    action: () => Promise<{ readonly applied: boolean } | void>,
+  ): Promise<void> {
+    let declined = false;
+    try {
+      const outcome = await action();
+      declined = outcome !== undefined && outcome !== null && outcome.applied === false;
+    } catch (error) {
+      if (isSessionLost(error)) {
+        stopLiveStream();
+        store.apply({ type: "character/offline" });
+        throw error;
+      }
+      store.apply({ type: "fitting/action-error", message: readErrorReason(error) });
+      return;
+    }
+    await loadFitting();
+    // loadFitting clears the action error on success, so a silent decline is
+    // recorded AFTER the reload or it would be wiped by its own refresh.
+    if (declined) {
+      store.apply({
+        type: "fitting/action-error",
+        message: "The server did not apply that change, and gave no reason.",
+      });
+    }
   }
 
   // --- R4 Agents & Missions ------------------------------------------------
@@ -1239,6 +1326,24 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
     async boardShip(shipID) {
       await runMutation(() => api.boardShip(shipID, callOptions));
+    },
+
+    loadFitting,
+
+    async fitModule(itemID, source, slot) {
+      await runFittingAction(() => api.fitModule(itemID, source, slot, callOptions));
+    },
+
+    async unfitModule(itemID, destination) {
+      await runFittingAction(() => api.unfitModule(itemID, destination, callOptions));
+    },
+
+    async setModuleOnline(itemID, online) {
+      await runFittingAction(() => api.setModuleOnline(itemID, online, callOptions));
+    },
+
+    async destroyRig(itemID) {
+      await runFittingAction(() => api.destroyRig(itemID, callOptions));
     },
 
     loadAgents,

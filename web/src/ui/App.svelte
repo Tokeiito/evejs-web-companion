@@ -8,6 +8,7 @@
   import CharacterSelect from "./CharacterSelect.svelte";
   import StationPanel from "./StationPanel.svelte";
   import InventoryShip from "./InventoryShip.svelte";
+  import Fitting from "./Fitting.svelte";
   import AgentsMissions from "./AgentsMissions.svelte";
   import AgentFinder from "./AgentFinder.svelte";
   import Flight from "./Flight.svelte";
@@ -29,7 +30,15 @@
   // Which docked page is showing. Local UI state only (the store mirrors EveJS
   // state, not view navigation).
   let page = $state<
-    "station" | "inventory" | "agents" | "finder" | "flight" | "overview" | "travel" | "chat"
+    | "station"
+    | "inventory"
+    | "fitting"
+    | "agents"
+    | "finder"
+    | "flight"
+    | "overview"
+    | "travel"
+    | "chat"
   >("station");
 </script>
 
@@ -45,6 +54,9 @@
     </button>
     <button type="button" class:active={page === "inventory"} onclick={() => (page = "inventory")}>
       Inventory &amp; Ship
+    </button>
+    <button type="button" class:active={page === "fitting"} onclick={() => (page = "fitting")}>
+      Fitting
     </button>
     <button type="button" class:active={page === "agents"} onclick={() => (page = "agents")}>
       Agents &amp; Missions
@@ -69,6 +81,8 @@
     <StationPanel {store} {flow} />
   {:else if page === "inventory"}
     <InventoryShip {store} {flow} />
+  {:else if page === "fitting"}
+    <Fitting {store} {flow} />
   {:else if page === "agents"}
     <AgentsMissions {store} {flow} />
   {:else if page === "finder"}

@@ -8,7 +8,12 @@
 
 import { BridgeCallError } from "../bridge/callMethod.ts";
 import type { JsonValue } from "../bridge/wire.ts";
-import type { AgentRow, OnlineCharacterState, StationStatic } from "../store/types.ts";
+import type {
+  AgentRow,
+  OnlineCharacterState,
+  SlotFamily,
+  StationStatic,
+} from "../store/types.ts";
 import type { NameRef } from "../store/names.ts";
 
 export interface LoginResult {
@@ -247,6 +252,111 @@ export async function boardShip(
   options: ApiOptions = {},
 ): Promise<void> {
   await postJson("/api/bridge/ship/board", { shipID }, options);
+}
+
+// --- R12 Ship fitting ------------------------------------------------------
+// The BFF drives the same bound-object two-step as the inventory routes (a
+// slot flag instead of hangar/cargo) and returns the raw retail-shaped reads,
+// decoded in the flow with bridge/fitting.ts. The browser addresses a SLOT by
+// family + index ("the third high slot") — slot flagIDs live on the BFF only.
+
+/** The raw fitting reads (retail-shaped; decoded in the flow). */
+export interface RawFittingReads {
+  readonly activeShipID: number | null;
+  readonly slots: JsonValue;
+  readonly shipInfo: JsonValue;
+  readonly online: JsonValue;
+  readonly errors: {
+    readonly slots: string | null;
+    readonly shipInfo: string | null;
+    readonly online: string | null;
+  };
+}
+
+/** Read the active ship's fitting: slots, resources, and online state. */
+export async function loadFitting(options: ApiOptions = {}): Promise<RawFittingReads> {
+  const data = await getJson("/api/bridge/fitting", options);
+  const errors = (data.errors ?? {}) as Record<string, JsonValue>;
+  return {
+    activeShipID: asNumberOrNull(data.activeShipID),
+    slots: data.slots ?? null,
+    shipInfo: data.shipInfo ?? null,
+    online: data.online ?? null,
+    errors: {
+      slots: typeof errors.slots === "string" ? errors.slots : null,
+      shipInfo: typeof errors.shipInfo === "string" ? errors.shipInfo : null,
+      online: typeof errors.online === "string" ? errors.online : null,
+    },
+  };
+}
+
+/**
+ * A fitting change's outcome. `applied` is the BFF's RE-READ of the slots
+ * after the call, not an echo of the request: the server can decline a fit
+ * silently (a module you have no skill for simply does not move), so a
+ * successful response is not on its own proof anything happened.
+ */
+export interface FittingChangeResult {
+  readonly applied: boolean;
+}
+
+/** Fit a module from the station hangar or the ship's cargo into a slot. */
+export async function fitModule(
+  itemID: number,
+  source: "hangar" | "cargo",
+  slot: { readonly family: SlotFamily; readonly index: number } | "auto",
+  options: ApiOptions = {},
+): Promise<FittingChangeResult> {
+  const body: Record<string, JsonValue> =
+    slot === "auto"
+      ? { itemID, source, family: "auto" }
+      : { itemID, source, family: slot.family, index: slot.index };
+  const data = await postJson("/api/bridge/fitting/fit", body, options);
+  return { applied: data.applied === true };
+}
+
+/** Unfit a module back to the station hangar or the ship's cargo. */
+export async function unfitModule(
+  itemID: number,
+  destination: "hangar" | "cargo",
+  options: ApiOptions = {},
+): Promise<FittingChangeResult> {
+  const data = await postJson(
+    "/api/bridge/fitting/unfit",
+    { itemID, destination },
+    options,
+  );
+  return { applied: data.applied === true };
+}
+
+/**
+ * Bring a fitted module online or take it offline. A refusal (not enough CPU
+ * or powergrid, capacitor, max online of that group) arrives as the handler's
+ * OWN message on a typed BridgeCallError — it is never guessed here.
+ */
+export async function setModuleOnline(
+  itemID: number,
+  online: boolean,
+  options: ApiOptions = {},
+): Promise<void> {
+  await postJson("/api/bridge/fitting/state", { itemID, online }, options);
+}
+
+/**
+ * DESTROY a fitted rig. Rigs cannot be unfitted — removing one destroys it —
+ * so the BFF refuses this call outright unless `confirm` is true. The UI asks
+ * first; this flag is the second gate behind that.
+ */
+export async function destroyRig(
+  itemID: number,
+  options: ApiOptions = {},
+): Promise<FittingChangeResult> {
+  const data = await postJson(
+    "/api/bridge/fitting/destroy-rig",
+    { itemID, confirm: true },
+    options,
+  );
+  return { applied: data.applied === true };
 }
 
 // --- R4 Agents & Missions (agentMgr bridge) --------------------------------

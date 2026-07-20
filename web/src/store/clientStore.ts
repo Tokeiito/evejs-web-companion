@@ -26,6 +26,9 @@ import type {
   ChatState,
   CharacterSummary,
   FlightState,
+  FittingResources,
+  FittingSlot,
+  FittingState,
   InventoryContainerState,
   InventoryState,
   LiveState,
@@ -80,6 +83,7 @@ export interface ClientState {
   readonly character: CharacterSlice;
   readonly station: StationSlice;
   readonly inventory: InventoryState;
+  readonly fitting: FittingState;
   readonly agents: AgentsState;
   readonly finder: AgentFinderState;
   readonly rewards: RewardsState;
@@ -124,6 +128,26 @@ const INITIAL_INVENTORY: InventoryState = Object.freeze({
   hangar: EMPTY_CONTAINER,
   cargo: EMPTY_CONTAINER,
   loaded: false,
+  actionError: null,
+});
+
+// A resource reading with no total: `known: false` renders as an unknown bar
+// rather than a misleading 0 / 0.
+const UNKNOWN_RESOURCE = Object.freeze({ used: 0, total: 0, known: false });
+const EMPTY_RESOURCES: FittingResources = Object.freeze({
+  cpu: UNKNOWN_RESOURCE,
+  powergrid: UNKNOWN_RESOURCE,
+  capacitor: UNKNOWN_RESOURCE,
+  calibration: UNKNOWN_RESOURCE,
+});
+
+const INITIAL_FITTING: FittingState = Object.freeze({
+  activeShipID: null,
+  slots: Object.freeze([]) as readonly FittingSlot[],
+  resources: EMPTY_RESOURCES,
+  loaded: false,
+  slotsError: null,
+  resourcesError: null,
   actionError: null,
 });
 
@@ -244,6 +268,7 @@ export interface ClientStore {
   readonly character: ReadableSignal<CharacterSlice>;
   readonly station: ReadableSignal<StationSlice>;
   readonly inventory: ReadableSignal<InventoryState>;
+  readonly fitting: ReadableSignal<FittingState>;
   readonly agents: ReadableSignal<AgentsState>;
   readonly finder: ReadableSignal<AgentFinderState>;
   readonly rewards: ReadableSignal<RewardsState>;
@@ -280,6 +305,7 @@ export function createClientStore(): ClientStore {
   const character = createSignal<CharacterSlice>(INITIAL_CHARACTER);
   const station = createSignal<StationSlice>(INITIAL_STATION);
   const inventory = createSignal<InventoryState>(INITIAL_INVENTORY);
+  const fitting = createSignal<FittingState>(INITIAL_FITTING);
   const agents = createSignal<AgentsState>(INITIAL_AGENTS);
   const finder = createSignal<AgentFinderState>(INITIAL_FINDER);
   const rewards = createSignal<RewardsState>(INITIAL_REWARDS);
@@ -303,6 +329,7 @@ export function createClientStore(): ClientStore {
     character: character.get(),
     station: station.get(),
     inventory: inventory.get(),
+    fitting: fitting.get(),
     agents: agents.get(),
     finder: finder.get(),
     rewards: rewards.get(),
@@ -330,6 +357,7 @@ export function createClientStore(): ClientStore {
         character.set(INITIAL_CHARACTER);
         station.set(INITIAL_STATION);
         inventory.set(INITIAL_INVENTORY);
+        fitting.set(INITIAL_FITTING);
         agents.set(INITIAL_AGENTS);
         finder.set(INITIAL_FINDER);
         rewards.set(INITIAL_REWARDS);
@@ -372,6 +400,7 @@ export function createClientStore(): ClientStore {
           station: event.station,
         });
         inventory.set(INITIAL_INVENTORY);
+        fitting.set(INITIAL_FITTING);
         agents.set(INITIAL_AGENTS);
         finder.set(INITIAL_FINDER);
         rewards.set(INITIAL_REWARDS);
@@ -384,6 +413,7 @@ export function createClientStore(): ClientStore {
       case "character/offline":
         station.set(INITIAL_STATION);
         inventory.set(INITIAL_INVENTORY);
+        fitting.set(INITIAL_FITTING);
         agents.set(INITIAL_AGENTS);
         finder.set(INITIAL_FINDER);
         rewards.set(INITIAL_REWARDS);
@@ -446,6 +476,24 @@ export function createClientStore(): ClientStore {
         break;
       case "inventory/cleared":
         inventory.set(INITIAL_INVENTORY);
+        break;
+      case "fitting/loaded":
+        fitting.set({
+          activeShipID: event.activeShipID,
+          slots: [...event.slots],
+          resources: event.resources,
+          loaded: true,
+          slotsError: event.slotsError,
+          resourcesError: event.resourcesError,
+          // A successful load clears any stale action error.
+          actionError: null,
+        });
+        break;
+      case "fitting/action-error":
+        fitting.set({ ...fitting.get(), actionError: event.message });
+        break;
+      case "fitting/cleared":
+        fitting.set(INITIAL_FITTING);
         break;
       case "agents/list":
         agents.set({
@@ -756,6 +804,7 @@ export function createClientStore(): ClientStore {
     character: readonlySignal(character),
     station: readonlySignal(station),
     inventory: readonlySignal(inventory),
+    fitting: readonlySignal(fitting),
     agents: readonlySignal(agents),
     finder: readonlySignal(finder),
     rewards: readonlySignal(rewards),
