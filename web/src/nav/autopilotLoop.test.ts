@@ -10,6 +10,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  MAX_SILENT_DOCK_ATTEMPTS,
   MAX_WARP_ATTEMPTS,
   WARP_EXIT_VARIANCE_M,
   createAutopilot,
@@ -625,15 +626,22 @@ test("ladder: a GATE inside 2500 m is JUMPED, not approached", () => {
   assert.equal(gateDecisionAt(2500).kind, "approach");
 });
 
-test("ladder: a STATION inside 50 km is DOCKED, not approached", () => {
-  for (const metres of [0, 25_000, 49_999]) {
+test("ladder: a STATION inside its 2.5 km docking radius is DOCKED, not approached", () => {
+  // R24 slice B — the gate is `DEFAULT_STATION_DOCKING_RADIUS` (runtime.js:700)
+  // measured as SURFACE distance, not the 50 km `maxDockingDistance`, which is
+  // only retail's outer hand-off trigger.
+  for (const metres of [0, 1_000, 2_499]) {
     const action = stationDecisionAt(metres);
     assert.equal(action.kind, "dock", `${metres} m from the station`);
     if (action.kind === "dock") {
       assert.equal(action.stationID, DEST_STATION);
     }
   }
-  assert.equal(stationDecisionAt(50_000).kind, "approach", "50 km exactly is outside");
+  assert.equal(stationDecisionAt(2_500).kind, "approach", "2.5 km exactly is outside");
+  // And the distance R13 docked from is now closed in on instead: firing Dock
+  // out here only earns a `DockingApproach` refusal (beyonceService.js:3013).
+  assert.equal(stationDecisionAt(25_000).kind, "approach");
+  assert.equal(stationDecisionAt(49_999).kind, "approach");
 });
 
 test("ladder: the close-range rule is per target KIND, as retail splits it", () => {
@@ -914,7 +922,9 @@ test("a measured run flies the route with no refusal: warp, approach, jump, warp
       if (dest === GATE_ORIGIN) {
         grid.gate = 1_000;
       } else {
-        grid.station = 10_000;
+        // Inside the station's real 2.5 km docking radius (R24 slice B) — a
+        // followBall on a station runs the ship right up to the hull.
+        grid.station = 1_000;
       }
     },
     getSpaceSnapshot: async () => {
@@ -980,4 +990,121 @@ test("an unexpected refusal still PAUSES rather than guessing, even when measuri
 
   assert.equal(controller.snapshot().status, "paused");
   assert.match(String(controller.snapshot().failureReason), /standing/i);
+});
+
+// --- R24 slice B: the smart Dock command ------------------------------------
+
+test("Dock ladder: a zero-hop plan warps, approaches and docks, and only ARRIVES when flight status says docked", async () => {
+  // Retail's Dock is `GetCloseAndTryCommand(itemID, RealDock, interactionRange=2500)`
+  // driven by `__NavigateSystemTo`, re-armed every 2000 ms. The same ladder,
+  // the same loop, no second autopilot: a plan with NO hops whose destination
+  // is the station.
+  const DOCK_ONLY: RoutePlan = {
+    destinationSystemID: DEST_SYSTEM,
+    destinationStationID: DEST_STATION,
+    destinationName: "Destination Station",
+    hops: [],
+  };
+  const mock = makeMock({ dockRefusals: 0 });
+  mock.state.docked = false;
+  mock.state.inSpace = true;
+  mock.state.system = DEST_SYSTEM;
+  mock.state.stationID = null;
+  mock.state.shipMode = "STOP";
+
+  // The ship starts a long way out; each move closes the gap the way the sim
+  // would. The dock rung is the server's real 2.5 km SURFACE radius.
+  let range = 900_000_000;
+  const { deps } = makeDeps(mock);
+  const controller = createAutopilot({
+    ...deps,
+    warp: async (dest: number) => {
+      await mock.warp(dest);
+      range = 60_000; // a station warp lands you close, but not docked
+    },
+    approach: async (dest: number) => {
+      await mock.approach(dest);
+      range = 800; // followBall runs the ship up to the hull
+    },
+    getSpaceSnapshot: async () =>
+      mock.state.docked
+        ? null
+        : gridSnapshot(DEST_STATION, range, DEST_SYSTEM, mock.state.shipMode),
+  });
+
+  controller.start(DOCK_ONLY);
+  await drive(controller, 120);
+
+  assert.deepEqual(
+    mock.calls.map((c) => c.m),
+    ["warp", "approach", "dock"],
+    "close the distance, then dock — each chosen from the measurement",
+  );
+  // And the ONLY thing that made it "arrived" is the flight status coming back
+  // docked at this station. The Dock call itself resolved without throwing on
+  // the very first attempt, which on this server proves nothing.
+  assert.equal(controller.snapshot().status, "arrived");
+  assert.equal(mock.state.docked, true);
+});
+
+test("Dock ladder: a Dock that returns fine but does not dock is bounded, and stops with a reason", async () => {
+  // `Handle_CmdDock` can return 200/null WITHOUT docking (beyonceService.js:3031-3042).
+  // Here the call always succeeds and the ship is never docked: the loop must
+  // stop asking rather than re-issuing Dock forever.
+  const DOCK_ONLY: RoutePlan = {
+    destinationSystemID: DEST_SYSTEM,
+    destinationStationID: DEST_STATION,
+    destinationName: "Destination Station",
+    hops: [],
+  };
+  let docks = 0;
+  const deps: AutopilotDeps = {
+    getStatus: async () =>
+      status({ inSpace: true, shipMode: "STOP", solarSystemID: DEST_SYSTEM }),
+    // In range for the whole run — so the ladder keeps choosing dock.
+    getSpaceSnapshot: async () => gridSnapshot(DEST_STATION, 800, DEST_SYSTEM),
+    undock: async () => {},
+    warp: async () => {},
+    approach: async () => {},
+    jump: async () => {},
+    dock: async () => {
+      docks += 1;
+    },
+    sleep: async () => {},
+    now: () => 0,
+    onProgress: () => {},
+    isSessionLost: () => false,
+    refusalReason: (error) => String((error as Error).message || error),
+  };
+  const controller = createAutopilot(deps);
+  controller.start(DOCK_ONLY);
+  await drive(controller, 400);
+
+  assert.ok(docks > 0, "it does try");
+  assert.notEqual(controller.snapshot().status, "arrived", "a 200 is not proof it docked");
+  assert.equal(controller.snapshot().status, "paused", "it gives up rather than spinning");
+  assert.ok(
+    String(controller.snapshot().failureReason).length > 0,
+    "and says why, in the loop's own words",
+  );
+});
+
+test("Dock ladder: a REFUSED dock is not a silent decline — the generous refusal bound still applies", async () => {
+  // The two failure modes must not be conflated. A `DockingApproach` refusal is
+  // the server TELLING us to close in, and on the unmeasured fallback path that
+  // legitimately repeats many times while the ship covers the last stretch — so
+  // it is governed by MAX_DOCK_ATTEMPTS (30), not by the much tighter
+  // silent-decline bound.
+  const mock = makeMock({ dockRefusals: MAX_SILENT_DOCK_ATTEMPTS + 5 });
+  const { deps } = makeDeps(mock);
+  const controller = createAutopilot(deps);
+
+  controller.start(PLAN);
+  await drive(controller, 200);
+
+  assert.equal(controller.snapshot().status, "arrived", "it waits the refusals out");
+  assert.ok(
+    mock.calls.filter((c) => c.m === "dock").length > MAX_SILENT_DOCK_ATTEMPTS,
+    "and re-issued dock more times than the silent-decline bound allows",
+  );
 });

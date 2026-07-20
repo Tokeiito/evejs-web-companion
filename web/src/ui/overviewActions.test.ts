@@ -368,3 +368,103 @@ test("activateModule is called WITHOUT naming an effect — the server picks it"
   const call = SOURCE.slice(SOURCE.indexOf("flow.activateModule("));
   assert.doesNotMatch(call.slice(0, 200), /effect:/, "the panel must not name an effect");
 });
+
+// --- R24 slice B: the Dock action on the overview row ------------------------
+
+const STATION_ID = 60003760;
+
+/** One ball of a chosen runtime kind, alongside the ship, rendered in the panel. */
+function renderWithEntity(kind: string, itemID: number): string {
+  const store = createClientStore();
+  store.apply({
+    type: "space/snapshot",
+    snapshot: {
+      inSpace: true,
+      solarSystemID: 30000142,
+      shipID: SHIP_ID,
+      sampledAtMs: 1,
+      entities: [
+        {
+          kind,
+          itemID,
+          typeID: ORE_TYPE_ID,
+          groupID: 15,
+          categoryID: 3,
+          name: "Jita IV - Moon 4",
+          ownerID: 1,
+          radius: 12000,
+          position: { x: 400_000, y: 0, z: 0 },
+          velocity: { x: 0, y: 0, z: 0 },
+          isSelf: false,
+          shieldRatio: null,
+          armorRatio: null,
+          hullRatio: null,
+          characterID: null,
+          corporationID: null,
+          allianceID: null,
+          securityStatus: null,
+          maxVelocity: null,
+          mode: null,
+          capacitorRatio: null,
+          remainingQuantity: null,
+          miningYieldTypeID: null,
+          beltID: null,
+        },
+      ],
+      ship: {
+        itemID: SHIP_ID,
+        typeID: 606,
+        name: "Ibis",
+        mode: "STOP",
+        maxVelocity: 300,
+        radius: 30,
+        position: { x: 0, y: 0, z: 0 },
+        velocity: { x: 0, y: 0, z: 0 },
+        shieldRatio: 1,
+        armorRatio: 1,
+        hullRatio: 1,
+        capacitorRatio: 1,
+        shieldCapacity: 300,
+        armorCapacity: 300,
+        hullCapacity: 300,
+        activeModuleIDs: [],
+      },
+    },
+  });
+  return render(Overview, { props: { store, flow: fakeFlow() } }).body;
+}
+
+test("R24: a station row offers Dock; a rock row does not", () => {
+  const station = renderWithEntity("station", STATION_ID);
+  assert.match(visibleText(station), /\bDock\b/, "a station is something you can dock at");
+  // Dockable is decided from the server's own kind for the ball — not guessed
+  // from the name, the distance, or the category number.
+  assert.doesNotMatch(
+    visibleText(renderWithEntity("asteroid", ROCK_ID)),
+    /\bDock\b/,
+    "you cannot dock at a rock",
+  );
+});
+
+test("R24: Dock is a real button in the shared row-actions group, and calls dockAt", () => {
+  // dockAt is the ladder (close the distance, then dock); flow.dock is the raw
+  // single command. The row must offer the one that finishes the job.
+  assert.match(SOURCE, /flow\.dockAt\(row\.itemID\)/);
+  const station = renderWithEntity("station", STATION_ID);
+  assert.match(station, /class="row-actions"/);
+  assert.equal(/<a\s+href="#/.test(station), false, "actions are buttons, not fake links");
+});
+
+test("R24: the station row keeps the standing invariants (no ids, plain words, data-label)", () => {
+  const body = renderWithEntity("station", STATION_ID);
+  const text = visibleText(body);
+  for (const id of [STATION_ID, SHIP_ID, ORE_TYPE_ID]) {
+    assert.equal(new RegExp(`\b${id}\b`).test(text), false, `${id} must not be visible`);
+  }
+  for (const jargon of ["CmdDock", "DockingApproach", "stationID", "surface distance", "bridge"]) {
+    assert.equal(text.includes(jargon), false, `"${jargon}" is developer vocabulary`);
+  }
+  for (const cell of body.match(/<td\b[^>]*>/g) ?? []) {
+    assert.match(cell, /data-label="/, `every <td> needs data-label; saw ${cell}`);
+  }
+});

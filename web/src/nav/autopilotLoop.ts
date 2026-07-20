@@ -47,8 +47,35 @@ import type { RouteHop } from "./routeSolver.ts";
 
 /** `maxStargateJumpingDistance` — inside this, jump instead of closing in. */
 export const MAX_STARGATE_JUMPING_DISTANCE_M = 2_500;
-/** `maxDockingDistance` — inside this, dock instead of closing in. */
+/**
+ * `maxDockingDistance` — retail's OUTER hand-off trigger only. Inside it the
+ * long-haul autopilot stops routing and hands the last leg to the Dock command;
+ * it is NOT the distance at which a station will actually take you.
+ *
+ * Kept exported because it names a real retail threshold, but the ladder no
+ * longer decides on it — see STATION_DOCKING_RADIUS_M.
+ */
 export const MAX_DOCKING_DISTANCE_M = 50_000;
+
+/**
+ * R24 slice B — THE REAL DOCK GATE. `DEFAULT_STATION_DOCKING_RADIUS`
+ * (runtime.js:700) is 2,500 m, tested by `canShipDockAtStation` (runtime.js:7563)
+ * against `getShipDockingDistanceToStation` (runtime.js:7550):
+ *
+ *     distance(centres) - shipRadius - getStationInteractionRadius(station)
+ *
+ * and `getStationInteractionRadius` (runtime.js:7453) returns the station's own
+ * radius whenever it has one — so that expression is exactly the SURFACE
+ * distance this module already measures. 2,500 m surface, not 50,000.
+ *
+ * Firing `CmdDock` from further out is not harmless: `Handle_CmdDock`
+ * (beyonceService.js:2994) both STARTS an approach and REFUSES with
+ * `DockingApproach` (:3013-3025), and nothing auto-docks on arrival — so every
+ * early Dock is a refusal the client has to absorb, and the client has to
+ * re-issue anyway. Deciding on the server's own radius asks once, when it will
+ * work.
+ */
+export const STATION_DOCKING_RADIUS_M = 2_500;
 /** `minWarpDistance` — inside this, approach; beyond it, warp. */
 export const MIN_WARP_DISTANCE_M = 150_000;
 
@@ -292,6 +319,16 @@ const MAX_JUMP_ATTEMPTS = 6;
 // ticks it takes to start, and a warp in progress is caught by the mid-warp
 // wait long before this.
 export const MAX_WARP_ATTEMPTS = 3;
+// R24 slice B — the SAME hole on the dock branch. `MAX_DOCK_ATTEMPTS` above
+// only counts REFUSALS, so it never fired for the other failure mode this
+// server has: `Handle_CmdDock` returning 200/null without docking
+// (beyonceService.js:3031-3042 — WARP_LANDING_PENDING, STATION_NOT_FOUND,
+// SHIP_IMMOBILE, DOCKING_APPROACH_REQUIRED all arrive as `ok:true`). In range
+// and never docking, the ladder would choose dock every tick forever. Counted
+// like the warp branch: consecutive dock decisions for the same station, reset
+// by any other move. Generous, because the honest case — dock, wait for the sim
+// to seat the ship — legitimately takes a few ticks.
+export const MAX_SILENT_DOCK_ATTEMPTS = 10;
 // A flight-status read can time out transiently while the server loads a
 // system scene during a jump handoff — the ship is fine, so retry a few cycles
 // before pausing rather than giving up on the first slow read.
@@ -333,6 +370,8 @@ interface LoopMemory {
   warpTargetID: number | null;
   /** Consecutive warp decisions for `warpTargetID` with nothing in between. */
   warpAttempts: number;
+  /** Consecutive dock decisions with nothing in between (the silent-decline bound). */
+  silentDockAttempts: number;
   statusReadFailures: number;
   settleTicks: number;
   action: string | null;
@@ -356,6 +395,7 @@ function freshMemory(): LoopMemory {
     jumpAttempts: 0,
     warpTargetID: null,
     warpAttempts: 0,
+    silentDockAttempts: 0,
     statusReadFailures: 0,
     settleTicks: 0,
     action: null,
@@ -436,8 +476,10 @@ function decideFromDistance(
       : null;
   }
 
-  // 2. Inside docking range of a station/structure -> dock.
-  if (kind === "station" && distance < MAX_DOCKING_DISTANCE_M) {
+  // 2. Inside the station's own docking radius -> dock. R24 slice B corrects
+  //    this from 50 km (retail's outer hand-off trigger) to the 2,500 m SURFACE
+  //    radius the server actually tests — see STATION_DOCKING_RADIUS_M.
+  if (kind === "station" && distance < STATION_DOCKING_RADIUS_M) {
     return { kind: "dock", stationID: targetID, label: labels.jumpOrDock };
   }
 
@@ -786,6 +828,11 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotController {
 
     if (action.kind === "dock") {
       if (isDockingApproach(reason)) {
+        // The server REFUSED and said why, so this is not the silent-decline
+        // case: hand the counting back to MAX_DOCK_ATTEMPTS, which is bounded
+        // far more generously because closing the last stretch legitimately
+        // takes many re-issues on the unmeasured fallback path.
+        memory.silentDockAttempts = 0;
         memory.dockAttempts += 1;
         if (memory.dockAttempts > MAX_DOCK_ATTEMPTS) {
           setPause(`Could not reach docking range after ${memory.dockAttempts} attempts.`);
@@ -948,6 +995,22 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotController {
     } else if (action.kind !== "wait") {
       memory.warpTargetID = null;
       memory.warpAttempts = 0;
+    }
+
+    // R24 slice B — and the same bound on dock, for the same reason. Arrival is
+    // decided by `isAtDestination` reading `docked` back out of FLIGHT STATUS,
+    // so a Dock that answers 200 and seats nobody simply never ends the loop.
+    if (action.kind === "dock") {
+      memory.silentDockAttempts += 1;
+      if (memory.silentDockAttempts > MAX_SILENT_DOCK_ATTEMPTS) {
+        setPause(
+          "The station accepted the request but has not taken the ship. Autopilot stopped.",
+        );
+        emit();
+        return { kind: "pause", reason: memory.failureReason ?? "not docking" };
+      }
+    } else if (action.kind !== "wait") {
+      memory.silentDockAttempts = 0;
     }
 
     memory.action = actionText(action);

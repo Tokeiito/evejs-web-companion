@@ -217,3 +217,86 @@ test("abortRoute after start marks the travel state aborted", async () => {
 
   assert.equal(store.travel.get().status, "aborted");
 });
+
+// --- R24 slice B: the smart Dock command ------------------------------------
+
+const IN_SPACE_ALPHA = {
+  inSpace: true,
+  docked: false,
+  solarSystemID: 1,
+  stationID: null,
+  structureID: null,
+  shipID: 9001,
+  shipMode: "STOP",
+  shipSpeedFraction: 0,
+};
+
+/** The default responder, but with the ship in space rather than docked. */
+function inSpaceResponder(path: string): { status: number; body: unknown } {
+  if (path === "/api/bridge/flight/status") {
+    return { status: 200, body: { ok: true, flight: IN_SPACE_ALPHA, notifications: [] } };
+  }
+  if (path === "/api/bridge/space/snapshot") {
+    return { status: 200, body: { ok: true, space: null, notifications: [] } };
+  }
+  if (path.startsWith("/api/bridge/flight/")) {
+    return { status: 200, body: { ok: true, result: null, flight: IN_SPACE_ALPHA, notifications: [] } };
+  }
+  return defaultResponder(path);
+}
+
+test("dockAt hands the SAME decide-loop a zero-hop plan for the station (no second autopilot)", async () => {
+  const store = createClientStore();
+  const flow = createAppFlow(store, { fetch: makeFakeFetch(inSpaceResponder) });
+
+  await flow.dockAt(60000001); // a station in Alpha, our current system
+  flow.abortRoute();
+
+  const travel = store.travel.get();
+  assert.equal(travel.destinationStationID, 60000001, "the station is the destination");
+  assert.equal(travel.destinationSystemID, 1, "in the system we are already in");
+  assert.equal(travel.totalJumps, 0);
+  assert.equal(travel.route.length, 0, "no hops: Dock never routes between systems");
+  // R7d — the readout carries a NAME, never the id.
+  assert.equal(typeof travel.destinationName, "string");
+});
+
+test("dockAt never treats the Dock call's 200 as docked — arrival comes from flight status", async () => {
+  // The confirmed hazard: `Handle_CmdDock` can return 200/null WITHOUT docking
+  // (beyonceService.js:3031-3042 — WARP_LANDING_PENDING, STATION_NOT_FOUND,
+  // SHIP_IMMOBILE, DOCKING_APPROACH_REQUIRED all reach the browser as ok:true).
+  // Here EVERY movement call answers 200, and flight status keeps saying the
+  // ship is in space. The loop must not reach "arrived".
+  const store = createClientStore();
+  const flow = createAppFlow(store, { fetch: makeFakeFetch(inSpaceResponder) });
+
+  await flow.dockAt(60000001);
+  // Let the background loop take a few ticks against the lying server.
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const status = store.travel.get().status;
+  flow.abortRoute();
+
+  assert.notEqual(status, "arrived", "a 200 from Dock is not proof the ship docked");
+});
+
+test("dockAt at the station you are already in says so instead of starting a loop", async () => {
+  const store = createClientStore();
+  const flow = createAppFlow(store, { fetch: makeFakeFetch(defaultResponder) }); // docked at 60000001
+
+  await flow.dockAt(60000001);
+
+  assert.match(String(store.travel.get().failureReason), /already docked/i);
+  assert.equal(store.travel.get().destinationStationID, null, "no plan was started");
+});
+
+test("dockAt refuses a non-station id with a reason, not a request", async () => {
+  const store = createClientStore();
+  const flow = createAppFlow(store, {
+    fetch: makeFakeFetch(() => {
+      throw new Error("no request should be made");
+    }),
+  });
+
+  await flow.dockAt(0);
+  assert.match(String(store.travel.get().failureReason), /not a station/i);
+});

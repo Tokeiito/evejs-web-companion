@@ -345,6 +345,13 @@
     (snapshot?.entities ?? []).filter((entity) => entity.kind === "asteroid").length,
   );
 
+  // R24 slice B — a row you can DOCK at. The server tells us what each ball is
+  // (its runtime kind), so a station is a station by data, not by guessing from
+  // its name or its distance.
+  function isDockable(row: SpaceEntity): boolean {
+    return row.kind === "station" || row.kind === "structure";
+  }
+
   // Which locked target a module is switched on AGAINST. Modules that act on
   // the ship itself ignore it; the server refuses with its own reason when a
   // module needs a target and none is chosen, and that reason is shown as-is.
@@ -754,6 +761,23 @@
                     >
                       Align to
                     </button>
+                    <!--
+                      R24 slice B — Dock, and mean it. Unlike the buttons above
+                      this is not a single move: it closes the distance itself
+                      (warp, then approach) and docks when the ship is actually
+                      in range, reporting each phase in the Travel readout and
+                      stopping with the station's own reason if it cannot get
+                      there. Only offered on something you can dock at.
+                    -->
+                    {#if isDockable(row)}
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onclick={() => run(() => flow.dockAt(row.itemID))}
+                      >
+                        Dock
+                      </button>
+                    {/if}
                     <!--
                       R23 — lock / release. GENERIC: this is the same button a
                       later combat goal uses, on the same row, for the same

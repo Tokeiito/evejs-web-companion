@@ -368,8 +368,22 @@ export interface AppFlow {
   reprocessItems(itemIDs: readonly number[]): Promise<void>;
   /** Jump through an NPC stargate (fromGate -> toGate). */
   jump(fromGateID: number, toGateID: number): Promise<void>;
-  /** Dock at the destination station. */
+  /**
+   * Dock at the destination station — ONE `CmdDock`, no closing in. Out of
+   * range the server starts an approach and refuses, and the caller has to
+   * re-issue; for a Dock that closes the distance itself, use `dockAt`.
+   */
   dock(stationID: number): Promise<void>;
+  /**
+   * R24 slice B — DOCK, the way retail's menu means it: close the distance and
+   * then dock. Runs the same browser decide-loop the travel autopilot runs (one
+   * loop, not two) over a zero-hop plan whose destination is this station, so
+   * it warps, approaches and docks in whatever order the measurement calls for,
+   * reports which phase it is in, and stops with the server's own reason if it
+   * cannot get there. Arrival is confirmed from FLIGHT STATUS, never from the
+   * Dock call's 200.
+   */
+  dockAt(stationID: number): Promise<void>;
   /**
    * R6a — find agents from the static reference table (default courier),
    * annotate each with jumps from the current system (a single client-side
@@ -2233,6 +2247,107 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     void autopilot.run();
   }
 
+  // --- R24 slice B: the smart Dock command ---------------------------------
+  //
+  // Retail sequences docking CLIENT-side and there is exactly one server call in
+  // it. `menusvc.py:2981 Dock` -> `DockStation` ->
+  // `GetCloseAndTryCommand(itemID, RealDock, interactionRange=2500)` ->
+  // `autopilot.py:503 __NavigateSystemTo`, re-armed every 2000 ms, evaluating:
+  // in warp -> do nothing; within the docking radius -> fire Dock and stop;
+  // too far to close under sublight -> warp; otherwise -> approach; and if none
+  // of that can make progress, give up with a reason.
+  //
+  // That IS the decide-loop this app already runs. So Dock does not get its own
+  // autopilot: it gets a zero-hop plan handed to the SAME controller, at the
+  // same 2000 ms cadence, with the same measurement, the same settle windows and
+  // the same bounds — including R24 slice A's warp floor and warp counter. The
+  // ladder's dock rung now tests the server's real 2,500 m surface radius
+  // (STATION_DOCKING_RADIUS_M), so Dock is asked once, when it will work,
+  // instead of being fired at 50 km to be refused.
+  //
+  // ⚠ A 200 IS NOT PROOF, twice over here:
+  //   * out of range `Handle_CmdDock` (beyonceService.js:2994) starts an
+  //     approach AND refuses with `DockingApproach` (:3013-3025) — nothing
+  //     auto-docks on arrival, the client must come back;
+  //   * and it can return 200/null WITHOUT docking (:3031-3042) —
+  //     `WARP_LANDING_PENDING`, `STATION_NOT_FOUND`, `SHIP_IMMOBILE` and
+  //     `DOCKING_APPROACH_REQUIRED` all reach the browser as `ok:true`.
+  // So nothing here reads the Dock response to decide it worked. The loop's
+  // arrival test is `isAtDestination`, which is `docked === true` AND the
+  // station id matching, both read back from `flight-status`.
+  async function dockAt(stationID: number): Promise<void> {
+    store.apply({ type: "travel/plan-error", message: null });
+    if (!(stationID > 0)) {
+      store.apply({ type: "travel/plan-error", message: "That is not a station to dock at." });
+      return;
+    }
+
+    // Where are we? Also the session check, and the origin system for the plan.
+    let status: FlightStatus;
+    try {
+      const step = await api.getFlightStatus(callOptions);
+      status = decodeFlightStatus(step.flight);
+      void observeFlightStatus(status);
+    } catch (error) {
+      if (isSessionLost(error)) {
+        stopLiveStream();
+        store.apply({ type: "character/offline" });
+        throw error;
+      }
+      store.apply({
+        type: "travel/plan-error",
+        message: `Could not read your location: ${readErrorReason(error)}`,
+      });
+      return;
+    }
+
+    if (status.docked && status.stationID === stationID) {
+      // Already there. Say so rather than starting a loop that would only
+      // discover it on its first tick.
+      store.apply({ type: "travel/plan-error", message: "You are already docked here." });
+      return;
+    }
+    if (status.solarSystemID === null) {
+      store.apply({ type: "travel/plan-error", message: "Your current solar system is unknown." });
+      return;
+    }
+
+    // The station's NAME, for the readout (R7d: the panel must never show the
+    // id). Static reference data, best-effort — an unnamed station still docks.
+    let destinationName: string | null = null;
+    try {
+      const resolved = await api.resolveDestination(stationID, callOptions);
+      destinationName = resolved.kind === "station" ? resolved.stationName : resolved.systemName;
+    } catch {
+      destinationName = null;
+    }
+
+    // A plan with NO hops: same system, one station to reach. Everything else
+    // about the loop is unchanged.
+    const plan: RoutePlan = {
+      destinationSystemID: status.solarSystemID,
+      destinationStationID: stationID,
+      destinationName,
+      hops: [],
+    };
+
+    store.apply({
+      type: "travel/planned",
+      destinationSystemID: status.solarSystemID,
+      destinationStationID: stationID,
+      destinationName,
+      route: [],
+      totalJumps: 0,
+      startedAt: Date.now(),
+    });
+
+    if (!autopilot) {
+      autopilot = createAutopilot(makeAutopilotDeps());
+    }
+    autopilot.start(plan);
+    void autopilot.run();
+  }
+
   // R7a — search the static map by name so a player can set a destination
   // without knowing EVE IDs. The static /api/map/find read (login-gated, no
   // bridge session) returns systems + stations; we annotate each with jumps from
@@ -2795,6 +2910,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     async dock(stationID) {
       await runFlightStep("Dock", () => api.dock(stationID, callOptions));
     },
+    dockAt,
 
     findAgents,
 

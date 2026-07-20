@@ -248,6 +248,20 @@
         Station ID
         <input type="number" min="1" bind:value={dockStationID} placeholder="destination station ID" />
       </label>
+      <!--
+        R24 slice B — two different things, named as two different things.
+        "Dock" is the raw single command: it only works if the ship is already
+        alongside. "Take me there and dock" closes the distance first — it
+        warps, approaches and then docks, and it keeps going until the station
+        has actually taken the ship or it can tell you why not.
+      -->
+      <button
+        type="button"
+        disabled={busy || parseID(dockStationID) === 0}
+        onclick={() => run(() => flow.dockAt(parseID(dockStationID)))}
+      >
+        Take me there and dock
+      </button>
       <button
         type="button"
         disabled={busy || parseID(dockStationID) === 0}
@@ -257,8 +271,10 @@
       </button>
     </p>
     <p class="note">
-      Docking needs the ship to be in range — warp closer first if it is too
-      far. Refresh flight status to confirm.
+      Dock on its own needs the ship to be alongside already. Take me there and
+      dock will fly the rest of the way for you and report each step as it goes.
+      Either way the station itself confirms it — the ship is only docked once
+      your flight status says so.
     </p>
   </section>
 {/if}
