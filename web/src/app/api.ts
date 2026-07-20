@@ -10,6 +10,7 @@ import { BridgeCallError } from "../bridge/callMethod.ts";
 import type { JsonValue } from "../bridge/wire.ts";
 import type {
   AgentRow,
+  IndustryActivity,
   InventoryPlace,
   OnlineCharacterState,
   SlotFamily,
@@ -600,6 +601,112 @@ export async function loadIndustryDefinitions(
   return typeof definitions === "object" && definitions !== null && !Array.isArray(definitions)
     ? (definitions as Readonly<Record<string, JsonValue>>)
     : {};
+}
+
+/** What an install would draw on: the request the preview and the install share. */
+export interface IndustryJobRequest {
+  readonly blueprintItemID: number;
+  readonly blueprintTypeID: number;
+  /** An activity NAME. The activityID lives only on the BFF. */
+  readonly activity: IndustryActivity;
+  readonly facilityID: number;
+  readonly runs: number;
+  readonly licensedRuns?: number;
+  readonly productTypeID?: number;
+}
+
+export interface IndustryPreviewResult {
+  /** typeID -> how much of it the player HAS at the input hangar (server-read). */
+  readonly available: Readonly<Record<string, number>>;
+}
+
+/**
+ * What the player HAS of each material the job would consume, from the
+ * server's own preview seam. The installation FEE is deliberately absent: no
+ * allowlisted retail call quotes a cost without also installing the job, so the
+ * panel says so rather than showing an invented estimate.
+ */
+export async function previewIndustryJob(
+  request: IndustryJobRequest,
+  options: ApiOptions = {},
+): Promise<IndustryPreviewResult> {
+  const data = await postJson(
+    "/api/bridge/industry/preview",
+    { ...request } as unknown as Record<string, JsonValue>,
+    options,
+  );
+  const available = data.available;
+  const normalized: Record<string, number> = {};
+  if (typeof available === "object" && available !== null && !Array.isArray(available)) {
+    for (const [typeID, quantity] of Object.entries(available)) {
+      normalized[typeID] = Number(quantity) || 0;
+    }
+  }
+  return { available: normalized };
+}
+
+/**
+ * An industry mutation's outcome. `applied` is the BFF's RE-READ of the job
+ * after the call, never an echo of the request — the R12/R14 lesson.
+ */
+export interface IndustryChangeResult {
+  readonly applied: boolean;
+  readonly declinedSilently: boolean;
+  readonly jobID: number | null;
+  /** The re-read job row (raw; decoded by bridge/industry.ts). */
+  readonly job: JsonValue;
+}
+
+function asIndustryChange(data: Record<string, JsonValue>): IndustryChangeResult {
+  return {
+    applied: data.applied === true,
+    declinedSilently: data.declinedSilently === true,
+    jobID: asNumberOrNull(data.jobID),
+    job: data.job ?? null,
+  };
+}
+
+/**
+ * INSTALL a job. This spends materials and charges an installation fee, so the
+ * BFF refuses the route outright without `confirm`. The UI asks first; this
+ * flag is the second gate behind that, exactly as `trashItems` and `destroyRig`
+ * are fenced.
+ */
+export async function installIndustryJob(
+  request: IndustryJobRequest,
+  options: ApiOptions = {},
+): Promise<IndustryChangeResult> {
+  const data = await postJson(
+    "/api/bridge/industry/install",
+    { ...request, confirm: true } as unknown as Record<string, JsonValue>,
+    options,
+  );
+  return asIndustryChange(data);
+}
+
+/** DELIVER a finished job — the retail `CompleteJob`. Only ever gives. */
+export async function deliverIndustryJob(
+  jobID: number,
+  options: ApiOptions = {},
+): Promise<IndustryChangeResult> {
+  const data = await postJson("/api/bridge/industry/deliver", { jobID }, options);
+  return asIndustryChange(data);
+}
+
+/**
+ * CANCEL a job. The materials and the installation fee are NOT returned, so
+ * the BFF refuses without `confirm` and the UI says what will be lost first.
+ */
+export async function cancelIndustryJob(
+  jobID: number,
+  options: ApiOptions = {},
+): Promise<IndustryChangeResult> {
+  const data = await postJson(
+    "/api/bridge/industry/cancel",
+    { jobID, confirm: true },
+    options,
+  );
+  return asIndustryChange(data);
 }
 
 // --- R4 Agents & Missions (agentMgr bridge) --------------------------------

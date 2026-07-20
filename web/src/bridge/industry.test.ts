@@ -28,6 +28,7 @@ import {
   decodeJobs,
   decodeSlotUsage,
   formatDuration,
+  industryRefusalMessage,
   isActiveJob,
   previewMaterials,
   previewTimeSeconds,
@@ -355,4 +356,71 @@ test("every activity has a plain-language label and a stable id round-trip", () 
     assert.equal(label.includes("_"), false, `${activity}'s label must not be a key`);
     assert.equal(activityOfID(activityIDOf(activity)), activity);
   }
+});
+
+// --- refusals ---------------------------------------------------------------
+
+test("a STRUCTURED industry refusal becomes the server's own reasons, in words", () => {
+  const message = industryRefusalMessage({
+    message: "IndustryValidationError: MISSING_MATERIAL, ACCOUNT_FUNDS",
+  });
+  assert.match(message, /materials/i);
+  assert.match(message, /installation fee/i);
+  // The raw code is jargon and must never reach a player (R9a / R7d).
+  assert.doesNotMatch(message, /MISSING_MATERIAL|ACCOUNT_FUNDS|IndustryValidationError/);
+});
+
+test("each mapped refusal name yields a distinct plain sentence", () => {
+  const cases: readonly (readonly [string, RegExp])[] = [
+    ["SLOTS_FULL", /job slots/i],
+    ["BLUEPRINT_INSTALLED", /already busy/i],
+    ["INVALID_RUNS", /number of runs/i],
+    ["FACILITY_OFFLINE", /offline/i],
+    ["MISSING_SKILL", /skills/i],
+    ["INPUT_ACCESS", /hangar/i],
+    ["RESEARCH_LIMIT", /researched/i],
+  ];
+  for (const [name, pattern] of cases) {
+    const message = industryRefusalMessage({ message: `IndustryValidationError: ${name}` });
+    assert.match(message, pattern, name);
+    assert.doesNotMatch(message, new RegExp(name), `${name} must not leak its code`);
+  }
+});
+
+test("an UNMAPPED refusal name falls back to a sentence, never the raw code", () => {
+  const message = industryRefusalMessage({
+    message: "IndustryValidationError: SOME_FUTURE_CODE",
+  });
+  assert.doesNotMatch(message, /SOME_FUTURE_CODE/);
+  assert.match(message, /would not accept/i);
+});
+
+test("duplicate reasons are said once", () => {
+  const message = industryRefusalMessage({
+    message: "IndustryValidationError: MISSING_MATERIAL, MISSING_MATERIAL",
+  });
+  assert.equal(message, "You do not have enough of the materials this job needs.");
+});
+
+test("a bare IndustryValidationError with no reasons says exactly that", () => {
+  const message = industryRefusalMessage({ message: "IndustryValidationError" });
+  assert.match(message, /gave no reason/i);
+});
+
+test("a PROSE refusal is passed through verbatim - the handler's own words", () => {
+  // Never reworded: the server said this, so the player sees it.
+  assert.equal(
+    industryRefusalMessage({ message: "That industry job is not ready yet." }),
+    "That industry job is not ready yet.",
+  );
+  assert.equal(
+    industryRefusalMessage({ message: "You do not have access to that industry job." }),
+    "You do not have access to that industry job.",
+  );
+});
+
+test("an empty or unrecognizable error reports a decline without inventing a cause", () => {
+  const message = industryRefusalMessage({ message: "" });
+  assert.match(message, /gave no reason/i);
+  assert.doesNotMatch(message, /material|fee|slot|skill/i);
 });

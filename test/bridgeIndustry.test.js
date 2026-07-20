@@ -46,6 +46,8 @@ const ACTIVITY_MANUFACTURING = 1;
 const ACTIVITY_COPYING = 5;
 const STATUS_INSTALLED = 1;
 const STATUS_DELIVERED = 101;
+const STATUS_CANCELLED = 102;
+const MONITOR_ID = 90001;
 
 const ORIGINAL_FETCH = global.fetch;
 const activeServers = new Set();
@@ -190,6 +192,34 @@ function jobRow(overrides = {}) {
   entries.push(["startDate", long("133000000000000000")]);
   entries.push(["endDate", long("133000000018000000")]);
   return keyVal(entries);
+}
+
+/**
+ * An industry.Location as facilityManager.GetFacilityLocations really answers
+ * it: an objectex1 whose FIELDS live in header[2], with an EMPTY top-level
+ * dict. A decoder that reads `value.dict` finds nothing.
+ */
+function locationObject(overrides = {}) {
+  const fields = {
+    itemID: STATION_ID,
+    typeID: 52678,
+    ownerID: CHARACTER_ID,
+    flagID: 4,
+    solarSystemID: SOLAR_SYSTEM_ID,
+    canView: true,
+    canTake: true,
+    ...overrides,
+  };
+  return {
+    type: "objectex1",
+    header: [
+      { type: "token", value: "industry.Location" },
+      [],
+      { type: "dict", entries: Object.entries(fields) },
+    ],
+    list: [],
+    dict: [],
+  };
 }
 
 function facilityRow(overrides = {}) {
@@ -552,4 +582,505 @@ test("the recipe route dedupes and caps its input", async () => {
   });
   assert.equal(cappedPayload.capped, true);
   assert.equal(cappedPayload.count, cappedPayload.limit);
+});
+
+// --- Slice B: install / deliver / cancel ------------------------------------
+//
+// Installing SPENDS things - materials out of a hangar and ISK out of the
+// wallet - so the route is fenced twice: it refuses outright without an
+// explicit confirmation flag, and the UI puts a two-step confirm in front of
+// that. Cancelling is fenced the same way, because it refunds NOTHING.
+//
+// And the R12/R14 lesson: a 200 is not proof. Every mutating route RE-READS the
+// job and reports what actually applied. The gateway fake below therefore holds
+// a real little job world and mutates it, so a re-read sees the real
+// consequence of its own call.
+
+/** A gateway fake with a mutable job world, for the mutating routes. */
+function fakeIndustryGateway(options = {}) {
+  const calls = { topLevel: [] };
+  const jobs = new Map();
+  let nextJobID = JOB_ID;
+  const installAnswersNull = options.installAnswersNull === true;
+  const deliverDoesNothing = options.deliverDoesNothing === true;
+  const failures = new Set(options.failures || []);
+
+  function jobRowFor(job) {
+    return jobRow({
+      jobID: job.jobID,
+      status: job.status,
+      runs: job.runs,
+      activityID: job.activityID,
+      facilityID: job.facilityID,
+      cost: job.cost,
+      successfulRuns: job.successfulRuns || 0,
+    });
+  }
+
+  return {
+    calls,
+    jobs,
+    async selectCharacter() {
+      return {
+        bridgeSessionID: BRIDGE_SESSION_ID,
+        service: "charUnboundMgr",
+        method: "SelectCharacterID",
+        result: null,
+        notifications: [],
+        session: {
+          userid: 4,
+          characterID: CHARACTER_ID,
+          characterName: "Test Pilot",
+          stationID: STATION_ID,
+          structureID: null,
+          solarSystemID: SOLAR_SYSTEM_ID,
+          corporationID: 98000000,
+          shipID: ACTIVE_SHIP_ID,
+        },
+      };
+    },
+    async releaseBridgeSession() {
+      return { released: true, characterID: CHARACTER_ID };
+    },
+    async readFlightStatus() {
+      return {
+        flight: {
+          docked: true,
+          inSpace: false,
+          stationID: STATION_ID,
+          solarSystemID: SOLAR_SYSTEM_ID,
+          shipID: ACTIVE_SHIP_ID,
+        },
+        notifications: [],
+      };
+    },
+    async callMethod(service, method, args, kwargs, sessionFields, bridgeSessionID) {
+      calls.topLevel.push({ service, method, args, kwargs, bridgeSessionID });
+      if (failures.has(`${service}.${method}`)) {
+        // The refusal shape the real gateway client raises: a typed code AND
+        // the HTTP status it arrived with, which the BFF re-uses.
+        throw Object.assign(new Error("IndustryValidationError: MISSING_MATERIAL"), {
+          code: "CALL_REFUSED",
+          statusCode: 409,
+        });
+      }
+      if (service === "facilityManager" && method === "GetFacilityLocations") {
+        return { service, method, result: list([locationObject(), locationObject({ flagID: 62, canTake: false })]), notifications: [] };
+      }
+      if (service === "industryMonitor" && method === "ConnectJob") {
+        return {
+          service,
+          method,
+          result: [MONITOR_ID, dict([[MATERIAL_TYPE_ID, 500]])],
+          notifications: [],
+        };
+      }
+      if (service === "industryMonitor" && method === "DisconnectJob") {
+        return { service, method, result: null, notifications: [] };
+      }
+      if (service === "industryManager" && method === "InstallJob") {
+        if (installAnswersNull) {
+          // The SILENT decline: 200, a null jobID, nothing started.
+          return { service, method, result: null, notifications: [] };
+        }
+        const request = args[0] || {};
+        nextJobID += 1;
+        jobs.set(nextJobID, {
+          jobID: nextJobID,
+          status: STATUS_INSTALLED,
+          runs: Number(request.runs) || 0,
+          activityID: Number(request.activityID) || 0,
+          facilityID: Number(request.facilityID) || 0,
+          // The SERVER's cost, not the client's advisory zero.
+          cost: 1250,
+        });
+        return { service, method, result: nextJobID, notifications: [] };
+      }
+      if (service === "industryManager" && method === "CompleteJob") {
+        const job = jobs.get(Number(args[0]));
+        if (job && !deliverDoesNothing) {
+          job.status = STATUS_DELIVERED;
+          job.successfulRuns = job.runs;
+        }
+        return { service, method, result: null, notifications: [] };
+      }
+      if (service === "industryManager" && method === "CancelJob") {
+        const job = jobs.get(Number(args[0]));
+        if (job) {
+          job.status = STATUS_CANCELLED;
+          job.successfulRuns = 0;
+        }
+        return { service, method, result: null, notifications: [] };
+      }
+      if (service === "industryManager" && method === "GetJob") {
+        const job = jobs.get(Number(args[0]));
+        return { service, method, result: job ? jobRowFor(job) : jobRow({ jobID: 0 }), notifications: [] };
+      }
+      if (service === "blueprintManager" && method === "GetBlueprintData") {
+        // After an install the blueprint is locked into the job.
+        const busy = [...jobs.values()].find((job) => job.status === STATUS_INSTALLED);
+        return {
+          service,
+          method,
+          result: blueprintRow(busy ? { jobID: busy.jobID } : {}),
+          notifications: [],
+        };
+      }
+      if (service === "industryManager" && method === "GetJobsByOwner") {
+        return { service, method, result: list([...jobs.values()].map(jobRowFor)), notifications: [] };
+      }
+      if (service === "blueprintManager" && method === "GetBlueprintDataByOwner") {
+        return { service, method, result: [list([blueprintRow()]), dict([])], notifications: [] };
+      }
+      if (service === "industryManager" && method === "GetJobCounts") {
+        return { service, method, result: dict([]), notifications: [] };
+      }
+      if (service === "facilityManager" && method === "GetFacilities") {
+        return { service, method, result: list([facilityRow()]), notifications: [] };
+      }
+      return { service, method, result: null, notifications: [] };
+    },
+    async bindObject() {
+      throw new Error("industry needs no bound objects");
+    },
+    async callBoundMethod() {
+      throw new Error("industry needs no bound objects");
+    },
+  };
+}
+
+/** A valid install request the way the browser sends it: activity by NAME. */
+function installBody(overrides = {}) {
+  return {
+    blueprintItemID: BLUEPRINT_ITEM_ID,
+    blueprintTypeID: BLUEPRINT_TYPE_ID,
+    activity: "manufacturing",
+    facilityID: STATION_ID,
+    runs: 3,
+    confirm: true,
+    ...overrides,
+  };
+}
+
+test("install REFUSES without an explicit confirmation, and nothing reaches the gateway", async () => {
+  const gateway = fakeIndustryGateway();
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+
+  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/industry/install", {
+    method: "POST",
+    body: installBody({ confirm: false }),
+  });
+  assert.equal(response.status, 400);
+  assert.equal(payload.error, "CONFIRMATION_REQUIRED");
+  assert.match(payload.message, /materials/i, "the refusal must say what would be spent");
+  assert.equal(
+    gateway.calls.topLevel.some((call) => call.method === "InstallJob"),
+    false,
+    "an unconfirmed install must never reach InstallJob",
+  );
+  assert.equal(gateway.jobs.size, 0, "and must not start a job");
+});
+
+test("install sends ONE POSITIONAL DICT with the fields the server actually reads", async () => {
+  const gateway = fakeIndustryGateway();
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+
+  await apiRequest(baseUrl, "/api/bridge/industry/install", {
+    method: "POST",
+    body: installBody(),
+  });
+
+  const install = gateway.calls.topLevel.find((call) => call.method === "InstallJob");
+  assert.ok(install, "InstallJob must be called");
+  assert.equal(install.args.length, 1, "InstallJob takes exactly ONE positional argument");
+  assert.equal(install.kwargs, null, "...and no kwargs");
+
+  const payload = install.args[0];
+  assert.equal(typeof payload, "object");
+  assert.equal(Array.isArray(payload), false, "the argument is a DICT, not a list");
+
+  // The fields that decide the outcome.
+  assert.equal(payload.blueprintID, BLUEPRINT_ITEM_ID);
+  assert.equal(payload.activityID, ACTIVITY_MANUFACTURING, "the browser named the activity; the BFF maps it");
+  assert.equal(payload.facilityID, STATION_ID);
+  assert.equal(payload.runs, 3);
+  assert.equal(payload.licensedRuns, 1);
+  // Scoped to the HELD session, never to a browser-supplied identity.
+  assert.equal(payload.characterID, CHARACTER_ID);
+  assert.equal(payload.solarSystemID, SOLAR_SYSTEM_ID);
+
+  // The full retail shape is sent, including the advisory fields the server
+  // recomputes anyway - a partial dict is a worse contract than a complete one.
+  for (const key of [
+    "blueprintTypeID",
+    "corporationID",
+    "account",
+    "cost",
+    "tax",
+    "time",
+    "materials",
+    "inputLocation",
+    "outputLocation",
+    "productTypeID",
+  ]) {
+    assert.ok(key in payload, `the payload must carry ${key}`);
+  }
+});
+
+test("install resolves the input hangar from GetFacilityLocations, preferring one it may TAKE from", async () => {
+  const gateway = fakeIndustryGateway();
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+
+  await apiRequest(baseUrl, "/api/bridge/industry/install", {
+    method: "POST",
+    body: installBody(),
+  });
+
+  const locations = gateway.calls.topLevel.find((call) => call.method === "GetFacilityLocations");
+  assert.ok(locations, "the hangar choices must be read first");
+  assert.deepEqual(locations.args, [STATION_ID, CHARACTER_ID]);
+
+  const payload = gateway.calls.topLevel.find((call) => call.method === "InstallJob").args[0];
+  // The fixture offers a takeable hangar (flag 4) and a non-takeable one
+  // (flag 62). Materials can only come from the one it may take from.
+  assert.equal(payload.inputLocation.flagID, 4);
+  assert.equal(payload.inputLocation.canTake, true);
+});
+
+test("install RE-READS the job and the blueprint - a 200 is not the proof", async () => {
+  const gateway = fakeIndustryGateway();
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+
+  const { payload } = await apiRequest(baseUrl, "/api/bridge/industry/install", {
+    method: "POST",
+    body: installBody(),
+  });
+  assert.equal(payload.ok, true);
+  assert.equal(payload.applied, true);
+  assert.equal(payload.declinedSilently, false);
+  assert.ok(payload.jobID > 0);
+
+  // Both re-reads happened, and both are returned.
+  assert.ok(gateway.calls.topLevel.some((call) => call.method === "GetJob"));
+  assert.ok(gateway.calls.topLevel.some((call) => call.method === "GetBlueprintData"));
+  assert.notEqual(payload.job, null);
+  assert.notEqual(payload.blueprint, null);
+
+  // The job carries the cost the SERVER charged, not the advisory zero sent.
+  assert.equal(readKeyVal(payload.job, "cost"), 1250);
+  // ...and the blueprint is now locked into that job.
+  assert.equal(readKeyVal(payload.blueprint, "jobID"), payload.jobID);
+});
+
+test("a SILENT install decline is reported as a decline, not as success", async () => {
+  const gateway = fakeIndustryGateway({ installAnswersNull: true });
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+
+  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/industry/install", {
+    method: "POST",
+    body: installBody(),
+  });
+  // The handler answered WITHOUT raising and without starting anything.
+  assert.equal(response.status, 200);
+  assert.equal(payload.applied, false);
+  assert.equal(payload.declinedSilently, true);
+  assert.equal(payload.jobID, null);
+  assert.equal(payload.job, null);
+  // No re-read is issued for a job that was never created.
+  assert.equal(gateway.calls.topLevel.some((call) => call.method === "GetJob"), false);
+});
+
+test("a THROWN install refusal passes the server's own reasons through", async () => {
+  const gateway = fakeIndustryGateway({ failures: ["industryManager.InstallJob"] });
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+
+  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/industry/install", {
+    method: "POST",
+    body: installBody(),
+  });
+  assert.equal(response.status, 409);
+  assert.equal(payload.error, "CALL_REFUSED");
+  // The SERVER's own error names, unreworded by the BFF.
+  assert.match(String(payload.message), /MISSING_MATERIAL/);
+});
+
+test("install validates its request before spending anything", async () => {
+  const gateway = fakeIndustryGateway();
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+
+  const cases = [
+    [{ blueprintItemID: 0 }, "INVALID_BLUEPRINT"],
+    [{ activity: "smelting" }, "INVALID_ACTIVITY"],
+    [{ facilityID: 0 }, "INVALID_FACILITY"],
+    [{ runs: 0 }, "INVALID_RUNS"],
+    [{ runs: -5 }, "INVALID_RUNS"],
+    [{ runs: 99_999_999 }, "INVALID_RUNS"],
+  ];
+  for (const [overrides, expected] of cases) {
+    const { response, payload } = await apiRequest(baseUrl, "/api/bridge/industry/install", {
+      method: "POST",
+      body: installBody(overrides),
+    });
+    assert.equal(response.status, 400, JSON.stringify(overrides));
+    assert.equal(payload.error, expected, JSON.stringify(overrides));
+  }
+  assert.equal(gateway.jobs.size, 0, "no invalid request may start a job");
+});
+
+test("the preview reads what the player HAS and always RELEASES its monitor", async () => {
+  const gateway = fakeIndustryGateway();
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+
+  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/industry/preview", {
+    method: "POST",
+    body: installBody({ confirm: undefined }),
+  });
+  assert.equal(response.status, 200);
+  assert.deepEqual(payload.available, { [String(MATERIAL_TYPE_ID)]: 500 });
+
+  // ConnectJob is NOT a pure read - it persists a monitor row - so the route
+  // always releases the monitor it opened.
+  const disconnect = gateway.calls.topLevel.find((call) => call.method === "DisconnectJob");
+  assert.ok(disconnect, "the monitor must be released");
+  assert.deepEqual(disconnect.args, [MONITOR_ID]);
+
+  // The preview starts NOTHING.
+  assert.equal(gateway.calls.topLevel.some((call) => call.method === "InstallJob"), false);
+  assert.equal(gateway.jobs.size, 0);
+});
+
+test("the preview needs no confirmation - it spends nothing", async () => {
+  const gateway = fakeIndustryGateway();
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+  const { response } = await apiRequest(baseUrl, "/api/bridge/industry/preview", {
+    method: "POST",
+    body: { ...installBody(), confirm: false },
+  });
+  assert.equal(response.status, 200);
+});
+
+test("deliver calls CompleteJob(jobID, solarSystemID) and judges by the RE-READ", async () => {
+  const gateway = fakeIndustryGateway();
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+  const { payload: installed } = await apiRequest(baseUrl, "/api/bridge/industry/install", {
+    method: "POST",
+    body: installBody(),
+  });
+
+  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/industry/deliver", {
+    method: "POST",
+    body: { jobID: installed.jobID },
+  });
+  assert.equal(response.status, 200);
+  assert.equal(payload.applied, true);
+  assert.equal(payload.declinedSilently, false);
+
+  const deliver = gateway.calls.topLevel.find((call) => call.method === "CompleteJob");
+  // The solar system comes from the HELD session's live position.
+  assert.deepEqual(deliver.args, [installed.jobID, SOLAR_SYSTEM_ID]);
+  assert.equal(readKeyVal(payload.job, "status"), STATUS_DELIVERED);
+});
+
+test("a deliver that changes nothing is reported as a silent decline", async () => {
+  const gateway = fakeIndustryGateway({ deliverDoesNothing: true });
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+  const { payload: installed } = await apiRequest(baseUrl, "/api/bridge/industry/install", {
+    method: "POST",
+    body: installBody(),
+  });
+
+  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/industry/deliver", {
+    method: "POST",
+    body: { jobID: installed.jobID },
+  });
+  // 200 with the job STILL running: the re-read is what catches this, and it
+  // is reported honestly rather than as a success.
+  assert.equal(response.status, 200);
+  assert.equal(payload.applied, false);
+  assert.equal(payload.declinedSilently, true);
+  assert.equal(readKeyVal(payload.job, "status"), STATUS_INSTALLED);
+});
+
+test("cancel REFUSES without an explicit confirmation, and says what will be lost", async () => {
+  const gateway = fakeIndustryGateway();
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+  const { payload: installed } = await apiRequest(baseUrl, "/api/bridge/industry/install", {
+    method: "POST",
+    body: installBody(),
+  });
+
+  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/industry/cancel", {
+    method: "POST",
+    body: { jobID: installed.jobID },
+  });
+  assert.equal(response.status, 400);
+  assert.equal(payload.error, "CONFIRMATION_REQUIRED");
+  // Cancelling refunds NEITHER the materials NOR the fee, and the refusal has
+  // to say so - that is the whole reason it is gated.
+  assert.match(payload.message, /materials/i);
+  assert.match(payload.message, /fee/i);
+  assert.equal(gateway.calls.topLevel.some((call) => call.method === "CancelJob"), false);
+});
+
+test("a confirmed cancel stops the job, and the RE-READ is what proves it", async () => {
+  const gateway = fakeIndustryGateway();
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+  const { payload: installed } = await apiRequest(baseUrl, "/api/bridge/industry/install", {
+    method: "POST",
+    body: installBody(),
+  });
+
+  const { payload } = await apiRequest(baseUrl, "/api/bridge/industry/cancel", {
+    method: "POST",
+    body: { jobID: installed.jobID, confirm: true },
+  });
+  assert.equal(payload.applied, true);
+  const cancel = gateway.calls.topLevel.find((call) => call.method === "CancelJob");
+  assert.deepEqual(cancel.args, [installed.jobID, SOLAR_SYSTEM_ID]);
+  assert.equal(readKeyVal(payload.job, "status"), STATUS_CANCELLED);
+});
+
+test("every mutating industry route requires a live session", async () => {
+  const gateway = fakeIndustryGateway();
+  const { baseUrl } = await startTestServer({ gateway });
+  // No select.
+  for (const [path, body] of [
+    ["/api/bridge/industry/preview", installBody()],
+    ["/api/bridge/industry/install", installBody()],
+    ["/api/bridge/industry/deliver", { jobID: 1 }],
+    ["/api/bridge/industry/cancel", { jobID: 1, confirm: true }],
+  ]) {
+    const { response, payload } = await apiRequest(baseUrl, path, { method: "POST", body });
+    assert.equal(response.status, 409, path);
+    assert.equal(payload.error, "NO_LIVE_SESSION", path);
+  }
+  assert.equal(gateway.calls.topLevel.length, 0, "no call may reach the gateway");
+});
+
+test("deliver and cancel reject a missing job before calling anything", async () => {
+  const gateway = fakeIndustryGateway();
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+  for (const path of ["/api/bridge/industry/deliver", "/api/bridge/industry/cancel"]) {
+    const { response, payload } = await apiRequest(baseUrl, path, {
+      method: "POST",
+      body: { jobID: 0, confirm: true },
+    });
+    assert.equal(response.status, 400, path);
+    assert.equal(payload.error, "INVALID_JOB", path);
+  }
+  assert.equal(gateway.calls.topLevel.length, 0);
 });

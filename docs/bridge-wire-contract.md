@@ -708,6 +708,96 @@ Recipes need their own route because `/api/names` cannot answer them.
   needed**. An unknown type is echoed as an explicit `null` so the client can
   cache the miss.
 
+### Mutations (R15 Slice B)
+
+Five more pairs: `industryManager.InstallJob` / `CompleteJob` / `CancelJob` and
+`industryMonitor.ConnectJob` / `DisconnectJob`.
+**`industryManager.CompleteManyJobs` is deliberately NOT listed** — a batch
+delivery across a whole job list is not something a stray click should fire, and
+the panel delivers one job at a time.
+
+#### The `InstallJob` payload — ONE POSITIONAL DICT
+
+`InstallJob` takes a **single positional dict** (`args.length === 1`, `kwargs:
+null`), the shape `industry.Job.dump()` produces and `parseIndustryRequest`
+reads. A **plain JSON object** is that dict — `marshalObjectToObject` accepts it
+directly, so no marshal wrapper is involved.
+
+```jsonc
+{
+  "blueprintID": 7100000001,   // the blueprint ITEM id
+  "blueprintTypeID": 681,
+  "activityID": 1,             // the BFF maps the browser's activity NAME
+  "facilityID": 60003760,
+  "solarSystemID": 30000142,
+  "characterID": 140000003,    // the HELD session's own character
+  "corporationID": 0,
+  "account": null,             // (ownerID, walletKey) for corp installs only
+  "runs": 3,
+  "licensedRuns": 1,           // copying
+  "cost": 0, "tax": 0, "time": 0, "materials": {},   // ADVISORY — see below
+  "inputLocation": { "itemID": …, "flagID": 4, "ownerID": …, "canTake": true },
+  "outputLocation": { … },
+  "productTypeID": 165,        // invention
+  "optionalTypeID": null, "optionalTypeID2": null
+}
+```
+
+⚠ **`cost` / `tax` / `time` / `materials` are advisory.** The server recomputes
+all four from the blueprint definition plus the facility's modifiers, so sending
+them wrong does not change what is charged and sending them right does not make
+them authoritative. The fields that genuinely decide the outcome are
+`blueprintID`, `activityID`, `facilityID`, `runs` (plus `licensedRuns` for
+copying, `productTypeID` for invention, and the two locations). A **null**
+location means "the server picks the default hangar".
+
+`CompleteJob(jobID, solarSystemID)` **is** delivery. `CancelJob(jobID,
+solarSystemID)` stops a job and returns the blueprint but **refunds neither the
+materials nor the installation fee**.
+
+#### ⚠ Refusals carry their reasons — two shapes
+
+The gateway's `readWrappedUserErrorRefusal` was discarding both of the shapes
+industry refuses with, leaving a bare code. R15 fixed each:
+
+| Shape | Raised as | Now surfaces as |
+| --- | --- | --- |
+| Prose | `throwWrappedUserError("CustomNotify", { notify: "<sentence>" })` — **132 call sites across the services** | the handler's own sentence |
+| Structured | `throwIndustryValidationError` → code `IndustryValidationError` + an `errors` list of `(KeyVal{value,name}, args)` tuples | `IndustryValidationError: MISSING_MATERIAL, ACCOUNT_FUNDS` |
+
+The gateway appends the server's **own** error names, unreworded (capped at 8).
+Turning a name into a player-facing sentence is the client's presentation job
+(`industryRefusalMessage` in `bridge/industry.ts`); an unmapped name falls back
+to a generic sentence rather than leaking the code.
+
+#### BFF mutation routes
+
+- `POST /api/bridge/industry/preview` `{ blueprintItemID, blueprintTypeID,
+  activity, facilityID, runs, licensedRuns? }` → `{ ok, available, inputLocation,
+  outputLocation }`. `ConnectJob` then **always** `DisconnectJob` — the preview
+  is not a pure read, so the monitor it opens is always released. Needs no
+  confirmation: it spends nothing.
+- `POST /api/bridge/industry/install` `{ …, confirm: true }` → `{ ok, applied,
+  declinedSilently, jobID, job, blueprint }`. **Refuses with 400
+  `CONFIRMATION_REQUIRED` unless `confirm === true`** — installing consumes
+  materials and charges the wallet, so it is fenced exactly as `destroy-rig`
+  (R12) and `trash` (R14) are. Re-reads **both** the job (which carries the cost
+  actually charged) and the blueprint (now locked into that job).
+- `POST /api/bridge/industry/deliver` `{ jobID }` → `CompleteJob`, then re-read.
+  Not gated: delivery only ever gives.
+- `POST /api/bridge/industry/cancel` `{ jobID, confirm: true }` → **400
+  `CONFIRMATION_REQUIRED`** without it, because nothing is refunded.
+
+⚠ **A 200 is not proof** (the R12/R14 lesson). `applied` always comes from the
+**re-read**, never from the response: `InstallJob` answering a null jobID, or a
+`CompleteJob` that leaves the status unmoved, are both silent declines and are
+reported as `declinedSilently: true`. The browser then says the server declined
+**without naming a cause it was not given**.
+
+**The browser names an ACTIVITY, never an activityID.** The
+name → id map lives only on the BFF, like R14's inventory places and R12's slot
+families.
+
 ## Space snapshot — overview + ship HUD (R11)
 
 The retail client's overview is a **client-side view over one server structure**:

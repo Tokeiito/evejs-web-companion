@@ -341,3 +341,191 @@ test("a lost session during an industry read unwinds to character select", async
   assert.equal(store.get().station.online, null, "the character is offline again");
   assert.equal(store.get().industry.loaded, false, "the industry slice is cleared");
 });
+
+// --- Slice B: install / deliver / cancel ------------------------------------
+
+test("installIndustryJob passes the request through and reloads the panel", async () => {
+  const store = createClientStore();
+  const { fetch, requests } = makeFakeFetch(
+    respondOk((path) =>
+      path === "/api/bridge/industry/install"
+        ? { status: 200, body: { ok: true, applied: true, declinedSilently: false, jobID: 5 } }
+        : null,
+    ),
+  );
+  const flow = createAppFlow(store, { fetch });
+
+  await flow.installIndustryJob({
+    blueprintItemID: BLUEPRINT_ITEM_ID,
+    blueprintTypeID: BLUEPRINT_TYPE_ID,
+    activity: "manufacturing",
+    facilityID: STATION_ID,
+    runs: 3,
+  });
+
+  const install = requests.find((entry) => entry.path === "/api/bridge/industry/install");
+  assert.ok(install);
+  // The browser names the ACTIVITY; the activityID lives only on the BFF.
+  assert.equal(install.body.activity, "manufacturing");
+  assert.equal(install.body.runs, 3);
+  // The second gate behind the UI's own confirm.
+  assert.equal(install.body.confirm, true);
+  // The panel reloaded, so it shows server truth rather than an optimistic edit.
+  assert.ok(
+    requests.filter((entry) => entry.path === "/api/bridge/industry").length >= 1,
+    "the panel must reload after a mutation",
+  );
+  assert.equal(store.get().industry.actionError, null);
+});
+
+test("a SILENT decline is reported as a decline with no invented cause", async () => {
+  const store = createClientStore();
+  const { fetch } = makeFakeFetch(
+    respondOk((path) =>
+      path === "/api/bridge/industry/install"
+        ? {
+            status: 200,
+            body: { ok: true, applied: false, declinedSilently: true, jobID: null },
+          }
+        : null,
+    ),
+  );
+  const flow = createAppFlow(store, { fetch });
+
+  await flow.installIndustryJob({
+    blueprintItemID: BLUEPRINT_ITEM_ID,
+    blueprintTypeID: BLUEPRINT_TYPE_ID,
+    activity: "manufacturing",
+    facilityID: STATION_ID,
+    runs: 1,
+  });
+
+  const message = store.get().industry.actionError ?? "";
+  assert.match(message, /gave no reason/i);
+  // It must not guess at a cause the server never gave.
+  assert.doesNotMatch(message, /material|fee|slot|skill/i);
+});
+
+test("a STRUCTURED refusal becomes the server's own reasons in plain words", async () => {
+  const store = createClientStore();
+  const { fetch } = makeFakeFetch(
+    respondOk((path) =>
+      path === "/api/bridge/industry/install"
+        ? {
+            status: 409,
+            body: {
+              ok: false,
+              error: "CALL_REFUSED",
+              message: "IndustryValidationError: MISSING_MATERIAL, ACCOUNT_FUNDS",
+            },
+          }
+        : null,
+    ),
+  );
+  const flow = createAppFlow(store, { fetch });
+
+  await flow.installIndustryJob({
+    blueprintItemID: BLUEPRINT_ITEM_ID,
+    blueprintTypeID: BLUEPRINT_TYPE_ID,
+    activity: "manufacturing",
+    facilityID: STATION_ID,
+    runs: 1,
+  });
+
+  const message = store.get().industry.actionError ?? "";
+  assert.match(message, /materials/i, "the server said MISSING_MATERIAL");
+  assert.match(message, /installation fee/i, "the server said ACCOUNT_FUNDS");
+  // The raw code is jargon and must never reach the player (R9a / R7d).
+  assert.doesNotMatch(message, /MISSING_MATERIAL|ACCOUNT_FUNDS|IndustryValidationError/);
+});
+
+test("a PROSE refusal is passed through verbatim - the handler's own words", async () => {
+  const store = createClientStore();
+  const { fetch } = makeFakeFetch(
+    respondOk((path) =>
+      path === "/api/bridge/industry/deliver"
+        ? {
+            status: 409,
+            body: {
+              ok: false,
+              error: "CALL_REFUSED",
+              message: "That industry job is not ready yet.",
+            },
+          }
+        : null,
+    ),
+  );
+  const flow = createAppFlow(store, { fetch });
+
+  await flow.deliverIndustryJob(5);
+  assert.equal(store.get().industry.actionError, "That industry job is not ready yet.");
+});
+
+test("deliver and cancel reload the panel and clear a stale error on success", async () => {
+  const store = createClientStore();
+  const { fetch, requests } = makeFakeFetch(
+    respondOk((path) =>
+      path === "/api/bridge/industry/deliver" || path === "/api/bridge/industry/cancel"
+        ? { status: 200, body: { ok: true, applied: true, declinedSilently: false, jobID: 5 } }
+        : null,
+    ),
+  );
+  const flow = createAppFlow(store, { fetch });
+
+  store.apply({ type: "industry/action-error", message: "something old" });
+  await flow.deliverIndustryJob(5);
+  assert.equal(store.get().industry.actionError, null);
+
+  await flow.cancelIndustryJob(5);
+  const cancel = requests.find((entry) => entry.path === "/api/bridge/industry/cancel");
+  assert.ok(cancel);
+  // Cancelling refunds nothing, so it carries the confirmation flag too.
+  assert.equal(cancel.body.confirm, true);
+  assert.equal(cancel.body.jobID, 5);
+});
+
+test("the preview returns what the player HAS, and starts nothing", async () => {
+  const store = createClientStore();
+  const { fetch, requests } = makeFakeFetch(
+    respondOk((path) =>
+      path === "/api/bridge/industry/preview"
+        ? { status: 200, body: { ok: true, available: { "38": 500 } } }
+        : null,
+    ),
+  );
+  const flow = createAppFlow(store, { fetch });
+
+  const available = await flow.previewIndustryJob({
+    blueprintItemID: BLUEPRINT_ITEM_ID,
+    blueprintTypeID: BLUEPRINT_TYPE_ID,
+    activity: "manufacturing",
+    facilityID: STATION_ID,
+    runs: 3,
+  });
+  assert.deepEqual(available, { "38": 500 });
+  assert.equal(
+    requests.some((entry) => entry.path === "/api/bridge/industry/install"),
+    false,
+    "a preview must never install anything",
+  );
+});
+
+test("a lost session during a mutation unwinds to character select", async () => {
+  const store = createClientStore();
+  const { fetch } = makeFakeFetch(() => ({
+    status: 404,
+    body: { ok: false, error: "SESSION_NOT_FOUND", message: "gone" },
+  }));
+  const flow = createAppFlow(store, { fetch });
+
+  await assert.rejects(() =>
+    flow.installIndustryJob({
+      blueprintItemID: BLUEPRINT_ITEM_ID,
+      blueprintTypeID: BLUEPRINT_TYPE_ID,
+      activity: "manufacturing",
+      facilityID: STATION_ID,
+      runs: 1,
+    }),
+  );
+  assert.equal(store.get().station.online, null);
+});

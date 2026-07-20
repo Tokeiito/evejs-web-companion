@@ -488,6 +488,92 @@ export function formatDuration(totalSeconds: number): string {
   return parts.join(" ");
 }
 
+// --- Refusals ---------------------------------------------------------------
+
+/**
+ * Plain-language sentences for the industry error names the SERVER refuses
+ * with.
+ *
+ * These are NOT invented causes. When an install is refused the server raises a
+ * structured `IndustryValidationError` carrying its own named reasons, and the
+ * gateway forwards them verbatim as
+ * `"IndustryValidationError: MISSING_MATERIAL, ACCOUNT_FUNDS"`. Turning a name
+ * the server chose into a sentence a player can read is presentation, the same
+ * job STATUS_LABELS does — nothing here decides WHY something failed.
+ *
+ * A name with no entry here falls back to a generic sentence rather than
+ * leaking the raw code, which is jargon (R9a).
+ */
+const REFUSAL_SENTENCES: Readonly<Record<string, string>> = {
+  MISSING_MATERIAL: "You do not have enough of the materials this job needs.",
+  ACCOUNT_FUNDS: "You cannot afford the installation fee.",
+  SLOTS_FULL: "You have no free job slots for that kind of work.",
+  MISSING_BLUEPRINT: "That blueprint could not be found.",
+  BLUEPRINT_INSTALLED: "That blueprint is already busy in another job.",
+  BLUEPRINT_ACCESS: "You cannot use that blueprint.",
+  INVALID_RUNS: "That number of runs is not allowed for this blueprint.",
+  INVALID_LICENSED_RUNS: "That number of licensed runs is not allowed.",
+  INVALID_ACTIVITY: "That kind of work cannot be done here.",
+  INCOMPATIBLE_ACTIVITY: "That blueprint cannot be used for that kind of work.",
+  MISSING_FACILITY: "That facility could not be found.",
+  FACILITY_OFFLINE: "That facility is offline.",
+  FACILITY_ACTIVITY: "That facility does not do that kind of work.",
+  FACILITY_DENIED: "That facility will not take this job.",
+  FACILITY_DISTANCE: "That facility is too far away.",
+  FACILITY_TYPE: "That facility cannot handle this job.",
+  MISSING_SKILL: "You do not have the skills this job needs.",
+  MISSING_INPUT_LOCATION: "There is nowhere to take the materials from.",
+  MISSING_OUTPUT_LOCATION: "There is nowhere to deliver the results to.",
+  INPUT_ACCESS: "You cannot take materials from that hangar.",
+  RESEARCH_LIMIT: "That blueprint cannot be researched any further.",
+  STANDINGS_RESTRICTION: "Your standing is not good enough to work here.",
+  INVALID_OWNER: "You cannot install a job for that owner.",
+  INVALID_PRODUCT: "That blueprint does not make anything you can build here.",
+  MISSING_ROLE: "You do not have the corporation role this needs.",
+};
+
+/**
+ * Turn a bridge refusal into something a player can read.
+ *
+ * Three shapes arrive, and they are handled differently on purpose:
+ *  - a STRUCTURED industry refusal (`IndustryValidationError: NAME, NAME`) —
+ *    each name the server gave becomes its sentence;
+ *  - a PROSE refusal (the handler's own words, e.g. "That industry job is not
+ *    ready yet.") — passed through verbatim, because the server said it;
+ *  - anything else — reported as a failure without a cause, never a guess.
+ */
+export function industryRefusalMessage(error: unknown): string {
+  const raw =
+    error && typeof error === "object" && "message" in error
+      ? String((error as { message?: unknown }).message ?? "")
+      : String(error);
+  if (!raw) {
+    return "The server did not apply that change, and gave no reason.";
+  }
+  const structured = /^IndustryValidationError(?::\s*(.*))?$/.exec(raw);
+  if (!structured) {
+    // The handler's OWN sentence. Never reworded.
+    return raw;
+  }
+  const names = (structured[1] ?? "")
+    .split(",")
+    .map((name) => name.trim())
+    .filter((name) => name.length > 0);
+  const sentences: string[] = [];
+  for (const name of names) {
+    const sentence = REFUSAL_SENTENCES[name];
+    // An unmapped name is still a real reason the server gave — but printing
+    // the code would be jargon, so it becomes the generic sentence instead.
+    const text = sentence ?? "The server would not accept this job.";
+    if (!sentences.includes(text)) {
+      sentences.push(text);
+    }
+  }
+  return sentences.length > 0
+    ? sentences.join(" ")
+    : "The server would not accept this job, and gave no reason.";
+}
+
 /**
  * Seconds until a retail FILETIME instant, from `nowMs`. FILETIME is 100 ns
  * ticks since 1601-01-01; the epoch offset is 11644473600 seconds.

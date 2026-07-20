@@ -1911,6 +1911,469 @@ app.get("/api/bridge/industry", requireAuth, async (req, res, next) => {
   }
 });
 
+// --- R15 Industry mutations (install / deliver / cancel) --------------------
+//
+// The browser names an ACTIVITY, never an activityID — the same rule R14 used
+// for inventory places and R12 for slot families. This map is the only place
+// the number exists on the BFF, and it never crosses the wire in either
+// direction.
+const INDUSTRY_ACTIVITY_IDS = Object.freeze({
+  manufacturing: 1,
+  research_time: 3,
+  research_material: 4,
+  copying: 5,
+  invention: 8,
+  reaction: 9,
+});
+// industry job status codes, for judging what a mutation actually did.
+const INDUSTRY_STATUS_DELIVERED = 101;
+const INDUSTRY_STATUS_CANCELLED = 102;
+// Retail's own ceiling on a single job; a runs value beyond it is a typo, and
+// rejecting it here makes that a clear 400 instead of a server refusal.
+const INDUSTRY_MAX_RUNS = 1_000_000;
+
+/**
+ * Resolve the input/output hangars an install will use.
+ *
+ * `GetFacilityLocations(facilityID, ownerID)` answers the CHOICES; the input
+ * must be one the character may TAKE from. Passing a location explicitly is
+ * optional — the server falls back to the first usable one — but resolving it
+ * here means the preview and the install agree about where the materials are
+ * coming from, which is the whole point of showing the player a preview.
+ *
+ * ⚠ The fields live in `header[2]` as {type:"dict", entries:[...]}, NOT in the
+ * top-level `dict` (which is empty). See docs/bridge-wire-contract.md.
+ */
+function decodeFacilityLocationChoices(result) {
+  const items = result && Array.isArray(result.items) ? result.items : [];
+  const choices = [];
+  for (const item of items) {
+    if (!item || item.type !== "objectex1" || !Array.isArray(item.header)) {
+      continue;
+    }
+    const stateDict = item.header[2];
+    const entries = stateDict && Array.isArray(stateDict.entries) ? stateDict.entries : [];
+    const fields = {};
+    for (const entry of entries) {
+      if (Array.isArray(entry) && typeof entry[0] === "string") {
+        fields[entry[0]] = entry[1];
+      }
+    }
+    const itemID = Number(fields.itemID) || 0;
+    if (itemID > 0) {
+      choices.push({
+        itemID,
+        typeID: Number(fields.typeID) || 0,
+        ownerID: Number(fields.ownerID) || 0,
+        flagID: Number(fields.flagID) || 0,
+        solarSystemID: Number(fields.solarSystemID) || 0,
+        canView: fields.canView !== false,
+        canTake: fields.canTake !== false,
+      });
+    }
+  }
+  return choices;
+}
+
+async function readIndustryLocations(held, webSessionID, facilityID) {
+  const outcome = await heldTopLevelCall(
+    held,
+    webSessionID,
+    "facilityManager",
+    "GetFacilityLocations",
+    [facilityID, held.characterID],
+    null,
+  );
+  const choices = decodeFacilityLocationChoices(outcome.result);
+  return {
+    choices,
+    // The input must be takeable; the output need not be.
+    input: choices.find((choice) => choice.canTake !== false) || choices[0] || null,
+    output: choices[0] || null,
+  };
+}
+
+/**
+ * The InstallJob payload — ONE POSITIONAL DICT, the shape
+ * `industry.Job.dump()` produces and `parseIndustryRequest` reads.
+ *
+ * ⚠ WHAT THE SERVER ACTUALLY READS. It recomputes materials, time and cost
+ * from the blueprint definition plus the facility's modifiers, so `cost` /
+ * `tax` / `time` / `materials` here are ADVISORY — sending them wrong does not
+ * change what gets charged, and sending them right does not make them
+ * authoritative. The fields that genuinely decide the outcome are
+ * `blueprintID`, `activityID`, `facilityID`, `runs` (plus `licensedRuns` for
+ * copying, `productTypeID` for invention, and the two locations). They are all
+ * sent anyway because the shape is the retail one and a partial dict is a
+ * worse contract than a complete one.
+ */
+function buildInstallJobPayload(held, request) {
+  return {
+    blueprintID: request.blueprintItemID,
+    blueprintTypeID: request.blueprintTypeID || 0,
+    activityID: request.activityID,
+    facilityID: request.facilityID,
+    solarSystemID: held.solarSystemID || 0,
+    characterID: held.characterID,
+    corporationID: 0,
+    // Personal industry only: the wallet charge takes the character path, for
+    // which `account` is unused. A corporation install would need the
+    // (ownerID, walletKey) pair here.
+    account: null,
+    runs: request.runs,
+    licensedRuns: request.licensedRuns,
+    cost: 0,
+    tax: 0,
+    time: 0,
+    materials: {},
+    inputLocation: request.inputLocation,
+    outputLocation: request.outputLocation,
+    productTypeID: request.productTypeID || 0,
+    optionalTypeID: null,
+    optionalTypeID2: null,
+  };
+}
+
+/**
+ * Validate the browser's install/preview request. Returns a normalized request
+ * or null (having already answered a 400).
+ */
+function normalizeIndustryRequest(req, res) {
+  const body = req.body || {};
+  const blueprintItemID = Number(body.blueprintItemID) || 0;
+  const facilityID = Number(body.facilityID) || 0;
+  const runs = Number(body.runs) || 0;
+  const activity = String(body.activity || "");
+  const activityID = INDUSTRY_ACTIVITY_IDS[activity] || 0;
+  if (blueprintItemID <= 0) {
+    res.status(400).json({
+      ok: false,
+      error: "INVALID_BLUEPRINT",
+      message: "A blueprint is required.",
+    });
+    return null;
+  }
+  if (activityID <= 0) {
+    res.status(400).json({
+      ok: false,
+      error: "INVALID_ACTIVITY",
+      message: "A known kind of industry work is required.",
+    });
+    return null;
+  }
+  if (facilityID <= 0) {
+    res.status(400).json({
+      ok: false,
+      error: "INVALID_FACILITY",
+      message: "A facility to do the work at is required.",
+    });
+    return null;
+  }
+  if (!Number.isSafeInteger(runs) || runs <= 0 || runs > INDUSTRY_MAX_RUNS) {
+    res.status(400).json({
+      ok: false,
+      error: "INVALID_RUNS",
+      message: "A positive number of runs is required.",
+    });
+    return null;
+  }
+  const licensedRuns = Number(body.licensedRuns) || 1;
+  return {
+    blueprintItemID,
+    blueprintTypeID: Number(body.blueprintTypeID) || 0,
+    activity,
+    activityID,
+    facilityID,
+    runs,
+    licensedRuns: licensedRuns > 0 ? licensedRuns : 1,
+    productTypeID: Number(body.productTypeID) || 0,
+  };
+}
+
+/**
+ * The install PREVIEW: what the player actually HAS of each material this job
+ * would consume, straight from the server.
+ *
+ * `industryMonitor.ConnectJob` is retail's own preview seam. It is NOT a pure
+ * read — it persists a monitor row — so this route always releases the monitor
+ * it opened, whatever happens.
+ *
+ * ⚠ WHAT THIS CANNOT TELL THE PLAYER: the installation FEE. No allowlisted
+ * retail call quotes a cost without also installing the job, so the ISK figure
+ * genuinely cannot be previewed. The panel says so plainly rather than showing
+ * an invented estimate, and the install response reports the cost the server
+ * actually charged.
+ */
+app.post("/api/bridge/industry/preview", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const request = normalizeIndustryRequest(req, res);
+  if (!request) {
+    return;
+  }
+  let monitorID = 0;
+  try {
+    await readHeldFlight(held, req.webSessionID);
+    const locations = await readIndustryLocations(held, req.webSessionID, request.facilityID);
+    const payload = buildInstallJobPayload(held, {
+      ...request,
+      inputLocation: locations.input,
+      outputLocation: locations.output,
+    });
+    const outcome = await heldTopLevelCall(
+      held,
+      req.webSessionID,
+      "industryMonitor",
+      "ConnectJob",
+      [payload],
+      null,
+    );
+    // [monitorID, dict<typeID -> availableQuantity>]
+    const result = Array.isArray(outcome.result) ? outcome.result : [];
+    monitorID = Number(result[0]) || 0;
+    const dict = result[1];
+    const entries = dict && Array.isArray(dict.entries) ? dict.entries : [];
+    const available = {};
+    for (const entry of entries) {
+      if (Array.isArray(entry)) {
+        available[String(Number(entry[0]) || 0)] = Number(entry[1]) || 0;
+      }
+    }
+    res.json({
+      ok: true,
+      available,
+      inputLocation: locations.input,
+      outputLocation: locations.output,
+      notifications: outcome.notifications,
+    });
+  } catch (error) {
+    next(error);
+  } finally {
+    if (monitorID > 0) {
+      // Best-effort release: a leaked monitor row is harmless but untidy, and
+      // failing to release must never turn a good preview into an error.
+      try {
+        await heldTopLevelCall(
+          held,
+          req.webSessionID,
+          "industryMonitor",
+          "DisconnectJob",
+          [monitorID],
+          null,
+        );
+      } catch {
+        // Ignored on purpose (see above).
+      }
+    }
+  }
+});
+
+/**
+ * INSTALL a job. This CONSUMES MATERIALS out of a hangar and CHARGES THE
+ * WALLET, so the route refuses outright without an explicit `confirm: true` —
+ * the second gate behind the UI's two-step confirm, exactly as `destroy-rig`
+ * (R12) and `trash` (R14) are fenced.
+ *
+ * The R12/R14 lesson applies: a 200 is not proof. The route re-reads the job
+ * AND the blueprint and reports what actually applied.
+ */
+app.post("/api/bridge/industry/install", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const request = normalizeIndustryRequest(req, res);
+  if (!request) {
+    return;
+  }
+  if ((req.body || {}).confirm !== true) {
+    res.status(400).json({
+      ok: false,
+      error: "CONFIRMATION_REQUIRED",
+      message:
+        "Installing a job spends materials and charges an installation fee. This action must be confirmed explicitly.",
+    });
+    return;
+  }
+  try {
+    await readHeldFlight(held, req.webSessionID);
+    const locations = await readIndustryLocations(held, req.webSessionID, request.facilityID);
+    const payload = buildInstallJobPayload(held, {
+      ...request,
+      inputLocation: locations.input,
+      outputLocation: locations.output,
+    });
+    const outcome = await heldTopLevelCall(
+      held,
+      req.webSessionID,
+      "industryManager",
+      "InstallJob",
+      [payload],
+      null,
+    );
+    const jobID = Number(outcome.result) || 0;
+    if (jobID <= 0) {
+      // A SILENT DECLINE: the handler answered without raising and without
+      // starting a job. Saying exactly that is honest; naming a cause would be
+      // a guess, and the server did not give one.
+      res.json({
+        ok: true,
+        applied: false,
+        declinedSilently: true,
+        jobID: null,
+        job: null,
+        blueprint: null,
+        notifications: outcome.notifications,
+      });
+      return;
+    }
+    // Re-read BOTH: the job proves it exists and carries the cost the server
+    // really charged, and the blueprint proves it is now locked into that job.
+    const [jobSettled, blueprintSettled] = await Promise.allSettled([
+      heldTopLevelCall(held, req.webSessionID, "industryManager", "GetJob", [jobID], null),
+      heldTopLevelCall(
+        held,
+        req.webSessionID,
+        "blueprintManager",
+        "GetBlueprintData",
+        [request.blueprintItemID],
+        null,
+      ),
+    ]);
+    res.json({
+      ok: true,
+      applied: true,
+      declinedSilently: false,
+      jobID,
+      job: jobSettled.status === "fulfilled" ? jobSettled.value.result : null,
+      blueprint: blueprintSettled.status === "fulfilled" ? blueprintSettled.value.result : null,
+      notifications: outcome.notifications,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * DELIVER a finished job (`CompleteJob(jobID, solarSystemID)`) — this is what
+ * hands the products over. Not gated behind a confirm: it only ever gives the
+ * player something.
+ *
+ * `applied` comes from the RE-READ, not from the response: a job that was not
+ * ready, or that another client already delivered, can come back without the
+ * status having moved.
+ */
+app.post("/api/bridge/industry/deliver", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const jobID = Number((req.body || {}).jobID) || 0;
+  if (jobID <= 0) {
+    res.status(400).json({ ok: false, error: "INVALID_JOB", message: "A job is required." });
+    return;
+  }
+  try {
+    await readHeldFlight(held, req.webSessionID);
+    const outcome = await heldTopLevelCall(
+      held,
+      req.webSessionID,
+      "industryManager",
+      "CompleteJob",
+      [jobID, held.solarSystemID || 0],
+      null,
+    );
+    const after = await heldTopLevelCall(
+      held,
+      req.webSessionID,
+      "industryManager",
+      "GetJob",
+      [jobID],
+      null,
+    );
+    const status = readIndustryJobStatus(after.result);
+    const applied = status === INDUSTRY_STATUS_DELIVERED;
+    res.json({
+      ok: true,
+      applied,
+      declinedSilently: !applied,
+      jobID,
+      job: after.result,
+      notifications: outcome.notifications,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * CANCEL a job. Cancelling stops the work and returns the blueprint, but
+ * refunds NEITHER the materials NOR the installation fee — both stay spent —
+ * so it is fenced behind the same explicit `confirm: true` the install is, and
+ * the UI says what will be lost before asking.
+ */
+app.post("/api/bridge/industry/cancel", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const body = req.body || {};
+  const jobID = Number(body.jobID) || 0;
+  if (jobID <= 0) {
+    res.status(400).json({ ok: false, error: "INVALID_JOB", message: "A job is required." });
+    return;
+  }
+  if (body.confirm !== true) {
+    res.status(400).json({
+      ok: false,
+      error: "CONFIRMATION_REQUIRED",
+      message:
+        "Cancelling a job does not return its materials or its installation fee. This action must be confirmed explicitly.",
+    });
+    return;
+  }
+  try {
+    await readHeldFlight(held, req.webSessionID);
+    const outcome = await heldTopLevelCall(
+      held,
+      req.webSessionID,
+      "industryManager",
+      "CancelJob",
+      [jobID, held.solarSystemID || 0],
+      null,
+    );
+    const after = await heldTopLevelCall(
+      held,
+      req.webSessionID,
+      "industryManager",
+      "GetJob",
+      [jobID],
+      null,
+    );
+    const applied = readIndustryJobStatus(after.result) === INDUSTRY_STATUS_CANCELLED;
+    res.json({
+      ok: true,
+      applied,
+      declinedSilently: !applied,
+      jobID,
+      job: after.result,
+      notifications: outcome.notifications,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/** Read `status` off a util.KeyVal job row (the re-read's verdict). */
+function readIndustryJobStatus(row) {
+  const entries =
+    row && row.args && Array.isArray(row.args.entries) ? row.args.entries : [];
+  const entry = entries.find((candidate) => Array.isArray(candidate) && candidate[0] === "status");
+  return entry ? Number(entry[1]) || 0 : 0;
+}
+
 // R4 Agents & Missions (agentMgr bridge). Agent list is a top-level read on the
 // held session (retail agentMgr.GetAgents().Clone()); conversation, briefing,
 // and journal use the bound agent (Moniker('agentMgr', agentID)). The browser

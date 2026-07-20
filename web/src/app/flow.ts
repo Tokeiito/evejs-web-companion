@@ -18,6 +18,7 @@ import {
   decodeFacilities,
   decodeJobs,
   decodeSlotUsage,
+  industryRefusalMessage,
 } from "../bridge/industry.ts";
 import {
   AGENT_BUTTON,
@@ -147,6 +148,23 @@ export interface AppFlow {
    * recipes for the blueprint types it saw, and the names for everything.
    */
   loadIndustry(): Promise<void>;
+  /**
+   * What the player HAS of each material an install would consume, read from
+   * the SERVER. Feeds the confirm step so the decision is informed.
+   */
+  previewIndustryJob(request: api.IndustryJobRequest): Promise<Readonly<Record<string, number>>>;
+  /**
+   * INSTALL a job. Spends materials and charges an installation fee, so the
+   * panel confirms before calling it and the BFF confirms again.
+   */
+  installIndustryJob(request: api.IndustryJobRequest): Promise<void>;
+  /** DELIVER a finished job (the retail CompleteJob). */
+  deliverIndustryJob(jobID: number): Promise<void>;
+  /**
+   * CANCEL a job. Returns the blueprint but NOT the materials or the fee, so
+   * this is confirmed twice as well.
+   */
+  cancelIndustryJob(jobID: number): Promise<void>;
   /** Load the docked station's agent roster (agentMgr.GetAgents). */
   loadAgents(): Promise<void>;
   /** Open a conversation with an agent (bound DoAction(None)). */
@@ -821,6 +839,50 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       definitions[typeID] = decodeDefinition(raw[String(typeID)]);
     }
     store.apply({ type: "industry/definitions", definitions });
+  }
+
+  /**
+   * Run an industry mutation, then reload the panel so it shows SERVER truth.
+   *
+   * The same two refusal shapes R12 and R14 established, and they are not the
+   * same thing:
+   *  - a THROWN refusal carries the handler's own reason. For deliver and
+   *    cancel that is prose ("That industry job is not ready yet."); for
+   *    install it is a structured list of the server's OWN error names, which
+   *    `industryRefusalMessage` turns into a sentence without inventing a
+   *    cause the server did not give.
+   *  - a SILENT decline returns success while nothing happened. The BFF
+   *    re-reads the job and reports `applied: false`; saying only that the
+   *    server declined is honest, where naming a cause would be a guess.
+   */
+  async function runIndustryAction(
+    action: () => Promise<{ readonly applied: boolean }>,
+  ): Promise<void> {
+    let declined = false;
+    try {
+      const outcome = await action();
+      declined = outcome.applied === false;
+    } catch (error) {
+      if (isSessionLost(error)) {
+        stopLiveStream();
+        store.apply({ type: "character/offline" });
+        throw error;
+      }
+      store.apply({
+        type: "industry/action-error",
+        message: industryRefusalMessage(error),
+      });
+      return;
+    }
+    await loadIndustry();
+    // loadIndustry clears the action error on success, so a silent decline is
+    // recorded AFTER the reload or it would be wiped by its own refresh.
+    if (declined) {
+      store.apply({
+        type: "industry/action-error",
+        message: "The server did not apply that change, and gave no reason.",
+      });
+    }
   }
 
   // --- R4 Agents & Missions ------------------------------------------------
@@ -1752,6 +1814,23 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     },
 
     loadIndustry,
+
+    async previewIndustryJob(request) {
+      const result = await api.previewIndustryJob(request, callOptions);
+      return result.available;
+    },
+
+    async installIndustryJob(request) {
+      await runIndustryAction(() => api.installIndustryJob(request, callOptions));
+    },
+
+    async deliverIndustryJob(jobID) {
+      await runIndustryAction(() => api.deliverIndustryJob(jobID, callOptions));
+    },
+
+    async cancelIndustryJob(jobID) {
+      await runIndustryAction(() => api.cancelIndustryJob(jobID, callOptions));
+    },
 
     loadAgents,
 
