@@ -2,10 +2,13 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  canMergeStacks,
   decodeCapacity,
   decodeContainer,
   decodeInventoryRows,
+  divisionLabel,
   isBoardableShip,
+  isOpenableContainer,
 } from "./inventoryShip.ts";
 import type { JsonValue } from "./wire.ts";
 
@@ -137,4 +140,75 @@ test("isBoardableShip recognizes hangar ships that are not already active", () =
   assert.equal(isBoardableShip(ship, null), true);
   assert.equal(isBoardableShip(ship, 200), false, "the active ship is not boardable");
   assert.equal(isBoardableShip(trit, null), false, "a non-ship is not boardable");
+});
+
+// --- R14 inventory depth ----------------------------------------------------
+
+function row(overrides: Record<string, unknown> = {}) {
+  return {
+    itemID: 100,
+    typeID: 34,
+    groupID: 18,
+    categoryID: 4,
+    flagID: 4,
+    quantity: 750,
+    singleton: false,
+    ...overrides,
+  } as Parameters<typeof isOpenableContainer>[0];
+}
+
+test("isOpenableContainer accepts ASSEMBLED container groups only", () => {
+  // Container-ness is a purely client-side static-data test: the protocol has
+  // no notion of it, and the bind for a container is the ship-cargo bind.
+  for (const groupID of [12, 340, 448, 649]) {
+    assert.equal(
+      isOpenableContainer(row({ groupID, categoryID: 2, typeID: 3297, singleton: true })),
+      true,
+      `group ${groupID} is a container`,
+    );
+  }
+  // An UNASSEMBLED container is just cargo — it stacks and holds nothing.
+  assert.equal(
+    isOpenableContainer(row({ groupID: 12, categoryID: 2, typeID: 3297, singleton: false })),
+    false,
+    "an unassembled container cannot be opened",
+  );
+  // Ordinary cargo and ships are not containers.
+  assert.equal(isOpenableContainer(row()), false);
+  assert.equal(
+    isOpenableContainer(row({ groupID: 25, categoryID: 6, typeID: 597, singleton: true })),
+    false,
+    "a ship is not an openable container here",
+  );
+});
+
+test("canMergeStacks allows only two different LOOSE stacks of one type", () => {
+  const first = row({ itemID: 100, quantity: 750 });
+  const second = row({ itemID: 101, quantity: 250 });
+  assert.equal(canMergeStacks(first, second), true);
+
+  // Same stack.
+  assert.equal(canMergeStacks(first, first), false);
+  // Different types cannot merge.
+  assert.equal(canMergeStacks(first, row({ itemID: 101, typeID: 35 })), false);
+  // An ASSEMBLED item is a single object, not a quantity.
+  assert.equal(canMergeStacks(row({ singleton: true }), second), false);
+  assert.equal(canMergeStacks(first, row({ itemID: 101, singleton: true })), false);
+});
+
+test("divisionLabel falls back to the ordinal — never to a flag number", () => {
+  assert.equal(divisionLabel(1, "Ore Bay"), "Ore Bay");
+  // A corporation that never renamed a division has no name for it. The
+  // fallback is plain player language, not flagCorpSAG3 and not 117.
+  assert.equal(divisionLabel(3, null), "Division 3");
+  assert.equal(divisionLabel(3, "   "), "Division 3");
+  for (let division = 1; division <= 7; division += 1) {
+    const label = divisionLabel(division, null);
+    assert.equal(label, `Division ${division}`);
+    assert.equal(
+      label.includes(String(114 + division)),
+      false,
+      "no flag number leaks into a label",
+    );
+  }
 });

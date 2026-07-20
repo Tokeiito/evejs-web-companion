@@ -23,6 +23,7 @@ import type {
   ChatMessage,
   CharacterSummary,
   CharStanding,
+  CorpDivisionState,
   CourierBriefing,
   FlightStatus,
   FittingResources,
@@ -31,7 +32,9 @@ import type {
   JournalState,
   LiveNotification,
   LiveStreamStatus,
+  MutationOutcome,
   OnlineCharacterState,
+  OpenContainerState,
   SpaceSnapshot,
   StationGuest,
   StationServiceBits,
@@ -100,6 +103,31 @@ export type FeedEvent =
   | { readonly type: "inventory/action-error"; readonly message: string | null }
   // Drop the inventory state (character offline / logged out).
   | { readonly type: "inventory/cleared" }
+  // Goal R14 — the items ticked for a bulk move or trash. Replaces the whole
+  // selection; an empty list clears it.
+  | { readonly type: "inventory/selection"; readonly itemIDs: readonly number[] }
+  // A container was opened (its contents decoded) or closed (null).
+  | {
+      readonly type: "inventory/container";
+      readonly container: OpenContainerState | null;
+    }
+  // The corporation hangar was read: which divisions exist, what they are
+  // CALLED, and what is in each. A division the character cannot query simply
+  // reads empty — the server stays authoritative.
+  | {
+      readonly type: "inventory/corp-loaded";
+      readonly available: boolean;
+      readonly reason: string | null;
+      readonly divisions: readonly CorpDivisionState[];
+    }
+  // Which corporation division the panel is showing.
+  | { readonly type: "inventory/corp-division"; readonly division: number }
+  // What the last mutation ACTUALLY did, re-read from the server. Null clears
+  // the report before the next action.
+  | {
+      readonly type: "inventory/outcome";
+      readonly outcome: MutationOutcome | null;
+    }
   // Goal R12 — the Fitting page. A full panel load: the active ship's slots by
   // family with what is fitted in each, plus its CPU / powergrid / capacitor /
   // calibration readings. The two reads are independent on the BFF, so each

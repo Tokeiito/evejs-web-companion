@@ -507,6 +507,119 @@ Decoded browser side into slots (`FittingSlot` = family + index + the module or
 `null`) and resource readings (`FittingResource` = used / total / `known`), with
 `known: false` rendering as an unknown bar rather than a misleading `0 / 0`.
 
+## Inventory depth + corporation hangars (R14)
+
+R14 adds no new inventory *surface*. Splitting, multi-select moves, re-merging,
+opening containers and reading a corporation hangar are all the **same R3
+`invbroker` two-step**, called with arguments R3 hardcoded away:
+
+| Operation | Retail call | New pair? |
+| --- | --- | --- |
+| Split a stack | `Add(itemID, sourceLocationID, qty=<partial>)` on the destination binding | no — R3's `Add` |
+| Multi-select move | `MultiAdd(itemIDs, sourceLocationID, {flag})` on the destination binding | **`invbroker.MultiAdd`** |
+| Re-merge | `MultiMerge([[src, dst, qty]], sourceContainerID)` | no — already listed |
+| Open a container | `GetInventoryFromId(containerItemID)` then `List()` | no — R3's cargo bind |
+| Trash | `TrashItems(itemIDs, locationID)` on the inventory-**manager** moniker | **`invbroker.TrashItems`** |
+| Corp hangar read | `GetInventoryFromId(<office>)` then `List(<division flag>)` | no |
+| Which office | `officeManager.GetMyCorporationsOffices()` | **`officeManager.GetMyCorporationsOffices`** |
+| Division names | `corpRegistry.GetCorporation()` → `division1..division7` | **`corpRegistry.GetCorporation`** |
+
+Four new deny-by-default pairs in total; every other `invbroker`,
+`officeManager` and `corpRegistry` sibling stays refused before dispatch.
+
+### ⚠ A container is listed with NO flag
+
+Container contents carry **`flagID` 0** — not 4 (hangar) or 5 (cargo). So a
+container binding is listed with **no flag argument at all**; passing the hangar
+or cargo flag answers **EMPTY**, and a caller that reused the hangar `List` call
+would report a full container as empty.
+
+The reverse also bites: filing an item **into** a container needs
+`flag: 0` given **explicitly**. A container binding carries a *null* flag
+context, and a null flag falls back to the hangar flag — so omitting `flag`
+files the item inside the container but stamps it `flagID` 4. It still lists
+(the no-flag `List` ignores flags), which is exactly how that bug hides.
+
+Container-ness itself is a **purely client-side static-data test** (`groupID` in
+{12, 340, 448, 649} and `singleton`) — the protocol has no notion of it, and the
+bind is byte-for-byte the ship-cargo bind.
+
+### Corporation hangar flag map
+
+Division *N* (1-7) is flag **114 + N**, i.e. `flagCorpSAG1..7` = 115-121 (plus
+184 `flagCorpGoalDeliveries`, not surfaced). **The browser never sees these
+numbers**: it addresses a division by its ordinal and renders its *name*
+(`division1..division7` off the corporation row, falling back to "Division N" —
+never `flagCorpSAG3`, never 117). R7d applies to division flags too.
+
+Access is a role-mask test against `session.corprole` — a *query* role to see a
+division, a *take* role to move things out — and **eve.js enforces it
+independently**. A division the character cannot query simply reads **empty**;
+a take they lack the role for is refused with the handler's own
+`CrpAccessDenied`, surfaced verbatim. The client's own greying-out is cosmetic.
+
+### ⚠ Office identity — the trap
+
+An office record carries **three separately allocated identifiers**:
+
+| Field | What it is |
+| --- | --- |
+| `office.officeID` | where the hangar **contents actually sit** (`item.locationID`) |
+| `office.officeFolderID` | the folder id |
+| `office.itemID` | what `GetMyCorporationsOffices` **publishes as `officeID`** |
+
+`GetInventoryFromId` accepts **any** of the three and normalizes the bound
+context to `office.officeID`, so **binding with the published value is correct**
+— and it is the only value a client can see. But the published value is **not**
+the items' `locationID`. Quoting it as the **source location** of a move-out is
+declined **silently**: a 200 with nothing moved. The bridge therefore takes the
+source location from each **listed row's own `locationID`**, never from the
+office identifier. `server/tests/webGatewayCorpHangar.test.js` seeds an office
+whose three identifiers deliberately differ and pins all of this.
+
+### ⚠ Silent declines, again (the R12 lesson)
+
+`invbroker` returns `null` **without raising** in several move branches
+(source-location mismatch, no room, a rig, a corp division the character cannot
+take from). Every mutating route below **re-reads** afterwards and reports what
+actually applied. `declinedSilently: true` means the server refused and gave no
+reason — reported as exactly that, because naming a cause would be a guess.
+
+A split is judged differently: it mints a **new** stack at the destination and
+leaves the source itemID in place, so `applied` comes from the **source stack
+shrinking**, not from the requested id appearing at the destination.
+
+### BFF routes (this repo)
+
+Handles stay server-side, cached under the same semantic keys as R3 plus
+`container:<itemID>`, `corpOffice:<officeID>` and `invManager:<stationID>`. The
+browser names a **place**, never a flag:
+
+```
+{ kind: "hangar" } | { kind: "cargo" }
+{ kind: "container", itemID } | { kind: "corp", division: 1..7 }
+```
+
+- `GET /api/bridge/inventory/container/:itemID` → `{ ok, containerID, list, capacity }`.
+  Binds `GetInventoryFromId(containerItemID)` and lists with **no flag**.
+- `POST /api/bridge/inventory/transfer` `{ itemIDs, from, to, qty? }` → one
+  `Add` (single item, optionally partial-`qty` = a split) or one `MultiAdd`
+  (several). Answers `{ ok, applied, moved, declined, declinedSilently, notFound }`.
+  A `qty` with more than one item is 400 `INVALID_SPLIT`.
+- `POST /api/bridge/inventory/merge` `{ sourceItemID, destinationItemID, place, qty? }`
+  → `MultiMerge`; answers `{ ok, applied, merged, declinedSilently }`.
+- `POST /api/bridge/inventory/trash` `{ itemIDs, place, confirm: true }` →
+  `TrashItems` on the inventory-**manager** moniker. **Refuses with 400
+  `CONFIRMATION_REQUIRED` unless `confirm === true`** — the second gate behind
+  the UI's two-step confirm, exactly as `destroy-rig` is fenced. Answers
+  `{ ok, applied, destroyed, survived, declinedSilently }`.
+- `GET /api/bridge/inventory/corp` → `{ ok, available, reason?, divisions: [{ division, name, list, error }] }`.
+  Reads the office and the division names, then lists all seven divisions
+  independently (`Promise.allSettled`) so a division the character cannot query
+  never blanks the rest. **No office here is `available: false` with
+  `reason: "NO_CORP_OFFICE"` — an ordinary state, not an error.** A division
+  descriptor exposes an **ordinal and a name, never a flag**.
+
 ## Space snapshot — overview + ship HUD (R11)
 
 The retail client's overview is a **client-side view over one server structure**:

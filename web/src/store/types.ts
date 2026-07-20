@@ -102,6 +102,86 @@ export interface InventoryState {
   readonly loaded: boolean;
   /** Non-null when the last mutation (move/stack/board) failed. */
   readonly actionError: string | null;
+  // --- R14 inventory depth ---
+  /** The items ticked for a bulk move / trash, by itemID. */
+  readonly selection: readonly number[];
+  /** The container currently open, or null when browsing the top level. */
+  readonly container: OpenContainerState | null;
+  /** The corporation hangar at this station. */
+  readonly corp: CorpHangarState;
+  /**
+   * What the LAST mutation actually did, re-read from the server rather than
+   * echoed from the request. `applied: false` with no reason is a silent
+   * decline — the server refused without saying why, and the UI says exactly
+   * that instead of inventing a cause.
+   */
+  readonly lastOutcome: MutationOutcome | null;
+}
+
+// --- R14 inventory depth ----------------------------------------------------
+
+/**
+ * A place items can live. The browser names a place; the retail flagIDs that
+ * back them (4 hangar, 5 cargo, 0 container contents, 115-121 corporation
+ * divisions) live on the BFF and never reach here.
+ */
+export type InventoryPlace =
+  | { readonly kind: "hangar" }
+  | { readonly kind: "cargo" }
+  | { readonly kind: "container"; readonly itemID: number }
+  | { readonly kind: "corp"; readonly division: number };
+
+/**
+ * An open container. Its contents are read with a NO-FLAG List on the BFF
+ * (container contents carry flagID 0), but that is a wire detail — here it is
+ * just another set of rows.
+ */
+export interface OpenContainerState {
+  readonly itemID: number;
+  readonly typeID: number;
+  readonly rows: readonly InventoryItemRow[];
+  readonly capacity: CapacityInfo | null;
+  readonly error: string | null;
+}
+
+/** One corporation hangar division, addressed by ordinal and shown by NAME. */
+export interface CorpDivisionState {
+  /** 1-7. Never rendered — it selects the division, the name labels it. */
+  readonly division: number;
+  /**
+   * The corporation's own name for this division, or null when it was never
+   * renamed (the UI then falls back to "Division N" — never a flag number).
+   */
+  readonly name: string | null;
+  readonly rows: readonly InventoryItemRow[];
+  readonly error: string | null;
+}
+
+/**
+ * The corporation hangar at the docked station. `available: false` is the
+ * ordinary case of a character whose corporation rents no office here — not an
+ * error state.
+ */
+export interface CorpHangarState {
+  readonly available: boolean;
+  /** Why the hangar is unavailable, when it is. */
+  readonly reason: string | null;
+  readonly divisions: readonly CorpDivisionState[];
+  /** Which division the panel is showing. */
+  readonly selectedDivision: number;
+  readonly loaded: boolean;
+}
+
+/**
+ * The honest result of a mutation. The BFF re-reads after every call because
+ * invbroker declines silently — it returns null WITHOUT raising — so a 200 is
+ * never proof. `declinedSilently` means the server refused and gave no reason.
+ */
+export interface MutationOutcome {
+  readonly applied: boolean;
+  readonly declinedSilently: boolean;
+  /** A short player-facing summary of what actually happened. */
+  readonly message: string;
 }
 
 // --- R12 Ship fitting ------------------------------------------------------

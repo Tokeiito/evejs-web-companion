@@ -226,6 +226,28 @@ What to expect:
 - **IDs kept where they still matter.** A field with no name in any available data stays an ID: the mission `title` (a localization message id), route-hop warp/jump **gate** IDs, the services **operationID**, and the labeled **Station ID** reference row (its name is the panel header).
 - Proven in-process by `test/bridgeNames.test.js` (the `resolveNames` batch across kinds + the `/api/names` route shape/unknown/empty/auth) and `web/src/app/namesFlow.test.ts` (batching, cache-no-refetch, definitive-unknown, transient-retry, and a previously-ID cell rendering the name); this spot test is the live end-to-end run.
 
+## Spot test (R14): move a selection, split a stack, open a container, use the corp hangar
+
+Goal R14. What it proves: the Inventory tab now does the rest of station inventory — multi-select moves, splitting and re-merging stacks, browsing inside a container, a confirmed destroy, and the **corporation hangar** by division **name**.
+
+**Setup expectation:** the character is docked with a few stacks in the hangar. Same server setup as the R2–R7a spot tests (EveJS running, `npm run build:web`, `npm start`).
+
+1. Open `http://127.0.0.1:26500/dist/`, log in, and select the character.
+2. **Multi-select:** tick two or more rows in the station hangar. A bar appears reading *"N selected in Station hangar"* with a **Move to Ship cargo** button. Press it — both move in **one** call, and the panel reports *"Moved 2 of 2."*
+3. **Split:** type a number into **Move quantity**, tick a single stack, and move it. Only that many units go across; the source stack shrinks and a new stack appears at the destination. The report reads *"Split N off the stack."*
+4. **Re-merge:** tick exactly two stacks of the **same** item in one place — a **Merge the two stacks** button appears. Press it; the smaller folds into the larger and the report says how many units moved.
+5. **Containers:** an assembled container in the hangar shows an **Open** action. Open it: its contents list (they are *not* hangar-flagged, so this is a different read), and **← Back to the hangar** takes you out. Items move in and out like anywhere else.
+6. **Trash:** tick something expendable and press **Trash…**. Nothing happens yet — a red **Destroy N permanently — confirm** button appears with a warning. Only that second press destroys it. (The BFF refuses the call outright without its own explicit confirmation, so a stray POST cannot destroy anything either.)
+7. **Corporation hangar:** the section at the bottom shows a **Division** picker listing your corporation's own division **names** (e.g. `Ore Bay`), or `Division 1`…`Division 7` where none was set. Pick one, move an item in from the hangar, and move it back out.
+
+What to expect:
+
+- **Names and words only.** A division is named, never numbered by its retail flag (`flagCorpSAG1` = 115 never appears). Items are type names as everywhere else.
+- **A 200 is not proof.** Every action re-reads afterwards and reports what **actually** applied. If the server declines without saying why — which `invbroker` genuinely does — the panel says *"The server did not move anything, and gave no reason"* rather than guessing at a cause.
+- **The server decides who can touch a corp division.** A division your roles do not let you see simply reads empty; if you attempt a move you lack the role for, you get the **server's own** refusal text. The UI's dimming is a hint, never the gate.
+- **No corp office here?** The section says so plainly — that is an ordinary state, not an error.
+- Proven in-process by `test/bridgeInventoryDepth.test.js`, `web/src/app/inventoryDepthFlow.test.ts`, and (in eve.js) `server/tests/webGatewayInventoryDepth.test.js` + `server/tests/webGatewayCorpHangar.test.js`; this spot test is the live end-to-end run.
+
 ## Configuration
 
 Defaults assume both repos live under `C:\Users\ryanf\Documents\GitHub`:

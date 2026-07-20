@@ -139,3 +139,61 @@ export function isBoardableShip(
 ): boolean {
   return row.categoryID === 6 && row.itemID !== activeShipID;
 }
+
+// --- R14 inventory depth ----------------------------------------------------
+
+/**
+ * The inventory groups whose items are containers you can open and put things
+ * into. Container-ness is a purely CLIENT-side static-data question — the
+ * protocol has no notion of it, and the bind for a container is byte-for-byte
+ * the bind for a ship's cargo hold.
+ *
+ *   12   Cargo Container      (the standard/secure/giant station containers)
+ *   340  Secure Cargo Container
+ *   448  Audit Log Secure Container
+ *   649  Freight Container
+ */
+const CONTAINER_GROUP_IDS = new Set([12, 340, 448, 649]);
+const CATEGORY_CELESTIAL = 2;
+
+/**
+ * Is this row a container the player can open? It must be an assembled
+ * (singleton) item of a container group. An UNASSEMBLED container is just
+ * cargo — it stacks, and it holds nothing.
+ */
+export function isOpenableContainer(row: InventoryItemRow): boolean {
+  if (!row.singleton) {
+    return false;
+  }
+  if (row.groupID !== null && CONTAINER_GROUP_IDS.has(row.groupID)) {
+    return true;
+  }
+  // Fall back to the category when a row carries no groupID: every container
+  // group above sits in the Celestial category.
+  return row.groupID === null && row.categoryID === CATEGORY_CELESTIAL;
+}
+
+/**
+ * Can these two rows be merged into one stack? Only same-type, non-assembled
+ * stacks — an assembled item is a single object, not a quantity.
+ */
+export function canMergeStacks(
+  source: InventoryItemRow,
+  destination: InventoryItemRow,
+): boolean {
+  return (
+    source.itemID !== destination.itemID &&
+    source.typeID === destination.typeID &&
+    !source.singleton &&
+    !destination.singleton
+  );
+}
+
+/**
+ * The label for a corporation hangar division. A corporation that never
+ * renamed a division has no name for it, and the fallback is the plain
+ * ordinal — NEVER the underlying flag number, which the browser never sees.
+ */
+export function divisionLabel(division: number, name: string | null): string {
+  return name && name.trim() !== "" ? name : `Division ${division}`;
+}

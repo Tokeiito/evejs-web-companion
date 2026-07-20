@@ -10,6 +10,7 @@ import { BridgeCallError } from "../bridge/callMethod.ts";
 import type { JsonValue } from "../bridge/wire.ts";
 import type {
   AgentRow,
+  InventoryPlace,
   OnlineCharacterState,
   SlotFamily,
   StationStatic,
@@ -252,6 +253,178 @@ export async function boardShip(
   options: ApiOptions = {},
 ): Promise<void> {
   await postJson("/api/bridge/ship/board", { shipID }, options);
+}
+
+// --- R14 Inventory depth + corporation hangars ------------------------------
+// The browser names a PLACE — the hangar, the ship's cargo, a container, a
+// corporation division by its ordinal — and the BFF maps that to the retail
+// flagIDs. No flag number is ever sent from here.
+
+/**
+ * What a mutation ACTUALLY did, re-read by the BFF after the call. invbroker
+ * declines silently in several branches (a source location that no longer
+ * matches, no room, a division the character cannot take from): it returns null
+ * WITHOUT raising, so a 200 is not proof anything moved. `declinedSilently`
+ * means the server refused and gave no reason — which is reported as exactly
+ * that rather than dressed up as a cause.
+ */
+export interface TransferResult {
+  readonly applied: boolean;
+  readonly moved: readonly number[];
+  readonly declined: readonly number[];
+  readonly declinedSilently: boolean;
+  readonly notFound: readonly number[];
+}
+
+function asNumberList(value: JsonValue | undefined): readonly number[] {
+  return Array.isArray(value) ? value.map((entry) => Number(entry) || 0).filter((id) => id > 0) : [];
+}
+
+/**
+ * Move items between any two places. One call carries them all, because they
+ * are the same retail call with different arguments: a single item with a
+ * `qty` is a SPLIT (a partial-quantity Add), several items are one MultiAdd.
+ */
+export async function transferItems(
+  itemIDs: readonly number[],
+  from: InventoryPlace,
+  to: InventoryPlace,
+  qty: number | null = null,
+  options: ApiOptions = {},
+): Promise<TransferResult> {
+  const body: Record<string, JsonValue> = {
+    itemIDs: [...itemIDs],
+    from: from as unknown as JsonValue,
+    to: to as unknown as JsonValue,
+  };
+  if (qty !== null) {
+    body.qty = qty;
+  }
+  const data = await postJson("/api/bridge/inventory/transfer", body, options);
+  return {
+    applied: data.applied === true,
+    moved: asNumberList(data.moved),
+    declined: asNumberList(data.declined),
+    declinedSilently: data.declinedSilently === true,
+    notFound: asNumberList(data.notFound),
+  };
+}
+
+export interface MergeResult {
+  readonly applied: boolean;
+  readonly merged: number;
+  readonly declinedSilently: boolean;
+}
+
+/** Re-merge one stack into another of the same type (drag-onto-stack). */
+export async function mergeStacks(
+  sourceItemID: number,
+  destinationItemID: number,
+  place: InventoryPlace,
+  qty: number | null = null,
+  options: ApiOptions = {},
+): Promise<MergeResult> {
+  const body: Record<string, JsonValue> = {
+    sourceItemID,
+    destinationItemID,
+    place: place as unknown as JsonValue,
+  };
+  if (qty !== null) {
+    body.qty = qty;
+  }
+  const data = await postJson("/api/bridge/inventory/merge", body, options);
+  return {
+    applied: data.applied === true,
+    merged: Number(data.merged) || 0,
+    declinedSilently: data.declinedSilently === true,
+  };
+}
+
+export interface TrashResult {
+  readonly applied: boolean;
+  readonly destroyed: readonly number[];
+  readonly survived: readonly number[];
+  readonly declinedSilently: boolean;
+}
+
+/**
+ * DESTROY items. Irreversible, so the BFF refuses outright without `confirm`,
+ * and the UI asks first — this flag is the second gate behind that, exactly as
+ * the rig destroy is fenced.
+ */
+export async function trashItems(
+  itemIDs: readonly number[],
+  place: InventoryPlace,
+  options: ApiOptions = {},
+): Promise<TrashResult> {
+  const data = await postJson(
+    "/api/bridge/inventory/trash",
+    { itemIDs: [...itemIDs], place: place as unknown as JsonValue, confirm: true },
+    options,
+  );
+  return {
+    applied: data.applied === true,
+    destroyed: asNumberList(data.destroyed),
+    survived: asNumberList(data.survived),
+    declinedSilently: data.declinedSilently === true,
+  };
+}
+
+export interface RawContainerReads {
+  readonly containerID: number;
+  readonly list: JsonValue;
+  readonly capacity: JsonValue;
+}
+
+/** Open a container and read its contents. */
+export async function openContainer(
+  containerID: number,
+  options: ApiOptions = {},
+): Promise<RawContainerReads> {
+  const data = await getJson(`/api/bridge/inventory/container/${containerID}`, options);
+  return {
+    containerID: asNumberOrNull(data.containerID) ?? containerID,
+    list: data.list ?? null,
+    capacity: data.capacity ?? null,
+  };
+}
+
+/** One corporation hangar division as the BFF reports it (rows still raw). */
+export interface RawCorpDivision {
+  readonly division: number;
+  readonly name: string | null;
+  readonly list: JsonValue;
+  readonly error: string | null;
+}
+
+export interface RawCorpHangar {
+  readonly available: boolean;
+  readonly reason: string | null;
+  readonly divisions: readonly RawCorpDivision[];
+}
+
+/**
+ * Read the corporation hangar at the docked station: which divisions exist,
+ * what they are CALLED, and what is in each. A division the character lacks
+ * the query role for simply reads empty — the server filters it, and that
+ * filtering is the authority (the UI's own greying-out is cosmetic).
+ */
+export async function loadCorpHangar(options: ApiOptions = {}): Promise<RawCorpHangar> {
+  const data = await getJson("/api/bridge/inventory/corp", options);
+  const divisions = Array.isArray(data.divisions) ? data.divisions : [];
+  return {
+    available: data.available === true,
+    reason: typeof data.reason === "string" ? data.reason : null,
+    divisions: divisions.map((entry) => {
+      const row = (entry ?? {}) as Record<string, JsonValue>;
+      return {
+        division: Number(row.division) || 0,
+        name: typeof row.name === "string" && row.name !== "" ? row.name : null,
+        list: row.list ?? null,
+        error: typeof row.error === "string" ? row.error : null,
+      };
+    }),
+  };
 }
 
 // --- R12 Ship fitting ------------------------------------------------------

@@ -30,6 +30,7 @@ import type {
   FittingSlot,
   FittingState,
   InventoryContainerState,
+  CorpHangarState,
   InventoryState,
   LiveState,
   OnlineCharacterState,
@@ -122,6 +123,17 @@ const EMPTY_CONTAINER: InventoryContainerState = Object.freeze({
   error: null,
 });
 
+// A corporation hangar starts unavailable: most characters, most of the time,
+// have no corp office at the station they are docked in, and that is an
+// ordinary state rather than an error.
+const EMPTY_CORP_HANGAR: CorpHangarState = Object.freeze({
+  available: false,
+  reason: null,
+  divisions: Object.freeze([]),
+  selectedDivision: 1,
+  loaded: false,
+});
+
 const INITIAL_INVENTORY: InventoryState = Object.freeze({
   stationID: null,
   activeShipID: null,
@@ -129,6 +141,10 @@ const INITIAL_INVENTORY: InventoryState = Object.freeze({
   cargo: EMPTY_CONTAINER,
   loaded: false,
   actionError: null,
+  selection: Object.freeze([]),
+  container: null,
+  corp: EMPTY_CORP_HANGAR,
+  lastOutcome: null,
 });
 
 // A resource reading with no total: `known: false` renders as an unknown bar
@@ -460,22 +476,71 @@ export function createClientStore(): ClientStore {
       case "station/read-error":
         station.set({ ...station.get(), readError: event.message });
         break;
-      case "inventory/loaded":
+      case "inventory/loaded": {
+        const previous = inventory.get();
+        // A reload drops any selection whose item is no longer in the hangar or
+        // cargo: acting on a stale tick would move something the player can no
+        // longer see.
+        const visible = new Set([
+          ...event.hangar.rows.map((row) => row.itemID),
+          ...event.cargo.rows.map((row) => row.itemID),
+          ...(previous.container ? previous.container.rows.map((row) => row.itemID) : []),
+          ...previous.corp.divisions.flatMap((division) =>
+            division.rows.map((row) => row.itemID),
+          ),
+        ]);
         inventory.set({
+          ...previous,
           stationID: event.stationID,
           activeShipID: event.activeShipID,
           hangar: event.hangar,
           cargo: event.cargo,
           loaded: true,
+          selection: previous.selection.filter((itemID) => visible.has(itemID)),
           // A successful load clears any stale mutation error.
           actionError: null,
         });
         break;
+      }
       case "inventory/action-error":
         inventory.set({ ...inventory.get(), actionError: event.message });
         break;
       case "inventory/cleared":
         inventory.set(INITIAL_INVENTORY);
+        break;
+      case "inventory/selection":
+        inventory.set({ ...inventory.get(), selection: [...event.itemIDs] });
+        break;
+      case "inventory/container":
+        inventory.set({
+          ...inventory.get(),
+          container: event.container,
+          // Leaving or entering a container clears the selection: a tick made
+          // in one place must never be applied in another.
+          selection: [],
+        });
+        break;
+      case "inventory/corp-loaded":
+        inventory.set({
+          ...inventory.get(),
+          corp: {
+            ...inventory.get().corp,
+            available: event.available,
+            reason: event.reason,
+            divisions: [...event.divisions],
+            loaded: true,
+          },
+        });
+        break;
+      case "inventory/corp-division":
+        inventory.set({
+          ...inventory.get(),
+          corp: { ...inventory.get().corp, selectedDivision: event.division },
+          selection: [],
+        });
+        break;
+      case "inventory/outcome":
+        inventory.set({ ...inventory.get(), lastOutcome: event.outcome });
         break;
       case "fitting/loaded":
         fitting.set({

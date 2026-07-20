@@ -802,6 +802,654 @@ app.post("/api/bridge/inventory/stack", requireAuth, async (req, res, next) => {
   }
 });
 
+// --- R14 Inventory depth + corporation hangars -----------------------------
+// All of this is the SAME R3 bound-object bridge above, with arguments R3
+// hardcoded away. Nothing here forks a parallel path: every route goes through
+// boundCall() and the shared bind/handle cache.
+//
+//   split a stack   Add(itemID, sourceLocationID, qty=<partial>)
+//   multi-move      MultiAdd(itemIDs, sourceLocationID, flag=<dest>)
+//   re-merge        MultiMerge([[src,dst,qty]], sourceContainerID)
+//   open container  GetInventoryFromId(containerID) then List() with NO FLAG
+//   corp hangar     GetInventoryFromId(officeID) then List(<division flag>)
+//   trash           TrashItems(itemIDs, locationID) — DESTRUCTIVE, confirm-gated
+//
+// The browser never sends a flagID or a division flag: it names a place
+// ("hangar", "cargo", a container's itemID, a corp division NUMBER 1-7) and the
+// mapping to retail flags lives here.
+
+// Container contents carry flagID 0 — NOT 4/5. A container is therefore listed
+// with no flag at all, and an item filed INTO one must be given flag 0
+// explicitly (a container binding's flag context is null, and a null flag falls
+// back to the hangar flag).
+const ITEM_FLAG_NONE = 0;
+// flagCorpSAG1..7 = 115..121. Division N maps to 114 + N. These numbers never
+// reach the browser; it addresses a division by its ordinal and sees its NAME.
+const CORP_DIVISION_FLAG_BASE = 114;
+const CORP_DIVISION_COUNT = 7;
+
+function corpDivisionFlag(division) {
+  return CORP_DIVISION_FLAG_BASE + division;
+}
+
+function isValidDivision(division) {
+  return Number.isSafeInteger(division) && division >= 1 && division <= CORP_DIVISION_COUNT;
+}
+
+// A container binds with the IDENTICAL call ship cargo binds with — there is no
+// container-specific bind method, and container-ness is a client-side
+// static-data question the server never asks.
+function containerBindSpec(containerID) {
+  return {
+    key: `container:${containerID}`,
+    service: "invbroker",
+    method: "GetInventoryFromId",
+    args: [containerID],
+    kwargs: { passive: 0 },
+  };
+}
+
+// The corporation's office at this station. See readCorpOffice() for why the
+// identifier bound here is the PUBLISHED one and what it is not.
+function corpOfficeBindSpec(officeID) {
+  return {
+    key: `corpOffice:${officeID}`,
+    service: "invbroker",
+    method: "GetInventoryFromId",
+    args: [officeID],
+    kwargs: { passive: 0 },
+  };
+}
+
+// Moniker('invbroker', (stationID, groupStation)) — the inventory MANAGER.
+// TrashItems dispatches on this, not on a per-container binding.
+function inventoryManagerBindSpec(held) {
+  return {
+    key: `invManager:${held.stationID}`,
+    service: "invbroker",
+    method: "MachoBindObject",
+    args: [[held.stationID, SHIP_BIND_GROUP_STATION]],
+    kwargs: null,
+  };
+}
+
+// Decode an invbroker List result to plain rows. Rows arrive as packedrows, or
+// (when empty and flag-scoped) a python set wrapping an empty list.
+function decodeInventoryRows(result) {
+  let listValue = result;
+  if (listValue && listValue.type === "objectex1" && Array.isArray(listValue.header)) {
+    const token = listValue.header[0];
+    if (token && token.value === "__builtin__.set" && Array.isArray(listValue.header[1])) {
+      listValue = listValue.header[1][0] ?? null;
+    }
+  } else if (listValue && listValue.type === "object" && Array.isArray(listValue.args)) {
+    listValue = listValue.args[0] ?? null;
+  }
+  const items =
+    listValue && listValue.type === "list" && Array.isArray(listValue.items) ? listValue.items : [];
+  const rows = [];
+  for (const item of items) {
+    const fields = item && item.type === "packedrow" && item.fields ? item.fields : item;
+    if (!fields || typeof fields !== "object") {
+      continue;
+    }
+    const itemID = Number(fields.itemID) || 0;
+    if (itemID > 0) {
+      rows.push({
+        itemID,
+        typeID: Number(fields.typeID) || 0,
+        locationID: Number(fields.locationID) || 0,
+        flagID: Number(fields.flagID) || 0,
+        quantity: Number(fields.quantity) || Number(fields.stacksize) || 0,
+      });
+    }
+  }
+  return rows;
+}
+
+// Decode officeManager.GetMyCorporationsOffices (a CRowset: objectex2 whose
+// `list` holds packedrows).
+function decodeOfficeRows(result) {
+  const rows = result && Array.isArray(result.list) ? result.list : [];
+  const offices = [];
+  for (const row of rows) {
+    const fields = row && row.type === "packedrow" && row.fields ? row.fields : null;
+    if (!fields) {
+      continue;
+    }
+    offices.push({
+      officeID: Number(fields.officeID) || 0,
+      stationID: Number(fields.stationID) || 0,
+    });
+  }
+  return offices;
+}
+
+// Decode corpRegistry.GetCorporation (a util.Row: a `header` list of column
+// names paired with a `line` list of values) into division ordinal -> name.
+function decodeDivisionNames(result) {
+  const entries =
+    result && result.type === "object" && result.args && Array.isArray(result.args.entries)
+      ? result.args.entries
+      : [];
+  const header = (entries.find(([key]) => key === "header") || [])[1];
+  const line = (entries.find(([key]) => key === "line") || [])[1];
+  const names = (header && header.items) || [];
+  const values = (line && line.items) || [];
+  const byDivision = {};
+  for (let division = 1; division <= CORP_DIVISION_COUNT; division += 1) {
+    const index = names.indexOf(`division${division}`);
+    const value = index >= 0 ? values[index] : null;
+    byDivision[division] = typeof value === "string" && value.trim() !== "" ? value : null;
+  }
+  return byDivision;
+}
+
+/**
+ * Resolve the corporation's office at the docked station.
+ *
+ * ⚠ IDENTITY. An office carries three separately allocated ids: officeID (where
+ * the hangar CONTENTS sit), officeFolderID, and itemID. What
+ * GetMyCorporationsOffices publishes as `officeID` is the office's ITEM id.
+ * GetInventoryFromId accepts any of the three, so BINDING with the published
+ * value is correct — but it is NOT the items' locationID, and passing it as the
+ * source location of a move-out gets the move declined SILENTLY (a 200 with
+ * nothing moved). Everywhere a source location is needed, the bridge takes it
+ * from the LISTED ROW's own locationID instead of assuming.
+ */
+async function readCorpOffice(held, webSessionID) {
+  const outcome = await heldTopLevelCall(
+    held,
+    webSessionID,
+    "officeManager",
+    "GetMyCorporationsOffices",
+    [],
+    null,
+  );
+  const offices = decodeOfficeRows(outcome.result);
+  const here = offices.find((office) => office.stationID === held.stationID);
+  return here ? here.officeID : 0;
+}
+
+// Resolve a browser-supplied place descriptor to a bind spec, the destination
+// flag, and the source location to quote when moving OUT of it.
+//   { kind: "hangar" }                     the docked station hangar
+//   { kind: "cargo" }                      the active ship's cargo hold
+//   { kind: "container", itemID }          a container in the hangar or cargo
+//   { kind: "corp", division: 1..7 }       a corporation hangar division
+async function resolvePlace(held, webSessionID, descriptor) {
+  const kind = String((descriptor && descriptor.kind) || "");
+  if (kind === "hangar") {
+    return { spec: hangarBindSpec(held), flag: ITEM_FLAG_HANGAR, locationID: held.stationID };
+  }
+  if (kind === "cargo") {
+    if (!held.activeShipID) {
+      throw Object.assign(new Error("No active ship."), { code: "NO_ACTIVE_SHIP", status: 409 });
+    }
+    return {
+      spec: cargoBindSpec(held, held.activeShipID),
+      flag: ITEM_FLAG_CARGO_HOLD,
+      locationID: held.activeShipID,
+    };
+  }
+  if (kind === "container") {
+    const containerID = Number(descriptor && descriptor.itemID) || 0;
+    if (containerID <= 0) {
+      throw Object.assign(new Error("A container is required."), {
+        code: "INVALID_CONTAINER",
+        status: 400,
+      });
+    }
+    return {
+      spec: containerBindSpec(containerID),
+      flag: ITEM_FLAG_NONE,
+      locationID: containerID,
+    };
+  }
+  if (kind === "corp") {
+    const division = Number(descriptor && descriptor.division) || 0;
+    if (!isValidDivision(division)) {
+      throw Object.assign(new Error("A corporation hangar division is required."), {
+        code: "INVALID_DIVISION",
+        status: 400,
+      });
+    }
+    const officeID = await readCorpOffice(held, webSessionID);
+    if (!officeID) {
+      throw Object.assign(
+        new Error("Your corporation has no office at this station."),
+        { code: "NO_CORP_OFFICE", status: 409 },
+      );
+    }
+    // locationID is deliberately null: the office's PUBLISHED id is not where
+    // items sit, so a move OUT of a division must read the row's own location.
+    return {
+      spec: corpOfficeBindSpec(officeID),
+      flag: corpDivisionFlag(division),
+      locationID: null,
+      division,
+    };
+  }
+  throw Object.assign(new Error("Unknown inventory location."), {
+    code: "INVALID_LOCATION",
+    status: 400,
+  });
+}
+
+// List a place. A container lists with NO flag argument at all; everything else
+// is flag-scoped.
+async function listPlace(held, webSessionID, place) {
+  const args = place.flag === ITEM_FLAG_NONE ? [] : [place.flag];
+  const outcome = await boundCall(held, webSessionID, place.spec, "List", args, null);
+  return decodeInventoryRows(outcome.result);
+}
+
+function sendPlaceError(res, error) {
+  if (error && error.status) {
+    res.status(error.status).json({ ok: false, error: error.code, message: error.message });
+    return true;
+  }
+  return false;
+}
+
+// Open a container and list its contents. THE RULE: a container binding is
+// listed with NO flag — its contents carry flagID 0, so a flag-scoped List
+// would answer empty and the container would look wrongly empty.
+app.get("/api/bridge/inventory/container/:itemID", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const containerID = Number(req.params.itemID) || 0;
+  if (containerID <= 0) {
+    res.status(400).json({ ok: false, error: "INVALID_CONTAINER", message: "A container is required." });
+    return;
+  }
+  const spec = containerBindSpec(containerID);
+  try {
+    const [list, capacity] = await Promise.allSettled([
+      boundCall(held, req.webSessionID, spec, "List", [], null),
+      boundCall(held, req.webSessionID, spec, "GetCapacity", [], null),
+    ]);
+    for (const settled of [list, capacity]) {
+      if (settled.status === "rejected" && settled.reason && settled.reason.code === "SESSION_NOT_FOUND") {
+        next(settled.reason);
+        return;
+      }
+    }
+    if (list.status === "rejected") {
+      next(list.reason);
+      return;
+    }
+    res.json({
+      ok: true,
+      containerID,
+      list: list.value.result,
+      // A container that reports no capacity is still browsable; the panel
+      // simply omits the gauge.
+      capacity: capacity.status === "fulfilled" ? capacity.value.result : null,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * The general move. One route carries split, multi-select move, and every
+ * hangar/cargo/container/corp-division combination, because they are all the
+ * same retail call with different arguments:
+ *   one item  + qty   -> Add(itemID, sourceLocationID, {qty, flag})   (a SPLIT)
+ *   many items        -> MultiAdd(itemIDs, sourceLocationID, {flag})
+ *
+ * The response reports what ACTUALLY moved. invbroker declines silently in
+ * several branches (source-location mismatch, no room, a rig, a corp division
+ * the character cannot take from) — it returns null WITHOUT raising — so a 200
+ * is never treated as proof. The destination is re-read and the caller is told
+ * which items landed and which did not.
+ */
+app.post("/api/bridge/inventory/transfer", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const body = req.body || {};
+  const itemIDs = (Array.isArray(body.itemIDs) ? body.itemIDs : [body.itemID])
+    .map((value) => Number(value) || 0)
+    .filter((value) => value > 0);
+  const qty = Number(body.qty);
+  const hasQty = Number.isSafeInteger(qty) && qty > 0;
+  if (itemIDs.length === 0) {
+    res.status(400).json({ ok: false, error: "INVALID_MOVE", message: "At least one item is required." });
+    return;
+  }
+  if (hasQty && itemIDs.length > 1) {
+    res.status(400).json({
+      ok: false,
+      error: "INVALID_SPLIT",
+      message: "A quantity can only be given when moving a single stack.",
+    });
+    return;
+  }
+  try {
+    await readHeldFlight(held, req.webSessionID);
+    const from = await resolvePlace(held, req.webSessionID, body.from);
+    const to = await resolvePlace(held, req.webSessionID, body.to);
+
+    // Read the source FIRST. This is what supplies the source location for a
+    // corp division (whose published office id is not the items' location), and
+    // the before-quantity a split is judged against.
+    const sourceRowsBefore = await listPlace(held, req.webSessionID, from);
+    const sourceByID = new Map(sourceRowsBefore.map((row) => [row.itemID, row]));
+    const missing = itemIDs.filter((itemID) => !sourceByID.has(itemID));
+    if (missing.length === itemIDs.length) {
+      res.status(409).json({
+        ok: false,
+        error: "ITEMS_NOT_AT_SOURCE",
+        message: "Those items are no longer where the panel last saw them; refresh and try again.",
+      });
+      return;
+    }
+    const present = itemIDs.filter((itemID) => sourceByID.has(itemID));
+    // Quote the source location the ITEMS report, never an assumed one.
+    const sourceLocationID =
+      from.locationID !== null && from.locationID !== undefined
+        ? from.locationID
+        : sourceByID.get(present[0]).locationID;
+
+    const kwargs = { flag: to.flag };
+    let outcome;
+    if (present.length === 1 && hasQty) {
+      outcome = await boundCall(
+        held,
+        req.webSessionID,
+        to.spec,
+        "Add",
+        [present[0], sourceLocationID],
+        { ...kwargs, qty },
+      );
+    } else if (present.length === 1) {
+      outcome = await boundCall(
+        held,
+        req.webSessionID,
+        to.spec,
+        "Add",
+        [present[0], sourceLocationID],
+        kwargs,
+      );
+    } else {
+      outcome = await boundCall(
+        held,
+        req.webSessionID,
+        to.spec,
+        "MultiAdd",
+        [present, sourceLocationID],
+        kwargs,
+      );
+    }
+
+    // RE-READ. The status code above proves only that the call was dispatched.
+    const [destinationRows, sourceRowsAfter] = await Promise.all([
+      listPlace(held, req.webSessionID, to),
+      listPlace(held, req.webSessionID, from),
+    ]);
+    const destinationIDs = new Set(destinationRows.map((row) => row.itemID));
+    const sourceAfterByID = new Map(sourceRowsAfter.map((row) => [row.itemID, row]));
+
+    const moved = present.filter((itemID) => destinationIDs.has(itemID));
+    const declined = present.filter((itemID) => !destinationIDs.has(itemID));
+    // A SPLIT mints a new stack at the destination and leaves the source
+    // itemID in place, so "did it land" is answered by the source SHRINKING.
+    const splitApplied =
+      hasQty &&
+      present.length === 1 &&
+      (sourceAfterByID.get(present[0])?.quantity ?? 0) <
+        (sourceByID.get(present[0])?.quantity ?? 0);
+    const applied = splitApplied || moved.length > 0;
+
+    res.json({
+      ok: true,
+      applied,
+      moved,
+      // Items the server did not move, and no reason was given: say exactly
+      // that rather than inventing a cause.
+      declined,
+      declinedSilently: !applied && declined.length > 0,
+      notFound: missing,
+      notifications: outcome.notifications,
+    });
+  } catch (error) {
+    if (sendPlaceError(res, error)) {
+      return;
+    }
+    next(error);
+  }
+});
+
+// Re-merge one stack into another of the same type (retail's drag-onto-stack).
+// MultiMerge takes (ops, sourceContainerID) with each op [source, dest, qty].
+app.post("/api/bridge/inventory/merge", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const body = req.body || {};
+  const sourceItemID = Number(body.sourceItemID) || 0;
+  const destinationItemID = Number(body.destinationItemID) || 0;
+  if (sourceItemID <= 0 || destinationItemID <= 0 || sourceItemID === destinationItemID) {
+    res.status(400).json({
+      ok: false,
+      error: "INVALID_MERGE",
+      message: "Two different stacks are required to merge.",
+    });
+    return;
+  }
+  try {
+    await readHeldFlight(held, req.webSessionID);
+    const place = await resolvePlace(held, req.webSessionID, body.place);
+    const rowsBefore = await listPlace(held, req.webSessionID, place);
+    const source = rowsBefore.find((row) => row.itemID === sourceItemID);
+    const destination = rowsBefore.find((row) => row.itemID === destinationItemID);
+    if (!source || !destination) {
+      res.status(409).json({
+        ok: false,
+        error: "ITEMS_NOT_AT_SOURCE",
+        message: "Those stacks are no longer where the panel last saw them; refresh and try again.",
+      });
+      return;
+    }
+    const requested = Number(body.qty);
+    const quantity =
+      Number.isSafeInteger(requested) && requested > 0 && requested <= source.quantity
+        ? requested
+        : source.quantity;
+    const containerID =
+      place.locationID !== null && place.locationID !== undefined
+        ? place.locationID
+        : source.locationID;
+    const outcome = await boundCall(
+      held,
+      req.webSessionID,
+      place.spec,
+      "MultiMerge",
+      [[[sourceItemID, destinationItemID, quantity]], containerID],
+      null,
+    );
+    // Re-read: the destination should have GROWN by the merged quantity.
+    const rowsAfter = await listPlace(held, req.webSessionID, place);
+    const destinationAfter = rowsAfter.find((row) => row.itemID === destinationItemID);
+    const applied = Boolean(destinationAfter) && destinationAfter.quantity > destination.quantity;
+    res.json({
+      ok: true,
+      applied,
+      merged: applied ? destinationAfter.quantity - destination.quantity : 0,
+      declinedSilently: !applied,
+      notifications: outcome.notifications,
+    });
+  } catch (error) {
+    if (sendPlaceError(res, error)) {
+      return;
+    }
+    next(error);
+  }
+});
+
+/**
+ * DESTROY items. This is irreversible, so — exactly as R12 fenced the rig
+ * destroy — the route refuses outright unless `confirm` is true, and the web UI
+ * puts a two-step confirm in front of that. TrashItems dispatches on the
+ * inventory MANAGER moniker, not on a per-container binding.
+ */
+app.post("/api/bridge/inventory/trash", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const body = req.body || {};
+  const itemIDs = (Array.isArray(body.itemIDs) ? body.itemIDs : [body.itemID])
+    .map((value) => Number(value) || 0)
+    .filter((value) => value > 0);
+  if (itemIDs.length === 0) {
+    res.status(400).json({ ok: false, error: "INVALID_TRASH", message: "At least one item is required." });
+    return;
+  }
+  if (body.confirm !== true) {
+    res.status(400).json({
+      ok: false,
+      error: "CONFIRMATION_REQUIRED",
+      message: "Trashing destroys these items permanently. This action must be confirmed explicitly.",
+    });
+    return;
+  }
+  try {
+    await readHeldFlight(held, req.webSessionID);
+    const place = await resolvePlace(held, req.webSessionID, body.place);
+    const rowsBefore = await listPlace(held, req.webSessionID, place);
+    const beforeIDs = new Set(rowsBefore.map((row) => row.itemID));
+    const present = itemIDs.filter((itemID) => beforeIDs.has(itemID));
+    if (present.length === 0) {
+      res.status(409).json({
+        ok: false,
+        error: "ITEMS_NOT_AT_SOURCE",
+        message: "Those items are no longer where the panel last saw them; refresh and try again.",
+      });
+      return;
+    }
+    const locationID =
+      place.locationID !== null && place.locationID !== undefined
+        ? place.locationID
+        : rowsBefore.find((row) => row.itemID === present[0]).locationID;
+    const outcome = await boundCall(
+      held,
+      req.webSessionID,
+      inventoryManagerBindSpec(held),
+      "TrashItems",
+      [present, locationID],
+      null,
+    );
+    // Re-read: the handler declines an untrashable item (an active ship, a
+    // locked corp asset) by returning without raising, so only the listing
+    // proves anything was destroyed.
+    const rowsAfter = await listPlace(held, req.webSessionID, place);
+    const afterIDs = new Set(rowsAfter.map((row) => row.itemID));
+    const destroyed = present.filter((itemID) => !afterIDs.has(itemID));
+    const survived = present.filter((itemID) => afterIDs.has(itemID));
+    res.json({
+      ok: true,
+      applied: destroyed.length > 0,
+      destroyed,
+      survived,
+      declinedSilently: survived.length > 0,
+      notifications: outcome.notifications,
+    });
+  } catch (error) {
+    if (sendPlaceError(res, error)) {
+      return;
+    }
+    next(error);
+  }
+});
+
+/**
+ * The corporation hangar: which office, what the seven divisions are CALLED,
+ * and what is in each one. Every division is read independently
+ * (Promise.allSettled) so a division the character lacks the query role for
+ * never blanks the rest — the server answers an empty list for those, and it
+ * stays authoritative. The client's own role check is cosmetic.
+ */
+app.get("/api/bridge/inventory/corp", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  try {
+    await readHeldFlight(held, req.webSessionID);
+    const [officeSettled, corporationSettled] = await Promise.allSettled([
+      readCorpOffice(held, req.webSessionID),
+      heldTopLevelCall(held, req.webSessionID, "corpRegistry", "GetCorporation", [], null),
+    ]);
+    for (const settled of [officeSettled, corporationSettled]) {
+      if (settled.status === "rejected" && settled.reason && settled.reason.code === "SESSION_NOT_FOUND") {
+        next(settled.reason);
+        return;
+      }
+    }
+    const divisionNames =
+      corporationSettled.status === "fulfilled"
+        ? decodeDivisionNames(corporationSettled.value.result)
+        : {};
+    const officeID = officeSettled.status === "fulfilled" ? officeSettled.value : 0;
+    if (!officeID) {
+      res.json({
+        ok: true,
+        available: false,
+        // Not an error: plenty of characters simply have no corp office here.
+        reason:
+          officeSettled.status === "rejected"
+            ? String((officeSettled.reason && officeSettled.reason.code) || "READ_FAILED")
+            : "NO_CORP_OFFICE",
+        divisions: [],
+      });
+      return;
+    }
+    const spec = corpOfficeBindSpec(officeID);
+    const ordinals = [];
+    for (let division = 1; division <= CORP_DIVISION_COUNT; division += 1) {
+      ordinals.push(division);
+    }
+    const settledLists = await Promise.allSettled(
+      ordinals.map((division) =>
+        boundCall(held, req.webSessionID, spec, "List", [corpDivisionFlag(division)], null),
+      ),
+    );
+    for (const settled of settledLists) {
+      if (settled.status === "rejected" && settled.reason && settled.reason.code === "SESSION_NOT_FOUND") {
+        next(settled.reason);
+        return;
+      }
+    }
+    res.json({
+      ok: true,
+      available: true,
+      divisions: ordinals.map((division, index) => {
+        const settled = settledLists[index];
+        return {
+          division,
+          // The player-authored name; the browser falls back to "Division N"
+          // when a corporation never renamed it. A flag number is never shown.
+          name: divisionNames[division] || null,
+          list: settled.status === "fulfilled" ? settled.value.result : null,
+          error:
+            settled.status === "rejected"
+              ? String((settled.reason && settled.reason.code) || "READ_FAILED")
+              : null,
+        };
+      }),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // Board a ship sitting in the station hangar (the retail
 // Moniker('ship',(stationID,groupStation)).Board(shipID, oldShipID)). On
 // success the newly boarded ship becomes the active ship for cargo reads.

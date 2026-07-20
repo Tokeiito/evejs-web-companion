@@ -160,6 +160,21 @@
     color: #06131f;
     font-weight: 600;
   }
+  /* An irreversible action (the armed half of a two-step destroy). Deliberately
+   * loud, and only ever rendered AFTER the player has already asked for it. */
+  button.danger {
+    background: var(--color-danger);
+    border-color: var(--color-danger);
+    color: #170608;
+    font-weight: 600;
+  }
+  button.danger:hover:not(:disabled) { background: #ff6b7a; }
+
+  /* The bulk-action bar that appears once rows are ticked. It sits between the
+   * page controls and the tables it acts on, so it is marked out from them. */
+  section.bulk {
+    border-color: var(--color-accent);
+  }
 
   /* Tab bar: wraps to multiple rows on a phone so every tab stays visible and
    * touch-sized; no horizontal body scroll. */

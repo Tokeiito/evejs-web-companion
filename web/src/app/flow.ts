@@ -10,7 +10,7 @@ import {
   getStationInfoCached,
   getStationItemBits,
 } from "../bridge/stationPanel.ts";
-import { decodeContainer, decodeInventoryRows } from "../bridge/inventoryShip.ts";
+import { decodeCapacity, decodeContainer, decodeInventoryRows } from "../bridge/inventoryShip.ts";
 import { buildSlots, decodeResources } from "../bridge/fitting.ts";
 import {
   AGENT_BUTTON,
@@ -36,6 +36,7 @@ import type {
   ChatChannel,
   DestinationMatch,
   FlightStatus,
+  InventoryPlace,
   SlotFamily,
   StationStatic,
 } from "../store/types.ts";
@@ -84,6 +85,35 @@ export interface AppFlow {
   stackContainer(target: "hangar" | "cargo"): Promise<void>;
   /** Board a hangar ship (it becomes active), then refresh. */
   boardShip(shipID: number): Promise<void>;
+  // --- R14 inventory depth ---
+  /** Tick or untick a row for a bulk move / trash. */
+  toggleSelection(itemID: number): void;
+  /** Drop every tick (e.g. after acting, or on leaving a place). */
+  clearSelection(): void;
+  /** Open a container and read its contents; null closes it. */
+  openContainer(containerID: number | null): Promise<void>;
+  /**
+   * Move items between two places. A single item with a `qty` is a SPLIT; more
+   * than one item is a single batch move. Reports what ACTUALLY applied.
+   */
+  transferItems(
+    itemIDs: readonly number[],
+    from: InventoryPlace,
+    to: InventoryPlace,
+    qty?: number | null,
+  ): Promise<void>;
+  /** Re-merge one stack into another of the same type. */
+  mergeStacks(
+    sourceItemID: number,
+    destinationItemID: number,
+    place: InventoryPlace,
+  ): Promise<void>;
+  /** DESTROY items. The caller must have confirmed first — this is irreversible. */
+  trashItems(itemIDs: readonly number[], place: InventoryPlace): Promise<void>;
+  /** Read the corporation hangar at the docked station. */
+  loadCorpHangar(): Promise<void>;
+  /** Show a different corporation hangar division. */
+  selectCorpDivision(division: number): void;
   /** Load the Fitting panel (the active ship's slots + resource readings). */
   loadFitting(): Promise<void>;
   /**
@@ -457,6 +487,169 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       return;
     }
     await loadInventory();
+  }
+
+  // --- R14 Inventory depth + corporation hangars ---------------------------
+
+  /**
+   * The reason a mutation was refused, keeping the SERVER's own words.
+   *
+   * The shared readErrorReason() reduces a typed refusal to its code, which is
+   * right for panels whose failures are transport-shaped. R14's are not: a corp
+   * hangar refusal is the invbroker handler's own sentence ("You do not have
+   * the required roles"), and the goal is to surface that verbatim rather than
+   * make the player decode CALL_REFUSED. The code is kept as a prefix so the
+   * machine-readable part is not lost either.
+   */
+  function readRefusalReason(error: unknown): string {
+    if (error instanceof BridgeCallError) {
+      const detail = error.message.trim();
+      return detail === "" || detail === error.code ? error.code : `${error.code}: ${detail}`;
+    }
+    return readErrorReason(error);
+  }
+
+  // Turn a transfer result into one honest sentence. A split is judged by the
+  // source stack shrinking (it mints a NEW stack at the destination, so the
+  // requested itemID never appears there), and a decline with no reason is
+  // reported AS a decline with no reason.
+  function describeTransfer(
+    result: { applied: boolean; moved: readonly number[]; declined: readonly number[] },
+    requested: number,
+    qty: number | null,
+  ): string {
+    if (result.applied && qty !== null) {
+      return `Split ${qty} off the stack.`;
+    }
+    if (result.applied && result.declined.length === 0) {
+      return `Moved ${result.moved.length} of ${requested}.`;
+    }
+    if (result.applied) {
+      return `Moved ${result.moved.length} of ${requested}; the server declined the rest without giving a reason.`;
+    }
+    return "The server did not move anything, and gave no reason.";
+  }
+
+  // Reload whatever places are currently on screen. A mutation can touch the
+  // hangar, the open container and a corp division at once (a move out of a
+  // container into a division touches all three), so after any action every
+  // open view is re-read rather than guessing which one changed.
+  async function refreshOpenPlaces(): Promise<void> {
+    const current = store.get().inventory;
+    await loadInventory();
+    if (current.container) {
+      await openContainer(current.container.itemID);
+    }
+    if (current.corp.loaded) {
+      await loadCorpHangar();
+    }
+  }
+
+  // Run a mutation and report what the SERVER says actually happened. The BFF
+  // re-reads after every call because invbroker declines silently, so `applied`
+  // here is a real observation, not an echo of the request.
+  async function runInventoryAction(
+    action: () => Promise<{ applied: boolean; declinedSilently: boolean; message: string }>,
+  ): Promise<void> {
+    store.apply({ type: "inventory/outcome", outcome: null });
+    let outcome: { applied: boolean; declinedSilently: boolean; message: string };
+    try {
+      outcome = await action();
+      store.apply({ type: "inventory/action-error", message: null });
+    } catch (error) {
+      if (isSessionLost(error)) {
+        stopLiveStream();
+        store.apply({ type: "character/offline" });
+        throw error;
+      }
+      // A typed refusal carries the HANDLER's own reason; it is surfaced
+      // verbatim rather than reworded.
+      store.apply({ type: "inventory/action-error", message: readRefusalReason(error) });
+      return;
+    }
+    store.apply({ type: "inventory/outcome", outcome });
+    store.apply({ type: "inventory/selection", itemIDs: [] });
+    await refreshOpenPlaces();
+  }
+
+  async function openContainer(containerID: number | null): Promise<void> {
+    if (containerID === null) {
+      store.apply({ type: "inventory/container", container: null });
+      return;
+    }
+    // Carry the container's own typeID so the panel can name it; it is a row in
+    // whichever place the player opened it from.
+    const current = store.get().inventory;
+    const owningRow =
+      current.hangar.rows.find((row) => row.itemID === containerID) ??
+      current.cargo.rows.find((row) => row.itemID === containerID) ??
+      null;
+    let reads: Awaited<ReturnType<typeof api.openContainer>>;
+    try {
+      reads = await api.openContainer(containerID, callOptions);
+    } catch (error) {
+      if (isSessionLost(error)) {
+        stopLiveStream();
+        store.apply({ type: "character/offline" });
+        throw error;
+      }
+      store.apply({
+        type: "inventory/container",
+        container: {
+          itemID: containerID,
+          typeID: owningRow ? owningRow.typeID : 0,
+          rows: [],
+          capacity: null,
+          error: readErrorReason(error),
+        },
+      });
+      return;
+    }
+    store.apply({
+      type: "inventory/container",
+      container: {
+        itemID: containerID,
+        typeID: owningRow
+          ? owningRow.typeID
+          : (store.get().inventory.container?.typeID ?? 0),
+        rows: decodeInventoryRows(reads.list),
+        capacity: reads.capacity === null ? null : decodeCapacity(reads.capacity),
+        error: null,
+      },
+    });
+  }
+
+  async function loadCorpHangar(): Promise<void> {
+    let reads: Awaited<ReturnType<typeof api.loadCorpHangar>>;
+    try {
+      reads = await api.loadCorpHangar(callOptions);
+    } catch (error) {
+      if (isSessionLost(error)) {
+        stopLiveStream();
+        store.apply({ type: "character/offline" });
+        throw error;
+      }
+      store.apply({
+        type: "inventory/corp-loaded",
+        available: false,
+        reason: readErrorReason(error),
+        divisions: [],
+      });
+      return;
+    }
+    store.apply({
+      type: "inventory/corp-loaded",
+      available: reads.available,
+      reason: reads.reason,
+      divisions: reads.divisions.map((division) => ({
+        division: division.division,
+        name: division.name,
+        // A division the character cannot query answers an EMPTY list, not an
+        // error — the server filtered it, and that is the authority.
+        rows: division.list === null ? [] : decodeInventoryRows(division.list),
+        error: division.error,
+      })),
+    });
   }
 
   // --- R12 Ship fitting ----------------------------------------------------
@@ -1361,6 +1554,77 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
     async boardShip(shipID) {
       await runMutation(() => api.boardShip(shipID, callOptions));
+    },
+
+    // --- R14 inventory depth ---
+
+    toggleSelection(itemID) {
+      const selection = store.get().inventory.selection;
+      store.apply({
+        type: "inventory/selection",
+        itemIDs: selection.includes(itemID)
+          ? selection.filter((id) => id !== itemID)
+          : [...selection, itemID],
+      });
+    },
+
+    clearSelection() {
+      store.apply({ type: "inventory/selection", itemIDs: [] });
+    },
+
+    openContainer,
+
+    async transferItems(itemIDs, from, to, qty = null) {
+      await runInventoryAction(async () => {
+        const result = await api.transferItems(itemIDs, from, to, qty ?? null, callOptions);
+        return {
+          applied: result.applied,
+          declinedSilently: result.declinedSilently,
+          message: describeTransfer(result, itemIDs.length, qty ?? null),
+        };
+      });
+    },
+
+    async mergeStacks(sourceItemID, destinationItemID, place) {
+      await runInventoryAction(async () => {
+        const result = await api.mergeStacks(
+          sourceItemID,
+          destinationItemID,
+          place,
+          null,
+          callOptions,
+        );
+        return {
+          applied: result.applied,
+          declinedSilently: result.declinedSilently,
+          message: result.applied
+            ? `Merged ${result.merged} into the stack.`
+            : "The server did not merge those stacks, and gave no reason.",
+        };
+      });
+    },
+
+    async trashItems(itemIDs, place) {
+      await runInventoryAction(async () => {
+        const result = await api.trashItems(itemIDs, place, callOptions);
+        const destroyed = result.destroyed.length;
+        const survived = result.survived.length;
+        let message: string;
+        if (destroyed > 0 && survived === 0) {
+          message = `Destroyed ${destroyed} ${destroyed === 1 ? "item" : "items"}.`;
+        } else if (destroyed > 0) {
+          message = `Destroyed ${destroyed}; the server refused to destroy ${survived}, and gave no reason.`;
+        } else {
+          message = "The server destroyed nothing, and gave no reason.";
+        }
+        return { applied: result.applied, declinedSilently: result.declinedSilently, message };
+      });
+    },
+
+    loadCorpHangar,
+
+    selectCorpDivision(division) {
+      store.apply({ type: "inventory/corp-division", division });
     },
 
     loadFitting,
