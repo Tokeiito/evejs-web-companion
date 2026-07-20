@@ -168,16 +168,18 @@
   }
 </script>
 
-<section>
-  <h2>Agents &amp; Missions</h2>
+<section class="panel">
+  <header class="panel-head">
+    <h2>Agents &amp; Missions</h2>
+    <p class="controls">
+      <button type="button" class="primary" disabled={busy} onclick={() => run(async () => { await flow.loadAgents(); await flow.loadJournal(); })}>
+        Refresh
+      </button>
+    </p>
+  </header>
   <p class="note">
     Talk to an agent, accept a courier, deliver the package, then complete the
     mission to collect the reward.
-  </p>
-  <p>
-    <button type="button" disabled={busy} onclick={() => run(async () => { await flow.loadAgents(); await flow.loadJournal(); })}>
-      Refresh
-    </button>
   </p>
   {#if $agents.actionError}
     <p class="error">Last agent action failed: {$agents.actionError}</p>
@@ -211,7 +213,7 @@
     </label>
   </div>
   {#if $agents.agents.length === 0}
-    <p class="note">{$agents.loaded ? "No agents at this station." : "Loading agents…"}</p>
+    <p class="empty">{$agents.loaded ? "No agents at this station." : "Loading agents…"}</p>
   {:else}
     <p class="note">
       Showing {cappedAgents.length} of {filteredAgents.length} matching
@@ -221,7 +223,7 @@
       {/if}
     </p>
     {#if cappedAgents.length === 0}
-      <p class="note">No agents match the filter.</p>
+      <p class="empty">No agents match the filter.</p>
     {:else}
       <ul class="agent-list">
         {#each cappedAgents as agent (agent.agentID)}
@@ -274,13 +276,13 @@
     <table class="guests">
       <tbody>
         <tr><th>Cargo type</th><td>{resolvedName($names.resolved, "type", $agents.briefing.cargoTypeID, "—")}</td></tr>
-        <tr><th>Quantity</th><td>{$agents.briefing.cargoQuantity ?? "—"}</td></tr>
-        <tr><th>Volume (m³)</th><td>{$agents.briefing.cargoVolume ?? "—"}</td></tr>
+        <tr><th>Quantity</th><td class="num">{$agents.briefing.cargoQuantity ?? "—"}</td></tr>
+        <tr><th>Volume (m³)</th><td class="num">{$agents.briefing.cargoVolume ?? "—"}</td></tr>
         <tr><th>Pickup</th><td>{stationText($agents.briefing.pickupLocationID)} · {systemText($agents.briefing.pickupSystemID)}</td></tr>
         <tr><th>Destination</th><td>{stationText($agents.briefing.destinationLocationID)} · {systemText($agents.briefing.destinationSystemID)}</td></tr>
-        <tr><th>Reward (ISK)</th><td>{$agents.briefing.rewardISK ?? "—"}</td></tr>
-        <tr><th>Time bonus (ISK)</th><td>{$agents.briefing.bonusISK ?? "—"}</td></tr>
-        <tr><th>Loyalty points</th><td>{$agents.briefing.loyaltyPoints ?? "—"}</td></tr>
+        <tr><th>Reward (ISK)</th><td class="num">{$agents.briefing.rewardISK ?? "—"}</td></tr>
+        <tr><th>Time bonus (ISK)</th><td class="num">{$agents.briefing.bonusISK ?? "—"}</td></tr>
+        <tr><th>Loyalty points</th><td class="num">{$agents.briefing.loyaltyPoints ?? "—"}</td></tr>
       </tbody>
     </table>
     <p class="controls">
@@ -314,12 +316,12 @@
     {/if}
     <table class="guests">
       <tbody>
-        <tr><th>Wallet balance (ISK)</th><td>{$rewards.cashBalance ?? "—"}</td></tr>
+        <tr><th>Wallet balance (ISK)</th><td class="num">{$rewards.cashBalance ?? "—"}</td></tr>
       </tbody>
     </table>
     <h3 class="note">Loyalty points ({$rewards.lpBalances.length})</h3>
     {#if $rewards.lpBalances.length === 0}
-      <p class="note">No loyalty-point balances.</p>
+      <p class="empty">No loyalty-point balances.</p>
     {:else}
       <ul class="journal">
         {#each $rewards.lpBalances as lp (lp.issuerCorpID)}
@@ -329,7 +331,7 @@
     {/if}
     <h3 class="note">Standings ({$rewards.standings.length})</h3>
     {#if $rewards.standings.length === 0}
-      <p class="note">No standings.</p>
+      <p class="empty">No standings.</p>
     {:else}
       <ul class="journal">
         {#each $rewards.standings as standing (standing.fromID)}
@@ -347,7 +349,7 @@
   {:else}
     <h3 class="note">Active ({$agents.journal.active.length})</h3>
     {#if $agents.journal.active.length === 0}
-      <p class="note">No active missions.</p>
+      <p class="empty">No active missions.</p>
     {:else}
       <ul class="journal">
         {#each $agents.journal.active as mission (mission.missionID)}
@@ -357,7 +359,7 @@
     {/if}
     <h3 class="note">Offered ({$agents.journal.offered.length})</h3>
     {#if $agents.journal.offered.length === 0}
-      <p class="note">No offered missions.</p>
+      <p class="empty">No offered missions.</p>
     {:else}
       <ul class="journal">
         {#each $agents.journal.offered as mission (mission.missionID)}

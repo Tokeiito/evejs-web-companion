@@ -256,14 +256,18 @@
   });
 </script>
 
-<section>
-  <h2>
-    Fitting
-    <small class="note">{activeShipName}</small>
-  </h2>
-  <p class="controls">
-    <button type="button" disabled={busy} onclick={() => run(refresh)}>Refresh</button>
-  </p>
+<section class="panel">
+  <header class="panel-head">
+    <h2>
+      Fitting
+      <small class="note">{activeShipName}</small>
+    </h2>
+    <p class="controls">
+      <button type="button" class="primary" disabled={busy} onclick={() => run(refresh)}>
+        Refresh
+      </button>
+    </p>
+  </header>
   {#if error}
     <p class="error">{error}</p>
   {/if}

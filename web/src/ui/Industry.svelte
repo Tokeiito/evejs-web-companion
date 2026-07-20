@@ -295,13 +295,15 @@
   });
 </script>
 
-<section>
-  <h2>Industry</h2>
-  <p class="controls">
-    <button type="button" disabled={busy} onclick={() => run(() => flow.loadIndustry())}>
-      Refresh
-    </button>
-  </p>
+<section class="panel">
+  <header class="panel-head">
+    <h2>Industry</h2>
+    <p class="controls">
+      <button type="button" class="primary" disabled={busy} onclick={() => run(() => flow.loadIndustry())}>
+        Refresh
+      </button>
+    </p>
+  </header>
   {#if error}
     <p class="error">{error}</p>
   {/if}
@@ -328,7 +330,7 @@
       </p>
     {/if}
     {#if activeJobs.length === 0}
-      <p class="note">Nothing in progress right now.</p>
+      <p class="empty">Nothing in progress right now.</p>
     {:else}
       <div class="table-wrap overflow-x-auto">
         <table class="guests reflow">
@@ -336,10 +338,10 @@
             <tr>
               <th>Making</th>
               <th>Work</th>
-              <th>Runs</th>
+              <th class="num">Runs</th>
               <th>Where</th>
               <th>Status</th>
-              <th>Time left</th>
+              <th class="num">Time left</th>
               <th>Action</th>
             </tr>
           </thead>
@@ -350,10 +352,10 @@
                 <td data-label="Work">
                   {job.activity ? ACTIVITY_LABELS[job.activity] : "Unknown work"}
                 </td>
-                <td data-label="Runs">{job.runs}</td>
+                <td class="num" data-label="Runs">{job.runs}</td>
                 <td data-label="Where">{facilityName(job.facilityID)}</td>
                 <td data-label="Status">{STATUS_LABELS[job.status]}</td>
-                <td data-label="Time left">{jobTimeText(job)}</td>
+                <td class="num" data-label="Time left">{jobTimeText(job)}</td>
                 <td data-label="Action">
                   <div class="row-actions">
                     {#if job.status === "ready"}
@@ -413,7 +415,7 @@
             <tr>
               <th>Made</th>
               <th>Work</th>
-              <th>Runs</th>
+              <th class="num">Runs</th>
               <th>Where</th>
               <th>Outcome</th>
             </tr>
@@ -425,7 +427,7 @@
                 <td data-label="Work">
                   {job.activity ? ACTIVITY_LABELS[job.activity] : "Unknown work"}
                 </td>
-                <td data-label="Runs">
+                <td class="num" data-label="Runs">
                   {job.status === "cancelled" ? "—" : job.successfulRuns || job.runs}
                 </td>
                 <td data-label="Where">{facilityName(job.facilityID)}</td>
@@ -444,7 +446,7 @@
       <p class="error">Your blueprints could not be loaded: {$industry.blueprintsError}</p>
     {/if}
     {#if $industry.blueprints.length === 0}
-      <p class="note">You do not own any blueprints.</p>
+      <p class="empty">You do not own any blueprints.</p>
     {:else}
       <div class="table-wrap overflow-x-auto">
         <table class="guests reflow">
@@ -452,9 +454,9 @@
             <tr>
               <th>Blueprint</th>
               <th>Makes</th>
-              <th>Runs</th>
-              <th>Material efficiency</th>
-              <th>Time efficiency</th>
+              <th class="num">Runs</th>
+              <th class="num">Material efficiency</th>
+              <th class="num">Time efficiency</th>
               <th>Can be used for</th>
               <th>Action</th>
             </tr>
@@ -469,12 +471,12 @@
                   {/if}
                 </td>
                 <td data-label="Makes">{productName(blueprint.typeID) ?? "—"}</td>
-                <td data-label="Runs">{runsText(blueprint)}</td>
+                <td class="num" data-label="Runs">{runsText(blueprint)}</td>
                 <!-- Spelled out, never "ME"/"TE" (R9a). -->
-                <td data-label="Material efficiency">
+                <td class="num" data-label="Material efficiency">
                   {blueprint.materialEfficiency}% saved
                 </td>
-                <td data-label="Time efficiency">{blueprint.timeEfficiency}% faster</td>
+                <td class="num" data-label="Time efficiency">{blueprint.timeEfficiency}% faster</td>
                 <td data-label="Can be used for">
                   {#if blueprintActivities(blueprint.typeID).length === 0}
                     <span class="note">—</span>
@@ -565,19 +567,19 @@
         {:else}
           <h3>What this job will use</h3>
           {#if materialLines.length === 0}
-            <p class="note">This job does not use any materials.</p>
+            <p class="empty">This job does not use any materials.</p>
           {:else}
             <div class="table-wrap overflow-x-auto">
               <table class="guests reflow">
                 <thead>
-                  <tr><th>Material</th><th>It will use about</th><th>You have</th></tr>
+                  <tr><th>Material</th><th class="num">It will use about</th><th class="num">You have</th></tr>
                 </thead>
                 <tbody>
                   {#each materialLines as line (line.typeID)}
                     <tr class={line.short ? "self" : ""}>
                       <td data-label="Material">{typeName(line.typeID)}</td>
-                      <td data-label="It will use about">{line.need}</td>
-                      <td data-label="You have">
+                      <td class="num" data-label="It will use about">{line.need}</td>
+                      <td class="num" data-label="You have">
                         {line.have === null ? "—" : line.have}
                         {#if line.short}
                           <small class="note">not enough</small>
@@ -624,7 +626,7 @@
       <p class="error">Nearby facilities could not be loaded: {$industry.facilitiesError}</p>
     {/if}
     {#if usableFacilities.length === 0}
-      <p class="note">No industry facilities are available where you are.</p>
+      <p class="empty">No industry facilities are available where you are.</p>
     {:else}
       <div class="table-wrap overflow-x-auto">
         <table class="guests reflow">
@@ -632,8 +634,8 @@
             <tr>
               <th>Facility</th>
               <th>System</th>
-              <th>Work it takes</th>
-              <th>Fee</th>
+              <th class="num">Work it takes</th>
+              <th class="num">Fee</th>
             </tr>
           </thead>
           <tbody>
@@ -646,10 +648,10 @@
                   {/if}
                 </td>
                 <td data-label="System">{systemName(facility.solarSystemID)}</td>
-                <td data-label="Work it takes">
+                <td class="num" data-label="Work it takes">
                   {facility.activities.map((activity) => ACTIVITY_LABELS[activity]).join(", ")}
                 </td>
-                <td data-label="Fee">{taxText(facility.tax)}</td>
+                <td class="num" data-label="Fee">{taxText(facility.tax)}</td>
               </tr>
             {/each}
           </tbody>

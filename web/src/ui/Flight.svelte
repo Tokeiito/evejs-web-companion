@@ -135,16 +135,18 @@
   }
 </script>
 
-<section>
-  <h2>Flight</h2>
+<section class="panel">
+  <header class="panel-head">
+    <h2>Flight</h2>
+    <p class="controls">
+      <button type="button" class="primary" disabled={busy} onclick={() => run(() => flow.loadFlightStatus())}>
+        Refresh flight status
+      </button>
+    </p>
+  </header>
   <p class="note">
     Fly manually, one step at a time: undock, warp, jump, and dock. Use the
     Travel tab to let the autopilot do it for you.
-  </p>
-  <p>
-    <button type="button" disabled={busy} onclick={() => run(() => flow.loadFlightStatus())}>
-      Refresh flight status
-    </button>
   </p>
   {#if error}
     <p class="error">{error}</p>

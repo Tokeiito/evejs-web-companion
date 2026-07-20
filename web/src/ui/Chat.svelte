@@ -139,8 +139,10 @@
   );
 </script>
 
-<section>
-  <h2>Chat</h2>
+<section class="panel">
+  <header class="panel-head">
+    <h2>Chat</h2>
+  </header>
   <nav class="tabs">
     {#each CHANNELS as channel (channel.id)}
       <button
@@ -176,7 +178,7 @@
       <div class="messages">
         <h3>Messages</h3>
         {#if active.messages.length === 0}
-          <p class="note">No recent messages.</p>
+          <p class="empty">No recent messages.</p>
         {:else}
           <ul class="message-list">
             {#each active.messages as message, index (index)}
@@ -191,7 +193,7 @@
       <div class="roster">
         <h3>Members ({active.roster.length})</h3>
         {#if active.roster.length === 0}
-          <p class="note">No members visible.</p>
+          <p class="empty">No members visible.</p>
         {:else}
           <ul class="roster-list">
             {#each active.roster as member (member.characterID)}

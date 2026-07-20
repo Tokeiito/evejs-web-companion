@@ -33,8 +33,10 @@
   }
 </script>
 
-<section>
-  <h2>Log in</h2>
+<section class="panel">
+  <header class="panel-head">
+    <h2>Log in</h2>
+  </header>
   <p class="note">Sign in with your EveJS account name — any password works.</p>
   <form onsubmit={submit}>
     <label>
@@ -55,7 +57,7 @@
         placeholder="anything"
       />
     </label>
-    <button type="submit" disabled={busy || !username.trim()}>
+    <button type="submit" class="primary" disabled={busy || !username.trim()}>
       {busy ? "Signing in…" : "Log in"}
     </button>
   </form>

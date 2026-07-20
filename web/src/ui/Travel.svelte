@@ -173,8 +173,10 @@
   });
 </script>
 
-<section>
-  <h2>Travel (autopilot)</h2>
+<section class="panel">
+  <header class="panel-head">
+    <h2>Travel (autopilot)</h2>
+  </header>
   <p class="note">
     Set a destination and the autopilot flies you there. Closing this tab stops
     the autopilot — the ship finishes its last move and waits.
@@ -208,7 +210,7 @@
     </p>
     {#if searched}
       {#if searchResults.length === 0}
-        <p class="note">No systems or stations match “{searchQuery.trim()}”.</p>
+        <p class="empty">No systems or stations match “{searchQuery.trim()}”.</p>
       {:else}
         <p class="note">Showing {searchResults.length} match{searchTotal === 1 ? "" : "es"}, nearest first where known.</p>
         <div class="table-wrap overflow-x-auto">
@@ -218,7 +220,7 @@
                 <th>Name</th>
                 <th>Kind</th>
                 <th>System</th>
-                <th>Jumps</th>
+                <th class="num">Jumps</th>
                 <th></th>
               </tr>
             </thead>
@@ -228,7 +230,7 @@
                   <td data-label="Name">{match.name}</td>
                   <td data-label="Kind">{match.kind}</td>
                   <td data-label="System">{match.solarSystemName ?? resolvedName($names.resolved, "system", match.solarSystemID, "—")}</td>
-                  <td data-label="Jumps">{jumpsText(match.jumps)}</td>
+                  <td class="num" data-label="Jumps">{jumpsText(match.jumps)}</td>
                   <td data-label="">
                     <button type="button" disabled={busy} onclick={() => setDestination(match)}>
                       Set destination
@@ -295,7 +297,7 @@
         <tr><th>Current system</th><td>{systemText($travel.currentSystemID, $travel.currentSystemName)}</td></tr>
         <tr><th>Next system</th><td>{systemText($travel.nextSystemID, $travel.nextSystemName)}</td></tr>
         <tr><th>Destination</th><td>{destinationText}</td></tr>
-        <tr><th>Remaining jumps</th><td>{$travel.remainingJumps} / {$travel.totalJumps}</td></tr>
+        <tr><th>Remaining jumps</th><td class="num">{$travel.remainingJumps} / {$travel.totalJumps}</td></tr>
         <tr><th>Elapsed</th><td>{elapsed}</td></tr>
         <tr>
           <th>Failure</th>

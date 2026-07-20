@@ -48,14 +48,16 @@
   }
 </script>
 
-<section>
-  <h2>Select character</h2>
+<section class="panel">
+  <header class="panel-head">
+    <h2>Select character</h2>
+  </header>
   <p class="note">
     Signed in as <strong>{$session.username}</strong>. Select a character to
     bring it online — a character already in use elsewhere cannot be selected.
   </p>
   {#if $character.characters.length === 0}
-    <p class="note">This account has no characters.</p>
+    <p class="empty">This account has no characters.</p>
   {:else}
     <ul class="character-list">
       {#each $character.characters as row (row.characterID)}

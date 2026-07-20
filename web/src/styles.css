@@ -289,6 +289,13 @@
   .panel-head > h2,
   .panel-head > h3 { margin: 0; }
   .panel-head > .controls { margin: 0; }
+  /* The panel title. `h1` is the app title in App.svelte, so a panel titles
+   * itself with an `h2` — sized up here so it still reads as the page heading,
+   * distinct from the smaller in-panel section headers below it. */
+  .panel-head > h2 {
+    font-size: 0.95rem;
+    color: var(--color-accent-bright);
+  }
 
   /* A section header inside a panel body gets a small accent tick, so the eye
    * finds the start of each block without needing a heavy rule. */

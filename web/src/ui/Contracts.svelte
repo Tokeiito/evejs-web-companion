@@ -123,9 +123,9 @@
 
 <section class="panel">
   <header class="panel-head">
-    <h1>Contracts</h1>
+    <h2>Contracts</h2>
     <p class="controls">
-      <button type="button" disabled={busy} onclick={() => void run(() => flow.loadContracts(0))}>
+      <button type="button" class="primary" disabled={busy} onclick={() => void run(() => flow.loadContracts(0))}>
         Refresh
       </button>
     </p>
@@ -184,9 +184,9 @@
             <tr>
               <th>Issued by</th>
               <th>Route</th>
-              <th>Pays</th>
-              <th>You must cover</th>
-              <th>Cargo</th>
+              <th class="num">Pays</th>
+              <th class="num">You must cover</th>
+              <th class="num">Cargo</th>
               <th>Expires</th>
               <th></th>
             </tr>
@@ -196,9 +196,9 @@
               <tr>
                 <td data-label="Issued by">{personName(row.issuerID)}</td>
                 <td data-label="Route">{routeText(row)}</td>
-                <td data-label="Pays">{formatIsk(row.reward)}</td>
-                <td data-label="You must cover">{formatIsk(row.collateral)}</td>
-                <td data-label="Cargo">{formatVolume(row.volume)}</td>
+                <td class="num" data-label="Pays">{formatIsk(row.reward)}</td>
+                <td class="num" data-label="You must cover">{formatIsk(row.collateral)}</td>
+                <td class="num" data-label="Cargo">{formatVolume(row.volume)}</td>
                 <td data-label="Expires">{dateText(row.dateExpired)}</td>
                 <td data-label="">
                   <div class="row-actions">
@@ -267,7 +267,7 @@
             <tr>
               <th>Kind</th>
               <th>Route</th>
-              <th>Pays</th>
+              <th class="num">Pays</th>
               <th>Status</th>
               <th>Issued</th>
               <th></th>
@@ -278,7 +278,7 @@
               <tr>
                 <td data-label="Kind">{contractTypeLabel(row.type)}</td>
                 <td data-label="Route">{routeText(row)}</td>
-                <td data-label="Pays">{formatIsk(row.reward ?? row.price)}</td>
+                <td class="num" data-label="Pays">{formatIsk(row.reward ?? row.price)}</td>
                 <td data-label="Status">{contractStatusLabel(row.status)}</td>
                 <td data-label="Issued">{dateText(row.dateIssued)}</td>
                 <td data-label="">
@@ -336,15 +336,15 @@
             {/if}
             <tr>
               <th>Pays</th>
-              <td>{formatIsk($contracts.detail.contract.reward)}</td>
+              <td class="num">{formatIsk($contracts.detail.contract.reward)}</td>
             </tr>
             <tr>
               <th>You must cover</th>
-              <td>{formatIsk($contracts.detail.contract.collateral)}</td>
+              <td class="num">{formatIsk($contracts.detail.contract.collateral)}</td>
             </tr>
             <tr>
               <th>Cargo size</th>
-              <td>{formatVolume($contracts.detail.contract.volume)}</td>
+              <td class="num">{formatVolume($contracts.detail.contract.volume)}</td>
             </tr>
             <tr>
               <th>Time allowed</th>
@@ -381,7 +381,7 @@
             <thead>
               <tr>
                 <th>Item</th>
-                <th>How many</th>
+                <th class="num">How many</th>
                 <th>Which way</th>
               </tr>
             </thead>
@@ -389,7 +389,7 @@
               {#each $contracts.detail.items as item, index (`${item.typeID}-${index}`)}
                 <tr>
                   <td data-label="Item">{itemName(item.typeID)}</td>
-                  <td data-label="How many">{item.quantity}</td>
+                  <td class="num" data-label="How many">{item.quantity}</td>
                   <!-- inCrate distinguishes what is being handed over from what
                        is being asked for — a gift from a trade. -->
                   <td data-label="Which way">

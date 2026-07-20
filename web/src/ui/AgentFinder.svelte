@@ -122,8 +122,10 @@
   }
 </script>
 
-<section>
-  <h2>Agent Finder</h2>
+<section class="panel">
+  <header class="panel-head">
+    <h2>Agent Finder</h2>
+  </header>
   <p class="note">Find an agent and set your destination.</p>
 </section>
 
@@ -190,7 +192,7 @@
   {#if !$finder.loaded}
     <p class="note">Loading agents…</p>
   {:else if $finder.agents.length === 0}
-    <p class="note">No agents match this filter.</p>
+    <p class="empty">No agents match this filter.</p>
   {:else}
     <p class="note">
       Showing {cappedAgents.length} of {filteredAgents.length} matching
@@ -203,18 +205,18 @@
       {/if}
     </p>
     {#if cappedAgents.length === 0}
-      <p class="note">No agents match the search.</p>
+      <p class="empty">No agents match the search.</p>
     {:else}
       <div class="table-wrap overflow-x-auto">
         <table class="guests agent-finder reflow">
           <thead>
             <tr>
               <th>Agent</th>
-              <th>Lvl</th>
+              <th class="num">Lvl</th>
               <th>Kind</th>
               <th>Station</th>
               <th>System</th>
-              <th>Jumps</th>
+              <th class="num">Jumps</th>
               <th></th>
             </tr>
           </thead>
@@ -222,11 +224,11 @@
             {#each cappedAgents as agent (agent.agentID)}
               <tr class:self={agent.jumps === 0}>
                 <td data-label="Agent">{agent.name}</td>
-                <td data-label="Lvl">{agent.level ?? "?"}</td>
+                <td class="num" data-label="Lvl">{agent.level ?? "?"}</td>
                 <td data-label="Kind">{agent.missionKind ?? "—"}</td>
                 <td data-label="Station">{agent.stationName ?? resolvedName($names.resolved, "station", agent.stationID, "—")}</td>
                 <td data-label="System">{agent.solarSystemName ?? resolvedName($names.resolved, "system", agent.solarSystemID, "—")}</td>
-                <td data-label="Jumps">{jumpsText(agent.jumps)}</td>
+                <td class="num" data-label="Jumps">{jumpsText(agent.jumps)}</td>
                 <td data-label="">
                   <button
                     type="button"

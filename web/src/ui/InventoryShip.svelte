@@ -318,25 +318,28 @@
   }
 </script>
 
-<section>
-  <h2>Inventory &amp; Ship</h2>
-  <p class="controls">
-    <label>
-      Move quantity (blank = whole stack):
-      <input type="number" min="1" bind:value={moveQty} disabled={busy} />
-    </label>
-    <button
-      type="button"
-      disabled={busy}
-      onclick={() =>
-        run(async () => {
-          await flow.loadInventory();
-          await flow.loadCorpHangar();
-        })}
-    >
-      Refresh
-    </button>
-  </p>
+<section class="panel">
+  <header class="panel-head">
+    <h2>Inventory &amp; Ship</h2>
+    <p class="controls">
+      <label>
+        Move quantity (blank = whole stack):
+        <input type="number" min="1" bind:value={moveQty} disabled={busy} />
+      </label>
+      <button
+        type="button"
+        class="primary"
+        disabled={busy}
+        onclick={() =>
+          run(async () => {
+            await flow.loadInventory();
+            await flow.loadCorpHangar();
+          })}
+      >
+        Refresh
+      </button>
+    </p>
+  </header>
   {#if $inventory.lastOutcome}
     <!-- What the server actually did, re-read after the call — not an echo of
          the request. A refusal with no reason says so plainly. -->
@@ -421,12 +424,12 @@
     <p class="error">The hangar could not be loaded: {$inventory.hangar.error}</p>
   {/if}
   {#if $inventory.hangar.rows.length === 0}
-    <p class="note">{$inventory.loaded ? "Hangar is empty." : "Loading hangar…"}</p>
+    <p class="empty">{$inventory.loaded ? "Hangar is empty." : "Loading hangar…"}</p>
   {:else}
     <div class="table-wrap overflow-x-auto">
       <table class="guests reflow">
         <thead>
-          <tr><th>Select</th><th>Type</th><th>Cat</th><th>Qty</th><th>Action</th></tr>
+          <tr><th>Select</th><th>Type</th><th>Cat</th><th class="num">Qty</th><th>Action</th></tr>
         </thead>
         <tbody>
           {#each $inventory.hangar.rows as row (row.itemID)}
@@ -443,7 +446,7 @@
               </td>
               <td data-label="Type">{resolvedName($names.resolved, "type", row.typeID)}</td>
               <td data-label="Cat">{resolvedName($names.resolved, "category", row.categoryID)}</td>
-              <td data-label="Qty">{row.singleton ? "(assembled)" : row.quantity}</td>
+              <td class="num" data-label="Qty">{row.singleton ? "(assembled)" : row.quantity}</td>
               <td data-label="Action">
                 <span class="row-actions">
                   {#if isOpenableContainer(row)}
@@ -517,12 +520,12 @@
   {#if !$inventory.activeShipID}
     <p class="note">No active ship — board a ship in the hangar to see its cargo.</p>
   {:else if $inventory.cargo.rows.length === 0}
-    <p class="note">{$inventory.loaded ? "Cargo hold is empty." : "Loading cargo…"}</p>
+    <p class="empty">{$inventory.loaded ? "Cargo hold is empty." : "Loading cargo…"}</p>
   {:else}
     <div class="table-wrap overflow-x-auto">
       <table class="guests reflow">
         <thead>
-          <tr><th>Select</th><th>Type</th><th>Cat</th><th>Qty</th><th>Action</th></tr>
+          <tr><th>Select</th><th>Type</th><th>Cat</th><th class="num">Qty</th><th>Action</th></tr>
         </thead>
         <tbody>
           {#each $inventory.cargo.rows as row (row.itemID)}
@@ -539,7 +542,7 @@
               </td>
               <td data-label="Type">{resolvedName($names.resolved, "type", row.typeID)}</td>
               <td data-label="Cat">{resolvedName($names.resolved, "category", row.categoryID)}</td>
-              <td data-label="Qty">{row.singleton ? "(assembled)" : row.quantity}</td>
+              <td class="num" data-label="Qty">{row.singleton ? "(assembled)" : row.quantity}</td>
               <td data-label="Action">
                 <span class="row-actions">
                   {#if isOpenableContainer(row)}
@@ -591,12 +594,12 @@
     {#if $inventory.container.error}
       <p class="error">This container could not be opened: {$inventory.container.error}</p>
     {:else if $inventory.container.rows.length === 0}
-      <p class="note">This container is empty.</p>
+      <p class="empty">This container is empty.</p>
     {:else}
       <div class="table-wrap overflow-x-auto">
         <table class="guests reflow">
           <thead>
-            <tr><th>Select</th><th>Type</th><th>Cat</th><th>Qty</th><th>Action</th></tr>
+            <tr><th>Select</th><th>Type</th><th>Cat</th><th class="num">Qty</th><th>Action</th></tr>
           </thead>
           <tbody>
             {#each $inventory.container.rows as row (row.itemID)}
@@ -616,7 +619,7 @@
                 </td>
                 <td data-label="Type">{resolvedName($names.resolved, "type", row.typeID)}</td>
                 <td data-label="Cat">{resolvedName($names.resolved, "category", row.categoryID)}</td>
-                <td data-label="Qty">{row.singleton ? "(assembled)" : row.quantity}</td>
+                <td class="num" data-label="Qty">{row.singleton ? "(assembled)" : row.quantity}</td>
                 <td data-label="Action">
                   <button
                     type="button"
@@ -689,7 +692,7 @@
         <div class="table-wrap overflow-x-auto">
           <table class="guests reflow">
             <thead>
-              <tr><th>Select</th><th>Type</th><th>Cat</th><th>Qty</th><th>Action</th></tr>
+              <tr><th>Select</th><th>Type</th><th>Cat</th><th class="num">Qty</th><th>Action</th></tr>
             </thead>
             <tbody>
               {#each selectedDivision.rows as row (row.itemID)}
@@ -711,7 +714,7 @@
                   <td data-label="Cat">
                     {resolvedName($names.resolved, "category", row.categoryID)}
                   </td>
-                  <td data-label="Qty">{row.singleton ? "(assembled)" : row.quantity}</td>
+                  <td class="num" data-label="Qty">{row.singleton ? "(assembled)" : row.quantity}</td>
                   <td data-label="Action">
                     <button
                       type="button"

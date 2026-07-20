@@ -80,8 +80,10 @@
 </script>
 
 {#if $station.online}
-  <section>
-    <h2>Docked — {$station.station?.stationName ?? "the station"}</h2>
+  <section class="panel">
+    <header class="panel-head">
+      <h2>Docked — {$station.station?.stationName ?? "the station"}</h2>
+    </header>
     <p class="note">
       <strong>{$station.online.characterName}</strong> is online and docked
       {#if $station.station}
@@ -118,7 +120,7 @@
   <section>
     <h2>Guests</h2>
     {#if $station.guests.length === 0}
-      <p class="note">No guests reported yet.</p>
+      <p class="empty">No guests reported yet.</p>
     {:else}
       <div class="table-wrap overflow-x-auto">
         <table class="guests reflow">
@@ -145,7 +147,7 @@
 
   <section>
     <p class="controls">
-      <button type="button" disabled={busy} onclick={() => run(() => flow.refreshStationPanel())}>
+      <button type="button" class="primary" disabled={busy} onclick={() => run(() => flow.refreshStationPanel())}>
         Refresh panel
       </button>
       <button type="button" class="minor" disabled={busy} onclick={() => run(() => flow.releaseSession())}>

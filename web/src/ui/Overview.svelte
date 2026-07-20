@@ -236,8 +236,10 @@
   });
 </script>
 
-<section>
-  <h2>Around your ship</h2>
+<section class="panel">
+  <header class="panel-head">
+    <h2>Around your ship</h2>
+  </header>
   <p class="note">
     Everything your ship can see, nearest first. Pick anything in the list to
     warp to it, fly towards it, orbit it, hold a distance from it or line your
@@ -361,7 +363,7 @@
     {#if !$space.loaded}
       <p class="note">Looking around…</p>
     {:else if overview.rows.length === 0}
-      <p class="note">Nothing matches — clear the search or filters to see everything.</p>
+      <p class="empty">Nothing matches — clear the search or filters to see everything.</p>
     {:else}
       <p class="note">
         Showing {overview.rows.length} of {overview.matched} nearby.
@@ -376,7 +378,7 @@
               <th>Name</th>
               <th>Type</th>
               <th>Group</th>
-              <th>Distance</th>
+              <th class="num">Distance</th>
               <th></th>
             </tr>
           </thead>
@@ -386,7 +388,7 @@
                 <td data-label="Name">{displayLabel(row)}</td>
                 <td data-label="Type">{typeName(row)}</td>
                 <td data-label="Group">{groupName(row)}</td>
-                <td data-label="Distance">{formatDistance(row.distance)}</td>
+                <td class="num" data-label="Distance">{formatDistance(row.distance)}</td>
                 <td data-label="">
                   <span class="row-actions">
                     <button

@@ -181,14 +181,14 @@
 
 <section class="panel">
   <header class="panel-head">
-    <h1>
+    <h2>
       Mail
       {#if $mail.unreadCount > 0}
-        <span class="badge">{$mail.unreadCount} unread</span>
+        <span class="badge accent">{$mail.unreadCount} unread</span>
       {/if}
-    </h1>
+    </h2>
     <p class="controls">
-      <button type="button" disabled={busy} onclick={() => void run(() => flow.loadMail())}>
+      <button type="button" class="primary" disabled={busy} onclick={() => void run(() => flow.loadMail())}>
         Check for new mail
       </button>
     </p>
@@ -234,7 +234,7 @@
     {#if !$mail.loaded}
       <p class="note">Fetching your mail…</p>
     {:else if $mail.messages.length === 0}
-      <p class="note">You have no mail.</p>
+      <p class="empty">You have no mail.</p>
     {:else}
       <div class="table-wrap overflow-x-auto">
         <table class="guests reflow">
@@ -364,7 +364,7 @@
           </table>
         </div>
       {:else if searched && personQuery.trim().length >= 2}
-        <p class="note">Nobody by that name.</p>
+        <p class="empty">Nobody by that name.</p>
       {/if}
 
       {#if recipients.length > 0}

@@ -306,20 +306,22 @@
   });
 </script>
 
-<section>
-  <h2>Market</h2>
-  <p class="controls">
-    <input
-      type="search"
-      bind:value={query}
-      placeholder="Search for an item to trade"
-      onkeydown={(event) => event.key === "Enter" && search()}
-    />
-    <button type="button" disabled={busy || query.trim().length < 2} onclick={search}>
-      Search
-    </button>
-    <button type="button" class="minor" disabled={busy} onclick={refresh}>Refresh</button>
-  </p>
+<section class="panel">
+  <header class="panel-head">
+    <h2>Market</h2>
+    <p class="controls">
+      <input
+        type="search"
+        bind:value={query}
+        placeholder="Search for an item to trade"
+        onkeydown={(event) => event.key === "Enter" && search()}
+      />
+      <button type="button" class="primary" disabled={busy || query.trim().length < 2} onclick={search}>
+        Search
+      </button>
+      <button type="button" class="minor" disabled={busy} onclick={refresh}>Refresh</button>
+    </p>
+  </header>
   {#if error}
     <p class="error">{error}</p>
   {/if}
@@ -433,29 +435,29 @@
 
       <h3>On sale (you can buy these)</h3>
       {#if sells.length === 0}
-        <p class="note">Nobody is selling this here right now.</p>
+        <p class="empty">Nobody is selling this here right now.</p>
       {:else}
         <div class="table-wrap overflow-x-auto">
           <table class="guests reflow">
             <thead>
               <tr>
-                <th>Price each</th>
-                <th>How many</th>
+                <th class="num">Price each</th>
+                <th class="num">How many</th>
                 <th>Where</th>
                 <th>System</th>
-                <th>Distance</th>
-                <th>Smallest deal</th>
+                <th class="num">Distance</th>
+                <th class="num">Smallest deal</th>
               </tr>
             </thead>
             <tbody>
               {#each sells as order (order.orderID)}
                 <tr>
-                  <td data-label="Price each">{formatIsk(order.price)}</td>
-                  <td data-label="How many">{order.volumeRemaining}</td>
+                  <td class="num" data-label="Price each">{formatIsk(order.price)}</td>
+                  <td class="num" data-label="How many">{order.volumeRemaining}</td>
                   <td data-label="Where">{stationName(order.stationID)}</td>
                   <td data-label="System">{systemName(order.solarSystemID)}</td>
-                  <td data-label="Distance">{distanceLabel(order.jumps)}</td>
-                  <td data-label="Smallest deal">{order.minimumVolume}</td>
+                  <td class="num" data-label="Distance">{distanceLabel(order.jumps)}</td>
+                  <td class="num" data-label="Smallest deal">{order.minimumVolume}</td>
                 </tr>
               {/each}
             </tbody>
@@ -465,28 +467,28 @@
 
       <h3>Wanted (you can sell to these)</h3>
       {#if buys.length === 0}
-        <p class="note">Nobody is buying this here right now.</p>
+        <p class="empty">Nobody is buying this here right now.</p>
       {:else}
         <div class="table-wrap overflow-x-auto">
           <table class="guests reflow">
             <thead>
               <tr>
-                <th>Price each</th>
-                <th>How many</th>
+                <th class="num">Price each</th>
+                <th class="num">How many</th>
                 <th>Where</th>
                 <th>System</th>
-                <th>Distance</th>
+                <th class="num">Distance</th>
                 <th>Reaches</th>
               </tr>
             </thead>
             <tbody>
               {#each buys as order (order.orderID)}
                 <tr>
-                  <td data-label="Price each">{formatIsk(order.price)}</td>
-                  <td data-label="How many">{order.volumeRemaining}</td>
+                  <td class="num" data-label="Price each">{formatIsk(order.price)}</td>
+                  <td class="num" data-label="How many">{order.volumeRemaining}</td>
                   <td data-label="Where">{stationName(order.stationID)}</td>
                   <td data-label="System">{systemName(order.solarSystemID)}</td>
-                  <td data-label="Distance">{distanceLabel(order.jumps)}</td>
+                  <td class="num" data-label="Distance">{distanceLabel(order.jumps)}</td>
                   <td data-label="Reaches">{rangeLabel(order.range)}</td>
                 </tr>
               {/each}
@@ -500,16 +502,16 @@
         <div class="table-wrap overflow-x-auto">
           <table class="guests reflow">
             <thead>
-              <tr><th>Day</th><th>Lowest</th><th>Highest</th><th>Average</th><th>Traded</th></tr>
+              <tr><th>Day</th><th class="num">Lowest</th><th class="num">Highest</th><th class="num">Average</th><th class="num">Traded</th></tr>
             </thead>
             <tbody>
               {#each $market.priceHistory as day (day.day)}
                 <tr>
                   <td data-label="Day">{dateText(day.day)}</td>
-                  <td data-label="Lowest">{formatIsk(day.low)}</td>
-                  <td data-label="Highest">{formatIsk(day.high)}</td>
-                  <td data-label="Average">{formatIsk(day.average)}</td>
-                  <td data-label="Traded">{day.volume}</td>
+                  <td class="num" data-label="Lowest">{formatIsk(day.low)}</td>
+                  <td class="num" data-label="Highest">{formatIsk(day.high)}</td>
+                  <td class="num" data-label="Average">{formatIsk(day.average)}</td>
+                  <td class="num" data-label="Traded">{day.volume}</td>
                 </tr>
               {/each}
             </tbody>
@@ -592,27 +594,27 @@
               </tr>
               <tr>
                 <th>Price for each one</th>
-                <td data-label="Price for each one">
+                <td class="num" data-label="Price for each one">
                   {formatIsk(draftPriceCheck?.price.toFixed(2) ?? null)}
                 </td>
               </tr>
               <tr>
                 <th>How many</th>
-                <td data-label="How many">{draft.quantity}</td>
+                <td class="num" data-label="How many">{draft.quantity}</td>
               </tr>
               <tr>
                 <th>That comes to</th>
-                <td data-label="That comes to">{formatIsk(draftValue)}</td>
+                <td class="num" data-label="That comes to">{formatIsk(draftValue)}</td>
               </tr>
               <tr>
                 <th>Broker's fee (estimate)</th>
-                <td data-label="Broker's fee (estimate)">
+                <td class="num" data-label="Broker's fee (estimate)">
                   about {formatIsk(draftFee?.amount ?? null)}
                 </td>
               </tr>
               <tr>
                 <th>Your ISK right now</th>
-                <td data-label="Your ISK right now">{formatIsk($market.cashBalance)}</td>
+                <td class="num" data-label="Your ISK right now">{formatIsk($market.cashBalance)}</td>
               </tr>
             </tbody>
           </table>
@@ -644,7 +646,7 @@
       <p class="error">Your orders could not be read: {$market.ownOrdersError}</p>
     {/if}
     {#if openOrders.length === 0}
-      <p class="note">You have no orders open right now.</p>
+      <p class="empty">You have no orders open right now.</p>
     {:else}
       <div class="table-wrap overflow-x-auto">
         <table class="guests reflow">
@@ -652,10 +654,10 @@
             <tr>
               <th>Item</th>
               <th>Buying or selling</th>
-              <th>Price each</th>
-              <th>Left</th>
+              <th class="num">Price each</th>
+              <th class="num">Left</th>
               <th>Where</th>
-              <th>Tied up</th>
+              <th class="num">Tied up</th>
               <th>Action</th>
             </tr>
           </thead>
@@ -666,10 +668,10 @@
                 <td data-label="Buying or selling">
                   {order.side === "buy" ? "Buying" : "Selling"}
                 </td>
-                <td data-label="Price each">{formatIsk(order.price)}</td>
-                <td data-label="Left">{order.volumeRemaining} of {order.volumeEntered}</td>
+                <td class="num" data-label="Price each">{formatIsk(order.price)}</td>
+                <td class="num" data-label="Left">{order.volumeRemaining} of {order.volumeEntered}</td>
                 <td data-label="Where">{stationName(order.stationID)}</td>
-                <td data-label="Tied up">
+                <td class="num" data-label="Tied up">
                   {order.side === "buy" ? formatIsk(order.escrow) : "—"}
                 </td>
                 <td data-label="Action">
@@ -779,7 +781,7 @@
             <tr>
               <th>Item</th>
               <th>Buying or selling</th>
-              <th>Price each</th>
+              <th class="num">Price each</th>
               <th>Where</th>
               <th>What happened</th>
               <th>Placed</th>
@@ -792,7 +794,7 @@
                 <td data-label="Buying or selling">
                   {order.side === "buy" ? "Buying" : "Selling"}
                 </td>
-                <td data-label="Price each">{formatIsk(order.price)}</td>
+                <td class="num" data-label="Price each">{formatIsk(order.price)}</td>
                 <td data-label="Where">{stationName(order.stationID)}</td>
                 <td data-label="What happened">{FILL_STATE_LABELS[order.state]}</td>
                 <td data-label="Placed">{dateText(order.issuedAt)}</td>
@@ -812,7 +814,7 @@
       <p class="error">Your trades could not be read: {$market.transactionsError}</p>
     {/if}
     {#if $market.transactions.length === 0}
-      <p class="note">You have not traded anything yet.</p>
+      <p class="empty">You have not traded anything yet.</p>
     {:else}
       <div class="table-wrap overflow-x-auto">
         <table class="guests reflow">
@@ -820,8 +822,8 @@
             <tr>
               <th>Item</th>
               <th>Bought or sold</th>
-              <th>How many</th>
-              <th>Price each</th>
+              <th class="num">How many</th>
+              <th class="num">Price each</th>
               <th>Where</th>
               <th>When</th>
             </tr>
@@ -837,8 +839,8 @@
                       ? "You sold"
                       : "—"}
                 </td>
-                <td data-label="How many">{trade.quantity}</td>
-                <td data-label="Price each">{formatIsk(trade.price)}</td>
+                <td class="num" data-label="How many">{trade.quantity}</td>
+                <td class="num" data-label="Price each">{formatIsk(trade.price)}</td>
                 <td data-label="Where">{stationName(trade.stationID)}</td>
                 <td data-label="When">{dateText(trade.transactedAt)}</td>
               </tr>
@@ -861,19 +863,19 @@
           <tbody>
             <tr>
               <th>ISK held for your buy orders</th>
-              <td data-label="ISK held for your buy orders">
+              <td class="num" data-label="ISK held for your buy orders">
                 {formatIsk($market.escrow.isk)}
               </td>
             </tr>
             <tr>
               <th>Goods held for your sell orders</th>
-              <td data-label="Goods held for your sell orders">
+              <td class="num" data-label="Goods held for your sell orders">
                 {$market.escrow.items}
               </td>
             </tr>
             <tr>
               <th>ISK you can still spend</th>
-              <td data-label="ISK you can still spend">{formatIsk($market.cashBalance)}</td>
+              <td class="num" data-label="ISK you can still spend">{formatIsk($market.cashBalance)}</td>
             </tr>
           </tbody>
         </table>
