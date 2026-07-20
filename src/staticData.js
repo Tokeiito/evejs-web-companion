@@ -739,6 +739,70 @@ function findMapLocations(filters = {}) {
   return { matches, total, capped, q, kind, limit };
 }
 
+// --- Tradable-item name search (goal R16) -----------------------------------
+// The market panel needs the player to pick an ITEM by name — the browser never
+// knows a typeID, and typing one would violate R7d anyway. This is the type-table
+// twin of findMapLocations: read-only static reference data, ranked the same way
+// (exact -> prefix -> substring), NOT a gateway/bridge call.
+//
+// ⚠ ONLY THINGS THAT CAN ACTUALLY BE TRADED. A type is offered only when it is
+// `published` AND carries a `marketGroupID`. Unpublished and non-market types
+// exist in the table in quantity (test objects, effect beacons, internal
+// placeholders); offering them would let a player build an order for something
+// no market will ever list, and the refusal would arrive from the server with
+// no useful explanation.
+
+const MARKET_FIND_DEFAULT_LIMIT = 25;
+const MARKET_FIND_MAX_LIMIT = 100;
+const MARKET_FIND_MIN_QUERY = 2;
+
+function findMarketTypes(filters = {}) {
+  const q = filters.q === undefined || filters.q === null ? "" : String(filters.q).trim();
+  const requestedLimit = Number(filters.limit);
+  const limit = Number.isFinite(requestedLimit) && requestedLimit > 0
+    ? Math.min(Math.floor(requestedLimit), MARKET_FIND_MAX_LIMIT)
+    : MARKET_FIND_DEFAULT_LIMIT;
+  if (q.length < MARKET_FIND_MIN_QUERY) {
+    return { matches: [], total: 0, capped: false, q, limit };
+  }
+
+  const needle = q.toLowerCase();
+  const scored = [];
+  for (const entry of buildIndex("itemTypes", "types", "typeID").values()) {
+    if (!entry || entry.published !== true) {
+      continue;
+    }
+    const marketGroupID = Number(entry.marketGroupID) || 0;
+    if (marketGroupID <= 0) {
+      continue;
+    }
+    const name = String(entry.name || "");
+    const score = scoreNameMatch(name.toLowerCase(), needle);
+    if (score < 0) {
+      continue;
+    }
+    scored.push({
+      score,
+      name,
+      entry: {
+        typeID: Number(entry.typeID) || 0,
+        name,
+        groupName: String(entry.groupName || "Unknown"),
+      },
+    });
+  }
+  scored.sort((a, b) =>
+    a.score - b.score ||
+    a.name.length - b.name.length ||
+    a.name.localeCompare(b.name) ||
+    a.entry.typeID - b.entry.typeID);
+
+  const total = scored.length;
+  const capped = total > limit;
+  const matches = (capped ? scored.slice(0, limit) : scored).map((s) => s.entry);
+  return { matches, total, capped, q, limit };
+}
+
 // --- Batch name resolution (goal R7c) --------------------------------------
 // The names-everywhere UI pass turns raw IDs into names across every tab. So an
 // inventory list of many typeIDs (or a guest list of corp IDs) resolves in ONE
@@ -878,6 +942,7 @@ module.exports = {
   getMarketGroup,
   getMarketGroupName,
   getMarketGroupPath,
+  findMarketTypes,
   getNpcIndustryFacility,
   getRegion,
   getRegionName,

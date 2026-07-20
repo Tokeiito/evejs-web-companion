@@ -35,6 +35,13 @@ import type {
   IndustryJobRow,
   IndustrySlotUsage,
   IndustryState,
+  MarketActionOutcome,
+  MarketEscrow,
+  MarketOrderRow,
+  MarketOwnOrderRow,
+  MarketPriceHistoryRow,
+  MarketState,
+  MarketTransactionRow,
   InventoryContainerState,
   CorpHangarState,
   InventoryState,
@@ -92,6 +99,7 @@ export interface ClientState {
   readonly inventory: InventoryState;
   readonly fitting: FittingState;
   readonly industry: IndustryState;
+  readonly market: MarketState;
   readonly agents: AgentsState;
   readonly finder: AgentFinderState;
   readonly rewards: RewardsState;
@@ -188,6 +196,29 @@ const INITIAL_INDUSTRY: IndustryState = Object.freeze({
   jobsError: null,
   facilitiesError: null,
   actionError: null,
+});
+
+// R16 market. Every read is independent, so each keeps its own error: a public
+// order book that fails to load must never hide the player's own orders.
+const INITIAL_MARKET: MarketState = Object.freeze({
+  typeID: null,
+  stationID: null,
+  solarSystemID: null,
+  sells: Object.freeze([]) as readonly MarketOrderRow[],
+  buys: Object.freeze([]) as readonly MarketOrderRow[],
+  ownOrders: Object.freeze([]) as readonly MarketOwnOrderRow[],
+  orderHistory: Object.freeze([]) as readonly MarketOwnOrderRow[],
+  transactions: Object.freeze([]) as readonly MarketTransactionRow[],
+  escrow: null as MarketEscrow | null,
+  priceHistory: Object.freeze([]) as readonly MarketPriceHistoryRow[],
+  cashBalance: null,
+  loaded: false,
+  bookError: null,
+  ownOrdersError: null,
+  transactionsError: null,
+  marketUnavailable: null,
+  actionError: null,
+  lastOutcome: null as MarketActionOutcome | null,
 });
 
 const INITIAL_AGENTS: AgentsState = Object.freeze({
@@ -309,6 +340,7 @@ export interface ClientStore {
   readonly inventory: ReadableSignal<InventoryState>;
   readonly fitting: ReadableSignal<FittingState>;
   readonly industry: ReadableSignal<IndustryState>;
+  readonly market: ReadableSignal<MarketState>;
   readonly agents: ReadableSignal<AgentsState>;
   readonly finder: ReadableSignal<AgentFinderState>;
   readonly rewards: ReadableSignal<RewardsState>;
@@ -347,6 +379,7 @@ export function createClientStore(): ClientStore {
   const inventory = createSignal<InventoryState>(INITIAL_INVENTORY);
   const fitting = createSignal<FittingState>(INITIAL_FITTING);
   const industry = createSignal<IndustryState>(INITIAL_INDUSTRY);
+  const market = createSignal<MarketState>(INITIAL_MARKET);
   const agents = createSignal<AgentsState>(INITIAL_AGENTS);
   const finder = createSignal<AgentFinderState>(INITIAL_FINDER);
   const rewards = createSignal<RewardsState>(INITIAL_REWARDS);
@@ -372,6 +405,7 @@ export function createClientStore(): ClientStore {
     inventory: inventory.get(),
     fitting: fitting.get(),
     industry: industry.get(),
+    market: market.get(),
     agents: agents.get(),
     finder: finder.get(),
     rewards: rewards.get(),
@@ -401,6 +435,7 @@ export function createClientStore(): ClientStore {
         inventory.set(INITIAL_INVENTORY);
         fitting.set(INITIAL_FITTING);
         industry.set(INITIAL_INDUSTRY);
+        market.set(INITIAL_MARKET);
         agents.set(INITIAL_AGENTS);
         finder.set(INITIAL_FINDER);
         rewards.set(INITIAL_REWARDS);
@@ -445,6 +480,7 @@ export function createClientStore(): ClientStore {
         inventory.set(INITIAL_INVENTORY);
         fitting.set(INITIAL_FITTING);
         industry.set(INITIAL_INDUSTRY);
+        market.set(INITIAL_MARKET);
         agents.set(INITIAL_AGENTS);
         finder.set(INITIAL_FINDER);
         rewards.set(INITIAL_REWARDS);
@@ -459,6 +495,7 @@ export function createClientStore(): ClientStore {
         inventory.set(INITIAL_INVENTORY);
         fitting.set(INITIAL_FITTING);
         industry.set(INITIAL_INDUSTRY);
+        market.set(INITIAL_MARKET);
         agents.set(INITIAL_AGENTS);
         finder.set(INITIAL_FINDER);
         rewards.set(INITIAL_REWARDS);
@@ -620,6 +657,42 @@ export function createClientStore(): ClientStore {
         break;
       case "industry/cleared":
         industry.set(INITIAL_INDUSTRY);
+        break;
+      // R16 market. Each read lands with its own error, so a public order book
+      // that failed never blanks the player's own orders (or the reverse).
+      case "market/loaded":
+        market.set({
+          ...market.get(),
+          typeID: event.typeID,
+          stationID: event.stationID,
+          solarSystemID: event.solarSystemID,
+          sells: [...event.sells],
+          buys: [...event.buys],
+          ownOrders: [...event.ownOrders],
+          orderHistory: [...event.orderHistory],
+          transactions: [...event.transactions],
+          escrow: event.escrow,
+          priceHistory: [...event.priceHistory],
+          cashBalance: event.cashBalance,
+          loaded: true,
+          bookError: event.bookError,
+          ownOrdersError: event.ownOrdersError,
+          transactionsError: event.transactionsError,
+          marketUnavailable: event.marketUnavailable,
+          // A successful load clears any stale action error, but NOT the last
+          // outcome: what the server actually charged stays on screen until the
+          // player does something else.
+          actionError: null,
+        });
+        break;
+      case "market/action-error":
+        market.set({ ...market.get(), actionError: event.message });
+        break;
+      case "market/outcome":
+        market.set({ ...market.get(), lastOutcome: event.outcome });
+        break;
+      case "market/cleared":
+        market.set(INITIAL_MARKET);
         break;
       case "agents/list":
         agents.set({
@@ -932,6 +1005,7 @@ export function createClientStore(): ClientStore {
     inventory: readonlySignal(inventory),
     fitting: readonlySignal(fitting),
     industry: readonlySignal(industry),
+    market: readonlySignal(market),
     agents: readonlySignal(agents),
     finder: readonlySignal(finder),
     rewards: readonlySignal(rewards),

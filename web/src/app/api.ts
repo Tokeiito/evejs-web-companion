@@ -709,6 +709,100 @@ export async function cancelIndustryJob(
   return asIndustryChange(data);
 }
 
+// --- R16 Market ------------------------------------------------------------
+// Like industry, the whole retail market surface is top-level, so the BFF
+// issues independent calls and hands back their raw retail-shaped results,
+// decoded in the flow with bridge/market.ts. All of it is `marketProxy` — the
+// `market` service is a dead stub (see src/server.js) — and the sorting /
+// filtering / best-price logic is CLIENT-side, because in retail it is too.
+
+/** One market read, with its own error (they are independent). */
+export interface RawMarketRead {
+  readonly result: JsonValue;
+  readonly error: string | null;
+}
+
+export interface RawMarketReads {
+  readonly typeID: number | null;
+  readonly characterID: number | null;
+  readonly stationID: number | null;
+  readonly solarSystemID: number | null;
+  readonly book: RawMarketRead;
+  readonly ownOrders: RawMarketRead;
+  readonly orderHistory: RawMarketRead;
+  readonly transactions: RawMarketRead;
+  readonly escrow: RawMarketRead;
+  readonly cashBalance: RawMarketRead;
+  readonly priceHistory: RawMarketRead;
+  /** Non-null when the market DAEMON is not answering (≠ "no orders"). */
+  readonly marketUnavailable: string | null;
+}
+
+function asMarketRead(value: JsonValue | undefined): RawMarketRead {
+  const row = (value ?? {}) as Record<string, JsonValue>;
+  return {
+    result: row.result ?? null,
+    error: typeof row.error === "string" ? row.error : null,
+  };
+}
+
+/**
+ * Read the market: an item's order book (when a type is chosen), the player's
+ * own orders, their closed-order history, their trades, their escrow, their
+ * price history and their ISK.
+ */
+export async function loadMarket(
+  typeID: number | null,
+  options: ApiOptions = {},
+): Promise<RawMarketReads> {
+  const query = typeID && typeID > 0 ? `?typeID=${encodeURIComponent(String(typeID))}` : "";
+  const data = await getJson(`/api/bridge/market${query}`, options);
+  return {
+    typeID: asNumberOrNull(data.typeID),
+    characterID: asNumberOrNull(data.characterID),
+    stationID: asNumberOrNull(data.stationID),
+    solarSystemID: asNumberOrNull(data.solarSystemID),
+    book: asMarketRead(data.book),
+    ownOrders: asMarketRead(data.ownOrders),
+    orderHistory: asMarketRead(data.orderHistory),
+    transactions: asMarketRead(data.transactions),
+    escrow: asMarketRead(data.escrow),
+    cashBalance: asMarketRead(data.cashBalance),
+    priceHistory: asMarketRead(data.priceHistory),
+    marketUnavailable:
+      typeof data.marketUnavailable === "string" ? data.marketUnavailable : null,
+  };
+}
+
+/** One tradable-item match from /api/market/find. */
+export interface MarketTypeMatch {
+  readonly typeID: number;
+  readonly name: string;
+  readonly groupName: string;
+}
+
+/**
+ * Search tradable items by NAME. Static reference data, so it works before the
+ * market itself answers — and it is the only way the panel ever obtains a
+ * typeID, because the player must never be asked for one (R7d).
+ */
+export async function findMarketTypes(
+  q: string,
+  options: ApiOptions = {},
+): Promise<readonly MarketTypeMatch[]> {
+  const trimmed = q.trim();
+  if (trimmed.length < 2) {
+    return [];
+  }
+  const data = await getJson(
+    `/api/market/find?q=${encodeURIComponent(trimmed)}`,
+    options,
+  );
+  return Array.isArray(data.matches)
+    ? (data.matches as unknown as readonly MarketTypeMatch[])
+    : [];
+}
+
 // --- R4 Agents & Missions (agentMgr bridge) --------------------------------
 // The BFF holds the bound agent handle; the browser addresses agents by game ID
 // and decodes the raw retail-shaped conversation/briefing/journal results with

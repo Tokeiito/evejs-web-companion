@@ -380,6 +380,154 @@ export interface IndustryState {
   readonly actionError: string | null;
 }
 
+// --- R16 Market ------------------------------------------------------------
+//
+// ⚠ MONEY IS A DECIMAL STRING HERE, NEVER A NUMBER. ISK in EveJS routinely
+// exceeds 2^53, so every price, escrow figure and balance below is the exact
+// decimal string the server sent (R7d), formatted for display by
+// bridge/market.ts. Quantities and jump counts are small integers and stay
+// numbers.
+//
+// ⚠ AN ORDER IS IDENTIFIED BY ITS orderID, WHICH IS NEVER RENDERED. It is a
+// handle the panel passes back to cancel or modify; the player sees the item,
+// the place and the price instead.
+
+/** Which side of the book an order sits on. */
+export type MarketSide = "buy" | "sell";
+
+/** One order in an item's public order book (marketProxy.GetOrders). */
+export interface MarketOrderRow {
+  /** Bigint-safe handle. Passed back to the server; never shown (R7d). */
+  readonly orderID: string;
+  readonly side: MarketSide;
+  readonly typeID: number;
+  readonly stationID: number;
+  readonly solarSystemID: number;
+  readonly regionID: number;
+  /** ISK per unit, as a decimal string. */
+  readonly price: string;
+  readonly volumeRemaining: number;
+  readonly volumeEntered: number;
+  /** The smallest quantity this order will trade in one go. */
+  readonly minimumVolume: number;
+  /** How far the order REACHES, in jumps (-1 station, 32767 region). */
+  readonly range: number;
+  /** How far AWAY it is from the player — computed by the SERVER. */
+  readonly jumps: number;
+  readonly durationDays: number;
+  /** Retail FILETIME; rendered as a date, never as a number. */
+  readonly issuedAt: bigint | null;
+}
+
+/** What became of one of the player's own orders. */
+export type MarketOwnFillState = "open" | "filled" | "expired" | "cancelled";
+
+/** One of the player's own orders (GetCharOrders / GetMarketOrderHistory). */
+export interface MarketOwnOrderRow {
+  readonly orderID: string;
+  readonly side: MarketSide;
+  readonly typeID: number;
+  readonly stationID: number;
+  readonly solarSystemID: number;
+  readonly price: string;
+  readonly volumeRemaining: number;
+  readonly volumeEntered: number;
+  readonly minimumVolume: number;
+  readonly range: number;
+  readonly durationDays: number;
+  /** ISK the SERVER has locked behind a buy order, as a decimal string. */
+  readonly escrow: string;
+  readonly state: MarketOwnFillState;
+  readonly issuedAt: bigint | null;
+  /** True for a corporation order. Out of scope to place, but shown if present
+   * so the player is never given a partial picture of their own market. */
+  readonly isCorp: boolean;
+}
+
+/** One completed trade (marketProxy.CharGetTransactions). */
+export interface MarketTransactionRow {
+  readonly transactionID: string;
+  readonly typeID: number;
+  readonly quantity: number;
+  /** ISK per unit, as a decimal string. */
+  readonly price: string;
+  readonly stationID: number;
+  /** Derived by comparing buyerID/sellerID with the character's own id. */
+  readonly side: "bought" | "sold" | null;
+  readonly transactedAt: bigint | null;
+}
+
+/** What the player currently has locked up behind open orders. */
+export interface MarketEscrow {
+  /** ISK locked behind buy orders, as a decimal string. */
+  readonly isk: string;
+  /** Units of goods locked behind sell orders. */
+  readonly items: number;
+}
+
+/** One day of an item's price history. */
+export interface MarketPriceHistoryRow {
+  readonly day: bigint | null;
+  readonly low: string;
+  readonly high: string;
+  readonly average: string;
+  readonly volume: number;
+  readonly orders: number;
+}
+
+/**
+ * The Market page state (goal R16). The reads are INDEPENDENT — a failure to
+ * read the public order book must not hide the player's own orders, and vice
+ * versa — so each carries its own error.
+ */
+export interface MarketState {
+  /** The item currently being looked at; null before one is chosen. */
+  readonly typeID: number | null;
+  readonly stationID: number | null;
+  readonly solarSystemID: number | null;
+  readonly sells: readonly MarketOrderRow[];
+  readonly buys: readonly MarketOrderRow[];
+  readonly ownOrders: readonly MarketOwnOrderRow[];
+  readonly orderHistory: readonly MarketOwnOrderRow[];
+  readonly transactions: readonly MarketTransactionRow[];
+  readonly escrow: MarketEscrow | null;
+  readonly priceHistory: readonly MarketPriceHistoryRow[];
+  /** Personal ISK balance, decimal string (bigint-safe); null until read. */
+  readonly cashBalance: string | null;
+  readonly loaded: boolean;
+  readonly bookError: string | null;
+  readonly ownOrdersError: string | null;
+  readonly transactionsError: string | null;
+  /** Non-null when the market daemon itself is not answering. */
+  readonly marketUnavailable: string | null;
+  /** Non-null when the last place/cancel/modify failed or was declined. */
+  readonly actionError: string | null;
+  /**
+   * What the LAST write actually did, read back from the server afterwards.
+   * Never a prediction — see `MarketActionOutcome`.
+   */
+  readonly lastOutcome: MarketActionOutcome | null;
+}
+
+/**
+ * The verdict on a completed write, assembled from RE-READS.
+ *
+ * ⚠ `charged` is the wallet balance BEFORE minus the balance AFTER — the only
+ * authoritative statement about what an order cost. The estimated broker fee
+ * shown at confirm time never appears here.
+ */
+export interface MarketActionOutcome {
+  readonly kind: "buy" | "sell" | "cancel" | "modify";
+  /** Did the server actually change anything? From the re-read, not the 200. */
+  readonly applied: boolean;
+  /** True when the server answered success and nothing moved. */
+  readonly declinedSilently: boolean;
+  /** ISK actually taken from (positive) or returned to (negative) the wallet. */
+  readonly charged: string | null;
+  /** The wallet balance after the write, as the server reports it. */
+  readonly balanceAfter: string | null;
+}
+
 // --- R4 Agents & Missions --------------------------------------------------
 
 /**

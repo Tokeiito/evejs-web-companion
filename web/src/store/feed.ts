@@ -33,6 +33,12 @@ import type {
   IndustryFacilityRow,
   IndustryJobRow,
   IndustrySlotUsage,
+  MarketActionOutcome,
+  MarketEscrow,
+  MarketOrderRow,
+  MarketOwnOrderRow,
+  MarketPriceHistoryRow,
+  MarketTransactionRow,
   InventoryContainerState,
   JournalState,
   LiveNotification,
@@ -178,6 +184,35 @@ export type FeedEvent =
   | { readonly type: "industry/action-error"; readonly message: string | null }
   // Drop the industry state (character offline / logged out).
   | { readonly type: "industry/cleared" }
+  // Goal R16 — the Market page. One event carries all six reads; each keeps
+  // its own error so a failed public order book never hides the player's own
+  // orders, and `marketUnavailable` distinguishes "the market daemon is not
+  // answering" from "nobody is trading this item".
+  | {
+      readonly type: "market/loaded";
+      readonly typeID: number | null;
+      readonly stationID: number | null;
+      readonly solarSystemID: number | null;
+      readonly sells: readonly MarketOrderRow[];
+      readonly buys: readonly MarketOrderRow[];
+      readonly ownOrders: readonly MarketOwnOrderRow[];
+      readonly orderHistory: readonly MarketOwnOrderRow[];
+      readonly transactions: readonly MarketTransactionRow[];
+      readonly escrow: MarketEscrow | null;
+      readonly priceHistory: readonly MarketPriceHistoryRow[];
+      readonly cashBalance: string | null;
+      readonly bookError: string | null;
+      readonly ownOrdersError: string | null;
+      readonly transactionsError: string | null;
+      readonly marketUnavailable: string | null;
+    }
+  // A market write failed or was declined; null clears the error.
+  | { readonly type: "market/action-error"; readonly message: string | null }
+  // What the last write ACTUALLY did, assembled from re-reads (never a
+  // prediction, and never the estimated fee shown at confirm time).
+  | { readonly type: "market/outcome"; readonly outcome: MarketActionOutcome | null }
+  // Drop the market state (character offline / logged out).
+  | { readonly type: "market/cleared" }
   // Goal R4 — the Agents & Missions page (agentMgr bridge). The station's
   // agent roster (decoded + filtered to the docked station by the BFF).
   | { readonly type: "agents/list"; readonly stationID: number | null; readonly agents: readonly AgentRow[] }

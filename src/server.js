@@ -2366,6 +2366,121 @@ app.post("/api/bridge/industry/cancel", requireAuth, async (req, res, next) => {
   }
 });
 
+// --- R16 Market (order books, own orders, transactions, escrow) ------------
+//
+// ⚠ THE SERVICE IS "marketProxy". EveJS registers TWO market services and the
+// obvious name is the wrong one: `market` (marketService.js) is a DEAD STUB
+// whose every method answers an empty rowset. `marketProxy`
+// (marketProxyService.js) is the real implementation — daemon-backed order
+// books, escrow, broker fees, real wallet debits. Calling `market` would give
+// the player a market page that renders perfectly and is permanently empty.
+// Every call below names marketProxy; the gateway allowlist refuses `market`.
+//
+// ⚠ THERE IS NO SERVER `marketQuote`. Sorting, jump filtering, best-bid
+// matching and skill-gated order limits are CLIENT-side in retail, so they are
+// client-side here too (web/src/bridge/market.ts). Do not go looking for a
+// call.
+//
+// ⚠ AN EXTERNAL DAEMON BACKS THIS. marketProxy talks to a market daemon over
+// TCP 127.0.0.1:40111. When it is down, reads THROW rather than answering
+// empty — which is what lets this route tell the browser "the market is not
+// answering" instead of "nobody is trading this item". The two are different
+// facts and the panel says which one happened.
+//
+// Like industry, market needs NO bound-object machinery: the whole surface is
+// top-level (sm.ProxySvc('marketProxy')), so heldTopLevelCall carries it all.
+//
+// SCOPE, and why the browser cannot widen it: every read below is scoped by the
+// SESSION the gateway materialized — region for the order book, character for
+// the own-orders/transactions/escrow reads. The only argument any of them takes
+// is a typeID. There is no owner parameter to tamper with.
+
+/**
+ * The daemon-outage code, told apart from an ordinary read failure so the panel
+ * can say something true about which one happened.
+ */
+function isMarketUnavailable(error) {
+  const text = String((error && (error.message || error.detail)) || "");
+  return text.includes("MarketUnavailable") || text.includes("market daemon");
+}
+
+app.get("/api/bridge/market", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  // A typeID is OPTIONAL: the player's own orders, transactions and escrow are
+  // worth showing before they have picked an item to look at.
+  const typeID = Number(req.query.typeID) || 0;
+  try {
+    // Sync the held station/system to the live position first: the order book's
+    // `jumps` column is computed from where the character actually is.
+    await readHeldFlight(held, req.webSessionID);
+
+    // Six INDEPENDENT reads (R2's rule): one failure never blanks the rest. A
+    // player whose order book fails to load still sees their own orders and
+    // their ISK.
+    const [book, ownOrders, history, transactions, escrow, balance, priceHistory] =
+      await Promise.allSettled([
+        typeID > 0
+          ? heldTopLevelCall(held, req.webSessionID, "marketProxy", "GetOrders", [typeID], null)
+          : Promise.resolve({ result: null }),
+        heldTopLevelCall(held, req.webSessionID, "marketProxy", "GetCharOrders", [], null),
+        heldTopLevelCall(held, req.webSessionID, "marketProxy", "GetMarketOrderHistory", [], null),
+        // fromDate 0 = everything the server still keeps.
+        heldTopLevelCall(held, req.webSessionID, "marketProxy", "CharGetTransactions", [0], null),
+        heldTopLevelCall(held, req.webSessionID, "marketProxy", "GetCharEscrow", [], null),
+        // Already allowlisted since R6. The wallet sits beside the order book
+        // so the player can see what they have before they spend it.
+        heldTopLevelCall(held, req.webSessionID, "account", "GetCashBalance", [0], null),
+        typeID > 0
+          ? heldTopLevelCall(held, req.webSessionID, "marketProxy", "GetNewPriceHistory", [typeID], null)
+          : Promise.resolve({ result: null }),
+      ]);
+
+    const settled = [book, ownOrders, history, transactions, escrow, balance, priceHistory];
+    for (const entry of settled) {
+      if (entry.status === "rejected" && entry.reason && entry.reason.code === "SESSION_NOT_FOUND") {
+        next(entry.reason);
+        return;
+      }
+    }
+
+    const codeOf = (entry) =>
+      entry.status === "rejected"
+        ? String((entry.reason && entry.reason.code) || "READ_FAILED")
+        : null;
+    const valueOf = (entry) => (entry.status === "fulfilled" ? entry.value.result : null);
+
+    // ⚠ The daemon-outage signal, extracted ONCE across every read: if the
+    // market itself is not answering, saying "you have no orders" would be a
+    // lie. The panel gets told which it is.
+    const outage = settled.find(
+      (entry) => entry.status === "rejected" && isMarketUnavailable(entry.reason),
+    );
+
+    res.json({
+      ok: true,
+      typeID: typeID > 0 ? typeID : null,
+      characterID: held.characterID,
+      stationID: held.stationID,
+      solarSystemID: held.solarSystemID ?? null,
+      book: { result: valueOf(book), error: codeOf(book) },
+      ownOrders: { result: valueOf(ownOrders), error: codeOf(ownOrders) },
+      orderHistory: { result: valueOf(history), error: codeOf(history) },
+      transactions: { result: valueOf(transactions), error: codeOf(transactions) },
+      escrow: { result: valueOf(escrow), error: codeOf(escrow) },
+      cashBalance: { result: valueOf(balance), error: codeOf(balance) },
+      priceHistory: { result: valueOf(priceHistory), error: codeOf(priceHistory) },
+      marketUnavailable: outage
+        ? "The market is not answering right now, so these figures may be incomplete."
+        : null,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 /** Read `status` off a util.KeyVal job row (the re-read's verdict). */
 function readIndustryJobStatus(row) {
   const entries =
@@ -3375,6 +3490,40 @@ app.get("/api/map/find", requireAuth, async (req, res, next) => {
       source: "static-data",
       q: result.q,
       kind: result.kind,
+      total: result.total,
+      capped: result.capped,
+      limit: result.limit,
+      count: result.matches.length,
+      matches: result.matches,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * R16 market ITEM SEARCH — how a player picks what to trade.
+ *
+ * The browser never knows a typeID and must never ask the player for one
+ * (R7d), so the market panel searches the static type table by NAME, exactly as
+ * /api/map/find searches systems and stations. Read-only static reference data;
+ * NOT a gateway/bridge call, so it works before (and independently of) the
+ * market daemon.
+ *
+ * Only PUBLISHED types that belong to a market group are offered: the table
+ * also holds test objects and internal placeholders that no market will ever
+ * list, and offering one would produce a server refusal the player could make
+ * no sense of.
+ */
+app.get("/api/market/find", requireAuth, async (req, res, next) => {
+  try {
+    const q = typeof req.query.q === "string" ? req.query.q : "";
+    const limit = req.query.limit !== undefined ? Number(req.query.limit) : undefined;
+    const result = staticData.findMarketTypes({ q, limit });
+    res.json({
+      ok: true,
+      source: "static-data",
+      q: result.q,
       total: result.total,
       capped: result.capped,
       limit: result.limit,

@@ -21,6 +21,14 @@ import {
   industryRefusalMessage,
 } from "../bridge/industry.ts";
 import {
+  decodeEscrow,
+  decodeOrderBook,
+  decodeOwnOrders,
+  decodePriceHistory,
+  decodeTransactions,
+  toAmountString,
+} from "../bridge/market.ts";
+import {
   AGENT_BUTTON,
   decodeBriefing,
   decodeConversation,
@@ -165,6 +173,17 @@ export interface AppFlow {
    * this is confirmed twice as well.
    */
   cancelIndustryJob(jobID: number): Promise<void>;
+  /**
+   * Load the Market panel: an item's order book (when one is chosen), the
+   * player's own orders, their closed-order history, their trades, their
+   * escrow, their price history and their ISK — plus every NAME those need.
+   */
+  loadMarket(typeID: number | null): Promise<void>;
+  /**
+   * Search tradable items by NAME — how the player picks what to look at.
+   * Static reference data, so it answers even when the market daemon does not.
+   */
+  findMarketTypes(q: string): Promise<readonly api.MarketTypeMatch[]>;
   /** Load the docked station's agent roster (agentMgr.GetAgents). */
   loadAgents(): Promise<void>;
   /** Open a conversation with an agent (bound DoAction(None)). */
@@ -883,6 +902,85 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         message: "The server did not apply that change, and gave no reason.",
       });
     }
+  }
+
+  // --- R16 Market ----------------------------------------------------------
+
+  /**
+   * Load the Market panel.
+   *
+   * Seven INDEPENDENT reads on the BFF, so a public order book that fails
+   * never hides the player's own orders — and the other way round. The
+   * DAEMON-outage case is kept separate from an empty book on purpose: "nobody
+   * is trading this" and "the market is not answering" are different facts and
+   * the panel says which one happened.
+   *
+   * Nothing here sorts or filters: that is the client-local `marketQuote`
+   * logic, applied at render time in the panel so the player can re-sort
+   * without a round-trip — exactly as retail does it.
+   */
+  async function loadMarket(typeID: number | null): Promise<void> {
+    let reads: Awaited<ReturnType<typeof api.loadMarket>>;
+    try {
+      reads = await api.loadMarket(typeID, callOptions);
+    } catch (error) {
+      if (isSessionLost(error)) {
+        stopLiveStream();
+        store.apply({ type: "character/offline" });
+      }
+      throw error;
+    }
+    const book = decodeOrderBook(reads.book.result);
+    const ownOrders = decodeOwnOrders(reads.ownOrders.result);
+    const orderHistory = decodeOwnOrders(reads.orderHistory.result);
+    // ⚠ The transaction decoder needs the character's OWN id: a trade row names
+    // a buyer and a seller and nothing else, so which side the player was on is
+    // derived by comparison, never guessed.
+    const transactions = decodeTransactions(
+      reads.transactions.result,
+      reads.characterID ?? 0,
+    );
+    store.apply({
+      type: "market/loaded",
+      typeID: reads.typeID,
+      stationID: reads.stationID,
+      solarSystemID: reads.solarSystemID,
+      sells: book.sells,
+      buys: book.buys,
+      ownOrders,
+      orderHistory,
+      transactions,
+      escrow: reads.escrow.error ? null : decodeEscrow(reads.escrow.result),
+      priceHistory: decodePriceHistory(reads.priceHistory.result),
+      cashBalance: toAmountString(reads.cashBalance.result),
+      bookError: reads.book.error,
+      // The own-orders picture is one thing to the player, so a failure in
+      // either half is an own-orders failure.
+      ownOrdersError: reads.ownOrders.error || reads.orderHistory.error,
+      transactionsError: reads.transactions.error,
+      marketUnavailable: reads.marketUnavailable,
+    });
+
+    // Every ID the panel will show, resolved to a NAME (R7d). An order is an
+    // item (a type) at a station in a system.
+    const refs: NameRef[] = [];
+    if (reads.typeID) {
+      refs.push({ kind: "type", id: reads.typeID });
+    }
+    for (const row of [...book.sells, ...book.buys]) {
+      refs.push({ kind: "station", id: row.stationID });
+      refs.push({ kind: "system", id: row.solarSystemID });
+    }
+    for (const row of [...ownOrders, ...orderHistory]) {
+      refs.push({ kind: "type", id: row.typeID });
+      refs.push({ kind: "station", id: row.stationID });
+      refs.push({ kind: "system", id: row.solarSystemID });
+    }
+    for (const row of transactions) {
+      refs.push({ kind: "type", id: row.typeID });
+      refs.push({ kind: "station", id: row.stationID });
+    }
+    requestNames(refs);
   }
 
   // --- R4 Agents & Missions ------------------------------------------------
@@ -1831,6 +1929,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     async cancelIndustryJob(jobID) {
       await runIndustryAction(() => api.cancelIndustryJob(jobID, callOptions));
     },
+    loadMarket,
+    findMarketTypes: (q: string) => api.findMarketTypes(q, callOptions),
 
     loadAgents,
 
