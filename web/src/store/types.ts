@@ -478,6 +478,12 @@ export interface SpaceShipStatus {
   readonly name: string | null;
   readonly mode: string | null;
   readonly maxVelocity: number | null;
+  /**
+   * The ship's own hull radius, so the client can measure SURFACE distance the
+   * way the server does — max(0, centre-to-centre - rA - rB). The autopilot
+   * decides jump / dock / approach / warp from that measure (goal R13).
+   */
+  readonly radius: number;
   readonly position: SpaceVector;
   readonly velocity: SpaceVector;
   readonly shieldRatio: number | null;

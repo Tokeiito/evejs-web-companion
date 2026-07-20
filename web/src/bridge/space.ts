@@ -117,6 +117,7 @@ function decodeShip(value: JsonValue | undefined): SpaceShipStatus | null {
     name: stringOrNull(raw.name),
     mode: stringOrNull(raw.mode),
     maxVelocity: floatOrNull(raw.maxVelocity),
+    radius: floatOr(raw.radius, 0),
     position: decodeVector(raw.position),
     velocity: decodeVector(raw.velocity),
     shieldRatio: ratioOrNull(raw.shieldRatio),

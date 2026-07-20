@@ -77,6 +77,9 @@ Current pairs (defined in `eve.js` `server/src/_secondary/express/evejsWebGatewa
 | `beyonce` | `CmdFollowBall` | R5a (bound: approach/follow) |
 | `beyonce` | `CmdStargateJump` | R5a (bound: jump — changes system) |
 | `beyonce` | `CmdDock` | R5a (bound: dock — returns to a station) |
+| `beyonce` | `CmdOrbit` | R13 (bound: orbit a target at a range) |
+| `beyonce` | `CmdAlignTo` | R13 (bound: align — **kwargs only**) |
+| `beyonce` | `CmdStop` | R13 (bound: stop — no arguments) |
 | `structureJumpBridgeMgr` | `CmdJumpThroughStructureStargate` | R5a (server-tier Upwell jump-gate parity) |
 | `account` | `GetCashBalance` | R6 (Step-12 wallet read — personal `GetCashBalance(0)`) |
 | `LPSvc` | `GetAllMyCharacterWalletLPBalances` | R6 (Step-12 loyalty-point read) |
@@ -648,11 +651,44 @@ and issues **one** atomic call (undock / `CmdWarpToStuffAutopilot` /
 simulates or predicts position; each move's truth comes from the next
 `flight-status`. Loop contract:
 
-- **Truth model (no distances).** `flight-status` carries no range readout, so
-  the loop drives off ship **mode** and the server's own **refusals**: warp to a
-  gate; while in warp, wait; when warp ends, jump; a settle window after each
-  warp/jump lets the transition begin before re-deciding (retail's
-  `ignoreTimerCycles`).
+- **Truth model — measure, don't guess (R13).** The loop reads the R11 space
+  snapshot each tick and computes the **surface distance** to its current target
+  the way the server does:
+
+  ```
+  surfaceDistance = max(0, distance(a.position, b.position) - a.radius - b.radius)
+  ```
+
+  (identical to `services/drone/droneRuntime.js`; the snapshot's `ship` block
+  carries the ego `radius` for exactly this). It then runs retail's ladder
+  (`autopilot.py:274-404`) **in retail's evaluation order**, on one measurement
+  per tick:
+
+  | Measured surface distance | Target | Action |
+  |---|---|---|
+  | `< 2500 m` (`maxStargateJumpingDistance`) | stargate | **jump** |
+  | `< 50000 m` (`maxDockingDistance`) | station/structure | **dock** |
+  | `< 150000 m` (`minWarpDistance`) | either | **approach** |
+  | otherwise | either | **warp** |
+
+  The close-range rule is per target **kind** — a gate is never docked at and a
+  station is never jumped to. Thresholds are strict `<`, so 2500 m exactly
+  approaches. A settle window after each warp/jump still lets the transition
+  begin before re-deciding (retail's `ignoreTimerCycles`).
+- **Measurement is primary; refusals are the backstop.** When the snapshot
+  cannot be read, or cannot see the target (off grid, a scene mid-load), the tick
+  falls back to the original R5b path — ship **mode** plus the server's own
+  **refusals** — so the loop never stalls for want of a measurement. The snapshot
+  read is a READ: it starts nothing, it cannot fail a tick, and a rejection just
+  costs that cycle its measurement.
+- **Never re-issue a running approach.** Retail skips its approach when the ship
+  is already `DSTBALL_FOLLOW` on that same target. The loop does the same: it
+  remembers what it told the ship to approach and, while the snapshot agrees the
+  ship is following that target, it **waits** instead of restarting the move. The
+  wait is bounded, so a ship that never closes stops rather than waiting forever.
+- **Never act mid-warp.** `DSTBALL_WARP` returns immediately — before any
+  measurement is consulted, so even a target measured inside jump range issues
+  nothing while the ship is in warp.
 - **Approach-then-redock (verified live).** `CmdDock` out of range refuses
   `DockingApproach` and the ship enters a FOLLOW approach; the loop **re-issues
   `CmdDock`** each cycle until `flight-status` shows docked — it does not assume
@@ -1084,15 +1120,40 @@ system + ship and guard `NOT_IN_SPACE`), and returns the refreshed snapshot.
 - `POST /api/bridge/flight/undock` `{}` → `{ ok, flight, notifications }`.
   Dispatches `ship.Undock(shipID, false, onlineModules=[])`; refuses
   `ALREADY_IN_SPACE` if not docked.
-- `POST /api/bridge/flight/warp` `{ destinationID }` → `{ ok, result, flight,
-  notifications }`. Binds the park and dispatches
-  `beyonce.CmdWarpToStuffAutopilot([destinationID])`.
+- `POST /api/bridge/flight/warp` `{ destinationID, minRange? }` → `{ ok, result,
+  flight, notifications }`. Binds the park and dispatches **one of two** warps:
+  without `minRange`, `beyonce.CmdWarpToStuffAutopilot([destinationID])` (the
+  autopilot's warp); with it, `beyonce.CmdWarpToStuff(["item", destinationID],
+  {minRange})` — the right-click "warp to within N" form, where the **subject
+  string is positional and the range is a kwarg**. `minRange` must be one of
+  retail's offered distances `[0, 10000, 20000, 30000, 50000, 70000, 100000]`
+  metres (anything else is `400 INVALID_RANGE`). Retail's own default for that
+  menu is **0**, not 10 km.
 - `POST /api/bridge/flight/jump` `{ fromGateID, toGateID }` →
   `beyonce.CmdStargateJump([fromGateID, toGateID, shipID])`. The system
   transition completes after a handoff delay; poll flight status to see it.
 - `POST /api/bridge/flight/dock` `{ stationID }` →
   `beyonce.CmdDock([stationID, shipID])`. Out-of-range docking refuses with a
   docking-approach reason; poll flight status to confirm the docked state.
+
+#### Flight verbs (R13)
+
+The rest of retail's in-space right-click menu. **Four of the six verbs needed no
+new server method** — R5a was already calling them, just with the interesting
+argument hardcoded away:
+
+| Verb | Route | Bound dispatch |
+|---|---|---|
+| Approach | `POST /api/bridge/flight/approach` `{ destinationID, range? }` | `CmdSetSpeedFraction([1.0])` then `CmdFollowBall([destinationID, range])`. **Default 50 m** — retail's *menu* range. The autopilot passes **0**. |
+| Keep at range | `POST /api/bridge/flight/keep-at-range` `{ targetID, range? }` | The **same** `CmdFollowBall([targetID, range])` with a non-zero range. Default **1000 m**, floored at **50 m**. |
+| Orbit | `POST /api/bridge/flight/orbit` `{ targetID, range? }` | `CmdOrbit([targetID, range])`, default **1000 m**. The range is coerced as the retail client coerces it: **float below 10, int at or above**. |
+| Align to | `POST /api/bridge/flight/align` `{ targetID }` | `CmdAlignTo([], {dstID: targetID, bookmarkID: null})` — **kwargs only, never positional**, exactly one non-null. |
+| Stop | `POST /api/bridge/flight/stop` `{}` | `CmdStop([], null)` — **no arguments**. In retail this also kills the autopilot; ours is client-side, so the browser aborts its decide-loop *before* issuing the call. |
+| Warp at range | `POST /api/bridge/flight/warp` `{ destinationID, minRange }` | See above. |
+
+All of them bind the park for the **current** system, guard `NOT_IN_SPACE`, reject
+a missing target with `400 INVALID_TARGET` before dispatching anything, and never
+let the bound handle reach the browser.
 
 Errors pass through with the gateway's status; a movement `CALL_REFUSED` (409)
 carries the handler's own reason, which the page shows as the last failure. A
@@ -1115,11 +1176,20 @@ beat arrives is **skipped, never queued**, so a slow snapshot cannot pile work u
 behind the autopilot's own flight-status reads. The poller issues no movement
 call of any kind.
 
-**Row actions reuse the existing atomic moves** — nothing new: *Warp to* posts
-`/api/bridge/flight/warp { destinationID: itemID }` and *Approach* posts
-`/api/bridge/flight/approach { destinationID: itemID }`. So a player can warp to
-anything they can see, through the same server-authoritative handlers the manual
-Flight tab and the autopilot already use.
+**Row actions reuse the existing atomic moves.** Every row offers *Warp to*,
+*Approach*, *Orbit*, *Keep at range* and *Align to*, each posting to the
+`/api/bridge/flight/*` verb route above with that row's `itemID` as the target,
+plus a panel-level *Stop the ship*. So a player can fly at anything they can see,
+through the same server-authoritative handlers the manual Flight tab and the
+autopilot already use.
+
+**Ranges are picked once, at panel level** (R13), not per row: a busy grid holds
+hundreds of rows, and hanging three range pickers off each of them would be
+unusable. The panel carries *Warp to within* (retail's ladder, defaulting to
+"as close as it can" = `minRange` 0), *Orbit at* and *Hold at* (defaulting to
+1 km), and each row button applies the current choice. Every range renders as a
+**distance a player reads** — `500 m`, `2.5 km`, `100 km` — never a raw metre
+count and never an identifier (R7d).
 
 ### Chat routes (R7)
 

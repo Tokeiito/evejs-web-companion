@@ -36,12 +36,45 @@
   // list re-renders every second, so the nearest few hundred is the useful set.
   const ROW_CAP = 200;
 
+  // R13 flight ranges. Every one of these is a DISTANCE the player picks once
+  // and then applies to any row, which is how the retail right-click submenus
+  // work — putting a set of range pickers on all 200 rows would be unusable.
+  // Labels are written out rather than formatted so a fixed menu reads as
+  // "10 km", never "10.0 km" and never a raw metre count.
+  interface RangeChoice {
+    readonly metres: number;
+    readonly label: string;
+  }
+  // Retail's warp-range menu, and retail's own default: right on top, not 10 km.
+  const WARP_RANGES: readonly RangeChoice[] = [
+    { metres: 0, label: "As close as it can" },
+    { metres: 10000, label: "10 km" },
+    { metres: 20000, label: "20 km" },
+    { metres: 30000, label: "30 km" },
+    { metres: 50000, label: "50 km" },
+    { metres: 70000, label: "70 km" },
+    { metres: 100000, label: "100 km" },
+  ];
+  // Orbit / hold distances, defaulting to retail's 1000 m.
+  const HOLD_RANGES: readonly RangeChoice[] = [
+    { metres: 500, label: "500 m" },
+    { metres: 1000, label: "1 km" },
+    { metres: 2500, label: "2.5 km" },
+    { metres: 5000, label: "5 km" },
+    { metres: 10000, label: "10 km" },
+    { metres: 20000, label: "20 km" },
+    { metres: 30000, label: "30 km" },
+  ];
+
   let busy = $state(false);
   let error = $state("");
   let search = $state("");
   let sort = $state<OverviewSort>("distance");
   let categoryFilter = $state("");
   let groupFilter = $state("");
+  let warpRange = $state("0");
+  let orbitRange = $state("1000");
+  let holdRange = $state("1000");
 
   const snapshot = $derived($space.snapshot);
   const inSpace = $derived(snapshot?.inSpace === true || $flight.status?.inSpace === true);
@@ -207,7 +240,8 @@
   <h2>Around your ship</h2>
   <p class="note">
     Everything your ship can see, nearest first. Pick anything in the list to
-    warp to it or fly towards it.
+    warp to it, fly towards it, orbit it, hold a distance from it or line your
+    ship up with it.
   </p>
   {#if error}
     <p class="error">{error}</p>
@@ -250,6 +284,44 @@
         {/each}
       </div>
     {/if}
+  </section>
+
+  <section>
+    <h2>Flying</h2>
+    <p class="note">
+      Pick the distances you want first, then use the buttons on any row below.
+      Stop cuts the engines — and switches the autopilot off, so nothing starts
+      flying you somewhere again.
+    </p>
+    <p class="controls">
+      <label>
+        Warp to within
+        <select bind:value={warpRange}>
+          {#each WARP_RANGES as choice (choice.metres)}
+            <option value={String(choice.metres)}>{choice.label}</option>
+          {/each}
+        </select>
+      </label>
+      <label>
+        Orbit at
+        <select bind:value={orbitRange}>
+          {#each HOLD_RANGES as choice (choice.metres)}
+            <option value={String(choice.metres)}>{choice.label}</option>
+          {/each}
+        </select>
+      </label>
+      <label>
+        Hold at
+        <select bind:value={holdRange}>
+          {#each HOLD_RANGES as choice (choice.metres)}
+            <option value={String(choice.metres)}>{choice.label}</option>
+          {/each}
+        </select>
+      </label>
+      <button type="button" disabled={busy} onclick={() => run(() => flow.stopShip())}>
+        Stop the ship
+      </button>
+    </p>
   </section>
 
   <section>
@@ -320,7 +392,7 @@
                     <button
                       type="button"
                       disabled={busy}
-                      onclick={() => run(() => flow.warpTo(row.itemID))}
+                      onclick={() => run(() => flow.warpTo(row.itemID, Number(warpRange)))}
                     >
                       Warp to
                     </button>
@@ -330,6 +402,27 @@
                       onclick={() => run(() => flow.approach(row.itemID))}
                     >
                       Approach
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onclick={() => run(() => flow.orbit(row.itemID, Number(orbitRange)))}
+                    >
+                      Orbit
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onclick={() => run(() => flow.keepAtRange(row.itemID, Number(holdRange)))}
+                    >
+                      Keep at range
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onclick={() => run(() => flow.alignTo(row.itemID))}
+                    >
+                      Align to
                     </button>
                   </span>
                 </td>

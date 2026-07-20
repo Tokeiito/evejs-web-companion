@@ -24,6 +24,30 @@ export function distanceMeters(from: SpaceVector, to: SpaceVector): number {
 }
 
 /**
+ * SURFACE distance between two objects, in metres: the gap between their hulls,
+ * not between their centres.
+ *
+ *     max(0, centreToCentre - radiusA - radiusB)
+ *
+ * This is the measure the SERVER uses everywhere it asks "how far is that?"
+ * (services/drone/droneRuntime.js computes it identically), and it is the
+ * measure retail's autopilot decides jump / dock / approach / warp from. It
+ * matters: a station's radius is kilometres, so centre-to-centre would have the
+ * client believe it is far outside docking range while the server considers it
+ * docked-close.
+ */
+export function surfaceDistanceMeters(
+  from: SpaceVector,
+  fromRadius: number,
+  to: SpaceVector,
+  toRadius: number,
+): number {
+  const centres = distanceMeters(from, to);
+  const radii = (Number.isFinite(fromRadius) ? fromRadius : 0) + (Number.isFinite(toRadius) ? toRadius : 0);
+  return Math.max(0, centres - radii);
+}
+
+/**
  * A distance as a player reads it: metres up close, kilometres in between,
  * AU once it is a warp away. Mirrors the retail overview's own thresholds.
  */

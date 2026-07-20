@@ -1590,6 +1590,45 @@ async function readHeldFlight(held, webSessionID) {
   }
 }
 
+// --- R13 flight-verb ranges -------------------------------------------------
+// Every one of these is a DISTANCE IN METRES, never an identifier. The retail
+// defaults: Approach 50 m (the menu form; the autopilot uses 0), Keep at range
+// 1000 m floored at 50 m, Orbit 1000 m. The warp-range menu offers a fixed
+// ladder, whose default is 0 — NOT 10 km.
+const APPROACH_DEFAULT_RANGE_M = 50;
+const KEEP_AT_RANGE_DEFAULT_M = 1000;
+const KEEP_AT_RANGE_FLOOR_M = 50;
+const ORBIT_DEFAULT_RANGE_M = 1000;
+// A sane ceiling so a typo cannot send an absurd follow/orbit range: 1000 km,
+// far beyond any sensible hold distance and well inside warp range.
+const MAX_FOLLOW_RANGE_M = 1_000_000;
+const WARP_RANGE_CHOICES_M = Object.freeze([0, 10000, 20000, 30000, 50000, 70000, 100000]);
+
+/**
+ * A follow/orbit range in metres: absent -> the caller's default, otherwise a
+ * finite non-negative number clamped up to `floor` and bounded above. Returns
+ * null for anything that is not a number at all (the route answers 400).
+ */
+function normalizeFollowRange(value, fallback, floor) {
+  if (value === undefined || value === null || value === "") {
+    return fallback;
+  }
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric < 0 || numeric > MAX_FOLLOW_RANGE_M) {
+    return null;
+  }
+  return Math.max(floor, numeric);
+}
+
+/** A warp range in metres: one of the offered choices, or null (400). */
+function normalizeWarpRange(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return null;
+  }
+  return WARP_RANGE_CHOICES_M.includes(numeric) ? numeric : null;
+}
+
 function requireInSpace(res, flight) {
   if (!flight || flight.inSpace !== true) {
     res.status(409).json({
@@ -1655,8 +1694,15 @@ app.post("/api/bridge/flight/undock", requireAuth, async (req, res, next) => {
   }
 });
 
-// Warp to a chosen gate/celestial through the bound park:
-// beyonce.CmdWarpToStuffAutopilot(destinationID).
+// Warp to a chosen gate/celestial through the bound park.
+//
+// Two shapes, exactly as retail has two:
+//   - no `minRange` in the body  -> beyonce.CmdWarpToStuffAutopilot(destID),
+//     the autopilot's own warp (the browser decide-loop uses this one);
+//   - `minRange` present         -> beyonce.CmdWarpToStuff("item", destID,
+//     minRange=<metres>), the right-click "Warp to → within N km" menu (R13).
+//     Retail's own default for that menu is 0, not 10 km.
+// `minRange` is a KWARG; the subject string ("item") is positional.
 app.post("/api/bridge/flight/warp", requireAuth, async (req, res, next) => {
   const held = requireHeldBridgeSession(req, res);
   if (!held) {
@@ -1667,19 +1713,38 @@ app.post("/api/bridge/flight/warp", requireAuth, async (req, res, next) => {
     res.status(400).json({ ok: false, error: "INVALID_TARGET", message: "A positive destinationID is required." });
     return;
   }
+  const rangedWarp = req.body && req.body.minRange !== undefined && req.body.minRange !== null;
+  const minRange = rangedWarp ? normalizeWarpRange(req.body.minRange) : 0;
+  if (rangedWarp && minRange === null) {
+    res.status(400).json({
+      ok: false,
+      error: "INVALID_RANGE",
+      message: "The warp range must be one of the offered distances.",
+    });
+    return;
+  }
   try {
     const before = await readHeldFlight(held, req.webSessionID);
     if (!requireInSpace(res, before.flight)) {
       return;
     }
-    const outcome = await boundCall(
-      held,
-      req.webSessionID,
-      parkBindSpec(before.flight.solarSystemID),
-      "CmdWarpToStuffAutopilot",
-      [destinationID],
-      null,
-    );
+    const outcome = rangedWarp
+      ? await boundCall(
+          held,
+          req.webSessionID,
+          parkBindSpec(before.flight.solarSystemID),
+          "CmdWarpToStuff",
+          ["item", destinationID],
+          { minRange },
+        )
+      : await boundCall(
+          held,
+          req.webSessionID,
+          parkBindSpec(before.flight.solarSystemID),
+          "CmdWarpToStuffAutopilot",
+          [destinationID],
+          null,
+        );
     const after = await readHeldFlight(held, req.webSessionID);
     res.json({
       ok: true,
@@ -1772,11 +1837,19 @@ app.post("/api/bridge/flight/dock", requireAuth, async (req, res, next) => {
   }
 });
 
-// Approach a gate/target at full speed — the autopilot's close-the-gap step:
-// beyonce.CmdSetSpeedFraction(1.0) + CmdFollowBall(destinationID, 0.0), exactly
-// as autopilot.py does. An autopilot-warp lands the ship NEAR a gate but often
-// outside jump range, so CmdStargateJump refuses NotWithinMaxJumpDist until the
-// ship follows the gate into range. (Both methods were allowlisted in R5a.)
+// Approach a gate/target at full speed:
+// beyonce.CmdSetSpeedFraction(1.0) + CmdFollowBall(destinationID, range).
+//
+// R13: the range is no longer hardcoded to 0.0. Retail has TWO callers of this
+// one method and they differ only in that number — the right-click "Approach"
+// menu uses 50 m, and the autopilot's close-the-gap step uses 0.0. So the
+// browser passes what it means: the Overview's Approach button sends the 50 m
+// default, and the decide-loop sends 0. (Keep at range is the same method again
+// at the player's chosen distance — see /flight/keep-at-range below.)
+//
+// An autopilot-warp lands the ship NEAR a gate but often outside jump range, so
+// CmdStargateJump refuses NotWithinMaxJumpDist until the ship follows the gate
+// into range. (Both methods were allowlisted in R5a; R13 adds no pair here.)
 app.post("/api/bridge/flight/approach", requireAuth, async (req, res, next) => {
   const held = requireHeldBridgeSession(req, res);
   if (!held) {
@@ -1787,6 +1860,15 @@ app.post("/api/bridge/flight/approach", requireAuth, async (req, res, next) => {
     res.status(400).json({ ok: false, error: "INVALID_TARGET", message: "A positive destinationID is required." });
     return;
   }
+  const range = normalizeFollowRange(req.body && req.body.range, APPROACH_DEFAULT_RANGE_M, 0);
+  if (range === null) {
+    res.status(400).json({
+      ok: false,
+      error: "INVALID_RANGE",
+      message: "The approach range must be a distance in metres.",
+    });
+    return;
+  }
   try {
     const before = await readHeldFlight(held, req.webSessionID);
     if (!requireInSpace(res, before.flight)) {
@@ -1794,7 +1876,172 @@ app.post("/api/bridge/flight/approach", requireAuth, async (req, res, next) => {
     }
     const spec = parkBindSpec(before.flight.solarSystemID);
     await boundCall(held, req.webSessionID, spec, "CmdSetSpeedFraction", [1.0], null);
-    const outcome = await boundCall(held, req.webSessionID, spec, "CmdFollowBall", [destinationID, 0.0], null);
+    const outcome = await boundCall(held, req.webSessionID, spec, "CmdFollowBall", [destinationID, range], null);
+    const after = await readHeldFlight(held, req.webSessionID);
+    res.json({
+      ok: true,
+      result: outcome.result,
+      flight: after.flight,
+      notifications: [...outcome.notifications, ...after.notifications],
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Keep at range: beyonce.CmdSetSpeedFraction(1.0) + CmdFollowBall(targetID,
+// range). The SAME server method as Approach — retail has no separate
+// keep-at-range command, it just passes a non-zero range. Default 1000 m,
+// floored at 50 m (below that the server treats it as a docking-style approach).
+app.post("/api/bridge/flight/keep-at-range", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const targetID = Number(req.body && req.body.targetID) || 0;
+  if (targetID <= 0) {
+    res.status(400).json({ ok: false, error: "INVALID_TARGET", message: "A positive targetID is required." });
+    return;
+  }
+  const range = normalizeFollowRange(
+    req.body && req.body.range,
+    KEEP_AT_RANGE_DEFAULT_M,
+    KEEP_AT_RANGE_FLOOR_M,
+  );
+  if (range === null) {
+    res.status(400).json({
+      ok: false,
+      error: "INVALID_RANGE",
+      message: "The range to hold must be a distance in metres.",
+    });
+    return;
+  }
+  try {
+    const before = await readHeldFlight(held, req.webSessionID);
+    if (!requireInSpace(res, before.flight)) {
+      return;
+    }
+    const spec = parkBindSpec(before.flight.solarSystemID);
+    await boundCall(held, req.webSessionID, spec, "CmdSetSpeedFraction", [1.0], null);
+    const outcome = await boundCall(held, req.webSessionID, spec, "CmdFollowBall", [targetID, range], null);
+    const after = await readHeldFlight(held, req.webSessionID);
+    res.json({
+      ok: true,
+      result: outcome.result,
+      flight: after.flight,
+      notifications: [...outcome.notifications, ...after.notifications],
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Orbit: beyonce.CmdOrbit(targetID, range) (allowlisted in R13). Default 1000 m.
+// The range is coerced the way the retail client coerces it before sending —
+// float below 10, int at or above — so the wire value matches what the real
+// client puts on it.
+app.post("/api/bridge/flight/orbit", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const targetID = Number(req.body && req.body.targetID) || 0;
+  if (targetID <= 0) {
+    res.status(400).json({ ok: false, error: "INVALID_TARGET", message: "A positive targetID is required." });
+    return;
+  }
+  const requested = normalizeFollowRange(req.body && req.body.range, ORBIT_DEFAULT_RANGE_M, 0);
+  if (requested === null) {
+    res.status(400).json({
+      ok: false,
+      error: "INVALID_RANGE",
+      message: "The orbit range must be a distance in metres.",
+    });
+    return;
+  }
+  const range = requested < 10 ? Number(requested) : Math.round(requested);
+  try {
+    const before = await readHeldFlight(held, req.webSessionID);
+    if (!requireInSpace(res, before.flight)) {
+      return;
+    }
+    const spec = parkBindSpec(before.flight.solarSystemID);
+    await boundCall(held, req.webSessionID, spec, "CmdSetSpeedFraction", [1.0], null);
+    const outcome = await boundCall(held, req.webSessionID, spec, "CmdOrbit", [targetID, range], null);
+    const after = await readHeldFlight(held, req.webSessionID);
+    res.json({
+      ok: true,
+      result: outcome.result,
+      flight: after.flight,
+      notifications: [...outcome.notifications, ...after.notifications],
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Align to: beyonce.CmdAlignTo(dstID=targetID, bookmarkID=null) (allowlisted in
+// R13). KWARGS ONLY — the retail client never sends a positional target here,
+// and exactly one of dstID / bookmarkID is non-null. This BFF only offers the
+// dstID form (the browser has no bookmarks yet), so bookmarkID is always null.
+app.post("/api/bridge/flight/align", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const targetID = Number(req.body && req.body.targetID) || 0;
+  if (targetID <= 0) {
+    res.status(400).json({ ok: false, error: "INVALID_TARGET", message: "A positive targetID is required." });
+    return;
+  }
+  try {
+    const before = await readHeldFlight(held, req.webSessionID);
+    if (!requireInSpace(res, before.flight)) {
+      return;
+    }
+    const outcome = await boundCall(
+      held,
+      req.webSessionID,
+      parkBindSpec(before.flight.solarSystemID),
+      "CmdAlignTo",
+      [],
+      { dstID: targetID, bookmarkID: null },
+    );
+    const after = await readHeldFlight(held, req.webSessionID);
+    res.json({
+      ok: true,
+      result: outcome.result,
+      flight: after.flight,
+      notifications: [...outcome.notifications, ...after.notifications],
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Stop: beyonce.CmdStop() (allowlisted in R13). No arguments at all.
+//
+// In retail, Stop also kills the autopilot (CancelSystemNavigation before,
+// SetOff after). Our autopilot is CLIENT-side, so the browser aborts its own
+// decide-loop around this call — the server half is just CmdStop.
+app.post("/api/bridge/flight/stop", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  try {
+    const before = await readHeldFlight(held, req.webSessionID);
+    if (!requireInSpace(res, before.flight)) {
+      return;
+    }
+    const outcome = await boundCall(
+      held,
+      req.webSessionID,
+      parkBindSpec(before.flight.solarSystemID),
+      "CmdStop",
+      [],
+      null,
+    );
     const after = await readHeldFlight(held, req.webSessionID);
     res.json({
       ok: true,

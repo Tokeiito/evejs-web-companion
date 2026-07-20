@@ -697,24 +697,70 @@ export async function undock(options: ApiOptions = {}): Promise<FlightStepResult
   return readFlightStep(await postJson("/api/bridge/flight/undock", {}, options));
 }
 
-/** Warp to a chosen gate/celestial (beyonce.CmdWarpToStuffAutopilot). */
+/**
+ * Warp to a chosen gate/celestial.
+ *
+ * `minRange` null is the autopilot's own warp (CmdWarpToStuffAutopilot); a
+ * number is the right-click "warp to within N" form (CmdWarpToStuff with a
+ * minRange kwarg). Retail's own default for the menu is 0.
+ */
 export async function warpTo(
   destinationID: number,
+  minRange: number | null = null,
   options: ApiOptions = {},
 ): Promise<FlightStepResult> {
-  return readFlightStep(await postJson("/api/bridge/flight/warp", { destinationID }, options));
+  const body = minRange === null ? { destinationID } : { destinationID, minRange };
+  return readFlightStep(await postJson("/api/bridge/flight/warp", body, options));
 }
 
 /**
  * Approach a gate/target at full speed (beyonce.CmdSetSpeedFraction(1) +
- * CmdFollowBall) — the autopilot's close-the-gap step when a warp lands the
- * ship near a gate but outside jump range.
+ * CmdFollowBall). The range is retail's: the menu approach uses 50 m, and the
+ * autopilot's close-the-gap step uses 0.
  */
 export async function approach(
   destinationID: number,
+  range: number | null = null,
   options: ApiOptions = {},
 ): Promise<FlightStepResult> {
-  return readFlightStep(await postJson("/api/bridge/flight/approach", { destinationID }, options));
+  const body = range === null ? { destinationID } : { destinationID, range };
+  return readFlightStep(await postJson("/api/bridge/flight/approach", body, options));
+}
+
+/**
+ * Hold a set distance from a target (the same CmdFollowBall as approach, with a
+ * non-zero range). Default 1000 m, floored at 50 m by the BFF.
+ */
+export async function keepAtRange(
+  targetID: number,
+  range: number | null = null,
+  options: ApiOptions = {},
+): Promise<FlightStepResult> {
+  const body = range === null ? { targetID } : { targetID, range };
+  return readFlightStep(await postJson("/api/bridge/flight/keep-at-range", body, options));
+}
+
+/** Circle a target at a set distance (beyonce.CmdOrbit). Default 1000 m. */
+export async function orbit(
+  targetID: number,
+  range: number | null = null,
+  options: ApiOptions = {},
+): Promise<FlightStepResult> {
+  const body = range === null ? { targetID } : { targetID, range };
+  return readFlightStep(await postJson("/api/bridge/flight/orbit", body, options));
+}
+
+/** Point the ship at a target and hold that heading (beyonce.CmdAlignTo). */
+export async function alignTo(
+  targetID: number,
+  options: ApiOptions = {},
+): Promise<FlightStepResult> {
+  return readFlightStep(await postJson("/api/bridge/flight/align", { targetID }, options));
+}
+
+/** Cut the engines (beyonce.CmdStop). */
+export async function stopShip(options: ApiOptions = {}): Promise<FlightStepResult> {
+  return readFlightStep(await postJson("/api/bridge/flight/stop", {}, options));
 }
 
 /** Jump through an NPC stargate (beyonce.CmdStargateJump). */

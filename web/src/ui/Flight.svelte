@@ -186,6 +186,21 @@
 
 {#if $flight.loaded && $flight.status && $flight.status.inSpace}
   <section>
+    <h2>Stop the ship</h2>
+    <p class="controls">
+      <button type="button" disabled={busy} onclick={() => run(() => flow.stopShip())}>
+        Stop the ship
+      </button>
+    </p>
+    <p class="note">
+      Cuts the engines and switches the autopilot off, so nothing starts flying
+      you somewhere again. To orbit something, hold a distance from it, line up
+      with it or warp to a chosen distance, open the Overview tab and use the
+      buttons on the row for the thing you want.
+    </p>
+  </section>
+
+  <section>
     <h2>Warp to a gate / celestial</h2>
     <p class="controls">
       <label>

@@ -342,8 +342,9 @@
   }
 
   /* ------------------------------------------------- overview + ship HUD --
-   * The two actions on an overview row sit side by side on desktop; the phone
-   * reflow below stacks them into full-width, touch-sized buttons. */
+   * The flight actions on an overview row (warp to / approach / orbit / keep at
+   * range / align to) wrap across as many lines as they need on desktop; the
+   * phone reflow below stacks them into full-width, touch-sized buttons. */
   .row-actions {
     display: flex;
     flex-wrap: wrap;
@@ -451,7 +452,7 @@
     }
     table.reflow td[data-label=""]:has(button)::before { display: none; }
     table.reflow td:has(button) button { width: 100%; }
-    /* Two row actions stack full-width on a phone rather than squeezing. */
+    /* Row actions stack full-width on a phone rather than squeezing. */
     table.reflow td .row-actions { flex-direction: column; }
   }
 }

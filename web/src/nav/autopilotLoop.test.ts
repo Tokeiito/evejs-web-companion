@@ -12,13 +12,16 @@ import assert from "node:assert/strict";
 import {
   createAutopilot,
   decideAutopilotAction,
+  measureSpace,
   type AutopilotAction,
   type AutopilotController,
   type AutopilotDeps,
   type AutopilotProgress,
   type RoutePlan,
+  type SpaceMeasurement,
 } from "./autopilotLoop.ts";
-import type { FlightStatus } from "../store/types.ts";
+import { surfaceDistanceMeters } from "../space/overview.ts";
+import type { FlightStatus, SpaceEntity, SpaceSnapshot } from "../store/types.ts";
 
 const ORIGIN_SYSTEM = 30000142;
 const DEST_SYSTEM = 30000140;
@@ -456,4 +459,396 @@ test("decide: off-route system pauses", () => {
     { warpedInSystem: null, jumpedFromSystem: null, pendingApproachGate: null },
   );
   assert.equal(action.kind, "pause");
+});
+
+// --- R13: the loop MEASURES, it does not guess -------------------------------
+//
+// Retail's autopilot reads `GetSurfaceDist(ship, destination)` once per tick and
+// picks the right call the first time. These tests drive the ladder off
+// SYNTHETIC distances: each case hands the decision one measured surface
+// distance and asserts which of jump / dock / approach / warp comes back, at
+// retail's own thresholds and in retail's evaluation order.
+
+function spaceEntity(overrides: Partial<SpaceEntity> & { itemID: number }): SpaceEntity {
+  return {
+    kind: null,
+    typeID: null,
+    groupID: null,
+    categoryID: null,
+    name: null,
+    ownerID: null,
+    radius: 0,
+    position: { x: 0, y: 0, z: 0 },
+    velocity: { x: 0, y: 0, z: 0 },
+    isSelf: false,
+    shieldRatio: null,
+    armorRatio: null,
+    hullRatio: null,
+    characterID: null,
+    corporationID: null,
+    allianceID: null,
+    securityStatus: null,
+    maxVelocity: null,
+    mode: null,
+    capacitorRatio: null,
+    ...overrides,
+  };
+}
+
+/** A snapshot with the ship at the origin and one target on the x axis. */
+function gridSnapshot(
+  targetID: number,
+  metres: number,
+  solarSystemID: number,
+  shipMode: string | null = "STOP",
+): SpaceSnapshot {
+  return {
+    inSpace: true,
+    solarSystemID,
+    shipID: SHIP_ID,
+    sampledAtMs: 0,
+    ship: null,
+    entities: [
+      spaceEntity({
+        itemID: SHIP_ID,
+        isSelf: true,
+        radius: 0,
+        position: { x: 0, y: 0, z: 0 },
+        mode: shipMode,
+      }),
+      spaceEntity({ itemID: targetID, radius: 0, position: { x: metres, y: 0, z: 0 } }),
+    ],
+  };
+}
+
+/** A measurement that puts exactly one target at a chosen surface distance. */
+function measuredAt(
+  targetID: number,
+  metres: number,
+  shipMode: string | null = "STOP",
+): SpaceMeasurement {
+  return { distances: new Map([[targetID, metres]]), shipMode };
+}
+
+/** The action chosen for the outbound gate at `metres`. */
+function gateDecisionAt(metres: number, shipMode = "STOP"): AutopilotAction {
+  return decideAutopilotAction(
+    status({ inSpace: true, shipMode, solarSystemID: ORIGIN_SYSTEM }),
+    COMPILED,
+    { warpedInSystem: null, jumpedFromSystem: null, pendingApproachGate: null },
+    measuredAt(GATE_ORIGIN, metres, shipMode),
+  );
+}
+
+/** The action chosen for the destination station at `metres`. */
+function stationDecisionAt(metres: number, shipMode = "STOP"): AutopilotAction {
+  return decideAutopilotAction(
+    status({ inSpace: true, shipMode, solarSystemID: DEST_SYSTEM }),
+    COMPILED,
+    { warpedInSystem: null, jumpedFromSystem: null, pendingApproachGate: null },
+    measuredAt(DEST_STATION, metres, shipMode),
+  );
+}
+
+test("surface distance is max(0, centre-to-centre - both radii), as the server measures it", () => {
+  // 10 km apart centre-to-centre with 1 km and 500 m radii: the gap between the
+  // hulls is 8.5 km, not 10 km.
+  assert.equal(
+    surfaceDistanceMeters({ x: 0, y: 0, z: 0 }, 1000, { x: 10000, y: 0, z: 0 }, 500),
+    8500,
+  );
+  // Overlapping hulls never read as a negative distance.
+  assert.equal(
+    surfaceDistanceMeters({ x: 0, y: 0, z: 0 }, 5000, { x: 1000, y: 0, z: 0 }, 5000),
+    0,
+  );
+});
+
+test("measureSpace builds surface distances from the snapshot (and skips the ship itself)", () => {
+  const measurement = measureSpace({
+    ...gridSnapshot(GATE_ORIGIN, 5000, ORIGIN_SYSTEM),
+    entities: [
+      spaceEntity({
+        itemID: SHIP_ID,
+        isSelf: true,
+        radius: 100,
+        position: { x: 0, y: 0, z: 0 },
+        mode: "FOLLOW",
+      }),
+      spaceEntity({ itemID: GATE_ORIGIN, radius: 900, position: { x: 5000, y: 0, z: 0 } }),
+    ],
+  });
+  assert.ok(measurement);
+  // 5000 centre-to-centre, minus the ship's 100 and the gate's 900.
+  assert.equal(measurement.distances.get(GATE_ORIGIN), 4000);
+  assert.equal(measurement.distances.has(SHIP_ID), false, "the ship is not one of its own targets");
+  assert.equal(measurement.shipMode, "FOLLOW");
+});
+
+test("measureSpace returns null when there is nothing to measure from", () => {
+  assert.equal(measureSpace(null), null);
+  assert.equal(
+    measureSpace({
+      inSpace: false,
+      solarSystemID: ORIGIN_SYSTEM,
+      shipID: null,
+      sampledAtMs: null,
+      ship: null,
+      entities: [],
+    }),
+    null,
+    "a docked snapshot measures nothing",
+  );
+});
+
+test("ladder: a GATE inside 2500 m is JUMPED, not approached", () => {
+  for (const metres of [0, 100, 2499]) {
+    const action = gateDecisionAt(metres);
+    assert.equal(action.kind, "jump", `${metres} m from the gate`);
+    if (action.kind === "jump") {
+      assert.equal(action.fromGateID, GATE_ORIGIN);
+      assert.equal(action.toGateID, GATE_DEST);
+    }
+  }
+  // 2500 exactly is NOT inside the threshold (retail's test is `<`).
+  assert.equal(gateDecisionAt(2500).kind, "approach");
+});
+
+test("ladder: a STATION inside 50 km is DOCKED, not approached", () => {
+  for (const metres of [0, 25_000, 49_999]) {
+    const action = stationDecisionAt(metres);
+    assert.equal(action.kind, "dock", `${metres} m from the station`);
+    if (action.kind === "dock") {
+      assert.equal(action.stationID, DEST_STATION);
+    }
+  }
+  assert.equal(stationDecisionAt(50_000).kind, "approach", "50 km exactly is outside");
+});
+
+test("ladder: the close-range rule is per target KIND, as retail splits it", () => {
+  // A gate 30 km out is approached (it is not a station, so 50 km does not
+  // dock); a station 1 km out is docked (it is not a gate, so 2.5 km does not
+  // jump).
+  assert.equal(gateDecisionAt(30_000).kind, "approach");
+  assert.equal(stationDecisionAt(1_000).kind, "dock");
+});
+
+test("ladder: inside 150 km the ship APPROACHES; beyond it, it WARPS", () => {
+  for (const metres of [3_000, 100_000, 149_999]) {
+    const action = gateDecisionAt(metres);
+    assert.equal(action.kind, "approach", `${metres} m from the gate`);
+    if (action.kind === "approach") {
+      assert.equal(action.gateID, GATE_ORIGIN);
+    }
+  }
+  for (const metres of [150_000, 1_000_000, 5_000_000_000]) {
+    const action = gateDecisionAt(metres);
+    assert.equal(action.kind, "warp", `${metres} m from the gate`);
+    if (action.kind === "warp") {
+      assert.equal(action.destinationID, GATE_ORIGIN);
+    }
+  }
+});
+
+test("ladder: a RUNNING approach on the same target is never re-issued", () => {
+  const base = { warpedInSystem: null, jumpedFromSystem: null, pendingApproachGate: null };
+  // Nothing of ours is running yet: issue the approach.
+  assert.equal(
+    decideAutopilotAction(
+      status({ inSpace: true, shipMode: "STOP", solarSystemID: ORIGIN_SYSTEM }),
+      COMPILED,
+      { ...base, approachingTargetID: null },
+      measuredAt(GATE_ORIGIN, 100_000, "STOP"),
+    ).kind,
+    "approach",
+  );
+  // Our approach is running against THIS target and the server agrees the ship
+  // is following: wait, do not restart it (retail skips on DSTBALL_FOLLOW).
+  const waiting = decideAutopilotAction(
+    status({ inSpace: true, shipMode: "FOLLOW", solarSystemID: ORIGIN_SYSTEM }),
+    COMPILED,
+    { ...base, approachingTargetID: GATE_ORIGIN },
+    measuredAt(GATE_ORIGIN, 100_000, "FOLLOW"),
+  );
+  assert.equal(waiting.kind, "wait");
+  if (waiting.kind === "wait") {
+    assert.equal(waiting.reason, "Closing in");
+  }
+  // A follow against a DIFFERENT target is not our approach: issue ours.
+  assert.equal(
+    decideAutopilotAction(
+      status({ inSpace: true, shipMode: "FOLLOW", solarSystemID: ORIGIN_SYSTEM }),
+      COMPILED,
+      { ...base, approachingTargetID: 42424242 },
+      measuredAt(GATE_ORIGIN, 100_000, "FOLLOW"),
+    ).kind,
+    "approach",
+  );
+  // And if the ship is not actually following, the approach is re-issued even
+  // though we believed one was running — the measurement is the authority.
+  assert.equal(
+    decideAutopilotAction(
+      status({ inSpace: true, shipMode: "STOP", solarSystemID: ORIGIN_SYSTEM }),
+      COMPILED,
+      { ...base, approachingTargetID: GATE_ORIGIN },
+      measuredAt(GATE_ORIGIN, 100_000, "STOP"),
+    ).kind,
+    "approach",
+  );
+});
+
+test("ladder: mid-warp does NOTHING, however close the measurement says the target is", () => {
+  // Retail returns immediately on DSTBALL_WARP. The distance here is inside
+  // jump range — the loop must still not act.
+  const action = gateDecisionAt(100, "WARP");
+  assert.equal(action.kind, "wait");
+  if (action.kind === "wait") {
+    assert.equal(action.reason, "In warp");
+  }
+  assert.equal(stationDecisionAt(100, "WARP").kind, "wait");
+});
+
+test("ladder: an UNMEASURABLE target falls back to the mode-and-refusal path", () => {
+  // The snapshot cannot see the gate (off grid, or a scene that has not caught
+  // up): the decision must not stall — it falls back to R5b's behaviour, which
+  // warps when it has not warped in this system yet...
+  const blind: SpaceMeasurement = { distances: new Map(), shipMode: "STOP" };
+  assert.equal(
+    decideAutopilotAction(
+      status({ inSpace: true, shipMode: "STOP", solarSystemID: ORIGIN_SYSTEM }),
+      COMPILED,
+      { warpedInSystem: null, jumpedFromSystem: null, pendingApproachGate: null },
+      blind,
+    ).kind,
+    "warp",
+  );
+  // ...and jumps once it has, exactly as before R13.
+  assert.equal(
+    decideAutopilotAction(
+      status({ inSpace: true, shipMode: "STOP", solarSystemID: ORIGIN_SYSTEM }),
+      COMPILED,
+      { warpedInSystem: ORIGIN_SYSTEM, jumpedFromSystem: null, pendingApproachGate: null },
+      blind,
+    ).kind,
+    "jump",
+  );
+});
+
+test("ladder: measurement OVERRIDES the old mode heuristic (no warp-then-blind-jump)", () => {
+  // Before R13 this state ("we already warped in this system") jumped
+  // unconditionally and learned the range only from the server's refusal. With
+  // a measurement saying the gate is still 80 km away, the ship approaches.
+  assert.equal(
+    decideAutopilotAction(
+      status({ inSpace: true, shipMode: "STOP", solarSystemID: ORIGIN_SYSTEM }),
+      COMPILED,
+      { warpedInSystem: ORIGIN_SYSTEM, jumpedFromSystem: null, pendingApproachGate: null },
+      measuredAt(GATE_ORIGIN, 80_000, "STOP"),
+    ).kind,
+    "approach",
+  );
+});
+
+test("ladder: the jump handoff still wins over any measurement", () => {
+  assert.equal(
+    decideAutopilotAction(
+      status({ inSpace: true, shipMode: "STOP", solarSystemID: ORIGIN_SYSTEM }),
+      COMPILED,
+      { warpedInSystem: ORIGIN_SYSTEM, jumpedFromSystem: ORIGIN_SYSTEM, pendingApproachGate: null },
+      measuredAt(GATE_ORIGIN, 100, "STOP"),
+    ).kind,
+    "wait",
+  );
+});
+
+test("a measured run flies the route with no refusal: warp, approach, jump, warp, approach, dock", async () => {
+  // A fake grid whose distance to the current target shrinks as the ship moves,
+  // wired into the loop through getSpaceSnapshot. Nothing ever refuses: every
+  // call has to be chosen from the measurement alone.
+  const mock = makeMock({ dockRefusals: 0, jumpRangeRefusals: 0 });
+  const grid = { gate: 4_000_000_000, station: 4_000_000_000 };
+  const { deps } = makeDeps(mock);
+  const controller = createAutopilot({
+    ...deps,
+    warp: async (dest: number) => {
+      await mock.warp(dest);
+      // A warp lands the ship NEAR the target, not on it.
+      if (dest === GATE_ORIGIN) {
+        grid.gate = 120_000;
+      } else {
+        grid.station = 120_000;
+      }
+    },
+    approach: async (dest: number) => {
+      await mock.approach(dest);
+      // The approach closes the remaining gap into jump / dock range.
+      if (dest === GATE_ORIGIN) {
+        grid.gate = 1_000;
+      } else {
+        grid.station = 10_000;
+      }
+    },
+    getSpaceSnapshot: async () => {
+      if (mock.state.docked) {
+        return null;
+      }
+      return mock.state.system === DEST_SYSTEM
+        ? gridSnapshot(DEST_STATION, grid.station, DEST_SYSTEM, mock.state.shipMode)
+        : gridSnapshot(GATE_ORIGIN, grid.gate, ORIGIN_SYSTEM, mock.state.shipMode);
+    },
+  });
+
+  controller.start(PLAN);
+  await drive(controller, 120);
+
+  assert.equal(controller.snapshot().status, "arrived");
+  const sequence = mock.calls.map((c) => c.m);
+  assert.deepEqual(
+    sequence,
+    ["undock", "warp", "approach", "jump", "warp", "approach", "dock"],
+    "every call was chosen from the measured distance, first time, with no refusal",
+  );
+  // The approach was issued ONCE per leg — a running approach is waited on, not
+  // restarted every cycle.
+  assert.equal(sequence.filter((m) => m === "approach").length, 2);
+  // And dock was issued once: measurement had the ship in range before it
+  // asked, so there was no approach-then-redock round trip.
+  assert.equal(sequence.filter((m) => m === "dock").length, 1);
+});
+
+test("a snapshot read that fails never fails the tick — the loop falls back and still arrives", async () => {
+  const mock = makeMock({ dockRefusals: 1 });
+  const { deps } = makeDeps(mock);
+  const controller = createAutopilot({
+    ...deps,
+    getSpaceSnapshot: async () => {
+      throw refusal("EveJS gateway timed out.", "EVE_GATEWAY_TIMEOUT");
+    },
+  });
+  controller.start(PLAN);
+  await drive(controller, 120);
+
+  assert.equal(controller.snapshot().status, "arrived");
+  assert.ok(mock.calls.some((c) => c.m === "jump"), "it still jumped");
+  assert.ok(mock.calls.some((c) => c.m === "dock"), "it still docked");
+});
+
+test("an unexpected refusal still PAUSES rather than guessing, even when measuring", async () => {
+  const mock = makeMock({ dockRefusals: 0 });
+  const { deps } = makeDeps(mock);
+  const controller = createAutopilot({
+    ...deps,
+    // The gate measures 1 km away, so the ladder says JUMP...
+    getSpaceSnapshot: async () =>
+      gridSnapshot(GATE_ORIGIN, 1_000, mock.state.system, mock.state.shipMode),
+    // ...and the server refuses it for a reason we must not guess around.
+    jump: async () => {
+      throw refusal("Your standing with this faction is too low to use this gate.");
+    },
+  });
+  controller.start(PLAN);
+  await drive(controller, 30);
+
+  assert.equal(controller.snapshot().status, "paused");
+  assert.match(String(controller.snapshot().failureReason), /standing/i);
 });

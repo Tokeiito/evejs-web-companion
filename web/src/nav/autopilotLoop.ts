@@ -10,18 +10,91 @@
 // was last issued and then sits. The loop pauses (does not guess) on any
 // unsafe/blocked condition, and after abort/pause it never calls the bridge.
 //
-// Truth model (no distances — flight-status has no range readout, so unlike
-// retail we can't measure `bp.GetSurfaceDist`): we drive off ship MODE and the
-// server's own refusals. Warp to a gate; while the ship is in warp, wait; when
-// warp ends, jump. The verified docking behaviour — `CmdDock` out of range
-// refuses `DockingApproach` and the ship enters a FOLLOW approach, then
-// re-issuing `CmdDock` docks once in range — is replicated by re-issuing dock
-// each cycle until the status shows docked (approach-then-redock). Retail's
-// `ignoreTimerCycles` (settle a few ticks after a warp/jump so the transition
-// starts before we re-decide) is mirrored by `settleTicks`.
+// Truth model — MEASURE, don't guess (goal R13). Retail's autopilot measures
+// `bp.GetSurfaceDist(ship, destination)` once per tick and picks the right call
+// the first time. We now do the same: the R11 space snapshot reports every
+// visible object's position and radius plus the ship's own, so the browser
+// computes the identical surface distance and runs retail's threshold ladder,
+// in retail's evaluation order:
+//
+//     < 2500 m   and the target is a gate     -> jump
+//     < 50000 m  and the target is a station  -> dock
+//     < 150000 m                              -> approach
+//     otherwise                               -> warp
+//
+// Measurement is the PRIMARY path; the server's refusals remain as a backstop
+// for the cycles where no snapshot is available (a slow read, a scene that has
+// not caught up, a target the snapshot cannot see). When we cannot measure, the
+// loop falls back to exactly the R5b mode-and-refusal behaviour it had before,
+// including the verified approach-then-redock docking path. Either way, the
+// browser only decides WHICH authoritative call to make — it never simulates or
+// predicts position, and every move is still a server-side command.
+//
+// Three safety rules survive the rewrite unchanged:
+//   - never act mid-warp (retail returns on DSTBALL_WARP);
+//   - never re-issue a running approach (retail skips when already
+//     DSTBALL_FOLLOW on that same target);
+//   - pause rather than guess on an unexpected refusal.
+//
+// Retail's `ignoreTimerCycles` (settle a few ticks after a warp/jump so the
+// transition starts before we re-decide) is mirrored by `settleTicks`.
 
-import type { FlightStatus } from "../store/types.ts";
+import { surfaceDistanceMeters } from "../space/overview.ts";
+import type { FlightStatus, SpaceSnapshot } from "../store/types.ts";
 import type { RouteHop } from "./routeSolver.ts";
+
+// --- Retail's thresholds (autopilot.py:274-404) -----------------------------
+
+/** `maxStargateJumpingDistance` — inside this, jump instead of closing in. */
+export const MAX_STARGATE_JUMPING_DISTANCE_M = 2_500;
+/** `maxDockingDistance` — inside this, dock instead of closing in. */
+export const MAX_DOCKING_DISTANCE_M = 50_000;
+/** `minWarpDistance` — inside this, approach; beyond it, warp. */
+export const MIN_WARP_DISTANCE_M = 150_000;
+
+/**
+ * One tick's measurement of the space around the ship, derived from the R11
+ * snapshot. `distances` holds SURFACE distances in metres, keyed by the
+ * object's id; a target the snapshot cannot see is simply absent (and the loop
+ * falls back to its refusal-driven path for that target).
+ */
+export interface SpaceMeasurement {
+  readonly distances: ReadonlyMap<number, number>;
+  /** The ship's movement mode as the server reports it ("FOLLOW", "WARP", …). */
+  readonly shipMode: string | null;
+}
+
+/**
+ * Build a tick's measurement from a space snapshot: the surface distance from
+ * the ship to every visible object, using the same formula the server uses.
+ * Returns null when the snapshot cannot support a measurement (not in space, or
+ * no ship position to measure from) — the caller then decides without it.
+ */
+export function measureSpace(snapshot: SpaceSnapshot | null): SpaceMeasurement | null {
+  if (!snapshot || !snapshot.inSpace) {
+    return null;
+  }
+  // The ship's own position and radius: the snapshot's `ship` block where it has
+  // one, else the self row in the entity list (both carry them).
+  const self = snapshot.entities.find((entity) => entity.isSelf) ?? null;
+  const origin = snapshot.ship?.position ?? self?.position ?? null;
+  if (!origin) {
+    return null;
+  }
+  const originRadius = snapshot.ship?.radius ?? self?.radius ?? 0;
+
+  const distances = new Map<number, number>();
+  for (const entity of snapshot.entities) {
+    if (entity.isSelf) {
+      continue;
+    }
+    distances.set(
+      entity.itemID,
+      surfaceDistanceMeters(origin, originRadius, entity.position, entity.radius),
+    );
+  }
+  return { distances, shipMode: snapshot.ship?.mode ?? self?.mode ?? null };
+}
 
 /** The loop's lifecycle status (mirrors the travel-panel states). */
 export type AutopilotStatus =
@@ -68,6 +141,13 @@ export interface AutopilotProgress {
 /** Everything the loop needs from the outside — all injectable for tests. */
 export interface AutopilotDeps {
   getStatus(): Promise<FlightStatus>;
+  /**
+   * R13 — read what is around the ship so the tick can MEASURE surface
+   * distances (the R11 snapshot). Optional and best-effort: a null return (or a
+   * rejection the caller swallows) simply means this cycle decides from ship
+   * mode and refusals, exactly as the loop did before measurement existed.
+   */
+  getSpaceSnapshot?(): Promise<SpaceSnapshot | null>;
   undock(): Promise<void>;
   warp(destinationID: number): Promise<void>;
   /** Approach a gate at full speed (CmdSetSpeedFraction + CmdFollowBall) to close into jump range. */
@@ -120,6 +200,11 @@ const MAX_STATUS_READ_FAILURES = 5;
 // close into jump range; bound it generously (separate from MAX_JUMP_ATTEMPTS,
 // which guards genuinely-fatal jump refusals).
 const MAX_APPROACH_CYCLES = 45;
+// When we MEASURE, a running approach is waited on rather than re-issued, so the
+// wait can be long: closing 150 km at a cruiser's speed is minutes. Bound it far
+// more generously than the refusal-driven counter above (at the 2s cadence this
+// is ~20 minutes) so a ship that genuinely cannot close still stops guessing.
+const MAX_APPROACH_WAIT_CYCLES = 600;
 
 interface CompiledPlan extends RoutePlan {
   readonly hopsByFromSystem: ReadonlyMap<number, RouteHop>;
@@ -132,7 +217,15 @@ interface LoopMemory {
   jumpedFromSystem: number | null;
   /** Set when a jump refused NotWithinMaxJumpDist: approach this gate, then retry the jump. */
   pendingApproachGate: number | null;
+  /**
+   * The target of the approach WE issued, so a running approach is never
+   * re-issued (retail skips when already DSTBALL_FOLLOW on the same target).
+   * Cleared whenever we issue any other move.
+   */
+  approachingTargetID: number | null;
   approachCycles: number;
+  /** Consecutive ticks spent waiting on a measured, already-running approach. */
+  approachWaitCycles: number;
   completedHops: number;
   dockAttempts: number;
   jumpAttempts: number;
@@ -151,7 +244,9 @@ function freshMemory(): LoopMemory {
     warpedInSystem: null,
     jumpedFromSystem: null,
     pendingApproachGate: null,
+    approachingTargetID: null,
     approachCycles: 0,
+    approachWaitCycles: 0,
     completedHops: 0,
     dockAttempts: 0,
     jumpAttempts: 0,
@@ -185,15 +280,93 @@ function isAtDestination(status: FlightStatus, plan: CompiledPlan): boolean {
 }
 
 /**
- * The pure decision: given the current flight status, the plan, and the loop
- * memory, choose the next atomic action. Reads memory but does not mutate it
- * (the controller reconciles memory against observed transitions and records
- * what it issues). Exported for direct unit assertions.
+ * Memory the decision reads (it never mutates it — the controller does that).
+ * `approachingTargetID` is optional because only the MEASURED path consults it;
+ * omitting it reads as "no approach of ours is running", which is the safe
+ * default (the decision then issues an approach rather than wrongly skipping
+ * one).
+ */
+type DecisionMemory = Pick<
+  LoopMemory,
+  "warpedInSystem" | "jumpedFromSystem" | "pendingApproachGate"
+> &
+  Partial<Pick<LoopMemory, "approachingTargetID">>;
+
+/** True when the server says the ship is currently following/approaching. */
+function isFollowing(shipMode: string | null): boolean {
+  return shipMode !== null && /follow|approach/i.test(shipMode);
+}
+
+/**
+ * Retail's threshold ladder for ONE target, measured once (autopilot.py:274-404).
+ * `kind` picks which of the two close-range rules applies — a gate jumps, a
+ * station docks — and both fall through to approach and then warp, in retail's
+ * evaluation order. Returns null when the target is not measurable this tick,
+ * which sends the caller back to the refusal-driven fallback.
+ */
+function decideFromDistance(
+  targetID: number,
+  kind: "gate" | "station",
+  measurement: SpaceMeasurement | null,
+  memory: DecisionMemory,
+  labels: { readonly jumpOrDock: string; readonly approach: string; readonly warp: string },
+  hop: RouteHop | null,
+): AutopilotAction | null {
+  const distance = measurement?.distances.get(targetID);
+  if (measurement === undefined || measurement === null || distance === undefined) {
+    return null;
+  }
+
+  // 1. Inside jump range of a gate -> jump. (Retail checks this first, and also
+  //    takes it for Upwell jump gates.)
+  if (kind === "gate" && distance < MAX_STARGATE_JUMPING_DISTANCE_M) {
+    return hop
+      ? {
+          kind: "jump",
+          fromGateID: targetID,
+          toGateID: hop.jumpToGateID,
+          label: labels.jumpOrDock,
+        }
+      : null;
+  }
+
+  // 2. Inside docking range of a station/structure -> dock.
+  if (kind === "station" && distance < MAX_DOCKING_DISTANCE_M) {
+    return { kind: "dock", stationID: targetID, label: labels.jumpOrDock };
+  }
+
+  // 3. Inside minimum warp distance -> close the gap under sublight. Never
+  //    re-issue an approach that is already running against this same target:
+  //    retail skips when the ship is already DSTBALL_FOLLOW on it, and so do we
+  //    (the ship is measurably moving; issuing again would only restart it).
+  if (distance < MIN_WARP_DISTANCE_M) {
+    if (memory.approachingTargetID === targetID && isFollowing(measurement.shipMode)) {
+      return { kind: "wait", reason: "Closing in" };
+    }
+    return { kind: "approach", gateID: targetID, label: labels.approach };
+  }
+
+  // 4. Too far to close under sublight -> warp.
+  return { kind: "warp", destinationID: targetID, label: labels.warp };
+}
+
+/**
+ * The pure decision: given the current flight status, the plan, the loop memory
+ * and (R13) this tick's MEASUREMENT of the space around the ship, choose the
+ * next atomic action. Reads memory but does not mutate it (the controller
+ * reconciles memory against observed transitions and records what it issues).
+ * Exported for direct unit assertions.
+ *
+ * `measurement` is optional: with it, the decision runs retail's distance ladder
+ * and gets the call right first time; without it (a snapshot read that failed,
+ * or a target the ship cannot see) the decision falls back to the R5b path that
+ * drives off ship mode and learns range from the server's refusals.
  */
 export function decideAutopilotAction(
   status: FlightStatus,
   plan: CompiledPlan,
-  memory: Pick<LoopMemory, "warpedInSystem" | "jumpedFromSystem" | "pendingApproachGate">,
+  memory: DecisionMemory,
+  measurement: SpaceMeasurement | null = null,
 ): AutopilotAction {
   // Docked: arrival check, else leave the station.
   if (status.docked) {
@@ -220,33 +393,68 @@ export function decideAutopilotAction(
     return { kind: "wait", reason: "Jump handoff" };
   }
 
-  // At the destination system: warp to the station, then dock (re-issuing dock
-  // through the FOLLOW approach until the status shows docked).
+  // At the destination system: close on the station and dock.
   if (sys === plan.destinationSystemID) {
     if (plan.destinationStationID === null) {
       return { kind: "arrived" };
     }
+    const stationID = plan.destinationStationID;
+    // MEASURED path: dock inside 50 km, approach inside 150 km, warp beyond.
+    const measured = decideFromDistance(
+      stationID,
+      "station",
+      measurement,
+      memory,
+      {
+        jumpOrDock: `Dock at station ${stationID}`,
+        approach: `Approach station ${stationID}`,
+        warp: `Warp to station ${stationID}`,
+      },
+      null,
+    );
+    if (measured) {
+      return measured;
+    }
+    // FALLBACK (no measurement): warp once, then re-issue dock through the
+    // server's own DockingApproach refusal until the status shows docked.
     if (memory.warpedInSystem === sys) {
       return {
         kind: "dock",
-        stationID: plan.destinationStationID,
-        label: `Dock at station ${plan.destinationStationID}`,
+        stationID,
+        label: `Dock at station ${stationID}`,
       };
     }
     return {
       kind: "warp",
-      destinationID: plan.destinationStationID,
-      label: `Warp to station ${plan.destinationStationID}`,
+      destinationID: stationID,
+      label: `Warp to station ${stationID}`,
     };
   }
 
-  // A routed system: warp to its outbound gate, then jump through it.
+  // A routed system: close on its outbound gate, then jump through it.
   const hop = plan.hopsByFromSystem.get(sys);
   if (!hop) {
     return { kind: "pause", reason: `Off route: no planned hop from system ${sys}.` };
   }
+  // MEASURED path: jump inside 2.5 km, approach inside 150 km, warp beyond.
+  const measured = decideFromDistance(
+    hop.gateToWarpID,
+    "gate",
+    measurement,
+    memory,
+    {
+      jumpOrDock: `Jump to system ${hop.toSystemID}`,
+      approach: `Approach gate ${hop.gateToWarpID}`,
+      warp: `Warp to gate ${hop.gateToWarpID}`,
+    },
+    hop,
+  );
+  if (measured) {
+    return measured;
+  }
+  // FALLBACK (no measurement): warp once, then jump — and if the jump refuses
+  // for range, approach and retry (the pendingApproachGate handshake).
   if (memory.warpedInSystem === sys) {
-    // A prior jump refused for range: approach the gate to close in, then jump.
     if (memory.pendingApproachGate === hop.gateToWarpID) {
       return {
         kind: "approach",
@@ -349,7 +557,9 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotController {
       memory.warpedInSystem = null;
       memory.jumpAttempts = 0;
       memory.pendingApproachGate = null;
+      memory.approachingTargetID = null;
       memory.approachCycles = 0;
+      memory.approachWaitCycles = 0;
     }
     if (plan) {
       const hop =
@@ -380,7 +590,9 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotController {
           await deps.warp(action.destinationID);
           memory.warpedInSystem = sys;
           memory.pendingApproachGate = null;
+          memory.approachingTargetID = null;
           memory.approachCycles = 0;
+          memory.approachWaitCycles = 0;
           memory.settleTicks = SETTLE_WARP;
           return;
         case "approach":
@@ -388,17 +600,24 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotController {
           // Approached; clear the pending flag so the next decision retries the
           // jump (which will re-request an approach if still short of range).
           memory.pendingApproachGate = null;
+          // Remember WHAT we are approaching, so a measured tick waits on the
+          // running approach instead of restarting it every cycle.
+          memory.approachingTargetID = action.gateID;
+          memory.approachWaitCycles = 0;
           memory.settleTicks = SETTLE_APPROACH;
           return;
         case "jump":
           await deps.jump(action.fromGateID, action.toGateID);
           memory.jumpedFromSystem = sys;
           memory.pendingApproachGate = null;
+          memory.approachingTargetID = null;
           memory.approachCycles = 0;
+          memory.approachWaitCycles = 0;
           memory.settleTicks = SETTLE_JUMP;
           return;
         case "dock":
           await deps.dock(action.stationID);
+          memory.approachingTargetID = null;
           memory.settleTicks = SETTLE_DOCK;
           return;
         default:
@@ -558,7 +777,40 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotController {
       return { kind: "wait", reason: "settling" };
     }
 
-    const action = decideAutopilotAction(status, plan, memory);
+    // R13 — MEASURE before deciding. The snapshot read is best-effort: it is a
+    // read, it starts nothing, and a failure just costs us measurement for this
+    // cycle (the decision then falls back to mode + refusals). It is never
+    // allowed to fail the tick or to issue a move.
+    let measurement: SpaceMeasurement | null = null;
+    if (deps.getSpaceSnapshot && !status.docked) {
+      try {
+        measurement = measureSpace(await deps.getSpaceSnapshot());
+      } catch {
+        measurement = null;
+      }
+      // Abort/pause may have fired during that await, like the status read.
+      if (memory.status !== "running") {
+        emit();
+        return { kind: memory.status === "aborted" ? "aborted" : "wait", reason: "stopped" };
+      }
+    }
+
+    const action = decideAutopilotAction(status, plan, memory, measurement);
+
+    // A measured approach that is already running is waited on, not re-issued.
+    // Bound the wait so a ship that can never close still stops rather than
+    // waiting forever.
+    if (action.kind === "wait" && action.reason === "Closing in") {
+      memory.approachWaitCycles += 1;
+      if (memory.approachWaitCycles > MAX_APPROACH_WAIT_CYCLES) {
+        setPause("The ship is not getting any closer. Autopilot stopped.");
+        emit();
+        return { kind: "pause", reason: memory.failureReason ?? "approach stalled" };
+      }
+    } else if (action.kind !== "wait") {
+      memory.approachWaitCycles = 0;
+    }
+
     memory.action = actionText(action);
     memory.phase = phaseText(action, status);
 
@@ -599,7 +851,9 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotController {
       case "dock":
         return action.label;
       case "wait":
-        return `Waiting (${action.reason})`;
+        // A measured approach already under way reads as what it is, not as a
+        // parenthesised internal reason (R9a plain player language).
+        return action.reason === "Closing in" ? "Closing in" : `Waiting (${action.reason})`;
       case "arrived":
         return "Arrived";
       case "pause":
@@ -626,6 +880,9 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotController {
       return "Docking";
     }
     if (action.kind === "wait") {
+      if (action.reason === "Closing in") {
+        return "Closing in";
+      }
       return isWarping(status.shipMode) ? "In warp" : "Working";
     }
     return status.docked ? "Docked" : "In space";

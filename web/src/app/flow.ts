@@ -137,13 +137,28 @@ export interface AppFlow {
   loadFlightStatus(): Promise<void>;
   /** Undock from the station (the session enters space). */
   undock(): Promise<void>;
-  /** Warp to a chosen gate/celestial through the bound park. */
-  warpTo(destinationID: number): Promise<void>;
+  /**
+   * Warp to a chosen gate/celestial through the bound park. `minRange` null is
+   * the autopilot warp; a number warps to that distance from the target (R13).
+   */
+  warpTo(destinationID: number, minRange?: number | null): Promise<void>;
   /**
    * R11 — approach an object at full speed (the same atomic move the autopilot
    * uses to close the last gap to a gate). Offered on every overview row.
+   * R13 — the range is retail's: 50 m from the menu, 0 from the autopilot.
    */
-  approach(destinationID: number): Promise<void>;
+  approach(destinationID: number, range?: number | null): Promise<void>;
+  /** R13 — hold a set distance from a target (CmdFollowBall at that range). */
+  keepAtRange(targetID: number, range?: number | null): Promise<void>;
+  /** R13 — circle a target at a set distance (CmdOrbit). */
+  orbit(targetID: number, range?: number | null): Promise<void>;
+  /** R13 — point the ship at a target and hold that heading (CmdAlignTo). */
+  alignTo(targetID: number): Promise<void>;
+  /**
+   * R13 — cut the engines (CmdStop). As in retail, this also switches the
+   * autopilot off: stopping the ship must not leave something still flying it.
+   */
+  stopShip(): Promise<void>;
   /** R11 — read what is currently around the ship (and the ship's condition). */
   loadSpaceSnapshot(): Promise<void>;
   /**
@@ -906,14 +921,34 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         void observeFlightStatus(status);
         return status;
       },
+      // R13 — the measurement the decide-loop runs retail's distance ladder on.
+      // A READ (it starts nothing); the decoded snapshot is pushed into the
+      // space slice too, so the Overview stays fresh while the autopilot flies
+      // even if the panel's own poll is not running. A failure returns null and
+      // the loop falls back to mode + refusals for that cycle.
+      getSpaceSnapshot: async () => {
+        try {
+          const result = await api.getSpaceSnapshot(callOptions);
+          const snapshot = decodeSpaceSnapshot(result.space);
+          store.apply({ type: "space/snapshot", snapshot });
+          return snapshot;
+        } catch (error) {
+          if (isSessionLost(error)) {
+            throw error;
+          }
+          return null;
+        }
+      },
       undock: async () => {
         await api.undock(callOptions);
       },
       warp: async (destinationID) => {
-        await api.warpTo(destinationID, callOptions);
+        await api.warpTo(destinationID, null, callOptions);
       },
       approach: async (destinationID) => {
-        await api.approach(destinationID, callOptions);
+        // The autopilot's close-the-gap approach is retail's 0.0, not the
+        // right-click menu's 50 m.
+        await api.approach(destinationID, 0, callOptions);
       },
       jump: async (fromGateID, toGateID) => {
         await api.jump(fromGateID, toGateID, callOptions);
@@ -1427,12 +1462,33 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       await runFlightStep("Undock", () => api.undock(callOptions));
     },
 
-    async warpTo(destinationID) {
-      await runFlightStep("Warp", () => api.warpTo(destinationID, callOptions));
+    async warpTo(destinationID, minRange = null) {
+      await runFlightStep("Warp", () => api.warpTo(destinationID, minRange, callOptions));
     },
 
-    async approach(destinationID) {
-      await runFlightStep("Approach", () => api.approach(destinationID, callOptions));
+    async approach(destinationID, range = null) {
+      await runFlightStep("Approach", () => api.approach(destinationID, range, callOptions));
+    },
+
+    async keepAtRange(targetID, range = null) {
+      await runFlightStep("Keep at range", () => api.keepAtRange(targetID, range, callOptions));
+    },
+
+    async orbit(targetID, range = null) {
+      await runFlightStep("Orbit", () => api.orbit(targetID, range, callOptions));
+    },
+
+    async alignTo(targetID) {
+      await runFlightStep("Align", () => api.alignTo(targetID, callOptions));
+    },
+
+    async stopShip() {
+      // Retail's Stop cancels the client-side navigation BEFORE the command and
+      // switches the autopilot off after it. Ours is the same order: abort the
+      // browser decide-loop first so it cannot issue another move into the stop,
+      // then tell the server to cut the engines.
+      autopilot?.abort();
+      await runFlightStep("Stop", () => api.stopShip(callOptions));
     },
 
     loadSpaceSnapshot,
