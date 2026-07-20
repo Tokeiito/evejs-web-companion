@@ -1,0 +1,109 @@
+{
+  "_comment": [
+    "Fit corpus for the dogma oracle. Both engines (EveJS liveFittingState and",
+    "EVEShipFit dogma-engine) consume THIS file, so the only variable is the engine.",
+    "",
+    "slot/index map to EveJS flagIDs as: low->11+index, medium->19+index,",
+    "high->27+index, rig->92+index (see liveFittingState.js SLOT_FAMILY_FLAGS).",
+    "",
+    "skills: 'none' | 'all5' | '@file.json' (explicit {typeID: level} map).",
+    "'@skills-farmer.json' is the operator character's real skill sheet",
+    "(character 140000005, all 511 known skills at level V)."
+  ],
+  "skills": "@skills-farmer.json",
+  "fits": [
+    {
+      "id": "mammoth-bare",
+      "name": "Mammoth, unfitted (baseline hull)",
+      "shipTypeID": 652,
+      "modules": []
+    },
+    {
+      "id": "mammoth-farmer",
+      "name": "Mammoth, 5x Expanded Cargohold II (the ship Farmer actually flies)",
+      "shipTypeID": 652,
+      "modules": [
+        { "typeID": 1319, "slot": "low", "index": 0, "state": "Online" },
+        { "typeID": 1319, "slot": "low", "index": 1, "state": "Online" },
+        { "typeID": 1319, "slot": "low", "index": 2, "state": "Online" },
+        { "typeID": 1319, "slot": "low", "index": 3, "state": "Online" },
+        { "typeID": 1319, "slot": "low", "index": 4, "state": "Online" }
+      ]
+    },
+    {
+      "id": "rifter-bare",
+      "name": "Rifter, unfitted (baseline hull)",
+      "shipTypeID": 587,
+      "modules": []
+    },
+    {
+      "id": "rifter-tank",
+      "name": "Rifter, armour tank (resist stacking)",
+      "shipTypeID": 587,
+      "modules": [
+        { "typeID": 2048, "slot": "low", "index": 0, "state": "Online" },
+        { "typeID": 1183, "slot": "low", "index": 1, "state": "Online" },
+        { "typeID": 1306, "slot": "low", "index": 2, "state": "Online" },
+        { "typeID": 1306, "slot": "low", "index": 3, "state": "Online" },
+        { "typeID": 380, "slot": "medium", "index": 0, "state": "Online" },
+        { "typeID": 30987, "slot": "rig", "index": 0, "state": "Passive" }
+      ]
+    },
+    {
+      "id": "rifter-guns",
+      "name": "Rifter, 3x 200mm AutoCannon II + EMP S, 2x Gyrostabilizer II (damage stacking)",
+      "shipTypeID": 587,
+      "modules": [
+        { "typeID": 2889, "slot": "high", "index": 0, "state": "Active", "charge": 21898 },
+        { "typeID": 2889, "slot": "high", "index": 1, "state": "Active", "charge": 21898 },
+        { "typeID": 2889, "slot": "high", "index": 2, "state": "Active", "charge": 21898 },
+        { "typeID": 519, "slot": "low", "index": 0, "state": "Online" },
+        { "typeID": 519, "slot": "low", "index": 1, "state": "Online" }
+      ]
+    },
+    {
+      "id": "rifter-prop",
+      "name": "Rifter, 5MN MWD II + agility mods (speed / align / mass)",
+      "shipTypeID": 587,
+      "modules": [
+        { "typeID": 440, "slot": "medium", "index": 0, "state": "Active" },
+        { "typeID": 2605, "slot": "low", "index": 0, "state": "Online" },
+        { "typeID": 2605, "slot": "low", "index": 1, "state": "Online" },
+        { "typeID": 1405, "slot": "low", "index": 2, "state": "Online" },
+        { "typeID": 1405, "slot": "low", "index": 3, "state": "Online" }
+      ]
+    },
+    {
+      "id": "drake-shield",
+      "name": "Drake, shield tank + heavy missiles (hull role bonus, resist + HP stacking)",
+      "shipTypeID": 24698,
+      "modules": [
+        { "typeID": 2410, "slot": "high", "index": 0, "state": "Active", "charge": 2629 },
+        { "typeID": 2410, "slot": "high", "index": 1, "state": "Active", "charge": 2629 },
+        { "typeID": 2410, "slot": "high", "index": 2, "state": "Active", "charge": 2629 },
+        { "typeID": 2410, "slot": "high", "index": 3, "state": "Active", "charge": 2629 },
+        { "typeID": 2410, "slot": "high", "index": 4, "state": "Active", "charge": 2629 },
+        { "typeID": 2410, "slot": "high", "index": 5, "state": "Active", "charge": 2629 },
+        { "typeID": 3841, "slot": "medium", "index": 0, "state": "Online" },
+        { "typeID": 3841, "slot": "medium", "index": 1, "state": "Online" },
+        { "typeID": 2281, "slot": "medium", "index": 2, "state": "Active" },
+        { "typeID": 2281, "slot": "medium", "index": 3, "state": "Active" },
+        { "typeID": 22291, "slot": "low", "index": 0, "state": "Online" },
+        { "typeID": 22291, "slot": "low", "index": 1, "state": "Online" },
+        { "typeID": 31790, "slot": "rig", "index": 0, "state": "Passive" },
+        { "typeID": 31790, "slot": "rig", "index": 1, "state": "Passive" }
+      ]
+    },
+    {
+      "id": "skiff-mining",
+      "name": "Skiff, 2x Modulated Strip Miner II + 2x Mining Laser Upgrade II",
+      "shipTypeID": 22546,
+      "modules": [
+        { "typeID": 17912, "slot": "high", "index": 0, "state": "Active" },
+        { "typeID": 17912, "slot": "high", "index": 1, "state": "Active" },
+        { "typeID": 28576, "slot": "low", "index": 0, "state": "Online" },
+        { "typeID": 28576, "slot": "low", "index": 1, "state": "Online" }
+      ]
+    }
+  ]
+}

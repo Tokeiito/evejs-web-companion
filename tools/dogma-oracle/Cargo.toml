@@ -1,0 +1,13 @@
+[package]
+name = "dogma-oracle"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Read-only harness: runs EVEShipFit's dogma-engine over EveJS's own SDE for a fixed fit corpus."
+
+[dependencies]
+esf-dogma-engine = { path = "third_party/dogma-engine", default-features = false }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[workspace]
