@@ -876,6 +876,127 @@ export async function modifyMarketOrder(
   return asMarketChange(data);
 }
 
+// --- R17 Mail ---------------------------------------------------------------
+// The BFF cold-starts the delta sync and hands back the RAW retail-shaped
+// arms, decoded in the flow with bridge/mail.ts — except the message BODY,
+// which arrives as plain TEXT because mailMgr.GetBody answers a zlib-DEFLATED
+// buffer and the BFF inflates it. The browser never handles a compressed byte.
+
+export interface RawMailInbox {
+  readonly characterID: number | null;
+  /** The raw SyncMail answer: {newMail, oldMail, mailStatus}. */
+  readonly sync: JsonValue;
+  /** Raw GetMailHeaders rows, when a status row had no header; else null. */
+  readonly backfill: JsonValue;
+  readonly unreadCount: number;
+}
+
+export async function loadMail(options: ApiOptions = {}): Promise<RawMailInbox> {
+  const data = await getJson("/api/bridge/mail", options);
+  return {
+    characterID: asNumberOrNull(data.characterID),
+    sync: data.sync ?? null,
+    backfill: data.backfill ?? null,
+    unreadCount: Number(data.unreadCount) || 0,
+  };
+}
+
+export interface MailBodyResult {
+  readonly messageID: number;
+  /** ⚠ Already inflated by the BFF — plain text, never compressed bytes. */
+  readonly body: string | null;
+  /** True when the body arrived but would not inflate. */
+  readonly unreadable: boolean;
+  /** From a RE-READ after opening; null when that re-read failed. */
+  readonly markedRead: boolean | null;
+  readonly unreadCount: number | null;
+}
+
+export async function loadMailBody(
+  messageID: number,
+  markRead: boolean,
+  options: ApiOptions = {},
+): Promise<MailBodyResult> {
+  const query = `?messageID=${encodeURIComponent(String(messageID))}${markRead ? "&markRead=1" : ""}`;
+  const data = await getJson(`/api/bridge/mail/body${query}`, options);
+  return {
+    messageID: Number(data.messageID) || messageID,
+    body: typeof data.body === "string" ? data.body : null,
+    unreadable: data.unreadable === true,
+    markedRead: typeof data.markedRead === "boolean" ? data.markedRead : null,
+    unreadCount: asNumberOrNull(data.unreadCount),
+  };
+}
+
+export interface MailSendRequest {
+  /** ⚠ A LIST on the way in, even though headers read it back as a string. */
+  readonly toCharacterIDs: readonly number[];
+  readonly title: string;
+  readonly body: string;
+}
+
+export interface MailSendResult {
+  /** Did the message really land? From the sender-copy re-read, not the 200. */
+  readonly applied: boolean;
+  /** True when the server answered success and wrote nothing. */
+  readonly declinedSilently: boolean;
+  readonly messageID: number | null;
+  readonly unreadCount: number | null;
+  readonly recipientCount: number;
+  /** What the server said when it declined without a reason. */
+  readonly message: string | null;
+}
+
+/**
+ * Send mail. No `confirm` gate, unlike R12/R14/R15/R16: nothing is spent and
+ * nothing is deleted. The BFF still refuses an empty recipient list, because
+ * the SERVER cannot — its NO_RECIPIENTS guard can never fire through the
+ * gateway, so mail to nobody would be written and would look sent.
+ */
+export async function sendMail(
+  request: MailSendRequest,
+  options: ApiOptions = {},
+): Promise<MailSendResult> {
+  const data = await postJson(
+    "/api/bridge/mail/send",
+    request as unknown as Record<string, JsonValue>,
+    options,
+  );
+  return {
+    applied: data.applied === true,
+    declinedSilently: data.declinedSilently === true,
+    messageID: asNumberOrNull(data.messageID),
+    unreadCount: asNumberOrNull(data.unreadCount),
+    recipientCount: Number(data.recipientCount) || 0,
+    message: typeof data.message === "string" ? data.message : null,
+  };
+}
+
+/** One person match from /api/characters/find. */
+export interface CharacterMatch {
+  readonly characterID: number;
+  readonly name: string;
+}
+
+/**
+ * Find someone to write to, by NAME. ⚠ The one place the names rule runs
+ * backwards (see the route): the player types a name, the panel carries the id
+ * invisibly, and no numeric ID is ever shown.
+ */
+export async function findCharacters(
+  q: string,
+  options: ApiOptions = {},
+): Promise<readonly CharacterMatch[]> {
+  const trimmed = q.trim();
+  if (trimmed.length < 2) {
+    return [];
+  }
+  const data = await getJson(`/api/characters/find?q=${encodeURIComponent(trimmed)}`, options);
+  return Array.isArray(data.matches)
+    ? (data.matches as unknown as readonly CharacterMatch[])
+    : [];
+}
+
 /** One tradable-item match from /api/market/find. */
 export interface MarketTypeMatch {
   readonly typeID: number;

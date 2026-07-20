@@ -906,6 +906,60 @@ function resolveNames(input = {}) {
   return { names, capped, limit: NAMES_MAX_ITEMS };
 }
 
+// R17 mail: finding a person to write to, BY NAME.
+//
+// The whole names-everywhere rule (R7d) runs the other way — ID to name — but
+// composing a message needs the reverse: the player types a name and the panel
+// needs the characterID SendMail's args[0] wants. Asking the player for a
+// numeric ID would be exactly the thing R7d forbids, so this searches the same
+// read-only characters table getCharacterName reads and hands back the id
+// without ever showing it.
+const CHARACTER_FIND_DEFAULT_LIMIT = 25;
+const CHARACTER_FIND_MAX_LIMIT = 100;
+const CHARACTER_FIND_MIN_QUERY = 2;
+
+function findCharacters(filters = {}) {
+  const q = filters.q === undefined || filters.q === null ? "" : String(filters.q).trim();
+  const requestedLimit = Number(filters.limit);
+  const limit = Number.isFinite(requestedLimit) && requestedLimit > 0
+    ? Math.min(Math.floor(requestedLimit), CHARACTER_FIND_MAX_LIMIT)
+    : CHARACTER_FIND_DEFAULT_LIMIT;
+  if (q.length < CHARACTER_FIND_MIN_QUERY) {
+    return { matches: [], total: 0, capped: false, q, limit };
+  }
+
+  // The caller's own character is excluded: mailing yourself is not something
+  // the panel should offer, and the server treats a self-addressed message as a
+  // sender copy with no recipient.
+  const excludeID = Number(filters.excludeCharacterID) || 0;
+  const needle = q.toLowerCase();
+  const scored = [];
+  for (const [characterID, entry] of getCharactersByID().entries()) {
+    if (!entry || characterID === excludeID) {
+      continue;
+    }
+    const name = String(entry.characterName || entry.name || "");
+    if (!name) {
+      continue;
+    }
+    const score = scoreNameMatch(name.toLowerCase(), needle);
+    if (score < 0) {
+      continue;
+    }
+    scored.push({ score, name, entry: { characterID, name } });
+  }
+  scored.sort((a, b) =>
+    a.score - b.score ||
+    a.name.length - b.name.length ||
+    a.name.localeCompare(b.name) ||
+    a.entry.characterID - b.entry.characterID);
+
+  const total = scored.length;
+  const capped = total > limit;
+  const matches = (capped ? scored.slice(0, limit) : scored).map((s) => s.entry);
+  return { matches, total, capped, q, limit };
+}
+
 function getIndustryBlueprint(blueprintTypeID) {
   return buildIndex(
     "industryBlueprints",
@@ -924,6 +978,7 @@ function getNpcIndustryFacility(facilityID) {
 
 module.exports = {
   findAgents,
+  findCharacters,
   findMapLocations,
   getAgentName,
   getAgentsByID,

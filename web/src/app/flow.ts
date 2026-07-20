@@ -29,6 +29,7 @@ import {
   marketRefusalMessage,
   toAmountString,
 } from "../bridge/market.ts";
+import { decodeMailbox, mailRefusalMessage } from "../bridge/mail.ts";
 import {
   AGENT_BUTTON,
   decodeBriefing,
@@ -211,6 +212,31 @@ export interface AppFlow {
   cancelMarketOrder(orderID: string): Promise<void>;
   /** CHANGE an order's price. Charges a fee and moves a buy order's escrow. */
   modifyMarketOrder(orderID: string, price: number): Promise<void>;
+  /**
+   * Load the Mail panel: the whole inbox, plus the NAME of everyone who sent or
+   * received a message. ⚠ The inbox is a DELTA SYNC the BFF cold-starts, so
+   * this is always the entire mailbox rather than a page of it.
+   */
+  loadMail(): Promise<void>;
+  /**
+   * Open one message. ⚠ The body arrives as plain TEXT — mailMgr.GetBody
+   * answers a zlib-DEFLATED buffer and the BFF inflates it. `markRead` makes
+   * this a WRITE, and whether the flag really moved is RE-READ afterwards.
+   */
+  openMail(messageID: number, markRead: boolean): Promise<void>;
+  /** Close the open message without touching the server. */
+  closeMail(): void;
+  /**
+   * Find someone to write to, by NAME. Static reference data; the id it
+   * carries is never shown to the player (R7d).
+   */
+  findCharacters(q: string): Promise<readonly api.CharacterMatch[]>;
+  /**
+   * SEND a message. Not a costly or destructive write, so no confirm gate —
+   * but an empty recipient list is refused, because the SERVER will not refuse
+   * it and mail addressed to nobody would look sent.
+   */
+  sendMail(request: api.MailSendRequest): Promise<void>;
   /** Load the docked station's agent roster (agentMgr.GetAgents). */
   loadAgents(): Promise<void>;
   /** Open a conversation with an agent (bound DoAction(None)). */
@@ -1054,6 +1080,124 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         declinedSilently: outcome.declinedSilently,
         charged: outcome.charged,
         balanceAfter: outcome.balanceAfter,
+      },
+    });
+  }
+
+  // --- R17 Mail -------------------------------------------------------------
+
+  async function loadMail(): Promise<void> {
+    let inbox: Awaited<ReturnType<typeof api.loadMail>>;
+    try {
+      inbox = await api.loadMail(callOptions);
+    } catch (error) {
+      if (isSessionLost(error)) {
+        stopLiveStream();
+        store.apply({ type: "character/offline" });
+      }
+      throw error;
+    }
+    // ⚠ The sync's two header arms plus any backfill ARE the whole mailbox:
+    // the BFF cold-started the delta, so there is no window and no paging.
+    const { messages, statuses } = decodeMailbox(inbox.sync, inbox.backfill);
+    store.apply({
+      type: "mail/loaded",
+      messages,
+      statuses,
+      unreadCount: inbox.unreadCount,
+      inboxError: null,
+    });
+
+    // Every person the panel will show, resolved to a NAME (R7d): who sent each
+    // message, and who each one went to. A corporation/alliance recipient is
+    // named too, so a corp-wide message reads as "to <corp>" rather than a
+    // number.
+    const refs: NameRef[] = [];
+    for (const header of messages) {
+      refs.push({ kind: "character", id: header.senderID });
+      for (const recipientID of header.toCharacterIDs) {
+        refs.push({ kind: "character", id: recipientID });
+      }
+      if (header.toCorpOrAllianceID !== null) {
+        refs.push({ kind: "corporation", id: header.toCorpOrAllianceID });
+      }
+    }
+    requestNames(refs);
+  }
+
+  /**
+   * Open one message.
+   *
+   * ⚠ `markRead` makes this a WRITE — it clears the unread bit and pushes
+   * OnMailUpdatedByExternal to the character's other sessions. The BFF re-reads
+   * the mailbox afterwards, so `markedRead` is what the server actually holds;
+   * when that re-read failed it is null and NO claim is made. On a successful
+   * mark-read the inbox is reloaded so the unread count and the list row agree.
+   */
+  async function openMail(messageID: number, markRead: boolean): Promise<void> {
+    let result: Awaited<ReturnType<typeof api.loadMailBody>>;
+    try {
+      result = await api.loadMailBody(messageID, markRead, callOptions);
+    } catch (error) {
+      if (isSessionLost(error)) {
+        stopLiveStream();
+        store.apply({ type: "character/offline" });
+        throw error;
+      }
+      store.apply({ type: "mail/action-error", message: mailRefusalMessage(error) });
+      return;
+    }
+    if (markRead && result.markedRead === true) {
+      // Reload BEFORE recording the open: mail/loaded clears the action error
+      // and the list must agree with the count.
+      await loadMail();
+    }
+    store.apply({
+      type: "mail/opened",
+      open: {
+        messageID: result.messageID,
+        body: result.body,
+        unreadable: result.unreadable,
+        markedRead: result.markedRead,
+      },
+    });
+  }
+
+  function closeMail(): void {
+    store.apply({ type: "mail/opened", open: null });
+  }
+
+  /**
+   * Send a message, then reload the inbox so the panel shows the server's own
+   * picture, and record what ACTUALLY happened.
+   *
+   * Same three outcomes as a market write: a thrown refusal becomes a sentence
+   * without inventing a cause; a SILENT decline (SendMail's bare null, which
+   * carries no reason at all) is reported as exactly that; and a success is
+   * confirmed by the BFF's re-read of the sender's own copy, not by the 200.
+   */
+  async function sendMail(request: api.MailSendRequest): Promise<void> {
+    let outcome: Awaited<ReturnType<typeof api.sendMail>>;
+    try {
+      outcome = await api.sendMail(request, callOptions);
+    } catch (error) {
+      if (isSessionLost(error)) {
+        stopLiveStream();
+        store.apply({ type: "character/offline" });
+        throw error;
+      }
+      store.apply({ type: "mail/action-error", message: mailRefusalMessage(error) });
+      return;
+    }
+    await loadMail();
+    store.apply({
+      type: "mail/outcome",
+      outcome: {
+        kind: "send",
+        applied: outcome.applied,
+        declinedSilently: outcome.declinedSilently,
+        recipientCount: outcome.recipientCount,
+        message: outcome.message,
       },
     });
   }
@@ -2042,6 +2186,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     async modifyMarketOrder(orderID, price) {
       await runMarketAction("modify", () => api.modifyMarketOrder(orderID, price, callOptions));
     },
+    loadMail,
+    openMail,
+    closeMail,
+    findCharacters: (q: string) => api.findCharacters(q, callOptions),
+    sendMail,
 
     loadAgents,
 

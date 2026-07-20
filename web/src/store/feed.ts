@@ -39,6 +39,10 @@ import type {
   MarketOwnOrderRow,
   MarketPriceHistoryRow,
   MarketTransactionRow,
+  MailActionOutcome,
+  MailHeaderRow,
+  MailOpenMessage,
+  MailStatusRow,
   InventoryContainerState,
   JournalState,
   LiveNotification,
@@ -213,6 +217,26 @@ export type FeedEvent =
   | { readonly type: "market/outcome"; readonly outcome: MarketActionOutcome | null }
   // Drop the market state (character offline / logged out).
   | { readonly type: "market/cleared" }
+  // Goal R17 (Slice A) — the Mail page. The inbox is a DELTA SYNC cold-started
+  // by the BFF, so `messages` is always the WHOLE mailbox rather than a page of
+  // it: the browser caches nothing across a page load and therefore holds no
+  // window to sync against.
+  | {
+      readonly type: "mail/loaded";
+      readonly messages: readonly MailHeaderRow[];
+      readonly statuses: readonly MailStatusRow[];
+      readonly unreadCount: number;
+      readonly inboxError: string | null;
+    }
+  // One message opened. The body is already plain TEXT — the BFF inflated the
+  // zlib buffer mailMgr.GetBody answers.
+  | { readonly type: "mail/opened"; readonly open: MailOpenMessage | null }
+  // A mail action failed or was declined; null clears the error.
+  | { readonly type: "mail/action-error"; readonly message: string | null }
+  // What a send ACTUALLY did, from a re-read of the sender's own mailbox.
+  | { readonly type: "mail/outcome"; readonly outcome: MailActionOutcome | null }
+  // Drop the mail state (character offline / logged out).
+  | { readonly type: "mail/cleared" }
   // Goal R4 — the Agents & Missions page (agentMgr bridge). The station's
   // agent roster (decoded + filtered to the docked station by the BFF).
   | { readonly type: "agents/list"; readonly stationID: number | null; readonly agents: readonly AgentRow[] }

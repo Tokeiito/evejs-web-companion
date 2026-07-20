@@ -4,6 +4,9 @@ const express = require("express");
 const fs = require("fs");
 const http = require("http");
 const path = require("path");
+// R17 mail: mailMgr.GetBody answers a zlib-DEFLATED buffer, and inflating it is
+// this file's job — see mailBodyText. The browser never sees a compressed byte.
+const zlib = require("zlib");
 const eveStore = require("./eveStore");
 const eveGatewayClient = require("./eveGatewayClient");
 const webAuth = require("./webAuth");
@@ -3073,6 +3076,393 @@ function marketOrderHasPrice(result, orderID, price) {
   return false;
 }
 
+// --- R17 Mail (mailMgr bridge) ---------------------------------------------
+//
+// Like industry and market, the whole retail mail surface is TOP-LEVEL
+// (sm.RemoteSvc('mailMgr')) — no bound-object step — so heldTopLevelCall
+// carries all of it and this adds no bridge machinery.
+//
+// ⚠ THE INBOX IS A DELTA SYNC, NOT A LIST CALL. There is no "give me my mail"
+// method. SyncMail(firstID, lastID) takes the MIN and MAX messageID the CALLER
+// already holds and answers only what falls outside that window. A caller that
+// invents a window gets a PARTIAL mailbox and NO error. The browser caches
+// nothing across a page load, so it is permanently cold and this route always
+// passes the cold-start pair [null, 0] — "I hold nothing, send everything".
+// (server/tests/webGatewayMail.test.js pins both the cold and the warm shape.)
+//
+// ⚠ GetBody RETURNS A ZLIB-DEFLATED BUFFER, NOT TEXT, and inflating it is THIS
+// FILE'S JOB. See mailBodyText below. The browser never sees a compressed byte.
+//
+// ⚠ AN EMPTY RECIPIENT LIST IS NOT REFUSED BY THE SERVER. mailState.sendMail's
+// NO_RECIPIENTS guard reads `recipients.length === 0 && !saveSenderCopy`, and
+// the handler hardcodes saveSenderCopy: true — so the guard can never fire
+// through the gateway, and mail addressed to nobody is written, filed into the
+// sender's own mailbox, and looks sent. The send route below refuses it here
+// instead, because nothing downstream will.
+
+/** The cold-start SyncMail window: "I hold nothing, send me the lot." */
+const MAIL_COLD_START_SYNC = Object.freeze([null, 0]);
+const MAIL_STATUS_MASK_READ = 1;
+const MAIL_MAX_RECIPIENTS = 20;
+const MAIL_MAX_TITLE = 200;
+const MAIL_MAX_BODY = 8000;
+
+/**
+ * ⚠ THE ZLIB RULE, and the single place it is implemented.
+ *
+ * mailMgr.GetBody answers zlib.deflateSync(body). A Node Buffer crosses the
+ * JSON bridge as {type:"Buffer", data:[...]}, so rendering the return directly
+ * would show the player a wall of byte values. This inflates it and hands back
+ * plain text. Decompressing in the BROWSER is not an option worth taking: it
+ * would mean shipping an inflate implementation to every page load to undo
+ * something the server did for a wire format the browser never speaks.
+ *
+ * Returns null for "no such message" (GetBody's own answer for one the
+ * character cannot see) and throws nothing on a corrupt stream — a body that
+ * will not inflate is reported as unreadable rather than blanking the message.
+ */
+function mailBodyText(result) {
+  if (result === null || result === undefined) {
+    return { text: null, unreadable: false };
+  }
+  let bytes = null;
+  if (Buffer.isBuffer(result)) {
+    bytes = result;
+  } else if (
+    result &&
+    typeof result === "object" &&
+    result.type === "Buffer" &&
+    Array.isArray(result.data)
+  ) {
+    bytes = Buffer.from(result.data);
+  } else if (typeof result === "string") {
+    // Not a shape the service produces today, but if a body ever arrives
+    // already-decoded it is text, not an error.
+    return { text: result, unreadable: false };
+  }
+  if (!bytes) {
+    return { text: null, unreadable: true };
+  }
+  try {
+    return { text: zlib.inflateSync(bytes).toString("utf8"), unreadable: false };
+  } catch {
+    return { text: null, unreadable: true };
+  }
+}
+
+function readMailKeyVal(row, key) {
+  const entries =
+    row && row.args && Array.isArray(row.args.entries) ? row.args.entries : [];
+  const entry = entries.find((candidate) => {
+    const name = Array.isArray(candidate) ? candidate[0] : null;
+    return (typeof name === "string" ? name : name && name.value) === key;
+  });
+  return entry ? entry[1] : undefined;
+}
+
+function mailListItems(value) {
+  return value && Array.isArray(value.items) ? value.items : [];
+}
+
+function mailNumber(value) {
+  if (typeof value === "number") {
+    return value;
+  }
+  if (value && value.type === "long") {
+    return Number(value.value) || 0;
+  }
+  return Number(value) || 0;
+}
+
+/**
+ * The unread count, computed HERE rather than trusted from anywhere else: it is
+ * the number of status rows whose read bit is clear. The browser gets the raw
+ * rows too and could count them itself; this exists so the count shown beside
+ * the tab and the count implied by the list can never disagree.
+ */
+function mailUnreadCount(syncResult) {
+  let unread = 0;
+  for (const row of mailListItems(readMailKeyVal(syncResult, "mailStatus"))) {
+    if ((mailNumber(readMailKeyVal(row, "statusMask")) & MAIL_STATUS_MASK_READ) === 0) {
+      unread += 1;
+    }
+  }
+  return unread;
+}
+
+/** Is `messageID` present in this sync's headers? The send/read re-read verdict. */
+function mailHeaderIDs(syncResult) {
+  const ids = new Set();
+  for (const arm of ["newMail", "oldMail"]) {
+    for (const row of mailListItems(readMailKeyVal(syncResult, arm))) {
+      ids.add(mailNumber(readMailKeyVal(row, "messageID")));
+    }
+  }
+  return ids;
+}
+
+function mailIsRead(syncResult, messageID) {
+  for (const row of mailListItems(readMailKeyVal(syncResult, "mailStatus"))) {
+    if (mailNumber(readMailKeyVal(row, "messageID")) === Number(messageID)) {
+      return (mailNumber(readMailKeyVal(row, "statusMask")) & MAIL_STATUS_MASK_READ) !== 0;
+    }
+  }
+  return false;
+}
+
+/**
+ * GET /api/bridge/mail — the whole inbox, cold-started.
+ *
+ * One call does it: a cold SyncMail IS the full mailbox. GetMailHeaders is the
+ * backfill for any messageID that has a status row but no header, which a cold
+ * sync should never produce — it is issued only when that actually happens, so
+ * the common case stays a single round-trip.
+ */
+app.get("/api/bridge/mail", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  try {
+    const sync = await heldTopLevelCall(
+      held,
+      req.webSessionID,
+      "mailMgr",
+      "SyncMail",
+      MAIL_COLD_START_SYNC,
+      null,
+    );
+
+    // Backfill: any message the mailbox knows the STATUS of but not the HEADER.
+    // ⚠ The argument is a list NESTED in args[0], not a spread of ids.
+    const haveHeaders = mailHeaderIDs(sync.result);
+    const missing = [];
+    for (const row of mailListItems(readMailKeyVal(sync.result, "mailStatus"))) {
+      const messageID = mailNumber(readMailKeyVal(row, "messageID"));
+      if (messageID > 0 && !haveHeaders.has(messageID)) {
+        missing.push(messageID);
+      }
+    }
+    let backfill = null;
+    if (missing.length > 0) {
+      const extra = await heldTopLevelCall(
+        held,
+        req.webSessionID,
+        "mailMgr",
+        "GetMailHeaders",
+        [missing],
+        null,
+      );
+      backfill = extra.result;
+    }
+
+    res.json({
+      ok: true,
+      characterID: held.characterID,
+      sync: sync.result,
+      backfill,
+      unreadCount: mailUnreadCount(sync.result),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * GET /api/bridge/mail/body?messageID=&markRead= — one message, as TEXT.
+ *
+ * ⚠ markRead=1 makes this a WRITE: it clears the unread bit and pushes
+ * OnMailUpdatedByExternal to the character's other sessions. Opening a message
+ * is the player's own deliberate act, so it needs no confirm gate — but it is
+ * re-read anyway, because a 200 is not proof that the flag moved.
+ */
+app.get("/api/bridge/mail/body", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const messageID = Number(req.query.messageID) || 0;
+  if (messageID <= 0) {
+    res.status(400).json({ ok: false, error: "MAIL_INVALID", message: "No message was named." });
+    return;
+  }
+  const markRead = req.query.markRead === "1" || req.query.markRead === "true";
+  try {
+    const body = await heldTopLevelCall(
+      held,
+      req.webSessionID,
+      "mailMgr",
+      "GetBody",
+      [messageID, markRead ? 1 : 0],
+      null,
+    );
+    const { text, unreadable } = mailBodyText(body.result);
+
+    // GetBody answers null for a message this character cannot see. That is a
+    // definite answer, not a failure, and it is reported as one.
+    if (text === null && !unreadable) {
+      res.status(404).json({
+        ok: false,
+        error: "MAIL_NOT_FOUND",
+        message: "That message is not in your mailbox.",
+      });
+      return;
+    }
+
+    // ⚠ A 200 IS NOT PROOF. Re-read the mailbox and report the flag the server
+    // actually holds, not the one we asked for.
+    let nowRead = null;
+    let unreadCount = null;
+    try {
+      const sync = await heldTopLevelCall(
+        held,
+        req.webSessionID,
+        "mailMgr",
+        "SyncMail",
+        MAIL_COLD_START_SYNC,
+        null,
+      );
+      nowRead = mailIsRead(sync.result, messageID);
+      unreadCount = mailUnreadCount(sync.result);
+    } catch {
+      // The body is in hand and worth showing; a failed re-read only means we
+      // decline to make a claim about the read flag.
+    }
+
+    res.json({
+      ok: true,
+      messageID,
+      body: text,
+      unreadable,
+      markedRead: nowRead,
+      unreadCount,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * POST /api/bridge/mail/send — write to another character.
+ *
+ * ⚠ EXACT POSITIONAL SIGNATURE (Handle_SendMail reads by index; a mis-ordered
+ * list is a silently different message, not an error):
+ *   [toCharacterIDs, toListID, toCorpOrAllianceID, title, body,
+ *    isReplyTo, isForwardedFrom]
+ * args[0] is a LIST on the way in even though headers read it back as a
+ * comma-joined string on the way out. toListID and toCorpOrAllianceID are
+ * always null: mailing lists are a separate service and corp/alliance mail fans
+ * out to every member — neither is in this slice.
+ *
+ * This is a write, but not a destructive or costly one — nothing is spent and
+ * nothing is deleted — so it takes no `confirm` gate, unlike R12/R14/R15/R16.
+ * What it does take is a RECIPIENT CHECK, because the server has none: see the
+ * empty-list note above.
+ */
+app.post("/api/bridge/mail/send", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const payload = req.body && typeof req.body === "object" ? req.body : {};
+  const recipients = Array.isArray(payload.toCharacterIDs)
+    ? [...new Set(payload.toCharacterIDs.map((id) => Number(id) || 0).filter((id) => id > 0))]
+    : [];
+  const title = typeof payload.title === "string" ? payload.title.trim() : "";
+  const body = typeof payload.body === "string" ? payload.body : "";
+
+  // ⚠ THE GUARD THE SERVER DOES NOT HAVE. Without this, mail to nobody is
+  // written into the sender's own mailbox and looks sent.
+  if (recipients.length === 0) {
+    res.status(400).json({
+      ok: false,
+      error: "MAIL_NO_RECIPIENT",
+      message: "Choose someone to send this to first.",
+    });
+    return;
+  }
+  if (recipients.length > MAIL_MAX_RECIPIENTS) {
+    res.status(400).json({
+      ok: false,
+      error: "MAIL_TOO_MANY_RECIPIENTS",
+      message: `You can send to at most ${MAIL_MAX_RECIPIENTS} people at once.`,
+    });
+    return;
+  }
+  if (!title) {
+    res.status(400).json({
+      ok: false,
+      error: "MAIL_NO_SUBJECT",
+      message: "Give your message a subject first.",
+    });
+    return;
+  }
+  if (title.length > MAIL_MAX_TITLE || body.length > MAIL_MAX_BODY) {
+    res.status(400).json({
+      ok: false,
+      error: "MAIL_TOO_LONG",
+      message: "That message is longer than the mail system accepts.",
+    });
+    return;
+  }
+
+  try {
+    const sent = await heldTopLevelCall(
+      held,
+      req.webSessionID,
+      "mailMgr",
+      "SendMail",
+      [recipients, null, null, title, body, null, null],
+      null,
+    );
+    const messageID = mailNumber(sent.result);
+
+    // ⚠ THE SILENT DECLINE. SendMail answers a bare null on failure with NO
+    // reason attached. Say exactly that rather than inventing a cause.
+    if (!messageID) {
+      res.json({
+        ok: true,
+        applied: false,
+        declinedSilently: true,
+        messageID: null,
+        message: "The server did not send that message, and did not say why.",
+      });
+      return;
+    }
+
+    // ⚠ A 200 IS NOT PROOF. Re-read the sender's own mailbox: the handler keeps
+    // a sender copy, so the message must be visible there if it really landed.
+    let applied = true;
+    let unreadCount = null;
+    try {
+      const sync = await heldTopLevelCall(
+        held,
+        req.webSessionID,
+        "mailMgr",
+        "SyncMail",
+        MAIL_COLD_START_SYNC,
+        null,
+      );
+      applied = mailHeaderIDs(sync.result).has(messageID);
+      unreadCount = mailUnreadCount(sync.result);
+    } catch {
+      // Keep `applied` as the messageID implies; a failed re-read is not
+      // evidence the send failed.
+    }
+
+    res.json({
+      ok: true,
+      applied,
+      declinedSilently: false,
+      messageID,
+      unreadCount,
+      recipientCount: recipients.length,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 /** Read `status` off a util.KeyVal job row (the re-read's verdict). */
 function readIndustryJobStatus(row) {
   const entries =
@@ -4107,6 +4497,46 @@ app.get("/api/map/find", requireAuth, async (req, res, next) => {
  * list, and offering one would produce a server refusal the player could make
  * no sense of.
  */
+/**
+ * R17 mail RECIPIENT SEARCH — how a player picks who to write to.
+ *
+ * ⚠ THIS IS THE ONE PLACE THE NAMES RULE RUNS BACKWARDS. R7d says the player
+ * never sees a numeric ID; composing a message needs the opposite direction —
+ * a name typed by the player turned into the characterID SendMail's args[0]
+ * wants. Asking the player for an ID would be exactly what R7d forbids, so the
+ * name is searched here and the id is carried invisibly.
+ *
+ * Read-only static reference data, like /api/map/find and /api/market/find —
+ * NOT a gateway/bridge call, so it works independently of the live session. The
+ * caller's own character is excluded: the server treats a self-addressed
+ * message as a sender copy with no recipient, so offering it would be offering
+ * a message that goes nowhere.
+ */
+app.get("/api/characters/find", requireAuth, async (req, res, next) => {
+  try {
+    const q = typeof req.query.q === "string" ? req.query.q : "";
+    const limit = req.query.limit !== undefined ? Number(req.query.limit) : undefined;
+    const held = req.webSessionID ? bridgeSessions.get(req.webSessionID) : null;
+    const result = staticData.findCharacters({
+      q,
+      limit,
+      excludeCharacterID: held ? held.characterID : 0,
+    });
+    res.json({
+      ok: true,
+      source: "static-data",
+      q: result.q,
+      total: result.total,
+      capped: result.capped,
+      limit: result.limit,
+      count: result.matches.length,
+      matches: result.matches,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.get("/api/market/find", requireAuth, async (req, res, next) => {
   try {
     const q = typeof req.query.q === "string" ? req.query.q : "";

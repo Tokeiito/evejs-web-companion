@@ -11,6 +11,7 @@
   import Fitting from "./Fitting.svelte";
   import Industry from "./Industry.svelte";
   import Market from "./Market.svelte";
+  import Mail from "./Mail.svelte";
   import AgentsMissions from "./AgentsMissions.svelte";
   import AgentFinder from "./AgentFinder.svelte";
   import Flight from "./Flight.svelte";
@@ -37,6 +38,7 @@
     | "fitting"
     | "industry"
     | "market"
+    | "mail"
     | "agents"
     | "finder"
     | "flight"
@@ -68,6 +70,9 @@
     <button type="button" class:active={page === "market"} onclick={() => (page = "market")}>
       Market
     </button>
+    <button type="button" class:active={page === "mail"} onclick={() => (page = "mail")}>
+      Mail
+    </button>
     <button type="button" class:active={page === "agents"} onclick={() => (page = "agents")}>
       Agents &amp; Missions
     </button>
@@ -97,6 +102,8 @@
     <Industry {store} {flow} />
   {:else if page === "market"}
     <Market {store} {flow} />
+  {:else if page === "mail"}
+    <Mail {store} {flow} />
   {:else if page === "agents"}
     <AgentsMissions {store} {flow} />
   {:else if page === "finder"}

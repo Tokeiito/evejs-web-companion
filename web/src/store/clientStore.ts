@@ -41,6 +41,11 @@ import type {
   MarketOwnOrderRow,
   MarketPriceHistoryRow,
   MarketState,
+  MailActionOutcome,
+  MailHeaderRow,
+  MailOpenMessage,
+  MailState,
+  MailStatusRow,
   MarketTransactionRow,
   InventoryContainerState,
   CorpHangarState,
@@ -100,6 +105,7 @@ export interface ClientState {
   readonly fitting: FittingState;
   readonly industry: IndustryState;
   readonly market: MarketState;
+  readonly mail: MailState;
   readonly agents: AgentsState;
   readonly finder: AgentFinderState;
   readonly rewards: RewardsState;
@@ -219,6 +225,20 @@ const INITIAL_MARKET: MarketState = Object.freeze({
   marketUnavailable: null,
   actionError: null,
   lastOutcome: null as MarketActionOutcome | null,
+});
+
+// R17 mail. The inbox arrives as a DELTA SYNC the BFF cold-starts, so
+// `messages` is always the WHOLE mailbox — the browser holds no window across a
+// page load and therefore never syncs against one.
+const INITIAL_MAIL: MailState = Object.freeze({
+  messages: Object.freeze([]) as readonly MailHeaderRow[],
+  statuses: Object.freeze([]) as readonly MailStatusRow[],
+  unreadCount: 0,
+  open: null as MailOpenMessage | null,
+  loaded: false,
+  inboxError: null,
+  actionError: null,
+  lastOutcome: null as MailActionOutcome | null,
 });
 
 const INITIAL_AGENTS: AgentsState = Object.freeze({
@@ -341,6 +361,7 @@ export interface ClientStore {
   readonly fitting: ReadableSignal<FittingState>;
   readonly industry: ReadableSignal<IndustryState>;
   readonly market: ReadableSignal<MarketState>;
+  readonly mail: ReadableSignal<MailState>;
   readonly agents: ReadableSignal<AgentsState>;
   readonly finder: ReadableSignal<AgentFinderState>;
   readonly rewards: ReadableSignal<RewardsState>;
@@ -380,6 +401,7 @@ export function createClientStore(): ClientStore {
   const fitting = createSignal<FittingState>(INITIAL_FITTING);
   const industry = createSignal<IndustryState>(INITIAL_INDUSTRY);
   const market = createSignal<MarketState>(INITIAL_MARKET);
+  const mail = createSignal<MailState>(INITIAL_MAIL);
   const agents = createSignal<AgentsState>(INITIAL_AGENTS);
   const finder = createSignal<AgentFinderState>(INITIAL_FINDER);
   const rewards = createSignal<RewardsState>(INITIAL_REWARDS);
@@ -406,6 +428,7 @@ export function createClientStore(): ClientStore {
     fitting: fitting.get(),
     industry: industry.get(),
     market: market.get(),
+    mail: mail.get(),
     agents: agents.get(),
     finder: finder.get(),
     rewards: rewards.get(),
@@ -436,6 +459,7 @@ export function createClientStore(): ClientStore {
         fitting.set(INITIAL_FITTING);
         industry.set(INITIAL_INDUSTRY);
         market.set(INITIAL_MARKET);
+        mail.set(INITIAL_MAIL);
         agents.set(INITIAL_AGENTS);
         finder.set(INITIAL_FINDER);
         rewards.set(INITIAL_REWARDS);
@@ -481,6 +505,7 @@ export function createClientStore(): ClientStore {
         fitting.set(INITIAL_FITTING);
         industry.set(INITIAL_INDUSTRY);
         market.set(INITIAL_MARKET);
+        mail.set(INITIAL_MAIL);
         agents.set(INITIAL_AGENTS);
         finder.set(INITIAL_FINDER);
         rewards.set(INITIAL_REWARDS);
@@ -496,6 +521,7 @@ export function createClientStore(): ClientStore {
         fitting.set(INITIAL_FITTING);
         industry.set(INITIAL_INDUSTRY);
         market.set(INITIAL_MARKET);
+        mail.set(INITIAL_MAIL);
         agents.set(INITIAL_AGENTS);
         finder.set(INITIAL_FINDER);
         rewards.set(INITIAL_REWARDS);
@@ -693,6 +719,35 @@ export function createClientStore(): ClientStore {
         break;
       case "market/cleared":
         market.set(INITIAL_MARKET);
+        break;
+      // R17 mail. A cold delta sync IS the whole mailbox, so the message list
+      // is REPLACED rather than merged — an old row surviving a reload would be
+      // a message the server no longer says the player has.
+      case "mail/loaded":
+        mail.set({
+          ...mail.get(),
+          messages: [...event.messages],
+          statuses: [...event.statuses],
+          unreadCount: event.unreadCount,
+          loaded: true,
+          inboxError: event.inboxError,
+          // A successful load clears a stale action error but NOT the last
+          // outcome: what the server did with the player's message stays on
+          // screen until they do something else.
+          actionError: null,
+        });
+        break;
+      case "mail/opened":
+        mail.set({ ...mail.get(), open: event.open });
+        break;
+      case "mail/action-error":
+        mail.set({ ...mail.get(), actionError: event.message });
+        break;
+      case "mail/outcome":
+        mail.set({ ...mail.get(), lastOutcome: event.outcome });
+        break;
+      case "mail/cleared":
+        mail.set(INITIAL_MAIL);
         break;
       case "agents/list":
         agents.set({
@@ -1006,6 +1061,7 @@ export function createClientStore(): ClientStore {
     fitting: readonlySignal(fitting),
     industry: readonlySignal(industry),
     market: readonlySignal(market),
+    mail: readonlySignal(mail),
     agents: readonlySignal(agents),
     finder: readonlySignal(finder),
     rewards: readonlySignal(rewards),

@@ -528,6 +528,96 @@ export interface MarketActionOutcome {
   readonly balanceAfter: string | null;
 }
 
+// --- R17 Mail ---------------------------------------------------------------
+
+/**
+ * One message HEADER from the delta sync.
+ *
+ * ⚠ `toCharacterIDs` is a COMMA-JOINED STRING on the wire and a real list on
+ * the way back in (SendMail's args[0]). The two directions are not symmetric;
+ * bridge/mail.ts splits the string in exactly one place, and by the time a row
+ * reaches here it is already a proper list of ids.
+ *
+ * ⚠ `sentDate` is a retail FILETIME (100 ns ticks since 1601-01-01), which
+ * exceeds 2^53 — so it stays a bigint until the moment it is rendered.
+ */
+export interface MailHeaderRow {
+  readonly messageID: number;
+  readonly senderID: number;
+  readonly toCharacterIDs: readonly number[];
+  /** Set when the message went to a mailing list (a surface out of this slice). */
+  readonly toListID: number | null;
+  /** Set when it went to a whole corporation or alliance. */
+  readonly toCorpOrAllianceID: number | null;
+  readonly title: string;
+  readonly sentDate: bigint | null;
+}
+
+/** One status row: whether a message has been opened, and how it is filed. */
+export interface MailStatusRow {
+  readonly messageID: number;
+  readonly statusMask: number;
+  readonly labelMask: number;
+  /** The read bit of statusMask, pulled out because it is the one that shows. */
+  readonly read: boolean;
+}
+
+/** The body of the message currently open, as TEXT. */
+export interface MailOpenMessage {
+  readonly messageID: number;
+  /**
+   * ⚠ Already INFLATED. mailMgr.GetBody answers a zlib-DEFLATED buffer; the BFF
+   * inflates it (src/server.js, mailBodyText) so this is plain text and the
+   * browser never handles a compressed byte.
+   */
+  readonly body: string | null;
+  /** True when the body arrived but would not inflate — say so, show no garbage. */
+  readonly unreadable: boolean;
+  /**
+   * Whether the server now holds this message as read, from a RE-READ after
+   * opening it. null when that re-read failed — in which case no claim is made.
+   */
+  readonly markedRead: boolean | null;
+}
+
+/**
+ * The Mail page state (goal R17, Slice A).
+ *
+ * ⚠ The inbox arrives as a DELTA SYNC, not a list: SyncMail answers only what
+ * falls outside the window the caller holds. The browser caches nothing across
+ * a page load, so it is permanently cold and `messages` is always the whole
+ * mailbox rather than a page of it.
+ */
+export interface MailState {
+  readonly messages: readonly MailHeaderRow[];
+  readonly statuses: readonly MailStatusRow[];
+  /** How many are unread — what the tab badge shows. */
+  readonly unreadCount: number;
+  /** The message currently open, if any. */
+  readonly open: MailOpenMessage | null;
+  readonly loaded: boolean;
+  readonly inboxError: string | null;
+  /** Non-null when the last open/send failed or was declined. */
+  readonly actionError: string | null;
+  readonly lastOutcome: MailActionOutcome | null;
+}
+
+/** The verdict on a completed send, assembled from a RE-READ. */
+export interface MailActionOutcome {
+  readonly kind: "send";
+  /** Did the message really land? From the sender-copy re-read, not the 200. */
+  readonly applied: boolean;
+  /** True when the server answered success and nothing was written. */
+  readonly declinedSilently: boolean;
+  /** How many people it went to. */
+  readonly recipientCount: number;
+  /**
+   * What the server said, when it declined without giving a reason. Never a
+   * cause this client invented.
+   */
+  readonly message: string | null;
+}
+
 // --- R4 Agents & Missions --------------------------------------------------
 
 /**
