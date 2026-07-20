@@ -30,6 +30,12 @@ npm test            # node --test: vanilla JS tests + web/**/*.test.ts together
 
 After `npm run build:web`, the first migrated page (goal R2, Svelte 5) is at `http://127.0.0.1:26500/dist/` — it has its own login form, so no vanilla-app sign-in is needed. See the "Consuming the bridge from TypeScript" section of [docs/bridge-wire-contract.md](docs/bridge-wire-contract.md) for the client/store layout and how to add a page.
 
+### Styling: Tailwind CSS v4, responsive (R8)
+
+The Svelte app is styled with **Tailwind CSS v4** via its first-party Vite plugin (`@tailwindcss/vite`), CSS-first: `web/src/styles.css` does `@import "tailwindcss"` (imported from `main.ts`), so `npm run build:web` compiles Tailwind into the `public/dist/` bundle automatically — no `tailwind.config.js` or PostCSS step. The Eve-dark palette lives in an `@theme` token block; the element/component look is built in `@layer base`/`@layer components` on top of Tailwind's preflight.
+
+The UI is **mobile-first responsive** from ~360px phones up to desktop: the tab bar wraps to touch-sized rows on a phone; data tables (station guests, inventory, agents, search results) reflow to stacked labelled **cards** at ≤640px and stay tables on wider screens (each wrapped so a wide table scrolls in its own box, never the page); form/control rows stack full-width on mobile; the page container caps its width on desktop for readable line length. Names-only still holds — no numeric game IDs are rendered.
+
 ## Spot test (R2): log in → pick a character → see your station
 
 The first live end-to-end check of the new stack (goal R2). What it proves: the browser drives the real retail calls (`SelectCharacterID` on a persistent live session, then the docked reads) against the same EveJS handlers the retail client hits.
