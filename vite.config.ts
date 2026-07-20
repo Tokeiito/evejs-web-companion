@@ -14,12 +14,18 @@ import { defineConfig } from "vite";
 // readers of the framework-agnostic signal store (web/src/store), which
 // implements the Svelte store contract so `$slice` auto-subscription works.
 import { svelte } from "@sveltejs/vite-plugin-svelte";
+// Styling (goal R8): Tailwind CSS v4 via its first-party Vite plugin. The
+// CSS-first entry (web/src/styles.css: `@import "tailwindcss"`) is imported
+// from main.ts, so Vite emits the compiled Tailwind bundle into public/dist/
+// alongside the app and the built index.html links it. Presentation only —
+// no change to the store, flow, or bridge.
+import tailwindcss from "@tailwindcss/vite";
 
 const bffTarget = process.env.EVEJS_WEB_BFF_URL || "http://127.0.0.1:26500";
 
 export default defineConfig({
   root: "web",
-  plugins: [svelte()],
+  plugins: [svelte(), tailwindcss()],
   // Built asset URLs are absolute under /dist/ so the bundle works when the
   // Express static middleware serves public/dist/ at /dist/.
   base: "/dist/",

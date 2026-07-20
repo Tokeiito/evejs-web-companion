@@ -8,3 +8,8 @@ declare module "*.svelte" {
   const component: Component<any>;
   export default component;
 }
+
+// Side-effect CSS imports (the Tailwind entry, goal R8) carry no exports; this
+// shim lets `npm run typecheck` accept `import "./styles.css"`. Vite (via
+// @tailwindcss/vite) compiles the CSS at build time.
+declare module "*.css";

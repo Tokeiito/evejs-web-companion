@@ -3,138 +3,22 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>EveJS Web — station entry (R2)</title>
+    <title>EveJS Web</title>
+    <!--
+      The full design system lives in web/src/styles.css (Tailwind v4),
+      imported from main.ts and emitted into public/dist/ by the build. Only a
+      minimal anti-flash background/color is inlined here so there is no
+      unstyled white flash before the CSS bundle loads.
+    -->
     <style>
       :root {
         color-scheme: dark;
       }
       body {
         margin: 0;
-        padding: 2rem;
         background: #0b0e13;
         color: #cfd8e3;
         font-family: "Segoe UI", system-ui, sans-serif;
-        font-size: 14px;
-      }
-      h1 {
-        font-size: 1.1rem;
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
-        color: #7fb4d9;
-      }
-      section {
-        border: 1px solid #223142;
-        background: #101722;
-        padding: 0.75rem 1rem;
-        margin-bottom: 1rem;
-        max-width: 46rem;
-      }
-      h2 {
-        font-size: 0.85rem;
-        letter-spacing: 0.06em;
-        text-transform: uppercase;
-        color: #8fa3b8;
-        margin-top: 0;
-      }
-      button {
-        background: #16273a;
-        color: #cfe3f5;
-        border: 1px solid #2f4a66;
-        padding: 0.4rem 0.9rem;
-        cursor: pointer;
-        font: inherit;
-      }
-      button:hover:not(:disabled) {
-        background: #1d334f;
-      }
-      button:disabled {
-        opacity: 0.55;
-        cursor: default;
-      }
-      button.minor {
-        background: transparent;
-        border-color: #223142;
-        color: #8fa3b8;
-      }
-      form label {
-        display: block;
-        margin-bottom: 0.6rem;
-        color: #8fa3b8;
-      }
-      form input {
-        display: block;
-        margin-top: 0.2rem;
-        width: 16rem;
-        max-width: 100%;
-        background: #0b111b;
-        color: #cfe3f5;
-        border: 1px solid #2f4a66;
-        padding: 0.35rem 0.5rem;
-        font: inherit;
-      }
-      ul.character-list {
-        list-style: none;
-        margin: 0;
-        padding: 0;
-      }
-      ul.character-list li {
-        margin-bottom: 0.5rem;
-      }
-      button.character {
-        display: block;
-        width: 100%;
-        text-align: left;
-      }
-      button.character .name {
-        display: block;
-        color: #cfe3f5;
-        font-weight: 600;
-      }
-      button.character .detail {
-        display: block;
-        color: #8fa3b8;
-        font-size: 12px;
-      }
-      dl.kv {
-        display: grid;
-        grid-template-columns: max-content 1fr;
-        gap: 0.15rem 1rem;
-        margin: 0;
-      }
-      dl.kv dt {
-        color: #8fa3b8;
-      }
-      dl.kv dd {
-        margin: 0;
-        color: #cfe3f5;
-      }
-      table.guests {
-        border-collapse: collapse;
-        width: 100%;
-      }
-      table.guests th,
-      table.guests td {
-        text-align: left;
-        padding: 0.25rem 0.6rem 0.25rem 0;
-        border-bottom: 1px solid #1a2636;
-        color: #a9c3d6;
-      }
-      table.guests th {
-        color: #8fa3b8;
-        font-size: 12px;
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-      }
-      table.guests tr.self td {
-        color: #cfe3f5;
-        font-weight: 600;
-      }
-      .error {
-        color: #e08a8a;
-      }
-      p.note {
-        max-width: 46rem;
-        color: #8fa3b8;
       }
     </style>
   </head>

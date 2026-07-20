@@ -4,6 +4,10 @@
 // app/flow.ts, the Svelte components pure readers. Replaces the R1b scaffold
 // smoke page per its own note.
 
+// Styling (goal R8): the Tailwind CSS v4 design-system entry. Importing it here
+// makes Vite (via @tailwindcss/vite) compile Tailwind and emit the CSS bundle
+// into public/dist/, and the built index.html links it automatically.
+import "./styles.css";
 import { mount } from "svelte";
 import App from "./ui/App.svelte";
 import { createClientStore } from "./store/clientStore.ts";
