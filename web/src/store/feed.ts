@@ -61,6 +61,7 @@ import type {
   TravelStatus,
   WalletLPBalance,
 } from "./types.ts";
+import type { ShipStats } from "../bridge/shipStats.ts";
 
 export type FeedStatus = "idle" | "connecting" | "connected" | "disconnected";
 
@@ -155,6 +156,8 @@ export type FeedEvent =
       readonly activeShipID: number | null;
       readonly slots: readonly FittingSlot[];
       readonly resources: FittingResources;
+      /** R21 — the derived statistics, from the same attribute map. */
+      readonly stats: ShipStats;
       readonly slotsError: string | null;
       readonly resourcesError: string | null;
     }

@@ -11,7 +11,8 @@ import {
   getStationItemBits,
 } from "../bridge/stationPanel.ts";
 import { decodeCapacity, decodeContainer, decodeInventoryRows } from "../bridge/inventoryShip.ts";
-import { buildSlots, decodeResources } from "../bridge/fitting.ts";
+import { buildSlots, decodeResources, decodeShipAttributes } from "../bridge/fitting.ts";
+import { deriveShipStats } from "../bridge/shipStats.ts";
 import {
   decodeBlueprints,
   decodeDefinition,
@@ -798,6 +799,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       activeShipID: reads.activeShipID,
       slots: buildSlots(reads.slots, reads.shipInfo, reads.online),
       resources: decodeResources(reads.shipInfo),
+      // R21 — the derived statistics come off the SAME ShipGetInfo attribute
+      // map as the resource bars. No extra read, and nothing re-simulated:
+      // the server already applied the ship's active-module effects before it
+      // sent this (see bridge/shipStats.ts for why that matters).
+      stats: deriveShipStats(decodeShipAttributes(reads.shipInfo)),
       slotsError: reads.errors.slots || reads.errors.online,
       resourcesError: reads.errors.shipInfo,
     });

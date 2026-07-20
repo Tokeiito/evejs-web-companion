@@ -974,6 +974,13 @@
     gap: 0.4rem;
   }
 
+  /* The shield / armor / hull triad, used as a text colour on the defence
+   * grid's layer names. Every row also carries its name in words, so the
+   * colour is reinforcement and never the only signal. */
+  .layer-shield { color: var(--color-shield); font-weight: 600; }
+  .layer-armor { color: var(--color-armor); font-weight: 600; }
+  .layer-hull { color: var(--color-hull); font-weight: 600; }
+
   /* A statistic whose value we could not honestly source. It is deliberately
    * WORDED, never a 0 and never blank — a blank in a stat panel reads as zero,
    * and a wrong zero in a fitting window is worse than an absent number. */

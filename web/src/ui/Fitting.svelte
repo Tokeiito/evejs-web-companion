@@ -36,6 +36,7 @@
     SlotFamily,
   } from "../store/types.ts";
   import { resolvedName, nameKey, type NameRef } from "../store/names.ts";
+  import { LAYERS, type LayerName, type Stat } from "../bridge/shipStats.ts";
 
   let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
 
@@ -329,6 +330,66 @@
       pct: percent($fitting.resources.calibration),
     },
   ]);
+
+  // --- R21 formatting for the statistic panels ------------------------------
+  //
+  // Every one of these takes a number the SERVER produced (or pure arithmetic
+  // over server numbers) and makes it readable. None of them invents a value:
+  // a statistic we could not source arrives as an unknown `Stat` and is
+  // rendered by the `statValue` snippet below as the word "Unavailable", with
+  // the reason on hover — never as 0 and never as an empty cell.
+
+  const NUMBER = new Intl.NumberFormat("en-GB");
+
+  function whole(value: number): string {
+    return NUMBER.format(Math.round(value));
+  }
+
+  function toFixed(value: number, digits: number): string {
+    return NUMBER.format(Number(value.toFixed(digits)));
+  }
+
+  function asPercent(value: number): string {
+    return `${(value * 100).toFixed(1)}%`;
+  }
+
+  /** Metres, shown as km once the number gets long — the way EVE reads them. */
+  function asDistance(value: number): string {
+    return value >= 1000 ? `${toFixed(value / 1000, 1)} km` : `${whole(value)} m`;
+  }
+
+  function asSeconds(value: number): string {
+    return `${toFixed(value, 2)} s`;
+  }
+
+  function asVolume(value: number): string {
+    return `${toFixed(value, 1)} m³`;
+  }
+
+  const layerLabels: Readonly<Record<LayerName, string>> = {
+    shield: "Shield",
+    armor: "Armor",
+    hull: "Structure",
+  };
+
+  const stats = $derived.by(() => $fitting.stats);
+
+  /** The resistance grid: one row per layer, four damage types across. */
+  const defenceRows = $derived.by(() =>
+    LAYERS.map((layer) => ({
+      layer,
+      label: layerLabels[layer],
+      tank: stats.tank[layer],
+    })),
+  );
+
+  const damageProfileText = $derived.by(() => {
+    const profile = stats.damageProfile;
+    const parts = [profile.em, profile.thermal, profile.kinetic, profile.explosive].map((share) =>
+      Math.round(share * 100),
+    );
+    return parts.join("/");
+  });
 
   async function run(action: () => Promise<void>): Promise<void> {
     if (busy) {
@@ -762,6 +823,207 @@
       {/if}
     {/each}
   {/if}
+
+  <!-- ============================ the statistic panels ==================== -->
+  <!--
+    Everything below is derived from the SAME `ShipGetInfo` attribute map the
+    resource bars read — no extra call, and nothing re-simulated in the
+    browser. Anything we could not honestly source says so in words.
+  -->
+
+  {#snippet statValue(stat: Stat, format: (value: number) => string)}
+    {#if stat.known}
+      {format(stat.value)}
+    {:else}
+      <span class="stat-unavailable" title={stat.why}>Unavailable</span>
+    {/if}
+  {/snippet}
+
+  {#snippet statRow(label: string, stat: Stat, format: (value: number) => string)}
+    <tr>
+      <th scope="row">{label}</th>
+      <td class="num">{@render statValue(stat, format)}</td>
+    </tr>
+  {/snippet}
+
+  <section>
+    <h2>Defence</h2>
+    <p class="note">
+      Effective hit points are worked out against an even {damageProfileText} spread
+      of the four damage types.
+    </p>
+    <div class="table-wrap overflow-x-auto">
+      <table class="guests reflow">
+        <thead>
+          <tr>
+            <th>Layer</th>
+            <th class="num">EM</th>
+            <th class="num">Thermal</th>
+            <th class="num">Kinetic</th>
+            <th class="num">Explosive</th>
+            <th class="num">Hit points</th>
+            <th class="num">Effective HP</th>
+          </tr>
+        </thead>
+        <tbody>
+          {#each defenceRows as row (row.layer)}
+            <tr>
+              <td data-label="Layer"><span class="layer-{row.layer}">{row.label}</span></td>
+              <td class="num" data-label="EM">
+                {@render statValue(row.tank.resistances.em, asPercent)}
+              </td>
+              <td class="num" data-label="Thermal">
+                {@render statValue(row.tank.resistances.thermal, asPercent)}
+              </td>
+              <td class="num" data-label="Kinetic">
+                {@render statValue(row.tank.resistances.kinetic, asPercent)}
+              </td>
+              <td class="num" data-label="Explosive">
+                {@render statValue(row.tank.resistances.explosive, asPercent)}
+              </td>
+              <td class="num" data-label="Hit points">
+                {@render statValue(row.tank.hp, whole)}
+              </td>
+              <td class="num" data-label="Effective HP">
+                {@render statValue(row.tank.ehp, whole)}
+              </td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+    </div>
+    <div class="hud">
+      {#each defenceRows as row (row.layer)}
+        <div class="hud-gauge {row.layer === 'hull' ? 'hull' : row.layer}">
+          <div class="hud-head">
+            <span class="hud-label">{row.label} effective HP</span>
+            <span class="hud-value">{@render statValue(row.tank.ehp, whole)}</span>
+          </div>
+        </div>
+      {/each}
+      <div class="hud-gauge">
+        <div class="hud-head">
+          <span class="hud-label">Total effective HP</span>
+          <span class="hud-value">{@render statValue(stats.totalEhp, whole)}</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Firepower</h2>
+    <div class="table-wrap overflow-x-auto">
+      <table class="guests">
+        <tbody>
+          {@render statRow("Damage per second", stats.firepower.dps, whole)}
+          {@render statRow("Volley damage", stats.firepower.volley, whole)}
+          {@render statRow("Drone damage per second", stats.firepower.droneDps, whole)}
+          {@render statRow("Mining yield", stats.mining.cubicMetresPerSecond, asVolume)}
+        </tbody>
+      </table>
+    </div>
+    <p class="note">
+      Your ship tells us about itself, but not yet about each module you have
+      fitted — so anything that has to be added up across your guns, launchers,
+      drones or miners cannot be worked out here yet.
+    </p>
+  </section>
+
+  <section>
+    <h2>Capacitor</h2>
+    <div class="table-wrap overflow-x-auto">
+      <table class="guests">
+        <tbody>
+          {@render statRow("Capacity", stats.capacitor.capacity, (v) => `${whole(v)} GJ`)}
+          {@render statRow("Recharge time", stats.capacitor.rechargeSeconds, asSeconds)}
+          {@render statRow("Net change per second", stats.capacitor.deltaPerSecond, (v) => whole(v))}
+          {@render statRow("Lasts for", stats.capacitor.lastsForSeconds, asSeconds)}
+        </tbody>
+      </table>
+    </div>
+    <p class="note">
+      Whether a fit runs its capacitor dry is not something we can work out yet,
+      so it is not shown rather than guessed.
+    </p>
+  </section>
+
+  <section>
+    <h2>Repairs</h2>
+    <div class="table-wrap overflow-x-auto">
+      <table class="guests">
+        <tbody>
+          {@render statRow("Shield repaired per second", stats.repairs.shield, whole)}
+          {@render statRow("Armor repaired per second", stats.repairs.armor, whole)}
+          {@render statRow("Structure repaired per second", stats.repairs.hull, whole)}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>Navigation</h2>
+    <div class="table-wrap overflow-x-auto">
+      <table class="guests">
+        <tbody>
+          {@render statRow("Top speed", stats.navigation.maxVelocity, (v) => `${toFixed(v, 1)} m/s`)}
+          {@render statRow("Time to align", stats.navigation.alignTimeSeconds, asSeconds)}
+          {@render statRow(
+            "Warp speed",
+            stats.navigation.warpSpeedAuPerSecond,
+            (v) => `${toFixed(v, 2)} AU/s`,
+          )}
+          {@render statRow(
+            "Signature radius",
+            stats.navigation.signatureRadius,
+            (v) => `${whole(v)} m`,
+          )}
+          {@render statRow("Mass", stats.navigation.mass, (v) => `${whole(v)} kg`)}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>Targeting</h2>
+    <div class="table-wrap overflow-x-auto">
+      <table class="guests">
+        <tbody>
+          {@render statRow("Targeting range", stats.targeting.maxTargetRange, asDistance)}
+          {@render statRow("Targets at once", stats.targeting.maxLockedTargets, whole)}
+          {@render statRow(
+            "Scan resolution",
+            stats.targeting.scanResolution,
+            (v) => `${toFixed(v, 1)} mm`,
+          )}
+          {@render statRow(
+            stats.targeting.sensorName
+              ? `${stats.targeting.sensorName} sensor strength`
+              : "Sensor strength",
+            stats.targeting.sensorStrength,
+            (v) => toFixed(v, 1),
+          )}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>Bays</h2>
+    <div class="table-wrap overflow-x-auto">
+      <table class="guests">
+        <tbody>
+          {@render statRow("Cargo space", stats.bays.cargoCapacity, asVolume)}
+          {@render statRow("Drone bay", stats.bays.droneCapacity, asVolume)}
+          {@render statRow(
+            "Drone bandwidth",
+            stats.bays.droneBandwidth,
+            (v) => `${toFixed(v, 0)} Mbit/s`,
+          )}
+          {@render statRow("Drone control range", stats.bays.droneControlRange, asDistance)}
+        </tbody>
+      </table>
+    </div>
+  </section>
 
   <section>
     <h2>

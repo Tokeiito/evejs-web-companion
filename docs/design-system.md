@@ -137,6 +137,49 @@ label. The track carries `role="meter"` plus `aria-valuenow/min/max`.
 Every gauge renders its label **and** its value as text next to the bar, so the
 bar is a fast visual summary and never the only way to read the state.
 
+### The fitting window (R21)
+
+The radial fit layout. **The stylesheet owns the look; it never owns the
+layout maths** — socket positions are computed in
+`web/src/ui/fittingGeometry.ts` from the slot counts the server reports and
+arrive as inline `left`/`top` percentages.
+
+- **`.fit-ring-wrap`** > **`.fit-ring`** — a square that is `width: 100%`
+  between `min-width: 26rem` and `max-width: 34rem`. The floor is load-bearing:
+  below about 26rem an eight-socket arc cannot hold 40px touch targets without
+  overlapping them, so the ring stops shrinking and the **wrapper** scrolls
+  (the `.table-wrap` trick), which is why the page still never scrolls sideways
+  at 360px. `.fit-ring-guide` is the dashed guide circle — decoration, and
+  `aria-hidden`.
+- **`.fit-hull`** — the ship at the centre: icon, name, class.
+- **`.fit-socket`** — one slot. Always a `<button>`, always ≥40px (2.5rem at or
+  below the breakpoint, 3.25rem above it). Modifiers: `.empty` (dashed and
+  hollow), `.offline` (dimmed, warn rim), `.armed` (a pending destroy), and
+  `.family-high` / `-mid` / `-low` / `-rig` / `-subsystem` for the rim tint.
+- **`.fit-legend`** — the family key. It repeats each arc's name **and** its
+  filled/total counts as text, so the rim colours are reinforcement and never
+  the only signal.
+- **`.fit-detail`** — the selected socket's name, state and actions, shown
+  beneath the ring so the ring never hosts a popover.
+- **`.fit-views`** — the ship/list view toggle.
+- **`.layer-shield` / `.layer-armor` / `.layer-hull`** — the triad as a text
+  colour on the defence grid's layer names.
+
+**If you change `.fit-socket`'s size or `.fit-ring`'s min/max width, re-run
+`web/src/ui/fittingGeometry.test.ts`.** It measures real pixel spacing at both
+ends of the responsive range and is the only thing standing between a tweak and
+sockets silently stacking on top of one another.
+
+#### `.stat-unavailable` — the honesty rule
+
+A statistic the client could not source renders the **word** "Unavailable"
+(muted, italic) with the reason in its `title`, never `0` and never an empty
+cell. A blank in a stat panel reads as zero, and a wrong zero in a fitting
+window is worse than an absent number. `bridge/shipStats.ts` enforces this at
+the type level: a `Stat` is either `{known: true, value}` or
+`{known: false, why}`, so a caller cannot accidentally render a missing value
+as a number.
+
 ### Badges
 
 `.badge` plus an optional `.good` / `.warn` / `.bad` / `.accent`. A badge always

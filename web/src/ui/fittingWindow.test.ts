@@ -31,6 +31,7 @@ function packedRow(fields: Record<string, unknown>): unknown {
 function rawFittingRead(
   counts: { high: number; mid: number; low: number; rig: number },
   fitted: readonly { itemID: number; typeID: number; flagID: number }[] = [],
+  extraAttributes: Record<number, number | null> = {},
 ): unknown {
   const attributes: Record<number, number | null> = {
     48: 168,
@@ -45,6 +46,7 @@ function rawFittingRead(
     13: counts.mid,
     12: counts.low,
     1137: counts.rig,
+    ...extraAttributes,
   };
   return {
     ok: true,
@@ -235,4 +237,125 @@ test("removing a rig from a socket still takes two deliberate steps", () => {
   assert.match(source, /Destroy rig…/);
   assert.match(source, /Yes, destroy it/);
   assert.match(source, /Destroying a rig is permanent/);
+});
+
+// --- the statistic panels ---------------------------------------------------
+
+/**
+ * The `drake-shield` fit's real ship attributes, as `ShipGetInfo` returns them
+ * (assumed-active — both hardeners applied). The same numbers
+ * `bridge/shipStats.test.ts` checks the maths against; here they prove the
+ * maths actually reaches the screen.
+ */
+const DRAKE_ATTRIBUTES: Record<number, number | null> = {
+  4: 13500000,
+  9: 4687.5,
+  37: 187.5,
+  38: 450,
+  55: 468750,
+  70: 0.43875,
+  76: 81250,
+  109: 0.67,
+  110: 0.67,
+  111: 0.67,
+  113: 0.67,
+  192: 8,
+  211: 22.8,
+  263: 17688.4375,
+  265: 4062.5,
+  267: 0.5,
+  268: 0.9,
+  269: 0.75,
+  270: 0.55,
+  271: 0.38746944336953026,
+  272: 0.19373472168476513,
+  273: 0.23248166602171813,
+  274: 0.30997555469562427,
+  283: 25,
+  482: 3125,
+  552: 377.991936,
+  564: 243.75,
+  600: 3.5,
+  1271: 25,
+  1281: 1,
+};
+
+async function renderDrake(): Promise<string> {
+  return renderFitting(rawFittingRead({ high: 8, mid: 6, low: 5, rig: 3 }, [], DRAKE_ATTRIBUTES));
+}
+
+test("the defence panel shows the real resistances and EHP on screen", async () => {
+  const body = await renderDrake();
+  // The oracle's own figures for this fit, rendered.
+  assert.match(body, /61\.3%/, "shield EM resist should be on screen");
+  assert.match(body, /80\.6%/, "shield explosive resist should be on screen");
+  assert.match(body, /75,982/, "total effective HP should be on screen");
+  // And the damage profile it is quoted against, because EHP without one is
+  // a meaningless number.
+  assert.match(body, /25\/25\/25\/25/);
+});
+
+test("the defence panel names each layer in words, not just in colour", async () => {
+  const body = await renderDrake();
+  assert.match(body, /Shield/);
+  assert.match(body, /Armor/);
+  assert.match(body, /Structure/);
+  // The triad tokens are applied as classes alongside those words.
+  assert.match(body, /class="layer-shield"/);
+  assert.match(body, /class="layer-armor"/);
+  assert.match(body, /class="layer-hull"/);
+});
+
+test("navigation and targeting figures reach the screen", async () => {
+  const body = await renderDrake();
+  assert.match(body, /8\.21 s/, "align time");
+  assert.match(body, /187\.5 m\/s/, "top speed");
+  assert.match(body, /3\.5 AU\/s/, "warp speed");
+  assert.match(body, /81\.3 km/, "targeting range in km");
+  assert.match(body, /Gravimetric sensor strength/, "the hull's own sensor, named");
+});
+
+test("a statistic we cannot source says so in words, never as a zero", async () => {
+  const body = await renderDrake();
+  // DPS, volley, mining, repairs, cap delta and cap stability all need
+  // per-module numbers or a solver we do not have.
+  const unavailable = body.match(/class="stat-unavailable"/g) ?? [];
+  assert.ok(
+    unavailable.length >= 8,
+    `expected the unsourceable statistics to be marked, found ${unavailable.length}`,
+  );
+  assert.match(body, /Unavailable/);
+  // Each one carries its reason, so the player is told WHY rather than left
+  // wondering whether the number really is zero.
+  assert.match(body, /title="[^"]*cannot be worked out[^"]*"/);
+  assert.match(body, /title="[^"]*not supported yet[^"]*"/);
+});
+
+test("the unsourceable statistics are labelled, so nothing reads as zero", async () => {
+  const body = await renderDrake();
+  // The rows exist (the player can see what is missing rather than the panel
+  // silently omitting it) but none of them claims a value.
+  for (const label of [
+    "Damage per second",
+    "Volley damage",
+    "Mining yield",
+    "Lasts for",
+    "Shield repaired per second",
+  ]) {
+    assert.ok(body.includes(label), `${label} should be listed`);
+  }
+  // The capacitor figures we CAN source are shown as real numbers.
+  assert.match(body, /3,125 GJ/);
+  assert.match(body, /468\.75 s/);
+});
+
+test("before any read, every statistic is unavailable rather than zero", async () => {
+  const { default: Panel } = (await import("./Fitting.svelte")) as { default: unknown };
+  const store = createClientStore();
+  const body = render(Panel as never, {
+    props: { store, flow: new Proxy({}, { get: () => async () => {} }) },
+  } as never).body;
+  // No ship, so no statistics panel at all — and certainly no zeroes claimed.
+  assert.doesNotMatch(body, /0 GJ/);
+  assert.match(body, /No active ship/);
 });

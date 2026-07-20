@@ -64,6 +64,7 @@ import type {
   TravelState,
 } from "./types.ts";
 import type { NamesState } from "./names.ts";
+import { deriveShipStats } from "../bridge/shipStats.ts";
 
 // --- Typed state slices ----------------------------------------------------
 
@@ -187,6 +188,9 @@ const INITIAL_FITTING: FittingState = Object.freeze({
   activeShipID: null,
   slots: Object.freeze([]) as readonly FittingSlot[],
   resources: EMPTY_RESOURCES,
+  // Before any read, every statistic is honestly unavailable rather than zero
+  // — deriving from an empty attribute map produces exactly that.
+  stats: deriveShipStats(new Map()),
   loaded: false,
   slotsError: null,
   resourcesError: null,
@@ -674,6 +678,7 @@ export function createClientStore(): ClientStore {
           activeShipID: event.activeShipID,
           slots: [...event.slots],
           resources: event.resources,
+          stats: event.stats,
           loaded: true,
           slotsError: event.slotsError,
           resourcesError: event.resourcesError,

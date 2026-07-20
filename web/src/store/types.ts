@@ -2,6 +2,8 @@
 // These are the *decoded* browser-side shapes; the marshaled wire shapes
 // (util.KeyVal rows, {type:"long"} wrappers, ...) live in ../bridge/wire.ts.
 
+import type { ShipStats } from "../bridge/shipStats.ts";
+
 /**
  * One character row from the reference call
  * charUnboundMgr.GetCharacterSelectionData (docs/bridge-wire-contract.md),
@@ -234,6 +236,13 @@ export interface FittingState {
   readonly activeShipID: number | null;
   readonly slots: readonly FittingSlot[];
   readonly resources: FittingResources;
+  /**
+   * R21 — the ship's derived statistics (resists, EHP, align time, speed,
+   * targeting, bays), promoted from the SAME `ShipGetInfo` attribute map the
+   * resource bars already read. Anything that could not be sourced carries
+   * its reason instead of a number; see `bridge/shipStats.ts`.
+   */
+  readonly stats: ShipStats;
   /** True once a fitting read has populated the slice. */
   readonly loaded: boolean;
   /** Non-null when the slot read failed (the resource bars still show). */

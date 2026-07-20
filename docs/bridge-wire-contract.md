@@ -503,6 +503,48 @@ bind as the R3 cargo read (one cached handle, not two).
   two-step confirmation: a rig is destroyed, never returned to the hangar, so
   neither a stray click nor a stray POST can lose one.
 
+#### Ship statistics (R21) — no new read
+
+The fitting window's statistics add **no call to this contract**. Resistances,
+EHP, align time, speed, warp speed, signature, targeting and bay figures are all
+derived browser-side from the **`shipInfo` attribute map `GET
+/api/bridge/fitting` already returns** (`web/src/bridge/shipStats.ts`).
+
+Two things make that sound, and both are properties of the server, not of us:
+
+1. **`ShipGetInfo` returns the whole attribute map**, not a promoted subset.
+   There is no allowlist anywhere on that path — `buildShipResourceState` seeds
+   from the full base + type-dogma map, `buildFittingSnapshot` copies it
+   wholesale, and `_buildAttributeValueDict` marshals every entry. Resonances
+   (267–274, 109/110/111/113) and layer HP (263, 265, 9) are all present.
+2. **It applies ACTIVE module effects.** The path is `Handle_ShipGetInfo` →
+   `_buildShipAttributeDict` → `getShipFittingSnapshot` → `buildFittingSnapshot`
+   → `buildSnapshotResourceState`, and that last step re-solves with
+   `collectAssumedActiveFittingEffects` through
+   `additionalAttributeModifierEntries`, with `assumeActiveShipModules`
+   defaulting to `true`. So hardeners are already in the numbers we receive.
+   (R20's warning about `buildShipResourceState()` applying only passive/online
+   effects is real, but it describes a caller *inside* eve.js — this route is
+   not one. `web/src/bridge/shipStats.test.ts` pins the distinction with the
+   real Drake values.)
+
+The browser does the arithmetic promotions only: `1 − resonance` for a
+resistance, `HP ÷ Σ(profileᵢ × resonanceᵢ)` for EHP, and the server's own
+`ln(4) × mass × inertia ÷ 1e6` for align time. It never simulates dogma.
+
+**What this contract cannot supply.** The gateway allowlist
+(`evejsWebGatewayRuntime.js`) exposes exactly two fitting reads — `ShipGetInfo`
+(the **ship's** attributes) and `ShipOnlineModules` (which modules are on).
+**Nothing returns per-module effective attributes.** So DPS, volley, drone
+damage, mining yield, repair rates and capacitor usage/delta cannot be computed
+from this contract at all, and the window shows them as *unavailable* rather
+than as zero. Supplying them needs a new allowlisted read (a per-module
+attribute call), which is a separate goal — exporting
+`buildEffectiveFittedModuleAttributeMap` in eve.js (done under R21) is a
+necessary step but **not sufficient on its own**, because the browser still has
+no wire route to reach it. Capacitor stability is a further gap again: neither
+EveJS nor R20's oracle has a solver.
+
 Decoded browser side into slots (`FittingSlot` = family + index + the module or
 `null`) and resource readings (`FittingResource` = used / total / `known`), with
 `known: false` rendering as an unknown bar rather than a misleading `0 / 0`.
