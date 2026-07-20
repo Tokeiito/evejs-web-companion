@@ -88,6 +88,9 @@ function renderLoaded(options: {
           maxVelocity: null,
           mode: null,
           capacitorRatio: null,
+          remainingQuantity: null,
+          miningYieldTypeID: null,
+          beltID: null,
         },
       ],
       ship: {
@@ -288,19 +291,58 @@ test("R8: the new actions are <button type=button>, sized by the shared button r
 
 // --- The generality claim, pinned in source ----------------------------------
 
-test("the action layer is GENERIC: no mining-specific branch in the panel", () => {
-  // Slice B adds mining ON TOP of this layer; it must not add a mining branch
-  // INSIDE it. If a later goal needs "if this is a mining laser…" here, that is
-  // the signal the abstraction was wrong — not a reason to special-case.
-  const script = SOURCE.split("</script>")[0] ?? "";
-  for (const word of ["mining", "miningLaser", "asteroid", "ore", "turret", "missile"]) {
+test("the reusable layer is GENERIC: no domain vocabulary in the BFF client", () => {
+  // This is the real test of the claim. `Overview.svelte` legitimately talks
+  // about rocks and ore — it is the mining PRESENTATION built on top. What must
+  // stay domain-free is the layer combat inherits: the typed BFF calls and the
+  // flow methods behind them. If a later goal has to add "if this is a mining
+  // laser…" THERE, the abstraction was wrong.
+  const apiSource = readFileSync(path.join(UI_DIR, "..", "app", "api.ts"), "utf8");
+  const sliceA = section(
+    apiSource,
+    "--- R23 slice A: targeting + module activation ---",
+    "--- R23 slice B: the mining loop ---",
+  );
+  assert.ok(sliceA.length > 500, "the slice A section must be found in api.ts");
+  for (const word of ["mining", "asteroid", "ore", "turret", "missile", "laser", "salvage"]) {
     assert.equal(
-      new RegExp(`\\b${word}\\b`, "i").test(script.replace(/\/\/[^\n]*/g, "")),
+      new RegExp(`\\b${word}\\b`, "i").test(stripComments(sliceA)),
       false,
-      `the action layer must not mention "${word}" — it is generic`,
+      `the reusable layer must not mention "${word}" — it is generic`,
+    );
+  }
+
+  // And the same for the flow methods.
+  const flowSource = readFileSync(path.join(UI_DIR, "..", "app", "flow.ts"), "utf8");
+  const flowSliceA = section(
+    flowSource,
+    "--- R23 slice A: targeting + module activation ---",
+    "--- R23 slice B: the mining loop ---",
+  );
+  assert.ok(flowSliceA.length > 500, "the slice A section must be found in flow.ts");
+  for (const word of ["mining", "asteroid", "ore", "turret", "missile", "laser"]) {
+    assert.equal(
+      new RegExp(`\\b${word}\\b`, "i").test(stripComments(flowSliceA)),
+      false,
+      `the reusable flow layer must not mention "${word}" — it is generic`,
     );
   }
 });
+
+/** The source between two banner comments (exclusive of the second). */
+function section(source: string, from: string, to: string): string {
+  const start = source.indexOf(from);
+  if (start < 0) {
+    return "";
+  }
+  const end = source.indexOf(to, start);
+  return source.slice(start, end < 0 ? undefined : end);
+}
+
+/** Code only: prose in comments may name examples without being a branch. */
+function stripComments(source: string): string {
+  return source.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, " ");
+}
 
 test("the panel calls the generic flow methods, once each, with no parallel path", () => {
   const callSites: Readonly<Record<string, number>> = {

@@ -1028,6 +1028,21 @@ export interface SpaceEntity {
   readonly maxVelocity: number | null;
   readonly mode: string | null;
   readonly capacitorRatio: number | null;
+  /**
+   * R23 slice B — asteroid rows only (null on everything else).
+   *
+   * `name`/`typeID` already resolve to the ORE, because the server stamps a
+   * rock's display name and slim type from the ore it holds. These three add
+   * what a miner actually needs: which ore the laser yields, which belt the rock
+   * belongs to, and HOW MUCH IS LEFT.
+   *
+   * `remainingQuantity` is null for "unknown" — either the row is not a rock, or
+   * the server had no mining record for it. It is NEVER 0 to mean unknown: a
+   * zero reads as a mined-out rock and would send a player past a full belt.
+   */
+  readonly remainingQuantity: number | null;
+  readonly miningYieldTypeID: number | null;
+  readonly beltID: number | null;
 }
 
 /**
@@ -1146,6 +1161,97 @@ export interface TargetingState {
    * actionError: "it was refused, and here is why" and "it quietly did nothing"
    * are different things and the page says so.
    */
+  readonly silentDecline: string | null;
+}
+
+// --- R23 slice B: the mining loop ------------------------------------------
+//
+// mine -> haul -> refine -> sell. Note what is NOT modelled here: there is no
+// mining cycle, no yield prediction and no rock countdown. Mining a rock is the
+// GENERIC targeting slice above with a mining laser; this slice is only the
+// places ore lives, what the scanner saw, and what the refinery quoted.
+
+/** One reading of a hold: how much is in it, out of how much it holds. */
+export interface HoldCapacity {
+  /** Cubic metres the hold can take, or null when the ship did not say. */
+  readonly capacity: number | null;
+  readonly used: number | null;
+}
+
+/** One item sitting in a hold. Named in the UI by typeID via the name cache. */
+export interface HoldItem {
+  readonly itemID: number;
+  readonly typeID: number;
+  readonly quantity: number;
+}
+
+/**
+ * One of the ship's mining holds (goal R23).
+ *
+ * The browser works in NAMES throughout: "Ore hold", "Ice hold", "Cargo hold".
+ * The retail flagIDs behind them (134 / 135 / 181 / 182, falling back to cargo)
+ * live only on the BFF and never reach here — R7d, and R9a's "ore hold, not
+ * flag 134".
+ */
+export interface MiningHold {
+  readonly key: string;
+  readonly label: string;
+  /** null when the read failed — "we could not look" is not "it is empty". */
+  readonly items: readonly HoldItem[] | null;
+  readonly capacity: HoldCapacity | null;
+  /** False for a hull that simply does not have this hold; it is not shown. */
+  readonly present: boolean;
+  readonly error: string | null;
+}
+
+/**
+ * One survey-scanner result (goal R23): what the scanner saw in a rock. The
+ * browser MERGES these into the overview by itemID and computes nothing itself.
+ */
+export interface SurveyResult {
+  readonly itemID: number;
+  readonly yieldTypeID: number | null;
+  readonly remainingQuantity: number | null;
+}
+
+/** What reprocessing one stack would yield, as the SERVER quoted it. */
+export interface ReprocessingQuote {
+  readonly itemID: number;
+  readonly typeID: number | null;
+  readonly quantityToProcess: number | null;
+  readonly leftOvers: number | null;
+  /** What this stack costs in ISK, as the station computed it. null = unknown. */
+  readonly iskCost: number | null;
+  /**
+   * The minerals the PLAYER receives. The server's quote also carries the
+   * station's own share; that is deliberately not here, because presenting it
+   * as the player's yield would be a confidently wrong number.
+   */
+  readonly outputs: readonly { readonly typeID: number; readonly quantity: number }[];
+}
+
+/**
+ * The mining panel state (goal R23 slice B).
+ *
+ * `taxRate` is null for "not known" rather than 0. Reprocessing DEBITS the
+ * station's tax from the wallet, so showing a confident 0 for a rate the server
+ * never gave would understate what the player is about to pay.
+ */
+export interface MiningState {
+  readonly holds: readonly MiningHold[];
+  readonly holdsLoaded: boolean;
+  readonly holdsError: string | null;
+  /** The last survey scan, newest first read; empty until the player scans. */
+  readonly survey: readonly SurveyResult[];
+  readonly surveyAtMs: number | null;
+  readonly surveyError: string | null;
+  readonly quotes: readonly ReprocessingQuote[];
+  readonly taxRate: number | null;
+  readonly quotesFor: readonly number[];
+  readonly quotesError: string | null;
+  readonly lastAction: string | null;
+  readonly actionError: string | null;
+  /** A call that succeeded, changed nothing, and gave no reason (see R23). */
   readonly silentDecline: string | null;
 }
 

@@ -26,6 +26,9 @@ import type {
   CorpDivisionState,
   CourierBriefing,
   FlightStatus,
+  MiningHold,
+  ReprocessingQuote,
+  SurveyResult,
   FittingResources,
   FittingSlot,
   IndustryBlueprintRow,
@@ -369,6 +372,36 @@ export type FeedEvent =
   | { readonly type: "targeting/silent-decline"; readonly message: string | null }
   // Drop the targeting state (docked / character offline / logged out).
   | { readonly type: "targeting/cleared" }
+  // Goal R23 slice B — the mining loop. The ship's mining holds, by NAME (the
+  // retail flagIDs never reach the browser), each with its own read error so one
+  // failed hold never blanks the rest.
+  | { readonly type: "mining/holds"; readonly holds: readonly MiningHold[] }
+  | { readonly type: "mining/holds-error"; readonly message: string | null }
+  // A survey scan completed: what the scanner saw in each rock in range. The
+  // panel MERGES this into the overview by itemID; nothing is computed here.
+  | {
+      readonly type: "mining/survey";
+      readonly survey: readonly SurveyResult[];
+      readonly atMs: number;
+    }
+  | { readonly type: "mining/survey-error"; readonly message: string | null }
+  // The refinery quoted the chosen stacks. `taxRate` is null for "not known"
+  // rather than 0 — reprocessing DEBITS the tax, so a confident zero would tell
+  // the player the refinery is free.
+  | {
+      readonly type: "mining/quotes";
+      readonly quotes: readonly ReprocessingQuote[];
+      readonly taxRate: number | null;
+      readonly quotesFor: readonly number[];
+    }
+  | { readonly type: "mining/quotes-error"; readonly message: string | null }
+  // The last mining action issued (unload / scan / reprocess), its refusal
+  // reason, and the separate "succeeded but changed nothing" case.
+  | { readonly type: "mining/action"; readonly action: string }
+  | { readonly type: "mining/action-error"; readonly message: string | null }
+  | { readonly type: "mining/silent-decline"; readonly message: string | null }
+  // Drop the mining state (character offline / logged out).
+  | { readonly type: "mining/cleared" }
   // A snapshot read failed non-fatally; null clears it after a clean read.
   | { readonly type: "space/error"; readonly message: string | null }
   // Drop the space state (docked / character offline / logged out).

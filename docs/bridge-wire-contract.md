@@ -2029,6 +2029,96 @@ and *Switch on* / *Switch off*, plus one panel-level "Use it on" picker naming t
 locked target — the same pattern as R13's ranges, because hanging a target picker
 off every module row would be unusable.
 
+### The mining loop (R23 slice B)
+
+**mine → haul → refine → sell.** The striking thing about slice B is how little
+it needed, and that is the payoff of building slice A as a primitive rather than
+as a mining feature:
+
+| Step | What it actually is |
+|---|---|
+| Warp to the belt | R5a `beyonce.CmdWarpToStuff` (belt beacons are ordinary statics) |
+| Orbit the rock | R13 `beyonce.CmdOrbit` |
+| **Lock the rock** | **slice A `dogmaIM.AddTarget`** — no mining pair |
+| **Run the laser** | **slice A `dogmaIM.Activate`** — no mining pair |
+| Read the ore hold | R12 `invbroker.ListByFlags` with a different flag |
+| Unload it | R3 `invbroker.Add`, hangar-bound |
+| Sell the minerals | the R16 market routes |
+
+**Gateway pairs added (4):** `miningScanMgr.perform_scan`,
+`reprocessingSvc.MachoBindObject` / `GetQuotes` / `Reprocess`. `GetQuote`
+(singular), `GetOptionsForItemTypes` and `GetReprocessingInfo` stay closed on the
+same service, and a test names them.
+
+**Snapshot fields added.** Asteroid rows gain `miningYieldTypeID`, `beltID` and
+`remainingQuantity`. `name`/`typeID` already resolved to the ORE, because the
+server stamps a rock's display name and slim type from the ore it holds.
+`remainingQuantity` lives in the scene's mining state rather than on the ball, so
+the gateway reads it through the mining runtime's OWN state reader — the same one
+the survey scanner uses. **When that read cannot answer, the field is `null`
+(unknown), never `0`:** a fabricated zero reads as a mined-out rock and would send
+a player straight past a full belt. Only asteroid rows grow the fields.
+
+**BFF routes:**
+
+- `GET  /api/bridge/ship/ore-hold` → `{ ok, activeShipID, stationID, holds }`
+- `POST /api/bridge/ship/ore-hold/unload` `{ itemIDs }` → `{ ok, requested, moved, remaining }`
+- `GET  /api/bridge/mining/scan` → `{ ok, results }` (in space only)
+- `GET  /api/bridge/reprocessing/quote?itemIDs=…` → `{ ok, stationID, taxRate, quotes }` (docked only)
+- `POST /api/bridge/reprocessing/reprocess` `{ itemIDs, confirm }` → `{ ok, requested, processed, remaining }` (docked only)
+
+**⚠ The ore-hold flag ladder never leaves the BFF.** The holds are read in order
+— **134** ore, **135** gas, **181** ice, **182** asteroid, falling back to **5**
+cargo (which is what the mining runtime itself falls back to on a hull with no
+specialised bay) — and each is handed to the browser as a **NAME**: "Ore hold",
+"Ice hold", "Cargo hold". A test asserts the string `flag` and each flagID appear
+nowhere in the response body. R9a: *"ore hold", not "flag 134"*. Each rung is read
+independently, so one unreadable hold never blanks the rest; `items: null` means
+**"we could not look"**, which is deliberately not the same as `items: []`
+(**"we looked, and it is empty"**). A hold the hull does not have answers
+`present: false` and is not drawn, rather than showing a meaningless 0 / 0 bar.
+
+**The survey scanner** is merged into the overview client-side by `itemID`. The
+scan wins over the snapshot's own reading when both exist — the player asked for
+it and it is the fresher read. A scanned rock with a real `0` shows **"Mined
+out"**; an unknown amount shows a dash. Those two must never render the same way.
+
+**⚠ Reprocessing charges ISK and consumes the ore**, so it sits behind the same
+two-step gate as R12's destroy-rig, with the server's own numbers in between:
+
+1. `GetQuotes` — a **pure read**. It reports the station's **tax rate** and, per
+   stack, what it would yield and what it costs. A test asserts a quote never
+   reaches `Reprocess`.
+2. Only then does the page offer *Refine it…*, and only that click reveals
+   *Yes, refine it*. The arming is keyed to the **exact stacks it was armed for**,
+   so changing the selection disarms it — confirming against numbers computed for
+   a different set of stacks is the mistake this gate exists to stop.
+3. The BFF refuses `Reprocess` outright without `confirm: true`.
+
+**⚠ `recoverables` is a LIST of `util.KeyVal`s, not a dict of typeID → amount**,
+and the player's share is the **`client`** field (`unrecoverable` is the
+station's). Reading the wrong field would put a confidently wrong mineral count in
+front of the player. The decoder follows the handler's own
+`buildRecoverableEntry` shape.
+
+**⚠ The tax rate is `null` when unknown, never `0`.** Reprocessing debits it from
+the wallet, so a confident zero would tell the player the refinery is free. The
+panel renders `stat-unavailable` "its cut is not known" instead.
+
+**A 200 is not proof, again.** Unload re-reads the whole hold ladder and reports
+which stacks really moved; reprocess re-reads the hangar and reports which stacks
+are really gone. A partial result says exactly how many moved. When the
+verification read itself fails, the answer is **`null` = "could not check"** —
+reported as unknown, never as success and never as a decline.
+
+**UI (`Mining.svelte`, a new panel).** Holds by name with a fill meter, a pick
+list, *Unload to the hangar*, and the refinery flow above. The panel **computes
+nothing about mining** — no yield prediction, no cycle simulation, no pricing; a
+test sweeps its source for exactly that. The other half of the loop — flying to a
+belt, locking a rock, running the laser — is deliberately **not** here: it is
+slice A's generic layer on the Around Your Ship tab, which a mining laser and a
+turret use identically.
+
 ### Chat routes (R7)
 
 All require the signed web login session and a held bridge session (else 409

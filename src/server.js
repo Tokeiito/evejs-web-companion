@@ -4775,6 +4775,449 @@ app.post("/api/bridge/modules/deactivate", requireAuth, async (req, res, next) =
   }
 });
 
+// --- R23 slice B: the mining loop -------------------------------------------
+//
+// mine -> haul -> refine -> sell. Note what is NOT here: there is no "start
+// mining" route and no mining cycle. Mining a rock IS slice A's generic
+// lock-then-activate with a mining laser's itemID, flying to the belt is R5a's
+// warp and R13's orbit, and selling the minerals is R16's market. Slice B adds
+// only what was genuinely missing — a place to see the ore, a way to get it
+// home, the survey scanner, and the refinery.
+//
+// The BROWSER NEVER SIMULATES A CYCLE. It does not predict yield, it does not
+// count down a rock, and it does not decide when a hold is full. It asks the
+// server and shows the answer.
+
+// The ore/gas/ice hold ladder (server-side flags 134/135/181/182), with the
+// ship's ordinary cargo hold as the fallback the mining runtime itself falls
+// back to. THESE NUMBERS NEVER LEAVE THIS FILE: the browser is handed a NAME
+// per hold ("Ore hold", "Ice hold") and never a flagID (R7d / R9a).
+const MINING_HOLDS = Object.freeze([
+  Object.freeze({ key: "ore", flag: 134, label: "Ore hold" }),
+  Object.freeze({ key: "gas", flag: 135, label: "Gas hold" }),
+  Object.freeze({ key: "ice", flag: 181, label: "Ice hold" }),
+  Object.freeze({ key: "asteroid", flag: 182, label: "Asteroid hold" }),
+  // The fallback: a hull with no specialised hold mines straight into cargo,
+  // so a miner flying a frigate must still be able to see and unload the ore.
+  Object.freeze({ key: "cargo", flag: ITEM_FLAG_CARGO_HOLD, label: "Cargo hold" }),
+]);
+
+/** A util.KeyVal capacity reading ({capacity, used}) as plain numbers, or null. */
+function decodeCapacityReading(result) {
+  const entries =
+    result && result.args && Array.isArray(result.args.entries) ? result.args.entries : [];
+  const read = (key) => {
+    const entry = entries.find((pair) => Array.isArray(pair) && pair[0] === key);
+    const value = entry ? entry[1] : undefined;
+    const numeric = Number(value && typeof value === "object" ? value.value : value);
+    return Number.isFinite(numeric) ? numeric : null;
+  };
+  const capacity = read("capacity");
+  const used = read("used");
+  return capacity === null && used === null ? null : { capacity, used };
+}
+
+// Read the ship's mining holds. Every hold in the ladder is read independently
+// (Promise.allSettled) so one that the hull does not have — or one whose read
+// fails — never blanks the rest, and a hold that answers nothing at all is
+// simply reported as absent rather than as an empty hold.
+app.get("/api/bridge/ship/ore-hold", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  try {
+    await readHeldFlight(held, req.webSessionID);
+    const shipID = held.activeShipID;
+    if (!shipID) {
+      res.status(409).json({ ok: false, error: "NO_ACTIVE_SHIP", message: "No active ship." });
+      return;
+    }
+    const spec = cargoBindSpec(held, shipID);
+    const settled = await Promise.allSettled(
+      MINING_HOLDS.flatMap((hold) => [
+        boundCall(held, req.webSessionID, spec, "List", [hold.flag], null),
+        boundCall(held, req.webSessionID, spec, "GetCapacity", [hold.flag], null),
+      ]),
+    );
+    for (const entry of settled) {
+      if (entry.status === "rejected" && entry.reason && entry.reason.code === "SESSION_NOT_FOUND") {
+        next(entry.reason);
+        return;
+      }
+    }
+    const holds = MINING_HOLDS.map((hold, index) => {
+      const listed = settled[index * 2];
+      const capacity = settled[index * 2 + 1];
+      // R7d: the shared row decoder carries flagID and locationID, and NEITHER
+      // may reach the browser — the whole point of naming the holds here is
+      // that the page never learns 134 exists. Only what a player reads about
+      // a stack survives: what it is, and how much of it there is.
+      const rows =
+        listed.status === "fulfilled"
+          ? decodeInventoryRows(listed.value.result).map((row) => ({
+              itemID: row.itemID,
+              typeID: row.typeID,
+              quantity: row.quantity,
+            }))
+          : null;
+      const reading =
+        capacity.status === "fulfilled" ? decodeCapacityReading(capacity.value.result) : null;
+      return {
+        // A NAME, never a flag number. The browser has no idea 134 exists.
+        key: hold.key,
+        label: hold.label,
+        // null (not []) when the read failed: "we could not look" is not the
+        // same as "the hold is empty", and the page says which.
+        items: rows,
+        capacity: reading,
+        // A hull without this hold answers a zero capacity; say so plainly so
+        // the page can leave it out instead of showing an empty 0 / 0 bar.
+        present: reading !== null && Number(reading.capacity) > 0,
+        error:
+          listed.status === "rejected"
+            ? String((listed.reason && listed.reason.code) || "READ_FAILED")
+            : capacity.status === "rejected"
+              ? String((capacity.reason && capacity.reason.code) || "READ_FAILED")
+              : null,
+      };
+    });
+    res.json({ ok: true, activeShipID: shipID, stationID: held.stationID, holds });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Unload mined ore into the station hangar. This is R3's invbroker.Add in the
+// unfit direction: the DESTINATION (the hangar) is the bound object and the ship
+// is the source location — no new server method at all.
+//
+// Docked-only, because there is nowhere else for it to go.
+app.post("/api/bridge/ship/ore-hold/unload", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const body = req.body || {};
+  const requested = Array.isArray(body.itemIDs)
+    ? body.itemIDs.map((value) => Number(value) || 0).filter((value) => value > 0)
+    : [];
+  if (requested.length === 0) {
+    res.status(400).json({
+      ok: false,
+      error: "NOTHING_SELECTED",
+      message: "Choose what to unload first.",
+    });
+    return;
+  }
+  try {
+    const before = await readHeldFlight(held, req.webSessionID);
+    if (!before.flight || before.flight.docked !== true) {
+      res.status(409).json({
+        ok: false,
+        error: "NOT_DOCKED",
+        message: "Dock at a station before unloading.",
+      });
+      return;
+    }
+    const shipID = held.activeShipID;
+    if (!shipID) {
+      res.status(409).json({ ok: false, error: "NO_ACTIVE_SHIP", message: "No active ship." });
+      return;
+    }
+    const hangarSpec = hangarBindSpec(held);
+    const notifications = [];
+    for (const itemID of requested) {
+      const outcome = await boundCall(
+        held,
+        req.webSessionID,
+        hangarSpec,
+        "Add",
+        [itemID, shipID],
+        { flag: ITEM_FLAG_HANGAR },
+      );
+      notifications.push(...outcome.notifications);
+    }
+    // A 200 is not proof — invbroker can decline a move silently. The answer is
+    // what the HOLDS say afterwards: anything still sitting in a mining hold
+    // did not move, and is named as such rather than assumed moved.
+    const spec = cargoBindSpec(held, shipID);
+    const stillHeld = new Set();
+    for (const hold of MINING_HOLDS) {
+      try {
+        const listed = await boundCall(held, req.webSessionID, spec, "List", [hold.flag], null);
+        for (const row of decodeInventoryRows(listed.result)) {
+          stillHeld.add(row.itemID);
+        }
+      } catch {
+        // A hold that cannot be re-read leaves its items unverified; they are
+        // reported as not-moved rather than silently counted as moved.
+      }
+    }
+    const moved = requested.filter((itemID) => !stillHeld.has(itemID));
+    res.json({
+      ok: true,
+      requested,
+      moved,
+      remaining: requested.filter((itemID) => stillHeld.has(itemID)),
+      notifications,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// The survey scanner: miningScanMgr.perform_scan() -> [[entityID, yieldTypeID,
+// remainingQuantity], …]. Read-only, session-scoped, no arguments. This is how
+// the player learns how much ore a rock has left; the browser MERGES it into
+// the overview rather than computing anything of its own.
+app.get("/api/bridge/mining/scan", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  try {
+    const before = await readHeldFlight(held, req.webSessionID);
+    if (!requireInSpace(res, before.flight)) {
+      return;
+    }
+    const outcome = await heldTopLevelCall(
+      held,
+      req.webSessionID,
+      "miningScanMgr",
+      "perform_scan",
+      [],
+      null,
+    );
+    res.json({ ok: true, results: outcome.result, notifications: outcome.notifications });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// R3's bound-object machinery, reused: Moniker('reprocessingSvc', stationID).
+// Keyed by station so docking somewhere else binds that station's refinery
+// rather than reusing a stale OID.
+function reprocessingBindSpec(held) {
+  return {
+    key: `reprocessing:${held.stationID}`,
+    service: "reprocessingSvc",
+    method: "MachoBindObject",
+    args: [held.stationID],
+    kwargs: null,
+  };
+}
+
+/** One value out of a util.KeyVal, unwrapping a marshaled long but NOT a
+ * nested list/dict (which the caller still needs whole). */
+function readKeyValField(entries, key) {
+  const entry = entries.find((pair) => Array.isArray(pair) && pair[0] === key);
+  const value = entry ? entry[1] : undefined;
+  if (value && typeof value === "object" && value.type === "long") {
+    return value.value;
+  }
+  return value;
+}
+
+function keyValEntries(value) {
+  return value && value.args && Array.isArray(value.args.entries) ? value.args.entries : [];
+}
+
+/**
+ * GetQuotes' [tax, efficiencyByTypeID, quotesByItemID] triple, as plain data.
+ *
+ * ⚠ `recoverables` is a LIST of util.KeyVals — NOT a dict of typeID -> amount —
+ * and the amount the player actually receives is the `client` field on each
+ * (`unrecoverable` is the station's share, which is exactly what the player must
+ * not be shown as theirs). Getting this wrong would put a confidently wrong
+ * mineral count on screen, so it is read from the real handler's shape
+ * (services/station/reprocessingService.js buildRecoverableEntry).
+ */
+function decodeReprocessingQuotes(result) {
+  const triple = Array.isArray(result) ? result : [];
+  const taxRaw = Number(triple[0]);
+  const dictEntries = (value) =>
+    value && value.type === "dict" && Array.isArray(value.entries) ? value.entries : [];
+  const quotes = [];
+  for (const [itemID, quote] of dictEntries(triple[2])) {
+    const entries = keyValEntries(quote);
+    const numericItemID = Number(itemID) || 0;
+    if (numericItemID <= 0) {
+      continue;
+    }
+    const recoverables = readKeyValField(entries, "recoverables");
+    const outputs = [];
+    const recoverableItems =
+      recoverables && recoverables.type === "list" && Array.isArray(recoverables.items)
+        ? recoverables.items
+        : [];
+    for (const recoverable of recoverableItems) {
+      const fields = keyValEntries(recoverable);
+      const typeID = Number(readKeyValField(fields, "typeID")) || 0;
+      // `client` is the player's share. Anything else on the entry is the
+      // station's, and must never be presented as what the player gets.
+      const quantity = Number(readKeyValField(fields, "client")) || 0;
+      if (typeID > 0 && quantity > 0) {
+        outputs.push({ typeID, quantity });
+      }
+    }
+    const iskCost = Number(readKeyValField(entries, "totalISKCost"));
+    quotes.push({
+      itemID: numericItemID,
+      typeID: Number(readKeyValField(entries, "typeID")) || null,
+      quantityToProcess: Number(readKeyValField(entries, "quantityToProcess")) || null,
+      leftOvers: Number(readKeyValField(entries, "leftOvers")) || null,
+      // What this stack costs in ISK, as the station computed it.
+      iskCost: Number.isFinite(iskCost) ? iskCost : null,
+      outputs,
+    });
+  }
+  return {
+    // null rather than 0 when the server did not give a rate: "we do not know
+    // the tax" and "the tax is nothing" are different, and a wrong 0 would
+    // understate what this costs.
+    taxRate: Number.isFinite(taxRaw) ? taxRaw : null,
+    quotes,
+  };
+}
+
+// What reprocessing these stacks WOULD produce, and what the station will take.
+// A pure read: nothing is consumed and nothing is charged by this route. The
+// tax comes back first in the retail triple and is passed through as its own
+// field, because the page must show it BEFORE the player commits.
+app.get("/api/bridge/reprocessing/quote", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const itemIDs = String((req.query && req.query.itemIDs) || "")
+    .split(",")
+    .map((value) => Number(value.trim()) || 0)
+    .filter((value) => value > 0);
+  if (itemIDs.length === 0) {
+    res.status(400).json({
+      ok: false,
+      error: "NOTHING_SELECTED",
+      message: "Choose what to reprocess first.",
+    });
+    return;
+  }
+  try {
+    const before = await readHeldFlight(held, req.webSessionID);
+    if (!before.flight || before.flight.docked !== true) {
+      res.status(409).json({
+        ok: false,
+        error: "NOT_DOCKED",
+        message: "Dock at a station to use its refinery.",
+      });
+      return;
+    }
+    const outcome = await boundCall(
+      held,
+      req.webSessionID,
+      reprocessingBindSpec(held),
+      "GetQuotes",
+      [itemIDs],
+      null,
+    );
+    const decoded = decodeReprocessingQuotes(outcome.result);
+    res.json({
+      ok: true,
+      stationID: held.stationID,
+      taxRate: decoded.taxRate,
+      quotes: decoded.quotes,
+      notifications: outcome.notifications,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ⚠ REPROCESS CONSUMES THE INPUT STACKS AND CHARGES ISK TAX. It is the only
+// destructive route in the mining loop, so it refuses outright unless the caller
+// explicitly confirms — a second gate behind the page's own two-step
+// confirmation, exactly like R12's destroy-rig. Neither a stray click nor a
+// stray POST can consume a hold full of ore.
+app.post("/api/bridge/reprocessing/reprocess", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const body = req.body || {};
+  const itemIDs = Array.isArray(body.itemIDs)
+    ? body.itemIDs.map((value) => Number(value) || 0).filter((value) => value > 0)
+    : [];
+  if (itemIDs.length === 0) {
+    res.status(400).json({
+      ok: false,
+      error: "NOTHING_SELECTED",
+      message: "Choose what to reprocess first.",
+    });
+    return;
+  }
+  if (body.confirm !== true) {
+    res.status(400).json({
+      ok: false,
+      error: "CONFIRMATION_REQUIRED",
+      message:
+        "Reprocessing consumes the ore and charges the station's tax. This action must be confirmed explicitly.",
+    });
+    return;
+  }
+  try {
+    const before = await readHeldFlight(held, req.webSessionID);
+    if (!before.flight || before.flight.docked !== true) {
+      res.status(409).json({
+        ok: false,
+        error: "NOT_DOCKED",
+        message: "Dock at a station to use its refinery.",
+      });
+      return;
+    }
+    const spec = reprocessingBindSpec(held);
+    // Reprocess(itemIDs, fromLocationID, ownerID, outputLocationID?, outputFlagID?)
+    // — the station hangar is both the source and the destination, so the
+    // minerals land where the ore was.
+    const outcome = await boundCall(
+      held,
+      req.webSessionID,
+      spec,
+      "Reprocess",
+      [itemIDs, held.stationID, held.characterID || 0, null, null],
+      null,
+    );
+    // A 200 is not proof: re-read the hangar and report which stacks are
+    // actually gone. A stack still present was NOT reprocessed, whatever the
+    // call answered.
+    let stillPresent = null;
+    try {
+      const listed = await boundCall(
+        held,
+        req.webSessionID,
+        hangarBindSpec(held),
+        "List",
+        [ITEM_FLAG_HANGAR],
+        null,
+      );
+      stillPresent = new Set(decodeInventoryRows(listed.result).map((row) => row.itemID));
+    } catch {
+      // The hangar could not be re-read, so nothing can be claimed either way.
+      stillPresent = null;
+    }
+    res.json({
+      ok: true,
+      requested: itemIDs,
+      // null when the verification read failed — "we could not check", which is
+      // reported as such and never as success.
+      processed: stillPresent === null ? null : itemIDs.filter((id) => !stillPresent.has(id)),
+      remaining: stillPresent === null ? null : itemIDs.filter((id) => stillPresent.has(id)),
+      notifications: outcome.notifications,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // R11 space overview + ship HUD. A read-only snapshot of what the ship can see
 // right now — the visible entities around it and the active ship's shield /
 // armor / hull / capacitor. The browser polls this ~1s while in space with the

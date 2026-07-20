@@ -54,6 +54,7 @@ const PANELS = [
   "AgentFinder",
   "Flight",
   "Overview",
+  "Mining",
   "Travel",
   "Chat",
 ] as const;

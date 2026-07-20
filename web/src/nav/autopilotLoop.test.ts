@@ -491,6 +491,9 @@ function spaceEntity(overrides: Partial<SpaceEntity> & { itemID: number }): Spac
     maxVelocity: null,
     mode: null,
     capacitorRatio: null,
+  remainingQuantity: null,
+  miningYieldTypeID: null,
+  beltID: null,
     ...overrides,
   };
 }

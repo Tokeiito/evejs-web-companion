@@ -51,6 +51,12 @@ import {
 } from "../bridge/rewards.ts";
 import { decodeFlightStatus } from "../bridge/flight.ts";
 import { decodeSpaceSnapshot, decodeTargetIDs } from "../bridge/space.ts";
+import {
+  decodeMiningHolds,
+  decodeReprocessingQuotes,
+  decodeSurveyResults,
+  decodeTaxRate,
+} from "../bridge/mining.ts";
 import { createSpacePoller, type SpacePoller } from "./spacePoll.ts";
 import type { FlightStepResult } from "./api.ts";
 import { BridgeCallError } from "../bridge/callMethod.ts";
@@ -342,6 +348,23 @@ export interface AppFlow {
   ): Promise<void>;
   /** R23 — switch a module off. */
   deactivateModule(itemID: number, opts?: { effect?: string }): Promise<void>;
+  // --- R23 slice B: the mining loop --------------------------------------
+  // Built ON TOP of the generic layer above, not into it. There is no "start
+  // mining" method: mining a rock is lockTarget + activateModule with a mining
+  // laser. The browser never simulates a cycle or predicts a yield.
+  /** R23 — read the ship's ore / gas / ice holds (falling back to cargo). */
+  loadMiningHolds(): Promise<void>;
+  /** R23 — run the survey scanner; the panel merges the results into the overview. */
+  runSurveyScan(): Promise<void>;
+  /** R23 — ask the station refinery what these stacks yield, and its ISK tax. */
+  loadReprocessingQuote(itemIDs: readonly number[]): Promise<void>;
+  /** R23 — move mined ore into the station hangar (docked only). */
+  unloadMiningHolds(itemIDs: readonly number[]): Promise<void>;
+  /**
+   * R23 — ⚠ CONSUMES the stacks and CHARGES the station's ISK tax. The panel
+   * confirms first (showing the quote and the tax) and the BFF confirms again.
+   */
+  reprocessItems(itemIDs: readonly number[]): Promise<void>;
   /** Jump through an NPC stargate (fromGate -> toGate). */
   jump(fromGateID: number, toGateID: number): Promise<void>;
   /** Dock at the destination station. */
@@ -1797,6 +1820,168 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     );
   }
 
+  // --- R23 slice B: the mining loop ----------------------------------------
+  //
+  // mine -> haul -> refine -> sell. There is deliberately NO mining loop
+  // controller here: mining a rock is lockTarget + activateModule above, and the
+  // browser never simulates a cycle, predicts a yield or decides when a hold is
+  // full. It reads the server and shows the answer.
+
+  /** Read the ship's mining holds (ore / gas / ice, falling back to cargo). */
+  async function loadMiningHolds(): Promise<void> {
+    let result;
+    try {
+      result = await api.getMiningHolds(callOptions);
+    } catch (error) {
+      if (isSessionLost(error)) {
+        stopLiveStream();
+        store.apply({ type: "character/offline" });
+        throw error;
+      }
+      store.apply({
+        type: "mining/holds-error",
+        message: `Your holds could not be read: ${flightErrorReason(error)}`,
+      });
+      return;
+    }
+    store.apply({ type: "mining/holds", holds: decodeMiningHolds(result.holds) });
+  }
+
+  /** Run the survey scanner and land what it saw. */
+  async function runSurveyScan(): Promise<void> {
+    let result;
+    try {
+      result = await api.runSurveyScan(callOptions);
+    } catch (error) {
+      if (isSessionLost(error)) {
+        stopLiveStream();
+        store.apply({ type: "character/offline" });
+        throw error;
+      }
+      store.apply({
+        type: "mining/survey-error",
+        message: `The survey scan failed: ${flightErrorReason(error)}`,
+      });
+      return;
+    }
+    store.apply({
+      type: "mining/survey",
+      survey: decodeSurveyResults(result.results),
+      atMs: Date.now(),
+    });
+  }
+
+  /** Ask the refinery what these stacks would yield — and what the tax is. */
+  async function loadReprocessingQuote(itemIDs: readonly number[]): Promise<void> {
+    if (itemIDs.length === 0) {
+      store.apply({ type: "mining/quotes", quotes: [], taxRate: null, quotesFor: [] });
+      return;
+    }
+    let result;
+    try {
+      result = await api.getReprocessingQuote(itemIDs, callOptions);
+    } catch (error) {
+      if (isSessionLost(error)) {
+        stopLiveStream();
+        store.apply({ type: "character/offline" });
+        throw error;
+      }
+      store.apply({
+        type: "mining/quotes-error",
+        message: `The refinery could not quote that: ${flightErrorReason(error)}`,
+      });
+      return;
+    }
+    store.apply({
+      type: "mining/quotes",
+      quotes: decodeReprocessingQuotes(result.quotes),
+      taxRate: decodeTaxRate(result.taxRate),
+      quotesFor: [...itemIDs],
+    });
+  }
+
+  /**
+   * Run one mining action and report what it ACTUALLY did.
+   *
+   * Both actions here move or consume real items, so neither trusts its own
+   * 200: the BFF re-reads and answers which stacks really moved. `moved: null`
+   * means the verification read itself failed — that is reported as "could not
+   * check", never as success and never as a decline.
+   */
+  async function runMiningAction(
+    label: string,
+    step: () => Promise<{
+      readonly requested: readonly number[];
+      readonly moved: readonly number[] | null;
+    }>,
+    partial: (moved: number, total: number) => string,
+    none: string,
+    unverified: string,
+  ): Promise<void> {
+    let result;
+    try {
+      result = await step();
+    } catch (error) {
+      if (isSessionLost(error)) {
+        stopLiveStream();
+        store.apply({ type: "character/offline" });
+        throw error;
+      }
+      store.apply({
+        type: "mining/action-error",
+        message: `${label} refused: ${flightErrorReason(error)}`,
+      });
+      return;
+    }
+    store.apply({ type: "mining/action", action: label });
+    // Whatever happened, the holds are the ground truth now.
+    await loadMiningHolds().catch(() => {});
+    if (result.moved === null) {
+      store.apply({ type: "mining/silent-decline", message: unverified });
+      return;
+    }
+    if (result.moved.length === 0) {
+      store.apply({ type: "mining/silent-decline", message: none });
+      return;
+    }
+    if (result.moved.length < result.requested.length) {
+      store.apply({
+        type: "mining/silent-decline",
+        message: partial(result.moved.length, result.requested.length),
+      });
+    }
+  }
+
+  async function unloadMiningHolds(itemIDs: readonly number[]): Promise<void> {
+    await runMiningAction(
+      "Unload",
+      () => api.unloadMiningHolds(itemIDs, callOptions),
+      (moved, total) =>
+        `Only ${moved} of ${total} stacks moved to your hangar. The server did not say why the rest stayed.`,
+      "Nothing moved to your hangar, and the server gave no reason.",
+      "The unload was accepted, but your holds could not be re-read, so what moved is unknown.",
+    );
+  }
+
+  /**
+   * ⚠ REPROCESS. This consumes the ore and charges the station's ISK tax. The
+   * panel confirms first (showing the quote AND the tax); the BFF confirms
+   * again. This method is unconditional by design — the gates are on either
+   * side of it, as with destroyRig.
+   */
+  async function reprocessItems(itemIDs: readonly number[]): Promise<void> {
+    await runMiningAction(
+      "Reprocess",
+      () => api.reprocessItems(itemIDs, callOptions),
+      (moved, total) =>
+        `Only ${moved} of ${total} stacks were reprocessed. The server did not say why the rest were left.`,
+      "Nothing was reprocessed, and the server gave no reason.",
+      "The refinery accepted that, but your hangar could not be re-read, so what was reprocessed is unknown.",
+    );
+    // The previous quote described stacks that may no longer exist.
+    store.apply({ type: "mining/quotes", quotes: [], taxRate: null, quotesFor: [] });
+  }
+
   async function deactivateModule(itemID: number, opts: { effect?: string } = {}): Promise<void> {
     await runTargetingAction(
       "Switch off",
@@ -2585,6 +2770,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     unlockTarget,
     activateModule,
     deactivateModule,
+    loadMiningHolds,
+    runSurveyScan,
+    loadReprocessingQuote,
+    unloadMiningHolds,
+    reprocessItems,
 
     startSpacePolling,
 

@@ -1682,6 +1682,128 @@ export async function deactivateModule(
   return readModuleAction(itemID, await postJson("/api/bridge/modules/deactivate", body, options));
 }
 
+// --- R23 slice B: the mining loop -------------------------------------------
+//
+// mine -> haul -> refine -> sell. There is no "start mining" call here and no
+// mining cycle: mining a rock IS the generic lockTarget + activateModule above
+// with a mining laser, flying to the belt is warpTo/orbit, and selling the
+// minerals is the market functions. These five are only what was missing — a
+// place to see the ore, a way to get it home, the scanner, and the refinery.
+
+/** The ship's mining holds, each already named by the BFF (never a flagID). */
+export interface MiningHoldsResult {
+  readonly activeShipID: number | null;
+  readonly holds: JsonValue;
+}
+
+/** What the scanner saw: `[[entityID, yieldTypeID, remainingQuantity]]`. */
+export interface SurveyScanResult {
+  readonly results: JsonValue;
+  readonly notifications: readonly JsonValue[];
+}
+
+/** The refinery's quote, with the station's ISK TAX RATE reported separately. */
+export interface ReprocessingQuoteResult {
+  readonly stationID: number | null;
+  readonly taxRate: JsonValue;
+  readonly quotes: JsonValue;
+}
+
+/**
+ * What an unload or a reprocess ACTUALLY did, verified by re-reading. `moved` /
+ * `processed` are null when the verification read itself failed — "we could not
+ * check", which the page reports as such and never as success.
+ */
+export interface MiningActionResult {
+  readonly requested: readonly number[];
+  readonly moved: readonly number[] | null;
+  readonly remaining: readonly number[] | null;
+  readonly notifications: readonly JsonValue[];
+}
+
+function readIDArray(value: JsonValue | undefined): readonly number[] | null {
+  if (!Array.isArray(value)) {
+    return null;
+  }
+  return value.map((entry) => Number(entry) || 0).filter((entry) => entry > 0);
+}
+
+/** Read the ship's ore / gas / ice holds (falling back to cargo). */
+export async function getMiningHolds(options: ApiOptions = {}): Promise<MiningHoldsResult> {
+  const data = await getJson("/api/bridge/ship/ore-hold", options);
+  return {
+    activeShipID: Number(data.activeShipID) || null,
+    holds: data.holds ?? null,
+  };
+}
+
+/** Move mined ore from the ship's holds into the station hangar (docked only). */
+export async function unloadMiningHolds(
+  itemIDs: readonly number[],
+  options: ApiOptions = {},
+): Promise<MiningActionResult> {
+  const data = await postJson(
+    "/api/bridge/ship/ore-hold/unload",
+    { itemIDs: [...itemIDs] },
+    options,
+  );
+  return {
+    requested: readIDArray(data.requested) ?? [],
+    moved: readIDArray(data.moved),
+    remaining: readIDArray(data.remaining),
+    notifications: Array.isArray(data.notifications) ? data.notifications : [],
+  };
+}
+
+/** Run the survey scanner (miningScanMgr.perform_scan). Read-only. */
+export async function runSurveyScan(options: ApiOptions = {}): Promise<SurveyScanResult> {
+  const data = await getJson("/api/bridge/mining/scan", options);
+  return {
+    results: data.results ?? null,
+    notifications: Array.isArray(data.notifications) ? data.notifications : [],
+  };
+}
+
+/**
+ * Ask the station's refinery what these stacks WOULD yield, and what it will
+ * take. A pure read: nothing is consumed and no ISK is charged by this call.
+ */
+export async function getReprocessingQuote(
+  itemIDs: readonly number[],
+  options: ApiOptions = {},
+): Promise<ReprocessingQuoteResult> {
+  const query = encodeURIComponent(itemIDs.join(","));
+  const data = await getJson(`/api/bridge/reprocessing/quote?itemIDs=${query}`, options);
+  return {
+    stationID: Number(data.stationID) || null,
+    taxRate: data.taxRate ?? null,
+    quotes: data.quotes ?? null,
+  };
+}
+
+/**
+ * ⚠ REPROCESS. This CONSUMES the chosen stacks and CHARGES the station's ISK
+ * tax, so the BFF refuses it outright unless `confirm` is true. The panel asks
+ * first — showing the quote and the tax — and this flag is the second gate
+ * behind that, exactly as destroyRig does for a rig.
+ */
+export async function reprocessItems(
+  itemIDs: readonly number[],
+  options: ApiOptions = {},
+): Promise<MiningActionResult> {
+  const data = await postJson(
+    "/api/bridge/reprocessing/reprocess",
+    { itemIDs: [...itemIDs], confirm: true },
+    options,
+  );
+  return {
+    requested: readIDArray(data.requested) ?? [],
+    moved: readIDArray(data.processed),
+    remaining: readIDArray(data.remaining),
+    notifications: Array.isArray(data.notifications) ? data.notifications : [],
+  };
+}
+
 // --- R5b Travel (client-side route solver static data) ---------------------
 // The system-adjacency graph the browser route solver runs BFS over is served
 // as read-only static reference data (GET /api/map/graph) — NOT a gateway call

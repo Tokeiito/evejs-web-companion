@@ -40,6 +40,9 @@ function entity(over: Partial<SpaceEntity> & { itemID: number }): SpaceEntity {
     maxVelocity: null,
     mode: null,
     capacitorRatio: null,
+  remainingQuantity: null,
+  miningYieldTypeID: null,
+  beltID: null,
     ...over,
   };
 }

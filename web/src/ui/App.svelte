@@ -17,6 +17,7 @@
   import AgentFinder from "./AgentFinder.svelte";
   import Flight from "./Flight.svelte";
   import Overview from "./Overview.svelte";
+  import Mining from "./Mining.svelte";
   import Travel from "./Travel.svelte";
   import Chat from "./Chat.svelte";
   import type { ClientStore } from "../store/clientStore.ts";
@@ -45,6 +46,7 @@
     | "finder"
     | "flight"
     | "overview"
+    | "mining"
     | "travel"
     | "chat"
   >("station");
@@ -90,6 +92,9 @@
     <button type="button" class:active={page === "overview"} onclick={() => (page = "overview")}>
       Around Your Ship
     </button>
+    <button type="button" class:active={page === "mining"} onclick={() => (page = "mining")}>
+      Mining
+    </button>
     <button type="button" class:active={page === "travel"} onclick={() => (page = "travel")}>
       Travel
     </button>
@@ -119,6 +124,8 @@
     <Flight {store} {flow} />
   {:else if page === "overview"}
     <Overview {store} {flow} />
+  {:else if page === "mining"}
+    <Mining {store} {flow} />
   {:else if page === "travel"}
     <Travel {store} {flow} />
   {:else}

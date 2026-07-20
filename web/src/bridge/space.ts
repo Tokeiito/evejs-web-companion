@@ -103,7 +103,31 @@ function decodeEntity(value: JsonValue): SpaceEntity | null {
     maxVelocity: floatOrNull(raw.maxVelocity),
     mode: stringOrNull(raw.mode),
     capacitorRatio: ratioOrNull(raw.capacitorRatio),
+    // R23 slice B — present on asteroid rows only. An ABSENT remainingQuantity
+    // decodes to null ("unknown"), never 0: a zero reads as a mined-out rock
+    // and would send a player straight past a full belt.
+    remainingQuantity: countOrNull(raw.remainingQuantity),
+    miningYieldTypeID: idOrNull(raw.miningYieldTypeID),
+    beltID: idOrNull(raw.beltID),
   };
+}
+
+/**
+ * A non-negative COUNT (long-aware), or null when the field is absent.
+ *
+ * Deliberately separate from idOrNull: a quantity of 0 is a real and meaningful
+ * answer ("this rock is mined out"), whereas an ID of 0 is no ID at all.
+ */
+export function countOrNull(value: JsonValue | undefined): number | null {
+  if (value === undefined || value === null) {
+    return null;
+  }
+  const long = unwrapLong(value);
+  if (long === null) {
+    return null;
+  }
+  const numeric = Number(long);
+  return Number.isFinite(numeric) && numeric >= 0 ? Math.trunc(numeric) : null;
 }
 
 function decodeShip(value: JsonValue | undefined): SpaceShipStatus | null {

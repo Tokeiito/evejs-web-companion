@@ -38,6 +38,11 @@
   const targeting = store.targeting;
   // svelte-ignore state_referenced_locally
   const fitting = store.fitting;
+  // R23 slice B — the survey scanner. The scan is the only read that says how
+  // much ore a rock has left when the snapshot could not; it is MERGED into the
+  // rows here, never used to compute anything.
+  // svelte-ignore state_referenced_locally
+  const mining = store.mining;
 
   // How many rows we render. A busy grid can hold hundreds of objects and the
   // list re-renders every second, so the nearest few hundred is the useful set.
@@ -299,6 +304,46 @@
     }
     return rows;
   });
+
+  // --- R23 slice B: rocks in the overview ----------------------------------
+
+  /**
+   * How much ore a rock has left, as ONE number from two sources that agree by
+   * construction: the snapshot's own reading, and the survey scanner's (which
+   * reaches rocks the snapshot may not have a mining record for). The scan wins
+   * when both exist, because the player asked for it and it is the fresher read.
+   *
+   * null is "not known" and renders as a dash. A rock with a real 0 is a
+   * mined-out rock and says so — the two must never be shown the same way.
+   */
+  const surveyByID = $derived.by<Map<number, number | null>>(() => {
+    const map = new Map<number, number | null>();
+    for (const result of $mining.survey) {
+      map.set(result.itemID, result.remainingQuantity);
+    }
+    return map;
+  });
+  function remainingOre(row: SpaceEntity): number | null {
+    const scanned = surveyByID.get(row.itemID);
+    if (scanned !== undefined) {
+      return scanned;
+    }
+    return row.remainingQuantity;
+  }
+  function remainingLabel(row: SpaceEntity): string {
+    if (row.kind !== "asteroid") {
+      return "";
+    }
+    const remaining = remainingOre(row);
+    if (remaining === null) {
+      // Never a fabricated number, and never a 0 standing in for "unknown".
+      return "—";
+    }
+    return remaining === 0 ? "Mined out" : `${remaining.toLocaleString()} units`;
+  }
+  const rockCount = $derived(
+    (snapshot?.entities ?? []).filter((entity) => entity.kind === "asteroid").length,
+  );
 
   // Which locked target a module is switched on AGAINST. Modules that act on
   // the ship itself ignore it; the server refuses with its own reason when a
@@ -616,7 +661,24 @@
           <option value="name">Name</option>
         </select>
       </label>
+      <!--
+        R23 slice B — the survey scanner. The ship can see the rocks around it
+        without this, but not always how much ore is left in them; a scan fills
+        the "Ore left" column in. Read-only: it mines nothing and moves nothing.
+      -->
+      <button type="button" disabled={busy} onclick={() => run(() => flow.runSurveyScan())}>
+        Scan the rocks
+      </button>
     </p>
+    {#if $mining.surveyError}
+      <p class="error">{$mining.surveyError}</p>
+    {:else if $mining.surveyAtMs !== null && $mining.survey.length === 0}
+      <p class="note">The scan came back empty — there was nothing minable in range.</p>
+    {:else if rockCount > 0 && $mining.surveyAtMs === null}
+      <p class="note">
+        There are rocks here. Scan them to see how much ore each one still has.
+      </p>
+    {/if}
 
     {#if !$space.loaded}
       <p class="note">Looking around…</p>
@@ -637,6 +699,13 @@
               <th>Type</th>
               <th>Group</th>
               <th class="num">Distance</th>
+              <!--
+                R23 slice B — only meaningful for a rock, and blank for
+                everything else. A dash means the amount is NOT KNOWN; a rock
+                that really is empty says "Mined out". Run a survey scan to fill
+                in what the ship could not see on its own.
+              -->
+              <th class="num">Ore left</th>
               <th></th>
             </tr>
           </thead>
@@ -647,6 +716,7 @@
                 <td data-label="Type">{typeName(row)}</td>
                 <td data-label="Group">{groupName(row)}</td>
                 <td class="num" data-label="Distance">{formatDistance(row.distance)}</td>
+                <td class="num" data-label="Ore left">{remainingLabel(row)}</td>
                 <td data-label="">
                   <span class="row-actions">
                     <button

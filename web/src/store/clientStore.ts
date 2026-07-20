@@ -59,6 +59,10 @@ import type {
   RewardsState,
   SpaceState,
   TargetingState,
+  MiningState,
+  MiningHold,
+  SurveyResult,
+  ReprocessingQuote,
   StationGuest,
   StationServiceBits,
   StationStatic,
@@ -119,6 +123,7 @@ export interface ClientState {
   readonly flight: FlightState;
   readonly space: SpaceState;
   readonly targeting: TargetingState;
+  readonly mining: MiningState;
   readonly travel: TravelState;
   readonly chat: ChatState;
   readonly live: LiveState;
@@ -335,6 +340,25 @@ const INITIAL_TARGETING: TargetingState = Object.freeze({
   silentDecline: null,
 });
 
+// R23 slice B — the mining loop. `taxRate` starts NULL, not 0: reprocessing
+// debits the station's tax from the wallet, and a confident zero before any
+// quote has been read would tell the player the refinery is free.
+const INITIAL_MINING: MiningState = Object.freeze({
+  holds: Object.freeze([]) as readonly MiningHold[],
+  holdsLoaded: false,
+  holdsError: null,
+  survey: Object.freeze([]) as readonly SurveyResult[],
+  surveyAtMs: null,
+  surveyError: null,
+  quotes: Object.freeze([]) as readonly ReprocessingQuote[],
+  taxRate: null,
+  quotesFor: Object.freeze([]) as readonly number[],
+  quotesError: null,
+  lastAction: null,
+  actionError: null,
+  silentDecline: null,
+});
+
 const INITIAL_TRAVEL: TravelState = Object.freeze({
   status: "idle" as TravelState["status"],
   destinationSystemID: null,
@@ -416,6 +440,7 @@ export interface ClientStore {
   readonly flight: ReadableSignal<FlightState>;
   readonly space: ReadableSignal<SpaceState>;
   readonly targeting: ReadableSignal<TargetingState>;
+  readonly mining: ReadableSignal<MiningState>;
   readonly travel: ReadableSignal<TravelState>;
   readonly chat: ReadableSignal<ChatState>;
   readonly live: ReadableSignal<LiveState>;
@@ -458,6 +483,7 @@ export function createClientStore(): ClientStore {
   const flight = createSignal<FlightState>(INITIAL_FLIGHT);
   const space = createSignal<SpaceState>(INITIAL_SPACE);
   const targeting = createSignal<TargetingState>(INITIAL_TARGETING);
+  const mining = createSignal<MiningState>(INITIAL_MINING);
   const travel = createSignal<TravelState>(INITIAL_TRAVEL);
   const chat = createSignal<ChatState>(INITIAL_CHAT);
   const live = createSignal<LiveState>(INITIAL_LIVE);
@@ -487,6 +513,7 @@ export function createClientStore(): ClientStore {
     flight: flight.get(),
     space: space.get(),
     targeting: targeting.get(),
+    mining: mining.get(),
     travel: travel.get(),
     chat: chat.get(),
     live: live.get(),
@@ -520,6 +547,7 @@ export function createClientStore(): ClientStore {
         flight.set(INITIAL_FLIGHT);
         space.set(INITIAL_SPACE);
         targeting.set(INITIAL_TARGETING);
+        mining.set(INITIAL_MINING);
         travel.set(INITIAL_TRAVEL);
         chat.set(INITIAL_CHAT);
         live.set(INITIAL_LIVE);
@@ -568,6 +596,7 @@ export function createClientStore(): ClientStore {
         flight.set(INITIAL_FLIGHT);
         space.set(INITIAL_SPACE);
         targeting.set(INITIAL_TARGETING);
+        mining.set(INITIAL_MINING);
         travel.set(INITIAL_TRAVEL);
         chat.set(INITIAL_CHAT);
         live.set(INITIAL_LIVE);
@@ -586,6 +615,7 @@ export function createClientStore(): ClientStore {
         flight.set(INITIAL_FLIGHT);
         space.set(INITIAL_SPACE);
         targeting.set(INITIAL_TARGETING);
+        mining.set(INITIAL_MINING);
         travel.set(INITIAL_TRAVEL);
         chat.set(INITIAL_CHAT);
         live.set(INITIAL_LIVE);
@@ -963,6 +993,17 @@ export function createClientStore(): ClientStore {
       case "space/cleared":
         space.set(INITIAL_SPACE);
         targeting.set(INITIAL_TARGETING);
+        // The MINING slice deliberately survives a dock. Docking is where the
+        // rest of the loop happens — unload the ore hold, quote it, reprocess it
+        // — so wiping the holds the moment the ship docks would clear the panel
+        // exactly when the player starts using it. Only the SURVEY is dropped:
+        // it described rocks in a system the ship is no longer flying in.
+        mining.set({
+          ...mining.get(),
+          survey: INITIAL_MINING.survey,
+          surveyAtMs: null,
+          surveyError: null,
+        });
         break;
       // --- R23 slice A: targeting + module activation ---------------------
       case "targeting/targets": {
@@ -1012,6 +1053,63 @@ export function createClientStore(): ClientStore {
         break;
       case "targeting/cleared":
         targeting.set(INITIAL_TARGETING);
+        break;
+      // --- R23 slice B: the mining loop ------------------------------------
+      case "mining/holds":
+        // A clean read clears the panel-level error; each hold still carries
+        // its OWN error, so one unreadable hold never blanks the rest.
+        mining.set({ ...mining.get(), holds: event.holds, holdsLoaded: true, holdsError: null });
+        break;
+      case "mining/holds-error":
+        mining.set({ ...mining.get(), holdsError: event.message });
+        break;
+      case "mining/survey":
+        mining.set({
+          ...mining.get(),
+          survey: event.survey,
+          surveyAtMs: event.atMs,
+          surveyError: null,
+        });
+        break;
+      case "mining/survey-error":
+        mining.set({ ...mining.get(), surveyError: event.message });
+        break;
+      case "mining/quotes":
+        mining.set({
+          ...mining.get(),
+          quotes: event.quotes,
+          taxRate: event.taxRate,
+          quotesFor: event.quotesFor,
+          quotesError: null,
+        });
+        break;
+      case "mining/quotes-error":
+        // A failed quote must not leave the PREVIOUS quote on screen: the
+        // player would arm a confirmation against numbers for other stacks.
+        mining.set({
+          ...mining.get(),
+          quotes: INITIAL_MINING.quotes,
+          taxRate: null,
+          quotesFor: INITIAL_MINING.quotesFor,
+          quotesError: event.message,
+        });
+        break;
+      case "mining/action":
+        mining.set({
+          ...mining.get(),
+          lastAction: event.action,
+          actionError: null,
+          silentDecline: null,
+        });
+        break;
+      case "mining/action-error":
+        mining.set({ ...mining.get(), actionError: event.message });
+        break;
+      case "mining/silent-decline":
+        mining.set({ ...mining.get(), silentDecline: event.message });
+        break;
+      case "mining/cleared":
+        mining.set(INITIAL_MINING);
         break;
       case "travel/planned":
         travel.set({
@@ -1206,6 +1304,7 @@ export function createClientStore(): ClientStore {
     flight: readonlySignal(flight),
     space: readonlySignal(space),
     targeting: readonlySignal(targeting),
+    mining: readonlySignal(mining),
     travel: readonlySignal(travel),
     chat: readonlySignal(chat),
     live: readonlySignal(live),
