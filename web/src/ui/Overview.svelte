@@ -21,7 +21,7 @@
   import { resolvedName, nameKey, type NameRef } from "../store/names.ts";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
-  import type { SpaceEntity } from "../store/types.ts";
+  import type { ModuleCycle, SpaceEntity } from "../store/types.ts";
 
   let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
 
@@ -281,6 +281,9 @@
     readonly label: string;
     readonly slotLabel: string;
     readonly running: boolean | null;
+    // R24 slice C — how long one cycle takes, and whether that figure is the
+    // pilot's real one or the type's starting point. null = we have neither.
+    readonly cycle: ModuleCycle | null;
   }
   const activeModuleIDs = $derived(snapshot?.ship?.activeModuleIDs ?? null);
   const moduleRows = $derived.by<ModuleRow[]>(() => {
@@ -300,10 +303,86 @@
         // null = the server could not tell us. Rendered as "unknown", never
         // as "off" — a wrong "off" would invite a double activation.
         running: activeModuleIDs === null ? null : activeModuleIDs.includes(slot.module.itemID),
+        cycle: $targeting.moduleCycles[slot.module.itemID] ?? null,
       });
     }
     return rows;
   });
+
+  // --- R24 slice C: cycle times --------------------------------------------
+  //
+  // Two things are shown and they are NOT the same claim:
+  //   * how long one cycle takes — from the server's own cycle event where one
+  //     has arrived (that duration already has the pilot's skills and bonuses
+  //     in it), otherwise from the module type's base duration;
+  //   * how far through the current cycle the module is — only ever animated
+  //     from a cycle event, because that is the only thing that tells us when
+  //     a cycle actually began.
+  // A module we have no figure for says so. It never gets a made-up one.
+
+  /** A cycle length as a player reads it. */
+  function cycleLengthLabel(cycle: ModuleCycle | null): string {
+    if (!cycle || !(cycle.durationMs > 0)) {
+      return "";
+    }
+    const seconds = cycle.durationMs / 1000;
+    return seconds >= 10 ? `${Math.round(seconds)}s` : `${seconds.toFixed(1)}s`;
+  }
+
+  // A ticking clock, so a running cycle's bar actually moves. Only while
+  // something is running — an idle panel does not need a 10 Hz timer.
+  let clockMs = $state(Date.now());
+  $effect(() => {
+    const anyRunning = moduleRows.some((row) => row.cycle?.startedAtMs !== null && row.cycle);
+    if (!anyRunning) {
+      return;
+    }
+    const timer = setInterval(() => {
+      clockMs = Date.now();
+    }, 200);
+    return () => clearInterval(timer);
+  });
+
+  /**
+   * How far through the current cycle, 0-100 — or null when we cannot honestly
+   * say. `null` covers both "no cycle event has ever told us when this started"
+   * and "the module is not running", and the panel shows neither as 0%: an
+   * empty bar reads as "just started", which would be a claim we cannot make.
+   */
+  function cycleProgressPercent(cycle: ModuleCycle | null): number | null {
+    if (!cycle || cycle.startedAtMs === null || !(cycle.durationMs > 0)) {
+      return null;
+    }
+    const elapsed = clockMs - cycle.startedAtMs;
+    if (elapsed < 0) {
+      return null;
+    }
+    // A repeating module runs cycle after cycle off the one start event, which
+    // is exactly what the retail client does with it.
+    const within = cycle.repeating ? elapsed % cycle.durationMs : Math.min(elapsed, cycle.durationMs);
+    return Math.max(0, Math.min(100, Math.round((within / cycle.durationMs) * 100)));
+  }
+
+  // --- R24 slice D: the live hold on the in-space screen --------------------
+  //
+  // A ship HAS a hold iff its capacity attribute is populated — the BFF turns
+  // each specialty hold into a named reading and says `present`, so nothing
+  // here knows or cares which flag is behind "Ore hold" (R7d/R9a). A hull with
+  // no specialty hold simply shows its cargo.
+  const shipHolds = $derived(
+    $mining.holds.filter((hold) => hold.present || (hold.items?.length ?? 0) > 0),
+  );
+
+  /** How full a hold is, or an honest "not known" when the ship did not say. */
+  function holdFillText(hold: { readonly capacity: { capacity: number | null; used: number | null } | null }): string {
+    const reading = hold.capacity;
+    if (!reading || reading.capacity === null || reading.used === null) {
+      return "not known";
+    }
+    // Whole cubic metres: the fractional part of an ore hold is noise a player
+    // watching a laser run does not need.
+    return `${Math.round(reading.used).toLocaleString()} / ${Math.round(reading.capacity).toLocaleString()} m³`;
+  }
 
   // --- R23 slice B: rocks in the overview ----------------------------------
 
@@ -401,6 +480,11 @@
     // locks. Both are best-effort — neither may blank the overview if it fails.
     void flow.loadFitting().catch(() => {});
     void flow.loadTargets().catch(() => {});
+    // R24 slice D — the ship's holds, so the in-space screen shows what is
+    // actually accumulating. One read at open; after that the LIVE push channel
+    // drives it (every OnItemsChanged the ore grant emits triggers a re-read),
+    // so there is no second poll competing with the snapshot cadence.
+    void flow.loadMiningHolds().catch(() => {});
     flow.startSpacePolling();
     return () => flow.stopSpacePolling();
   });
@@ -455,6 +539,29 @@
           </div>
         {/each}
       </div>
+    {/if}
+    <!--
+      R24 slice D — the LIVE hold, on the in-space screen rather than a tab away.
+      Only holds this hull actually HAS appear: whether a ship has an ore hold,
+      a gas hold, an ice hold or an asteroid hold is decided by whether the
+      capacity attribute is populated, so a Venture and a Mammoth differ by DATA
+      and nothing here special-cases either of them. What is not known reads as
+      not known — an unknown fill is not an empty one.
+
+      It stays fresh off the PUSH channel, not a poll: mining grants ore and
+      emits OnItemsChanged, that frame reaches the browser, and the browser
+      re-reads the hold from the ship. The notification is the trigger; the ship
+      is the authority.
+    -->
+    {#if shipHolds.length > 0}
+      <ul class="hold-strip">
+        {#each shipHolds as hold (hold.key)}
+          <li>
+            <span class="hold-name">{hold.label}</span>
+            <span class="hold-fill">{holdFillText(hold)}</span>
+          </li>
+        {/each}
+      </ul>
     {/if}
   </section>
 
@@ -577,6 +684,14 @@
               <th>Equipment</th>
               <th>Fitted in</th>
               <th>Running</th>
+              <!--
+                R24 slice C — one cycle's length. Where the ship has reported a
+                cycle it is the pilot's real figure, skills and bonuses already
+                counted; otherwise it is the equipment's own starting figure and
+                the row SAYS so rather than quietly passing it off as the
+                other one.
+              -->
+              <th>Cycle</th>
               <th></th>
             </tr>
           </thead>
@@ -590,6 +705,29 @@
                     <span class="stat-unavailable">Not known</span>
                   {:else}
                     {module.running ? "Running" : "Idle"}
+                  {/if}
+                </td>
+                <td data-label="Cycle">
+                  {#if !module.cycle}
+                    <span class="stat-unavailable">Not known</span>
+                  {:else}
+                    <span>{cycleLengthLabel(module.cycle)}</span>
+                    {#if module.cycle.source === "base"}
+                      <!--
+                        R9a in one word: "before skills". The player is told
+                        plainly that this is the equipment's own figure and not
+                        theirs, rather than being handed a number that will not
+                        match what their ship does.
+                      -->
+                      <span class="note"> before skills</span>
+                    {/if}
+                    {#if cycleProgressPercent(module.cycle) !== null}
+                      <progress
+                        max="100"
+                        value={cycleProgressPercent(module.cycle)}
+                        aria-label="Cycle progress"
+                      ></progress>
+                    {/if}
                   {/if}
                 </td>
                 <td data-label="">

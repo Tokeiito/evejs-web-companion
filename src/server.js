@@ -5464,6 +5464,69 @@ app.post("/api/names", requireAuth, async (req, res, next) => {
 });
 
 /**
+ * R24 slice C — MODULE CYCLE TIMES, from static reference data.
+ *
+ * How long a module takes to run one cycle is attribute **73** (`duration`, in
+ * milliseconds), and it is already sitting in the static dogma table:
+ * Miner I / Miner II = 15000, Modulated Strip Miner II = 45000. `staticData`
+ * has exposed `getTypeDogmaAttribute` since it was written and nothing has ever
+ * called it — this is the first caller. ZERO bridge calls: like /api/names and
+ * /api/map/graph this is read-only reference data that cannot vary by player,
+ * so it never needs a round trip to EveJS.
+ *
+ * ⚠ WHAT THIS NUMBER IS NOT. It is the BASE duration on the type, before the
+ * pilot's skills, the ship's role bonuses, rigs, implants or heat. The server
+ * computes the EFFECTIVE duration (it is what it puts in an `OnGodmaShipEffect`
+ * cycle event), but there is still no allowlisted call that returns effective
+ * per-module attributes — the same wall that blocks DPS. So this route answers
+ * `baseCycleMs`, named `base` all the way to the screen, and the page prefers
+ * the server's own figure whenever a cycle event has told it one. A number
+ * presented as the truth when it is only the starting point is worse than no
+ * number at all.
+ */
+const CYCLE_TIME_TYPE_LIMIT = 500;
+const ATTRIBUTE_DURATION = 73;
+
+// A GET, deliberately: this is an idempotent read of unchanging reference data
+// with no player context in it at all. Nothing here mutates, so nothing here
+// should look like it might.
+app.get("/api/types/cycle-times", requireAuth, async (req, res, next) => {
+  try {
+    const requested = String((req.query && req.query.typeIDs) || "")
+      .split(",")
+      .map((part) => part.trim())
+      .filter((part) => part.length > 0);
+    const seen = new Set();
+    const baseCycleMs = {};
+    for (const raw of requested) {
+      const typeID = Number(raw) || 0;
+      if (typeID <= 0 || seen.has(typeID)) {
+        continue;
+      }
+      seen.add(typeID);
+      if (seen.size > CYCLE_TIME_TYPE_LIMIT) {
+        break;
+      }
+      const value = Number(staticData.getTypeDogmaAttribute(typeID, ATTRIBUTE_DURATION, null));
+      // null, never 0: a module with no duration attribute does not cycle, and
+      // "0 ms" would read as an instant one.
+      baseCycleMs[String(typeID)] = Number.isFinite(value) && value > 0 ? value : null;
+    }
+    res.json({
+      ok: true,
+      source: "static-data",
+      // Named on the wire, not just in a comment: every consumer is forced to
+      // acknowledge that this is the base figure.
+      baseCycleMs,
+      capped: requested.length > CYCLE_TIME_TYPE_LIMIT,
+      limit: CYCLE_TIME_TYPE_LIMIT,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
  * R15 industry RECIPES — the static half of the industry panel.
  *
  * Every NAME the panel needs is already reachable through /api/names: a

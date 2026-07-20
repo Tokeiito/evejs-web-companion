@@ -67,6 +67,7 @@ import type {
   AgentAction,
   ChatChannel,
   DestinationMatch,
+  FittingSlot,
   FlightStatus,
   InventoryPlace,
   SlotFamily,
@@ -534,6 +535,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
     if (event.kind === "notification") {
       const notification = (event.notification ?? {}) as Record<string, JsonValue>;
+      const method = typeof notification.method === "string" ? notification.method : null;
+      const args = Array.isArray(notification.args) ? (notification.args as unknown[]) : [];
       store.apply({
         type: "live/notification",
         epoch,
@@ -541,10 +544,99 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         notification: {
           kind: typeof notification.kind === "string" ? notification.kind : "unknown",
           service: typeof notification.service === "string" ? notification.service : null,
-          method: typeof notification.method === "string" ? notification.method : null,
+          method,
           receivedAtMs: Date.now(),
+          args,
         },
       });
+      applyPushedNotification(method, args);
+    }
+  }
+
+  // --- R24 slices C + D: acting on what the push channel carries -------------
+  //
+  // R10 built this channel and the page only ever used it for LIVENESS. Two of
+  // the notifications on it turn out to carry things the browser cannot get any
+  // other way, and both were VERIFIED end to end against the gateway (see
+  // `server/tests/webGatewaySessionEvents.test.js`, "R24:" — both arrive, with
+  // their payloads intact, on the same `sendNotification` capture stub R10
+  // proved):
+  //
+  //   OnGodmaShipEffect  a module cycle started or stopped, carrying the
+  //                      EFFECTIVE cycle duration (runtime.js:13012). No
+  //                      allowlisted call returns effective per-module
+  //                      attributes, so this event is the only source there is.
+  //   OnItemsChanged     something in the player's items changed. Mining emits
+  //                      it per stack granted (`syncMinedOreChangesToSession`,
+  //                      miningRuntime.js:994-999).
+  //
+  // The two are handled DIFFERENTLY on purpose. The cycle event is used for its
+  // payload, because the payload is the whole point. The items event is used as
+  // a TRIGGER only: it says something moved, and the ore hold is then RE-READ
+  // from the ship. Deriving the hold from a stream of deltas would mean the
+  // page's arithmetic and the ship's contents drifting apart the first time a
+  // frame is missed — and this channel is explicitly allowed to drop and
+  // resynchronise. The authority on what is in the hold is the hold.
+  function applyPushedNotification(method: string | null, args: readonly unknown[]): void {
+    if (method === "OnGodmaShipEffect") {
+      applyCycleNotification(args);
+      return;
+    }
+    if (method === "OnItemsChanged") {
+      // Coalesced: mining grants ore stack by stack, so a busy cycle can push
+      // several of these at once and one re-read answers all of them.
+      scheduleHoldRefresh();
+    }
+  }
+
+  // `OnGodmaShipEffect` args, positionally (godmaMultiEvent.js:44-78, and
+  // runtime.js:13012 which sends the same ten):
+  //   [0] moduleID  [1] effectID  [2] when      [3] isStart  [4] shouldStart
+  //   [5] environment [6] startedAt [7] duration [8] repeat  [9] error
+  //
+  // `duration` is -1 when the effect has none (an instant or passive effect),
+  // and the wire form can be a marshalled real (`{type:"real", value}`) rather
+  // than a bare number. Anything we cannot read as a positive number of
+  // milliseconds is reported as "no duration", never as zero.
+  function applyCycleNotification(args: readonly unknown[]): void {
+    const moduleID = Number(args[0]) || 0;
+    if (!(moduleID > 0)) {
+      return;
+    }
+    const raw = args[7];
+    const numeric =
+      raw && typeof raw === "object" && "value" in (raw as Record<string, unknown>)
+        ? Number((raw as Record<string, unknown>).value)
+        : Number(raw);
+    const durationMs = Number.isFinite(numeric) && numeric > 0 ? numeric : null;
+    const running = Number(args[3]) === 1;
+    const repeat = args[8];
+    store.apply({
+      type: "targeting/cycle",
+      moduleID,
+      durationMs,
+      running,
+      repeating: repeat === true || Number(repeat) > 0,
+      observedAtMs: Date.now(),
+    });
+  }
+
+  // Mining grants ore stack by stack, so one cycle can push several
+  // OnItemsChanged frames back to back. Coalesce them into one re-read.
+  const HOLD_REFRESH_COALESCE_MS = 150;
+  let holdRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  function scheduleHoldRefresh(): void {
+    if (holdRefreshTimer !== null) {
+      return;
+    }
+    holdRefreshTimer = setTimeout(() => {
+      holdRefreshTimer = null;
+      // Best-effort: a failed refresh leaves the last good reading on screen
+      // with its own error, exactly as the panel's poll does.
+      void loadMiningHolds().catch(() => {});
+    }, HOLD_REFRESH_COALESCE_MS);
+    if (typeof holdRefreshTimer === "object" && "unref" in holdRefreshTimer) {
+      (holdRefreshTimer as { unref(): void }).unref();
     }
   }
 
@@ -864,6 +956,37 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       slotsError: reads.errors.slots || reads.errors.online,
       resourcesError: reads.errors.shipInfo,
     });
+    // R24 slice C — seed each fitted module's BASE cycle length from static
+    // data, so the panel can say how long a module takes before it has ever
+    // been switched on. Best-effort and never blocking: it is reference data,
+    // and a module with no figure simply has none rather than a fabricated one.
+    void seedBaseCycleTimes(store.fitting.get().slots).catch(() => {});
+  }
+
+  /**
+   * R24 slice C — attribute 73 for every fitted module, mapped from TYPE to the
+   * individual module's itemID (which is what the cycle events are keyed by, so
+   * the two sources land in the same place and the server's figure can displace
+   * the base one cleanly).
+   */
+  async function seedBaseCycleTimes(slots: readonly FittingSlot[]): Promise<void> {
+    const typeIDs: number[] = [];
+    for (const slot of slots) {
+      if (slot.module && slot.module.typeID > 0 && !typeIDs.includes(slot.module.typeID)) {
+        typeIDs.push(slot.module.typeID);
+      }
+    }
+    if (typeIDs.length === 0) {
+      return;
+    }
+    const { baseCycleMs } = await api.loadBaseCycleTimes(typeIDs, callOptions);
+    const cycles: Record<number, number | null> = {};
+    for (const slot of slots) {
+      if (slot.module) {
+        cycles[slot.module.itemID] = baseCycleMs[slot.module.typeID] ?? null;
+      }
+    }
+    store.apply({ type: "targeting/base-cycles", cycles });
   }
 
   /**

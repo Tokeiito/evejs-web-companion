@@ -774,6 +774,40 @@
   .hud-gauge.cpu .hud-label { color: var(--color-cpu); }
   .hud-gauge.powergrid .hud-label { color: var(--color-powergrid); }
 
+  /* ============================================ the live hold strip (R24) --
+   * What is accumulating in the ship, on the in-space screen. Deliberately a
+   * one-line-per-hold strip rather than another set of gauges: this sits under
+   * a gauge block already, and a miner watching a laser run needs the NUMBER
+   * (how much room is left) far more than another bar. Wraps rather than
+   * scrolls, so it costs one line on a desktop and stacks on a phone. */
+  .hold-strip {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem 1.1rem;
+    margin: 0.6rem 0 0;
+    padding: 0;
+    list-style: none;
+    font-size: 0.9em;
+  }
+  .hold-strip li {
+    display: flex;
+    gap: 0.4rem;
+    align-items: baseline;
+  }
+  .hold-strip .hold-name { color: var(--color-muted, inherit); }
+  .hold-strip .hold-fill { font-variant-numeric: tabular-nums; }
+
+  /* ========================================= the compact overview (R24) --
+   * The overview is the primary in-space instrument: it re-renders every
+   * second while things are happening, and it has to read at a glance. So its
+   * rows lose a third of their vertical padding and its type drops a notch —
+   * roughly half again as many objects on screen without touching the R8
+   * reflow rules, which still apply below the breakpoint, and without shrinking
+   * a single control (buttons keep their 40px target from the shared rule). */
+  table.overview { font-size: 0.92em; }
+  table.overview th,
+  table.overview td { padding-block: 0.3rem; }
+
   /* =============================================== the fitting window (R21) --
    * A real fitting window: the ship in the middle, its slots as SOCKETS on
    * arcs around it. The arcs' angles are computed in

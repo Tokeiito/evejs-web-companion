@@ -1944,3 +1944,39 @@ export async function resolveNames(
   }
   return { names };
 }
+
+// --- R24 slice C: module cycle times (static reference data) ----------------
+// POST /api/types/cycle-times takes { typeIDs } and returns { baseCycleMs }.
+// Read-only static data over attribute 73 (`duration`) — like /api/names, NOT a
+// gateway/bridge call. The wire name says `base` because that is what it is:
+// the type's duration before skills, bonuses, rigs or heat. Where the server
+// has pushed a real cycle event, THAT figure wins.
+
+export interface CycleTimesResult {
+  /** typeID -> milliseconds, or null where the type has no duration at all. */
+  readonly baseCycleMs: Readonly<Record<number, number | null>>;
+}
+
+export async function loadBaseCycleTimes(
+  typeIDs: readonly number[],
+  options: ApiOptions = {},
+): Promise<CycleTimesResult> {
+  const data = await getJson(
+    `/api/types/cycle-times?typeIDs=${encodeURIComponent(typeIDs.join(","))}`,
+    options,
+  );
+  const raw =
+    typeof data.baseCycleMs === "object" && data.baseCycleMs !== null && !Array.isArray(data.baseCycleMs)
+      ? (data.baseCycleMs as Record<string, JsonValue>)
+      : {};
+  const baseCycleMs: Record<number, number | null> = {};
+  for (const [key, value] of Object.entries(raw)) {
+    const typeID = Number(key) || 0;
+    if (typeID <= 0) {
+      continue;
+    }
+    const ms = Number(value);
+    baseCycleMs[typeID] = Number.isFinite(ms) && ms > 0 ? ms : null;
+  }
+  return { baseCycleMs };
+}

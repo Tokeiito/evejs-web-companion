@@ -58,6 +58,7 @@ import type {
   OnlineCharacterState,
   RewardsState,
   SpaceState,
+  ModuleCycle,
   TargetingState,
   MiningState,
   MiningHold,
@@ -338,6 +339,7 @@ const INITIAL_TARGETING: TargetingState = Object.freeze({
   lastAction: null,
   actionError: null,
   silentDecline: null,
+  moduleCycles: Object.freeze({}) as Readonly<Record<number, ModuleCycle>>,
 });
 
 // R23 slice B — the mining loop. `taxRate` starts NULL, not 0: reprocessing
@@ -1054,6 +1056,63 @@ export function createClientStore(): ClientStore {
       case "targeting/cleared":
         targeting.set(INITIAL_TARGETING);
         break;
+      // --- R24 slice C: module cycle times ---------------------------------
+      case "targeting/base-cycles": {
+        // The base figure NEVER displaces one the server gave us. Attribute 73
+        // is the type's starting point; an `OnGodmaShipEffect` duration is the
+        // pilot's actual cycle. Downgrading the second to the first would be a
+        // silent loss of accuracy on screen.
+        const prev = targeting.get();
+        const next: Record<number, ModuleCycle> = { ...prev.moduleCycles };
+        for (const [key, ms] of Object.entries(event.cycles)) {
+          const moduleID = Number(key);
+          if (!(moduleID > 0) || ms === null || !(ms > 0)) {
+            continue;
+          }
+          if (next[moduleID] && next[moduleID].source === "server") {
+            continue;
+          }
+          next[moduleID] = {
+            durationMs: ms,
+            source: "base",
+            startedAtMs: next[moduleID]?.startedAtMs ?? null,
+            repeating: next[moduleID]?.repeating ?? false,
+          };
+        }
+        targeting.set({ ...prev, moduleCycles: next });
+        break;
+      }
+      case "targeting/cycle": {
+        const prev = targeting.get();
+        const existing = prev.moduleCycles[event.moduleID] ?? null;
+        // A stop event tells us nothing new about the LENGTH, so keep whatever
+        // we had; it only ends the running cycle.
+        const durationMs =
+          event.durationMs !== null && event.durationMs > 0
+            ? event.durationMs
+            : (existing?.durationMs ?? 0);
+        if (!(durationMs > 0)) {
+          break;
+        }
+        targeting.set({
+          ...prev,
+          moduleCycles: {
+            ...prev.moduleCycles,
+            [event.moduleID]: {
+              durationMs,
+              // A server figure, once seen, stays a server figure: the length
+              // does not become less trustworthy when the module stops.
+              source:
+                event.durationMs !== null && event.durationMs > 0
+                  ? "server"
+                  : (existing?.source ?? "base"),
+              startedAtMs: event.running ? event.observedAtMs : null,
+              repeating: event.running ? event.repeating : false,
+            },
+          },
+        });
+        break;
+      }
       // --- R23 slice B: the mining loop ------------------------------------
       case "mining/holds":
         // A clean read clears the panel-level error; each hold still carries

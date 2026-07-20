@@ -1162,6 +1162,43 @@ export interface TargetingState {
    * are different things and the page says so.
    */
   readonly silentDecline: string | null;
+  /**
+   * R24 slice C — WHAT EACH MODULE'S CYCLE LOOKS LIKE, keyed by module itemID.
+   *
+   * Two independent facts live here and they are NOT interchangeable, which is
+   * why `source` is on the record rather than in a comment:
+   *
+   *   "server"  the server told us, in an `OnGodmaShipEffect` cycle event
+   *             (runtime.js:13012). That duration is the EFFECTIVE one — skills,
+   *             role bonuses, rigs and heat already in it — and it is the only
+   *             way the browser can ever know it, because there is still no
+   *             allowlisted call returning effective per-module attributes.
+   *   "base"    nobody has told us yet, so this is attribute 73 off the type,
+   *             before any of that. A real number, but the STARTING point, and
+   *             the page must say so.
+   *
+   * A module with no entry has no cycle we can speak to. That is not the same
+   * as "instant" and must never render as one.
+   */
+  readonly moduleCycles: Readonly<Record<number, ModuleCycle>>;
+}
+
+/** One module's cycle, and where the figure came from (R24 slice C). */
+export interface ModuleCycle {
+  /** One cycle's length in milliseconds. */
+  readonly durationMs: number;
+  /** "server" = the effective duration; "base" = attribute 73 off the type. */
+  readonly source: "server" | "base";
+  /**
+   * Browser clock reading for when the running cycle was observed to start, or
+   * null when the module is not known to be running. Deliberately the LOCAL
+   * clock: the server's stamp is a Windows FILETIME on the server's clock, and
+   * pretending we can line the two up would be fabricated precision. What we
+   * honestly know is "the cycle had just started when this reached us".
+   */
+  readonly startedAtMs: number | null;
+  /** True when the server said the effect repeats (a laser left running). */
+  readonly repeating: boolean;
 }
 
 // --- R23 slice B: the mining loop ------------------------------------------
@@ -1390,6 +1427,18 @@ export interface LiveNotification {
   readonly service: string | null;
   readonly method: string | null;
   readonly receivedAtMs: number;
+  /**
+   * R24 — the notification's own payload, as the gateway JSON-encoded it.
+   *
+   * R10 kept only the metadata, because liveness was all the page needed then:
+   * "something happened, go and re-read". The in-space cockpit needs more than
+   * that from two of these — `OnGodmaShipEffect` carries the only effective
+   * cycle duration the browser will ever see, and `OnItemsChanged` carries what
+   * changed. The gateway has always pushed the whole notification
+   * (`encodeJsonSafeCallValue`, evejsWebGatewayRuntime.js:2672); this is the
+   * page finally keeping it. Empty when the frame carried no args.
+   */
+  readonly args: readonly unknown[];
 }
 
 /**

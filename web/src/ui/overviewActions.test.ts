@@ -50,13 +50,13 @@ function visibleText(body: string): string {
  * online, and the server reporting it as cycling. Every one of those facts
  * arrives the way the real app delivers it — through a store event.
  */
-function renderLoaded(options: {
+function loadedStore(options: {
   locked?: number[];
   acquiring?: number | null;
   activeModuleIDs?: number[] | null;
   actionError?: string | null;
   silentDecline?: string | null;
-} = {}): string {
+} = {}) {
   const store = createClientStore();
   store.apply({
     type: "space/snapshot",
@@ -154,7 +154,12 @@ function renderLoaded(options: {
       "type:606": "Ibis",
     },
   });
-  return render(Overview, { props: { store, flow: fakeFlow() } }).body;
+  return store;
+}
+
+/** The same panel, rendered. */
+function renderLoaded(options: Parameters<typeof loadedStore>[0] = {}): string {
+  return render(Overview, { props: { store: loadedStore(options), flow: fakeFlow() } }).body;
 }
 
 // --- The sections exist and read as a player would expect --------------------
@@ -464,6 +469,118 @@ test("R24: the station row keeps the standing invariants (no ids, plain words, d
   for (const jargon of ["CmdDock", "DockingApproach", "stationID", "surface distance", "bridge"]) {
     assert.equal(text.includes(jargon), false, `"${jargon}" is developer vocabulary`);
   }
+  for (const cell of body.match(/<td\b[^>]*>/g) ?? []) {
+    assert.match(cell, /data-label="/, `every <td> needs data-label; saw ${cell}`);
+  }
+});
+
+// --- R24 slices C + D: cycle times and the live hold, as they RENDER ---------
+
+const HOLD_STORE_EVENT = {
+  type: "mining/holds" as const,
+  holds: [
+    {
+      key: "ore",
+      label: "Ore hold",
+      items: [{ itemID: 77000001, typeID: ORE_TYPE_ID, quantity: 350 }],
+      capacity: { capacity: 5000, used: 1250 },
+      present: true,
+      error: null,
+    },
+    // A hold this hull does not have: no capacity attribute, so it must not
+    // be drawn at all — not as an empty bar, not as 0 / 0.
+    { key: "ice", label: "Ice hold", items: [], capacity: null, present: false, error: null },
+  ],
+};
+
+test("R24 slice C: an unknown cycle reads NOT KNOWN, never an instant one", () => {
+  const text = visibleText(renderLoaded());
+  assert.match(text, /Cycle/, "the equipment table has a cycle column");
+  // Nothing has told us this module's cycle length yet.
+  assert.match(text, /Not known/);
+});
+
+test("R24 slice C: a BASE cycle length says so; a server one does not", () => {
+  const baseStore = loadedStore();
+  baseStore.apply({ type: "targeting/base-cycles", cycles: { [MODULE_ID]: 15000 } });
+  const base = visibleText(render(Overview, { props: { store: baseStore, flow: fakeFlow() } }).body);
+  assert.match(base, /15s/, "the length is shown");
+  assert.match(base, /before skills/, "and it is named as the equipment's own figure");
+
+  const serverStore = loadedStore();
+  serverStore.apply({
+    type: "targeting/cycle",
+    moduleID: MODULE_ID,
+    durationMs: 12750,
+    running: true,
+    repeating: true,
+    observedAtMs: Date.now(),
+  });
+  const server = visibleText(
+    render(Overview, { props: { store: serverStore, flow: fakeFlow() } }).body,
+  );
+  assert.match(server, /12\.8s|13s/, "the pilot's real cycle length");
+  assert.doesNotMatch(
+    server,
+    /before skills/,
+    "a figure that already HAS the skills in it must not be hedged as if it did not",
+  );
+});
+
+test("R24 slice D: only holds the hull HAS are drawn, with used out of total", () => {
+  const store = loadedStore();
+  store.apply(HOLD_STORE_EVENT);
+  const text = visibleText(render(Overview, { props: { store, flow: fakeFlow() } }).body);
+
+  assert.match(text, /Ore hold/);
+  assert.match(text, /1,250 \/ 5,000 m³/, "used out of total, as the ship reported it");
+  assert.doesNotMatch(text, /Ice hold/, "a hold this hull lacks is not rendered at all");
+});
+
+test("R24 slice D: a hold the ship could not measure reads NOT KNOWN, not empty", () => {
+  const store = loadedStore();
+  store.apply({
+    type: "mining/holds",
+    holds: [
+      {
+        key: "ore",
+        label: "Ore hold",
+        items: [{ itemID: 77000001, typeID: ORE_TYPE_ID, quantity: 350 }],
+        capacity: null,
+        present: false,
+        error: null,
+      },
+    ],
+  });
+  const text = visibleText(render(Overview, { props: { store, flow: fakeFlow() } }).body);
+  assert.match(text, /Ore hold/, "there IS ore in it, so it is shown");
+  assert.match(text, /not known/, "but how full it is, is not");
+  assert.doesNotMatch(text, /0 \/ 0/, "an unknown reading is never a zero one");
+});
+
+test("R24: the new cockpit readouts keep the standing invariants", () => {
+  const store = loadedStore();
+  store.apply(HOLD_STORE_EVENT);
+  store.apply({ type: "targeting/base-cycles", cycles: { [MODULE_ID]: 15000 } });
+  const body = render(Overview, { props: { store, flow: fakeFlow() } }).body;
+  const text = visibleText(body);
+
+  // R7d — no numeric ids on screen.
+  for (const id of [ROCK_ID, SHIP_ID, MODULE_ID, ORE_TYPE_ID, LASER_TYPE_ID, 77000001]) {
+    assert.equal(new RegExp(`\b${id}\b`).test(text), false, `${id} must not be visible`);
+  }
+  // R9a — plain words, no wire vocabulary.
+  for (const jargon of [
+    "OnGodmaShipEffect",
+    "OnItemsChanged",
+    "attribute 73",
+    "durationMs",
+    "flagID",
+    "capacity attribute",
+  ]) {
+    assert.equal(text.includes(jargon), false, `"${jargon}" is developer vocabulary`);
+  }
+  // R8 — every cell still carries its narrow-layout label.
   for (const cell of body.match(/<td\b[^>]*>/g) ?? []) {
     assert.match(cell, /data-label="/, `every <td> needs data-label; saw ${cell}`);
   }

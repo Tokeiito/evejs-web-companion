@@ -372,6 +372,26 @@ export type FeedEvent =
   | { readonly type: "targeting/silent-decline"; readonly message: string | null }
   // Drop the targeting state (docked / character offline / logged out).
   | { readonly type: "targeting/cleared" }
+  // R24 slice C — the BASE cycle length for a module type (attribute 73, off
+  // static reference data). Applied to every fitted module of that type that
+  // has no better figure; a server-sourced duration is never overwritten by it.
+  | {
+      readonly type: "targeting/base-cycles";
+      /** moduleItemID -> milliseconds, or null where the type has no duration. */
+      readonly cycles: Readonly<Record<number, number | null>>;
+    }
+  // R24 slice C — a cycle event the SERVER pushed (`OnGodmaShipEffect`). This
+  // carries the EFFECTIVE duration, which is the only way the browser can know
+  // it. `running: false` is the stop event: the length is remembered, the
+  // running cycle is not.
+  | {
+      readonly type: "targeting/cycle";
+      readonly moduleID: number;
+      readonly durationMs: number | null;
+      readonly running: boolean;
+      readonly repeating: boolean;
+      readonly observedAtMs: number;
+    }
   // Goal R23 slice B — the mining loop. The ship's mining holds, by NAME (the
   // retail flagIDs never reach the browser), each with its own read error so one
   // failed hold never blanks the rest.

@@ -21,7 +21,7 @@ function message(overrides: Partial<ChatMessage> = {}): ChatMessage {
 }
 
 function notification(kind = "service") {
-  return { kind, service: "OnX", method: "Notify", receivedAtMs: 100 };
+  return { kind, service: "OnX", method: "Notify", receivedAtMs: 100, args: [] };
 }
 
 test("live/notification records the cursor and marks the channel live", () => {
