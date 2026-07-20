@@ -114,7 +114,6 @@ async function startTestServer(options = {}) {
     eveStore: options.store || fakeStore(),
     eveGatewayClient: options.gateway || {},
     webAuth: fakeAuth(),
-    marketClient: {},
     errorLogger() {},
   });
   const server = app.listen(0, "127.0.0.1");

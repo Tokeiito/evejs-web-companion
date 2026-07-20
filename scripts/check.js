@@ -1,11 +1,18 @@
 "use strict";
 
+// Operator sanity check (`npm run check`): is the EveJS gateway reachable and
+// is its runtime ready enough for the web client to sign in?
+//
+// Trimmed by goal R9b: this used to walk `eveStore.listAccounts()` and print a
+// sample skill dashboard, both of which lived on the retired emulation-snapshot
+// surface. The gateway `/status` + `/health` reads it uses now are the same two
+// the live `GET /api/health` route serves.
+
 const eveStore = require("../src/eveStore");
 const webAuth = require("../src/webAuth");
 
 async function main() {
   const status = await eveStore.getStatus();
-  const accounts = await eveStore.listAccounts();
 
   console.log("EveJS Web POC check");
   console.log("Data source: EveJS web gateway v1");
@@ -30,27 +37,6 @@ async function main() {
     status.runtime.dependencies.serviceManager !== true
   ) {
     throw new Error("EveJS v1 gateway is unavailable or its runtime is not ready.");
-  }
-
-  if (accounts.length === 0) {
-    throw new Error("No EveJS accounts found.");
-  }
-
-  const firstAccount = accounts[0];
-  const characters = await eveStore.listCharactersForAccount(firstAccount.accountID);
-  console.log(`First account: ${firstAccount.username}`);
-  console.log(`Characters for first account: ${characters.length}`);
-
-  if (characters.length > 0) {
-    const dashboard = await eveStore.getSkillDashboard(
-      firstAccount.accountID,
-      characters[0].characterID,
-    );
-    console.log(
-      `Skill dashboard sample: ${dashboard.character.characterName}, ` +
-        `${dashboard.summary.trainedSkillCount} skills, ` +
-        `${dashboard.summary.totalSkillPoints} SP`,
-    );
   }
 }
 

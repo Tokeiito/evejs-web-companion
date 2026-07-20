@@ -293,8 +293,10 @@ Current pages:
 
 The two registered gameplay mutations are skill-queue save (with a save-paused variant) and PI extractor restart. Both run through EveJS's authoritative validation and runtime code; EveJS owns persistence.
 
-## Current plumbing (transitional)
+## Current plumbing (bridge-only since R9b)
 
-Today the app talks to EveJS through the versioned `/_evejs-web/v1` gateway: broad character snapshots for reads, exclusive browser character-control leases, per-character serialized commands with idempotency keys and expected state versions, and a sequenced WebSocket event stream with replay and reconnect snapshots. Lease, receipt, and event state is process-memory; an EveJS restart starts a new event epoch and clients recover via snapshot.
+The migration is finished: **the client is bridge-only.** Every read and every mutation the app performs goes through `POST /api/bridge/*` (the retail call tuple, bound objects, the persistent session, flight, chat) or through the login-gated read-only static routes (`/api/map/*`, `/api/names`, `/api/agents/find`), which serve EveJS's static reference export the same way the retail client resolves names from its local static DB.
 
-This plumbing is being **replaced, not extended**: the roadmap's direction is a thin bridge in eve.js that invokes the same `Handle_*` service handlers the retail client uses, with pages migrating one at a time and each legacy path deleted as its page moves. Do not build new features on the v1 gateway. See the roadmap for the R0–R6 goal ladder.
+Goal R9b retired the transitional machinery that used to sit alongside it: the broad character-snapshot dashboards (`GET|POST /api/characters/:characterID/*`), `GET /api/characters`, `GET /api/me`, the exclusive browser character-control leases, the per-character idempotent command path, and the sequenced WebSocket event stream — along with their modules (`src/browserLeaseStore.js`, `src/characterEventProxy.js`, `src/marketClient.js`, the emulation side of `src/eveStore.js`, and the matching v1 read helpers in `src/eveGatewayClient.js`).
+
+What is left of the v1 gateway is exactly four reads the auth and health surface still needs: `/account` and `/characters` for login, `/snapshot` for the character-ownership check `POST /api/bridge/select` performs, and `/status` + `/health` for `GET /api/health`. `src/eveStore.js` is now just the normalizer over those. Do not build new features on the v1 gateway.

@@ -51,42 +51,6 @@ function getGatewayToken() {
   return String(process.env.EVEJS_WEB_GATEWAY_TOKEN || "").trim();
 }
 
-function buildEventStreamRequest(accountID, characterID, cursor = null) {
-  const token = getGatewayToken();
-  if (!token) {
-    throw new EveGatewayError(
-      "EVEJS_WEB_GATEWAY_TOKEN is required for the character event stream.",
-      { code: "EVE_GATEWAY_CONFIGURATION", statusCode: 503 },
-    );
-  }
-
-  const url = new URL(`${getGatewayBaseUrl()}/events`);
-  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-  url.searchParams.set("accountID", String(Number(accountID) || 0));
-  url.searchParams.set("characterID", String(Number(characterID) || 0));
-  if (cursor) {
-    url.searchParams.set("epoch", cursor.epoch);
-    url.searchParams.set("sequence", String(cursor.sequence));
-  }
-
-  return {
-    url: url.toString(),
-    headers: {
-      "x-evejs-web-token": token,
-    },
-  };
-}
-
-function normalizeQueueEntries(entries) {
-  if (!Array.isArray(entries)) {
-    return entries;
-  }
-  return entries.map((entry) => ({
-    typeID: entry && entry.typeID,
-    toLevel: entry && entry.toLevel,
-  }));
-}
-
 function assertGatewayEnvelope(data, statusCode) {
   if (!data || data.source !== GATEWAY_SOURCE) {
     throw new EveGatewayError("EveJS gateway endpoint is not available.", {
@@ -169,26 +133,6 @@ async function postJson(path, payload, options = {}) {
   return postSerializedJson(path, JSON.stringify(payload), options);
 }
 
-function isUncertainCommandError(error) {
-  return error instanceof EveGatewayError && (
-    error.statusCode === 503 ||
-    error.code === "EVE_GATEWAY_TIMEOUT" ||
-    error.code === "EVE_GATEWAY_UNREACHABLE"
-  );
-}
-
-async function postCommandJson(path, payload) {
-  const serializedPayload = JSON.stringify(payload);
-  try {
-    return await postSerializedJson(path, serializedPayload);
-  } catch (error) {
-    if (!isUncertainCommandError(error)) {
-      throw error;
-    }
-    return postSerializedJson(path, serializedPayload);
-  }
-}
-
 async function getJson(path, query = {}) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
@@ -237,51 +181,6 @@ async function getJson(path, query = {}) {
   } finally {
     clearTimeout(timeout);
   }
-}
-
-async function getCharacterStatus(accountID, characterID) {
-  return getJson("/character-status", {
-    accountID: Number(accountID) || 0,
-    characterID: Number(characterID) || 0,
-  });
-}
-
-async function claimCharacterControl(accountID, characterID, controllerID) {
-  return postJson("/character-control/claim", {
-    accountID: Number(accountID) || 0,
-    characterID: Number(characterID) || 0,
-    controllerID: String(controllerID || ""),
-  });
-}
-
-async function renewCharacterControl(
-  accountID,
-  characterID,
-  controllerID,
-  credentials = {},
-) {
-  return postJson("/character-control/renew", {
-    accountID: Number(accountID) || 0,
-    characterID: Number(characterID) || 0,
-    controllerID: String(controllerID || ""),
-    leaseID: String(credentials.leaseID || ""),
-    leaseSecret: String(credentials.leaseSecret || ""),
-  });
-}
-
-async function releaseCharacterControl(
-  accountID,
-  characterID,
-  controllerID,
-  credentials = {},
-) {
-  return postJson("/character-control/release", {
-    accountID: Number(accountID) || 0,
-    characterID: Number(characterID) || 0,
-    controllerID: String(controllerID || ""),
-    leaseID: String(credentials.leaseID || ""),
-    leaseSecret: String(credentials.leaseSecret || ""),
-  });
 }
 
 async function getGatewayHealth() {
@@ -345,11 +244,6 @@ async function getStatus() {
   };
 }
 
-async function listAccounts() {
-  const result = await getJson("/accounts");
-  return Array.isArray(result.accounts) ? result.accounts : [];
-}
-
 async function getAccount(username) {
   const result = await getJson("/account", {
     username: String(username || "").trim(),
@@ -370,13 +264,6 @@ async function getSnapshot(accountID, characterID) {
     characterID: Number(characterID) || 0,
   });
   return result.snapshot || null;
-}
-
-async function getStationAsks(stationID) {
-  const result = await getJson("/market/station-asks", {
-    stationID: Number(stationID) || 0,
-  });
-  return Array.isArray(result.rows) ? result.rows : [];
 }
 
 // Bridge reads can be heavy on a cold gateway: map.GetStationInfo marshals the
@@ -601,42 +488,10 @@ async function sendChat(bridgeSessionID, channel, message, sessionFields = {}) {
   };
 }
 
-async function saveSkillQueue(accountID, characterID, entries, options = {}) {
-  return postCommandJson("/skill-queue", {
-    accountID: Number(accountID) || 0,
-    characterID: Number(characterID) || 0,
-    command: {
-      commandID: String(options.commandID || ""),
-      expectedStateVersion: String(options.expectedStateVersion || ""),
-      controllerID: String(options.controllerID || ""),
-      type: "offline.skill_queue.save",
-      payload: {
-        entries: normalizeQueueEntries(entries),
-        activate: options.activate === true,
-      },
-    },
-  });
-}
-
-async function restartExtractors(accountID, characterID, options = {}) {
-  return postCommandJson("/pi/restart-extractors", {
-    accountID: Number(accountID) || 0,
-    characterID: Number(characterID) || 0,
-    command: {
-      commandID: String(options.commandID || ""),
-      expectedStateVersion: String(options.expectedStateVersion || ""),
-      controllerID: String(options.controllerID || ""),
-      type: "offline.pi.extractors.restart",
-      payload: {
-        planetID: Number(options.planetID) || 0,
-      },
-    },
-  });
-}
-
 module.exports = {
   EveGatewayError,
-  buildEventStreamRequest,
+  // Bridge surface (the live path): the retail call tuple, bound objects, the
+  // persistent session, flight status, and chat.
   callMethod,
   bindObject,
   callBoundMethod,
@@ -645,17 +500,13 @@ module.exports = {
   readFlightStatus,
   readChat,
   sendChat,
-  claimCharacterControl,
+  // The four v1 reads the auth/health surface still needs (goal R9b): account
+  // lookup + the character list for login, the one-row snapshot the
+  // /api/bridge/select ownership check reads, and gateway status for
+  // /api/health. Every other v1 read helper went with the legacy routes.
   getAccount,
-  getGatewayHealth,
-  getSnapshot,
-  getCharacterStatus,
-  getStationAsks,
-  getStatus,
-  listAccounts,
   listCharacters,
-  releaseCharacterControl,
-  renewCharacterControl,
-  saveSkillQueue,
-  restartExtractors,
+  getSnapshot,
+  getStatus,
+  getGatewayHealth,
 };

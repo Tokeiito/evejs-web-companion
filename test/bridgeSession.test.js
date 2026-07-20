@@ -169,7 +169,6 @@ async function startTestServer(options = {}) {
     eveStore: options.store || fakeStore(),
     eveGatewayClient: options.gateway || fakeGateway(),
     webAuth: fakeAuth(),
-    marketClient: {},
     staticData: options.staticData || fakeStaticData(),
     errorLogger() {},
   });
