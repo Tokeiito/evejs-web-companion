@@ -2119,6 +2119,131 @@ belt, locking a rock, running the laser — is deliberately **not** here: it is
 slice A's generic layer on the Around Your Ship tab, which a mining laser and a
 turret use identically.
 
+### The in-space cockpit (R24)
+
+**The warp DEAD BAND — a live bug, and the shape of a whole class of them.**
+R13's autopilot warped whenever the measured SURFACE distance reached 150 km.
+That is not the gate the server applies, and the server never says so:
+
+| Link | What it does |
+|---|---|
+| `warpState.js:236` | refuses when the distance to the **warp-in point** is under `MIN_WARP_DISTANCE_METERS` |
+| `warpCommands.js:250-255` | returns `WARP_DISTANCE_TOO_CLOSE` |
+| `beyonceService.js:1693` | `_throwWarpFailureUserError` translates ONLY criminal / bubble / scramble / immobile |
+| `beyonceService.js:1713` | everything else hits `default: break` and **throws nothing** |
+
+So the browser received `ok:true, result:null` with the ship exactly where it
+was, re-measured the same distance, decided "warp" again — and span forever,
+because the warp branch had no attempt bound. Three corrections were all needed:
+
+1. **Stop paying the autopilot call's built-in 10 km.**
+   `Handle_CmdWarpToStuffAutopilot` (`beyonceService.js:2983`) hardcodes
+   `minimumRange: 10000`, which is added to the warp's stop distance. The loop
+   now sends retail's own `WarpToItem(warpRange=0)` shape —
+   `Handle_CmdWarpToStuff("item", id, minRange=0)` (`:2654-2684`) — which
+   reaches the identical `warpToEntity` without that term.
+2. **Measure against the gate the server really applies.** The two target kinds
+   differ, and one of them is *random*:
+
+   | Kind | Accepted when |
+   |---|---|
+   | station | `surfaceDist >= 150000 + minRange + shipRadius` (`getWarpStopDistanceForTarget`, `warpState.js:632`) |
+   | stargate | `surfaceDist >= 150000 + minRange - shipRadius ± 2500` (`resolveStargateWarpTarget`, `runtime.js:2928`, jittering the warp-in point inside `WARP_EXIT_VARIANCE_RADIUS_METERS`, `runtime.js:701`) |
+
+   No client can reproduce the stargate case exactly. `warpFloorMeters` therefore
+   takes the **worst case of both kinds** and never asks for a warp the server
+   might refuse. In the residual band the ladder APPROACHES — which is what
+   retail does under `minWarpDistance` anyway, and which actually closes the gap.
+3. **Bound the branch.** `MAX_WARP_ATTEMPTS` counts consecutive warp decisions
+   for the same destination and resets on any other move, so a normal route
+   never accumulates and only a warp that changes nothing does.
+
+**The rule this generalises to: a decision that cannot make progress must pause
+with a reason, never repeat.** Applying it to Dock found the same hole twice
+more.
+
+**Smart Dock.** Retail sequences docking client-side with exactly one server
+call: `menusvc.py:2981 Dock` to `DockStation` to
+`GetCloseAndTryCommand(itemID, RealDock, interactionRange=2500)` to
+`autopilot.py:503 __NavigateSystemTo`, re-armed every 2000 ms. That IS this
+app's decide-loop, so Dock is a **zero-hop plan handed to the same controller**
+rather than a second autopilot. Two corrections:
+
+* **The gate is 2,500 m SURFACE, not 50,000.** 50,000 is `maxDockingDistance`,
+  retail's outer hand-off trigger. `DEFAULT_STATION_DOCKING_RADIUS`
+  (`runtime.js:700`) is what a station actually takes you at, tested by
+  `canShipDockAtStation` (`:7563`) against
+  `distance - shipRadius - getStationInteractionRadius(station)`; and
+  `getStationInteractionRadius` (`:7453`) returns the station's own radius
+  whenever it has one, so that expression is exactly the surface distance the
+  loop already measures. Firing Dock from 50 km is not free: `Handle_CmdDock`
+  (`beyonceService.js:2994`) both starts an approach AND refuses with
+  `DockingApproach` (`:3013-3025`), and nothing auto-docks on arrival.
+* **`CmdDock` can return 200/null WITHOUT docking** (`:3031-3042`) —
+  `WARP_LANDING_PENDING`, `STATION_NOT_FOUND`, `SHIP_IMMOBILE` and
+  `DOCKING_APPROACH_REQUIRED` all reach the browser as `ok:true`. Nothing reads
+  the Dock response to decide it worked: arrival is `isAtDestination`, which is
+  `docked === true` AND the station id matching, both read back from
+  `flight-status`. Writing that test exposed that `MAX_DOCK_ATTEMPTS` only ever
+  counted **refusals**, so a Dock answering 200 and seating nobody looped
+  forever too — now bounded by `MAX_SILENT_DOCK_ATTEMPTS`, and explicitly reset
+  when the server DOES refuse with a reason so the two failure modes stay apart.
+
+**The push channel already carried everything.** R10 kept only a notification's
+metadata, because liveness was all it needed then; the gateway has always pushed
+the whole notification (`encodeJsonSafeCallValue`,
+`evejsWebGatewayRuntime.js:2672`). Two notifications on that channel carry things
+the browser cannot obtain any other way, and both are verified end to end in
+`server/tests/webGatewaySessionEvents.test.js` ("R24:"):
+
+| Notification | Emitted by | What it carries | How the page uses it |
+|---|---|---|---|
+| `OnGodmaShipEffect` | `notifyGenericModuleEffectState`, `runtime.js:13012` | module id, isStart, and the server's **effective** cycle duration | **for its payload** — it is the only source of an effective duration |
+| `OnItemsChanged` | `syncMinedOreChangesToSession`, `miningRuntime.js:994-999` | the changed stacks | **as a trigger only** — the hold is RE-READ from the ship |
+
+The asymmetry is deliberate. A hold derived from a stream of deltas drifts the
+first time a frame is missed, and this channel is explicitly allowed to drop and
+resynchronise. **The authority on what is in the hold is the hold.**
+
+**Cycle times — two sources, never conflated.** Where a cycle event has arrived,
+its duration is the pilot's real one. Where none has, attribute **73**
+(`duration`) off static data answers instead, through
+`staticData.getTypeDogmaAttribute` — exported since it was written, with **no
+caller until now** — behind a new **zero-bridge-call** `GET /api/types/cycle-times`.
+The base figure is labelled "before skills" on screen and **never displaces** a
+server one; a `-1` duration (a passive or instant effect) yields **no** cycle
+rather than a 0 ms one. There is still no allowlisted call returning effective
+per-module attributes — the same wall that blocks DPS — so nothing was invented.
+
+**Specialty holds are DATA.** A ship has a hold iff its capacity attribute is
+populated (`services/inventory/specialShipHoldRegistry.js`: 134/1556 ore,
+135/1557 gas, 181/3136 ice, 182/3227 asteroid, plus cargo 5/38). The BFF reports
+`present` from the reading, so a Venture and a Mammoth differ by data and neither
+is special-cased, and a hold that could not be measured reads "not known" rather
+than 0 / 0.
+
+**What is NOT observable to a client.** A full hold stopping the cycle:
+`stopReason: "cargo"` is a return value INSIDE the server
+(`miningRuntime.js:990`), not a notification. The client sees a stop event and a
+full hold, and must not claim one caused the other. Depletion is likewise
+observable only as an **absence** — the rock stops appearing in the snapshot and
+in `GetTargets`; there is no "your rock is gone" event.
+
+R24 page pieces: `web/src/nav/autopilotLoop.ts` (`warpFloorMeters`,
+`WARP_EXIT_VARIANCE_M`, `AUTOPILOT_WARP_MIN_RANGE_M`, `MAX_WARP_ATTEMPTS`,
+`STATION_DOCKING_RADIUS_M`, `MAX_SILENT_DOCK_ATTEMPTS`), `app/flow.ts` `dockAt`
+plus `applyPushedNotification` / `applyCycleNotification` / `scheduleHoldRefresh`
+and `seedBaseCycleTimes`, `app/api.ts` `loadBaseCycleTimes`, the `moduleCycles`
+map on the targeting slice with `targeting/base-cycles` + `targeting/cycle` feed
+events, `LiveNotification.args`, the Dock row action + Cycle column + live hold
+strip in `Overview.svelte`, and "Take me there and dock" in `Flight.svelte`.
+Tested by `web/src/nav/autopilotLoop.test.ts` (the dead-band regressions and the
+Dock ladder), `web/src/app/cockpitFlow.test.ts` (slices C/D/E through the real
+SSE path), `web/src/app/travelFlow.test.ts` (`dockAt`),
+`web/src/ui/overviewActions.test.ts` (how it renders + the invariants), and
+eve.js `server/tests/webGatewaySessionEvents.test.js`.
+
+
 ### Chat routes (R7)
 
 All require the signed web login session and a held bridge session (else 409
