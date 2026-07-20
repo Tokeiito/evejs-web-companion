@@ -47,11 +47,18 @@
   /** The rig awaiting an explicit "yes, destroy it" — never a one-click loss. */
   let confirmingRigID = $state<number | null>(null);
 
-  // R7c — resolve every fitted module's typeID and every fittable inventory
-  // row's typeID to a display NAME. Fire-and-forget so the panel renders
-  // immediately and swaps in names as they arrive.
+  // R7c — resolve the ACTIVE SHIP's typeID, every fitted module's typeID and
+  // every fittable inventory row's typeID to a display NAME. Fire-and-forget so
+  // the panel renders immediately and swaps in names as they arrive.
+  //
+  // The ship's own type belongs in this batch: without it the header falls back
+  // to "your ship" whenever Fitting is the first panel opened, because nothing
+  // else has warmed the flow's name cache for it yet.
   $effect(() => {
     const refs: NameRef[] = [];
+    if (activeShipTypeID !== null) {
+      refs.push({ kind: "type", id: activeShipTypeID });
+    }
     for (const slot of $fitting.slots) {
       if (slot.module) {
         refs.push({ kind: "type", id: slot.module.typeID });
@@ -95,15 +102,23 @@
     return match ? moduleName(match.row.typeID) : null;
   });
 
-  const activeShipName = $derived.by<string>(() => {
+  /** The active ship's TYPE (what names it) — never its item ID. */
+  const activeShipTypeID = $derived.by<number | null>(() => {
     const shipID = $fitting.activeShipID;
     if (shipID === null) {
-      return "your ship";
+      return null;
     }
     const row =
       $inventory.hangar.rows.find((entry) => entry.itemID === shipID) ??
       $inventory.cargo.rows.find((entry) => entry.itemID === shipID);
-    const typeName = row ? $names.resolved[nameKey("type", row.typeID)] : null;
+    return row ? row.typeID : null;
+  });
+
+  const activeShipName = $derived.by<string>(() => {
+    if (activeShipTypeID === null) {
+      return "your ship";
+    }
+    const typeName = $names.resolved[nameKey("type", activeShipTypeID)];
     return typeName ?? "your ship";
   });
 
@@ -244,7 +259,7 @@
 <section>
   <h2>
     Fitting
-    <small class="note">{activeShipName()}</small>
+    <small class="note">{activeShipName}</small>
   </h2>
   <p class="controls">
     <button type="button" disabled={busy} onclick={() => run(refresh)}>Refresh</button>
