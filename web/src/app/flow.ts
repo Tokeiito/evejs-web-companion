@@ -31,6 +31,13 @@ import {
 } from "../bridge/market.ts";
 import { decodeMailbox, mailRefusalMessage } from "../bridge/mail.ts";
 import {
+  contractRefusalMessage,
+  decodeContractDetail,
+  decodeContractList,
+  decodeContractSearch,
+  decodeContractSummary,
+} from "../bridge/contracts.ts";
+import {
   AGENT_BUTTON,
   decodeBriefing,
   decodeConversation,
@@ -237,6 +244,20 @@ export interface AppFlow {
    * it and mail addressed to nobody would look sent.
    */
   sendMail(request: api.MailSendRequest): Promise<void>;
+  /**
+   * Load the Contracts panel: the public courier browse, the player's own
+   * contracts (waiting / taken on / expired), the summary counts, and every
+   * NAME those need. READS ONLY — every contract mutator is refused at the
+   * gateway.
+   *
+   * ⚠ An empty public browse is EXPECTED: EveJS has no contract generator, so
+   * there is nothing to find until a player creates one.
+   */
+  loadContracts(page: number): Promise<void>;
+  /** Open one contract in full: its items and its route endpoints, by name. */
+  openContract(contractID: number): Promise<void>;
+  /** Close the open contract without touching the server. */
+  closeContract(): void;
   /** Load the docked station's agent roster (agentMgr.GetAgents). */
   loadAgents(): Promise<void>;
   /** Open a conversation with an agent (bound DoAction(None)). */
@@ -1165,6 +1186,97 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
   function closeMail(): void {
     store.apply({ type: "mail/opened", open: null });
+  }
+
+  // --- R17 Contracts --------------------------------------------------------
+
+  async function loadContracts(page: number): Promise<void> {
+    let reads: Awaited<ReturnType<typeof api.loadContracts>>;
+    try {
+      reads = await api.loadContracts(page, callOptions);
+    } catch (error) {
+      if (isSessionLost(error)) {
+        stopLiveStream();
+        store.apply({ type: "character/offline" });
+      }
+      throw error;
+    }
+    const browse = decodeContractSearch(reads.browse.result);
+    const outstanding = decodeContractList(reads.outstanding.result);
+    const accepted = decodeContractList(reads.accepted.result);
+    const expired = decodeContractList(reads.expired.result);
+
+    store.apply({
+      type: "contracts/loaded",
+      browse: browse.contracts,
+      numFound: browse.numFound,
+      page: reads.page,
+      pageSize: reads.pageSize,
+      outstanding,
+      accepted,
+      expired,
+      summary: reads.summary.error ? null : decodeContractSummary(reads.summary.result),
+      browseError: reads.browse.error,
+      // The player's own contracts come from three reads; any one failing
+      // means the "yours" view is incomplete.
+      mineError: reads.outstanding.error || reads.accepted.error || reads.expired.error,
+      worldHasNoContracts: reads.worldHasNoContracts,
+    });
+
+    // Every ID the panel will show, resolved to a NAME (R7d). A contract is
+    // issued by someone, runs between two stations in two systems, and may be
+    // reserved for or taken by someone.
+    const refs: NameRef[] = [];
+    for (const row of [...browse.contracts, ...outstanding, ...accepted, ...expired]) {
+      refs.push({ kind: "character", id: row.issuerID });
+      refs.push({ kind: "corporation", id: row.issuerCorpID });
+      refs.push({ kind: "station", id: row.startStationID });
+      refs.push({ kind: "station", id: row.endStationID });
+      refs.push({ kind: "system", id: row.startSolarSystemID });
+      refs.push({ kind: "system", id: row.endSolarSystemID });
+      if (row.assigneeID !== null) {
+        refs.push({ kind: "owner", id: row.assigneeID });
+      }
+      if (row.acceptorID !== null) {
+        refs.push({ kind: "owner", id: row.acceptorID });
+      }
+    }
+    requestNames(refs);
+  }
+
+  async function openContract(contractID: number): Promise<void> {
+    let raw: Awaited<ReturnType<typeof api.loadContractDetail>>;
+    try {
+      raw = await api.loadContractDetail(contractID, callOptions);
+    } catch (error) {
+      if (isSessionLost(error)) {
+        stopLiveStream();
+        store.apply({ type: "character/offline" });
+        throw error;
+      }
+      store.apply({ type: "contracts/detail-error", message: contractRefusalMessage(error) });
+      return;
+    }
+    const detail = decodeContractDetail(raw);
+    store.apply({ type: "contracts/detail", detail });
+    if (detail) {
+      // The item types and the route endpoints all render as NAMES.
+      const refs: NameRef[] = [
+        { kind: "station", id: detail.contract.startStationID },
+        { kind: "station", id: detail.contract.endStationID },
+        { kind: "system", id: detail.startSolarSystemID },
+        { kind: "system", id: detail.endSolarSystemID },
+        { kind: "character", id: detail.contract.issuerID },
+      ];
+      for (const item of detail.items) {
+        refs.push({ kind: "type", id: item.typeID });
+      }
+      requestNames(refs);
+    }
+  }
+
+  function closeContract(): void {
+    store.apply({ type: "contracts/detail", detail: null });
   }
 
   /**
@@ -2191,6 +2303,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     closeMail,
     findCharacters: (q: string) => api.findCharacters(q, callOptions),
     sendMail,
+    loadContracts,
+    openContract,
+    closeContract,
 
     loadAgents,
 

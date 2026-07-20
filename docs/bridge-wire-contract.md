@@ -1272,6 +1272,198 @@ refusal keeps the handler's own sentence verbatim; a named market error
 (`MktBrokersFeeUnexpected2`, `MktNotEnoughMoney`, …) becomes a plain sentence,
 which is presentation, not diagnosis.
 
+## Mail — your inbox, reading a message, writing one (R17 Slice A)
+
+The whole retail mail surface is **top-level** (`sm.RemoteSvc('mailMgr')`), so
+`POST /api/bridge/call` on the held session carries all of it — **no
+bound-object machinery**.
+
+### ⚠ Three traps, before the call table
+
+**1. The inbox is a DELTA SYNC, not a list call.** There is no "give me my mail"
+method anywhere on `mailMgr`. `SyncMail(firstID, lastID)` takes the **min and
+max messageID the CALLER already holds** and answers only what falls *outside*
+that window. A caller that invents a window gets a **partial mailbox and no
+error at all**. The browser caches nothing across a page load, so it is
+permanently cold and the BFF always sends the cold-start pair **`[null, 0]`** —
+"I hold nothing, send everything". Both shapes are pinned in
+`server/tests/webGatewayMail.test.js`.
+
+**2. `GetBody` returns a zlib-DEFLATED buffer, not text.**
+`mailState.getCompressedBody` answers `zlib.deflateSync(body)`, which crosses the
+JSON bridge as `{type:"Buffer", data:[…]}`. **The BFF inflates it**
+(`src/server.js`, `mailBodyText` → `zlib.inflateSync(Buffer.from(...))`) and
+hands the browser plain text. **Never decompress in the browser** — that would
+mean shipping an inflate implementation to every page load to undo something the
+server did for a wire format the browser never speaks. A body that will not
+inflate is reported `unreadable: true` rather than rendered as byte values.
+`test/bridgeMail.test.js` builds a **real** deflated buffer and asserts no
+`{"type":"Buffer"}` survives into the response.
+
+**3. `toCharacterIDs` is asymmetric.** A header row reads it back as a
+**comma-joined STRING** (`"140000003,140000004"`, or `null` for none), while
+`SendMail`'s `args[0]` wants a **real list**. A decoder that assumes an array
+turns two recipients into one character whose id is the whole string.
+`bridge/mail.ts` `splitRecipientIDs` is the only place that string is
+interpreted.
+
+### The call table
+
+| Call | Args | Answers |
+|---|---|---|
+| `mailMgr.SyncMail` | `[firstID, lastID]` — **`[null, 0]` cold** | `{newMail, oldMail, mailStatus}` |
+| `mailMgr.GetMailHeaders` | `[[messageID, …]]` — **list NESTED in args[0]** | list of header rows |
+| `mailMgr.GetBody` | `[messageID, shouldMarkAsRead]` (1/0) | **zlib-DEFLATED buffer**, or `null` |
+| `mailMgr.SendMail` | `[toCharacterIDs, toListID, toCorpOrAllianceID, title, body, isReplyTo, isForwardedFrom]` | new `messageID`, or a bare `null` |
+
+`GetMailHeaders` with a **flat** argument list silently answers nothing — the
+list must be nested. `GetBody` with `shouldMarkAsRead=1` is a **write**: it
+clears the unread bit and pushes `OnMailUpdatedByExternal` to the character's
+other sessions.
+
+### ⚠ An empty recipient list is NOT refused by the server
+
+`mailState.sendMail`'s `NO_RECIPIENTS` guard reads
+`recipients.length === 0 && !saveSenderCopy`, and `Handle_SendMail` **hardcodes
+`saveSenderCopy: true`** — so the guard **can never fire through the gateway**.
+Mail addressed to nobody allocates a real `messageID`, is written, is filed into
+the *sender's own* mailbox, and **looks sent**. `POST /api/bridge/mail/send`
+refuses an empty recipient list itself, because nothing downstream will.
+
+### Security property
+
+Not one of the four calls takes an **owner** argument.
+`resolveSessionCharacterID` derives the mailbox from the session the gateway
+materialized, so no argument a browser can send reaches another character's
+mail — proven by a third character being blind to a message's header, its body
+and its presence in a sync. `SendMail`'s sender is likewise the session.
+
+### BFF routes (this repo)
+
+| Route | Does |
+|---|---|
+| `GET /api/bridge/mail` | cold `SyncMail [null,0]`, + `GetMailHeaders` backfill only when a status row has no header; answers the raw arms plus a computed `unreadCount` |
+| `GET /api/bridge/mail/body?messageID=&markRead=` | `GetBody`, **inflated to text**; re-reads to report `markedRead` |
+| `POST /api/bridge/mail/send` | `SendMail` with the exact 7-arg positional shape; guards recipients/subject/length |
+| `GET /api/characters/find?q=` | static reference data — **the one place the names rule runs backwards** (see below) |
+
+### ⚠ A 200 is not proof
+
+`markedRead` comes from a **fresh `SyncMail`**, not from the call succeeding;
+when that re-read fails it is `null` and **no claim is made**. A send is
+confirmed by finding the **sender's own copy** in a re-read. And `SendMail`'s
+bare `null` — a decline carrying **no reason at all** — is reported as exactly
+that (*"The server did not send that message, and did not say why."*); **no
+cause is ever invented.**
+
+### ⚠ Where R7d runs backwards
+
+Everything renders by **name** (senders, recipients, a corp-wide message as
+"everyone at ⟨corp⟩"). But composing needs the *reverse* direction, since
+`SendMail` wants a `characterID` — and asking the player for one is exactly what
+R7d forbids. So `GET /api/characters/find` searches the characters table **by
+name** (mirroring `/api/map/find` and `/api/market/find`) and the id rides along
+invisibly. The caller's own character is excluded: the server treats a
+self-addressed message as a sender copy with no recipient.
+
+**Out of slice:** the whole `mailingListsMgr` service (a separate
+join/leave/moderate/broadcast surface), and `mailMgr`'s own label and
+bulk-delete surface (`MarkAsRead` / `MoveToTrash` / `DeleteMail` / `EmptyTrash` /
+`ReplaceLabels` …) — opening a message already marks it read via `GetBody`, and a
+destructive bulk mail operation is not something a stray click should fire. Both
+are refused before dispatch and named in a test.
+
+## Contracts — the job board, your contracts, one in full (R17 Slice B)
+
+**Reads only.** The whole surface is **top-level**
+(`sm.ProxySvc('contractProxy')`) — no bound-object machinery.
+
+### ⚠ Four traps, before the call table
+
+**1. The service is `contractProxy`, NOT `contractMgr`** — the same shape as
+R16's market trap. `contractMgrService.js` is **86 lines of dead stubs**:
+`GetLoginInfo` answers three empty rowsets, `SearchContracts` an empty list,
+`NumOutstandingContracts` `0` — every method hardcoded empty, and the retail
+client never calls it. The live implementation is `contractProxyService.js`.
+Naming the stub produces a contracts page that renders perfectly and is
+permanently empty — **indistinguishable from trap 2**, which is what makes it
+expensive. No pair names `contractMgr`, and a test refuses it **by name** with
+the dead service deliberately registered, so the refusal proves the *allowlist*
+rather than its absence.
+
+**2. ⚠ A public browse is LEGITIMATELY EMPTY, and that is not a bug.** There is
+**no NPC/seed contract generator anywhere in EveJS** — `createContract` exists
+only in `contractRuntimeState.js` and its own handler, and nothing calls it at
+startup. `SearchContracts` answers nothing until a **player** creates a contract.
+The panel says so plainly: *"There are no public delivery jobs in this world yet.
+Jobs appear here once a player creates one — nothing posts them automatically."*
+**The BFF sets `worldHasNoContracts` ONLY when the browse SUCCEEDED and returned
+nothing** — a *failed* browse must never set it, because "there is nothing to
+find" and "we could not look" are different facts and the panel words them
+differently.
+
+**3. `SearchContracts` is KWARGS-ONLY.** `Handle_SearchContracts` ignores `args`
+entirely and reads every filter off `kwargs`. Filters sent positionally are
+**silently dropped** — a browse meant to show couriers quietly answers every
+contract type, with no error.
+
+**4. ⚠ `maxResults` is NOT the page size.** The envelope reports
+`MAX_CONTRACTS_PER_SEARCH` (**1000**, `contractProxyService.js:29`) while
+`searchContracts` actually slices by `CONTRACTS_PER_PAGE` (**100**,
+`contractRuntimeState.js:48`). **The two constants disagree**, so a client that
+pages by `maxResults` — the obvious reading — advances `startNum` by 1000 and
+**skips 900 contracts per page**, silently. The BFF pages by 100 and never reads
+that field.
+
+### The call table
+
+| Call | Args | Answers |
+|---|---|---|
+| `contractProxy.SearchContracts` | **`[]`** + kwargs `{contractType, availability, startNum}` | `{contracts:[{contract, items, bids}], numFound, searchTime, maxResults}` |
+| `contractProxy.GetMyCurrentContractList` | `[isAccepted, forCorp]` | `{contracts, items}` |
+| `contractProxy.GetMyExpiredContractList` | `[forCorp]` | `{contracts, items}` |
+| `contractProxy.GetContractListForOwner` | `[ownerID, filtStatus, contractType, issuedBy]` — **only args[0..2] are read** | `{contracts, items}` |
+| `contractProxy.GetLoginInfo` | `[]` | `{needsAttention, inProgress, assignedToMe}` — **rowsets** |
+| `contractProxy.CollectMyPageInfo` | `[]` | the counts KeyVal |
+| `contractProxy.GetContract` | `[contractID]` | the detail bundle, or `null` |
+
+⚠ **A search entry WRAPS the contract** (`entry.contract`), while a list bundle
+carries contract rows **directly**. Reading a search entry as a row finds no
+`contractID` and drops every result — an empty browse indistinguishable from
+trap 2. ⚠ `GetContractListForOwner` ignores its 4th argument **and both
+documented kwargs** (`num`, `startContractID`), so a caller that thinks it is
+paging gets the first page every time.
+
+### Security property
+
+Every contract **mutator** sits on the **same service** as the seven reads —
+`AcceptContract`, `CompleteContract`, `CreateContract`, `DeleteContract`,
+`DeleteMultipleContracts`, `SplitStack`, `SetContractExpired` — so a
+service-granular allowlist would have handed the browser the power to move a
+player's items and ISK. All are refused before dispatch and named in a test.
+`GetContractListForOwner` is the only read that *could* name another owner; the
+BFF only ever passes the session's own characterID, and the browser never
+chooses that argument. Auctions and bids are **stubbed server-side**
+(`PlaceBid` → `null`, `GetMyBids` → empty), so there is no bidding to build.
+
+**Accepting a contract is deliberately not implemented.** Its signature is
+unambiguous (`[contractID, forCorp]`, read positionally) — but it **transfers
+items and ISK**, and with no contract generator there is nothing in this world to
+accept, so the path could not be exercised end to end even once. A two-step
+confirm gate that has never been run is worse than no gate.
+
+### BFF routes (this repo)
+
+| Route | Does |
+|---|---|
+| `GET /api/bridge/contracts?page=` | five independent reads under `Promise.allSettled` (browse + outstanding + accepted + expired + summary); pages by **100** |
+| `GET /api/bridge/contracts/detail?contractID=` | `GetContract`; its `null` becomes a **404**, not an empty detail pane |
+
+Each read keeps its **own error**, so a failed public browse never hides the
+player's own contracts. ISK (`price` / `reward` / `collateral`) stays a **decimal
+string** the whole way — it exceeds 2^53 — and the four dates stay **bigints**
+(retail FILETIMEs) until they are rendered.
+
 ## Agent Finder static route (R6a)
 
 The per-station `agentMgr.GetAgents` roster is unreliable for *finding* an agent

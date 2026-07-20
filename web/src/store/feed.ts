@@ -43,6 +43,9 @@ import type {
   MailHeaderRow,
   MailOpenMessage,
   MailStatusRow,
+  ContractDetail,
+  ContractRow,
+  ContractSummary,
   InventoryContainerState,
   JournalState,
   LiveNotification,
@@ -237,6 +240,32 @@ export type FeedEvent =
   | { readonly type: "mail/outcome"; readonly outcome: MailActionOutcome | null }
   // Drop the mail state (character offline / logged out).
   | { readonly type: "mail/cleared" }
+  // Goal R17 (Slice B) — the Contracts page. READS ONLY: every contract mutator
+  // is refused at the gateway, so there is no action event here. Each read
+  // keeps its own error, so a public browse that failed never hides the
+  // player's own contracts.
+  | {
+      readonly type: "contracts/loaded";
+      readonly browse: readonly ContractRow[];
+      readonly numFound: number;
+      readonly page: number;
+      readonly pageSize: number;
+      readonly outstanding: readonly ContractRow[];
+      readonly accepted: readonly ContractRow[];
+      readonly expired: readonly ContractRow[];
+      readonly summary: ContractSummary | null;
+      readonly browseError: string | null;
+      readonly mineError: string | null;
+      // ⚠ True ONLY when the browse SUCCEEDED and found nothing. EveJS has no
+      // contract generator, so that is expected — and it must never be
+      // confused with a browse that failed.
+      readonly worldHasNoContracts: boolean;
+    }
+  // One contract opened in full; null closes it.
+  | { readonly type: "contracts/detail"; readonly detail: ContractDetail | null }
+  | { readonly type: "contracts/detail-error"; readonly message: string | null }
+  // Drop the contracts state (character offline / logged out).
+  | { readonly type: "contracts/cleared" }
   // Goal R4 — the Agents & Missions page (agentMgr bridge). The station's
   // agent roster (decoded + filtered to the docked station by the BFF).
   | { readonly type: "agents/list"; readonly stationID: number | null; readonly agents: readonly AgentRow[] }

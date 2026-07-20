@@ -972,6 +972,74 @@ export async function sendMail(
   };
 }
 
+// --- R17 Contracts ----------------------------------------------------------
+// READS ONLY. Every contract mutator is refused at the gateway, so there is no
+// write surface here. The BFF issues five independent reads and hands back
+// their raw retail-shaped results, decoded in the flow with
+// bridge/contracts.ts.
+
+export interface RawContractRead {
+  readonly result: JsonValue;
+  readonly error: string | null;
+}
+
+export interface RawContractReads {
+  readonly characterID: number | null;
+  readonly page: number;
+  readonly pageSize: number;
+  readonly browse: RawContractRead;
+  readonly outstanding: RawContractRead;
+  readonly accepted: RawContractRead;
+  readonly expired: RawContractRead;
+  readonly summary: RawContractRead;
+  /**
+   * ⚠ True ONLY when the browse SUCCEEDED and found nothing. EveJS has no
+   * NPC/seed contract generator, so an empty public browse is EXPECTED — but
+   * "the browse failed" and "this world has no contracts yet" are different
+   * facts and the panel must never confuse them.
+   */
+  readonly worldHasNoContracts: boolean;
+}
+
+function asContractRead(value: JsonValue | undefined): RawContractRead {
+  const row = (value ?? {}) as Record<string, JsonValue>;
+  return {
+    result: row.result ?? null,
+    error: typeof row.error === "string" ? row.error : null,
+  };
+}
+
+export async function loadContracts(
+  page: number,
+  options: ApiOptions = {},
+): Promise<RawContractReads> {
+  const query = page > 0 ? `?page=${encodeURIComponent(String(page))}` : "";
+  const data = await getJson(`/api/bridge/contracts${query}`, options);
+  return {
+    characterID: asNumberOrNull(data.characterID),
+    page: Number(data.page) || 0,
+    pageSize: Number(data.pageSize) || 100,
+    browse: asContractRead(data.browse),
+    outstanding: asContractRead(data.outstanding),
+    accepted: asContractRead(data.accepted),
+    expired: asContractRead(data.expired),
+    summary: asContractRead(data.summary),
+    worldHasNoContracts: data.worldHasNoContracts === true,
+  };
+}
+
+/** One contract in full. */
+export async function loadContractDetail(
+  contractID: number,
+  options: ApiOptions = {},
+): Promise<JsonValue> {
+  const data = await getJson(
+    `/api/bridge/contracts/detail?contractID=${encodeURIComponent(String(contractID))}`,
+    options,
+  );
+  return data.detail ?? null;
+}
+
 /** One person match from /api/characters/find. */
 export interface CharacterMatch {
   readonly characterID: number;

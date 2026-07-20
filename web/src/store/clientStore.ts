@@ -46,6 +46,10 @@ import type {
   MailOpenMessage,
   MailState,
   MailStatusRow,
+  ContractDetail,
+  ContractRow,
+  ContractSummary,
+  ContractsState,
   MarketTransactionRow,
   InventoryContainerState,
   CorpHangarState,
@@ -106,6 +110,7 @@ export interface ClientState {
   readonly industry: IndustryState;
   readonly market: MarketState;
   readonly mail: MailState;
+  readonly contracts: ContractsState;
   readonly agents: AgentsState;
   readonly finder: AgentFinderState;
   readonly rewards: RewardsState;
@@ -241,6 +246,30 @@ const INITIAL_MAIL: MailState = Object.freeze({
   lastOutcome: null as MailActionOutcome | null,
 });
 
+// R17 contracts. READS ONLY — every mutator is refused at the gateway, so
+// there is no action state here. Each read keeps its own error, so a public
+// browse that failed never hides the player's own contracts.
+//
+// ⚠ worldHasNoContracts starts FALSE and only ever becomes true from a
+// SUCCESSFUL empty browse. "Nothing loaded yet" and "this world has no
+// contracts" are different statements and must never look alike.
+const INITIAL_CONTRACTS: ContractsState = Object.freeze({
+  browse: Object.freeze([]) as readonly ContractRow[],
+  numFound: 0,
+  page: 0,
+  pageSize: 100,
+  outstanding: Object.freeze([]) as readonly ContractRow[],
+  accepted: Object.freeze([]) as readonly ContractRow[],
+  expired: Object.freeze([]) as readonly ContractRow[],
+  summary: null as ContractSummary | null,
+  detail: null as ContractDetail | null,
+  loaded: false,
+  browseError: null,
+  mineError: null,
+  detailError: null,
+  worldHasNoContracts: false,
+});
+
 const INITIAL_AGENTS: AgentsState = Object.freeze({
   stationID: null,
   agents: Object.freeze([]) as AgentsState["agents"],
@@ -362,6 +391,7 @@ export interface ClientStore {
   readonly industry: ReadableSignal<IndustryState>;
   readonly market: ReadableSignal<MarketState>;
   readonly mail: ReadableSignal<MailState>;
+  readonly contracts: ReadableSignal<ContractsState>;
   readonly agents: ReadableSignal<AgentsState>;
   readonly finder: ReadableSignal<AgentFinderState>;
   readonly rewards: ReadableSignal<RewardsState>;
@@ -402,6 +432,7 @@ export function createClientStore(): ClientStore {
   const industry = createSignal<IndustryState>(INITIAL_INDUSTRY);
   const market = createSignal<MarketState>(INITIAL_MARKET);
   const mail = createSignal<MailState>(INITIAL_MAIL);
+  const contracts = createSignal<ContractsState>(INITIAL_CONTRACTS);
   const agents = createSignal<AgentsState>(INITIAL_AGENTS);
   const finder = createSignal<AgentFinderState>(INITIAL_FINDER);
   const rewards = createSignal<RewardsState>(INITIAL_REWARDS);
@@ -429,6 +460,7 @@ export function createClientStore(): ClientStore {
     industry: industry.get(),
     market: market.get(),
     mail: mail.get(),
+    contracts: contracts.get(),
     agents: agents.get(),
     finder: finder.get(),
     rewards: rewards.get(),
@@ -460,6 +492,7 @@ export function createClientStore(): ClientStore {
         industry.set(INITIAL_INDUSTRY);
         market.set(INITIAL_MARKET);
         mail.set(INITIAL_MAIL);
+        contracts.set(INITIAL_CONTRACTS);
         agents.set(INITIAL_AGENTS);
         finder.set(INITIAL_FINDER);
         rewards.set(INITIAL_REWARDS);
@@ -506,6 +539,7 @@ export function createClientStore(): ClientStore {
         industry.set(INITIAL_INDUSTRY);
         market.set(INITIAL_MARKET);
         mail.set(INITIAL_MAIL);
+        contracts.set(INITIAL_CONTRACTS);
         agents.set(INITIAL_AGENTS);
         finder.set(INITIAL_FINDER);
         rewards.set(INITIAL_REWARDS);
@@ -522,6 +556,7 @@ export function createClientStore(): ClientStore {
         industry.set(INITIAL_INDUSTRY);
         market.set(INITIAL_MARKET);
         mail.set(INITIAL_MAIL);
+        contracts.set(INITIAL_CONTRACTS);
         agents.set(INITIAL_AGENTS);
         finder.set(INITIAL_FINDER);
         rewards.set(INITIAL_REWARDS);
@@ -748,6 +783,33 @@ export function createClientStore(): ClientStore {
         break;
       case "mail/cleared":
         mail.set(INITIAL_MAIL);
+        break;
+      // R17 contracts. Reads only; each keeps its own error.
+      case "contracts/loaded":
+        contracts.set({
+          ...contracts.get(),
+          browse: [...event.browse],
+          numFound: event.numFound,
+          page: event.page,
+          pageSize: event.pageSize,
+          outstanding: [...event.outstanding],
+          accepted: [...event.accepted],
+          expired: [...event.expired],
+          summary: event.summary,
+          loaded: true,
+          browseError: event.browseError,
+          mineError: event.mineError,
+          worldHasNoContracts: event.worldHasNoContracts,
+        });
+        break;
+      case "contracts/detail":
+        contracts.set({ ...contracts.get(), detail: event.detail, detailError: null });
+        break;
+      case "contracts/detail-error":
+        contracts.set({ ...contracts.get(), detailError: event.message });
+        break;
+      case "contracts/cleared":
+        contracts.set(INITIAL_CONTRACTS);
         break;
       case "agents/list":
         agents.set({
@@ -1062,6 +1124,7 @@ export function createClientStore(): ClientStore {
     industry: readonlySignal(industry),
     market: readonlySignal(market),
     mail: readonlySignal(mail),
+    contracts: readonlySignal(contracts),
     agents: readonlySignal(agents),
     finder: readonlySignal(finder),
     rewards: readonlySignal(rewards),

@@ -618,6 +618,108 @@ export interface MailActionOutcome {
   readonly message: string | null;
 }
 
+// --- R17 Contracts ----------------------------------------------------------
+
+/**
+ * One contract.
+ *
+ * ⚠ `price`, `reward` and `collateral` are DECIMAL STRINGS, not numbers: ISK
+ * exceeds 2^53 in ordinary play and routing it through a JS number would round
+ * it on the way to the screen (R7d).
+ *
+ * ⚠ The four dates are retail FILETIMEs (100 ns ticks since 1601-01-01), which
+ * exceed 2^53 — so they stay bigints until they are rendered.
+ */
+export interface ContractRow {
+  readonly contractID: number;
+  /** 1 item trade, 2 auction (stubbed server-side), 3 delivery job. */
+  readonly type: number;
+  readonly status: number;
+  readonly availability: number;
+  readonly issuerID: number;
+  readonly issuerCorpID: number;
+  readonly forCorp: boolean;
+  /** Who it is reserved for; null when it is open to anyone. */
+  readonly assigneeID: number | null;
+  /** Who took it; null while nobody has. */
+  readonly acceptorID: number | null;
+  readonly dateIssued: bigint | null;
+  readonly dateExpired: bigint | null;
+  readonly dateAccepted: bigint | null;
+  readonly dateCompleted: bigint | null;
+  readonly numDays: number;
+  readonly startStationID: number;
+  readonly endStationID: number;
+  readonly startSolarSystemID: number;
+  readonly endSolarSystemID: number;
+  readonly price: string | null;
+  readonly reward: string | null;
+  readonly collateral: string | null;
+  /** Cubic metres of cargo. */
+  readonly volume: number;
+  readonly title: string;
+  readonly description: string;
+}
+
+/** One item attached to a contract. */
+export interface ContractItemRow {
+  readonly typeID: number;
+  readonly quantity: number;
+  /**
+   * True when the item is being HANDED OVER, false when it is being ASKED FOR
+   * — the difference between a gift and a trade.
+   */
+  readonly inCrate: boolean;
+}
+
+/** One contract in full: the row, its items, and its route endpoints. */
+export interface ContractDetail {
+  readonly contract: ContractRow;
+  readonly items: readonly ContractItemRow[];
+  readonly startSolarSystemID: number;
+  readonly endSolarSystemID: number;
+}
+
+/** The headline counts from GetLoginInfo. */
+export interface ContractSummary {
+  readonly needsAttention: number;
+  readonly inProgress: number;
+  readonly assignedToMe: number;
+}
+
+/**
+ * The Contracts page state (goal R17, Slice B). READS ONLY — every contract
+ * mutator is refused at the gateway, so there is no action state here.
+ *
+ * The reads are INDEPENDENT: a public browse that fails must not hide the
+ * player's own contracts, so each keeps its own error.
+ */
+export interface ContractsState {
+  /** The public courier browse. Legitimately EMPTY in a world with no contracts. */
+  readonly browse: readonly ContractRow[];
+  readonly numFound: number;
+  readonly page: number;
+  readonly pageSize: number;
+  /** The player's own: issued and waiting, taken on, and expired. */
+  readonly outstanding: readonly ContractRow[];
+  readonly accepted: readonly ContractRow[];
+  readonly expired: readonly ContractRow[];
+  readonly summary: ContractSummary | null;
+  /** The contract currently opened in full, if any. */
+  readonly detail: ContractDetail | null;
+  readonly loaded: boolean;
+  readonly browseError: string | null;
+  readonly mineError: string | null;
+  readonly detailError: string | null;
+  /**
+   * ⚠ TRUE ONLY WHEN THE BROWSE SUCCEEDED AND FOUND NOTHING — never inferred
+   * from an absence. EveJS has no NPC/seed contract generator, so an empty
+   * public browse is EXPECTED, and the panel says so plainly. "The browse
+   * failed" and "this world has no contracts yet" must never look alike.
+   */
+  readonly worldHasNoContracts: boolean;
+}
+
 // --- R4 Agents & Missions --------------------------------------------------
 
 /**

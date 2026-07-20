@@ -3463,6 +3463,173 @@ app.post("/api/bridge/mail/send", requireAuth, async (req, res, next) => {
   }
 });
 
+// --- R17 Contracts (contractProxy bridge) -----------------------------------
+//
+// Like mail and market, the whole contract surface is TOP-LEVEL
+// (sm.ProxySvc('contractProxy')) — no bound-object step — so heldTopLevelCall
+// carries all of it.
+//
+// ⚠ THE SERVICE IS "contractProxy". EveJS registers TWO contract services and
+// the obvious name is the wrong one: `contractMgr` (contractMgrService.js) is
+// 86 lines of DEAD STUBS — GetLoginInfo answers three empty rowsets,
+// SearchContracts an empty list, NumOutstandingContracts 0 — every method
+// hardcoded empty, never called by the retail client. Naming it would give a
+// contracts page that renders perfectly and is permanently empty, which is
+// INDISTINGUISHABLE from the genuinely empty world below. Every call here names
+// contractProxy; the gateway allowlist refuses `contractMgr` by name.
+//
+// ⚠ A PUBLIC BROWSE IS LEGITIMATELY EMPTY, AND THAT IS NOT A BUG. There is no
+// NPC/seed contract generator anywhere in EveJS — `createContract` exists only
+// in contractRuntimeState.js and its own handler, and nothing calls it at
+// startup. So SearchContracts answers nothing until a player creates a
+// contract. The route reports that as a FACT (`worldHasNoContracts`) so the
+// panel can say "no public contracts exist in this world yet" rather than
+// looking broken. Do not go hunting for a bug here.
+//
+// ⚠ SearchContracts IS KWARGS-ONLY. Handle_SearchContracts ignores `args`
+// entirely and reads every filter off kwargs. Filters sent positionally are
+// silently DROPPED — a browse meant to show couriers would quietly answer
+// every contract type instead, with no error.
+//
+// ⚠ READS ONLY. Every contract MUTATOR (AcceptContract, CompleteContract,
+// CreateContract, DeleteContract, ...) sits on the SAME service and is refused
+// by the gateway. Accepting a contract transfers items and ISK; its signature
+// is unambiguous ([contractID, forCorp]) but there is nothing in this world to
+// accept, so an accept path could not be exercised end to end even once — and a
+// two-step confirm gate that has never been run is worse than no gate.
+
+/** contractType 3 = courier. availability 0 = public. */
+const CONTRACT_TYPE_COURIER = 3;
+const CONTRACT_AVAILABILITY_PUBLIC = 0;
+/**
+ * ⚠ THE REAL PAGE STRIDE, and it is NOT the `maxResults` the envelope reports.
+ * searchContracts slices by CONTRACTS_PER_PAGE (100,
+ * contractRuntimeState.js:48) while the envelope's `maxResults` carries
+ * MAX_CONTRACTS_PER_SEARCH (1000, contractProxyService.js:29). The two
+ * constants disagree, so paging by `maxResults` — the obvious reading — would
+ * advance startNum by 1000 and SKIP 900 CONTRACTS PER PAGE, silently. Page by
+ * this, never by that field.
+ */
+const CONTRACTS_PAGE_SIZE = 100;
+
+function contractsListEmpty(result) {
+  const contracts = readMailKeyVal(result, "contracts");
+  return !contracts || !Array.isArray(contracts.items) || contracts.items.length === 0;
+}
+
+/**
+ * GET /api/bridge/contracts?page= — the browse, the player's own, and the
+ * summary, in one panel load.
+ *
+ * Five INDEPENDENT reads (R2's rule): one failure never blanks the rest. A
+ * player whose public browse fails still sees their own contracts.
+ */
+app.get("/api/bridge/contracts", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const page = Math.max(0, Number(req.query.page) || 0);
+  try {
+    const [browse, outstanding, accepted, expired, summary] = await Promise.allSettled([
+      // ⚠ KWARGS-ONLY: no positional args at all, or the filters are dropped.
+      heldTopLevelCall(held, req.webSessionID, "contractProxy", "SearchContracts", [], {
+        contractType: CONTRACT_TYPE_COURIER,
+        availability: CONTRACT_AVAILABILITY_PUBLIC,
+        startNum: page * CONTRACTS_PAGE_SIZE,
+      }),
+      // (isAccepted, forCorp). Neither names an owner — the character comes
+      // from the session, so there is nothing here to point elsewhere.
+      heldTopLevelCall(
+        held, req.webSessionID, "contractProxy", "GetMyCurrentContractList", [false, false], null,
+      ),
+      heldTopLevelCall(
+        held, req.webSessionID, "contractProxy", "GetMyCurrentContractList", [true, false], null,
+      ),
+      heldTopLevelCall(
+        held, req.webSessionID, "contractProxy", "GetMyExpiredContractList", [false], null,
+      ),
+      heldTopLevelCall(
+        held, req.webSessionID, "contractProxy", "GetLoginInfo", [], null,
+      ),
+    ]);
+
+    const settled = [browse, outstanding, accepted, expired, summary];
+    for (const entry of settled) {
+      if (entry.status === "rejected" && entry.reason && entry.reason.code === "SESSION_NOT_FOUND") {
+        next(entry.reason);
+        return;
+      }
+    }
+
+    const codeOf = (entry) =>
+      entry.status === "rejected"
+        ? String((entry.reason && entry.reason.code) || "READ_FAILED")
+        : null;
+    const valueOf = (entry) => (entry.status === "fulfilled" ? entry.value.result : null);
+
+    // ⚠ THE FACT, NOT A GUESS. "The browse succeeded and found nothing" is a
+    // different statement from "the browse failed", and only the first one
+    // justifies telling the player this world has no contracts yet.
+    const worldHasNoContracts =
+      browse.status === "fulfilled" && contractsListEmpty(browse.value.result);
+
+    res.json({
+      ok: true,
+      characterID: held.characterID,
+      page,
+      pageSize: CONTRACTS_PAGE_SIZE,
+      browse: { result: valueOf(browse), error: codeOf(browse) },
+      outstanding: { result: valueOf(outstanding), error: codeOf(outstanding) },
+      accepted: { result: valueOf(accepted), error: codeOf(accepted) },
+      expired: { result: valueOf(expired), error: codeOf(expired) },
+      summary: { result: valueOf(summary), error: codeOf(summary) },
+      worldHasNoContracts,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * GET /api/bridge/contracts/detail?contractID= — one contract in full.
+ *
+ * GetContract answers null for a contract that does not exist — a definite
+ * answer the panel can act on ("that contract is gone"), reported as a 404
+ * rather than an empty detail pane.
+ */
+app.get("/api/bridge/contracts/detail", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const contractID = Number(req.query.contractID) || 0;
+  if (contractID <= 0) {
+    res.status(400).json({
+      ok: false,
+      error: "CONTRACT_INVALID",
+      message: "No contract was named.",
+    });
+    return;
+  }
+  try {
+    const detail = await heldTopLevelCall(
+      held, req.webSessionID, "contractProxy", "GetContract", [contractID], null,
+    );
+    if (detail.result === null || detail.result === undefined) {
+      res.status(404).json({
+        ok: false,
+        error: "CONTRACT_NOT_FOUND",
+        message: "That contract is no longer available.",
+      });
+      return;
+    }
+    res.json({ ok: true, contractID, detail: detail.result });
+  } catch (error) {
+    next(error);
+  }
+});
+
 /** Read `status` off a util.KeyVal job row (the re-read's verdict). */
 function readIndustryJobStatus(row) {
   const entries =

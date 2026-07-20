@@ -1,0 +1,315 @@
+// R17 Slice B — decoding the retail CONTRACT surface (contractProxy).
+//
+// ⚠ THE SERVICE IS `contractProxy`. `contractMgr` is 86 lines of DEAD STUBS
+// whose every method answers empty. Nothing in the browser names a service —
+// the BFF does — but the distinction matters here because a page fed by the
+// dead service and a page fed by the real one IN AN EMPTY WORLD look
+// identical. That is why the BFF reports `worldHasNoContracts` as a fact
+// derived from a SUCCESSFUL browse rather than letting the panel infer it from
+// an absence.
+//
+// ⚠ A PUBLIC BROWSE IS LEGITIMATELY EMPTY. There is no NPC/seed contract
+// generator in EveJS, so until a player creates a contract there is nothing to
+// find. The panel says so plainly. This is expected, not a defect.
+//
+// ⚠ ISK FIELDS (price / reward / collateral) ARE KEPT AS DECIMAL STRINGS the
+// whole way. They exceed 2^53 in ordinary play, so routing them through a JS
+// number would round them on the way to the screen (R7d).
+//
+// ⚠ DATES ARE FILETIMEs (100 ns ticks since 1601-01-01), not Unix timestamps,
+// and they exceed 2^53 — so they stay bigints until they are rendered.
+
+import type {
+  ContractDetail,
+  ContractItemRow,
+  ContractRow,
+  ContractSummary,
+} from "../store/types.ts";
+import type { JsonValue } from "./wire.ts";
+import { isListValue, readKeyVal, unwrapLong } from "./wire.ts";
+
+/** contractType 3 = courier; 1 = item exchange; 2 = auction (stubbed server-side). */
+export const CONTRACT_TYPE_ITEM_EXCHANGE = 1;
+export const CONTRACT_TYPE_AUCTION = 2;
+export const CONTRACT_TYPE_COURIER = 3;
+
+/** What kind of contract this is, in words. */
+export const CONTRACT_TYPE_LABELS: Readonly<Record<number, string>> = {
+  [CONTRACT_TYPE_ITEM_EXCHANGE]: "Item trade",
+  [CONTRACT_TYPE_AUCTION]: "Auction",
+  [CONTRACT_TYPE_COURIER]: "Delivery job",
+};
+
+/**
+ * Contract status codes (contractRuntimeState.CONTRACT_STATUS), in words a
+ * player can act on. -1 is REQUIRES_ATTENTION.
+ */
+export const CONTRACT_STATUS_LABELS: Readonly<Record<number, string>> = {
+  [-1]: "Needs your attention",
+  0: "Waiting for someone to take it",
+  1: "Being delivered",
+  2: "Finished by the person who issued it",
+  3: "Finished by the person who took it",
+  4: "Finished",
+  5: "Called off",
+  6: "Turned down",
+  7: "Failed",
+  8: "Deleted",
+  9: "Reversed",
+  10: "Has a bid on it",
+};
+
+export function contractTypeLabel(type: number): string {
+  return CONTRACT_TYPE_LABELS[type] ?? "Contract";
+}
+
+export function contractStatusLabel(status: number): string {
+  return CONTRACT_STATUS_LABELS[status] ?? "Unknown";
+}
+
+function listItems(value: JsonValue | undefined): readonly JsonValue[] {
+  return isListValue(value) ? (value.items as readonly JsonValue[]) : [];
+}
+
+function toNumber(value: JsonValue | undefined): number {
+  const long = unwrapLong(value);
+  if (long !== null) {
+    return Number(long);
+  }
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function toText(value: JsonValue | undefined): string {
+  return typeof value === "string" ? value : "";
+}
+
+/** An ISK amount as a DECIMAL STRING — never a JS number (it exceeds 2^53). */
+function toAmount(value: JsonValue | undefined): string | null {
+  const long = unwrapLong(value);
+  if (long !== null) {
+    return long.toString();
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return String(value);
+  }
+  if (typeof value === "string" && /^-?\d+(\.\d+)?$/.test(value)) {
+    return value;
+  }
+  return null;
+}
+
+/** A FILETIME instant, kept as a bigint; null when absent or zero. */
+function toFiletime(value: JsonValue | undefined): bigint | null {
+  const long = unwrapLong(value);
+  return long !== null && long > 0n ? long : null;
+}
+
+function decodeContractRow(row: JsonValue): ContractRow | null {
+  const contractID = toNumber(readKeyVal(row, "contractID"));
+  if (contractID <= 0) {
+    return null;
+  }
+  const assigneeID = toNumber(readKeyVal(row, "assigneeID"));
+  const acceptorID = toNumber(readKeyVal(row, "acceptorID"));
+  return {
+    contractID,
+    type: toNumber(readKeyVal(row, "type")),
+    status: toNumber(readKeyVal(row, "status")),
+    availability: toNumber(readKeyVal(row, "availability")),
+    issuerID: toNumber(readKeyVal(row, "issuerID")),
+    issuerCorpID: toNumber(readKeyVal(row, "issuerCorpID")),
+    forCorp: readKeyVal(row, "forCorp") === true,
+    // 0 means "nobody", which is a real state (a public contract), not a bad id.
+    assigneeID: assigneeID > 0 ? assigneeID : null,
+    acceptorID: acceptorID > 0 ? acceptorID : null,
+    dateIssued: toFiletime(readKeyVal(row, "dateIssued")),
+    dateExpired: toFiletime(readKeyVal(row, "dateExpired")),
+    dateAccepted: toFiletime(readKeyVal(row, "dateAccepted")),
+    dateCompleted: toFiletime(readKeyVal(row, "dateCompleted")),
+    numDays: toNumber(readKeyVal(row, "numDays")),
+    startStationID: toNumber(readKeyVal(row, "startStationID")),
+    endStationID: toNumber(readKeyVal(row, "endStationID")),
+    startSolarSystemID: toNumber(readKeyVal(row, "startSolarSystemID")),
+    endSolarSystemID: toNumber(readKeyVal(row, "endSolarSystemID")),
+    // ⚠ DECIMAL STRINGS. ISK exceeds 2^53.
+    price: toAmount(readKeyVal(row, "price")),
+    reward: toAmount(readKeyVal(row, "reward")),
+    collateral: toAmount(readKeyVal(row, "collateral")),
+    volume: toNumber(readKeyVal(row, "volume")),
+    title: toText(readKeyVal(row, "title")),
+    description: toText(readKeyVal(row, "description")),
+  };
+}
+
+/**
+ * Decode a contract LIST BUNDLE — the shape GetMyCurrentContractList,
+ * GetMyExpiredContractList and GetContractListForOwner all answer:
+ * {contracts: list, items: dict keyed by contractID}.
+ */
+export function decodeContractList(result: JsonValue): readonly ContractRow[] {
+  const rows: ContractRow[] = [];
+  for (const row of listItems(readKeyVal(result, "contracts"))) {
+    const decoded = decodeContractRow(row);
+    if (decoded) {
+      rows.push(decoded);
+    }
+  }
+  // Newest first: a contract just issued matters more than one from last month.
+  return rows.sort((left, right) => {
+    if (left.dateIssued !== null && right.dateIssued !== null && left.dateIssued !== right.dateIssued) {
+      return right.dateIssued > left.dateIssued ? 1 : -1;
+    }
+    return right.contractID - left.contractID;
+  });
+}
+
+export interface DecodedBrowse {
+  readonly contracts: readonly ContractRow[];
+  /** How many the search matched in total, across every page. */
+  readonly numFound: number;
+}
+
+/**
+ * Decode a SearchContracts result: {contracts:[{contract, items, bids}], …}.
+ *
+ * ⚠ THE SEARCH ENTRY IS NESTED. Unlike a list bundle, whose `contracts` are
+ * contract rows directly, a search entry WRAPS the row: the contract itself
+ * rides `entry.contract`. Reading a search entry as a row finds no contractID
+ * and drops every result — an empty browse that looks exactly like the empty
+ * world.
+ *
+ * ⚠ `maxResults` IS DELIBERATELY NOT READ. It reports 1000
+ * (MAX_CONTRACTS_PER_SEARCH) while the server actually slices by 100
+ * (CONTRACTS_PER_PAGE); paging by it would skip 900 contracts per page. The
+ * BFF owns the page stride.
+ */
+export function decodeContractSearch(result: JsonValue): DecodedBrowse {
+  const contracts: ContractRow[] = [];
+  for (const entry of listItems(readKeyVal(result, "contracts"))) {
+    // Accept both shapes: the wrapped search entry, and a bare row if one ever
+    // arrives. The wrapped one is what the server sends.
+    const inner = readKeyVal(entry, "contract");
+    const decoded = decodeContractRow(inner === undefined ? entry : inner);
+    if (decoded) {
+      contracts.push(decoded);
+    }
+  }
+  return { contracts, numFound: toNumber(readKeyVal(result, "numFound")) };
+}
+
+function decodeItemRow(row: JsonValue): ContractItemRow | null {
+  const typeID = toNumber(readKeyVal(row, "typeID")) || toNumber(readKeyVal(row, "itemTypeID"));
+  if (typeID <= 0) {
+    return null;
+  }
+  return {
+    typeID,
+    quantity: toNumber(readKeyVal(row, "quantity")),
+    // `inCrate` distinguishes what is BEING HANDED OVER from what is being
+    // ASKED FOR — the difference between a gift and a trade.
+    inCrate: readKeyVal(row, "inCrate") === true,
+  };
+}
+
+/** Decode a GetContract detail bundle: the row, its items, its endpoints. */
+export function decodeContractDetail(result: JsonValue): ContractDetail | null {
+  const contract = decodeContractRow(readKeyVal(result, "contract") ?? null);
+  if (!contract) {
+    return null;
+  }
+  const items: ContractItemRow[] = [];
+  for (const row of listItems(readKeyVal(result, "items"))) {
+    const decoded = decodeItemRow(row);
+    if (decoded) {
+      items.push(decoded);
+    }
+  }
+  return {
+    contract,
+    items,
+    startSolarSystemID: toNumber(readKeyVal(result, "startSolarSystemID")),
+    endSolarSystemID: toNumber(readKeyVal(result, "endSolarSystemID")),
+  };
+}
+
+/**
+ * Decode GetLoginInfo's three summary rowsets into counts.
+ *
+ * ⚠ THESE ARE ROWSETS, NOT KeyVals: {columns, lines}. Only the row COUNT is
+ * needed, so this reads `lines` and does not care about the columns.
+ */
+export function decodeContractSummary(result: JsonValue): ContractSummary {
+  const countOf = (key: string): number => {
+    const rowset = readKeyVal(result, key);
+    const entries =
+      rowset && typeof rowset === "object" && "args" in rowset
+        ? (rowset as { args?: { entries?: readonly (readonly [string, JsonValue])[] } }).args?.entries
+        : undefined;
+    const lines = Array.isArray(entries)
+      ? entries.find((entry) => Array.isArray(entry) && entry[0] === "lines")?.[1]
+      : undefined;
+    return isListValue(lines) ? lines.items.length : 0;
+  };
+  return {
+    needsAttention: countOf("needsAttention"),
+    inProgress: countOf("inProgress"),
+    assignedToMe: countOf("assignedToMe"),
+  };
+}
+
+// --- Money formatting -------------------------------------------------------
+
+/**
+ * Format an ISK amount held as a DECIMAL STRING, with thousands separators and
+ * exactly two decimal places — never via a JS number, so an amount beyond 2^53
+ * is not rounded on its way to the screen (R7d).
+ */
+export function formatIsk(amount: string | null | undefined): string {
+  if (amount === null || amount === undefined || amount === "") {
+    return "—";
+  }
+  const match = /^(-?)(\d*)(?:\.(\d*))?$/.exec(String(amount).trim());
+  if (!match) {
+    return "—";
+  }
+  const sign = match[1];
+  const whole = (match[2] || "0").replace(/^0+(?=\d)/, "");
+  const fraction = (match[3] || "").padEnd(2, "0").slice(0, 2);
+  const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  return `${sign}${grouped}.${fraction} ISK`;
+}
+
+/** A volume in cubic metres, for the size of a delivery. */
+export function formatVolume(volume: number): string {
+  if (!Number.isFinite(volume) || volume <= 0) {
+    return "—";
+  }
+  return `${volume.toLocaleString(undefined, { maximumFractionDigits: 2 })} m³`;
+}
+
+// --- Refusals ---------------------------------------------------------------
+
+/**
+ * Turn a server refusal into a sentence a player can act on. An UNMAPPED
+ * refusal is passed through verbatim rather than reworded: inventing a cause
+ * the server never gave is exactly the failure mode this ladder avoids.
+ */
+const REFUSAL_SENTENCES: Readonly<Record<string, string>> = {
+  CONTRACT_INVALID: "No contract was named.",
+  CONTRACT_NOT_FOUND: "That contract is no longer available.",
+};
+
+export function contractRefusalMessage(error: unknown): string {
+  const code =
+    typeof error === "object" && error !== null && "code" in error
+      ? String((error as { code?: unknown }).code)
+      : "";
+  if (code && code in REFUSAL_SENTENCES) {
+    return REFUSAL_SENTENCES[code] as string;
+  }
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  if (message && message in REFUSAL_SENTENCES) {
+    return REFUSAL_SENTENCES[message] as string;
+  }
+  return message || "Those contracts could not be loaded.";
+}
