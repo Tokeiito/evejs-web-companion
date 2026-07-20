@@ -13,6 +13,13 @@ import {
 import { decodeCapacity, decodeContainer, decodeInventoryRows } from "../bridge/inventoryShip.ts";
 import { buildSlots, decodeResources } from "../bridge/fitting.ts";
 import {
+  decodeBlueprints,
+  decodeDefinition,
+  decodeFacilities,
+  decodeJobs,
+  decodeSlotUsage,
+} from "../bridge/industry.ts";
+import {
   AGENT_BUTTON,
   decodeBriefing,
   decodeConversation,
@@ -134,6 +141,12 @@ export interface AppFlow {
    * the panel confirms before calling it and the BFF confirms again.
    */
   destroyRig(itemID: number): Promise<void>;
+  /**
+   * Load the Industry panel: the player's blueprints, their jobs, their used
+   * job slots, and the facilities their region offers. Also fetches the static
+   * recipes for the blueprint types it saw, and the names for everything.
+   */
+  loadIndustry(): Promise<void>;
   /** Load the docked station's agent roster (agentMgr.GetAgents). */
   loadAgents(): Promise<void>;
   /** Open a conversation with an agent (bound DoAction(None)). */
@@ -715,6 +728,99 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         message: "The server did not apply that change, and gave no reason.",
       });
     }
+  }
+
+  // --- R15 Industry --------------------------------------------------------
+
+  /**
+   * Load the Industry panel.
+   *
+   * Two round-trips, and the ORDER matters: the live read has to answer first
+   * because it is what names the blueprint types the static recipes are then
+   * fetched for. The live read is five INDEPENDENT calls on the BFF, so a
+   * player whose region answers no facilities still sees their blueprints and
+   * jobs — each read keeps its own error.
+   *
+   * The recipe fetch is deliberately NOT awaited into the same failure path:
+   * it is static reference data, so a failure there costs the install preview
+   * its material list but must never blank the panel.
+   */
+  async function loadIndustry(): Promise<void> {
+    let reads: Awaited<ReturnType<typeof api.loadIndustry>>;
+    try {
+      reads = await api.loadIndustry(callOptions);
+    } catch (error) {
+      if (isSessionLost(error)) {
+        stopLiveStream();
+        store.apply({ type: "character/offline" });
+      }
+      throw error;
+    }
+    const blueprints = decodeBlueprints(reads.blueprints.result);
+    const jobs = decodeJobs(reads.jobs.result);
+    const facilities = decodeFacilities(reads.facilities.result);
+    store.apply({
+      type: "industry/loaded",
+      ownerID: reads.ownerID,
+      stationID: reads.stationID,
+      solarSystemID: reads.solarSystemID,
+      blueprints,
+      jobs,
+      facilities,
+      slotsUsed: decodeSlotUsage(reads.jobCounts.result),
+      blueprintsError: reads.blueprints.error,
+      // The slot counts are part of the jobs picture; a failure there is a
+      // jobs-side failure rather than a whole-panel one.
+      jobsError: reads.jobs.error || reads.jobCounts.error,
+      facilitiesError: reads.facilities.error,
+    });
+
+    // Every ID the panel will show, resolved to a NAME (R7d). A blueprint and
+    // its product are ordinary types; a facility is a station in a system.
+    const refs: NameRef[] = [];
+    for (const blueprint of blueprints) {
+      refs.push({ kind: "type", id: blueprint.typeID });
+    }
+    for (const job of jobs) {
+      refs.push({ kind: "type", id: job.blueprintTypeID });
+      refs.push({ kind: "type", id: job.productTypeID });
+      refs.push({ kind: "station", id: job.facilityID });
+    }
+    for (const facility of facilities) {
+      refs.push({ kind: "station", id: facility.facilityID });
+      refs.push({ kind: "system", id: facility.solarSystemID });
+    }
+    requestNames(refs);
+
+    // The static recipes for every blueprint type in view — the blueprints the
+    // player holds AND the ones their running jobs are built from (a job's
+    // blueprint may be locked away in the job and absent from the list).
+    const typeIDs = new Set<number>();
+    for (const blueprint of blueprints) {
+      typeIDs.add(blueprint.typeID);
+    }
+    for (const job of jobs) {
+      typeIDs.add(job.blueprintTypeID);
+    }
+    const known = store.get().industry.definitions;
+    const wanted = [...typeIDs].filter((typeID) => typeID > 0 && !(typeID in known));
+    if (wanted.length === 0) {
+      return;
+    }
+    let raw: Readonly<Record<string, JsonValue>>;
+    try {
+      raw = await api.loadIndustryDefinitions(wanted, callOptions);
+    } catch {
+      // Static data only: the panel still lists everything, it just cannot
+      // preview what an install would consume until a later load succeeds.
+      return;
+    }
+    const definitions: Record<number, ReturnType<typeof decodeDefinition>> = {};
+    for (const typeID of wanted) {
+      // A definitive miss is cached as null so it is never refetched.
+      definitions[typeID] = decodeDefinition(raw[String(typeID)]);
+    }
+    store.apply({ type: "industry/definitions", definitions });
   }
 
   // --- R4 Agents & Missions ------------------------------------------------
@@ -1644,6 +1750,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     async destroyRig(itemID) {
       await runFittingAction(() => api.destroyRig(itemID, callOptions));
     },
+
+    loadIndustry,
 
     loadAgents,
 

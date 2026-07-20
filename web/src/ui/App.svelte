@@ -9,6 +9,7 @@
   import StationPanel from "./StationPanel.svelte";
   import InventoryShip from "./InventoryShip.svelte";
   import Fitting from "./Fitting.svelte";
+  import Industry from "./Industry.svelte";
   import AgentsMissions from "./AgentsMissions.svelte";
   import AgentFinder from "./AgentFinder.svelte";
   import Flight from "./Flight.svelte";
@@ -33,6 +34,7 @@
     | "station"
     | "inventory"
     | "fitting"
+    | "industry"
     | "agents"
     | "finder"
     | "flight"
@@ -57,6 +59,9 @@
     </button>
     <button type="button" class:active={page === "fitting"} onclick={() => (page = "fitting")}>
       Fitting
+    </button>
+    <button type="button" class:active={page === "industry"} onclick={() => (page = "industry")}>
+      Industry
     </button>
     <button type="button" class:active={page === "agents"} onclick={() => (page = "agents")}>
       Agents &amp; Missions
@@ -83,6 +88,8 @@
     <InventoryShip {store} {flow} />
   {:else if page === "fitting"}
     <Fitting {store} {flow} />
+  {:else if page === "industry"}
+    <Industry {store} {flow} />
   {:else if page === "agents"}
     <AgentsMissions {store} {flow} />
   {:else if page === "finder"}

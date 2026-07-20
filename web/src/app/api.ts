@@ -532,6 +532,76 @@ export async function destroyRig(
   return { applied: data.applied === true };
 }
 
+// --- R15 Industry ----------------------------------------------------------
+// Industry needs no bound-object machinery: the whole retail surface is
+// top-level, so the BFF simply issues five independent calls and hands back
+// their raw retail-shaped results, decoded in the flow with bridge/industry.ts.
+// Names and recipes come separately from static data, which never varies by
+// player and so never needs the live session at all.
+
+/** One of the five industry reads, with its own error (they are independent). */
+export interface RawIndustryRead {
+  readonly result: JsonValue;
+  readonly error: string | null;
+}
+
+export interface RawIndustryReads {
+  readonly ownerID: number | null;
+  readonly stationID: number | null;
+  readonly solarSystemID: number | null;
+  readonly blueprints: RawIndustryRead;
+  readonly jobs: RawIndustryRead;
+  readonly jobCounts: RawIndustryRead;
+  readonly facilities: RawIndustryRead;
+  readonly activityModifiers: RawIndustryRead;
+}
+
+function asIndustryRead(value: JsonValue | undefined): RawIndustryRead {
+  const row = (value ?? {}) as Record<string, JsonValue>;
+  return {
+    result: row.result ?? null,
+    error: typeof row.error === "string" ? row.error : null,
+  };
+}
+
+/** Read the player's blueprints, jobs, job slots, and available facilities. */
+export async function loadIndustry(options: ApiOptions = {}): Promise<RawIndustryReads> {
+  const data = await getJson("/api/bridge/industry", options);
+  return {
+    ownerID: asNumberOrNull(data.ownerID),
+    stationID: asNumberOrNull(data.stationID),
+    solarSystemID: asNumberOrNull(data.solarSystemID),
+    blueprints: asIndustryRead(data.blueprints),
+    jobs: asIndustryRead(data.jobs),
+    jobCounts: asIndustryRead(data.jobCounts),
+    facilities: asIndustryRead(data.facilities),
+    activityModifiers: asIndustryRead(data.activityModifiers),
+  };
+}
+
+/**
+ * The static recipes for a set of blueprint types: which activities each one
+ * supports, what they consume, and how long they take. Read-only reference
+ * data — no live session is involved, so this survives a lost bridge session.
+ */
+export async function loadIndustryDefinitions(
+  blueprintTypeIDs: readonly number[],
+  options: ApiOptions = {},
+): Promise<Readonly<Record<string, JsonValue>>> {
+  if (blueprintTypeIDs.length === 0) {
+    return {};
+  }
+  const data = await postJson(
+    "/api/industry/blueprints",
+    { blueprintTypeIDs: [...blueprintTypeIDs] },
+    options,
+  );
+  const definitions = data.definitions;
+  return typeof definitions === "object" && definitions !== null && !Array.isArray(definitions)
+    ? (definitions as Readonly<Record<string, JsonValue>>)
+    : {};
+}
+
 // --- R4 Agents & Missions (agentMgr bridge) --------------------------------
 // The BFF holds the bound agent handle; the browser addresses agents by game ID
 // and decodes the raw retail-shaped conversation/briefing/journal results with

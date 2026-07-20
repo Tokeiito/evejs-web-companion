@@ -620,6 +620,94 @@ browser names a **place**, never a flag:
   `reason: "NO_CORP_OFFICE"` — an ordinary state, not an error.** A division
   descriptor exposes an **ordinal and a name, never a flag**.
 
+## Industry — blueprints, jobs, facilities (R15)
+
+Industry is the first panel that needs **no bound-object machinery at all**.
+The entire retail industry surface is `sm.RemoteSvc(...)` — top-level calls with
+no `MachoBindObject` step anywhere — so `POST /api/bridge/call` on the held
+session carries every one of them, and R15's only gateway change is the
+allowlist pairs themselves.
+
+### The call table
+
+| What the panel needs | Retail call | Answers |
+| --- | --- | --- |
+| The player's blueprints | `blueprintManager.GetBlueprintDataByOwner(ownerID, facilityID\|None)` | `[list<blueprintInstance>, dict<facilityID → count>]` |
+| One blueprint (post-mutation re-read) | `blueprintManager.GetBlueprintData(itemID)` | one `blueprintInstance` |
+| The player's jobs | `industryManager.GetJobsByOwner(ownerID, includeCompleted)` | `list<job>` |
+| One job (post-mutation re-read) | `industryManager.GetJob(jobID)` | one `job` |
+| Job slots in use | `industryManager.GetJobCounts(charID)` | `dict<activityID → usedSlots>` |
+| Facilities in range | `facilityManager.GetFacilities()` | `list<facility>`, region-scoped off the **session** |
+| Activity modifier ceiling | `facilityManager.GetMaxActivityModifiers()` | `dict<activityID → modifier>` |
+| Input/output hangar choices | `facilityManager.GetFacilityLocations(facilityID, ownerID)` | `list<industry.Location>` |
+
+Eight new deny-by-default pairs. **`facilityManager.SetFacilityTaxes` is
+deliberately NOT listed** — it is a corp-admin mutator that rewrites what every
+member of a corporation pays to use a structure, and it sits on the same service
+as three of the reads above, so a service-granular allowlist would have exposed
+it. It stays refused before dispatch, as do `GetFacility`, `GetFacilitiesByID`,
+`GetFacilityTaxes`, `blueprintManager.GetLimits`, and every `industryMonitor`
+method.
+
+`ownerID` is `session.charid` for personal industry or `session.corpid` for
+corporation industry. **The BFF only ever passes the held session's own
+`characterID`** — the browser never supplies an owner, so it cannot read another
+character's industry. `GetFacilities` takes no arguments at all and scopes
+itself off `session.regionid`, so it cannot be pointed at another region either.
+
+### ⚠ Shape traps
+
+**The blueprint read is a 2-TUPLE, not a list.** `GetBlueprintDataByOwner`
+answers a plain JSON array `[list<instance>, dict<facilityID → count>]`. A
+decoder that treats the result as a `{type:"list"}` finds nothing.
+
+**Efficiencies are two distinct fields.** Each instance carries
+`materialEfficiency` *and* `timeEfficiency` (plus `runs`, `original`,
+`locationID`, `jobID`) directly, so the panel needs no per-blueprint follow-up
+read — but a transposition of the two looks plausible and is wrong.
+
+**`industry.Location` hides its fields in `header[2]`.** These arrive as
+`buildObjectEx1("industry.Location", [], [...])`, whose state entries land in
+`header[2]` as `{type:"dict", entries:[...]}`. The top-level `dict` array is
+**empty** and `header[1]` is the (empty) args list. A decoder that reads
+`value.dict` silently leaves the player with nowhere to draw materials from.
+
+**Job status is COMPUTED at read time, not stored.** `getJobStatus()` promotes
+an `INSTALLED` job whose `endDate` has passed to `READY` on every read. The
+browser therefore never compares an end date against the clock to decide
+whether a job is done — it shows the status the server returned. (It does use
+`endDate` for a cosmetic countdown, which is not the same thing.)
+
+### Live calls vs static data
+
+The live calls answer what is true of **this player**; static data answers what
+is true of **the game**. Neither is derived from the other.
+
+| Live (gateway) | Static (`src/staticData.js`) |
+| --- | --- |
+| Which blueprints the player holds, at what efficiencies, with how many runs left, and whether one is locked into a job | What a blueprint and its product are **called** |
+| Which jobs are running, their status, cost, and end date | Which activities a blueprint supports, what each consumes, how long it takes |
+| Which facilities the region offers, their tax, online state, and supported activities | What a facility (an NPC facility's id **is** its station id) and its system are called |
+| How many job slots each activity is using | — |
+
+Names ride the existing `/api/names` cache (`type` / `station` / `system`).
+Recipes need their own route because `/api/names` cannot answer them.
+
+### BFF routes (this repo)
+
+- `GET /api/bridge/industry` → `{ ok, ownerID, stationID, solarSystemID,
+  blueprints: {result,error}, jobs: {result,error}, jobCounts: {result,error},
+  facilities: {result,error}, activityModifiers: {result,error} }`.
+  Five **independent** calls (`Promise.allSettled`): each read carries its own
+  error, so a player whose region answers no facilities still sees their
+  blueprints and jobs. Jobs are read with `includeCompleted=true` and filtered
+  client-side by the status the server computed.
+- `POST /api/industry/blueprints` `{ blueprintTypeIDs }` →
+  `{ ok, source:"static-data", count, capped, limit, definitions }`. Pure static
+  reference data (like `/api/map/graph`): **no gateway call, no live session
+  needed**. An unknown type is echoed as an explicit `null` so the client can
+  cache the miss.
+
 ## Space snapshot — overview + ship HUD (R11)
 
 The retail client's overview is a **client-side view over one server structure**:

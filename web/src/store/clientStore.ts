@@ -29,6 +29,12 @@ import type {
   FittingResources,
   FittingSlot,
   FittingState,
+  IndustryBlueprintRow,
+  IndustryDefinition,
+  IndustryFacilityRow,
+  IndustryJobRow,
+  IndustrySlotUsage,
+  IndustryState,
   InventoryContainerState,
   CorpHangarState,
   InventoryState,
@@ -85,6 +91,7 @@ export interface ClientState {
   readonly station: StationSlice;
   readonly inventory: InventoryState;
   readonly fitting: FittingState;
+  readonly industry: IndustryState;
   readonly agents: AgentsState;
   readonly finder: AgentFinderState;
   readonly rewards: RewardsState;
@@ -164,6 +171,22 @@ const INITIAL_FITTING: FittingState = Object.freeze({
   loaded: false,
   slotsError: null,
   resourcesError: null,
+  actionError: null,
+});
+
+const INITIAL_INDUSTRY: IndustryState = Object.freeze({
+  ownerID: null,
+  stationID: null,
+  solarSystemID: null,
+  blueprints: Object.freeze([]) as readonly IndustryBlueprintRow[],
+  jobs: Object.freeze([]) as readonly IndustryJobRow[],
+  facilities: Object.freeze([]) as readonly IndustryFacilityRow[],
+  slotsUsed: Object.freeze({}) as IndustrySlotUsage,
+  definitions: Object.freeze({}) as Readonly<Record<number, IndustryDefinition | null>>,
+  loaded: false,
+  blueprintsError: null,
+  jobsError: null,
+  facilitiesError: null,
   actionError: null,
 });
 
@@ -285,6 +308,7 @@ export interface ClientStore {
   readonly station: ReadableSignal<StationSlice>;
   readonly inventory: ReadableSignal<InventoryState>;
   readonly fitting: ReadableSignal<FittingState>;
+  readonly industry: ReadableSignal<IndustryState>;
   readonly agents: ReadableSignal<AgentsState>;
   readonly finder: ReadableSignal<AgentFinderState>;
   readonly rewards: ReadableSignal<RewardsState>;
@@ -322,6 +346,7 @@ export function createClientStore(): ClientStore {
   const station = createSignal<StationSlice>(INITIAL_STATION);
   const inventory = createSignal<InventoryState>(INITIAL_INVENTORY);
   const fitting = createSignal<FittingState>(INITIAL_FITTING);
+  const industry = createSignal<IndustryState>(INITIAL_INDUSTRY);
   const agents = createSignal<AgentsState>(INITIAL_AGENTS);
   const finder = createSignal<AgentFinderState>(INITIAL_FINDER);
   const rewards = createSignal<RewardsState>(INITIAL_REWARDS);
@@ -346,6 +371,7 @@ export function createClientStore(): ClientStore {
     station: station.get(),
     inventory: inventory.get(),
     fitting: fitting.get(),
+    industry: industry.get(),
     agents: agents.get(),
     finder: finder.get(),
     rewards: rewards.get(),
@@ -374,6 +400,7 @@ export function createClientStore(): ClientStore {
         station.set(INITIAL_STATION);
         inventory.set(INITIAL_INVENTORY);
         fitting.set(INITIAL_FITTING);
+        industry.set(INITIAL_INDUSTRY);
         agents.set(INITIAL_AGENTS);
         finder.set(INITIAL_FINDER);
         rewards.set(INITIAL_REWARDS);
@@ -417,6 +444,7 @@ export function createClientStore(): ClientStore {
         });
         inventory.set(INITIAL_INVENTORY);
         fitting.set(INITIAL_FITTING);
+        industry.set(INITIAL_INDUSTRY);
         agents.set(INITIAL_AGENTS);
         finder.set(INITIAL_FINDER);
         rewards.set(INITIAL_REWARDS);
@@ -430,6 +458,7 @@ export function createClientStore(): ClientStore {
         station.set(INITIAL_STATION);
         inventory.set(INITIAL_INVENTORY);
         fitting.set(INITIAL_FITTING);
+        industry.set(INITIAL_INDUSTRY);
         agents.set(INITIAL_AGENTS);
         finder.set(INITIAL_FINDER);
         rewards.set(INITIAL_REWARDS);
@@ -559,6 +588,38 @@ export function createClientStore(): ClientStore {
         break;
       case "fitting/cleared":
         fitting.set(INITIAL_FITTING);
+        break;
+      case "industry/loaded":
+        industry.set({
+          ...industry.get(),
+          ownerID: event.ownerID,
+          stationID: event.stationID,
+          solarSystemID: event.solarSystemID,
+          blueprints: [...event.blueprints],
+          jobs: [...event.jobs],
+          facilities: [...event.facilities],
+          slotsUsed: event.slotsUsed,
+          loaded: true,
+          blueprintsError: event.blueprintsError,
+          jobsError: event.jobsError,
+          facilitiesError: event.facilitiesError,
+          // A successful load clears any stale action error.
+          actionError: null,
+        });
+        break;
+      case "industry/definitions":
+        // Recipes MERGE rather than replace: they are static, so one already
+        // fetched stays valid, and a later load only needs the new types.
+        industry.set({
+          ...industry.get(),
+          definitions: { ...industry.get().definitions, ...event.definitions },
+        });
+        break;
+      case "industry/action-error":
+        industry.set({ ...industry.get(), actionError: event.message });
+        break;
+      case "industry/cleared":
+        industry.set(INITIAL_INDUSTRY);
         break;
       case "agents/list":
         agents.set({
@@ -870,6 +931,7 @@ export function createClientStore(): ClientStore {
     station: readonlySignal(station),
     inventory: readonlySignal(inventory),
     fitting: readonlySignal(fitting),
+    industry: readonlySignal(industry),
     agents: readonlySignal(agents),
     finder: readonlySignal(finder),
     rewards: readonlySignal(rewards),

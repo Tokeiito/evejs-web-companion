@@ -28,6 +28,11 @@ import type {
   FlightStatus,
   FittingResources,
   FittingSlot,
+  IndustryBlueprintRow,
+  IndustryDefinition,
+  IndustryFacilityRow,
+  IndustryJobRow,
+  IndustrySlotUsage,
   InventoryContainerState,
   JournalState,
   LiveNotification,
@@ -145,6 +150,34 @@ export type FeedEvent =
   | { readonly type: "fitting/action-error"; readonly message: string | null }
   // Drop the fitting state (character offline / logged out).
   | { readonly type: "fitting/cleared" }
+  // Goal R15 — the Industry page. A full panel load: the player's blueprints
+  // with their efficiencies and runs, their jobs with the status the SERVER
+  // computed, how many job slots each activity is using, and the facilities
+  // their region offers. The five reads are independent on the BFF, so each
+  // carries its own error and one failure never blanks the rest.
+  | {
+      readonly type: "industry/loaded";
+      readonly ownerID: number | null;
+      readonly stationID: number | null;
+      readonly solarSystemID: number | null;
+      readonly blueprints: readonly IndustryBlueprintRow[];
+      readonly jobs: readonly IndustryJobRow[];
+      readonly facilities: readonly IndustryFacilityRow[];
+      readonly slotsUsed: IndustrySlotUsage;
+      readonly blueprintsError: string | null;
+      readonly jobsError: string | null;
+      readonly facilitiesError: string | null;
+    }
+  // Static blueprint recipes, merged in after the live read named the types.
+  | {
+      readonly type: "industry/definitions";
+      readonly definitions: Readonly<Record<number, IndustryDefinition | null>>;
+    }
+  // An industry action (install/deliver/cancel) failed or was declined; null
+  // clears the error after a clean action.
+  | { readonly type: "industry/action-error"; readonly message: string | null }
+  // Drop the industry state (character offline / logged out).
+  | { readonly type: "industry/cleared" }
   // Goal R4 — the Agents & Missions page (agentMgr bridge). The station's
   // agent roster (decoded + filtered to the docked station by the BFF).
   | { readonly type: "agents/list"; readonly stationID: number | null; readonly agents: readonly AgentRow[] }

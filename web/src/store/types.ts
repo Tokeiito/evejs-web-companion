@@ -244,6 +244,142 @@ export interface FittingState {
   readonly actionError: string | null;
 }
 
+// --- R15 Industry ----------------------------------------------------------
+
+/**
+ * The industry activities a blueprint can be put to. The browser works in
+ * these NAMES throughout — an activityID is decoded to one of these the moment
+ * it comes off the wire and never appears in rendered text (R7d).
+ */
+export type IndustryActivity =
+  | "manufacturing"
+  | "research_time"
+  | "research_material"
+  | "copying"
+  | "invention"
+  | "reaction";
+
+/**
+ * What a job is doing right now, as the SERVER computed it. `ready` is derived
+ * server-side from the job's end date (an installed job whose clock ran out
+ * reads back as ready), so the browser never does that arithmetic itself.
+ */
+export type IndustryJobStatus =
+  | "unsubmitted"
+  | "running"
+  | "paused"
+  | "ready"
+  | "completed"
+  | "delivered"
+  | "cancelled"
+  | "reverted";
+
+/** One material line of a recipe: how much of a type an activity consumes. */
+export interface IndustryMaterial {
+  readonly typeID: number;
+  readonly quantity: number;
+}
+
+/** One activity of a blueprint DEFINITION (static data): what it costs in
+ * materials and time for a single run, and what it yields. */
+export interface IndustryRecipe {
+  readonly activity: IndustryActivity;
+  readonly materials: readonly IndustryMaterial[];
+  readonly products: readonly IndustryMaterial[];
+  /** Base seconds for one run, before efficiency and facility modifiers. */
+  readonly timeSeconds: number;
+}
+
+/** A blueprint DEFINITION from static data — the same for every player. */
+export interface IndustryDefinition {
+  readonly blueprintTypeID: number;
+  readonly blueprintName: string | null;
+  readonly productTypeID: number | null;
+  readonly productName: string | null;
+  readonly maxProductionLimit: number | null;
+  readonly recipes: readonly IndustryRecipe[];
+}
+
+/**
+ * One blueprint the PLAYER owns (blueprintManager.GetBlueprintDataByOwner).
+ * Everything here is live and per-instance; the name and the recipe come from
+ * the matching IndustryDefinition.
+ */
+export interface IndustryBlueprintRow {
+  readonly itemID: number;
+  readonly typeID: number;
+  /** Percent of material saved. Shown as "Material efficiency", never "ME". */
+  readonly materialEfficiency: number;
+  /** Percent of time saved. Shown as "Time efficiency", never "TE". */
+  readonly timeEfficiency: number;
+  /** Runs left on a copy. Meaningless for an original, which never runs out. */
+  readonly runs: number;
+  /** True for an original (unlimited runs), false for a copy. */
+  readonly original: boolean;
+  readonly locationID: number;
+  readonly facilityID: number | null;
+  /** Non-null when this blueprint is busy in a job right now. */
+  readonly jobID: number | null;
+}
+
+/** One of the player's industry jobs (industryManager.GetJobsByOwner). */
+export interface IndustryJobRow {
+  readonly jobID: number;
+  readonly activity: IndustryActivity | null;
+  readonly status: IndustryJobStatus;
+  readonly blueprintID: number;
+  readonly blueprintTypeID: number;
+  readonly productTypeID: number;
+  readonly facilityID: number;
+  readonly runs: number;
+  readonly successfulRuns: number;
+  /** Installation cost the server charged, in ISK. */
+  readonly cost: number;
+  /** Retail FILETIME; the panel renders these as a finish time / countdown. */
+  readonly startDate: bigint | null;
+  readonly endDate: bigint | null;
+  readonly timeSeconds: number;
+}
+
+/** A facility the player's region offers (facilityManager.GetFacilities). */
+export interface IndustryFacilityRow {
+  readonly facilityID: number;
+  readonly solarSystemID: number;
+  readonly typeID: number;
+  readonly ownerID: number;
+  readonly online: boolean;
+  /** Facility tax as a FRACTION (0.01 = 1%); the panel renders a percentage. */
+  readonly tax: number | null;
+  /** Which activities this facility will host, by name. */
+  readonly activities: readonly IndustryActivity[];
+}
+
+/** How many job slots of each activity the character currently has in use. */
+export type IndustrySlotUsage = Partial<Record<IndustryActivity, number>>;
+
+/**
+ * The Industry page state (goal R15). Each of the five BFF reads is
+ * independent, so each carries its own error and a failed one never blanks the
+ * rest — a player with no facilities in range still sees their blueprints.
+ */
+export interface IndustryState {
+  readonly ownerID: number | null;
+  readonly stationID: number | null;
+  readonly solarSystemID: number | null;
+  readonly blueprints: readonly IndustryBlueprintRow[];
+  readonly jobs: readonly IndustryJobRow[];
+  readonly facilities: readonly IndustryFacilityRow[];
+  readonly slotsUsed: IndustrySlotUsage;
+  /** Static recipes keyed by blueprintTypeID, filled in after the live read. */
+  readonly definitions: Readonly<Record<number, IndustryDefinition | null>>;
+  readonly loaded: boolean;
+  readonly blueprintsError: string | null;
+  readonly jobsError: string | null;
+  readonly facilitiesError: string | null;
+  /** Non-null when the last install/deliver/cancel failed or was declined. */
+  readonly actionError: string | null;
+}
+
 // --- R4 Agents & Missions --------------------------------------------------
 
 /**

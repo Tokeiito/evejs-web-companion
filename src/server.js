@@ -491,6 +491,7 @@ app.post("/api/bridge/select", requireAuth, async (req, res, next) => {
       // semantic key (hangar/cargo/ship). Handles live here only — never in
       // browser JS — exactly like the bridgeSessionID.
       stationID: Number(outcome.session.stationID) || null,
+      solarSystemID: Number(outcome.session.solarSystemID) || null,
       activeShipID: Number(outcome.session.shipID) || null,
       boundHandles: new Map(),
       // R10 live event channel: the single gateway push WebSocket for this
@@ -1842,6 +1843,74 @@ app.post("/api/bridge/fitting/destroy-rig", requireAuth, async (req, res, next) 
   }
 });
 
+// --- R15 Industry (blueprints / jobs / facilities) -------------------------
+// Unlike every panel before it, industry needs NO bound-object machinery: the
+// whole retail surface is TOP-LEVEL (sm.RemoteSvc('blueprintManager') /
+// ('industryManager') / ('facilityManager')), so heldTopLevelCall carries all
+// of it. See docs/bridge-wire-contract.md for the call table.
+//
+// The split between live calls and static data:
+//   LIVE  — the player's own blueprint INSTANCES (material/time efficiency,
+//           runs left, where they sit, whether one is busy in a job), their
+//           JOBS, their used job slots, and the FACILITIES their region offers
+//           with each one's tax and supported activities.
+//   STATIC — every NAME and every recipe: what a blueprint is called, what it
+//           produces, what each activity consumes and how long it takes, and
+//           what a facility/solar system is called. None of that changes with
+//           the player, so it never needs a round-trip.
+
+app.get("/api/bridge/industry", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  try {
+    // Sync held station/system to the live position first, so the facility
+    // read reflects where the character actually is.
+    await readHeldFlight(held, req.webSessionID);
+    const ownerID = held.characterID;
+    // Five INDEPENDENT reads (R2's rule): one failure never blanks the rest.
+    // A player with no facilities in range should still see their blueprints.
+    const [blueprints, jobs, jobCounts, facilities, modifiers] = await Promise.allSettled([
+      heldTopLevelCall(held, req.webSessionID, "blueprintManager", "GetBlueprintDataByOwner", [ownerID, null], null),
+      // includeCompleted=true: the panel shows finished work alongside running
+      // work, and filters client-side by the status the SERVER computed.
+      heldTopLevelCall(held, req.webSessionID, "industryManager", "GetJobsByOwner", [ownerID, true], null),
+      heldTopLevelCall(held, req.webSessionID, "industryManager", "GetJobCounts", [ownerID], null),
+      heldTopLevelCall(held, req.webSessionID, "facilityManager", "GetFacilities", [], null),
+      heldTopLevelCall(held, req.webSessionID, "facilityManager", "GetMaxActivityModifiers", [], null),
+    ]);
+
+    for (const settled of [blueprints, jobs, jobCounts, facilities, modifiers]) {
+      if (settled.status === "rejected" && settled.reason && settled.reason.code === "SESSION_NOT_FOUND") {
+        next(settled.reason);
+        return;
+      }
+    }
+
+    const settledCode = (settled) =>
+      settled.status === "rejected"
+        ? String((settled.reason && settled.reason.code) || "READ_FAILED")
+        : null;
+    const settledValue = (settled) =>
+      settled.status === "fulfilled" ? settled.value.result : null;
+
+    res.json({
+      ok: true,
+      ownerID,
+      stationID: held.stationID,
+      solarSystemID: held.solarSystemID ?? null,
+      blueprints: { result: settledValue(blueprints), error: settledCode(blueprints) },
+      jobs: { result: settledValue(jobs), error: settledCode(jobs) },
+      jobCounts: { result: settledValue(jobCounts), error: settledCode(jobCounts) },
+      facilities: { result: settledValue(facilities), error: settledCode(facilities) },
+      activityModifiers: { result: settledValue(modifiers), error: settledCode(modifiers) },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // R4 Agents & Missions (agentMgr bridge). Agent list is a top-level read on the
 // held session (retail agentMgr.GetAgents().Clone()); conversation, briefing,
 // and journal use the bound agent (Moniker('agentMgr', agentID)). The browser
@@ -2228,6 +2297,13 @@ async function readHeldFlight(held, webSessionID) {
     const flight = outcome && outcome.flight ? outcome.flight : {};
     if (flight.docked === true && Number(flight.stationID) > 0) {
       held.stationID = Number(flight.stationID);
+    }
+    // The solar system the character is in RIGHT NOW. Tracked here because
+    // R15's industry deliver/cancel take it as an argument
+    // (CompleteJob(jobID, solarSystemID)), and it is otherwise unavailable to a
+    // route that never touches the space runtime.
+    if (Number(flight.solarSystemID) > 0) {
+      held.solarSystemID = Number(flight.solarSystemID);
     }
     return outcome;
   } catch (error) {
@@ -2867,6 +2943,67 @@ app.post("/api/names", requireAuth, async (req, res, next) => {
       capped: result.capped,
       limit: result.limit,
       names: result.names,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * R15 industry RECIPES — the static half of the industry panel.
+ *
+ * Every NAME the panel needs is already reachable through /api/names: a
+ * blueprint and its product are ordinary types ("type"), and a facility is a
+ * station ("station") in a system ("system"). What /api/names cannot answer is
+ * the RECIPE — which activities a blueprint supports, what each one consumes,
+ * how long it takes, and what it produces. That comes from the 5,081 blueprint
+ * definitions in static data, and it is what the install preview is built from.
+ *
+ * Read-only reference data (like /api/map/graph or /api/agents/find), NOT a
+ * gateway call: none of it varies by player, so it never needs a round-trip to
+ * EveJS. The player's OWN numbers — efficiencies, runs left, whether a
+ * blueprint is busy — come from the live read instead.
+ */
+const INDUSTRY_DEFINITIONS_MAX = 500;
+
+app.post("/api/industry/blueprints", requireAuth, async (req, res, next) => {
+  try {
+    const requested = Array.isArray(req.body && req.body.blueprintTypeIDs)
+      ? req.body.blueprintTypeIDs
+      : [];
+    const unique = [];
+    const seen = new Set();
+    for (const value of requested) {
+      const typeID = Number(value) || 0;
+      if (typeID > 0 && !seen.has(typeID)) {
+        seen.add(typeID);
+        unique.push(typeID);
+      }
+    }
+    const capped = unique.length > INDUSTRY_DEFINITIONS_MAX;
+    const slice = capped ? unique.slice(0, INDUSTRY_DEFINITIONS_MAX) : unique;
+    const definitions = {};
+    for (const typeID of slice) {
+      const definition = staticData.getIndustryBlueprint(typeID);
+      // A definitive null is echoed too, so the client can cache the miss.
+      definitions[String(typeID)] = definition
+        ? {
+            blueprintTypeID: definition.blueprintTypeID,
+            blueprintName: definition.blueprintName,
+            productTypeID: definition.productTypeID,
+            productName: definition.productName,
+            maxProductionLimit: definition.maxProductionLimit,
+            activities: definition.activities || {},
+          }
+        : null;
+    }
+    res.json({
+      ok: true,
+      source: "static-data",
+      count: slice.length,
+      capped,
+      limit: INDUSTRY_DEFINITIONS_MAX,
+      definitions,
     });
   } catch (error) {
     next(error);
