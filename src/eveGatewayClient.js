@@ -1,5 +1,7 @@
 "use strict";
 
+const { WebSocket } = require("ws");
+
 const DEFAULT_GATEWAY_BASE_URL = "http://127.0.0.1:26002/_evejs-web/v1";
 const DEFAULT_TIMEOUT_MS = 1500;
 const GATEWAY_SOURCE = "evejs-web-gateway";
@@ -488,8 +490,147 @@ async function sendChat(bridgeSessionID, channel, message, sessionFields = {}) {
   };
 }
 
+// --- R10 live event channel (gateway push) ---------------------------------
+// The one non-request surface the BFF holds: a WebSocket on the gateway's
+// bridge-session event path. It carries the session's notification captures and
+// its chat live, so the browser stops depending on polls for liveness. The BFF
+// holds at most ONE of these per held bridge session and republishes it to the
+// browser as SSE (see /api/bridge/events in server.js) — the bridgeSessionID
+// never leaves the server, exactly as on the request routes.
+
+const SESSION_EVENTS_PATH = "/session-events";
+
+function getGatewayWebSocketUrl(query) {
+  const url = new URL(`${getGatewayBaseUrl()}${SESSION_EVENTS_PATH}`);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  for (const [key, value] of Object.entries(query)) {
+    if (value !== undefined && value !== null && value !== "") {
+      url.searchParams.set(key, String(value));
+    }
+  }
+  return url.toString();
+}
+
+/**
+ * Open the gateway push stream for a held bridge session.
+ *
+ * `cursor` ({epoch, sequence}) resumes a prior connection: the gateway replays
+ * exactly the frames missed while disconnected, or — when the cursor is too old
+ * or from a previous gateway process — sends a snapshot frame saying so, which
+ * the consumer answers with a re-read. Returns a handle with `close()`.
+ *
+ * Delivery is best effort by design. The request routes still drain
+ * notifications onto every response, so a stream that never opens (or drops)
+ * costs liveness, never correctness.
+ */
+function openSessionEventStream(options = {}) {
+  const {
+    bridgeSessionID,
+    userid,
+    cursor = null,
+    onFrame,
+    onOpen,
+    onClose,
+  } = options;
+  const query = {
+    userid: Number(userid) || 0,
+    bridgeSessionID: String(bridgeSessionID || ""),
+  };
+  if (cursor && cursor.epoch && Number.isSafeInteger(Number(cursor.sequence))) {
+    query.epoch = String(cursor.epoch);
+    query.sequence = String(Number(cursor.sequence));
+  }
+  const headers = {};
+  const token = getGatewayToken();
+  if (token) {
+    headers["x-evejs-web-token"] = token;
+  }
+
+  let socket;
+  try {
+    socket = new WebSocket(getGatewayWebSocketUrl(query), { headers });
+  } catch (error) {
+    // A configuration failure is not recoverable by retrying; report it as a
+    // close so the caller degrades to polling instead of hanging.
+    if (typeof onClose === "function") {
+      onClose({ code: 0, reason: error.message || "stream unavailable" });
+    }
+    return { close() {} };
+  }
+
+  let closed = false;
+  let refusalStatus = 0;
+
+  socket.on("open", () => {
+    if (typeof onOpen === "function") {
+      onOpen();
+    }
+  });
+  socket.on("message", (data) => {
+    if (closed || typeof onFrame !== "function") {
+      return;
+    }
+    let frame;
+    try {
+      frame = JSON.parse(String(data));
+    } catch {
+      return; // A malformed frame is dropped, never thrown at the caller.
+    }
+    if (frame && typeof frame === "object" && frame.source === GATEWAY_SOURCE) {
+      onFrame(frame);
+    }
+  });
+  // A refused upgrade (401/404/503) never opens and never closes on its own.
+  socket.on("unexpected-response", (request, response) => {
+    refusalStatus = Number(response.statusCode) || 0;
+    response.resume();
+    request.destroy();
+    finish(refusalStatus, `gateway refused the event stream (HTTP ${refusalStatus})`);
+  });
+  socket.on("error", (error) => {
+    finish(refusalStatus, error && error.message ? error.message : "stream error");
+  });
+  socket.on("close", (code, reason) => {
+    finish(Number(code) || 0, String(reason || ""));
+  });
+
+  function finish(code, reason) {
+    if (closed) {
+      return;
+    }
+    closed = true;
+    if (typeof onClose === "function") {
+      onClose({ code, reason, refusalStatus });
+    }
+  }
+
+  return {
+    get refusalStatus() {
+      return refusalStatus;
+    },
+    close() {
+      closed = true;
+      try {
+        if (
+          socket.readyState === WebSocket.OPEN ||
+          socket.readyState === WebSocket.CONNECTING
+        ) {
+          socket.close();
+        }
+      } catch {
+        try {
+          socket.terminate();
+        } catch {
+          // Already gone.
+        }
+      }
+    },
+  };
+}
+
 module.exports = {
   EveGatewayError,
+  openSessionEventStream,
   // Bridge surface (the live path): the retail call tuple, bound objects, the
   // persistent session, flight status, and chat.
   callMethod,

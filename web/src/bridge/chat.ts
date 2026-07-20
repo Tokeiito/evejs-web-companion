@@ -96,3 +96,12 @@ export function decodeSentMessage(raw: JsonValue | undefined): ChatMessage | nul
   const chat = asRecord(raw);
   return chat.entry ? decodeMessage(chat.entry) : null;
 }
+
+/**
+ * Decode one backlog entry on its own (goal R10). The live channel pushes the
+ * same entry shape the backlog read returns, so a pushed message and a polled
+ * one decode identically — which is what lets the store dedupe across them.
+ */
+export function decodeMessageEntry(raw: JsonValue | undefined): ChatMessage | null {
+  return raw === undefined || raw === null ? null : decodeMessage(raw);
+}

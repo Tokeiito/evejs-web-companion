@@ -25,6 +25,7 @@ import {
 import { decodeFlightStatus } from "../bridge/flight.ts";
 import type { FlightStepResult } from "./api.ts";
 import { BridgeCallError } from "../bridge/callMethod.ts";
+import type { JsonValue } from "../bridge/wire.ts";
 import * as api from "./api.ts";
 import type { ClientStore } from "../store/clientStore.ts";
 import type {
@@ -34,7 +35,11 @@ import type {
   FlightStatus,
   StationStatic,
 } from "../store/types.ts";
-import { decodeChatChannel, decodeChatChannelName } from "../bridge/chat.ts";
+import {
+  decodeChatChannel,
+  decodeChatChannelName,
+  decodeMessageEntry,
+} from "../bridge/chat.ts";
 import { nameKey, type NameRef } from "../store/names.ts";
 import {
   buildSystemGraph,
@@ -53,6 +58,11 @@ import {
 export interface AppFlowOptions {
   readonly baseUrl?: string;
   readonly fetch?: typeof fetch;
+  /**
+   * R10 — injectable EventSource factory for the live event channel. Defaults
+   * to the browser's own EventSource; tests supply a fake.
+   */
+  readonly eventSource?: (url: string) => api.EventSourceLike;
 }
 
 export interface AppFlow {
@@ -190,6 +200,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   const callOptions = {
     ...(options.baseUrl !== undefined ? { baseUrl: options.baseUrl } : {}),
     ...(options.fetch !== undefined ? { fetch: options.fetch } : {}),
+    ...(options.eventSource !== undefined ? { eventSource: options.eventSource } : {}),
   };
 
   // R6b — the docked station the station-scoped panels are currently synced to,
@@ -198,6 +209,102 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // different station (autopilot arrival / manual dock); see observeFlightStatus.
   let syncedStationID: number | null = null;
   let relocating = false;
+
+  // --- R10 live event channel ---------------------------------------------
+  // One SSE subscription per online character, opened when select succeeds and
+  // closed when the character goes offline. It feeds the store the session
+  // notifications the page used to discard and the chat messages the Chat panel
+  // used to poll for. Liveness only: every bridge response still carries its
+  // notification drain, so a channel that never opens costs latency, not data.
+  let liveStream: api.BridgeEventSubscription | null = null;
+
+  function applyLiveFrame(frame: unknown): void {
+    if (typeof frame !== "object" || frame === null) {
+      return;
+    }
+    const record = frame as Record<string, JsonValue>;
+
+    // BFF-originated status frame (the gateway socket connected / dropped).
+    if (record.source === "evejs-web-bff" && record.type === "stream-status") {
+      const state = record.state;
+      store.apply({
+        type: "live/status",
+        status:
+          state === "live" || state === "connecting" || state === "degraded" || state === "ended"
+            ? state
+            : "idle",
+      });
+      return;
+    }
+    if (record.source !== "evejs-web-gateway") {
+      return;
+    }
+
+    const cursor = (record.cursor ?? {}) as Record<string, JsonValue>;
+    const epoch = typeof cursor.epoch === "string" ? cursor.epoch : null;
+    const sequence = typeof cursor.sequence === "number" ? cursor.sequence : 0;
+
+    // The gateway could not replay from our cursor: what we hold may have gaps,
+    // so re-read the active chat channel rather than pretend the backlog is
+    // continuous.
+    if (record.type === "snapshot") {
+      store.apply({ type: "live/resynchronize", epoch, sequence });
+      if (record.reason === "cursor_not_replayable") {
+        void loadChat(store.chat.get().activeChannel);
+      }
+      return;
+    }
+    if (record.type !== "event") {
+      return;
+    }
+
+    const event = (record.event ?? {}) as Record<string, JsonValue>;
+    if (event.kind === "chat") {
+      const channel = event.channel === "corp" ? "corp" : "local";
+      const message = decodeMessageEntry(event.entry);
+      if (message) {
+        store.apply({ type: "chat/message", channel, message });
+      }
+      return;
+    }
+    if (event.kind === "notification") {
+      const notification = (event.notification ?? {}) as Record<string, JsonValue>;
+      store.apply({
+        type: "live/notification",
+        epoch,
+        sequence,
+        notification: {
+          kind: typeof notification.kind === "string" ? notification.kind : "unknown",
+          service: typeof notification.service === "string" ? notification.service : null,
+          method: typeof notification.method === "string" ? notification.method : null,
+          receivedAtMs: Date.now(),
+        },
+      });
+    }
+  }
+
+  function startLiveStream(): void {
+    stopLiveStream();
+    store.apply({ type: "live/status", status: "connecting" });
+    liveStream = api.subscribeBridgeEvents(
+      {
+        onFrame: applyLiveFrame,
+        onOpen: () => store.apply({ type: "live/status", status: "live" }),
+        // EventSource reconnects on its own; the store just records that the
+        // page is back on its polls until frames resume.
+        onError: () => store.apply({ type: "live/status", status: "degraded" }),
+      },
+      callOptions,
+    );
+  }
+
+  function stopLiveStream(): void {
+    if (liveStream) {
+      liveStream.close();
+      liveStream = null;
+    }
+    store.apply({ type: "live/cleared" });
+  }
 
   async function refreshStationPanel(): Promise<void> {
     // Retail issues these when the docked UI loads; the page issues them after
@@ -236,7 +343,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // unwind so the view falls back to the character list.
     const lost = failures.find((entry) => isSessionLost(entry.result.reason));
     if (lost) {
-      store.apply({ type: "character/offline" });
+      stopLiveStream();
+        store.apply({ type: "character/offline" });
       throw lost.result.reason;
     }
 
@@ -265,6 +373,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         // The live session ended out from under the inventory tab: unwind to
         // the character list like refreshStationPanel/runMutation, so the page
         // doesn't stay mounted with stale rows on a dead session.
+        stopLiveStream();
         store.apply({ type: "character/offline" });
       }
       throw error;
@@ -287,6 +396,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       store.apply({ type: "inventory/action-error", message: null });
     } catch (error) {
       if (isSessionLost(error)) {
+        stopLiveStream();
         store.apply({ type: "character/offline" });
         throw error;
       }
@@ -345,6 +455,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       });
     } catch (error) {
       if (isSessionLost(error)) {
+        stopLiveStream();
         store.apply({ type: "character/offline" });
         throw error;
       }
@@ -361,6 +472,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       await api.sendChat(channel, trimmed, callOptions);
     } catch (error) {
       if (isSessionLost(error)) {
+        stopLiveStream();
         store.apply({ type: "character/offline" });
         throw error;
       }
@@ -391,6 +503,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       store.apply({ type: "agents/action-error", message: null });
     } catch (error) {
       if (isSessionLost(error)) {
+        stopLiveStream();
         store.apply({ type: "character/offline" });
         throw error;
       }
@@ -552,6 +665,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       await applyFlight(await api.getFlightStatus(callOptions));
     } catch (error) {
       if (isSessionLost(error)) {
+        stopLiveStream();
         store.apply({ type: "character/offline" });
       }
       throw error;
@@ -573,6 +687,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       result = await step();
     } catch (error) {
       if (isSessionLost(error)) {
+        stopLiveStream();
         store.apply({ type: "character/offline" });
         throw error;
       }
@@ -659,7 +774,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         // A lost session inside the loop unwinds to character select, like every
         // other held-session flow (R3-R5a).
         if (progress.status === "error") {
-          store.apply({ type: "character/offline" });
+          stopLiveStream();
+        store.apply({ type: "character/offline" });
         }
       },
       isSessionLost,
@@ -677,6 +793,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       graph = await loadRouteGraph();
     } catch (error) {
       if (isSessionLost(error)) {
+        stopLiveStream();
         store.apply({ type: "character/offline" });
         throw error;
       }
@@ -693,6 +810,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       originSystem = status.solarSystemID;
     } catch (error) {
       if (isSessionLost(error)) {
+        stopLiveStream();
         store.apply({ type: "character/offline" });
         throw error;
       }
@@ -711,6 +829,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       destination = await api.resolveDestination(destinationID, callOptions);
     } catch (error) {
       if (isSessionLost(error)) {
+        stopLiveStream();
         store.apply({ type: "character/offline" });
         throw error;
       }
@@ -1019,6 +1138,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // flight read at this station doesn't trigger a redundant relocate; a
       // later dock elsewhere on this session will.
       syncedStationID = result.character.stationID;
+      // R10: the session is live, so open the push channel before the docked
+      // reads — anything the reads trigger is then already being observed.
+      startLiveStream();
       await refreshStationPanel();
     },
 
@@ -1165,16 +1287,21 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     requestNames,
 
     async releaseSession() {
+      // R10: stop consuming the push channel first — the session it belongs to
+      // is about to end.
+      stopLiveStream();
       try {
         await api.releaseSession(callOptions);
       } finally {
         syncedStationID = null;
+        stopLiveStream();
         store.apply({ type: "character/offline" });
         store.apply({ type: "character/selected", characterID: null });
       }
     },
 
     async logout() {
+      stopLiveStream();
       try {
         await api.logout(callOptions);
       } finally {

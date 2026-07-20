@@ -457,6 +457,108 @@ export async function sendChat(
   return data.chat ?? null;
 }
 
+// --- R10 Live event channel (SSE) ------------------------------------------
+// The BFF republishes its gateway push WebSocket to the browser as Server-Sent
+// Events on GET /api/bridge/events (same-origin, cookie-authed). Frames are
+// either gateway frames (`source: "evejs-web-gateway"`) or BFF status frames
+// (`source: "evejs-web-bff"`, `type: "stream-status"`).
+//
+// EventSource handles reconnection itself, so this is deliberately thin. It is
+// a LIVENESS channel only — every bridge response still carries its notification
+// drain — so a browser without EventSource, or one whose stream never connects,
+// simply keeps polling.
+
+export interface BridgeEventSubscription {
+  close(): void;
+}
+
+export interface BridgeEventHandlers {
+  readonly onFrame: (frame: JsonValue) => void;
+  readonly onOpen?: () => void;
+  readonly onError?: () => void;
+}
+
+/** Minimal EventSource surface, so tests can inject a fake. */
+export interface EventSourceLike {
+  onmessage: ((event: { data: string }) => void) | null;
+  onopen: ((event?: unknown) => void) | null;
+  onerror: ((event?: unknown) => void) | null;
+  close(): void;
+}
+
+export interface BridgeEventOptions extends ApiOptions {
+  /** Injectable EventSource factory for tests; default globalThis.EventSource. */
+  readonly eventSource?: (url: string) => EventSourceLike;
+}
+
+/**
+ * Subscribe to the live bridge event channel. Returns a handle whose `close()`
+ * detaches; call it when the character goes offline or the page unmounts.
+ */
+export function subscribeBridgeEvents(
+  handlers: BridgeEventHandlers,
+  options: BridgeEventOptions = {},
+): BridgeEventSubscription {
+  const url = `${options.baseUrl ?? ""}/api/bridge/events`;
+  const factory =
+    options.eventSource ??
+    (typeof globalThis.EventSource === "function"
+      ? (target: string) =>
+          new globalThis.EventSource(target, {
+            withCredentials: true,
+          }) as unknown as EventSourceLike
+      : null);
+  if (!factory) {
+    // No EventSource in this environment: report the failure once so the caller
+    // stays on its polls rather than waiting for events that cannot arrive.
+    handlers.onError?.();
+    return { close() {} };
+  }
+
+  let source: EventSourceLike;
+  try {
+    source = factory(url);
+  } catch {
+    handlers.onError?.();
+    return { close() {} };
+  }
+
+  let closed = false;
+  source.onopen = () => {
+    if (!closed) {
+      handlers.onOpen?.();
+    }
+  };
+  source.onmessage = (event) => {
+    if (closed) {
+      return;
+    }
+    let frame: JsonValue;
+    try {
+      frame = JSON.parse(event.data) as JsonValue;
+    } catch {
+      return; // A malformed frame is ignored, never thrown at the page.
+    }
+    handlers.onFrame(frame);
+  };
+  source.onerror = () => {
+    if (!closed) {
+      handlers.onError?.();
+    }
+  };
+
+  return {
+    close() {
+      closed = true;
+      try {
+        source.close();
+      } catch {
+        // Already closed.
+      }
+    },
+  };
+}
+
 // --- R5a Flight (manually-stepped space movement) --------------------------
 // The BFF holds the beyonce bound park handle server-side and returns the raw
 // flight-status snapshot (decoded in the flow with bridge/flight.ts). Movement

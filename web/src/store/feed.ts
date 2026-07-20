@@ -20,12 +20,15 @@ import type {
   AgentRow,
   ChatChannel,
   ChatChannelState,
+  ChatMessage,
   CharacterSummary,
   CharStanding,
   CourierBriefing,
   FlightStatus,
   InventoryContainerState,
   JournalState,
+  LiveNotification,
+  LiveStreamStatus,
   OnlineCharacterState,
   StationGuest,
   StationServiceBits,
@@ -208,6 +211,38 @@ export type FeedEvent =
   | { readonly type: "chat/error"; readonly message: string | null }
   // Drop the chat state (character offline / logged out).
   | { readonly type: "chat/cleared" }
+  // Goal R10 — one chat message pushed over the live channel (gateway chat
+  // emitter -> WS -> BFF SSE), appended to the channel's backlog. Deduplicated
+  // against what a poll already delivered, so live and poll can coexist.
+  | {
+      readonly type: "chat/message";
+      readonly channel: ChatChannel;
+      readonly message: ChatMessage;
+    }
+  // Goal R10 — the live push channel's connection state. Drives poll cadence
+  // (fast when the channel is down, slow safety net when it is live); it is not
+  // a correctness signal, since every bridge response still drains
+  // notifications.
+  | { readonly type: "live/status"; readonly status: LiveStreamStatus }
+  // Goal R10 — a session notification pushed over the live channel, with the
+  // cursor it arrived at so a reconnect can resume from it. This is where the
+  // notifications the page used to throw away now land.
+  | {
+      readonly type: "live/notification";
+      readonly notification: LiveNotification;
+      readonly epoch: string | null;
+      readonly sequence: number;
+    }
+  // Goal R10 — the live channel could not be replayed from the held cursor
+  // (gateway restart or a cursor past the replay horizon); the consumer must
+  // re-read rather than assume continuity.
+  | {
+      readonly type: "live/resynchronize";
+      readonly epoch: string | null;
+      readonly sequence: number;
+    }
+  // Drop the live-channel state (character offline / logged out).
+  | { readonly type: "live/cleared" }
   // Goal R7c — the names-everywhere cache. A batch of `{kind, id}` refs resolved
   // (through the static /api/names route): each entry is a name string, or null
   // for a definitive "unknown". Merged into the `names` slice so pure-reader

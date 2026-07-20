@@ -8,6 +8,7 @@
   // bridge session.
   import { onDestroy, onMount } from "svelte";
   import { BridgeCallError } from "../bridge/callMethod.ts";
+  import { createChatPoller } from "../app/chatPoll.ts";
   import { isSessionLost } from "../app/flow.ts";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
@@ -20,6 +21,8 @@
   const chat = store.chat;
   // svelte-ignore state_referenced_locally
   const names = store.names;
+  // svelte-ignore state_referenced_locally
+  const live = store.live;
 
   // R7d — resolve each channel's identity to a NAME: Local → its solar system,
   // Corp → the corporation. Batched + cached by the flow; the raw room string
@@ -37,8 +40,14 @@
     }
   });
 
-  const POLL_MS = 4000;
-  let timer: ReturnType<typeof setInterval> | null = null;
+  // R10 — messages now arrive live over the push channel, so the backlog poll
+  // drops to a slow safety net while the channel is delivering and snaps back
+  // to the old fast cadence whenever it is not. The poll still covers roster
+  // changes (which the channel does not carry) and keeps the held session warm.
+  const poller = createChatPoller({
+    status: () => store.get().live.status,
+    refresh: () => void refresh(),
+  });
   let busy = $state(false);
   let error = $state("");
   let draft = $state("");
@@ -103,18 +112,18 @@
 
   onMount(() => {
     void refresh();
-    // Poll the active channel while the panel is open (READ is a backlog poll).
-    timer = setInterval(() => {
-      void refresh();
-    }, POLL_MS);
+    poller.start();
+  });
+
+  // Re-arm the poll cadence when the live channel connects or drops.
+  $effect(() => {
+    void $live.status;
+    poller.sync();
   });
 
   onDestroy(() => {
     // Closing the tab stops polling.
-    if (timer !== null) {
-      clearInterval(timer);
-      timer = null;
-    }
+    poller.stop();
   });
 
   // The active channel's decoded state (roster + backlog).

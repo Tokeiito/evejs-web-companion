@@ -176,7 +176,7 @@ app.post("/api/logout", async (req, res) => {
     try {
       await releaseHeldBridgeSession(payload.sessionID);
     } catch {
-      bridgeSessions.delete(payload.sessionID);
+      forgetBridgeSession(payload.sessionID);
     }
   }
   clearSessionCookie(res);
@@ -222,11 +222,35 @@ app.post("/api/bridge/call", requireAuth, async (req, res, next) => {
     // takeover, restart): drop the stale handle so the next call is stateless
     // and surface the typed error so the page can return to character select.
     if (heldBridgeSession && error && error.code === "SESSION_NOT_FOUND") {
-      bridgeSessions.delete(req.webSessionID);
+      forgetBridgeSession(req.webSessionID);
     }
     next(error);
   }
 });
+
+// Drop a held bridge session from the BFF's map. Every site that forgets a
+// handle goes through here so the R10 push stream is torn down with it: a
+// gateway WebSocket for a session the BFF no longer holds can never be useful,
+// and attached browsers are told the channel ended rather than being left on a
+// silent stream.
+function forgetBridgeSession(webSessionID) {
+  const held = bridgeSessions.get(webSessionID);
+  if (!held) {
+    return false;
+  }
+  bridgeSessions.delete(webSessionID);
+  publishStreamStatus(held, "ended", "session_released");
+  closeHeldStream(held);
+  for (const subscriber of [...held.streamSubscribers]) {
+    held.streamSubscribers.delete(subscriber);
+    try {
+      subscriber.end();
+    } catch {
+      // The response is already gone.
+    }
+  }
+  return true;
+}
 
 // Best-effort release of the bridge session a web session holds. Returns true
 // when a held session existed. SESSION_NOT_FOUND from the gateway means the
@@ -236,7 +260,7 @@ async function releaseHeldBridgeSession(webSessionID) {
   if (!held) {
     return false;
   }
-  bridgeSessions.delete(webSessionID);
+  forgetBridgeSession(webSessionID);
   try {
     await gateway.releaseBridgeSession(held.bridgeSessionID, {
       userid: Number(held.accountID),
@@ -248,6 +272,157 @@ async function releaseHeldBridgeSession(webSessionID) {
   }
   return true;
 }
+
+// --- R10 live event channel (gateway push -> SSE) --------------------------
+// The BFF holds at most ONE gateway WebSocket per held bridge session and
+// republishes it to the browser as Server-Sent Events on GET /api/bridge/events
+// (same-origin, cookie-authed, routed to this web session's held bridge
+// session). The bridgeSessionID stays server-side, exactly as on every request
+// route.
+//
+// The stream is opened lazily when a browser attaches and closed when the last
+// one detaches, so a held session with nobody watching costs nothing. The last
+// cursor seen is remembered on the held-session entry, so a gateway reconnect
+// resumes with it and the gateway replays the frames missed in between.
+//
+// Liveness only: every request route still drains notifications onto its
+// response, so a stream that never opens or drops mid-flight degrades to the
+// old poll-based behaviour rather than losing data.
+
+const STREAM_RETRY_MS = 3000;
+const SSE_HEARTBEAT_MS = 25_000;
+
+function writeSseFrame(res, payload) {
+  try {
+    res.write(`data: ${JSON.stringify(payload)}\n\n`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Fan a gateway frame out to every SSE subscriber on this held session, and
+// remember its cursor so a reconnect resumes from it.
+function publishStreamFrame(held, frame) {
+  if (frame && frame.cursor && typeof frame.cursor.epoch === "string") {
+    held.streamCursor = {
+      epoch: frame.cursor.epoch,
+      sequence: Number(frame.cursor.sequence) || 0,
+    };
+  }
+  for (const subscriber of [...held.streamSubscribers]) {
+    if (!writeSseFrame(subscriber, frame)) {
+      held.streamSubscribers.delete(subscriber);
+    }
+  }
+}
+
+function publishStreamStatus(held, state, detail) {
+  publishStreamFrame(held, {
+    source: "evejs-web-bff",
+    type: "stream-status",
+    state,
+    detail: detail === undefined ? null : detail,
+  });
+}
+
+function openHeldStream(webSessionID, held) {
+  if (held.stream || held.streamSubscribers.size === 0) {
+    return;
+  }
+  held.streamRetryTimer = null;
+  held.stream = gateway.openSessionEventStream({
+    bridgeSessionID: held.bridgeSessionID,
+    userid: Number(held.accountID),
+    cursor: held.streamCursor || null,
+    onOpen() {
+      publishStreamStatus(held, "live");
+    },
+    onFrame(frame) {
+      publishStreamFrame(held, frame);
+    },
+    onClose(details) {
+      held.stream = null;
+      if (held.streamSubscribers.size === 0) {
+        return;
+      }
+      // Tell the browser the channel is degraded so it leans on its poll, then
+      // retry. A 404 means the gateway no longer knows this bridge session —
+      // retrying cannot fix that, so stop and let the next request route
+      // surface SESSION_NOT_FOUND.
+      const refusal = Number(details && details.refusalStatus) || 0;
+      if (refusal === 404) {
+        publishStreamStatus(held, "ended", "session_not_found");
+        return;
+      }
+      publishStreamStatus(held, "degraded", (details && details.reason) || null);
+      held.streamRetryTimer = setTimeout(() => {
+        held.streamRetryTimer = null;
+        if (bridgeSessions.get(webSessionID) === held) {
+          openHeldStream(webSessionID, held);
+        }
+      }, STREAM_RETRY_MS);
+      if (typeof held.streamRetryTimer.unref === "function") {
+        held.streamRetryTimer.unref();
+      }
+    },
+  });
+}
+
+function closeHeldStream(held) {
+  if (held.streamRetryTimer) {
+    clearTimeout(held.streamRetryTimer);
+    held.streamRetryTimer = null;
+  }
+  if (held.stream) {
+    held.stream.close();
+    held.stream = null;
+  }
+}
+
+app.get("/api/bridge/events", requireAuth, (req, res) => {
+  const held = bridgeSessions.get(req.webSessionID) || null;
+  if (!held) {
+    res.status(409).json({
+      ok: false,
+      error: "NO_LIVE_SESSION",
+      message: "No character is online; select a character first.",
+    });
+    return;
+  }
+  res.writeHead(200, {
+    "content-type": "text/event-stream; charset=utf-8",
+    "cache-control": "no-store",
+    connection: "keep-alive",
+    // Defeat proxy buffering, which would otherwise hold frames back and
+    // reintroduce exactly the latency this channel removes.
+    "x-accel-buffering": "no",
+  });
+  res.write(": open\n\n");
+  held.streamSubscribers.add(res);
+  publishStreamStatus(held, held.stream ? "live" : "connecting");
+  openHeldStream(req.webSessionID, held);
+
+  // SSE comment heartbeat: keeps intermediaries from reaping an idle stream.
+  const heartbeat = setInterval(() => {
+    try {
+      res.write(": ping\n\n");
+    } catch {
+      // The close handler below owns teardown.
+    }
+  }, SSE_HEARTBEAT_MS);
+  if (typeof heartbeat.unref === "function") {
+    heartbeat.unref();
+  }
+
+  req.on("close", () => {
+    clearInterval(heartbeat);
+    held.streamSubscribers.delete(res);
+    if (held.streamSubscribers.size === 0) {
+      closeHeldStream(held);
+    }
+  });
+});
 
 // Read-only station identity from the local static reference data (allowed by
 // the roadmap: names/SDE stay client-local, exactly as the retail client
@@ -318,6 +493,13 @@ app.post("/api/bridge/select", requireAuth, async (req, res, next) => {
       stationID: Number(outcome.session.stationID) || null,
       activeShipID: Number(outcome.session.shipID) || null,
       boundHandles: new Map(),
+      // R10 live event channel: the single gateway push WebSocket for this
+      // session (opened lazily when a browser attaches), the SSE responses it
+      // fans out to, and the last cursor seen so a reconnect resumes there.
+      stream: null,
+      streamSubscribers: new Set(),
+      streamCursor: null,
+      streamRetryTimer: null,
     });
     res.json({
       ok: true,
@@ -469,7 +651,7 @@ async function boundCall(held, webSessionID, bindSpec, method, args, kwargs) {
     );
   } catch (error) {
     if (error && error.code === "SESSION_NOT_FOUND") {
-      bridgeSessions.delete(webSessionID);
+      forgetBridgeSession(webSessionID);
       throw error;
     }
     if (error && error.code === "BOUND_HANDLE_NOT_FOUND") {
@@ -670,7 +852,7 @@ async function heldTopLevelCall(held, webSessionID, service, method, args, kwarg
     );
   } catch (error) {
     if (error && error.code === "SESSION_NOT_FOUND") {
-      bridgeSessions.delete(webSessionID);
+      forgetBridgeSession(webSessionID);
     }
     throw error;
   }
@@ -959,7 +1141,7 @@ app.get("/api/bridge/chat/:channel", requireAuth, async (req, res, next) => {
     res.json({ ok: true, chat: outcome.chat, notifications: outcome.notifications });
   } catch (error) {
     if (error && error.code === "SESSION_NOT_FOUND") {
-      bridgeSessions.delete(req.webSessionID);
+      forgetBridgeSession(req.webSessionID);
     }
     next(error);
   }
@@ -990,7 +1172,7 @@ app.post("/api/bridge/chat/:channel/send", requireAuth, async (req, res, next) =
     res.json({ ok: true, chat: outcome.chat, notifications: outcome.notifications });
   } catch (error) {
     if (error && error.code === "SESSION_NOT_FOUND") {
-      bridgeSessions.delete(req.webSessionID);
+      forgetBridgeSession(req.webSessionID);
     }
     next(error);
   }
@@ -1041,7 +1223,7 @@ async function readHeldFlight(held, webSessionID) {
     return outcome;
   } catch (error) {
     if (error && error.code === "SESSION_NOT_FOUND") {
-      bridgeSessions.delete(webSessionID);
+      forgetBridgeSession(webSessionID);
     }
     throw error;
   }

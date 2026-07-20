@@ -474,6 +474,42 @@ export interface ChatState {
   readonly error: string | null;
 }
 
+// --- R10 live event channel ------------------------------------------------
+
+/**
+ * How the live push channel (gateway WebSocket -> BFF SSE -> browser) is doing.
+ * "live" means events are arriving; anything else means the page is back on its
+ * safety-net polls. Nothing about correctness depends on this — every bridge
+ * response still carries its notification drain — so it drives poll cadence,
+ * not what the player is shown.
+ */
+export type LiveStreamStatus = "idle" | "connecting" | "live" | "degraded" | "ended";
+
+/**
+ * One session notification pushed over the live channel: the same shape the
+ * response drain carries (`kind` is the ClientSession surface that produced it).
+ */
+export interface LiveNotification {
+  readonly kind: string;
+  readonly service: string | null;
+  readonly method: string | null;
+  readonly receivedAtMs: number;
+}
+
+/**
+ * The live channel slice (goal R10). Holds the connection status, the cursor
+ * last seen (so a reconnect can resume), and a bounded tail of the session
+ * notifications that arrived — which is where the drained `notifications` the
+ * page used to discard now actually land.
+ */
+export interface LiveState {
+  readonly status: LiveStreamStatus;
+  readonly epoch: string | null;
+  readonly sequence: number;
+  readonly notifications: readonly LiveNotification[];
+  readonly lastEventAtMs: number | null;
+}
+
 export interface CharacterSummary {
   readonly characterID: number;
   readonly characterName: string;

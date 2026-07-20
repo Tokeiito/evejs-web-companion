@@ -28,6 +28,7 @@ import type {
   FlightState,
   InventoryContainerState,
   InventoryState,
+  LiveState,
   OnlineCharacterState,
   RewardsState,
   StationGuest,
@@ -84,6 +85,7 @@ export interface ClientState {
   readonly flight: FlightState;
   readonly travel: TravelState;
   readonly chat: ChatState;
+  readonly live: LiveState;
   readonly names: NamesState;
   readonly feed: FeedSlice;
 }
@@ -206,6 +208,21 @@ const INITIAL_NAMES: NamesState = Object.freeze({
   resolved: Object.freeze({}) as NamesState["resolved"],
 });
 
+// R10 live channel: how many pushed session notifications to keep. A bounded
+// tail — this is a liveness record for the page to react to, not a log.
+const LIVE_NOTIFICATION_LIMIT = 50;
+// How many messages a channel backlog keeps once live pushes start appending.
+// Matches the gateway's default backlog read so live and polled state converge.
+const CHAT_BACKLOG_LIMIT = 50;
+
+const INITIAL_LIVE: LiveState = Object.freeze({
+  status: "idle" as LiveState["status"],
+  epoch: null,
+  sequence: 0,
+  notifications: Object.freeze([]) as LiveState["notifications"],
+  lastEventAtMs: null,
+});
+
 const INITIAL_FEED: FeedSlice = Object.freeze({
   adapter: null,
   status: "idle" as FeedStatus,
@@ -225,6 +242,7 @@ export interface ClientStore {
   readonly flight: ReadableSignal<FlightState>;
   readonly travel: ReadableSignal<TravelState>;
   readonly chat: ReadableSignal<ChatState>;
+  readonly live: ReadableSignal<LiveState>;
   readonly names: ReadableSignal<NamesState>;
   readonly feed: ReadableSignal<FeedSlice>;
 
@@ -259,6 +277,7 @@ export function createClientStore(): ClientStore {
   const flight = createSignal<FlightState>(INITIAL_FLIGHT);
   const travel = createSignal<TravelState>(INITIAL_TRAVEL);
   const chat = createSignal<ChatState>(INITIAL_CHAT);
+  const live = createSignal<LiveState>(INITIAL_LIVE);
   const names = createSignal<NamesState>(INITIAL_NAMES);
   const feed = createSignal<FeedSlice>(INITIAL_FEED);
 
@@ -280,6 +299,7 @@ export function createClientStore(): ClientStore {
     flight: flight.get(),
     travel: travel.get(),
     chat: chat.get(),
+    live: live.get(),
     names: names.get(),
     feed: feed.get(),
   });
@@ -305,6 +325,7 @@ export function createClientStore(): ClientStore {
         flight.set(INITIAL_FLIGHT);
         travel.set(INITIAL_TRAVEL);
         chat.set(INITIAL_CHAT);
+        live.set(INITIAL_LIVE);
         break;
       case "character/list": {
         const characters = [...event.characters];
@@ -345,6 +366,7 @@ export function createClientStore(): ClientStore {
         flight.set(INITIAL_FLIGHT);
         travel.set(INITIAL_TRAVEL);
         chat.set(INITIAL_CHAT);
+        live.set(INITIAL_LIVE);
         break;
       case "character/offline":
         station.set(INITIAL_STATION);
@@ -355,6 +377,7 @@ export function createClientStore(): ClientStore {
         flight.set(INITIAL_FLIGHT);
         travel.set(INITIAL_TRAVEL);
         chat.set(INITIAL_CHAT);
+        live.set(INITIAL_LIVE);
         break;
       case "station/relocated": {
         // The docked station changed on the same live session (autopilot
@@ -580,6 +603,70 @@ export function createClientStore(): ClientStore {
       case "chat/cleared":
         chat.set(INITIAL_CHAT);
         break;
+      // R10 — a live-pushed message. The safety-net poll and the push channel
+      // both deliver the same backlog entries, so an append that duplicates a
+      // message already present is dropped: a message is identified by its
+      // author, text, and timestamp (the gateway backlog entry has no ID).
+      case "chat/message": {
+        const current = chat.get();
+        const channelState = current[event.channel];
+        const incoming = event.message;
+        const duplicate = channelState.messages.some(
+          (existing) =>
+            existing.createdAtMs === incoming.createdAtMs &&
+            existing.characterID === incoming.characterID &&
+            existing.message === incoming.message,
+        );
+        if (duplicate) {
+          break;
+        }
+        const messages = [...channelState.messages, incoming];
+        chat.set({
+          ...current,
+          [event.channel]: {
+            ...channelState,
+            messages: messages.slice(-CHAT_BACKLOG_LIMIT),
+            // A live message proves the channel exists even before its first
+            // read completes.
+            loaded: true,
+          },
+        });
+        break;
+      }
+      // R10 — the live push channel's own state.
+      case "live/status":
+        live.set({ ...live.get(), status: event.status });
+        break;
+      case "live/notification": {
+        const current = live.get();
+        live.set({
+          ...current,
+          status: "live",
+          epoch: event.epoch ?? current.epoch,
+          sequence: event.sequence,
+          notifications: [...current.notifications, event.notification].slice(
+            -LIVE_NOTIFICATION_LIMIT,
+          ),
+          lastEventAtMs: event.notification.receivedAtMs,
+        });
+        break;
+      }
+      // The gateway could not replay from the held cursor. Adopt the new cursor
+      // and drop the buffered tail: continuing to show it would imply a
+      // continuity the stream just told us it cannot provide.
+      case "live/resynchronize": {
+        const current = live.get();
+        live.set({
+          ...current,
+          epoch: event.epoch ?? current.epoch,
+          sequence: event.sequence,
+          notifications: Object.freeze([]) as LiveState["notifications"],
+        });
+        break;
+      }
+      case "live/cleared":
+        live.set(INITIAL_LIVE);
+        break;
       case "names/resolved": {
         // Merge the freshly-resolved batch into the names cache (static
         // reference data — a name only ever gets more resolved, never cleared).
@@ -651,6 +738,7 @@ export function createClientStore(): ClientStore {
     flight: readonlySignal(flight),
     travel: readonlySignal(travel),
     chat: readonlySignal(chat),
+    live: readonlySignal(live),
     names: readonlySignal(names),
     feed: readonlySignal(feed),
     get,

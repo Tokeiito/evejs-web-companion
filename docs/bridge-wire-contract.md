@@ -721,6 +721,112 @@ Success (200): `{ "ok": true, "chat": { "channel", "roomName", "sent": true,
 "entry": { "characterID", "characterName", "message", "createdAtMs" } },
 "notifications": [...] }`.
 
+## Live event channel — the push path (R10 / roadmap G6)
+
+Everything above is **pull**: handler notifications are captured into a
+per-session array and drained onto the next call response, and chat is a backlog
+poll. R10 adds a real **push** channel alongside them. It is strictly
+**additive** — the `notifications` drain on every response is unchanged, so a
+browser with no channel behaves exactly as it did before, and a reconnect gap
+can never lose data the next response would have carried anyway.
+
+The chain is **gateway WebSocket → BFF → browser SSE**. The `bridgeSessionID`
+never leaves the server, exactly as on the request routes.
+
+### `GET /_evejs-web/v1/session-events` (WebSocket upgrade)
+
+Query: `userid`, `bridgeSessionID`, and optionally the resume cursor
+`epoch` + `sequence` (both or neither — a half cursor is `INVALID_EVENT_CURSOR`
+400, not a fresh subscribe).
+
+Rides the **same** `server.on("upgrade")` seam, `WebSocketServer`, 2 MB frame /
+4 MB buffer guards, ping/pong heartbeat, and graceful shutdown as the existing
+character-event path (`/events`, keyed by `characterID`). Inbound client
+messages are rejected — the channel is strictly server→client.
+
+**Authorization** is resolved *before* the handshake completes, so a refusal is a
+readable HTTP status rather than an opened-then-closed socket: the
+`bridgeSessionID` must resolve to a live session owned by `userid`. An unknown
+**or foreign** handle is opaquely `SESSION_NOT_FOUND` (404); a malformed request
+is 400; a not-ready runtime is 503.
+
+> **Upgrade auth matches request auth.** `authorizeGatewayUpgrade` previously
+> returned `false` whenever no `EVEJS_WEB_GATEWAY_TOKEN` was configured, while
+> `authorizeGatewayRequest` fell back to loopback-allow. That divergence made the
+> push channel unreachable in the ordinary token-less local setup even though
+> every request route on the same origin worked. Both now use one rule: with a
+> token configured, present it; without one, **loopback only**.
+
+**Frames.** Every frame carries `source: "evejs-web-gateway"`, `apiVersion`,
+`streamVersion`, and `cursor: { epoch, sequence }`.
+
+- `type: "event"` with `event.kind: "notification"` — one capture from the
+  session's `sendServiceNotification` / `sendNotification` / `sendSessionChange`
+  stub, in the same shape the drain carries (`kind` is `service` / `client` /
+  `sessionchange`).
+- `type: "event"` with `event.kind: "chat"` — `{ channel: "local"|"corp",
+  roomName, entry }`, sourced by subscribing to `chatRuntime`'s existing
+  module-level `channel-message` emitter and routing by room name to each live
+  browser session's Local and Corp rooms. `entry` is the **same backlog-entry
+  shape the chat READ returns**, so a pushed message and a polled one decode
+  identically. Chat mechanics are subscribed to, never modified.
+- `type: "snapshot"` — the replay fallback (below).
+
+### Replay or snapshot
+
+Copied from `characterEventRuntime`: a per-process `epoch`, a per-session
+monotonic `sequence`, and a bounded history (256 frames). On subscribe:
+
+- **Replayable cursor** (same epoch, within the retained horizon): exactly the
+  frames after `cursor.sequence` are delivered, then live delivery continues.
+  The subscriber is registered *before* the replay batch drains, so the handoff
+  from replay to live is atomic with no gap.
+- **Otherwise**: a single `snapshot` frame carrying the current high-water cursor
+  and a `reason` — `"no_cursor"` (a fresh subscribe, nothing was missed) or
+  `"cursor_not_replayable"` (a gateway restart or a cursor past the horizon).
+  A session stream has no separately readable authoritative state to snapshot, so
+  the frame's honest content is "resynchronize by reading" — the browser answers
+  `cursor_not_replayable` with a chat re-read rather than assuming continuity.
+
+Frames are retained even with no subscriber attached, which is what makes a
+reconnect during a brief drop lossless. A consumer whose `onFrame` returns
+`false` (the socket overflowed its buffer) is dropped as `consumer_rejected`.
+Ending the bridge session (release, idle TTL, retail takeover, shutdown) drops
+its stream and closes attached sockets.
+
+### BFF: `GET /api/bridge/events` (SSE)
+
+Same-origin, cookie-authed, routed to the web session's own held bridge session;
+409 `NO_LIVE_SESSION` without one, 401 without a login.
+
+The BFF holds **at most one** gateway WebSocket per held bridge session,
+regardless of how many browsers attach. It is opened lazily on first attach and
+closed when the last browser detaches, so a held session nobody is watching costs
+nothing. The BFF remembers the last cursor it saw, so a reconnect resumes from it
+and the gateway replays the gap.
+
+Gateway frames are forwarded verbatim. The BFF adds its own status frames —
+`{ source: "evejs-web-bff", type: "stream-status", state, detail }` with `state`
+one of `connecting` / `live` / `degraded` / `ended` — so the browser knows when
+to lean on its polls. A dropped gateway socket is announced as `degraded` and
+retried with the cursor; a gateway 404 (the session is gone) is announced as
+`ended` and **not** retried, since retrying cannot fix it.
+
+### What stays polled
+
+- **Chat roster** — the channel carries messages, not membership changes.
+- **Flight status**, inventory, agents, journal, rewards — all still explicit
+  reads. The channel is a liveness signal, not a state replacement.
+- **The chat backlog poll itself**, as a safety net: it drops from 4s to 30s
+  while the channel is live and snaps back to 4s the moment it is not. It also
+  keeps the held bridge session warm against its idle TTL for a player who is
+  only watching chat.
+
+The browser side feeds pushed messages into the chat slice (deduplicated against
+what a poll already delivered, by author + text + timestamp) and pushed
+notifications into a bounded `live` slice — which is where the drained
+`notifications` the page used to discard now actually land.
+
 ## BFF routes (this repo)
 
 `POST /api/bridge/call` — requires the signed web login session (else 401 `AUTH_REQUIRED`).
