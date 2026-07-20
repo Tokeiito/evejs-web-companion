@@ -51,9 +51,8 @@
 <section>
   <h2>Select character</h2>
   <p class="note">
-    Signed in as <strong>{$session.username}</strong>. Selecting a character
-    brings it online on a live EveJS session (the same rules as the retail
-    client — a character already controlled elsewhere is refused).
+    Signed in as <strong>{$session.username}</strong>. Select a character to
+    bring it online — a character already in use elsewhere cannot be selected.
   </p>
   {#if $character.characters.length === 0}
     <p class="note">This account has no characters.</p>

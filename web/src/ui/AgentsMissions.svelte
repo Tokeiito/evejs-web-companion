@@ -171,11 +171,8 @@
 <section>
   <h2>Agents &amp; Missions</h2>
   <p class="note">
-    agentMgr bridge: the station's agents come from agentMgr.GetAgents; the agent
-    moniker (Moniker('agentMgr', agentID)) is bound on the BFF, and DoAction /
-    GetMission* dispatch on it. Talk to an agent, request and accept a courier in
-    person, load the package, autopilot to the dropoff, then Complete and see the
-    reward. The browser never sees a bound handle.
+    Talk to an agent, accept a courier, deliver the package, then complete the
+    mission to collect the reward.
   </p>
   <p>
     <button type="button" disabled={busy} onclick={() => run(async () => { await flow.loadAgents(); await flow.loadJournal(); })}>
@@ -210,7 +207,7 @@
     </label>
     <label>
       Search
-      <input type="search" placeholder="agent id / type" bind:value={searchText} />
+      <input type="search" placeholder="mission type or level" bind:value={searchText} />
     </label>
   </div>
   {#if $agents.agents.length === 0}
@@ -311,9 +308,9 @@
 
 {#if $rewards.loaded}
   <section>
-    <h2>Reward &amp; wallet (post-completion)</h2>
+    <h2>Reward &amp; wallet</h2>
     {#if $rewards.error}
-      <p class="error">Some reward reads failed: {$rewards.error}</p>
+      <p class="error">Some reward details could not be loaded: {$rewards.error}</p>
     {/if}
     <table class="guests">
       <tbody>

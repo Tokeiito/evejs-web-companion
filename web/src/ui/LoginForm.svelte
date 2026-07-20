@@ -35,9 +35,7 @@
 
 <section>
   <h2>Log in</h2>
-  <p class="note">
-    EveJS account name; the password is not checked (dev emulator).
-  </p>
+  <p class="note">Sign in with your EveJS account name — any password works.</p>
   <form onsubmit={submit}>
     <label>
       Account

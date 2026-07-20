@@ -138,12 +138,8 @@
 <section>
   <h2>Flight</h2>
   <p class="note">
-    Manually-stepped space movement (R5a): the atomic moves the retail client's
-    client-side autopilot issues, one button per step. ship.Undock enters space;
-    the beyonce remote park (Moniker('beyonce', solarSystemID)) is bound on the
-    BFF, and CmdWarpToStuffAutopilot / CmdStargateJump / CmdDock dispatch on it.
-    The autopilot decide-loop and route solver are R5b — here you pick each gate
-    and destination. The browser never sees a bound handle.
+    Fly manually, one step at a time: undock, warp, jump, and dock. Use the
+    Travel tab to let the autopilot do it for you.
   </p>
   <p>
     <button type="button" disabled={busy} onclick={() => run(() => flow.loadFlightStatus())}>
@@ -225,10 +221,7 @@
         Jump
       </button>
     </p>
-    <p class="note">
-      The system transition completes after a short handoff; refresh flight
-      status to see the new system.
-    </p>
+    <p class="note">Refresh flight status to see the new system.</p>
   </section>
 
   <section>
@@ -247,8 +240,8 @@
       </button>
     </p>
     <p class="note">
-      Docking requires being in range; if the ship is too far the handler
-      refuses with a docking-approach reason. Refresh flight status to confirm.
+      Docking needs the ship to be in range — warp closer first if it is too
+      far. Refresh flight status to confirm.
     </p>
   </section>
 {/if}

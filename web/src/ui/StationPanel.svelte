@@ -87,7 +87,6 @@
       {#if $station.station}
         in {$station.station.solarSystemName} ({$station.station.regionName})
       {/if}
-      — live EveJS session.
     </p>
     <dl class="kv">
       <dt>Station type</dt>
@@ -100,7 +99,7 @@
   </section>
 
   <section>
-    <h2>Station services — stationSvc.GetStationItemBits</h2>
+    <h2>Station services</h2>
     {#if $station.bits}
       <dl class="kv">
         <dt>Owner</dt>
@@ -109,26 +108,15 @@
         <dd>{nameOnly($station.bits.stationTypeID, "type")}</dd>
       </dl>
     {:else}
-      <p class="note">Loading services row…</p>
+      <p class="note">Loading station services…</p>
     {/if}
-    <p class="note">
-      map.GetStationInfo:
-      {#if $station.stationInfoCached === null}
-        not queried yet
-      {:else if $station.stationInfoCached}
-        answered with the retail cached-object envelope (rowset rides the
-        object cache)
-      {:else}
-        answered with an unexpected shape
-      {/if}
-    </p>
     {#if $station.readError}
-      <p class="error">Some docked reads failed (panel shows what loaded): {$station.readError}</p>
+      <p class="error">Some station details could not be loaded: {$station.readError}</p>
     {/if}
   </section>
 
   <section>
-    <h2>Guests — station.GetGuests</h2>
+    <h2>Guests</h2>
     {#if $station.guests.length === 0}
       <p class="note">No guests reported yet.</p>
     {:else}

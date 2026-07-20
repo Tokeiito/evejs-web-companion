@@ -176,13 +176,8 @@
 <section>
   <h2>Travel (autopilot)</h2>
   <p class="note">
-    The browser autopilot decide-loop (R5b): a client-side port of the retail
-    client's ~2-second autopilot loop. It solves the jump route locally, then
-    sequences the R5a atomic moves — undock, warp to each gate, jump, warp to the
-    station, dock (re-issuing dock through the approach) — reading flight-status
-    between moves. Movement stays authoritative on the server; the browser only
-    sequences it. Closing this tab stops the autopilot (the ship finishes its
-    last move and sits) — exactly like closing the retail client mid-autopilot.
+    Set a destination and the autopilot flies you there. Closing this tab stops
+    the autopilot — the ship finishes its last move and waits.
   </p>
 </section>
 
@@ -191,7 +186,7 @@
     <h2>Set destination</h2>
     <p class="note">
       Search any solar system or station by name, then Set destination to fly
-      there — no EVE IDs needed. The route is computed from your current location.
+      there. The route is planned from where you are now.
     </p>
     <p class="controls">
       <label>
@@ -256,7 +251,7 @@
 
   <section>
     <h2>Start route by ID</h2>
-    <p class="note">Advanced fallback: enter a station or solar system ID directly.</p>
+    <p class="note">Advanced: enter a station or solar system ID directly.</p>
     <p class="controls">
       <label>
         Destination

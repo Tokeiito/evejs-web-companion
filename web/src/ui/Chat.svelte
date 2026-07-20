@@ -132,13 +132,6 @@
 
 <section>
   <h2>Chat</h2>
-  <p class="note">
-    Local and Corp chat for the browser character (R7). The character joins Local
-    on select and appears in both channels' member lists; messages read from the
-    backlog store and send through the same session the retail client uses. Chat
-    delivery bypasses the notification drain, so this panel polls the open
-    channel every {POLL_MS / 1000}s.
-  </p>
   <nav class="tabs">
     {#each CHANNELS as channel (channel.id)}
       <button

@@ -124,14 +124,7 @@
 
 <section>
   <h2>Agent Finder</h2>
-  <p class="note">
-    Find a courier agent from static reference data and set the autopilot to it.
-    Agents are listed from the agentAuthority table (not the unreliable
-    per-station roster) and sorted by jumps from your current system. Set the
-    destination on one, then watch the browser autopilot fly there on the Travel
-    tab; on arrival, talk to the agent and accept a courier on the Agents &amp;
-    Missions tab.
-  </p>
+  <p class="note">Find an agent and set your destination.</p>
 </section>
 
 <section>
@@ -201,10 +194,10 @@
   {:else}
     <p class="note">
       Showing {cappedAgents.length} of {filteredAgents.length} matching
-      ({$finder.total}{$finder.capped ? "+" : ""} in the dataset for this filter),
-      sorted nearest-first from {originText()}.
+      ({$finder.total}{$finder.capped ? "+" : ""} for this filter), nearest first
+      from {originText()}.
       {#if $finder.capped}
-        The dataset was capped server-side — add a level to narrow it.
+        Pick a level to narrow the list.
       {:else if filteredAgents.length > cappedAgents.length}
         Refine the search to narrow the list.
       {/if}

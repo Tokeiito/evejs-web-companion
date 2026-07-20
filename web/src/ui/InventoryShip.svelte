@@ -106,12 +106,6 @@
 
 <section>
   <h2>Inventory &amp; Ship</h2>
-  <p class="note">
-    Bound-object bridge: the station hangar and active-ship cargo are bound
-    with invbroker (GetInventory / GetInventoryFromId); List / Add / StackAll /
-    Board dispatch on those handles. The browser never sees a handle — it moves
-    items and boards ships by their game IDs.
-  </p>
   <p class="controls">
     <label>
       Move quantity (blank = whole stack):
@@ -140,7 +134,7 @@
     </button>
   </p>
   {#if $inventory.hangar.error}
-    <p class="error">Hangar read failed: {$inventory.hangar.error}</p>
+    <p class="error">The hangar could not be loaded: {$inventory.hangar.error}</p>
   {/if}
   {#if $inventory.hangar.rows.length === 0}
     <p class="note">{$inventory.loaded ? "Hangar is empty." : "Loading hangar…"}</p>
@@ -192,7 +186,7 @@
     </button>
   </p>
   {#if $inventory.cargo.error}
-    <p class="error">Cargo read failed: {$inventory.cargo.error}</p>
+    <p class="error">The cargo hold could not be loaded: {$inventory.cargo.error}</p>
   {/if}
   {#if !$inventory.activeShipID}
     <p class="note">No active ship — board a ship in the hangar to see its cargo.</p>
