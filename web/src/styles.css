@@ -341,6 +341,62 @@
     overflow-x: auto;
   }
 
+  /* ------------------------------------------------- overview + ship HUD --
+   * The two actions on an overview row sit side by side on desktop; the phone
+   * reflow below stacks them into full-width, touch-sized buttons. */
+  .row-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+  }
+
+  /* Labelled percentage bars for shield / armor / hull / capacitor. */
+  .hud {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+    gap: 0.6rem 1rem;
+  }
+  .hud-gauge {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+  .hud-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 0.5rem;
+  }
+  .hud-label {
+    color: var(--color-muted);
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-weight: 600;
+  }
+  .hud-value {
+    color: var(--color-text-bright);
+    font-variant-numeric: tabular-nums;
+  }
+  .hud-track {
+    height: 0.6rem;
+    border-radius: 0.3rem;
+    background: var(--color-panel-3);
+    border: 1px solid var(--color-line);
+    overflow: hidden;
+  }
+  .hud-fill {
+    display: block;
+    height: 100%;
+    border-radius: 0.3rem 0 0 0.3rem;
+    background: var(--color-accent, #57a3d6);
+    transition: width 200ms linear;
+  }
+  .hud-gauge.shield .hud-fill { background: #4a9fd8; }
+  .hud-gauge.armor .hud-fill { background: #c8a24a; }
+  .hud-gauge.hull .hud-fill { background: #c46a5a; }
+  .hud-gauge.capacitor .hud-fill { background: #5ab98c; }
+
   /* Record-table -> card reflow on phones (<=640px). Each row becomes a
    * bordered card and each cell a labelled block (label from data-label). */
   @media (max-width: 640px) {
@@ -395,5 +451,7 @@
     }
     table.reflow td[data-label=""]:has(button)::before { display: none; }
     table.reflow td:has(button) button { width: 100%; }
+    /* Two row actions stack full-width on a phone rather than squeezing. */
+    table.reflow td .row-actions { flex-direction: column; }
   }
 }

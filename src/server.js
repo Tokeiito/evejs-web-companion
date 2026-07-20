@@ -1446,6 +1446,32 @@ app.post("/api/bridge/flight/approach", requireAuth, async (req, res, next) => {
   }
 });
 
+// R11 space overview + ship HUD. A read-only snapshot of what the ship can see
+// right now — the visible entities around it and the active ship's shield /
+// armor / hull / capacitor. The browser polls this ~1s while in space with the
+// overview open (the retail client re-renders its own overview on the same
+// 0.5-1.0s cadence) and computes distance, sorting and filtering itself from
+// the returned positions, exactly as the real client does. Read-only: it starts
+// no movement; the Warp to / Approach buttons on each row reuse the existing
+// atomic-move routes above (/api/bridge/flight/warp and /approach).
+app.get("/api/bridge/space/snapshot", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  try {
+    const outcome = await gateway.readSpaceSnapshot(held.bridgeSessionID, {
+      userid: held.accountID,
+    });
+    res.json({ ok: true, space: outcome.space, notifications: outcome.notifications });
+  } catch (error) {
+    if (error && error.code === "SESSION_NOT_FOUND") {
+      forgetBridgeSession(req.webSessionID);
+    }
+    next(error);
+  }
+});
+
 // --- R5b Travel: client-side route solver static data ----------------------
 // The browser autopilot's route solver is client-side (roadmap §7 / G2): the
 // system-adjacency graph it runs BFS over is read-only static reference data

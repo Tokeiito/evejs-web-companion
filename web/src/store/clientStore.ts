@@ -31,6 +31,7 @@ import type {
   LiveState,
   OnlineCharacterState,
   RewardsState,
+  SpaceState,
   StationGuest,
   StationServiceBits,
   StationStatic,
@@ -83,6 +84,7 @@ export interface ClientState {
   readonly finder: AgentFinderState;
   readonly rewards: RewardsState;
   readonly flight: FlightState;
+  readonly space: SpaceState;
   readonly travel: TravelState;
   readonly chat: ChatState;
   readonly live: LiveState;
@@ -166,6 +168,12 @@ const INITIAL_FLIGHT: FlightState = Object.freeze({
   structureName: null,
 });
 
+const INITIAL_SPACE: SpaceState = Object.freeze({
+  snapshot: null,
+  loaded: false,
+  error: null,
+});
+
 const INITIAL_TRAVEL: TravelState = Object.freeze({
   status: "idle" as TravelState["status"],
   destinationSystemID: null,
@@ -240,6 +248,7 @@ export interface ClientStore {
   readonly finder: ReadableSignal<AgentFinderState>;
   readonly rewards: ReadableSignal<RewardsState>;
   readonly flight: ReadableSignal<FlightState>;
+  readonly space: ReadableSignal<SpaceState>;
   readonly travel: ReadableSignal<TravelState>;
   readonly chat: ReadableSignal<ChatState>;
   readonly live: ReadableSignal<LiveState>;
@@ -275,6 +284,7 @@ export function createClientStore(): ClientStore {
   const finder = createSignal<AgentFinderState>(INITIAL_FINDER);
   const rewards = createSignal<RewardsState>(INITIAL_REWARDS);
   const flight = createSignal<FlightState>(INITIAL_FLIGHT);
+  const space = createSignal<SpaceState>(INITIAL_SPACE);
   const travel = createSignal<TravelState>(INITIAL_TRAVEL);
   const chat = createSignal<ChatState>(INITIAL_CHAT);
   const live = createSignal<LiveState>(INITIAL_LIVE);
@@ -297,6 +307,7 @@ export function createClientStore(): ClientStore {
     finder: finder.get(),
     rewards: rewards.get(),
     flight: flight.get(),
+    space: space.get(),
     travel: travel.get(),
     chat: chat.get(),
     live: live.get(),
@@ -323,6 +334,7 @@ export function createClientStore(): ClientStore {
         finder.set(INITIAL_FINDER);
         rewards.set(INITIAL_REWARDS);
         flight.set(INITIAL_FLIGHT);
+        space.set(INITIAL_SPACE);
         travel.set(INITIAL_TRAVEL);
         chat.set(INITIAL_CHAT);
         live.set(INITIAL_LIVE);
@@ -364,6 +376,7 @@ export function createClientStore(): ClientStore {
         finder.set(INITIAL_FINDER);
         rewards.set(INITIAL_REWARDS);
         flight.set(INITIAL_FLIGHT);
+        space.set(INITIAL_SPACE);
         travel.set(INITIAL_TRAVEL);
         chat.set(INITIAL_CHAT);
         live.set(INITIAL_LIVE);
@@ -375,6 +388,7 @@ export function createClientStore(): ClientStore {
         finder.set(INITIAL_FINDER);
         rewards.set(INITIAL_REWARDS);
         flight.set(INITIAL_FLIGHT);
+        space.set(INITIAL_SPACE);
         travel.set(INITIAL_TRAVEL);
         chat.set(INITIAL_CHAT);
         live.set(INITIAL_LIVE);
@@ -549,6 +563,16 @@ export function createClientStore(): ClientStore {
         break;
       case "flight/cleared":
         flight.set(INITIAL_FLIGHT);
+        break;
+      case "space/snapshot":
+        // A clean read clears any stale read error.
+        space.set({ snapshot: event.snapshot, loaded: true, error: null });
+        break;
+      case "space/error":
+        space.set({ ...space.get(), error: event.message });
+        break;
+      case "space/cleared":
+        space.set(INITIAL_SPACE);
         break;
       case "travel/planned":
         travel.set({
@@ -736,6 +760,7 @@ export function createClientStore(): ClientStore {
     finder: readonlySignal(finder),
     rewards: readonlySignal(rewards),
     flight: readonlySignal(flight),
+    space: readonlySignal(space),
     travel: readonlySignal(travel),
     chat: readonlySignal(chat),
     live: readonlySignal(live),

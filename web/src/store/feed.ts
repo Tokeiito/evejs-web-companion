@@ -30,6 +30,7 @@ import type {
   LiveNotification,
   LiveStreamStatus,
   OnlineCharacterState,
+  SpaceSnapshot,
   StationGuest,
   StationServiceBits,
   StationStatic,
@@ -168,6 +169,15 @@ export type FeedEvent =
   | { readonly type: "flight/action-error"; readonly message: string | null }
   // Drop the flight state (character offline / logged out).
   | { readonly type: "flight/cleared" }
+  // Goal R11 — the Overview panel. A space snapshot read completed: everything
+  // the ship can see right now plus the active ship's shield/armor/hull/cap.
+  // The flow polls this ~1s while in space with the panel open; the panel is a
+  // pure reader that derives distances, sorting and filtering itself.
+  | { readonly type: "space/snapshot"; readonly snapshot: SpaceSnapshot }
+  // A snapshot read failed non-fatally; null clears it after a clean read.
+  | { readonly type: "space/error"; readonly message: string | null }
+  // Drop the space state (docked / character offline / logged out).
+  | { readonly type: "space/cleared" }
   // Goal R5b — the Travel panel (browser autopilot decide-loop). A route was
   // computed (client-side solver) and the loop started.
   | {

@@ -385,6 +385,29 @@ async function readFlightStatus(bridgeSessionID, sessionFields = {}) {
 }
 
 /**
+ * Space snapshot (goal R11) — a read-only projection of what the held session
+ * can see in space right now: the visible entities (identity + position +
+ * velocity + health fractions) and the active ship's shield/armor/hull/
+ * capacitor. POST /_evejs-web/v1/space/snapshot. The browser polls this ~1s
+ * while in space with the overview open — the same cadence the retail client
+ * re-renders its own overview at — and computes distance/sorting/filtering
+ * itself from the projected positions. See docs/bridge-wire-contract.md.
+ */
+async function readSpaceSnapshot(bridgeSessionID, sessionFields = {}) {
+  const body = { bridgeSessionID: String(bridgeSessionID || "") };
+  if (sessionFields && typeof sessionFields === "object" && !Array.isArray(sessionFields)) {
+    body.session = sessionFields;
+  }
+  const data = await postJson("/space/snapshot", body, {
+    timeoutMs: BRIDGE_CALL_TIMEOUT_MS,
+  });
+  return {
+    space: data.space && typeof data.space === "object" ? data.space : {},
+    notifications: Array.isArray(data.notifications) ? data.notifications : [],
+  };
+}
+
+/**
  * Bound-object bridge (goal R3) — step 1. Dispatch an allowlisted bind method
  * (invbroker.GetInventory/GetInventoryFromId/MachoBindObject,
  * ship.MachoBindObject) on the persistent session; the gateway registers the
@@ -639,6 +662,7 @@ module.exports = {
   selectCharacter,
   releaseBridgeSession,
   readFlightStatus,
+  readSpaceSnapshot,
   readChat,
   sendChat,
   // The four v1 reads the auth/health surface still needs (goal R9b): account

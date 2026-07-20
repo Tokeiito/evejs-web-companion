@@ -23,6 +23,8 @@ import {
   decodeLpBalances,
 } from "../bridge/rewards.ts";
 import { decodeFlightStatus } from "../bridge/flight.ts";
+import { decodeSpaceSnapshot } from "../bridge/space.ts";
+import { createSpacePoller, type SpacePoller } from "./spacePoll.ts";
 import type { FlightStepResult } from "./api.ts";
 import { BridgeCallError } from "../bridge/callMethod.ts";
 import type { JsonValue } from "../bridge/wire.ts";
@@ -115,6 +117,20 @@ export interface AppFlow {
   undock(): Promise<void>;
   /** Warp to a chosen gate/celestial through the bound park. */
   warpTo(destinationID: number): Promise<void>;
+  /**
+   * R11 — approach an object at full speed (the same atomic move the autopilot
+   * uses to close the last gap to a gate). Offered on every overview row.
+   */
+  approach(destinationID: number): Promise<void>;
+  /** R11 — read what is currently around the ship (and the ship's condition). */
+  loadSpaceSnapshot(): Promise<void>;
+  /**
+   * R11 — start/stop the ~1s overview poll. The Overview panel starts it when it
+   * mounts and stops it when it unmounts; it also stops itself as soon as the
+   * ship is no longer in space (docked).
+   */
+  startSpacePolling(): void;
+  stopSpacePolling(): void;
   /** Jump through an NPC stargate (fromGate -> toGate). */
   jump(fromGateID: number, toGateID: number): Promise<void>;
   /** Dock at the destination station. */
@@ -671,6 +687,71 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       throw error;
     }
   }
+
+  // --- R11 Space overview + ship HUD ---------------------------------------
+
+  // Read what the ship can currently see (plus its own shield/armor/hull/cap)
+  // and push it to the space slice. A failed read is surfaced as a non-fatal
+  // panel error rather than thrown at the poller — except a lost session, which
+  // unwinds to character select like every other held-session read.
+  //
+  // Docked is not an error: the gateway answers a docked session with an empty
+  // overview, and the slice is cleared so the panel shows the docked message
+  // instead of a stale grid.
+  async function loadSpaceSnapshot(): Promise<void> {
+    let result;
+    try {
+      result = await api.getSpaceSnapshot(callOptions);
+    } catch (error) {
+      if (isSessionLost(error)) {
+        stopLiveStream();
+        store.apply({ type: "character/offline" });
+        throw error;
+      }
+      store.apply({
+        type: "space/error",
+        message: `The view around the ship could not be read: ${flightErrorReason(error)}`,
+      });
+      return;
+    }
+    const snapshot = decodeSpaceSnapshot(result.space);
+    store.apply({ type: "space/snapshot", snapshot });
+    // Keep the flight readout honest too: a snapshot that says the ship is no
+    // longer in space means the poll is about to stop, and the panel should not
+    // keep showing the last grid it saw.
+    if (!snapshot.inSpace) {
+      store.apply({ type: "space/cleared" });
+    }
+  }
+
+  // The ~1s overview poll. It runs only while the panel is open AND the ship is
+  // in space, and it skips a beat rather than queueing when a read is slow, so
+  // it never piles work behind the autopilot's own flight-status cadence.
+  let spacePanelOpen = false;
+  const spacePoller: SpacePoller = createSpacePoller({
+    refresh: () => loadSpaceSnapshot(),
+    shouldPoll: () => {
+      if (!spacePanelOpen) {
+        return false;
+      }
+      const flight = store.flight.get().status;
+      const space = store.space.get().snapshot;
+      // Trust either source: the flight slice is authoritative for in-space, and
+      // a fresh snapshot that says "not in space" stops the poll immediately.
+      if (space && !space.inSpace) {
+        return false;
+      }
+      return flight === null || flight.inSpace;
+    },
+  });
+  const startSpacePolling = (): void => {
+    spacePanelOpen = true;
+    spacePoller.start();
+  };
+  const stopSpacePolling = (): void => {
+    spacePanelOpen = false;
+    spacePoller.stop();
+  };
 
   // Run one movement step, record it as the last action, and refresh the flight
   // snapshot the step returned. A lost session unwinds to the character list; a
@@ -1244,6 +1325,16 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     async warpTo(destinationID) {
       await runFlightStep("Warp", () => api.warpTo(destinationID, callOptions));
     },
+
+    async approach(destinationID) {
+      await runFlightStep("Approach", () => api.approach(destinationID, callOptions));
+    },
+
+    loadSpaceSnapshot,
+
+    startSpacePolling,
+
+    stopSpacePolling,
 
     async jump(fromGateID, toGateID) {
       await runFlightStep("Jump", () => api.jump(fromGateID, toGateID, callOptions));

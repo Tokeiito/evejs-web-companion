@@ -380,6 +380,66 @@ only the live session scalars the gateway already holds plus a best-effort
 `spaceRuntime.getEntity` (lazy-required, mirroring `teardownBrowserSession`), so
 it stays within the `_secondary/express` footprint.
 
+## Space snapshot — overview + ship HUD (R11)
+
+The retail client's overview is a **client-side view over one server structure**:
+the server enumerates the destiny Ballpark balls paired with their slimItems, and
+the client dead-reckons positions locally and re-renders every 0.5–1.0 s.
+Distance math, sorting, filtering and naming are all client-side. **So polling
+here is faithful, not a compromise** — a ~1 s snapshot poll matches retail's own
+re-render cadence, and this feature does **not** depend on the R10 push channel
+(the channel carries events, not continuous positions).
+
+The ship HUD is a **different source** from the overview: shield/armor/hull/
+capacitor for the **active ship** come from the ship item's dogma-backed state
+(retail: `godma.GetItem(shipID)`), not the ballpark. Other entities carry only
+their `damageState`-equivalent fractions, which is what each overview row gets.
+
+### `POST /_evejs-web/v1/space/snapshot`
+
+Request: `{ "bridgeSessionID", "session"?: { "userid" } }` — a **read-only**
+projection of what the held session can currently see, drained together with the
+accumulated notification backlog. Ownership is checked before any space read: an
+unknown handle or a foreign `userid` is `SESSION_NOT_FOUND` (404), never another
+character's surroundings.
+
+The gateway calls the space runtime and never modifies it:
+`getSceneForSession(session)` → `scene.getVisibleEntitiesForSession(session)`
+(statics + dynamics, already cloak-filtered) and
+`scene.getShipEntityForSession(session)` for the ego ball, with the presentation
+fields refreshed before projecting (the same refresh `ensureInitialBallpark` runs
+before it builds a slim payload). Ship capacities come from
+`space/combat/damage.js` `getEntityMaxHealthLayers(entity)`. Positions are
+integrated server-side every tick (`RUNTIME_TICK_INTERVAL_MS = 100`), so each
+poll sees a freshly integrated scene without the gateway stepping it. A
+proxy-only process or a vanished scene degrades to an empty overview rather than
+failing the read.
+
+Success (200): `{ "ok": true, "space": { … }, "notifications": [...] }` where
+`space` is:
+
+- `inSpace`, `solarSystemID`, `shipID`, `sampledAtMs` (scene sim time — tells two
+  polls apart).
+- `entities[]` — one row per visible object: `kind`, `itemID`, `typeID`,
+  `groupID`, `categoryID`, `name`, `ownerID`, `radius`, `position {x,y,z}`,
+  `velocity {x,y,z}`, `isSelf`, and the remaining-health fractions
+  `shieldRatio` / `armorRatio` / `hullRatio` (null for an object with no
+  damageable health). Ship/structure rows add `characterID`, `corporationID`,
+  `allianceID`, `securityStatus`, `maxVelocity`, `mode`, `targetEntityID`,
+  `capacitorRatio`.
+- `ship` — the active ship's HUD: `itemID`, `typeID`, `name`, `mode`,
+  `maxVelocity`, `position`, `velocity`, the remaining fractions
+  `shieldRatio` / `armorRatio` / `hullRatio` / `capacitorRatio`, and the
+  capacities behind them (`shieldCapacity`, `armorCapacity`, `hullCapacity`).
+  Null when docked or the scene is gone.
+
+**The server never precomputes distance.** It reports positions; the browser
+measures from the ship's own position, sorts, filters and caps —
+`web/src/space/overview.ts`, exactly the division the retail client uses.
+
+A docked session answers cleanly with `inSpace: false`, `entities: []`,
+`ship: null` rather than an error.
+
 ## Client-side route solver & browser autopilot (R5b)
 
 R5b automates the R5a atomic moves. It is **web-only — no eve.js/gateway change**:
@@ -817,6 +877,9 @@ retried with the cursor; a gateway 404 (the session is gone) is announced as
 - **Chat roster** — the channel carries messages, not membership changes.
 - **Flight status**, inventory, agents, journal, rewards — all still explicit
   reads. The channel is a liveness signal, not a state replacement.
+- **The space snapshot (R11)** — and deliberately so: the retail client
+  re-renders its own overview every 0.5-1.0 s, so a ~1 s poll IS the faithful
+  cadence, not a fallback the channel replaces.
 - **The chat backlog poll itself**, as a safety net: it drops from 4s to 30s
   while the channel is live and snaps back to 4s the moment it is not. It also
   keeps the held bridge session warm against its idle TTL for a player who is
@@ -912,6 +975,28 @@ carries the handler's own reason, which the page shows as the last failure. A
 `SESSION_NOT_FOUND` drops the held bridge session (the page returns to character
 select).
 
+### Space overview route (R11)
+
+- `GET /api/bridge/space/snapshot` → `{ ok, space, notifications }`. Requires the
+  signed web login session and a held bridge session (else 409
+  `NO_LIVE_SESSION`). A read-only relay of the gateway's projection — the BFF
+  interprets nothing; the browser's `web/src/bridge/space.ts` decoder owns that.
+  A `SESSION_NOT_FOUND` drops the held bridge session (the page returns to
+  character select).
+
+**Polling cadence:** the Overview panel polls this every **1 s** while the ship
+is in space and the panel is open. It stops when the panel closes, and the very
+next beat after the ship docks stops it too. A read still in flight when the next
+beat arrives is **skipped, never queued**, so a slow snapshot cannot pile work up
+behind the autopilot's own flight-status reads. The poller issues no movement
+call of any kind.
+
+**Row actions reuse the existing atomic moves** — nothing new: *Warp to* posts
+`/api/bridge/flight/warp { destinationID: itemID }` and *Approach* posts
+`/api/bridge/flight/approach { destinationID: itemID }`. So a player can warp to
+anything they can see, through the same server-authoritative handlers the manual
+Flight tab and the autopilot already use.
+
 ### Chat routes (R7)
 
 All require the signed web login session and a held bridge session (else 409
@@ -930,7 +1015,7 @@ panel polls the open channel every ~4s and stops when closed.
 A `SESSION_NOT_FOUND` from either drops the held bridge session (the page returns
 to character select).
 
-The server-side client is `src/eveGatewayClient.js` — since R9b it is the bridge surface plus four v1 reads (`getAccount`, `listCharacters`, `getSnapshot`, `getStatus`/`getGatewayHealth`) and nothing else: `callMethod(service, method, args, kwargs, sessionFields, bridgeSessionID?)`, `selectCharacter(args, kwargs, sessionFields)`, `releaseBridgeSession(bridgeSessionID, sessionFields?)`, `readFlightStatus(bridgeSessionID, sessionFields)` (R5a), `readChat(bridgeSessionID, channel, sessionFields, options?)` / `sendChat(bridgeSessionID, channel, message, sessionFields)` (R7), and the R3 bound-object pair `bindObject(service, method, args, kwargs, sessionFields, bridgeSessionID)` / `callBoundMethod(service, method, args, kwargs, sessionFields, bridgeSessionID, boundHandle)`. The TS browser client consumes the BFF routes only and never sees the bridgeSessionID or any boundHandle.
+The server-side client is `src/eveGatewayClient.js` — since R9b it is the bridge surface plus four v1 reads (`getAccount`, `listCharacters`, `getSnapshot`, `getStatus`/`getGatewayHealth`) and nothing else: `callMethod(service, method, args, kwargs, sessionFields, bridgeSessionID?)`, `selectCharacter(args, kwargs, sessionFields)`, `releaseBridgeSession(bridgeSessionID, sessionFields?)`, `readFlightStatus(bridgeSessionID, sessionFields)` (R5a), `readSpaceSnapshot(bridgeSessionID, sessionFields)` (R11), `readChat(bridgeSessionID, channel, sessionFields, options?)` / `sendChat(bridgeSessionID, channel, message, sessionFields)` (R7), and the R3 bound-object pair `bindObject(service, method, args, kwargs, sessionFields, bridgeSessionID)` / `callBoundMethod(service, method, args, kwargs, sessionFields, bridgeSessionID, boundHandle)`. The TS browser client consumes the BFF routes only and never sees the bridgeSessionID or any boundHandle.
 
 ## Login semantics (who-cares, R1)
 

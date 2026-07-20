@@ -626,6 +626,29 @@ export async function dock(
   return readFlightStep(await postJson("/api/bridge/flight/dock", { stationID }, options));
 }
 
+// --- R11 Space overview + ship HUD -----------------------------------------
+// A read-only snapshot of what the ship can see plus the active ship's
+// shield/armor/hull/capacitor (decoded in the flow with bridge/space.ts). The
+// page polls it ~1s while in space; distance/sorting/filtering are computed in
+// the browser, exactly as the retail client does.
+
+/** One space-snapshot read: the raw snapshot + the drained notifications. */
+export interface SpaceSnapshotResult {
+  readonly space: JsonValue;
+  readonly notifications: readonly JsonValue[];
+}
+
+/** Read what is currently around the ship (and the ship's own condition). */
+export async function getSpaceSnapshot(
+  options: ApiOptions = {},
+): Promise<SpaceSnapshotResult> {
+  const data = await getJson("/api/bridge/space/snapshot", options);
+  return {
+    space: data.space ?? null,
+    notifications: Array.isArray(data.notifications) ? data.notifications : [],
+  };
+}
+
 // --- R5b Travel (client-side route solver static data) ---------------------
 // The system-adjacency graph the browser route solver runs BFS over is served
 // as read-only static reference data (GET /api/map/graph) — NOT a gateway call

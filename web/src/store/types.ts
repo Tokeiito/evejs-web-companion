@@ -359,6 +359,100 @@ export interface FlightState {
   readonly structureName: string | null;
 }
 
+// --- R11 Space overview + ship HUD -----------------------------------------
+
+/** A position or velocity in space (metres, metres/second). */
+export interface SpaceVector {
+  readonly x: number;
+  readonly y: number;
+  readonly z: number;
+}
+
+/**
+ * One object the ship can see (goal R11). This is the browser's half of the
+ * structure retail's overview reads: the server hands over identity, position
+ * and velocity, and the CLIENT computes distance, sorting and filtering — the
+ * same division the real client uses. `typeID`/`groupID`/`categoryID` exist so
+ * the name cache can resolve a TYPE and GROUP name; they are never rendered
+ * (R7d). Health fields are remaining fractions (0-1) or null for an object with
+ * no damageable health (a planet, a stargate).
+ */
+export interface SpaceEntity {
+  /** Coarse runtime kind ("ship", "structure", "celestial", …), or null. */
+  readonly kind: string | null;
+  /** The object's own id — used only as a row key and as a move target. */
+  readonly itemID: number;
+  readonly typeID: number | null;
+  readonly groupID: number | null;
+  readonly categoryID: number | null;
+  /** The object's own name where it has one (a celestial, a named ship). */
+  readonly name: string | null;
+  readonly ownerID: number | null;
+  readonly radius: number;
+  readonly position: SpaceVector;
+  readonly velocity: SpaceVector;
+  /** True for the player's own ship (excluded from the overview list). */
+  readonly isSelf: boolean;
+  readonly shieldRatio: number | null;
+  readonly armorRatio: number | null;
+  readonly hullRatio: number | null;
+  readonly characterID: number | null;
+  readonly corporationID: number | null;
+  readonly allianceID: number | null;
+  readonly securityStatus: number | null;
+  readonly maxVelocity: number | null;
+  readonly mode: string | null;
+  readonly capacitorRatio: number | null;
+}
+
+/**
+ * The active ship's HUD numbers (goal R11). A DIFFERENT source from the
+ * overview: shield / armor / hull / capacitor for the player's own ship come
+ * from the ship item's dogma-backed state, not from the ballpark the overview
+ * enumerates. Ratios are remaining fractions (0-1); capacities are the max HP
+ * behind each bar (null when unavailable).
+ */
+export interface SpaceShipStatus {
+  readonly itemID: number | null;
+  readonly typeID: number | null;
+  readonly name: string | null;
+  readonly mode: string | null;
+  readonly maxVelocity: number | null;
+  readonly position: SpaceVector;
+  readonly velocity: SpaceVector;
+  readonly shieldRatio: number | null;
+  readonly armorRatio: number | null;
+  readonly hullRatio: number | null;
+  readonly capacitorRatio: number | null;
+  readonly shieldCapacity: number | null;
+  readonly armorCapacity: number | null;
+  readonly hullCapacity: number | null;
+}
+
+/** One decoded space snapshot: everything visible plus the active ship. */
+export interface SpaceSnapshot {
+  readonly inSpace: boolean;
+  readonly solarSystemID: number | null;
+  readonly shipID: number | null;
+  /** Server sim time the snapshot was taken at (tells two polls apart). */
+  readonly sampledAtMs: number | null;
+  readonly entities: readonly SpaceEntity[];
+  readonly ship: SpaceShipStatus | null;
+}
+
+/**
+ * The Overview panel state (goal R11). The flow polls the snapshot ~1s while
+ * the ship is in space and the panel is open, and pushes each read here; the
+ * panel is a pure reader that derives distances, sorting and filtering itself.
+ */
+export interface SpaceState {
+  readonly snapshot: SpaceSnapshot | null;
+  /** True once a snapshot read has populated the slice. */
+  readonly loaded: boolean;
+  /** Non-null when the last snapshot read failed (non-fatally). */
+  readonly error: string | null;
+}
+
 // --- R5b Travel (browser autopilot decide-loop) ----------------------------
 
 /**
