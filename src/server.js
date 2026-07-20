@@ -2481,6 +2481,598 @@ app.get("/api/bridge/market", requireAuth, async (req, res, next) => {
   }
 });
 
+// --- R16 Market mutations (place buy / place sell / cancel / modify) -------
+//
+// ⚠ THIS IS THE FIRST FEATURE THAT SPENDS THE PLAYER'S ISK. Every route below
+// runs a handler that calls debitCharacterWallet / creditCharacterWallet for
+// real, writes escrow records, and charges a broker's fee and an SCC
+// surcharge. So all four are fenced the way R12's destroy-rig, R14's trash and
+// R15's install are: NO route acts without an explicit `confirm: true`, and the
+// web UI puts a two-step confirm in front of that showing the item, price x
+// quantity, the ESTIMATED broker's fee and the player's current ISK.
+//
+// ⚠ AND A 200 IS NOT PROOF (the R12/R14/R15 lesson). Every route below re-reads
+// the WALLET before and after and reports the difference, plus re-reads the
+// player's own orders. `charged` is that difference and nothing else — it is
+// the only authoritative statement about what an order cost, and it is what the
+// panel shows. The client's estimated fee never appears in a response.
+
+// Retail's own ceiling (marketRules.MARKET_MAX_ORDER_PRICE): the ISK value at
+// which the underlying scaled 64-bit representation overflows. Rejected here so
+// a typo is a clear 400 instead of an opaque server refusal.
+const MARKET_MAX_ORDER_PRICE = 9_223_372_036_854;
+// The durations the server accepts (marketRules.ALLOWED_DURATIONS). 0 means
+// "fill immediately or not at all" and creates no standing order.
+const MARKET_ALLOWED_DURATIONS = new Set([0, 1, 3, 7, 14, 30, 90]);
+// Order range sentinels. -1 = this station only; that is the default because a
+// wider range is skill-gated and the server refuses one the character has not
+// trained for.
+const MARKET_RANGE_STATION = -1;
+
+/** Round to 2dp exactly as the server's `roundIsk` does. */
+function roundMarketPrice(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return 0;
+  }
+  return Math.round(numeric * 100) / 100;
+}
+
+/**
+ * Read the character's ISK. Used BEFORE and AFTER every write, because the
+ * difference between the two is the only honest answer to "what did that
+ * cost?" — the server's own fee arithmetic is not exposed by any allowlisted
+ * read, and the client's estimate is an estimate.
+ */
+async function readMarketBalance(held, webSessionID) {
+  try {
+    const outcome = await heldTopLevelCall(
+      held,
+      webSessionID,
+      "account",
+      "GetCashBalance",
+      [0],
+      null,
+    );
+    return marketAmountString(outcome.result);
+  } catch {
+    // A wallet read that fails leaves `charged` null, which the panel reports
+    // as "the server did not report a wallet change" rather than as a number.
+    return null;
+  }
+}
+
+/** An amount as a bigint-safe decimal string; null when absent/malformed. */
+function marketAmountString(value) {
+  if (value && typeof value === "object" && value.type === "long") {
+    return String(value.value);
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return String(value);
+  }
+  if (typeof value === "string" && /^-?\d+(\.\d+)?$/.test(value)) {
+    return value;
+  }
+  return null;
+}
+
+/**
+ * before - after, in exact hundredths. Positive = taken from the player,
+ * negative = returned to them. Goes through BigInt, never a float: ISK exceeds
+ * 2^53 and a float subtraction at that magnitude loses ISK.
+ */
+function marketIskDelta(before, after) {
+  if (before === null || after === null) {
+    return null;
+  }
+  const hundredths = (text) => {
+    const match = /^(-?)(\d*)(?:\.(\d*))?$/.exec(String(text).trim());
+    if (!match) {
+      return null;
+    }
+    const frac = (match[3] || "").padEnd(2, "0").slice(0, 2);
+    const value = BigInt(`${match[2] || "0"}${frac}`);
+    return match[1] === "-" ? -value : value;
+  };
+  const left = hundredths(before);
+  const right = hundredths(after);
+  if (left === null || right === null) {
+    return null;
+  }
+  const diff = left - right;
+  const negative = diff < 0n;
+  const magnitude = negative ? -diff : diff;
+  return `${negative ? "-" : ""}${(magnitude / 100n).toString()}.${(magnitude % 100n)
+    .toString()
+    .padStart(2, "0")}`;
+}
+
+/** The confirm gate every market write sits behind. */
+function requireMarketConfirmation(req, res, message) {
+  if ((req.body || {}).confirm === true) {
+    return true;
+  }
+  res.status(400).json({
+    ok: false,
+    error: "CONFIRMATION_REQUIRED",
+    message,
+  });
+  return false;
+}
+
+/**
+ * Validate a price the way the retail client does BEFORE dispatch: round to
+ * 2dp, and reject anything above the market ceiling. Returns the rounded price,
+ * or null having already answered a 400.
+ */
+function normalizeMarketPrice(req, res) {
+  const raw = Number((req.body || {}).price);
+  if (!Number.isFinite(raw) || raw <= 0) {
+    res.status(400).json({
+      ok: false,
+      error: "INVALID_PRICE",
+      message: "A price above zero is required.",
+    });
+    return null;
+  }
+  if (raw > MARKET_MAX_ORDER_PRICE) {
+    res.status(400).json({
+      ok: false,
+      error: "PRICE_TOO_HIGH",
+      message: "That price is higher than the market allows.",
+    });
+    return null;
+  }
+  const price = roundMarketPrice(raw);
+  if (price <= 0) {
+    res.status(400).json({
+      ok: false,
+      error: "INVALID_PRICE",
+      message: "That price rounds down to nothing. The smallest price is 0.01 ISK.",
+    });
+    return null;
+  }
+  return price;
+}
+
+/**
+ * Re-read the player's own orders after a write — the proof half. A response
+ * saying "ok" proves nothing; this is what the panel judges `applied` against.
+ */
+async function readOwnOrdersQuietly(held, webSessionID) {
+  try {
+    const outcome = await heldTopLevelCall(
+      held,
+      webSessionID,
+      "marketProxy",
+      "GetCharOrders",
+      [],
+      null,
+    );
+    return outcome.result;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * PLACE A BUY ORDER.
+ *
+ * `PlaceBuyOrder([stationID, typeID, price, quantity, orderRange, minVolume,
+ *                 duration, useCorp, expectedBrokersFee])` — every argument read
+ * by INDEX.
+ *
+ * ⚠ `expectedBrokersFee` IS A RATE AND A CHECK, NOT A PAYMENT. The server
+ * compares it against the character's real broker commission rate and refuses
+ * the whole order (MktBrokersFeeUnexpected2) if they differ — it exists to stop
+ * a player being charged a rate other than the one they were shown. We cannot
+ * compute that rate: it is 3% minus (Broker Relations level x 0.3%) minus
+ * standings terms, and NO allowlisted read answers either input. A guess would
+ * refuse legitimate orders from any trained trader, so `null` — the documented
+ * "do not check" value — is sent, and the honesty is delivered the other way
+ * round: the UI labels its estimate an estimate, and this route reports the
+ * amount the wallet ACTUALLY lost.
+ */
+app.post("/api/bridge/market/buy", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const body = req.body || {};
+  const typeID = Number(body.typeID) || 0;
+  const quantity = Number(body.quantity) || 0;
+  if (typeID <= 0) {
+    res.status(400).json({ ok: false, error: "INVALID_TYPE", message: "An item is required." });
+    return;
+  }
+  if (!Number.isSafeInteger(quantity) || quantity <= 0) {
+    res.status(400).json({
+      ok: false,
+      error: "INVALID_QUANTITY",
+      message: "A whole number of units above zero is required.",
+    });
+    return;
+  }
+  const price = normalizeMarketPrice(req, res);
+  if (price === null) {
+    return;
+  }
+  const durationDays = Number(body.durationDays);
+  if (!MARKET_ALLOWED_DURATIONS.has(durationDays)) {
+    res.status(400).json({
+      ok: false,
+      error: "INVALID_DURATION",
+      message: "That is not a length of time the market accepts.",
+    });
+    return;
+  }
+  if (
+    !requireMarketConfirmation(
+      req,
+      res,
+      "Placing a buy order sets aside ISK straight away and charges a broker's fee. This action must be confirmed explicitly.",
+    )
+  ) {
+    return;
+  }
+  try {
+    await readHeldFlight(held, req.webSessionID);
+    // BEFORE. Read first, so the difference afterwards is the real charge.
+    const balanceBefore = await readMarketBalance(held, req.webSessionID);
+    const outcome = await heldTopLevelCall(
+      held,
+      req.webSessionID,
+      "marketProxy",
+      "PlaceBuyOrder",
+      [
+        held.stationID,
+        typeID,
+        price,
+        quantity,
+        // Station-only range: a wider one is skill-gated and the server refuses
+        // a range the character has not trained for.
+        MARKET_RANGE_STATION,
+        1,
+        durationDays,
+        // Personal market only — the handler refuses a corp order outright.
+        false,
+        // See the note above: a rate we cannot know must not be asserted.
+        null,
+      ],
+      null,
+    );
+    const balanceAfter = await readMarketBalance(held, req.webSessionID);
+    const charged = marketIskDelta(balanceBefore, balanceAfter);
+    const ownOrders = await readOwnOrdersQuietly(held, req.webSessionID);
+    // ⚠ `applied` comes from the WALLET, not from the 200. PlaceBuyOrder
+    // answers None whether it created an order, filled one immediately, or did
+    // nothing at all — so a response alone cannot tell them apart. A charge of
+    // exactly zero means nothing happened, and saying so is honest where
+    // naming a cause would be a guess the server did not give.
+    const applied = charged !== null && charged !== "0.00";
+    res.json({
+      ok: true,
+      applied,
+      declinedSilently: !applied,
+      charged,
+      balanceBefore,
+      balanceAfter,
+      ownOrders,
+      notifications: outcome.notifications,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * PLACE A SELL ORDER.
+ *
+ * `PlaceMultiSellOrder([itemList, useCorp, duration, expectedBrokersFee])`.
+ *
+ * ⚠ SELLING IS ITEM-BASED, NOT TYPE-BASED. Each entry must carry
+ * `{itemID, typeID, stationID, price, quantity}` — the handler moves specific
+ * STACKS out of the hangar into escrow, so it needs the itemID of the stack,
+ * not just "10 of type 34". There is no single-sell method in the whole retail
+ * surface; this one call is it, and the browser sends a one-entry list.
+ */
+app.post("/api/bridge/market/sell", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const body = req.body || {};
+  const itemID = Number(body.itemID) || 0;
+  const typeID = Number(body.typeID) || 0;
+  const quantity = Number(body.quantity) || 0;
+  if (itemID <= 0 || typeID <= 0) {
+    res.status(400).json({
+      ok: false,
+      error: "INVALID_ITEM",
+      message: "A specific stack of goods to sell is required.",
+    });
+    return;
+  }
+  if (!Number.isSafeInteger(quantity) || quantity <= 0) {
+    res.status(400).json({
+      ok: false,
+      error: "INVALID_QUANTITY",
+      message: "A whole number of units above zero is required.",
+    });
+    return;
+  }
+  const price = normalizeMarketPrice(req, res);
+  if (price === null) {
+    return;
+  }
+  const durationDays = Number(body.durationDays);
+  if (!MARKET_ALLOWED_DURATIONS.has(durationDays)) {
+    res.status(400).json({
+      ok: false,
+      error: "INVALID_DURATION",
+      message: "That is not a length of time the market accepts.",
+    });
+    return;
+  }
+  if (
+    !requireMarketConfirmation(
+      req,
+      res,
+      "Placing a sell order hands the goods over to the market and charges a broker's fee. This action must be confirmed explicitly.",
+    )
+  ) {
+    return;
+  }
+  try {
+    await readHeldFlight(held, req.webSessionID);
+    const balanceBefore = await readMarketBalance(held, req.webSessionID);
+    const outcome = await heldTopLevelCall(
+      held,
+      req.webSessionID,
+      "marketProxy",
+      "PlaceMultiSellOrder",
+      [
+        [{ itemID, typeID, stationID: held.stationID, price, quantity }],
+        false,
+        durationDays,
+        // Same reasoning as the buy route: a rate we cannot know is not asserted.
+        null,
+      ],
+      null,
+    );
+    const balanceAfter = await readMarketBalance(held, req.webSessionID);
+    const ownOrders = await readOwnOrdersQuietly(held, req.webSessionID);
+    // PlaceMultiSellOrder answers a BOOLEAN — true when it traded or created an
+    // order. That is a real signal (unlike PlaceBuyOrder's None), so it is used,
+    // and the wallet delta is reported alongside it: a sell order COSTS the
+    // broker's fee up front and pays out only when it fills.
+    const applied = outcome.result === true;
+    res.json({
+      ok: true,
+      applied,
+      declinedSilently: !applied,
+      charged: marketIskDelta(balanceBefore, balanceAfter),
+      balanceBefore,
+      balanceAfter,
+      ownOrders,
+      notifications: outcome.notifications,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * CANCEL an order. `CancelCharOrder([orderID, regionID])`.
+ *
+ * ⚠ The server IGNORES `regionID` and reads only `args[0]`, re-deriving the
+ * region from the order it loads. The trailing argument is sent anyway because
+ * that is the retail shape.
+ *
+ * Cancelling a BUY order returns the ISK held in escrow but NOT the broker's
+ * fee already paid; cancelling a SELL order returns the goods. Confirmed because
+ * the fee is genuinely lost either way.
+ */
+app.post("/api/bridge/market/cancel", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const orderID = String((req.body || {}).orderID || "").trim();
+  if (!/^\d+$/.test(orderID)) {
+    res.status(400).json({ ok: false, error: "INVALID_ORDER", message: "An order is required." });
+    return;
+  }
+  if (
+    !requireMarketConfirmation(
+      req,
+      res,
+      "Taking an order down returns what it was holding, but the broker's fee you already paid is not returned. This action must be confirmed explicitly.",
+    )
+  ) {
+    return;
+  }
+  try {
+    await readHeldFlight(held, req.webSessionID);
+    const before = await readOwnOrdersQuietly(held, req.webSessionID);
+    const balanceBefore = await readMarketBalance(held, req.webSessionID);
+    const outcome = await heldTopLevelCall(
+      held,
+      req.webSessionID,
+      "marketProxy",
+      "CancelCharOrder",
+      // The regionID the server ignores. Sent because the shape is retail's.
+      [orderID, 0],
+      null,
+    );
+    const balanceAfter = await readMarketBalance(held, req.webSessionID);
+    const ownOrders = await readOwnOrdersQuietly(held, req.webSessionID);
+    // ⚠ `applied` is the RE-READ, not the 200: the order is gone from the open
+    // list, or it is not. CancelCharOrder answers None either way, including
+    // when the order was already closed.
+    const applied = marketOrderCount(before) > marketOrderCount(ownOrders);
+    res.json({
+      ok: true,
+      applied,
+      declinedSilently: !applied,
+      // A cancel usually RETURNS ISK, so this is normally negative.
+      charged: marketIskDelta(balanceBefore, balanceAfter),
+      balanceBefore,
+      balanceAfter,
+      ownOrders,
+      notifications: outcome.notifications,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * MODIFY an order's price.
+ * `ModifyCharOrder([orderID, newPrice, bid, stationID, solarSystemID, oldPrice,
+ *                   range, volRemaining, issueDate])`.
+ *
+ * ⚠ The server reads ONLY `args[0]` and `args[1]` and re-derives everything
+ * else from the order it loads — so the seven trailing arguments cannot change
+ * the outcome, and a caller that got one wrong would not be told. They are sent
+ * because the shape is the retail one.
+ *
+ * Repricing charges a modification fee and, on a buy order, moves the escrow up
+ * or down, so it is confirmed like the rest.
+ */
+app.post("/api/bridge/market/modify", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const body = req.body || {};
+  const orderID = String(body.orderID || "").trim();
+  if (!/^\d+$/.test(orderID)) {
+    res.status(400).json({ ok: false, error: "INVALID_ORDER", message: "An order is required." });
+    return;
+  }
+  const price = normalizeMarketPrice(req, res);
+  if (price === null) {
+    return;
+  }
+  if (
+    !requireMarketConfirmation(
+      req,
+      res,
+      "Changing an order's price charges a fee, and on a buy order it changes how much ISK is set aside. This action must be confirmed explicitly.",
+    )
+  ) {
+    return;
+  }
+  try {
+    await readHeldFlight(held, req.webSessionID);
+    const balanceBefore = await readMarketBalance(held, req.webSessionID);
+    const outcome = await heldTopLevelCall(
+      held,
+      req.webSessionID,
+      "marketProxy",
+      "ModifyCharOrder",
+      [
+        orderID,
+        price,
+        // Everything from here down is re-derived server-side. Sent for shape
+        // fidelity only — see the note above.
+        Boolean(body.bid),
+        held.stationID,
+        held.solarSystemID || 0,
+        roundMarketPrice(body.oldPrice),
+        Number(body.range) || MARKET_RANGE_STATION,
+        Number(body.volumeRemaining) || 0,
+        0,
+      ],
+      null,
+    );
+    const balanceAfter = await readMarketBalance(held, req.webSessionID);
+    const ownOrders = await readOwnOrdersQuietly(held, req.webSessionID);
+    // ⚠ `applied` is the RE-READ: the order now carries the new price, or it
+    // does not. ModifyCharOrder answers None whether it repriced, found nothing
+    // to change, or the order was already closed.
+    const applied = marketOrderHasPrice(ownOrders, orderID, price);
+    res.json({
+      ok: true,
+      applied,
+      declinedSilently: !applied,
+      charged: marketIskDelta(balanceBefore, balanceAfter),
+      balanceBefore,
+      balanceAfter,
+      ownOrders,
+      notifications: outcome.notifications,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// --- Reading the owner-order rowset, for the re-read verdicts ---------------
+// The BFF understands just enough of this rowset to judge whether a mutation
+// applied. The browser still gets the RAW result and decodes it properly; these
+// two helpers exist only so `applied` is a fact rather than an echo.
+
+/** Unwrap the inline cached envelope, if that is what arrived. */
+function unwrapMarketCached(result) {
+  if (!result || typeof result !== "object" || Array.isArray(result)) {
+    return result;
+  }
+  const name = result.name;
+  const text = typeof name === "string" ? name : (name && name.value) || "";
+  if (!String(text).endsWith("objectCaching.CachedMethodCallResult")) {
+    return result;
+  }
+  const carrier = Array.isArray(result.args) ? result.args[1] : null;
+  return carrier && carrier.type === "substream" ? carrier.value : null;
+}
+
+/** The owner-order rowset as {column: value} records. */
+function marketOwnerOrderRows(result) {
+  const rowset = unwrapMarketCached(result);
+  if (!rowset || typeof rowset !== "object" || !rowset.args) {
+    return [];
+  }
+  const entries = Array.isArray(rowset.args.entries) ? rowset.args.entries : [];
+  const pick = (key) => {
+    const entry = entries.find((candidate) => Array.isArray(candidate) && candidate[0] === key);
+    return entry ? entry[1] : null;
+  };
+  const columnsValue = pick("columns");
+  const columns = columnsValue && Array.isArray(columnsValue.items)
+    ? columnsValue.items.map((column) =>
+      (typeof column === "string" ? column : (column && column.value) || ""))
+    : [];
+  const linesValue = pick("lines");
+  const lines = linesValue && Array.isArray(linesValue.items) ? linesValue.items : [];
+  return lines.map((line) => {
+    const cells = Array.isArray(line) ? line : (line && line.items) || [];
+    const row = {};
+    columns.forEach((column, index) => {
+      row[column] = cells[index];
+    });
+    return row;
+  });
+}
+
+function marketOrderCount(result) {
+  return marketOwnerOrderRows(result).length;
+}
+
+/** Does the named order now carry `price`? The modify verdict. */
+function marketOrderHasPrice(result, orderID, price) {
+  const wanted = String(orderID);
+  for (const row of marketOwnerOrderRows(result)) {
+    const id = row.orderID && row.orderID.type === "long"
+      ? String(row.orderID.value)
+      : String(row.orderID);
+    if (id === wanted) {
+      return roundMarketPrice(row.price) === roundMarketPrice(price);
+    }
+  }
+  return false;
+}
+
 /** Read `status` off a util.KeyVal job row (the re-read's verdict). */
 function readIndustryJobStatus(row) {
   const entries =

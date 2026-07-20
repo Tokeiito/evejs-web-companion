@@ -1037,6 +1037,241 @@ reads reflect the payout (wallet grows, an LP balance for the agent corp appears
 standing toward the corp grows, the mission leaves the journal). Deny-by-default is
 re-proven for non-allowlisted `account`/`LPSvc`/`standingMgr` siblings.
 
+## Market — order books, your orders, placing and managing (R16)
+
+**This is the first feature that spends the player's ISK.** EveJS's market is
+real: `marketProxyService.js` does daemon-backed order books, order placement,
+cancel and modify, backed by `debitCharacterWallet` / `creditCharacterWallet`,
+escrow records, broker fees, an SCC surcharge and skill-gated order limits.
+
+Like industry, the market needs **no bound-object machinery**: the whole retail
+surface is top-level (`sm.ProxySvc('marketProxy')`), so `POST /api/bridge/call`
+on the held session carries all of it.
+
+### ⚠ Three traps, before the call table
+
+**1. The service is `marketProxy`, NOT `market`.** EveJS registers two market
+services. `marketService.js` registers as **`market`** and is a **dead stub** —
+every method answers an empty rowset. The live implementation is
+`marketProxyService.js`, registered as **`marketProxy`**. Allowlisting or calling
+the stub produces a market page that renders perfectly and is **permanently
+empty**, which reads as a bridge bug and is very hard to trace. No pair on the
+allowlist names `market`, and a test asserts that by name.
+
+**2. `marketQuote` has no server handler, and is not missing.** In retail it is a
+**client-local** service: order caching, sorting, jump-distance filtering,
+skill-gated order limits and best-bid matching are implemented in the client.
+There is nothing to allowlist. The browser implements that logic itself in
+`web/src/bridge/market.ts` — which is also why re-sorting an order book costs no
+round-trip.
+
+**3. An external daemon backs all of it.** `marketProxy` talks to an
+out-of-process market daemon over **TCP `127.0.0.1:40111`** (`marketDaemonClient`).
+When it is down, daemon-backed reads **throw** rather than answering empty. The
+BFF detects that and reports an **outage**, because *"nobody is trading this
+item"* and *"the market is not answering"* are different facts, and telling a
+player the first when the second is true is a lie about their own position. If
+market reads come back empty or erroring, **check the daemon before suspecting
+the bridge.**
+
+### The read call table
+
+| What the panel needs | Retail call | Answers |
+| --- | --- | --- |
+| Daemon liveness | `marketProxy.StartupCheck()` | `None`, or throws |
+| An item's order book | `marketProxy.GetOrders(typeID)` | `[sellsRowset, buysRowset]`, region from the **session** |
+| The player's open orders | `marketProxy.GetCharOrders()` | owner-order rowset, open only |
+| The player's finished orders | `marketProxy.GetMarketOrderHistory()` | the same rowset, closed only |
+| The player's trades | `marketProxy.CharGetTransactions(fromDate)` | `list<util.KeyVal>` |
+| What is locked up | `marketProxy.GetCharEscrow()` | `util.KeyVal{iskEscrow, itemsEscrow}` |
+| Price history | `marketProxy.GetNewPriceHistory(typeID)` / `GetOldPriceHistory(typeID)` | history rowsets |
+| Many types at once | `marketProxy.GetHistoryForManyTypeIDs(typeIDs)` | `dict<typeID → [old,new]>` |
+| Cheapest nearby | `marketProxy.GetStationAsks()` / `GetSystemAsks()` / `GetRegionBest()` | summary dicts, all session-scoped |
+| The wallet | `account.GetCashBalance(0)` | already allowlisted since R6 |
+
+Twelve new deny-by-default read pairs.
+
+**`marketProxy.GetCorporationOrders` is deliberately NOT listed** — it is the
+corp-scoped sibling of `GetCharOrders` sitting on the **same service** as eleven
+listed reads, so a service-granular allowlist would have handed the browser a
+corporation's whole market position. `CorpGetTransactions` is absent for the same
+reason. **The entire PLEX surface is deliberately absent** (`GetPlexOrders` /
+`GetPlexBest` / `GetPlexHistory` / `GetPlexOldPriceHistory` /
+`GetPlexNewPriceHistory` / `PlacePlexSellOrder` / `ModifyPlexCharOrder`): PLEX
+trades on a special **global** market path, not the regional order book this
+models.
+
+**Scope.** Not one read takes an owner or a location argument. `GetOrders` scopes
+to `session.regionid`; `GetCharOrders` / `GetMarketOrderHistory` /
+`CharGetTransactions` / `GetCharEscrow` to `session.charid`; `GetStationAsks` to
+`session.stationid`; `GetSystemAsks` to `session.solarsystemid2`; `GetRegionBest`
+to `session.regionid`. The only argument any of them takes is a **typeID** (or a
+`fromDate`) — *what* to look at, never *whose*.
+
+### ⚠ Shape traps
+
+**The order book rides a cached envelope.** `GetOrders` / `GetCharOrders` /
+`GetMarketOrderHistory` answer a retail `CachedMethodCallResult`, not the rowset.
+Unlike `map.GetStationInfo` (R2), whose payload is a cached-**object** reference
+the browser genuinely cannot decode, these use the **inline** form: the real
+payload rides `args[1]` as `{type:"substream", value:…}`. A decoder that reads
+the envelope as a rowset finds nothing. A decoder that meets the *reference* form
+answers `null` rather than fabricating an empty book.
+
+**`GetOrders` answers a 2-TUPLE whose halves are not interchangeable.** `[0]` is
+**sells** (what you can buy from), `[1]` is **buys** (what you can sell to).
+Transposing them shows a player the wrong prices for the direction they are
+trading in. Every row also carries its own `bid` flag, so the browser treats that
+flag as authoritative and **drops** a row that disagrees with its half.
+
+**The two rowsets use different row classes.** The order book is `blue.DBRow` —
+each `line` is a **bare JSON array**. The owner-order rowset is `util.Row` — each
+`line` is a `{type:"list"}` **wrapper**. A decoder that assumes one shape reads
+zero rows of the other.
+
+**Order-book columns** (15): `price`, `volRemaining`, `typeID`, `range`,
+`orderID`, `volEntered`, `minVolume`, `bid`, `issueDate`, `duration`,
+`stationID`, `regionID`, `solarSystemID`, `constellationID`, `jumps`.
+**Owner-order columns** (21): `orderID`, `typeID`, `charID`, `regionID`,
+`stationID`, `range`, `bid`, `price`, `volEntered`, `volRemaining`, `issueDate`,
+`minVolume`, `contraband`, `duration`, `isCorp`, `solarSystemID`, `escrow`,
+`constellationID`, `keyID`, `orderState`, `lastStateChange`.
+
+`range` is how far an order **reaches** (`-1` this station, `0` this system,
+`32767` the whole region — decoded to words, never printed as a number);
+`jumps` is how far **away** it is, computed **server-side** from the session's
+own position, so the browser never works out a distance itself. `orderState`:
+`0` open, `1` filled, `2` expired, `3` cancelled.
+
+**Money is a decimal string end to end.** ISK exceeds 2^53 in ordinary play, so
+no price, escrow figure or balance becomes a JS number on its way to the screen
+(R7d). Comparison, formatting and the before/after difference all work on decimal
+strings (the last via BigInt hundredths).
+
+### The write call table — exact positional signatures
+
+Four new pairs. Every one reads its arguments **by index**; there are no kwargs
+anywhere in the market surface, so a mis-ordered list is a *silently different
+order*, not an error.
+
+| Write | Signature |
+| --- | --- |
+| Place a buy | `PlaceBuyOrder([stationID, typeID, price, quantity, orderRange, minVolume, duration, useCorp, expectedBrokersFee])` |
+| Place a sell | `PlaceMultiSellOrder([itemList, useCorp, duration, expectedBrokersFee])` |
+| Cancel | `CancelCharOrder([orderID, regionID])` |
+| Reprice | `ModifyCharOrder([orderID, newPrice, bid, stationID, solarSystemID, oldPrice, range, volRemaining, issueDate])` |
+
+⚠ **`CancelCharOrder` ignores `regionID`** — the server reads only `args[0]` and
+re-derives the region from the order it loads.
+⚠ **`ModifyCharOrder` reads only `args[0]` and `args[1]`** and re-derives the
+other seven. Both trailing sets are sent anyway because the shape is the retail
+one; both facts are pinned by tests that pass **deliberately wrong** trailing
+arguments and prove the outcome is unaffected — a client that got one wrong would
+not be corrected by an error.
+
+⚠ **Selling is ITEM-based, not type-based.** Each `itemList` entry must carry
+`{itemID, typeID, stationID, price, quantity}`: the handler moves that specific
+**stack** out of the hangar into escrow, so "10 of Tritanium" is not something
+the market can act on. There is no single-sell method in the whole retail
+surface; `PlaceMultiSellOrder` with a one-entry list is it.
+
+**`marketProxy.BuyMultipleItems` is deliberately NOT listed** — a batch
+immediate-buy across a whole shopping list, charging the wallet once per entry,
+is not something a stray click should fire, and anything it can do one
+`PlaceBuyOrder` can do deliberately.
+
+### ⚠ `expectedBrokersFee` is a RATE and a CHECK, not a payment
+
+`validateExpectedBrokerFeePercentage` compares it against the character's real
+`brokerCommissionRate` and **refuses the whole order** with
+`MktBrokersFeeUnexpected2` on a mismatch. Its purpose is to stop a player being
+charged a rate other than the one they were shown.
+
+The browser **cannot compute that rate**. It is `3% − (Broker Relations level ×
+0.3%) − (faction standing × 0.03%) − (corp standing × 0.02%)`, floored at 100
+ISK, and at a player-owned structure it is whatever that structure's owner set.
+**No allowlisted read answers any of those inputs.** Sending a guess would refuse
+legitimate orders from any trained trader, so the bridge sends **`null`** — the
+documented "do not check" value — and the honesty is delivered the other way
+round:
+
+- the confirm step labels its 3% figure an **estimate**, says plainly that skills
+  and standings change it and that this app cannot see either, and
+- after the order lands the BFF **re-reads the wallet** and reports the amount
+  actually charged.
+
+A gateway test places an order with a deliberately wrong 99% rate, proves it is
+refused, and proves the wallet was not touched.
+
+### Client-side guards, applied BEFORE dispatch
+
+- **Price rounded to 2dp** (`Math.round(v*100)/100`, the server's own `roundIsk`).
+  The server rounds whatever it is sent, so an unrounded price is not rejected —
+  it is silently **changed**. Rounding client-side means the number in the confirm
+  dialog is the number that gets used.
+- **`price > MARKET_MAX_ORDER_PRICE` (9 223 372 036 854) rejected**, so a typo is a
+  clear message rather than an opaque server refusal.
+- **Duration restricted to 0 / 1 / 3 / 7 / 14 / 30 / 90**, the set the server
+  accepts.
+- **Order range fixed to station-only (`-1`)**: a wider range is skill-gated and
+  the server refuses one the character has not trained for.
+
+### BFF routes (this repo)
+
+- `GET /api/bridge/market?typeID=` → `{ ok, typeID, characterID, stationID,
+  solarSystemID, book:{result,error}, ownOrders:{result,error},
+  orderHistory:{result,error}, transactions:{result,error}, escrow:{result,error},
+  cashBalance:{result,error}, priceHistory:{result,error}, marketUnavailable }`.
+  Seven **independent** calls (`Promise.allSettled`): a player whose order book
+  fails still sees their own orders, their trades and their ISK. `typeID` is
+  optional — the own-market half answers before an item is chosen.
+- `GET /api/market/find?q=` → `{ ok, source:"static-data", matches:[{typeID, name,
+  groupName}] }`. Pure static reference data: **no gateway call, no live session**,
+  so it answers even when the market is down. It is the only way the panel ever
+  obtains a typeID, because a player must never be asked for one (R7d). Only
+  **published** types carrying a `marketGroupID` are offered.
+- `POST /api/bridge/market/buy` `{typeID, price, quantity, durationDays, confirm}`
+- `POST /api/bridge/market/sell` `{itemID, typeID, price, quantity, durationDays, confirm}`
+- `POST /api/bridge/market/cancel` `{orderID, confirm}`
+- `POST /api/bridge/market/modify` `{orderID, price, confirm}`
+
+**Every write refuses with 400 `CONFIRMATION_REQUIRED` unless `confirm === true`,
+and the refusal happens before anything reaches the gateway** — the second gate
+behind the UI's two-step confirm, exactly as R12's `destroy-rig`, R14's `trash`
+and R15's `install` are fenced.
+
+### ⚠ A 200 is not proof — reporting the ACTUAL charge
+
+Each write route reads the **wallet before and after** and answers:
+
+```jsonc
+{ "ok": true, "applied": true, "declinedSilently": false,
+  "charged": "1137.50",          // before − after, EXACT (BigInt hundredths)
+  "balanceBefore": "1000000.00", "balanceAfter": "998862.50",
+  "ownOrders": <re-read rowset> }
+```
+
+`charged` is the **only authoritative statement about what an order cost**. The
+client's estimated fee never appears in a response and is never compared against
+it. A refund (a cancel) reads as a **negative** charge.
+
+`applied` comes from the re-read, never from the response, because the handlers
+cannot be told apart by their return values:
+
+| Write | Returns | How `applied` is judged |
+| --- | --- | --- |
+| `PlaceBuyOrder` | `None` whether it created an order, filled one, or did nothing | the wallet moved |
+| `PlaceMultiSellOrder` | `True`/`False` — a real signal | the boolean, plus the wallet delta reported alongside |
+| `CancelCharOrder` | `None` even when the order was already closed | the open-order count fell |
+| `ModifyCharOrder` | `None` even when nothing changed | the order now carries the new price |
+
+A write that answers success while nothing moved is reported as
+`declinedSilently: true`, which reaches the player as *"The server did not apply
+that change, and gave no reason."* — **no cause is ever invented.** A *thrown*
+refusal keeps the handler's own sentence verbatim; a named market error
+(`MktBrokersFeeUnexpected2`, `MktNotEnoughMoney`, …) becomes a plain sentence,
+which is presentation, not diagnosis.
+
 ## Agent Finder static route (R6a)
 
 The per-station `agentMgr.GetAgents` roster is unreliable for *finding* an agent

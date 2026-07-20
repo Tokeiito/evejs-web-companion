@@ -774,6 +774,108 @@ export async function loadMarket(
   };
 }
 
+/**
+ * What a market write ACTUALLY did.
+ *
+ * ⚠ `applied` is the BFF's RE-READ (of the wallet, of the player's own orders),
+ * never an echo of the request — the R12/R14/R15 lesson. ⚠ `charged` is the
+ * wallet balance BEFORE minus the balance AFTER: the only authoritative
+ * statement about what an order cost. The estimated broker fee the confirm step
+ * showed never appears here, and is never compared against this.
+ */
+export interface MarketChangeResult {
+  readonly applied: boolean;
+  readonly declinedSilently: boolean;
+  /** ISK taken (positive) or returned (negative), as a decimal string. */
+  readonly charged: string | null;
+  readonly balanceAfter: string | null;
+  /** The re-read own-orders rowset (raw; decoded by bridge/market.ts). */
+  readonly ownOrders: JsonValue;
+}
+
+function asMarketChange(data: Record<string, JsonValue>): MarketChangeResult {
+  return {
+    applied: data.applied === true,
+    declinedSilently: data.declinedSilently === true,
+    charged: typeof data.charged === "string" ? data.charged : null,
+    balanceAfter: typeof data.balanceAfter === "string" ? data.balanceAfter : null,
+    ownOrders: data.ownOrders ?? null,
+  };
+}
+
+/** What the browser sends to place an order. Prices are already rounded. */
+export interface MarketBuyRequest {
+  readonly typeID: number;
+  readonly price: number;
+  readonly quantity: number;
+  readonly durationDays: number;
+}
+
+export interface MarketSellRequest {
+  /** The specific STACK being sold — selling is item-based, not type-based. */
+  readonly itemID: number;
+  readonly typeID: number;
+  readonly price: number;
+  readonly quantity: number;
+  readonly durationDays: number;
+}
+
+/**
+ * PLACE A BUY ORDER. Sets ISK aside immediately and charges a broker's fee, so
+ * the BFF refuses the route outright without `confirm`. The UI asks first; this
+ * flag is the second gate behind that.
+ */
+export async function placeMarketBuyOrder(
+  request: MarketBuyRequest,
+  options: ApiOptions = {},
+): Promise<MarketChangeResult> {
+  const data = await postJson(
+    "/api/bridge/market/buy",
+    { ...request, confirm: true } as unknown as Record<string, JsonValue>,
+    options,
+  );
+  return asMarketChange(data);
+}
+
+/** PLACE A SELL ORDER. Hands the goods over and charges a broker's fee. */
+export async function placeMarketSellOrder(
+  request: MarketSellRequest,
+  options: ApiOptions = {},
+): Promise<MarketChangeResult> {
+  const data = await postJson(
+    "/api/bridge/market/sell",
+    { ...request, confirm: true } as unknown as Record<string, JsonValue>,
+    options,
+  );
+  return asMarketChange(data);
+}
+
+/**
+ * CANCEL an order. Returns what it was holding; the broker's fee already paid
+ * is NOT returned, which is why the UI says so before asking.
+ */
+export async function cancelMarketOrder(
+  orderID: string,
+  options: ApiOptions = {},
+): Promise<MarketChangeResult> {
+  const data = await postJson("/api/bridge/market/cancel", { orderID, confirm: true }, options);
+  return asMarketChange(data);
+}
+
+/** CHANGE an order's price. Charges a fee, and moves a buy order's escrow. */
+export async function modifyMarketOrder(
+  orderID: string,
+  price: number,
+  options: ApiOptions = {},
+): Promise<MarketChangeResult> {
+  const data = await postJson(
+    "/api/bridge/market/modify",
+    { orderID, price, confirm: true },
+    options,
+  );
+  return asMarketChange(data);
+}
+
 /** One tradable-item match from /api/market/find. */
 export interface MarketTypeMatch {
   readonly typeID: number;

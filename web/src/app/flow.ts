@@ -26,6 +26,7 @@ import {
   decodeOwnOrders,
   decodePriceHistory,
   decodeTransactions,
+  marketRefusalMessage,
   toAmountString,
 } from "../bridge/market.ts";
 import {
@@ -84,6 +85,22 @@ export interface AppFlowOptions {
    * to the browser's own EventSource; tests supply a fake.
    */
   readonly eventSource?: (url: string) => api.EventSourceLike;
+}
+
+/**
+ * What the panel asks for when it places an order. `side` decides which retail
+ * call is used, and they are NOT symmetric: buying names a TYPE, selling names
+ * a specific STACK (`itemID`), because the sell handler moves that stack into
+ * escrow.
+ */
+export interface MarketOrderRequest {
+  readonly side: "buy" | "sell";
+  readonly typeID: number;
+  readonly price: number;
+  readonly quantity: number;
+  readonly durationDays: number;
+  /** Required for a sell: the stack being handed over. */
+  readonly itemID?: number;
 }
 
 export interface AppFlow {
@@ -184,6 +201,16 @@ export interface AppFlow {
    * Static reference data, so it answers even when the market daemon does not.
    */
   findMarketTypes(q: string): Promise<readonly api.MarketTypeMatch[]>;
+  /**
+   * PLACE A BUY ORDER. Sets ISK aside immediately and charges a broker's fee,
+   * so the panel confirms before calling it and the BFF confirms again. What
+   * the server ACTUALLY charged lands in the store as `lastOutcome`.
+   */
+  placeMarketOrder(request: MarketOrderRequest): Promise<void>;
+  /** CANCEL an order. Returns what it held; the fee already paid is not. */
+  cancelMarketOrder(orderID: string): Promise<void>;
+  /** CHANGE an order's price. Charges a fee and moves a buy order's escrow. */
+  modifyMarketOrder(orderID: string, price: number): Promise<void>;
   /** Load the docked station's agent roster (agentMgr.GetAgents). */
   loadAgents(): Promise<void>;
   /** Open a conversation with an agent (bound DoAction(None)). */
@@ -981,6 +1008,54 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       refs.push({ kind: "station", id: row.stationID });
     }
     requestNames(refs);
+  }
+
+  /**
+   * Run a market write, then reload the panel so it shows SERVER truth, and
+   * record what ACTUALLY happened to the money.
+   *
+   * Three outcomes, handled differently on purpose:
+   *  - a THROWN refusal carries the handler's own reason (or a named market
+   *    error), which `marketRefusalMessage` turns into a sentence without
+   *    inventing a cause the server did not give;
+   *  - a SILENT decline returns success while nothing moved. The BFF judged
+   *    that from its RE-READ (the wallet did not change, or the order is still
+   *    there at the old price), and saying only that the server declined is
+   *    honest where naming a cause would be a guess;
+   *  - success, in which case the amount reported is the WALLET DIFFERENCE the
+   *    BFF measured — never the estimate the confirm step showed.
+   */
+  async function runMarketAction(
+    kind: "buy" | "sell" | "cancel" | "modify",
+    action: () => Promise<api.MarketChangeResult>,
+  ): Promise<void> {
+    let outcome: api.MarketChangeResult;
+    try {
+      outcome = await action();
+    } catch (error) {
+      if (isSessionLost(error)) {
+        stopLiveStream();
+        store.apply({ type: "character/offline" });
+        throw error;
+      }
+      store.apply({ type: "market/action-error", message: marketRefusalMessage(error) });
+      return;
+    }
+    // Reload first: the panel must show the server's own picture of the
+    // player's orders and ISK before it says anything about what happened.
+    await loadMarket(store.get().market.typeID);
+    // loadMarket clears the action error on success, so the verdict is recorded
+    // AFTER the reload or its own refresh would wipe it.
+    store.apply({
+      type: "market/outcome",
+      outcome: {
+        kind,
+        applied: outcome.applied,
+        declinedSilently: outcome.declinedSilently,
+        charged: outcome.charged,
+        balanceAfter: outcome.balanceAfter,
+      },
+    });
   }
 
   // --- R4 Agents & Missions ------------------------------------------------
@@ -1931,6 +2006,42 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     },
     loadMarket,
     findMarketTypes: (q: string) => api.findMarketTypes(q, callOptions),
+    async placeMarketOrder(request) {
+      // Buying names a TYPE; selling names a specific STACK. Two different
+      // retail calls, and the panel chooses between them here rather than the
+      // BFF guessing from the payload.
+      if (request.side === "sell") {
+        const itemID = request.itemID ?? 0;
+        await runMarketAction("sell", () =>
+          api.placeMarketSellOrder(
+            {
+              itemID,
+              typeID: request.typeID,
+              price: request.price,
+              quantity: request.quantity,
+              durationDays: request.durationDays,
+            },
+            callOptions,
+          ));
+        return;
+      }
+      await runMarketAction("buy", () =>
+        api.placeMarketBuyOrder(
+          {
+            typeID: request.typeID,
+            price: request.price,
+            quantity: request.quantity,
+            durationDays: request.durationDays,
+          },
+          callOptions,
+        ));
+    },
+    async cancelMarketOrder(orderID) {
+      await runMarketAction("cancel", () => api.cancelMarketOrder(orderID, callOptions));
+    },
+    async modifyMarketOrder(orderID, price) {
+      await runMarketAction("modify", () => api.modifyMarketOrder(orderID, price, callOptions));
+    },
 
     loadAgents,
 

@@ -16,9 +16,13 @@
   // book costs no round-trip.
   import { onMount } from "svelte";
   import {
+    DURATION_CHOICES,
     FILL_STATE_LABELS,
     bestPrices,
+    checkPrice,
+    checkQuantity,
     distanceLabel,
+    estimateBrokerFee,
     filterByJumps,
     formatIsk,
     rangeLabel,
@@ -28,7 +32,7 @@
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
   import type { MarketTypeMatch } from "../app/api.ts";
-  import type { MarketOwnOrderRow } from "../store/types.ts";
+  import type { MarketOrderRow, MarketOwnOrderRow, MarketSide } from "../store/types.ts";
   import { resolvedName } from "../store/names.ts";
 
   let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
@@ -37,6 +41,12 @@
   const market = store.market;
   // svelte-ignore state_referenced_locally
   const names = store.names;
+  // ⚠ SELLING NEEDS THE HANGAR. PlaceMultiSellOrder moves a specific STACK into
+  // escrow, so a sell must name an itemID — "10 of Tritanium" is not something
+  // the market can act on. The hangar the Inventory page already reads is where
+  // those stacks come from.
+  // svelte-ignore state_referenced_locally
+  const inventory = store.inventory;
 
   let busy = $state(false);
   let error = $state("");
@@ -52,6 +62,25 @@
   // --- Client-local book controls (retail's `marketQuote`) -----------------
   /** -1 means "no limit"; anything else caps how far away an order may be. */
   let maxJumps = $state(-1);
+
+  // --- Placing / changing orders (Slice B) ---------------------------------
+  type Draft = {
+    readonly side: MarketSide;
+    price: string;
+    quantity: string;
+    durationDays: number;
+  };
+  let draft = $state<Draft | null>(null);
+  /** True once the player has asked to see the confirmation step. */
+  let confirming = $state(false);
+  /** The order the player has armed a cancel for. */
+  let cancellingOrderID = $state<string | null>(null);
+  /** The order being repriced, and the new price they typed. */
+  let modifyingOrderID = $state<string | null>(null);
+  let modifyPrice = $state("");
+  let confirmingModify = $state(false);
+  /** The hangar stack a sell will hand over. Null until one is picked. */
+  let sellItemID = $state<number | null>(null);
 
   function typeName(typeID: number): string {
     return resolvedName($names.resolved, "type", typeID, "an unnamed item");
@@ -103,6 +132,7 @@
     chosenName = match.name;
     matches = [];
     query = "";
+    closeDraft();
     void run(() => flow.loadMarket(match.typeID));
   }
 
@@ -124,8 +154,155 @@
     $market.ownOrders.filter((order) => order.state === "open"),
   );
 
+  /**
+   * The stacks of the chosen item the player is actually holding at this
+   * station. A sell is offered only against one of these: the market moves a
+   * real stack into escrow, so offering a sell for goods the player does not
+   * have would produce a refusal they could make no sense of.
+   */
+  const sellableStacks = $derived.by(() =>
+    $market.typeID === null
+      ? []
+      : $inventory.hangar.rows.filter((row) => row.typeID === $market.typeID),
+  );
+
+  const chosenStack = $derived.by(
+    () => sellableStacks.find((row) => row.itemID === sellItemID) ?? null,
+  );
+
+  // --- The order draft, and what it will cost ------------------------------
+
+  const draftPriceCheck = $derived.by(() =>
+    draft === null ? null : checkPrice(Number(draft.price)),
+  );
+  const draftQuantityCheck = $derived.by(() =>
+    draft === null ? null : checkQuantity(Number(draft.quantity)),
+  );
+  /** price x quantity, at the ROUNDED price that will actually be sent. */
+  const draftValue = $derived.by(() => {
+    if (draft === null || !draftPriceCheck?.ok || !draftQuantityCheck?.ok) {
+      return null;
+    }
+    return (draftPriceCheck.price * Number(draft.quantity)).toFixed(2);
+  });
+  /** ⚠ AN ESTIMATE at the standard 3% rate — see bridge/market.ts. */
+  const draftFee = $derived.by(() => {
+    if (draft === null || !draftPriceCheck?.ok || !draftQuantityCheck?.ok) {
+      return null;
+    }
+    return estimateBrokerFee(draftPriceCheck.price, Number(draft.quantity));
+  });
+  const draftReady = $derived.by(() => {
+    if (draft === null || draftPriceCheck?.ok !== true || draftQuantityCheck?.ok !== true) {
+      return false;
+    }
+    if (draft.side === "buy") {
+      return true;
+    }
+    // A sell must name a stack, and cannot offer more than that stack holds.
+    return chosenStack !== null && Number(draft.quantity) <= chosenStack.quantity;
+  });
+
+  function startDraft(side: MarketSide): void {
+    const suggested = side === "buy" ? best.bestBuy : best.bestSell;
+    const stack = side === "sell" ? sellableStacks[0] ?? null : null;
+    sellItemID = stack ? stack.itemID : null;
+    draft = {
+      side,
+      price: suggested ?? "",
+      // A sell defaults to the whole stack; a buy to one unit.
+      quantity: stack ? String(stack.quantity) : "1",
+      durationDays: 30,
+    };
+    confirming = false;
+  }
+
+  function closeDraft(): void {
+    draft = null;
+    confirming = false;
+    sellItemID = null;
+  }
+
+  function placeOrder(): void {
+    const current = draft;
+    const priceCheck = draftPriceCheck;
+    if (current === null || !priceCheck?.ok || $market.typeID === null) {
+      return;
+    }
+    void run(async () => {
+      await flow.placeMarketOrder({
+        side: current.side,
+        typeID: $market.typeID as number,
+        price: priceCheck.price,
+        quantity: Number(current.quantity),
+        durationDays: current.durationDays,
+        // Only a sell carries one, and it is required there.
+        itemID: current.side === "sell" ? sellItemID ?? 0 : undefined,
+      });
+      closeDraft();
+    });
+  }
+
+  function cancelOrder(order: MarketOwnOrderRow): void {
+    cancellingOrderID = null;
+    void run(() => flow.cancelMarketOrder(order.orderID));
+  }
+
+  function startModify(order: MarketOwnOrderRow): void {
+    modifyingOrderID = order.orderID;
+    modifyPrice = order.price;
+    confirmingModify = false;
+  }
+
+  function closeModify(): void {
+    modifyingOrderID = null;
+    modifyPrice = "";
+    confirmingModify = false;
+  }
+
+  const modifyCheck = $derived.by(() =>
+    modifyingOrderID === null ? null : checkPrice(Number(modifyPrice)),
+  );
+
+  function applyModify(order: MarketOwnOrderRow): void {
+    const check = modifyCheck;
+    if (!check?.ok) {
+      return;
+    }
+    void run(async () => {
+      await flow.modifyMarketOrder(order.orderID, check.price);
+      closeModify();
+    });
+  }
+
+  /** What the last write ACTUALLY did, in words. Never a prediction. */
+  const outcomeText = $derived.by(() => {
+    const outcome = $market.lastOutcome;
+    if (outcome === null) {
+      return null;
+    }
+    if (outcome.declinedSilently) {
+      return "The server did not apply that change, and gave no reason.";
+    }
+    if (outcome.charged === null) {
+      return "That went through. The server did not report a wallet change.";
+    }
+    const negative = outcome.charged.startsWith("-");
+    const magnitude = negative ? outcome.charged.slice(1) : outcome.charged;
+    if (magnitude === "0.00" || magnitude === "0") {
+      return "That went through. Nothing was taken from your wallet.";
+    }
+    return negative
+      ? `That went through. ${formatIsk(magnitude)} was returned to your wallet.`
+      : `That went through. You were actually charged ${formatIsk(magnitude)}.`;
+  });
+
   onMount(() => {
     void run(() => flow.loadMarket(null));
+    // The hangar, so a sell can name a real stack. Deliberately NOT part of the
+    // market load: it is a different panel's read, and failing it must cost the
+    // player only the ability to sell, not the whole market page.
+    void flow.loadInventory().catch(() => {});
   });
 </script>
 
@@ -148,6 +325,12 @@
   {/if}
   {#if $market.marketUnavailable}
     <p class="error">{$market.marketUnavailable}</p>
+  {/if}
+  {#if $market.actionError}
+    <p class="error">Your last order was not placed: {$market.actionError}</p>
+  {/if}
+  {#if outcomeText}
+    <p class="note">{outcomeText}</p>
   {/if}
   {#if matches.length > 0}
     <div class="table-wrap overflow-x-auto">
@@ -236,6 +419,16 @@
             <option value={10}>Within 10 jumps</option>
           </select>
         </label>
+        <button type="button" disabled={busy} onclick={() => startDraft("buy")}>
+          Offer to buy…
+        </button>
+        <button
+          type="button"
+          disabled={busy || sellableStacks.length === 0}
+          onclick={() => startDraft("sell")}
+        >
+          Offer to sell…
+        </button>
       </p>
 
       <h3>On sale (you can buy these)</h3>
@@ -325,6 +518,123 @@
       {/if}
     {/if}
   </section>
+
+  {#if draft !== null && $market.typeID !== null}
+    <section class="bulk">
+      <h2>
+        {draft.side === "buy" ? "Offer to buy" : "Offer to sell"}
+        {chosenName || typeName($market.typeID)}
+      </h2>
+      {#if !confirming}
+        {#if draft.side === "sell"}
+          <p class="controls">
+            <label>
+              Which of yours to sell
+              <select bind:value={sellItemID}>
+                {#each sellableStacks as stack (stack.itemID)}
+                  <option value={stack.itemID}>
+                    {typeName(stack.typeID)} — {stack.quantity} you are holding
+                  </option>
+                {/each}
+              </select>
+            </label>
+          </p>
+          {#if chosenStack === null}
+            <p class="note">
+              You are not holding any of this here, so there is nothing to sell.
+            </p>
+          {/if}
+        {/if}
+        <p class="controls">
+          <label>
+            Price for each one
+            <input type="number" min="0.01" step="0.01" bind:value={draft.price} />
+          </label>
+          <label>
+            How many
+            <input type="number" min="1" step="1" bind:value={draft.quantity} />
+          </label>
+          <label>
+            How long to leave it open
+            <select bind:value={draft.durationDays}>
+              {#each DURATION_CHOICES as choice (choice.days)}
+                <option value={choice.days}>{choice.label}</option>
+              {/each}
+            </select>
+          </label>
+        </p>
+        {#if draftPriceCheck && !draftPriceCheck.ok && draft.price !== ""}
+          <p class="error">{draftPriceCheck.message}</p>
+        {/if}
+        {#if draftQuantityCheck && !draftQuantityCheck.ok && draft.quantity !== ""}
+          <p class="error">{draftQuantityCheck.message}</p>
+        {/if}
+        {#if draft.side === "sell" && chosenStack !== null && Number(draft.quantity) > chosenStack.quantity}
+          <p class="error">
+            You only have {chosenStack.quantity} of these to sell.
+          </p>
+        {/if}
+        <p class="controls">
+          <button type="button" disabled={busy || !draftReady} onclick={() => (confirming = true)}>
+            Check this order…
+          </button>
+          <button type="button" class="minor" disabled={busy} onclick={closeDraft}>
+            Never mind
+          </button>
+        </p>
+      {:else}
+        <div class="table-wrap overflow-x-auto">
+          <table class="guests reflow">
+            <tbody>
+              <tr>
+                <th>Item</th>
+                <td data-label="Item">{chosenName || typeName($market.typeID)}</td>
+              </tr>
+              <tr>
+                <th>Price for each one</th>
+                <td data-label="Price for each one">
+                  {formatIsk(draftPriceCheck?.price.toFixed(2) ?? null)}
+                </td>
+              </tr>
+              <tr>
+                <th>How many</th>
+                <td data-label="How many">{draft.quantity}</td>
+              </tr>
+              <tr>
+                <th>That comes to</th>
+                <td data-label="That comes to">{formatIsk(draftValue)}</td>
+              </tr>
+              <tr>
+                <th>Broker's fee (estimate)</th>
+                <td data-label="Broker's fee (estimate)">
+                  about {formatIsk(draftFee?.amount ?? null)}
+                </td>
+              </tr>
+              <tr>
+                <th>Your ISK right now</th>
+                <td data-label="Your ISK right now">{formatIsk($market.cashBalance)}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="note">
+          The broker's fee above is an <strong>estimate</strong> worked out at the
+          standard rate. Your trading skills and your standing with this station's
+          owner change what you are really charged, and this app cannot see either
+          of them. Once the order goes through, the amount you were actually
+          charged is shown here.
+        </p>
+        <p class="controls">
+          <button type="button" class="danger" disabled={busy} onclick={placeOrder}>
+            {draft.side === "buy" ? "Yes, place this buy order" : "Yes, place this sell order"}
+          </button>
+          <button type="button" class="minor" disabled={busy} onclick={() => (confirming = false)}>
+            Go back and change it
+          </button>
+        </p>
+      {/if}
+    </section>
+  {/if}
 {/if}
 
 {#if $market.loaded && tab === "orders"}
@@ -346,6 +656,7 @@
               <th>Left</th>
               <th>Where</th>
               <th>Tied up</th>
+              <th>Action</th>
             </tr>
           </thead>
           <tbody>
@@ -361,11 +672,101 @@
                 <td data-label="Tied up">
                   {order.side === "buy" ? formatIsk(order.escrow) : "—"}
                 </td>
+                <td data-label="Action">
+                  <div class="row-actions">
+                    {#if modifyingOrderID === order.orderID}
+                      <input
+                        type="number"
+                        min="0.01"
+                        step="0.01"
+                        bind:value={modifyPrice}
+                        aria-label="New price for each one"
+                      />
+                      {#if confirmingModify}
+                        <button
+                          type="button"
+                          class="danger"
+                          disabled={busy || modifyCheck?.ok !== true}
+                          onclick={() => applyModify(order)}
+                        >
+                          Yes, change the price
+                        </button>
+                        <button
+                          type="button"
+                          class="minor"
+                          disabled={busy}
+                          onclick={() => (confirmingModify = false)}
+                        >
+                          Go back
+                        </button>
+                      {:else}
+                        <button
+                          type="button"
+                          disabled={busy || modifyCheck?.ok !== true}
+                          onclick={() => (confirmingModify = true)}
+                        >
+                          Check this change…
+                        </button>
+                        <button type="button" class="minor" disabled={busy} onclick={closeModify}>
+                          Never mind
+                        </button>
+                      {/if}
+                    {:else if cancellingOrderID === order.orderID}
+                      <button
+                        type="button"
+                        class="danger"
+                        disabled={busy}
+                        onclick={() => cancelOrder(order)}
+                      >
+                        Yes, take this order down
+                      </button>
+                      <button
+                        type="button"
+                        class="minor"
+                        disabled={busy}
+                        onclick={() => (cancellingOrderID = null)}
+                      >
+                        Leave it up
+                      </button>
+                    {:else}
+                      <button
+                        type="button"
+                        class="minor"
+                        disabled={busy}
+                        onclick={() => startModify(order)}
+                      >
+                        Change the price…
+                      </button>
+                      <button
+                        type="button"
+                        class="minor"
+                        disabled={busy}
+                        onclick={() => (cancellingOrderID = order.orderID)}
+                      >
+                        Take it down…
+                      </button>
+                    {/if}
+                  </div>
+                </td>
               </tr>
             {/each}
           </tbody>
         </table>
       </div>
+      {#if modifyingOrderID !== null && confirmingModify}
+        <p class="note">
+          Changing the price of an order costs a fee, and on a buy order it also
+          changes how much ISK is tied up. The exact amount is worked out by the
+          server, and what you were actually charged is shown once it goes
+          through.
+        </p>
+      {/if}
+      {#if cancellingOrderID !== null}
+        <p class="note">
+          Taking a buy order down returns the ISK it had tied up. The fee you
+          paid to place it is not returned.
+        </p>
+      {/if}
     {/if}
   </section>
 

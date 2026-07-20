@@ -430,3 +430,243 @@ test("a query too short to be useful never reaches the BFF", async () => {
     0,
   );
 });
+
+// =============================================================================
+// Slice B: the WRITES
+// =============================================================================
+// What the flow owes a player who has just spent ISK:
+//   - the panel reloaded from the SERVER before anything is said about what
+//     happened, so the orders and the balance on screen are server truth;
+//   - the amount reported is the one the BFF measured from the WALLET, never
+//     the estimate the confirm step showed;
+//   - a silent decline said plainly, with no invented cause;
+//   - a thrown refusal in the server's own words.
+
+function changeResult(overrides: Record<string, unknown> = {}) {
+  return {
+    ok: true,
+    applied: true,
+    declinedSilently: false,
+    charged: "1137.50",
+    balanceBefore: "1000000.00",
+    balanceAfter: "998862.50",
+    ownOrders: null,
+    ...overrides,
+  };
+}
+
+test("placing a buy sends confirm:true and the rounded price, and reloads the panel", async () => {
+  const { store, flow, requests } = makeFlow(
+    respondOk((path) =>
+      path === "/api/bridge/market/buy" ? { status: 200, body: changeResult() } : null,
+    ),
+  );
+  await flow.loadMarket(TYPE_ID);
+  await flow.placeMarketOrder({
+    side: "buy",
+    typeID: TYPE_ID,
+    price: 10,
+    quantity: 100,
+    durationDays: 30,
+  });
+
+  const buy = requests.find((entry) => entry.path === "/api/bridge/market/buy");
+  assert.ok(buy, "the buy must reach the BFF");
+  // The BFF refuses without this; the UI's two-step confirm is the first gate.
+  assert.equal(buy.body.confirm, true);
+  assert.equal(buy.body.price, 10);
+  assert.equal(buy.body.quantity, 100);
+  // The panel is reloaded from the server BEFORE any verdict is shown.
+  assert.equal(
+    requests.filter((entry) => entry.path.startsWith("/api/bridge/market?")).length >= 1,
+    true,
+  );
+  assert.equal(store.get().market.lastOutcome?.applied, true);
+});
+
+test("the reported amount is the SERVER's charge, not the client's estimate", async () => {
+  const { store, flow } = makeFlow(
+    respondOk((path) =>
+      path === "/api/bridge/market/buy"
+        ? { status: 200, body: changeResult({ charged: "1137.50" }) }
+        : null,
+    ),
+  );
+  await flow.loadMarket(TYPE_ID);
+  await flow.placeMarketOrder({
+    side: "buy",
+    typeID: TYPE_ID,
+    price: 10,
+    quantity: 100,
+    durationDays: 30,
+  });
+
+  const outcome = store.get().market.lastOutcome;
+  // The client's own estimate for this order would be 10 x 100 x 3% = 30.00.
+  // What is recorded is what the WALLET lost.
+  assert.equal(outcome?.charged, "1137.50");
+  assert.equal(outcome?.balanceAfter, "998862.50");
+  assert.equal(outcome?.kind, "buy");
+});
+
+test("selling names the STACK — a sell carries an itemID, a buy does not", async () => {
+  const { flow, requests } = makeFlow(
+    respondOk((path) =>
+      path === "/api/bridge/market/sell" ? { status: 200, body: changeResult() } : null,
+    ),
+  );
+  await flow.loadMarket(TYPE_ID);
+  await flow.placeMarketOrder({
+    side: "sell",
+    typeID: TYPE_ID,
+    itemID: 7_000_000_001,
+    price: 12.5,
+    quantity: 10,
+    durationDays: 90,
+  });
+
+  const sell = requests.find((entry) => entry.path === "/api/bridge/market/sell");
+  assert.ok(sell, "a sell must go to the sell route, not the buy route");
+  assert.equal(sell.body.itemID, 7_000_000_001);
+  assert.equal(sell.body.confirm, true);
+});
+
+test("cancelling and repricing both go behind confirm", async () => {
+  const { flow, requests } = makeFlow(
+    respondOk((path) =>
+      path === "/api/bridge/market/cancel" || path === "/api/bridge/market/modify"
+        ? { status: 200, body: changeResult({ charged: "-2450.00" }) }
+        : null,
+    ),
+  );
+  await flow.loadMarket(TYPE_ID);
+  await flow.cancelMarketOrder("8000000101");
+  await flow.modifyMarketOrder("8000000101", 12);
+
+  const cancel = requests.find((entry) => entry.path === "/api/bridge/market/cancel");
+  const modify = requests.find((entry) => entry.path === "/api/bridge/market/modify");
+  assert.equal(cancel?.body.confirm, true);
+  assert.equal(cancel?.body.orderID, "8000000101");
+  assert.equal(modify?.body.confirm, true);
+  assert.equal(modify?.body.price, 12);
+});
+
+test("a refund is recorded as a NEGATIVE charge, so the panel can say ISK came back", async () => {
+  const { store, flow } = makeFlow(
+    respondOk((path) =>
+      path === "/api/bridge/market/cancel"
+        ? { status: 200, body: changeResult({ charged: "-2450.00" }) }
+        : null,
+    ),
+  );
+  await flow.loadMarket(TYPE_ID);
+  await flow.cancelMarketOrder("8000000101");
+  assert.equal(store.get().market.lastOutcome?.charged, "-2450.00");
+});
+
+test("a SILENT decline is reported as exactly that — no cause is invented", async () => {
+  const { store, flow } = makeFlow(
+    respondOk((path) =>
+      path === "/api/bridge/market/buy"
+        ? {
+            status: 200,
+            body: changeResult({ applied: false, declinedSilently: true, charged: "0.00" }),
+          }
+        : null,
+    ),
+  );
+  await flow.loadMarket(TYPE_ID);
+  await flow.placeMarketOrder({
+    side: "buy",
+    typeID: TYPE_ID,
+    price: 10,
+    quantity: 1,
+    durationDays: 30,
+  });
+
+  const outcome = store.get().market.lastOutcome;
+  assert.equal(outcome?.applied, false);
+  assert.equal(outcome?.declinedSilently, true);
+  // ⚠ And no actionError: a silent decline is not a refusal with a reason, and
+  // inventing one would be worse than saying the server declined.
+  assert.equal(store.get().market.actionError, null);
+});
+
+test("a THROWN refusal keeps the server's own words and does not reload a verdict", async () => {
+  const { store, flow } = makeFlow(
+    respondOk((path) =>
+      path === "/api/bridge/market/buy"
+        ? {
+            status: 409,
+            body: {
+              ok: false,
+              error: "CALL_REFUSED",
+              message: "No matching sell orders were available at the requested price.",
+            },
+          }
+        : null,
+    ),
+  );
+  await flow.loadMarket(TYPE_ID);
+  await flow.placeMarketOrder({
+    side: "buy",
+    typeID: TYPE_ID,
+    price: 10,
+    quantity: 1,
+    durationDays: 30,
+  });
+
+  // The handler's OWN sentence, never reworded.
+  assert.match(
+    String(store.get().market.actionError),
+    /No matching sell orders were available/,
+  );
+  // No outcome is recorded: nothing happened, so there is nothing to report
+  // about the money.
+  assert.equal(store.get().market.lastOutcome, null);
+});
+
+test("a NAMED market refusal becomes a sentence a player can read", async () => {
+  const { store, flow } = makeFlow(
+    respondOk((path) =>
+      path === "/api/bridge/market/buy"
+        ? {
+            status: 409,
+            body: { ok: false, error: "CALL_REFUSED", message: "MktBrokersFeeUnexpected2" },
+          }
+        : null,
+    ),
+  );
+  await flow.loadMarket(TYPE_ID);
+  await flow.placeMarketOrder({
+    side: "buy",
+    typeID: TYPE_ID,
+    price: 10,
+    quantity: 1,
+    durationDays: 30,
+  });
+  assert.match(
+    String(store.get().market.actionError),
+    /broker's fee here is not what you were shown/,
+  );
+});
+
+test("a lost session during a write unwinds to character select rather than reporting a charge", async () => {
+  const { store, flow } = makeFlow(
+    respondOk((path) =>
+      path === "/api/bridge/market/buy"
+        ? { status: 404, body: { ok: false, error: "SESSION_NOT_FOUND" } }
+        : null,
+    ),
+  );
+  await flow.loadMarket(TYPE_ID);
+  await assert.rejects(() =>
+    flow.placeMarketOrder({
+      side: "buy",
+      typeID: TYPE_ID,
+      price: 10,
+      quantity: 1,
+      durationDays: 30,
+    }));
+  assert.equal(store.get().market.lastOutcome, null);
+});
