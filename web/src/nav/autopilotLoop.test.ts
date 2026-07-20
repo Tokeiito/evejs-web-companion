@@ -10,9 +10,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  MAX_WARP_ATTEMPTS,
+  WARP_EXIT_VARIANCE_M,
   createAutopilot,
   decideAutopilotAction,
   measureSpace,
+  warpFloorMeters,
   type AutopilotAction,
   type AutopilotController,
   type AutopilotDeps,
@@ -524,13 +527,18 @@ function gridSnapshot(
   };
 }
 
-/** A measurement that puts exactly one target at a chosen surface distance. */
+/**
+ * A measurement that puts exactly one target at a chosen surface distance.
+ * `shipRadius` defaults to 0 (the smallest hull), which makes the R24 warp
+ * floor the pure `150 km + WARP_EXIT_VARIANCE_M` worst case.
+ */
 function measuredAt(
   targetID: number,
   metres: number,
   shipMode: string | null = "STOP",
+  shipRadius = 0,
 ): SpaceMeasurement {
-  return { distances: new Map([[targetID, metres]]), shipMode };
+  return { distances: new Map([[targetID, metres]]), shipMode, shipRadius };
 }
 
 /** The action chosen for the outbound gate at `metres`. */
@@ -636,21 +644,139 @@ test("ladder: the close-range rule is per target KIND, as retail splits it", () 
   assert.equal(stationDecisionAt(1_000).kind, "dock");
 });
 
-test("ladder: inside 150 km the ship APPROACHES; beyond it, it WARPS", () => {
-  for (const metres of [3_000, 100_000, 149_999]) {
+test("ladder: below the warp floor the ship APPROACHES; at or above it, it WARPS", () => {
+  const floor = warpFloorMeters(0);
+  for (const metres of [3_000, 100_000, 149_999, floor - 1]) {
     const action = gateDecisionAt(metres);
     assert.equal(action.kind, "approach", `${metres} m from the gate`);
     if (action.kind === "approach") {
       assert.equal(action.gateID, GATE_ORIGIN);
     }
   }
-  for (const metres of [150_000, 1_000_000, 5_000_000_000]) {
+  for (const metres of [floor, 1_000_000, 5_000_000_000]) {
     const action = gateDecisionAt(metres);
     assert.equal(action.kind, "warp", `${metres} m from the gate`);
     if (action.kind === "warp") {
       assert.equal(action.destinationID, GATE_ORIGIN);
     }
   }
+});
+
+// --- R24 slice A: the warp DEAD BAND ----------------------------------------
+
+test("warp floor: never below retail's 150 km, and it tracks the hull it is asked about", () => {
+  // A small hull is dominated by the server's randomised stargate warp-exit
+  // scatter (WARP_EXIT_VARIANCE_M).
+  assert.equal(warpFloorMeters(0), 150_000 + WARP_EXIT_VARIANCE_M);
+  assert.equal(warpFloorMeters(60), 150_000 + WARP_EXIT_VARIANCE_M);
+  // A hull bigger than that scatter dominates instead: a station warp's stop
+  // distance carries +shipRadius (warpState.js:632).
+  assert.equal(warpFloorMeters(4_000), 154_000);
+  // The 10 km the AUTOPILOT call hardcodes, for comparison — this is the term
+  // R24 removes by sending retail's minRange=0 instead.
+  assert.equal(warpFloorMeters(0, 10_000), 162_500);
+  // Never optimistic about junk input.
+  assert.equal(warpFloorMeters(Number.NaN), 150_000 + WARP_EXIT_VARIANCE_M);
+});
+
+test("dead band: a target the SERVER would silently refuse is approached, never warped", () => {
+  // THE BUG. R13 warped at >= 150,000 m surface distance. The server refuses
+  // (warpState.js:236) and says nothing a client can see: WARP_DISTANCE_TOO_CLOSE
+  // (warpCommands.js:250-255) is not one of the four cases
+  // _throwWarpFailureUserError translates (beyonceService.js:1693-1713), so the
+  // browser gets ok:true / result:null and a ship that has not moved. The loop
+  // then re-measured the SAME distance and decided "warp" again, forever.
+  //
+  // Every distance here is inside the band R13 warped in and the server refuses.
+  for (const metres of [150_000, 150_001, 151_000, 152_499]) {
+    assert.equal(
+      gateDecisionAt(metres).kind,
+      "approach",
+      `${metres} m from the gate is inside the dead band`,
+    );
+    assert.equal(
+      stationDecisionAt(metres).kind,
+      "approach",
+      `${metres} m from the station is inside the dead band`,
+    );
+  }
+});
+
+test("dead band: a warp that changes nothing is BOUNDED — the loop pauses, it does not spin", async () => {
+  // A server that accepts the warp call and does nothing with it: 200, null,
+  // ship still parked. This is the shape the four confirmed silent-decline
+  // sites on this server all take, so the loop must survive it by construction
+  // rather than by trusting any particular refusal text.
+  const DEAD_BAND_M = 151_000;
+  const calls: string[] = [];
+  const deps: AutopilotDeps = {
+    getStatus: async () => status({ inSpace: true, shipMode: "STOP", solarSystemID: ORIGIN_SYSTEM }),
+    // The ship never moves, however many warps we issue.
+    getSpaceSnapshot: async () => gridSnapshot(GATE_ORIGIN, DEAD_BAND_M, ORIGIN_SYSTEM),
+    undock: async () => { calls.push("undock"); },
+    warp: async () => { calls.push("warp"); },
+    approach: async () => { calls.push("approach"); },
+    jump: async () => { calls.push("jump"); },
+    dock: async () => { calls.push("dock"); },
+    sleep: async () => {},
+    now: () => 0,
+    onProgress: () => {},
+    isSessionLost: () => false,
+    refusalReason: (error) => String((error as Error).message || error),
+  };
+  const pilot: AutopilotController = createAutopilot(deps);
+  pilot.start(PLAN);
+
+  // Far more ticks than any bound: if the branch were unbounded this would
+  // issue ~40 warps.
+  for (let i = 0; i < 40; i += 1) {
+    await pilot.tick();
+  }
+
+  // At the corrected floor this distance decides APPROACH, so no warp is even
+  // attempted — the loop makes real progress instead of asking for one the
+  // server will not honour.
+  assert.equal(calls.filter((c) => c === "warp").length, 0, "no warp inside the dead band");
+  assert.ok(calls.includes("approach"), "it closes the gap under sublight instead");
+  assert.notEqual(pilot.snapshot().status, "error");
+});
+
+test("dead band: even a warp the ladder DOES choose cannot repeat unboundedly", async () => {
+  // Belt and braces for the residual uncertainty: the stargate warp-in point is
+  // randomised inside WARP_EXIT_VARIANCE_M, so no client can predict the
+  // server's gate exactly. If a warp we legitimately chose still changes
+  // nothing, the branch must stop, not spin — the jump branch has had this
+  // counter since R5b and warp had none.
+  const FAR_M = 5_000_000;
+  const calls: string[] = [];
+  const deps: AutopilotDeps = {
+    getStatus: async () => status({ inSpace: true, shipMode: "STOP", solarSystemID: ORIGIN_SYSTEM }),
+    // Accepted, and the ship stays exactly where it was: the silent decline.
+    getSpaceSnapshot: async () => gridSnapshot(GATE_ORIGIN, FAR_M, ORIGIN_SYSTEM),
+    undock: async () => { calls.push("undock"); },
+    warp: async () => { calls.push("warp"); },
+    approach: async () => { calls.push("approach"); },
+    jump: async () => { calls.push("jump"); },
+    dock: async () => { calls.push("dock"); },
+    sleep: async () => {},
+    now: () => 0,
+    onProgress: () => {},
+    isSessionLost: () => false,
+    refusalReason: (error) => String((error as Error).message || error),
+  };
+  const pilot: AutopilotController = createAutopilot(deps);
+  pilot.start(PLAN);
+  for (let i = 0; i < 40; i += 1) {
+    await pilot.tick();
+  }
+
+  const warps = calls.filter((c) => c === "warp").length;
+  assert.ok(warps > 0, "the ladder does choose a warp out here");
+  assert.ok(warps <= MAX_WARP_ATTEMPTS, `bounded (issued ${warps})`);
+  // And it stops with a reason a player can read, rather than running forever.
+  const final = pilot.snapshot();
+  assert.equal(final.status, "paused");
+  assert.match(String(final.failureReason), /warp did not start/i);
 });
 
 test("ladder: a RUNNING approach on the same target is never re-issued", () => {
@@ -715,7 +841,7 @@ test("ladder: an UNMEASURABLE target falls back to the mode-and-refusal path", (
   // The snapshot cannot see the gate (off grid, or a scene that has not caught
   // up): the decision must not stall — it falls back to R5b's behaviour, which
   // warps when it has not warped in this system yet...
-  const blind: SpaceMeasurement = { distances: new Map(), shipMode: "STOP" };
+  const blind: SpaceMeasurement = { distances: new Map(), shipMode: "STOP", shipRadius: 0 };
   assert.equal(
     decideAutopilotAction(
       status({ inSpace: true, shipMode: "STOP", solarSystemID: ORIGIN_SYSTEM }),

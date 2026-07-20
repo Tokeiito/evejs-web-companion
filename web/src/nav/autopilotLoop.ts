@@ -52,6 +52,85 @@ export const MAX_DOCKING_DISTANCE_M = 50_000;
 /** `minWarpDistance` — inside this, approach; beyond it, warp. */
 export const MIN_WARP_DISTANCE_M = 150_000;
 
+// --- R24 slice A: the warp DEAD BAND ----------------------------------------
+//
+// THE BUG THIS FIXES. R13 warped whenever the measured surface distance reached
+// MIN_WARP_DISTANCE_M, but that is not the gate the server applies, and the
+// server does not say so out loud:
+//
+//   * the sim refuses when `totalDistance < MIN_WARP_DISTANCE_METERS`
+//     (warpState.js:236), where `totalDistance` is measured to the WARP-IN
+//     POINT, not to the target's centre;
+//   * that refusal comes back as `WARP_DISTANCE_TOO_CLOSE`
+//     (warpCommands.js:250-255), and `_throwWarpFailureUserError`
+//     (beyonceService.js:1693) only translates criminal / bubble / scramble /
+//     immobile — everything else falls into `default: break` (:1713) and throws
+//     NOTHING. The browser sees `ok:true, result:null` and a ship that has not
+//     moved.
+//
+// So the loop re-measured, saw the same distance, decided "warp" again, and
+// span. Two separate corrections, plus a bound, are needed — a decision that
+// cannot make progress must pause with a reason, never repeat forever.
+//
+// CORRECTION 1 — stop paying the autopilot call's built-in 10 km.
+// `Handle_CmdWarpToStuffAutopilot` (beyonceService.js:2983) hardcodes
+// `minimumRange: 10000`, which is added to the warp's stop distance and so
+// pushes the server's gate 10 km further out. Retail's own `WarpToItem` uses
+// `warpRange=0`, and `Handle_CmdWarpToStuff("item", id, minRange=0)`
+// (beyonceService.js:2654-2684) reaches the identical `warpToEntity` call with
+// that 10 km removed. The loop now sends that shape (see AUTOPILOT_WARP_MIN_RANGE_M).
+//
+// CORRECTION 2 — measure against the gate the server actually applies. With the
+// 10 km gone the two target kinds still differ:
+//
+//   station  `getWarpStopDistanceForTarget` (warpState.js:632) gives
+//            `targetRadius + minRange + 2*shipRadius` against the station
+//            CENTRE, so accepted iff `surfaceDist >= 150000 + minRange + shipRadius`.
+//   stargate `resolveStargateWarpTarget` (runtime.js:2928) aims at a point on
+//            the gate's near-side envelope, jittered by a RANDOM offset inside
+//            `WARP_EXIT_VARIANCE_RADIUS_METERS` (runtime.js:701 = 2500), so
+//            accepted iff `surfaceDist >= 150000 + minRange - shipRadius ± 2500`.
+//
+// The gate case is randomised, so no client can reproduce it exactly. What a
+// client CAN do is never ask for a warp the server might refuse: take the
+// worst case of both kinds. `max(shipRadius, 2500)` covers the station's
+// `+shipRadius` and the gate's `+2500` at once.
+//
+// The residual band (150 km → the floor) is no longer a spin: the ladder falls
+// through to APPROACH there, which is what retail does below minWarpDistance
+// anyway and which actually closes the gap.
+
+/**
+ * The range the loop's own warps ask for — retail's `WarpToItem(warpRange=0)`.
+ * Zero, not the 10 km `CmdWarpToStuffAutopilot` bakes in.
+ */
+export const AUTOPILOT_WARP_MIN_RANGE_M = 0;
+
+/**
+ * `WARP_EXIT_VARIANCE_RADIUS_METERS` (runtime.js:701) — the radius of the random
+ * scatter the server applies to a stargate warp-in point. It is drawn per call,
+ * so it is the irreducible uncertainty in any client-side prediction of the
+ * server's warp gate.
+ */
+export const WARP_EXIT_VARIANCE_M = 2_500;
+
+/**
+ * The lowest SURFACE distance at which the server is guaranteed to accept a
+ * warp — i.e. the distance at or above which "warp" is a decision that can
+ * actually make progress. Below it the ladder approaches instead.
+ *
+ * Never below `MIN_WARP_DISTANCE_M`: retail's ladder approaches under 150 km
+ * regardless, and this only ever raises that floor to match the server.
+ */
+export function warpFloorMeters(
+  shipRadius: number,
+  minRange: number = AUTOPILOT_WARP_MIN_RANGE_M,
+): number {
+  const radius = Number.isFinite(shipRadius) ? Math.max(0, shipRadius) : 0;
+  const range = Number.isFinite(minRange) ? Math.max(0, minRange) : 0;
+  return MIN_WARP_DISTANCE_M + range + Math.max(radius, WARP_EXIT_VARIANCE_M);
+}
+
 /**
  * One tick's measurement of the space around the ship, derived from the R11
  * snapshot. `distances` holds SURFACE distances in metres, keyed by the
@@ -62,6 +141,13 @@ export interface SpaceMeasurement {
   readonly distances: ReadonlyMap<number, number>;
   /** The ship's movement mode as the server reports it ("FOLLOW", "WARP", …). */
   readonly shipMode: string | null;
+  /**
+   * The ship's own hull radius (metres). It is part of the server's warp gate,
+   * so the decision cannot predict a refusal without it. 0 when the snapshot
+   * did not carry one — that reads as the smallest possible hull, which keeps
+   * the floor conservative rather than optimistic.
+   */
+  readonly shipRadius: number;
 }
 
 /**
@@ -93,7 +179,11 @@ export function measureSpace(snapshot: SpaceSnapshot | null): SpaceMeasurement |
       surfaceDistanceMeters(origin, originRadius, entity.position, entity.radius),
     );
   }
-  return { distances, shipMode: snapshot.ship?.mode ?? self?.mode ?? null };
+  return {
+    distances,
+    shipMode: snapshot.ship?.mode ?? self?.mode ?? null,
+    shipRadius: originRadius,
+  };
 }
 
 /** The loop's lifecycle status (mirrors the travel-panel states). */
@@ -192,6 +282,16 @@ const SETTLE_JUMP = 5;
 const SETTLE_DOCK = 2;
 const MAX_DOCK_ATTEMPTS = 30;
 const MAX_JUMP_ATTEMPTS = 6;
+// R24 slice A — BOUND THE WARP BRANCH. The jump branch has had a counter since
+// R5b; warp had none, which is why a silently-refused warp (200/null, ship
+// stationary) could repeat forever. Counted per destination and reset the
+// moment any other move is issued, so a normal route — warp, land, approach,
+// jump — never accumulates. Only a warp that changes nothing does. Three
+// consecutive warps to the same target with the ship not warping in between is
+// already well past "the last one did not take": SETTLE_WARP covers the two
+// ticks it takes to start, and a warp in progress is caught by the mid-warp
+// wait long before this.
+export const MAX_WARP_ATTEMPTS = 3;
 // A flight-status read can time out transiently while the server loads a
 // system scene during a jump handoff — the ship is fine, so retry a few cycles
 // before pausing rather than giving up on the first slow read.
@@ -229,6 +329,10 @@ interface LoopMemory {
   completedHops: number;
   dockAttempts: number;
   jumpAttempts: number;
+  /** The destination `warpAttempts` is counting against (null = none pending). */
+  warpTargetID: number | null;
+  /** Consecutive warp decisions for `warpTargetID` with nothing in between. */
+  warpAttempts: number;
   statusReadFailures: number;
   settleTicks: number;
   action: string | null;
@@ -250,6 +354,8 @@ function freshMemory(): LoopMemory {
     completedHops: 0,
     dockAttempts: 0,
     jumpAttempts: 0,
+    warpTargetID: null,
+    warpAttempts: 0,
     statusReadFailures: 0,
     settleTicks: 0,
     action: null,
@@ -335,18 +441,23 @@ function decideFromDistance(
     return { kind: "dock", stationID: targetID, label: labels.jumpOrDock };
   }
 
-  // 3. Inside minimum warp distance -> close the gap under sublight. Never
-  //    re-issue an approach that is already running against this same target:
-  //    retail skips when the ship is already DSTBALL_FOLLOW on it, and so do we
-  //    (the ship is measurably moving; issuing again would only restart it).
-  if (distance < MIN_WARP_DISTANCE_M) {
+  // 3. Too close for the SERVER to accept a warp -> close the gap under
+  //    sublight. This is retail's `minWarpDistance` rule with R24's correction:
+  //    the floor is the server's own gate, not a flat 150 km, so the decision
+  //    never asks for a warp that comes back 200/null with the ship still
+  //    sitting there (see the warp-dead-band note above).
+  //
+  //    Never re-issue an approach that is already running against this same
+  //    target: retail skips when the ship is already DSTBALL_FOLLOW on it, and
+  //    so do we (the ship is measurably moving; issuing again would restart it).
+  if (distance < warpFloorMeters(measurement.shipRadius)) {
     if (memory.approachingTargetID === targetID && isFollowing(measurement.shipMode)) {
       return { kind: "wait", reason: "Closing in" };
     }
     return { kind: "approach", gateID: targetID, label: labels.approach };
   }
 
-  // 4. Too far to close under sublight -> warp.
+  // 4. Far enough that the server will take the warp -> warp.
   return { kind: "warp", destinationID: targetID, label: labels.warp };
 }
 
@@ -556,6 +667,8 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotController {
       memory.jumpedFromSystem = null;
       memory.warpedInSystem = null;
       memory.jumpAttempts = 0;
+      memory.warpTargetID = null;
+      memory.warpAttempts = 0;
       memory.pendingApproachGate = null;
       memory.approachingTargetID = null;
       memory.approachCycles = 0;
@@ -809,6 +922,32 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotController {
       }
     } else if (action.kind !== "wait") {
       memory.approachWaitCycles = 0;
+    }
+
+    // R24 slice A — BOUND THE WARP BRANCH. A warp the server silently declines
+    // (WARP_DISTANCE_TOO_CLOSE reaches us as 200/null — see the dead-band note
+    // at the top) leaves the ship exactly where it was, so the next tick
+    // measures the same distance and decides "warp" again. Counting consecutive
+    // warps to the SAME destination catches precisely that and nothing else: a
+    // warp that is actually running shows up as mid-warp and never reaches
+    // here, and any other move resets the counter.
+    if (action.kind === "warp") {
+      if (memory.warpTargetID === action.destinationID) {
+        memory.warpAttempts += 1;
+      } else {
+        memory.warpTargetID = action.destinationID;
+        memory.warpAttempts = 1;
+      }
+      if (memory.warpAttempts > MAX_WARP_ATTEMPTS) {
+        setPause(
+          `The warp did not start after ${MAX_WARP_ATTEMPTS} tries and the ship has not moved. Autopilot stopped.`,
+        );
+        emit();
+        return { kind: "pause", reason: memory.failureReason ?? "warp not starting" };
+      }
+    } else if (action.kind !== "wait") {
+      memory.warpTargetID = null;
+      memory.warpAttempts = 0;
     }
 
     memory.action = actionText(action);

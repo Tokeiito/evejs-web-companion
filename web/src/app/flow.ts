@@ -86,6 +86,7 @@ import {
 } from "../nav/routeSolver.ts";
 import type { AgentFinderRow } from "../store/types.ts";
 import {
+  AUTOPILOT_WARP_MIN_RANGE_M,
   createAutopilot,
   type AutopilotController,
   type AutopilotDeps,
@@ -2080,7 +2081,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         await api.undock(callOptions);
       },
       warp: async (destinationID) => {
-        await api.warpTo(destinationID, null, callOptions);
+        // R24 slice A — retail's `WarpToItem(warpRange=0)`, NOT the autopilot
+        // call. Passing a range routes to `CmdWarpToStuff("item", id,
+        // minRange=0)`, which reaches the identical `warpToEntity` as
+        // `CmdWarpToStuffAutopilot` but WITHOUT the 10 km that handler hardcodes
+        // (beyonceService.js:2983). That 10 km was added to the warp's stop
+        // distance, pushing the server's silent refusal 10 km further out than
+        // the distance the loop was measuring against — the dead band.
+        await api.warpTo(destinationID, AUTOPILOT_WARP_MIN_RANGE_M, callOptions);
       },
       approach: async (destinationID) => {
         // The autopilot's close-the-gap approach is retail's 0.0, not the
