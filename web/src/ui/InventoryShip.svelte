@@ -112,10 +112,10 @@
     Board dispatch on those handles. The browser never sees a handle — it moves
     items and boards ships by their game IDs.
   </p>
-  <p>
+  <p class="controls">
     <label>
       Move quantity (blank = whole stack):
-      <input type="number" min="1" bind:value={moveQty} disabled={busy} style="width: 8em" />
+      <input type="number" min="1" bind:value={moveQty} disabled={busy} />
     </label>
     <button type="button" disabled={busy} onclick={() => run(() => flow.loadInventory())}>
       Refresh
@@ -145,35 +145,37 @@
   {#if $inventory.hangar.rows.length === 0}
     <p class="note">{$inventory.loaded ? "Hangar is empty." : "Loading hangar…"}</p>
   {:else}
-    <table class="guests">
-      <thead>
-        <tr><th>Type</th><th>Cat</th><th>Qty</th><th>Action</th></tr>
-      </thead>
-      <tbody>
-        {#each $inventory.hangar.rows as row (row.itemID)}
-          <tr class={row.itemID === $inventory.activeShipID ? "self" : ""}>
-            <td>{resolvedName($names.resolved, "type", row.typeID)}</td>
-            <td>{resolvedName($names.resolved, "category", row.categoryID)}</td>
-            <td>{row.singleton ? "(assembled)" : row.quantity}</td>
-            <td>
-              {#if isShip(row)}
-                {#if isBoardableShip(row, $inventory.activeShipID)}
-                  <button type="button" disabled={busy} onclick={() => run(() => flow.boardShip(row.itemID))}>
-                    Board
-                  </button>
+    <div class="table-wrap overflow-x-auto">
+      <table class="guests reflow">
+        <thead>
+          <tr><th>Type</th><th>Cat</th><th>Qty</th><th>Action</th></tr>
+        </thead>
+        <tbody>
+          {#each $inventory.hangar.rows as row (row.itemID)}
+            <tr class={row.itemID === $inventory.activeShipID ? "self" : ""}>
+              <td data-label="Type">{resolvedName($names.resolved, "type", row.typeID)}</td>
+              <td data-label="Cat">{resolvedName($names.resolved, "category", row.categoryID)}</td>
+              <td data-label="Qty">{row.singleton ? "(assembled)" : row.quantity}</td>
+              <td data-label="Action">
+                {#if isShip(row)}
+                  {#if isBoardableShip(row, $inventory.activeShipID)}
+                    <button type="button" disabled={busy} onclick={() => run(() => flow.boardShip(row.itemID))}>
+                      Board
+                    </button>
+                  {:else}
+                    <span class="note">active ship</span>
+                  {/if}
                 {:else}
-                  <span class="note">active ship</span>
+                  <button type="button" disabled={busy} onclick={() => run(() => flow.moveItem(row.itemID, "toCargo", qtyArg()))}>
+                    → Cargo
+                  </button>
                 {/if}
-              {:else}
-                <button type="button" disabled={busy} onclick={() => run(() => flow.moveItem(row.itemID, "toCargo", qtyArg()))}>
-                  → Cargo
-                </button>
-              {/if}
-            </td>
-          </tr>
-        {/each}
-      </tbody>
-    </table>
+              </td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+    </div>
   {/if}
 </section>
 
@@ -197,24 +199,26 @@
   {:else if $inventory.cargo.rows.length === 0}
     <p class="note">{$inventory.loaded ? "Cargo hold is empty." : "Loading cargo…"}</p>
   {:else}
-    <table class="guests">
-      <thead>
-        <tr><th>Type</th><th>Cat</th><th>Qty</th><th>Action</th></tr>
-      </thead>
-      <tbody>
-        {#each $inventory.cargo.rows as row (row.itemID)}
-          <tr>
-            <td>{resolvedName($names.resolved, "type", row.typeID)}</td>
-            <td>{resolvedName($names.resolved, "category", row.categoryID)}</td>
-            <td>{row.singleton ? "(assembled)" : row.quantity}</td>
-            <td>
-              <button type="button" disabled={busy} onclick={() => run(() => flow.moveItem(row.itemID, "toHangar", qtyArg()))}>
-                → Hangar
-              </button>
-            </td>
-          </tr>
-        {/each}
-      </tbody>
-    </table>
+    <div class="table-wrap overflow-x-auto">
+      <table class="guests reflow">
+        <thead>
+          <tr><th>Type</th><th>Cat</th><th>Qty</th><th>Action</th></tr>
+        </thead>
+        <tbody>
+          {#each $inventory.cargo.rows as row (row.itemID)}
+            <tr>
+              <td data-label="Type">{resolvedName($names.resolved, "type", row.typeID)}</td>
+              <td data-label="Cat">{resolvedName($names.resolved, "category", row.categoryID)}</td>
+              <td data-label="Qty">{row.singleton ? "(assembled)" : row.quantity}</td>
+              <td data-label="Action">
+                <button type="button" disabled={busy} onclick={() => run(() => flow.moveItem(row.itemID, "toHangar", qtyArg()))}>
+                  → Hangar
+                </button>
+              </td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+    </div>
   {/if}
 </section>

@@ -132,29 +132,31 @@
     {#if $station.guests.length === 0}
       <p class="note">No guests reported yet.</p>
     {:else}
-      <table class="guests">
-        <thead>
-          <tr><th>Character</th><th>Corporation</th><th>Alliance</th></tr>
-        </thead>
-        <tbody>
-          {#each $station.guests as guest (guest.characterID)}
-            <tr class={guest.characterID === $station.online.characterID ? "self" : ""}>
-              <td>
-                {guest.characterID === $station.online.characterID
-                  ? `${$station.online.characterName} (you)`
-                  : nameOnly(guest.characterID, "character")}
-              </td>
-              <td>{nameOnly(guest.corporationID, "corporation")}</td>
-              <td>{nameOnly(guest.allianceID, "alliance")}</td>
-            </tr>
-          {/each}
-        </tbody>
-      </table>
+      <div class="table-wrap overflow-x-auto">
+        <table class="guests reflow">
+          <thead>
+            <tr><th>Character</th><th>Corporation</th><th>Alliance</th></tr>
+          </thead>
+          <tbody>
+            {#each $station.guests as guest (guest.characterID)}
+              <tr class={guest.characterID === $station.online.characterID ? "self" : ""}>
+                <td data-label="Character">
+                  {guest.characterID === $station.online.characterID
+                    ? `${$station.online.characterName} (you)`
+                    : nameOnly(guest.characterID, "character")}
+                </td>
+                <td data-label="Corporation">{nameOnly(guest.corporationID, "corporation")}</td>
+                <td data-label="Alliance">{nameOnly(guest.allianceID, "alliance")}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
     {/if}
   </section>
 
   <section>
-    <p>
+    <p class="controls">
       <button type="button" disabled={busy} onclick={() => run(() => flow.refreshStationPanel())}>
         Refresh panel
       </button>

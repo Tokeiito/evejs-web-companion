@@ -193,7 +193,7 @@
       Search any solar system or station by name, then Set destination to fly
       there — no EVE IDs needed. The route is computed from your current location.
     </p>
-    <p>
+    <p class="controls">
       <label>
         Search
         <input
@@ -216,32 +216,34 @@
         <p class="note">No systems or stations match “{searchQuery.trim()}”.</p>
       {:else}
         <p class="note">Showing {searchResults.length} match{searchTotal === 1 ? "" : "es"}, nearest first where known.</p>
-        <table class="guests">
-          <thead>
-            <tr>
-              <th>Name</th>
-              <th>Kind</th>
-              <th>System</th>
-              <th>Jumps</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {#each searchResults as match (match.kind + ":" + match.id)}
+        <div class="table-wrap overflow-x-auto">
+          <table class="guests reflow">
+            <thead>
               <tr>
-                <td>{match.name}</td>
-                <td>{match.kind}</td>
-                <td>{match.solarSystemName ?? resolvedName($names.resolved, "system", match.solarSystemID, "—")}</td>
-                <td>{jumpsText(match.jumps)}</td>
-                <td>
-                  <button type="button" disabled={busy} onclick={() => setDestination(match)}>
-                    Set destination
-                  </button>
-                </td>
+                <th>Name</th>
+                <th>Kind</th>
+                <th>System</th>
+                <th>Jumps</th>
+                <th></th>
               </tr>
-            {/each}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {#each searchResults as match (match.kind + ":" + match.id)}
+                <tr>
+                  <td data-label="Name">{match.name}</td>
+                  <td data-label="Kind">{match.kind}</td>
+                  <td data-label="System">{match.solarSystemName ?? resolvedName($names.resolved, "system", match.solarSystemID, "—")}</td>
+                  <td data-label="Jumps">{jumpsText(match.jumps)}</td>
+                  <td data-label="">
+                    <button type="button" disabled={busy} onclick={() => setDestination(match)}>
+                      Set destination
+                    </button>
+                  </td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
       {/if}
     {/if}
     {#if $travel.failureReason}
@@ -255,7 +257,7 @@
   <section>
     <h2>Start route by ID</h2>
     <p class="note">Advanced fallback: enter a station or solar system ID directly.</p>
-    <p>
+    <p class="controls">
       <label>
         Destination
         <input
@@ -277,7 +279,7 @@
 {:else}
   <section>
     <h2>Route to {destinationText}</h2>
-    <p>
+    <p class="controls">
       {#if $travel.status === "running"}
         <button type="button" disabled={busy} onclick={() => run(async () => flow.pauseRoute())}>Pause</button>
       {:else if $travel.status === "paused"}

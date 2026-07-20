@@ -191,7 +191,7 @@
 {#if $flight.loaded && $flight.status && $flight.status.inSpace}
   <section>
     <h2>Warp to a gate / celestial</h2>
-    <p>
+    <p class="controls">
       <label>
         Target ID
         <input type="number" min="1" bind:value={warpTargetID} placeholder="stargate / celestial ID" />
@@ -208,7 +208,7 @@
 
   <section>
     <h2>Jump through a stargate</h2>
-    <p>
+    <p class="controls">
       <label>
         From gate ID
         <input type="number" min="1" bind:value={fromGateID} placeholder="source stargate ID" />
@@ -233,7 +233,7 @@
 
   <section>
     <h2>Dock at a station</h2>
-    <p>
+    <p class="controls">
       <label>
         Station ID
         <input type="number" min="1" bind:value={dockStationID} placeholder="destination station ID" />

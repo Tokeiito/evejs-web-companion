@@ -248,7 +248,7 @@
   <section>
     <h2>Conversation · {agentName($agents.activeAgentID)}</h2>
     <p class="agent-says">{$agents.conversation.agentSays}</p>
-    <p>
+    <p class="controls">
       {#each $agents.conversation.actions as action (action.actionID)}
         <button
           type="button"
@@ -286,7 +286,7 @@
         <tr><th>Loyalty points</th><td>{$agents.briefing.loyaltyPoints ?? "—"}</td></tr>
       </tbody>
     </table>
-    <p>
+    <p class="controls">
       <button
         type="button"
         disabled={busy || $agents.briefing.cargoTypeID === null}
