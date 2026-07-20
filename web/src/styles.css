@@ -774,6 +774,215 @@
   .hud-gauge.cpu .hud-label { color: var(--color-cpu); }
   .hud-gauge.powergrid .hud-label { color: var(--color-powergrid); }
 
+  /* =============================================== the fitting window (R21) --
+   * A real fitting window: the ship in the middle, its slots as SOCKETS on
+   * arcs around it. The arcs' angles are computed in
+   * `web/src/ui/fittingGeometry.ts` from the slot counts the SERVER reports
+   * and arrive here as inline left/top percentages — this stylesheet owns the
+   * look, never the layout maths.
+   *
+   * The ring is a square box that scales with the panel, so the whole thing is
+   * fluid without a single fixed pixel dimension. Below the R8 breakpoint the
+   * panel offers the list view instead (the toggle is always available). */
+  /* The ring needs a floor: below about 26rem an eight-socket arc cannot hold
+   * 40px touch targets without overlapping them (the arc simply runs out of
+   * circumference). So the ring stops shrinking there and its WRAPPER scrolls
+   * instead — the same trick `.table-wrap` uses, and the reason the page
+   * itself still never scrolls sideways at 360px (R8). Below the breakpoint
+   * the panel defaults to the list view anyway; this only has to hold up for a
+   * player who deliberately asks for the ring on a phone. */
+  .fit-ring-wrap {
+    width: 100%;
+    overflow-x: auto;
+  }
+  .fit-ring {
+    position: relative;
+    width: 100%;
+    min-width: 26rem;
+    max-width: 34rem;
+    margin-inline: auto;
+    aspect-ratio: 1;
+  }
+  /* The faint guide circle the sockets sit on: decoration only, and marked
+   * aria-hidden in the markup so it is never announced. */
+  .fit-ring-guide {
+    position: absolute;
+    inset: 14%;
+    border: 1px dashed var(--color-line);
+    border-radius: 50%;
+    opacity: 0.55;
+  }
+  .fit-hull {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.3rem;
+    text-align: center;
+    max-width: 40%;
+  }
+  .fit-hull img {
+    width: 4.5rem;
+    height: 4.5rem;
+    object-fit: contain;
+  }
+  .fit-hull .fit-hull-name {
+    color: var(--color-text-bright);
+    font-weight: 600;
+    line-height: 1.2;
+  }
+  .fit-hull .fit-hull-class {
+    color: var(--color-muted);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+
+  /* A socket. Always >=40px so it is a real touch target at every width (R8),
+   * and always a <button> so it is keyboard reachable and announceable. */
+  .fit-socket {
+    position: absolute;
+    transform: translate(-50%, -50%);
+    /* 40px at and below the breakpoint, 52px above it. Both sizes are proven
+     * non-overlapping and in-bounds against the geometry in
+     * `fittingGeometry.test.ts`; changing either one without re-running that
+     * suite will silently start stacking sockets on top of each other. */
+    width: 2.5rem;
+    height: 2.5rem;
+    padding: 0.15rem;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.1rem;
+    border-radius: 0.4rem;
+    border: 1px solid var(--color-line-strong);
+    background: var(--color-panel-3);
+    color: var(--color-cell);
+    font-size: 10px;
+    line-height: 1.1;
+    text-align: center;
+    overflow: hidden;
+    cursor: pointer;
+  }
+  .fit-socket:hover:not(:disabled) {
+    border-color: var(--color-accent-dim);
+    background: var(--color-panel-2);
+  }
+  .fit-socket:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+  .fit-socket img {
+    width: 1.6rem;
+    height: 1.6rem;
+    object-fit: contain;
+  }
+  @media (min-width: 641px) {
+    .fit-socket {
+      width: 3.25rem;
+      height: 3.25rem;
+    }
+    .fit-socket img {
+      width: 2rem;
+      height: 2rem;
+    }
+  }
+  /* The socket's short text label — an abbreviation when there is no icon, and
+   * the slot number when the socket is empty. */
+  .fit-socket .fit-socket-text {
+    display: block;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+  }
+  /* An EMPTY socket must read as empty at a glance: hollow, dimmer, dashed. */
+  .fit-socket.empty {
+    border-style: dashed;
+    background: transparent;
+    color: var(--color-muted);
+  }
+  /* An OFFLINE module is fitted but doing nothing — dimmed, and it says so. */
+  .fit-socket.offline {
+    opacity: 0.6;
+    border-color: var(--color-warn);
+  }
+  /* The socket a pending action is armed on. */
+  .fit-socket.armed {
+    border-color: var(--color-danger);
+    box-shadow: 0 0 0 2px rgb(224 138 138 / 0.25);
+  }
+  /* Family tint on the socket's rim, so the three arcs are separable even
+   * before you read a label. Reinforced by the text in every socket's
+   * accessible name — colour is never the only signal. */
+  .fit-socket.family-high { border-left-color: var(--color-hull); }
+  .fit-socket.family-mid { border-left-color: var(--color-shield); }
+  .fit-socket.family-low { border-left-color: var(--color-armor); }
+  .fit-socket.family-rig { border-left-color: var(--color-calibration); }
+  .fit-socket.family-subsystem { border-left-color: var(--color-accent-dim); }
+
+  /* The family key beneath the ring. It repeats each arc's name and counts as
+   * TEXT, so the rim colours are reinforcement and never the only signal. */
+  .fit-legend {
+    list-style: none;
+    padding: 0;
+    margin: 0.8rem 0 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    justify-content: center;
+  }
+  .fit-legend .badge {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* The selected socket's detail + actions, shown beneath the ring so the
+   * ring itself never has to host a popover. */
+  .fit-detail {
+    margin-top: 0.9rem;
+    padding: 0.75rem 0.9rem;
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-frame);
+    background: var(--color-panel-3);
+  }
+  .fit-detail .fit-detail-head {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem 0.9rem;
+    align-items: baseline;
+    margin-bottom: 0.6rem;
+  }
+  .fit-detail .fit-detail-slot {
+    color: var(--color-muted);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+  .fit-detail .fit-detail-name {
+    color: var(--color-text-bright);
+    font-weight: 600;
+  }
+
+  /* The radial / list view toggle. */
+  .fit-views {
+    display: flex;
+    gap: 0.4rem;
+  }
+
+  /* A statistic whose value we could not honestly source. It is deliberately
+   * WORDED, never a 0 and never blank — a blank in a stat panel reads as zero,
+   * and a wrong zero in a fitting window is worse than an absent number. */
+  .stat-unavailable {
+    color: var(--color-muted);
+    font-style: italic;
+    font-weight: 400;
+  }
+
   /* ------------------------------------------------- overview + ship HUD --
    * The flight actions on an overview row (warp to / approach / orbit / keep at
    * range / align to) wrap across as many lines as they need on desktop; the
