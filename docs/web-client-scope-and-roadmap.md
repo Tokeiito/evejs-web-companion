@@ -154,7 +154,34 @@ This project runs with a **master orchestrator session** and **worker sessions**
 
 | R8 | Complete | **Adopt Tailwind CSS + make every tab responsive (phone → desktop)** — the desktop-shaped UI broke on phones (wide tables, a fixed tab row, small touch targets). Adopt Tailwind and make every current tab mobile-first responsive from ~360px up to desktop, without changing behavior/data or reintroducing any visible numeric ID (R7d must hold). Web-only. | Done — **build + browser-verified at 360/768/1280px; presentation only**. **Web-only; eve.js untouched** (no `flow.ts`/`api.ts`/store/decoder/bridge change — markup + CSS + build wiring only). **Tailwind v4.3.3 via the first-party `@tailwindcss/vite` plugin (4.3.3), CSS-first:** `web/src/styles.css` does `@import "tailwindcss"` and is imported from `main.ts`, so `npm run build:web` emits the compiled bundle (`public/dist/assets/index-*.css`, 0.64 kB → 12.63 kB) and the built `index.html` links it; chose v4 + the Vite plugin over v3 + PostCSS as the lower-config modern path (no `tailwind.config.js`/`postcss.config.js`; palette tokens in an `@theme` block). The app's Eve-dark palette was lifted out of the old inline `<style>` in `web/index.html` into `@theme` tokens + `@layer base`/`@layer components` (so they win over preflight); the inline style is trimmed to a minimal anti-flash background; a `*.css` module shim keeps `tsc` green; viewport meta already present. **Responsive patterns:** (1) tab nav wraps to multiple rows on a phone (`flex-wrap`), each tab a ≥40px touch target, active tab highlighted; (2) **tables → cards**: every record table (Station guests, Inventory hangar/cargo, Agent Finder agents, Travel search results) gets class `reflow` + a `data-label` on each `<td>` and reflows to stacked labelled cards at ≤640px (`td::before { content: attr(data-label) }`, thead clipped) while staying a table on wider screens, each wrapped in an `overflow-x-auto` box so a wide table scrolls in its own container and the page never scrolls sideways; key/value status tables stay as-is; (3) control rows (Flight warp/jump/dock, Travel search/start-route/route, Inventory quantity, Agents conversation + briefing actions, Station actions) get class `controls` — labelled fields stack and inputs/buttons go full-width on mobile; (4) fluid `#app` container capped at 64rem and centred on desktop for readable line length. **Width checks (a static harness of the compiled CSS + representative markup, driven in a browser at each viewport):** 360px — `documentScrollWidth == 360`, zero elements wider than viewport, nav wrapped (40px buttons), reflow rows `display:block` cards with `data-label` shown, action buttons + control inputs full-width; 768px — reflow rows back to `table-row`, thead visible, card labels `none`, no overflow; 1280px — `#app` capped at 1024px + centred, nav single row, no overflow. **ID sweep re-proof (R7d holds):** re-ran the exhaustive grep over `web/src/ui/*.svelte` for `(ID`/`(typeID`/`(ship`/`system ${`/`station ${`/`corp ${`/`agent ${`/`type ${`/`local_`/`corp_`/`title=`/`<td>{…ID}` — every hit is JS logic (`if (id === null)`), a key/onclick arg, a name-resolver argument, or a comment; **zero raw numeric IDs render as data**; the 22 added `data-label` values are words or empty, none numeric. Baseline → final `npm test` unchanged at **358/358**; `tsc` + `build:web` clean. Committed `8c777ce` (Tailwind setup: `package.json`/`package-lock.json`/`vite.config.ts`/`styles.css`/`main.ts`/`svelte-files.d.ts`/`index.html`) + the responsive restyle commit (the 6 tab components) + this docs update; not pushed. |
 
-After R7: expand the client surface as practical — mail, market transactions, fitting, contracts, corp tools — each area starting from its mined retail calls. Mining and combat are reconsidered only after the courier loop is solid.
+### Next-phase backlog (recorded 2026-07-19)
+
+The R0–R8 ladder is complete and the §7 courier milestone is achieved live. This is the candidate backlog for what follows — the operator's list plus the earlier "after R7" note (mail, market, fitting, contracts, corp tools). Each area still starts from its **mined retail calls**; nothing here is scheduled until the orchestrator writes a goal prompt for it.
+
+**Space — the "being in space" client surface**
+
+- **Overview** — what is actually around the ship (entities, names/types, distances), sortable/filterable, with **warp-to / approach on any entry**, not just route gates and the station we already know the ID of. Today space is a corridor between known IDs; this converts it into a place, and every later space activity depends on it.
+- **HUD** — real shield / armor / hull (and capacitor) for the active ship.
+- **Autopilot / warp / approach fidelity** — closer to the retail client loop: align, approach thresholds, warp-to-at-range, orbit / keep-at-range, stop.
+- Deferred behind the above: mining, combat, salvage, exploration.
+- **Architectural note (the real cost):** the overview and HUD need **live space state** (destiny/ballpark entity + ship state), which retail delivers by push. Our bridge is request/response plus a drained notification backlog, so this phase forces the deferred delivery decision — poll a space-state read, or finally build the event channel (**G6 push**). Chat (R7) hit the same wall and settled on polling a backlog; space state is higher-frequency and may not tolerate that.
+
+**Non-space — "spinning in station"**
+
+- **Ship fitting** — fit/unfit modules, view the fitting, CPU / powergrid / capacitor. Gates almost every other activity (you cannot meaningfully mine, fight, or run harder missions unfitted).
+- **Inventory management beyond the basics** — multi-select, stacks/splits, containers, trash.
+- **Corp hangars** — division access, moving items in and out.
+- **Industry panels** — blueprints, jobs, facilities.
+- **Market transactions, contracts, mail** — from the earlier "after R7" note.
+
+**Cross-cutting / cleanup**
+
+- **Live event channel (G6 push)** — see the space note; likely a prerequisite for a good overview/HUD.
+- **Retire the legacy v1-gateway / eveStore machinery** (the old R7 cleanup goal, still outstanding).
+- **Remove the developer-facing method-name blurbs** from the player-facing UI (they describe the bridge, not the game).
+- Optional: bind the web app to the LAN so a real phone can reach it for responsive testing.
+
+**Orchestrator's recommended order:** space awareness first (**overview + HUD**, which forces the state-delivery decision), then **ship fitting**, then the deeper station systems (corp hangars, industry, market/contracts).
 
 ## 9. Risks and mitigations
 
