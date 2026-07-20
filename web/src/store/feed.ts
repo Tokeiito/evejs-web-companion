@@ -345,6 +345,30 @@ export type FeedEvent =
   // The flow polls this ~1s while in space with the panel open; the panel is a
   // pure reader that derives distances, sorting and filtering itself.
   | { readonly type: "space/snapshot"; readonly snapshot: SpaceSnapshot }
+  // Goal R23 slice A — the GENERIC in-space action layer. Nothing here names
+  // mining or combat: these five events carry a target, a module and an effect
+  // name, and a later combat goal reuses them unchanged.
+  //
+  // The server's answer to dogmaIM.GetTargets — the ONLY authority on what is
+  // locked. Every lock/unlock re-reads and lands here, because a 200 from a
+  // lock call is not proof that anything locked.
+  | { readonly type: "targeting/targets"; readonly targetIDs: readonly number[] }
+  // The server ACCEPTED a lock attempt and is still acquiring it. Not a claim
+  // about server state — the entry disappears as soon as the target shows up in
+  // targeting/targets, or when the lock is abandoned.
+  | { readonly type: "targeting/acquiring"; readonly targetID: number }
+  // The last targeting/activation action issued, for the status readout. A
+  // successful action clears any stale refusal and silent-decline note.
+  | { readonly type: "targeting/action"; readonly action: string }
+  // An action was REFUSED, carrying the server's own reason verbatim; null
+  // clears it.
+  | { readonly type: "targeting/action-error"; readonly message: string | null }
+  // An action returned 200, the re-read showed nothing changed, and the server
+  // gave no reason. Deliberately separate from action-error: "refused, here is
+  // why" and "quietly did nothing" are different and the page says which.
+  | { readonly type: "targeting/silent-decline"; readonly message: string | null }
+  // Drop the targeting state (docked / character offline / logged out).
+  | { readonly type: "targeting/cleared" }
   // A snapshot read failed non-fatally; null clears it after a clean read.
   | { readonly type: "space/error"; readonly message: string | null }
   // Drop the space state (docked / character offline / logged out).

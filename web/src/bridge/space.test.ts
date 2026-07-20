@@ -5,7 +5,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { decodeSpaceSnapshot, egoPosition } from "./space.ts";
+import { decodeSpaceSnapshot, decodeTargetIDs, egoPosition } from "./space.ts";
 import type { JsonValue } from "./wire.ts";
 
 test("a full snapshot decodes into overview rows and a ship readout", () => {
@@ -178,4 +178,51 @@ test("distances are measured from the ship, falling back to the self row", () =>
 
   // Nothing at all: the origin, so distances are still finite numbers.
   assert.deepEqual(egoPosition(null), { x: 0, y: 0, z: 0 });
+});
+
+// --- R23: the generic action layer's two decoded fields ---------------------
+
+test("R23: activeModuleIDs decodes to a list, long-aware", () => {
+  const snapshot = decodeSpaceSnapshot({
+    inSpace: true,
+    entities: [],
+    ship: {
+      itemID: 9001,
+      activeModuleIDs: [7700001, { type: "long", value: "7700002" }],
+    },
+  } as unknown as JsonValue);
+  assert.deepEqual(snapshot.ship?.activeModuleIDs, [7700001, 7700002]);
+});
+
+test("R23: an ABSENT activeModuleIDs decodes to null — 'unknown', not 'nothing running'", () => {
+  // This distinction is load-bearing. A gateway that could not answer must not
+  // be reported to the player as "no modules are running": that reads as Idle
+  // and invites a double activation.
+  const snapshot = decodeSpaceSnapshot({
+    inSpace: true,
+    entities: [],
+    ship: { itemID: 9001 },
+  } as unknown as JsonValue);
+  assert.equal(snapshot.ship?.activeModuleIDs, null);
+
+  // An explicitly EMPTY list is a real answer and stays an empty list.
+  const idle = decodeSpaceSnapshot({
+    inSpace: true,
+    entities: [],
+    ship: { itemID: 9001, activeModuleIDs: [] },
+  } as unknown as JsonValue);
+  assert.deepEqual(idle.ship?.activeModuleIDs, []);
+});
+
+test("R23: the locked-target list decodes long-aware, and empties safely", () => {
+  assert.deepEqual(
+    decodeTargetIDs([50001248, { type: "long", value: "50001249" }] as unknown as JsonValue),
+    [50001248, 50001249],
+  );
+  // A malformed or absent payload is an empty list, never a crash.
+  assert.deepEqual(decodeTargetIDs(undefined), []);
+  assert.deepEqual(decodeTargetIDs(null as unknown as JsonValue), []);
+  assert.deepEqual(decodeTargetIDs({ nope: true } as unknown as JsonValue), []);
+  // Junk entries are dropped rather than decoded to zero.
+  assert.deepEqual(decodeTargetIDs([0, "x", 42] as unknown as JsonValue), [42]);
 });

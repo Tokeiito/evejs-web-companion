@@ -1058,6 +1058,15 @@ export interface SpaceShipStatus {
   readonly shieldCapacity: number | null;
   readonly armorCapacity: number | null;
   readonly hullCapacity: number | null;
+  /**
+   * The fitted modules the SERVER says are cycling right now (goal R23). Read
+   * from the ship entity's own active-effect map, never from the browser's
+   * memory of what it clicked — otherwise the page would keep claiming a module
+   * is running after the server short-cycled it (target lost, hold full, out of
+   * range). Empty means nothing is running; null means the read could not
+   * answer and the page must say "unknown", not "off".
+   */
+  readonly activeModuleIDs: readonly number[] | null;
 }
 
 /** One decoded space snapshot: everything visible plus the active ship. */
@@ -1082,6 +1091,62 @@ export interface SpaceState {
   readonly loaded: boolean;
   /** Non-null when the last snapshot read failed (non-fatally). */
   readonly error: string | null;
+}
+
+// --- R23 slice A: targeting + module activation ----------------------------
+//
+// THE GENERIC IN-SPACE ACTION LAYER. Nothing here names mining, combat,
+// salvaging or ewar, and nothing should: a target is a target, a module is a
+// module, and which effect a module runs is an ARGUMENT the caller passes.
+// Slice B drives a mining laser through this slice; a later combat goal drives
+// a turret through the same slice unchanged.
+
+/**
+ * One target the ship has locked, or is still locking (goal R23).
+ *
+ * `name` is resolved from the space snapshot — the same row the overview shows
+ * — so the locked list reads "Veldspar" or "Ibis", never an itemID (R7d). It is
+ * null only while the target is not in the current snapshot (it warped off, or
+ * the poll has not caught up), and the page shows a plain "out of view" label
+ * rather than falling back to the number.
+ */
+export interface LockedTarget {
+  readonly itemID: number;
+  readonly name: string | null;
+  /** The type behind the ball, so the panel can resolve a TYPE name. */
+  readonly typeID: number | null;
+  /** True while the server is still acquiring the lock (it is not usable yet). */
+  readonly acquiring: boolean;
+}
+
+/**
+ * The targeting + activation slice (goal R23 slice A).
+ *
+ * `lockedTargetIDs` is the server's answer to dogmaIM.GetTargets and is the
+ * ONLY authority on what is locked — a 200 from a lock call is not proof, so
+ * every mutation re-reads and lands here.
+ *
+ * `acquiringTargetIDs` is the browser's short-lived note of locks the server
+ * ACCEPTED but has not finished acquiring. It is not a claim about server
+ * state: an entry is dropped the moment the target appears in
+ * `lockedTargetIDs`, and cleared outright when the ship leaves space.
+ */
+export interface TargetingState {
+  readonly lockedTargetIDs: readonly number[];
+  readonly acquiringTargetIDs: readonly number[];
+  /** True once a GetTargets read has populated the slice. */
+  readonly loaded: boolean;
+  /** The last lock/unlock/activate action issued, for the status readout. */
+  readonly lastAction: string | null;
+  /** Non-null when the last action failed — the SERVER's own refusal reason. */
+  readonly actionError: string | null;
+  /**
+   * Non-null when a call returned 200 but the re-read showed nothing changed
+   * and the server gave no reason. This is deliberately a DIFFERENT field from
+   * actionError: "it was refused, and here is why" and "it quietly did nothing"
+   * are different things and the page says so.
+   */
+  readonly silentDecline: string | null;
 }
 
 // --- R5b Travel (browser autopilot decide-loop) ----------------------------

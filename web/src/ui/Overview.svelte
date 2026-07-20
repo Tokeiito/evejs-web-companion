@@ -31,6 +31,13 @@
   const flight = store.flight;
   // svelte-ignore state_referenced_locally
   const names = store.names;
+  // R23 slice A — the GENERIC in-space action layer: what is locked, and which
+  // modules are running. Nothing here is mining-specific; the same two sections
+  // serve a turret exactly as they serve a mining laser.
+  // svelte-ignore state_referenced_locally
+  const targeting = store.targeting;
+  // svelte-ignore state_referenced_locally
+  const fitting = store.fitting;
 
   // How many rows we render. A busy grid can hold hundreds of objects and the
   // list re-renders every second, so the nearest few hundred is the useful set.
@@ -207,6 +214,113 @@
     return ship.name && ship.name.length > 0 ? ship.name : "your ship";
   }
 
+  // --- R23 slice A: targeting + module activation --------------------------
+  //
+  // GENERIC BY CONSTRUCTION. A target is a target and a module is a module; the
+  // only thing that differs between mining and combat is WHICH module the
+  // player switches on, which is their choice, not this panel's.
+
+  const lockedIDs = $derived($targeting.lockedTargetIDs);
+  const acquiringIDs = $derived($targeting.acquiringTargetIDs);
+
+  function isLocked(itemID: number): boolean {
+    return lockedIDs.includes(itemID);
+  }
+  function isAcquiring(itemID: number): boolean {
+    return acquiringIDs.includes(itemID);
+  }
+
+  /**
+   * The locked list, each entry named from the CURRENT snapshot. A target the
+   * snapshot no longer carries has no name to show — so it says so plainly
+   * rather than falling back to its itemID (R7d).
+   */
+  interface LockedRow {
+    readonly itemID: number;
+    readonly label: string;
+    readonly typeLabel: string;
+    readonly distance: string;
+    readonly acquiring: boolean;
+  }
+  const lockedRows = $derived.by<LockedRow[]>(() => {
+    const byID = new Map<number, SpaceEntity>();
+    for (const entity of snapshot?.entities ?? []) {
+      byID.set(entity.itemID, entity);
+    }
+    const rowDistance = new Map<number, number>();
+    for (const row of overview.rows) {
+      rowDistance.set(row.itemID, row.distance);
+    }
+    const ids = [...lockedIDs, ...acquiringIDs.filter((id) => !lockedIDs.includes(id))];
+    return ids.map((itemID) => {
+      const entity = byID.get(itemID) ?? null;
+      const distance = rowDistance.get(itemID);
+      return {
+        itemID,
+        label: entity ? displayLabel(entity) : "No longer in view",
+        typeLabel: entity ? typeName(entity) : "—",
+        distance: distance === undefined ? "—" : formatDistance(distance),
+        acquiring: !lockedIDs.includes(itemID),
+      };
+    });
+  });
+
+  /**
+   * The modules the player can switch on: everything ONLINE in the ship's
+   * slots. Rigs and subsystems are never activated, so they are left out.
+   * Whether a module is RUNNING comes from the snapshot's activeModuleIDs —
+   * the server's own state — never from what this page remembers clicking.
+   */
+  interface ModuleRow {
+    readonly itemID: number;
+    readonly label: string;
+    readonly slotLabel: string;
+    readonly running: boolean | null;
+  }
+  const activeModuleIDs = $derived(snapshot?.ship?.activeModuleIDs ?? null);
+  const moduleRows = $derived.by<ModuleRow[]>(() => {
+    const rows: ModuleRow[] = [];
+    for (const slot of $fitting.slots) {
+      if (slot.family === "rig" || slot.family === "subsystem" || !slot.module) {
+        continue;
+      }
+      if (!slot.module.online) {
+        continue;
+      }
+      rows.push({
+        itemID: slot.module.itemID,
+        label: resolvedName($names.resolved, "type", slot.module.typeID, "Unknown module"),
+        slotLabel:
+          slot.family === "high" ? "High slot" : slot.family === "mid" ? "Mid slot" : "Low slot",
+        // null = the server could not tell us. Rendered as "unknown", never
+        // as "off" — a wrong "off" would invite a double activation.
+        running: activeModuleIDs === null ? null : activeModuleIDs.includes(slot.module.itemID),
+      });
+    }
+    return rows;
+  });
+
+  // Which locked target a module is switched on AGAINST. Modules that act on
+  // the ship itself ignore it; the server refuses with its own reason when a
+  // module needs a target and none is chosen, and that reason is shown as-is.
+  let actionTargetID = $state("");
+  const effectiveTargetID = $derived(
+    Number(actionTargetID) > 0 && isLocked(Number(actionTargetID)) ? Number(actionTargetID) : 0,
+  );
+
+  // Module names come from the same cache as everything else (R7d).
+  $effect(() => {
+    const refs: NameRef[] = [];
+    for (const slot of $fitting.slots) {
+      if (slot.module) {
+        refs.push({ kind: "type", id: slot.module.typeID });
+      }
+    }
+    if (refs.length > 0) {
+      flow.requestNames(refs);
+    }
+  });
+
   async function run(action: () => Promise<void>): Promise<void> {
     if (busy) {
       return;
@@ -231,6 +345,10 @@
   // when the tab closes. The poll also stops itself once the ship docks.
   onMount(() => {
     void run(() => flow.loadSpaceSnapshot());
+    // R23: the ship's slots (so modules can be offered BY NAME) and the current
+    // locks. Both are best-effort — neither may blank the overview if it fails.
+    void flow.loadFitting().catch(() => {});
+    void flow.loadTargets().catch(() => {});
     flow.startSpacePolling();
     return () => flow.stopSpacePolling();
   });
@@ -324,6 +442,146 @@
         Stop the ship
       </button>
     </p>
+  </section>
+
+  <!--
+    R23 slice A — the generic in-space action layer. Two sections, neither of
+    which knows anything about mining: what you have locked, and what you can
+    switch on. A later combat goal renders exactly these two sections.
+  -->
+  <section>
+    <h2>Locked targets</h2>
+    <p class="note">
+      What your ship has a lock on. You need a lock before you can use most
+      equipment on something. Locking takes a moment — your ship has to get a
+      fix on it first.
+    </p>
+    {#if lockedRows.length === 0}
+      <p class="empty">Nothing is locked. Use Lock on any row below.</p>
+    {:else}
+      <div class="table-wrap overflow-x-auto">
+        <table class="guests reflow">
+          <thead>
+            <tr>
+              <th>Target</th>
+              <th>Type</th>
+              <th class="num">Distance</th>
+              <th>State</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each lockedRows as locked (locked.itemID)}
+              <tr>
+                <td data-label="Target">{locked.label}</td>
+                <td data-label="Type">{locked.typeLabel}</td>
+                <td class="num" data-label="Distance">{locked.distance}</td>
+                <td data-label="State">{locked.acquiring ? "Locking…" : "Locked"}</td>
+                <td data-label="">
+                  <span class="row-actions">
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onclick={() => run(() => flow.unlockTarget(locked.itemID))}
+                    >
+                      Release lock
+                    </button>
+                  </span>
+                </td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+    {/if}
+  </section>
+
+  <section>
+    <h2>Your equipment</h2>
+    <p class="note">
+      Everything switched on and ready to run. Pick a locked target first if the
+      equipment needs one — your ship will say so if it does.
+    </p>
+    {#if moduleRows.length === 0}
+      <p class="empty">
+        Nothing is powered up. Turn equipment on in the Fitting tab first.
+      </p>
+    {:else}
+      <p class="controls">
+        <label>
+          Use it on
+          <select bind:value={actionTargetID}>
+            <option value="">Nothing — just switch it on</option>
+            {#each lockedRows.filter((entry) => !entry.acquiring) as locked (locked.itemID)}
+              <option value={String(locked.itemID)}>{locked.label}</option>
+            {/each}
+          </select>
+        </label>
+      </p>
+      <div class="table-wrap overflow-x-auto">
+        <table class="guests reflow">
+          <thead>
+            <tr>
+              <th>Equipment</th>
+              <th>Fitted in</th>
+              <th>Running</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each moduleRows as module (module.itemID)}
+              <tr>
+                <td data-label="Equipment">{module.label}</td>
+                <td data-label="Fitted in">{module.slotLabel}</td>
+                <td data-label="Running">
+                  {#if module.running === null}
+                    <span class="stat-unavailable">Not known</span>
+                  {:else}
+                    {module.running ? "Running" : "Idle"}
+                  {/if}
+                </td>
+                <td data-label="">
+                  <span class="row-actions">
+                    <button
+                      type="button"
+                      class={module.running === true ? "active" : ""}
+                      disabled={busy || module.running === true}
+                      onclick={() =>
+                        run(() =>
+                          flow.activateModule(module.itemID, {
+                            targetID: effectiveTargetID > 0 ? effectiveTargetID : null,
+                          }),
+                        )}
+                    >
+                      Switch on
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busy || module.running === false}
+                      onclick={() => run(() => flow.deactivateModule(module.itemID))}
+                    >
+                      Switch off
+                    </button>
+                  </span>
+                </td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+    {/if}
+    <!--
+      Two different failures, said differently on purpose. A refusal carries the
+      server's OWN words. A silent decline is when the call came back fine, the
+      re-read showed nothing changed, and the server gave no reason — the page
+      says exactly that rather than inventing a cause.
+    -->
+    {#if $targeting.actionError}
+      <p class="error">{$targeting.actionError}</p>
+    {/if}
+    {#if $targeting.silentDecline}
+      <p class="error">{$targeting.silentDecline}</p>
+    {/if}
   </section>
 
   <section>
@@ -426,6 +684,38 @@
                     >
                       Align to
                     </button>
+                    <!--
+                      R23 — lock / release. GENERIC: this is the same button a
+                      later combat goal uses, on the same row, for the same
+                      reason. Locking is not instant, so the middle state is
+                      shown honestly rather than pretending the lock landed.
+                    -->
+                    {#if isLocked(row.itemID)}
+                      <button
+                        type="button"
+                        class="active"
+                        disabled={busy}
+                        onclick={() => run(() => flow.unlockTarget(row.itemID))}
+                      >
+                        Release lock
+                      </button>
+                    {:else if isAcquiring(row.itemID)}
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onclick={() => run(() => flow.unlockTarget(row.itemID))}
+                      >
+                        Locking… stop
+                      </button>
+                    {:else}
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onclick={() => run(() => flow.lockTarget(row.itemID))}
+                      >
+                        Lock
+                      </button>
+                    {/if}
                   </span>
                 </td>
               </tr>

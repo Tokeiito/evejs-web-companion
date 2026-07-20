@@ -4505,6 +4505,276 @@ app.post("/api/bridge/flight/stop", requireAuth, async (req, res, next) => {
   }
 });
 
+// --- R23 slice A: targeting + module activation -----------------------------
+//
+// THE GENERIC IN-SPACE ACTION LAYER. Everything below is deliberately free of
+// any notion of mining, combat, salvaging or ewar: a target is a target, a
+// module is a module, and the effect name is an ARGUMENT. R23 slice B drives a
+// mining laser through these four routes; a later combat goal drives a turret
+// through the same four routes with a different module and effect name and
+// needs no new BFF surface, no new store slice and no new UI.
+//
+// If you find yourself about to add "mining" to a name in this section, don't.
+
+/** A dogmaIM target list ({type:"list", items:[…]}) as plain itemIDs. */
+function decodeTargetIDList(result) {
+  const items =
+    result && result.type === "list" && Array.isArray(result.items) ? result.items : [];
+  return items
+    .map((value) => Number(value && typeof value === "object" ? value.value : value) || 0)
+    .filter((value) => value > 0);
+}
+
+/** The itemIDs the server says are locked RIGHT NOW. The only authority. */
+async function readLockedTargetIDs(held, webSessionID) {
+  const outcome = await heldTopLevelCall(held, webSessionID, "dogmaIM", "GetTargets", [], null);
+  return { ids: decodeTargetIDList(outcome.result), notifications: outcome.notifications };
+}
+
+/**
+ * The module itemIDs the server says are CYCLING right now, read from the space
+ * snapshot's ship projection (which reads the ship entity's own active-effect
+ * map). There is no separate retail call for this, and the browser must never
+ * substitute its own memory of what it clicked.
+ */
+async function readActiveModuleIDs(held) {
+  const outcome = await gateway.readSpaceSnapshot(held.bridgeSessionID, {
+    userid: held.accountID,
+  });
+  const ship = outcome && outcome.space ? outcome.space.ship : null;
+  const ids = ship && Array.isArray(ship.activeModuleIDs) ? ship.activeModuleIDs : null;
+  return {
+    // null (not []) when the snapshot could not answer at all, so the caller can
+    // say "unknown" instead of "nothing is running".
+    ids: ids === null ? null : ids.map((value) => Number(value) || 0).filter((v) => v > 0),
+    notifications: outcome ? outcome.notifications : [],
+  };
+}
+
+// What is locked right now. The page polls this alongside the space snapshot.
+app.get("/api/bridge/targets", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  try {
+    const locked = await readLockedTargetIDs(held, req.webSessionID);
+    res.json({ ok: true, targetIDs: locked.ids, notifications: locked.notifications });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Lock a target: dogmaIM.AddTarget(targetID) -> [pendingFlag, targetIDList].
+//
+// A lock is NOT instant — the server acquires it over a duration that depends
+// on the ship's scan resolution and the target's signature — so AddTarget
+// answering 200 does not mean the target is locked. The pending flag says the
+// server ACCEPTED the attempt; the re-read of GetTargets says whether it has
+// landed yet. Both are reported separately and the page shows "Locking…" until
+// a later poll sees the target in the locked list.
+//
+// Every refusal (out of range, too many locked, already warping, no such ball)
+// is the handler's own reason, passed through untouched.
+app.post("/api/bridge/targets/lock", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const targetID = Number(req.body && req.body.targetID) || 0;
+  if (targetID <= 0) {
+    res.status(400).json({ ok: false, error: "INVALID_TARGET", message: "A target is required." });
+    return;
+  }
+  try {
+    const before = await readHeldFlight(held, req.webSessionID);
+    if (!requireInSpace(res, before.flight)) {
+      return;
+    }
+    const outcome = await heldTopLevelCall(
+      held,
+      req.webSessionID,
+      "dogmaIM",
+      "AddTarget",
+      [targetID],
+      null,
+    );
+    // AddTarget answers the retail pair [pendingFlag, targetIDList].
+    const pair = Array.isArray(outcome.result) ? outcome.result : [];
+    const accepted = Number(pair[0]) === 1;
+    // A 200 is not proof: ask the server what is actually locked.
+    const locked = await readLockedTargetIDs(held, req.webSessionID);
+    res.json({
+      ok: true,
+      targetID,
+      // The lock has LANDED.
+      locked: locked.ids.includes(targetID),
+      // The server accepted the attempt and is still acquiring it.
+      acquiring: accepted && !locked.ids.includes(targetID),
+      targetIDs: locked.ids,
+      notifications: [...outcome.notifications, ...locked.notifications],
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Unlock one target: dogmaIM.RemoveTarget(targetID). The handler returns null
+// whether or not anything was dropped, so the re-read is the whole answer.
+//
+// Unlocking is deliberately ONE TARGET AT A TIME: dogmaIM.RemoveTargets and
+// ClearTargets (drop every lock in a single call) are NOT allowlisted, so a
+// stray click here can only ever cost one lock.
+app.post("/api/bridge/targets/unlock", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const targetID = Number(req.body && req.body.targetID) || 0;
+  if (targetID <= 0) {
+    res.status(400).json({ ok: false, error: "INVALID_TARGET", message: "A target is required." });
+    return;
+  }
+  try {
+    const before = await readHeldFlight(held, req.webSessionID);
+    if (!requireInSpace(res, before.flight)) {
+      return;
+    }
+    // A lock that is still being ACQUIRED is not in the locked list yet, and
+    // RemoveTarget does not touch it — CancelAddTarget is the verb for that.
+    // Cancelling first makes one "Unlock" button correct in both states; a
+    // cancel for a target that was never pending is a no-op on the server.
+    const cancelled = await heldTopLevelCall(
+      held,
+      req.webSessionID,
+      "dogmaIM",
+      "CancelAddTarget",
+      [targetID],
+      null,
+    );
+    const outcome = await heldTopLevelCall(
+      held,
+      req.webSessionID,
+      "dogmaIM",
+      "RemoveTarget",
+      [targetID],
+      null,
+    );
+    const locked = await readLockedTargetIDs(held, req.webSessionID);
+    res.json({
+      ok: true,
+      targetID,
+      // The only claim worth making: it is no longer locked.
+      released: !locked.ids.includes(targetID),
+      targetIDs: locked.ids,
+      notifications: [
+        ...cancelled.notifications,
+        ...outcome.notifications,
+        ...locked.notifications,
+      ],
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Switch a module ON: dogmaIM.Activate(moduleItemID, effectName, targetID, repeat).
+//
+// GENERIC BY CONSTRUCTION. The browser does not know, and must not guess, which
+// effect a given module runs: an EMPTY effect name makes the server resolve the
+// module's own default activation effect from its typeID. A caller that DOES
+// know (slice B sends "miningLaser") may name one, and combat will name its
+// own — but that is the caller's argument, not this route's business.
+//
+// `repeat` is the retail cycle flag: -1 keeps cycling until something stops it,
+// 0 runs a single cycle. Default -1, the retail default for a held module.
+//
+// The handler owns every refusal — module not online, no target, target not
+// locked, out of range, not enough capacitor, wrong charge/crystal — and each
+// arrives with its own reason, which is passed through untouched. This BFF
+// never pre-judges whether a module can run.
+app.post("/api/bridge/modules/activate", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const body = req.body || {};
+  const itemID = Number(body.itemID) || 0;
+  if (itemID <= 0) {
+    res.status(400).json({ ok: false, error: "INVALID_MODULE", message: "A module is required." });
+    return;
+  }
+  const effect = typeof body.effect === "string" ? body.effect : "";
+  const targetID = Number(body.targetID) || 0;
+  const repeat = body.repeat === 0 || body.repeat === "0" ? 0 : -1;
+  try {
+    const before = await readHeldFlight(held, req.webSessionID);
+    if (!requireInSpace(res, before.flight)) {
+      return;
+    }
+    const outcome = await heldTopLevelCall(
+      held,
+      req.webSessionID,
+      "dogmaIM",
+      "Activate",
+      [itemID, effect, targetID > 0 ? targetID : null, repeat],
+      null,
+    );
+    // A 200 is not proof: ask the server which modules are actually cycling.
+    const active = await readActiveModuleIDs(held);
+    res.json({
+      ok: true,
+      itemID,
+      // null when the snapshot could not answer — "unknown", never "off".
+      active: active.ids === null ? null : active.ids.includes(itemID),
+      activeModuleIDs: active.ids,
+      notifications: [...outcome.notifications, ...active.notifications],
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Switch a module OFF: dogmaIM.Deactivate(moduleItemID, effectName). Same
+// generality, same re-read.
+app.post("/api/bridge/modules/deactivate", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const body = req.body || {};
+  const itemID = Number(body.itemID) || 0;
+  if (itemID <= 0) {
+    res.status(400).json({ ok: false, error: "INVALID_MODULE", message: "A module is required." });
+    return;
+  }
+  const effect = typeof body.effect === "string" ? body.effect : "";
+  try {
+    const before = await readHeldFlight(held, req.webSessionID);
+    if (!requireInSpace(res, before.flight)) {
+      return;
+    }
+    const outcome = await heldTopLevelCall(
+      held,
+      req.webSessionID,
+      "dogmaIM",
+      "Deactivate",
+      [itemID, effect],
+      null,
+    );
+    const active = await readActiveModuleIDs(held);
+    res.json({
+      ok: true,
+      itemID,
+      stopped: active.ids === null ? null : !active.ids.includes(itemID),
+      activeModuleIDs: active.ids,
+      notifications: [...outcome.notifications, ...active.notifications],
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // R11 space overview + ship HUD. A read-only snapshot of what the ship can see
 // right now — the visible entities around it and the active ship's shield /
 // armor / hull / capacitor. The browser polls this ~1s while in space with the

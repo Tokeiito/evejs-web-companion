@@ -58,6 +58,7 @@ import type {
   OnlineCharacterState,
   RewardsState,
   SpaceState,
+  TargetingState,
   StationGuest,
   StationServiceBits,
   StationStatic,
@@ -117,6 +118,7 @@ export interface ClientState {
   readonly rewards: RewardsState;
   readonly flight: FlightState;
   readonly space: SpaceState;
+  readonly targeting: TargetingState;
   readonly travel: TravelState;
   readonly chat: ChatState;
   readonly live: LiveState;
@@ -321,6 +323,18 @@ const INITIAL_SPACE: SpaceState = Object.freeze({
   error: null,
 });
 
+// R23 slice A — the generic in-space action layer. Reset alongside the space
+// slice: a docked ship has no locks and nothing cycling, so carrying either
+// across a dock would be a lie the moment the page rendered it.
+const INITIAL_TARGETING: TargetingState = Object.freeze({
+  lockedTargetIDs: Object.freeze([]) as readonly number[],
+  acquiringTargetIDs: Object.freeze([]) as readonly number[],
+  loaded: false,
+  lastAction: null,
+  actionError: null,
+  silentDecline: null,
+});
+
 const INITIAL_TRAVEL: TravelState = Object.freeze({
   status: "idle" as TravelState["status"],
   destinationSystemID: null,
@@ -401,6 +415,7 @@ export interface ClientStore {
   readonly rewards: ReadableSignal<RewardsState>;
   readonly flight: ReadableSignal<FlightState>;
   readonly space: ReadableSignal<SpaceState>;
+  readonly targeting: ReadableSignal<TargetingState>;
   readonly travel: ReadableSignal<TravelState>;
   readonly chat: ReadableSignal<ChatState>;
   readonly live: ReadableSignal<LiveState>;
@@ -442,6 +457,7 @@ export function createClientStore(): ClientStore {
   const rewards = createSignal<RewardsState>(INITIAL_REWARDS);
   const flight = createSignal<FlightState>(INITIAL_FLIGHT);
   const space = createSignal<SpaceState>(INITIAL_SPACE);
+  const targeting = createSignal<TargetingState>(INITIAL_TARGETING);
   const travel = createSignal<TravelState>(INITIAL_TRAVEL);
   const chat = createSignal<ChatState>(INITIAL_CHAT);
   const live = createSignal<LiveState>(INITIAL_LIVE);
@@ -470,6 +486,7 @@ export function createClientStore(): ClientStore {
     rewards: rewards.get(),
     flight: flight.get(),
     space: space.get(),
+    targeting: targeting.get(),
     travel: travel.get(),
     chat: chat.get(),
     live: live.get(),
@@ -502,6 +519,7 @@ export function createClientStore(): ClientStore {
         rewards.set(INITIAL_REWARDS);
         flight.set(INITIAL_FLIGHT);
         space.set(INITIAL_SPACE);
+        targeting.set(INITIAL_TARGETING);
         travel.set(INITIAL_TRAVEL);
         chat.set(INITIAL_CHAT);
         live.set(INITIAL_LIVE);
@@ -549,6 +567,7 @@ export function createClientStore(): ClientStore {
         rewards.set(INITIAL_REWARDS);
         flight.set(INITIAL_FLIGHT);
         space.set(INITIAL_SPACE);
+        targeting.set(INITIAL_TARGETING);
         travel.set(INITIAL_TRAVEL);
         chat.set(INITIAL_CHAT);
         live.set(INITIAL_LIVE);
@@ -566,6 +585,7 @@ export function createClientStore(): ClientStore {
         rewards.set(INITIAL_REWARDS);
         flight.set(INITIAL_FLIGHT);
         space.set(INITIAL_SPACE);
+        targeting.set(INITIAL_TARGETING);
         travel.set(INITIAL_TRAVEL);
         chat.set(INITIAL_CHAT);
         live.set(INITIAL_LIVE);
@@ -942,6 +962,56 @@ export function createClientStore(): ClientStore {
         break;
       case "space/cleared":
         space.set(INITIAL_SPACE);
+        targeting.set(INITIAL_TARGETING);
+        break;
+      // --- R23 slice A: targeting + module activation ---------------------
+      case "targeting/targets": {
+        const prev = targeting.get();
+        const locked = event.targetIDs;
+        // A target that has ARRIVED in the server's locked list is no longer
+        // being acquired. This is the only place an acquiring note is retired
+        // on success, so the page can never show "Locking…" for something that
+        // is already locked.
+        targeting.set({
+          ...prev,
+          lockedTargetIDs: locked,
+          acquiringTargetIDs: prev.acquiringTargetIDs.filter((id) => !locked.includes(id)),
+          loaded: true,
+        });
+        break;
+      }
+      case "targeting/acquiring": {
+        const prev = targeting.get();
+        if (
+          prev.acquiringTargetIDs.includes(event.targetID) ||
+          prev.lockedTargetIDs.includes(event.targetID)
+        ) {
+          break;
+        }
+        targeting.set({
+          ...prev,
+          acquiringTargetIDs: [...prev.acquiringTargetIDs, event.targetID],
+        });
+        break;
+      }
+      case "targeting/action":
+        // A successful action clears BOTH the stale refusal and the stale
+        // silent-decline note — they describe the previous action, not this one.
+        targeting.set({
+          ...targeting.get(),
+          lastAction: event.action,
+          actionError: null,
+          silentDecline: null,
+        });
+        break;
+      case "targeting/action-error":
+        targeting.set({ ...targeting.get(), actionError: event.message });
+        break;
+      case "targeting/silent-decline":
+        targeting.set({ ...targeting.get(), silentDecline: event.message });
+        break;
+      case "targeting/cleared":
+        targeting.set(INITIAL_TARGETING);
         break;
       case "travel/planned":
         travel.set({
@@ -1135,6 +1205,7 @@ export function createClientStore(): ClientStore {
     rewards: readonlySignal(rewards),
     flight: readonlySignal(flight),
     space: readonlySignal(space),
+    targeting: readonlySignal(targeting),
     travel: readonlySignal(travel),
     chat: readonlySignal(chat),
     live: readonlySignal(live),

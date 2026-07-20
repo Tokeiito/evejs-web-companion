@@ -50,7 +50,7 @@ import {
   decodeLpBalances,
 } from "../bridge/rewards.ts";
 import { decodeFlightStatus } from "../bridge/flight.ts";
-import { decodeSpaceSnapshot } from "../bridge/space.ts";
+import { decodeSpaceSnapshot, decodeTargetIDs } from "../bridge/space.ts";
 import { createSpacePoller, type SpacePoller } from "./spacePoll.ts";
 import type { FlightStepResult } from "./api.ts";
 import { BridgeCallError } from "../bridge/callMethod.ts";
@@ -323,6 +323,25 @@ export interface AppFlow {
    */
   startSpacePolling(): void;
   stopSpacePolling(): void;
+  // --- R23 slice A: the GENERIC in-space action layer --------------------
+  // Deliberately free of any notion of mining or combat. A target is a target;
+  // a module is a module; the effect name is an OPTIONAL argument (omit it and
+  // the server resolves the module's own default activation effect from its
+  // typeID — the browser never guesses which effect a module runs). A later
+  // combat goal reuses all five of these unchanged.
+  /** R23 — read the locked-target list (the only authority on what is locked). */
+  loadTargets(): Promise<void>;
+  /** R23 — lock a ball. Acquisition takes time; the lock is not instant. */
+  lockTarget(targetID: number): Promise<void>;
+  /** R23 — release ONE lock (or abandon one still being acquired). */
+  unlockTarget(targetID: number): Promise<void>;
+  /** R23 — switch a module on. `repeat` is -1 continuous (default) or 0 single-cycle. */
+  activateModule(
+    itemID: number,
+    opts?: { effect?: string; targetID?: number | null; repeat?: -1 | 0 },
+  ): Promise<void>;
+  /** R23 — switch a module off. */
+  deactivateModule(itemID: number, opts?: { effect?: string }): Promise<void>;
   /** Jump through an NPC stargate (fromGate -> toGate). */
   jump(fromGateID: number, toGateID: number): Promise<void>;
   /** Dock at the destination station. */
@@ -1627,7 +1646,16 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // it never piles work behind the autopilot's own flight-status cadence.
   let spacePanelOpen = false;
   const spacePoller: SpacePoller = createSpacePoller({
-    refresh: () => loadSpaceSnapshot(),
+    // R23: the locked-target list rides the SAME ~1s beat as the snapshot.
+    // Locking is asynchronous — the server acquires a lock over a duration — so
+    // without a poll the page would show "Locking…" forever. The targets read
+    // is best-effort: it must never make a snapshot read look like a failure.
+    refresh: async () => {
+      await loadSpaceSnapshot();
+      if (store.space.get().snapshot?.inSpace === true) {
+        await loadTargets().catch(() => {});
+      }
+    },
     shouldPoll: () => {
       if (!spacePanelOpen) {
         return false;
@@ -1650,6 +1678,134 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     spacePanelOpen = false;
     spacePoller.stop();
   };
+
+  // --- R23 slice A: targeting + module activation --------------------------
+  //
+  // THE GENERIC IN-SPACE ACTION LAYER. Nothing below names mining, combat,
+  // salvaging or ewar, and nothing should: lockTarget/unlockTarget take a ball,
+  // activateModule/deactivateModule take a module and an OPTIONAL effect name.
+  // Slice B drives a mining laser through these four; a later combat goal
+  // drives a turret through the same four unchanged.
+  //
+  // Every one of them obeys the same two rules:
+  //   1. A REFUSAL carries the server's own reason verbatim (targeting/action-error).
+  //   2. A 200 IS NOT PROOF — the BFF re-reads the authoritative state after
+  //      every mutation, and when that re-read shows nothing changed AND the
+  //      server gave no reason, that is reported as a SILENT DECLINE
+  //      (targeting/silent-decline), a different thing from a refusal. The page
+  //      never invents a cause for it.
+
+  /** Read the locked-target list. Also used by the overview poll. */
+  async function loadTargets(): Promise<void> {
+    let result;
+    try {
+      result = await api.getTargets(callOptions);
+    } catch (error) {
+      if (isSessionLost(error)) {
+        stopLiveStream();
+        store.apply({ type: "character/offline" });
+        throw error;
+      }
+      // A targets read failing is not fatal to the overview; say so plainly.
+      store.apply({
+        type: "targeting/action-error",
+        message: `The locked-target list could not be read: ${flightErrorReason(error)}`,
+      });
+      return;
+    }
+    store.apply({ type: "targeting/targets", targetIDs: decodeTargetIDs(result.targetIDs) });
+  }
+
+  /**
+   * Run one targeting/activation action: record it, surface a refusal verbatim,
+   * and land the server's own re-read. `verify` decides whether the action
+   * actually took effect; false with no thrown refusal is a SILENT DECLINE.
+   */
+  async function runTargetingAction<T>(
+    label: string,
+    step: () => Promise<T>,
+    apply: (result: T) => void | Promise<void>,
+    verify: (result: T) => boolean,
+    declineMessage: string,
+  ): Promise<void> {
+    let result: T;
+    try {
+      result = await step();
+    } catch (error) {
+      if (isSessionLost(error)) {
+        stopLiveStream();
+        store.apply({ type: "character/offline" });
+        throw error;
+      }
+      store.apply({
+        type: "targeting/action-error",
+        message: `${label} refused: ${flightErrorReason(error)}`,
+      });
+      return;
+    }
+    store.apply({ type: "targeting/action", action: label });
+    await apply(result);
+    if (!verify(result)) {
+      store.apply({ type: "targeting/silent-decline", message: declineMessage });
+    }
+  }
+
+  async function lockTarget(targetID: number): Promise<void> {
+    await runTargetingAction(
+      "Lock",
+      () => api.lockTarget(targetID, callOptions),
+      (result) => {
+        store.apply({ type: "targeting/targets", targetIDs: decodeTargetIDs(result.targetIDs) });
+        if (result.acquiring) {
+          store.apply({ type: "targeting/acquiring", targetID });
+        }
+      },
+      // Accepted-and-acquiring is a SUCCESS: a lock takes time, and reporting
+      // "nothing happened" while the server is mid-acquisition would be wrong.
+      (result) => result.locked || result.acquiring,
+      "The server accepted that lock and then did not lock anything, and gave no reason.",
+    );
+  }
+
+  async function unlockTarget(targetID: number): Promise<void> {
+    await runTargetingAction(
+      "Unlock",
+      () => api.unlockTarget(targetID, callOptions),
+      (result) =>
+        store.apply({ type: "targeting/targets", targetIDs: decodeTargetIDs(result.targetIDs) }),
+      (result) => result.released,
+      "The server did not release that lock, and gave no reason.",
+    );
+  }
+
+  async function activateModule(
+    itemID: number,
+    opts: { effect?: string; targetID?: number | null; repeat?: -1 | 0 } = {},
+  ): Promise<void> {
+    await runTargetingAction(
+      "Switch on",
+      () => api.activateModule(itemID, opts, callOptions),
+      // Refresh the snapshot NOW rather than waiting for the next poll tick, so
+      // the button state the player sees after the click is the server's answer
+      // to THIS action. Best-effort: a failed refresh must not turn a
+      // successful activation into an error.
+      () => loadSpaceSnapshot().catch(() => {}),
+      // null means the verification read could not answer. That is NOT a silent
+      // decline — we simply do not know — so it is not reported as one.
+      (result) => result.active !== false,
+      "The server accepted that module and then did not run it, and gave no reason.",
+    );
+  }
+
+  async function deactivateModule(itemID: number, opts: { effect?: string } = {}): Promise<void> {
+    await runTargetingAction(
+      "Switch off",
+      () => api.deactivateModule(itemID, opts, callOptions),
+      () => loadSpaceSnapshot().catch(() => {}),
+      (result) => result.stopped !== false,
+      "The server did not stop that module, and gave no reason.",
+    );
+  }
 
   // Run one movement step, record it as the last action, and refresh the flight
   // snapshot the step returned. A lost session unwinds to the character list; a
@@ -2424,6 +2580,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     },
 
     loadSpaceSnapshot,
+    loadTargets,
+    lockTarget,
+    unlockTarget,
+    activateModule,
+    deactivateModule,
 
     startSpacePolling,
 

@@ -1540,6 +1540,148 @@ export async function getSpaceSnapshot(
   };
 }
 
+// --- R23 slice A: targeting + module activation -----------------------------
+//
+// THE GENERIC IN-SPACE ACTION LAYER. Nothing here names mining, combat,
+// salvaging or ewar. A target is a target; a module is a module; the effect
+// name is an argument the caller supplies (or omits, in which case the SERVER
+// resolves the module's own default activation effect from its typeID — the
+// browser never guesses which effect a module runs). Slice B drives a mining
+// laser through these five functions; a later combat goal drives a turret
+// through the same five unchanged.
+
+/** What the server says is locked right now — the only authority. */
+export interface TargetsResult {
+  readonly targetIDs: JsonValue;
+  readonly notifications: readonly JsonValue[];
+}
+
+/**
+ * One lock/unlock outcome. Both flags come from a RE-READ of GetTargets after
+ * the mutation, never from the mutation's own 200.
+ *
+ * `locked`  — the lock has landed and the target is usable.
+ * `acquiring` — the server accepted the attempt and is still acquiring it.
+ * `released` — it is no longer locked (the unlock answer).
+ */
+export interface TargetActionResult {
+  readonly targetID: number;
+  readonly locked: boolean;
+  readonly acquiring: boolean;
+  readonly released: boolean;
+  readonly targetIDs: JsonValue;
+  readonly notifications: readonly JsonValue[];
+}
+
+/**
+ * One module activate/deactivate outcome, verified against the space snapshot's
+ * activeModuleIDs. `active` / `stopped` are NULL when the snapshot could not
+ * answer — "unknown", never "off".
+ */
+export interface ModuleActionResult {
+  readonly itemID: number;
+  readonly active: boolean | null;
+  readonly stopped: boolean | null;
+  readonly activeModuleIDs: JsonValue;
+  readonly notifications: readonly JsonValue[];
+}
+
+function readNotifications(data: Record<string, JsonValue>): readonly JsonValue[] {
+  return Array.isArray(data.notifications) ? data.notifications : [];
+}
+
+/** Read the locked-target list (dogmaIM.GetTargets). */
+export async function getTargets(options: ApiOptions = {}): Promise<TargetsResult> {
+  const data = await getJson("/api/bridge/targets", options);
+  return { targetIDs: data.targetIDs ?? null, notifications: readNotifications(data) };
+}
+
+/** Lock a target (dogmaIM.AddTarget). Acquisition is not instant. */
+export async function lockTarget(
+  targetID: number,
+  options: ApiOptions = {},
+): Promise<TargetActionResult> {
+  const data = await postJson("/api/bridge/targets/lock", { targetID }, options);
+  return {
+    targetID,
+    locked: data.locked === true,
+    acquiring: data.acquiring === true,
+    released: false,
+    targetIDs: data.targetIDs ?? null,
+    notifications: readNotifications(data),
+  };
+}
+
+/**
+ * Release ONE lock (dogmaIM.RemoveTarget, preceded by CancelAddTarget so the
+ * same button also abandons a lock that is still being acquired). The bulk
+ * verbs are not on the gateway allowlist at all, so a stray click here can only
+ * ever cost one lock.
+ */
+export async function unlockTarget(
+  targetID: number,
+  options: ApiOptions = {},
+): Promise<TargetActionResult> {
+  const data = await postJson("/api/bridge/targets/unlock", { targetID }, options);
+  return {
+    targetID,
+    locked: false,
+    acquiring: false,
+    released: data.released === true,
+    targetIDs: data.targetIDs ?? null,
+    notifications: readNotifications(data),
+  };
+}
+
+function readModuleAction(itemID: number, data: Record<string, JsonValue>): ModuleActionResult {
+  return {
+    itemID,
+    active: typeof data.active === "boolean" ? data.active : null,
+    stopped: typeof data.stopped === "boolean" ? data.stopped : null,
+    activeModuleIDs: data.activeModuleIDs ?? null,
+    notifications: readNotifications(data),
+  };
+}
+
+/**
+ * Switch a module on (dogmaIM.Activate).
+ *
+ * `effect` is optional BY DESIGN: omit it and the server resolves the module's
+ * own default activation effect. `repeat` is retail's cycle flag — -1 keeps
+ * cycling (the default), 0 runs a single cycle. `targetID` is omitted for
+ * modules that act on the ship itself.
+ */
+export async function activateModule(
+  itemID: number,
+  opts: { effect?: string; targetID?: number | null; repeat?: -1 | 0 } = {},
+  options: ApiOptions = {},
+): Promise<ModuleActionResult> {
+  const body: Record<string, JsonValue> = { itemID };
+  if (opts.effect) {
+    body.effect = opts.effect;
+  }
+  if (opts.targetID) {
+    body.targetID = opts.targetID;
+  }
+  if (opts.repeat === 0) {
+    body.repeat = 0;
+  }
+  return readModuleAction(itemID, await postJson("/api/bridge/modules/activate", body, options));
+}
+
+/** Switch a module off (dogmaIM.Deactivate). */
+export async function deactivateModule(
+  itemID: number,
+  opts: { effect?: string } = {},
+  options: ApiOptions = {},
+): Promise<ModuleActionResult> {
+  const body: Record<string, JsonValue> = { itemID };
+  if (opts.effect) {
+    body.effect = opts.effect;
+  }
+  return readModuleAction(itemID, await postJson("/api/bridge/modules/deactivate", body, options));
+}
+
 // --- R5b Travel (client-side route solver static data) ---------------------
 // The system-adjacency graph the browser route solver runs BFS over is served
 // as read-only static reference data (GET /api/map/graph) — NOT a gateway call

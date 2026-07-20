@@ -1951,6 +1951,84 @@ unusable. The panel carries *Warp to within* (retail's ladder, defaulting to
 **distance a player reads** — `500 m`, `2.5 km`, `100 km` — never a raw metre
 count and never an identifier (R7d).
 
+### Targeting + module activation — the generic action layer (R23 slice A)
+
+Until R23 the browser could **move** a ship but not **act** with it: there was no
+way to lock a ball or switch a module on, so space was inert. Slice A opens that
+layer **once, as a primitive** — it is deliberately NOT a mining feature.
+
+Locking a target and running a module are the two verbs behind *every* in-space
+action in this game. A mining laser, a turret, a launcher, a salvager, a remote
+repper and an ewar module are the **same two calls** with a different module
+`itemID` and a different effect name. So a later combat goal adds **no new
+gateway pairs, no new BFF routes, no new store slice and no new UI** — it reuses
+all of this unchanged.
+
+**Gateway pairs added (6, all top-level `dogmaIM` on the live in-space session):**
+
+| Tuple | Answers |
+|---|---|
+| `dogmaIM.AddTarget(targetID)` | `[pendingFlag, targetIDList]` |
+| `dogmaIM.CancelAddTarget(targetID)` | `null` — abandon a lock still being acquired |
+| `dogmaIM.RemoveTarget(targetID)` | `null` — drop one landed lock |
+| `dogmaIM.GetTargets()` | the locked `itemID` list — **the only authority** |
+| `dogmaIM.Activate(moduleItemID, effectName, targetID, repeat)` | starts a cycle |
+| `dogmaIM.Deactivate(moduleItemID, effectName)` | stops it |
+
+⚠ **`RemoveTargets`, `ClearTargets` and `GetTargeters` are deliberately absent**
+and sit on the *same* service — a service-granular allowlist would have handed
+the browser a one-call "drop every lock" and a read of who is locking *you*. The
+page releases one lock at a time, by name, so a stray click can only ever cost
+one lock. A test names all three.
+
+**`effectName` is optional, and that is what makes the layer generic.** An empty
+effect name makes the *server* resolve the module's own default activation effect
+from its `typeID`, so the browser never has to know — or guess — what kind of
+module it is holding. `repeat` is retail's cycle flag: `-1` keeps cycling (the
+default), `0` runs a single cycle.
+
+**BFF routes** (all require the web login session and a held bridge session;
+every mutating one requires the ship to be in space, else 409 `NOT_IN_SPACE`):
+
+- `GET  /api/bridge/targets` → `{ ok, targetIDs, notifications }`
+- `POST /api/bridge/targets/lock` `{ targetID }` → `{ ok, targetID, locked, acquiring, targetIDs }`
+- `POST /api/bridge/targets/unlock` `{ targetID }` → `{ ok, targetID, released, targetIDs }`
+- `POST /api/bridge/modules/activate` `{ itemID, effect?, targetID?, repeat? }` → `{ ok, itemID, active, activeModuleIDs }`
+- `POST /api/bridge/modules/deactivate` `{ itemID, effect? }` → `{ ok, itemID, stopped, activeModuleIDs }`
+
+**⚠ A 200 is not proof, three times over.** `AddTarget` answers 200 while the
+lock is still being *acquired*; `RemoveTarget` returns `null` whether or not it
+dropped anything; `Activate` can be accepted and then quietly not run. So:
+
+- every mutation **re-reads** the authority (`GetTargets` for locks, the space
+  snapshot's `activeModuleIDs` for modules) and reports what that read says;
+- `locked` vs `acquiring` are reported **separately** — a lock mid-acquisition is
+  progress, not a failure, and the page shows "Locking…" rather than claiming
+  either outcome;
+- `unlock` issues `CancelAddTarget` **then** `RemoveTarget`, so one button is
+  correct whether the lock landed or is still being acquired;
+- when the call succeeds, the re-read shows nothing changed and the server gave
+  **no reason**, that is surfaced as a **silent decline** — a different store
+  field and a different message from a refusal. The page says exactly that and
+  **never invents a cause**.
+
+**Module state is server state.** The space snapshot's ship projection gained
+`activeModuleIDs`, read off the ship entity's own active-effect map. The browser
+never substitutes its memory of what it clicked — otherwise the page would keep
+claiming a module is running after the server short-cycled it (target lost, hold
+full, out of range). An **absent** `activeModuleIDs` decodes to `null` =
+**unknown**, never `[]` = "nothing running": a wrong "Idle" invites a double
+activation.
+
+**UI (`Overview.svelte`, generic).** Every overview row carries *Lock* /
+*Locking… stop* / *Release lock*. A **Locked targets** table lists each target by
+**name** (resolved from the snapshot; a target no longer in view reads "No longer
+in view", never its `itemID` — R7d). A **Your equipment** table lists every
+*online* module by **name**, with the server's Running / Idle / *Not known* state
+and *Switch on* / *Switch off*, plus one panel-level "Use it on" picker naming the
+locked target — the same pattern as R13's ranges, because hanging a target picker
+off every module row would be unusable.
+
 ### Chat routes (R7)
 
 All require the signed web login session and a held bridge session (else 409

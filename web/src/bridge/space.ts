@@ -127,7 +127,30 @@ function decodeShip(value: JsonValue | undefined): SpaceShipStatus | null {
     shieldCapacity: floatOrNull(raw.shieldCapacity),
     armorCapacity: floatOrNull(raw.armorCapacity),
     hullCapacity: floatOrNull(raw.hullCapacity),
+    // R23: which modules the SERVER says are cycling. An ABSENT field decodes
+    // to null ("unknown"), not [] — a gateway that could not answer must never
+    // be reported to the player as "nothing is running".
+    activeModuleIDs: decodeIDList(raw.activeModuleIDs),
   };
+}
+
+/** A list of game IDs (long-aware) — or null when the field is absent. */
+function decodeIDList(value: JsonValue | undefined): readonly number[] | null {
+  if (!Array.isArray(value)) {
+    return null;
+  }
+  return (value as JsonValue[])
+    .map((entry) => idOrNull(entry))
+    .filter((entry): entry is number => entry !== null);
+}
+
+/**
+ * The itemIDs the server says are locked, from the targets read (goal R23).
+ * Shared by the poll and by every lock/unlock re-read, because both answer the
+ * same `targetIDs` array — the ONLY authority on what is locked.
+ */
+export function decodeTargetIDs(raw: JsonValue | undefined): readonly number[] {
+  return decodeIDList(raw) ?? [];
 }
 
 export function decodeSpaceSnapshot(raw: JsonValue | undefined): SpaceSnapshot {
