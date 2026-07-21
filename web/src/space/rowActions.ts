@@ -79,6 +79,13 @@ export interface RowActionContext {
    * reads as mining gear. 0 does not remove "Mine this"; it gives it a reason.
    */
   readonly minerCount?: number;
+  /**
+   * R33 — how much ore this rock has left, MERGED from the snapshot and the
+   * survey scanner (`remainingOre` in Overview.svelte). Undefined or null is
+   * "not known" and must leave the verb alone; a real 0 is a rock the server
+   * will refuse to mine.
+   */
+  readonly remainingQuantity?: number | null;
 }
 
 /**
@@ -137,16 +144,31 @@ export function actionsForRow(ctx: RowActionContext): readonly RowAction[] {
   // be unusable are the SERVER'S OWN rules restated, not invented ones: a
   // module needs a lock before it will run on something, and there has to be
   // mining equipment switched on for there to be anything to run.
+  //
+  // R33 — AND THE ROCK ITSELF GETS A SAY. The panel already prints "Mined out"
+  // in the Ore left column for a rock the server reads as empty, and until now
+  // it printed that beside a live "Mine this" button. eve.js refuses both the
+  // module (`miningRuntime.js` — `remainingQuantity <= 0` answers
+  // TARGET_NOT_FOUND) and the drones (`droneRuntime.js` — a rock is mineable
+  // only while `remainingQuantity > 0`), so that button could never have worked.
+  //
+  // ⚠ IT IS CHECKED AGAINST A HARD 0, NEVER AGAINST FALSINESS. `null` is "we
+  // were not told", which is a completely different fact and must leave the
+  // verb enabled — the decoder keeps the two apart precisely so this line can.
+  // ⚠ AND IT IS FIRST, because it is the reason no other reason can fix: powering
+  // up a laser and locking the rock will not put ore back into it.
   actions.push({
     id: "mine",
     label: "Mine this",
     concern: "module",
     unavailable:
-      (ctx.minerCount ?? 0) <= 0
-        ? "No mining equipment is switched on — power some up under Your equipment"
-        : !ctx.locked
-          ? "Lock it first — your equipment needs a fix on it before it will run"
-          : null,
+      ctx.remainingQuantity === 0
+        ? "There is no ore left in it"
+        : (ctx.minerCount ?? 0) <= 0
+          ? "No mining equipment is switched on — power some up under Your equipment"
+          : !ctx.locked
+            ? "Lock it first — your equipment needs a fix on it before it will run"
+            : null,
   });
 
   // R23 — lock / release. GENERIC: the same button a combat goal uses, for the

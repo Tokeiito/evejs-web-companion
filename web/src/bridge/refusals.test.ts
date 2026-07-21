@@ -10,6 +10,7 @@ import test from "node:test";
 
 import {
   BRIDGE_REFUSAL_CODES,
+  PREDICTED_REFUSAL_TEXTS,
   SERVER_REFUSAL_KEYS,
   SILENT_REFUSAL_TEXT,
   UNKNOWN_REFUSAL_TEXT,
@@ -99,6 +100,20 @@ function everyPlayerFacingSentence(): string[] {
     SILENT_REFUSAL_TEXT,
   ];
 }
+
+/**
+ * R33's predicted refusals are held to the same R9a LANGUAGE bar (below), but
+ * deliberately NOT to this function's punctuation rule.
+ *
+ * ⚠ THE DIFFERENCE IS THE RENDERING CONTEXT, not a relaxed standard. Everything
+ * in `everyPlayerFacingSentence` is prose in an error paragraph, where a
+ * terminal full stop is correct. A predicted refusal is a BUTTON LABEL — it
+ * replaces "Bring home" on the control itself, following R30's `unavailable`
+ * convention ("There is nothing in your holds to take anywhere"), which carries
+ * no full stop because a label is not a sentence in a paragraph. Forcing one
+ * here would make the drone control read differently from the haul control
+ * sitting a few hundred pixels above it.
+ */
 
 test("R9a — no refusal a player reads contains a resource path, a code prefix, or an identifier", () => {
   for (const sentence of everyPlayerFacingSentence()) {
@@ -279,5 +294,44 @@ test("refusalWords is describeRefusal's text, and never empty", () => {
     const words = refusalWords(raw);
     assert.equal(words, describeRefusal(raw).text);
     assert.ok(words.trim().length > 0);
+  }
+});
+
+// --- R33: the refusals we can see coming ------------------------------------
+
+test("R33 — a predicted refusal is NOT in the wire vocabulary", () => {
+  // ⚠ The two tables must never merge. SERVER_REFUSALS is pinned key-for-key
+  // against the codes a browser call can actually provoke; a sentence that no
+  // wire message maps to would quietly destroy the one property that makes that
+  // table worth having.
+  for (const text of PREDICTED_REFUSAL_TEXTS) {
+    assert.ok(
+      !SERVER_REFUSAL_KEYS.includes(text),
+      `${text} must not be keyed as a wire refusal`,
+    );
+    assert.ok(
+      !BRIDGE_REFUSAL_CODES.includes(text),
+      `${text} must not be keyed as a bridge code`,
+    );
+  }
+});
+
+test("R33 — each predicted refusal is a distinct sentence a player can act on", () => {
+  assert.ok(PREDICTED_REFUSAL_TEXTS.length > 0);
+  assert.equal(
+    new Set(PREDICTED_REFUSAL_TEXTS).size,
+    PREDICTED_REFUSAL_TEXTS.length,
+    "two controls must not wear the same words",
+  );
+  for (const text of PREDICTED_REFUSAL_TEXTS) {
+    // The same R9a language bar every arriving refusal clears.
+    assert.ok(isPlainPlayerLanguage(text), `not plain player language: ${text}`);
+    assert.ok(!text.includes("UI/"), `resource path leaked: ${text}`);
+    assert.ok(!text.includes("CALL_REFUSED"), `wire code leaked: ${text}`);
+    assert.ok(!/^\d/.test(text), `numeric prefix leaked: ${text}`);
+    assert.ok(text.trim().length > 10, `too terse to explain anything: ${text}`);
+    // ⚠ NO INVENTED REMEDY. Regaining drone control is CmdReconnectToDrones,
+    // which this client cannot dispatch — the gateway does not allowlist it.
+    assert.doesNotMatch(text, /reconnect|regain control/i);
   }
 });

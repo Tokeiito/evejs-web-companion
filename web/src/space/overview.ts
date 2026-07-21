@@ -279,6 +279,44 @@ export function isMyDrone(
 }
 
 /**
+ * Can my ship give this drone ORDERS? (goal R33)
+ *
+ * ⚠ DELIBERATELY NARROWER THAN `isMyDrone`, AND THE GAP BETWEEN THE TWO IS THE
+ * WHOLE OF R33. `isMyDrone` is the LISTING rule — owner OR controller — and the
+ * BFF's `readDronesInSpace` uses the same disjunction to decide what appears in
+ * the Drones panel. This is the CONTROL rule, and eve.js applies exactly one
+ * test for it: `droneRuntime.js` refuses every drone order
+ * (`commandReturnDrones`, `commandEngage`, `commandMineRepeatedly`,
+ * `commandSalvage`, `commandAbandonDrone`) unless
+ * `droneEntity.controllerID === shipRecord.itemID`.
+ *
+ * So a drone you OWN but no longer CONTROL is listed and cannot be ordered.
+ * That is not hypothetical: an abandoned `Ice Harvesting Drone II`
+ * (`controllerID: null`) in Perimeter II - Asteroid Belt 1 was recalled live,
+ * answered 200, and did not move for 20 s. The server's reason was sitting in
+ * the call RESULT dict, which the BFF drops — so nothing ever reached the
+ * player. This predicate is what lets the control say so up front.
+ *
+ * ⚠ NOTE IT COMPARES AGAINST THE HULL, NOT AGAINST NULL. "Abandoned" is only
+ * the commonest way to fail this; a drone under ANOTHER ship's control fails it
+ * too, and a `controllerID !== null` test would wave that one through.
+ *
+ * `null` means WE CANNOT TELL — the snapshot carries no row for this drone, or
+ * we do not know our own hull's id. A null must leave the control ENABLED, so
+ * the server can give the real answer; guessing here would be the exact failure
+ * this function exists to fix, pointed the other way.
+ */
+export function canMyShipOrderDrone(
+  entity: SpaceEntity | null | undefined,
+  myShipID: number | null,
+): boolean | null {
+  if (!entity || entity.kind !== "drone" || myShipID === null) {
+    return null;
+  }
+  return entity.controllerID === myShipID;
+}
+
+/**
  * The hostiles in a snapshot, nearest first.
  *
  * Separate from `buildOverviewRows` on purpose: the overview is a filtered,

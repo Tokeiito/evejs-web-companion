@@ -71,6 +71,21 @@ interface SceneOptions {
   readonly droneBandwidth?: number | null;
   readonly hostiles?: { itemID: number; name: string; npcEntityType: string | null }[];
   readonly players?: { itemID: number; name: string }[];
+  /**
+   * R33 — the SNAPSHOT rows for drones, which is where `controllerID` lives.
+   *
+   * ⚠ SEPARATE FROM `inSpace` ON PURPOSE, because the two really are separate
+   * on the wire and the gap between them is the whole defect. `inSpace` is the
+   * BFF's drone list (owner OR controller); the snapshot is what carries the
+   * controller field. A case that supplies `inSpace` and NO snapshot row is the
+   * honest "we cannot tell" case, and it must leave the control alone.
+   */
+  readonly droneEntities?: {
+    itemID: number;
+    name: string;
+    controllerID: number | null;
+    ownerID?: number | null;
+  }[];
   readonly loadDrones?: boolean;
   readonly shieldRatio?: number;
 }
@@ -126,6 +141,19 @@ function scene(options: SceneOptions = {}): string {
   for (const player of options.players ?? []) {
     entities.push(
       spaceRow({ itemID: player.itemID, name: player.name, characterID: 90000042 }),
+    );
+  }
+  for (const drone of options.droneEntities ?? []) {
+    entities.push(
+      spaceRow({
+        itemID: drone.itemID,
+        kind: "drone",
+        typeID: DRONE_TYPE_ID,
+        name: drone.name,
+        ownerID: drone.ownerID === undefined ? CHARACTER_ID : drone.ownerID,
+        controllerID: drone.controllerID,
+        droneActivity: "idle",
+      }),
     );
   }
   store.apply({
@@ -386,4 +414,193 @@ test("R7d: no numeric ID reaches the rendered drone or threat markup", () => {
       `the id ${id} must never be visible to a player`,
     );
   }
+});
+
+// --- R33: a control that cannot work must not look like one -----------------
+//
+// THE CASE, MEASURED LIVE, NOT IMAGINED. An abandoned `Ice Harvesting Drone II`
+// (`controllerID: null`) was left in Perimeter II - Asteroid Belt 1.
+// `entity.CmdReturnBay` on it answers 200, and the drone does not move — the
+// ninth confirmed silent decline on this server. eve.js DOES refuse it, with a
+// reason ("That drone is not currently under this ship's control."), but the
+// reason is an entry in the call RESULT dict and the BFF forwards only
+// `notifications`, so nothing whatsoever reaches the player.
+//
+// So R31 cannot save this one: there is no refusal to render. The client has to
+// see it coming, and it can — `controllerID` is decoded and sitting there.
+//
+// ⚠ THE OTHER HALF OF THE RULE IS TESTED JUST AS HARD. Where the client CANNOT
+// source the reason it must leave the control alone. Three of the tests below
+// exist only to stop this fix over-correcting into a guess.
+
+const ABANDONED_DRONE_ID = 9500002;
+const OTHER_SHIPS_DRONE_ID = 9500003;
+
+/** The live fixture: mine by ownership, flown by nobody. */
+const AN_ABANDONED_DRONE = {
+  itemID: ABANDONED_DRONE_ID,
+  typeID: DRONE_TYPE_ID,
+  name: "Ice Harvesting Drone II",
+  activity: "idle",
+  targetID: null,
+  shieldRatio: 0,
+  armorRatio: 0.25,
+  hullRatio: 1,
+};
+
+test("R33: a drone this ship does not fly renders DISABLED, wearing the reason", () => {
+  const body = scene({
+    inSpace: [AN_ABANDONED_DRONE],
+    droneEntities: [
+      { itemID: ABANDONED_DRONE_ID, name: "Ice Harvesting Drone II", controllerID: null },
+    ],
+  });
+  // The reason is the LABEL, not a tooltip. A `title` alone is invisible on a
+  // touch screen and only arrives after the press on every other device.
+  assert.match(visibleText(body), /Your ship is not flying this drone/);
+  assert.match(
+    body,
+    /<button[^>]*disabled[^>]*>[\s\S]{0,120}Your ship is not flying this drone/,
+    "the control must be disabled, not merely captioned",
+  );
+  // And it must NOT still be offering the action it cannot perform.
+  //
+  // ⚠ Scoped to the BUTTON, not to the page text: the panel's standing help
+  // note ("…or Bring home to call them back") names the verb in prose, and that
+  // sentence describes the feature rather than promising this drone.
+  assert.doesNotMatch(
+    body,
+    /<button[^>]*>[\s\S]{0,80}Bring home\s*<\/button>/,
+    "no live Bring home control may survive for a drone we cannot order",
+  );
+});
+
+test("R33: the drone is still LISTED, by name — honest is not hidden", () => {
+  // Removing the row would be a different lie: the drone is really out there,
+  // it is really yours, and a panel that hides it invites a player to wonder
+  // where it went.
+  const text = visibleText(
+    scene({
+      inSpace: [AN_ABANDONED_DRONE],
+      droneEntities: [
+        { itemID: ABANDONED_DRONE_ID, name: "Ice Harvesting Drone II", controllerID: null },
+      ],
+    }),
+  );
+  assert.match(text, /Ice Harvesting Drone II/);
+  assert.match(text, /1 out/, "it still counts as a drone in space");
+});
+
+test("R33: the gate is THIS HULL, not merely 'has a controller'", () => {
+  // A drone under ANOTHER ship's control fails eve.js's check exactly as an
+  // abandoned one does. A `controllerID !== null` test would wave it through.
+  const body = scene({
+    inSpace: [{ ...AN_ABANDONED_DRONE, itemID: OTHER_SHIPS_DRONE_ID, name: "Someone's Warrior" }],
+    droneEntities: [
+      { itemID: OTHER_SHIPS_DRONE_ID, name: "Someone's Warrior", controllerID: SHIP_ID + 1 },
+    ],
+  });
+  assert.match(visibleText(body), /Your ship is not flying this drone/);
+});
+
+test("R33: a drone this ship DOES fly is untouched", () => {
+  const body = scene({
+    inSpace: [A_SPACE_DRONE],
+    droneEntities: [{ itemID: SPACE_DRONE_ID, name: "Hobgoblin I", controllerID: SHIP_ID }],
+  });
+  assert.match(visibleText(body), /Bring home/);
+  assert.doesNotMatch(visibleText(body), /Your ship is not flying/);
+  assert.match(
+    body,
+    /<button(?![^>]*disabled)[^>]*>[\s\S]{0,80}Bring home/,
+    "a drone we DO control must keep a live button",
+  );
+});
+
+test("R33: capability is NOT removed — one dead drone does not disable the flight", () => {
+  // The rule that matters most. A mixed flight must still recall everything it
+  // legitimately can; disabling the group because one drone is unreachable
+  // would cost a player the drones they still own.
+  const body = scene({
+    inSpace: [A_SPACE_DRONE, AN_ABANDONED_DRONE],
+    droneEntities: [
+      { itemID: SPACE_DRONE_ID, name: "Hobgoblin I", controllerID: SHIP_ID },
+      { itemID: ABANDONED_DRONE_ID, name: "Ice Harvesting Drone II", controllerID: null },
+    ],
+  });
+  const text = visibleText(body);
+  // The group verbs are still offered, and still say what they do.
+  assert.match(text, /Bring them all home/);
+  assert.doesNotMatch(text, /Your ship is not flying any of these drones/);
+  assert.match(
+    body,
+    /<button(?![^>]*disabled)[^>]*>[\s\S]{0,80}Bring them all home/,
+    "the group order must stay live for the drones it can reach",
+  );
+  // And the dead one still says its piece, in the same panel.
+  assert.match(text, /Your ship is not flying this drone/);
+});
+
+test("R33: when NOT ONE drone is ours to fly, the group order says so too", () => {
+  const body = scene({
+    inSpace: [AN_ABANDONED_DRONE],
+    droneEntities: [
+      { itemID: ABANDONED_DRONE_ID, name: "Ice Harvesting Drone II", controllerID: null },
+    ],
+  });
+  assert.match(visibleText(body), /Your ship is not flying any of these drones/);
+  assert.doesNotMatch(visibleText(body), /Bring them all home/);
+});
+
+// --- R33, the other side of the line: DO NOT GUESS --------------------------
+
+test("R33: a drone the snapshot does not carry keeps its LIVE button", () => {
+  // ⚠ THIS IS THE ANTI-OVER-CORRECTION TEST. `inSpace` lists the drone; the
+  // snapshot has no row for it, so `controllerID` is not merely null — it is
+  // UNKNOWN. A disabled button here would assert a reason we cannot source,
+  // which is a worse failure than an enabled one that gets a real answer.
+  const body = scene({ inSpace: [A_SPACE_DRONE] });
+  assert.match(visibleText(body), /Bring home/);
+  assert.doesNotMatch(visibleText(body), /Your ship is not flying/);
+  assert.match(
+    body,
+    /<button(?![^>]*disabled)[^>]*>[\s\S]{0,80}Bring home/,
+    "unknown must leave the control alone",
+  );
+});
+
+test("R33: an unknown drone is still included in the GROUP order", () => {
+  // The same rule, applied to the list the group buttons send: "we could not
+  // check" must not quietly shrink what a group order acts on.
+  const body = scene({
+    inSpace: [A_SPACE_DRONE, AN_ABANDONED_DRONE],
+    droneEntities: [
+      // Only the abandoned one has a snapshot row; A_SPACE_DRONE is unknown.
+      { itemID: ABANDONED_DRONE_ID, name: "Ice Harvesting Drone II", controllerID: null },
+    ],
+  });
+  assert.match(
+    body,
+    /<button(?![^>]*disabled)[^>]*>[\s\S]{0,80}Bring them all home/,
+    "the unknown drone keeps the group order live",
+  );
+});
+
+test("R33: R9a — the reason is a sentence, and names no id and no remedy we lack", () => {
+  const text = visibleText(
+    scene({
+      inSpace: [AN_ABANDONED_DRONE],
+      droneEntities: [
+        { itemID: ABANDONED_DRONE_ID, name: "Ice Harvesting Drone II", controllerID: null },
+      ],
+    }),
+  );
+  assert.doesNotMatch(text, /controllerID|CmdReturnBay|CALL_REFUSED|null/i);
+  for (const id of [ABANDONED_DRONE_ID, SHIP_ID, CHARACTER_ID, DRONE_TYPE_ID]) {
+    assert.doesNotMatch(text, new RegExp(`\b${id}\b`), `id ${id} leaked to the player`);
+  }
+  // ⚠ NO INVENTED REMEDY. Regaining control is `CmdReconnectToDrones`, which is
+  // NOT in the gateway's allowlist — this client cannot dispatch it, so the
+  // sentence must not send a player looking for a button that is not there.
+  assert.doesNotMatch(text, /reconnect|regain control|take control/i);
 });

@@ -13,6 +13,7 @@
   import { egoPosition } from "../bridge/space.ts";
   import {
     buildOverviewRows,
+    canMyShipOrderDrone,
     formatDistance,
     healthIsDropping,
     hostileLabel,
@@ -24,6 +25,12 @@
     type OverviewRow,
     type OverviewSort,
   } from "../space/overview.ts";
+  // R33 — the two sentences a drone control wears when this ship cannot order
+  // it. They live with every other refusal's wording, not here.
+  import {
+    DRONE_NOT_UNDER_YOUR_CONTROL,
+    NO_DRONE_UNDER_YOUR_CONTROL,
+  } from "../bridge/refusals.ts";
   import { droneActivityLabel, droneIsBusy } from "../bridge/drones.ts";
   // R30 slice A — what a stargate row could never say: which system is through
   // it. Read from the route graph the autopilot already caches.
@@ -555,6 +562,10 @@
       acquiring: isAcquiring(row.itemID),
       gateLink: row.gateLink,
       minerCount: minerRows.length,
+      // R33 — the same merged number the Ore left column renders (an OverviewRow
+      // IS a SpaceEntity), so the verb and the column can never disagree about
+      // whether the rock is empty.
+      remainingQuantity: remainingOre(row),
     });
   });
 
@@ -1152,6 +1163,10 @@
     return (dronesInSpace ?? [])
       .map((drone) => {
         const target = drone.targetID === null ? null : byID.get(drone.targetID) ?? null;
+        // R33 — can this ship actually ORDER it? The panel lists a drone when
+        // it is owned by me OR flown by my hull; the server only obeys the
+        // second. `null` is "we cannot tell", and it is NOT the same as false.
+        const orderable = canMyShipOrderDrone(byID.get(drone.itemID) ?? null, ship?.itemID ?? null);
         return {
           itemID: drone.itemID,
           label:
@@ -1163,13 +1178,41 @@
           // The ball it is busy with, by NAME. A target the snapshot no longer
           // carries simply has no name to show, so it shows none (R7d).
           targetLabel: target === null ? "" : displayLabel(target),
+          // The R30 shape: a reason, or null. Only a HARD false earns one —
+          // a `null` orderable leaves the control live to get a real answer.
+          unavailable: orderable === false ? DRONE_NOT_UNDER_YOUR_CONTROL : null,
         };
       })
       .sort((left, right) => Number(right.busy) - Number(left.busy));
   });
 
-  /** Every drone in space, for the "all of them" buttons. */
-  const allDroneIDs = $derived(spaceRows.map((row) => row.itemID));
+  /**
+   * Every drone the group buttons may act on (goal R33).
+   *
+   * ⚠ THIS INCLUDES THE ONES WE CANNOT JUDGE, and that is the point. Only a
+   * drone we have POSITIVELY established is not ours to fly is dropped; a drone
+   * the snapshot does not carry stays in, because "we could not check" must
+   * never quietly narrow what a group order does.
+   *
+   * ⚠ AND IT NEVER EMPTIES THE GROUP FOR THE REST. One un-orderable drone
+   * removes itself from the list and nothing else — the other drones are still
+   * recalled, still attack, still mine. Capability is only ever removed from
+   * the drone that provably does not have it.
+   */
+  const allDroneIDs = $derived(
+    spaceRows.filter((row) => row.unavailable === null).map((row) => row.itemID),
+  );
+
+  /**
+   * The reason a GROUP order cannot run, or null.
+   *
+   * It is only ever set when there are drones out and NOT ONE of them is ours
+   * to fly — the whole-flight version of the per-row sentence. With a mixed
+   * flight the button stays live and quietly acts on the ones it can.
+   */
+  const groupOrderUnavailable = $derived(
+    spaceRows.length > 0 && allDroneIDs.length === 0 ? NO_DRONE_UNDER_YOUR_CONTROL : null,
+  );
 
   /**
    * R30 slice F — what a COLLAPSED drone panel still has to say.
@@ -2320,12 +2363,23 @@
               {drone.activity}{drone.targetLabel ? ` — ${drone.targetLabel}` : ""}
             </span>
             <span class="row-actions">
+              <!--
+                R33 — the control says what it can do, or why it cannot.
+
+                ⚠ THE REASON IS THE LABEL, exactly as R30's haul verb does it.
+                A greyed "Bring home" with the explanation hidden in a tooltip
+                is the silent decline again, one layer up: a player on a touch
+                screen never sees a `title`, and a player who does see it has
+                already pressed. This is the ninth confirmed silent decline on
+                this server, and every one of them looked like a live button.
+              -->
               <button
                 type="button"
-                disabled={busy}
+                disabled={busy || drone.unavailable !== null}
+                title={drone.unavailable ?? ""}
                 onclick={() => run(() => flow.recallDrones([drone.itemID]))}
               >
-                Bring home
+                {drone.unavailable ?? "Bring home"}
               </button>
             </span>
           </li>
@@ -2339,26 +2393,36 @@
           CmdEngage — this is a UI choice, so a player only ever sends drones at
           something they deliberately picked.)
         -->
+        <!--
+          R33 — all three group orders carry the SAME server gate. eve.js
+          refuses recall, engage and mine alike unless the drone's controllerID
+          is this hull, so all three act on `allDroneIDs`, which has already
+          dropped the drones we know are not ours to fly — and kept every drone
+          we could not check.
+        -->
         <button
           type="button"
-          disabled={busy || effectiveTargetID <= 0}
+          disabled={busy || effectiveTargetID <= 0 || groupOrderUnavailable !== null}
+          title={groupOrderUnavailable ?? ""}
           onclick={() => run(() => flow.engageDrones(allDroneIDs, effectiveTargetID))}
         >
-          Attack what I have locked
+          {groupOrderUnavailable ?? "Attack what I have locked"}
         </button>
         <button
           type="button"
-          disabled={busy || effectiveTargetID <= 0}
+          disabled={busy || effectiveTargetID <= 0 || groupOrderUnavailable !== null}
+          title={groupOrderUnavailable ?? ""}
           onclick={() => run(() => flow.mineWithDrones(allDroneIDs, effectiveTargetID))}
         >
-          Mine what I have locked
+          {groupOrderUnavailable ?? "Mine what I have locked"}
         </button>
         <button
           type="button"
-          disabled={busy}
+          disabled={busy || groupOrderUnavailable !== null}
+          title={groupOrderUnavailable ?? ""}
           onclick={() => run(() => flow.recallDrones(allDroneIDs))}
         >
-          Bring them all home
+          {groupOrderUnavailable ?? "Bring them all home"}
         </button>
       </p>
       {#if effectiveTargetID <= 0}

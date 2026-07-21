@@ -246,6 +246,54 @@ const BRIDGE_REFUSALS: Readonly<Record<string, string>> = Object.freeze({
   BRIDGE_BAD_RESPONSE: "The server's answer could not be read.",
 });
 
+// --- R33: the refusals we can see coming ------------------------------------
+//
+// ⚠ THESE ARE NOT WIRE STRINGS, and they are deliberately NOT in
+// SERVER_REFUSALS. That table is the vocabulary of refusals that ARRIVE, pinned
+// key-for-key against the codes a browser call can provoke; putting a sentence
+// there that no wire message maps to would corrupt the one table whose value is
+// that it matches the server exactly.
+//
+// This is the other half of the same job. A PREDICTED refusal is one the client
+// can source from a field it already holds, BEFORE the player presses anything
+// — so the control renders disabled wearing the reason instead of inviting a
+// press that goes nowhere. The wording lives here for the same reason every
+// other refusal's does: refusals.ts is the only place in this app where "the
+// action will not happen" becomes words a player reads, and a sentence kept
+// anywhere else drifts out of reach of the R9a sweep that pins it.
+//
+// ⚠ THE BAR FOR ADDING ONE IS A SERVER GATE YOU CAN POINT AT, not a hunch. If
+// the client cannot tell, the control STAYS ENABLED and the server's own
+// refusal answers — a disabled button asserting a reason we cannot source is a
+// worse failure than an enabled one that gets a true answer.
+
+/**
+ * A drone your ship is not flying (goal R33).
+ *
+ * SOURCED FROM: `droneRuntime.js` refuses every drone order — recall, engage,
+ * mine, salvage, abandon; five call sites, one condition — unless
+ * `droneEntity.controllerID === shipRecord.itemID`. The server's own words for
+ * it are "That drone is not currently under this ship's control."; this says
+ * the same thing in the second person, because we are saying it BEFORE the
+ * press rather than relaying an answer.
+ *
+ * ⚠ IT NAMES NO REMEDY, on purpose. Regaining control is
+ * `entity.CmdReconnectToDrones`, which is NOT in the gateway's
+ * WEB_CALL_ALLOWLIST — this client cannot dispatch it. Telling a player to
+ * reconnect would be sending them after a button that does not exist here, and
+ * an invented remedy is the same failure as an invented reason.
+ */
+export const DRONE_NOT_UNDER_YOUR_CONTROL = "Your ship is not flying this drone";
+
+/** The same fact about a whole flight, for the group order (goal R33). */
+export const NO_DRONE_UNDER_YOUR_CONTROL = "Your ship is not flying any of these drones";
+
+/** Every predicted refusal this client can put on a control. Exported for the tests. */
+export const PREDICTED_REFUSAL_TEXTS: readonly string[] = Object.freeze([
+  DRONE_NOT_UNDER_YOUR_CONTROL,
+  NO_DRONE_UNDER_YOUR_CONTROL,
+]);
+
 /** Every server refusal string this client explains in words. Exported for the tests. */
 export const SERVER_REFUSAL_KEYS: readonly string[] = Object.freeze(
   Object.keys(SERVER_REFUSALS),

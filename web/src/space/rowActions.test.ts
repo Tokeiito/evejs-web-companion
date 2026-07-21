@@ -221,3 +221,57 @@ test("the lost-selection sentence is plain player language, and names no id", ()
   assert.match(SELECTION_GONE, /no longer/i);
   assert.doesNotMatch(SELECTION_GONE, /\d/, "R7d: it never quotes what it lost by number");
 });
+
+// --- R33: a rock with nothing left in it ------------------------------------
+//
+// The Ore left column has printed "Mined out" since R23 slice B, and until R33
+// it printed that next to a live "Mine this" button. eve.js refuses both the
+// module path (`miningRuntime.js` answers TARGET_NOT_FOUND when
+// `remainingQuantity <= 0`) and the drone path (`droneRuntime.js` treats a rock
+// as mineable only while `remainingQuantity > 0`), so the button was an
+// invitation to a refusal the client could already see coming.
+
+test("R33: a rock the client KNOWS is empty carries the reason", () => {
+  const mine = actionsForRow({
+    ...A_ROCK,
+    locked: true,
+    minerCount: 1,
+    remainingQuantity: 0,
+  }).find((a) => a.id === "mine");
+  assert.ok(mine, "the verb is still offered, wearing its reason");
+  assert.match(mine.unavailable ?? "", /no ore left/i);
+});
+
+test("R33: the empty-rock reason BEATS the other two — it is the one they cannot fix", () => {
+  // Powering up a laser and locking the rock will not put ore back into it, so
+  // a player must not be sent to do either.
+  const reason = (ctx: Partial<RowActionContext>) =>
+    actionsForRow({ ...A_ROCK, ...ctx }).find((a) => a.id === "mine")?.unavailable ?? null;
+  assert.match(reason({ remainingQuantity: 0, minerCount: 0, locked: false }) ?? "", /no ore left/i);
+  assert.match(reason({ remainingQuantity: 0, minerCount: 1, locked: false }) ?? "", /no ore left/i);
+});
+
+test("R33: UNKNOWN ore is not empty ore — the verb stays usable", () => {
+  // ⚠ THE ANTI-OVER-CORRECTION TEST, again. The decoder keeps `null` ("we were
+  // not told") apart from `0` ("the server says it is empty") precisely so this
+  // stays true; a falsy test here would disable Mine this on every rock the
+  // snapshot has no mining record for.
+  const reason = (ctx: Partial<RowActionContext>) =>
+    actionsForRow({ ...A_ROCK, ...ctx }).find((a) => a.id === "mine")?.unavailable ?? null;
+  assert.equal(reason({ remainingQuantity: null, minerCount: 1, locked: true }), null);
+  assert.equal(reason({ minerCount: 1, locked: true }), null, "absent is also unknown");
+  // And a rock with ore in it is untouched.
+  assert.equal(reason({ remainingQuantity: 12000, minerCount: 1, locked: true }), null);
+});
+
+test("R33: the empty-rock reason is plain player language and names no field", () => {
+  const mine = actionsForRow({
+    ...A_ROCK,
+    locked: true,
+    minerCount: 1,
+    remainingQuantity: 0,
+  }).find((a) => a.id === "mine");
+  const reason = mine?.unavailable ?? "";
+  assert.doesNotMatch(reason, /remainingQuantity|TARGET_NOT_FOUND|null|0/);
+  assert.ok(reason.length > 10, "a sentence, not a flag");
+});
