@@ -209,7 +209,7 @@ Success (200): the `/call` envelope plus:
 
 `shipID` (**R3**) is the docked character's active ship (`session.shipid`, set by `applyCharacterToSession`); the BFF uses it to bind the active ship's cargo with `invbroker.GetInventoryFromId`.
 
-- `bridgeSessionID` is an opaque gateway-minted handle for the stored live session. **It exists only between the gateway and the BFF: the BFF keeps it server-side keyed by its cookie session, and it must never reach browser JS** (same rule as the gateway token).
+- `bridgeSessionID` is an opaque gateway-minted handle for the stored live session. **It exists only between the gateway and the BFF: the BFF keeps it server-side keyed by its web login session (the `sessionID` inside the signed token, whichever carrier brought it — see "Session carriers (R42)"), and it must never reach browser JS** (same rule as the gateway token).
 - `session` echoes the scalar docked-entry state `applyCharacterToSession` put on the live session (where the character is), so the BFF/page need not re-derive it.
 - Failures: the handler's own refusals → `CALL_REFUSED` (409); apply-failure → `SESSION_SELECT_FAILED`; in both cases the minted session is discarded and unregistered (nothing leaks).
 
@@ -1945,8 +1945,13 @@ its stream and closes attached sockets.
 
 ### BFF: `GET /api/bridge/events` (SSE)
 
-Same-origin, cookie-authed, routed to the web session's own held bridge session;
-409 `NO_LIVE_SESSION` without one, 401 without a login.
+Same-origin, routed to the web session's own held bridge session; 409
+`NO_LIVE_SESSION` without one, 401 without a login.
+
+**This is the one route that takes the session token in the query string**
+(`?access_token=<token>`), because `EventSource` cannot set request headers —
+see "Session carriers (R42)" below for why that is bounded to this route and
+what it costs. The cookie still works here too.
 
 The BFF holds **at most one** gateway WebSocket per held bridge session,
 regardless of how many browsers attach. It is opened lazily on first attach and
@@ -2639,6 +2644,48 @@ The server-side client is `src/eveGatewayClient.js` — since R9b it is the brid
 - Unknown username → **401** `{ "ok": false, "error": "UNKNOWN_EVEJS_ACCOUNT", "message": "Unknown EveJS account." }`.
 - Banned account → 403 `ACCOUNT_BANNED`.
 - Account auto-create is deferred to R2 (alongside `SelectCharacterID`).
+- **Since R42 the success body also carries `sessionToken`** — the same signed
+  token the `Set-Cookie` header carries, handed to the browser so a tab can keep
+  its own. See "Session carriers (R42)" below.
+
+## Session carriers (R42)
+
+The signed login token is unchanged — same `webAuth.createSessionToken`, same
+`verifySessionToken`, same `req.webSessionID`. What R42 changed is **how it
+travels**, because a cookie belongs to the browser profile rather than to the
+tab: a second tab logging in as another account overwrote the first tab's
+session and every open tab collapsed onto the last account to sign in. The
+operator wants ten tabs running ten accounts.
+
+Three carriers, decided in one place (`readSessionToken` in `src/server.js`):
+
+| Carrier | Accepted by | Notes |
+| --- | --- | --- |
+| `Authorization: Bearer <token>` | every route | The per-tab path. Read from the tab's `sessionStorage`, which is per-tab by specification. **Wins over the cookie** when both are present, so a stale profile-wide cookie cannot override a tab's own identity. |
+| `Cookie: evejs_web_poc=<token>` | every route | The pre-R42 carrier, kept so nothing regresses mid-migration. Still `httpOnly`. |
+| `?access_token=<token>` | **`GET /api/bridge/events` only** | The SSE stream. `EventSource` cannot set headers, so the token rides the URL. |
+
+**The credential-in-a-URL trade, stated plainly.** URLs reach browser history,
+`Referer` headers and any access log in front of the app. Two things bound it:
+the BFF writes no access log (nothing logs `req.url`; the error handler logs the
+`Error` alone — keep it that way, and redact `access_token` if request logging is
+ever added), and **the query carrier is accepted by the stream route and no
+other**, so a leaked stream URL can be used to *watch* a session, never to drive
+one. Every mutating route goes through `requireAuth`, which ignores the query
+string entirely.
+
+**The XSS trade, also stated plainly.** A token in `sessionStorage` is a token
+the page's own JavaScript — and therefore an XSS bug — can read; `httpOnly`
+existed to prevent exactly that. Acceptable **here and only here**: this BFF is a
+companion to a local dev emulator whose login accepts any password for any
+existing username (Login semantics above, goal R1), so there is no secret left
+for `httpOnly` to protect. **Do not copy this into anything a network can
+reach.** The note lives in the code as well, above `setSessionCookie`
+(`src/server.js`) and at the top of `web/src/app/sessionToken.ts`.
+
+`POST /api/logout` reads the same carriers, so a tab signing out releases **its
+own** held bridge session and leaves every other tab live; it also expires the
+cookie, and the client clears its stored token.
 
 ## Reference call
 
