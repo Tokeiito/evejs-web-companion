@@ -26,6 +26,7 @@
 // next read. When a read lands it replaces everything — this module has no
 // memory and no simulation of its own.
 
+import { refusalWords } from "./refusals.ts";
 import type { JsonValue } from "./wire.ts";
 import type {
   SkillGroup,
@@ -406,7 +407,12 @@ export function skillQueueRefusal(
     return explain(skillName || "that skill");
   }
   const detail = message.trim();
-  return detail === "" || detail === code
-    ? "The server would not save that queue, and did not say why."
-    : detail;
+  if (detail === "" || detail === code) {
+    return "The server would not save that queue, and did not say why.";
+  }
+  // R31 — an unknown refusal still has to READ as a sentence. `refusalWords`
+  // passes the server's own prose through untouched (which is what R28 wanted
+  // here) but catches the case this used to get wrong: a bare code or a
+  // resource key being dumped straight at the player.
+  return refusalWords(detail);
 }

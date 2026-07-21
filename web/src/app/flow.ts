@@ -66,6 +66,7 @@ import { decodeSkillSheet, skillQueueRefusal } from "../bridge/skills.ts";
 import { createSpacePoller, type SpacePoller } from "./spacePoll.ts";
 import type { FlightStepResult } from "./api.ts";
 import { BridgeCallError } from "../bridge/callMethod.ts";
+import { refusalWords as sayRefusalWords } from "../bridge/refusals.ts";
 import { readDictEntry, type JsonValue } from "../bridge/wire.ts";
 import * as api from "./api.ts";
 import type { ClientStore } from "../store/clientStore.ts";
@@ -572,7 +573,16 @@ export function isSessionLost(error: unknown): boolean {
   return error instanceof BridgeCallError && error.code === "SESSION_NOT_FOUND";
 }
 
-/** Short, human-readable reason for a failed docked read. */
+/**
+ * The RAW reason a read or a mutation failed — the server's own words, or its
+ * code when it gave none.
+ *
+ * ⚠ THIS IS NOT PLAYER-FACING. It is the machine-readable text: what the
+ * autopilot and the mining bot classify on, and what `describeRefusal` keys off.
+ * Anything that ends up on screen must go through `errorWords`/`refusalWords`
+ * (R31) — a bare `CALL_FAILED` or `101,UI/Menusvc/MenuHints/...` is jargon, and
+ * R9a does not have an exception for error paths.
+ */
 function readErrorReason(error: unknown): string {
   if (error instanceof BridgeCallError) {
     return error.code;
@@ -582,6 +592,42 @@ function readErrorReason(error: unknown): string {
   }
   return String(error);
 }
+
+/**
+ * The RAW reason a mutation was refused, keeping the SERVER's own words.
+ *
+ * readErrorReason() reduces a typed refusal to its code, which is right for the
+ * classification paths. It is WRONG for anything a player reads: a corp hangar
+ * refusal is the invbroker handler's own sentence ("You do not have the
+ * required roles") and a fitting refusal is dogma's ("You do not have enough
+ * CPU to online that module."), and throwing those away to show `CALL_REFUSED`
+ * loses the only useful half. The code is kept as a prefix so the
+ * machine-readable part is not lost either; `describeRefusal` looks past it.
+ *
+ * ⚠ STILL NOT PLAYER-FACING. Everything on screen goes through errorWords().
+ */
+function readRefusalReason(error: unknown): string {
+  if (error instanceof BridgeCallError) {
+    const detail = error.message.trim();
+    return detail === "" || detail === error.code ? error.code : `${error.code}: ${detail}`;
+  }
+  return readErrorReason(error);
+}
+
+/**
+ * R31 — THE SINGLE TRANSLATION SEAM. Any failure, in words a player reads.
+ *
+ * Every player-facing message in this file goes through here or through
+ * flightRefusalWords(). The raw text is logged rather than shown, so it stays
+ * recoverable for diagnosis without being in the player's face, and a refusal
+ * this client has never seen still reads as a sentence instead of a code.
+ */
+function errorWords(error: unknown): string {
+  return sayRefusal(readRefusalReason(error));
+}
+
+/** Turn a raw refusal into a sentence, keeping the raw recoverable (R31). */
+const sayRefusal = sayRefusalWords;
 
 export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}): AppFlow {
   const callOptions = {
@@ -905,7 +951,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       type: "station/read-error",
       message: failures.length
         ? failures
-            .map((entry) => `${entry.label}: ${readErrorReason(entry.result.reason)}`)
+            .map((entry) => `${entry.label}: ${errorWords(entry.result.reason)}`)
             .join("; ")
         : null,
     });
@@ -951,7 +997,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         store.apply({ type: "character/offline" });
         throw error;
       }
-      store.apply({ type: "inventory/action-error", message: readErrorReason(error) });
+      store.apply({ type: "inventory/action-error", message: errorWords(error) });
       return;
     }
     await loadInventory();
@@ -959,23 +1005,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
   // --- R14 Inventory depth + corporation hangars ---------------------------
 
-  /**
-   * The reason a mutation was refused, keeping the SERVER's own words.
-   *
-   * The shared readErrorReason() reduces a typed refusal to its code, which is
-   * right for panels whose failures are transport-shaped. R14's are not: a corp
-   * hangar refusal is the invbroker handler's own sentence ("You do not have
-   * the required roles"), and the goal is to surface that verbatim rather than
-   * make the player decode CALL_REFUSED. The code is kept as a prefix so the
-   * machine-readable part is not lost either.
-   */
-  function readRefusalReason(error: unknown): string {
-    if (error instanceof BridgeCallError) {
-      const detail = error.message.trim();
-      return detail === "" || detail === error.code ? error.code : `${error.code}: ${detail}`;
-    }
-    return readErrorReason(error);
-  }
+  // R14's readRefusalReason and its rendered half now live at module scope as
+  // readRefusalReason/errorWords — R31 made "keep the handler's own sentence"
+  // the rule for EVERY panel rather than a special case for corp hangars, so
+  // there is one seam instead of two that could drift apart.
 
   // Turn a transfer result into one honest sentence. A split is judged by the
   // source stack shrinking (it mints a NEW stack at the destination, so the
@@ -1032,7 +1065,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       }
       // A typed refusal carries the HANDLER's own reason; it is surfaced
       // verbatim rather than reworded.
-      store.apply({ type: "inventory/action-error", message: readRefusalReason(error) });
+      store.apply({ type: "inventory/action-error", message: errorWords(error) });
       return;
     }
     store.apply({ type: "inventory/outcome", outcome });
@@ -1068,7 +1101,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           typeID: owningRow ? owningRow.typeID : 0,
           rows: [],
           capacity: null,
-          error: readErrorReason(error),
+          error: errorWords(error),
         },
       });
       return;
@@ -1100,7 +1133,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       store.apply({
         type: "inventory/corp-loaded",
         available: false,
-        reason: readErrorReason(error),
+        reason: errorWords(error),
         divisions: [],
       });
       return;
@@ -1207,7 +1240,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         store.apply({ type: "character/offline" });
         throw error;
       }
-      store.apply({ type: "fitting/action-error", message: readErrorReason(error) });
+      store.apply({ type: "fitting/action-error", message: errorWords(error) });
       return;
     }
     await loadFitting();
@@ -1747,7 +1780,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         store.apply({ type: "character/offline" });
         throw error;
       }
-      store.apply({ type: "chat/error", message: readErrorReason(error) });
+      store.apply({ type: "chat/error", message: errorWords(error) });
     }
   }
 
@@ -1764,7 +1797,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         store.apply({ type: "character/offline" });
         throw error;
       }
-      store.apply({ type: "chat/error", message: readErrorReason(error) });
+      store.apply({ type: "chat/error", message: errorWords(error) });
       return;
     }
     // Reflect the sent message immediately by re-reading the channel backlog
@@ -1795,7 +1828,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         store.apply({ type: "character/offline" });
         throw error;
       }
-      store.apply({ type: "agents/action-error", message: readErrorReason(error) });
+      store.apply({ type: "agents/action-error", message: errorWords(error) });
     }
   }
 
@@ -1805,6 +1838,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // user-facing text as the message (scrambled, invalid target,
   // docking-approach, lost control, ship destroyed). Surface it so the operator
   // sees the real reason, not just the code — "pause on unsafe" must show why.
+  //
+  // ⚠ THIS IS THE RAW TEXT AND MUST STAY RAW. It is what the autopilot and the
+  // mining bot CLASSIFY on — `classifyJumpRefusal` reads it for
+  // `NotWithingMaxJumpDist` to decide approach-and-retry versus pause, and
+  // `isRangeRefusal` reads it to decide whether to close in. Translating here
+  // would silently break both, because a plain sentence does not match a regex
+  // written for the server's vocabulary. Player-facing text comes from
+  // `flightRefusalWords` (R31); the two are deliberately separate.
   function flightErrorReason(error: unknown): string {
     if (error instanceof BridgeCallError) {
       return error.message && error.message !== error.code
@@ -1812,6 +1853,18 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         : error.code;
     }
     return readErrorReason(error);
+  }
+
+  /**
+   * R31 — a movement refusal in words a player reads.
+   *
+   * The player never sees `101,UI/Menusvc/MenuHints/NotWithingMaxJumpDist`
+   * again; they read "That gate is too far away to jump through. Get closer to
+   * it first." The refusal is still a refusal — every caller of this still
+   * renders a failure, at the control that caused it (R30 slice C).
+   */
+  function flightRefusalWords(error: unknown): string {
+    return sayRefusal(flightErrorReason(error));
   }
 
   // --- R6b docked-station-change refresh -----------------------------------
@@ -1848,7 +1901,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         if (isSessionLost(error)) {
           throw error;
         }
-        store.apply({ type: "inventory/action-error", message: readErrorReason(error) });
+        store.apply({ type: "inventory/action-error", message: errorWords(error) });
       }
     }
   }
@@ -2029,7 +2082,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       }
       store.apply({
         type: "space/error",
-        message: `The view around the ship could not be read: ${flightErrorReason(error)}`,
+        message: `The view around the ship could not be read: ${flightRefusalWords(error)}`,
       });
       return;
     }
@@ -2172,7 +2225,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // A targets read failing is not fatal to the overview; say so plainly.
       store.apply({
         type: "targeting/action-error",
-        message: `The locked-target list could not be read: ${flightErrorReason(error)}`,
+        message: `The locked-target list could not be read: ${flightRefusalWords(error)}`,
       });
       return;
     }
@@ -2202,7 +2255,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       }
       store.apply({
         type: "targeting/action-error",
-        message: `${label} refused: ${flightErrorReason(error)}`,
+        message: `${label} refused: ${flightRefusalWords(error)}`,
       });
       return;
     }
@@ -2280,7 +2333,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       }
       store.apply({
         type: "mining/holds-error",
-        message: `Your holds could not be read: ${flightErrorReason(error)}`,
+        message: `Your holds could not be read: ${flightRefusalWords(error)}`,
       });
       return;
     }
@@ -2300,7 +2353,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       }
       store.apply({
         type: "mining/survey-error",
-        message: `The survey scan failed: ${flightErrorReason(error)}`,
+        message: `The survey scan failed: ${flightRefusalWords(error)}`,
       });
       return;
     }
@@ -2328,7 +2381,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       }
       store.apply({
         type: "mining/quotes-error",
-        message: `The refinery could not quote that: ${flightErrorReason(error)}`,
+        message: `The refinery could not quote that: ${flightRefusalWords(error)}`,
       });
       return;
     }
@@ -2369,7 +2422,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       }
       store.apply({
         type: "mining/action-error",
-        message: `${label} refused: ${flightErrorReason(error)}`,
+        message: `${label} refused: ${flightRefusalWords(error)}`,
       });
       return;
     }
@@ -2407,7 +2460,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       }
       store.apply({
         type: "drones/error",
-        message: `Your drones could not be read: ${flightErrorReason(error)}`,
+        message: `Your drones could not be read: ${flightRefusalWords(error)}`,
       });
       return;
     }
@@ -2453,7 +2506,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       }
       store.apply({
         type: "drones/action-error",
-        message: `${label} refused: ${flightErrorReason(error)}`,
+        message: `${label} refused: ${flightRefusalWords(error)}`,
       });
       return;
     }
@@ -2599,7 +2652,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         store.apply({ type: "character/offline" });
         throw error;
       }
-      store.apply({ type: "flight/action-error", message: `${label} refused: ${flightErrorReason(error)}` });
+      store.apply({ type: "flight/action-error", message: `${label} refused: ${flightRefusalWords(error)}` });
       // Re-read the true state so the page shows where the ship actually is,
       // not a stale optimistic guess (best-effort; ignore a follow-up failure).
       try {
@@ -2649,7 +2702,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       }
       store.apply({
         type: "skills/error",
-        message: `Your skills could not be read: ${readErrorReason(error)}`,
+        message: `Your skills could not be read: ${errorWords(error)}`,
       });
       return;
     }
@@ -2677,7 +2730,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         type: "skills/action-error",
         message: error instanceof BridgeCallError
           ? skillQueueRefusal(error.code, error.message, context)
-          : `That change could not be saved: ${readErrorReason(error)}`,
+          : `That change could not be saved: ${errorWords(error)}`,
       });
       // The queue is unchanged on the server, but the panel may have been
       // showing an optimistic order — re-read so what is on screen is the
@@ -2808,7 +2861,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         store.apply({ type: "character/offline" });
         throw error;
       }
-      store.apply({ type: "travel/plan-error", message: `Could not load the map graph: ${readErrorReason(error)}` });
+      store.apply({ type: "travel/plan-error", message: `Could not load the map graph: ${errorWords(error)}` });
       return;
     }
 
@@ -2825,7 +2878,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         store.apply({ type: "character/offline" });
         throw error;
       }
-      store.apply({ type: "travel/plan-error", message: `Could not read your location: ${readErrorReason(error)}` });
+      store.apply({ type: "travel/plan-error", message: `Could not read your location: ${errorWords(error)}` });
       return;
     }
     if (originSystem === null) {
@@ -2844,7 +2897,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         store.apply({ type: "character/offline" });
         throw error;
       }
-      store.apply({ type: "travel/plan-error", message: `Could not resolve the destination: ${readErrorReason(error)}` });
+      store.apply({ type: "travel/plan-error", message: `Could not resolve the destination: ${errorWords(error)}` });
       return;
     }
     if (destination.kind === "unknown" || destination.solarSystemID === null) {
@@ -2945,7 +2998,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       }
       store.apply({
         type: "travel/plan-error",
-        message: `Could not read your location: ${readErrorReason(error)}`,
+        message: `Could not read your location: ${errorWords(error)}`,
       });
       return;
     }
@@ -3300,7 +3353,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     } catch (error) {
       // The finder reads static reference data (web-login only, no bridge
       // session), so a failure is a plain read error surfaced in the slice.
-      store.apply({ type: "finder/error", message: `Could not find agents: ${readErrorReason(error)}` });
+      store.apply({ type: "finder/error", message: `Could not find agents: ${errorWords(error)}` });
       return;
     }
 
@@ -3317,7 +3370,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         // The map graph is the same read-only static data the route solver
         // uses; if it can't load, still list the agents (jumps null) and note
         // why rather than failing the whole find.
-        distanceNote = `Agents listed without distances (map graph unavailable: ${readErrorReason(error)}).`;
+        distanceNote = `Agents listed without distances (map graph unavailable: ${errorWords(error)}).`;
       }
     }
 

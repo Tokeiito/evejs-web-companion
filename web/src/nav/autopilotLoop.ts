@@ -39,6 +39,7 @@
 // Retail's `ignoreTimerCycles` (settle a few ticks after a warp/jump so the
 // transition starts before we re-decide) is mirrored by `settleTicks`.
 
+import { refusalWords } from "../bridge/refusals.ts";
 import { surfaceDistanceMeters } from "../space/overview.ts";
 import type { FlightStatus, SpaceSnapshot } from "../store/types.ts";
 import type { RouteHop } from "./routeSolver.ts";
@@ -833,7 +834,21 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotController {
       setError("The live session ended (idle timeout or another client took over).");
       return;
     }
+    // ⚠ TWO STRINGS, AND THEY ARE NOT INTERCHANGEABLE (R31).
+    //
+    // `reason` is the server's RAW text and every classification below reads
+    // it — classifyJumpRefusal() looks for `NotWithingMaxJumpDist` to decide
+    // approach-and-retry rather than pause, isDockingApproach() decides whether
+    // docking is merely out of range, and the undock/warp guards match on the
+    // handler's own wording. Those regexes are written against the SERVER's
+    // vocabulary, so classifying on translated prose would silently turn a
+    // recoverable refusal into a dead stop.
+    //
+    // `words` is the same refusal in player language and is the ONLY one that
+    // may reach a pause message, because failureReason renders in the cockpit
+    // strip (R30 slice C) where R9a applies.
     const reason = deps.refusalReason(error);
+    const words = refusalWords(reason);
 
     if (action.kind === "undock" && /already in space|already_in_space/i.test(reason)) {
       // Benign: we wanted to be in space and we are. Continue.
@@ -848,7 +863,7 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotController {
         // approach from an autopilot-warp landing takes many ticks).
         memory.approachCycles += 1;
         if (memory.approachCycles > MAX_APPROACH_CYCLES) {
-          setPause(`Could not close to jump range after ${memory.approachCycles} approach cycles: ${reason}`);
+          setPause(`Could not close to jump range after ${memory.approachCycles} approach cycles: ${words}`);
           return;
         }
         memory.pendingApproachGate = action.fromGateID;
@@ -858,16 +873,16 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotController {
       // A genuinely fatal jump refusal (stuck, standings, restricted, ...).
       memory.jumpAttempts += 1;
       if (memory.jumpAttempts > MAX_JUMP_ATTEMPTS) {
-        setPause(`Could not jump after ${memory.jumpAttempts} attempts: ${reason}`);
+        setPause(`Could not jump after ${memory.jumpAttempts} attempts: ${words}`);
         return;
       }
-      setPause(`Jump refused: ${reason}`);
+      setPause(`Jump refused: ${words}`);
       return;
     }
 
     if (action.kind === "approach") {
       // Approach itself refusing is unusual (scrambled / can't move): pause.
-      setPause(`Approach refused: ${reason}`);
+      setPause(`Approach refused: ${words}`);
       return;
     }
 
@@ -887,7 +902,7 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotController {
         memory.settleTicks = SETTLE_DOCK;
         return;
       }
-      setPause(`Dock refused: ${reason}`);
+      setPause(`Dock refused: ${words}`);
       return;
     }
 
@@ -899,13 +914,13 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotController {
         memory.settleTicks = SETTLE_APPROACH;
         return;
       }
-      setPause(`Warp refused: ${reason}`);
+      setPause(`Warp refused: ${words}`);
       return;
     }
 
     // Any other refusal — scrambled/disrupted/invalid target/lost control:
     // pause and show the handler's own reason. Don't guess.
-    setPause(`${labelFor(action)} refused: ${reason}`);
+    setPause(`${labelFor(action)} refused: ${words}`);
   }
 
   function labelFor(action: AutopilotAction): string {
@@ -952,7 +967,7 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotController {
       memory.statusReadFailures += 1;
       if (memory.statusReadFailures > MAX_STATUS_READ_FAILURES) {
         setPause(
-          `Could not read flight status after ${memory.statusReadFailures} tries: ${deps.refusalReason(error)}`,
+          `Could not read flight status after ${memory.statusReadFailures} tries: ${refusalWords(deps.refusalReason(error))}`,
         );
         emit();
         return { kind: "pause", reason: memory.failureReason ?? "status read failed" };

@@ -43,6 +43,7 @@ import {
   measureSpace,
   type SpaceMeasurement,
 } from "./autopilotLoop.ts";
+import { refusalWords } from "../bridge/refusals.ts";
 import { formatDistance, hostileRows, isMyDrone } from "../space/overview.ts";
 import type {
   FlightStatus,
@@ -1270,7 +1271,16 @@ export function createMiningBot(deps: MiningBotDeps): MiningBotController {
       setError("The live session ended (idle timeout or another client took over).");
       return;
     }
+    // ⚠ TWO STRINGS, AND THEY ARE NOT INTERCHANGEABLE (R31). `reason` is the
+    // server's RAW text, which every classification below reads — isRangeRefusal()
+    // decides whether to close in and retry rather than stop, and the undock /
+    // dock / warp guards match on the handler's own wording. Those regexes are
+    // written against the SERVER's vocabulary, so classifying on translated
+    // prose would silently turn a recoverable refusal into a dead bot. `words`
+    // is the same refusal in player language, and is the only one that may be
+    // shown — `failureReason` renders in the cockpit strip, where R9a applies.
     const reason = deps.refusalReason(error);
+    const words = refusalWords(reason);
 
     if (action.kind === "undock" && /already in space|already_in_space/i.test(reason)) {
       // Benign: we wanted to be in space and we are.
@@ -1302,7 +1312,7 @@ export function createMiningBot(deps: MiningBotDeps): MiningBotController {
         memory.settleTicks = SETTLE_DOCK;
         return;
       }
-      setPause(`The station refused to take the ship: ${reason}`);
+      setPause(`The station refused to take the ship: ${words}`);
       return;
     }
 
@@ -1312,7 +1322,7 @@ export function createMiningBot(deps: MiningBotDeps): MiningBotController {
     }
 
     // Anything else: do not guess. Stop and show the server's own words.
-    setPause(`${actionText(action)} was refused: ${reason}`);
+    setPause(`${actionText(action)} was refused: ${words}`);
   }
 
   /** The one place an approach is issued outside the ladder (a range refusal). */
@@ -1328,7 +1338,7 @@ export function createMiningBot(deps: MiningBotDeps): MiningBotController {
         setError("The live session ended (idle timeout or another client took over).");
         return;
       }
-      setPause(`The ship could not close in: ${deps.refusalReason(error)}`);
+      setPause(`The ship could not close in: ${refusalWords(deps.refusalReason(error))}`);
     }
   }
 
@@ -1353,7 +1363,7 @@ export function createMiningBot(deps: MiningBotDeps): MiningBotController {
       memory.statusReadFailures += 1;
       if (memory.statusReadFailures > MAX_READ_FAILURES) {
         setPause(
-          `Your ship's status could not be read after ${memory.statusReadFailures} tries, so the bot stopped: ${deps.refusalReason(error)}`,
+          `Your ship's status could not be read after ${memory.statusReadFailures} tries, so the bot stopped: ${refusalWords(deps.refusalReason(error))}`,
         );
         emit();
         return { kind: "pause", reason: memory.failureReason ?? "status read failed" };
