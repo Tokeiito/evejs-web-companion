@@ -1040,6 +1040,64 @@ export async function loadContractDetail(
   return data.detail ?? null;
 }
 
+// --- R37 Personal Assets ----------------------------------------------------
+// READS ONLY. Raw retail shapes out; decoding is bridge/personalAssets.ts's
+// job, as everywhere else.
+
+export interface RawAssetStations {
+  readonly characterID: number | null;
+  /** charMgr.ListStations' CRowset, untouched. null when the read failed. */
+  readonly stations: JsonValue;
+  /** ⚠ True ONLY when the read SUCCEEDED and was empty. */
+  readonly ownsNothing: boolean;
+  readonly error: string | null;
+}
+
+export interface RawAssetStationItems {
+  readonly stationID: number;
+  /** charMgr.ListStationItems' list, untouched. null when the read failed. */
+  readonly items: JsonValue;
+  /** Per-type m³ from static data; a type it does not know is simply absent. */
+  readonly volumes: Readonly<Record<string, number>>;
+  readonly hasNoItems: boolean;
+  readonly error: string | null;
+}
+
+/** Every station holding this character's items. */
+export async function loadAssetStations(
+  options: ApiOptions = {},
+): Promise<RawAssetStations> {
+  const data = await getJson("/api/bridge/assets", options);
+  return {
+    characterID: asNumberOrNull(data.characterID),
+    stations: data.stations ?? null,
+    ownsNothing: data.ownsNothing === true,
+    error: typeof data.error === "string" ? data.error : null,
+  };
+}
+
+/** What is at one of them. */
+export async function loadAssetStationItems(
+  stationID: number,
+  options: ApiOptions = {},
+): Promise<RawAssetStationItems> {
+  const data = await getJson(
+    `/api/bridge/assets/station?stationID=${encodeURIComponent(String(stationID))}`,
+    options,
+  );
+  const volumes =
+    data.volumes && typeof data.volumes === "object" && !Array.isArray(data.volumes)
+      ? (data.volumes as Record<string, number>)
+      : {};
+  return {
+    stationID: Number(data.stationID) || stationID,
+    items: data.items ?? null,
+    volumes,
+    hasNoItems: data.hasNoItems === true,
+    error: typeof data.error === "string" ? data.error : null,
+  };
+}
+
 /** One person match from /api/characters/find. */
 export interface CharacterMatch {
   readonly characterID: number;

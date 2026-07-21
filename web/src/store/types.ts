@@ -1858,3 +1858,75 @@ export interface SkillsState {
   readonly lastAction: string | null;
   readonly actionError: string | null;
 }
+
+// --- R37 Personal Assets ---------------------------------------------------
+
+/**
+ * One station holding some of this character's items
+ * (charMgr.ListStations, decoded from the CRowset's POSITIONAL packedrows).
+ *
+ * The server resolved every item up its container chain to get here — the
+ * browser never aggregates assets itself.
+ */
+export interface AssetStationRow {
+  readonly stationID: number;
+  readonly solarSystemID: number;
+  /** The station's own type, for its icon. null when the world does not know it. */
+  readonly typeID: number | null;
+  /** How many top-level stacks are here, per the server's own count. */
+  readonly itemCount: number;
+}
+
+/**
+ * One stack at one station (charMgr.ListStationItems, decoded from the
+ * NAME-KEYED packedrows — a different variant from the station rows above).
+ */
+export interface AssetItemRow {
+  readonly itemID: number;
+  readonly typeID: number;
+  /**
+   * How many. ⚠ NOT the row's raw `quantity`, which is -1 for an assembled
+   * item; this is the server's own rule (singleton -> 1, else stacksize).
+   */
+  readonly units: number;
+  /** An assembled, unique thing (a ship, a fitted module) rather than a stack. */
+  readonly singleton: boolean;
+  readonly categoryID: number;
+  readonly groupID: number;
+  /** m³ per unit from static data; null when the type's volume is unknown. */
+  readonly volume: number | null;
+}
+
+/** What one expanded station is holding, and whether that read worked. */
+export interface AssetStationContents {
+  readonly items: readonly AssetItemRow[];
+  /**
+   * ⚠ TRUE ONLY WHEN THE READ SUCCEEDED AND THE STATION WAS EMPTY. "Nothing
+   * here" and "that read failed" must not render alike.
+   */
+  readonly hasNoItems: boolean;
+  readonly error: string | null;
+}
+
+/**
+ * The Personal Assets page state (goal R37). READS ONLY — the bound
+ * global-assets object implements no write at all. The one ACTION the page
+ * offers is setting a destination, which is `travel` state, not asset state.
+ */
+export interface PersonalAssetsState {
+  /** Every station holding something. Empty is meaningful only with `ownsNothing`. */
+  readonly stations: readonly AssetStationRow[];
+  /** Contents keyed by stationID, for the stations the player has expanded. */
+  readonly contents: Readonly<Record<number, AssetStationContents>>;
+  /** Which station is expanded right now; null when none is. */
+  readonly expandedStationID: number | null;
+  readonly loaded: boolean;
+  readonly error: string | null;
+  /**
+   * ⚠ TRUE ONLY WHEN ListStations SUCCEEDED AND WAS EMPTY — never inferred
+   * from an absence. "You own nothing anywhere" is a strong claim and only a
+   * successful read may make it; a failed read leaves this false and sets
+   * `error` instead (the worldHasNoContracts precedent).
+   */
+  readonly ownsNothing: boolean;
+}

@@ -3705,6 +3705,197 @@ app.get("/api/bridge/contracts/detail", requireAuth, async (req, res, next) => {
   }
 });
 
+// --- R37 Personal Assets (charMgr global-assets bridge) ---------------------
+//
+// "Where is my stuff, across the whole cluster." Unlike mail/market/contracts,
+// this surface is NOT top-level: the retail moniker is
+// Moniker('charMgr', (charID, 10002)) via MachoBindObject, and ListStations /
+// ListStationItems dispatch on that bound object — so it rides boundCall, the
+// same two-step invbroker and agentMgr use.
+//
+// ⚠ THE SERVER ALREADY ANSWERS "WHERE IS MY STUFF". charMgrGlobalAssets
+// resolves every item up its container chain to a dockable ROOT location and
+// groups by station (`_buildAssetSnapshot` / `_buildStationRows`). The bridge
+// must not re-derive that by walking containers itself — one call is the whole
+// feature, and a client-side aggregation would disagree with the server about
+// asset-safety wraps, industry-installed items and hidden locations.
+//
+// ⚠ THE TWO READS SEND DIFFERENT ROW SHAPES, and this is the R32 trap again.
+//   * ListStations is a CRowset — `{type:"objectex2", list:[packedrow …]}` —
+//     whose rows are the POSITIONAL packedrow variant (`values` parallel to
+//     `columns`), because buildDbRowset feeds buildPackedRowFromRowsetLine an
+//     ARRAY per row.
+//   * ListStationItems is a plain `{type:"list", items:[packedrow …]}` whose
+//     rows are the NAME-KEYED variant (`fields`).
+// A decoder that commits to either shape silently drops every field of the
+// other. Both are read through `readRowField` on the browser side.
+//
+// ⚠ stationID / solarSystemID / itemID / locationID ARE DECLARED int64 (type
+// code 0x14) in the row descriptors. They are ordinary JS numbers here because
+// the handler builds them with toInteger(), but a caller must not ASSUME that —
+// the gateway renders any genuine BigInt as a BARE DECIMAL STRING, not a
+// {type:"long"} wrapper (encodeJsonSafeCallValue). The browser decoder accepts
+// both.
+//
+// READS ONLY. The bound global-assets object implements no write at all.
+
+/** Moniker('charMgr', (charID, 10002)) — the global ASSETS container. */
+const CHAR_GLOBAL_ASSETS_CONTAINER_ID = 10002;
+
+function globalAssetsBindSpec(held) {
+  return {
+    key: `globalAssets:${held.characterID}`,
+    service: "charMgr",
+    method: "MachoBindObject",
+    args: [[held.characterID, CHAR_GLOBAL_ASSETS_CONTAINER_ID]],
+    kwargs: null,
+  };
+}
+
+/**
+ * Is this ListStations result a SUCCESSFUL, EMPTY read?
+ *
+ * The CRowset's rows live on `list`. An absent/!array `list` is a shape we did
+ * not expect and must NOT be reported as "you own nothing" — the caller only
+ * treats `true` as the fact.
+ */
+function assetStationsEmpty(result) {
+  return Boolean(result) && Array.isArray(result.list) && result.list.length === 0;
+}
+
+/**
+ * GET /api/bridge/assets — every station holding this character's items.
+ *
+ * ONE bound read. The per-station contents are a separate route so first paint
+ * does not fan out one call per station.
+ */
+app.get("/api/bridge/assets", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  try {
+    // Sync the held session's live position first. The asset snapshot is built
+    // AGAINST THE SESSION: charMgrGlobalAssets keys its cache on the session's
+    // station/system/constellation/region, `isHiddenPersonalAssetLocation`
+    // hides the character's own id, and an unknown location inherits the
+    // session's system. This is the same class of dependency that made
+    // GetAgents answer 0 for a docked station until the sync was added.
+    await readHeldFlight(held, req.webSessionID).catch(() => null);
+    const spec = globalAssetsBindSpec(held);
+    const stations = await boundCall(held, req.webSessionID, spec, "ListStations", [], null);
+    res.json({
+      ok: true,
+      characterID: held.characterID,
+      stations: stations.result,
+      // ⚠ THE FACT, NOT A GUESS. True only when the read SUCCEEDED and the
+      // rowset was empty — "you own nothing anywhere" and "the read failed"
+      // must never render alike (the worldHasNoContracts precedent).
+      ownsNothing: assetStationsEmpty(stations.result),
+      error: null,
+    });
+  } catch (error) {
+    if (error && error.code === "SESSION_NOT_FOUND") {
+      next(error);
+      return;
+    }
+    // A failed read is reported AS a failed read, with ownsNothing false.
+    res.json({
+      ok: true,
+      characterID: held.characterID,
+      stations: null,
+      ownsNothing: false,
+      error: String((error && error.code) || "READ_FAILED"),
+    });
+  }
+});
+
+/**
+ * Per-type volume (m³) for every type in a ListStationItems result.
+ *
+ * Reads the NAME-KEYED packedrow variant this handler builds. Types the static
+ * tables do not know are simply absent from the map — never zero, which the
+ * page would have to render as a real measurement.
+ */
+function readTypeVolumes(result) {
+  const rows = result && Array.isArray(result.items) ? result.items : [];
+  const volumes = {};
+  for (const row of rows) {
+    const fields = row && row.type === "packedrow" && row.fields ? row.fields : null;
+    const typeID = Number(fields && fields.typeID) || 0;
+    if (typeID <= 0 || Object.prototype.hasOwnProperty.call(volumes, typeID)) {
+      continue;
+    }
+    const type = staticData.getType(typeID);
+    const volume = Number(type && type.volume);
+    if (Number.isFinite(volume) && volume > 0) {
+      volumes[typeID] = volume;
+    }
+  }
+  return volumes;
+}
+
+/**
+ * GET /api/bridge/assets/station?stationID= — what is at ONE of those stations.
+ *
+ * Called when the player expands a station. `hasNoItems` is the same fact as
+ * `ownsNothing` above, scoped to this station.
+ */
+app.get("/api/bridge/assets/station", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const stationID = Number(req.query.stationID) || 0;
+  if (stationID <= 0) {
+    res.status(400).json({
+      ok: false,
+      error: "ASSET_LOCATION_INVALID",
+      message: "No location was named.",
+    });
+    return;
+  }
+  try {
+    const spec = globalAssetsBindSpec(held);
+    const items = await boundCall(
+      held,
+      req.webSessionID,
+      spec,
+      "ListStationItems",
+      [stationID],
+      null,
+    );
+    const result = items.result;
+    res.json({
+      ok: true,
+      stationID,
+      items: result,
+      // Per-type VOLUME, from static reference data — no bridge call and no new
+      // allowlist pair. The asset rows carry a typeID but no volume (the
+      // descriptor has no such column), and volume is a property of the TYPE,
+      // not of the stack, so it cannot vary by player. Same class of read as
+      // /api/names. Absent for a type the static tables do not know, which the
+      // page renders as "—" rather than as zero.
+      volumes: readTypeVolumes(result),
+      hasNoItems:
+        Boolean(result) && Array.isArray(result.items) && result.items.length === 0,
+      error: null,
+    });
+  } catch (error) {
+    if (error && error.code === "SESSION_NOT_FOUND") {
+      next(error);
+      return;
+    }
+    res.json({
+      ok: true,
+      stationID,
+      items: null,
+      hasNoItems: false,
+      error: String((error && error.code) || "READ_FAILED"),
+    });
+  }
+});
+
 /** Read `status` off a util.KeyVal job row (the re-read's verdict). */
 function readIndustryJobStatus(row) {
   const entries =

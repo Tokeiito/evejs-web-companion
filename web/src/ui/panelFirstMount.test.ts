@@ -50,6 +50,7 @@ const PANELS = [
   "Market",
   "Mail",
   "Contracts",
+  "PersonalAssets",
   "AgentsMissions",
   "AgentFinder",
   "Flight",

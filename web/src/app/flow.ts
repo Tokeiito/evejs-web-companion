@@ -39,6 +39,11 @@ import {
   decodeContractSummary,
 } from "../bridge/contracts.ts";
 import {
+  assetRefusalMessage,
+  decodeAssetItems,
+  decodeAssetStations,
+} from "../bridge/personalAssets.ts";
+import {
   AGENT_BUTTON,
   decodeBriefing,
   decodeConversation,
@@ -333,6 +338,26 @@ export interface AppFlow {
   openContract(contractID: number): Promise<void>;
   /** Close the open contract without touching the server. */
   closeContract(): void;
+  /**
+   * Load the Personal Assets panel: every station holding this character's
+   * items, and every NAME those need. READS ONLY — the bound global-assets
+   * object implements no write at all.
+   *
+   * ⚠ The station list is the SERVER's aggregation, not ours. Do not walk
+   * containers in the browser to rebuild it.
+   */
+  loadPersonalAssets(): Promise<void>;
+  /**
+   * Expand one asset location and read what is there; null collapses it and
+   * touches no server. A read that fails is recorded against that station
+   * alone and never thrown.
+   */
+  openAssetStation(stationID: number | null): Promise<void>;
+  /**
+   * Set course for an asset location. Wraps `startRoute` — it builds no
+   * navigation of its own.
+   */
+  setDestinationToAssetStation(stationID: number): Promise<void>;
   /** Load the docked station's agent roster (agentMgr.GetAgents). */
   loadAgents(): Promise<void>;
   /** Open a conversation with an agent (bound DoAction(None)). */
@@ -1736,6 +1761,99 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
   function closeContract(): void {
     store.apply({ type: "contracts/detail", detail: null });
+  }
+
+  // --- R37 Personal Assets --------------------------------------------------
+
+  async function loadPersonalAssets(): Promise<void> {
+    let read: Awaited<ReturnType<typeof api.loadAssetStations>>;
+    try {
+      read = await api.loadAssetStations(callOptions);
+    } catch (error) {
+      if (isSessionLost(error)) {
+        stopLiveStream();
+        store.apply({ type: "character/offline" });
+      }
+      throw error;
+    }
+    // ⚠ A FAILED READ MUST NOT DECODE TO AN EMPTY LIST AND LOOK LIKE "you own
+    // nothing". The BFF reports the failure as `error` with `ownsNothing`
+    // false; the decode is skipped entirely so the panel has nothing to
+    // mistake for a successful empty answer.
+    const stations = read.error ? [] : decodeAssetStations(read.stations);
+    store.apply({
+      type: "assets/loaded",
+      stations,
+      error: read.error,
+      ownsNothing: read.ownsNothing,
+    });
+
+    // R7d: a station is its NAME, and so is the system it sits in.
+    const refs: NameRef[] = [];
+    for (const row of stations) {
+      refs.push({ kind: "station", id: row.stationID });
+      refs.push({ kind: "system", id: row.solarSystemID });
+      if (row.typeID !== null) {
+        refs.push({ kind: "type", id: row.typeID });
+      }
+    }
+    requestNames(refs);
+  }
+
+  /**
+   * Expand one station and read what is there. Collapsing passes null and
+   * touches no server.
+   *
+   * A failed read is kept AS a failure against that station, never thrown: one
+   * station the server would not talk about must not blank the whole page.
+   */
+  async function openAssetStation(stationID: number | null): Promise<void> {
+    store.apply({ type: "assets/expanded", stationID });
+    if (stationID === null || stationID <= 0) {
+      return;
+    }
+    let read: Awaited<ReturnType<typeof api.loadAssetStationItems>>;
+    try {
+      read = await api.loadAssetStationItems(stationID, callOptions);
+    } catch (error) {
+      if (isSessionLost(error)) {
+        stopLiveStream();
+        store.apply({ type: "character/offline" });
+        throw error;
+      }
+      store.apply({
+        type: "assets/station-items",
+        stationID,
+        items: [],
+        hasNoItems: false,
+        error: assetRefusalMessage(error),
+      });
+      return;
+    }
+    const items = read.error ? [] : decodeAssetItems(read.items, read.volumes);
+    store.apply({
+      type: "assets/station-items",
+      stationID,
+      items,
+      hasNoItems: read.hasNoItems,
+      error: read.error,
+    });
+    // Every stack renders as a type NAME and a type ICON (R7d / R27).
+    requestNames(items.map((item) => ({ kind: "type", id: item.typeID }) as NameRef));
+  }
+
+  /**
+   * Fly to where your stuff is.
+   *
+   * ⚠ THIS BUILDS NO NAVIGATION. `startRoute` already accepts a stationID,
+   * resolves it, solves the route against the cached map graph and hands the
+   * plan to the one shared autopilot controller — the same call Travel,
+   * Overview, the agent finder and the mission bot all make. Setting a
+   * destination from an asset location is that call with a station the player
+   * picked from this list instead of from a search box.
+   */
+  async function setDestinationToAssetStation(stationID: number): Promise<void> {
+    await startRoute(stationID);
   }
 
   /**
@@ -3963,6 +4081,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     loadContracts,
     openContract,
     closeContract,
+    loadPersonalAssets,
+    openAssetStation,
+    setDestinationToAssetStation,
 
     loadAgents,
 

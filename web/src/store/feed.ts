@@ -55,6 +55,8 @@ import type {
   ContractDetail,
   ContractRow,
   ContractSummary,
+  AssetItemRow,
+  AssetStationRow,
   InventoryContainerState,
   JournalState,
   LiveNotification,
@@ -280,6 +282,28 @@ export type FeedEvent =
   | { readonly type: "contracts/detail-error"; readonly message: string | null }
   // Drop the contracts state (character offline / logged out).
   | { readonly type: "contracts/cleared" }
+  // Goal R37 — the Personal Assets page (charMgr global assets). READS ONLY:
+  // the bound global-assets object implements no write at all.
+  | {
+      readonly type: "assets/loaded";
+      readonly stations: readonly AssetStationRow[];
+      readonly error: string | null;
+      // ⚠ True ONLY when ListStations SUCCEEDED and was empty. "You own
+      // nothing anywhere" and "that read failed" must never look alike.
+      readonly ownsNothing: boolean;
+    }
+  // One station's contents, from expanding it.
+  | {
+      readonly type: "assets/station-items";
+      readonly stationID: number;
+      readonly items: readonly AssetItemRow[];
+      readonly hasNoItems: boolean;
+      readonly error: string | null;
+    }
+  // Which station is open; null collapses it. Touches no server.
+  | { readonly type: "assets/expanded"; readonly stationID: number | null }
+  // Drop the assets state (character offline / logged out).
+  | { readonly type: "assets/cleared" }
   // Goal R4 — the Agents & Missions page (agentMgr bridge). The station's
   // agent roster (decoded + filtered to the docked station by the BFF).
   | { readonly type: "agents/list"; readonly stationID: number | null; readonly agents: readonly AgentRow[] }

@@ -50,6 +50,9 @@ import type {
   ContractRow,
   ContractSummary,
   ContractsState,
+  AssetStationContents,
+  AssetStationRow,
+  PersonalAssetsState,
   MarketTransactionRow,
   InventoryContainerState,
   CorpHangarState,
@@ -125,6 +128,7 @@ export interface ClientState {
   readonly market: MarketState;
   readonly mail: MailState;
   readonly contracts: ContractsState;
+  readonly assets: PersonalAssetsState;
   readonly agents: AgentsState;
   readonly finder: AgentFinderState;
   readonly rewards: RewardsState;
@@ -291,6 +295,21 @@ const INITIAL_CONTRACTS: ContractsState = Object.freeze({
   mineError: null,
   detailError: null,
   worldHasNoContracts: false,
+});
+
+// R37 personal assets. READS ONLY — the bound global-assets object implements
+// no write at all.
+//
+// ⚠ ownsNothing starts FALSE and only ever becomes true from a SUCCESSFUL
+// empty ListStations. "Nothing loaded yet", "that read failed" and "you own
+// nothing anywhere" are three different statements and must not look alike.
+const INITIAL_ASSETS: PersonalAssetsState = Object.freeze({
+  stations: Object.freeze([]) as readonly AssetStationRow[],
+  contents: Object.freeze({}) as Readonly<Record<number, AssetStationContents>>,
+  expandedStationID: null as number | null,
+  loaded: false,
+  error: null,
+  ownsNothing: false,
 });
 
 const INITIAL_AGENTS: AgentsState = Object.freeze({
@@ -532,6 +551,7 @@ export interface ClientStore {
   readonly market: ReadableSignal<MarketState>;
   readonly mail: ReadableSignal<MailState>;
   readonly contracts: ReadableSignal<ContractsState>;
+  readonly assets: ReadableSignal<PersonalAssetsState>;
   readonly agents: ReadableSignal<AgentsState>;
   readonly finder: ReadableSignal<AgentFinderState>;
   readonly rewards: ReadableSignal<RewardsState>;
@@ -579,6 +599,7 @@ export function createClientStore(): ClientStore {
   const market = createSignal<MarketState>(INITIAL_MARKET);
   const mail = createSignal<MailState>(INITIAL_MAIL);
   const contracts = createSignal<ContractsState>(INITIAL_CONTRACTS);
+  const assets = createSignal<PersonalAssetsState>(INITIAL_ASSETS);
   const agents = createSignal<AgentsState>(INITIAL_AGENTS);
   const finder = createSignal<AgentFinderState>(INITIAL_FINDER);
   const rewards = createSignal<RewardsState>(INITIAL_REWARDS);
@@ -613,6 +634,7 @@ export function createClientStore(): ClientStore {
     market: market.get(),
     mail: mail.get(),
     contracts: contracts.get(),
+    assets: assets.get(),
     agents: agents.get(),
     finder: finder.get(),
     rewards: rewards.get(),
@@ -651,6 +673,7 @@ export function createClientStore(): ClientStore {
         market.set(INITIAL_MARKET);
         mail.set(INITIAL_MAIL);
         contracts.set(INITIAL_CONTRACTS);
+    assets.set(INITIAL_ASSETS);
         agents.set(INITIAL_AGENTS);
         finder.set(INITIAL_FINDER);
         rewards.set(INITIAL_REWARDS);
@@ -703,6 +726,7 @@ export function createClientStore(): ClientStore {
         market.set(INITIAL_MARKET);
         mail.set(INITIAL_MAIL);
         contracts.set(INITIAL_CONTRACTS);
+    assets.set(INITIAL_ASSETS);
         agents.set(INITIAL_AGENTS);
         finder.set(INITIAL_FINDER);
         rewards.set(INITIAL_REWARDS);
@@ -728,6 +752,7 @@ export function createClientStore(): ClientStore {
         market.set(INITIAL_MARKET);
         mail.set(INITIAL_MAIL);
         contracts.set(INITIAL_CONTRACTS);
+    assets.set(INITIAL_ASSETS);
         agents.set(INITIAL_AGENTS);
         finder.set(INITIAL_FINDER);
         rewards.set(INITIAL_REWARDS);
@@ -986,6 +1011,39 @@ export function createClientStore(): ClientStore {
         break;
       case "contracts/cleared":
         contracts.set(INITIAL_CONTRACTS);
+        break;
+      // R37 personal assets. Reads only.
+      case "assets/loaded":
+        assets.set({
+          ...assets.get(),
+          stations: [...event.stations],
+          // A fresh station list invalidates whatever was expanded: the
+          // contents under it may no longer exist.
+          contents: {},
+          expandedStationID: null,
+          loaded: true,
+          error: event.error,
+          ownsNothing: event.ownsNothing,
+        });
+        break;
+      case "assets/station-items":
+        assets.set({
+          ...assets.get(),
+          contents: {
+            ...assets.get().contents,
+            [event.stationID]: {
+              items: [...event.items],
+              hasNoItems: event.hasNoItems,
+              error: event.error,
+            },
+          },
+        });
+        break;
+      case "assets/expanded":
+        assets.set({ ...assets.get(), expandedStationID: event.stationID });
+        break;
+      case "assets/cleared":
+        assets.set(INITIAL_ASSETS);
         break;
       case "agents/list":
         agents.set({
@@ -1666,6 +1724,7 @@ export function createClientStore(): ClientStore {
     market: readonlySignal(market),
     mail: readonlySignal(mail),
     contracts: readonlySignal(contracts),
+    assets: readonlySignal(assets),
     agents: readonlySignal(agents),
     finder: readonlySignal(finder),
     rewards: readonlySignal(rewards),

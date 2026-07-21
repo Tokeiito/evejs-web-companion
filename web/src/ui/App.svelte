@@ -13,6 +13,7 @@
   import Market from "./Market.svelte";
   import Mail from "./Mail.svelte";
   import Contracts from "./Contracts.svelte";
+  import PersonalAssets from "./PersonalAssets.svelte";
   import AgentsMissions from "./AgentsMissions.svelte";
   import AgentFinder from "./AgentFinder.svelte";
   import Flight from "./Flight.svelte";
@@ -43,6 +44,7 @@
     | "market"
     | "mail"
     | "contracts"
+    | "assets"
     | "agents"
     | "finder"
     | "flight"
@@ -81,6 +83,9 @@
     </button>
     <button type="button" class:active={page === "contracts"} onclick={() => (page = "contracts")}>
       Contracts
+    </button>
+    <button type="button" class:active={page === "assets"} onclick={() => (page = "assets")}>
+      Personal Assets
     </button>
     <button type="button" class:active={page === "agents"} onclick={() => (page = "agents")}>
       Agents &amp; Missions
@@ -121,6 +126,8 @@
     <Mail {store} {flow} />
   {:else if page === "contracts"}
     <Contracts {store} {flow} />
+  {:else if page === "assets"}
+    <PersonalAssets {store} {flow} />
   {:else if page === "agents"}
     <AgentsMissions {store} {flow} />
   {:else if page === "finder"}
