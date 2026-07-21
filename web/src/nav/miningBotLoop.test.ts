@@ -1129,6 +1129,21 @@ test("A FULL CYCLE: undock -> belt -> lock -> mine -> hold fills -> dock -> unlo
   assert.ok(order("dock") > order("activate"), "then hauled the full hold home");
   assert.ok(order("unload") > order("dock"), "and unloaded it");
 
+  // THE PHASE MUST NOT CONTRADICT THE REASON. Live, a full hold sets no
+  // "heading home" flag — it does not need one — so a label keyed off that flag
+  // announced "Flying to the belt" while the ship warped to the station with a
+  // full load. The label is decided from where the move is AIMED, so both
+  // phases must appear across a run that does both.
+  const phases = new Set(rec.progress.map((p) => p.phase));
+  assert.ok(phases.has("Hauling"), `the haul reads as hauling (saw: ${[...phases].join(", ")})`);
+  assert.ok(phases.has("Flying to the belt"), "and the outbound leg reads as the outbound leg");
+  assert.ok(phases.has("Mining"), "and mining reads as mining");
+  for (const frame of rec.progress) {
+    if (frame.phase === "Hauling") {
+      assert.doesNotMatch(String(frame.why), /Heading for/, "a haul never says it is heading out");
+    }
+  }
+
   const final = bot.snapshot();
   assert.equal(final.cyclesCompleted >= 1, true, `a haul was completed (${final.cyclesCompleted})`);
   assert.ok(final.oreUnitsMined > 0, `ore was counted from the hold (${final.oreUnitsMined})`);
