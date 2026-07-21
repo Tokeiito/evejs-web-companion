@@ -68,6 +68,7 @@ import type {
   StationGuest,
   StationServiceBits,
   StationStatic,
+  MiningBotState,
   TravelState,
 } from "./types.ts";
 import type { NamesState } from "./names.ts";
@@ -128,6 +129,7 @@ export interface ClientState {
   readonly mining: MiningState;
   readonly drones: DronesState;
   readonly travel: TravelState;
+  readonly bot: MiningBotState;
   readonly chat: ChatState;
   readonly live: LiveState;
   readonly names: NamesState;
@@ -377,6 +379,26 @@ const INITIAL_DRONES: DronesState = Object.freeze({
   silentDecline: null,
 });
 
+// R26 — the mining bot readout. `holdUsed`/`holdCapacity` start NULL, not 0:
+// a hull that has not reported a capacity must not render as an empty hold
+// with room to spare.
+const INITIAL_BOT: MiningBotState = Object.freeze({
+  status: "idle" as MiningBotState["status"],
+  phase: null,
+  action: null,
+  why: null,
+  rockName: null,
+  beltName: null,
+  stationName: null,
+  cyclesCompleted: 0,
+  oreUnitsMined: 0,
+  holdUsed: null,
+  holdCapacity: null,
+  failureReason: null,
+  startError: null,
+  startedAt: null,
+});
+
 const INITIAL_TRAVEL: TravelState = Object.freeze({
   status: "idle" as TravelState["status"],
   destinationSystemID: null,
@@ -461,6 +483,7 @@ export interface ClientStore {
   readonly mining: ReadableSignal<MiningState>;
   readonly drones: ReadableSignal<DronesState>;
   readonly travel: ReadableSignal<TravelState>;
+  readonly bot: ReadableSignal<MiningBotState>;
   readonly chat: ReadableSignal<ChatState>;
   readonly live: ReadableSignal<LiveState>;
   readonly names: ReadableSignal<NamesState>;
@@ -505,6 +528,7 @@ export function createClientStore(): ClientStore {
   const mining = createSignal<MiningState>(INITIAL_MINING);
   const drones = createSignal<DronesState>(INITIAL_DRONES);
   const travel = createSignal<TravelState>(INITIAL_TRAVEL);
+  const bot = createSignal<MiningBotState>(INITIAL_BOT);
   const chat = createSignal<ChatState>(INITIAL_CHAT);
   const live = createSignal<LiveState>(INITIAL_LIVE);
   const names = createSignal<NamesState>(INITIAL_NAMES);
@@ -536,6 +560,7 @@ export function createClientStore(): ClientStore {
     mining: mining.get(),
     drones: drones.get(),
     travel: travel.get(),
+    bot: bot.get(),
     chat: chat.get(),
     live: live.get(),
     names: names.get(),
@@ -571,6 +596,7 @@ export function createClientStore(): ClientStore {
         mining.set(INITIAL_MINING);
         drones.set(INITIAL_DRONES);
         travel.set(INITIAL_TRAVEL);
+        bot.set(INITIAL_BOT);
         chat.set(INITIAL_CHAT);
         live.set(INITIAL_LIVE);
         break;
@@ -621,6 +647,7 @@ export function createClientStore(): ClientStore {
         mining.set(INITIAL_MINING);
         drones.set(INITIAL_DRONES);
         travel.set(INITIAL_TRAVEL);
+        bot.set(INITIAL_BOT);
         chat.set(INITIAL_CHAT);
         live.set(INITIAL_LIVE);
         break;
@@ -641,6 +668,7 @@ export function createClientStore(): ClientStore {
         mining.set(INITIAL_MINING);
         drones.set(INITIAL_DRONES);
         travel.set(INITIAL_TRAVEL);
+        bot.set(INITIAL_BOT);
         chat.set(INITIAL_CHAT);
         live.set(INITIAL_LIVE);
         break;
@@ -1261,6 +1289,40 @@ export function createClientStore(): ClientStore {
       case "travel/cleared":
         travel.set(INITIAL_TRAVEL);
         break;
+      // --- R26: the mining bot ------------------------------------------
+      //
+      // The loop lives in the browser and pushes its readout here; this slice
+      // is a pure record of what it said. Nothing here decides anything.
+      case "bot/started":
+        bot.set({
+          ...INITIAL_BOT,
+          status: "running",
+          beltName: event.beltName,
+          stationName: event.stationName,
+          startedAt: event.startedAt,
+        });
+        break;
+      case "bot/progress":
+        bot.set({
+          ...bot.get(),
+          status: event.status,
+          phase: event.phase,
+          action: event.action,
+          why: event.why,
+          rockName: event.rockName,
+          cyclesCompleted: event.cyclesCompleted,
+          oreUnitsMined: event.oreUnitsMined,
+          holdUsed: event.holdUsed,
+          holdCapacity: event.holdCapacity,
+          failureReason: event.failureReason,
+        });
+        break;
+      case "bot/start-error":
+        bot.set({ ...bot.get(), status: "idle", startError: event.message });
+        break;
+      case "bot/cleared":
+        bot.set(INITIAL_BOT);
+        break;
       case "chat/loaded": {
         const current = chat.get();
         chat.set({
@@ -1423,6 +1485,7 @@ export function createClientStore(): ClientStore {
     mining: readonlySignal(mining),
     drones: readonlySignal(drones),
     travel: readonlySignal(travel),
+    bot: readonlySignal(bot),
     chat: readonlySignal(chat),
     live: readonlySignal(live),
     names: readonlySignal(names),

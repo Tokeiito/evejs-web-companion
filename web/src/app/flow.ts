@@ -99,6 +99,30 @@ import {
   type AutopilotDeps,
   type RoutePlan,
 } from "../nav/autopilotLoop.ts";
+import {
+  createMiningBot,
+  type MiningBotController,
+  type MiningBotDeps,
+  type MiningPlan,
+} from "../nav/miningBotLoop.ts";
+
+/**
+ * What the player asked the mining bot to do (goal R26).
+ *
+ * `miningModuleIDs` is the player's OWN pick from the ship's online modules,
+ * by name. The browser does not decide which of your modules is a mining
+ * laser: it would have to guess, and a wrong guess fires a turret at a rock.
+ */
+export interface MiningBotRequest {
+  readonly beltID: number;
+  readonly beltName: string | null;
+  readonly stationID: number;
+  readonly stationName: string | null;
+  readonly miningModuleIDs: readonly number[];
+  /** Remaining fraction (0-1) of any health layer that ends the run. */
+  readonly healthFloor: number;
+  readonly useDrones: boolean;
+}
 
 export interface AppFlowOptions {
   readonly baseUrl?: string;
@@ -445,6 +469,24 @@ export interface AppFlow {
     query: string,
     kind?: "system" | "station" | null,
   ): Promise<DestinationMatch[]>;
+  // --- R26: the mining bot -----------------------------------------------
+  //
+  // A SECOND browser decide-loop, built from the same parts as the autopilot
+  // and never running alongside it (starting the bot aborts the autopilot).
+  // Closing the tab is closing the client: the loop stops, the ship finishes
+  // its last server-side command, and sits.
+  /**
+   * Start the mining bot on a belt, hauling to a station, running the
+   * equipment the PLAYER picked. Surfaces a start problem through the bot
+   * slice rather than throwing.
+   */
+  startMiningBot(request: MiningBotRequest): Promise<void>;
+  /** Pause the bot (it stops issuing; the ship finishes its last move). */
+  pauseMiningBot(): void;
+  /** Resume a paused bot from where it stopped. */
+  resumeMiningBot(): void;
+  /** Stop the bot (it stops and never calls the bridge again). */
+  stopMiningBot(): void;
   /** Pause the autopilot loop (it stops issuing; the ship finishes its last move). */
   pauseRoute(): void;
   /** Resume a paused autopilot loop from where it stopped. */
@@ -2650,6 +2692,157 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     void autopilot.run();
   }
 
+  // --- R26: the mining bot (a second browser decide-loop) ------------------
+  //
+  // Wired exactly as the autopilot is: a framework-agnostic controller whose
+  // every dependency is a BFF call, driven from the browser at its own cadence.
+  // It is deliberately a SEPARATE controller from the travel autopilot but
+  // never a simultaneous one — starting the bot aborts the autopilot first,
+  // because two loops steering one ship is the bug neither of them can see.
+  //
+  // Note what these deps are NOT wired to: the flow's own lockTarget /
+  // activateModule / launchDrones wrappers, which swallow a refusal into the
+  // store and return normally. The bot has to SEE the refusal to decide on it,
+  // so it goes straight to the api layer, like makeAutopilotDeps does.
+  let miningBot: MiningBotController | null = null;
+
+  function makeMiningBotDeps(): MiningBotDeps {
+    return {
+      getStatus: async () => {
+        const step = await api.getFlightStatus(callOptions);
+        const status = decodeFlightStatus(step.flight);
+        void observeFlightStatus(status);
+        return status;
+      },
+      getSpaceSnapshot: async () => {
+        const result = await api.getSpaceSnapshot(callOptions);
+        const snapshot = decodeSpaceSnapshot(result.space);
+        // Push it to the space slice too, so the Overview stays live while the
+        // bot works even if the panel's own poll is not running.
+        store.apply({ type: "space/snapshot", snapshot });
+        return snapshot;
+      },
+      // THE LOCK AUTHORITY. A failed read must return null, never [] — an empty
+      // list would read as "nothing is locked" and re-lock a rock already being
+      // mined.
+      getLockedTargetIDs: async () => {
+        const result = await api.getTargets(callOptions);
+        const ids = decodeTargetIDs(result.targetIDs);
+        store.apply({ type: "targeting/targets", targetIDs: ids });
+        return ids;
+      },
+      // THE ORE AUTHORITY, and the same rule: a hold nobody could read is not
+      // an empty hold.
+      getHolds: async () => {
+        const result = await api.getMiningHolds(callOptions);
+        const holds = decodeMiningHolds(result.holds);
+        store.apply({ type: "mining/holds", holds });
+        return holds;
+      },
+      getDroneBayItemIDs: async () => {
+        const result = await api.getDrones(callOptions);
+        const bay = decodeDroneBay(result.bay);
+        return bay === null ? null : bay.map((stack) => stack.itemID);
+      },
+      undock: async () => {
+        await api.undock(callOptions);
+      },
+      // R24 slice A — retail's `WarpToItem(warpRange=0)`, not the autopilot
+      // call's hardcoded 10 km. Same correction, same reason.
+      warp: async (destinationID) => {
+        await api.warpTo(destinationID, AUTOPILOT_WARP_MIN_RANGE_M, callOptions);
+      },
+      approach: async (destinationID) => {
+        await api.approach(destinationID, 0, callOptions);
+      },
+      dock: async (stationID) => {
+        await api.dock(stationID, callOptions);
+      },
+      lockTarget: async (targetID) => {
+        await api.lockTarget(targetID, callOptions);
+      },
+      // No `effect` is passed: the SERVER resolves the module's own default
+      // activation effect from its type. The browser never guesses which effect
+      // a module runs — that rule is R23's and it holds here.
+      activateModule: async (moduleID, targetID) => {
+        await api.activateModule(moduleID, { targetID, repeat: -1 }, callOptions);
+      },
+      launchDrones: async (itemIDs) => {
+        await api.launchDrones(
+          itemIDs.map((itemID) => ({ itemID, quantity: 1 })),
+          callOptions,
+        );
+      },
+      unloadHolds: async (itemIDs) => {
+        await api.unloadMiningHolds(itemIDs, callOptions);
+      },
+      sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+      onProgress: (progress) => {
+        store.apply({
+          type: "bot/progress",
+          status: progress.status,
+          phase: progress.phase,
+          action: progress.action,
+          why: progress.why,
+          rockName: progress.rockName,
+          cyclesCompleted: progress.cyclesCompleted,
+          oreUnitsMined: progress.oreUnitsMined,
+          holdUsed: progress.holdUsed,
+          holdCapacity: progress.holdCapacity,
+          failureReason: progress.failureReason,
+        });
+        // A lost session inside the loop unwinds to character select, like
+        // every other held-session flow.
+        if (progress.status === "error") {
+          stopLiveStream();
+          store.apply({ type: "character/offline" });
+        }
+      },
+      isSessionLost,
+      refusalReason: (error) => flightErrorReason(error),
+    };
+  }
+
+  async function startMiningBot(request: MiningBotRequest): Promise<void> {
+    store.apply({ type: "bot/start-error", message: null });
+
+    if (request.miningModuleIDs.length === 0) {
+      store.apply({
+        type: "bot/start-error",
+        message: "Pick at least one piece of mining equipment for the bot to run.",
+      });
+      return;
+    }
+
+    // Two loops must never steer one ship. Retail's own Stop switches the
+    // autopilot off for the same reason; so does this.
+    autopilot?.abort();
+
+    const plan: MiningPlan = {
+      beltID: request.beltID,
+      beltName: request.beltName,
+      stationID: request.stationID,
+      stationName: request.stationName,
+      miningModuleIDs: [...request.miningModuleIDs],
+      healthFloor: request.healthFloor,
+      useDrones: request.useDrones,
+      myCharacterID: store.character.get().selectedCharacterID,
+    };
+
+    store.apply({
+      type: "bot/started",
+      beltName: request.beltName,
+      stationName: request.stationName,
+      startedAt: Date.now(),
+    });
+
+    if (!miningBot) {
+      miningBot = createMiningBot(makeMiningBotDeps());
+    }
+    miningBot.start(plan);
+    void miningBot.run();
+  }
+
   // R7a — search the static map by name so a player can set a destination
   // without knowing EVE IDs. The static /api/map/find read (login-gated, no
   // bridge session) returns systems + stations; we annotate each with jumps from
@@ -3226,6 +3419,23 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     startRoute,
 
     searchDestinations,
+
+    startMiningBot,
+
+    pauseMiningBot() {
+      miningBot?.pause();
+    },
+
+    resumeMiningBot() {
+      if (miningBot) {
+        miningBot.resume();
+        void miningBot.run();
+      }
+    },
+
+    stopMiningBot() {
+      miningBot?.stop();
+    },
 
     pauseRoute() {
       autopilot?.pause();

@@ -63,6 +63,7 @@ import type {
   StationGuest,
   StationServiceBits,
   StationStatic,
+  MiningBotRunState,
   TravelRouteStep,
   TravelStatus,
   WalletLPBalance,
@@ -482,6 +483,34 @@ export type FeedEvent =
   | { readonly type: "travel/plan-error"; readonly message: string | null }
   // Drop the travel state (character offline / logged out / new route).
   | { readonly type: "travel/cleared" }
+  // Goal R26 — the mining bot (a browser decide-loop, like the autopilot). The
+  // player started it on a belt, hauling to a station.
+  | {
+      readonly type: "bot/started";
+      readonly beltName: string | null;
+      readonly stationName: string | null;
+      readonly startedAt: number;
+    }
+  // A live readout push from the bot's loop. `why` is not optional decoration:
+  // the player must always be able to see why it did the last thing it did.
+  | {
+      readonly type: "bot/progress";
+      readonly status: MiningBotRunState;
+      readonly phase: string | null;
+      readonly action: string | null;
+      readonly why: string | null;
+      readonly rockName: string | null;
+      readonly cyclesCompleted: number;
+      readonly oreUnitsMined: number;
+      readonly holdUsed: number | null;
+      readonly holdCapacity: number | null;
+      readonly failureReason: string | null;
+    }
+  // Starting failed before the loop began (nothing picked, not in space);
+  // null clears a stale message.
+  | { readonly type: "bot/start-error"; readonly message: string | null }
+  // Drop the bot state (character offline / logged out).
+  | { readonly type: "bot/cleared" }
   // Goal R7 — the Chat panel (Local + Corp). A channel read completed (roster +
   // recent backlog) — the panel polls while open (READ is a backlog poll).
   | {

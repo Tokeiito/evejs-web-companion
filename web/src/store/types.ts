@@ -1447,6 +1447,50 @@ export interface TravelState {
   readonly failureReason: string | null;
 }
 
+// --- R26: the mining bot ----------------------------------------------------
+
+export type MiningBotRunState = "idle" | "running" | "paused" | "stopped" | "error";
+
+/**
+ * The mining bot's panel state (goal R26).
+ *
+ * The decide-loop runs in the BROWSER and pushes its readout here; the panel is
+ * a pure reader, exactly as the Travel panel is for the autopilot.
+ *
+ * `why` is the field this slice exists for. A bot you cannot interrogate is one
+ * you cannot trust, so the reason for the LAST thing it did is always on screen
+ * — not only when something goes wrong. It is plain player language and carries
+ * no numeric ids (R9a / R7d).
+ *
+ * `holdUsed` / `holdCapacity` are null for UNKNOWN, never 0: a hull that did not
+ * report a capacity must not render as an empty hold with room to spare.
+ */
+export interface MiningBotState {
+  readonly status: MiningBotRunState;
+  /** Where in the loop it is ("Mining", "Hauling", "Docking"). */
+  readonly phase: string | null;
+  /** What it last did. */
+  readonly action: string | null;
+  /** WHY it did that — always present while running. */
+  readonly why: string | null;
+  /** The rock it is working, by NAME (R7d). */
+  readonly rockName: string | null;
+  /** The belt and station the player picked, by name. */
+  readonly beltName: string | null;
+  readonly stationName: string | null;
+  /** Loads actually unloaded into the hangar this run. */
+  readonly cyclesCompleted: number;
+  /** Ore units this run, counted from the HOLD growing — never from a yield sum. */
+  readonly oreUnitsMined: number;
+  readonly holdUsed: number | null;
+  readonly holdCapacity: number | null;
+  /** Set when it stopped — always a sentence a player can act on. */
+  readonly failureReason: string | null;
+  /** A problem starting it (nothing picked, not in space); null clears it. */
+  readonly startError: string | null;
+  readonly startedAt: number | null;
+}
+
 /**
  * One destination match from the Travel-tab name search (goal R7a): a solar
  * system or station resolved from the static /api/map/find route, annotated with

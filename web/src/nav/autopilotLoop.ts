@@ -439,8 +439,59 @@ type DecisionMemory = Pick<
   Partial<Pick<LoopMemory, "approachingTargetID">>;
 
 /** True when the server says the ship is currently following/approaching. */
-function isFollowing(shipMode: string | null): boolean {
+export function isFollowing(shipMode: string | null): boolean {
   return shipMode !== null && /follow|approach/i.test(shipMode);
+}
+
+/**
+ * ONE RUNG OF THE MEASURED LADDER: how do I close on that object?
+ *
+ * Extracted so it can be REUSED rather than re-derived. `decideFromDistance`
+ * below is this plus "and what do I do once I am there" (jump a gate, dock a
+ * station); R26's mining bot is the same three rungs plus "and what do I do
+ * once I am there" (mine the belt, dock the station). The distance thresholds,
+ * the R24 warp dead band and the never-restart-a-running-approach rule are
+ * therefore stated exactly once, and any correction to them corrects every
+ * caller at the same time.
+ *
+ * `interactionRadiusM` is the SURFACE distance at which the caller's own
+ * business becomes possible — the server's 2,500 m stargate jump range, the
+ * server's 2,500 m station docking radius, or a bot's own "the warp has
+ * landed" test. It is the caller's number, not this function's.
+ *
+ * Returns null when the target is not measurable this tick, which sends the
+ * caller back to whatever refusal-driven fallback it has.
+ */
+export type CloseInStep =
+  /** Inside `interactionRadiusM` — do the thing. */
+  | { readonly kind: "arrive" }
+  /** Our own approach is already running on this target: wait, do not restart. */
+  | { readonly kind: "closing" }
+  /** Too close for the SERVER to accept a warp: close the gap under sublight. */
+  | { readonly kind: "approach" }
+  /** Far enough that the server will take a warp. */
+  | { readonly kind: "warp" };
+
+export function decideCloseIn(
+  targetID: number,
+  interactionRadiusM: number,
+  measurement: SpaceMeasurement | null,
+  approachingTargetID: number | null = null,
+): CloseInStep | null {
+  const distance = measurement?.distances.get(targetID);
+  if (!measurement || distance === undefined) {
+    return null;
+  }
+  if (distance < interactionRadiusM) {
+    return { kind: "arrive" };
+  }
+  if (distance < warpFloorMeters(measurement.shipRadius)) {
+    if (approachingTargetID === targetID && isFollowing(measurement.shipMode)) {
+      return { kind: "closing" };
+    }
+    return { kind: "approach" };
+  }
+  return { kind: "warp" };
 }
 
 /**
@@ -458,49 +509,43 @@ function decideFromDistance(
   labels: { readonly jumpOrDock: string; readonly approach: string; readonly warp: string },
   hop: RouteHop | null,
 ): AutopilotAction | null {
-  const distance = measurement?.distances.get(targetID);
-  if (measurement === undefined || measurement === null || distance === undefined) {
+  // The shared three rungs — arrive / closing / approach / warp. The close-range
+  // radius is the one the SERVER applies to this kind of target:
+  //   gate     `maxStargateJumpingDistance`, 2,500 m (retail checks it first,
+  //            and also takes it for Upwell jump gates);
+  //   station  `DEFAULT_STATION_DOCKING_RADIUS`, 2,500 m SURFACE — R24 slice B's
+  //            correction from the 50 km `maxDockingDistance`, which is only
+  //            retail's outer hand-off trigger (see STATION_DOCKING_RADIUS_M).
+  const step = decideCloseIn(
+    targetID,
+    kind === "gate" ? MAX_STARGATE_JUMPING_DISTANCE_M : STATION_DOCKING_RADIUS_M,
+    measurement,
+    memory.approachingTargetID ?? null,
+  );
+  if (step === null) {
     return null;
   }
 
-  // 1. Inside jump range of a gate -> jump. (Retail checks this first, and also
-  //    takes it for Upwell jump gates.)
-  if (kind === "gate" && distance < MAX_STARGATE_JUMPING_DISTANCE_M) {
-    return hop
-      ? {
-          kind: "jump",
-          fromGateID: targetID,
-          toGateID: hop.jumpToGateID,
-          label: labels.jumpOrDock,
-        }
-      : null;
-  }
-
-  // 2. Inside the station's own docking radius -> dock. R24 slice B corrects
-  //    this from 50 km (retail's outer hand-off trigger) to the 2,500 m SURFACE
-  //    radius the server actually tests — see STATION_DOCKING_RADIUS_M.
-  if (kind === "station" && distance < STATION_DOCKING_RADIUS_M) {
-    return { kind: "dock", stationID: targetID, label: labels.jumpOrDock };
-  }
-
-  // 3. Too close for the SERVER to accept a warp -> close the gap under
-  //    sublight. This is retail's `minWarpDistance` rule with R24's correction:
-  //    the floor is the server's own gate, not a flat 150 km, so the decision
-  //    never asks for a warp that comes back 200/null with the ship still
-  //    sitting there (see the warp-dead-band note above).
-  //
-  //    Never re-issue an approach that is already running against this same
-  //    target: retail skips when the ship is already DSTBALL_FOLLOW on it, and
-  //    so do we (the ship is measurably moving; issuing again would restart it).
-  if (distance < warpFloorMeters(measurement.shipRadius)) {
-    if (memory.approachingTargetID === targetID && isFollowing(measurement.shipMode)) {
+  switch (step.kind) {
+    case "arrive":
+      if (kind === "gate") {
+        return hop
+          ? {
+              kind: "jump",
+              fromGateID: targetID,
+              toGateID: hop.jumpToGateID,
+              label: labels.jumpOrDock,
+            }
+          : null;
+      }
+      return { kind: "dock", stationID: targetID, label: labels.jumpOrDock };
+    case "closing":
       return { kind: "wait", reason: "Closing in" };
-    }
-    return { kind: "approach", gateID: targetID, label: labels.approach };
+    case "approach":
+      return { kind: "approach", gateID: targetID, label: labels.approach };
+    case "warp":
+      return { kind: "warp", destinationID: targetID, label: labels.warp };
   }
-
-  // 4. Far enough that the server will take the warp -> warp.
-  return { kind: "warp", destinationID: targetID, label: labels.warp };
 }
 
 /**

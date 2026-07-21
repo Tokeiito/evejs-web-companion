@@ -25,6 +25,7 @@
     type OverviewSort,
   } from "../space/overview.ts";
   import { droneActivityLabel, droneIsBusy } from "../bridge/drones.ts";
+  import MiningBot from "./MiningBot.svelte";
   import { resolvedName, nameKey, type NameRef } from "../store/names.ts";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
@@ -1411,3 +1412,10 @@
     {/if}
   </section>
 {/if}
+
+<!--
+  R26 — the mining bot. Deliberately OUTSIDE the in-space guard above: the bot
+  docks itself to unload, and a player must still be able to see what it is
+  doing, and stop it, while the ship is in the station.
+-->
+<MiningBot {store} {flow} />

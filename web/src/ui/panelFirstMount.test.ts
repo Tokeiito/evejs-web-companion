@@ -54,6 +54,7 @@ const PANELS = [
   "AgentFinder",
   "Flight",
   "Overview",
+  "MiningBot",
   "Mining",
   "Travel",
   "Chat",
