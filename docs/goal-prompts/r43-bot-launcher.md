@@ -49,7 +49,25 @@ The panel's "why can't this start" becomes **declared requirements per bot, chec
 
 Requirements: docked where needed; **mining bot needs ≥1 mining module fitted and online**; a belt and station chosen with room in the hold; the mission bot at its agent's station.
 
-**Trap — do not write a fresh "is this a mining module" test.** The mining bot already derives its miners (`minerRows` / `looksLikeMiningEquipment`), with live-measured edge cases: R33's Procurer run saw `Ice Harvester Upgrade II` correctly excluded by the `/upgrade/` term, and a `Medium Ice Harvester Accelerator I` **rig** that the name guess does *not* exclude and which survives only because `moduleRows` skips the rig family structurally. An independently-written second check will disagree with the bot's own list — worst case, a preflight that says "you have a miner" for a hull whose `minerRows` is empty, so the bot starts and instantly pauses. **Share the derivation; pin the agreement with a test.**
+### The mining-module check: slot first (operator correction)
+
+> *"Miner module is a High slot only. Not sure what a 'minerRows' is, and rigs don't matter."*
+
+**A mining module is in a HIGH slot.** Filter to high slots, then identify miners among them. Everything needed exists: `web/src/bridge/fitting.ts` decodes slots by family (`SLOT_FAMILY_FLAGS.high = [27..34]`), and R33's live Procurer run found its two `Strip Miner I` at **flags 27 and 28**.
+
+This is simpler *and* more correct than what is in the tree today:
+
+```
+/miner|mining|strip|harvest|deep core/i.test(label) && !/upgrade|rig|processor/i.test(label)
+```
+
+**Every term in that negative half exists only because the search was not slot-restricted.** `Ice Harvester Upgrade II` is a low slot; `Medium Ice Harvester Accelerator I` is a rig. Restrict to high slots and both vanish by construction — no negative lookahead, and no dependency on a separate structural rig-skip that must travel alongside the name test to stay honest.
+
+So: **≥1 high-slot module that is a miner and is ONLINE.** Among high slots the positive name match is a reasonable identifier; prefer an authoritative group/category signal if one is reachable client-side, but do not add a BFF route for it. Cannot-tell still does not pass — an unreadable fitting means the bot does not start.
+
+Cleaning up `looksLikeMiningEquipment` and its structural companion is welcome **only if the bot's behaviour is unchanged and its tests still pass**. Do not change what the bot switches on as a side effect; if it is more than a small safe change, implement the requirement on the high-slot rule and report the duplication separately.
+
+*(`minerRows` is an internal variable name in `Overview.svelte` — orchestrator jargon that should never reach a user-facing string. Requirement text must be plain: "This ship has no mining equipment fitted".)*
 
 ## Deliberately NOT in this goal
 
