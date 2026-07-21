@@ -270,8 +270,14 @@ test("a refusal shows the SERVER'S OWN reason, not a guessed one", async () => {
 
   await flow.setModuleOnline(5001, true);
 
-  // readErrorReason surfaces the typed code; the message rides the same error.
-  assert.equal(store.get().fitting.actionError, "CALL_REFUSED");
+  // ⚠ THIS TEST ONLY NOW DOES WHAT ITS NAME SAYS. It asserted `CALL_REFUSED`
+  // — the envelope — while the handler's actual reason rode along inside the
+  // same error and was dropped on the floor. R31 made the seam keep the
+  // message, so the player reads dogma's own sentence about CPU.
+  assert.equal(
+    store.get().fitting.actionError,
+    "You do not have enough CPU to online that module.",
+  );
 });
 
 // --- the silent decline -----------------------------------------------------

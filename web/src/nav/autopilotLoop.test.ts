@@ -1113,3 +1113,52 @@ test("Dock ladder: a REFUSED dock is not a silent decline — the generous refus
     "and re-issued dock more times than the silent-decline bound allows",
   );
 });
+
+// --- R31: translated for the player, classified on the server's own words ----
+
+test("R31 — a jump refusal is still CLASSIFIED on the raw text, not on the prose", async () => {
+  // ⚠ THE REGRESSION THIS PREVENTS IS SILENT AND EXPENSIVE. classifyJumpRefusal
+  // decides approach-and-retry versus a dead stop by looking for
+  // `NotWithingMaxJumpDist` in the SERVER's own string. R31 translates that
+  // string for the player — and if the translation had been applied before the
+  // classifier instead of after it, "That gate is too far away to jump
+  // through." would match none of those patterns, every recoverable
+  // out-of-range jump would be reclassified as fatal, and the autopilot would
+  // pause on the single most ordinary refusal in the game.
+  //
+  // Three jump-range refusals, exactly the live string, and it must still
+  // arrive.
+  const mock = makeMock({ jumpRangeRefusals: 3 });
+  const { deps } = makeDeps(mock);
+  const controller = createAutopilot(deps);
+
+  controller.start(PLAN);
+  await drive(controller, 200);
+
+  assert.equal(controller.snapshot().status, "arrived", "it closed in and jumped");
+  assert.ok(
+    mock.calls.filter((c) => c.m === "approach").length > 0,
+    "the range refusal was recognised as 'close in', not as 'give up'",
+  );
+});
+
+test("R31 — an autopilot pause never shows the player a resource key", async () => {
+  // A refusal the classifier treats as fatal goes straight into failureReason,
+  // which renders in the cockpit strip (R30 slice C). That is a player-facing
+  // string and R9a applies to it.
+  const mock = makeMock({});
+  mock.jump = async () => {
+    throw refusal("CmdStargateJump refused: 101,UI/GateIcons/GateClosed");
+  };
+  const { deps } = makeDeps(mock);
+  const controller = createAutopilot(deps);
+
+  controller.start(PLAN);
+  await drive(controller, 200);
+
+  const why = String(controller.snapshot().failureReason ?? "");
+  assert.ok(why.length > 0, "it still says the jump failed — a refusal is never swallowed");
+  assert.ok(!why.includes("UI/"), `resource path reached the player: ${why}`);
+  assert.ok(!why.includes("101,"), `localization marker reached the player: ${why}`);
+  assert.match(why, /gate is closed/i, "and it says what actually happened");
+});

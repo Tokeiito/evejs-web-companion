@@ -340,7 +340,10 @@ test("a container that fails to open shows its reason and stays open in the pane
 
   const container = store.inventory.get().container;
   assert.equal(container?.itemID, CONTAINER_ID);
-  assert.match(String(container?.error), /bind failed|CALL_FAILED/);
+  // R31 — "bind failed" is the BFF's own diagnostic, not something a player
+  // can act on, so the panel now says what happened in words. The container
+  // still stays open carrying its reason, which is what this test guards.
+  assert.equal(container?.error, "The game server hit an error carrying that out.");
   assert.deepEqual(container?.rows, []);
 });
 

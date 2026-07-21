@@ -183,7 +183,9 @@ test("a lock the server REFUSES surfaces the server's own reason", async () => {
 
   await flow.lockTarget(ROCK_ID);
   const state = store.targeting.get();
-  assert.match(state.actionError ?? "", /TargetTooFar/);
+  // R31 — the server's reason still reaches the player, now as its meaning
+  // rather than its name. `TargetTooFar` is dogma's TARGET_OUT_OF_RANGE arm.
+  assert.equal(state.actionError, "Lock refused: That is too far away. Get closer and try again.");
   assert.equal(state.silentDecline, null, "a refusal is not a silent decline");
   assert.deepEqual(state.lockedTargetIDs, []);
 });

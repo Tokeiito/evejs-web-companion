@@ -160,6 +160,51 @@ test("a movement refusal is surfaced as a visible reason and the true state re-r
   assert.ok(requests.some((r) => r.path === "/api/bridge/flight/status"));
 });
 
+test("R31 — the out-of-range jump reads as a sentence, all the way to the store", async () => {
+  // ⚠ THIS IS THE EXACT PAYLOAD THE RUNNING EMULATOR RETURNS. Captured live:
+  // POST /api/bridge/flight/jump with the ship sitting at the station answers
+  // 409 with this body, and before R31 the player was shown
+  // "Jump refused: CALL_REFUSED: 101,UI/Menusvc/MenuHints/NotWithingMaxJumpDist"
+  // — a client resource key, a numeric localization marker, and CCP's own
+  // "Withing" typo, in the one place a player is most likely to look.
+  const store = createClientStore();
+  const { fetch, requests } = makeFakeFetch((path) => {
+    if (path === "/api/bridge/flight/jump") {
+      return {
+        status: 409,
+        body: {
+          ok: false,
+          error: "CALL_REFUSED",
+          message: "101,UI/Menusvc/MenuHints/NotWithingMaxJumpDist",
+        },
+      };
+    }
+    if (path === "/api/bridge/flight/status") {
+      return { status: 200, body: { ok: true, flight: IN_SPACE, notifications: [] } };
+    }
+    throw new Error(`unexpected ${path}`);
+  });
+  const flow = createAppFlow(store, { fetch });
+
+  await flow.jump(50002185, 50001249);
+
+  const message = store.flight.get().actionError ?? "";
+  assert.equal(
+    message,
+    "Jump refused: That gate is too far away to jump through. Get closer to it first.",
+  );
+  // R9a, at the only place it actually matters — what reached the store.
+  assert.ok(!message.includes("UI/"), "a resource path reached the player");
+  assert.ok(!message.includes("101,"), "a localization marker reached the player");
+  assert.ok(!message.includes("CALL_REFUSED"), "a wire code reached the player");
+  assert.ok(!/[a-z][A-Z]/.test(message), "an identifier reached the player");
+  // ⚠ THE REFUSAL IS NOT SWALLOWED. R31 changes the wording, never the fact:
+  // the player is still told the jump did not happen, and the true state is
+  // still re-read rather than optimistically assumed.
+  assert.match(message, /refused/);
+  assert.ok(requests.some((r) => r.path === "/api/bridge/flight/status"));
+});
+
 test("the flight status resolves system + station NAMES, cached across polls (R7a)", async () => {
   const store = createClientStore();
   const { fetch, requests } = makeFakeFetch((path) => {

@@ -161,7 +161,12 @@ test("a refused mutation is surfaced through the store, not thrown", async () =>
 
   await flow.moveItem(100, "toCargo");
 
-  assert.match(store.inventory.get().actionError ?? "", /CALL_NOT_ALLOWED/);
+  // R31 — surfaced, in words. The point of the test is that it is surfaced
+  // at all rather than thrown, and that is unchanged.
+  assert.equal(
+    store.inventory.get().actionError,
+    "This client is not allowed to ask the game server for that.",
+  );
   // No reload after a failed mutation (only the failed move was requested).
   assert.equal(requests.filter((r) => r.path === "/api/bridge/inventory").length, 0);
 });

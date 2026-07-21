@@ -96,7 +96,10 @@ test("a failed holds read is surfaced, not swallowed", async () => {
   const flow = createAppFlow(store, { fetch });
 
   await flow.loadMiningHolds();
-  assert.match(store.mining.get().holdsError ?? "", /No active ship/);
+  assert.equal(
+    store.mining.get().holdsError,
+    "Your holds could not be read: You are not in a ship right now.",
+  );
 });
 
 test("runSurveyScan lands what the scanner saw, with its zeroes intact", async () => {
@@ -193,7 +196,12 @@ test("a failed quote CLEARS the previous one rather than leaving stale numbers u
   const state = store.mining.get();
   assert.deepEqual(state.quotes, [], "a stale quote could arm a confirmation for other stacks");
   assert.equal(state.taxRate, null);
-  assert.match(state.quotesError ?? "", /Dock first/);
+  // R31 — the refusal still says the quote failed and why; NOT_DOCKED is now
+  // explained rather than named.
+  assert.equal(
+    state.quotesError,
+    "The refinery could not quote that: Your ship is in space. That can only be done while docked.",
+  );
 });
 
 // --- Unloading --------------------------------------------------------------
@@ -291,7 +299,12 @@ test("an unload refusal carries the server's own reason", async () => {
   const flow = createAppFlow(store, { fetch });
 
   await flow.unloadMiningHolds([ORE_STACK_ID]);
-  assert.match(store.mining.get().actionError ?? "", /Dock at a station/);
+  // R31 — NOT_DOCKED is explained rather than shown. The refusal is still a
+  // refusal, and silentDecline is still null, which is what this test is for.
+  assert.equal(
+    store.mining.get().actionError,
+    "Unload refused: Your ship is in space. That can only be done while docked.",
+  );
   assert.equal(store.mining.get().silentDecline, null);
 });
 

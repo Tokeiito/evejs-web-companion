@@ -289,7 +289,11 @@ test("a refused agent action is surfaced through the store, not thrown", async (
 
   await flow.openConversation(3008416);
 
-  assert.match(store.agents.get().actionError ?? "", /CALL_NOT_ALLOWED/);
+  // R31 — the player reads the refusal, not the wire code that carried it.
+  assert.equal(
+    store.agents.get().actionError,
+    "This client is not allowed to ask the game server for that.",
+  );
 });
 
 // A completed-courier conversation: the agent re-offers (Request(821,2)) and

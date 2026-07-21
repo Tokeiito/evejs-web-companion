@@ -447,9 +447,20 @@ test("the code may arrive as the error code instead of the message", () => {
 });
 
 test("an UNKNOWN refusal keeps the server's own words rather than inventing calm ones", () => {
+  // R28's rule, unchanged: when the server says something a player can act on,
+  // those are its words and they stand. Being wrong in plain language is worse
+  // than being terse.
+  assert.equal(
+    skillQueueRefusal("CALL_REFUSED", "That skill plan is not available to you.", "Gunnery"),
+    "That skill plan is not available to you.",
+  );
+  // R31 CORRECTS THE OTHER HALF. A bare code is not "the server's own words",
+  // it is a name the server never meant a player to read — so it degrades to an
+  // honest sentence instead of being dumped on screen. The reason is still not
+  // invented: the fallback says only that it was refused.
   assert.equal(
     skillQueueRefusal("CALL_REFUSED", "SomethingNobodyHasSeen", "Gunnery"),
-    "SomethingNobodyHasSeen",
+    "The server turned that down without a reason this client can put into words.",
   );
   // And a refusal with nothing in it says exactly that, instead of implying
   // the save worked.

@@ -156,7 +156,8 @@ test("a read failure surfaces through the chat slice (panel stays put)", async (
 
   await flow.loadChat("local");
   const chat = store.chat.get();
-  assert.equal(chat.error, "CALL_FAILED");
+  // R31 — the failure is still surfaced; it is just no longer a code.
+  assert.equal(chat.error, "The game server hit an error carrying that out.");
   assert.equal(chat.local.loaded, false);
 });
 
