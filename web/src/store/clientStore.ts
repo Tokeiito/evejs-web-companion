@@ -57,6 +57,7 @@ import type {
   LiveState,
   OnlineCharacterState,
   RewardsState,
+  GateLink,
   SpaceState,
   DamageEvent,
   ModuleCycle,
@@ -334,6 +335,8 @@ const INITIAL_SPACE: SpaceState = Object.freeze({
   snapshot: null,
   loaded: false,
   error: null,
+  gateLinks: Object.freeze([]) as readonly GateLink[],
+  gateLinksError: null,
 });
 
 // R23 slice A — the generic in-space action layer. Reset alongside the space
@@ -1071,9 +1074,28 @@ export function createClientStore(): ClientStore {
       case "flight/cleared":
         flight.set(INITIAL_FLIGHT);
         break;
-      case "space/snapshot":
+      case "space/snapshot": {
         // A clean read clears any stale read error.
-        space.set({ snapshot: event.snapshot, loaded: true, error: null });
+        //
+        // R30 slice A — the gate links ride WITH the snapshot when the producer
+        // has them, and are otherwise carried forward. Carrying forward matters:
+        // the graph loads once, asynchronously, so the first snapshots arrive
+        // before it is ready and every later one would otherwise wipe the links
+        // the moment they landed.
+        const previous = space.get();
+        space.set({
+          snapshot: event.snapshot,
+          loaded: true,
+          error: null,
+          gateLinks: event.gateLinks ?? previous.gateLinks,
+          gateLinksError: event.gateLinks !== undefined ? null : previous.gateLinksError,
+        });
+        break;
+      }
+      case "space/gate-map-error":
+        // The star map could not be read. Say so rather than rendering a grid
+        // whose gates silently offer nothing.
+        space.set({ ...space.get(), gateLinks: [], gateLinksError: event.message });
         break;
       case "space/error":
         space.set({ ...space.get(), error: event.message });

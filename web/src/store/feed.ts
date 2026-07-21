@@ -61,6 +61,7 @@ import type {
   MutationOutcome,
   OnlineCharacterState,
   OpenContainerState,
+  GateLink,
   SpaceSnapshot,
   StationGuest,
   StationServiceBits,
@@ -353,7 +354,18 @@ export type FeedEvent =
   // the ship can see right now plus the active ship's shield/armor/hull/cap.
   // The flow polls this ~1s while in space with the panel open; the panel is a
   // pure reader that derives distances, sorting and filtering itself.
-  | { readonly type: "space/snapshot"; readonly snapshot: SpaceSnapshot }
+  | {
+      readonly type: "space/snapshot";
+      readonly snapshot: SpaceSnapshot;
+      /**
+       * R30 slice A — the stargate links for this snapshot's system, when the
+       * producer could compute them. `undefined` means "no answer this time"
+       * (the route graph has not loaded yet) and the slice keeps what it had;
+       * an empty array is a real answer meaning "this grid has no gates".
+       */
+      readonly gateLinks?: readonly GateLink[];
+    }
+  | { readonly type: "space/gate-map-error"; readonly message: string }
   // Goal R23 slice A — the GENERIC in-space action layer. Nothing here names
   // mining or combat: these five events carry a target, a module and an effect
   // name, and a later combat goal reuses them unchanged.

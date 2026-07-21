@@ -123,44 +123,23 @@
   // type two raw gate IDs by hand. The graph that answers "which system is
   // through this gate" was already in the browser, cached by the autopilot.
   //
-  // A READ over static reference data, re-asked only when the ship's system
-  // changes — not per poll, and never per row.
-  const currentSystemID = $derived($flight.status?.solarSystemID ?? null);
-  let gateLinks = $state<readonly GateLink[]>([]);
-  // Set when the star map itself could not be read. "There are no gates here"
-  // and "I could not tell" are different facts and must not render the same.
-  let gateLinksError = $state("");
-
-  $effect(() => {
-    const systemID = currentSystemID;
-    if (systemID === null) {
-      gateLinks = [];
-      gateLinksError = "";
-      return;
-    }
-    // A stale answer must never label a gate in the system we just LEFT, so the
-    // reply is dropped unless the ship is still where the question was asked.
-    let live = true;
-    void flow
-      .nearbyGates(systemID)
-      .then((links) => {
-        if (!live) {
-          return;
-        }
-        gateLinks = links;
-        gateLinksError = "";
-      })
-      .catch(() => {
-        if (!live) {
-          return;
-        }
-        gateLinks = [];
-        gateLinksError = "Could not read the star map, so jumps are not offered here.";
-      });
-    return () => {
-      live = false;
-    };
-  });
+  // The links arrive WITH the snapshot, through the space slice, and this panel
+  // stays what it has always been: a pure reader.
+  //
+  // It was originally a component-local `$state` filled by an `$effect` that
+  // awaited `flow.nearbyGates`, and that DID NOT WORK — the write landed (the
+  // effect could read all seven links back immediately afterwards) but the
+  // template never saw it, on the same component instance. A synchronous write
+  // in the same effect rendered fine; every asynchronous one was invisible.
+  // Rather than keep guessing at the framework, the links now travel the exact
+  // path the rest of this panel's data travels — the store, re-rendered every
+  // second — which is the mechanism the whole app already depends on.
+  //
+  // It is also the better design: the links are computed from the SAME snapshot
+  // that produced the rows, so a gate can never be labelled with a destination
+  // worked out for a different system than the grid it is sitting on.
+  const gateLinks = $derived($space.gateLinks);
+  const gateLinksError = $derived($space.gateLinksError);
 
   // Every name this panel shows resolves through the shared name cache: a TYPE
   // name and its GROUP / CATEGORY names, all keyed off the object's typeID.
@@ -261,6 +240,26 @@
         groupName: $names.resolved[nameKey("typeGroup", entity.typeID ?? 0)] ?? null,
       }),
     }),
+  );
+
+  /**
+   * R30 slice A — the rows the table iterates, each carrying its own gate link
+   * (null for everything that is not a stargate).
+   *
+   * The link is folded into the ROW rather than looked up inside the loop. That
+   * is not a style choice: a `{@const}` at the top of the keyed `{#each}`, and
+   * even a lookup in an `{#if}` condition, both kept the `null` they were first
+   * rendered with when the gate links arrived asynchronously a moment later —
+   * the store held all seven correct links and not one button appeared. Folding
+   * them in here means the links are part of the item identity, so the rows the
+   * each block receives are genuinely new and cannot render a stale answer.
+   * Cost is one shallow copy per visible row per poll, which is nothing.
+   */
+  const gateRows = $derived(
+    overview.rows.map((row) => ({
+      ...row,
+      gateLink: gateLinkFor(gateLinks, row.itemID),
+    })),
   );
 
   const ship = $derived(snapshot?.ship ?? null);
@@ -1508,12 +1507,7 @@
             </tr>
           </thead>
           <tbody>
-            {#each overview.rows as row (row.itemID)}
-              <!--
-                R30 slice A — non-null ONLY for a stargate, and the same fact
-                that identifies it as one supplies the system on the other side.
-              -->
-              {@const gateLink = gateLinkFor(gateLinks, row.itemID)}
+            {#each gateRows as row (row.itemID)}
               <!--
                 R25 slice B — a hostile row is visually distinct IN the list as
                 well as pulled out above it. The badge carries the word, so the
@@ -1602,14 +1596,26 @@
                       send — and it says so on the control rather than greying
                       out in silence.
                     -->
-                    {#if gateLink}
-                      {@const blocked = jumpBlockedReason(gateLink)}
+                    <!--
+                      The lookup is the {#if} CONDITION, not a {@const} hoisted
+                      to the top of the {#each}. That is deliberate and it cost
+                      a live debugging session to learn: in a keyed each block a
+                      top-level {@const} did not re-evaluate when the gate links
+                      landed asynchronously, so every gate row kept the `null`
+                      it was created with and no Jump button ever appeared —
+                      while the store held all seven correct links. Reading
+                      `gateLinks` in the condition makes this block genuinely
+                      reactive to it.
+                    -->
+                    {#if row.gateLink}
+                      {@const blocked = jumpBlockedReason(row.gateLink)}
                       <button
                         type="button"
                         disabled={busy || blocked !== null}
-                        onclick={() => run(() => flow.jump(row.itemID, gateLink.destinationGateID))}
+                        onclick={() =>
+                          run(() => flow.jump(row.itemID, (row.gateLink as GateLink).destinationGateID))}
                       >
-                        {blocked ?? jumpLabel(gateLink)}
+                        {blocked ?? jumpLabel(row.gateLink)}
                       </button>
                     {/if}
                     <!--

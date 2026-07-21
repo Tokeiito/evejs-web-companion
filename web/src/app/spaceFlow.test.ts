@@ -181,7 +181,7 @@ test("Warp to and Approach on a row reuse the existing atomic moves", async () =
   });
   const flow = createAppFlow(store, { fetch });
 
-  // The row hands the object's own id straight to the R5a moves — no new
+  // The row hands the object's own id straight to the R5a moves â€” no new
   // movement surface is introduced by the overview.
   await flow.warpTo(GATE_ID);
   await flow.approach(GATE_ID);
@@ -287,7 +287,7 @@ test("a slow snapshot read is skipped, never queued behind itself", async () => 
   const first = poller.tick();
   assert.equal(started, 1);
 
-  // A beat that lands while the first read is still in flight does nothing —
+  // A beat that lands while the first read is still in flight does nothing â€”
   // so a slow read can never pile up work behind the autopilot's own calls.
   await poller.tick();
   assert.equal(started, 1);
@@ -338,4 +338,97 @@ test("stopSpacePolling ends the poll when the panel closes", async () => {
     0,
     "closing the panel leaves no poll running",
   );
+});
+
+// --- R30 slice A: the gate links ride with the snapshot ----------------------
+
+// Jita(30000142) <-> Maurasi(30000140). GATE_ID is the gate ON the Jita grid,
+// which is exactly the itemID the overview row for that gate carries.
+const GATE_GRAPH = {
+  ok: true,
+  systems: { "30000142": "Jita", "30000140": "Maurasi" },
+  edges: [
+    [30000142, 30000140, GATE_ID, 50000802],
+    [30000140, 30000142, 50000802, GATE_ID],
+  ],
+};
+
+function gateResponder(path: string): { status: number; body: unknown } {
+  if (path === "/api/map/graph") {
+    return { status: 200, body: GATE_GRAPH };
+  }
+  return { status: 200, body: { ok: true, space: SNAPSHOT, notifications: [] } };
+}
+
+test("the gate links reach the space slice, keyed to the snapshot's own system", async () => {
+  const store = createClientStore();
+  const { fetch } = makeFakeFetch(gateResponder);
+  const flow = createAppFlow(store, { fetch });
+
+  // The FIRST snapshot lands before the star map has been read — the map load
+  // is asynchronous and a snapshot must never wait on it.
+  await flow.loadSpaceSnapshot();
+  assert.deepEqual(store.space.get().gateLinks, [], "no answer yet, and no guess either");
+
+  // Let the one-time map read settle, then take another beat.
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  await flow.loadSpaceSnapshot();
+
+  assert.deepEqual(store.space.get().gateLinks, [
+    {
+      gateID: GATE_ID,
+      toSystemID: 30000140,
+      toSystemName: "Maurasi",
+      destinationGateID: 50000802,
+    },
+  ]);
+  assert.equal(store.space.get().gateLinksError, null);
+});
+
+test("a later snapshot never wipes the links it has no fresh answer for", async () => {
+  const store = createClientStore();
+  const { fetch } = makeFakeFetch(gateResponder);
+  const flow = createAppFlow(store, { fetch });
+
+  await flow.loadSpaceSnapshot();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  await flow.loadSpaceSnapshot();
+  assert.equal(store.space.get().gateLinks.length, 1);
+
+  // A snapshot with no system to key off (the ship is between states) must
+  // leave the links alone rather than blanking every Jump button for a beat.
+  store.apply({
+    type: "space/snapshot",
+    snapshot: { ...store.space.get().snapshot!, solarSystemID: null },
+  });
+  assert.equal(
+    store.space.get().gateLinks.length,
+    1,
+    "an event carrying no answer keeps the last one",
+  );
+});
+
+test("a star map that cannot be read says so, once, instead of silently offering nothing", async () => {
+  const store = createClientStore();
+  let graphReads = 0;
+  const { fetch } = makeFakeFetch((path) => {
+    if (path === "/api/map/graph") {
+      graphReads += 1;
+      return { status: 500, body: { ok: false, error: "map unavailable" } };
+    }
+    return { status: 200, body: { ok: true, space: SNAPSHOT, notifications: [] } };
+  });
+  const flow = createAppFlow(store, { fetch });
+
+  await flow.loadSpaceSnapshot();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  await flow.loadSpaceSnapshot();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  await flow.loadSpaceSnapshot();
+
+  assert.match(String(store.space.get().gateLinksError), /star map/i);
+  assert.deepEqual(store.space.get().gateLinks, []);
+  // Said ONCE. A standing condition re-reported every second would bury every
+  // other error on the panel, and would re-request a map that is not coming.
+  assert.equal(graphReads, 1, "a failed map read is not retried every beat");
 });

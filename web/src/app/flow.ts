@@ -92,7 +92,7 @@ import {
   solveRoute,
   type SystemGraph,
 } from "../nav/routeSolver.ts";
-// R30 slice A — reading the already-cached gate graph as "what is on this grid
+// R30 slice A â€” reading the already-cached gate graph as "what is on this grid
 // and where does it go", so a stargate row can offer a jump.
 import { buildGateLinks, type GateLink } from "../space/gateLinks.ts";
 import type { AgentFinderRow } from "../store/types.ts";
@@ -132,7 +132,7 @@ export interface AppFlowOptions {
   readonly baseUrl?: string;
   readonly fetch?: typeof fetch;
   /**
-   * R10 — injectable EventSource factory for the live event channel. Defaults
+   * R10 â€” injectable EventSource factory for the live event channel. Defaults
    * to the browser's own EventSource; tests supply a fake.
    */
   readonly eventSource?: (url: string) => api.EventSourceLike;
@@ -192,7 +192,7 @@ export interface AppFlow {
     destinationItemID: number,
     place: InventoryPlace,
   ): Promise<void>;
-  /** DESTROY items. The caller must have confirmed first — this is irreversible. */
+  /** DESTROY items. The caller must have confirmed first â€” this is irreversible. */
   trashItems(itemIDs: readonly number[], place: InventoryPlace): Promise<void>;
   /** Read the corporation hangar at the docked station. */
   loadCorpHangar(): Promise<void>;
@@ -214,7 +214,7 @@ export interface AppFlow {
   /** Bring a fitted module online, or take it offline. */
   setModuleOnline(itemID: number, online: boolean): Promise<void>;
   /**
-   * DESTROY a fitted rig. Rigs cannot be unfitted, so this is irreversible —
+   * DESTROY a fitted rig. Rigs cannot be unfitted, so this is irreversible â€”
    * the panel confirms before calling it and the BFF confirms again.
    */
   destroyRig(itemID: number): Promise<void>;
@@ -244,11 +244,11 @@ export interface AppFlow {
   /**
    * Load the Market panel: an item's order book (when one is chosen), the
    * player's own orders, their closed-order history, their trades, their
-   * escrow, their price history and their ISK — plus every NAME those need.
+   * escrow, their price history and their ISK â€” plus every NAME those need.
    */
   loadMarket(typeID: number | null): Promise<void>;
   /**
-   * Search tradable items by NAME — how the player picks what to look at.
+   * Search tradable items by NAME â€” how the player picks what to look at.
    * Static reference data, so it answers even when the market daemon does not.
    */
   findMarketTypes(q: string): Promise<readonly api.MarketTypeMatch[]>;
@@ -264,12 +264,12 @@ export interface AppFlow {
   modifyMarketOrder(orderID: string, price: number): Promise<void>;
   /**
    * Load the Mail panel: the whole inbox, plus the NAME of everyone who sent or
-   * received a message. ⚠ The inbox is a DELTA SYNC the BFF cold-starts, so
+   * received a message. âš  The inbox is a DELTA SYNC the BFF cold-starts, so
    * this is always the entire mailbox rather than a page of it.
    */
   loadMail(): Promise<void>;
   /**
-   * Open one message. ⚠ The body arrives as plain TEXT — mailMgr.GetBody
+   * Open one message. âš  The body arrives as plain TEXT â€” mailMgr.GetBody
    * answers a zlib-DEFLATED buffer and the BFF inflates it. `markRead` makes
    * this a WRITE, and whether the flag really moved is RE-READ afterwards.
    */
@@ -282,7 +282,7 @@ export interface AppFlow {
    */
   findCharacters(q: string): Promise<readonly api.CharacterMatch[]>;
   /**
-   * SEND a message. Not a costly or destructive write, so no confirm gate —
+   * SEND a message. Not a costly or destructive write, so no confirm gate â€”
    * but an empty recipient list is refused, because the SERVER will not refuse
    * it and mail addressed to nobody would look sent.
    */
@@ -290,10 +290,10 @@ export interface AppFlow {
   /**
    * Load the Contracts panel: the public courier browse, the player's own
    * contracts (waiting / taken on / expired), the summary counts, and every
-   * NAME those need. READS ONLY — every contract mutator is refused at the
+   * NAME those need. READS ONLY â€” every contract mutator is refused at the
    * gateway.
    *
-   * ⚠ An empty public browse is EXPECTED: EveJS has no contract generator, so
+   * âš  An empty public browse is EXPECTED: EveJS has no contract generator, so
    * there is nothing to find until a player creates one.
    */
   loadContracts(page: number): Promise<void>;
@@ -326,7 +326,7 @@ export interface AppFlow {
    */
   setAutopilotToDropoff(dropoffStationID: number): Promise<void>;
   /**
-   * R6 — the post-completion reward readout (Step 12): wallet / LP / standings.
+   * R6 â€” the post-completion reward readout (Step 12): wallet / LP / standings.
    * The journal (the fourth Step-12 read) refreshes via loadJournal.
    */
   loadRewards(): Promise<void>;
@@ -340,26 +340,26 @@ export interface AppFlow {
    */
   warpTo(destinationID: number, minRange?: number | null): Promise<void>;
   /**
-   * R11 — approach an object at full speed (the same atomic move the autopilot
+   * R11 â€” approach an object at full speed (the same atomic move the autopilot
    * uses to close the last gap to a gate). Offered on every overview row.
-   * R13 — the range is retail's: 50 m from the menu, 0 from the autopilot.
+   * R13 â€” the range is retail's: 50 m from the menu, 0 from the autopilot.
    */
   approach(destinationID: number, range?: number | null): Promise<void>;
-  /** R13 — hold a set distance from a target (CmdFollowBall at that range). */
+  /** R13 â€” hold a set distance from a target (CmdFollowBall at that range). */
   keepAtRange(targetID: number, range?: number | null): Promise<void>;
-  /** R13 — circle a target at a set distance (CmdOrbit). */
+  /** R13 â€” circle a target at a set distance (CmdOrbit). */
   orbit(targetID: number, range?: number | null): Promise<void>;
-  /** R13 — point the ship at a target and hold that heading (CmdAlignTo). */
+  /** R13 â€” point the ship at a target and hold that heading (CmdAlignTo). */
   alignTo(targetID: number): Promise<void>;
   /**
-   * R13 — cut the engines (CmdStop). As in retail, this also switches the
+   * R13 â€” cut the engines (CmdStop). As in retail, this also switches the
    * autopilot off: stopping the ship must not leave something still flying it.
    */
   stopShip(): Promise<void>;
-  /** R11 — read what is currently around the ship (and the ship's condition). */
+  /** R11 â€” read what is currently around the ship (and the ship's condition). */
   loadSpaceSnapshot(): Promise<void>;
   /**
-   * R11 — start/stop the ~1s overview poll. The Overview panel starts it when it
+   * R11 â€” start/stop the ~1s overview poll. The Overview panel starts it when it
    * mounts and stops it when it unmounts; it also stops itself as soon as the
    * ship is no longer in space (docked).
    */
@@ -369,73 +369,73 @@ export interface AppFlow {
   // Deliberately free of any notion of mining or combat. A target is a target;
   // a module is a module; the effect name is an OPTIONAL argument (omit it and
   // the server resolves the module's own default activation effect from its
-  // typeID — the browser never guesses which effect a module runs). A later
+  // typeID â€” the browser never guesses which effect a module runs). A later
   // combat goal reuses all five of these unchanged.
-  /** R23 — read the locked-target list (the only authority on what is locked). */
+  /** R23 â€” read the locked-target list (the only authority on what is locked). */
   loadTargets(): Promise<void>;
-  /** R23 — lock a ball. Acquisition takes time; the lock is not instant. */
+  /** R23 â€” lock a ball. Acquisition takes time; the lock is not instant. */
   lockTarget(targetID: number): Promise<void>;
-  /** R23 — release ONE lock (or abandon one still being acquired). */
+  /** R23 â€” release ONE lock (or abandon one still being acquired). */
   unlockTarget(targetID: number): Promise<void>;
-  /** R23 — switch a module on. `repeat` is -1 continuous (default) or 0 single-cycle. */
+  /** R23 â€” switch a module on. `repeat` is -1 continuous (default) or 0 single-cycle. */
   activateModule(
     itemID: number,
     opts?: { effect?: string; targetID?: number | null; repeat?: -1 | 0 },
   ): Promise<void>;
-  /** R23 — switch a module off. */
+  /** R23 â€” switch a module off. */
   deactivateModule(itemID: number, opts?: { effect?: string }): Promise<void>;
   // --- R23 slice B: the mining loop --------------------------------------
   // Built ON TOP of the generic layer above, not into it. There is no "start
   // mining" method: mining a rock is lockTarget + activateModule with a mining
   // laser. The browser never simulates a cycle or predicts a yield.
-  /** R23 — read the ship's ore / gas / ice holds (falling back to cargo). */
+  /** R23 â€” read the ship's ore / gas / ice holds (falling back to cargo). */
   loadMiningHolds(): Promise<void>;
-  /** R23 — run the survey scanner; the panel merges the results into the overview. */
+  /** R23 â€” run the survey scanner; the panel merges the results into the overview. */
   runSurveyScan(): Promise<void>;
-  /** R23 — ask the station refinery what these stacks yield, and its ISK tax. */
+  /** R23 â€” ask the station refinery what these stacks yield, and its ISK tax. */
   loadReprocessingQuote(itemIDs: readonly number[]): Promise<void>;
-  /** R23 — move mined ore into the station hangar (docked only). */
+  /** R23 â€” move mined ore into the station hangar (docked only). */
   unloadMiningHolds(itemIDs: readonly number[]): Promise<void>;
   /**
-   * R23 — ⚠ CONSUMES the stacks and CHARGES the station's ISK tax. The panel
+   * R23 â€” âš  CONSUMES the stacks and CHARGES the station's ISK tax. The panel
    * confirms first (showing the quote and the tax) and the BFF confirms again.
    */
   reprocessItems(itemIDs: readonly number[]): Promise<void>;
   // --- R25 slice A: drones -------------------------------------------------
   //
-  // ⚠ NOT ONE of these four server calls can be trusted on its return value.
+  // âš  NOT ONE of these four server calls can be trusted on its return value.
   // The launch handler answers 200 with an EMPTY DICT when it refuses, and the
   // three in-space orders answer an empty dict on SUCCESS. So every method here
   // lands what the BFF re-read out of the space snapshot afterwards, and a
   // refusal surfaces as a silent-decline rather than as a phantom success.
 
-  /** R25 — the bay, the drones in space, and the server's launch limits. */
+  /** R25 â€” the bay, the drones in space, and the server's launch limits. */
   loadDrones(): Promise<void>;
   /**
-   * R25 — launch from the bay.
+   * R25 â€” launch from the bay.
    *
-   * ⚠ THIS IS THE DEFENCE. An idle combat drone auto-engages whatever shoots
+   * âš  THIS IS THE DEFENCE. An idle combat drone auto-engages whatever shoots
    * the ship it came from (the server's own behaviour, on by default), so a
    * miner who launches is defended with no further clicks. `engageDrones` is
    * for CHOOSING a victim, not for being protected.
    */
   launchDrones(itemIDs: readonly number[]): Promise<void>;
-  /** R25 — set drones on a target. */
+  /** R25 â€” set drones on a target. */
   engageDrones(droneIDs: readonly number[], targetID: number): Promise<void>;
-  /** R25 — put mining drones on a rock. */
+  /** R25 â€” put mining drones on a rock. */
   mineWithDrones(droneIDs: readonly number[], targetID: number): Promise<void>;
-  /** R25 — bring drones home (the runtime scoops them itself inside 2500 m). */
+  /** R25 â€” bring drones home (the runtime scoops them itself inside 2500 m). */
   recallDrones(droneIDs: readonly number[]): Promise<void>;
   // --- R28: skills ---------------------------------------------------------
   //
-  // ⚠ A queue save answers with the RE-READ sheet, never with its own return
+  // âš  A queue save answers with the RE-READ sheet, never with its own return
   // value: skillMgr.SaveNewQueue returns null on success, so believing the call
   // would mean believing nothing at all.
 
-  /** R28 — the character sheet, the queue, and the server's clock. */
+  /** R28 â€” the character sheet, the queue, and the server's clock. */
   loadSkills(): Promise<void>;
   /**
-   * R28 — save the WHOLE queue. Adding, removing and reordering are all this
+   * R28 â€” save the WHOLE queue. Adding, removing and reordering are all this
    * one call, exactly as the server models it. `[]` pauses training.
    *
    * `context` is the skill the player was acting on; it is used only to word a
@@ -450,7 +450,7 @@ export interface AppFlow {
   /** Jump through an NPC stargate (fromGate -> toGate). */
   jump(fromGateID: number, toGateID: number): Promise<void>;
   /**
-   * R30 slice A — the stargates in `systemID` and where each one leads.
+   * R30 slice A â€” the stargates in `systemID` and where each one leads.
    *
    * NO new server surface: this is a read of the SAME client-side route graph
    * the R5b autopilot already fetches once and caches (`loadRouteGraph`), served
@@ -463,13 +463,13 @@ export interface AppFlow {
    */
   nearbyGates(systemID: number): Promise<readonly GateLink[]>;
   /**
-   * Dock at the destination station — ONE `CmdDock`, no closing in. Out of
+   * Dock at the destination station â€” ONE `CmdDock`, no closing in. Out of
    * range the server starts an approach and refuses, and the caller has to
    * re-issue; for a Dock that closes the distance itself, use `dockAt`.
    */
   dock(stationID: number): Promise<void>;
   /**
-   * R24 slice B — DOCK, the way retail's menu means it: close the distance and
+   * R24 slice B â€” DOCK, the way retail's menu means it: close the distance and
    * then dock. Runs the same browser decide-loop the travel autopilot runs (one
    * loop, not two) over a zero-hop plan whose destination is this station, so
    * it warps, approaches and docks in whatever order the measurement calls for,
@@ -479,26 +479,26 @@ export interface AppFlow {
    */
   dockAt(stationID: number): Promise<void>;
   /**
-   * R6a — find agents from the static reference table (default courier),
+   * R6a â€” find agents from the static reference table (default courier),
    * annotate each with jumps from the current system (a single client-side
    * BFS), and sort nearest-first. Surfaces a failure through the finder slice
    * rather than throwing.
    */
   findAgents(filters?: { kind?: string; level?: number | null; limit?: number }): Promise<void>;
   /**
-   * R6a — set the browser autopilot to a found agent's station (reuses the R5b
+   * R6a â€” set the browser autopilot to a found agent's station (reuses the R5b
    * route solver + decide-loop via startRoute), and record the target agent so
    * the player knows who they're flying to.
    */
   setDestinationToAgent(agentID: number): Promise<void>;
   /**
-   * R5b — start the browser autopilot to a destination (station or system ID):
+   * R5b â€” start the browser autopilot to a destination (station or system ID):
    * solve the route client-side, then run the decide-loop. Surfaces a plan
    * error (unreachable / unknown) through the travel slice rather than throwing.
    */
   startRoute(destinationID: number): Promise<void>;
   /**
-   * R7a — search the static map by name (systems + stations) so a player can set
+   * R7a â€” search the static map by name (systems + stations) so a player can set
    * a destination without knowing EVE IDs. Returns the matches annotated with
    * jumps from the current system (best-effort). A too-short query returns []
    * without a request; a read failure throws (the caller surfaces it).
@@ -532,18 +532,18 @@ export interface AppFlow {
   /** Abort the autopilot loop (it stops and never calls the bridge again). */
   abortRoute(): void;
   /**
-   * R7 — read a chat channel's member roster + recent backlog (Local or Corp)
+   * R7 â€” read a chat channel's member roster + recent backlog (Local or Corp)
    * and push it to the store. The panel polls this while open (READ is a backlog
    * poll). A lost session unwinds to offline; any other failure surfaces through
    * the chat slice.
    */
   loadChat(channel: ChatChannel): Promise<void>;
-  /** R7 — send a message to a chat channel, then refresh its backlog. */
+  /** R7 â€” send a message to a chat channel, then refresh its backlog. */
   sendChatMessage(channel: ChatChannel, message: string): Promise<void>;
-  /** R7 — switch the active chat tab (Local <-> Corp). */
+  /** R7 â€” switch the active chat tab (Local <-> Corp). */
   setChatChannel(channel: ChatChannel): void;
   /**
-   * R7c — request display names for a set of `{kind, id}` refs (names-everywhere).
+   * R7c â€” request display names for a set of `{kind, id}` refs (names-everywhere).
    * Fire-and-forget: unresolved refs are batched into one /api/names round-trip,
    * cached (including a definitive "unknown" so they never refetch), and pushed
    * into the store's `names` slice for pure-reader components. Already-cached or
@@ -580,7 +580,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     ...(options.eventSource !== undefined ? { eventSource: options.eventSource } : {}),
   };
 
-  // R6b — the docked station the station-scoped panels are currently synced to,
+  // R6b â€” the docked station the station-scoped panels are currently synced to,
   // and a guard so an in-flight relocate is not re-entered. Set on select and
   // updated whenever a flight-status snapshot reveals the character docked at a
   // different station (autopilot arrival / manual dock); see observeFlightStatus.
@@ -669,7 +669,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // R10 built this channel and the page only ever used it for LIVENESS. Two of
   // the notifications on it turn out to carry things the browser cannot get any
   // other way, and both were VERIFIED end to end against the gateway (see
-  // `server/tests/webGatewaySessionEvents.test.js`, "R24:" — both arrive, with
+  // `server/tests/webGatewaySessionEvents.test.js`, "R24:" â€” both arrive, with
   // their payloads intact, on the same `sendNotification` capture stub R10
   // proved):
   //
@@ -686,7 +686,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // a TRIGGER only: it says something moved, and the ore hold is then RE-READ
   // from the ship. Deriving the hold from a stream of deltas would mean the
   // page's arithmetic and the ship's contents drifting apart the first time a
-  // frame is missed — and this channel is explicitly allowed to drop and
+  // frame is missed â€” and this channel is explicitly allowed to drop and
   // resynchronise. The authority on what is in the hold is the hold.
   function applyPushedNotification(method: string | null, args: readonly unknown[]): void {
     if (method === "OnGodmaShipEffect") {
@@ -704,15 +704,15 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
   }
 
-  // `OnDamageMessage` (R29). One shot. The payload is a BARE marshaled dict —
-  // not a util.KeyVal — and the fields used here were read off the live wire:
+  // `OnDamageMessage` (R29). One shot. The payload is a BARE marshaled dict â€”
+  // not a util.KeyVal â€” and the fields used here were read off the live wire:
   //
   //   attackType  "me" for a shot WE fired; "otherPlayerWeapons" for one fired
   //               at us. This is the ONLY honest direction signal, and it is
   //               read rather than inferred from the ids.
   //   source      the shooter's itemID; `target` the thing hit.
   //   weapon      the weapon's typeID, for naming.
-  //   damage      what this shot did. ZERO IS REAL — it is a clean miss, and it
+  //   damage      what this shot did. ZERO IS REAL â€” it is a clean miss, and it
   //               is kept rather than dropped, because "it shot and missed" is
   //               information the player wants.
   //   hitQuality  the server's own band. Passed through unnamed; this server
@@ -721,7 +721,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // Both directions were measured: a rat shooting an idle ship produced 16 of
   // these with our ship as target, and our two turrets produced their own with
   // attackType "me". The payload is used for its CONTENT, like the cycle event
-  // above and unlike the items event — but a health re-read is still scheduled,
+  // above and unlike the items event â€” but a health re-read is still scheduled,
   // because the log is a lossy tail and the bars must come from the snapshot.
   function applyDamageNotification(args: readonly unknown[]): void {
     const payload = args[0];
@@ -854,7 +854,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // full-table marshal) must never blank the services row or the guest list.
     // And because selectCharacter calls this after the view has already
     // switched to the panel, a failure is reported through the store (visible
-    // in the panel) rather than thrown into an unmounted caller — except a
+    // in the panel) rather than thrown into an unmounted caller â€” except a
     // lost session, which must unwind the flow back to the character list.
     const labels = ["GetStationItemBits", "GetGuests", "GetStationInfo"] as const;
     const [bits, guests, cached] = await Promise.allSettled([
@@ -903,7 +903,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
   // Load the Inventory & Ship panel. The two containers are decoded
   // independently (their own error is preserved) so one failed read never
-  // blanks the other — R2's Promise.allSettled rule, applied here on the BFF's
+  // blanks the other â€” R2's Promise.allSettled rule, applied here on the BFF's
   // already-settled per-container results. A lost session unwinds to select.
   async function loadInventory(): Promise<void> {
     let panel: Awaited<ReturnType<typeof api.loadInventory>>;
@@ -1103,7 +1103,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         division: division.division,
         name: division.name,
         // A division the character cannot query answers an EMPTY list, not an
-        // error — the server filtered it, and that is the authority.
+        // error â€” the server filtered it, and that is the authority.
         rows: division.list === null ? [] : decodeInventoryRows(division.list),
         error: division.error,
       })),
@@ -1132,7 +1132,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       activeShipID: reads.activeShipID,
       slots: buildSlots(reads.slots, reads.shipInfo, reads.online),
       resources: decodeResources(reads.shipInfo),
-      // R21 — the derived statistics come off the SAME ShipGetInfo attribute
+      // R21 â€” the derived statistics come off the SAME ShipGetInfo attribute
       // map as the resource bars. No extra read, and nothing re-simulated:
       // the server already applied the ship's active-module effects before it
       // sent this (see bridge/shipStats.ts for why that matters).
@@ -1140,7 +1140,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       slotsError: reads.errors.slots || reads.errors.online,
       resourcesError: reads.errors.shipInfo,
     });
-    // R24 slice C — seed each fitted module's BASE cycle length from static
+    // R24 slice C â€” seed each fitted module's BASE cycle length from static
     // data, so the panel can say how long a module takes before it has ever
     // been switched on. Best-effort and never blocking: it is reference data,
     // and a module with no figure simply has none rather than a fabricated one.
@@ -1148,7 +1148,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   }
 
   /**
-   * R24 slice C — attribute 73 for every fitted module, mapped from TYPE to the
+   * R24 slice C â€” attribute 73 for every fitted module, mapped from TYPE to the
    * individual module's itemID (which is what the cycle events are keyed by, so
    * the two sources land in the same place and the server's figure can displace
    * the base one cleanly).
@@ -1220,7 +1220,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    * because it is what names the blueprint types the static recipes are then
    * fetched for. The live read is five INDEPENDENT calls on the BFF, so a
    * player whose region answers no facilities still sees their blueprints and
-   * jobs — each read keeps its own error.
+   * jobs â€” each read keeps its own error.
    *
    * The recipe fetch is deliberately NOT awaited into the same failure path:
    * it is static reference data, so a failure there costs the install preview
@@ -1273,7 +1273,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
     requestNames(refs);
 
-    // The static recipes for every blueprint type in view — the blueprints the
+    // The static recipes for every blueprint type in view â€” the blueprints the
     // player holds AND the ones their running jobs are built from (a job's
     // blueprint may be locked away in the job and absent from the list).
     const typeIDs = new Set<number>();
@@ -1354,14 +1354,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    * Load the Market panel.
    *
    * Seven INDEPENDENT reads on the BFF, so a public order book that fails
-   * never hides the player's own orders — and the other way round. The
+   * never hides the player's own orders â€” and the other way round. The
    * DAEMON-outage case is kept separate from an empty book on purpose: "nobody
    * is trading this" and "the market is not answering" are different facts and
    * the panel says which one happened.
    *
    * Nothing here sorts or filters: that is the client-local `marketQuote`
    * logic, applied at render time in the panel so the player can re-sort
-   * without a round-trip — exactly as retail does it.
+   * without a round-trip â€” exactly as retail does it.
    */
   async function loadMarket(typeID: number | null): Promise<void> {
     let reads: Awaited<ReturnType<typeof api.loadMarket>>;
@@ -1377,7 +1377,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const book = decodeOrderBook(reads.book.result);
     const ownOrders = decodeOwnOrders(reads.ownOrders.result);
     const orderHistory = decodeOwnOrders(reads.orderHistory.result);
-    // ⚠ The transaction decoder needs the character's OWN id: a trade row names
+    // âš  The transaction decoder needs the character's OWN id: a trade row names
     // a buyer and a seller and nothing else, so which side the player was on is
     // derived by comparison, never guessed.
     const transactions = decodeTransactions(
@@ -1440,7 +1440,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    *    there at the old price), and saying only that the server declined is
    *    honest where naming a cause would be a guess;
    *  - success, in which case the amount reported is the WALLET DIFFERENCE the
-   *    BFF measured — never the estimate the confirm step showed.
+   *    BFF measured â€” never the estimate the confirm step showed.
    */
   async function runMarketAction(
     kind: "buy" | "sell" | "cancel" | "modify",
@@ -1488,7 +1488,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       }
       throw error;
     }
-    // ⚠ The sync's two header arms plus any backfill ARE the whole mailbox:
+    // âš  The sync's two header arms plus any backfill ARE the whole mailbox:
     // the BFF cold-started the delta, so there is no window and no paging.
     const { messages, statuses } = decodeMailbox(inbox.sync, inbox.backfill);
     store.apply({
@@ -1519,7 +1519,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   /**
    * Open one message.
    *
-   * ⚠ `markRead` makes this a WRITE — it clears the unread bit and pushes
+   * âš  `markRead` makes this a WRITE â€” it clears the unread bit and pushes
    * OnMailUpdatedByExternal to the character's other sessions. The BFF re-reads
    * the mailbox afterwards, so `markedRead` is what the server actually holds;
    * when that re-read failed it is null and NO claim is made. On a successful
@@ -1699,7 +1699,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     });
   }
 
-  // R6 — the post-completion reward readout (Step 12): wallet / LP / standings.
+  // R6 â€” the post-completion reward readout (Step 12): wallet / LP / standings.
   // The three reads are independent on the BFF (Promise.allSettled); a per-read
   // error rides in the `error` field rather than blanking the whole panel. The
   // journal (the fourth Step-12 read) is refreshed separately via loadJournal.
@@ -1719,7 +1719,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     });
   }
 
-  // R7 — read a chat channel's roster + backlog and push it to the store. The
+  // R7 â€” read a chat channel's roster + backlog and push it to the store. The
   // panel polls this while open (READ is a backlog poll). A lost session unwinds
   // to offline; any other failure surfaces through the chat slice so the panel
   // stays put and shows the reason.
@@ -1794,7 +1794,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // A movement refusal (CALL_REFUSED, 409) carries the handler's OWN
   // user-facing text as the message (scrambled, invalid target,
   // docking-approach, lost control, ship destroyed). Surface it so the operator
-  // sees the real reason, not just the code — "pause on unsafe" must show why.
+  // sees the real reason, not just the code â€” "pause on unsafe" must show why.
   function flightErrorReason(error: unknown): string {
     if (error instanceof BridgeCallError) {
       return error.message && error.message !== error.code
@@ -1871,12 +1871,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
   }
 
-  // R7a — resolve location IDs to names for the Flight readout, cached so the
+  // R7a â€” resolve location IDs to names for the Flight readout, cached so the
   // status doesn't refetch every poll. The cache holds a resolved name, or null
   // for a definitive static "unknown" (e.g. a player structure not in the static
   // tables) so those are not refetched either; a transient network failure is
   // NOT cached (it can retry). Names resolve through the existing read-only
-  // /api/map/resolve route — no new gateway/bridge call.
+  // /api/map/resolve route â€” no new gateway/bridge call.
   const locationNames = new Map<number, string | null>();
 
   async function cachedLocationName(id: number): Promise<string | null> {
@@ -1952,9 +1952,50 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
   // --- R11 Space overview + ship HUD ---------------------------------------
 
+  // R30 slice A — the gate links that ride WITH each snapshot.
+  //
+  // The route graph is fetched once and cached (`loadRouteGraph`), but that read
+  // is asynchronous while a snapshot arrives every second. So this is written to
+  // be answerable SYNCHRONOUSLY or not at all: if the graph is already in hand,
+  // the links come back with the snapshot; if it is not, this returns undefined
+  // (meaning "no answer this time", which the store treats as "keep what you
+  // had") and kicks off the one-time load in the background so the next beat can
+  // answer. Nothing here ever blocks a snapshot on a map read.
+  let gateMapLoading = false;
+  let gateMapFailed = false;
+  function gateLinksForSnapshot(
+    snapshot: { readonly solarSystemID: number | null; readonly inSpace: boolean },
+  ): readonly GateLink[] | undefined {
+    if (!snapshot.inSpace || snapshot.solarSystemID === null) {
+      return undefined;
+    }
+    if (routeGraph) {
+      return buildGateLinks(routeGraph, snapshot.solarSystemID);
+    }
+    if (!gateMapLoading && !gateMapFailed) {
+      gateMapLoading = true;
+      void loadRouteGraph()
+        .catch(() => {
+          // Said once, not once per second: a map that cannot be read is a
+          // standing condition, and re-reporting it every beat would bury the
+          // rest of the panel's errors.
+          gateMapFailed = true;
+          store.apply({
+            type: "space/gate-map-error",
+            message: "Could not read the star map, so jumps are not offered here.",
+          });
+        })
+        .finally(() => {
+          gateMapLoading = false;
+        });
+    }
+    return undefined;
+  }
+
+
   // Read what the ship can currently see (plus its own shield/armor/hull/cap)
   // and push it to the space slice. A failed read is surfaced as a non-fatal
-  // panel error rather than thrown at the poller — except a lost session, which
+  // panel error rather than thrown at the poller â€” except a lost session, which
   // unwinds to character select like every other held-session read.
   //
   // Docked is not an error: the gateway answers a docked session with an empty
@@ -1977,7 +2018,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       return;
     }
     const snapshot = decodeSpaceSnapshot(result.space);
-    store.apply({ type: "space/snapshot", snapshot });
+    store.apply({ type: "space/snapshot", snapshot, gateLinks: gateLinksForSnapshot(snapshot) });
     // Keep the flight readout honest too: a snapshot that says the ship is no
     // longer in space means the poll is about to stop, and the panel should not
     // keep showing the last grid it saw.
@@ -1992,8 +2033,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   let spacePanelOpen = false;
   const spacePoller: SpacePoller = createSpacePoller({
     // R23: the locked-target list rides the SAME ~1s beat as the snapshot.
-    // Locking is asynchronous — the server acquires a lock over a duration — so
-    // without a poll the page would show "Locking…" forever. The targets read
+    // Locking is asynchronous â€” the server acquires a lock over a duration â€” so
+    // without a poll the page would show "Lockingâ€¦" forever. The targets read
     // is best-effort: it must never make a snapshot read look like a failure.
     refresh: async () => {
       await loadSpaceSnapshot();
@@ -2034,7 +2075,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   //
   // Every one of them obeys the same two rules:
   //   1. A REFUSAL carries the server's own reason verbatim (targeting/action-error).
-  //   2. A 200 IS NOT PROOF — the BFF re-reads the authoritative state after
+  //   2. A 200 IS NOT PROOF â€” the BFF re-reads the authoritative state after
   //      every mutation, and when that re-read shows nothing changed AND the
   //      server gave no reason, that is reported as a SILENT DECLINE
   //      (targeting/silent-decline), a different thing from a refusal. The page
@@ -2136,7 +2177,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // successful activation into an error.
       () => loadSpaceSnapshot().catch(() => {}),
       // null means the verification read could not answer. That is NOT a silent
-      // decline — we simply do not know — so it is not reported as one.
+      // decline â€” we simply do not know â€” so it is not reported as one.
       (result) => result.active !== false,
       "The server accepted that module and then did not run it, and gave no reason.",
     );
@@ -2193,7 +2234,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     });
   }
 
-  /** Ask the refinery what these stacks would yield — and what the tax is. */
+  /** Ask the refinery what these stacks would yield â€” and what the tax is. */
   async function loadReprocessingQuote(itemIDs: readonly number[]): Promise<void> {
     if (itemIDs.length === 0) {
       store.apply({ type: "mining/quotes", quotes: [], taxRate: null, quotesFor: [] });
@@ -2227,7 +2268,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    *
    * Both actions here move or consume real items, so neither trusts its own
    * 200: the BFF re-reads and answers which stacks really moved. `moved: null`
-   * means the verification read itself failed — that is reported as "could not
+   * means the verification read itself failed â€” that is reported as "could not
    * check", never as success and never as a decline.
    */
   async function runMiningAction(
@@ -2276,7 +2317,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
   // --- R25 slice A: drones ---------------------------------------------------
 
-  /** Read the bay, what is in space, and the limits — one BFF round trip. */
+  /** Read the bay, what is in space, and the limits â€” one BFF round trip. */
   async function loadDrones(): Promise<void> {
     let result;
     try {
@@ -2308,7 +2349,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    *
    * The shape is the same for all four: issue the call, land the fresh
    * in-space list the BFF re-read, and then decide whether anything happened.
-   * `changed` is the per-action test — for a launch it is "did any new drone
+   * `changed` is the per-action test â€” for a launch it is "did any new drone
    * appear", for an order it is "does the server still report these drones".
    * A null in-space list means the re-read failed, which is reported as
    * "could not check" and never as success.
@@ -2364,7 +2405,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           return "No drones launched. Check your bandwidth and how many are already out.";
         }
         if (launched.length < itemIDs.length) {
-          return `Only ${launched.length} of ${itemIDs.length} drones launched — the rest did not fit in your bandwidth or drone limit.`;
+          return `Only ${launched.length} of ${itemIDs.length} drones launched â€” the rest did not fit in your bandwidth or drone limit.`;
         }
         return null;
       },
@@ -2382,7 +2423,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       }
       const known = new Set(inSpace.map((drone) => drone.itemID));
       const missing = droneIDs.filter((itemID) => !known.has(itemID));
-      // ⚠ A drone that is GONE from space is not a failure for a recall — it is
+      // âš  A drone that is GONE from space is not a failure for a recall â€” it is
       // the recall finishing. Only the orders that expect the drone to still be
       // flying treat a disappearance as worth mentioning, which is why the
       // recall path below does not use this verifier.
@@ -2434,9 +2475,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   }
 
   /**
-   * ⚠ REPROCESS. This consumes the ore and charges the station's ISK tax. The
+   * âš  REPROCESS. This consumes the ore and charges the station's ISK tax. The
    * panel confirms first (showing the quote AND the tax); the BFF confirms
-   * again. This method is unconditional by design — the gates are on either
+   * again. This method is unconditional by design â€” the gates are on either
    * side of it, as with destroyRig.
    */
   async function reprocessItems(itemIDs: readonly number[]): Promise<void> {
@@ -2465,7 +2506,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // Run one movement step, record it as the last action, and refresh the flight
   // snapshot the step returned. A lost session unwinds to the character list; a
   // movement refusal (scrambled, invalid target, docking-approach, lost control,
-  // ship destroyed) is surfaced through the store as a visible reason — never a
+  // ship destroyed) is surfaced through the store as a visible reason â€” never a
   // silent no-op or a fake success. On refusal the flight snapshot is still
   // refreshed so the readout reflects the real (unchanged) state.
   async function runFlightStep(
@@ -2552,7 +2593,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         store.apply({ type: "character/offline" });
         throw error;
       }
-      // ⚠ THE REFUSAL IS THE FEATURE. All eleven of the server's public codes
+      // âš  THE REFUSAL IS THE FEATURE. All eleven of the server's public codes
       // are things a player hits in ordinary play, and every one of them says
       // what to do next instead of showing its name.
       store.apply({
@@ -2562,7 +2603,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           : `That change could not be saved: ${readErrorReason(error)}`,
       });
       // The queue is unchanged on the server, but the panel may have been
-      // showing an optimistic order — re-read so what is on screen is the
+      // showing an optimistic order â€” re-read so what is on screen is the
       // server's, not ours.
       await loadSkills().catch(() => {});
       return;
@@ -2577,8 +2618,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
   // The client-side route solver's graph (fetched once, then cached) and the
   // single autopilot controller instance. The loop runs in the browser; closing
-  // the tab kills this JS and the loop simply stops issuing (no "stop" sent) —
-  // the ship completes its last server-side command and sits (roadmap §7).
+  // the tab kills this JS and the loop simply stops issuing (no "stop" sent) â€”
+  // the ship completes its last server-side command and sits (roadmap Â§7).
   let routeGraph: SystemGraph | null = null;
   let autopilot: AutopilotController | null = null;
 
@@ -2599,12 +2640,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       getStatus: async () => {
         const step = await api.getFlightStatus(callOptions);
         const status = decodeFlightStatus(step.flight);
-        // Reconcile the docked station in the background — the tick must not
+        // Reconcile the docked station in the background â€” the tick must not
         // block on a panel refresh (the loop owns its own cadence).
         void observeFlightStatus(status);
         return status;
       },
-      // R13 — the measurement the decide-loop runs retail's distance ladder on.
+      // R13 â€” the measurement the decide-loop runs retail's distance ladder on.
       // A READ (it starts nothing); the decoded snapshot is pushed into the
       // space slice too, so the Overview stays fresh while the autopilot flies
       // even if the panel's own poll is not running. A failure returns null and
@@ -2613,7 +2654,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         try {
           const result = await api.getSpaceSnapshot(callOptions);
           const snapshot = decodeSpaceSnapshot(result.space);
-          store.apply({ type: "space/snapshot", snapshot });
+          store.apply({ type: "space/snapshot", snapshot, gateLinks: gateLinksForSnapshot(snapshot) });
           return snapshot;
         } catch (error) {
           if (isSessionLost(error)) {
@@ -2626,13 +2667,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         await api.undock(callOptions);
       },
       warp: async (destinationID) => {
-        // R24 slice A — retail's `WarpToItem(warpRange=0)`, NOT the autopilot
+        // R24 slice A â€” retail's `WarpToItem(warpRange=0)`, NOT the autopilot
         // call. Passing a range routes to `CmdWarpToStuff("item", id,
         // minRange=0)`, which reaches the identical `warpToEntity` as
         // `CmdWarpToStuffAutopilot` but WITHOUT the 10 km that handler hardcodes
         // (beyonceService.js:2983). That 10 km was added to the warp's stop
         // distance, pushing the server's silent refusal 10 km further out than
-        // the distance the loop was measuring against — the dead band.
+        // the distance the loop was measuring against â€” the dead band.
         await api.warpTo(destinationID, AUTOPILOT_WARP_MIN_RANGE_M, callOptions);
       },
       approach: async (destinationID) => {
@@ -2791,16 +2832,16 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // That IS the decide-loop this app already runs. So Dock does not get its own
   // autopilot: it gets a zero-hop plan handed to the SAME controller, at the
   // same 2000 ms cadence, with the same measurement, the same settle windows and
-  // the same bounds — including R24 slice A's warp floor and warp counter. The
+  // the same bounds â€” including R24 slice A's warp floor and warp counter. The
   // ladder's dock rung now tests the server's real 2,500 m surface radius
   // (STATION_DOCKING_RADIUS_M), so Dock is asked once, when it will work,
   // instead of being fired at 50 km to be refused.
   //
-  // ⚠ A 200 IS NOT PROOF, twice over here:
+  // âš  A 200 IS NOT PROOF, twice over here:
   //   * out of range `Handle_CmdDock` (beyonceService.js:2994) starts an
-  //     approach AND refuses with `DockingApproach` (:3013-3025) — nothing
+  //     approach AND refuses with `DockingApproach` (:3013-3025) â€” nothing
   //     auto-docks on arrival, the client must come back;
-  //   * and it can return 200/null WITHOUT docking (:3031-3042) —
+  //   * and it can return 200/null WITHOUT docking (:3031-3042) â€”
   //     `WARP_LANDING_PENDING`, `STATION_NOT_FOUND`, `SHIP_IMMOBILE` and
   //     `DOCKING_APPROACH_REQUIRED` all reach the browser as `ok:true`.
   // So nothing here reads the Dock response to decide it worked. The loop's
@@ -2844,7 +2885,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
 
     // The station's NAME, for the readout (R7d: the panel must never show the
-    // id). Static reference data, best-effort — an unnamed station still docks.
+    // id). Static reference data, best-effort â€” an unnamed station still docks.
     let destinationName: string | null = null;
     try {
       const resolved = await api.resolveDestination(stationID, callOptions);
@@ -2884,7 +2925,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // Wired exactly as the autopilot is: a framework-agnostic controller whose
   // every dependency is a BFF call, driven from the browser at its own cadence.
   // It is deliberately a SEPARATE controller from the travel autopilot but
-  // never a simultaneous one — starting the bot aborts the autopilot first,
+  // never a simultaneous one â€” starting the bot aborts the autopilot first,
   // because two loops steering one ship is the bug neither of them can see.
   //
   // Note what these deps are NOT wired to: the flow's own lockTarget /
@@ -2906,10 +2947,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         const snapshot = decodeSpaceSnapshot(result.space);
         // Push it to the space slice too, so the Overview stays live while the
         // bot works even if the panel's own poll is not running.
-        store.apply({ type: "space/snapshot", snapshot });
+        store.apply({ type: "space/snapshot", snapshot, gateLinks: gateLinksForSnapshot(snapshot) });
         return snapshot;
       },
-      // THE LOCK AUTHORITY. A failed read must return null, never [] — an empty
+      // THE LOCK AUTHORITY. A failed read must return null, never [] â€” an empty
       // list would read as "nothing is locked" and re-lock a rock already being
       // mined.
       getLockedTargetIDs: async () => {
@@ -2934,7 +2975,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       undock: async () => {
         await api.undock(callOptions);
       },
-      // R24 slice A — retail's `WarpToItem(warpRange=0)`, not the autopilot
+      // R24 slice A â€” retail's `WarpToItem(warpRange=0)`, not the autopilot
       // call's hardcoded 10 km. Same correction, same reason.
       warp: async (destinationID) => {
         await api.warpTo(destinationID, AUTOPILOT_WARP_MIN_RANGE_M, callOptions);
@@ -2950,7 +2991,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       },
       // No `effect` is passed: the SERVER resolves the module's own default
       // activation effect from its type. The browser never guesses which effect
-      // a module runs — that rule is R23's and it holds here.
+      // a module runs â€” that rule is R23's and it holds here.
       activateModule: async (moduleID, targetID) => {
         await api.activateModule(moduleID, { targetID, repeat: -1 }, callOptions);
       },
@@ -3030,7 +3071,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     void miningBot.run();
   }
 
-  // R7a — search the static map by name so a player can set a destination
+  // R7a â€” search the static map by name so a player can set a destination
   // without knowing EVE IDs. The static /api/map/find read (login-gated, no
   // bridge session) returns systems + stations; we annotate each with jumps from
   // the current system using the same single BFS the Agent Finder uses (the map
@@ -3079,7 +3120,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // "unknown" so it never refetches), and pushes them into the store's `names`
   // slice for pure-reader components. A transient network failure is NOT cached
   // (the pending marks are released so a later request retries). Fire-and-forget:
-  // requestNames never throws and never blocks a UI interaction — the component
+  // requestNames never throws and never blocks a UI interaction â€” the component
   // shows the raw ID until the name lands. Chunked to the route's server-side cap
   // so a large list is never silently truncated.
   const NAMES_REQUEST_CAP = 500;
@@ -3188,7 +3229,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
     // The player's current system is the docked character's system (the finder
     // is a docked-station tool). Distances come from ONE BFS over the map graph
-    // (client-side, like the route solver) — never a solveRoute per agent.
+    // (client-side, like the route solver) â€” never a solveRoute per agent.
     const origin = store.station.get().online?.solarSystemID ?? null;
     let distances: Map<number, number> | null = null;
     let distanceNote: string | null = null;
@@ -3284,7 +3325,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // later dock elsewhere on this session will.
       syncedStationID = result.character.stationID;
       // R10: the session is live, so open the push channel before the docked
-      // reads — anything the reads trigger is then already being observed.
+      // reads â€” anything the reads trigger is then already being observed.
       startLiveStream();
       await refreshStationPanel();
     },
@@ -3519,7 +3560,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         );
         if (!item) {
           // runAgentAction's success path clears the action-error, so signal the
-          // miss by throwing — its catch surfaces the reason through the store.
+          // miss by throwing â€” its catch surfaces the reason through the store.
           throw new Error(
             `The mission package (type ${cargoTypeID}) is not in the station hangar.`,
           );
@@ -3596,7 +3637,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       await runFlightStep("Jump", () => api.jump(fromGateID, toGateID, callOptions));
     },
 
-    // R30 slice A. A pure read over the cached graph — it issues no game call
+    // R30 slice A. A pure read over the cached graph â€” it issues no game call
     // and starts nothing, so a panel may ask for it on every system change.
     async nearbyGates(systemID) {
       if (!(systemID > 0)) {
@@ -3661,7 +3702,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     requestNames,
 
     async releaseSession() {
-      // R10: stop consuming the push channel first — the session it belongs to
+      // R10: stop consuming the push channel first â€” the session it belongs to
       // is about to end.
       stopLiveStream();
       try {

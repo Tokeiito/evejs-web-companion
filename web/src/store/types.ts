@@ -3,6 +3,9 @@
 // (util.KeyVal rows, {type:"long"} wrappers, ...) live in ../bridge/wire.ts.
 
 import type { ShipStats } from "../bridge/shipStats.ts";
+import type { GateLink } from "../space/gateLinks.ts";
+
+export type { GateLink };
 
 /**
  * One character row from the reference call
@@ -1136,6 +1139,23 @@ export interface SpaceState {
   readonly loaded: boolean;
   /** Non-null when the last snapshot read failed (non-fatally). */
   readonly error: string | null;
+  /**
+   * R30 slice A — the stargates in the system this snapshot was taken in, and
+   * where each one leads. Computed from the client-side route graph the
+   * autopilot already caches (no server call of its own) and delivered WITH the
+   * snapshot on purpose: the links describe the same grid the entities do, so
+   * they can never label a gate using a different system's map.
+   *
+   * Empty until the graph has loaded, and empty for a system the graph does not
+   * reach. Empty is not an error — a grid with no gates is ordinary.
+   */
+  readonly gateLinks: readonly GateLink[];
+  /**
+   * Non-null only when the star map itself could not be read. Distinct from an
+   * empty `gateLinks`: "there are no gates here" and "I could not tell where
+   * these gates go" are different facts and a player acts differently on each.
+   */
+  readonly gateLinksError: string | null;
 }
 
 // --- R23 slice A: targeting + module activation ----------------------------
