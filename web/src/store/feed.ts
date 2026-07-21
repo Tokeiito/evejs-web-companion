@@ -77,6 +77,7 @@ import type {
   WalletLPBalance,
 } from "./types.ts";
 import type { ShipStats } from "../bridge/shipStats.ts";
+import type { MiningRungID } from "../nav/miningLadder.ts";
 
 export type FeedStatus = "idle" | "connecting" | "connected" | "disconnected";
 
@@ -614,6 +615,13 @@ export type FeedEvent =
       readonly phase: string | null;
       readonly action: string | null;
       readonly why: string | null;
+      /**
+       * R44 — the rung of the ladder that fired, or null for a tick the ladder
+       * never answered. REQUIRED, not optional, on purpose: an optional field
+       * on a feed event is exactly the shape that goes quietly missing and
+       * leaves a readout dark while everything still compiles.
+       */
+      readonly rung: MiningRungID | null;
       readonly rockName: string | null;
       readonly cyclesCompleted: number;
       readonly oreUnitsMined: number;

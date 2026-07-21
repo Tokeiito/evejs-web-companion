@@ -5,6 +5,7 @@
 import type { ShipStats } from "../bridge/shipStats.ts";
 import type { GateLink } from "../space/gateLinks.ts";
 import type { BotID } from "../nav/botRegistry.ts";
+import type { MiningRungID } from "../nav/miningLadder.ts";
 
 export type { GateLink };
 export type { BotID };
@@ -1618,6 +1619,15 @@ export interface MiningBotState {
   readonly action: string | null;
   /** WHY it did that — always present while running. */
   readonly why: string | null;
+  /**
+   * R44 — WHICH RUNG of the bot's ladder fired last, so the panel can show the
+   * whole ladder with that one lit. Null means no rung fired: the loop was in a
+   * settle window, waiting on a read, or the player paused it.
+   *
+   * ⚠ R7d — this identifier NEVER renders. `nav/miningLadder.ts` maps it to the
+   * plain-language name a player reads, and a panel test sweeps for every id.
+   */
+  readonly rung: MiningRungID | null;
   /** The rock it is working, by NAME (R7d). */
   readonly rockName: string | null;
   /** The belt and station the player picked, by name. */

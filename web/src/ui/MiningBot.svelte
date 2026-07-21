@@ -17,6 +17,11 @@
   // R30 slice E — the mining-equipment guess, shared with the cockpit's
   // "Mine this" so the bot and the one-click verb can never run different sets.
   import { activatableModules, looksLikeMiningEquipment } from "../space/rowActions.ts";
+  // R44 — the ladder, by NAME. This panel shows every rule the bot follows and
+  // marks the one that fired this tick. It is a pure reader of a catalogue: the
+  // order, the wording and the caveats all live in nav/miningLadder.ts next to
+  // the loop they describe, so a rung cannot be renamed here and drift there.
+  import { MINING_LADDER } from "../nav/miningLadder.ts";
   import { nameKey } from "../store/names.ts";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
@@ -199,6 +204,27 @@
       : Math.min(100, Math.round(($bot.holdUsed / $bot.holdCapacity) * 100)),
   );
 
+  /**
+   * R44 — the ladder as rows, grouped the way the loop is ordered.
+   *
+   * ⚠ THE ORDER IS THE BEHAVIOUR, so this never sorts or filters: it walks the
+   * catalogue as written and only breaks it where the group changes. A rung the
+   * bot did not reach this tick is shown NOT FIRED rather than hidden — seeing
+   * what did not fire is most of what makes an unattended loop trustworthy.
+   */
+  const ladderGroups = $derived.by(() => {
+    const groups: { name: string; rungs: typeof MINING_LADDER }[] = [];
+    for (const rung of MINING_LADDER) {
+      const last = groups[groups.length - 1];
+      if (last && last.name === rung.group) {
+        last.rungs = [...last.rungs, rung];
+      } else {
+        groups.push({ name: rung.group, rungs: [rung] });
+      }
+    }
+    return groups;
+  });
+
   async function run(action: () => Promise<void> | void): Promise<void> {
     if (busy) {
       return;
@@ -332,6 +358,55 @@
       </p>
     {/if}
   </section>
+
+  <!--
+    R44 — THE RULES, AND WHICH ONE JUST FIRED.
+
+    The bot tries these top to bottom and stops at the first one that matches,
+    so the ORDER on screen is the order in the loop and must not be re-sorted.
+    Rules it never reached this tick stay visible and unlit on purpose: a player
+    deciding whether to leave this running learns as much from what did not fire
+    as from what did.
+
+    Two of these rules are marked as more than the line describes. That marking
+    is not hedging — it is the panel refusing to imply the bot is simpler than
+    it is.
+  -->
+  <section>
+    <h2>The rules it follows</h2>
+    <p class="note">
+      It works down this list every couple of seconds and stops at the first
+      rule that fits.
+      {#if $bot.rung === null}
+        Right now none of them is running — it is waiting on your ship rather
+        than deciding.
+      {:else}
+        The one it is on is marked.
+      {/if}
+    </p>
+    {#each ladderGroups as group (group.name)}
+      <h3>{group.name}</h3>
+      <ol class="ladder">
+        {#each group.rungs as rung (rung.id)}
+          {@const fired = $bot.rung === rung.id}
+          <li class="rung" class:fired aria-current={fired ? "step" : undefined}>
+            <span class="mark" aria-hidden="true">{fired ? "▸" : ""}</span>
+            <span class="rung-body">
+              <span class="rung-name">{rung.name}</span>
+              <span class="state">{fired ? "running now" : "not this time"}</span>
+              {#if rung.fit === "unexpressible"}
+                <span class="caveat">
+                  This rule is more than one line can say — {rung.caveat}
+                </span>
+              {:else if fired && rung.caveat}
+                <span class="caveat">{rung.caveat}</span>
+              {/if}
+            </span>
+          </li>
+        {/each}
+      </ol>
+    {/each}
+  </section>
 {:else}
   <section>
     <h2>Set it up</h2>
@@ -430,5 +505,53 @@
   }
   #bot-floor {
     width: 5rem;
+  }
+
+  /* R44 — the ladder. R8: it reflows and never scrolls the page sideways. */
+  .ladder {
+    list-style: none;
+    margin: 0.25rem 0 0.75rem;
+    padding: 0;
+  }
+  .rung {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+    /* R8 — a comfortable row on a phone, not a dense log line. */
+    min-height: 40px;
+    padding: 0.4rem 0.5rem;
+    border-left: 3px solid transparent;
+    opacity: 0.6;
+  }
+  .rung.fired {
+    /* The lit rung. Marked three ways — weight, edge and its own words — so it
+       does not rely on colour alone. */
+    opacity: 1;
+    font-weight: 600;
+    border-left-color: currentColor;
+    background: rgba(127, 127, 127, 0.12);
+  }
+  .mark {
+    flex: 0 0 1rem;
+    text-align: center;
+  }
+  .rung-body {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+    min-width: 0;
+  }
+  .rung-name {
+    /* Long sentences wrap rather than pushing the panel wide. */
+    overflow-wrap: anywhere;
+  }
+  .state,
+  .caveat {
+    font-size: 0.85em;
+    font-weight: 400;
+    opacity: 0.75;
+  }
+  .caveat {
+    font-style: italic;
   }
 </style>
