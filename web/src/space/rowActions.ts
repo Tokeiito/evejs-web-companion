@@ -253,3 +253,157 @@ export function shipActions(ctx: ShipActionContext): readonly RowAction[] {
 export function looksLikeMiningEquipment(label: string): boolean {
   return /miner|mining|strip|harvest|deep core/i.test(label) && !/upgrade|rig|processor/i.test(label);
 }
+
+// --- R43: ONE derivation of "which of these is a miner" ----------------------
+//
+// ⚠ THE NAME GUESS ABOVE IS ONLY HALF OF IT, and the other half is why this
+// lives here instead of being re-written at each call site.
+//
+// A live R33 run on Farmer's Procurer carried `Medium Ice Harvester
+// Accelerator I` — a RIG. `looksLikeMiningEquipment` says TRUE for it: it
+// matches `harvest` and none of `upgrade|rig|processor` appears in its name.
+// The only reason the bot does not try to switch it on is that the derivation
+// skips the rig family STRUCTURALLY, before the name is ever consulted.
+//
+// So a second, independently written "does this ship have a miner?" check that
+// reached for the name guess alone would answer YES for a hull whose actual
+// miner list is empty — the preflight would wave the bot through and the loop
+// would immediately pause with nothing to run. The two halves have to travel
+// together, so they are one function and everything shares it.
+
+/** A module the client could switch on: a slot's contents, minus what is never activated. */
+export interface ActivatableModule {
+  readonly itemID: number;
+  readonly typeID: number;
+  readonly online: boolean;
+  /**
+   * The module's name, or null when it has not resolved yet.
+   *
+   * ⚠ NULL IS NOT "Unknown module". A placeholder here would be fed to the name
+   * guess and answer a confident "not a miner" about a module nobody has looked
+   * up yet — which is a guess wearing the clothes of a fact. Callers that render
+   * substitute their own placeholder; callers that DECIDE must treat null as
+   * "cannot tell" (see nav/botRegistry.ts).
+   */
+  readonly label: string | null;
+}
+
+/** The shape both the store's `FittingSlot` and any test fixture satisfy. */
+export interface ActivatableSlot {
+  readonly family: string;
+  readonly module: {
+    readonly itemID: number;
+    readonly typeID: number;
+    readonly online: boolean;
+  } | null;
+}
+
+/**
+ * Every module in the fit that can be ACTIVATED, empty slots and the two
+ * never-activated families dropped.
+ *
+ * Rigs and subsystems are excluded here and nowhere else. That exclusion is
+ * structural — it does not consult the name — which is exactly what makes it
+ * survive a rig whose name reads like a mining laser.
+ */
+export function activatableModules(
+  slots: readonly ActivatableSlot[],
+  nameOf: (typeID: number) => string | null,
+): readonly ActivatableModule[] {
+  const rows: ActivatableModule[] = [];
+  for (const slot of slots) {
+    if (slot.family === "rig" || slot.family === "subsystem" || !slot.module) {
+      continue;
+    }
+    rows.push({
+      itemID: slot.module.itemID,
+      typeID: slot.module.typeID,
+      online: slot.module.online,
+      label: nameOf(slot.module.typeID),
+    });
+  }
+  return rows;
+}
+
+/**
+ * The activatable modules that are POWERED UP and read like mining gear — the
+ * exact set the mining bot reaches for.
+ */
+export function miningModules(
+  modules: readonly ActivatableModule[],
+): readonly ActivatableModule[] {
+  return modules.filter(
+    (row) => row.online && row.label !== null && looksLikeMiningEquipment(row.label),
+  );
+}
+
+/**
+ * A MINING MODULE LIVES IN A HIGH SLOT (goal R43).
+ *
+ * ⚠ THIS IS A SLOT RULE FIRST AND A NAME RULE SECOND, and that order is the
+ * whole correction. The operator put it plainly: a miner is high-slot only, and
+ * rigs do not matter — because once you are looking at high slots they cannot.
+ * Farmer's live Procurer confirms it directly: both `Strip Miner I` sit at
+ * flags 27 and 28, both high.
+ *
+ * Every decoy that motivated the negative half of `looksLikeMiningEquipment`
+ * disappears by construction here rather than by being named:
+ *   • `Ice Harvester Upgrade II` is a LOW slot module.
+ *   • `Medium Ice Harvester Accelerator I` is a RIG.
+ * Neither is reachable from a high-slot filter, so nothing has to remember to
+ * exclude them.
+ *
+ * ⚠ IT STILL APPLIES THE BOT'S OWN PREDICATE, and that is deliberate rather
+ * than leftover. `looksLikeMiningEquipment` is what the LOOP reaches for when it
+ * decides which modules to switch on; intersecting with it makes this set a
+ * strict SUBSET of the bot's own, which is the property that matters: the
+ * preflight can never be more optimistic than the bot it is clearing. A
+ * requirement that said "yes, you have a miner" about a module the loop would
+ * not switch on is precisely the failure this check exists to prevent — the bot
+ * starts and immediately pauses with nothing to run.
+ *
+ * (An authoritative signal does exist and needs no new BFF route: `/api/names`
+ * resolves `typeGroup:17482` to "Strip Miner". Moving to it would break the
+ * subset property unless the LOOP moved at the same time, so it is left for a
+ * goal that can change both together.)
+ */
+export function highSlotMiningModules(
+  slots: readonly ActivatableSlot[],
+  nameOf: (typeID: number) => string | null,
+): readonly ActivatableModule[] {
+  return activatableModules(
+    slots.filter((slot) => slot.family === "high"),
+    nameOf,
+  ).filter((row) => row.label !== null && looksLikeMiningEquipment(row.label));
+}
+
+/**
+ * Powered-up modules whose name has not arrived yet.
+ *
+ * A caller that has to DECIDE whether this ship can mine cannot treat these as
+ * "not a miner" — any one of them could be a Strip Miner nobody has looked up.
+ * They are the honest "cannot tell" the R43 preflight refuses to start on.
+ */
+export function unnamedOnlineModules(
+  modules: readonly ActivatableModule[],
+): readonly ActivatableModule[] {
+  return modules.filter((row) => row.online && row.label === null);
+}
+
+/**
+ * High-slot modules nobody has named yet — the R43 preflight's cannot-tell.
+ *
+ * ⚠ IT DOES NOT FILTER ON `online`. The question the requirement asks is "is a
+ * miner FITTED", which an unpowered module answers just as well as a powered
+ * one; an unnamed high-slot module could be a Strip Miner either way, so it
+ * poisons the count regardless of its power state.
+ */
+export function unnamedHighSlotModules(
+  slots: readonly ActivatableSlot[],
+  nameOf: (typeID: number) => string | null,
+): readonly ActivatableModule[] {
+  return activatableModules(
+    slots.filter((slot) => slot.family === "high"),
+    nameOf,
+  ).filter((row) => row.label === null);
+}

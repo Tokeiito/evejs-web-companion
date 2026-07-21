@@ -19,6 +19,10 @@ import assert from "node:assert/strict";
 
 import { createAppFlow } from "./flow.ts";
 import { createClientStore } from "../store/clientStore.ts";
+// R43 — the preflight reads the FIT before it starts, so the harness has to
+// serve a ship that can actually mine. These are Farmer's live Procurer's own
+// captured bytes rather than a hand-typed stand-in.
+import { fittingBody, namesBody } from "./botFixtures.ts";
 
 interface Recorded {
   readonly path: string;
@@ -156,7 +160,7 @@ function harness(options: { locked?: number[]; activeModuleIDs?: number[] } = {}
     locked: options.locked ?? ([] as number[]),
     active: options.activeModuleIDs ?? ([] as number[]),
   };
-  const { fetch, requests } = makeFakeFetch((path) => {
+  const { fetch, requests } = makeFakeFetch((path, _method, body) => {
     if (path === "/api/bridge/flight/status") {
       return { status: 200, body: flightBody(false) };
     }
@@ -182,6 +186,15 @@ function harness(options: { locked?: number[]; activeModuleIDs?: number[] } = {}
     }
     if (path === "/api/bridge/ship/ore-hold") {
       return { status: 200, body: holdsBody(0, []) };
+    }
+    // R43 preflight: the fit, and the names it needs to tell a Strip Miner from
+    // a Nanofiber. Without these the requirement check reaches cannot-tell and
+    // correctly refuses to start.
+    if (path === "/api/bridge/fitting") {
+      return { status: 200, body: fittingBody() };
+    }
+    if (path === "/api/names") {
+      return { status: 200, body: namesBody(body) };
     }
     return { status: 200, body: { ok: true } };
   });
@@ -242,7 +255,7 @@ test("the bot activates a module with NO effect name — the server resolves it,
 
 test("the bot's warps carry retail's minRange 0, not the autopilot call's built-in 10 km (R24 slice A)", async () => {
   // A world with the belt far away and no rocks, so the ladder chooses a warp.
-  const { fetch, requests } = makeFakeFetch((path) => {
+  const { fetch, requests } = makeFakeFetch((path, _method, body) => {
     if (path === "/api/bridge/flight/status") return { status: 200, body: flightBody(false) };
     if (path === "/api/bridge/space/snapshot") {
       return {
@@ -284,6 +297,8 @@ test("the bot's warps carry retail's minRange 0, not the autopilot call's built-
       return { status: 200, body: { ok: true, targetIDs: [], notifications: [] } };
     }
     if (path === "/api/bridge/ship/ore-hold") return { status: 200, body: holdsBody(0, []) };
+    if (path === "/api/bridge/fitting") return { status: 200, body: fittingBody() };
+    if (path === "/api/names") return { status: 200, body: namesBody(body) };
     return { status: 200, body: { ok: true } };
   });
   const flow = createAppFlow(createClientStore(), { fetch });
@@ -299,7 +314,7 @@ test("the bot's warps carry retail's minRange 0, not the autopilot call's built-
 
 test("a docked bot unloads first and only then undocks — and the readout says why", async () => {
   let items: unknown[] = [{ itemID: 90001, typeID: 1230, quantity: 4_000 }];
-  const { fetch, requests } = makeFakeFetch((path) => {
+  const { fetch, requests } = makeFakeFetch((path, _method, body) => {
     if (path === "/api/bridge/flight/status") return { status: 200, body: flightBody(true) };
     if (path === "/api/bridge/ship/ore-hold") {
       return { status: 200, body: holdsBody(items.length > 0 ? 4_000 : 0, items) };
@@ -308,6 +323,8 @@ test("a docked bot unloads first and only then undocks — and the readout says 
       items = [];
       return { status: 200, body: { ok: true, requested: [90001], moved: [90001], remaining: [] } };
     }
+    if (path === "/api/bridge/fitting") return { status: 200, body: fittingBody() };
+    if (path === "/api/names") return { status: 200, body: namesBody(body) };
     return { status: 200, body: { ok: true } };
   });
   const store = createClientStore();

@@ -115,10 +115,23 @@ import {
 } from "../nav/autopilotLoop.ts";
 import {
   createMiningBot,
+  destinationHold,
+  holdShouldHaul,
   type MiningBotController,
   type MiningBotDeps,
   type MiningPlan,
 } from "../nav/miningBotLoop.ts";
+// R43 — one declaration of which bots exist, what each needs before it can
+// start, and who is allowed to hold the ship.
+import {
+  MINING_BOT_REQUIREMENTS,
+  MISSION_BOT_REQUIREMENTS,
+  createShipClaim,
+  evaluateRequirements,
+  type MiningBotReads,
+  type MissionBotReads,
+} from "../nav/botRegistry.ts";
+import { highSlotMiningModules, unnamedHighSlotModules } from "../space/rowActions.ts";
 import {
   DEFAULT_MAX_JUMPS,
   createMissionBot,
@@ -3689,21 +3702,148 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     };
   }
 
+  // --- R43: one ship, one bot, and a preflight against fresh authority -------
+  //
+  // ⚠ THE CLAIM IS THE ONLY PLACE A BOT IS STOPPED FOR ANOTHER BOT. It walks
+  // every OTHER registered bot; the record it is built from is exhaustive over
+  // `BotID`, so a fourth bot cannot compile without its stopper and inherits
+  // exclusion from all three existing ones for free. This replaces the two
+  // asymmetric hand-written lines that let the mining bot start on top of a
+  // running mission bot.
+  const claimShip = createShipClaim({
+    mining: () => miningBot?.stop(),
+    mission: () => missionBot?.stop(),
+  });
+
+  /**
+   * Resolve names and WAIT for them, unlike the fire-and-forget `requestNames`.
+   *
+   * The preflight has to know whether a powered-up module is a mining laser,
+   * and that is a question about its NAME. Reading the cache without waiting
+   * would report "no miner fitted" on a ship whose Strip Miners simply had not
+   * been looked up yet — a guess dressed as a fact. Anything still unresolved
+   * afterwards stays unresolved and becomes a cannot-tell, never a "no".
+   */
+  async function resolveNamesNow(refs: readonly NameRef[]): Promise<void> {
+    requestNames(refs);
+    if (nameFlushScheduled) {
+      nameFlushScheduled = false;
+      await flushNameQueue();
+    }
+  }
+
+  /**
+   * What the mining bot's requirements are checked against — read NOW.
+   *
+   * ⚠ FRESH, NOT WHATEVER THE STORE WAS HOLDING. The panel evaluates the same
+   * requirements against the store so a player can see the checklist, but that
+   * copy can be minutes old: a ship that has since docked, a laser since
+   * unfitted. Only these reads decide, and they are taken immediately before
+   * the first call the loop would make. Every read is independent and a failure
+   * lands as `null` — which the requirement turns into cannot-tell, and
+   * cannot-tell does not pass.
+   */
+  async function miningBotReads(request: MiningBotRequest): Promise<MiningBotReads> {
+    let inSpace: boolean | null = null;
+    try {
+      const step = await api.getFlightStatus(callOptions);
+      const status = decodeFlightStatus(step.flight);
+      void observeFlightStatus(status);
+      inSpace = !status.docked;
+    } catch {
+      inSpace = null;
+    }
+
+    let minersFitted: number | null = null;
+    let minersOnline: number | null = null;
+    try {
+      await loadFitting();
+      const fit = store.fitting.get();
+      if (fit.slotsError === null) {
+        // Ask for every fitted module's name and WAIT, then look at the HIGH
+        // SLOTS — where every mining module lives (space/rowActions.ts).
+        await resolveNamesNow(
+          fit.slots
+            .filter((slot) => slot.module !== null)
+            .map((slot) => ({ kind: "type" as const, id: slot.module!.typeID })),
+        );
+        const resolved = store.names.get().resolved;
+        const nameOf = (typeID: number): string | null =>
+          resolved[nameKey("type", typeID)] ?? null;
+        // A high-slot module nobody could name might BE a Strip Miner, so an
+        // unnamed one poisons BOTH counts rather than being read as "not a
+        // miner". Only a fit we could read end to end produces numbers.
+        if (unnamedHighSlotModules(fit.slots, nameOf).length === 0) {
+          const miners = highSlotMiningModules(fit.slots, nameOf);
+          minersFitted = miners.length;
+          minersOnline = miners.filter((row) => row.online).length;
+        }
+      }
+    } catch {
+      minersFitted = null;
+      minersOnline = null;
+    }
+
+    let holdHasRoom: boolean | null = null;
+    try {
+      const result = await api.getMiningHolds(callOptions);
+      const holds = decodeMiningHolds(result.holds);
+      store.apply({ type: "mining/holds", holds });
+      // The loop's OWN pair: the hold it will actually fill, and its own 0.9
+      // headroom. "Should haul already" is exactly "has no room left".
+      const shouldHaul = holdShouldHaul(destinationHold(holds));
+      holdHasRoom = shouldHaul === null ? null : !shouldHaul;
+    } catch {
+      holdHasRoom = null;
+    }
+
+    return {
+      inSpace,
+      minersFitted,
+      minersOnline,
+      beltChosen: request.beltID > 0,
+      stationChosen: request.stationID > 0,
+      holdHasRoom,
+    };
+  }
+
+  /**
+   * The mission bot's reads. Only "where is the ship" needs the server — the
+   * agent and its station come from the request the player just made, so they
+   * are knowable rather than readable and can never be cannot-tell.
+   */
+  async function missionBotReads(request: MissionBotRequest): Promise<MissionBotReads> {
+    let docked: boolean | null = null;
+    try {
+      const step = await api.getFlightStatus(callOptions);
+      const status = decodeFlightStatus(step.flight);
+      void observeFlightStatus(status);
+      docked = status.docked;
+    } catch {
+      docked = null;
+    }
+    return {
+      docked,
+      agentChosen: request.agentID > 0,
+      agentStationKnown: request.agentStationID > 0,
+    };
+  }
+
   async function startMissionBot(request: MissionBotRequest): Promise<void> {
     store.apply({ type: "mission-bot/start-error", message: null });
 
-    if (!(request.agentID > 0) || !(request.agentStationID > 0)) {
-      store.apply({
-        type: "mission-bot/start-error",
-        message: "Pick an agent for the bot to work with.",
-      });
+    // ⚠ THE CLAIM COMES FIRST, BEFORE THE PREFLIGHT CAN REFUSE. The player has
+    // said which bot they want; whether or not this one turns out to be able to
+    // start, the other must not be left flying the ship out from under a
+    // decision that has already been made. A refusal that leaves the previous
+    // bot running would be the old two-loops bug wearing an error message.
+    claimShip("mission");
+
+    const preflight = evaluateRequirements(MISSION_BOT_REQUIREMENTS, await missionBotReads(request));
+    if (!preflight.canStart) {
+      store.apply({ type: "mission-bot/start-error", message: preflight.blockedBy });
       return;
     }
-
-    // Two loops must never steer one ship. The mission bot DRIVES the autopilot
-    // rather than competing with it, so the one it must not run alongside is the
-    // mining bot.
-    miningBot?.stop();
 
     const plan: MissionPlan = {
       agentID: request.agentID,
@@ -3740,8 +3880,21 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
 
     // Two loops must never steer one ship. Retail's own Stop switches the
-    // autopilot off for the same reason; so does this.
+    // autopilot off for the same reason; so does this. The travel autopilot is
+    // NOT a peer bot — the mission bot drives it rather than competing with it
+    // — so it is aborted here and does not go through the ship claim.
     autopilot?.abort();
+    // ⚠ AND THIS IS THE LINE THAT WAS MISSING. `startMiningBot` aborted the
+    // autopilot and stopped nothing else, so a running mission bot kept
+    // ticking. It is now the same declarative claim the mission bot takes,
+    // before the preflight, for the same reason.
+    claimShip("mining");
+
+    const preflight = evaluateRequirements(MINING_BOT_REQUIREMENTS, await miningBotReads(request));
+    if (!preflight.canStart) {
+      store.apply({ type: "bot/start-error", message: preflight.blockedBy });
+      return;
+    }
 
     const plan: MiningPlan = {
       beltID: request.beltID,

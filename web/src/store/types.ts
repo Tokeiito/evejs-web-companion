@@ -4,8 +4,10 @@
 
 import type { ShipStats } from "../bridge/shipStats.ts";
 import type { GateLink } from "../space/gateLinks.ts";
+import type { BotID } from "../nav/botRegistry.ts";
 
 export type { GateLink };
+export type { BotID };
 
 /**
  * One character row from the reference call
@@ -1677,6 +1679,22 @@ export interface MissionBotState {
   /** A problem starting it (no agent picked, not docked); null clears it. */
   readonly startError: string | null;
   readonly startedAt: number | null;
+}
+
+/**
+ * Which bot is holding the ship (goal R43).
+ *
+ * ⚠ THIS IS A VIEW, NOT A SECOND SOURCE OF TRUTH. The store recomputes it from
+ * the loops' OWN statuses after every event (see `syncBotClaim` in
+ * clientStore.ts), so it cannot drift away from them the way a separately-set
+ * flag would. Nothing writes it directly and there is no event that carries it.
+ *
+ * It exists because a player who starts a bot and switches panels has, until
+ * now, had nowhere to find out that anything is running at all. `null` means
+ * no loop holds the ship; a paused bot still holds it (see `holdsTheShip`).
+ */
+export interface BotsState {
+  readonly runningBotID: BotID | null;
 }
 
 /**

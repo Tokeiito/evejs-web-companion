@@ -288,10 +288,134 @@ export const DRONE_NOT_UNDER_YOUR_CONTROL = "Your ship is not flying this drone"
 /** The same fact about a whole flight, for the group order (goal R33). */
 export const NO_DRONE_UNDER_YOUR_CONTROL = "Your ship is not flying any of these drones";
 
+// --- R43: what a bot needs before it will start -----------------------------
+//
+// The same mechanism as the drone sentences above, pointed at a different kind
+// of gate. A bot's requirement IS a predicted refusal by the definition this
+// section already uses — the client sources it from a field it holds, before
+// the player presses anything, and says it on the control instead of letting a
+// press go nowhere. It is a THIRD table only if you write it somewhere else, so
+// it is not written somewhere else.
+//
+// ⚠ THE "SERVER GATE YOU CAN POINT AT" BAR STILL APPLIES; the gate is simply
+// the bot's own ladder rather than a handler. Each sentence below names the
+// condition under which `nav/miningBotLoop.ts` or `nav/missionBotLoop.ts` would
+// refuse to make progress, so nothing here is a hunch about what MIGHT go
+// wrong — it is the loop's own bound, said before the run instead of after it.
+//
+// ⚠ AND THERE ARE TWO SENTENCES PER UNREADABLE CHECK, not one. "You are docked"
+// and "we could not tell where you are" send a player to different places, and
+// collapsing them would hide a failed read behind a confident answer — which is
+// exactly the thing the cannot-tell verdict exists to stop.
+
+/**
+ * SOURCED FROM: the ladder's mine step activates the modules in the plan, so a
+ * hull carrying no mining equipment cannot leave the "waiting to mine" arm.
+ *
+ * ⚠ TWO SENTENCES, NOT ONE, because they are two different problems with two
+ * different fixes. "You have not got one" sends a player to the Fitting tab;
+ * "you have one and it is switched off" is one click on a row they are already
+ * looking at. Collapsing them would send half of those players to the wrong
+ * place.
+ *
+ * ⚠ AND NEITHER NAMES A SLOT. Mining equipment being high-slot-only is how the
+ * CHECK works, not something a player needs told — "fit it in a high slot" is
+ * the kind of jargon R9a exists to keep off the screen.
+ */
+export const MINING_BOT_NEEDS_A_MINER =
+  "This ship has no mining equipment fitted. Fit a mining laser under Fitting and come back.";
+
+/**
+ * SOURCED FROM: the same step — a module that is not online cannot be activated.
+ *
+ * ⚠ IT NAMES THE REMEDY THIS CLIENT CAN ACTUALLY OFFER. Powering a module up is
+ * a control on the row under Around Your Ship (R30 slice E), not a trip to the
+ * Fitting tab, so that is where it points.
+ */
+export const MINING_BOT_NEEDS_THE_MINER_ON =
+  "Your mining equipment is fitted but not switched on. Power it up under Around Your Ship.";
+
+/** SOURCED FROM: the plan's beltID is what the ladder warps to; without one there is nowhere to go. */
+export const MINING_BOT_NEEDS_A_BELT = "Pick the asteroid belt you want the bot to work.";
+
+/** SOURCED FROM: the plan's stationID is where a full hold is hauled; without one the haul step has no destination. */
+export const MINING_BOT_NEEDS_A_STATION =
+  "Pick the station you want the bot to take the ore to.";
+
+/** SOURCED FROM: the plan's agentID is who the ladder asks for work. */
+export const MISSION_BOT_NEEDS_AN_AGENT = "Pick the agent you want the bot to work for.";
+
+/** SOURCED FROM: the ladder flies to the agent's OWN station before asking, so that station has to be known. */
+export const MISSION_BOT_NEEDS_AGENT_STATION =
+  "The station that agent works from is not known, so the bot has nowhere to fly to.";
+
+/**
+ * The cannot-tell sentences.
+ *
+ * Each says the same two true things: we could not make the check, and the bot
+ * has therefore not started. None of them guesses at a cause, and none of them
+ * tells the player the thing is wrong — only that it is unread.
+ */
+export const UNCHECKABLE_WHERE_YOU_ARE =
+  "Could not read where your ship is, so the bot has not started. Try again in a moment.";
+
+export const UNCHECKABLE_MINERS =
+  "Could not read what is fitted to your ship, so the bot has not started. Try again in a moment.";
+
+export const UNCHECKABLE_HOLD =
+  "Could not read how much room is in your hold, so the bot has not started. Try again in a moment.";
+
 /** Every predicted refusal this client can put on a control. Exported for the tests. */
 export const PREDICTED_REFUSAL_TEXTS: readonly string[] = Object.freeze([
   DRONE_NOT_UNDER_YOUR_CONTROL,
   NO_DRONE_UNDER_YOUR_CONTROL,
+  MINING_BOT_NEEDS_A_MINER,
+  MINING_BOT_NEEDS_THE_MINER_ON,
+  MINING_BOT_NEEDS_A_BELT,
+  MINING_BOT_NEEDS_A_STATION,
+  MISSION_BOT_NEEDS_AN_AGENT,
+  MISSION_BOT_NEEDS_AGENT_STATION,
+  UNCHECKABLE_WHERE_YOU_ARE,
+  UNCHECKABLE_MINERS,
+  UNCHECKABLE_HOLD,
+]);
+
+// --- R43: what a bot will DO about a box the checklist has not ticked -------
+//
+// ⚠ THESE ARE NOT REFUSALS AND MUST NOT BE FILED AS ONES. A refusal says the
+// thing will not happen; each sentence below says the opposite — the bot has
+// seen the state and will resolve it itself on its first rungs.
+//
+// They exist because the obvious version of this checklist was WRONG, and
+// wrong in the exact way MissionBot.svelte's own comment already records
+// having been fixed once: both loops handle their "wrong" starting state.
+// `missionBotLoop.ts:552` reads "in space with no flight of ours running" and
+// flies to the station it needs; `miningBotLoop.ts:422` reads a docked ship and
+// unloads, then undocks. Gating a start on "you must be docked" or "you must be
+// in space" would have made the LAUNCHER NARROWER THAN THE BOT — refusing a
+// start the ladder underneath handles perfectly well, and breaking the
+// live-proven restart-while-docked path in the process.
+//
+// So the state is still declared, still checked and still shown — it just does
+// not block, and it reads as what will happen rather than as a complaint.
+
+/** SOURCED FROM: miningBotLoop's docked branch — unload, confirm the hold is empty, then undock. */
+export const MINING_BOT_WILL_UNDOCK =
+  "Your ship is docked. The bot will unload anything aboard and undock before it starts mining.";
+
+/** SOURCED FROM: the same branch — a full hold is taken in before anything new is mined. */
+export const MINING_BOT_WILL_UNLOAD_FIRST =
+  "Your hold is nearly full. The bot will take this load in before it mines anything new.";
+
+/** SOURCED FROM: missionBotLoop's in-space branch — it flies to where the ladder needs the ship. */
+export const MISSION_BOT_WILL_FLY_TO_AGENT =
+  "Your ship is out in space. The bot will fly to the station and dock before it asks for work.";
+
+/** Every "the bot will handle it" sentence. Exported for the tests. */
+export const BOT_ADVISORY_TEXTS: readonly string[] = Object.freeze([
+  MINING_BOT_WILL_UNDOCK,
+  MINING_BOT_WILL_UNLOAD_FIRST,
+  MISSION_BOT_WILL_FLY_TO_AGENT,
 ]);
 
 /** Every server refusal string this client explains in words. Exported for the tests. */

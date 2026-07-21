@@ -19,8 +19,12 @@ import {
   type Unsubscribe,
 } from "./signals.ts";
 import type { FeedAdapter, FeedEvent, FeedSink, FeedStatus } from "./feed.ts";
+// R43 — the bot registry owns the BotID union and what "holding the ship"
+// means, so the store and flow.ts can never disagree about either.
+import { BOT_IDS, holdsTheShip, type BotID } from "../nav/botRegistry.ts";
 import type {
   AgentFinderState,
+  BotsState,
   AgentsState,
   ChatChannelState,
   ChatState,
@@ -143,6 +147,7 @@ export interface ClientState {
   readonly travel: TravelState;
   readonly bot: MiningBotState;
   readonly missionBot: MissionBotState;
+  readonly bots: BotsState;
   readonly chat: ChatState;
   readonly live: LiveState;
   readonly names: NamesState;
@@ -461,6 +466,15 @@ const INITIAL_MISSION_BOT: MissionBotState = Object.freeze({
   startedAt: null,
 });
 
+/**
+ * R43 — nothing holds the ship until a loop says otherwise. There is no
+ * `bots/…` event: this slice is RECOMPUTED from the loops' own statuses (see
+ * `syncBotClaim`), which is what makes it incapable of disagreeing with them.
+ */
+const INITIAL_BOTS: BotsState = Object.freeze({
+  runningBotID: null as BotID | null,
+});
+
 // R28 skills. Every "unknown" is null and never an empty list: a failed read
 // must not look like a character who knows nothing, and an unread queue must
 // not look like a queue with nothing in it.
@@ -580,6 +594,7 @@ export interface ClientStore {
   readonly travel: ReadableSignal<TravelState>;
   readonly bot: ReadableSignal<MiningBotState>;
   readonly missionBot: ReadableSignal<MissionBotState>;
+  readonly bots: ReadableSignal<BotsState>;
   readonly chat: ReadableSignal<ChatState>;
   readonly live: ReadableSignal<LiveState>;
   readonly names: ReadableSignal<NamesState>;
@@ -629,6 +644,7 @@ export function createClientStore(): ClientStore {
   const travel = createSignal<TravelState>(INITIAL_TRAVEL);
   const bot = createSignal<MiningBotState>(INITIAL_BOT);
   const missionBot = createSignal<MissionBotState>(INITIAL_MISSION_BOT);
+  const bots = createSignal<BotsState>(INITIAL_BOTS);
   const chat = createSignal<ChatState>(INITIAL_CHAT);
   const live = createSignal<LiveState>(INITIAL_LIVE);
   const names = createSignal<NamesState>(INITIAL_NAMES);
@@ -665,6 +681,7 @@ export function createClientStore(): ClientStore {
     travel: travel.get(),
     bot: bot.get(),
     missionBot: missionBot.get(),
+    bots: bots.get(),
     chat: chat.get(),
     live: live.get(),
     names: names.get(),
@@ -1751,8 +1768,34 @@ export function createClientStore(): ClientStore {
     }
   };
 
+  /**
+   * Which bot holds the ship, recomputed from the loops themselves (goal R43).
+   *
+   * ⚠ THE READER RECORD IS THE POINT. `Record<BotID, …>` is exhaustive, so a
+   * fourth bot cannot be added to the union without the compiler demanding its
+   * status reader here — the running-bot readout picks it up on the day it
+   * lands, rather than silently reporting "nothing is running" while it flies
+   * the ship. `BOT_IDS` gives the order, so a tie (which the ship claim makes
+   * impossible) still resolves the same way every time.
+   */
+  const botStatus: Readonly<Record<BotID, () => string>> = {
+    mining: () => bot.get().status,
+    mission: () => missionBot.get().status,
+  };
+
+  const syncBotClaim = (): void => {
+    const holder = BOT_IDS.find((id) => holdsTheShip(botStatus[id]())) ?? null;
+    if (bots.get().runningBotID !== holder) {
+      bots.set({ runningBotID: holder });
+    }
+  };
+
   const apply = (event: FeedEvent): void => {
     reduce(event);
+    // ⚠ AFTER EVERY EVENT, not inside the eight bot cases. A per-case call is a
+    // line each new bot has to remember; this one cannot be forgotten, and it
+    // is a pair of status reads with an equality guard, so it costs nothing.
+    syncBotClaim();
     bump();
   };
 
@@ -1825,6 +1868,7 @@ export function createClientStore(): ClientStore {
     travel: readonlySignal(travel),
     bot: readonlySignal(bot),
     missionBot: readonlySignal(missionBot),
+    bots: readonlySignal(bots),
     chat: readonlySignal(chat),
     live: readonlySignal(live),
     names: readonlySignal(names),

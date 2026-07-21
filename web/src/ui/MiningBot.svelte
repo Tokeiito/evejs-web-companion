@@ -16,8 +16,8 @@
   import { formatDistance } from "../space/overview.ts";
   // R30 slice E — the mining-equipment guess, shared with the cockpit's
   // "Mine this" so the bot and the one-click verb can never run different sets.
-  import { looksLikeMiningEquipment } from "../space/rowActions.ts";
-  import { resolvedName } from "../store/names.ts";
+  import { activatableModules, looksLikeMiningEquipment } from "../space/rowActions.ts";
+  import { nameKey } from "../store/names.ts";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
 
@@ -133,27 +133,26 @@
   /**
    * The equipment the bot may run: everything ONLINE in the ship's slots, by
    * name. Rigs and subsystems are never activated, so they are left out.
+   *
+   * ⚠ R43 — THE DERIVATION MOVED, THE MEANING DID NOT. It now comes from
+   * `space/rowActions.ts` so that this list, the cockpit's "Mine this" and the
+   * launcher's "have you got a miner?" preflight are one function rather than
+   * three that agree today. See that file for the Ice Harvester rig that a
+   * separately-written version of this gets wrong.
    */
   interface Equipment {
     readonly itemID: number;
     readonly label: string;
   }
-  const equipment = $derived.by<Equipment[]>(() => {
-    const rows: Equipment[] = [];
-    for (const slot of $fitting.slots) {
-      if (slot.family === "rig" || slot.family === "subsystem" || !slot.module) {
-        continue;
-      }
-      if (!slot.module.online) {
-        continue;
-      }
-      rows.push({
-        itemID: slot.module.itemID,
-        label: resolvedName($names.resolved, "type", slot.module.typeID, "Unknown module"),
-      });
-    }
-    return rows;
-  });
+  const equipment = $derived.by<Equipment[]>(() =>
+    activatableModules($fitting.slots, (typeID) =>
+      // A name that has not landed yet is null in the shared derivation; only
+      // this RENDERING layer substitutes a placeholder for it.
+      $names.resolved[nameKey("type", typeID)] ?? null,
+    )
+      .filter((row) => row.online)
+      .map((row) => ({ itemID: row.itemID, label: row.label ?? "Unknown module" })),
+  );
 
   /**
    * A CONVENIENCE default, not a claim: equipment whose name reads like a
