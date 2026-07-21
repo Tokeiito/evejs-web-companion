@@ -36,6 +36,21 @@ Pin it with a test: starting each bot while each other bot runs must leave exact
 - **Show what is currently running**, so a player who has left a bot going and switched panels can find it again.
 - The panel must survive docking/undocking the way the mining bot readout already does.
 
+## Starting requirements (added mid-goal by the operator)
+
+> *"Add a 'starting requirements' to any bot, such as 'has to be in station', or maybe some other checks like, 'miner bot has to be in a ship fitted with at least 1 mining type module'"*
+
+The panel's "why can't this start" becomes **declared requirements per bot, checked against live state** — not ad-hoc conditions scattered through the panel. This is slice 4 of the bot-builder discovery, so it is the intended shape.
+
+- Each bot declares requirements. Each is a **pure function over injected reads** returning met / not-met / **cannot-tell**, plus a plain sentence for the not-met case (R9a).
+- Evaluate against **fresh authority immediately before the first call**. A stale "you have a mining module" is exactly what this prevents.
+- **Cannot-tell must not pass.** An unreadable value means the bot does not start and says so — the same pause-rather-than-guess rule the loops follow.
+- Pure over injected reads ⇒ every case is a plain `node --test` file.
+
+Requirements: docked where needed; **mining bot needs ≥1 mining module fitted and online**; a belt and station chosen with room in the hold; the mission bot at its agent's station.
+
+**Trap — do not write a fresh "is this a mining module" test.** The mining bot already derives its miners (`minerRows` / `looksLikeMiningEquipment`), with live-measured edge cases: R33's Procurer run saw `Ice Harvester Upgrade II` correctly excluded by the `/upgrade/` term, and a `Medium Ice Harvester Accelerator I` **rig** that the name guess does *not* exclude and which survives only because `moduleRows` skips the rig family structurally. An independently-written second check will disagree with the bot's own list — worst case, a preflight that says "you have a miner" for a hull whose `minerRows` is empty, so the bot starts and instantly pauses. **Share the derivation; pin the agreement with a test.**
+
 ## Deliberately NOT in this goal
 
 - No new bot. No changes to either loop's logic.
