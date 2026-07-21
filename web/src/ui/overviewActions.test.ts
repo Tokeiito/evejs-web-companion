@@ -187,6 +187,38 @@ test("with nothing locked the list says so, in plain words", () => {
   assert.match(text, /Nothing is locked/);
 });
 
+// Regression: a player locked a rock, pressed Switch on, and the server refused
+// "You need an active target to activate that module" — because the "Use it on"
+// picker defaulted to "Nothing" and the module was sent with no target at all.
+// Locking a thing MAKES it the thing your equipment acts on; the default must
+// follow the lock, and the opt-out has to be the deliberate choice.
+test("the equipment target defaults to what is LOCKED, not to nothing", () => {
+  const body = renderLoaded({ locked: [ROCK_ID] });
+
+  const auto = body.indexOf("What I have locked");
+  const optOut = body.indexOf("Nothing — just switch it on");
+  assert.ok(auto >= 0, "the locked target must be offered as the default choice");
+  assert.ok(optOut >= 0, "an explicit no-target option must still exist");
+  assert.ok(
+    auto < optOut,
+    "the locked target must come BEFORE the no-target option, so it is what a browser selects by default",
+  );
+  // And it must name the rock, so the player can see what it will be used on.
+  assert.match(body.slice(auto, optOut), /Veldspar/);
+});
+
+test("with nothing locked, the target picker says so rather than implying a target", () => {
+  const body = renderLoaded({ locked: [] });
+  assert.match(body, /Nothing locked yet/);
+});
+
+test("a target still being acquired is never the default — it cannot be shot at yet", () => {
+  const body = renderLoaded({ locked: [], acquiring: ROCK_ID });
+  // Auto resolves over LOCKED targets only; an acquiring one leaves us with none.
+  assert.match(body, /Nothing locked yet/);
+  assert.doesNotMatch(body, /What I have locked/);
+});
+
 test("a module the server says is cycling reads Running; otherwise Idle", () => {
   assert.match(visibleText(renderLoaded({ activeModuleIDs: [MODULE_ID] })), /Running/);
   assert.match(visibleText(renderLoaded({ activeModuleIDs: [] })), /Idle/);

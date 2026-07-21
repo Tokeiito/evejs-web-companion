@@ -431,13 +431,35 @@
     return row.kind === "station" || row.kind === "structure";
   }
 
-  // Which locked target a module is switched on AGAINST. Modules that act on
-  // the ship itself ignore it; the server refuses with its own reason when a
-  // module needs a target and none is chosen, and that reason is shown as-is.
-  let actionTargetID = $state("");
-  const effectiveTargetID = $derived(
-    Number(actionTargetID) > 0 && isLocked(Number(actionTargetID)) ? Number(actionTargetID) : 0,
-  );
+  // Which locked target a module is switched on AGAINST.
+  //
+  // Locking something MAKES it the thing your equipment acts on — that is what
+  // a player expects, and it is what retail does. So the default ("") is AUTO:
+  // whatever is locked. Defaulting to "no target" instead meant a player could
+  // lock a rock, hit Switch on, and be refused "You need an active target"
+  // while staring at the rock they had just locked.
+  //
+  // "none" is the explicit opt-out, for equipment that acts on the ship itself.
+  // An id that is no longer locked falls back to auto rather than sending a
+  // stale target the server would refuse.
+  const AUTO_TARGET = "";
+  const NO_TARGET = "none";
+  let actionTargetID = $state(AUTO_TARGET);
+  /** Locked (not still-acquiring) targets, in the order they were locked. */
+  const selectableTargets = $derived(lockedRows.filter((entry) => !entry.acquiring));
+  const effectiveTargetID = $derived.by(() => {
+    if (actionTargetID === NO_TARGET) {
+      return 0;
+    }
+    if (actionTargetID !== AUTO_TARGET) {
+      const chosen = Number(actionTargetID);
+      if (chosen > 0 && isLocked(chosen)) {
+        return chosen;
+      }
+    }
+    // Auto (or a stale pick): use what is locked.
+    return selectableTargets.length > 0 ? selectableTargets[0].itemID : 0;
+  });
 
   // Module names come from the same cache as everything else (R7d).
   $effect(() => {
@@ -670,10 +692,17 @@
         <label>
           Use it on
           <select bind:value={actionTargetID}>
-            <option value="">Nothing — just switch it on</option>
-            {#each lockedRows.filter((entry) => !entry.acquiring) as locked (locked.itemID)}
-              <option value={String(locked.itemID)}>{locked.label}</option>
-            {/each}
+            {#if selectableTargets.length > 0}
+              <option value={AUTO_TARGET}>
+                What I have locked ({selectableTargets[0].label})
+              </option>
+              {#each selectableTargets as locked (locked.itemID)}
+                <option value={String(locked.itemID)}>{locked.label}</option>
+              {/each}
+            {:else}
+              <option value={AUTO_TARGET}>Nothing locked yet</option>
+            {/if}
+            <option value={NO_TARGET}>Nothing — just switch it on</option>
           </select>
         </label>
       </p>
