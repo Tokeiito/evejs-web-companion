@@ -69,6 +69,7 @@ import type {
   StationServiceBits,
   StationStatic,
   MiningBotState,
+  SkillsState,
   TravelState,
 } from "./types.ts";
 import type { NamesState } from "./names.ts";
@@ -128,6 +129,7 @@ export interface ClientState {
   readonly targeting: TargetingState;
   readonly mining: MiningState;
   readonly drones: DronesState;
+  readonly skills: SkillsState;
   readonly travel: TravelState;
   readonly bot: MiningBotState;
   readonly chat: ChatState;
@@ -399,6 +401,24 @@ const INITIAL_BOT: MiningBotState = Object.freeze({
   startedAt: null,
 });
 
+// R28 skills. Every "unknown" is null and never an empty list: a failed read
+// must not look like a character who knows nothing, and an unread queue must
+// not look like a queue with nothing in it.
+const INITIAL_SKILLS: SkillsState = Object.freeze({
+  characterName: null,
+  totalSkillPoints: null,
+  freeSkillPoints: null,
+  skills: null,
+  queue: null,
+  // No read yet, so the browser's clock is all we have; the first read
+  // replaces this with the real offset from the server's.
+  clockOffsetMs: 0,
+  loaded: false,
+  error: null,
+  lastAction: null,
+  actionError: null,
+});
+
 const INITIAL_TRAVEL: TravelState = Object.freeze({
   status: "idle" as TravelState["status"],
   destinationSystemID: null,
@@ -482,6 +502,7 @@ export interface ClientStore {
   readonly targeting: ReadableSignal<TargetingState>;
   readonly mining: ReadableSignal<MiningState>;
   readonly drones: ReadableSignal<DronesState>;
+  readonly skills: ReadableSignal<SkillsState>;
   readonly travel: ReadableSignal<TravelState>;
   readonly bot: ReadableSignal<MiningBotState>;
   readonly chat: ReadableSignal<ChatState>;
@@ -527,6 +548,7 @@ export function createClientStore(): ClientStore {
   const targeting = createSignal<TargetingState>(INITIAL_TARGETING);
   const mining = createSignal<MiningState>(INITIAL_MINING);
   const drones = createSignal<DronesState>(INITIAL_DRONES);
+  const skills = createSignal<SkillsState>(INITIAL_SKILLS);
   const travel = createSignal<TravelState>(INITIAL_TRAVEL);
   const bot = createSignal<MiningBotState>(INITIAL_BOT);
   const chat = createSignal<ChatState>(INITIAL_CHAT);
@@ -559,6 +581,7 @@ export function createClientStore(): ClientStore {
     targeting: targeting.get(),
     mining: mining.get(),
     drones: drones.get(),
+    skills: skills.get(),
     travel: travel.get(),
     bot: bot.get(),
     chat: chat.get(),
@@ -595,6 +618,7 @@ export function createClientStore(): ClientStore {
         targeting.set(INITIAL_TARGETING);
         mining.set(INITIAL_MINING);
         drones.set(INITIAL_DRONES);
+        skills.set(INITIAL_SKILLS);
         travel.set(INITIAL_TRAVEL);
         bot.set(INITIAL_BOT);
         chat.set(INITIAL_CHAT);
@@ -652,6 +676,10 @@ export function createClientStore(): ClientStore {
         live.set(INITIAL_LIVE);
         break;
       case "character/offline":
+        // R28: the skill sheet belongs to the character who was selected, so it
+        // goes with them. Leaving it behind would show the NEXT character
+        // someone else's skills.
+        skills.set(INITIAL_SKILLS);
         station.set(INITIAL_STATION);
         inventory.set(INITIAL_INVENTORY);
         fitting.set(INITIAL_FITTING);
@@ -1255,6 +1283,32 @@ export function createClientStore(): ClientStore {
         mining.set(INITIAL_MINING);
         drones.set(INITIAL_DRONES);
         break;
+      // --- R28: the skill sheet and the training queue ------------------
+      case "skills/loaded":
+        skills.set({
+          ...skills.get(),
+          characterName: event.characterName,
+          totalSkillPoints: event.totalSkillPoints,
+          freeSkillPoints: event.freeSkillPoints,
+          skills: event.skills,
+          queue: event.queue,
+          clockOffsetMs: event.clockOffsetMs,
+          loaded: true,
+          error: null,
+        });
+        break;
+      case "skills/error":
+        skills.set({ ...skills.get(), error: event.message });
+        break;
+      case "skills/action":
+        skills.set({ ...skills.get(), lastAction: event.action, actionError: null });
+        break;
+      case "skills/action-error":
+        skills.set({ ...skills.get(), actionError: event.message });
+        break;
+      case "skills/cleared":
+        skills.set(INITIAL_SKILLS);
+        break;
       case "travel/planned":
         travel.set({
           ...INITIAL_TRAVEL,
@@ -1484,6 +1538,7 @@ export function createClientStore(): ClientStore {
     targeting: readonlySignal(targeting),
     mining: readonlySignal(mining),
     drones: readonlySignal(drones),
+    skills: readonlySignal(skills),
     travel: readonlySignal(travel),
     bot: readonlySignal(bot),
     chat: readonlySignal(chat),

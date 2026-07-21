@@ -5575,6 +5575,120 @@ droneOrderRoute("/api/bridge/drones/mine", "CmdMineRepeatedly", { needsTarget: t
 // reports exactly that rather than pretending the bay is already full.
 droneOrderRoute("/api/bridge/drones/recall", "CmdReturnBay", { needsTarget: false });
 
+// --- R28 Skills: the character sheet and the training queue ----------------
+//
+// TWO DIFFERENT SURFACES ON PURPOSE.
+//
+// The READ is the gateway's v1 GET /skills — a plain-JSON projection that needs
+// no bridge session, because reading what a character knows is not an act of
+// piloting. It arrives with names, group names, the SP threshold for every
+// level of every skill, and the queue's instants as epoch milliseconds against
+// `serverNowMs` sampled in the same read. Nothing is decoded here and nothing
+// is computed here.
+//
+// The WRITE is the retail call skillMgr.SaveNewQueue on the HELD session. It
+// has to be: the gateway's own POST /skill-queue runs under an
+// OFFLINE_COMPANION authorization policy that requires the character to be
+// OFFLINE, and a web login that has selected a character is `retail_client`.
+// (Measured, not assumed — eve.js server/tests/webGatewaySkills.test.js pins
+// both halves.) So the offline command is a companion-app surface for a
+// character who is not playing, and this client's player IS playing.
+//
+// ⚠ A 200 IS NOT PROOF. SaveNewQueue returns null on success AND validates
+// before it writes, so the only honest answer to "did the edit take" is the
+// re-read below — which comes back through the gateway's snapshot of
+// skillQueueRuntime, the same authority the save wrote to.
+async function answerWithSkillSheet(res, account, characterID, extra = {}) {
+  const skills = await gateway.getSkills(account.accountID, characterID);
+  if (!skills) {
+    res.status(404).json({
+      ok: false,
+      error: "CHARACTER_NOT_FOUND",
+      message: "That character was not found.",
+    });
+    return;
+  }
+  res.json({ ok: true, ...extra, skills });
+}
+
+app.get("/api/bridge/skills", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  try {
+    await answerWithSkillSheet(res, req.account, held.characterID);
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * Save the whole queue (goal R28).
+ *
+ * Adding a skill, removing one and reordering are ALL "save this list" — that
+ * is how retail models it, and inventing three verbs on top of one server call
+ * would only create three ways to disagree with the server. The browser sends
+ * the list it wants; the server validates it as a whole (prerequisites, level
+ * order, Omega gating, the 50-entry cap, the queue-length limit) and refuses
+ * the whole list with ONE of its eleven public codes if any of that fails.
+ *
+ * The refusal codes pass through UNTRANSLATED as the CALL_REFUSED message —
+ * turning `QueueCannotPlaceSkillBeforeRequirements` into a sentence a player
+ * can act on is the page's job (R9a), and doing it here would put the wording
+ * out of reach of the tests that pin it.
+ */
+app.post("/api/bridge/skills/queue", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const body = req.body || {};
+  if (!Array.isArray(body.entries)) {
+    res.status(400).json({
+      ok: false,
+      error: "INVALID_QUEUE",
+      message: "A queue is a list of skills to train.",
+    });
+    return;
+  }
+  // Shape-check only. What is TRAINABLE is the server's judgement, and this
+  // route never pre-refuses on its behalf — a client-side guess about
+  // prerequisites or Omega state is exactly the kind of duplicated mechanic
+  // that drifts out of step with the emulator.
+  const entries = [];
+  for (const entry of body.entries) {
+    const typeID = Number(entry && entry.typeID) || 0;
+    const toLevel = Number(entry && entry.toLevel) || 0;
+    if (!Number.isSafeInteger(typeID) || typeID <= 0 || toLevel < 1 || toLevel > 5) {
+      res.status(400).json({
+        ok: false,
+        error: "INVALID_QUEUE_ENTRY",
+        message: "Each queued skill needs a skill and a level from 1 to 5.",
+      });
+      return;
+    }
+    entries.push([typeID, toLevel]);
+  }
+  try {
+    const outcome = await heldTopLevelCall(
+      held,
+      req.webSessionID,
+      "skillMgr",
+      "SaveNewQueue",
+      [entries],
+      // An empty queue is a PAUSE, not a start: activating nothing would ask
+      // the server to begin training a queue that does not exist.
+      { activate: entries.length > 0 },
+    );
+    await answerWithSkillSheet(res, req.account, held.characterID, {
+      notifications: outcome.notifications,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // --- R5b Travel: client-side route solver static data ----------------------
 // The browser autopilot's route solver is client-side (roadmap §7 / G2): the
 // system-adjacency graph it runs BFS over is read-only static reference data

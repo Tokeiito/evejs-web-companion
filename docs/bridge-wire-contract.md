@@ -90,6 +90,7 @@ Current pairs (defined in `eve.js` `server/src/_secondary/express/evejsWebGatewa
 | `dogmaIM` | `ShipOnlineModules` | R12 (top-level: which fitted modules are online) |
 | `dogmaIM` | `SetModuleOnline` | R12 (top-level: bring a module online) |
 | `dogmaIM` | `TakeModuleOffline` | R12 (top-level: take a module offline) |
+| `skillMgr` | `SaveNewQueue` | R28 (top-level: save the WHOLE training queue — the only skill write) |
 
 R12 adds **no** fit/unfit pair: fitting and unfitting are `invbroker.Add` with a
 slot flag, already listed for R3. `dogmaIM.GetAllInfo` is deliberately **not**
@@ -2556,6 +2557,144 @@ arrived", and it is used for exactly one decision: whether "no rocks in the
 snapshot" means *still flying* or *this belt is finished*. It is never a mining
 range, a lock range or a yield rule; the server owns all three and the bot finds
 them out by being refused.
+
+## Skills — the character sheet and the training queue (R28)
+
+### ⚠ Why the write is a retail call and NOT the gateway's own `/skill-queue`
+
+The gateway has had `POST /_evejs-web/v1/skill-queue` since long before R28. It
+is **unreachable from a logged-in browser client**, and that is by design rather
+than by accident:
+
+- it runs `CHARACTER_COMMAND_TYPES.SAVE_SKILL_QUEUE` under
+  `AUTHORIZATION_POLICIES.OFFLINE_COMPANION`;
+- `characterCommandRuntime.authorizeInsideLane` admits that policy **only** when
+  `controlState === "offline" && online === false`;
+- selecting a character mints a held bridge session, `charService` calls
+  `characterControlRuntime.recordRetailSessionStarted`, and
+  `GET /character-status` then reports **`retail_client` / `online: true`**.
+
+So `/skill-queue` is a **companion-app** surface for a character who is not
+playing. A player reading their own skill sheet in this client *is* playing, so
+the write has to be the retail one on the live session — like every other panel.
+Both paths land in the same `skillQueueRuntime.saveQueue`, so they refuse
+identically; only the envelope differs.
+
+### `GET /_evejs-web/v1/skills?accountID&characterID`
+
+A v1 read, **not** a bridge call: no `bridgeSessionID`, no session at all.
+Reading what a character knows is not an act of piloting. Ownership is checked
+exactly as `/snapshot` checks it.
+
+```json
+{ "ok": true, "source": "evejs-web-gateway", "apiVersion": 1,
+  "skills": {
+    "characterID": 140000005, "characterName": "Farmer",
+    "totalSkillPoints": 641792000, "freeSkillPoints": 0,
+    "serverNowMs": 1784617151473,
+    "skills": [ { "typeID": 3300, "name": "Gunnery", "groupName": "Gunnery",
+                  "level": 4, "rank": 1, "skillPoints": 45255,
+                  "levelSkillPoints": [250, 1414, 8000, 45255, 256000],
+                  "inTraining": false } ],
+    "queue": { "active": true, "maxEntries": 150, "endTimeMs": 1784619665666,
+               "entries": [ { "queuePosition": 0, "typeID": 3315, "toLevel": 1,
+                              "startSP": 0, "destinationSP": 1000,
+                              "startTimeMs": 1784617165666,
+                              "endTimeMs": 1784619165666,
+                              "skillPointsPerMinute": 30 } ] },
+    "queueWarning": null } }
+```
+
+Three properties matter, and each removes a game mechanic from the browser:
+
+- **`levelSkillPoints` is the server's SP curve, evaluated.** The gateway calls
+  `skillTrainingMath.getSkillPointsForLevel(rank, level)` for all five levels.
+  The client places current SP between two of those numbers and does no other
+  arithmetic. Nothing anywhere in this repo defines the curve.
+- **`skillPoints` is LIVE.** It comes from `getQueueSnapshot`'s
+  `projectedSkills`, which already overlays the progress of whatever is
+  training, so the training skill reports the SP it has *this instant*.
+- **Every instant is epoch milliseconds, converted from the server's own Win32
+  FILETIME, next to `serverNowMs` sampled in the same read.** The client
+  measures its clock offset once per read and interpolates between reads; it
+  never converts a FILETIME and never assumes the two machines agree.
+
+`skillPointsPerMinute` is non-zero **only on the head entry** — a later entry's
+attributes-at-the-time are not knowable now, and borrowing the head's rate would
+be a client-side simulation.
+
+`queue: null` means the queue could not be read (`queueWarning` says why). It is
+**not** an empty queue; an empty queue is `entries: []` with `active: false`,
+which is an ordinary state.
+
+### `skillMgr.SaveNewQueue` — the only skill write
+
+```
+service: "skillMgr", method: "SaveNewQueue"
+args:    [ [[typeID, toLevel], …] ]      // position order IS queue order
+kwargs:  { "activate": true }            // false (with []) pauses training
+```
+
+**Add, remove and reorder are all this one call.** The server models a queue as
+a list you replace; three client verbs on top of one server behaviour would only
+create three ways to disagree with it. An empty list with `activate: false`
+pauses training, which is why `skillMgr.AbortTraining` is **not** allowlisted.
+
+**⚠ It returns `null` on success.** Its return value is not evidence of
+anything. The BFF re-reads `GET /skills` after every save and answers with that
+sheet; the client lands the re-read **before** it records the action.
+
+**⚠ Everything else on `skillMgr` is deliberately absent.** `InjectSkillpoints`,
+`InjectSkillIntoBrain`, `ExtractSkills`, `PurchaseSkills`,
+`ApplyFreeSkillPoints*`, `SplitSkillInjector` and `CombineSkillInjector` each
+spend something the player cannot get back — ISK, an injector, an extractor, or
+unallocated SP that can only be applied once. A service-granular allowlist would
+have handed the browser all of them.
+
+### Refusals — the eleven public codes
+
+`saveQueue` refuses the **whole** list and changes nothing. Its
+`throwWrappedUserError` sites carry no `info`/`notify` prose, so
+`readWrappedUserErrorRefusal` falls through to the bare code and the browser
+receives **409 `CALL_REFUSED`** with the code *as the message*:
+
+`QueueTooManySkills` · `QueueTooLong` · `QueueSkillNotUploaded` ·
+`QueueCannotTrainPastMaximumLevel` · `QueueCannotTrainOmegaRestrictedSkill` ·
+`QueueCannotTrainPreviouslyTrainedSkills` ·
+`QueueCannotPlaceSkillLevelsOutOfOrder` ·
+`QueueCannotPlaceSkillBeforeRequirements` · `UserAlreadyHasSkillInTraining` ·
+`SkillInQueueRequiresOmegaCloneState` · `SkillInQueueOverAlphaSpTrainingSize`
+
+The BFF passes them through **untranslated**; the wording lives in
+`web/src/bridge/skills.ts` (`skillQueueRefusal`), where it is testable. A test
+asserts that table is exactly the gateway's `PUBLIC_SKILL_QUEUE_ERROR_CODES`
+allowlist — a code the gateway can send and the client cannot explain would
+reach a player as jargon (R9a).
+
+### BFF routes (this repo)
+
+| Route | What it does |
+| --- | --- |
+| `GET /api/bridge/skills` | The held session's character sheet + queue, straight from `GET /_evejs-web/v1/skills`. Nothing decoded, nothing computed. |
+| `POST /api/bridge/skills/queue` | `{ entries: [{typeID, toLevel}] }` → `skillMgr.SaveNewQueue`, then **re-reads the sheet** and returns it. `activate` is `entries.length > 0`. |
+
+The BFF shape-checks entries (`typeID > 0`, `1 ≤ toLevel ≤ 5`) and nothing else.
+What is *trainable* is the server's judgement — a client-side guess about
+prerequisites or clone state is exactly the duplicated mechanic that drifts.
+
+### Client modules
+
+`web/src/bridge/skills.ts` (pure: decode, group, place SP between thresholds,
+the five squares, the interpolated readout, and the refusal wording);
+`app/api.ts` `getSkills`/`saveSkillQueue`; `app/flow.ts`
+`loadSkills`/`saveSkillQueue`; the `skills` store slice with
+`skills/loaded`/`skills/error`/`skills/action`/`skills/action-error`/
+`skills/cleared`; and `web/src/ui/Skills.svelte`.
+
+**The countdown is bounded on both sides.** SP is clamped to the server's own
+`destinationSP`, the remaining time is clamped at zero, and when the head
+entry's finish instant passes the panel **re-reads** instead of promoting the
+level itself. A read always wins: the module keeps no memory between reads.
 
 ### How to add a page on the new stack (R2+)
 

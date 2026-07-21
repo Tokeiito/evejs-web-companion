@@ -1626,3 +1626,93 @@ export interface CharacterSummary {
   readonly trainingEndTime: bigint | null;
   readonly queueEndTime: bigint | null;
 }
+
+// --- R28 Skills: the character sheet and the training queue -----------------
+//
+// Every number in here came from the server already evaluated (the gateway's
+// GET /skills): the SP threshold for each level, the SP a queue entry starts
+// and ends at, and the instants it starts and ends. Nothing in the client
+// re-derives them — see bridge/skills.ts.
+
+/** One skill the character has, with the server's thresholds for all 5 levels. */
+export interface SkillRow {
+  readonly typeID: number;
+  readonly name: string;
+  readonly groupName: string;
+  /** The level the character HAS. Partial progress rides in skillPoints. */
+  readonly level: number;
+  readonly rank: number;
+  readonly skillPoints: number;
+  /** SP needed for levels I..V. The server's curve, not ours. */
+  readonly levelSkillPoints: readonly number[];
+  readonly inTraining: boolean;
+}
+
+/** One skill group as the sheet reads it. */
+export interface SkillGroup {
+  readonly groupName: string;
+  readonly skills: readonly SkillRow[];
+  readonly skillCount: number;
+  readonly totalSkillPoints: number;
+  readonly maxedCount: number;
+}
+
+/** One planned step of training, exactly as the server scheduled it. */
+export interface SkillQueueEntry {
+  readonly typeID: number;
+  readonly toLevel: number;
+  readonly startSP: number;
+  readonly destinationSP: number;
+  /** Epoch ms, or null when the server gave none. Never coerced to 0. */
+  readonly startTimeMs: number | null;
+  readonly endTimeMs: number | null;
+  /** Non-zero only for the head: a later entry's rate is not knowable yet. */
+  readonly skillPointsPerMinute: number;
+}
+
+export interface SkillQueueState {
+  readonly active: boolean;
+  readonly entries: readonly SkillQueueEntry[];
+  readonly endTimeMs: number | null;
+  /** The server's own cap on queue length, shown rather than enforced here. */
+  readonly maxEntries: number;
+}
+
+/** The decoded GET /api/bridge/skills payload. */
+export interface SkillSheet {
+  readonly characterName: string;
+  readonly totalSkillPoints: number;
+  readonly freeSkillPoints: number;
+  readonly skills: readonly SkillRow[];
+  /** null when the gateway could not read the queue — NOT an empty queue. */
+  readonly queue: SkillQueueState | null;
+  /** serverNowMs minus the browser's clock at read time. */
+  readonly clockOffsetMs: number;
+}
+
+/** The live readout for whatever is training, interpolated between reads. */
+export interface SkillTrainingReadout {
+  readonly typeID: number;
+  readonly toLevel: number;
+  readonly skillPoints: number;
+  readonly startSP: number;
+  readonly destinationSP: number;
+  readonly fraction: number;
+  readonly remainingMs: number;
+  readonly finishAtMs: number;
+  readonly skillPointsPerMinute: number;
+}
+
+export interface SkillsState {
+  readonly characterName: string | null;
+  readonly totalSkillPoints: number | null;
+  readonly freeSkillPoints: number | null;
+  /** null until read; null again if a read fails. NEVER [] for "unknown". */
+  readonly skills: readonly SkillRow[] | null;
+  readonly queue: SkillQueueState | null;
+  readonly clockOffsetMs: number;
+  readonly loaded: boolean;
+  readonly error: string | null;
+  readonly lastAction: string | null;
+  readonly actionError: string | null;
+}

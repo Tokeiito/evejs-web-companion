@@ -2097,3 +2097,51 @@ export async function recallDrones(
     await postJson("/api/bridge/drones/recall", { droneIDs: [...droneIDs] }, options),
   );
 }
+
+// --- R28 Skills: the character sheet and the training queue -------------------
+//
+// ONE read and ONE write, because that is what the server has. Adding a skill,
+// removing one and reordering are all "save this list" — the same call retail
+// makes — so there is no add/remove/move endpoint to keep in step with three
+// different server behaviours.
+//
+// The write's answer is NOT its own return value: the BFF re-reads the sheet
+// after every save and returns THAT, so a caller cannot accidentally believe a
+// queue edit that never landed.
+
+/** The whole Skills panel in one read: sheet, queue, and the server's clock. */
+export interface SkillsResult {
+  /** Raw; decoded by bridge/skills.ts. Carries serverNowMs for the countdown. */
+  readonly skills: JsonValue;
+  readonly notifications: readonly JsonValue[];
+}
+
+function readSkills(data: Record<string, JsonValue>): SkillsResult {
+  return {
+    skills: data.skills ?? null,
+    notifications: Array.isArray(data.notifications) ? data.notifications : [],
+  };
+}
+
+export async function getSkills(options: ApiOptions = {}): Promise<SkillsResult> {
+  return readSkills(await getJson("/api/bridge/skills", options));
+}
+
+/**
+ * Save the whole training queue (skillMgr.SaveNewQueue).
+ *
+ * Sending [] pauses training. The server validates the list as a WHOLE and
+ * refuses all of it with one of eleven public codes if any part is wrong — the
+ * refusal arrives as a BridgeCallError whose message is that bare code, which
+ * bridge/skills.ts turns into a sentence.
+ */
+export async function saveSkillQueue(
+  entries: readonly { readonly typeID: number; readonly toLevel: number }[],
+  options: ApiOptions = {},
+): Promise<SkillsResult> {
+  const body: JsonValue = entries.map((entry) => ({
+    typeID: entry.typeID,
+    toLevel: entry.toLevel,
+  }));
+  return readSkills(await postJson("/api/bridge/skills/queue", { entries: body }, options));
+}

@@ -31,6 +31,8 @@ import type {
   DroneLimits,
   MiningHold,
   ReprocessingQuote,
+  SkillRow,
+  SkillQueueState,
   SurveyResult,
   FittingResources,
   FittingSlot,
@@ -449,6 +451,28 @@ export type FeedEvent =
   // refused launch can surface, because the handler returns an empty dict.
   | { readonly type: "drones/silent-decline"; readonly message: string | null }
   | { readonly type: "drones/cleared" }
+  // Goal R28 — the skill sheet and the training queue.
+  //
+  // ⚠ `skills` and `queue` are NULLABLE and null means "we could not read it".
+  // An empty queue is [] with active:false, which is a real and common state
+  // (nothing is training); collapsing the two would show a player a queue we
+  // never actually looked at.
+  | {
+      readonly type: "skills/loaded";
+      readonly characterName: string;
+      readonly totalSkillPoints: number;
+      readonly freeSkillPoints: number;
+      readonly skills: readonly SkillRow[] | null;
+      readonly queue: SkillQueueState | null;
+      /** serverNowMs minus the browser clock at read time. */
+      readonly clockOffsetMs: number;
+    }
+  | { readonly type: "skills/error"; readonly message: string | null }
+  // A queue edit the server ACCEPTED — landed only after the re-read confirmed
+  // it, never on the strength of the call returning.
+  | { readonly type: "skills/action"; readonly action: string }
+  | { readonly type: "skills/action-error"; readonly message: string | null }
+  | { readonly type: "skills/cleared" }
   // A snapshot read failed non-fatally; null clears it after a clean read.
   | { readonly type: "space/error"; readonly message: string | null }
   // Drop the space state (docked / character offline / logged out).

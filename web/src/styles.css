@@ -1216,6 +1216,73 @@
     font-size: 0.82rem;
   }
 
+  /* ============================================== skills + training (R28) --
+   * THE FIVE SQUARES. EVE's oldest piece of visual shorthand: a skill's level
+   * as filled pips. Three states, not two — `queued` is a level the training
+   * queue will bring the skill to but which the character does NOT have yet,
+   * and conflating it with `filled` would show a player skills they cannot
+   * actually use.
+   *
+   * The pips are NEVER the only way to read a level: the cell carries an
+   * aria-label naming the level in words, and the SP column beside it states
+   * the numbers. Colour alone signals nothing. */
+  .rank {
+    display: inline-flex;
+    gap: 0.22rem;
+    align-items: center;
+    /* A touch-sized row even though the pips themselves are tiny (R8). */
+    min-height: 40px;
+  }
+  .rank-pip {
+    width: 0.6rem;
+    height: 0.6rem;
+    border-radius: 0.12rem;
+    border: 1px solid var(--color-line);
+    background: var(--color-panel-3);
+  }
+  .rank-filled {
+    background: var(--color-accent);
+    border-color: var(--color-accent);
+  }
+  /* Planned, not owned: outlined in the accent rather than filled with it. */
+  .rank-queued {
+    background: transparent;
+    border-color: var(--color-accent);
+  }
+
+  /* A skill group's header doubles as its expander. 511 skills across 24
+   * groups is not a list anyone scrolls; collapsed groups are the default and
+   * the search box opens whatever matches. */
+  .group-toggle {
+    background: none;
+    border: 0;
+    padding: 0.4rem 0;
+    margin: 0;
+    font: inherit;
+    color: inherit;
+    cursor: pointer;
+    text-align: left;
+    min-height: 40px;
+  }
+  .group-toggle::before {
+    content: "▸ ";
+    color: var(--color-muted);
+  }
+  .group-toggle[aria-expanded="true"]::before { content: "▾ "; }
+
+  /* Up / Down / Remove on a queued skill. Wraps on desktop, stacks on a phone
+   * through the same .row-actions rules the overview uses. */
+  .queue-controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+  }
+  .queue-controls button {
+    padding: 0.4rem 0.7rem;
+    font-size: 0.85rem;
+    min-height: 40px;
+  }
+
   /* ======================================================================
    * 4. REFLOW — the R8 responsive contract
    * ----------------------------------------------------------------------
@@ -1287,6 +1354,10 @@
     table.reflow td:has(button) button { width: 100%; }
     /* Row actions stack full-width on a phone rather than squeezing. */
     table.reflow td .row-actions { flex-direction: column; }
+    /* R28's queue controls do the same: three buttons side by side at 360px
+     * would each be under the 40px touch target. */
+    table.reflow td .queue-controls { flex-direction: column; }
+    table.reflow td .queue-controls button { width: 100%; }
     .row-actions button {
       padding: 0.5rem 0.9rem;
       font-size: 14px;

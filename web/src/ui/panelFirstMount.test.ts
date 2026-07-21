@@ -56,6 +56,7 @@ const PANELS = [
   "Overview",
   "MiningBot",
   "Mining",
+  "Skills",
   "Travel",
   "Chat",
 ] as const;

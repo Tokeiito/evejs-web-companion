@@ -18,6 +18,7 @@
   import Flight from "./Flight.svelte";
   import Overview from "./Overview.svelte";
   import Mining from "./Mining.svelte";
+  import Skills from "./Skills.svelte";
   import Travel from "./Travel.svelte";
   import Chat from "./Chat.svelte";
   import type { ClientStore } from "../store/clientStore.ts";
@@ -47,6 +48,7 @@
     | "flight"
     | "overview"
     | "mining"
+    | "skills"
     | "travel"
     | "chat"
   >("station");
@@ -95,6 +97,9 @@
     <button type="button" class:active={page === "mining"} onclick={() => (page = "mining")}>
       Mining
     </button>
+    <button type="button" class:active={page === "skills"} onclick={() => (page = "skills")}>
+      Skills
+    </button>
     <button type="button" class:active={page === "travel"} onclick={() => (page = "travel")}>
       Travel
     </button>
@@ -126,6 +131,8 @@
     <Overview {store} {flow} />
   {:else if page === "mining"}
     <Mining {store} {flow} />
+  {:else if page === "skills"}
+    <Skills {store} {flow} />
   {:else if page === "travel"}
     <Travel {store} {flow} />
   {:else}

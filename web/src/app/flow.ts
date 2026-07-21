@@ -62,6 +62,7 @@ import {
   decodeDroneLimits,
   decodeDronesInSpace,
 } from "../bridge/drones.ts";
+import { decodeSkillSheet, skillQueueRefusal } from "../bridge/skills.ts";
 import { createSpacePoller, type SpacePoller } from "./spacePoll.ts";
 import type { FlightStepResult } from "./api.ts";
 import { BridgeCallError } from "../bridge/callMethod.ts";
@@ -422,6 +423,27 @@ export interface AppFlow {
   mineWithDrones(droneIDs: readonly number[], targetID: number): Promise<void>;
   /** R25 — bring drones home (the runtime scoops them itself inside 2500 m). */
   recallDrones(droneIDs: readonly number[]): Promise<void>;
+  // --- R28: skills ---------------------------------------------------------
+  //
+  // ⚠ A queue save answers with the RE-READ sheet, never with its own return
+  // value: skillMgr.SaveNewQueue returns null on success, so believing the call
+  // would mean believing nothing at all.
+
+  /** R28 — the character sheet, the queue, and the server's clock. */
+  loadSkills(): Promise<void>;
+  /**
+   * R28 — save the WHOLE queue. Adding, removing and reordering are all this
+   * one call, exactly as the server models it. `[]` pauses training.
+   *
+   * `context` is the skill the player was acting on; it is used only to word a
+   * refusal ("Gunnery needs another skill first"), because the server's refusal
+   * codes do not carry a name.
+   */
+  saveSkillQueue(
+    entries: readonly { readonly typeID: number; readonly toLevel: number }[],
+    label: string,
+    context?: string,
+  ): Promise<void>;
   /** Jump through an NPC stargate (fromGate -> toGate). */
   jump(fromGateID: number, toGateID: number): Promise<void>;
   /**
@@ -2386,6 +2408,82 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     await applyFlight(result);
   }
 
+  // --- R28: skills ----------------------------------------------------------
+  //
+  // The sheet is a plain read; the queue is a plain write. What makes this
+  // careful rather than trivial is the third thing: NOTHING is believed until
+  // the sheet has been re-read. The BFF does that re-read, and both functions
+  // below land the SAME decoded sheet, so the panel's queue and the panel's
+  // skill levels always came from one instant on the server's clock.
+
+  /** Land a decoded sheet, or say the read failed without inventing a sheet. */
+  function applySkillSheet(raw: JsonValue): void {
+    const sheet = decodeSkillSheet(raw, Date.now());
+    store.apply({
+      type: "skills/loaded",
+      characterName: sheet.characterName,
+      totalSkillPoints: sheet.totalSkillPoints,
+      freeSkillPoints: sheet.freeSkillPoints,
+      skills: sheet.skills,
+      queue: sheet.queue,
+      clockOffsetMs: sheet.clockOffsetMs,
+    });
+  }
+
+  async function loadSkills(): Promise<void> {
+    let result;
+    try {
+      result = await api.getSkills(callOptions);
+    } catch (error) {
+      if (isSessionLost(error)) {
+        stopLiveStream();
+        store.apply({ type: "character/offline" });
+        throw error;
+      }
+      store.apply({
+        type: "skills/error",
+        message: `Your skills could not be read: ${readErrorReason(error)}`,
+      });
+      return;
+    }
+    applySkillSheet(result.skills);
+  }
+
+  async function saveSkillQueue(
+    entries: readonly { readonly typeID: number; readonly toLevel: number }[],
+    label: string,
+    context = "that skill",
+  ): Promise<void> {
+    let result;
+    try {
+      result = await api.saveSkillQueue(entries, callOptions);
+    } catch (error) {
+      if (isSessionLost(error)) {
+        stopLiveStream();
+        store.apply({ type: "character/offline" });
+        throw error;
+      }
+      // ⚠ THE REFUSAL IS THE FEATURE. All eleven of the server's public codes
+      // are things a player hits in ordinary play, and every one of them says
+      // what to do next instead of showing its name.
+      store.apply({
+        type: "skills/action-error",
+        message: error instanceof BridgeCallError
+          ? skillQueueRefusal(error.code, error.message, context)
+          : `That change could not be saved: ${readErrorReason(error)}`,
+      });
+      // The queue is unchanged on the server, but the panel may have been
+      // showing an optimistic order — re-read so what is on screen is the
+      // server's, not ours.
+      await loadSkills().catch(() => {});
+      return;
+    }
+    // The BFF's re-read IS the confirmation. Landing the sheet first means the
+    // "saved" message can never be on screen next to a stale queue.
+    applySkillSheet(result.skills);
+    store.apply({ type: "skills/action", action: label });
+  }
+
   // --- R5b Travel (browser autopilot decide-loop) --------------------------
 
   // The client-side route solver's graph (fetched once, then cached) and the
@@ -3398,6 +3496,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     loadReprocessingQuote,
     unloadMiningHolds,
     reprocessItems,
+    loadSkills,
+    saveSkillQueue,
 
     startSpacePolling,
 

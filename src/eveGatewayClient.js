@@ -268,6 +268,24 @@ async function getSnapshot(accountID, characterID) {
   return result.snapshot || null;
 }
 
+/**
+ * The skill sheet + training queue (goal R28): GET /_evejs-web/v1/skills.
+ *
+ * A v1 READ, not a bridge call — it needs no held session, because reading what
+ * a character knows is not an act of piloting. Everything arrives resolved:
+ * names, group names, the SP threshold for all five levels of every skill, and
+ * the queue's instants as epoch milliseconds against `serverNowMs` sampled in
+ * the SAME read. The browser therefore never converts a FILETIME and never
+ * re-derives the SP curve.
+ */
+async function getSkills(accountID, characterID) {
+  const result = await getJson("/skills", {
+    accountID: Number(accountID) || 0,
+    characterID: Number(characterID) || 0,
+  });
+  return result.skills || null;
+}
+
 // Bridge reads can be heavy on a cold gateway: map.GetStationInfo marshals the
 // whole station table and lazily loads a multi-MB world store on first touch,
 // and GetCharacterSelectionData computes per-character skill totals. The 1.5s
@@ -674,4 +692,6 @@ module.exports = {
   getSnapshot,
   getStatus,
   getGatewayHealth,
+  // R28: the skill sheet + queue, resolved server-side (see getSkills above).
+  getSkills,
 };
