@@ -7,6 +7,12 @@
 // in its cookie-session store and attaches it to bridge calls itself.
 
 import { BridgeCallError } from "../bridge/callMethod.ts";
+import {
+  clearSessionToken,
+  sessionAuthHeaders,
+  setSessionToken,
+  withSessionTokenQuery,
+} from "./sessionToken.ts";
 import type { JsonValue } from "../bridge/wire.ts";
 import type {
   AgentRow,
@@ -36,6 +42,12 @@ export interface ApiOptions {
   readonly fetch?: typeof fetch;
 }
 
+// R42 — THE one place every BFF request in this file picks up its session
+// token. The tab's own token (sessionStorage, per-tab) goes on as
+// `Authorization: Bearer`; the cookie still rides along under
+// `credentials: "same-origin"` so a tab that has not stored a token yet keeps
+// working. Attaching it here rather than at each call site is the point: there
+// are well over a hundred callers below and none of them should know about it.
 async function requestJson(
   path: string,
   init: RequestInit,
@@ -47,6 +59,10 @@ async function requestJson(
     response = await doFetch(`${options.baseUrl ?? ""}${path}`, {
       credentials: "same-origin",
       ...init,
+      headers: {
+        ...sessionAuthHeaders(),
+        ...((init.headers as Record<string, string> | undefined) ?? {}),
+      },
     });
   } catch (cause) {
     throw new BridgeCallError(
@@ -117,6 +133,13 @@ export async function login(
   options: ApiOptions = {},
 ): Promise<LoginResult> {
   const data = await postJson("/api/login", { username, password }, options);
+  // R42: take the token the BFF handed back into this TAB's storage before
+  // anything else runs, so every request after this one — and the SSE stream —
+  // carries this tab's identity rather than whichever account last wrote the
+  // shared cookie.
+  if (typeof data.sessionToken === "string" && data.sessionToken.length > 0) {
+    setSessionToken(data.sessionToken);
+  }
   const account = (data.account ?? {}) as { accountID?: JsonValue; username?: JsonValue };
   return {
     accountID: asNumberOrNull(account.accountID) ?? 0,
@@ -125,7 +148,15 @@ export async function login(
 }
 
 export async function logout(options: ApiOptions = {}): Promise<void> {
-  await postJson("/api/logout", {}, options);
+  try {
+    await postJson("/api/logout", {}, options);
+  } finally {
+    // R42 — logout clears BOTH carriers: the BFF expires the cookie, this drops
+    // the tab's stored token. In a `finally` because a logout that failed on
+    // the wire must still leave this tab signed out locally, or the next
+    // request would go out wearing a session the player thinks they left.
+    clearSessionToken();
+  }
 }
 
 /**
@@ -1424,7 +1455,13 @@ export function subscribeBridgeEvents(
   handlers: BridgeEventHandlers,
   options: BridgeEventOptions = {},
 ): BridgeEventSubscription {
-  const url = `${options.baseUrl ?? ""}/api/bridge/events`;
+  // R42 — `EventSource` cannot set request headers, so this is the one URL in
+  // the client that carries the session token in its query string. Without it
+  // the stream would fall back to the shared cookie and tab two would watch
+  // tab one's account go about its business: a per-tab session with a
+  // shared push channel is half a feature. See `requireStreamAuth` in
+  // src/server.js for why the query carrier is bounded to this route alone.
+  const url = withSessionTokenQuery(`${options.baseUrl ?? ""}/api/bridge/events`);
   const factory =
     options.eventSource ??
     (typeof globalThis.EventSource === "function"

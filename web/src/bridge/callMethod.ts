@@ -3,9 +3,11 @@
 // Mirrors the retail call tuple (service, method, args, kwargs) and drives it
 // through the R1 BFF proxy route POST /api/bridge/call
 // (docs/bridge-wire-contract.md). The BFF requires the signed web login
-// session cookie (same-origin credentials) and pins the bridge session
+// session — since R42 the tab's own `Authorization: Bearer` token, with the
+// same-origin cookie as the migration fallback — and pins the bridge session
 // identity to the logged-in account.
 
+import { sessionAuthHeaders } from "../app/sessionToken.ts";
 import type {
   BridgeCallRequestBody,
   BridgeCallSuccessBody,
@@ -93,7 +95,11 @@ export async function callMethod<TResult = JsonValue>(
   try {
     response = await doFetch(`${options.baseUrl ?? ""}/api/bridge/call`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      // R42 — the tab's own session token, alongside the cookie. This route is
+      // the second fetch site in the client (api.ts's requestJson is the
+      // other), so it needs the header too or character selection and the
+      // station panel would silently run as whoever last wrote the cookie.
+      headers: { ...sessionAuthHeaders(), "content-type": "application/json" },
       credentials: "same-origin",
       body: JSON.stringify(body),
       ...(options.signal ? { signal: options.signal } : {}),

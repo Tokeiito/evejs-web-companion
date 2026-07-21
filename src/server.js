@@ -52,6 +52,29 @@ function parseCookies(header) {
   return cookies;
 }
 
+// --- R42: the login token rides TWO carriers, so tabs stop colliding --------
+//
+// The signed login token used to have exactly one carrier: the httpOnly cookie
+// below, scoped to path "/". A cookie belongs to the BROWSER PROFILE, not to
+// the tab, so a second tab logging in as another account OVERWROTE the first
+// tab's session and every open tab collapsed onto whichever account signed in
+// last. The operator wants ten tabs running ten accounts, so the token now
+// also rides `Authorization: Bearer <token>`, fed from the tab's own
+// `sessionStorage` — which is per-tab by specification. Same token, same
+// `webAuth.verifySessionToken`, same `req.webSessionID`: this changes the
+// CARRIER, not the authentication. The cookie stays for the migration window
+// so nothing that already works breaks.
+//
+// SECURITY TRADE — DELIBERATE, AND LOCAL TO THIS POC. A token the page's own
+// JavaScript can read is a token an XSS bug can steal; `httpOnly` existed to
+// prevent precisely that, and we are giving it up. That is acceptable HERE and
+// only here: this BFF is a companion to a LOCAL DEV EMULATOR whose login
+// accepts ANY password for ANY existing username (see /api/login below, goal
+// R1) — there is no secret left for httpOnly to protect. DO NOT COPY THIS
+// PATTERN into anything reachable from a network. If this app ever grows real
+// credentials, per-tab identity has to be solved some other way (a per-tab
+// path-scoped cookie, or a session id in the URL path) and the token must go
+// back to being httpOnly.
 function setSessionCookie(res, token) {
   res.cookie(config.sessionCookieName, token, {
     httpOnly: true,
@@ -80,33 +103,87 @@ function publicAccount(account) {
   };
 }
 
-async function requireAuth(req, res, next) {
-  const cookies = parseCookies(req.headers.cookie);
-  const payload = auth.verifySessionToken(cookies[config.sessionCookieName]);
-  if (!payload) {
-    res.status(401).json({ ok: false, error: "AUTH_REQUIRED" });
-    return;
-  }
+// The query-string name the SSE stream carries its token under. See
+// requireStreamAuth below for why the stream needs one and every other route
+// refuses it.
+const SESSION_QUERY_PARAM = "access_token";
 
-  try {
-    const account = await store.getAccount(payload.username);
-    if (!account || account.accountID !== Number(payload.accountID)) {
-      clearSessionCookie(res);
-      res.status(401).json({ ok: false, error: "ACCOUNT_NOT_FOUND" });
-      return;
-    }
-    if (account.banned) {
-      clearSessionCookie(res);
-      res.status(403).json({ ok: false, error: "ACCOUNT_BANNED" });
-      return;
-    }
-    req.account = account;
-    req.webSessionID = payload.sessionID;
-    next();
-  } catch (error) {
-    next(error);
-  }
+function readBearerToken(authorizationHeader) {
+  const match = /^Bearer +(\S.*)$/i.exec(String(authorizationHeader || "").trim());
+  return match ? match[1].trim() : "";
 }
+
+// The one place that decides which carrier a request's session token came from.
+// Header first: when a tab has its own token in sessionStorage that is the
+// deliberate identity, and the shared cookie left over from another tab's login
+// must not be able to override it.
+function readSessionToken(req, { allowQueryParam = false } = {}) {
+  const fromHeader = readBearerToken(req.headers.authorization);
+  if (fromHeader) {
+    return fromHeader;
+  }
+  if (allowQueryParam) {
+    const fromQuery = req.query ? req.query[SESSION_QUERY_PARAM] : undefined;
+    if (typeof fromQuery === "string" && fromQuery) {
+      return fromQuery;
+    }
+  }
+  const cookies = parseCookies(req.headers.cookie);
+  return cookies[config.sessionCookieName] || "";
+}
+
+// One implementation, two doors — `requireAuth` for everything, and the
+// query-tolerant variant the SSE route needs. The auth itself is identical;
+// only the accepted carrier set differs.
+function makeRequireAuth({ allowQueryParam = false } = {}) {
+  return async function requireAuthenticatedSession(req, res, next) {
+    const payload = auth.verifySessionToken(readSessionToken(req, { allowQueryParam }));
+    if (!payload) {
+      res.status(401).json({ ok: false, error: "AUTH_REQUIRED" });
+      return;
+    }
+
+    try {
+      const account = await store.getAccount(payload.username);
+      if (!account || account.accountID !== Number(payload.accountID)) {
+        clearSessionCookie(res);
+        res.status(401).json({ ok: false, error: "ACCOUNT_NOT_FOUND" });
+        return;
+      }
+      if (account.banned) {
+        clearSessionCookie(res);
+        res.status(403).json({ ok: false, error: "ACCOUNT_BANNED" });
+        return;
+      }
+      req.account = account;
+      req.webSessionID = payload.sessionID;
+      next();
+    } catch (error) {
+      next(error);
+    }
+  };
+}
+
+// Every route. Header or cookie only — a token in the query string is REFUSED
+// here, deliberately; see requireStreamAuth.
+const requireAuth = makeRequireAuth();
+
+// The SSE push channel alone. `EventSource` cannot set request headers — the
+// API has no hook for it — so GET /api/bridge/events accepts the token as the
+// `access_token` query parameter. That puts a credential in a URL, which is a
+// real cost: URLs reach browser history, `Referer` headers, and any access log
+// in front of the app. Two things contain it. First, this BFF writes no access
+// log: nothing here logs `req.url`, and the error handler logs the Error alone,
+// so the token is not recorded on this side — keep it that way if request
+// logging is ever added, and redact this parameter if it is. Second, the query
+// carrier is accepted by this route and no other, so a token that leaks through
+// a URL can be used to WATCH a session's stream but never to drive it: every
+// mutating route goes through `requireAuth`, which ignores the query string.
+//
+// A per-tab session whose push channel still rode the shared cookie would be
+// half a feature — tab two would receive tab one's live events — so this is not
+// optional decoration.
+const requireStreamAuth = makeRequireAuth({ allowQueryParam: true });
 
 app.get("/api/health", async (req, res) => {
   try {
@@ -158,9 +235,15 @@ app.post("/api/login", async (req, res, next) => {
       return;
     }
 
-    setSessionCookie(res, auth.createSessionToken(account));
+    // R42: one token, both carriers. The cookie keeps the pre-R42 client
+    // working; `sessionToken` in the body is what the tab puts in its own
+    // sessionStorage so ten tabs can hold ten different accounts. Read the
+    // security note above setSessionCookie before copying this anywhere.
+    const token = auth.createSessionToken(account);
+    setSessionCookie(res, token);
     res.json({
       ok: true,
+      sessionToken: token,
       account: publicAccount(account),
       characters: await store.listCharactersForAccount(account.accountID),
     });
@@ -169,9 +252,11 @@ app.post("/api/login", async (req, res, next) => {
   }
 });
 
+// Logging out has to release the session the CALLING TAB holds, so it reads the
+// same carriers as requireAuth: a tab signing out with its own Bearer token
+// must not release whatever session the shared cookie happens to name.
 app.post("/api/logout", async (req, res) => {
-  const cookies = parseCookies(req.headers.cookie);
-  const payload = auth.verifySessionToken(cookies[config.sessionCookieName]);
+  const payload = auth.verifySessionToken(readSessionToken(req));
   if (payload && payload.sessionID) {
     // Logging out closes the client: best-effort release of the persistent
     // bridge session so the character goes offline (the gateway TTL is the
@@ -279,9 +364,11 @@ async function releaseHeldBridgeSession(webSessionID) {
 // --- R10 live event channel (gateway push -> SSE) --------------------------
 // The BFF holds at most ONE gateway WebSocket per held bridge session and
 // republishes it to the browser as Server-Sent Events on GET /api/bridge/events
-// (same-origin, cookie-authed, routed to this web session's held bridge
-// session). The bridgeSessionID stays server-side, exactly as on every request
-// route.
+// (same-origin, routed to this web session's held bridge session). The
+// bridgeSessionID stays server-side, exactly as on every request route. Since
+// R42 the stream authenticates from the `access_token` query parameter as well
+// as the cookie, because EventSource cannot send a header — see
+// requireStreamAuth for the trade that buys and what bounds it.
 //
 // The stream is opened lazily when a browser attaches and closed when the last
 // one detaches, so a held session with nobody watching costs nothing. The last
@@ -383,7 +470,7 @@ function closeHeldStream(held) {
   }
 }
 
-app.get("/api/bridge/events", requireAuth, (req, res) => {
+app.get("/api/bridge/events", requireStreamAuth, (req, res) => {
   const held = bridgeSessions.get(req.webSessionID) || null;
   if (!held) {
     res.status(409).json({
