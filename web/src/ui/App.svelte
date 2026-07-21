@@ -22,6 +22,7 @@
   import Skills from "./Skills.svelte";
   import Planets from "./Planets.svelte";
   import Travel from "./Travel.svelte";
+  import Bots from "./Bots.svelte";
   import Chat from "./Chat.svelte";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
@@ -54,6 +55,7 @@
     | "skills"
     | "planets"
     | "travel"
+    | "bots"
     | "chat"
   >("station");
 </script>
@@ -113,6 +115,9 @@
     <button type="button" class:active={page === "travel"} onclick={() => (page = "travel")}>
       Travel
     </button>
+    <button type="button" class:active={page === "bots"} onclick={() => (page = "bots")}>
+      Bots
+    </button>
     <button type="button" class:active={page === "chat"} onclick={() => (page = "chat")}>
       Chat
     </button>
@@ -149,6 +154,8 @@
     <Planets {store} {flow} />
   {:else if page === "travel"}
     <Travel {store} {flow} />
+  {:else if page === "bots"}
+    <Bots {store} {flow} />
   {:else}
     <Chat {store} {flow} />
   {/if}

@@ -61,6 +61,9 @@ const PANELS = [
   "Skills",
   "Planets",
   "Travel",
+  // R43 — the launcher. It embeds MiningBot and MissionBot, so a first-mount
+  // failure in either now takes this panel down too.
+  "Bots",
   "Chat",
 ] as const;
 
