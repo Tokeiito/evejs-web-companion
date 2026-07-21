@@ -825,8 +825,10 @@
     }
   }
 
-  // The panel owns the poll's lifetime: it starts when the tab opens and stops
-  // when the tab closes. The poll also stops itself once the ship docks.
+  // R30 slice B — this panel CLAIMS the space feed; it no longer owns it.
+  // Other panels that show live space data claim it too, so leaving this tab
+  // hands the feed over rather than switching it off. The feed still stops on
+  // its own when the ship docks or the browser tab is hidden.
   onMount(() => {
     void run(() => flow.loadSpaceSnapshot());
     // R23: the ship's slots (so modules can be offered BY NAME) and the current

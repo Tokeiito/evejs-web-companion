@@ -10,6 +10,7 @@
   // you cannot trust, so the reason for the LAST thing it did is on screen at
   // all times — not only when it stops. If it is sitting still, this panel says
   // what it is waiting for; if it broke off, it says what drove it off.
+  import { onMount } from "svelte";
   import { BridgeCallError } from "../bridge/callMethod.ts";
   import { isSessionLost } from "../app/flow.ts";
   import { formatDistance } from "../space/overview.ts";
@@ -54,6 +55,19 @@
 
   const origin = $derived(snapshot?.ship?.position ?? { x: 0, y: 0, z: 0 });
   const shipRadius = $derived(snapshot?.ship?.radius ?? 0);
+
+  // R30 slice B — this panel claims the space feed in its OWN right.
+  //
+  // It reads the snapshot directly (belt and rock distances, the health floor)
+  // and it is deliberately rendered outside the Overview's in-space guard,
+  // because the bot docks itself to unload and a player must still be able to
+  // watch it and stop it from inside the station. Its claim is therefore not
+  // redundant with the Overview's: it is the claim that survives the dock, and
+  // the one that re-arms the feed the moment the bot undocks again.
+  onMount(() => {
+    flow.startSpacePolling();
+    return () => flow.stopSpacePolling();
+  });
 
   function surfaceTo(entity: { position: { x: number; y: number; z: number }; radius: number }): number {
     const dx = entity.position.x - origin.x;

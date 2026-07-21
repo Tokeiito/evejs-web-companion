@@ -167,6 +167,10 @@
 
   onMount(() => {
     void run(() => flow.loadMiningHolds());
+    // R30 slice B — claim the space feed while this tab is open, so a player
+    // watching the hold fill is not also freezing the grid the ore comes from.
+    flow.startSpacePolling();
+    return () => flow.stopSpacePolling();
   });
 </script>
 

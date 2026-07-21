@@ -181,7 +181,7 @@ test("Warp to and Approach on a row reuse the existing atomic moves", async () =
   });
   const flow = createAppFlow(store, { fetch });
 
-  // The row hands the object's own id straight to the R5a moves â€” no new
+  // The row hands the object's own id straight to the R5a moves — no new
   // movement surface is introduced by the overview.
   await flow.warpTo(GATE_ID);
   await flow.approach(GATE_ID);
@@ -287,7 +287,7 @@ test("a slow snapshot read is skipped, never queued behind itself", async () => 
   const first = poller.tick();
   assert.equal(started, 1);
 
-  // A beat that lands while the first read is still in flight does nothing â€”
+  // A beat that lands while the first read is still in flight does nothing —
   // so a slow read can never pile up work behind the autopilot's own calls.
   await poller.tick();
   assert.equal(started, 1);
@@ -320,7 +320,53 @@ test("a failing read keeps the poller alive for the next beat", async () => {
   assert.equal(attempts, 2, "a failed read must not tear the poller down");
 });
 
-test("stopSpacePolling ends the poll when the panel closes", async () => {
+// --- R30 slice B: the space feed is CLAIMED, not switched --------------------
+//
+// These replace a single test that asserted "one start, one stop, no poll".
+// That was true, and it was the bug: the Overview panel was the only caller, so
+// leaving its tab froze the snapshot, the locks, the gauges, the distances and
+// the hostile list for a ship that was still flying. The semantics being pinned
+// now are a REFERENCE COUNT — the assertion is not weakened, it is re-pointed at
+// the guarantee that actually matters.
+
+function snapshotReads(requests: readonly { readonly path: string }[]): number {
+  return requests.filter((entry) => entry.path === "/api/bridge/space/snapshot").length;
+}
+
+test("the LAST release ends the poll — releasing one of two viewers does not", async () => {
+  const store = createClientStore();
+  const { fetch, requests } = makeFakeFetch(() => ({
+    status: 200,
+    body: { ok: true, space: SNAPSHOT, notifications: [] },
+  }));
+  const flow = createAppFlow(store, { fetch });
+
+  // Two panels are showing live space data (Overview embeds MiningBot; a tab
+  // switch mounts the next panel around the previous one's unmount).
+  flow.startSpacePolling();
+  flow.startSpacePolling();
+
+  // One of them unmounts. The feed must keep running for the other.
+  flow.stopSpacePolling();
+  await new Promise((resolve) => setTimeout(resolve, SPACE_POLL_INTERVAL_MS + 40));
+  const whileOneViewerRemains = snapshotReads(requests);
+  assert.ok(
+    whileOneViewerRemains > 0,
+    "a surviving viewer must keep the space feed alive — this is the whole slice",
+  );
+
+  // The last one unmounts: now it stops.
+  flow.stopSpacePolling();
+  const atRelease = snapshotReads(requests);
+  await new Promise((resolve) => setTimeout(resolve, SPACE_POLL_INTERVAL_MS + 40));
+  assert.equal(
+    snapshotReads(requests),
+    atRelease,
+    "the last viewer letting go leaves no poll running",
+  );
+});
+
+test("a single claim released still ends the poll (the old guarantee, kept)", async () => {
   const store = createClientStore();
   const { fetch, requests } = makeFakeFetch(() => ({
     status: 200,
@@ -332,12 +378,28 @@ test("stopSpacePolling ends the poll when the panel closes", async () => {
   flow.stopSpacePolling();
 
   // Give any armed timer a chance to fire; nothing should have been read.
-  await new Promise((resolve) => setTimeout(resolve, 5));
-  assert.equal(
-    requests.filter((entry) => entry.path === "/api/bridge/space/snapshot").length,
-    0,
-    "closing the panel leaves no poll running",
-  );
+  await new Promise((resolve) => setTimeout(resolve, SPACE_POLL_INTERVAL_MS + 40));
+  assert.equal(snapshotReads(requests), 0, "no viewers means no poll");
+});
+
+test("releases never drive the count negative, so a later claim still polls", async () => {
+  const store = createClientStore();
+  const { fetch, requests } = makeFakeFetch(() => ({
+    status: 200,
+    body: { ok: true, space: SNAPSHOT, notifications: [] },
+  }));
+  const flow = createAppFlow(store, { fetch });
+
+  // An unbalanced release (a panel unmounting twice, a teardown ordering quirk)
+  // must not leave the count at -1, where the NEXT claim would bring it to zero
+  // and the cockpit would silently never update again.
+  flow.stopSpacePolling();
+  flow.stopSpacePolling();
+  flow.startSpacePolling();
+
+  await new Promise((resolve) => setTimeout(resolve, SPACE_POLL_INTERVAL_MS + 40));
+  assert.ok(snapshotReads(requests) > 0, "one claim after stray releases still polls");
+  flow.stopSpacePolling();
 });
 
 // --- R30 slice A: the gate links ride with the snapshot ----------------------

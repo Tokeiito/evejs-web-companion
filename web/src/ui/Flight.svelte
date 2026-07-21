@@ -84,6 +84,12 @@
 
   onMount(() => {
     void run(() => flow.loadFlightStatus());
+    // R30 slice B — claim the space feed. This panel reads live flight status
+    // for a ship that is moving, so the feed must not go still because the
+    // Overview tab happens to be closed. Released on unmount; the feed only
+    // actually stops when the LAST viewer lets go.
+    flow.startSpacePolling();
+    return () => flow.stopSpacePolling();
   });
 
   function parseID(value: string): number {

@@ -10,7 +10,7 @@
   // issuing (no "stop" is sent) — the ship completes its last server-side
   // command and sits. We deliberately register NO unload handler that would
   // send anything.
-  import { onDestroy } from "svelte";
+  import { onDestroy, onMount } from "svelte";
   import { BridgeCallError } from "../bridge/callMethod.ts";
   import { isSessionLost } from "../app/flow.ts";
   import type { ClientStore } from "../store/clientStore.ts";
@@ -79,6 +79,18 @@
     if (timer) {
       clearInterval(timer);
     }
+  });
+
+  // R30 slice B — claim the space feed while the Travel tab is open.
+  //
+  // This is the tab the operator's complaint was actually about: you fly out,
+  // come here to set a destination, and go back. Before the claim, that round
+  // trip STOPPED the snapshot — distances, gauges and locks all froze while the
+  // ship kept moving, then jumped when you returned. The autopilot's own reads
+  // papered over it only while a route was actually running.
+  onMount(() => {
+    flow.startSpacePolling();
+    return () => flow.stopSpacePolling();
   });
 
   const elapsed = $derived.by(() => {
