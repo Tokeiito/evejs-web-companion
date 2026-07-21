@@ -23,12 +23,12 @@ The R2+ page migrations build on a TypeScript + Vite stack under `web/`, living 
 
 ```powershell
 npm run typecheck   # tsc, no emit
-npm run build:web   # typecheck + Vite build into public/dist/ (git-ignored), served at /dist/
+npm run build:web   # typecheck + Vite build into public/dist/ (git-ignored), served at /
 npm run dev:web     # Vite dev server; proxies /api to the BFF (EVEJS_WEB_BFF_URL overrides)
 npm test            # node --test: vanilla JS tests + web/**/*.test.ts together
 ```
 
-After `npm run build:web`, the first migrated page (goal R2, Svelte 5) is at `http://127.0.0.1:26500/dist/` — it has its own login form, so no vanilla-app sign-in is needed. See the "Consuming the bridge from TypeScript" section of [docs/bridge-wire-contract.md](docs/bridge-wire-contract.md) for the client/store layout and how to add a page.
+After `npm run build:web`, the app is at `http://127.0.0.1:26500/`. (R45 deleted the vanilla app that used to own the root; the old `/dist/` bookmark now 302s to `/`.) See the "Consuming the bridge from TypeScript" section of [docs/bridge-wire-contract.md](docs/bridge-wire-contract.md) for the client/store layout and how to add a page.
 
 ### Styling: Tailwind CSS v4, responsive (R8)
 
@@ -42,7 +42,7 @@ The first live end-to-end check of the new stack (goal R2). What it proves: the 
 
 1. Start EveJS (`eve.js` repo) the way you normally run it, so the web gateway is listening on `:26002`.
 2. In this repo: `npm run build:web` (once, or after pulling), then `npm start`.
-3. Open `http://127.0.0.1:26500/dist/`.
+3. Open `http://127.0.0.1:26500/`.
 4. Log in with the EveJS account that owns your test character (any password — it is not checked).
 5. Click the character (e.g. **Farmer**). This brings the character **online on a live EveJS session** — the same duplicate-login and control rules as the retail client apply, so a character already logged in elsewhere is refused with the server's own message.
 6. You should see the docked station panel: station name/system/region (client-local static data, as in retail), the `GetStationItemBits` services row, and the `GetGuests` list with your character in it.
@@ -59,7 +59,7 @@ What to expect:
 The second live check (goal R3). What it proves: the browser drives the retail **two-step bound-object** call pattern (`invbroker` / `ship` moniker → `MachoBindObject` → `List`/`Add`/`StackAll`/`Board`) against the same handlers the retail client hits. The bound-object handles live only in the BFF and gateway — the browser moves items and boards ships by their game IDs.
 
 1. Same setup as the R2 spot test (EveJS running, `npm run build:web`, `npm start`).
-2. Open `http://127.0.0.1:26500/dist/`, log in as the account that owns **Farmer**, and select the character (R2 flow).
+2. Open `http://127.0.0.1:26500/`, log in as the account that owns **Farmer**, and select the character (R2 flow).
 3. Click the **Inventory & Ship** tab. You should see two panels: the **station hangar** (all hangar items, with a capacity readout) and the **active-ship cargo** (its items + cargo capacity).
 4. **Move an item:** click **→ Cargo** on a non-ship hangar item (optionally type a quantity first for a partial move). The item should disappear from the hangar and appear in the cargo, and cargo "used" should rise. **→ Hangar** moves it back. **Stack all** consolidates loose stacks.
 5. **Board a ship:** a ship sitting in the hangar shows a **Board** button. Click it — that ship becomes the active ship, and the cargo panel now shows *its* cargo.
@@ -78,7 +78,7 @@ The courier milestone's key check (goal R4). What it proves: the browser drives 
 **Setup expectation:** the character must be **docked at a station that has an agent offering a courier** (the accept is in person — a co-located accept, the normal path). Not every station has one; pick a character docked at an agent station (level-1 courier agents are common). The orchestrator's live check docks Farmer at such a station.
 
 1. Same setup as the R2/R3 spot tests (EveJS running, `npm run build:web`, `npm start`).
-2. Open `http://127.0.0.1:26500/dist/`, log in, and select the character (R2 flow).
+2. Open `http://127.0.0.1:26500/`, log in, and select the character (R2 flow).
 3. Click the **Agents & Missions** tab. You should see the **station agents** list and your **mission journal** (active + offered).
 4. **Talk to an agent:** click an agent. The **Conversation** panel shows what the agent says and the available action buttons (Request Mission / Accept / Decline / …), rendered from the retail `availableActions`.
 5. **Request + accept a courier:** click **Request Mission** to get an offer, then **Accept**. The conversation advances to the accepted state, the **Courier briefing** panel appears (cargo type/quantity/volume, pickup, destination, reward, time bonus, loyalty points), and the accepted mission shows under **Active** in the journal.
@@ -97,7 +97,7 @@ The travel foundation (goal R5a). What it proves: the **persistent browser-backe
 **Setup expectation:** the character is docked and has an active ship that can undock, warp, and jump (Farmer's ship works). You need the **game IDs** of the gate/celestial to warp to, the source + destination **stargate IDs** to jump, and the destination **station ID** to dock — R5a has no route solver, so you supply them. From Maurasi (system 30000140, where the orchestrator docks Farmer at station 60003454), a worked example: warp to gate `50000801` (→ Kisogo), or use the neighbours mapped in `docs/retail-call-inventory.md` Steps 7–9. A simple round trip: undock, warp to a gate, dock back at your origin station.
 
 1. Same setup as the R2–R4 spot tests (EveJS running, `npm run build:web`, `npm start`).
-2. Open `http://127.0.0.1:26500/dist/`, log in, and select the character (R2 flow).
+2. Open `http://127.0.0.1:26500/`, log in, and select the character (R2 flow).
 3. Click the **Flight** tab. The **Status** readout shows *Docked · station …*, the solar system, and the active ship.
 4. **Undock:** click **Undock**. Click **Refresh flight status** — the readout flips to *In space · system …* with a ship movement state (e.g. `STOP`).
 5. **Warp:** enter a gate/celestial ID under **Warp to a gate / celestial** and click **Warp to target**. Refresh — the ship state shows `WARP`.
@@ -117,7 +117,7 @@ The client-side autopilot (goal R5b). What it proves: the **browser** runs the r
 **Setup expectation:** the character is docked with an active ship that can undock/warp/jump (Farmer works). Pick a destination **a few jumps away** — a **station ID** (a courier destination) or a **solar system ID**. From Maurasi (system `30000140`), Jita is one jump: station `60003760` (Jita 4-4) is a good target.
 
 1. Same setup as the R2–R5a spot tests (EveJS running, `npm run build:web`, `npm start`).
-2. Open `http://127.0.0.1:26500/dist/`, log in, and select the character (R2 flow).
+2. Open `http://127.0.0.1:26500/`, log in, and select the character (R2 flow).
 3. Click the **Travel** tab. Under **Start route**, enter the destination ID (e.g. `60003760`) and click **Start route**.
 4. The route is computed from your current location and the **Status** readout goes live: current/next system, target, travel state, **remaining jumps**, and **elapsed time**. The **Planned route** lists each hop (which gate to warp to, which gate to jump through).
 5. Watch it drive itself: undock → warp to the gate → jump → (next system) → … → warp to the station → dock. The dock is re-issued through the approach until the ship is in range (approach-then-redock).
@@ -135,7 +135,7 @@ The courier-milestone capstone (goal R6): a player completes a courier mission e
 
 **Setup expectation:** the character is docked at a station with courier agents and an active ship with cargo space (Farmer at Jita 4-4, station `60003760`, which has 882 courier agents). Same server setup as the R2–R5b spot tests (EveJS running, `npm run build:web`, `npm start`).
 
-1. Open `http://127.0.0.1:26500/dist/`, log in, and select the character (R2 flow).
+1. Open `http://127.0.0.1:26500/`, log in, and select the character (R2 flow).
 2. Click the **Agents & Missions** tab. The roster is filtered: **Courier only** is on by default, with a **Level** dropdown and a **Search** box, and the render is capped (first 60, with a "showing X of Y" count) so the ~1,700-agent station stays responsive. Narrow to a level-1 courier agent and click it.
 3. In the conversation, click **Request Mission**, then **Accept** (in person — you are docked at the agent's station). The **Courier briefing** shows the package (type / quantity / volume), pickup, **destination station**, reward, time bonus, and loyalty points; the mission appears under **Active** in the journal.
 4. Click **Load package into ship** (the R3 inventory move loads the staged package into the active ship's cargo). Verify capacity on the **Inventory & Ship** tab if you like.
@@ -155,7 +155,7 @@ The Agent Finder (goal R6a). What it proves: a player can **find a courier agent
 
 **Setup expectation:** the character is docked (Farmer at Jita 4-4, station `60003760`, system Jita `30000142`). Same server setup as the R2–R6 spot tests (EveJS running, `npm run build:web`, `npm start`).
 
-1. Open `http://127.0.0.1:26500/dist/`, log in, and select the character (R2 flow).
+1. Open `http://127.0.0.1:26500/`, log in, and select the character (R2 flow).
 2. Click the **Agent Finder** tab. It loads couriers by default, each row showing **name, level, mission kind, station, system, and jumps away**, sorted **nearest-first** from your current system. The render is capped (first 60, with a "showing X of Y" count) so the ~11k-agent dataset stays responsive.
 3. Set **Level** to `1` to narrow to level-1 couriers (the full level is fetched, so the sort is complete). Use **Search** (name / system) to jump to a system, e.g. type `Jita`.
 4. Pick a **nearby** L1 courier and click **Set destination**. The **Autopilot target** panel names who you're flying to, and the app switches you to the **Travel** tab where the R5b autopilot is already running.
@@ -176,7 +176,7 @@ Local + Corp chat (goal R7). What it proves: the browser character **appears in 
 
 **Setup expectation:** the character is docked (Farmer at Jita 4-4, station `60003760`, system Jita `30000142`), in a corporation. Same server setup as the R2–R6 spot tests (EveJS running, `npm run build:web`, `npm start`).
 
-1. Open `http://127.0.0.1:26500/dist/`, log in, and select the character (R2 flow).
+1. Open `http://127.0.0.1:26500/`, log in, and select the character (R2 flow).
 2. Click the **Chat** tab. It opens on **Local**, showing the **member roster** (every pilot in your system, including you) and the **recent messages**. It polls the open channel every ~4s.
 3. Type in the send box and **Send**. Your message appears in the Local backlog (confirm from a second client in the same system, e.g. the retail client or another browser login, that it shows up — and that your character is listed in their Local).
 4. Switch to the **Corp** tab: it shows your **corp roster** (your corp-mates who are online) and the **corp backlog**. Send a corp message; corp-mates polling corp (or the retail client) see it.
@@ -195,7 +195,7 @@ Travel usability (goal R7a). What it proves: the **Flight** tab shows system/sta
 
 **Setup expectation:** the character is docked (Farmer at Jita 4-4). Same server setup as the R2–R7 spot tests (EveJS running, `npm run build:web`, `npm start`).
 
-1. Open `http://127.0.0.1:26500/dist/`, log in, and select the character (R2 flow).
+1. Open `http://127.0.0.1:26500/`, log in, and select the character (R2 flow).
 2. Click the **Flight** tab. The **Location** line reads `Docked · Jita IV - Moon 4 - Caldari Navy Assembly Plant` and the **Solar system** row reads `Jita (30000142)` — the resolved **names**, not bare IDs. (Undock and it reads `In space · Jita`.)
 3. Click the **Travel** tab. Under **Set destination**, type a name — e.g. `Jita`, or the name of a system a few jumps away — and click **Search** (or press Enter). A short results list shows each match's **name, kind (system/station), system, and jumps away**, with the exact-name system ranked first.
 4. Click **Set destination** on a result. The R5b autopilot starts immediately (the panel switches to the live route readout) and drives there — undock → warp → jump → … → dock — exactly as the R5b spot test.
@@ -213,7 +213,7 @@ Display pass (goal R7c). What it proves: across every tab, raw numeric IDs are s
 
 **Setup expectation:** the character is docked (Farmer at Jita 4-4). Same server setup as the R2–R7a spot tests (EveJS running, `npm run build:web`, `npm start`).
 
-1. Open `http://127.0.0.1:26500/dist/`, log in, and select the character (R2 flow).
+1. Open `http://127.0.0.1:26500/`, log in, and select the character (R2 flow).
 2. **Inventory & Ship** tab: the **Type** column reads item names (e.g. `Tritanium`) and the **Cat** column category names (e.g. `Ship`) — not `34` / `6`; the active-ship cargo header reads the **ship type name** (e.g. `Ibis (ship …)`). The raw typeID/categoryID stay on the cell tooltip and the Item column keeps the itemID.
 3. **Station** tab: the services row shows **Owner** as the corp/faction name (`… · School of Applied Knowledge`) and **Station type** as the type name; the **Guests** table shows character / corporation / alliance **names** (IDs on the tooltip).
 4. **Agents & Missions** tab: agent buttons and the conversation heading read the **agent name** (e.g. `Antaken Kamola`), the courier briefing shows the **cargo type name** and **station + system names** for pickup/destination, and the reward LP/standings rows show **corp / owner names**.
@@ -232,7 +232,7 @@ Goal R14. What it proves: the Inventory tab now does the rest of station invento
 
 **Setup expectation:** the character is docked with a few stacks in the hangar. Same server setup as the R2–R7a spot tests (EveJS running, `npm run build:web`, `npm start`).
 
-1. Open `http://127.0.0.1:26500/dist/`, log in, and select the character.
+1. Open `http://127.0.0.1:26500/`, log in, and select the character.
 2. **Multi-select:** tick two or more rows in the station hangar. A bar appears reading *"N selected in Station hangar"* with a **Move to Ship cargo** button. Press it — both move in **one** call, and the panel reports *"Moved 2 of 2."*
 3. **Split:** type a number into **Move quantity**, tick a single stack, and move it. Only that many units go across; the source stack shrinks and a new stack appears at the destination. The report reads *"Split N off the stack."*
 4. **Re-merge:** tick exactly two stacks of the **same** item in one place — a **Merge the two stacks** button appears. Press it; the smaller folds into the larger and the report says how many units moved.

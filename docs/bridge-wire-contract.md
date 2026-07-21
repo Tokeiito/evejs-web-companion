@@ -2689,7 +2689,7 @@ cookie, and the client clears its stored token.
 
 ## Reference call
 
-`charUnboundMgr.GetCharacterSelectionData()` (`Handle_GetCharacterSelectionData`, `eve.js` `server/src/services/character/charService.js`) reads `session.userid` and returns the retail 4-tuple `(userDetails, trainingDetails, characterDetails, wars)`; `characterDetails` is a `{type:"list"}` of `util.KeyVal` rows. Proven end to end in-process by `eve.js` `server/tests/webGatewayServiceCall.test.js` and consumed live by the frontend bridge panel (`public/app.js` `loadBridgePanel`).
+`charUnboundMgr.GetCharacterSelectionData()` (`Handle_GetCharacterSelectionData`, `eve.js` `server/src/services/character/charService.js`) reads `session.userid` and returns the retail 4-tuple `(userDetails, trainingDetails, characterDetails, wars)`; `characterDetails` is a `{type:"list"}` of `util.KeyVal` rows. Proven end to end in-process by `eve.js` `server/tests/webGatewayServiceCall.test.js` and consumed live by the Svelte client's typed reference call (`web/src/bridge/characterSelection.ts`), which parses that 4-tuple and feeds `web/src/ui/CharacterSelect.svelte`. (Before R45 this was the deleted vanilla `public/app.js` `loadBridgePanel`.)
 
 ## Consuming the bridge from TypeScript (R1b)
 
