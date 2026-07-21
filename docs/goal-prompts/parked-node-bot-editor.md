@@ -43,6 +43,17 @@ R43 shipped declared requirements per bot (met / not-met / **cannot-tell**, eval
 - The bot runs in the **browser**; closing the tab closes the client.
 - **This environment cannot verify a canvas visually** — screenshots time out, `requestAnimationFrame` never fires, and async panel content never flushes to the DOM. Static geometry *is* measurable. Any interaction-heavy UI is effectively untestable here and would rest on the operator clicking and reporting back.
 
+## The sub-ladder investigation answered its question
+
+Run after R44 (composite actions vs named row groups vs phases; judged on safety, expressiveness, legibility). **Verdict, 2–1: composite actions only — players never compose flights.** The two rejected models failed for reasons worth keeping:
+
+- **Named groups** is the better *idea* and the worse *product*. Its `forward: n` offset is the strongest single mechanism proposed anywhere — **file it for later**. But fall-through re-entry is exponential (~8 groups × 8 rows ≈ 16.7M predicate evaluations in one tick), and decisively, **the real bot never needs fall-through**: `travelDecision` returns on every path including `step === null`, and `runTheLasers` returns on all three. Delete fall-through to fix the freeze and a group *is* a composite action with worse ergonomics and a player-editable warp dead band.
+- **Phases is disqualified**, and structurally so: a two-line livelock (`hold>10% → become B` / `hold≤90% → become A`) is unrecoverable because **every bound in this codebase dispatches on `action.kind`, so a tick emitting nothing passes through zero bounds**, and per-phase counters reset on entry so a ping-pong resets its own watchdog.
+
+**The general rule that falls out, and it applies beyond this feature: never ship a primitive where a tick can legally emit no world call.**
+
+**One correction that would have bricked the bot:** a proposed top-level row *"when the belt has no rocks left, stop"* fires on tick one — `candidates.length === 0` is already true while the ship is still warping, because the belt is not on the grid yet. `belt-empty` is not a row; it is the arrival **step** of "go to the belt".
+
 ## Open questions for the brainstorm
 
 1. Can a **node-like view** render an ordered, first-match-wins document without implying free-form edges — and if a player draws an edge, what does it mean?
