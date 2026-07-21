@@ -11,6 +11,12 @@ import {
   buildOverviewRows,
   distanceMeters,
   formatDistance,
+  healthIsDropping,
+  hostileLabel,
+  hostileRows,
+  isHostile,
+  isMyDrone,
+  newlyArrivedHostiles,
   overviewFilterIDs,
   ratioPercent,
 } from "./overview.ts";
@@ -43,6 +49,11 @@ function entity(over: Partial<SpaceEntity> & { itemID: number }): SpaceEntity {
   remainingQuantity: null,
   miningYieldTypeID: null,
   beltID: null,
+  isNpc: false,
+  npcEntityType: null,
+  controllerID: null,
+  droneActivity: null,
+  targetEntityID: null,
     ...over,
   };
 }
@@ -191,4 +202,144 @@ test("ratios become whole percentages for the HUD bars", () => {
   assert.equal(ratioPercent(null), null);
   assert.equal(ratioPercent(undefined), null);
   assert.equal(ratioPercent(Number.NaN), null);
+});
+
+// --- R25 slice B: telling a pirate from a person -----------------------------
+//
+// ⚠ THE FINDING THIS WHOLE SECTION EXISTS FOR: a belt rat is `kind: "ship"`.
+// The server builds it through the same entity path as the player parked next
+// to you, with the same name, position, health and velocity fields. So `kind`
+// cannot separate them — and neither could anything else this row carried
+// before R25. Every test below is a guard against re-deriving that the wrong
+// way.
+
+/** A ship row, player-flown or NPC, otherwise identical. */
+function shipRow(over: Partial<SpaceEntity> & { itemID: number }): SpaceEntity {
+  return entity({ kind: "ship", typeID: 606, groupID: 25, categoryID: 6, ...over });
+}
+
+test("a rat and a player ship differ ONLY in isNpc / npcEntityType", () => {
+  const rat = shipRow({ itemID: 1, isNpc: true, npcEntityType: "npc", characterID: null });
+  const player = shipRow({ itemID: 2, isNpc: false, npcEntityType: null, characterID: 90000042 });
+
+  // The trap, asserted so nobody re-introduces it: kind is identical.
+  assert.equal(rat.kind, player.kind);
+
+  assert.equal(isHostile(rat), true);
+  assert.equal(isHostile(player), false);
+  assert.equal(hostileLabel(rat), "Pirate");
+  assert.equal(hostileLabel(player), null, "a player gets no badge at all");
+});
+
+test("⚠ characterID === 0 is NOT the test — a structure would be flagged", () => {
+  // The shortcut that almost works. A structure and a corp-owned ball both
+  // carry no characterID, and a warning that flags harmless furniture gets
+  // ignored — which is worse than having no warning.
+  const structure = entity({
+    itemID: 3,
+    kind: "structure",
+    characterID: null,
+    isNpc: false,
+    npcEntityType: null,
+  });
+  assert.equal(isHostile(structure), false);
+  assert.equal(hostileLabel(structure), null);
+});
+
+test("police are an NPC that is NOT a threat; a drifter is", () => {
+  const concord = shipRow({ itemID: 4, isNpc: true, npcEntityType: "concord" });
+  const drifter = shipRow({ itemID: 5, isNpc: true, npcEntityType: "drifter" });
+  assert.equal(isHostile(concord), false, "law enforcement does not shoot a miner");
+  assert.equal(hostileLabel(concord), "Police");
+  assert.equal(isHostile(drifter), true);
+  assert.equal(hostileLabel(drifter), "Drifter");
+});
+
+test("an NPC of an unreadable kind is treated as hostile — loud, not silent", () => {
+  // For a warning whose job is to keep a miner alive, an unknown NPC is the
+  // case you want to be wrong about in the loud direction.
+  const unknown = shipRow({ itemID: 6, isNpc: true, npcEntityType: null });
+  assert.equal(isHostile(unknown), true);
+  assert.equal(hostileLabel(unknown), "Pirate");
+});
+
+test("your own ship is never a threat to itself", () => {
+  const self = shipRow({ itemID: 7, isNpc: true, npcEntityType: "npc", isSelf: true });
+  assert.equal(isHostile(self), false);
+});
+
+test("R9a: every badge is a word a player uses, with no id in it", () => {
+  for (const npcEntityType of ["npc", "concord", "drifter", null]) {
+    const label = hostileLabel(shipRow({ itemID: 8, isNpc: true, npcEntityType }));
+    assert.ok(label);
+    assert.doesNotMatch(label, /\d/, `"${label}" must contain no number`);
+    assert.doesNotMatch(label, /npc|entity|kind/i, `"${label}" must not leak runtime wording`);
+  }
+});
+
+test("threats are read from the WHOLE snapshot, nearest first, uncapped", () => {
+  // The reason this is not a filter over the overview: the overview is
+  // searchable, filterable and capped at 200 rows, so a miner who searched for
+  // "Veldspar" would have filtered away the thing shooting them.
+  const far = shipRow({ itemID: 10, isNpc: true, npcEntityType: "npc", position: { x: 50_000, y: 0, z: 0 } });
+  const near = shipRow({ itemID: 11, isNpc: true, npcEntityType: "npc", position: { x: 900, y: 0, z: 0 } });
+  const rock = entity({ itemID: 12, kind: "asteroid", position: { x: 100, y: 0, z: 0 } });
+  const rows = hostileRows(snapshotOf([far, rock, near]), ORIGIN);
+  assert.deepEqual(rows.map((row) => row.itemID), [11, 10]);
+  assert.ok(Number(rows[0]?.distance) < Number(rows[1]?.distance));
+  assert.deepEqual(hostileRows(null, ORIGIN), []);
+});
+
+test("only NEW hostiles are announced — the ones already there are not news", () => {
+  const first = shipRow({ itemID: 20, isNpc: true, npcEntityType: "npc" });
+  const second = shipRow({ itemID: 21, isNpc: true, npcEntityType: "npc" });
+  const rows = hostileRows(snapshotOf([first, second]), ORIGIN);
+
+  // Primed from the first look: landing in an occupied belt announces nothing.
+  assert.deepEqual(newlyArrivedHostiles(rows, new Set([20, 21])), []);
+  // The one that just warped in.
+  assert.deepEqual(
+    newlyArrivedHostiles(rows, new Set([20])).map((row) => row.itemID),
+    [21],
+  );
+});
+
+test("a drone is mine by owner OR by the hull flying it", () => {
+  const mine = entity({ itemID: 30, kind: "drone", ownerID: 7, controllerID: 9001 });
+  const ownedButSwapped = entity({ itemID: 31, kind: "drone", ownerID: 7, controllerID: 5555 });
+  const someoneElses = entity({ itemID: 32, kind: "drone", ownerID: 999, controllerID: 8888 });
+  const notADrone = entity({ itemID: 33, kind: "ship", ownerID: 7, controllerID: 9001 });
+
+  assert.equal(isMyDrone(mine, 7, 9001), true);
+  assert.equal(isMyDrone(ownedButSwapped, 7, 9001), true, "still mine after a hull swap");
+  assert.equal(isMyDrone(someoneElses, 7, 9001), false);
+  assert.equal(isMyDrone(notADrone, 7, 9001), false, "only drone rows count");
+});
+
+test("a drone is never mistaken for a hostile, whoever owns it", () => {
+  const someoneElses = entity({ itemID: 34, kind: "drone", ownerID: 999, isNpc: false });
+  assert.equal(isHostile(someoneElses), false);
+});
+
+// --- "You are under attack", the honest version ------------------------------
+
+test("damage is reported from two consecutive readings, never invented", () => {
+  // There is NO damage-log read on this server, so this client does not invent
+  // one. All it claims is what the HUD actually showed: a layer went down.
+  const full = { shieldRatio: 1, armorRatio: 1, hullRatio: 1 };
+  assert.equal(healthIsDropping(full, { ...full, shieldRatio: 0.8 }), true);
+  assert.equal(healthIsDropping(full, { ...full, armorRatio: 0.9 }), true);
+  assert.equal(healthIsDropping(full, { ...full, hullRatio: 0.99 }), true);
+  assert.equal(healthIsDropping(full, full), false, "steady is not damage");
+  // Recharging is not damage either.
+  assert.equal(healthIsDropping({ ...full, shieldRatio: 0.5 }, full), false);
+});
+
+test("an unknown health layer is never reported as damage", () => {
+  const unknown = { shieldRatio: null, armorRatio: null, hullRatio: null };
+  assert.equal(healthIsDropping(unknown, { shieldRatio: 0.2, armorRatio: null, hullRatio: null }), false);
+  assert.equal(healthIsDropping({ shieldRatio: 1, armorRatio: null, hullRatio: null }, unknown), false);
+  // And nothing to compare against is nothing to claim.
+  assert.equal(healthIsDropping(null, { shieldRatio: 0.1, armorRatio: null, hullRatio: null }), false);
+  assert.equal(healthIsDropping({ shieldRatio: 1, armorRatio: null, hullRatio: null }, null), false);
 });

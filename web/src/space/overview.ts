@@ -210,6 +210,138 @@ export function overviewFilterIDs(snapshot: SpaceSnapshot | null): {
   };
 }
 
+// --- R25 slice B: telling a pirate from a person -----------------------------
+//
+// ⚠ THE FINDING THIS SECTION EXISTS FOR: a belt rat is `kind: "ship"`. It is
+// built through the same server-side entity path as the player parked next to
+// you and carries the same name, position, health and velocity. `kind` cannot
+// separate them, and neither could anything else the snapshot carried before
+// R25 — which is why the gateway projects exactly two new fields, `isNpc` and
+// `npcEntityType`, and why the whole of this client's threat logic reads them
+// and nothing else.
+//
+// ⚠ AND THE TRAP THAT LOOKS LIKE A SHORTCUT: `characterID === 0` would ALMOST
+// work. Structures and corp-owned balls also carry characterID 0, so a panel
+// built on it flags harmless furniture as a threat — and a threat warning that
+// cries wolf gets ignored, which is worse than not having one.
+
+/**
+ * Is this row something that will SHOOT AT YOU?
+ *
+ * True only for a ship the runtime says nobody is flying, of a kind that
+ * attacks: "npc" (pirates, and the belt rats a miner actually meets) and
+ * "drifter". Deliberately NOT "concord" — law enforcement is an NPC that does
+ * not attack a miner, and painting it red would make the colour meaningless.
+ *
+ * An NPC ship whose kind we could not read is treated as hostile: for a warning
+ * whose job is to keep a miner alive, an unknown NPC is the case you want to be
+ * wrong about in the loud direction.
+ */
+export function isHostile(entity: SpaceEntity): boolean {
+  if (!entity.isNpc || entity.isSelf) {
+    return false;
+  }
+  return entity.npcEntityType !== "concord";
+}
+
+/**
+ * What a player should CALL this row (R9a: plain player language, never
+ * "NPC entity kind"). Returns null for anything that is not an NPC, so a
+ * caller renders no badge at all rather than an empty one.
+ */
+export function hostileLabel(entity: SpaceEntity): string | null {
+  if (!entity.isNpc) {
+    return null;
+  }
+  switch (entity.npcEntityType) {
+    case "concord":
+      return "Police";
+    case "drifter":
+      return "Drifter";
+    default:
+      return "Pirate";
+  }
+}
+
+/** Is this drone row one of MINE — owned by me, or flown by my hull? */
+export function isMyDrone(
+  entity: SpaceEntity,
+  myCharacterID: number | null,
+  myShipID: number | null,
+): boolean {
+  if (entity.kind !== "drone") {
+    return false;
+  }
+  if (myCharacterID !== null && entity.ownerID === myCharacterID) {
+    return true;
+  }
+  return myShipID !== null && entity.controllerID === myShipID;
+}
+
+/**
+ * The hostiles in a snapshot, nearest first.
+ *
+ * Separate from `buildOverviewRows` on purpose: the overview is a filtered,
+ * capped, sortable list, and a threat must NOT be something a player can filter
+ * away or push off the bottom of a hundred-row cap. This reads the whole
+ * snapshot every time, ignores every filter, and is never capped.
+ */
+export function hostileRows(
+  snapshot: SpaceSnapshot | null,
+  origin: SpaceVector,
+): readonly OverviewRow[] {
+  if (!snapshot) {
+    return [];
+  }
+  return snapshot.entities
+    .filter((entity) => isHostile(entity))
+    .map((entity) => ({ ...entity, distance: distanceMeters(origin, entity.position) }))
+    .sort((left, right) => left.distance - right.distance);
+}
+
+/**
+ * Which hostiles are NEW since the last look — the ones worth interrupting the
+ * player for ("A pirate has arrived").
+ *
+ * Pure and caller-driven: the caller owns the "seen" set, so this never holds
+ * state across a dock, a session change, or a panel remount. `seen` being EMPTY
+ * on the very first poll would otherwise announce every rat already in the belt
+ * as an arrival, so the caller is expected to prime it from the first snapshot;
+ * that is documented at the call site rather than guessed at here.
+ */
+export function newlyArrivedHostiles(
+  hostiles: readonly OverviewRow[],
+  seen: ReadonlySet<number>,
+): readonly OverviewRow[] {
+  return hostiles.filter((row) => !seen.has(row.itemID));
+}
+
+/**
+ * Is the ship's shield/armor/hull dropping fast enough to be worth shouting
+ * about?
+ *
+ * The honest, sourceable version of "you are under attack". This client has NO
+ * damage log to read — there is no such server read — so it does not invent
+ * one. What it CAN say is what two consecutive HUD readings show: a health
+ * layer that went down. `null` for either reading means unknown, and unknown is
+ * never reported as damage.
+ */
+export function healthIsDropping(
+  previous: { readonly shieldRatio: number | null; readonly armorRatio: number | null; readonly hullRatio: number | null } | null,
+  current: { readonly shieldRatio: number | null; readonly armorRatio: number | null; readonly hullRatio: number | null } | null,
+): boolean {
+  if (!previous || !current) {
+    return false;
+  }
+  const dropped = (before: number | null, after: number | null): boolean =>
+    before !== null && after !== null && after < before;
+  return (
+    dropped(previous.shieldRatio, current.shieldRatio) ||
+    dropped(previous.armorRatio, current.armorRatio) ||
+    dropped(previous.hullRatio, current.hullRatio)
+  );
+}
+
 /**
  * A health/capacitor ratio as a whole percentage for a labelled bar, or null
  * when the ship has no such layer to report.

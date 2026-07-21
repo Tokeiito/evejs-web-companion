@@ -91,6 +91,11 @@ function loadedStore(options: {
           remainingQuantity: null,
           miningYieldTypeID: null,
           beltID: null,
+          isNpc: false,
+          npcEntityType: null,
+          controllerID: null,
+          droneActivity: null,
+          targetEntityID: null,
         },
       ],
       ship: {
@@ -383,10 +388,14 @@ function stripComments(source: string): string {
 
 test("the panel calls the generic flow methods, once each, with no parallel path", () => {
   const callSites: Readonly<Record<string, number>> = {
-    "flow.lockTarget(": 1,
-    // Unlock is offered in two places on purpose: on the overview row and in
-    // the locked-target list. Both go through the SAME flow method.
-    "flow.unlockTarget(": 3,
+    // R25 added a second lock site: the threat block, so a player can lock the
+    // pirate that just arrived without hunting for it in a 200-row list. It is
+    // the SAME flow method — which is the whole point of this test.
+    "flow.lockTarget(": 2,
+    // Unlock is offered in several places on purpose: on the overview row (two
+    // states), in the locked-target list, and on a threat row. All of them go
+    // through the SAME flow method.
+    "flow.unlockTarget(": 4,
     "flow.activateModule(": 1,
     "flow.deactivateModule(": 1,
   };
@@ -446,6 +455,11 @@ function renderWithEntity(kind: string, itemID: number): string {
           remainingQuantity: null,
           miningYieldTypeID: null,
           beltID: null,
+          isNpc: false,
+          npcEntityType: null,
+          controllerID: null,
+          droneActivity: null,
+          targetEntityID: null,
         },
       ],
       ship: {

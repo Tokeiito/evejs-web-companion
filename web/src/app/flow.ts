@@ -57,6 +57,11 @@ import {
   decodeSurveyResults,
   decodeTaxRate,
 } from "../bridge/mining.ts";
+import {
+  decodeDroneBay,
+  decodeDroneLimits,
+  decodeDronesInSpace,
+} from "../bridge/drones.ts";
 import { createSpacePoller, type SpacePoller } from "./spacePoll.ts";
 import type { FlightStepResult } from "./api.ts";
 import { BridgeCallError } from "../bridge/callMethod.ts";
@@ -67,6 +72,7 @@ import type {
   AgentAction,
   ChatChannel,
   DestinationMatch,
+  DroneInSpace,
   FittingSlot,
   FlightStatus,
   InventoryPlace,
@@ -367,6 +373,31 @@ export interface AppFlow {
    * confirms first (showing the quote and the tax) and the BFF confirms again.
    */
   reprocessItems(itemIDs: readonly number[]): Promise<void>;
+  // --- R25 slice A: drones -------------------------------------------------
+  //
+  // ⚠ NOT ONE of these four server calls can be trusted on its return value.
+  // The launch handler answers 200 with an EMPTY DICT when it refuses, and the
+  // three in-space orders answer an empty dict on SUCCESS. So every method here
+  // lands what the BFF re-read out of the space snapshot afterwards, and a
+  // refusal surfaces as a silent-decline rather than as a phantom success.
+
+  /** R25 — the bay, the drones in space, and the server's launch limits. */
+  loadDrones(): Promise<void>;
+  /**
+   * R25 — launch from the bay.
+   *
+   * ⚠ THIS IS THE DEFENCE. An idle combat drone auto-engages whatever shoots
+   * the ship it came from (the server's own behaviour, on by default), so a
+   * miner who launches is defended with no further clicks. `engageDrones` is
+   * for CHOOSING a victim, not for being protected.
+   */
+  launchDrones(itemIDs: readonly number[]): Promise<void>;
+  /** R25 — set drones on a target. */
+  engageDrones(droneIDs: readonly number[], targetID: number): Promise<void>;
+  /** R25 — put mining drones on a rock. */
+  mineWithDrones(droneIDs: readonly number[], targetID: number): Promise<void>;
+  /** R25 — bring drones home (the runtime scoops them itself inside 2500 m). */
+  recallDrones(droneIDs: readonly number[]): Promise<void>;
   /** Jump through an NPC stargate (fromGate -> toGate). */
   jump(fromGateID: number, toGateID: number): Promise<void>;
   /**
@@ -2090,6 +2121,154 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
   }
 
+  // --- R25 slice A: drones ---------------------------------------------------
+
+  /** Read the bay, what is in space, and the limits — one BFF round trip. */
+  async function loadDrones(): Promise<void> {
+    let result;
+    try {
+      result = await api.getDrones(callOptions);
+    } catch (error) {
+      if (isSessionLost(error)) {
+        stopLiveStream();
+        store.apply({ type: "character/offline" });
+        throw error;
+      }
+      store.apply({
+        type: "drones/error",
+        message: `Your drones could not be read: ${flightErrorReason(error)}`,
+      });
+      return;
+    }
+    store.apply({
+      type: "drones/loaded",
+      // null survives all the way to the panel: a failed read is "not known",
+      // never an empty bay and never "no drones in space".
+      bay: decodeDroneBay(result.bay),
+      inSpace: decodeDronesInSpace(result.inSpace),
+      limits: decodeDroneLimits(result.shipInfo),
+    });
+  }
+
+  /**
+   * Run one drone action and report what it ACTUALLY did.
+   *
+   * The shape is the same for all four: issue the call, land the fresh
+   * in-space list the BFF re-read, and then decide whether anything happened.
+   * `changed` is the per-action test — for a launch it is "did any new drone
+   * appear", for an order it is "does the server still report these drones".
+   * A null in-space list means the re-read failed, which is reported as
+   * "could not check" and never as success.
+   */
+  async function runDroneAction(
+    label: string,
+    step: () => Promise<{
+      readonly inSpace: JsonValue;
+      readonly launched: JsonValue;
+    }>,
+    verify: (
+      inSpace: readonly DroneInSpace[] | null,
+      launched: readonly DroneInSpace[] | null,
+    ) => string | null,
+  ): Promise<void> {
+    let result;
+    try {
+      result = await step();
+    } catch (error) {
+      if (isSessionLost(error)) {
+        stopLiveStream();
+        store.apply({ type: "character/offline" });
+        throw error;
+      }
+      store.apply({
+        type: "drones/action-error",
+        message: `${label} refused: ${flightErrorReason(error)}`,
+      });
+      return;
+    }
+    const inSpace = decodeDronesInSpace(result.inSpace);
+    store.apply({ type: "drones/action", action: label });
+    store.apply({ type: "drones/in-space", inSpace });
+    const complaint = verify(inSpace, decodeDronesInSpace(result.launched));
+    if (complaint !== null) {
+      store.apply({ type: "drones/silent-decline", message: complaint });
+    }
+    // The bay changed too (drones left it, or came back into it).
+    await loadDrones().catch(() => {});
+  }
+
+  async function launchDrones(itemIDs: readonly number[]): Promise<void> {
+    await runDroneAction(
+      "Launch",
+      () => api.launchDrones(itemIDs.map((itemID) => ({ itemID })), callOptions),
+      (inSpace, launched) => {
+        if (inSpace === null || launched === null) {
+          return "The launch was accepted, but space could not be re-read, so what launched is unknown.";
+        }
+        if (launched.length === 0) {
+          // The refusal case the server does not report: bandwidth, the active
+          // drone cap, a stack that moved. All of them answer an empty dict.
+          return "No drones launched. Check your bandwidth and how many are already out.";
+        }
+        if (launched.length < itemIDs.length) {
+          return `Only ${launched.length} of ${itemIDs.length} drones launched — the rest did not fit in your bandwidth or drone limit.`;
+        }
+        return null;
+      },
+    );
+  }
+
+  /** The three in-space orders share one verification: did we still see them? */
+  function orderVerifier(
+    droneIDs: readonly number[],
+    unverified: string,
+  ): (inSpace: readonly DroneInSpace[] | null) => string | null {
+    return (inSpace) => {
+      if (inSpace === null) {
+        return unverified;
+      }
+      const known = new Set(inSpace.map((drone) => drone.itemID));
+      const missing = droneIDs.filter((itemID) => !known.has(itemID));
+      // ⚠ A drone that is GONE from space is not a failure for a recall — it is
+      // the recall finishing. Only the orders that expect the drone to still be
+      // flying treat a disappearance as worth mentioning, which is why the
+      // recall path below does not use this verifier.
+      return missing.length === droneIDs.length
+        ? "The order was accepted, but none of those drones are in space any more."
+        : null;
+    };
+  }
+
+  async function engageDrones(droneIDs: readonly number[], targetID: number): Promise<void> {
+    await runDroneAction(
+      "Engage",
+      () => api.engageDrones(droneIDs, targetID, callOptions),
+      orderVerifier(droneIDs, "The order was accepted, but space could not be re-read."),
+    );
+  }
+
+  async function mineWithDrones(droneIDs: readonly number[], targetID: number): Promise<void> {
+    await runDroneAction(
+      "Mine",
+      () => api.mineWithDrones(droneIDs, targetID, callOptions),
+      orderVerifier(droneIDs, "The order was accepted, but space could not be re-read."),
+    );
+  }
+
+  async function recallDrones(droneIDs: readonly number[]): Promise<void> {
+    await runDroneAction(
+      "Recall",
+      () => api.recallDrones(droneIDs, callOptions),
+      (inSpace) =>
+        inSpace === null
+          ? "The recall was accepted, but space could not be re-read."
+          : // A recalled drone stays visibly in space, flying home, until the
+            // runtime scoops it inside 2500 m. So there is nothing to complain
+            // about either way: still-there is in progress, gone is done.
+            null,
+    );
+  }
+
   async function unloadMiningHolds(itemIDs: readonly number[]): Promise<void> {
     await runMiningAction(
       "Unload",
@@ -3017,6 +3196,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     activateModule,
     deactivateModule,
     loadMiningHolds,
+    loadDrones,
+    launchDrones,
+    engageDrones,
+    mineWithDrones,
+    recallDrones,
     runSurveyScan,
     loadReprocessingQuote,
     unloadMiningHolds,

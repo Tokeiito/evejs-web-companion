@@ -60,6 +60,7 @@ import type {
   SpaceState,
   ModuleCycle,
   TargetingState,
+  DronesState,
   MiningState,
   MiningHold,
   SurveyResult,
@@ -125,6 +126,7 @@ export interface ClientState {
   readonly space: SpaceState;
   readonly targeting: TargetingState;
   readonly mining: MiningState;
+  readonly drones: DronesState;
   readonly travel: TravelState;
   readonly chat: ChatState;
   readonly live: LiveState;
@@ -361,6 +363,20 @@ const INITIAL_MINING: MiningState = Object.freeze({
   silentDecline: null,
 });
 
+// R25 slice A — drones. `bay` and `inSpace` start NULL, not []: until a read
+// succeeds we do not know whether the bay is empty or whether we simply could
+// not look, and those two facts pull a player in opposite directions.
+const INITIAL_DRONES: DronesState = Object.freeze({
+  bay: null,
+  inSpace: null,
+  limits: Object.freeze({ maxActiveDrones: null, droneBandwidth: null }),
+  loaded: false,
+  error: null,
+  lastAction: null,
+  actionError: null,
+  silentDecline: null,
+});
+
 const INITIAL_TRAVEL: TravelState = Object.freeze({
   status: "idle" as TravelState["status"],
   destinationSystemID: null,
@@ -443,6 +459,7 @@ export interface ClientStore {
   readonly space: ReadableSignal<SpaceState>;
   readonly targeting: ReadableSignal<TargetingState>;
   readonly mining: ReadableSignal<MiningState>;
+  readonly drones: ReadableSignal<DronesState>;
   readonly travel: ReadableSignal<TravelState>;
   readonly chat: ReadableSignal<ChatState>;
   readonly live: ReadableSignal<LiveState>;
@@ -486,6 +503,7 @@ export function createClientStore(): ClientStore {
   const space = createSignal<SpaceState>(INITIAL_SPACE);
   const targeting = createSignal<TargetingState>(INITIAL_TARGETING);
   const mining = createSignal<MiningState>(INITIAL_MINING);
+  const drones = createSignal<DronesState>(INITIAL_DRONES);
   const travel = createSignal<TravelState>(INITIAL_TRAVEL);
   const chat = createSignal<ChatState>(INITIAL_CHAT);
   const live = createSignal<LiveState>(INITIAL_LIVE);
@@ -516,6 +534,7 @@ export function createClientStore(): ClientStore {
     space: space.get(),
     targeting: targeting.get(),
     mining: mining.get(),
+    drones: drones.get(),
     travel: travel.get(),
     chat: chat.get(),
     live: live.get(),
@@ -550,6 +569,7 @@ export function createClientStore(): ClientStore {
         space.set(INITIAL_SPACE);
         targeting.set(INITIAL_TARGETING);
         mining.set(INITIAL_MINING);
+        drones.set(INITIAL_DRONES);
         travel.set(INITIAL_TRAVEL);
         chat.set(INITIAL_CHAT);
         live.set(INITIAL_LIVE);
@@ -599,6 +619,7 @@ export function createClientStore(): ClientStore {
         space.set(INITIAL_SPACE);
         targeting.set(INITIAL_TARGETING);
         mining.set(INITIAL_MINING);
+        drones.set(INITIAL_DRONES);
         travel.set(INITIAL_TRAVEL);
         chat.set(INITIAL_CHAT);
         live.set(INITIAL_LIVE);
@@ -618,6 +639,7 @@ export function createClientStore(): ClientStore {
         space.set(INITIAL_SPACE);
         targeting.set(INITIAL_TARGETING);
         mining.set(INITIAL_MINING);
+        drones.set(INITIAL_DRONES);
         travel.set(INITIAL_TRAVEL);
         chat.set(INITIAL_CHAT);
         live.set(INITIAL_LIVE);
@@ -1167,8 +1189,43 @@ export function createClientStore(): ClientStore {
       case "mining/silent-decline":
         mining.set({ ...mining.get(), silentDecline: event.message });
         break;
+      // --- R25 slice A: drones ---------------------------------------------
+      //
+      // Every one of these carries what the SERVER said, re-read after the
+      // fact. Nothing here remembers what was clicked: the drone handlers
+      // answer an empty dict on refusal, so this store's memory of a launch
+      // would be a lie exactly when it mattered.
+      case "drones/loaded":
+        drones.set({
+          ...drones.get(),
+          bay: event.bay,
+          inSpace: event.inSpace,
+          limits: event.limits,
+          loaded: true,
+          error: null,
+        });
+        break;
+      case "drones/error":
+        drones.set({ ...drones.get(), error: event.message });
+        break;
+      case "drones/in-space":
+        drones.set({ ...drones.get(), inSpace: event.inSpace });
+        break;
+      case "drones/action":
+        drones.set({ ...drones.get(), lastAction: event.action, actionError: null, silentDecline: null });
+        break;
+      case "drones/action-error":
+        drones.set({ ...drones.get(), actionError: event.message });
+        break;
+      case "drones/silent-decline":
+        drones.set({ ...drones.get(), silentDecline: event.message });
+        break;
+      case "drones/cleared":
+        drones.set(INITIAL_DRONES);
+        break;
       case "mining/cleared":
         mining.set(INITIAL_MINING);
+        drones.set(INITIAL_DRONES);
         break;
       case "travel/planned":
         travel.set({
@@ -1364,6 +1421,7 @@ export function createClientStore(): ClientStore {
     space: readonlySignal(space),
     targeting: readonlySignal(targeting),
     mining: readonlySignal(mining),
+    drones: readonlySignal(drones),
     travel: readonlySignal(travel),
     chat: readonlySignal(chat),
     live: readonlySignal(live),

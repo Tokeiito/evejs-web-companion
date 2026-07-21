@@ -109,6 +109,15 @@ function decodeEntity(value: JsonValue): SpaceEntity | null {
     remainingQuantity: countOrNull(raw.remainingQuantity),
     miningYieldTypeID: idOrNull(raw.miningYieldTypeID),
     beltID: idOrNull(raw.beltID),
+    // R25 slice B — ship rows only. An ABSENT isNpc decodes to FALSE, which is
+    // the safe direction: a row we cannot classify is treated as a person, so
+    // the panel never invents a threat. npcEntityType stays null.
+    isNpc: raw.isNpc === true,
+    npcEntityType: stringOrNull(raw.npcEntityType),
+    // R25 slice A — drone rows only.
+    controllerID: idOrNull(raw.controllerID),
+    droneActivity: stringOrNull(raw.droneActivity),
+    targetEntityID: idOrNull(raw.targetEntityID),
   };
 }
 

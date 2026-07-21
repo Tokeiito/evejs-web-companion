@@ -14,10 +14,17 @@
   import {
     buildOverviewRows,
     formatDistance,
+    healthIsDropping,
+    hostileLabel,
+    hostileRows,
+    isHostile,
+    newlyArrivedHostiles,
     overviewFilterIDs,
     ratioPercent,
+    type OverviewRow,
     type OverviewSort,
   } from "../space/overview.ts";
+  import { droneActivityLabel, droneIsBusy } from "../bridge/drones.ts";
   import { resolvedName, nameKey, type NameRef } from "../store/names.ts";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
@@ -43,6 +50,10 @@
   // rows here, never used to compute anything.
   // svelte-ignore state_referenced_locally
   const mining = store.mining;
+  // R25 slice A — drones. The bay, what is in space, and the two limits the
+  // server enforces on a launch.
+  // svelte-ignore state_referenced_locally
+  const drones = store.drones;
 
   // How many rows we render. A busy grid can hold hundreds of objects and the
   // list re-renders every second, so the nearest few hundred is the useful set.
@@ -474,6 +485,195 @@
     }
   });
 
+  // --- R25 slice A: drones -------------------------------------------------
+  //
+  // ⚠ LAUNCHING IS THE DEFENCE. An idle combat drone auto-engages whatever
+  // shoots the ship it came from — the server's own behaviour, on by default —
+  // so a miner who launches is defended without another click. Engage below is
+  // for CHOOSING a victim, and the panel says so in as many words rather than
+  // leaving a player to think they have to babysit it.
+
+  const droneBay = $derived($drones.bay);
+  const dronesInSpace = $derived($drones.inSpace);
+  const droneLimits = $derived($drones.limits);
+
+  /** The bay's stacks, by NAME. The bay's flagID never reaches this file. */
+  const bayRows = $derived.by(() =>
+    (droneBay ?? []).map((stack) => ({
+      itemID: stack.itemID,
+      label: resolvedName($names.resolved, "type", stack.typeID, "Unknown drone"),
+      quantity: stack.quantity,
+    })),
+  );
+
+  /** Drones in space, the ones with a job first so a busy flight reads at a glance. */
+  const spaceRows = $derived.by(() => {
+    const byID = new Map<number, SpaceEntity>();
+    for (const entity of snapshot?.entities ?? []) {
+      byID.set(entity.itemID, entity);
+    }
+    return (dronesInSpace ?? [])
+      .map((drone) => {
+        const target = drone.targetID === null ? null : byID.get(drone.targetID) ?? null;
+        return {
+          itemID: drone.itemID,
+          label:
+            drone.name && drone.name.length > 0
+              ? drone.name
+              : resolvedName($names.resolved, "type", drone.typeID, "Drone"),
+          activity: droneActivityLabel(drone.activity),
+          busy: droneIsBusy(drone.activity),
+          // The ball it is busy with, by NAME. A target the snapshot no longer
+          // carries simply has no name to show, so it shows none (R7d).
+          targetLabel: target === null ? "" : displayLabel(target),
+        };
+      })
+      .sort((left, right) => Number(right.busy) - Number(left.busy));
+  });
+
+  /** Every drone in space, for the "all of them" buttons. */
+  const allDroneIDs = $derived(spaceRows.map((row) => row.itemID));
+
+  const droneLimitText = $derived.by(() => {
+    const parts: string[] = [];
+    // null is "not known", never 0 — a hull with no drone bay and a read that
+    // failed look identical from here, and neither may be shown as a hard zero.
+    parts.push(
+      droneLimits.maxActiveDrones === null
+        ? "Drones at once: not known"
+        : `Drones at once: ${spaceRows.length} of ${droneLimits.maxActiveDrones}`,
+    );
+    parts.push(
+      droneLimits.droneBandwidth === null
+        ? "Bandwidth: not known"
+        : `Bandwidth: ${droneLimits.droneBandwidth} Mbit/sec`,
+    );
+    return parts.join(" · ");
+  });
+
+  // Which bay stacks the player has picked to launch.
+  let launchPicks = $state<Record<number, boolean>>({});
+  const pickedForLaunch = $derived(
+    bayRows.filter((row) => launchPicks[row.itemID] === true).map((row) => row.itemID),
+  );
+  function toggleLaunchPick(itemID: number): void {
+    launchPicks = { ...launchPicks, [itemID]: launchPicks[itemID] !== true };
+  }
+
+  // Drone names come from the same cache as everything else (R7d).
+  $effect(() => {
+    const refs: NameRef[] = [];
+    for (const stack of droneBay ?? []) {
+      refs.push({ kind: "type", id: stack.typeID });
+    }
+    for (const drone of dronesInSpace ?? []) {
+      if (drone.typeID !== null) {
+        refs.push({ kind: "type", id: drone.typeID });
+      }
+    }
+    if (refs.length > 0) {
+      flow.requestNames(refs);
+    }
+  });
+
+  // --- R25 slice B: hostile awareness --------------------------------------
+  //
+  // ⚠ THE FINDING THAT SHAPES ALL OF THIS: a belt rat is `kind: "ship"`, built
+  // through the same server path as the player parked next to you. Nothing in
+  // the snapshot separated them before R25, which is why `isNpc` /
+  // `npcEntityType` exist and why every threat decision on this page reads them
+  // and nothing else.
+  //
+  // Threats are deliberately NOT just rows in the overview. The overview is
+  // searchable, filterable and capped at 200 — a player who filtered to
+  // "Veldspar" while mining would have filtered away the thing shooting them.
+  // The threat list below reads the WHOLE snapshot, ignores every filter, and
+  // is never capped.
+
+  const threats = $derived(hostileRows(snapshot, origin));
+
+  /** Warn ONLY about arrivals. A rat that was already here when you landed is
+   * not news; the one that just warped in is. The seen-set is primed from the
+   * FIRST snapshot for exactly that reason — otherwise landing in an occupied
+   * belt would announce every rat in it as an arrival. */
+  let seenHostileIDs = $state<ReadonlySet<number>>(new Set<number>());
+  let primedHostiles = $state(false);
+  let arrivalNotice = $state("");
+  $effect(() => {
+    if (!inSpace) {
+      // A dock (or a system change) resets the whole idea of "who was here".
+      seenHostileIDs = new Set<number>();
+      primedHostiles = false;
+      arrivalNotice = "";
+      return;
+    }
+    if (!$space.loaded) {
+      return;
+    }
+    const current = threats;
+    if (!primedHostiles) {
+      seenHostileIDs = new Set(current.map((row) => row.itemID));
+      primedHostiles = true;
+      return;
+    }
+    const arrived = newlyArrivedHostiles(current, seenHostileIDs);
+    if (arrived.length > 0) {
+      const label = hostileLabel(arrived[0]) ?? "hostile";
+      arrivalNotice =
+        arrived.length === 1
+          ? `A ${label.toLowerCase()} has arrived — ${displayLabel(arrived[0])}, ${formatDistance(arrived[0].distance)} away.`
+          : `${arrived.length} hostiles have arrived. The nearest is ${displayLabel(arrived[0])}, ${formatDistance(arrived[0].distance)} away.`;
+    }
+    // Forget the ones that are gone, so a rat that leaves and comes back warns
+    // again rather than sneaking in on a stale id.
+    seenHostileIDs = new Set(current.map((row) => row.itemID));
+  });
+
+  /**
+   * ARE YOU BEING SHOT? The honest version.
+   *
+   * There is no damage-log read on this server, so this page does not invent
+   * one. What it CAN say is what two consecutive HUD readings show: a health
+   * layer that went down. That is a fact, and it is enough to make a dropping
+   * shield legible at a glance.
+   */
+  let previousHealth = $state<{
+    shieldRatio: number | null;
+    armorRatio: number | null;
+    hullRatio: number | null;
+  } | null>(null);
+  let takingDamageUntilMs = $state(0);
+  let damageClock = $state(Date.now());
+  $effect(() => {
+    const current = ship
+      ? { shieldRatio: ship.shieldRatio, armorRatio: ship.armorRatio, hullRatio: ship.hullRatio }
+      : null;
+    if (healthIsDropping(previousHealth, current)) {
+      // Held briefly so a warning does not blink out between two polls that
+      // happen to read the same value.
+      takingDamageUntilMs = Date.now() + 6000;
+    }
+    previousHealth = current;
+  });
+  $effect(() => {
+    if (takingDamageUntilMs <= 0) {
+      return;
+    }
+    const timer = setInterval(() => {
+      damageClock = Date.now();
+    }, 1000);
+    return () => clearInterval(timer);
+  });
+  const takingDamage = $derived(takingDamageUntilMs > damageClock);
+
+  /** Overview rows get a hostile marker so the list itself is readable too. */
+  function rowIsHostile(row: OverviewRow): boolean {
+    return isHostile(row);
+  }
+  function rowBadge(row: OverviewRow): string {
+    return hostileLabel(row) ?? "";
+  }
+
   async function run(action: () => Promise<void>): Promise<void> {
     if (busy) {
       return;
@@ -507,6 +707,9 @@
     // drives it (every OnItemsChanged the ore grant emits triggers a re-read),
     // so there is no second poll competing with the snapshot cadence.
     void flow.loadMiningHolds().catch(() => {});
+    // R25 — the drone bay and what is already in space. Best-effort like the
+    // reads above: a hull with no drone bay must not blank the overview.
+    void flow.loadDrones().catch(() => {});
     flow.startSpacePolling();
     return () => flow.stopSpacePolling();
   });
@@ -584,6 +787,215 @@
           </li>
         {/each}
       </ul>
+    {/if}
+  </section>
+
+  <!--
+    R25 slice B — the threat block. Deliberately ABOVE everything a player is
+    likely to be reading while mining, and deliberately NOT a row in the
+    overview: the overview is searchable, filterable and capped at 200 rows, so
+    a miner who filtered to "Veldspar" would have filtered away the thing
+    shooting them. This list reads the whole snapshot every poll.
+  -->
+  {#if takingDamage || threats.length > 0}
+    <section class="threat" class:under-attack={takingDamage}>
+      <h2>{takingDamage ? "You are taking damage" : "Hostiles nearby"}</h2>
+      {#if takingDamage}
+        <!--
+          The honest version of "you are under attack". There is no damage-log
+          read on this server and this page does not invent one — this says only
+          what two consecutive readings of your own ship showed: a health layer
+          went down. See the Ship condition bars above for which one.
+        -->
+        <p class="note">
+          Your ship's shield, armour or hull dropped in the last few seconds.
+        </p>
+      {/if}
+      {#if arrivalNotice}
+        <p class="arrival">{arrivalNotice}</p>
+      {/if}
+      {#if threats.length === 0}
+        <p class="note">Nothing hostile is in range right now.</p>
+      {:else}
+        <ul class="threat-list">
+          {#each threats as threat (threat.itemID)}
+            <li>
+              <span class="threat-badge">{rowBadge(threat)}</span>
+              <span class="threat-name">{displayLabel(threat)}</span>
+              <span class="threat-distance">{formatDistance(threat.distance)}</span>
+              <span class="row-actions">
+                {#if isLocked(threat.itemID)}
+                  <button
+                    type="button"
+                    class="active"
+                    disabled={busy}
+                    onclick={() => run(() => flow.unlockTarget(threat.itemID))}
+                  >
+                    Release lock
+                  </button>
+                {:else if isAcquiring(threat.itemID)}
+                  <button type="button" disabled>Locking…</button>
+                {:else}
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onclick={() => run(() => flow.lockTarget(threat.itemID))}
+                  >
+                    Lock
+                  </button>
+                {/if}
+                {#if allDroneIDs.length > 0}
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onclick={() => run(() => flow.engageDrones(allDroneIDs, threat.itemID))}
+                  >
+                    Send drones
+                  </button>
+                {/if}
+              </span>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+    </section>
+  {/if}
+
+  <!--
+    R25 slice A — drones. Two lists, because they are two different things: what
+    is sitting in the bay (launchable) and what is already flying (orderable).
+
+    ⚠ LAUNCHING IS THE DEFENCE. The server auto-engages idle combat drones
+    against whatever shoots your ship, so a miner who launches is defended
+    without touching Engage at all. The note below says that plainly, because a
+    player who does not know it will sit there clicking.
+
+    The two limits are SHOWN and never enforced here: the server owns both, and
+    a browser that pre-guessed them would either block a legal launch or promise
+    an illegal one.
+  -->
+  <section>
+    <h2>Drones</h2>
+    <p class="note">
+      Drones you launch defend you on their own — they will attack anything that
+      shoots your ship, without you doing anything else. Use Attack to pick a
+      target yourself, or Bring home to call them back.
+    </p>
+    <p class="note">{droneLimitText}</p>
+    {#if $drones.error}
+      <p class="error">{$drones.error}</p>
+    {/if}
+    {#if $drones.actionError}
+      <p class="error">{$drones.actionError}</p>
+    {/if}
+    {#if $drones.silentDecline}
+      <p class="error">{$drones.silentDecline}</p>
+    {/if}
+
+    <h3>In space</h3>
+    {#if dronesInSpace === null}
+      <!-- null is "we could not look", which must never read as "none out". -->
+      <p class="note">
+        {$drones.loaded ? "Your drones in space could not be read." : "Looking…"}
+      </p>
+    {:else if spaceRows.length === 0}
+      <p class="empty">No drones out.</p>
+    {:else}
+      <ul class="drone-list">
+        {#each spaceRows as drone (drone.itemID)}
+          <li>
+            <span class="drone-name">{drone.label}</span>
+            <span class="drone-activity">
+              {drone.activity}{drone.targetLabel ? ` — ${drone.targetLabel}` : ""}
+            </span>
+            <span class="row-actions">
+              <button
+                type="button"
+                disabled={busy}
+                onclick={() => run(() => flow.recallDrones([drone.itemID]))}
+              >
+                Bring home
+              </button>
+            </span>
+          </li>
+        {/each}
+      </ul>
+      <p class="controls">
+        <!--
+          Acting on the LOCKED target, reusing R23's auto-target default:
+          locking something makes it what your equipment acts on, and drones are
+          no different. (The server does not actually require a lock for
+          CmdEngage — this is a UI choice, so a player only ever sends drones at
+          something they deliberately picked.)
+        -->
+        <button
+          type="button"
+          disabled={busy || effectiveTargetID <= 0}
+          onclick={() => run(() => flow.engageDrones(allDroneIDs, effectiveTargetID))}
+        >
+          Attack what I have locked
+        </button>
+        <button
+          type="button"
+          disabled={busy || effectiveTargetID <= 0}
+          onclick={() => run(() => flow.mineWithDrones(allDroneIDs, effectiveTargetID))}
+        >
+          Mine what I have locked
+        </button>
+        <button
+          type="button"
+          disabled={busy}
+          onclick={() => run(() => flow.recallDrones(allDroneIDs))}
+        >
+          Bring them all home
+        </button>
+      </p>
+      {#if effectiveTargetID <= 0}
+        <p class="note">Lock something first to give your drones a target.</p>
+      {/if}
+    {/if}
+
+    <h3>In the bay</h3>
+    {#if droneBay === null}
+      <p class="note">
+        {$drones.loaded ? "Your drone bay could not be read." : "Looking…"}
+      </p>
+    {:else if bayRows.length === 0}
+      <p class="empty">Nothing in the drone bay.</p>
+    {:else}
+      <ul class="drone-list">
+        {#each bayRows as stack (stack.itemID)}
+          <li>
+            <label class="drone-pick">
+              <input
+                type="checkbox"
+                checked={launchPicks[stack.itemID] === true}
+                onchange={() => toggleLaunchPick(stack.itemID)}
+              />
+              <span class="drone-name">{stack.label}</span>
+            </label>
+            <span class="drone-activity">In the bay</span>
+            <span class="row-actions">
+              <button
+                type="button"
+                disabled={busy}
+                onclick={() => run(() => flow.launchDrones([stack.itemID]))}
+              >
+                Launch
+              </button>
+            </span>
+          </li>
+        {/each}
+      </ul>
+      <p class="controls">
+        <button
+          type="button"
+          disabled={busy || pickedForLaunch.length === 0}
+          onclick={() => run(() => flow.launchDrones(pickedForLaunch))}
+        >
+          Launch the ones I picked
+        </button>
+      </p>
     {/if}
   </section>
 
@@ -885,8 +1297,17 @@
           </thead>
           <tbody>
             {#each overview.rows as row (row.itemID)}
-              <tr>
-                <td data-label="Name">{displayLabel(row)}</td>
+              <!--
+                R25 slice B — a hostile row is visually distinct IN the list as
+                well as pulled out above it. The badge carries the word, so the
+                colour is never the only signal (a player who cannot tell red
+                from grey still reads "Pirate").
+              -->
+              <tr class:hostile={rowIsHostile(row)}>
+                <td data-label="Name">
+                  {#if rowIsHostile(row)}<span class="threat-badge">{rowBadge(row)}</span>{/if}
+                  {displayLabel(row)}
+                </td>
                 <td data-label="Type">{typeName(row)}</td>
                 <td data-label="Group">{groupName(row)}</td>
                 <td class="num" data-label="Distance">{formatDistance(row.distance)}</td>

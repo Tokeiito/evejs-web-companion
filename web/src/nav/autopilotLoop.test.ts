@@ -498,6 +498,11 @@ function spaceEntity(overrides: Partial<SpaceEntity> & { itemID: number }): Spac
   remainingQuantity: null,
   miningYieldTypeID: null,
   beltID: null,
+  isNpc: false,
+  npcEntityType: null,
+  controllerID: null,
+  droneActivity: null,
+  targetEntityID: null,
     ...overrides,
   };
 }

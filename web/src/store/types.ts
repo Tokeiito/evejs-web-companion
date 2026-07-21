@@ -1043,6 +1043,36 @@ export interface SpaceEntity {
   readonly remainingQuantity: number | null;
   readonly miningYieldTypeID: number | null;
   readonly beltID: number | null;
+  /**
+   * R25 slice B — SHIP rows only. The only thing that separates a pirate from a
+   * person.
+   *
+   * ⚠ A belt rat is `kind: "ship"`. It is built through the same entity path as
+   * the player parked next to you and carries the same name, position, health
+   * and velocity fields, so `kind` cannot tell them apart and neither can
+   * anything else this row carried before R25.
+   *
+   * `isNpc` is the runtime's own "nobody is flying this" flag. `npcEntityType`
+   * is which KIND of NPC, verbatim from the runtime: "npc" (pirates — the thing
+   * that shoots a miner), "concord" (law enforcement, which does not),
+   * "drifter". Both are null/false on rows the gateway does not project them
+   * for, so a non-ship row is never mistaken for a friendly ship.
+   */
+  readonly isNpc: boolean;
+  readonly npcEntityType: string | null;
+  /**
+   * R25 slice A — DRONE rows only (null on everything else).
+   *
+   * `ownerID` (above) already says whose drone it is; `controllerID` says which
+   * HULL is flying it, which is the question that matters after a ship swap.
+   * `droneActivity` is what it is doing as a word ("idle", "fighting",
+   * "mining", …) — NULL means the gateway could not tell, never "idle".
+   * `targetEntityID` is the ball it is busy with, so the panel can name the rock
+   * or the rat instead of reporting a bare "mining".
+   */
+  readonly controllerID: number | null;
+  readonly droneActivity: string | null;
+  readonly targetEntityID: number | null;
 }
 
 /**
@@ -1242,6 +1272,51 @@ export interface MiningHold {
 }
 
 /**
+ * One stack sitting in the ship's drone bay (goal R25). Named in the UI by
+ * typeID via the name cache — the bay's flagID (87) lives only on the BFF, so
+ * the browser has no idea that number exists (R7d).
+ */
+export interface DroneBayStack {
+  readonly itemID: number;
+  readonly typeID: number;
+  readonly quantity: number;
+}
+
+/**
+ * One drone the SERVER says is in space under this ship's control (goal R25).
+ *
+ * `activity` is a WORD ("idle", "fighting", "mining", …), never the runtime's
+ * activity enum, and null means "we could not tell" — never "idle". A player
+ * told their drones are idle when nobody looked will not launch the ones that
+ * would have saved them.
+ */
+export interface DroneInSpace {
+  readonly itemID: number;
+  readonly typeID: number | null;
+  readonly name: string | null;
+  readonly activity: string | null;
+  /** The ball it is busy with, so the panel can NAME the rock or the rat. */
+  readonly targetID: number | null;
+  readonly shieldRatio: number | null;
+  readonly armorRatio: number | null;
+  readonly hullRatio: number | null;
+}
+
+/**
+ * The two limits the SERVER enforces on a launch (goal R25): how many drones
+ * may be in space at once, and the hull's drone bandwidth.
+ *
+ * Shown so a player can see why a launch was refused — and NOT used to
+ * pre-refuse one. Both are null for "unknown", which is also what a hull with
+ * no drone bay reports; the panel says "unknown" rather than showing a
+ * confident 0 it did not read.
+ */
+export interface DroneLimits {
+  readonly maxActiveDrones: number | null;
+  readonly droneBandwidth: number | null;
+}
+
+/**
  * One survey-scanner result (goal R23): what the scanner saw in a rock. The
  * browser MERGES these into the overview by itemID and computes nothing itself.
  */
@@ -1289,6 +1364,34 @@ export interface MiningState {
   readonly lastAction: string | null;
   readonly actionError: string | null;
   /** A call that succeeded, changed nothing, and gave no reason (see R23). */
+  readonly silentDecline: string | null;
+}
+
+/**
+ * The Drones panel's slice (goal R25).
+ *
+ * ⚠ EVERY "we could not look" IS A NULL, and that is load-bearing here in a way
+ * it is nowhere else in this store. "You have no drones in space" and "the
+ * snapshot did not answer" are the same pixels and opposite facts: the first
+ * invites a player to launch, the second invites them to launch a SECOND flight
+ * on top of the one already out there. `bay` and `inSpace` are null until a
+ * successful read fills them, and the panel renders null as "not known".
+ */
+export interface DronesState {
+  /** null until read; null again if a read fails. NEVER [] for "unknown". */
+  readonly bay: readonly DroneBayStack[] | null;
+  readonly inSpace: readonly DroneInSpace[] | null;
+  /** The launch limits the SERVER enforces — shown, never used to pre-refuse. */
+  readonly limits: DroneLimits;
+  readonly loaded: boolean;
+  readonly error: string | null;
+  readonly lastAction: string | null;
+  readonly actionError: string | null;
+  /**
+   * A drone call that answered success and changed nothing. The server's launch
+   * handler returns an empty dict when it refuses, so this is the ONLY way a
+   * refused launch can be reported at all.
+   */
   readonly silentDecline: string | null;
 }
 

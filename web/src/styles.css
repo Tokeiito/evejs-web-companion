@@ -797,6 +797,91 @@
   .hold-strip .hold-name { color: var(--color-muted, inherit); }
   .hold-strip .hold-fill { font-variant-numeric: tabular-nums; }
 
+  /* ================================ drones + hostile awareness (R25) --
+   * Two components that answer two questions a miner has at the same moment:
+   * "what do I have out?" and "what is shooting me?".
+   *
+   * The threat block deliberately does NOT rely on colour alone. Every hostile
+   * carries a WORD ("Pirate", "Drifter") in a badge, so the list is readable
+   * with no colour perception at all — the red is an accelerator, never the
+   * signal. R9a: the badge says Pirate, never a runtime entity kind. */
+  .threat {
+    border: 1px solid var(--color-danger);
+    border-radius: 0.4rem;
+    padding: 0.7rem 0.9rem;
+    background: color-mix(in srgb, var(--color-danger) 8%, transparent);
+  }
+  /* Actually being hit reads louder than merely being near something. */
+  .threat.under-attack {
+    border-color: var(--color-danger);
+    border-width: 2px;
+    background: color-mix(in srgb, var(--color-danger) 16%, transparent);
+  }
+  .threat h2 { color: var(--color-danger); }
+  .threat .arrival {
+    color: var(--color-text-bright);
+    font-weight: 600;
+    margin: 0.4rem 0;
+  }
+  .threat-list {
+    margin: 0.5rem 0 0;
+    padding: 0;
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+  }
+  .threat-list li {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+  }
+  .threat-badge {
+    display: inline-block;
+    padding: 0.05rem 0.4rem;
+    border-radius: 0.25rem;
+    background: var(--color-danger);
+    color: var(--color-on-danger);
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+  .threat-name { color: var(--color-text-bright); font-weight: 600; }
+  .threat-distance {
+    color: var(--color-muted);
+    font-variant-numeric: tabular-nums;
+  }
+  /* The same hostile, marked where it also appears in the ordinary list. */
+  table.overview tr.hostile td { background: color-mix(in srgb, var(--color-danger) 10%, transparent); }
+
+  /* The drone lists: one line per drone, name + what it is doing + its buttons.
+   * A list rather than a table because there are at most a handful of drones
+   * and each row is three short facts — a table would cost more chrome than it
+   * carries. Wraps to stacked lines under the R8 breakpoint on its own. */
+  .drone-list {
+    margin: 0.4rem 0 0;
+    padding: 0;
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+  }
+  .drone-list li {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+  }
+  .drone-name { color: var(--color-text-bright); font-weight: 600; }
+  .drone-activity { color: var(--color-muted); font-size: 0.9em; }
+  .drone-pick {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+  }
+
   /* ========================================= the compact overview (R24) --
    * The overview is the primary in-space instrument: it re-renders every
    * second while things are happening, and it has to read at a glance. So its

@@ -1980,3 +1980,120 @@ export async function loadBaseCycleTimes(
   }
   return { baseCycleMs };
 }
+
+// --- R25 slice A: drones -----------------------------------------------------
+//
+// Four routes, and NOT ONE of them can be trusted on its own return value. The
+// server's launch handler answers 200 with an empty dict when it refuses, and
+// all three entity orders answer an empty dict on SUCCESS and error tuples
+// otherwise. So every function below reports what the BFF read back OUT OF
+// SPACE afterwards, and `inSpace: null` means the re-read failed — never "you
+// have no drones".
+
+/** The whole Drones panel in one read: bay, space, and the server's limits. */
+export interface DronesResult {
+  readonly activeShipID: number | null;
+  /** null when the bay could not be read — NOT an empty bay. */
+  readonly bay: JsonValue;
+  /** null when the snapshot could not be read — NOT "no drones in space". */
+  readonly inSpace: JsonValue;
+  /** Raw dogmaIM.ShipGetInfo, decoded by bridge/drones.ts (no new call). */
+  readonly shipInfo: JsonValue;
+  readonly errors: Readonly<Record<string, string | null>>;
+}
+
+/**
+ * What a launch or an order ACTUALLY changed, as the snapshot reports it.
+ *
+ * `launched` is present only for a launch, and is the honest claim: the drones
+ * in space now that were not in space before. A drone the server declined
+ * simply does not appear, so the panel says "nothing launched" instead of
+ * echoing a phantom success.
+ */
+export interface DroneActionResult {
+  readonly inSpace: JsonValue;
+  readonly launched: JsonValue;
+  readonly notifications: readonly JsonValue[];
+}
+
+function readDroneAction(data: Record<string, JsonValue>): DroneActionResult {
+  return {
+    inSpace: data.inSpace ?? null,
+    launched: data.launched ?? null,
+    notifications: Array.isArray(data.notifications) ? data.notifications : [],
+  };
+}
+
+export async function getDrones(options: ApiOptions = {}): Promise<DronesResult> {
+  const data = await getJson("/api/bridge/drones", options);
+  const rawErrors =
+    typeof data.errors === "object" && data.errors !== null && !Array.isArray(data.errors)
+      ? (data.errors as Record<string, JsonValue>)
+      : {};
+  const errors: Record<string, string | null> = {};
+  for (const [key, value] of Object.entries(rawErrors)) {
+    errors[key] = typeof value === "string" && value.length > 0 ? value : null;
+  }
+  return {
+    activeShipID: Number(data.activeShipID) || null,
+    bay: data.bay ?? null,
+    inSpace: data.inSpace ?? null,
+    shipInfo: data.shipInfo ?? null,
+    errors,
+  };
+}
+
+/**
+ * Launch from the bay (ship.LaunchDrones).
+ *
+ * ⚠ THIS IS THE DEFENCE. An idle combat drone auto-engages whatever shoots the
+ * ship it came from — the server's own behaviour, on by default — so a miner
+ * who launches is defended without another click. `engageDrones` below is for
+ * choosing a victim, not for being protected.
+ */
+export async function launchDrones(
+  drones: readonly { readonly itemID: number; readonly quantity?: number }[],
+  options: ApiOptions = {},
+): Promise<DroneActionResult> {
+  const body: JsonValue = drones.map((entry) => ({
+    itemID: entry.itemID,
+    quantity: entry.quantity ?? 1,
+  }));
+  return readDroneAction(await postJson("/api/bridge/drones/launch", { drones: body }, options));
+}
+
+/** Set drones on a target (entity.CmdEngage). */
+export async function engageDrones(
+  droneIDs: readonly number[],
+  targetID: number,
+  options: ApiOptions = {},
+): Promise<DroneActionResult> {
+  return readDroneAction(
+    await postJson("/api/bridge/drones/engage", { droneIDs: [...droneIDs], targetID }, options),
+  );
+}
+
+/** Put mining drones on a rock (entity.CmdMineRepeatedly). */
+export async function mineWithDrones(
+  droneIDs: readonly number[],
+  targetID: number,
+  options: ApiOptions = {},
+): Promise<DroneActionResult> {
+  return readDroneAction(
+    await postJson("/api/bridge/drones/mine", { droneIDs: [...droneIDs], targetID }, options),
+  );
+}
+
+/**
+ * Bring drones home (entity.CmdReturnBay). The runtime flies them back and
+ * scoops them itself inside 2500 m, so they stay visibly "coming home" for the
+ * length of the trip — which is exactly what the re-read reports.
+ */
+export async function recallDrones(
+  droneIDs: readonly number[],
+  options: ApiOptions = {},
+): Promise<DroneActionResult> {
+  return readDroneAction(
+    await postJson("/api/bridge/drones/recall", { droneIDs: [...droneIDs] }, options),
+  );
+}

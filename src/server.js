@@ -5244,6 +5244,337 @@ app.get("/api/bridge/space/snapshot", requireAuth, async (req, res, next) => {
   }
 });
 
+// --- R25 slice A: drones ----------------------------------------------------
+//
+// The first thing on this bridge that KEEPS FIGHTING after the browser stops
+// asking, and that is the whole point. An idle combat drone auto-engages
+// whatever shoots the ship it was launched from — the server's own behaviour
+// (droneRuntime's incoming-aggression hook, gated on a per-drone `aggressive`
+// setting that DEFAULTS ON). So for a miner sitting in a belt the minimum
+// viable defence is LAUNCHING. Engage below is for CHOOSING a victim; it is not
+// what makes a player defended, and this BFF does not imply that it is.
+//
+// ⚠ THE SERVICE SPLIT. Launch and scoop are `ship`; every in-space order is
+// `entity`. One feature, two services.
+//
+// ⚠ LAUNCH ANSWERS 200 WHEN IT REFUSES. The server's handler returns an empty
+// dict on outright failure and an error tuple per itemID on partial failure —
+// bandwidth, the active-drone cap, a wrong bay flag and a vanished stack all
+// arrive that way. Nothing here reads a 200 as a launch: every route below
+// re-reads the SPACE SNAPSHOT and reports what is actually out there.
+
+// The ship's drone bay flag. Like the mining holds and the slot flags, this
+// number NEVER leaves this file — the browser is handed drones by name.
+const ITEM_FLAG_DRONE_BAY = 87;
+
+/**
+ * The drones the SERVER says are in space under this ship's control.
+ *
+ * Owner AND controller are both checked. `ownerID` alone would also match a
+ * drone this character owns but launched from a hull they have since swapped
+ * out of; `controllerID` alone would match a drone flown by this hull for
+ * someone else. A drone the panel offers a Recall button for must be both.
+ */
+async function readDronesInSpace(held) {
+  const outcome = await gateway.readSpaceSnapshot(held.bridgeSessionID, {
+    userid: held.accountID,
+  });
+  const space = outcome && outcome.space ? outcome.space : null;
+  const entities = space && Array.isArray(space.entities) ? space.entities : null;
+  if (entities === null) {
+    // null, not [] — "we could not look" is not "you have no drones in space",
+    // and a page that confuses the two invites a player to launch a second set.
+    return { drones: null, notifications: outcome ? outcome.notifications : [] };
+  }
+  const shipID = Number(held.activeShipID) || 0;
+  const characterID = Number(held.characterID) || 0;
+  const drones = entities
+    .filter((row) => row && row.kind === "drone")
+    .filter((row) => {
+      const owner = Number(row.ownerID) || 0;
+      const controller = Number(row.controllerID) || 0;
+      return (
+        (characterID > 0 && owner === characterID) ||
+        (shipID > 0 && controller === shipID)
+      );
+    })
+    .map((row) => ({
+      itemID: Number(row.itemID) || 0,
+      typeID: Number(row.typeID) || null,
+      // A NAME. The panel never renders the itemID it keys rows by (R7d).
+      name: typeof row.name === "string" && row.name.length > 0 ? row.name : null,
+      // A WORD, or null for "we could not tell" — never a raw activity enum.
+      activity: typeof row.droneActivity === "string" ? row.droneActivity : null,
+      // What it is busy with, so the page can name the rock or the rat.
+      targetID: Number(row.targetEntityID) || null,
+      shieldRatio: typeof row.shieldRatio === "number" ? row.shieldRatio : null,
+      armorRatio: typeof row.armorRatio === "number" ? row.armorRatio : null,
+      hullRatio: typeof row.hullRatio === "number" ? row.hullRatio : null,
+    }));
+  return { drones, notifications: outcome ? outcome.notifications : [] };
+}
+
+// The whole Drones panel: what is in the bay, what is in space, and the two
+// limits the server enforces on a launch.
+//
+// The LIMITS ADD NO ALLOWLIST PAIR. maxActiveDrones and droneBandwidth are
+// ordinary ship dogma attributes, and dogmaIM.ShipGetInfo — allowlisted since
+// R6 for the fitting panel — already answers the ship's whole attribute map.
+// The raw result is passed through and decoded browser-side, exactly as the
+// fitting route does, so the attribute IDs live in one place.
+//
+// The three reads are INDEPENDENT (allSettled): a bay that cannot be read must
+// not blank the drones already flying, and vice versa.
+app.get("/api/bridge/drones", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  try {
+    await readHeldFlight(held, req.webSessionID);
+    const shipID = held.activeShipID;
+    if (!shipID) {
+      res.status(409).json({ ok: false, error: "NO_ACTIVE_SHIP", message: "No active ship." });
+      return;
+    }
+    const noShip = () =>
+      Promise.reject(Object.assign(new Error("No active ship."), { code: "NO_ACTIVE_SHIP" }));
+    const [bay, shipInfo, inSpace] = await Promise.allSettled([
+      boundCall(
+        held,
+        req.webSessionID,
+        cargoBindSpec(held, shipID),
+        "ListByFlags",
+        [[ITEM_FLAG_DRONE_BAY]],
+        null,
+      ),
+      heldTopLevelCall(held, req.webSessionID, "dogmaIM", "ShipGetInfo", [], null),
+      shipID ? readDronesInSpace(held) : noShip(),
+    ]);
+    for (const settled of [bay, shipInfo, inSpace]) {
+      if (settled.status === "rejected" && settled.reason && settled.reason.code === "SESSION_NOT_FOUND") {
+        next(settled.reason);
+        return;
+      }
+    }
+    const settledCode = (settled) =>
+      settled.status === "rejected"
+        ? String((settled.reason && settled.reason.code) || "READ_FAILED")
+        : null;
+    // R7d: the shared row decoder carries flagID and locationID and NEITHER may
+    // reach the browser. Only what a player reads about a drone stack survives.
+    const bayRows =
+      bay.status === "fulfilled"
+        ? decodeInventoryRows(bay.value.result).map((row) => ({
+            itemID: row.itemID,
+            typeID: row.typeID,
+            quantity: row.quantity,
+          }))
+        : null;
+    res.json({
+      ok: true,
+      activeShipID: shipID,
+      // null (not []) on a failed read: "we could not look in the bay" is not
+      // "the bay is empty", and the panel says which.
+      bay: bayRows,
+      inSpace: inSpace.status === "fulfilled" ? inSpace.value.drones : null,
+      // Raw, decoded browser-side alongside the fitting panel's attributes.
+      shipInfo: shipInfo.status === "fulfilled" ? shipInfo.value.result : null,
+      errors: {
+        bay: settledCode(bay),
+        shipInfo: settledCode(shipInfo),
+        inSpace: settledCode(inSpace),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * The shared tail of every drone mutation: re-read what is actually in space
+ * and answer with it.
+ *
+ * Not one of the four server calls below returns anything a caller can trust.
+ * LaunchDrones answers a dict that is empty on failure; CmdEngage,
+ * CmdMineRepeatedly and CmdReturnBay answer a dict that is empty on SUCCESS and
+ * carries per-drone error tuples otherwise. The snapshot is the authority, and
+ * it is the same authority in all four cases.
+ */
+async function answerWithDronesInSpace(res, held, extra, notifications) {
+  let after = { drones: null, notifications: [] };
+  try {
+    after = await readDronesInSpace(held);
+  } catch {
+    // The re-read failed; `inSpace: null` says so rather than claiming an
+    // outcome the server never confirmed.
+  }
+  res.json({
+    ok: true,
+    ...extra,
+    inSpace: after.drones,
+    notifications: [...notifications, ...after.notifications],
+  });
+}
+
+// Launch from the bay: ship.LaunchDrones([[itemID, qty], …], whoseBehalfID,
+// ignoreWarning).
+//
+// The BFF does NOT pre-check bandwidth or the active-drone cap. The server owns
+// both limits, refuses per drone with its own reason, and would have to be
+// re-implemented here to guess — so the page shows the limits, sends the
+// request, and reports what came back in space.
+app.post("/api/bridge/drones/launch", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const body = req.body || {};
+  const requested = Array.isArray(body.drones)
+    ? body.drones
+        .map((entry) => ({
+          itemID: Number(entry && entry.itemID) || 0,
+          quantity: Math.max(1, Number(entry && entry.quantity) || 1),
+        }))
+        .filter((entry) => entry.itemID > 0)
+    : [];
+  if (requested.length === 0) {
+    res.status(400).json({
+      ok: false,
+      error: "NOTHING_SELECTED",
+      message: "Choose which drones to launch first.",
+    });
+    return;
+  }
+  try {
+    const before = await readHeldFlight(held, req.webSessionID);
+    if (!requireInSpace(res, before.flight)) {
+      return;
+    }
+    // What was ALREADY out, so "launched" can mean "new since the request"
+    // rather than "everything in space". A read that fails here does not block
+    // the launch — it just makes the outcome unverifiable, which is reported as
+    // such below rather than guessed at.
+    let beforeSpace = { drones: null, notifications: [] };
+    try {
+      beforeSpace = await readDronesInSpace(held);
+    } catch {
+      beforeSpace = { drones: null, notifications: [] };
+    }
+    const already = new Set((beforeSpace.drones || []).map((drone) => drone.itemID));
+    const outcome = await heldTopLevelCall(
+      held,
+      req.webSessionID,
+      "ship",
+      "LaunchDrones",
+      [requested.map((entry) => [entry.itemID, entry.quantity]), held.characterID || 0, false],
+      null,
+    );
+    let after = { drones: null, notifications: [] };
+    try {
+      after = await readDronesInSpace(held);
+    } catch {
+      after = { drones: null, notifications: [] };
+    }
+    res.json({
+      ok: true,
+      requested: requested.map((entry) => entry.itemID),
+      inSpace: after.drones,
+      // The only honest claim: which drones are in space NOW that were not
+      // before. A launch the server declined simply does not appear here, and
+      // the panel reports "nothing launched" instead of a phantom success.
+      //
+      // null when EITHER read failed — without the "before" list, a drone in
+      // space now could equally have been there all along, so there is nothing
+      // to claim in either direction.
+      launched:
+        after.drones === null || beforeSpace.drones === null
+          ? null
+          : after.drones.filter((drone) => !already.has(drone.itemID)),
+      notifications: [...beforeSpace.notifications, ...outcome.notifications, ...after.notifications],
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/** Normalize a `droneIDs` body field for the three entity orders below. */
+function readDroneIDs(body) {
+  return Array.isArray(body && body.droneIDs)
+    ? body.droneIDs.map((value) => Number(value) || 0).filter((value) => value > 0)
+    : [];
+}
+
+/**
+ * The three in-space orders. All three are the SAME shape — entity.<Cmd>(
+ * [droneIDs], targetID?) followed by the same snapshot re-read — so they share
+ * one implementation and differ only in the method name and whether a target is
+ * required.
+ */
+function droneOrderRoute(routePath, method, { needsTarget }) {
+  app.post(routePath, requireAuth, async (req, res, next) => {
+    const held = requireHeldBridgeSession(req, res);
+    if (!held) {
+      return;
+    }
+    const body = req.body || {};
+    const droneIDs = readDroneIDs(body);
+    if (droneIDs.length === 0) {
+      res.status(400).json({
+        ok: false,
+        error: "NO_DRONES",
+        message: "Choose which drones to order first.",
+      });
+      return;
+    }
+    const targetID = Number(body.targetID) || 0;
+    if (needsTarget && targetID <= 0) {
+      res.status(400).json({ ok: false, error: "INVALID_TARGET", message: "A target is required." });
+      return;
+    }
+    try {
+      const before = await readHeldFlight(held, req.webSessionID);
+      if (!requireInSpace(res, before.flight)) {
+        return;
+      }
+      const outcome = await heldTopLevelCall(
+        held,
+        req.webSessionID,
+        "entity",
+        method,
+        needsTarget ? [droneIDs, targetID] : [droneIDs],
+        null,
+      );
+      await answerWithDronesInSpace(
+        res,
+        held,
+        { droneIDs, targetID: needsTarget ? targetID : null },
+        outcome.notifications,
+      );
+    } catch (error) {
+      next(error);
+    }
+  });
+}
+
+// Attack that ball.
+//
+// ⚠ The server does NOT require the ship to have the target locked — the
+// drone's own visibility check is the gate. The page drives this from the R23
+// locked target anyway, because "shoot the thing you deliberately locked" is
+// the only version a player can reason about; that is a UI choice, and this
+// route does not pretend it is a server rule.
+droneOrderRoute("/api/bridge/drones/engage", "CmdEngage", { needsTarget: true });
+
+// Mining drones on a rock (and salvage drones on a wreck — the same call).
+droneOrderRoute("/api/bridge/drones/mine", "CmdMineRepeatedly", { needsTarget: true });
+
+// Come home. The runtime flies them back and scoops them into the bay itself
+// once they are inside 2500 m, so there is no second call — and the drones stay
+// in space, visibly "returning", for as long as the trip takes. The re-read
+// reports exactly that rather than pretending the bay is already full.
+droneOrderRoute("/api/bridge/drones/recall", "CmdReturnBay", { needsTarget: false });
+
 // --- R5b Travel: client-side route solver static data ----------------------
 // The browser autopilot's route solver is client-side (roadmap §7 / G2): the
 // system-adjacency graph it runs BFS over is read-only static reference data

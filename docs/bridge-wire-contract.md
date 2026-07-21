@@ -2244,6 +2244,155 @@ SSE path), `web/src/app/travelFlow.test.ts` (`dockAt`),
 eve.js `server/tests/webGatewaySessionEvents.test.js`.
 
 
+### Drones + hostile awareness (R25)
+
+**The design-changing finding: launching IS the defence.** An idle combat drone
+AUTO-ENGAGES whatever shoots the ship it was launched from — `droneRuntime.js`
+`noteIncomingAggression`, driven from the space runtime's damage path, gated on
+the drone's own `behaviorSettings.aggressive`, **which defaults true**. So a
+miner who launches is defended with no further clicks. `CmdEngage` is for
+*choosing* a victim; it is not what makes a player defended, and neither the BFF
+nor the panel implies otherwise.
+
+**⚠ THE SERVICE SPLIT.** Launch and scoop are `ship`; every in-space drone order
+is `entity`. One feature, two services — a reader who assumes drones live on one
+service wires half of it to the wrong place.
+
+**⚠ EVERY DRONE CALL ANSWERS 200 WHEN IT REFUSES.** This is not a theory; it was
+observed live. `ship.LaunchDrones` for three bay stacks answered **200** with:
+
+```
+{ 9988400023314: [9988400023314],                                    // launched
+  9988400023316: [["CustomNotify", {notify: "Not enough drone bandwidth to launch that drone."}]],
+  9988400037367: [["CustomNotify", {notify: "Not enough drone bandwidth to launch that drone."}]] }
+```
+
+and `entity.CmdMineRepeatedly` putting an *Ice Harvesting Drone II* on a Veldspar
+rock answered **200** with `"That drone cannot mine the selected resource."` — while
+the three order verbs answer an **empty dict on SUCCESS**. So the return value is
+never the answer: every route re-reads the **space snapshot** and reports what is
+actually out there.
+
+Allowlist delta — five pairs, split across two services:
+
+| Pair | Purpose |
+|---|---|
+| `ship.LaunchDrones([[itemID, qty], …], whoseBehalfID, ignoreWarning)` | launch from the bay (flag 87) |
+| `ship.ScoopDrone([droneIDs])` | manual scoop (the fallback; `CmdReturnBay` scoops itself) |
+| `entity.CmdEngage([droneIDs], targetID)` | attack |
+| `entity.CmdReturnBay([droneIDs])` | recall — the runtime flies them home and scoops inside **2500 m** |
+| `entity.CmdMineRepeatedly([droneIDs], targetID)` | mining drones on a rock (and salvage drones on a wreck) |
+
+**⚠ `CmdAssist`, `CmdGuard` and `CmdUnanchor` have NO server handler at all.**
+They are real verbs in the retail *client* and read as obvious siblings of the
+three listed `entity` pairs. `BaseService.callMethod` answers **null** for an
+unknown method rather than raising, so allowlisting one would not fail loudly —
+the browser would get a cheerful 200 for an order that was never given, and a
+player would believe drones were guarding them while nothing was. Deny-by-default
+is what keeps that from being buildable, and a test refuses all three BY NAME.
+`CmdAbandonDrone` (PERMANENTLY DISOWNS a player's drones), `CmdReturnHome`,
+`CmdSalvage` and `CmdReconnectToDrones` are real handlers on the same service and
+are deliberately absent for the same reason a service-granular allowlist is.
+
+**The limits add NO pair.** `maxActiveDrones` (attr **352**) and `droneBandwidth`
+(attr **1271**) are ordinary ship dogma and ride back in `dogmaIM.ShipGetInfo`,
+allowlisted since R6 for the fitting panel. The BFF passes that result through
+raw and `web/src/bridge/drones.ts` decodes it with the fitting panel's own
+`decodeShipAttributes`. **Live, the Procurer reports `droneBandwidth = 50` and NO
+`maxActiveDrones` attribute at all** — so the client shows "Drones at once: not
+known" rather than a confident 0, which would read as "this ship may carry none".
+The client never pre-refuses a launch: the server owns both limits and refuses
+per drone with its own reason.
+
+The drone bay needs no new pair either — the `invbroker` `GetInventoryFromId` /
+`ListByFlags([87])` two-step is already allowlisted (R3/R21). Flag 87 lives only
+in `src/server.js`; the browser is handed drones by NAME (R7d).
+
+BFF routes (all require the web login session + a held bridge session, and all
+mutations refuse while docked with 409):
+
+- `GET /api/bridge/drones` → `{ ok, activeShipID, bay, inSpace, shipInfo, errors }`.
+  Three INDEPENDENT reads (`allSettled`): the bay, `ShipGetInfo`, and the
+  snapshot. **`bay` / `inSpace` are `null` when a read failed — never `[]`.**
+- `POST /api/bridge/drones/launch` `{ drones: [{itemID, quantity}] }` →
+  `{ ok, requested, inSpace, launched, notifications }`. `launched` is the honest
+  claim: the drones in space now that were not in space before. `null` when
+  either snapshot read failed.
+- `POST /api/bridge/drones/engage` `{ droneIDs, targetID }`
+- `POST /api/bridge/drones/mine` `{ droneIDs, targetID }`
+- `POST /api/bridge/drones/recall` `{ droneIDs }` (no target)
+
+all three orders → `{ ok, droneIDs, targetID, inSpace, notifications }`.
+
+**⚠ `null` vs `[]` is load-bearing here in a way it is nowhere else in this
+client.** "You have no drones in space" and "we could not look" are the same
+pixels and opposite facts: the first invites a player to launch, the second
+invites them to launch a SECOND flight on top of the one already flying. The
+gateway, the BFF, the decoders, the store slice and the panel all keep them apart.
+
+**Slice B — how a pirate is told from a person.**
+
+⚠ **A belt rat is `kind: "ship"`.** It is built through the same
+`buildShipEntityCore` path as the player parked next to you and carries the same
+name, position, health and velocity fields. Nothing the snapshot projected before
+R25 separated them. Observed live, on the same grid, in the same snapshot:
+
+| Row | kind | isNpc | npcEntityType | characterID |
+|---|---|---|---|---|
+| `"Guristas Plunderer"` | `ship` | `true` | `"npc"` | `null` |
+| `"Procurer"` (the player) | `ship` | `false` | `null` | `140000005` |
+
+So R25 projects exactly **two** new ship-row fields, gateway-side, and nothing
+else: `isNpc` (the runtime's own `nativeNpc` flag, stamped by
+`nativeNpcService.applyNativeRuntimeNpcPresentation`) and `npcEntityType`
+(verbatim: `"npc"` pirates, `"concord"` police, `"drifter"`).
+
+⚠ **`characterID === 0` is the trap that almost works.** Structures and
+corp-owned balls also carry no characterID, so a panel built on it flags harmless
+furniture as a threat — and a warning that cries wolf gets ignored, which is worse
+than having none. A test names this case.
+
+Player-facing wording is decided once, in the browser (R9a): `"Pirate"`,
+`"Police"`, `"Drifter"`. `"concord"` is deliberately **not** hostile — law
+enforcement does not shoot a miner. An NPC of an unreadable kind IS treated as
+hostile: for a warning whose job is to keep a miner alive, unknown is the case to
+be wrong about in the loud direction.
+
+Threats are read from the **whole snapshot**, never from the overview rows: the
+overview is searchable, filterable and capped at 200, so a miner who searched for
+"Veldspar" would have filtered away the thing shooting them. Only NEW arrivals are
+announced ("A pirate has arrived — …"), with the seen-set primed from the first
+snapshot so landing in an occupied belt does not announce every rat in it.
+
+**"You are under attack", the honest version.** There is no damage-log read on
+this server and this client does not invent one. `healthIsDropping` claims only
+what two consecutive HUD readings showed: a shield/armour/hull layer went down. A
+`null` on either side is unknown and is never reported as damage.
+
+R25 drone-row projection (drone rows only): `controllerID` (which HULL is flying
+it — the question that matters after a ship swap), `controllerOwnerID`,
+`droneActivity` (a WORD — `idle`/`fighting`/`mining`/`approaching`/`returning`/
+`chasing`/`salvaging` — derived from `droneRuntime`'s OWN exported `STATE_*`
+constants, `null` for "we could not tell", **never** the raw enum) and
+`targetEntityID`.
+
+R25 page pieces: gateway `evejsWebGatewayRuntime.js` (the five allowlist pairs,
+`droneActivityWord`, and the `isNpc`/`npcEntityType`/drone fields in
+`projectSpaceEntity`), BFF `src/server.js` (`ITEM_FLAG_DRONE_BAY`,
+`readDronesInSpace`, `answerWithDronesInSpace`, `droneOrderRoute` and the five
+routes), `web/src/bridge/drones.ts` (`decodeDroneBay`/`decodeDronesInSpace`/
+`decodeDroneLimits`/`droneActivityLabel`/`droneIsBusy`), the `drones` store slice
++ `drones/loaded`/`drones/in-space`/`drones/action`/`drones/action-error`/
+`drones/silent-decline`/`drones/cleared` feed events, `app/flow.ts`
+`loadDrones`/`launchDrones`/`engageDrones`/`mineWithDrones`/`recallDrones`,
+`web/src/space/overview.ts` (`isHostile`/`hostileLabel`/`hostileRows`/
+`newlyArrivedHostiles`/`isMyDrone`/`healthIsDropping`), and the Drones section +
+threat block in `Overview.svelte`. Tested by
+`web/src/bridge/drones.test.ts`, `web/src/space/overview.test.ts`,
+`web/src/ui/dronePanel.test.ts`, `test/bridgeDrones.test.js`, and eve.js
+`server/tests/webGatewayDronesAndHostiles.test.js`.
+
+
 ### Chat routes (R7)
 
 All require the signed web login session and a held bridge session (else 409

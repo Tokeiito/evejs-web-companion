@@ -26,6 +26,9 @@ import type {
   CorpDivisionState,
   CourierBriefing,
   FlightStatus,
+  DroneBayStack,
+  DroneInSpace,
+  DroneLimits,
   MiningHold,
   ReprocessingQuote,
   SurveyResult,
@@ -422,6 +425,29 @@ export type FeedEvent =
   | { readonly type: "mining/silent-decline"; readonly message: string | null }
   // Drop the mining state (character offline / logged out).
   | { readonly type: "mining/cleared" }
+  // Goal R25 slice A — drones. The bay, the drones actually in space, and the
+  // two launch limits the server enforces, all from ONE read.
+  //
+  // ⚠ `bay` and `inSpace` are NULLABLE and null means "we could not look". An
+  // empty array means the bay is empty / nothing is out there. Collapsing the
+  // two would invite a player to launch a second flight on top of the one
+  // already flying.
+  | {
+      readonly type: "drones/loaded";
+      readonly bay: readonly DroneBayStack[] | null;
+      readonly inSpace: readonly DroneInSpace[] | null;
+      readonly limits: DroneLimits;
+    }
+  | { readonly type: "drones/error"; readonly message: string | null }
+  // What is in space after a launch / engage / mine / recall. The server's own
+  // return values prove nothing, so this always carries a fresh re-read.
+  | { readonly type: "drones/in-space"; readonly inSpace: readonly DroneInSpace[] | null }
+  | { readonly type: "drones/action"; readonly action: string }
+  | { readonly type: "drones/action-error"; readonly message: string | null }
+  // A drone call that answered success and changed nothing — the ONLY way a
+  // refused launch can surface, because the handler returns an empty dict.
+  | { readonly type: "drones/silent-decline"; readonly message: string | null }
+  | { readonly type: "drones/cleared" }
   // A snapshot read failed non-fatally; null clears it after a clean read.
   | { readonly type: "space/error"; readonly message: string | null }
   // Drop the space state (docked / character offline / logged out).
