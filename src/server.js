@@ -905,6 +905,17 @@ function decodeInventoryRows(result) {
         locationID: Number(fields.locationID) || 0,
         flagID: Number(fields.flagID) || 0,
         quantity: Number(fields.quantity) || Number(fields.stacksize) || 0,
+        // R40: what a row IS, not just where it sits. The ship bays route needs
+        // these to tell a ship from a container from a stack of ore without a
+        // second read. Additive — every existing caller picks the fields it
+        // wants and is unaffected. groupID/categoryID are null (not 0) when the
+        // row did not carry them: 0 is a real category and "absent" is not it.
+        groupID: fields.groupID === undefined || fields.groupID === null ? null : Number(fields.groupID),
+        categoryID:
+          fields.categoryID === undefined || fields.categoryID === null
+            ? null
+            : Number(fields.categoryID),
+        singleton: Number(fields.singleton) === 1,
       });
     }
   }
@@ -5281,6 +5292,182 @@ app.post("/api/bridge/ship/ore-hold/unload", requireAuth, async (req, res, next)
       moved,
       remaining: requested.filter((itemID) => stillHeld.has(itemID)),
       notifications,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// --- R40 ship bays ---------------------------------------------------------
+//
+// EVERY bay a hull can have, by NAME. A "bay" is nothing but an inventory FLAG
+// on the ship's own inventory — exactly the mechanism R12 fitting uses for slot
+// flags — so enumerating a hull's bays is one GetCapacity per candidate flag.
+//
+// WHY THIS ROUTE EXISTS AT ALL (the client-first rule). Bound-object calls are
+// BFF-only: /api/bridge/call is a TOP-LEVEL proxy and cannot dispatch on a
+// bound handle, so the browser physically cannot run the bind-then-List
+// two-step. The existing routes each read a fixed slice and none of them
+// answers "what bays does THIS ship have": /ship/ore-hold covers the four
+// mining holds plus cargo and only for the ACTIVE ship; /drones covers the
+// drone bay, again active-ship only; /inventory/container/:itemID binds an
+// arbitrary itemID but calls List/GetCapacity with NO flag, which answers for
+// one unnamed default hold and can never enumerate the rest. A ship sitting in
+// the hangar that the player has not boarded is unreadable today.
+//
+// It adds NO eve.js allowlist pairs. GetInventoryFromId (the bind), ListByFlags
+// and GetCapacity are all ALREADY allowlisted (evejsWebGatewayRuntime.js) and
+// already driven from this file — GetInventoryFromId by containerBindSpec,
+// GetCapacity by /api/bridge/inventory, ListByFlags by /api/bridge/drones. So
+// no gateway restart is required and no new server surface is exposed.
+//
+// WHICH FLAGS. Only the flags eve.js actually MAPS to a hull attribute are
+// asked about. That is not fussiness: _calculateCapacity initialises capacity
+// to 1000000.0 and returns it untouched when no branch matches, so asking about
+// an unmapped flag (151 specialized material bay, for instance) yields a
+// phantom 1,000,000 m³ bay on every hull in the game. Asking only about mapped
+// flags means a capacity of 0 always means "this hull has no such bay".
+//
+// THESE NUMBERS NEVER LEAVE THIS FILE (R7d/R9a): the browser is handed a key
+// and a LABEL per bay and never learns that 134 exists.
+const SHIP_BAYS = Object.freeze([
+  Object.freeze({ key: "cargo", flag: ITEM_FLAG_CARGO_HOLD, label: "Cargo hold" }),
+  // The same flag ITEM_FLAG_DRONE_BAY names for /api/bridge/drones; spelled out
+  // here because that constant is declared further down this file and a const
+  // cannot be read before its declaration is evaluated.
+  Object.freeze({ key: "drone", flag: 87, label: "Drone bay" }),
+  Object.freeze({ key: "shipMaintenance", flag: 90, label: "Ship maintenance bay" }),
+  Object.freeze({ key: "fuel", flag: 133, label: "Fuel bay" }),
+  Object.freeze({ key: "ore", flag: 134, label: "Ore hold" }),
+  Object.freeze({ key: "gas", flag: 135, label: "Gas hold" }),
+  Object.freeze({ key: "mineral", flag: 136, label: "Mineral hold" }),
+  Object.freeze({ key: "salvage", flag: 137, label: "Salvage hold" }),
+  Object.freeze({ key: "ship", flag: 138, label: "Ship hold" }),
+  Object.freeze({ key: "smallShip", flag: 139, label: "Small ship hold" }),
+  Object.freeze({ key: "mediumShip", flag: 140, label: "Medium ship hold" }),
+  Object.freeze({ key: "largeShip", flag: 141, label: "Large ship hold" }),
+  Object.freeze({ key: "industrialShip", flag: 142, label: "Industrial ship hold" }),
+  Object.freeze({ key: "ammo", flag: 143, label: "Ammo hold" }),
+  Object.freeze({ key: "commandCenter", flag: 148, label: "Command center hold" }),
+  Object.freeze({ key: "planetary", flag: 149, label: "Planetary commodities hold" }),
+  Object.freeze({ key: "quafe", flag: 154, label: "Quafe bay" }),
+  Object.freeze({ key: "fleet", flag: 155, label: "Fleet hangar" }),
+  Object.freeze({ key: "fighter", flag: 158, label: "Fighter bay" }),
+  Object.freeze({ key: "corpse", flag: 174, label: "Corpse bay" }),
+  Object.freeze({ key: "booster", flag: 176, label: "Booster bay" }),
+  Object.freeze({ key: "subsystem", flag: 177, label: "Subsystem bay" }),
+  Object.freeze({ key: "ice", flag: 181, label: "Ice hold" }),
+  Object.freeze({ key: "asteroid", flag: 182, label: "Asteroid hold" }),
+  Object.freeze({ key: "mobileDepot", flag: 183, label: "Mobile depot hold" }),
+  Object.freeze({ key: "colony", flag: 185, label: "Colony resources hold" }),
+  Object.freeze({ key: "expedition", flag: 188, label: "Expedition hold" }),
+]);
+
+// Which bays a ship has, what each one holds, and how full it is.
+//
+// ABSENT IS NOT EMPTY, AND NEITHER IS UNKNOWN. Three states cross the wire,
+// because conflating them is the mistake worldHasNoContracts exists to prevent:
+//   present === true   the hull HAS this bay (capacity > 0)
+//   present === false  the hull does NOT have it (the server answered 0)
+//   present === null   we could not tell — the capacity read itself FAILED
+// A 200 on this route is not proof any individual bay was read.
+app.get("/api/bridge/ship/:shipID/bays", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const shipID = Number(req.params.shipID) || 0;
+  if (shipID <= 0) {
+    res.status(400).json({ ok: false, error: "INVALID_SHIP", message: "A ship is required." });
+    return;
+  }
+  // The bind is the SAME call a container binds with — a ship's bays are just
+  // its own inventory, so there is no ship-specific bind method.
+  const spec = containerBindSpec(shipID);
+  try {
+    // One capacity read per candidate flag, all independent: a hull that
+    // refuses one bay must not blank the other twenty-six.
+    const settled = await Promise.allSettled(
+      SHIP_BAYS.map((bay) =>
+        boundCall(held, req.webSessionID, spec, "GetCapacity", [bay.flag], null),
+      ),
+    );
+    for (const entry of settled) {
+      if (entry.status === "rejected" && entry.reason && entry.reason.code === "SESSION_NOT_FOUND") {
+        next(entry.reason);
+        return;
+      }
+    }
+    const readings = SHIP_BAYS.map((bay, index) => {
+      const outcome = settled[index];
+      if (outcome.status !== "fulfilled") {
+        // Could not look. NOT "the hull lacks this bay".
+        return { bay, capacity: null, present: null, error: String((outcome.reason && outcome.reason.code) || "READ_FAILED") };
+      }
+      const reading = decodeCapacityReading(outcome.value.result);
+      if (reading === null || reading.capacity === null) {
+        return { bay, capacity: reading, present: null, error: "NO_CAPACITY_REPORTED" };
+      }
+      return { bay, capacity: reading, present: Number(reading.capacity) > 0, error: null };
+    });
+
+    // Contents come from ONE ListByFlags over just the bays that exist, rather
+    // than a List per bay: the rows carry their own flagID, so a single read
+    // fills every bay at once. An absent bay is never asked about.
+    const presentReadings = readings.filter((entry) => entry.present === true);
+    let byFlag = null;
+    let listError = null;
+    if (presentReadings.length > 0) {
+      try {
+        const listed = await boundCall(
+          held,
+          req.webSessionID,
+          spec,
+          "ListByFlags",
+          [presentReadings.map((entry) => entry.bay.flag)],
+          null,
+        );
+        byFlag = new Map(presentReadings.map((entry) => [entry.bay.flag, []]));
+        for (const row of decodeInventoryRows(listed.result)) {
+          const bucket = byFlag.get(row.flagID);
+          if (bucket) {
+            // R7d: flagID and locationID are wire detail and must NOT reach the
+            // browser. Only what a player reads about a stack survives — what
+            // it is, how much of it there is, and enough to name and act on it.
+            bucket.push({
+              itemID: row.itemID,
+              typeID: row.typeID,
+              groupID: row.groupID,
+              categoryID: row.categoryID,
+              quantity: row.quantity,
+              singleton: row.singleton,
+            });
+          }
+        }
+      } catch (error) {
+        if (error && error.code === "SESSION_NOT_FOUND") {
+          next(error);
+          return;
+        }
+        listError = String(error.code || "READ_FAILED");
+      }
+    }
+
+    res.json({
+      ok: true,
+      shipID,
+      activeShipID: held.activeShipID || null,
+      bays: readings.map((entry) => ({
+        key: entry.bay.key,
+        label: entry.bay.label,
+        present: entry.present,
+        capacity: entry.capacity,
+        // null is "we could not look"; [] is "we looked, and it is empty".
+        // An absent bay has no contents to speak of and stays null.
+        items:
+          entry.present === true && byFlag !== null ? byFlag.get(entry.bay.flag) || [] : null,
+        error: entry.error || (entry.present === true ? listError : null),
+      })),
     });
   } catch (error) {
     next(error);

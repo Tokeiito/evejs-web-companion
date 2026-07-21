@@ -64,6 +64,7 @@ import type {
   MutationOutcome,
   OnlineCharacterState,
   OpenContainerState,
+  ShipBay,
   GateLink,
   SpaceSnapshot,
   StationGuest,
@@ -159,6 +160,23 @@ export type FeedEvent =
   | {
       readonly type: "inventory/outcome";
       readonly outcome: MutationOutcome | null;
+    }
+  // Goal R40 — which ship the Ships card has expanded. `itemID: null` collapses
+  // it. Opening a ship does NOT carry its bays: those arrive separately, so the
+  // card can say "looking…" instead of showing an empty hull.
+  | {
+      readonly type: "inventory/ship-open";
+      readonly itemID: number | null;
+      readonly typeID: number;
+    }
+  // The bays that ship turned out to have. Each bay carries its own three-valued
+  // `present` and its own error, so one unreadable bay never blanks the rest —
+  // and an absent bay is never mistaken for an empty one.
+  | {
+      readonly type: "inventory/ship-bays";
+      readonly itemID: number;
+      readonly bays: readonly ShipBay[];
+      readonly error: string | null;
     }
   // Goal R12 — the Fitting page. A full panel load: the active ship's slots by
   // family with what is fitted in each, plus its CPU / powergrid / capacitor /

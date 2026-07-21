@@ -1,15 +1,32 @@
 <script lang="ts">
-  // Inventory & Ship page (goals R3 + R14): the docked station hangar, the
-  // active ship's cargo, any container the player has opened, and the
-  // corporation hangar's divisions — all driven through the bound-object
-  // bridge. A pure reader of the store's inventory slice; every bind / List /
-  // Add / MultiAdd / MultiMerge / TrashItems call lives on the BFF (which holds
-  // the bound-object handles) and in app/flow.ts.
+  // Inventory & Ship page (goals R3 + R14, recast by R40): the docked station
+  // hangar, the ships the player owns and what is inside each of their bays,
+  // any container they have opened, and the corporation hangar's divisions —
+  // all driven through the bound-object bridge. A pure reader of the store's
+  // inventory slice; every bind / List / Add / MultiAdd / MultiMerge /
+  // TrashItems call lives on the BFF (which holds the bound-object handles)
+  // and in app/flow.ts.
   //
-  // The browser addresses items by their game IDs and places by NAME — a
-  // container by which container, a corporation division by its name. Retail
-  // flag numbers (4 hangar, 5 cargo, 0 container contents, 115-121 divisions)
-  // never reach this file.
+  // R40 SPLIT THIS INTO TWO CARDS, because a ship and a crate of ore are not
+  // the same kind of thing and reading them out of one mixed table made both
+  // harder to find:
+  //
+  //   SHIPS            every hull the player owns. Clicking one reveals ITS
+  //                    BAYS — and a hull can have several (a Procurer has a
+  //                    cargo hold, a drone bay and a 16,000 m³ ore hold) —
+  //                    each with how full it is and what is inside.
+  //   HANGAR INVENTORY everything that is not a ship, as a grid of pictures
+  //                    captioned with the name and the amount.
+  //
+  // A BAY IS AN INVENTORY FLAG, the same mechanism R12's fitting window uses
+  // for slots. The flag numbers never reach this file — the BFF enumerates the
+  // bays and hands over a label per bay (R7d/R9a). This file has no idea 134
+  // exists, exactly as it has no idea 4, 5 or 115-121 do.
+  //
+  // ABSENT IS NOT EMPTY. A hull that has no ore hold, a hull whose ore hold we
+  // could not read, and an ore hold that is genuinely empty are three different
+  // states and are drawn three different ways. Collapsing them is the mistake
+  // `worldHasNoContracts` exists to prevent.
   import { onMount } from "svelte";
   import {
     canMergeStacks,
@@ -17,6 +34,7 @@
     isBoardableShip,
     isOpenableContainer,
   } from "../bridge/inventoryShip.ts";
+  import { presentBays, unreadableBays } from "../bridge/shipBays.ts";
   import { BridgeCallError } from "../bridge/callMethod.ts";
   import { isSessionLost } from "../app/flow.ts";
   // R27 — the shared item icon: one cached picture per thing, falling back
@@ -24,7 +42,12 @@
   import TypeIcon from "./TypeIcon.svelte";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
-  import type { InventoryItemRow, InventoryPlace } from "../store/types.ts";
+  import type {
+    CapacityInfo,
+    InventoryItemRow,
+    InventoryPlace,
+    ShipBay,
+  } from "../store/types.ts";
   import { resolvedName, nameKey, type NameRef } from "../store/names.ts";
 
   let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
@@ -46,16 +69,26 @@
   // confirmation flag behind that.
   let trashArmed = $state(false);
 
+  const CATEGORY_SHIP = 6;
+
+  function isShip(row: InventoryItemRow): boolean {
+    return row.categoryID === CATEGORY_SHIP;
+  }
+
   // R7c — resolve every row's typeID -> type name and categoryID -> category
   // name (batched + cached by the flow's name cache). Fire-and-forget in an
   // effect so rows render immediately and swap to names as they arrive.
   $effect(() => {
     const refs: NameRef[] = [];
+    const openShip = $inventory.openShip;
     const everyRow = [
       ...$inventory.hangar.rows,
       ...$inventory.cargo.rows,
       ...($inventory.container ? $inventory.container.rows : []),
       ...$inventory.corp.divisions.flatMap((division) => division.rows),
+      // R40 — the things inside the open ship's bays need names too, or the
+      // grid captions them all "—".
+      ...(openShip ? openShip.bays.flatMap((bay) => bay.items ?? []) : []),
     ];
     for (const row of everyRow) {
       refs.push({ kind: "type", id: row.typeID });
@@ -65,6 +98,9 @@
     }
     if ($inventory.container) {
       refs.push({ kind: "type", id: $inventory.container.typeID });
+    }
+    if (openShip && openShip.typeID > 0) {
+      refs.push({ kind: "type", id: openShip.typeID });
     }
     if (refs.length > 0) {
       flow.requestNames(refs);
@@ -84,14 +120,11 @@
     return row ? row.typeID : null;
   });
 
-  function activeShipHeader(): string {
-    if ($inventory.activeShipID === null) {
-      return "—";
+  function typeName(typeID: number | null): string {
+    if (typeID === null || typeID <= 0) {
+      return "your ship";
     }
-    // Ship TYPE name only (e.g. "Algos"); the raw item ID is never rendered.
-    const typeName =
-      activeShipTypeID !== null ? $names.resolved[nameKey("type", activeShipTypeID)] : null;
-    return typeName ?? "active ship";
+    return $names.resolved[nameKey("type", typeID)] ?? "your ship";
   }
 
   async function run(action: () => Promise<void>): Promise<void> {
@@ -119,10 +152,6 @@
     return moveQty.trim() !== "" && Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
   }
 
-  function isShip(row: InventoryItemRow): boolean {
-    return row.categoryID === 6;
-  }
-
   onMount(() => {
     void run(async () => {
       await flow.loadInventory();
@@ -130,11 +159,33 @@
     });
   });
 
-  function capacityText(capacity: { capacity: number; used: number } | null): string {
+  function amount(value: number): string {
+    return value.toLocaleString(undefined, { maximumFractionDigits: 2 });
+  }
+
+  /**
+   * How full a bay is, in words. A capacity the ship did not report reads "not
+   * known" and NEVER 0 — a confident "0 of 0 m³" would tell the player the bay
+   * is unusable when in truth we simply failed to ask.
+   */
+  function capacityText(capacity: CapacityInfo | null): string {
     if (!capacity) {
-      return "—";
+      return "not known";
     }
-    return `${capacity.used.toFixed(2)} / ${capacity.capacity.toFixed(2)} m³`;
+    return `${amount(capacity.used)} of ${amount(capacity.capacity)} m³`;
+  }
+
+  /** The gauge's fill, clamped. Zero capacity means no meaningful bar. */
+  function fillPercent(capacity: CapacityInfo | null): number {
+    if (!capacity || !(capacity.capacity > 0)) {
+      return 0;
+    }
+    return Math.max(0, Math.min(100, (capacity.used / capacity.capacity) * 100));
+  }
+
+  /** What a tile says under the name: an amount, or that the thing is one object. */
+  function amountText(row: InventoryItemRow): string {
+    return row.singleton ? "assembled" : amount(row.quantity);
   }
 
   // --- selection ------------------------------------------------------------
@@ -164,6 +215,10 @@
     }
     flow.toggleSelection(row.itemID);
     trashArmed = false;
+  }
+
+  function isPicked(row: InventoryItemRow, place: InventoryPlace): boolean {
+    return samePlace(selectionPlace, place) && selection.includes(row.itemID);
   }
 
   const selection = $derived($inventory.selection);
@@ -301,6 +356,72 @@
     });
   }
 
+  // --- R40 the ships card ---------------------------------------------------
+
+  /**
+   * Every hull the player owns HERE, plus the one they are flying.
+   *
+   * The active ship is normally a hangar row while docked, but a player in
+   * space has no station hangar to read — so when the active ship is not among
+   * the hangar rows it is added from what the slice does know. Otherwise the
+   * one ship they are definitely in would be the one ship they could not open.
+   */
+  const ships = $derived.by<InventoryItemRow[]>(() => {
+    const rows = $inventory.hangar.rows.filter(isShip);
+    const activeID = $inventory.activeShipID;
+    if (activeID !== null && !rows.some((row) => row.itemID === activeID)) {
+      rows.unshift({
+        itemID: activeID,
+        typeID: activeShipTypeID ?? 0,
+        groupID: null,
+        categoryID: CATEGORY_SHIP,
+        flagID: null,
+        quantity: 1,
+        singleton: true,
+      });
+    }
+    return rows;
+  });
+
+  /** Everything in the hangar that is NOT a ship — the second card's contents. */
+  const hangarThings = $derived($inventory.hangar.rows.filter((row) => !isShip(row)));
+
+  const openShip = $derived($inventory.openShip);
+
+  /** The bays this hull actually has. Only these are ever drawn. */
+  const shownBays = $derived.by<readonly ShipBay[]>(() =>
+    openShip ? presentBays(openShip.bays) : [],
+  );
+
+  /**
+   * Bays we could not READ. These are named out loud: without them, a hull
+   * whose ore hold failed to read would look exactly like a hull that has no
+   * ore hold, and the player would believe a bay does not exist when in fact
+   * nobody managed to look.
+   */
+  const uncheckedBays = $derived.by<readonly ShipBay[]>(() =>
+    openShip ? unreadableBays(openShip.bays) : [],
+  );
+
+  async function toggleShip(row: InventoryItemRow): Promise<void> {
+    const already = openShip !== null && openShip.itemID === row.itemID;
+    await run(() => flow.openShipBays(already ? null : row.itemID));
+  }
+
+  /**
+   * Can the player act on what is in this bay from here?
+   *
+   * ONLY the active ship's cargo hold. `transferItems` addresses a ship by the
+   * place "cargo", which the BFF resolves to the ACTIVE ship's cargo flag —
+   * there is no addressing for "the ore hold of the ship I am not flying", so
+   * offering a button for one would be offering something that cannot work.
+   * Every other bay is shown read-only, and the card says why rather than
+   * leaving the player to wonder where the buttons went.
+   */
+  function bayIsActionable(shipItemID: number, bay: ShipBay): boolean {
+    return shipItemID === $inventory.activeShipID && bay.key === "cargo";
+  }
+
   // --- corporation hangar ---------------------------------------------------
 
   const selectedDivision = $derived(
@@ -321,6 +442,83 @@
   }
 </script>
 
+<!--
+  ONE tile grid, used by the hangar, an open container, a corporation division
+  and a ship's cargo bay. Every place shows the same thing — a picture, the
+  NAME, and the AMOUNT underneath (the operator's ask) — so they are one
+  snippet rather than four copies that drift apart.
+
+  `actions` decides which buttons a tile offers, because what you can do with a
+  thing depends on where it is sitting. `readOnly` drops selection and actions
+  entirely: that is a bay the bridge gives us no way to act on, and a button
+  that cannot work must not be drawn.
+-->
+{#snippet itemGrid(
+  rows: readonly InventoryItemRow[],
+  place: InventoryPlace,
+  actions: "toCargo" | "toHangar" | "none",
+  readOnly: boolean = false,
+)}
+  <ul class="item-grid">
+    {#each rows as row (row.itemID)}
+      <li class="item-tile {isPicked(row, place) ? 'picked' : ''}">
+        <TypeIcon
+          typeID={row.typeID}
+          name={resolvedName($names.resolved, "type", row.typeID)}
+          size="lg"
+        />
+        <span class="item-tile-name">{resolvedName($names.resolved, "type", row.typeID)}</span>
+        <span class="item-tile-amount">{amountText(row)}</span>
+        {#if !readOnly}
+          <label class="item-tile-pick">
+            <input
+              type="checkbox"
+              aria-label="Select {resolvedName($names.resolved, 'type', row.typeID)}"
+              checked={isPicked(row, place)}
+              disabled={busy}
+              onchange={() => toggle(row, place)}
+            />
+            Select
+          </label>
+          <span class="item-tile-actions">
+            {#if isOpenableContainer(row)}
+              <button
+                type="button"
+                disabled={busy}
+                onclick={() => run(() => flow.openContainer(row.itemID))}
+              >
+                Open
+              </button>
+            {:else if actions === "toCargo"}
+              <button
+                type="button"
+                disabled={busy}
+                onclick={() =>
+                  run(() =>
+                    flow.transferItems([row.itemID], place, { kind: "cargo" }, qtyArg()),
+                  )}
+              >
+                → Cargo
+              </button>
+            {:else if actions === "toHangar"}
+              <button
+                type="button"
+                disabled={busy}
+                onclick={() =>
+                  run(() =>
+                    flow.transferItems([row.itemID], place, { kind: "hangar" }, qtyArg()),
+                  )}
+              >
+                → Hangar
+              </button>
+            {/if}
+          </span>
+        {/if}
+      </li>
+    {/each}
+  </ul>
+{/snippet}
+
 <section class="panel">
   <header class="panel-head">
     <h2>Inventory &amp; Ship</h2>
@@ -337,6 +535,9 @@
           run(async () => {
             await flow.loadInventory();
             await flow.loadCorpHangar();
+            if ($inventory.openShip) {
+              await flow.openShipBays($inventory.openShip.itemID);
+            }
           })}
       >
         Refresh
@@ -408,10 +609,134 @@
   </section>
 {/if}
 
+<!-- ============================================================ CARD 1 — SHIPS -->
+<section>
+  <h2>Your ships</h2>
+  {#if $inventory.hangar.error}
+    <p class="error">Your ships could not be listed: {$inventory.hangar.error}</p>
+  {/if}
+  {#if ships.length === 0}
+    <p class="empty">
+      {$inventory.loaded ? "You have no ships here." : "Looking for your ships…"}
+    </p>
+  {:else}
+    <p class="note">Pick a ship to see its bays and what is in them.</p>
+    <ul class="item-grid">
+      {#each ships as ship (ship.itemID)}
+        <li
+          class="item-tile {ship.itemID === $inventory.activeShipID ? 'self' : ''} {openShip &&
+          openShip.itemID === ship.itemID
+            ? 'picked'
+            : ''}"
+        >
+          <TypeIcon
+            typeID={ship.typeID}
+            name={resolvedName($names.resolved, "type", ship.typeID)}
+            size="lg"
+          />
+          <span class="item-tile-name">{resolvedName($names.resolved, "type", ship.typeID)}</span>
+          <span class="item-tile-amount">
+            {ship.itemID === $inventory.activeShipID ? "you are flying this" : "docked here"}
+          </span>
+          <span class="item-tile-actions">
+            <button type="button" disabled={busy} onclick={() => toggleShip(ship)}>
+              {openShip && openShip.itemID === ship.itemID ? "Hide bays" : "Show bays"}
+            </button>
+            {#if isBoardableShip(ship, $inventory.activeShipID)}
+              <button
+                type="button"
+                class="minor"
+                disabled={busy}
+                onclick={() => run(() => flow.boardShip(ship.itemID))}
+              >
+                Board
+              </button>
+            {/if}
+          </span>
+        </li>
+      {/each}
+    </ul>
+  {/if}
+
+  {#if openShip}
+    <h3>{typeName(openShip.typeID)} — its bays</h3>
+    {#if openShip.error}
+      <!-- The read failed outright, so NOTHING is known about this hull's bays.
+           That is emphatically not "this ship has no bays". -->
+      <p class="error">
+        This ship's bays could not be read, so we cannot say what it has: {openShip.error}
+      </p>
+    {:else if !openShip.loaded}
+      <p class="empty">Looking inside this ship…</p>
+    {:else if shownBays.length === 0}
+      <p class="note">
+        {uncheckedBays.length > 0
+          ? "None of this ship's bays could be read, so we cannot say what it has."
+          : "This ship has no bays that can hold anything."}
+      </p>
+    {:else}
+      {#each shownBays as bay (bay.key)}
+        <div class="bay">
+          <div class="bay-head">
+            <strong>{bay.label}</strong>
+            <span class={bay.capacity ? "hud-value" : "stat-unavailable"}>
+              {capacityText(bay.capacity)}
+            </span>
+          </div>
+          {#if bay.capacity && bay.capacity.capacity > 0}
+            <!-- The bar is a summary; the numbers above it are the real reading,
+                 so the bar is never the only way to tell how full a bay is. -->
+            <div class="hud-track">
+              <span class="hud-fill" style="width: {fillPercent(bay.capacity)}%"></span>
+            </div>
+          {/if}
+          {#if bay.error}
+            <p class="error">What is in here could not be read: {bay.error}</p>
+          {:else if bay.items === null}
+            <p class="error">What is in here could not be read.</p>
+          {:else if bay.items.length === 0}
+            <p class="empty">Nothing in here yet.</p>
+          {:else if bayIsActionable(openShip.itemID, bay)}
+            {@render itemGrid(bay.items, { kind: "cargo" }, "toHangar")}
+          {:else}
+            {@render itemGrid(bay.items, { kind: "cargo" }, "none", true)}
+          {/if}
+          {#if bayIsActionable(openShip.itemID, bay) && bay.items && bay.items.length > 0}
+            <p>
+              <button
+                type="button"
+                class="minor"
+                disabled={busy}
+                onclick={() => run(() => flow.stackContainer("cargo"))}
+              >
+                Stack all (cargo)
+              </button>
+            </p>
+          {/if}
+        </div>
+      {/each}
+      {#if openShip.itemID !== $inventory.activeShipID}
+        <p class="note">
+          Board this ship to move things in and out of it.
+        </p>
+      {/if}
+    {/if}
+    {#if uncheckedBays.length > 0 && !openShip.error}
+      <!-- Named out loud, so a bay we failed to check is never mistaken for a
+           bay the hull does not have. -->
+      <p class="note">
+        These bays could not be checked, so we cannot say whether this ship has them:
+        {uncheckedBays.map((bay) => bay.label).join(", ")}.
+      </p>
+    {/if}
+  {/if}
+</section>
+
+<!-- ================================================ CARD 2 — HANGAR INVENTORY -->
 <section>
   <h2>
-    Station hangar
-    <small class="note">capacity {capacityText($inventory.hangar.capacity)}</small>
+    Hangar inventory
+    <small class="note">room used {capacityText($inventory.hangar.capacity)}</small>
   </h2>
   <p>
     <button
@@ -425,177 +750,14 @@
   </p>
   {#if $inventory.hangar.error}
     <p class="error">The hangar could not be loaded: {$inventory.hangar.error}</p>
-  {/if}
-  {#if $inventory.hangar.rows.length === 0}
-    <p class="empty">{$inventory.loaded ? "Hangar is empty." : "Loading hangar…"}</p>
+  {:else if hangarThings.length === 0}
+    <p class="empty">
+      {$inventory.loaded
+        ? "Nothing here but your ships."
+        : "Looking through your hangar…"}
+    </p>
   {:else}
-    <div class="table-wrap overflow-x-auto">
-      <table class="guests reflow">
-        <thead>
-          <tr><th>Select</th><th>Type</th><th>Cat</th><th class="num">Qty</th><th>Action</th></tr>
-        </thead>
-        <tbody>
-          {#each $inventory.hangar.rows as row (row.itemID)}
-            <tr class={row.itemID === $inventory.activeShipID ? "self" : ""}>
-              <td data-label="Select">
-                <input
-                  type="checkbox"
-                  aria-label="Select {resolvedName($names.resolved, 'type', row.typeID)}"
-                  checked={samePlace(selectionPlace, { kind: "hangar" }) &&
-                    selection.includes(row.itemID)}
-                  disabled={busy}
-                  onchange={() => toggle(row, { kind: "hangar" })}
-                />
-              </td>
-              <td data-label="Type">
-                <span class="cell-item">
-                  <TypeIcon
-                    typeID={row.typeID}
-                    name={resolvedName($names.resolved, "type", row.typeID)}
-                  />
-                  {resolvedName($names.resolved, "type", row.typeID)}
-                </span>
-              </td>
-              <td data-label="Cat">{resolvedName($names.resolved, "category", row.categoryID)}</td>
-              <td class="num" data-label="Qty">{row.singleton ? "(assembled)" : row.quantity}</td>
-              <td data-label="Action">
-                <span class="row-actions">
-                  {#if isOpenableContainer(row)}
-                    <button
-                      type="button"
-                      disabled={busy}
-                      onclick={() => run(() => flow.openContainer(row.itemID))}
-                    >
-                      Open
-                    </button>
-                  {/if}
-                  {#if isShip(row)}
-                    {#if isBoardableShip(row, $inventory.activeShipID)}
-                      <button
-                        type="button"
-                        disabled={busy}
-                        onclick={() => run(() => flow.boardShip(row.itemID))}
-                      >
-                        Board
-                      </button>
-                    {:else}
-                      <span class="note">active ship</span>
-                    {/if}
-                  {:else if !isOpenableContainer(row)}
-                    <button
-                      type="button"
-                      disabled={busy}
-                      onclick={() =>
-                        run(() =>
-                          flow.transferItems(
-                            [row.itemID],
-                            { kind: "hangar" },
-                            { kind: "cargo" },
-                            qtyArg(),
-                          ),
-                        )}
-                    >
-                      → Cargo
-                    </button>
-                  {/if}
-                </span>
-              </td>
-            </tr>
-          {/each}
-        </tbody>
-      </table>
-    </div>
-  {/if}
-</section>
-
-<section>
-  <h2>
-    Active ship cargo
-    <small class="note">
-      {activeShipHeader()} · capacity {capacityText($inventory.cargo.capacity)}
-    </small>
-  </h2>
-  <p>
-    <button
-      type="button"
-      class="minor"
-      disabled={busy || !$inventory.activeShipID}
-      onclick={() => run(() => flow.stackContainer("cargo"))}
-    >
-      Stack all (cargo)
-    </button>
-  </p>
-  {#if $inventory.cargo.error}
-    <p class="error">The cargo hold could not be loaded: {$inventory.cargo.error}</p>
-  {/if}
-  {#if !$inventory.activeShipID}
-    <p class="note">No active ship — board a ship in the hangar to see its cargo.</p>
-  {:else if $inventory.cargo.rows.length === 0}
-    <p class="empty">{$inventory.loaded ? "Cargo hold is empty." : "Loading cargo…"}</p>
-  {:else}
-    <div class="table-wrap overflow-x-auto">
-      <table class="guests reflow">
-        <thead>
-          <tr><th>Select</th><th>Type</th><th>Cat</th><th class="num">Qty</th><th>Action</th></tr>
-        </thead>
-        <tbody>
-          {#each $inventory.cargo.rows as row (row.itemID)}
-            <tr>
-              <td data-label="Select">
-                <input
-                  type="checkbox"
-                  aria-label="Select {resolvedName($names.resolved, 'type', row.typeID)}"
-                  checked={samePlace(selectionPlace, { kind: "cargo" }) &&
-                    selection.includes(row.itemID)}
-                  disabled={busy}
-                  onchange={() => toggle(row, { kind: "cargo" })}
-                />
-              </td>
-              <td data-label="Type">
-                <span class="cell-item">
-                  <TypeIcon
-                    typeID={row.typeID}
-                    name={resolvedName($names.resolved, "type", row.typeID)}
-                  />
-                  {resolvedName($names.resolved, "type", row.typeID)}
-                </span>
-              </td>
-              <td data-label="Cat">{resolvedName($names.resolved, "category", row.categoryID)}</td>
-              <td class="num" data-label="Qty">{row.singleton ? "(assembled)" : row.quantity}</td>
-              <td data-label="Action">
-                <span class="row-actions">
-                  {#if isOpenableContainer(row)}
-                    <button
-                      type="button"
-                      disabled={busy}
-                      onclick={() => run(() => flow.openContainer(row.itemID))}
-                    >
-                      Open
-                    </button>
-                  {:else}
-                    <button
-                      type="button"
-                      disabled={busy}
-                      onclick={() =>
-                        run(() =>
-                          flow.transferItems(
-                            [row.itemID],
-                            { kind: "cargo" },
-                            { kind: "hangar" },
-                            qtyArg(),
-                          ),
-                        )}
-                    >
-                      → Hangar
-                    </button>
-                  {/if}
-                </span>
-              </td>
-            </tr>
-          {/each}
-        </tbody>
-      </table>
-    </div>
+    {@render itemGrid(hangarThings, { kind: "hangar" }, "toCargo")}
   {/if}
 </section>
 
@@ -603,7 +765,7 @@
   <section>
     <h2>
       {containerName()}
-      <small class="note">capacity {capacityText($inventory.container.capacity)}</small>
+      <small class="note">room used {capacityText($inventory.container.capacity)}</small>
     </h2>
     <p>
       <button type="button" class="minor" disabled={busy} onclick={() => run(() => flow.openContainer(null))}>
@@ -615,60 +777,11 @@
     {:else if $inventory.container.rows.length === 0}
       <p class="empty">This container is empty.</p>
     {:else}
-      <div class="table-wrap overflow-x-auto">
-        <table class="guests reflow">
-          <thead>
-            <tr><th>Select</th><th>Type</th><th>Cat</th><th class="num">Qty</th><th>Action</th></tr>
-          </thead>
-          <tbody>
-            {#each $inventory.container.rows as row (row.itemID)}
-              <tr>
-                <td data-label="Select">
-                  <input
-                    type="checkbox"
-                    aria-label="Select {resolvedName($names.resolved, 'type', row.typeID)}"
-                    checked={samePlace(selectionPlace, {
-                      kind: "container",
-                      itemID: $inventory.container.itemID,
-                    }) && selection.includes(row.itemID)}
-                    disabled={busy}
-                    onchange={() =>
-                      toggle(row, { kind: "container", itemID: $inventory.container!.itemID })}
-                  />
-                </td>
-                <td data-label="Type">
-                  <span class="cell-item">
-                    <TypeIcon
-                      typeID={row.typeID}
-                      name={resolvedName($names.resolved, "type", row.typeID)}
-                    />
-                    {resolvedName($names.resolved, "type", row.typeID)}
-                  </span>
-                </td>
-                <td data-label="Cat">{resolvedName($names.resolved, "category", row.categoryID)}</td>
-                <td class="num" data-label="Qty">{row.singleton ? "(assembled)" : row.quantity}</td>
-                <td data-label="Action">
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onclick={() =>
-                      run(() =>
-                        flow.transferItems(
-                          [row.itemID],
-                          { kind: "container", itemID: $inventory.container!.itemID },
-                          { kind: "hangar" },
-                          qtyArg(),
-                        ),
-                      )}
-                  >
-                    → Hangar
-                  </button>
-                </td>
-              </tr>
-            {/each}
-          </tbody>
-        </table>
-      </div>
+      {@render itemGrid(
+        $inventory.container.rows,
+        { kind: "container", itemID: $inventory.container.itemID },
+        "toHangar",
+      )}
     {/if}
   </section>
 {/if}
@@ -716,62 +829,11 @@
           you see it — the server decides, and it does not say which.
         </p>
       {:else}
-        <div class="table-wrap overflow-x-auto">
-          <table class="guests reflow">
-            <thead>
-              <tr><th>Select</th><th>Type</th><th>Cat</th><th class="num">Qty</th><th>Action</th></tr>
-            </thead>
-            <tbody>
-              {#each selectedDivision.rows as row (row.itemID)}
-                <tr>
-                  <td data-label="Select">
-                    <input
-                      type="checkbox"
-                      aria-label="Select {resolvedName($names.resolved, 'type', row.typeID)}"
-                      checked={samePlace(selectionPlace, {
-                        kind: "corp",
-                        division: selectedDivision.division,
-                      }) && selection.includes(row.itemID)}
-                      disabled={busy}
-                      onchange={() =>
-                        toggle(row, { kind: "corp", division: selectedDivision!.division })}
-                    />
-                  </td>
-                  <td data-label="Type">
-                    <span class="cell-item">
-                      <TypeIcon
-                        typeID={row.typeID}
-                        name={resolvedName($names.resolved, "type", row.typeID)}
-                      />
-                      {resolvedName($names.resolved, "type", row.typeID)}
-                    </span>
-                  </td>
-                  <td data-label="Cat">
-                    {resolvedName($names.resolved, "category", row.categoryID)}
-                  </td>
-                  <td class="num" data-label="Qty">{row.singleton ? "(assembled)" : row.quantity}</td>
-                  <td data-label="Action">
-                    <button
-                      type="button"
-                      disabled={busy}
-                      onclick={() =>
-                        run(() =>
-                          flow.transferItems(
-                            [row.itemID],
-                            { kind: "corp", division: selectedDivision!.division },
-                            { kind: "hangar" },
-                            qtyArg(),
-                          ),
-                        )}
-                    >
-                      → Hangar
-                    </button>
-                  </td>
-                </tr>
-              {/each}
-            </tbody>
-          </table>
-        </div>
+        {@render itemGrid(
+          selectedDivision.rows,
+          { kind: "corp", division: selectedDivision.division },
+          "toHangar",
+        )}
       {/if}
     {/if}
   {/if}

@@ -121,6 +121,52 @@ export interface InventoryState {
    * that instead of inventing a cause.
    */
   readonly lastOutcome: MutationOutcome | null;
+  // --- R40 ship bays ---
+  /**
+   * Which ship the Ships card has open, and what its bays turned out to be.
+   * Null when no ship is expanded.
+   */
+  readonly openShip: OpenShipState | null;
+}
+
+// --- R40 ship bays ----------------------------------------------------------
+
+/**
+ * ONE bay on a hull — cargo hold, ore hold, drone bay, fleet hangar, and the
+ * two dozen others a hull might have. A bay IS an inventory flag, but the flag
+ * number never reaches the browser: the BFF hands over a key and a LABEL (R7d).
+ *
+ * The three-valued `present` is the whole point of this type. A hull that has
+ * no ore hold, and a hull whose ore hold could not be read, must not render
+ * identically — so "absent" and "unknown" are different values, and neither is
+ * an empty `items` list.
+ */
+export interface ShipBay {
+  /** Stable identity for this bay, e.g. "cargo", "ore", "drone". Not shown. */
+  readonly key: string;
+  /** What the player reads: "Ore hold", "Drone bay". Never a flag number. */
+  readonly label: string;
+  /**
+   * true — the hull has this bay · false — it does not · null — the read
+   * FAILED, so we genuinely do not know. Only `true` gets drawn as a bay.
+   */
+  readonly present: boolean | null;
+  /** Used / capacity in m³, or null when the ship reported none. */
+  readonly capacity: CapacityInfo | null;
+  /** `[]` is "we looked, and it is empty"; `null` is "we could not look". */
+  readonly items: readonly InventoryItemRow[] | null;
+  readonly error: string | null;
+}
+
+/** The ship whose bays the Ships card is showing. */
+export interface OpenShipState {
+  readonly itemID: number;
+  readonly typeID: number;
+  readonly bays: readonly ShipBay[];
+  /** True once a bay read has answered for this ship. */
+  readonly loaded: boolean;
+  /** Non-null when the bay read failed outright (no bay was read at all). */
+  readonly error: string | null;
 }
 
 // --- R14 inventory depth ----------------------------------------------------

@@ -390,6 +390,28 @@ export async function openContainer(
   };
 }
 
+/** A ship's bays as the BFF reports them (goal R40); still to be decoded. */
+export interface RawShipBaysResult {
+  readonly shipID: number;
+  readonly bays: JsonValue;
+}
+
+/**
+ * Read which bays a ship has, how full each is, and what is in it. Works for
+ * ANY ship the character can see — the one they are flying and the ones sitting
+ * in the hangar alike.
+ */
+export async function getShipBays(
+  shipID: number,
+  options: ApiOptions = {},
+): Promise<RawShipBaysResult> {
+  const data = await getJson(`/api/bridge/ship/${shipID}/bays`, options);
+  return {
+    shipID: asNumberOrNull(data.shipID) ?? shipID,
+    bays: data.bays ?? null,
+  };
+}
+
 /** One corporation hangar division as the BFF reports it (rows still raw). */
 export interface RawCorpDivision {
   readonly division: number;

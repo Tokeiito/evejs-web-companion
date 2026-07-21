@@ -1140,6 +1140,113 @@
     min-width: 0;
   }
 
+  /* ============================================= the item grid (R40) --
+   * The station hangar as a grid of picture tiles captioned with the thing's
+   * NAME and how much of it there is — the operator's ask, and the shape a
+   * player expects an inventory to have.
+   *
+   * WHY THIS REFLOWS BY ITSELF (R8). `auto-fill` + `minmax(<floor>, 1fr)` is
+   * the whole responsive story: the browser fits as many whole columns as the
+   * CONTAINER allows and never more, so the grid narrows to 2 columns on a
+   * phone and to 1 below the floor without a single media query and without
+   * ever pushing the body sideways. The floor is in `rem`, so it tracks the
+   * root font size rather than assuming pixels. Nothing here has a fixed
+   * width, so there is no width at which a tile can overflow its column.
+   *
+   * A LONG NAME MUST WRAP, NOT SCROLL. `min-width: 0` on the tile defeats the
+   * grid item's automatic minimum size (which is `auto`, i.e. big enough for
+   * the longest word) and `overflow-wrap: anywhere` breaks names like
+   * "Compressed Dense Veldspar" mid-word if it comes to it. Without both, one
+   * long type name is enough to force a horizontal scrollbar on the page. */
+  .item-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(8.5rem, 1fr));
+    gap: 0.6rem;
+    margin: 0.6rem 0 0;
+    padding: 0;
+    list-style: none;
+  }
+  .item-tile {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.35rem;
+    min-width: 0;
+    padding: 0.65rem 0.5rem;
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-frame);
+    background: var(--color-panel-3);
+  }
+  /* Ticked. The border is a SECOND signal only — the checkbox itself is the
+   * accessible state, so colour is never the only way to tell. */
+  .item-tile.picked {
+    border-color: var(--color-accent);
+  }
+  /* The tile the player is currently flying, in the ships card. */
+  .item-tile.self {
+    border-color: var(--color-accent-dim);
+  }
+  .item-tile-name {
+    font-size: 13px;
+    line-height: 1.25;
+    text-align: center;
+    overflow-wrap: anywhere;
+    min-width: 0;
+  }
+  /* The amount, under the name, per the operator. Tabular so a column of
+   * numbers lines up even though each sits in its own tile. */
+  .item-tile-amount {
+    color: var(--color-muted);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+  }
+  /* Selection and actions are full-width inside the tile so every target
+   * clears the 40px minimum (R8) no matter how narrow the column gets. */
+  .item-tile-pick {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.4rem;
+    width: 100%;
+    min-height: 2.5rem;
+    font-size: 12px;
+    color: var(--color-muted);
+    cursor: pointer;
+  }
+  .item-tile-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    width: 100%;
+    margin-top: auto;
+  }
+  .item-tile-actions button {
+    width: 100%;
+    min-height: 2.5rem;
+  }
+
+  /* ------------------------------------------------------- ship bays (R40) --
+   * A hull's bays. Each one is an ordinary `.hud-gauge` — used-vs-total is
+   * exactly what that component is for, and it already prints the numbers as
+   * text beside the bar, so the bar is never the only way to read how full a
+   * bay is. Only bays the hull ACTUALLY HAS are drawn; an absent bay is not a
+   * bay with nothing in it, and the two must never look alike. */
+  .bay {
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-frame);
+    background: var(--color-panel-2, var(--color-panel-3));
+    padding: 0.7rem 0.85rem;
+    margin-top: 0.6rem;
+  }
+  .bay-head {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem 0.9rem;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 0.5rem;
+  }
+
   /* =============================================== the fitting window (R21) --
    * A real fitting window: the ship in the middle, its slots as SOCKETS on
    * arcs around it. The arcs' angles are computed in

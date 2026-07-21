@@ -11,6 +11,7 @@ import {
   getStationItemBits,
 } from "../bridge/stationPanel.ts";
 import { decodeCapacity, decodeContainer, decodeInventoryRows } from "../bridge/inventoryShip.ts";
+import { decodeShipBays } from "../bridge/shipBays.ts";
 import { buildSlots, decodeResources, decodeShipAttributes } from "../bridge/fitting.ts";
 import { deriveShipStats } from "../bridge/shipStats.ts";
 import {
@@ -213,6 +214,8 @@ export interface AppFlow {
   clearSelection(): void;
   /** Open a container and read its contents; null closes it. */
   openContainer(containerID: number | null): Promise<void>;
+  /** Goal R40 — expand a ship in the Ships card and read its bays; null closes it. */
+  openShipBays(shipID: number | null): Promise<void>;
   /**
    * Move items between two places. A single item with a `qty` is a SPLIT; more
    * than one item is a single batch move. Reports what ACTUALLY applied.
@@ -1188,6 +1191,59 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         capacity: reads.capacity === null ? null : decodeCapacity(reads.capacity),
         error: null,
       },
+    });
+  }
+
+  /**
+   * Open a ship in the Ships card and read its bays (goal R40). `null` closes
+   * the card.
+   *
+   * The open and the read are two steps on purpose: the card shows "looking at
+   * this ship…" the moment it is clicked, instead of a hull that appears to
+   * have no bays until the read lands. An empty bay list and a bay list that
+   * has not arrived yet are different pictures.
+   */
+  async function openShipBays(shipID: number | null): Promise<void> {
+    if (shipID === null) {
+      store.apply({ type: "inventory/ship-open", itemID: null, typeID: 0 });
+      return;
+    }
+    // The ship's own typeID, so the card can NAME the hull. It is a row in
+    // whichever place the player clicked it from.
+    const current = store.get().inventory;
+    const owningRow =
+      current.hangar.rows.find((row) => row.itemID === shipID) ??
+      current.cargo.rows.find((row) => row.itemID === shipID) ??
+      null;
+    store.apply({
+      type: "inventory/ship-open",
+      itemID: shipID,
+      typeID: owningRow ? owningRow.typeID : (current.openShip?.typeID ?? 0),
+    });
+    let result: Awaited<ReturnType<typeof api.getShipBays>>;
+    try {
+      result = await api.getShipBays(shipID, callOptions);
+    } catch (error) {
+      if (isSessionLost(error)) {
+        stopLiveStream();
+        store.apply({ type: "character/offline" });
+        throw error;
+      }
+      // The whole read failed, so NOTHING is known about this hull's bays —
+      // which is not the same as a hull with no bays. The card says so.
+      store.apply({
+        type: "inventory/ship-bays",
+        itemID: shipID,
+        bays: [],
+        error: errorWords(error),
+      });
+      return;
+    }
+    store.apply({
+      type: "inventory/ship-bays",
+      itemID: shipID,
+      bays: decodeShipBays(result.bays),
+      error: null,
     });
   }
 
@@ -3965,6 +4021,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     },
 
     openContainer,
+    openShipBays,
 
     async transferItems(itemIDs, from, to, qty = null) {
       await runInventoryAction(async () => {

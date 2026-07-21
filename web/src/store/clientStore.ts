@@ -195,6 +195,7 @@ const INITIAL_INVENTORY: InventoryState = Object.freeze({
   container: null,
   corp: EMPTY_CORP_HANGAR,
   lastOutcome: null,
+  openShip: null,
 });
 
 // A resource reading with no total: `known: false` renders as an unknown bar
@@ -869,6 +870,40 @@ export function createClientStore(): ClientStore {
       case "inventory/outcome":
         inventory.set({ ...inventory.get(), lastOutcome: event.outcome });
         break;
+      case "inventory/ship-open":
+        // Opening a DIFFERENT ship starts from nothing rather than showing the
+        // previous ship's bays under the new ship's name. Re-opening the same
+        // ship (a refresh) keeps what is on screen until the read answers.
+        inventory.set({
+          ...inventory.get(),
+          openShip:
+            event.itemID === null
+              ? null
+              : {
+                  itemID: event.itemID,
+                  typeID: event.typeID,
+                  bays:
+                    inventory.get().openShip && inventory.get().openShip!.itemID === event.itemID
+                      ? inventory.get().openShip!.bays
+                      : [],
+                  loaded: false,
+                  error: null,
+                },
+        });
+        break;
+      case "inventory/ship-bays": {
+        const open = inventory.get().openShip;
+        // A read that answers for a ship the player has already navigated away
+        // from is dropped: a late reply must never repaint the wrong hull.
+        if (!open || open.itemID !== event.itemID) {
+          break;
+        }
+        inventory.set({
+          ...inventory.get(),
+          openShip: { ...open, bays: [...event.bays], loaded: true, error: event.error },
+        });
+        break;
+      }
       case "fitting/loaded":
         fitting.set({
           activeShipID: event.activeShipID,
