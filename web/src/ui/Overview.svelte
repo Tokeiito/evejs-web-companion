@@ -44,7 +44,7 @@
   import { resolvedName, nameKey, type NameRef } from "../store/names.ts";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
-  import type { ModuleCycle, SpaceEntity } from "../store/types.ts";
+  import type { DestinationMatch, ModuleCycle, SpaceEntity } from "../store/types.ts";
 
   let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
 
@@ -112,6 +112,17 @@
     { metres: 30000, label: "30 km" },
   ];
 
+  /**
+   * R30 slice F — a collapsed panel must never hide what it is SET to. Each
+   * label is read back out of the same fixed menu the picker offers, so the
+   * summary can only ever say something the player could have chosen — it is
+   * never formatted from the raw metre count, which is how "10 km" turns into
+   * "10.0 km" or, worse, "10000".
+   */
+  function rangeLabel(choices: readonly RangeChoice[], metres: string): string {
+    return choices.find((choice) => String(choice.metres) === metres)?.label ?? "—";
+  }
+
   let busy = $state(false);
   let error = $state("");
   let search = $state("");
@@ -121,6 +132,9 @@
   let warpRange = $state("0");
   let orbitRange = $state("1000");
   let holdRange = $state("1000");
+  const warpLabel = $derived(rangeLabel(WARP_RANGES, warpRange));
+  const orbitLabel = $derived(rangeLabel(HOLD_RANGES, orbitRange));
+  const holdLabel = $derived(rangeLabel(HOLD_RANGES, holdRange));
 
   const snapshot = $derived($space.snapshot);
   const inSpace = $derived(snapshot?.inSpace === true || $flight.status?.inSpace === true);
@@ -452,7 +466,9 @@
    * anything vanished. Announcing on either would cry wolf.
    */
   $effect(() => {
-    if (selectedID === null || !inSpace || !$space.loaded) {
+    // SOMEWHERE_ELSE is not a ball in space, so it can never "leave the
+    // snapshot" — checking it would announce it as vanished on every poll.
+    if (selectedID === null || selectedID === SOMEWHERE_ELSE || !inSpace || !$space.loaded) {
       return;
     }
     const stillThere = (snapshot?.entities ?? []).some((entity) => entity.itemID === selectedID);
@@ -461,6 +477,71 @@
       selectedID = null;
     }
   });
+
+  // --- R30 slice F: "Somewhere else…" ---------------------------------------
+  //
+  // THE LAST FORCED TAB SWITCH IN THE GRID. Slice A put Jump on a gate, so a
+  // destination one system away no longer pushes the player out. A destination
+  // that is not on this grid and not through a gate you can see still did:
+  // there was nothing in the overview that could express "anywhere that is not
+  // one of these 200 rows", so the answer was always the Travel tab — and
+  // before slice B, leaving actively froze the cockpit's own data feed.
+  //
+  // So the list grows one row that is not a ball in space. It sits at the
+  // bottom, it has no distance because it does not have one, and its verb is
+  // Set destination.
+
+  /**
+   * The sentinel id for that row.
+   *
+   * Negative on purpose: every real itemID the server issues is positive, so
+   * this cannot collide with one, and the "did my selection leave the snapshot"
+   * check can recognise and skip it rather than announcing it as vanished every
+   * poll.
+   */
+  const SOMEWHERE_ELSE = -1;
+  const somewhereElseSelected = $derived(selectedID === SOMEWHERE_ELSE);
+
+  // ⚠ Search results live in COMPONENT-LOCAL $state, never the store. They are
+  // a transient answer to a question this panel asked; the store holds what the
+  // SHIP reports. Travel.svelte made the same call for the same reason, and two
+  // panels holding the same search in two places would be two things to keep
+  // in sync for no gain.
+  let destinationQuery = $state("");
+  let destinationResults = $state<DestinationMatch[]>([]);
+  let destinationSearched = $state(false);
+
+  async function searchDestinations(): Promise<void> {
+    const query = destinationQuery.trim();
+    if (query.length < 2) {
+      destinationResults = [];
+      destinationSearched = false;
+      return;
+    }
+    await runFor("route", async () => {
+      destinationResults = await flow.searchDestinations(query);
+      destinationSearched = true;
+    });
+  }
+
+  /**
+   * Hand the chosen match to the same autopilot the Travel tab uses. `startRoute`
+   * resolves a station or a system id, solves the route and runs the decide
+   * loop — so this is one more caller of an existing path, not a second one.
+   */
+  async function setDestination(match: DestinationMatch): Promise<void> {
+    await runFor("route", () => flow.startRoute(match.id));
+  }
+
+  function jumpsText(jumps: number | null): string {
+    if (jumps === null) {
+      return "—";
+    }
+    if (jumps === 0) {
+      return "here";
+    }
+    return jumps === 1 ? "1 jump" : `${jumps} jumps`;
+  }
 
   /** The verbs on offer for the current selection. Empty when nothing is picked. */
   const selectionActions = $derived.by<readonly RowAction[]>(() => {
@@ -1090,6 +1171,24 @@
   /** Every drone in space, for the "all of them" buttons. */
   const allDroneIDs = $derived(spaceRows.map((row) => row.itemID));
 
+  /**
+   * R30 slice F — what a COLLAPSED drone panel still has to say.
+   *
+   * The panel folds away below the grid, so the one fact it may never hide is
+   * that you have drones in space: they are out, they are defending you, and
+   * they do not come home on their own. Everything else can wait for a click.
+   * `null` stays "we could not look", never "none out".
+   */
+  const droneSummary = $derived.by(() => {
+    if (dronesInSpace === null) {
+      return $drones.loaded ? "Could not be read" : "Looking…";
+    }
+    if (spaceRows.length === 0) {
+      return (droneBay ?? []).length > 0 ? "None out" : "None";
+    }
+    return spaceRows.length === 1 ? "1 out" : `${spaceRows.length} out`;
+  });
+
   const droneLimitText = $derived.by(() => {
     const parts: string[] = [];
     // null is "not known", never 0 — a hull with no drone bay and a read that
@@ -1352,58 +1451,6 @@
     <p class="note">Undock to see what is around your ship.</p>
   </section>
 {:else}
-  <section>
-    <h2>Ship condition</h2>
-    {#if !ship}
-      <p class="note">Reading your ship's condition…</p>
-    {:else}
-      <p class="note">{shipLabel()}</p>
-      <div class="hud">
-        {#each gauges as gauge (gauge.key)}
-          <div class="hud-gauge {gauge.key}">
-            <div class="hud-head">
-              <span class="hud-label">{gauge.label}</span>
-              <span class="hud-value">{gauge.percent === null ? "—" : `${gauge.percent}%`}</span>
-            </div>
-            <div
-              class="hud-track"
-              role="meter"
-              aria-label={gauge.label}
-              aria-valuenow={gauge.percent ?? 0}
-              aria-valuemin="0"
-              aria-valuemax="100"
-            >
-              <span class="hud-fill" style={`width: ${gauge.percent ?? 0}%`}></span>
-            </div>
-          </div>
-        {/each}
-      </div>
-    {/if}
-    <!--
-      R24 slice D — the LIVE hold, on the in-space screen rather than a tab away.
-      Only holds this hull actually HAS appear: whether a ship has an ore hold,
-      a gas hold, an ice hold or an asteroid hold is decided by whether the
-      capacity attribute is populated, so a Venture and a Mammoth differ by DATA
-      and nothing here special-cases either of them. What is not known reads as
-      not known — an unknown fill is not an empty one.
-
-      It stays fresh off the PUSH channel, not a poll: mining grants ore and
-      emits OnItemsChanged, that frame reaches the browser, and the browser
-      re-reads the hold from the ship. The notification is the trigger; the ship
-      is the authority.
-    -->
-    {#if shipHolds.length > 0}
-      <ul class="hold-strip">
-        {#each shipHolds as hold (hold.key)}
-          <li>
-            <span class="hold-name">{hold.label}</span>
-            <span class="hold-fill">{holdFillText(hold)}</span>
-          </li>
-        {/each}
-      </ul>
-    {/if}
-  </section>
-
   <!--
     R25 slice B — the threat block. Deliberately ABOVE everything a player is
     likely to be reading while mining, and deliberately NOT a row in the
@@ -1477,180 +1524,414 @@
     </section>
   {/if}
 
-  <!--
-    R25 slice A — drones. Two lists, because they are two different things: what
-    is sitting in the bay (launchable) and what is already flying (orderable).
 
-    ⚠ LAUNCHING IS THE DEFENCE. The server auto-engages idle combat drones
-    against whatever shoots your ship, so a miner who launches is defended
-    without touching Engage at all. The note below says that plainly, because a
-    player who does not know it will sit there clicking.
-
-    The two limits are SHOWN and never enforced here: the server owns both, and
-    a browser that pre-guessed them would either block a legal launch or promise
-    an illegal one.
-  -->
   <section>
-    <h2>Drones</h2>
-    <p class="note">
-      Drones you launch defend you on their own — they will attack anything that
-      shoots your ship, without you doing anything else. Use Attack to pick a
-      target yourself, or Bring home to call them back.
-    </p>
-    <p class="note">{droneLimitText}</p>
-    {#if $drones.error}
-      <p class="error">{$drones.error}</p>
-    {/if}
-    {#if $drones.actionError}
-      <p class="error">{$drones.actionError}</p>
-    {/if}
-    {#if $drones.silentDecline}
-      <p class="error">{$drones.silentDecline}</p>
-    {/if}
-
-    <h3>In space</h3>
-    {#if dronesInSpace === null}
-      <!-- null is "we could not look", which must never read as "none out". -->
-      <p class="note">
-        {$drones.loaded ? "Your drones in space could not be read." : "Looking…"}
-      </p>
-    {:else if spaceRows.length === 0}
-      <p class="empty">No drones out.</p>
+    <h2>Ship condition</h2>
+    {#if !ship}
+      <p class="note">Reading your ship's condition…</p>
     {:else}
-      <ul class="drone-list">
-        {#each spaceRows as drone (drone.itemID)}
+      <p class="note">{shipLabel()}</p>
+      <div class="hud">
+        {#each gauges as gauge (gauge.key)}
+          <div class="hud-gauge {gauge.key}">
+            <div class="hud-head">
+              <span class="hud-label">{gauge.label}</span>
+              <span class="hud-value">{gauge.percent === null ? "—" : `${gauge.percent}%`}</span>
+            </div>
+            <div
+              class="hud-track"
+              role="meter"
+              aria-label={gauge.label}
+              aria-valuenow={gauge.percent ?? 0}
+              aria-valuemin="0"
+              aria-valuemax="100"
+            >
+              <span class="hud-fill" style={`width: ${gauge.percent ?? 0}%`}></span>
+            </div>
+          </div>
+        {/each}
+      </div>
+    {/if}
+    <!--
+      R24 slice D — the LIVE hold, on the in-space screen rather than a tab away.
+      Only holds this hull actually HAS appear: whether a ship has an ore hold,
+      a gas hold, an ice hold or an asteroid hold is decided by whether the
+      capacity attribute is populated, so a Venture and a Mammoth differ by DATA
+      and nothing here special-cases either of them. What is not known reads as
+      not known — an unknown fill is not an empty one.
+
+      It stays fresh off the PUSH channel, not a poll: mining grants ore and
+      emits OnItemsChanged, that frame reaches the browser, and the browser
+      re-reads the hold from the ship. The notification is the trigger; the ship
+      is the authority.
+    -->
+    {#if shipHolds.length > 0}
+      <ul class="hold-strip">
+        {#each shipHolds as hold (hold.key)}
           <li>
-            <span class="drone-name">{drone.label}</span>
-            <span class="drone-activity">
-              {drone.activity}{drone.targetLabel ? ` — ${drone.targetLabel}` : ""}
-            </span>
-            <span class="row-actions">
-              <button
-                type="button"
-                disabled={busy}
-                onclick={() => run(() => flow.recallDrones([drone.itemID]))}
-              >
-                Bring home
-              </button>
-            </span>
+            <span class="hold-name">{hold.label}</span>
+            <span class="hold-fill">{holdFillText(hold)}</span>
           </li>
         {/each}
       </ul>
+    {/if}
+  </section>
+
+  <!--
+    R30 slice D — THE SELECTION BAR.
+
+    One bar, acting on one thing, replacing up to nine buttons on every one of
+    up to 200 rows. What it offers is not decided here: `space/rowActions.ts`
+    returns the verb list as data, and this renders it. That split is the whole
+    point — a decision spelled out as {#if} blocks in markup can only be checked
+    by a regex over markup, which proves nothing about the decision.
+
+    It is `position: sticky` at desktop width so it stays reachable while you
+    scroll a long grid. Sticky, NOT fixed: a sticky element still takes up its
+    own space in the flow, so it cannot occlude the last row of the table the
+    way a floating bar would — and that occlusion would be invisible at desktop
+    width, which is where it would be shipped from. The fixed-bottom phone bar
+    is a separate piece of work with its own body padding to compensate.
+  -->
+  <section class="selection-bar" aria-label="What you have picked">
+    {#if selectionNotice}
+      <!--
+        ⚠ The selection is CLEARED and SAID, never silently moved. A bar that
+        fell back to "the first row" would have the player press Warp to
+        expecting one destination and get another.
+      -->
+      <p class="error">{selectionNotice}</p>
+    {/if}
+    <!--
+      R30 slice E — YOUR SHIP's own verb, not the selection's. Taking what you
+      have mined somewhere is squarely "what can I do right now", so it lives in
+      the same bar, and it is drawn whether or not anything is picked.
+
+      ⚠ It is ALWAYS drawn. Every reason it cannot run is a sentence on the
+      control — no station on this grid, or nothing in the holds — because a
+      player with a full hold who cannot find the haul verb has no way to tell
+      whether the app forgot it or decided against it.
+    -->
+    <span class="row-actions ship-actions">
+      {#each haulActions as action (action.id)}
+        <button
+          type="button"
+          disabled={concernBusy(action.concern) || action.unavailable !== null}
+          title={action.unavailable ?? ""}
+          onclick={() => runRowAction(action)}
+        >
+          {action.unavailable ?? action.label}
+        </button>
+      {/each}
+    </span>
+    {#if concernErrors.hold}
+      <p class="error">{concernErrors.hold}</p>
+    {/if}
+    {#if somewhereElseSelected}
+      <!--
+        R30 slice F — the destination search, in the cockpit.
+
+        ⚠ Results are COMPONENT-LOCAL $state, never a store slice. They are a
+        transient answer to a question this panel asked; the store holds what
+        the SHIP reports. Travel.svelte made the same call for the same reason.
+
+        Setting one hands off to `flow.startRoute` — the same R5b route solver
+        and browser autopilot the Travel tab drives. This is one more caller of
+        an existing path, not a second path.
+      -->
+      <p class="selection-name">Somewhere else…</p>
       <p class="controls">
-        <!--
-          Acting on the LOCKED target, reusing R23's auto-target default:
-          locking something makes it what your equipment acts on, and drones are
-          no different. (The server does not actually require a lock for
-          CmdEngage — this is a UI choice, so a player only ever sends drones at
-          something they deliberately picked.)
-        -->
+        <label>
+          Where to
+          <input
+            type="search"
+            bind:value={destinationQuery}
+            placeholder="system or station name"
+            onkeydown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                void searchDestinations();
+              }
+            }}
+          />
+        </label>
         <button
           type="button"
-          disabled={busy || effectiveTargetID <= 0}
-          onclick={() => run(() => flow.engageDrones(allDroneIDs, effectiveTargetID))}
+          disabled={concernBusy("route") || destinationQuery.trim().length < 2}
+          onclick={() => searchDestinations()}
         >
-          Attack what I have locked
-        </button>
-        <button
-          type="button"
-          disabled={busy || effectiveTargetID <= 0}
-          onclick={() => run(() => flow.mineWithDrones(allDroneIDs, effectiveTargetID))}
-        >
-          Mine what I have locked
-        </button>
-        <button
-          type="button"
-          disabled={busy}
-          onclick={() => run(() => flow.recallDrones(allDroneIDs))}
-        >
-          Bring them all home
+          Search
         </button>
       </p>
-      {#if effectiveTargetID <= 0}
-        <p class="note">Lock something first to give your drones a target.</p>
+      {#if concernErrors.route}
+        <p class="error">{concernErrors.route}</p>
       {/if}
-    {/if}
-
-    <h3>In the bay</h3>
-    {#if droneBay === null}
+      {#if destinationSearched && destinationResults.length === 0}
+        <p class="empty">Nothing on the star map matches that name.</p>
+      {:else if destinationResults.length > 0}
+        <ul class="destination-results">
+          {#each destinationResults as match (match.id)}
+            <li>
+              <span class="destination-name">{match.name}</span>
+              <span class="destination-where">
+                {match.kind === "station"
+                  ? (match.solarSystemName ?? "an unknown system")
+                  : "Solar system"} · {jumpsText(match.jumps)}
+              </span>
+              <span class="row-actions">
+                <button
+                  type="button"
+                  disabled={concernBusy("route")}
+                  onclick={() => setDestination(match)}
+                >
+                  Set destination
+                </button>
+              </span>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+    {:else if !selectedRow}
       <p class="note">
-        {$drones.loaded ? "Your drone bay could not be read." : "Looking…"}
+        Pick anything in the list below to warp to it, fly towards it, orbit it,
+        hold a distance from it, line your ship up with it, lock it or mine it.
+        The last row sets a course anywhere else.
       </p>
-    {:else if bayRows.length === 0}
-      <p class="empty">Nothing in the drone bay.</p>
     {:else}
-      <ul class="drone-list">
-        {#each bayRows as stack (stack.itemID)}
-          <li>
-            <label class="drone-pick">
-              <input
-                type="checkbox"
-                checked={launchPicks[stack.itemID] === true}
-                onchange={() => toggleLaunchPick(stack.itemID)}
-              />
-              <span class="drone-name">{stack.label}</span>
-            </label>
-            <span class="drone-activity">In the bay</span>
-            <span class="row-actions">
-              <button
-                type="button"
-                disabled={busy}
-                onclick={() => run(() => flow.launchDrones([stack.itemID]))}
-              >
-                Launch
-              </button>
-            </span>
-          </li>
-        {/each}
-      </ul>
-      <p class="controls">
-        <button
-          type="button"
-          disabled={busy || pickedForLaunch.length === 0}
-          onclick={() => run(() => flow.launchDrones(pickedForLaunch))}
-        >
-          Launch the ones I picked
-        </button>
+      <p class="selection-name">{displayLabel(selectedRow)}</p>
+      <p class="selection-what">
+        {typeName(selectedRow)} · {formatDistance(selectedRow.distance)}
       </p>
+      <span class="row-actions">
+        {#each selectionActions as action (action.id + action.label)}
+          <!--
+            An action that cannot be used right now is still DRAWN, disabled,
+            wearing the sentence that says why (as its label and as its
+            title/aria-description). Never a silent grey rectangle, and never
+            missing entirely — a player cannot tell a forgotten button from a
+            deliberate one.
+          -->
+          <button
+            type="button"
+            class={action.id === "unlock" ? "active" : ""}
+            disabled={concernBusy(action.concern) || action.unavailable !== null}
+            title={action.unavailable ?? ""}
+            onclick={() => runRowAction(action)}
+          >
+            {action.unavailable ?? action.label}
+          </button>
+        {/each}
+      </span>
+      <!--
+        The failure lands HERE, beside the buttons that caused it, and it is
+        kept per concern — so a refused lock does not read as a refused warp,
+        and neither of them greys out anything else.
+      -->
+      {#each ["move", "lock", "module", "route"] as const as concern (concern)}
+        {#if concernErrors[concern]}
+          <p class="error">{concernErrors[concern]}</p>
+        {/if}
+      {/each}
+      <!--
+        R30 slice E — ⚠ WHAT EACH MODULE DID, ONE LINE EACH.
+
+        "Mine this" reaches for every powered-up module whose name reads like
+        mining gear, and every one of those calls lands its outcome in the SAME
+        store slot. Firing them all and showing the last answer would silently
+        lose the other refusals — a player with two lasers would be told it
+        worked while one of them never started. So each is read back right after
+        its own call and named here, including the accepted-then-not-running
+        case, which is a different failure from a refusal and reads differently.
+      -->
+      {#if mineReports.length > 0}
+        <ul class="mine-reports">
+          {#each mineReports as report (report.itemID)}
+            <li class={report.ok ? "" : "error"}>
+              <span class="mine-module">{report.label}</span>
+              <span class="mine-outcome">{report.outcome}</span>
+            </li>
+          {/each}
+        </ul>
+      {/if}
     {/if}
   </section>
 
   <section>
-    <h2>Flying</h2>
-    <p class="note">
-      Pick the distances you want first, then use the buttons on any row below.
-      Stop cuts the engines — and switches the autopilot off, so nothing starts
-      flying you somewhere again.
-    </p>
+    <h2>Overview</h2>
     <p class="controls">
       <label>
-        Warp to within
-        <select bind:value={warpRange}>
-          {#each WARP_RANGES as choice (choice.metres)}
-            <option value={String(choice.metres)}>{choice.label}</option>
+        Search
+        <input type="search" bind:value={search} placeholder="name, type or group" />
+      </label>
+      <label>
+        Category
+        <select bind:value={categoryFilter}>
+          <option value="">All</option>
+          {#each filterChoices.categories as choice (choice.id)}
+            <option value={String(choice.id)}>{choice.label}</option>
           {/each}
         </select>
       </label>
       <label>
-        Orbit at
-        <select bind:value={orbitRange}>
-          {#each HOLD_RANGES as choice (choice.metres)}
-            <option value={String(choice.metres)}>{choice.label}</option>
+        Group
+        <select bind:value={groupFilter}>
+          <option value="">All</option>
+          {#each filterChoices.groups as choice (choice.id)}
+            <option value={String(choice.id)}>{choice.label}</option>
           {/each}
         </select>
       </label>
       <label>
-        Hold at
-        <select bind:value={holdRange}>
-          {#each HOLD_RANGES as choice (choice.metres)}
-            <option value={String(choice.metres)}>{choice.label}</option>
-          {/each}
+        Sort by
+        <select bind:value={sort}>
+          <option value="distance">Distance</option>
+          <option value="name">Name</option>
         </select>
       </label>
-      <button type="button" disabled={busy} onclick={() => run(() => flow.stopShip())}>
-        Stop the ship
+      <!--
+        R23 slice B — the survey scanner. The ship can see the rocks around it
+        without this, but not always how much ore is left in them; a scan fills
+        the "Ore left" column in. Read-only: it mines nothing and moves nothing.
+      -->
+      <button type="button" disabled={busy} onclick={() => run(() => flow.runSurveyScan())}>
+        Scan the rocks
       </button>
     </p>
+    {#if $mining.surveyError}
+      <p class="error">{$mining.surveyError}</p>
+    {:else if $mining.surveyAtMs !== null && $mining.survey.length === 0}
+      <p class="note">The scan came back empty — there was nothing minable in range.</p>
+    {:else if rockCount > 0 && $mining.surveyAtMs === null}
+      <p class="note">
+        There are rocks here. Scan them to see how much ore each one still has.
+      </p>
+    {/if}
+
+    {#if !$space.loaded}
+      <p class="note">Looking around…</p>
+    {:else if overview.rows.length === 0}
+      <p class="empty">Nothing matches — clear the search or filters to see everything.</p>
+    {:else}
+      <p class="note">
+        Showing {overview.rows.length} of {overview.matched} nearby.
+        {#if overview.matched > overview.rows.length}
+          Search or filter to narrow the list.
+        {/if}
+      </p>
+      <div class="table-wrap overflow-x-auto">
+        <table class="guests overview reflow">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Type</th>
+              <th>Group</th>
+              <th class="num">Distance</th>
+              <!--
+                R23 slice B — only meaningful for a rock, and blank for
+                everything else. A dash means the amount is NOT KNOWN; a rock
+                that really is empty says "Mined out". Run a survey scan to fill
+                in what the ship could not see on its own.
+              -->
+              <th class="num">Ore left</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each gateRows as row (row.itemID)}
+              <!--
+                R25 slice B — a hostile row is visually distinct IN the list as
+                well as pulled out above it. The badge carries the word, so the
+                colour is never the only signal (a player who cannot tell red
+                from grey still reads "Pirate").
+              -->
+              <tr class:hostile={rowIsHostile(row)}>
+                <td data-label="Name">
+                  {#if rowIsHostile(row)}<span class="threat-badge">{rowBadge(row)}</span>{/if}
+                  {displayLabel(row)}
+                </td>
+                <td data-label="Type">
+                  <span class="cell-item">
+                    <TypeIcon typeID={row.typeID} name={typeName(row)} />
+                    {typeName(row)}
+                  </span>
+                </td>
+                <td data-label="Group">{groupName(row)}</td>
+                <td class="num" data-label="Distance">{formatDistance(row.distance)}</td>
+                <td class="num" data-label="Ore left">{remainingLabel(row)}</td>
+                <!--
+                  R30 slice D — the whole per-row `.row-actions` block that used
+                  to live here is GONE, and this single control replaces it.
+
+                  There were up to nine buttons on every one of up to 200 rows,
+                  re-rendered every poll. The names and distances a player is
+                  actually reading were squeezed into whatever the buttons left,
+                  and at the phone breakpoint each row became a stack of nine
+                  full-width buttons you had to scroll past to reach the next
+                  row. Picking a thing and acting on it is how the retail client
+                  works, and it is the only version of this that fits.
+                -->
+                <td data-label="">
+                  <span class="row-actions">
+                    <button
+                      type="button"
+                      class={selectedID === row.itemID ? "active" : ""}
+                      aria-pressed={selectedID === row.itemID}
+                      onclick={() => selectRow(row.itemID)}
+                    >
+                      {selectedID === row.itemID ? "Selected" : "Select"}
+                    </button>
+                  </span>
+                </td>
+              </tr>
+            {/each}
+            <!--
+              R30 slice F — the row that is not a thing in space.
+
+              The overview can only ever offer what is on this grid. A
+              destination that is neither on it nor through a gate you can see
+              had no expression here at all, so the answer was always the Travel
+              tab — and before slice B, going there actively froze this panel's
+              own data feed. This row is where "anywhere else" lives, and its
+              verb is Set destination.
+
+              It carries no distance and no type, because it does not have
+              either, and a dash is the honest way to say so.
+            -->
+            <tr class="synthetic-row">
+              <td data-label="Name">Somewhere else…</td>
+              <td data-label="Type">Anywhere not on this grid</td>
+              <td data-label="Group">—</td>
+              <td class="num" data-label="Distance">—</td>
+              <td class="num" data-label="Ore left"></td>
+              <td data-label="">
+                <span class="row-actions">
+                  <button
+                    type="button"
+                    class={somewhereElseSelected ? "active" : ""}
+                    aria-pressed={somewhereElseSelected}
+                    onclick={() => selectRow(SOMEWHERE_ELSE)}
+                  >
+                    {somewhereElseSelected ? "Selected" : "Select"}
+                  </button>
+                </span>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      {#if $flight.actionError}
+        <p class="error">{$flight.actionError}</p>
+      {/if}
+      <!--
+        R30 slice A — an honest silence. If the star map could not be read we
+        say so, because "this gate offers no jump" and "I could not tell where
+        this gate goes" are different facts and a player acts differently on
+        each. Warp to / Approach still work on the gate row regardless.
+      -->
+      {#if gateLinksError}
+        <p class="note">{gateLinksError}</p>
+      {/if}
+    {/if}
   </section>
 
   <!--
@@ -1926,6 +2207,209 @@
     {/if}
   </section>
 
+  <!--
+    R30 slice F — COLLAPSED, and moved below the grid.
+
+    These are three distances a player picks ONCE and then applies to every row
+    for the rest of the session — retail's right-click submenus, flattened. They
+    had a full section above the list they modify, which put a settings panel
+    between the player and the thing they came to read. Collapsed by default and
+    below the grid: still one click away, no longer in the way.
+
+    Native <details>. No JS, no state to get out of sync, keyboard-operable and
+    screen-reader-announced for free — and the summary carries the CURRENT
+    values, so a collapsed panel never hides what it is set to.
+  -->
+  <details class="collapsible">
+    <summary>
+      <span class="collapse-title">Flying distances</span>
+      <span class="collapse-hint">
+        Warp {warpLabel} · Orbit {orbitLabel} · Hold {holdLabel}
+      </span>
+    </summary>
+    <p class="note">
+      Pick the distances you want, then use Warp to, Orbit and Keep at range on
+      whatever you have picked. Stop cuts the engines — and switches the
+      autopilot off, so nothing starts flying you somewhere again.
+    </p>
+    <p class="controls">
+      <label>
+        Warp to within
+        <select bind:value={warpRange}>
+          {#each WARP_RANGES as choice (choice.metres)}
+            <option value={String(choice.metres)}>{choice.label}</option>
+          {/each}
+        </select>
+      </label>
+      <label>
+        Orbit at
+        <select bind:value={orbitRange}>
+          {#each HOLD_RANGES as choice (choice.metres)}
+            <option value={String(choice.metres)}>{choice.label}</option>
+          {/each}
+        </select>
+      </label>
+      <label>
+        Hold at
+        <select bind:value={holdRange}>
+          {#each HOLD_RANGES as choice (choice.metres)}
+            <option value={String(choice.metres)}>{choice.label}</option>
+          {/each}
+        </select>
+      </label>
+      <button type="button" disabled={busy} onclick={() => run(() => flow.stopShip())}>
+        Stop the ship
+      </button>
+    </p>
+  </details>
+
+  <!--
+    R25 slice A — drones. Two lists, because they are two different things: what
+    is sitting in the bay (launchable) and what is already flying (orderable).
+
+    ⚠ LAUNCHING IS THE DEFENCE. The server auto-engages idle combat drones
+    against whatever shoots your ship, so a miner who launches is defended
+    without touching Engage at all. The note below says that plainly, because a
+    player who does not know it will sit there clicking.
+
+    The two limits are SHOWN and never enforced here: the server owns both, and
+    a browser that pre-guessed them would either block a legal launch or promise
+    an illegal one.
+
+    R30 slice F — COLLAPSED, and moved below the grid. A hull with no drone bay
+    still had two empty lists and a paragraph of explanation sitting between the
+    player and the overview, on every single poll. The summary carries the count
+    that matters — how many are OUT — so a collapsed panel never hides the fact
+    that you have drones in space, which is the one thing you must not miss.
+  -->
+  <details class="collapsible">
+    <summary>
+      <span class="collapse-title">Drones</span>
+      <span class="collapse-hint">{droneSummary}</span>
+    </summary>
+    <p class="note">
+      Drones you launch defend you on their own — they will attack anything that
+      shoots your ship, without you doing anything else. Use Attack to pick a
+      target yourself, or Bring home to call them back.
+    </p>
+    <p class="note">{droneLimitText}</p>
+    {#if $drones.error}
+      <p class="error">{$drones.error}</p>
+    {/if}
+    {#if $drones.actionError}
+      <p class="error">{$drones.actionError}</p>
+    {/if}
+    {#if $drones.silentDecline}
+      <p class="error">{$drones.silentDecline}</p>
+    {/if}
+
+    <h3>In space</h3>
+    {#if dronesInSpace === null}
+      <!-- null is "we could not look", which must never read as "none out". -->
+      <p class="note">
+        {$drones.loaded ? "Your drones in space could not be read." : "Looking…"}
+      </p>
+    {:else if spaceRows.length === 0}
+      <p class="empty">No drones out.</p>
+    {:else}
+      <ul class="drone-list">
+        {#each spaceRows as drone (drone.itemID)}
+          <li>
+            <span class="drone-name">{drone.label}</span>
+            <span class="drone-activity">
+              {drone.activity}{drone.targetLabel ? ` — ${drone.targetLabel}` : ""}
+            </span>
+            <span class="row-actions">
+              <button
+                type="button"
+                disabled={busy}
+                onclick={() => run(() => flow.recallDrones([drone.itemID]))}
+              >
+                Bring home
+              </button>
+            </span>
+          </li>
+        {/each}
+      </ul>
+      <p class="controls">
+        <!--
+          Acting on the LOCKED target, reusing R23's auto-target default:
+          locking something makes it what your equipment acts on, and drones are
+          no different. (The server does not actually require a lock for
+          CmdEngage — this is a UI choice, so a player only ever sends drones at
+          something they deliberately picked.)
+        -->
+        <button
+          type="button"
+          disabled={busy || effectiveTargetID <= 0}
+          onclick={() => run(() => flow.engageDrones(allDroneIDs, effectiveTargetID))}
+        >
+          Attack what I have locked
+        </button>
+        <button
+          type="button"
+          disabled={busy || effectiveTargetID <= 0}
+          onclick={() => run(() => flow.mineWithDrones(allDroneIDs, effectiveTargetID))}
+        >
+          Mine what I have locked
+        </button>
+        <button
+          type="button"
+          disabled={busy}
+          onclick={() => run(() => flow.recallDrones(allDroneIDs))}
+        >
+          Bring them all home
+        </button>
+      </p>
+      {#if effectiveTargetID <= 0}
+        <p class="note">Lock something first to give your drones a target.</p>
+      {/if}
+    {/if}
+
+    <h3>In the bay</h3>
+    {#if droneBay === null}
+      <p class="note">
+        {$drones.loaded ? "Your drone bay could not be read." : "Looking…"}
+      </p>
+    {:else if bayRows.length === 0}
+      <p class="empty">Nothing in the drone bay.</p>
+    {:else}
+      <ul class="drone-list">
+        {#each bayRows as stack (stack.itemID)}
+          <li>
+            <label class="drone-pick">
+              <input
+                type="checkbox"
+                checked={launchPicks[stack.itemID] === true}
+                onchange={() => toggleLaunchPick(stack.itemID)}
+              />
+              <span class="drone-name">{stack.label}</span>
+            </label>
+            <span class="drone-activity">In the bay</span>
+            <span class="row-actions">
+              <button
+                type="button"
+                disabled={busy}
+                onclick={() => run(() => flow.launchDrones([stack.itemID]))}
+              >
+                Launch
+              </button>
+            </span>
+          </li>
+        {/each}
+      </ul>
+      <p class="controls">
+        <button
+          type="button"
+          disabled={busy || pickedForLaunch.length === 0}
+          onclick={() => run(() => flow.launchDrones(pickedForLaunch))}
+        >
+          Launch the ones I picked
+        </button>
+      </p>
+    {/if}
+  </details>
+
   <section>
     <h2>Shots fired</h2>
     <p class="note">
@@ -1960,266 +2444,6 @@
           </tbody>
         </table>
       </div>
-    {/if}
-  </section>
-
-  <!--
-    R30 slice D — THE SELECTION BAR.
-
-    One bar, acting on one thing, replacing up to nine buttons on every one of
-    up to 200 rows. What it offers is not decided here: `space/rowActions.ts`
-    returns the verb list as data, and this renders it. That split is the whole
-    point — a decision spelled out as {#if} blocks in markup can only be checked
-    by a regex over markup, which proves nothing about the decision.
-
-    It is `position: sticky` at desktop width so it stays reachable while you
-    scroll a long grid. Sticky, NOT fixed: a sticky element still takes up its
-    own space in the flow, so it cannot occlude the last row of the table the
-    way a floating bar would — and that occlusion would be invisible at desktop
-    width, which is where it would be shipped from. The fixed-bottom phone bar
-    is a separate piece of work with its own body padding to compensate.
-  -->
-  <section class="selection-bar" aria-label="What you have picked">
-    {#if selectionNotice}
-      <!--
-        ⚠ The selection is CLEARED and SAID, never silently moved. A bar that
-        fell back to "the first row" would have the player press Warp to
-        expecting one destination and get another.
-      -->
-      <p class="error">{selectionNotice}</p>
-    {/if}
-    <!--
-      R30 slice E — YOUR SHIP's own verb, not the selection's. Taking what you
-      have mined somewhere is squarely "what can I do right now", so it lives in
-      the same bar, and it is drawn whether or not anything is picked.
-
-      ⚠ It is ALWAYS drawn. Every reason it cannot run is a sentence on the
-      control — no station on this grid, or nothing in the holds — because a
-      player with a full hold who cannot find the haul verb has no way to tell
-      whether the app forgot it or decided against it.
-    -->
-    <span class="row-actions ship-actions">
-      {#each haulActions as action (action.id)}
-        <button
-          type="button"
-          disabled={concernBusy(action.concern) || action.unavailable !== null}
-          title={action.unavailable ?? ""}
-          onclick={() => runRowAction(action)}
-        >
-          {action.unavailable ?? action.label}
-        </button>
-      {/each}
-    </span>
-    {#if concernErrors.hold}
-      <p class="error">{concernErrors.hold}</p>
-    {/if}
-    {#if !selectedRow}
-      <p class="note">
-        Pick anything in the list below to warp to it, fly towards it, orbit it,
-        hold a distance from it, line your ship up with it, lock it or mine it.
-      </p>
-    {:else}
-      <p class="selection-name">{displayLabel(selectedRow)}</p>
-      <p class="selection-what">
-        {typeName(selectedRow)} · {formatDistance(selectedRow.distance)}
-      </p>
-      <span class="row-actions">
-        {#each selectionActions as action (action.id + action.label)}
-          <!--
-            An action that cannot be used right now is still DRAWN, disabled,
-            wearing the sentence that says why (as its label and as its
-            title/aria-description). Never a silent grey rectangle, and never
-            missing entirely — a player cannot tell a forgotten button from a
-            deliberate one.
-          -->
-          <button
-            type="button"
-            class={action.id === "unlock" ? "active" : ""}
-            disabled={concernBusy(action.concern) || action.unavailable !== null}
-            title={action.unavailable ?? ""}
-            onclick={() => runRowAction(action)}
-          >
-            {action.unavailable ?? action.label}
-          </button>
-        {/each}
-      </span>
-      <!--
-        The failure lands HERE, beside the buttons that caused it, and it is
-        kept per concern — so a refused lock does not read as a refused warp,
-        and neither of them greys out anything else.
-      -->
-      {#each ["move", "lock", "module", "route"] as const as concern (concern)}
-        {#if concernErrors[concern]}
-          <p class="error">{concernErrors[concern]}</p>
-        {/if}
-      {/each}
-      <!--
-        R30 slice E — ⚠ WHAT EACH MODULE DID, ONE LINE EACH.
-
-        "Mine this" reaches for every powered-up module whose name reads like
-        mining gear, and every one of those calls lands its outcome in the SAME
-        store slot. Firing them all and showing the last answer would silently
-        lose the other refusals — a player with two lasers would be told it
-        worked while one of them never started. So each is read back right after
-        its own call and named here, including the accepted-then-not-running
-        case, which is a different failure from a refusal and reads differently.
-      -->
-      {#if mineReports.length > 0}
-        <ul class="mine-reports">
-          {#each mineReports as report (report.itemID)}
-            <li class={report.ok ? "" : "error"}>
-              <span class="mine-module">{report.label}</span>
-              <span class="mine-outcome">{report.outcome}</span>
-            </li>
-          {/each}
-        </ul>
-      {/if}
-    {/if}
-  </section>
-
-  <section>
-    <h2>Overview</h2>
-    <p class="controls">
-      <label>
-        Search
-        <input type="search" bind:value={search} placeholder="name, type or group" />
-      </label>
-      <label>
-        Category
-        <select bind:value={categoryFilter}>
-          <option value="">All</option>
-          {#each filterChoices.categories as choice (choice.id)}
-            <option value={String(choice.id)}>{choice.label}</option>
-          {/each}
-        </select>
-      </label>
-      <label>
-        Group
-        <select bind:value={groupFilter}>
-          <option value="">All</option>
-          {#each filterChoices.groups as choice (choice.id)}
-            <option value={String(choice.id)}>{choice.label}</option>
-          {/each}
-        </select>
-      </label>
-      <label>
-        Sort by
-        <select bind:value={sort}>
-          <option value="distance">Distance</option>
-          <option value="name">Name</option>
-        </select>
-      </label>
-      <!--
-        R23 slice B — the survey scanner. The ship can see the rocks around it
-        without this, but not always how much ore is left in them; a scan fills
-        the "Ore left" column in. Read-only: it mines nothing and moves nothing.
-      -->
-      <button type="button" disabled={busy} onclick={() => run(() => flow.runSurveyScan())}>
-        Scan the rocks
-      </button>
-    </p>
-    {#if $mining.surveyError}
-      <p class="error">{$mining.surveyError}</p>
-    {:else if $mining.surveyAtMs !== null && $mining.survey.length === 0}
-      <p class="note">The scan came back empty — there was nothing minable in range.</p>
-    {:else if rockCount > 0 && $mining.surveyAtMs === null}
-      <p class="note">
-        There are rocks here. Scan them to see how much ore each one still has.
-      </p>
-    {/if}
-
-    {#if !$space.loaded}
-      <p class="note">Looking around…</p>
-    {:else if overview.rows.length === 0}
-      <p class="empty">Nothing matches — clear the search or filters to see everything.</p>
-    {:else}
-      <p class="note">
-        Showing {overview.rows.length} of {overview.matched} nearby.
-        {#if overview.matched > overview.rows.length}
-          Search or filter to narrow the list.
-        {/if}
-      </p>
-      <div class="table-wrap overflow-x-auto">
-        <table class="guests overview reflow">
-          <thead>
-            <tr>
-              <th>Name</th>
-              <th>Type</th>
-              <th>Group</th>
-              <th class="num">Distance</th>
-              <!--
-                R23 slice B — only meaningful for a rock, and blank for
-                everything else. A dash means the amount is NOT KNOWN; a rock
-                that really is empty says "Mined out". Run a survey scan to fill
-                in what the ship could not see on its own.
-              -->
-              <th class="num">Ore left</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {#each gateRows as row (row.itemID)}
-              <!--
-                R25 slice B — a hostile row is visually distinct IN the list as
-                well as pulled out above it. The badge carries the word, so the
-                colour is never the only signal (a player who cannot tell red
-                from grey still reads "Pirate").
-              -->
-              <tr class:hostile={rowIsHostile(row)}>
-                <td data-label="Name">
-                  {#if rowIsHostile(row)}<span class="threat-badge">{rowBadge(row)}</span>{/if}
-                  {displayLabel(row)}
-                </td>
-                <td data-label="Type">
-                  <span class="cell-item">
-                    <TypeIcon typeID={row.typeID} name={typeName(row)} />
-                    {typeName(row)}
-                  </span>
-                </td>
-                <td data-label="Group">{groupName(row)}</td>
-                <td class="num" data-label="Distance">{formatDistance(row.distance)}</td>
-                <td class="num" data-label="Ore left">{remainingLabel(row)}</td>
-                <!--
-                  R30 slice D — the whole per-row `.row-actions` block that used
-                  to live here is GONE, and this single control replaces it.
-
-                  There were up to nine buttons on every one of up to 200 rows,
-                  re-rendered every poll. The names and distances a player is
-                  actually reading were squeezed into whatever the buttons left,
-                  and at the phone breakpoint each row became a stack of nine
-                  full-width buttons you had to scroll past to reach the next
-                  row. Picking a thing and acting on it is how the retail client
-                  works, and it is the only version of this that fits.
-                -->
-                <td data-label="">
-                  <span class="row-actions">
-                    <button
-                      type="button"
-                      class={selectedID === row.itemID ? "active" : ""}
-                      aria-pressed={selectedID === row.itemID}
-                      onclick={() => selectRow(row.itemID)}
-                    >
-                      {selectedID === row.itemID ? "Selected" : "Select"}
-                    </button>
-                  </span>
-                </td>
-              </tr>
-            {/each}
-          </tbody>
-        </table>
-      </div>
-      {#if $flight.actionError}
-        <p class="error">{$flight.actionError}</p>
-      {/if}
-      <!--
-        R30 slice A — an honest silence. If the star map could not be read we
-        say so, because "this gate offers no jump" and "I could not tell where
-        this gate goes" are different facts and a player acts differently on
-        each. Warp to / Approach still work on the gate row regardless.
-      -->
-      {#if gateLinksError}
-        <p class="note">{gateLinksError}</p>
-      {/if}
     {/if}
   </section>
 {/if}

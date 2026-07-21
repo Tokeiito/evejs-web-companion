@@ -616,6 +616,100 @@ test("R30 slice E: powering a module is verified against a RE-READ, not the call
   assert.match(power, /gave no reason/, "and a decline says so plainly");
 });
 
+// --- R30 slice F: the collapses, the reorder, and "Somewhere else…" ----------
+
+test("R30 slice F: the grid comes BEFORE the panels that used to bury it", () => {
+  // The overview was the LAST thing on the page, under ship condition, threats,
+  // drones, the range pickers, locked targets, equipment and the damage log. A
+  // player who came to look at what is around their ship scrolled past all of
+  // it, every time.
+  const body = renderLoaded();
+  const at = (needle: string) => {
+    const index = body.indexOf(needle);
+    assert.ok(index >= 0, `expected to find ${needle}`);
+    return index;
+  };
+  const grid = at(">Overview<");
+  assert.ok(at("selection-bar") < grid, "the bar sits above the grid it acts on");
+  assert.ok(grid < at("Flying distances"), "the range pickers moved below the grid");
+  assert.ok(grid < at(">Drones<"), "so did the drone panel");
+  assert.ok(grid < at("Shots fired"), "and the damage log");
+  // Ship condition stays ABOVE: it is a HUD, not a panel you go looking for.
+  assert.ok(at("Ship condition") < grid);
+});
+
+test("R30 slice F: the collapses are native <details>, and never hide their state", () => {
+  const body = renderLoaded();
+  // Native <details>/<summary>: no JS, no component state to fall out of sync,
+  // keyboard-operable and screen-reader-announced for free.
+  const collapses = body.match(/<details class="collapsible"/g) ?? [];
+  assert.equal(collapses.length, 2, "the range pickers and the drone panel fold away");
+  // ⚠ Neither is `open`. They are collapsed by DEFAULT — that is the point.
+  assert.doesNotMatch(body, /<details class="collapsible"[^>]*\bopen\b/);
+
+  // ⚠ AND THE SUMMARY CARRIES THE CURRENT STATE. A collapsed panel that hid
+  // what it was set to would be worse than the section it replaced. The range
+  // summary reads back the labels from the SAME fixed menu the picker offers,
+  // so it can only ever say something the player could have chosen — never a
+  // raw metre count and never "10.0 km".
+  assert.match(body, /Warp\s+As close as it can/, "the warp default, in its own words");
+  assert.match(body, /Orbit\s+1 km/);
+  assert.match(body, /Hold\s+1 km/);
+  assert.doesNotMatch(body, /Warp\s+1000\b/, "R7d/R9a: never the raw number");
+  // The drone summary carries the one fact it may not hide: how many are OUT.
+  assert.match(body, /class="collapse-hint">[\s\S]{0,40}(None|out|Looking|Could not)/);
+});
+
+test("R30 slice F: 'Somewhere else…' is the last row, and invents no distance", () => {
+  const body = renderLoaded();
+  assert.match(body, /Somewhere else…/, "the destination row exists");
+  // It is a row in the grid, after every real one — and it is marked as not
+  // being a thing in space so it does not read as another ball on the grid.
+  assert.ok(
+    body.indexOf('class="synthetic-row"') > body.indexOf("Veldspar"),
+    "it sits below the real rows",
+  );
+  // ⚠ It has no distance and no group, because it does not have either. A
+  // fabricated 0 m would put this row nearest in a distance sort.
+  const row = body.slice(body.indexOf('class="synthetic-row"'));
+  const cells = row.slice(0, row.indexOf("</tr>"));
+  assert.match(cells, /data-label="Distance">—/, "no distance is invented");
+  // R8 — it reflows like every other row.
+  for (const cell of cells.match(/<td\b[^>]*>/g) ?? []) {
+    assert.match(cell, /data-label="/, `every <td> needs data-label; saw ${cell}`);
+  }
+});
+
+test("R30 slice F: the destination sentinel cannot collide with a real thing in space", () => {
+  // Every itemID the server issues is positive. A negative sentinel therefore
+  // cannot be mistaken for a ball — and the "did my selection leave the
+  // snapshot" check must SKIP it, or it would announce the destination row as
+  // vanished on every single poll.
+  assert.match(SOURCE, /const SOMEWHERE_ELSE = -1;/);
+  // Deliberately no literal newline in the needle: this repo converts line
+  // endings on checkout, so a "\n" here would pass on one machine and fail on
+  // the next for a reason that has nothing to do with the claim.
+  const gone = section(SOURCE, "SOMEWHERE_ELSE is not a ball", "});");
+  assert.ok(gone.length > 100, "the lost-selection effect must be found");
+  assert.match(gone, /selectedID === SOMEWHERE_ELSE/, "the sentinel is skipped");
+});
+
+test("R30 slice F: destination results are COMPONENT-LOCAL, never a store slice", () => {
+  // They are a transient answer to a question this panel asked; the store holds
+  // what the SHIP reports. Travel.svelte made the same call for the same
+  // reason, and two panels holding the same search would be two things to keep
+  // in sync for no gain.
+  assert.match(SOURCE, /let destinationResults = \$state<DestinationMatch\[\]>\(\[\]\)/);
+  assert.equal(
+    /store\.apply\(\s*\{\s*type:\s*"travel\//.test(SOURCE),
+    false,
+    "the panel must not write search results into the store",
+  );
+  // And setting one reuses the EXISTING autopilot path rather than a second.
+  assert.equal(SOURCE.split("flow.startRoute(").length - 1, 1);
+  assert.equal(SOURCE.split("flow.searchDestinations(").length - 1, 1);
+});
+
 test("activateModule is called WITHOUT naming an effect — the server picks it", () => {
   // The browser must never guess which effect a module runs. Passing no effect
   // name is what makes one button correct for a laser, a turret and a repper.

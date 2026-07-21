@@ -910,6 +910,56 @@
   .mine-reports .mine-outcome { color: var(--color-muted, inherit); }
   .mine-reports li.error .mine-outcome { color: inherit; }
 
+  /* R30 slice F — the collapses. Native <details>: no JS, no state to fall out
+   * of sync, keyboard-operable and screen-reader-announced for free.
+   *
+   * The summary is >=40px tall (R8) and always carries the CURRENT state of
+   * what is folded away — the distances that are set, how many drones are out
+   * — so collapsing never hides the fact a player needs at a glance. */
+  .collapsible > summary {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.5rem;
+    min-height: 2.5rem;
+    padding: 0.5rem 0;
+    cursor: pointer;
+    user-select: none;
+  }
+  .collapsible > summary .collapse-title {
+    color: var(--color-text-bright);
+    font-weight: 600;
+  }
+  .collapsible > summary .collapse-hint {
+    color: var(--color-muted, inherit);
+    font-size: 0.9em;
+  }
+
+  /* R30 slice F — the destination search results, inside the selection bar. */
+  .destination-results {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+  }
+  .destination-results li {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+  }
+  .destination-results .destination-name { color: var(--color-text-bright); }
+  .destination-results .destination-where {
+    color: var(--color-muted, inherit);
+    font-size: 0.9em;
+  }
+
+  /* The one row in the overview that is not a thing in space. It is set apart
+   * so it does not read as another ball on the grid. */
+  tr.synthetic-row td { color: var(--color-muted, inherit); font-style: italic; }
+
   /* ================================ drones + hostile awareness (R25) --
    * Two components that answer two questions a miner has at the same moment:
    * "what do I have out?" and "what is shooting me?".
