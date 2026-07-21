@@ -107,6 +107,29 @@ export type KeyValValue = {
   readonly args: DictValue;
 };
 
+/**
+ * A blue.DBRow — the OTHER row shape on this wire, and the one that has bitten
+ * us. `buildPackedRow` (eve.js server/src/services/_shared/serviceHelpers.js:110)
+ * emits `{type:"packedrow", header, columns:[[name, typeCode], …], fields}`
+ * where `fields` is a plain name-keyed object; `buildPackedRowFromRowsetLine`
+ * emits the POSITIONAL variant instead, carrying `values` parallel to
+ * `columns`. Both are read here so a caller never has to care which it got.
+ *
+ * ⚠ A PACKEDROW IS NOT A KeyVal AND FAILS `isKeyValValue`. Reading one with
+ * `readKeyVal` returns undefined for EVERY field, which does not throw and does
+ * not log — the row simply decodes to nothing and the panel shows an absence.
+ * Whether a given handler builds KeyVals or packed rows is a per-method choice
+ * on the server (contractProxy builds LIST rows as KeyVals and DETAIL rows as
+ * packed rows), so decoders should read rows through `readRowField` below
+ * rather than committing to one shape.
+ */
+export type PackedRowValue = {
+  readonly type: "packedrow";
+  readonly columns?: readonly JsonValue[];
+  readonly fields?: Readonly<Record<string, JsonValue>>;
+  readonly values?: readonly JsonValue[];
+};
+
 // --- Decoding helpers ------------------------------------------------------
 
 export function isListValue(value: unknown): value is ListValue {
@@ -144,6 +167,57 @@ export function readKeyVal(row: unknown, key: string): JsonValue | undefined {
     (candidate) => Array.isArray(candidate) && candidate[0] === key,
   );
   return entry ? entry[1] : undefined;
+}
+
+export function isPackedRowValue(value: unknown): value is PackedRowValue {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    (value as { type?: unknown }).type === "packedrow"
+  );
+}
+
+/**
+ * Read one column from a packed row by NAME, from either variant: the
+ * name-keyed `fields` object, or `values` positioned against `columns`.
+ * undefined when absent or malformed — never a substituted default.
+ */
+export function readPackedRow(row: unknown, key: string): JsonValue | undefined {
+  if (!isPackedRowValue(row)) {
+    return undefined;
+  }
+  const fields = row.fields;
+  if (typeof fields === "object" && fields !== null && !Array.isArray(fields)) {
+    if (key in fields) {
+      return fields[key];
+    }
+  }
+  if (Array.isArray(row.columns) && Array.isArray(row.values)) {
+    // A column is [name, typeCode]; a bare string name is tolerated too.
+    const index = row.columns.findIndex((column) =>
+      Array.isArray(column) ? column[0] === key : column === key,
+    );
+    if (index >= 0) {
+      return row.values[index];
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Read one field from a server ROW, whichever shape it arrived in — util.KeyVal
+ * or packedrow.
+ *
+ * ⚠ PREFER THIS OVER `readKeyVal` FOR ANYTHING THE SERVER CALLS A ROW. The two
+ * shapes are chosen per handler and are not visible from the call site; a
+ * decoder that hardcodes one of them fails SILENTLY against the other, drops
+ * every field, and renders an empty panel that is indistinguishable from an
+ * empty world. Use `readKeyVal` directly only for a value that is genuinely a
+ * KeyVal and never a row — a result BUNDLE, say.
+ */
+export function readRowField(row: unknown, key: string): JsonValue | undefined {
+  return isPackedRowValue(row) ? readPackedRow(row, key) : readKeyVal(row, key);
 }
 
 /**

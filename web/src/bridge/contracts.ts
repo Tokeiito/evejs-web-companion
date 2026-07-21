@@ -12,6 +12,16 @@
 // generator in EveJS, so until a player creates a contract there is nothing to
 // find. The panel says so plainly. This is expected, not a defect.
 //
+// ⚠ THE LIST AND THE DETAIL SEND DIFFERENT ROW SHAPES. contractProxy builds
+// LIST rows with buildKeyVal (`buildContractRow`) but DETAIL rows with
+// buildPackedRow (`buildContractDetailContractRow`) — and the detail item rows
+// with buildPackedRow too, while the LIST's item rows are KeyVals again. The
+// same packed detail row also rides inside every SEARCH entry's `contract`.
+// Reading a packedrow with readKeyVal yields undefined for every field, so the
+// row decodes to nothing and the panel shows a blank that looks exactly like
+// "no such contract". Rows are therefore read through readRowField, which
+// accepts both shapes; only the surrounding BUNDLE is read as a KeyVal.
+//
 // ⚠ ISK FIELDS (price / reward / collateral) ARE KEPT AS DECIMAL STRINGS the
 // whole way. They exceed 2^53 in ordinary play, so routing them through a JS
 // number would round them on the way to the screen (R7d).
@@ -26,7 +36,7 @@ import type {
   ContractSummary,
 } from "../store/types.ts";
 import type { JsonValue } from "./wire.ts";
-import { isListValue, readKeyVal, unwrapLong } from "./wire.ts";
+import { isListValue, readKeyVal, readRowField, unwrapLong } from "./wire.ts";
 
 /** contractType 3 = courier; 1 = item exchange; 2 = auction (stubbed server-side). */
 export const CONTRACT_TYPE_ITEM_EXCHANGE = 1;
@@ -98,46 +108,60 @@ function toAmount(value: JsonValue | undefined): string | null {
   return null;
 }
 
-/** A FILETIME instant, kept as a bigint; null when absent or zero. */
+/**
+ * A FILETIME instant, kept as a bigint; null when absent or zero.
+ *
+ * ⚠ THE DATES ARRIVE AS BARE DECIMAL STRINGS, NOT `{type:"long"}` WRAPPERS.
+ * The server holds them as BigInt (`buildFiletime` -> `toFileTimeBigInt`), and
+ * the gateway's `encodeJsonSafeCallValue`
+ * (evejsWebGatewayRuntime.js:1058) turns every BigInt into a plain decimal
+ * STRING on the way out — so `dateIssued` is `"134291089691370000"`, not
+ * `{type:"long", value:…}`. `unwrapLong` rejects a bare string, which silently
+ * dated every contract to null. Verified against a payload captured from the
+ * real contractProxy.GetContract handler (R32).
+ */
 function toFiletime(value: JsonValue | undefined): bigint | null {
-  const long = unwrapLong(value);
+  const long =
+    typeof value === "string" && /^-?\d+$/.test(value)
+      ? BigInt(value)
+      : unwrapLong(value);
   return long !== null && long > 0n ? long : null;
 }
 
 function decodeContractRow(row: JsonValue): ContractRow | null {
-  const contractID = toNumber(readKeyVal(row, "contractID"));
+  const contractID = toNumber(readRowField(row, "contractID"));
   if (contractID <= 0) {
     return null;
   }
-  const assigneeID = toNumber(readKeyVal(row, "assigneeID"));
-  const acceptorID = toNumber(readKeyVal(row, "acceptorID"));
+  const assigneeID = toNumber(readRowField(row, "assigneeID"));
+  const acceptorID = toNumber(readRowField(row, "acceptorID"));
   return {
     contractID,
-    type: toNumber(readKeyVal(row, "type")),
-    status: toNumber(readKeyVal(row, "status")),
-    availability: toNumber(readKeyVal(row, "availability")),
-    issuerID: toNumber(readKeyVal(row, "issuerID")),
-    issuerCorpID: toNumber(readKeyVal(row, "issuerCorpID")),
-    forCorp: readKeyVal(row, "forCorp") === true,
+    type: toNumber(readRowField(row, "type")),
+    status: toNumber(readRowField(row, "status")),
+    availability: toNumber(readRowField(row, "availability")),
+    issuerID: toNumber(readRowField(row, "issuerID")),
+    issuerCorpID: toNumber(readRowField(row, "issuerCorpID")),
+    forCorp: readRowField(row, "forCorp") === true,
     // 0 means "nobody", which is a real state (a public contract), not a bad id.
     assigneeID: assigneeID > 0 ? assigneeID : null,
     acceptorID: acceptorID > 0 ? acceptorID : null,
-    dateIssued: toFiletime(readKeyVal(row, "dateIssued")),
-    dateExpired: toFiletime(readKeyVal(row, "dateExpired")),
-    dateAccepted: toFiletime(readKeyVal(row, "dateAccepted")),
-    dateCompleted: toFiletime(readKeyVal(row, "dateCompleted")),
-    numDays: toNumber(readKeyVal(row, "numDays")),
-    startStationID: toNumber(readKeyVal(row, "startStationID")),
-    endStationID: toNumber(readKeyVal(row, "endStationID")),
-    startSolarSystemID: toNumber(readKeyVal(row, "startSolarSystemID")),
-    endSolarSystemID: toNumber(readKeyVal(row, "endSolarSystemID")),
+    dateIssued: toFiletime(readRowField(row, "dateIssued")),
+    dateExpired: toFiletime(readRowField(row, "dateExpired")),
+    dateAccepted: toFiletime(readRowField(row, "dateAccepted")),
+    dateCompleted: toFiletime(readRowField(row, "dateCompleted")),
+    numDays: toNumber(readRowField(row, "numDays")),
+    startStationID: toNumber(readRowField(row, "startStationID")),
+    endStationID: toNumber(readRowField(row, "endStationID")),
+    startSolarSystemID: toNumber(readRowField(row, "startSolarSystemID")),
+    endSolarSystemID: toNumber(readRowField(row, "endSolarSystemID")),
     // ⚠ DECIMAL STRINGS. ISK exceeds 2^53.
-    price: toAmount(readKeyVal(row, "price")),
-    reward: toAmount(readKeyVal(row, "reward")),
-    collateral: toAmount(readKeyVal(row, "collateral")),
-    volume: toNumber(readKeyVal(row, "volume")),
-    title: toText(readKeyVal(row, "title")),
-    description: toText(readKeyVal(row, "description")),
+    price: toAmount(readRowField(row, "price")),
+    reward: toAmount(readRowField(row, "reward")),
+    collateral: toAmount(readRowField(row, "collateral")),
+    volume: toNumber(readRowField(row, "volume")),
+    title: toText(readRowField(row, "title")),
+    description: toText(readRowField(row, "description")),
   };
 }
 
@@ -198,16 +222,16 @@ export function decodeContractSearch(result: JsonValue): DecodedBrowse {
 }
 
 function decodeItemRow(row: JsonValue): ContractItemRow | null {
-  const typeID = toNumber(readKeyVal(row, "typeID")) || toNumber(readKeyVal(row, "itemTypeID"));
+  const typeID = toNumber(readRowField(row, "typeID")) || toNumber(readRowField(row, "itemTypeID"));
   if (typeID <= 0) {
     return null;
   }
   return {
     typeID,
-    quantity: toNumber(readKeyVal(row, "quantity")),
+    quantity: toNumber(readRowField(row, "quantity")),
     // `inCrate` distinguishes what is BEING HANDED OVER from what is being
     // ASKED FOR — the difference between a gift and a trade.
-    inCrate: readKeyVal(row, "inCrate") === true,
+    inCrate: readRowField(row, "inCrate") === true,
   };
 }
 
