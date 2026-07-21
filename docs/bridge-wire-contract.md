@@ -2503,6 +2503,60 @@ tabs, roster, message list, send box; polls the open channel every 4s via
 `web/src/bridge/chat.test.ts` (decoder), `web/src/app/chatFlow.test.ts` (flow),
 and BFF-side by `test/bridgeChat.test.js`. See "Local + Corp chat (R7)" above.
 
+### The mining bot — automated play (R26)
+
+**No contract change. That is the headline, and it was the goal's constraint:
+R26 is COMPOSITION, not new surface.** The bot adds **zero** gateway pairs, zero
+BFF routes, and zero snapshot fields. Every call it makes was already allowlisted
+and already had a route:
+
+| The bot needs to… | It uses (all pre-existing) |
+| --- | --- |
+| know where the ship is | `GET /api/bridge/flight/status` (R5a) |
+| measure the belt, the station, the rocks, the pirates, its own drones and **which modules are cycling** | `GET /api/bridge/space/snapshot` (R11 + R23 slice B's asteroid fields + R25's `isNpc`/drone fields) |
+| know what is locked | `GET /api/bridge/targets` (R23 slice A) |
+| lock a rock | `POST /api/bridge/targets/lock` (R23 slice A) |
+| run the lasers | `POST /api/bridge/modules/activate` (R23 slice A) — **no `effect`**, so the server resolves the module's own default |
+| see the ore | `GET /api/bridge/ship/ore-hold` (R23 slice B) |
+| put the ore in the hangar | `POST /api/bridge/ship/ore-hold/unload` (R23 slice B) |
+| defend itself | `GET /api/bridge/drones` + `POST /api/bridge/drones/launch` (R25 slice A) |
+| fly | `POST /api/bridge/flight/undock` / `warp` / `approach` / `dock` (R5a, with R24 slice A's `minRange: 0`) |
+
+**Browser pieces:** `web/src/nav/miningBotLoop.ts` (the framework-agnostic
+decide-loop — `createMiningBot(deps)` with `start`/`pause`/`resume`/`stop`/
+`tick`/`run`, and the pure `decideMiningAction` mapping one reading of the world
+to one atomic action plus the plain-language reason for it);
+`app/flow.ts` `startMiningBot`/`pauseMiningBot`/`resumeMiningBot`/
+`stopMiningBot` (owns the single controller and wires its deps straight to
+`app/api.ts`, **not** through the flow's own refusal-swallowing wrappers — the
+loop has to SEE a refusal to decide on it); the `bot` store slice with
+`bot/started`/`bot/progress`/`bot/start-error`/`bot/cleared` feed events; and
+`web/src/ui/MiningBot.svelte` (belt/station pickers off the live snapshot,
+equipment ticked by the player, Start / Pause / Stop, and the live "what it is
+doing / **why**" readout). Unit-tested by
+`web/src/nav/miningBotLoop.test.ts` (the ladder, every bound, and a full
+undock→belt→lock→mine→dock→unload→back-out cycle against a synthetic world) and
+`web/src/app/botFlow.test.ts` (the flow wiring, over a faked BFF).
+
+**One shared piece was extracted, not copied.** `decideCloseIn` in
+`web/src/nav/autopilotLoop.ts` is now exported: the arrive / closing / approach /
+warp rungs — including R24 slice A's warp dead band and the
+never-restart-a-running-approach rule — are stated **once** and used by both the
+autopilot's gate/station ladder and the bot's belt/station ladder. A correction
+to the server's warp gate now corrects both callers at the same time.
+
+**Two loops must never steer one ship.** `startMiningBot` aborts the travel
+autopilot before it starts, exactly as R13's `stopShip` switches the autopilot
+off: a ship being flown by two decide-loops is a bug neither of them can see.
+
+**The one number the bot owns that is not the server's** is
+`BELT_ARRIVAL_RADIUS_M` (20 km surface). A belt has no interaction radius to
+borrow — you do not dock with a belt — so the bot needs its own answer to "have I
+arrived", and it is used for exactly one decision: whether "no rocks in the
+snapshot" means *still flying* or *this belt is finished*. It is never a mining
+range, a lock range or a yield rule; the server owns all three and the bot finds
+them out by being refused.
+
 ### How to add a page on the new stack (R2+)
 
 1. Mine the page's retail calls (`docs/retail-call-inventory.md`) and get each (service, method) pair allowlisted in eve.js (bridge-goal work, not web-side).
