@@ -247,43 +247,51 @@ export function destinationHold(holds: readonly MiningHold[] | null): MiningHold
 }
 
 /**
- * Is the destination hold full? `null` is UNKNOWN — the ship did not report a
- * capacity — and unknown never reads as full or as room to spare.
+ * How full the hold gets before the bot takes the load home. The OPERATOR's
+ * number: "mine until we hit % full, so do like 90%".
  *
- * ⚠ THE SECOND TEST IS FROM A LIVE RUN, AND WITHOUT IT THE BOT NEVER HAULS.
- *
- * A Retriever's ore hold stopped at **15999.95 of 16000 m³**. Veldspar is
- * 0.1 m³ a unit, so the server had filled it to within half a unit and then
- * STOPPED THE LASERS — there was no room for another whole unit. But
- * `used >= capacity` is false at 15999.95, so the bot read "not full", switched
- * the lasers back on, watched the server short-cycle them, and did it again.
- *
- * The fix is not a fudge factor and not a yield prediction — the browser still
- * computes nothing about mining. It is arithmetic on two numbers the SERVER
- * gave us: `used` cubic metres divided by the units actually sitting in the
- * hold is the volume of one unit of what is in there, and if the remaining
- * space is smaller than that, not one more unit fits. That is "the hold cannot
- * take another cycle", observed rather than guessed.
- *
- * When the items cannot be read, this falls back to the plain `used >=
- * capacity` test rather than inventing a unit size.
+ * ⚠ THIS HEADROOM IS LOAD-BEARING — see `holdShouldHaul`. It is not a rounding
+ * allowance and not politeness to the server: it is what stops the bot ever
+ * having to work out whether one more unit fits. DO NOT raise it to 1.0.
  */
-export function holdIsFull(hold: MiningHold | null): boolean | null {
+export const HAUL_AT_FRACTION = 0.9;
+
+/**
+ * Time to take the load home? `null` is UNKNOWN — the ship did not report a
+ * capacity — and unknown never reads as "go" or as "room to spare".
+ *
+ * ⚠ THE QUESTION THIS DELIBERATELY NO LONGER ASKS IS "DOES ONE MORE UNIT FIT".
+ *
+ * It used to. A hold that stops one part-unit short of capacity is the R26 bug:
+ * a Retriever stopped at 15999.95 of 16000 m³ with the server refusing to start
+ * another cycle, `used >= capacity` is FALSE there, so the bot re-lit the lasers
+ * forever and never hauled. The answer then was to derive one unit's volume as
+ * `used / units` and ask whether the remaining space was smaller than that.
+ *
+ * That derivation was itself wrong in a way the R39 soak measured. Across a
+ * MIXED hold `used / units` is an AVERAGE describing neither ore — 0.1433 on a
+ * hold of Veldspar (0.1 m³) and Scordite (0.15 m³) while the bot was mining the
+ * 0.15. Whenever that average sits BELOW the volume of the ore actually
+ * arriving, the test fires too late and the original bug is back: the bot reads
+ * "not full", relights on a rock whose unit cannot fit, stalls for three
+ * minutes and then ends the run with a reason that is not true. One of the two
+ * soak hauls was in exactly that state and escaped only because the fill landed
+ * on 0.00 free.
+ *
+ * THE HEADROOM DISSOLVES THE WHOLE CLASS. Stopping at a FRACTION of capacity
+ * makes the decision immune to cycle size, to unit volume, to a mixed hold and
+ * to wherever the server chooses to stop filling — because the last cycle no
+ * longer has to fit exactly. There is nothing left to derive, so the item list
+ * is not read here at all and an unreadable one costs nothing: capacity alone
+ * decides. A little space goes unused, which is the harmless direction and the
+ * entire point.
+ */
+export function holdShouldHaul(hold: MiningHold | null): boolean | null {
   const capacity = hold?.capacity;
   if (!capacity || capacity.capacity === null || capacity.used === null || !(capacity.capacity > 0)) {
     return null;
   }
-  if (capacity.used >= capacity.capacity) {
-    return true;
-  }
-  const units = holdUnits(hold ? [hold] : null);
-  if (units !== null && units > 0 && capacity.used > 0) {
-    const cubicMetresPerUnit = capacity.used / units;
-    if (cubicMetresPerUnit > 0 && capacity.capacity - capacity.used < cubicMetresPerUnit) {
-      return true;
-    }
-  }
-  return false;
+  return capacity.used >= capacity.capacity * HAUL_AT_FRACTION;
 }
 
 /** Every stack sitting in any readable hold — what an unload would move. */
@@ -520,7 +528,7 @@ export function decideMiningAction(
   }
 
   const hold = destinationHold(holds);
-  const full = holdIsFull(hold);
+  const full = holdShouldHaul(hold);
   if (full === true) {
     return travelDecision(
       plan.stationID,
@@ -529,7 +537,10 @@ export function decideMiningAction(
       "dock",
       observation,
       memory,
-      `The ${hold?.label.toLowerCase() ?? "hold"} is full, so the load is going to ${plan.stationName ?? "the station"}.`,
+      // R9a — say what actually happened. The bot leaves on a FRACTION now, so
+      // announcing a full hold would be a small lie the player can see through
+      // by opening the cargo bay.
+      `The ${hold?.label.toLowerCase() ?? "hold"} is ${Math.round(HAUL_AT_FRACTION * 100)}% full, so the load is going to ${plan.stationName ?? "the station"}.`,
     );
   }
   // The lasers have run for minutes on a rock that still has ore and not one

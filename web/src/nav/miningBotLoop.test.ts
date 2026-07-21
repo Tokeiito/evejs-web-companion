@@ -32,7 +32,8 @@ import {
   createMiningBot,
   decideMiningAction,
   destinationHold,
-  holdIsFull,
+  HAUL_AT_FRACTION,
+  holdShouldHaul,
   holdUnits,
   isMineableRock,
   lowestHealth,
@@ -268,35 +269,39 @@ test("the destination hold is the hull's specialised one, falling back to cargo"
   assert.equal(destinationHold([]), null);
 });
 
-test("hold fullness is the SERVER's numbers, and unknown is never full", () => {
-  assert.equal(holdIsFull(oreHold(0)), false);
-  assert.equal(holdIsFull(oreHold(4_999)), false);
-  assert.equal(holdIsFull(oreHold(5_000)), true);
-  // Room to spare with items in it is still not full.
-  assert.equal(holdIsFull(oreHold(1_000, 5_000, [10_000])), false);
-  // A hull that did not report a capacity is UNKNOWN, not full and not empty.
+test("hauling is a FRACTION of the server's capacity, and unknown is never a haul", () => {
+  assert.equal(holdShouldHaul(oreHold(0)), false);
+  // 5,000 m³ hold: the bot goes at 4,500.
+  assert.equal(holdShouldHaul(oreHold(4_499)), false);
+  assert.equal(holdShouldHaul(oreHold(4_500)), true);
+  assert.equal(holdShouldHaul(oreHold(5_000)), true);
+  // Room to spare with items in it is still not a haul.
+  assert.equal(holdShouldHaul(oreHold(1_000, 5_000, [10_000])), false);
+  // A hull that did not report a capacity is UNKNOWN — never a haul, never room.
   assert.equal(
-    holdIsFull({ key: "ore", label: "Ore hold", items: [], capacity: null, present: true, error: null }),
+    holdShouldHaul({ key: "ore", label: "Ore hold", items: [], capacity: null, present: true, error: null }),
     null,
   );
-  assert.equal(holdIsFull(null), null);
+  assert.equal(holdShouldHaul(null), null);
+  // The threshold is the named constant, not a number sprinkled in the code.
+  assert.equal(holdShouldHaul(oreHold(16_000 * HAUL_AT_FRACTION, 16_000)), true);
 });
 
-test("THE LIVE CASE: a hold with no room for one more UNIT is full, though used < capacity", () => {
+test("THE R26 REGRESSION STAYS COVERED: the boundary that never hauled is far past the mark", () => {
   // Observed live on a Retriever: the ore hold stopped at 15999.95 of 16000 m³
-  // and the server stopped the lasers, because Veldspar is 0.1 m³ a unit and
-  // 0.05 m³ does not take one. `used >= capacity` says "not full" here, so
-  // without the per-unit test the bot re-lit the lasers forever and never
-  // hauled. The unit size is not guessed — it is `used` divided by the units
-  // the hold reports holding.
-  const live = oreHold(15_999.95, 16_000, [159_999.5 /* units of 0.1 m³ */]);
-  assert.equal(holdIsFull(live), true, "0.05 m³ left and a unit is 0.1 m³: full");
+  // with the server refusing to start another cycle, and `used >= capacity` is
+  // FALSE there — so the bot re-lit the lasers forever and never hauled.
+  //
+  // Under the 90% rule that boundary is not a special case at all: a 16,000 m³
+  // hold is hauled at 14,400, and 15,999.95 passed that 1,599 m³ ago. The whole
+  // class of "does exactly one more unit fit" questions is gone.
+  assert.equal(holdShouldHaul(oreHold(15_999.95, 16_000, [159_999.5])), true);
 
-  // And it does not fire early: 100 m³ of headroom takes another 1,000 units.
-  assert.equal(holdIsFull(oreHold(15_900, 16_000, [159_000])), false);
-
-  // With the items unreadable there is no unit size to derive, so it falls back
-  // to the plain test rather than inventing one.
+  // ⚠ AND IT NO LONGER DEPENDS ON READING THE ITEMS. The old derivation needed
+  // the stack list to work out one unit's volume, so an unreadable hold fell
+  // back to `used >= capacity` and returned FALSE on exactly this number — the
+  // original bug, still live whenever the item read failed. Capacity alone now
+  // answers it.
   const blind: MiningHold = {
     key: "ore",
     label: "Ore hold",
@@ -305,7 +310,38 @@ test("THE LIVE CASE: a hold with no room for one more UNIT is full, though used 
     present: true,
     error: "READ_FAILED",
   };
-  assert.equal(holdIsFull(blind), false, "no unit size to derive, so no claim is made");
+  assert.equal(holdShouldHaul(blind), true, "capacity alone decides; the stacks are not needed");
+});
+
+test("THE MIXED-ORE HOLD THE R39 SOAK MEASURED: the average that decided it is gone", () => {
+  // Real numbers off the live Procurer (16,000 m³ ore hold), both hauls:
+  //
+  //   haul 1  type 17464 x 96,728 @ 0.15 + Veldspar x 14,908 @ 0.1 = 16,000.00
+  //   haul 2  type 17464 x 71,866 @ 0.15 + Veldspar x 52,200 @ 0.1 = 15,999.90
+  //
+  // reconciled against the station hangar to the cubic metre. The old predicate
+  // derived ONE unit volume as `used / units`, which across a mixed hold is an
+  // average describing NEITHER ore — 0.1433 on haul 1 while the bot was mining
+  // 0.15. When that average sits below the volume of the ore actually arriving,
+  // the test fires too LATE: the bot reads "not full", relights on a rock whose
+  // unit cannot fit, and stalls. Haul 1 was in exactly that state and escaped
+  // only because the fill happened to land on 0.00 free.
+  //
+  // At 90% none of that arithmetic is reachable: both hauls are decided by
+  // capacity alone, thousands of cubic metres earlier.
+  const haul1 = oreHold(16_000.0, 16_000, [96_728, 14_908]);
+  const haul2 = oreHold(15_999.9, 16_000, [71_866, 52_200]);
+  assert.equal(holdShouldHaul(haul1), true);
+  assert.equal(holdShouldHaul(haul2), true);
+
+  // The mixed hold mid-fill, well under the mark, is still not a haul — the
+  // headroom must not make the bot leave with a half-empty ship.
+  assert.equal(holdShouldHaul(oreHold(9_000, 16_000, [50_000, 20_000])), false);
+
+  // And the crossing itself: 14,400 is the mark for a 16,000 m³ hold, whatever
+  // is in it and whatever it is mining.
+  assert.equal(holdShouldHaul(oreHold(14_399.99, 16_000, [95_000, 5_000])), false);
+  assert.equal(holdShouldHaul(oreHold(14_400, 16_000, [95_000, 5_000])), true);
 });
 
 test("hold units distinguish an empty hold from a hold nobody could read", () => {
