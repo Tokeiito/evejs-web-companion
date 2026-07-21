@@ -12,6 +12,21 @@ Two bots exist and both are live-proven, but each is reachable only from inside 
 - **`web/src/nav/missionBotLoop.ts`** + `web/src/ui/MissionBot.svelte` — live-proven: 3 consecutive missions, +420,750 ISK, +639 LP, zero pauses.
 - Both are plain browser `while` loops with an injected `sleep`, started through `AppFlow` (`startMiningBot` / `startMissionBot` and their pause/resume/stop siblings). **No new engine is needed — this is presentation.**
 
+## A live bug this goal must fix
+
+**Two bots can drive one ship today.** Verified by the orchestrator:
+
+```
+flow.ts:3706   startMissionBot → miningBot?.stop()     ✓
+flow.ts:3744   startMiningBot  → autopilot?.abort()    ✗ never stops missionBot
+```
+
+Mutual exclusion is two hand-written lines and they are **asymmetric**. Start the mining bot while the mission bot is running and both loops keep ticking, each issuing movement and module calls against the same ship. Neither knows about the other.
+
+**Fix it declaratively, not with a third hand-written line.** A single `runningBotID` in the store, with starting any bot stopping whatever else holds it, makes the property structural instead of something each new bot must remember to re-implement. A fourth bot would otherwise need three more lines and get one of them wrong.
+
+Pin it with a test: starting each bot while each other bot runs must leave exactly one running.
+
 ## What to build
 
 **A Bots panel** — one place listing every bot the client can run, each with what it needs before it can start, Start/Pause/Stop, and its live readout.
