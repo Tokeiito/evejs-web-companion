@@ -432,6 +432,65 @@ function getSolarSystemName(solarSystemID) {
   return entry ? String(entry.solarSystemName || `System ${solarSystemID}`) : `System ${solarSystemID}`;
 }
 
+// --- Planet celestials (goal R41) ------------------------------------------
+// A colony record names its planet by ID only. The player-facing name of a
+// planet is not stored anywhere as a string — in EVE it is DERIVED, and it is
+// derived the same way everywhere: the solar system's name followed by the
+// planet's position in that system as a Roman numeral ("Tanoo I"). The SDE's
+// mapPlanets carries exactly the two facts that needs, `solarSystemID` and
+// `celestialIndex`, so we build the name rather than inventing a table.
+//
+// This is a NAME, not a mechanic: nothing about extraction, cycles or yields is
+// computed here. It exists so the Planets panel can obey R7d and show a place
+// instead of a number.
+
+function getPlanetCelestial(planetID) {
+  return buildJsonlIndex("mapPlanets.jsonl", "_key").get(Number(planetID) || 0) || null;
+}
+
+const ROMAN_NUMERALS = Object.freeze([
+  [1000, "M"], [900, "CM"], [500, "D"], [400, "CD"],
+  [100, "C"], [90, "XC"], [50, "L"], [40, "XL"],
+  [10, "X"], [9, "IX"], [5, "V"], [4, "IV"], [1, "I"],
+]);
+
+function toRomanNumeral(value) {
+  let remaining = Number(value) || 0;
+  if (remaining <= 0 || !Number.isFinite(remaining)) {
+    return "";
+  }
+  let out = "";
+  for (const [amount, numeral] of ROMAN_NUMERALS) {
+    while (remaining >= amount) {
+      out += numeral;
+      remaining -= amount;
+    }
+  }
+  return out;
+}
+
+/**
+ * "Tanoo I", or null when this planet is not in the static map.
+ *
+ * Null — never a stringified ID — because a planet we cannot name is a fact the
+ * caller has to decide about, and "Planet 40000002" on screen would break R7d
+ * more quietly than an absent name does.
+ */
+function getPlanetName(planetID) {
+  const celestial = getPlanetCelestial(planetID);
+  if (!celestial) {
+    return null;
+  }
+  const systemID = Number(celestial.solarSystemID) || 0;
+  const system = systemID ? getSolarSystem(systemID) : null;
+  if (!system) {
+    return null;
+  }
+  const numeral = toRomanNumeral(celestial.celestialIndex);
+  const systemName = getSolarSystemName(systemID);
+  return numeral ? `${systemName} ${numeral}` : systemName;
+}
+
 // --- System-adjacency graph (goal R5b) -------------------------------------
 // The browser autopilot's route solver is client-side (retail solves routes
 // locally from its static map DB; there is no wire call to the game server for
@@ -999,6 +1058,8 @@ module.exports = {
   getMarketGroupPath,
   findMarketTypes,
   getNpcIndustryFacility,
+  getPlanetCelestial,
+  getPlanetName,
   getRegion,
   getRegionName,
   getSolarSystem,

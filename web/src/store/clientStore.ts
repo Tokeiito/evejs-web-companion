@@ -77,6 +77,7 @@ import type {
   MiningBotState,
   MissionBotState,
   SkillsState,
+  PlanetsState,
   TravelState,
 } from "./types.ts";
 import type { NamesState } from "./names.ts";
@@ -138,6 +139,7 @@ export interface ClientState {
   readonly mining: MiningState;
   readonly drones: DronesState;
   readonly skills: SkillsState;
+  readonly planets: PlanetsState;
   readonly travel: TravelState;
   readonly bot: MiningBotState;
   readonly missionBot: MissionBotState;
@@ -477,6 +479,18 @@ const INITIAL_SKILLS: SkillsState = Object.freeze({
   actionError: null,
 });
 
+// R41 planets. `colonies: null` is "we have not read them / the read failed";
+// an empty list is a real answer only alongside `hasNoColonies`, which is set
+// ONLY when the read succeeded AND the gateway carried a colony table.
+const INITIAL_PLANETS: PlanetsState = Object.freeze({
+  colonies: null,
+  selectedPlanetID: null,
+  clockOffsetMs: 0,
+  loaded: false,
+  error: null,
+  hasNoColonies: false,
+});
+
 const INITIAL_TRAVEL: TravelState = Object.freeze({
   status: "idle" as TravelState["status"],
   destinationSystemID: null,
@@ -562,6 +576,7 @@ export interface ClientStore {
   readonly mining: ReadableSignal<MiningState>;
   readonly drones: ReadableSignal<DronesState>;
   readonly skills: ReadableSignal<SkillsState>;
+  readonly planets: ReadableSignal<PlanetsState>;
   readonly travel: ReadableSignal<TravelState>;
   readonly bot: ReadableSignal<MiningBotState>;
   readonly missionBot: ReadableSignal<MissionBotState>;
@@ -610,6 +625,7 @@ export function createClientStore(): ClientStore {
   const mining = createSignal<MiningState>(INITIAL_MINING);
   const drones = createSignal<DronesState>(INITIAL_DRONES);
   const skills = createSignal<SkillsState>(INITIAL_SKILLS);
+  const planets = createSignal<PlanetsState>(INITIAL_PLANETS);
   const travel = createSignal<TravelState>(INITIAL_TRAVEL);
   const bot = createSignal<MiningBotState>(INITIAL_BOT);
   const missionBot = createSignal<MissionBotState>(INITIAL_MISSION_BOT);
@@ -645,6 +661,7 @@ export function createClientStore(): ClientStore {
     mining: mining.get(),
     drones: drones.get(),
     skills: skills.get(),
+    planets: planets.get(),
     travel: travel.get(),
     bot: bot.get(),
     missionBot: missionBot.get(),
@@ -684,6 +701,7 @@ export function createClientStore(): ClientStore {
         mining.set(INITIAL_MINING);
         drones.set(INITIAL_DRONES);
         skills.set(INITIAL_SKILLS);
+        planets.set(INITIAL_PLANETS);
         travel.set(INITIAL_TRAVEL);
         bot.set(INITIAL_BOT);
         chat.set(INITIAL_CHAT);
@@ -1499,6 +1517,40 @@ export function createClientStore(): ClientStore {
       case "skills/cleared":
         skills.set(INITIAL_SKILLS);
         break;
+      // --- R41: planetary colonies --------------------------------------
+      case "planets/loaded": {
+        const previous = planets.get();
+        // Keep the open colony open across a refresh, but only if it is still
+        // there — a colony that has been abandoned must not stay selected.
+        const stillThere = previous.selectedPlanetID !== null
+          && event.colonies.some((colony) => colony.planetID === previous.selectedPlanetID);
+        planets.set({
+          ...previous,
+          colonies: event.colonies,
+          selectedPlanetID: stillThere ? previous.selectedPlanetID : null,
+          clockOffsetMs: event.clockOffsetMs,
+          loaded: true,
+          error: null,
+          // ⚠ The claim "you have no colonies" is made ONLY here, and only when
+          // the gateway actually carried a colony table that held none of ours.
+          hasNoColonies: event.coloniesReadable && event.colonies.length === 0,
+        });
+        break;
+      }
+      case "planets/error":
+        planets.set({
+          ...planets.get(),
+          error: event.message,
+          // A failed read tells us nothing about whether colonies exist.
+          hasNoColonies: false,
+        });
+        break;
+      case "planets/selected":
+        planets.set({ ...planets.get(), selectedPlanetID: event.planetID });
+        break;
+      case "planets/cleared":
+        planets.set(INITIAL_PLANETS);
+        break;
       case "travel/planned":
         travel.set({
           ...INITIAL_TRAVEL,
@@ -1769,6 +1821,7 @@ export function createClientStore(): ClientStore {
     mining: readonlySignal(mining),
     drones: readonlySignal(drones),
     skills: readonlySignal(skills),
+    planets: readonlySignal(planets),
     travel: readonlySignal(travel),
     bot: readonlySignal(bot),
     missionBot: readonlySignal(missionBot),

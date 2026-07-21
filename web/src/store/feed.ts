@@ -23,6 +23,7 @@ import type {
   ChatMessage,
   CharacterSummary,
   CharStanding,
+  Colony,
   CorpDivisionState,
   CourierBriefing,
   FlightStatus,
@@ -547,6 +548,22 @@ export type FeedEvent =
   | { readonly type: "skills/action"; readonly action: string }
   | { readonly type: "skills/action-error"; readonly message: string | null }
   | { readonly type: "skills/cleared" }
+  // Goal R41 — the character's planetary colonies.
+  //
+  // ⚠ `colonies` is NULLABLE and null means "we could not read them".
+  // `coloniesReadable` is the OTHER half of the distinction: false says the
+  // gateway reported no colony table at all, which is not the same statement as
+  // "you have built nothing". Only readable + empty may tell a player that.
+  | {
+      readonly type: "planets/loaded";
+      readonly colonies: readonly Colony[];
+      readonly coloniesReadable: boolean;
+      /** serverNowMs minus the browser clock at read time. */
+      readonly clockOffsetMs: number;
+    }
+  | { readonly type: "planets/error"; readonly message: string | null }
+  | { readonly type: "planets/selected"; readonly planetID: number | null }
+  | { readonly type: "planets/cleared" }
   // A snapshot read failed non-fatally; null clears it after a clean read.
   | { readonly type: "space/error"; readonly message: string | null }
   // Drop the space state (docked / character offline / logged out).

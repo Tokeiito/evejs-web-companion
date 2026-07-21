@@ -59,6 +59,7 @@ const PANELS = [
   "MissionBot",
   "Mining",
   "Skills",
+  "Planets",
   "Travel",
   "Chat",
 ] as const;

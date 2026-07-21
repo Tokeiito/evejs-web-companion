@@ -1976,3 +1976,110 @@ export interface PersonalAssetsState {
    */
   readonly ownsNothing: boolean;
 }
+
+// --- R41 Planetary Interaction: the character's colonies --------------------
+//
+// READS ONLY. Nothing in this slice models a mechanic: the cycle time, the
+// quantity per cycle, the install and expiry instants and every stored quantity
+// are the emulator's own numbers, copied across by the BFF. The one thing the
+// client decides is whether an instant has PASSED, and it decides that against
+// `serverNowMs` sampled in the same read (see clockOffsetMs), never against the
+// browser's unguarded clock.
+
+/** One commodity sitting in a pin, already named by the BFF. */
+export interface ColonyStoredItem {
+  /** For the icon only — R7d forbids showing it. */
+  readonly typeID: number;
+  readonly typeName: string;
+  readonly quantity: number;
+}
+
+/**
+ * The extraction program installed in an Extractor Control Unit, or absent when
+ * the unit has never been programmed. Every field is the server's.
+ */
+export interface ColonyExtractionProgram {
+  readonly resourceTypeID: number;
+  /** null when the world could not name the resource. */
+  readonly resourceTypeName: string | null;
+  readonly cycleTimeSeconds: number;
+  readonly quantityPerCycle: number;
+  /** Epoch ms, or null when the server gave none. Never coerced to 0 (= 1601). */
+  readonly installedAtMs: number | null;
+  readonly expiresAtMs: number | null;
+  readonly headCount: number;
+}
+
+/** What a pin IS, decided by the BFF from the type's group. */
+export type ColonyPinKind =
+  | "command"
+  | "extractor-control"
+  | "extractor"
+  | "factory"
+  | "storage"
+  | "launchpad"
+  | "other";
+
+/** One structure on a planet. */
+export interface ColonyPin {
+  readonly pinID: number;
+  readonly typeID: number;
+  readonly typeName: string;
+  readonly kind: ColonyPinKind;
+  readonly contents: readonly ColonyStoredItem[];
+  /** Only ever set on an extractor control unit. */
+  readonly program: ColonyExtractionProgram | null;
+}
+
+/** One route moving a commodity between two pins. */
+export interface ColonyRoute {
+  readonly routeID: number;
+  readonly path: readonly number[];
+  readonly commodityTypeID: number;
+  readonly commodityTypeName: string | null;
+  readonly commodityQuantity: number;
+}
+
+/** One colony: a planet this character has built on. */
+export interface Colony {
+  readonly planetID: number;
+  /** "Tanoo I". null when the static map cannot name it — NEVER the id. */
+  readonly planetName: string | null;
+  readonly solarSystemID: number;
+  readonly solarSystemName: string | null;
+  /** The planet's own type, for its icon. */
+  readonly planetTypeID: number;
+  readonly planetTypeName: string | null;
+  readonly commandCenterLevel: number;
+  /** When the server last ran this colony forward. Epoch ms, or null. */
+  readonly lastSimulatedAtMs: number | null;
+  readonly pins: readonly ColonyPin[];
+  readonly linkCount: number;
+  readonly routes: readonly ColonyRoute[];
+}
+
+/** The decoded GET /api/bridge/planets payload. */
+export interface ColonyReport {
+  readonly colonies: readonly Colony[];
+  /** False when the gateway reported no colony table AT ALL — see below. */
+  readonly coloniesReadable: boolean;
+  /** serverNowMs minus the browser's clock at read time. */
+  readonly clockOffsetMs: number;
+}
+
+export interface PlanetsState {
+  /** null until read, and null again if a read fails. NEVER [] for "unknown". */
+  readonly colonies: readonly Colony[] | null;
+  /** Which colony is open; null when none is. */
+  readonly selectedPlanetID: number | null;
+  readonly clockOffsetMs: number;
+  readonly loaded: boolean;
+  readonly error: string | null;
+  /**
+   * ⚠ TRUE ONLY WHEN THE READ SUCCEEDED, CARRIED A COLONY TABLE, AND IT HELD
+   * NOTHING OF THIS CHARACTER'S. A gateway that reported no colony table at all
+   * has not told us the character has none, and a failed read has told us
+   * nothing whatsoever — both leave this false (the worldHasNoContracts rule).
+   */
+  readonly hasNoColonies: boolean;
+}

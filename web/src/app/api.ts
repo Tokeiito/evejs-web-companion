@@ -2274,3 +2274,21 @@ export async function saveSkillQueue(
   }));
   return readSkills(await postJson("/api/bridge/skills/queue", { entries: body }, options));
 }
+
+// --- R41 Planets: the character's colonies ------------------------------------
+//
+// ONE read and no write. This is not a bridge `callMethod` — the BFF answers it
+// from the gateway's owner-scoped snapshot, so it costs the deny-by-default
+// allowlist nothing. See src/server.js for why the planetMgr reads that would
+// have needed allowlisting were declined.
+
+/** The whole Planets panel in one read, decoded by bridge/planets.ts. */
+export interface PlanetsResult {
+  /** Raw colony rows; every id in them is for an icon, never for display. */
+  readonly planets: JsonValue;
+}
+
+export async function getPlanets(options: ApiOptions = {}): Promise<PlanetsResult> {
+  const data = await getJson("/api/bridge/planets", options);
+  return { planets: data as JsonValue };
+}

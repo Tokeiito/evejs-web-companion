@@ -6222,6 +6222,230 @@ app.post("/api/bridge/skills/queue", requireAuth, async (req, res, next) => {
   }
 });
 
+// --- R41 Planets: the character's colonies ---------------------------------
+//
+// WHERE THIS READ COMES FROM, AND WHY IT IS NOT A BRIDGE CALL.
+//
+// The emulator's colonies live in the `planetRuntimeState` root table, and the
+// gateway's GET /snapshot ALREADY carries them: buildPlanetRuntimeForCharacter
+// filters `coloniesByKey` down to rows whose `ownerID` is the requested
+// character before the snapshot is serialized. That read is owner-scoped by
+// construction and needs no held session — reading what you have built on a
+// planet is not an act of piloting, exactly as reading what you have trained
+// is not (R28).
+//
+// So this route adds ZERO entries to the gateway's deny-by-default call
+// allowlist. That is not laziness, it is the safer of the two options. The
+// planetMgr service DOES expose reads — GetFullNetworkForOwner,
+// GetCommandPinsForPlanet, GetExtractorsForPlanet — and every one of them is
+// deliberately OWNER-AGNOSTIC, because in the retail client they back the
+// in-space planet view where you can see that someone else has a colony:
+//
+//   Handle_GetFullNetworkForOwner takes the ownerID from `args[1]`, so
+//   allowlisting it would let any logged-in browser read ANY character's pin
+//   layout on any planet by passing someone else's ID. GetCommandPinsForPlanet
+//   and GetExtractorsForPlanet iterate `listColoniesForPlanet` across ALL
+//   owners by design.
+//
+// That is the R38 shape precisely: a convenient read that leaks owner-only data
+// for arbitrary IDs, declined. The snapshot answers the same question with the
+// ownership check already applied.
+
+const PI_PIN_KIND_BY_GROUP_ID = Object.freeze({
+  1026: "extractor",
+  1027: "command",
+  1028: "factory",
+  1029: "storage",
+  1030: "launchpad",
+  1063: "extractor-control",
+});
+
+// EveJS stores instants as Windows FILETIME (100ns ticks since 1601) in
+// STRINGS, because they overflow a double. Every instant leaves this route as
+// epoch milliseconds next to a `serverNowMs` sampled in the same read, so the
+// browser never converts a FILETIME and never compares one clock to another.
+const FILETIME_TICKS_PER_MS = 10000n;
+const FILETIME_UNIX_EPOCH_OFFSET = 116444736000000000n;
+
+// ⚠ A DURATION IS IN TICKS TOO, AND THIS ONE COST A ROUND TRIP.
+//
+// An extractor's `cycleTime` is NOT seconds — it is 100ns FILETIME ticks, the
+// same unit as the instants. planetRuntimeStore divides it by SECOND_TICKS
+// (10,000,000) everywhere it uses it. A live read caught this: the real colony
+// on Jita I carries cycleTime 9,000,000,000, which is 900 seconds — a 15-minute
+// extractor cycle, exactly what retail PI uses. Copied across as "seconds" it
+// would have rendered as a cycle 285 years long, and the tests passed happily
+// because the fixture had been written with the same wrong assumption.
+const FILETIME_TICKS_PER_SECOND = 10000000;
+
+function cycleTicksToSeconds(value) {
+  const ticks = Number(value) || 0;
+  if (ticks <= 0) {
+    return 0;
+  }
+  return Math.round(ticks / FILETIME_TICKS_PER_SECOND);
+}
+
+function fileTimeToEpochMs(value) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  const text = String(value).trim();
+  if (!/^\d+$/.test(text)) {
+    return null;
+  }
+  const ticks = BigInt(text);
+  // "0" is EveJS's "never", not 1601 — a launchpad that has never launched
+  // carries lastLaunchTime "0". Answer null so the panel says nothing rather
+  // than printing a date four centuries ago.
+  if (ticks <= FILETIME_UNIX_EPOCH_OFFSET) {
+    return null;
+  }
+  return Number((ticks - FILETIME_UNIX_EPOCH_OFFSET) / FILETIME_TICKS_PER_MS);
+}
+
+function planetPinKind(staticDataSource, typeID) {
+  const type = staticDataSource.getType(typeID);
+  const groupID = Number(type && type.groupID) || 0;
+  return PI_PIN_KIND_BY_GROUP_ID[groupID] || "other";
+}
+
+function projectPinContents(staticDataSource, contents) {
+  if (!contents || typeof contents !== "object" || Array.isArray(contents)) {
+    return [];
+  }
+  return Object.entries(contents)
+    .map(([typeIDText, quantity]) => ({
+      typeID: Number(typeIDText) || 0,
+      typeName: staticDataSource.getTypeName(Number(typeIDText) || 0),
+      quantity: Number(quantity) || 0,
+    }))
+    .filter((entry) => entry.typeID > 0 && entry.quantity > 0)
+    .sort((left, right) => right.quantity - left.quantity);
+}
+
+/**
+ * One extraction program, or null when this pin has none.
+ *
+ * NOTHING IS SIMULATED HERE. The cycle time, the quantity per cycle and both
+ * instants are the server's own numbers, copied across. Whether the program has
+ * run out is not decided here either — the browser compares `expiresAtMs` to
+ * `serverNowMs`, so a page left open goes stale visibly instead of lying.
+ */
+function projectExtractionProgram(staticDataSource, pin) {
+  const resourceTypeID = Number(pin && pin.programType) || 0;
+  const expiresAtMs = fileTimeToEpochMs(pin && pin.expiryTime);
+  const installedAtMs = fileTimeToEpochMs(pin && pin.installTime);
+  if (!resourceTypeID && expiresAtMs === null && installedAtMs === null) {
+    return null;
+  }
+  return {
+    resourceTypeID,
+    resourceTypeName: resourceTypeID ? staticDataSource.getTypeName(resourceTypeID) : null,
+    cycleTimeSeconds: cycleTicksToSeconds(pin && pin.cycleTime),
+    quantityPerCycle: Number(pin && pin.qtyPerCycle) || 0,
+    installedAtMs,
+    expiresAtMs,
+    headCount: Array.isArray(pin && pin.heads) ? pin.heads.length : 0,
+  };
+}
+
+function projectColony(staticDataSource, colony) {
+  const planetID = Number(colony && colony.planetID) || 0;
+  const solarSystemID = Number(colony && colony.solarSystemID) || 0;
+  const planetTypeID = Number(colony && colony.planetTypeID || colony && colony.typeID) || 0;
+  const pins = (Array.isArray(colony && colony.pins) ? colony.pins : []).map((pin) => {
+    const typeID = Number(pin && pin.typeID) || 0;
+    const kind = planetPinKind(staticDataSource, typeID);
+    return {
+      pinID: Number(pin && pin.pinID) || 0,
+      typeID,
+      typeName: staticDataSource.getTypeName(typeID),
+      kind,
+      contents: projectPinContents(staticDataSource, pin && pin.contents),
+      program: kind === "extractor-control"
+        ? projectExtractionProgram(staticDataSource, pin)
+        : null,
+    };
+  }).filter((pin) => pin.pinID > 0);
+  const routes = (Array.isArray(colony && colony.routes) ? colony.routes : []).map((route) => {
+    const commodityTypeID = Number(route && route.commodityTypeID) || 0;
+    return {
+      routeID: Number(route && route.routeID) || 0,
+      path: (Array.isArray(route && route.path) ? route.path : []).map((id) => Number(id) || 0),
+      commodityTypeID,
+      commodityTypeName: commodityTypeID ? staticDataSource.getTypeName(commodityTypeID) : null,
+      commodityQuantity: Number(route && route.commodityQuantity) || 0,
+    };
+  }).filter((route) => route.routeID > 0);
+  return {
+    planetID,
+    // Null, never a stringified id: a planet the static map cannot name is a
+    // fact the panel decides how to word (R7d), not a number to print.
+    planetName: planetID ? staticDataSource.getPlanetName(planetID) : null,
+    solarSystemID,
+    solarSystemName: solarSystemID ? staticDataSource.getSolarSystemName(solarSystemID) : null,
+    planetTypeID,
+    planetTypeName: planetTypeID ? staticDataSource.getTypeName(planetTypeID) : null,
+    commandCenterLevel: Number(colony && colony.level) || 0,
+    lastSimulatedAtMs: fileTimeToEpochMs(colony && colony.currentSimTime),
+    pins,
+    linkCount: (Array.isArray(colony && colony.links) ? colony.links : []).length,
+    routes,
+  };
+}
+
+/**
+ * GET /api/bridge/planets — every colony this character owns.
+ *
+ * ⚠ THE FACT, NOT A GUESS (the worldHasNoContracts rule). "The snapshot carried
+ * a colony table and none of it is yours" is a different statement from "this
+ * gateway did not report colonies at all", and only the first one justifies
+ * telling a player they have no colonies. `coloniesReadable` carries which one
+ * happened; a read that throws never reaches here at all.
+ */
+app.get("/api/bridge/planets", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  try {
+    const snapshot = await gateway.getSnapshot(req.account.accountID, held.characterID);
+    if (!snapshot) {
+      res.status(404).json({
+        ok: false,
+        error: "CHARACTER_NOT_FOUND",
+        message: "That character was not found.",
+      });
+      return;
+    }
+    const runtime = snapshot.planetRuntimeState;
+    const coloniesReadable = Boolean(
+      runtime && typeof runtime === "object" && !Array.isArray(runtime)
+      && runtime.coloniesByKey && typeof runtime.coloniesByKey === "object"
+      && !Array.isArray(runtime.coloniesByKey),
+    );
+    const colonies = coloniesReadable
+      ? Object.values(runtime.coloniesByKey)
+        .map((colony) => projectColony(staticData, colony))
+        .filter((colony) => colony.planetID > 0)
+        .sort((left, right) => (
+          String(left.planetName || "").localeCompare(String(right.planetName || ""))
+          || left.planetID - right.planetID
+        ))
+      : [];
+    res.json({
+      ok: true,
+      characterID: held.characterID,
+      serverNowMs: Date.now(),
+      coloniesReadable,
+      colonies,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // --- R5b Travel: client-side route solver static data ----------------------
 // The browser autopilot's route solver is client-side (roadmap §7 / G2): the
 // system-adjacency graph it runs BFS over is read-only static reference data

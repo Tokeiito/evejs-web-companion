@@ -70,6 +70,7 @@ import {
   decodeDronesInSpace,
 } from "../bridge/drones.ts";
 import { decodeSkillSheet, skillQueueRefusal } from "../bridge/skills.ts";
+import { decodeColonyReport } from "../bridge/planets.ts";
 import { createSpacePoller, type SpacePoller } from "./spacePoll.ts";
 import type { FlightStepResult } from "./api.ts";
 import { BridgeCallError } from "../bridge/callMethod.ts";
@@ -520,6 +521,16 @@ export interface AppFlow {
     label: string,
     context?: string,
   ): Promise<void>;
+  // --- R41: planetary colonies ---------------------------------------------
+  //
+  // READ ONLY, and deliberately so. The write path the emulator exposes
+  // (restart the expired extractors) changes what a colony is DOING, and this
+  // slice ships the ability to look before it ships the ability to act.
+
+  /** R41 — every colony this character owns, and what is on each planet. */
+  loadPlanets(): Promise<void>;
+  /** R41 — open one colony, or close the open one with null. View state. */
+  selectColony(planetID: number | null): void;
   /** Jump through an NPC stargate (fromGate -> toGate). */
   jump(fromGateID: number, toGateID: number): Promise<void>;
   /**
@@ -3032,6 +3043,44 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     store.apply({ type: "skills/action", action: label });
   }
 
+  // --- R41: planetary colonies ---------------------------------------------
+  //
+  // One read, no write. The BFF answers it from the gateway's owner-scoped
+  // snapshot, so this panel costs the call allowlist nothing.
+  //
+  // ⚠ `coloniesReadable` is carried through UNTOUCHED. It is the difference
+  // between "you have built nothing" and "we could not see whether you have",
+  // and the panel words those two differently.
+
+  async function loadPlanets(): Promise<void> {
+    let result;
+    try {
+      result = await api.getPlanets(callOptions);
+    } catch (error) {
+      if (isSessionLost(error)) {
+        stopLiveStream();
+        store.apply({ type: "character/offline" });
+        throw error;
+      }
+      store.apply({
+        type: "planets/error",
+        message: `Your colonies could not be read: ${errorWords(error)}`,
+      });
+      return;
+    }
+    const report = decodeColonyReport(result.planets, Date.now());
+    store.apply({
+      type: "planets/loaded",
+      colonies: report.colonies,
+      coloniesReadable: report.coloniesReadable,
+      clockOffsetMs: report.clockOffsetMs,
+    });
+  }
+
+  function selectColony(planetID: number | null): void {
+    store.apply({ type: "planets/selected", planetID });
+  }
+
   // --- R5b Travel (browser autopilot decide-loop) --------------------------
 
   // The client-side route solver's graph (fetched once, then cached) and the
@@ -4349,6 +4398,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     unloadMiningHolds,
     reprocessItems,
     loadSkills,
+    loadPlanets,
+    selectColony,
     saveSkillQueue,
 
     startSpacePolling,
