@@ -92,6 +92,9 @@ import {
   solveRoute,
   type SystemGraph,
 } from "../nav/routeSolver.ts";
+// R30 slice A — reading the already-cached gate graph as "what is on this grid
+// and where does it go", so a stargate row can offer a jump.
+import { buildGateLinks, type GateLink } from "../space/gateLinks.ts";
 import type { AgentFinderRow } from "../store/types.ts";
 import {
   AUTOPILOT_WARP_MIN_RANGE_M,
@@ -446,6 +449,19 @@ export interface AppFlow {
   ): Promise<void>;
   /** Jump through an NPC stargate (fromGate -> toGate). */
   jump(fromGateID: number, toGateID: number): Promise<void>;
+  /**
+   * R30 slice A — the stargates in `systemID` and where each one leads.
+   *
+   * NO new server surface: this is a read of the SAME client-side route graph
+   * the R5b autopilot already fetches once and caches (`loadRouteGraph`), served
+   * as static reference data. It exists so a gate row in the overview can say
+   * which system is on the other side and jump through it, instead of pushing a
+   * flying player to another tab to type two raw gate IDs by hand.
+   *
+   * Throws if the graph cannot be read; the caller states that honestly rather
+   * than rendering gates it silently cannot route.
+   */
+  nearbyGates(systemID: number): Promise<readonly GateLink[]>;
   /**
    * Dock at the destination station — ONE `CmdDock`, no closing in. Out of
    * range the server starts an approach and refuses, and the caller has to
@@ -3578,6 +3594,15 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
     async jump(fromGateID, toGateID) {
       await runFlightStep("Jump", () => api.jump(fromGateID, toGateID, callOptions));
+    },
+
+    // R30 slice A. A pure read over the cached graph — it issues no game call
+    // and starts nothing, so a panel may ask for it on every system change.
+    async nearbyGates(systemID) {
+      if (!(systemID > 0)) {
+        return [];
+      }
+      return buildGateLinks(await loadRouteGraph(), systemID);
     },
 
     async dock(stationID) {

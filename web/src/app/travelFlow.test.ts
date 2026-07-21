@@ -300,3 +300,58 @@ test("dockAt refuses a non-station id with a reason, not a request", async () =>
   await flow.dockAt(0);
   assert.match(String(store.travel.get().failureReason), /not a station/i);
 });
+
+// --- R30 slice A: nearbyGates ------------------------------------------------
+
+test("nearbyGates reads the SAME cached graph the autopilot uses — no new server surface", async () => {
+  const store = createClientStore();
+  const paths: string[] = [];
+  const flow = createAppFlow(store, {
+    fetch: makeFakeFetch((path) => {
+      paths.push(path);
+      return defaultResponder(path);
+    }),
+  });
+
+  const fromBravo = await flow.nearbyGates(2);
+  assert.deepEqual(fromBravo, [
+    { gateID: 211, toSystemID: 1, toSystemName: "Alpha", destinationGateID: 112 },
+    { gateID: 223, toSystemID: 3, toSystemName: "Charlie", destinationGateID: 322 },
+  ]);
+
+  // The ONLY route it touches is the static map graph the route solver already
+  // fetches. Nothing here is a game call, so it starts nothing.
+  assert.deepEqual(paths, ["/api/map/graph"]);
+
+  // Cached: a second system's gates cost no second fetch.
+  const fromAlpha = await flow.nearbyGates(1);
+  assert.equal(fromAlpha.length, 1);
+  assert.equal(fromAlpha[0]?.toSystemName, "Bravo");
+  assert.deepEqual(paths, ["/api/map/graph"], "the graph is fetched once, then cached");
+});
+
+test("nearbyGates answers a system with no gates, and an invalid one, without a request", async () => {
+  const store = createClientStore();
+  const flow = createAppFlow(store, { fetch: makeFakeFetch(defaultResponder) });
+
+  assert.deepEqual(await flow.nearbyGates(0), [], "an unknown system asks nothing");
+  assert.deepEqual(await flow.nearbyGates(-7), []);
+  // A system the graph does not reach is empty, not an error.
+  assert.deepEqual(await flow.nearbyGates(4242), []);
+});
+
+test("nearbyGates surfaces a failed graph read instead of pretending there are no gates", async () => {
+  const store = createClientStore();
+  const flow = createAppFlow(store, {
+    fetch: makeFakeFetch((path) => {
+      if (path === "/api/map/graph") {
+        return { status: 500, body: { ok: false, error: "map unavailable" } };
+      }
+      throw new Error(`unexpected ${path}`);
+    }),
+  });
+
+  // "No gates here" and "I could not read the star map" are different facts and
+  // the panel renders them differently — so this must reject, not return [].
+  await assert.rejects(() => flow.nearbyGates(2));
+});

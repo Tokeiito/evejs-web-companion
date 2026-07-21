@@ -25,6 +25,14 @@
     type OverviewSort,
   } from "../space/overview.ts";
   import { droneActivityLabel, droneIsBusy } from "../bridge/drones.ts";
+  // R30 slice A — what a stargate row could never say: which system is through
+  // it. Read from the route graph the autopilot already caches.
+  import {
+    gateLinkFor,
+    jumpBlockedReason,
+    jumpLabel,
+    type GateLink,
+  } from "../space/gateLinks.ts";
   import MiningBot from "./MiningBot.svelte";
   // R27 — the shared item icon: one cached picture per thing, falling back
   // to a name-derived tile whenever the icon cache has no entry (or no cache).
@@ -106,6 +114,53 @@
   const snapshot = $derived($space.snapshot);
   const inSpace = $derived(snapshot?.inSpace === true || $flight.status?.inSpace === true);
   const origin = $derived(egoPosition(snapshot));
+
+  // R30 slice A — the stargates on this grid and where they lead.
+  //
+  // WHY THIS EXISTS: a gate was a row like any other. You could warp to it and
+  // approach it, but the moment your destination was in the next system the
+  // panel had nothing more to offer and you had to leave for the Flight tab and
+  // type two raw gate IDs by hand. The graph that answers "which system is
+  // through this gate" was already in the browser, cached by the autopilot.
+  //
+  // A READ over static reference data, re-asked only when the ship's system
+  // changes — not per poll, and never per row.
+  const currentSystemID = $derived($flight.status?.solarSystemID ?? null);
+  let gateLinks = $state<readonly GateLink[]>([]);
+  // Set when the star map itself could not be read. "There are no gates here"
+  // and "I could not tell" are different facts and must not render the same.
+  let gateLinksError = $state("");
+
+  $effect(() => {
+    const systemID = currentSystemID;
+    if (systemID === null) {
+      gateLinks = [];
+      gateLinksError = "";
+      return;
+    }
+    // A stale answer must never label a gate in the system we just LEFT, so the
+    // reply is dropped unless the ship is still where the question was asked.
+    let live = true;
+    void flow
+      .nearbyGates(systemID)
+      .then((links) => {
+        if (!live) {
+          return;
+        }
+        gateLinks = links;
+        gateLinksError = "";
+      })
+      .catch(() => {
+        if (!live) {
+          return;
+        }
+        gateLinks = [];
+        gateLinksError = "Could not read the star map, so jumps are not offered here.";
+      });
+    return () => {
+      live = false;
+    };
+  });
 
   // Every name this panel shows resolves through the shared name cache: a TYPE
   // name and its GROUP / CATEGORY names, all keyed off the object's typeID.
@@ -1455,6 +1510,11 @@
           <tbody>
             {#each overview.rows as row (row.itemID)}
               <!--
+                R30 slice A — non-null ONLY for a stargate, and the same fact
+                that identifies it as one supplies the system on the other side.
+              -->
+              {@const gateLink = gateLinkFor(gateLinks, row.itemID)}
+              <!--
                 R25 slice B — a hostile row is visually distinct IN the list as
                 well as pulled out above it. The badge carries the word, so the
                 colour is never the only signal (a player who cannot tell red
@@ -1529,6 +1589,30 @@
                       </button>
                     {/if}
                     <!--
+                      R30 slice A — Jump, on the gate, naming where it goes.
+                      This is the whole slice: a player who can see a gate can
+                      now leave the system without leaving the cockpit.
+
+                      It is offered from ANY distance on purpose. The server
+                      owns the range rule and states its own refusal (it lands
+                      in the flight error below the table); inventing a distance
+                      test here would put a guessed rule on screen next to the
+                      real one. The one case we DO block is a graph edge with no
+                      gate recorded on the far side — there is nothing honest to
+                      send — and it says so on the control rather than greying
+                      out in silence.
+                    -->
+                    {#if gateLink}
+                      {@const blocked = jumpBlockedReason(gateLink)}
+                      <button
+                        type="button"
+                        disabled={busy || blocked !== null}
+                        onclick={() => run(() => flow.jump(row.itemID, gateLink.destinationGateID))}
+                      >
+                        {blocked ?? jumpLabel(gateLink)}
+                      </button>
+                    {/if}
+                    <!--
                       R23 — lock / release. GENERIC: this is the same button a
                       later combat goal uses, on the same row, for the same
                       reason. Locking is not instant, so the middle state is
@@ -1569,6 +1653,15 @@
       </div>
       {#if $flight.actionError}
         <p class="error">{$flight.actionError}</p>
+      {/if}
+      <!--
+        R30 slice A — an honest silence. If the star map could not be read we
+        say so, because "this gate offers no jump" and "I could not tell where
+        this gate goes" are different facts and a player acts differently on
+        each. Warp to / Approach still work on the gate row regardless.
+      -->
+      {#if gateLinksError}
+        <p class="note">{gateLinksError}</p>
       {/if}
     {/if}
   </section>
