@@ -2913,6 +2913,127 @@ the five squares, the interpolated readout, and the refusal wording);
 entry's finish instant passes the panel **re-reads** instead of promoting the
 level itself. A read always wins: the module keeps no memory between reads.
 
+## Personal Assets — where your stuff is (R37)
+
+"Where is my stuff, across the whole cluster", plus a course set to any of it.
+**Reads only** — the bound global-assets object implements no write at all.
+
+### ⚠ Not a top-level service: this is the bound two-step
+
+Unlike mail / market / contracts, `charMgr`'s asset surface is reached through
+`MachoBindObject`. The retail moniker is `Moniker('charMgr', (charID, 10002))`
+— **10002 is the global-assets container id**, and
+`charMgrGlobalAssets._parseBindContext` **refuses any other containerID**, so
+this bind cannot be steered at another part of `charMgr`.
+
+`charMgrService` delegates the whole surface to
+`server/src/services/character/charMgrGlobalAssets.js`.
+
+### Gateway pairs (R37 — `charMgr` had ZERO before this goal)
+
+| Pair | Why |
+| --- | --- |
+| `charMgr.MachoBindObject` | The bind. Everything below dispatches on the bound object. |
+| `charMgr.ListStations` | Every station holding the character's items, with an item count each. **This one call is the feature.** Scopes off the session; there is no way to ask about someone else's assets. |
+| `charMgr.ListStationItems` | What is at ONE station. Called only when the player expands one, so first paint does not fan out per-station reads. |
+
+**Deliberately absent, on the same bound object:** `List` and
+`ListIncludingContainers` (each a strictly wider read — every item the character
+owns anywhere, the latter walking into every container) and `GetAssetWorth`
+(prices the lot). Nothing on screen needs a cluster-wide item dump or a
+net-worth figure. `charMgr`'s own writes are absent too — a service-granular
+allowlist would have handed them to the browser.
+
+**Setting a destination adds no pair.** The route is solved in the browser from
+the static map graph and flown with the `beyonce` pairs R5a already listed.
+
+### ⚠ The two reads send DIFFERENT packedrow variants
+
+This is the R32 contract-detail trap in a new place, and both shapes were
+confirmed against bytes captured from the live handlers:
+
+| Read | Envelope | Row shape |
+| --- | --- | --- |
+| `ListStations` | `{type:"objectex2", header, list, dict}` — a **CRowset**. ⚠ Rows are on **`list`**, not `items`. | **POSITIONAL** packedrow: `columns:[["stationID",20],…]` + parallel `values:[60003760,30000142,52678,9,null]`, **no `fields`**. |
+| `ListStationItems` | `{type:"list", items}` | **NAME-KEYED** packedrow: `fields:{itemID,typeID,…}`, **no `values`**. |
+
+`buildDbRowset` produces the positional variant because it feeds
+`buildPackedRowFromRowsetLine` an *array* per row. A decoder that commits to
+either variant returns `undefined` for every field of the other — silently.
+Both are read through `readRowField` (`web/src/bridge/wire.ts:219`).
+
+Column descriptors:
+
+- stations: `stationID`(20) `solarSystemID`(20) `typeID`(3) `itemCount`(3) `upkeepState`(17)
+- items: `itemID`(20) `typeID`(3) `ownerID`(3) `locationID`(20) `flagID`(2) `quantity`(3) `groupID`(3) `categoryID`(3) `customInfo`(129) `singleton`(2) `stacksize`(3)
+
+### ⚠ Value encoding — measured, not assumed
+
+`stationID` / `solarSystemID` / `itemID` / `locationID` are declared **int64**
+(type code `0x14` = 20), so R32's bare-string-bigint trap was the expected
+hazard. **It does not bite here:** `charMgrGlobalAssets` builds every one of
+them with `toInteger()`, so they cross the wire as **plain JS numbers** — no
+`{type:"long"}` wrapper and no decimal string. Measured live: `stationID`
+`60003760`, `itemID` `9988400022007` (> 2³², still well under 2⁵³).
+
+The decoder still accepts the wrapper *and* the bare string, because the gateway
+renders any genuine `BigInt` as a bare decimal string
+(`encodeJsonSafeCallValue`) and a future handler change must not silently zero
+the panel.
+
+### ⚠ `quantity` is `-1` for an assembled item, not a count
+
+Every singleton row measured live carried `quantity:-1, singleton:1,
+stacksize:1` — the retail convention for a unique assembled thing (a ship, a
+fitted module). Rendering that field raw puts "-1 Badger" on screen. The decoder
+exposes `units`, which is the **server's own rule**
+(`charMgrGlobalAssets._calculateItemUnits`): a singleton is 1, everything else
+is its `stacksize`.
+
+### BFF routes (this repo)
+
+| Route | What it does |
+| --- | --- |
+| `GET /api/bridge/assets` | Syncs the held session's live position, then one bound `ListStations`. Returns `{stations, ownsNothing, error}`. |
+| `GET /api/bridge/assets/station?stationID=` | One bound `ListStationItems`. Returns `{items, volumes, hasNoItems, error}`. |
+
+**`ownsNothing` / `hasNoItems` are FACTS, not guesses** — true only when the
+read *succeeded and was empty*, exactly like `worldHasNoContracts`
+(`src/server.js`). A failed read leaves them `false` and sets `error`, so "you
+own nothing anywhere" and "that read failed" can never render alike. The flow
+does not decode a payload that reported an error at all, so a partial answer is
+never shown as if it were the whole truth.
+
+**The position sync is deliberate.** The asset snapshot is built *against the
+session*: `charMgrGlobalAssets` keys its cache on the session's
+station/system/constellation/region, `isHiddenPersonalAssetLocation` hides the
+character's own id, and an unknown location inherits the session's system. This
+is the same class of dependency that made `GetAgents` answer 0 for a docked
+station until the sync was added.
+
+**`volumes` costs no bridge call.** Volume is a property of the *type*, not of
+the stack, and the row descriptor has no such column — so the BFF attaches it
+from `staticData.getType(...).volume`, the same class of read as `/api/names`. A
+type the static tables do not know is *absent* from the map, and renders as "—"
+rather than as a measured zero.
+
+### Client modules
+
+`web/src/bridge/personalAssets.ts` (pure: decode both row variants, the
+singleton `units` rule, volume totals, refusal wording); `app/api.ts`
+`loadAssetStations`/`loadAssetStationItems`; `app/flow.ts`
+`loadPersonalAssets`/`openAssetStation`/`setDestinationToAssetStation`; the
+`assets` store slice with
+`assets/loaded`/`assets/station-items`/`assets/expanded`/`assets/cleared`; and
+`web/src/ui/PersonalAssets.svelte`.
+
+**Set-destination builds no navigation.** `setDestinationToAssetStation` is a
+one-line wrapper over `startRoute(stationID)` — the same call Travel, the
+cockpit, the agent finder and the mission bot all make. `startRoute` reports
+plan failures through `travel.failureReason` rather than by throwing, so the
+panel renders that field; without it an unreachable destination would look like
+a button that did nothing.
+
 ### How to add a page on the new stack (R2+)
 
 1. Mine the page's retail calls (`docs/retail-call-inventory.md`) and get each (service, method) pair allowlisted in eve.js (bridge-goal work, not web-side).
