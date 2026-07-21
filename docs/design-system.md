@@ -137,6 +137,55 @@ label. The track carries `role="meter"` plus `aria-valuenow/min/max`.
 Every gauge renders its label **and** its value as text next to the bar, so the
 bar is a fast visual summary and never the only way to read the state.
 
+### Item icons (R27)
+
+One component — `web/src/ui/TypeIcon.svelte` — is the **only** thing in the app
+allowed to render an image. A test enforces that (`typeIcon.test.ts`), because
+before R27 the fitting window had its own pair of `<img>` tags and its own
+missing-icon bookkeeping, and that is exactly what must not grow back.
+
+```svelte
+<span class="cell-item">
+  <TypeIcon typeID={row.typeID} name={typeName(row.typeID)} />
+  {typeName(row.typeID)}
+</span>
+```
+
+| prop | meaning |
+| --- | --- |
+| `typeID` | the item's type. `null`, `0`, a negative or a non-integer all go straight to the tile — **no `src` is emitted at all**, so there is never a broken image. |
+| `name` | the item's **already-resolved name**. It is the `alt`, the tile's `aria-label`, and where the tile's letters come from. |
+| `size` | `sm` (1.5rem, table rows) · `md` (2rem) · `lg` (4.5rem, the fitting hull) · `socket` (tracks the fitting socket across the R8 breakpoint). |
+| `fallbackText` | overrides the tile's letters. Only the fitting window passes it, because a socket is the one caller with no name rendered beside it, so its tile has to *be* the label. |
+
+**The fallback is the common case, not the error case.** `data/` is gitignored,
+so a fresh clone and CI have **no icon cache at all** and every icon renders as
+a tile. Design for the tile first; treat the picture as the bonus.
+
+- **`.type-icon`** — the fixed box, and the **only** element carrying a size.
+  The picture and the tile fill it identically, so a row measures the same
+  before, during and after an image loads (R8: no jitter, no reflow reshuffle).
+  Never put a width or height on the `<img>` or the tile.
+- **`.type-icon-tile`** — the fallback plate: inset, dimmed, one or two
+  initials derived from the name (`iconInitials`). An unresolved name (`—`)
+  becomes `?`, never an empty square.
+- **`.cell-item`** — an icon and its name inside **one existing table cell**.
+  Deliberately not a new column: an extra `<td>` would need its own
+  `data-label` and would add a row to every reflow card, so the R8 contract
+  stays untouched.
+
+**Local only.** Icons are `/icon-cache/types/64/icon/<typeID>.png`, served by
+the BFF with `fallthrough: false` above the SPA catch-all — so a type we never
+cached returns a real **404** and `onerror` fires, rather than quietly getting
+`index.html` with a 200. `staticData.getRemoteTypeIconUrl` (images.evetech.net)
+exists but is **not wired to the browser** and must not be: the client makes no
+external requests, so it works offline and leaks nothing about what the player
+is flying.
+
+**R7d.** The typeID in the `src` path is fine — an asset path is not data shown
+to the player (the R21 precedent, and `visibleText()` in the invariant sweeps
+strips `<img>` tags entirely). Everything *rendered or spoken* is the name.
+
 ### The fitting window (R21)
 
 The radial fit layout. **The stylesheet owns the look; it never owns the
@@ -188,7 +237,11 @@ carries its own text, so colour is reinforcement.
 ## Invariants this system must not break
 
 - **R7d** — zero visible numeric IDs. Names resolve through `store/names.ts`;
-  an unresolved name renders `—`, never the raw ID.
+  an unresolved name renders `—`, never the raw ID. An icon's `src` path is the
+  one exemption (R21/R27): asset paths are not data shown to the player.
+- **R27** — `TypeIcon.svelte` is the only component that renders an image, the
+  size lives on `.type-icon` and nowhere else, and every panel must still look
+  right with `data/icon-cache` absent entirely.
 - **R8** — no horizontal page scroll at 360px; record tables keep `.reflow` +
   `data-label` and still become labelled cards at ≤640px; targets stay ≥40px.
 - **R9a** — plain player language, no developer jargon in the UI.

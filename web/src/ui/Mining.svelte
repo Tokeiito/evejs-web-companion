@@ -14,6 +14,9 @@
   import { onMount } from "svelte";
   import { BridgeCallError } from "../bridge/callMethod.ts";
   import { isSessionLost } from "../app/flow.ts";
+  // R27 — the shared item icon: one cached picture per thing, falling back
+  // to a name-derived tile whenever the icon cache has no entry (or no cache).
+  import TypeIcon from "./TypeIcon.svelte";
   import { resolvedName, type NameRef } from "../store/names.ts";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
@@ -244,7 +247,12 @@
                       aria-label={`Pick ${itemName(item.typeID)}`}
                     />
                   </td>
-                  <td data-label="Ore">{itemName(item.typeID)}</td>
+                  <td data-label="Ore">
+                    <span class="cell-item">
+                      <TypeIcon typeID={item.typeID} name={itemName(item.typeID)} />
+                      {itemName(item.typeID)}
+                    </span>
+                  </td>
                   <td class="num" data-label="Amount">{item.quantity.toLocaleString()}</td>
                 </tr>
               {/each}
@@ -321,7 +329,13 @@
               {#each $mining.quotes as quote (quote.itemID)}
                 <tr>
                   <td data-label="Ore">
-                    {quote.typeID === null ? "Unknown" : itemName(quote.typeID)}
+                    <span class="cell-item">
+                      <TypeIcon
+                        typeID={quote.typeID}
+                        name={quote.typeID === null ? "Unknown" : itemName(quote.typeID)}
+                      />
+                      {quote.typeID === null ? "Unknown" : itemName(quote.typeID)}
+                    </span>
                   </td>
                   <td class="num" data-label="Refined">
                     {quote.quantityToProcess === null

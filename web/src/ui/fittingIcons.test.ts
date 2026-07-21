@@ -1,24 +1,10 @@
-// Socket faces (goal R21): the local icon URL and the text fallback.
+// A socket's text fallback (goal R21). The icon URL rules moved to
+// `typeIcons.test.ts` when R27 gave every panel the same icon component.
 
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { abbreviate, typeIconUrl } from "./fittingIcons.ts";
-
-test("icons come from the LOCAL cache and never an external host", () => {
-  const url = typeIconUrl(3634)!;
-  assert.equal(url, "/icon-cache/types/64/icon/3634.png");
-  // Same-origin, relative: no scheme, no host, nothing to leak.
-  assert.ok(url.startsWith("/"));
-  assert.doesNotMatch(url, /^https?:|\/\/|evetech|images\./);
-});
-
-test("a nonsense type has no icon rather than a broken URL", () => {
-  assert.equal(typeIconUrl(0), null);
-  assert.equal(typeIconUrl(-1), null);
-  assert.equal(typeIconUrl(1.5), null);
-  assert.equal(typeIconUrl(Number.NaN), null);
-});
+import { abbreviate } from "./fittingIcons.ts";
 
 test("a short name is left exactly as it is", () => {
   assert.equal(abbreviate("Gyrostabilizer"), "Gyrostabilizer");

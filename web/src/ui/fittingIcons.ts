@@ -1,31 +1,12 @@
-// Socket faces for the fitting window (goal R21): the icon a socket shows, and
-// the short text it falls back to.
+// Socket TEXT for the fitting window (goal R21): the short name a socket shows
+// when there is no cached picture for what is fitted there.
 //
-// ICONS ARE LOCAL ONLY. `scripts/cache-icons.js` has already downloaded the
-// type icons into `data/icon-cache/`, and the BFF serves that directory at
-// `config.iconCacheUrlPath` (`/icon-cache`). We link there and NOWHERE else —
-// the browser never hits an external image host, so the client keeps working
-// offline and leaks nothing about what the player is flying.
-//
-// The cache does not cover every type in the game, so a socket must survive a
-// missing icon. The panel listens for the image's `error` event and swaps in
-// `abbreviate(name)`; this module owns both halves of that pair.
-
-/** Where the BFF serves the cached type icons (src/config.js). */
-const ICON_BASE = "/icon-cache/types/64/icon";
-
-/**
- * The local URL for a type's icon. This puts a typeID in an image URL, which
- * is NOT an R7d violation: R7d bans numeric IDs shown to the player AS DATA,
- * and this one is never rendered — it is an asset path, the same way the name
- * cache keys on an ID the player never sees.
- */
-export function typeIconUrl(typeID: number): string | null {
-  if (!Number.isSafeInteger(typeID) || typeID <= 0) {
-    return null;
-  }
-  return `${ICON_BASE}/${typeID}.png`;
-}
+// R27 moved the icon rules themselves out to `typeIcons.ts` + `TypeIcon.svelte`
+// so that every panel shares one implementation. What stayed here is the part
+// that is genuinely specific to a socket: a socket is the ONE place in the app
+// where the fallback is the ONLY text — every other caller renders the item's
+// full name right next to the icon, so a two-letter tile is enough there. A
+// socket has no room for a neighbour, so it needs a name it can actually read.
 
 /**
  * A module's name shortened to something that fits inside a socket, for when

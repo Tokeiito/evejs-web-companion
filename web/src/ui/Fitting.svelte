@@ -24,7 +24,12 @@
     slotsOfFamily,
   } from "../bridge/fitting.ts";
   import { OUTER_RADIUS_PERCENT, countByFamily, placeFamily } from "./fittingGeometry.ts";
-  import { abbreviate, typeIconUrl } from "./fittingIcons.ts";
+  import { abbreviate } from "./fittingIcons.ts";
+  // R27 — the shared item icon. The fitting window used to own the only two
+  // `<img>` tags in the app, with its own 404 bookkeeping; both are now the
+  // same component every other panel uses, so the fallback behaves identically
+  // here and in Overview, Inventory, Market and Industry.
+  import TypeIcon from "./TypeIcon.svelte";
   import { BridgeCallError } from "../bridge/callMethod.ts";
   import { isSessionLost } from "../app/flow.ts";
   import type { ClientStore } from "../store/clientStore.ts";
@@ -71,8 +76,6 @@
 
   /** Which socket the player has selected; its actions show beneath the ring. */
   let selected = $state<{ family: SlotFamily; index: number } | null>(null);
-  /** Types whose cached icon 404ed — those sockets fall back to text. */
-  let iconMissing = $state<ReadonlySet<number>>(new Set());
 
   function chooseView(next: "radial" | "list"): void {
     view = next;
@@ -82,14 +85,6 @@
     } catch {
       // A browser with storage blocked still gets the toggle, just not the
       // memory of it. Never let that break the panel.
-    }
-  }
-
-  function noteMissingIcon(typeID: number): void {
-    if (!iconMissing.has(typeID)) {
-      const next = new Set(iconMissing);
-      next.add(typeID);
-      iconMissing = next;
     }
   }
 
@@ -160,19 +155,9 @@
     confirmingRigID = null;
   }
 
-  /** What a socket shows: the module's icon, or a short version of its name. */
+  /** What an EMPTY socket shows: its number within its family. */
   function socketText(slot: FittingSlot): string {
-    if (!slot.module) {
-      return String(slot.index + 1);
-    }
-    return abbreviate(moduleName(slot.module.typeID));
-  }
-
-  function socketIcon(slot: FittingSlot): string | null {
-    if (!slot.module || iconMissing.has(slot.module.typeID)) {
-      return null;
-    }
-    return typeIconUrl(slot.module.typeID);
+    return String(slot.index + 1);
   }
 
   /** The full spoken/hover description of a socket — never an abbreviation. */
@@ -186,13 +171,6 @@
     }
     return `${slotName(slot)}, ${name}, ${slot.module.online ? "online" : "offline"}`;
   }
-
-  const shipIcon = $derived.by<string | null>(() => {
-    if (activeShipTypeID === null || iconMissing.has(activeShipTypeID)) {
-      return null;
-    }
-    return typeIconUrl(activeShipTypeID);
-  });
 
   // R7c — resolve the ACTIVE SHIP's typeID, every fitted module's typeID and
   // every fittable inventory row's typeID to a display NAME. Fire-and-forget so
@@ -584,13 +562,7 @@
       <div class="fit-ring">
         <div class="fit-ring-guide" aria-hidden="true"></div>
         <div class="fit-hull">
-          {#if shipIcon && activeShipTypeID !== null}
-            <img
-              src={shipIcon}
-              alt=""
-              onerror={() => noteMissingIcon(activeShipTypeID!)}
-            />
-          {/if}
+          <TypeIcon typeID={activeShipTypeID} name={activeShipName} size="lg" />
           <span class="fit-hull-name">{activeShipName}</span>
           {#if activeShipClass}
             <span class="fit-hull-class">{activeShipClass}</span>
@@ -599,7 +571,6 @@
 
         {#each sockets as socket (`${socket.slot.family}:${socket.slot.index}`)}
           {@const slot = socket.slot}
-          {@const icon = socketIcon(slot)}
           <button
             type="button"
             class="fit-socket family-{slot.family}"
@@ -616,8 +587,14 @@
             disabled={busy}
             onclick={() => clickSocket(slot)}
           >
-            {#if icon && slot.module}
-              <img src={icon} alt="" onerror={() => noteMissingIcon(slot.module!.typeID)} />
+            {#if slot.module}
+              {@const moduleLabel = moduleName(slot.module.typeID)}
+              <TypeIcon
+                typeID={slot.module.typeID}
+                name={moduleLabel}
+                size="socket"
+                fallbackText={abbreviate(moduleLabel)}
+              />
             {:else}
               <span class="fit-socket-text">{socketText(slot)}</span>
             {/if}

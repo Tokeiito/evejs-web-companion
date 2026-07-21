@@ -26,6 +26,9 @@
   } from "../space/overview.ts";
   import { droneActivityLabel, droneIsBusy } from "../bridge/drones.ts";
   import MiningBot from "./MiningBot.svelte";
+  // R27 — the shared item icon: one cached picture per thing, falling back
+  // to a name-derived tile whenever the icon cache has no entry (or no cache).
+  import TypeIcon from "./TypeIcon.svelte";
   import { resolvedName, nameKey, type NameRef } from "../store/names.ts";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
@@ -255,6 +258,8 @@
   interface LockedRow {
     readonly itemID: number;
     readonly label: string;
+    /** R27 — for the row's icon only; never rendered as a number. */
+    readonly typeID: number | null;
     readonly typeLabel: string;
     readonly distance: string;
     readonly acquiring: boolean;
@@ -275,6 +280,7 @@
       return {
         itemID,
         label: entity ? displayLabel(entity) : "No longer in view",
+        typeID: entity ? entity.typeID : null,
         typeLabel: entity ? typeName(entity) : "—",
         distance: distance === undefined ? "—" : formatDistance(distance),
         acquiring: !lockedIDs.includes(itemID),
@@ -1068,7 +1074,12 @@
             {#each lockedRows as locked (locked.itemID)}
               <tr>
                 <td data-label="Target">{locked.label}</td>
-                <td data-label="Type">{locked.typeLabel}</td>
+                <td data-label="Type">
+                  <span class="cell-item">
+                    <TypeIcon typeID={locked.typeID} name={locked.typeLabel} />
+                    {locked.typeLabel}
+                  </span>
+                </td>
                 <td class="num" data-label="Distance">{locked.distance}</td>
                 <td data-label="State">{locked.acquiring ? "Locking…" : "Locked"}</td>
                 <td data-label="">
@@ -1309,7 +1320,12 @@
                   {#if rowIsHostile(row)}<span class="threat-badge">{rowBadge(row)}</span>{/if}
                   {displayLabel(row)}
                 </td>
-                <td data-label="Type">{typeName(row)}</td>
+                <td data-label="Type">
+                  <span class="cell-item">
+                    <TypeIcon typeID={row.typeID} name={typeName(row)} />
+                    {typeName(row)}
+                  </span>
+                </td>
                 <td data-label="Group">{groupName(row)}</td>
                 <td class="num" data-label="Distance">{formatDistance(row.distance)}</td>
                 <td class="num" data-label="Ore left">{remainingLabel(row)}</td>

@@ -34,6 +34,9 @@
   import type { MarketTypeMatch } from "../app/api.ts";
   import type { MarketOrderRow, MarketOwnOrderRow, MarketSide } from "../store/types.ts";
   import { resolvedName } from "../store/names.ts";
+  // R27 — the shared item icon: one cached picture per thing, falling back
+  // to a name-derived tile whenever the icon cache has no entry (or no cache).
+  import TypeIcon from "./TypeIcon.svelte";
 
   let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
 
@@ -343,7 +346,12 @@
         <tbody>
           {#each matches as match (match.typeID)}
             <tr>
-              <td data-label="Item">{match.name}</td>
+              <td data-label="Item">
+                <span class="cell-item">
+                  <TypeIcon typeID={match.typeID} name={match.name} />
+                  {match.name}
+                </span>
+              </td>
               <td data-label="Kind">{match.groupName}</td>
               <td data-label="Action">
                 <div class="row-actions">
@@ -590,7 +598,12 @@
             <tbody>
               <tr>
                 <th>Item</th>
-                <td data-label="Item">{chosenName || typeName($market.typeID)}</td>
+                <td data-label="Item">
+                  <span class="cell-item">
+                    <TypeIcon typeID={$market.typeID} name={chosenName || typeName($market.typeID)} />
+                    {chosenName || typeName($market.typeID)}
+                  </span>
+                </td>
               </tr>
               <tr>
                 <th>Price for each one</th>
@@ -664,7 +677,12 @@
           <tbody>
             {#each openOrders as order (order.orderID)}
               <tr>
-                <td data-label="Item">{typeName(order.typeID)}</td>
+                <td data-label="Item">
+                  <span class="cell-item">
+                    <TypeIcon typeID={order.typeID} name={typeName(order.typeID)} />
+                    {typeName(order.typeID)}
+                  </span>
+                </td>
                 <td data-label="Buying or selling">
                   {order.side === "buy" ? "Buying" : "Selling"}
                 </td>
@@ -790,7 +808,12 @@
           <tbody>
             {#each $market.orderHistory as order (order.orderID)}
               <tr>
-                <td data-label="Item">{typeName(order.typeID)}</td>
+                <td data-label="Item">
+                  <span class="cell-item">
+                    <TypeIcon typeID={order.typeID} name={typeName(order.typeID)} />
+                    {typeName(order.typeID)}
+                  </span>
+                </td>
                 <td data-label="Buying or selling">
                   {order.side === "buy" ? "Buying" : "Selling"}
                 </td>
@@ -831,7 +854,12 @@
           <tbody>
             {#each $market.transactions as trade (trade.transactionID)}
               <tr>
-                <td data-label="Item">{typeName(trade.typeID)}</td>
+                <td data-label="Item">
+                  <span class="cell-item">
+                    <TypeIcon typeID={trade.typeID} name={typeName(trade.typeID)} />
+                    {typeName(trade.typeID)}
+                  </span>
+                </td>
                 <td data-label="Bought or sold">
                   {trade.side === "bought"
                     ? "You bought"

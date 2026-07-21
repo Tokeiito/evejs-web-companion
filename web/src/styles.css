@@ -893,6 +893,71 @@
   table.overview th,
   table.overview td { padding-block: 0.3rem; }
 
+  /* ==================================================== item icons (R27) --
+   * The picture next to a thing's name, wherever a thing has a name: overview
+   * rows, inventory and the ore hold, market orders, industry blueprints and
+   * materials, and the fitting window's sockets and hull.
+   *
+   * ONE BOX, TWO CONTENTS. `.type-icon` is a fixed square and the ONLY thing
+   * that has a size; whether it currently holds a cached picture or the named
+   * fallback tile, it measures exactly the same. That is what stops rows from
+   * jittering as images stream in and stops the R8 reflow cards from
+   * reshuffling under the player mid-load. Change the size here, never on the
+   * `<img>`.
+   *
+   * THE TILE IS THE DEFAULT, NOT THE ERROR STATE. `data/` is gitignored, so a
+   * fresh clone and CI have no icon cache at all and every icon lands here. It
+   * is styled as a deliberate part of the design — an inset, dimmed initial
+   * plate that matches a meter track — and never as something broken. The
+   * name is always rendered beside it, so the tile carries no information of
+   * its own and colour/glyph is never the only signal. */
+  .type-icon {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    vertical-align: middle;
+  }
+  .type-icon img {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    display: block;
+  }
+  .type-icon-tile {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 0.25rem;
+    border: 1px solid var(--color-line);
+    background: var(--color-panel-3);
+    color: var(--color-muted);
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    line-height: 1;
+    text-transform: uppercase;
+  }
+  .type-icon-sm { width: 1.5rem; height: 1.5rem; }
+  .type-icon-sm .type-icon-tile { font-size: 9px; }
+  .type-icon-md { width: 2rem; height: 2rem; }
+  .type-icon-md .type-icon-tile { font-size: 11px; }
+  .type-icon-lg { width: 4.5rem; height: 4.5rem; }
+  .type-icon-lg .type-icon-tile { font-size: 20px; }
+
+  /* A name with its icon, inside one table cell. Deliberately NOT a new
+   * column: an extra <td> would need its own `data-label` and would add a
+   * column to every reflow card, so the icon rides along in the cell that
+   * already holds the name and the R8 contract is untouched. */
+  .cell-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    min-width: 0;
+  }
+
   /* =============================================== the fitting window (R21) --
    * A real fitting window: the ship in the middle, its slots as SOCKETS on
    * arcs around it. The arcs' angles are computed in
@@ -943,11 +1008,8 @@
     text-align: center;
     max-width: 40%;
   }
-  .fit-hull img {
-    width: 4.5rem;
-    height: 4.5rem;
-    object-fit: contain;
-  }
+  /* The hull picture is a shared `.type-icon-lg` (R27) — it needs no size of
+   * its own here, and must not be given one. */
   .fit-hull .fit-hull-name {
     color: var(--color-text-bright);
     font-weight: 600;
@@ -995,23 +1057,52 @@
     outline: 2px solid var(--color-accent);
     outline-offset: 2px;
   }
-  .fit-socket img {
+  /* A socket's picture is a shared `.type-icon` (R27) in the `socket` size,
+   * which tracks the socket's own growth across the R8 breakpoint. */
+  .type-icon-socket {
     width: 1.6rem;
     height: 1.6rem;
-    object-fit: contain;
   }
   @media (min-width: 641px) {
     .fit-socket {
       width: 3.25rem;
       height: 3.25rem;
     }
-    .fit-socket img {
+    .type-icon-socket {
       width: 2rem;
       height: 2rem;
     }
   }
-  /* The socket's short text label — an abbreviation when there is no icon, and
-   * the slot number when the socket is empty. */
+  /* A socket is the ONE place the fallback tile is the only text there is —
+   * there is no name rendered beside it — so it shows an abbreviated module
+   * name instead of two initials, and it drops the plate styling because the
+   * socket is already a bordered box.
+   *
+   * The abbreviation is wider than the picture it replaces, so when the tile
+   * is what is showing, the wrapper widens to the socket's content box. That
+   * does NOT reintroduce jitter: the socket itself is a fixed 2.5rem/3.25rem
+   * button (pinned by fittingGeometry.test.ts) and never changes size — only
+   * the box inside it does. */
+  .type-icon-socket:has(.type-icon-tile) {
+    width: 100%;
+    height: auto;
+  }
+  .type-icon-socket .type-icon-tile {
+    border: none;
+    background: none;
+    color: inherit;
+    font-weight: inherit;
+    letter-spacing: normal;
+    text-transform: none;
+    font-size: inherit;
+    height: auto;
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  /* The socket's short text label — the slot number when the socket is empty
+   * (the fitted case is the `.type-icon-socket` tile above). */
   .fit-socket .fit-socket-text {
     display: block;
     max-width: 100%;

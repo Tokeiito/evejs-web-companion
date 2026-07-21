@@ -31,6 +31,9 @@
     IndustryJobRow,
   } from "../store/types.ts";
   import { resolvedName } from "../store/names.ts";
+  // R27 — the shared item icon: one cached picture per thing, falling back
+  // to a name-derived tile whenever the icon cache has no entry (or no cache).
+  import TypeIcon from "./TypeIcon.svelte";
 
   let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
 
@@ -465,7 +468,10 @@
             {#each $industry.blueprints as blueprint (blueprint.itemID)}
               <tr class={startingBlueprint?.itemID === blueprint.itemID ? "self" : ""}>
                 <td data-label="Blueprint">
-                  {typeName(blueprint.typeID)}
+                  <span class="cell-item">
+                    <TypeIcon typeID={blueprint.typeID} name={typeName(blueprint.typeID)} />
+                    {typeName(blueprint.typeID)}
+                  </span>
                   {#if blueprint.jobID !== null}
                     <small class="note">in use by a job</small>
                   {/if}
@@ -577,7 +583,12 @@
                 <tbody>
                   {#each materialLines as line (line.typeID)}
                     <tr class={line.short ? "self" : ""}>
-                      <td data-label="Material">{typeName(line.typeID)}</td>
+                      <td data-label="Material">
+                        <span class="cell-item">
+                          <TypeIcon typeID={line.typeID} name={typeName(line.typeID)} />
+                          {typeName(line.typeID)}
+                        </span>
+                      </td>
                       <td class="num" data-label="It will use about">{line.need}</td>
                       <td class="num" data-label="You have">
                         {line.have === null ? "—" : line.have}

@@ -19,6 +19,9 @@
   } from "../bridge/inventoryShip.ts";
   import { BridgeCallError } from "../bridge/callMethod.ts";
   import { isSessionLost } from "../app/flow.ts";
+  // R27 — the shared item icon: one cached picture per thing, falling back
+  // to a name-derived tile whenever the icon cache has no entry (or no cache).
+  import TypeIcon from "./TypeIcon.svelte";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
   import type { InventoryItemRow, InventoryPlace } from "../store/types.ts";
@@ -444,7 +447,15 @@
                   onchange={() => toggle(row, { kind: "hangar" })}
                 />
               </td>
-              <td data-label="Type">{resolvedName($names.resolved, "type", row.typeID)}</td>
+              <td data-label="Type">
+                <span class="cell-item">
+                  <TypeIcon
+                    typeID={row.typeID}
+                    name={resolvedName($names.resolved, "type", row.typeID)}
+                  />
+                  {resolvedName($names.resolved, "type", row.typeID)}
+                </span>
+              </td>
               <td data-label="Cat">{resolvedName($names.resolved, "category", row.categoryID)}</td>
               <td class="num" data-label="Qty">{row.singleton ? "(assembled)" : row.quantity}</td>
               <td data-label="Action">
@@ -540,7 +551,15 @@
                   onchange={() => toggle(row, { kind: "cargo" })}
                 />
               </td>
-              <td data-label="Type">{resolvedName($names.resolved, "type", row.typeID)}</td>
+              <td data-label="Type">
+                <span class="cell-item">
+                  <TypeIcon
+                    typeID={row.typeID}
+                    name={resolvedName($names.resolved, "type", row.typeID)}
+                  />
+                  {resolvedName($names.resolved, "type", row.typeID)}
+                </span>
+              </td>
               <td data-label="Cat">{resolvedName($names.resolved, "category", row.categoryID)}</td>
               <td class="num" data-label="Qty">{row.singleton ? "(assembled)" : row.quantity}</td>
               <td data-label="Action">
@@ -617,7 +636,15 @@
                       toggle(row, { kind: "container", itemID: $inventory.container!.itemID })}
                   />
                 </td>
-                <td data-label="Type">{resolvedName($names.resolved, "type", row.typeID)}</td>
+                <td data-label="Type">
+                  <span class="cell-item">
+                    <TypeIcon
+                      typeID={row.typeID}
+                      name={resolvedName($names.resolved, "type", row.typeID)}
+                    />
+                    {resolvedName($names.resolved, "type", row.typeID)}
+                  </span>
+                </td>
                 <td data-label="Cat">{resolvedName($names.resolved, "category", row.categoryID)}</td>
                 <td class="num" data-label="Qty">{row.singleton ? "(assembled)" : row.quantity}</td>
                 <td data-label="Action">
@@ -710,7 +737,15 @@
                         toggle(row, { kind: "corp", division: selectedDivision!.division })}
                     />
                   </td>
-                  <td data-label="Type">{resolvedName($names.resolved, "type", row.typeID)}</td>
+                  <td data-label="Type">
+                    <span class="cell-item">
+                      <TypeIcon
+                        typeID={row.typeID}
+                        name={resolvedName($names.resolved, "type", row.typeID)}
+                      />
+                      {resolvedName($names.resolved, "type", row.typeID)}
+                    </span>
+                  </td>
                   <td data-label="Cat">
                     {resolvedName($names.resolved, "category", row.categoryID)}
                   </td>
