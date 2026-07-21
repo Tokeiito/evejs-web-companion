@@ -60,6 +60,7 @@ import {
 import {
   decodeDroneBay,
   decodeDroneLimits,
+  decodeDroneOrderRefusals,
   decodeDronesInSpace,
 } from "../bridge/drones.ts";
 import { decodeSkillSheet, skillQueueRefusal } from "../bridge/skills.ts";
@@ -75,6 +76,7 @@ import type {
   ChatChannel,
   DestinationMatch,
   DroneInSpace,
+  DroneOrderReport,
   FittingSlot,
   FlightStatus,
   InventoryPlace,
@@ -2484,11 +2486,61 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    * A null in-space list means the re-read failed, which is reported as
    * "could not check" and never as success.
    */
+  /**
+   * R34 — the server's per-drone reasons, turned into reports the panel can
+   * render, with every droneID resolved to a NAME on the way through.
+   *
+   * ⚠ THE ID DIES HERE (R7d). The result dict is keyed by droneID and that key
+   * is the only thing tying a sentence to a drone; it is spent on the lookup
+   * and never stored. A report carries a label or nothing — there is no id
+   * field for the panel to accidentally print.
+   *
+   * ⚠ AND THE SENTENCE IS NOT REWORDED. It goes through `sayRefusal`
+   * (R31's one seam), which passes prose straight through — that is what makes
+   * an UNKNOWN fourteenth sentence survive intact instead of being swallowed,
+   * while a code or identifier still falls back to R31's generic wording rather
+   * than being shown raw. Matching the thirteen against a table here would be
+   * us talking over a server that already said it better.
+   *
+   * The name is looked for in the FRESH list first and the previous one second:
+   * a drone that has just left space still has a name in the list we held a
+   * moment ago, and "one of your drones" is a worse answer than the truth when
+   * the truth is still sitting in the store.
+   */
+  function droneOrderReports(
+    result: JsonValue,
+    inSpace: readonly DroneInSpace[] | null,
+  ): readonly DroneOrderReport[] {
+    const refusals = decodeDroneOrderRefusals(result);
+    if (refusals.length === 0) {
+      return [];
+    }
+    const named = new Map<number, string>();
+    for (const drone of store.get().drones.inSpace ?? []) {
+      if (drone.name) {
+        named.set(drone.itemID, drone.name);
+      }
+    }
+    for (const drone of inSpace ?? []) {
+      if (drone.name) {
+        named.set(drone.itemID, drone.name);
+      }
+    }
+    // No dedupe, no merge, no collapse: one report per refusal, in the order
+    // the server gave them (R30 — two drones that share a name are still two
+    // drones, and hiding the second is the bug this pattern exists to stop).
+    return refusals.map((refusal) => ({
+      label: named.get(refusal.droneID) ?? null,
+      text: sayRefusal(refusal.raw),
+    }));
+  }
+
   async function runDroneAction(
     label: string,
     step: () => Promise<{
       readonly inSpace: JsonValue;
       readonly launched: JsonValue;
+      readonly result: JsonValue;
     }>,
     verify: (
       inSpace: readonly DroneInSpace[] | null,
@@ -2513,6 +2565,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const inSpace = decodeDronesInSpace(result.inSpace);
     store.apply({ type: "drones/action", action: label });
     store.apply({ type: "drones/in-space", inSpace });
+    // R34 — what the SERVER said, per drone, before this client judges anything.
+    // It is applied AFTER `drones/action` (which clears the previous order's
+    // reports) and independently of the verifier below, so a refusal the server
+    // explained can never be displaced by our own guess about the same call.
+    store.apply({
+      type: "drones/order-reports",
+      reports: droneOrderReports(result.result, inSpace),
+    });
     const complaint = verify(inSpace, decodeDronesInSpace(result.launched));
     if (complaint !== null) {
       store.apply({ type: "drones/silent-decline", message: complaint });

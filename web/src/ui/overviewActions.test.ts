@@ -848,8 +848,10 @@ test("R24: Dock is dispatched as the LADDER (dockAt), never the raw dock command
 test("R24: the station row keeps the standing invariants (no ids, plain words, data-label)", () => {
   const body = renderWithEntity("station", STATION_ID);
   const text = visibleText(body);
+  // ⚠ `\\b`, NOT `\b` — in a template literal `\b` is the BACKSPACE character,
+  // so this swept rendered text for a control code and could never fail (R34).
   for (const id of [STATION_ID, SHIP_ID, ORE_TYPE_ID]) {
-    assert.equal(new RegExp(`\b${id}\b`).test(text), false, `${id} must not be visible`);
+    assert.equal(new RegExp(`\\b${id}\\b`).test(text), false, `${id} must not be visible`);
   }
   for (const jargon of ["CmdDock", "DockingApproach", "stationID", "surface distance", "bridge"]) {
     assert.equal(text.includes(jargon), false, `"${jargon}" is developer vocabulary`);
@@ -951,8 +953,9 @@ test("R24: the new cockpit readouts keep the standing invariants", () => {
   const text = visibleText(body);
 
   // R7d — no numeric ids on screen.
+  // ⚠ `\\b`, NOT `\b` — see the note on the station-row sweep above (R34).
   for (const id of [ROCK_ID, SHIP_ID, MODULE_ID, ORE_TYPE_ID, LASER_TYPE_ID, 77000001]) {
-    assert.equal(new RegExp(`\b${id}\b`).test(text), false, `${id} must not be visible`);
+    assert.equal(new RegExp(`\\b${id}\\b`).test(text), false, `${id} must not be visible`);
   }
   // R9a — plain words, no wire vocabulary.
   for (const jargon of [

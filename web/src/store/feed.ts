@@ -29,6 +29,7 @@ import type {
   DroneBayStack,
   DroneInSpace,
   DroneLimits,
+  DroneOrderReport,
   MiningHold,
   ReprocessingQuote,
   SkillRow,
@@ -474,6 +475,13 @@ export type FeedEvent =
   // A drone call that answered success and changed nothing — the ONLY way a
   // refused launch can surface, because the handler returns an empty dict.
   | { readonly type: "drones/silent-decline"; readonly message: string | null }
+  // R34 — the server's own reason for each drone it refused. A LIST, not a
+  // message: an order fans out over several drones and each gets its own
+  // answer, so one slot would let a later drone erase an earlier refusal.
+  | {
+      readonly type: "drones/order-reports";
+      readonly reports: readonly DroneOrderReport[];
+    }
   | { readonly type: "drones/cleared" }
   // Goal R28 — the skill sheet and the training queue.
   //

@@ -12,10 +12,13 @@ import assert from "node:assert/strict";
 import {
   decodeDroneBay,
   decodeDroneLimits,
+  decodeDroneOrderRefusals,
   decodeDronesInSpace,
   droneActivityLabel,
   droneIsBusy,
 } from "./drones.ts";
+import { describeRefusal, isPlainPlayerLanguage, UNKNOWN_REFUSAL_TEXT } from "./refusals.ts";
+import type { DroneOrderRefusal } from "./drones.ts";
 import type { JsonValue } from "./wire.ts";
 
 /**
@@ -163,4 +166,243 @@ test("an unknown activity sorts with the drones you might give a job to", () => 
   assert.equal(droneIsBusy("approaching"), true);
   assert.equal(droneIsBusy("idle"), false);
   assert.equal(droneIsBusy(null), false);
+});
+
+// --- R34: the thirteen sentences the server already wrote --------------------
+//
+// ⚠ THE SERVER WAS NEVER SILENT ABOUT ANY OF THIS. `droneRuntime.js` refuses a
+// drone order one drone at a time and writes its reason into the call RESULT
+// dict as it goes. The BFF forwarded only `outcome.notifications` and dropped
+// `outcome.result`, so all thirteen sentences were destroyed in our own code
+// before the browser ever had a chance to read one. These tests pin the
+// recovery, and they pin it against the EXACT bytes the running emulator
+// produced rather than a shape invented here.
+
+/**
+ * The live capture — the EXACT body `POST /api/bridge/drones/recall` returned
+ * for the abandoned `Ice Harvesting Drone II` (`9988400023314`), measured by
+ * R34 against the running emulator.
+ *
+ * ⚠ THE `type` TAGS ARE REAL AND THE FIXTURE MUST CARRY THEM. R33's writeup
+ * quoted this payload WITHOUT them, and a decoder built to that quote would
+ * have been tested against a shape the server does not send. The measured wire
+ * keeps `{"type":"dict"}` on both dicts. The decoder ignores the tag and reads
+ * `entries` either way — which is why the untagged variant is pinned
+ * separately below rather than assumed to be the only shape.
+ *
+ * ⚠ AND THE CALL ANSWERED 200 WITH ZERO NOTIFICATIONS. That is the whole
+ * defect in one line: the only channel the BFF forwarded was empty, and the
+ * reason was sitting in the channel it discarded.
+ */
+const LIVE_ABANDONED_DRONE_RESULT: JsonValue = {
+  type: "dict",
+  entries: [
+    [
+      9988400023314,
+      [
+        "CustomNotify",
+        {
+          type: "dict",
+          entries: [["notify", "That drone is not currently under this ship's control."]],
+        },
+      ],
+    ],
+  ],
+};
+
+/** The same payload with the `type` tags stripped, which some paths do emit. */
+const UNTAGGED_ABANDONED_DRONE_RESULT: JsonValue = {
+  entries: [
+    [
+      9988400023314,
+      [
+        "CustomNotify",
+        { entries: [["notify", "That drone is not currently under this ship's control."]] },
+      ],
+    ],
+  ],
+};
+
+/** Every sentence `appendDroneError` can write, read straight out of eve.js. */
+const THE_THIRTEEN: readonly string[] = [
+  "Drone is too far away to scoop into the bay.",
+  "No owned salvageable wreck is available.",
+  "That drone cannot currently be scooped into the drone bay.",
+  "That drone cannot mine the selected resource.",
+  "That drone has no supported engage profile.",
+  "That drone has no supported mining profile.",
+  "That drone is not currently under this ship's control.",
+  "That drone is not in local space.",
+  "That target cannot be engaged by drones.",
+  "That target cannot be mined or salvaged by drones.",
+  "That target cannot be salvaged by drones.",
+  "That target is not visible to this drone.",
+  "Unable to scoop that drone.",
+];
+
+/** One drone's error, in the tuple shape `buildDroneErrorTuple` makes. */
+function droneError(droneID: JsonValue, message: string): JsonValue {
+  return [droneID, ["CustomNotify", { entries: [["notify", message]] }]];
+}
+
+/**
+ * The refusal at `index`, with the presence check `noUncheckedIndexedAccess`
+ * requires. Asserting rather than `!`-ing keeps a decoder that returns too few
+ * entries a TEST FAILURE instead of a crash three lines later.
+ */
+function at(refusals: readonly DroneOrderRefusal[], index: number): DroneOrderRefusal {
+  const refusal = refusals[index];
+  assert.ok(refusal, `expected a refusal at position ${index + 1}, got none`);
+  return refusal;
+}
+
+test("R34: the live wire capture decodes to the drone and the server's sentence", () => {
+  const refusals = decodeDroneOrderRefusals(LIVE_ABANDONED_DRONE_RESULT);
+  assert.equal(refusals.length, 1);
+  assert.equal(at(refusals, 0).droneID, 9988400023314);
+  // VERBATIM. Not "close to", not "means the same as" — the same string.
+  assert.equal(at(refusals, 0).raw, "That drone is not currently under this ship's control.");
+});
+
+test("R34: the same payload decodes with or without the marshal `type` tags", () => {
+  // The decoder reads `entries` and ignores the tag, so a path that strips them
+  // (or adds them) cannot silently blank a reason.
+  assert.deepEqual(
+    decodeDroneOrderRefusals(UNTAGGED_ABANDONED_DRONE_RESULT),
+    decodeDroneOrderRefusals(LIVE_ABANDONED_DRONE_RESULT),
+  );
+});
+
+test("R34: a result with no errors in it is no refusals — not an unknown", () => {
+  // The success shape. `buildMultiDroneResult` answers an EMPTY dict when every
+  // drone was obeyed, and an empty dict must not manufacture a complaint.
+  assert.deepEqual(decodeDroneOrderRefusals({ entries: [] }), []);
+  assert.deepEqual(decodeDroneOrderRefusals(null), []);
+  assert.deepEqual(decodeDroneOrderRefusals(undefined), []);
+});
+
+test("R34: EVERY drone in a fan-out gets its own entry — none is collapsed", () => {
+  // ⚠ THIS IS R30'S FINDING, MOVED TO THE SERVER SIDE OF THE FENCE. R30 proved
+  // with two Strip Miner Is that a shared slot lets a later answer erase an
+  // earlier refusal. A drone order fans out the same way, so three refused
+  // drones must produce three reports — not one, and not "the last one".
+  const refusals = decodeDroneOrderRefusals({
+    entries: [
+      droneError(101, "That drone is not currently under this ship's control."),
+      droneError(102, "That target cannot be mined or salvaged by drones."),
+      droneError(103, "That drone has no supported mining profile."),
+    ],
+  });
+  assert.equal(refusals.length, 3);
+  assert.deepEqual(
+    refusals.map((refusal) => refusal.droneID),
+    [101, 102, 103],
+  );
+  assert.deepEqual(
+    refusals.map((refusal) => refusal.raw),
+    [
+      "That drone is not currently under this ship's control.",
+      "That target cannot be mined or salvaged by drones.",
+      "That drone has no supported mining profile.",
+    ],
+  );
+});
+
+test("R34: two drones refused for the SAME reason stay two drones", () => {
+  // The exact collapse R30 measured, in its drone form. Deduplicating identical
+  // sentences would read as "one drone was refused" when two were.
+  const refusals = decodeDroneOrderRefusals({
+    entries: [
+      droneError(201, "That drone is not currently under this ship's control."),
+      droneError(202, "That drone is not currently under this ship's control."),
+    ],
+  });
+  assert.equal(refusals.length, 2);
+  assert.notEqual(at(refusals, 0).droneID, at(refusals, 1).droneID);
+});
+
+test("R34: a long-wrapped droneID survives (the bridge decoder rule)", () => {
+  // docs/bridge-wire-contract.md — ids decode with unwrapLong, never with the
+  // `typeof === "number"` pattern that silently zeroes a wrapper. A drone id is
+  // well past 2^32, and this is exactly where that rule earns its keep.
+  const refusals = decodeDroneOrderRefusals({
+    entries: [
+      droneError({ type: "long", value: "9988400023314" }, "That drone is not in local space."),
+    ],
+  });
+  assert.equal(refusals.length, 1);
+  assert.equal(at(refusals, 0).droneID, 9988400023314);
+});
+
+test("R34: a malformed entry is skipped, and never costs the other drones", () => {
+  const refusals = decodeDroneOrderRefusals({
+    entries: [
+      "not a pair",
+      [],
+      [0, ["CustomNotify", { entries: [["notify", "an id of zero is not a drone"]] }]],
+      [301, ["CustomNotify", { entries: [["notify", "   "]] }]],
+      droneError(302, "That target is not visible to this drone."),
+    ],
+  } as JsonValue);
+  assert.equal(refusals.length, 1);
+  assert.equal(at(refusals, 0).droneID, 302);
+});
+
+// --- R34: the wording is the SERVER'S, and stays the server's ----------------
+
+test("R34: all thirteen sentences pass R9a AS WRITTEN — no translation needed", () => {
+  // ⚠ THE WHOLE JUSTIFICATION FOR PASSING THEM THROUGH. R31's table exists to
+  // turn CODES into prose; these are already prose, and re-spelling them would
+  // be this client talking over a server that said it better. If this ever
+  // fails, a sentence has changed on the server side and the pass-through has
+  // to be re-argued — not silently patched with a lookup table.
+  for (const sentence of THE_THIRTEEN) {
+    assert.equal(
+      isPlainPlayerLanguage(sentence),
+      true,
+      `the server's own sentence must read as player language: "${sentence}"`,
+    );
+  }
+});
+
+test("R34: every one of the thirteen reaches the player VERBATIM", () => {
+  for (const sentence of THE_THIRTEEN) {
+    const refusal = describeRefusal(sentence);
+    assert.equal(refusal.text, sentence, "the server's sentence must not be reworded");
+    // No detail, because nothing was translated and nothing was lost.
+    assert.equal(refusal.detail, null);
+  }
+});
+
+test("R34: an UNKNOWN sentence survives — it is not swallowed or genericised", () => {
+  // ⚠ THE FOURTEENTH SENTENCE IS THE POINT. A thirteen-entry lookup table would
+  // have looked correct today and silently blanked whatever eve.js adds next.
+  // A sentence we have never seen is still a sentence, and the player gets it.
+  const novel = "That drone has run out of something this client has never heard of.";
+  const refusals = decodeDroneOrderRefusals({ entries: [droneError(401, novel)] });
+  assert.equal(at(refusals, 0).raw, novel);
+  assert.equal(describeRefusal(novel).text, novel);
+});
+
+test("R34: a CODE where a sentence was expected falls back to R31, not raw", () => {
+  // The only guard: if what arrives is an identifier rather than prose, the
+  // player must not be shown it. R31's generic wording answers, and the raw
+  // text stays recoverable as `detail` for whoever has to chase it.
+  const refusals = decodeDroneOrderRefusals({ entries: [droneError(501, "DroneNotUnderControl")] });
+  // The decoder does NOT judge — it forwards what the server said.
+  assert.equal(at(refusals, 0).raw, "DroneNotUnderControl");
+  // The presentation seam does, and it refuses to print an identifier.
+  const refusal = describeRefusal(at(refusals, 0).raw);
+  assert.equal(refusal.text, UNKNOWN_REFUSAL_TEXT);
+  assert.equal(refusal.detail, "DroneNotUnderControl");
+  assert.equal(isPlainPlayerLanguage(refusal.text), true);
+});
+
+test("R34: the decoder never invents a sentence the server did not send", () => {
+  // An entry whose value carries no notify text at all yields NOTHING, rather
+  // than a placeholder that would read as a refusal the server never made.
+  const refusals = decodeDroneOrderRefusals({
+    entries: [[601, ["CustomNotify", { entries: [["somethingElse", "not a notify key"]] }]]],
+  } as JsonValue);
+  assert.deepEqual(refusals, []);
 });

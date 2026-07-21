@@ -5677,7 +5677,33 @@ function droneOrderRoute(routePath, method, { needsTarget }) {
       await answerWithDronesInSpace(
         res,
         held,
-        { droneIDs, targetID: needsTarget ? targetID : null },
+        {
+          droneIDs,
+          targetID: needsTarget ? targetID : null,
+          // R34 — THE SERVER'S OWN REASON, PER DRONE, FORWARDED RAW.
+          //
+          // ⚠ THIS IS THE REPAIR OF A LOSS, NOT A NEW FEATURE. `droneRuntime.js`
+          // writes a plain-language sentence for every drone it refuses —
+          // `appendDroneError(response, droneID, "…")`, thirteen distinct
+          // sentences, all already player-ready — into the call RESULT dict,
+          // keyed by droneID. This route used to forward `outcome.notifications`
+          // alone and drop `outcome.result` on the floor, so a refusal the
+          // server had already explained in words reached the player as
+          // nothing whatsoever. R33 had to PREDICT one of those thirteen
+          // client-side because there was nothing to render; the other twelve
+          // could not be predicted at all.
+          //
+          // NOTHING IS DECODED OR TRANSLATED HERE, deliberately. R31's rule is
+          // that the BFF forwards the raw structure and the browser is the only
+          // place a refusal becomes words — the wording then stays inside reach
+          // of the tests that pin it, instead of being re-spelled here.
+          //
+          // ⚠ THE DICT IS KEYED BY droneID, and that key is an ID (R7d). It is
+          // forwarded because it is the ONLY thing that attributes a sentence to
+          // a drone; the browser turns it into a NAME and drops it, and no
+          // reader of this field may render it.
+          result: outcome.result ?? null,
+        },
         outcome.notifications,
       );
     } catch (error) {

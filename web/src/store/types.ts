@@ -1442,6 +1442,24 @@ export interface MiningState {
  * on top of the one already out there. `bay` and `inSpace` are null until a
  * successful read fills them, and the panel renders null as "not known".
  */
+/**
+ * One drone's own answer to the order it was just given (goal R34).
+ *
+ * ⚠ THERE IS NO ID IN THIS TYPE, AND THAT IS THE POINT (R7d). The server's
+ * reasons arrive in a dict keyed by droneID; `flow.ts` resolves that key to a
+ * name the moment it decodes it, and the id gets no further. A report the panel
+ * cannot render an id from is a report that cannot leak one.
+ *
+ * `label` is null when the drone has no name we can show — the re-read failed,
+ * or it is gone from space. The panel words that as "one of your drones"; it
+ * never falls back to the id.
+ */
+export interface DroneOrderReport {
+  readonly label: string | null;
+  /** The server's own sentence, already through `describeRefusal` (R31). */
+  readonly text: string;
+}
+
 export interface DronesState {
   /** null until read; null again if a read fails. NEVER [] for "unknown". */
   readonly bay: readonly DroneBayStack[] | null;
@@ -1458,6 +1476,20 @@ export interface DronesState {
    * refused launch can be reported at all.
    */
   readonly silentDecline: string | null;
+  /**
+   * R34 — what the SERVER said about each drone in the last order, one entry
+   * per refused drone.
+   *
+   * ⚠ IT IS A LIST BECAUSE A DRONE ORDER IS A FAN-OUT. `actionError` and
+   * `silentDecline` above are single slots, and R30 measured what a single slot
+   * does to a fan-out: a later success overwrites an earlier refusal and the
+   * player is told everything worked. The server answers per drone, so this
+   * keeps per drone.
+   *
+   * Empty means "nothing was refused", which is NOT "everything worked" — the
+   * fresh `inSpace` read above remains the only authority on what happened.
+   */
+  readonly orderReports: readonly DroneOrderReport[];
 }
 
 // --- R5b Travel (browser autopilot decide-loop) ----------------------------

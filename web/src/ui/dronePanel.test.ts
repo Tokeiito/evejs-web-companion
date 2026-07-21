@@ -88,6 +88,15 @@ interface SceneOptions {
   }[];
   readonly loadDrones?: boolean;
   readonly shieldRatio?: number;
+  /**
+   * R34 — the per-drone reasons the SERVER gave for the last order.
+   *
+   * ⚠ THE SHAPE ITSELF IS AN ASSERTION. There is no droneID in it, because
+   * `flow.ts` spends that key on a name lookup and the report type has no id
+   * field for the panel to render. A test cannot leak what the type cannot
+   * carry — which is the strongest form the R7d guarantee can take here.
+   */
+  readonly orderReports?: { label: string | null; text: string }[];
 }
 
 function spaceRow(over: Record<string, unknown> & { itemID: number }): unknown {
@@ -196,6 +205,9 @@ function scene(options: SceneOptions = {}): string {
         droneBandwidth: options.droneBandwidth === undefined ? 50 : options.droneBandwidth,
       },
     } as never);
+  }
+  if (options.orderReports !== undefined) {
+    store.apply({ type: "drones/order-reports", reports: options.orderReports } as never);
   }
   // Names the panel resolves by typeID (R7d — nothing numeric is rendered).
   store.apply({
@@ -597,10 +609,185 @@ test("R33: R9a — the reason is a sentence, and names no id and no remedy we la
   );
   assert.doesNotMatch(text, /controllerID|CmdReturnBay|CALL_REFUSED|null/i);
   for (const id of [ABANDONED_DRONE_ID, SHIP_ID, CHARACTER_ID, DRONE_TYPE_ID]) {
-    assert.doesNotMatch(text, new RegExp(`\b${id}\b`), `id ${id} leaked to the player`);
+    // ⚠ `\\b`, NOT `\b`. In a template literal `\b` is the BACKSPACE character,
+    // so this assertion — and two more like it in overviewActions.test.ts —
+    // searched rendered text for a control code and could never fail. R34 fixed
+    // all three rather than adding a fourth, because a vacuous R7d sweep is
+    // worse than none: it reads as proof.
+    assert.doesNotMatch(text, new RegExp(`\\b${id}\\b`), `id ${id} leaked to the player`);
   }
   // ⚠ NO INVENTED REMEDY. Regaining control is `CmdReconnectToDrones`, which is
   // NOT in the gateway's allowlist — this client cannot dispatch it, so the
   // sentence must not send a player looking for a button that is not there.
   assert.doesNotMatch(text, /reconnect|regain control|take control/i);
+});
+
+// --- R34: the reason the SERVER wrote, per drone ----------------------------
+//
+// R33 predicted one refusal because the BFF was throwing the server's own
+// answer away. R34 stopped throwing it away, and these tests are about the
+// difference between the two — which is not cosmetic:
+//
+//   R33's PREDICTION fires BEFORE a call, on a control the client can already
+//   tell will fail. It is a button LABEL and its job is to stop a press that
+//   would go nowhere. It covers exactly ONE of the thirteen cases.
+//
+//   R34's SENTENCE arrives AFTER a call the server actually refused. It is the
+//   server's own words, per drone, and it covers all thirteen — including the
+//   twelve no client could ever predict.
+//
+// They cannot contradict each other because they cannot both describe the same
+// event: a control R33 disables is never pressed, so the server is never asked
+// and there is no sentence to conflict with. The tests below pin that, and pin
+// that where the server HAS spoken it is the server that is quoted.
+
+/** The exact bytes the emulator sent for the abandoned drone (R33's capture). */
+const SERVERS_OWN_SENTENCE = "That drone is not currently under this ship's control.";
+/** R33's client-side prediction of the same fact, worded for a button. */
+const R33_PREDICTION = "Your ship is not flying this drone";
+
+test("R34: the server's sentence reaches the player VERBATIM, next to the drone's name", () => {
+  const text = visibleText(
+    scene({
+      inSpace: [A_SPACE_DRONE],
+      orderReports: [{ label: "Hobgoblin I", text: SERVERS_OWN_SENTENCE }],
+    }),
+  );
+  // Not paraphrased, not truncated, not wrapped in our own framing.
+  assert.match(text, new RegExp(SERVERS_OWN_SENTENCE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  // Attributed to a drone BY NAME.
+  assert.match(text, /Hobgoblin I/);
+});
+
+test("R34: the server's sentence is what is quoted — NOT R33's prediction", () => {
+  // ⚠ THE ORDERING RULE. Where both mechanisms have something to say about the
+  // same fact, the authority wins: the server's wording is the server's rule,
+  // and ours can drift from it. R33's phrasing must not appear in a report.
+  const text = visibleText(
+    scene({
+      inSpace: [AN_ABANDONED_DRONE],
+      orderReports: [{ label: "Ice Harvesting Drone II", text: SERVERS_OWN_SENTENCE }],
+    }),
+  );
+  assert.match(text, new RegExp(SERVERS_OWN_SENTENCE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  const reportRegion = text.slice(text.indexOf("Drones"), text.indexOf("In space"));
+  assert.equal(
+    reportRegion.includes(R33_PREDICTION),
+    false,
+    "a received refusal must be quoted from the server, never re-worded as the prediction",
+  );
+});
+
+test("R34: R33's prediction still does its own job — disabling a control up front", () => {
+  // The two mechanisms coexist. With NO server report at all, the abandoned
+  // drone's button is still disabled wearing the predicted reason, because
+  // nothing has been pressed and there is nothing for the server to have said.
+  const body = scene({
+    inSpace: [AN_ABANDONED_DRONE],
+    droneEntities: [
+      { itemID: ABANDONED_DRONE_ID, name: "Ice Harvesting Drone II", controllerID: null },
+    ],
+  });
+  assert.match(
+    body,
+    new RegExp(`<button[^>]*disabled[^>]*>[\\s\\S]{0,120}${R33_PREDICTION}`),
+    "the predicted refusal still renders on the control, before any call",
+  );
+  // And no server report is invented to sit beside it.
+  assert.equal(visibleText(body).includes(SERVERS_OWN_SENTENCE), false);
+});
+
+test("R34: EVERY refused drone gets its own line — R30's collapse cannot happen", () => {
+  // ⚠ THE EXACT FAILURE R30 MEASURED, IN ITS DRONE FORM. Two drones that share
+  // a name and are refused for the same reason are still two drones; a panel
+  // that merged them would report one refusal where there were two, and a panel
+  // that used one slot would report the last and lose the first.
+  const text = visibleText(
+    scene({
+      inSpace: [A_SPACE_DRONE],
+      orderReports: [
+        { label: "Hobgoblin I", text: SERVERS_OWN_SENTENCE },
+        { label: "Hobgoblin I", text: SERVERS_OWN_SENTENCE },
+      ],
+    }),
+  );
+  const occurrences = text.split(SERVERS_OWN_SENTENCE).length - 1;
+  assert.equal(occurrences, 2, "both refusals must be on screen, not merged into one");
+});
+
+test("R34: drones refused for DIFFERENT reasons each keep their own reason", () => {
+  const text = visibleText(
+    scene({
+      inSpace: [A_SPACE_DRONE],
+      orderReports: [
+        { label: "Hobgoblin I", text: SERVERS_OWN_SENTENCE },
+        { label: "Ice Harvesting Drone II", text: "That drone cannot mine the selected resource." },
+      ],
+    }),
+  );
+  assert.match(text, /That drone is not currently under this ship's control\./);
+  assert.match(text, /That drone cannot mine the selected resource\./);
+});
+
+test("R34: an UNKNOWN sentence is shown, not swallowed and not genericised", () => {
+  // The fourteenth sentence eve.js adds must reach the player as written. A
+  // lookup table would have blanked it; the pass-through shows it.
+  const novel = "That drone has run out of something this client has never heard of.";
+  const text = visibleText(
+    scene({ inSpace: [A_SPACE_DRONE], orderReports: [{ label: "Hobgoblin I", text: novel }] }),
+  );
+  assert.match(text, new RegExp(novel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+});
+
+test("R34: a drone we cannot name reads as words — NEVER as its id (R7d)", () => {
+  const text = visibleText(
+    scene({ inSpace: [A_SPACE_DRONE], orderReports: [{ label: null, text: SERVERS_OWN_SENTENCE }] }),
+  );
+  assert.match(text, /One of your drones/);
+  assert.match(text, new RegExp(SERVERS_OWN_SENTENCE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+});
+
+test("R34: R7d — the droneID that KEYS the server's dict never reaches the screen", () => {
+  // ⚠ THIS IS THE INVARIANT MOST AT RISK IN THIS GOAL. The server attributes
+  // each sentence by droneID, so the id is genuinely load-bearing data that has
+  // to travel from the wire into the browser. It dies in `flow.ts`, which
+  // spends it on a name lookup — and `DroneOrderReport` has no id field for it
+  // to survive in, which is why this cannot regress by accident.
+  //
+  // The id used here is the REAL one from the live capture, not a placeholder.
+  const LIVE_DRONE_ID = 9988400023314;
+  const text = visibleText(
+    scene({
+      inSpace: [AN_ABANDONED_DRONE],
+      orderReports: [{ label: "Ice Harvesting Drone II", text: SERVERS_OWN_SENTENCE }],
+    }),
+  );
+  assert.match(text, /Ice Harvesting Drone II/);
+  for (const id of [LIVE_DRONE_ID, ABANDONED_DRONE_ID, SPACE_DRONE_ID, SHIP_ID, DRONE_TYPE_ID]) {
+    assert.doesNotMatch(text, new RegExp(`\\b${id}\\b`), `id ${id} reached the screen`);
+  }
+  // No digits at all in the reports block — the strongest form of the claim.
+  const reports = text.slice(text.indexOf(SERVERS_OWN_SENTENCE) - 60);
+  assert.doesNotMatch(reports.slice(0, 120), /\d{4,}/, "a long number appeared beside the reason");
+});
+
+test("R34: the report markup can only render a label and a sentence", () => {
+  // A structural guarantee rather than a sampled one: the block renders exactly
+  // `report.label` and `report.text`, and the type carries nothing else. There
+  // is no field an id could hide in.
+  const block = SOURCE.slice(
+    SOURCE.indexOf(`{#each $drones.orderReports`),
+    SOURCE.indexOf("<h3>In space</h3>"),
+  );
+  assert.notEqual(block, "");
+  const referenced = [...block.matchAll(/report\.(\w+)/g)].map((match) => match[1]);
+  assert.deepEqual([...new Set(referenced)].sort(), ["label", "text"]);
+});
+
+test("R34: the report type itself carries no id (R7d, at the source)", () => {
+  const types = readFileSync(path.join(UI_DIR, "..", "store", "types.ts"), "utf8");
+  const start = types.indexOf("export interface DroneOrderReport");
+  const declaration = types.slice(start, types.indexOf("}", start));
+  assert.notEqual(start, -1);
+  assert.doesNotMatch(declaration, /ID\b|Id\b|\bid\b/, "an id field appeared on a rendered report");
 });

@@ -138,6 +138,126 @@ export function decodeDronesInSpace(raw: JsonValue | undefined): readonly DroneI
   return drones;
 }
 
+// --- R34: the reason the server already wrote, per drone ---------------------
+//
+// ⚠ THE SERVER WAS NEVER SILENT. `droneRuntime.js` refuses a drone order one
+// drone at a time and writes its reason into the call RESULT dict as it goes —
+// `appendDroneError(response, droneID, "<sentence>")`, thirteen distinct
+// sentences across engage / mine / salvage / scoop / recall, every one of them
+// already plain player language. The BFF used to forward only the
+// notifications, so all thirteen were thrown away before the browser ever saw
+// them. R33's client-side prediction exists because of that loss, not because
+// the server had nothing to say.
+//
+// The wire shape, captured live from the running emulator:
+//
+//   result: {"entries":[[9988400023314,["CustomNotify",{"entries":[["notify",
+//      "That drone is not currently under this ship's control."]]}]]]}
+//
+// — a marshal dict keyed by droneID, each value the `["CustomNotify", {notify}]`
+// tuple `buildDroneErrorTuple` makes.
+//
+// ⚠ WHAT THIS DECODER DOES NOT DO: it does not interpret, match, rank or
+// reword. It hands the server's sentence back verbatim. Turning it into what
+// the player reads is `describeRefusal`'s job (R31 — the one seam where a
+// refusal becomes words), and the sentences pass through it untouched because
+// they are already prose. A THIRTEEN-ENTRY LOOKUP TABLE HERE WOULD BE A BUG:
+// it would silently swallow the fourteenth sentence the server adds.
+
+/** One drone the server refused, and the exact words it refused with. */
+export interface DroneOrderRefusal {
+  /**
+   * ⚠ FOR ATTRIBUTION ONLY, NEVER FOR DISPLAY (R7d). This is how a sentence is
+   * tied back to the drone it belongs to; `flow.ts` resolves it to a NAME
+   * immediately and the id does not travel any further than that.
+   */
+  readonly droneID: number;
+  /** The server's own words, untouched. Rendered via `describeRefusal`. */
+  readonly raw: string;
+}
+
+/** Marshal dict keys that carry a UserError's prose (the gateway reads both). */
+const NOTIFY_KEYS: ReadonlySet<string> = new Set(["notify", "info"]);
+
+/**
+ * Pull the sentence out of one drone's error value.
+ *
+ * Deliberately a search rather than a fixed path: the runtime writes a bare
+ * tuple for the three in-space orders and a LIST of tuples on the launch path
+ * (`appendLaunchError`), and a decoder that hard-coded `value[1].entries[0][1]`
+ * would decode one and silently return nothing for the other. Depth is capped
+ * so a malformed payload cannot spin.
+ */
+function findNotifyText(value: JsonValue | undefined, depth = 0): string | null {
+  if (depth > 6 || value === undefined || value === null) {
+    return null;
+  }
+  if (Array.isArray(value)) {
+    const pair = value as JsonValue[];
+    if (pair.length === 2 && typeof pair[0] === "string" && NOTIFY_KEYS.has(pair[0])) {
+      const text = typeof pair[1] === "string" ? pair[1].trim() : "";
+      if (text !== "") {
+        return text;
+      }
+    }
+    for (const item of pair) {
+      const found = findNotifyText(item, depth + 1);
+      if (found !== null) {
+        return found;
+      }
+    }
+    return null;
+  }
+  if (typeof value === "object") {
+    for (const nested of Object.values(value as Record<string, JsonValue>)) {
+      const found = findNotifyText(nested, depth + 1);
+      if (found !== null) {
+        return found;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Every drone the server refused, in the order it refused them.
+ *
+ * ⚠ ONE ENTRY PER DRONE, AND NO DEDUPLICATION. This is R30's finding applied to
+ * a fan-out that happens server-side instead of client-side: a drone order acts
+ * on several drones and each one gets its own answer, so collapsing them —
+ * whether into one message or by merging two drones that share a name — is the
+ * exact failure R30 measured with two Strip Miner Is, where a later success
+ * cleared a shared slot and hid an earlier refusal.
+ *
+ * A drone that is ABSENT from this list was not refused. That is not the same
+ * as "it worked": the re-read of what is actually in space is still the only
+ * authority on what the order did, and the caller still checks it.
+ */
+export function decodeDroneOrderRefusals(
+  raw: JsonValue | undefined,
+): readonly DroneOrderRefusal[] {
+  const entries = asObject(raw).entries;
+  if (!Array.isArray(entries)) {
+    return [];
+  }
+  const refusals: DroneOrderRefusal[] = [];
+  for (const entry of entries as JsonValue[]) {
+    if (!Array.isArray(entry) || entry.length < 2) {
+      continue;
+    }
+    const droneID = idOrNull(entry[0]);
+    if (droneID === null) {
+      continue;
+    }
+    const raw = findNotifyText(entry[1]);
+    if (raw === null) {
+      continue;
+    }
+    refusals.push({ droneID, raw });
+  }
+  return refusals;
+}
+
 /**
  * What a drone is doing, in the words a player uses (R9a).
  *

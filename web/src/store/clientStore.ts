@@ -63,6 +63,7 @@ import type {
   ModuleCycle,
   TargetingState,
   DronesState,
+  DroneOrderReport,
   MiningState,
   MiningHold,
   SurveyResult,
@@ -390,6 +391,8 @@ const INITIAL_DRONES: DronesState = Object.freeze({
   lastAction: null,
   actionError: null,
   silentDecline: null,
+  // R34 — empty means "the server refused nothing", never "everything worked".
+  orderReports: Object.freeze([]) as readonly DroneOrderReport[],
 });
 
 // R26 — the mining bot readout. `holdUsed`/`holdCapacity` start NULL, not 0:
@@ -1317,14 +1320,31 @@ export function createClientStore(): ClientStore {
       case "drones/in-space":
         drones.set({ ...drones.get(), inSpace: event.inSpace });
         break;
+      // A NEW order clears the LAST order's per-drone reasons along with the
+      // two single slots. They describe the order that has just been replaced,
+      // and leaving them up would attribute an old drone's refusal to a new
+      // press (R34).
       case "drones/action":
-        drones.set({ ...drones.get(), lastAction: event.action, actionError: null, silentDecline: null });
+        drones.set({
+          ...drones.get(),
+          lastAction: event.action,
+          actionError: null,
+          silentDecline: null,
+          orderReports: [],
+        });
         break;
       case "drones/action-error":
         drones.set({ ...drones.get(), actionError: event.message });
         break;
       case "drones/silent-decline":
         drones.set({ ...drones.get(), silentDecline: event.message });
+        break;
+      // R34 — the server's own per-drone reasons, REPLACED wholesale rather
+      // than appended to. One order, one complete set of answers; merging two
+      // orders' reports would leave a stale drone explaining a press it was
+      // never part of.
+      case "drones/order-reports":
+        drones.set({ ...drones.get(), orderReports: event.reports });
         break;
       case "drones/cleared":
         drones.set(INITIAL_DRONES);

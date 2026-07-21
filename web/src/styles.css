@@ -1039,6 +1039,25 @@
   }
   .drone-name { color: var(--color-text-bright); font-weight: 600; }
   .drone-activity { color: var(--color-muted); font-size: 0.9em; }
+  /* R34 — one line per REFUSED drone, the same shape as R30's per-module
+   * reports and for the same reason: a drone order fans out, each drone answers
+   * for itself, and a single verdict would hide every refusal but the last.
+   * `flex-wrap` is what makes it stack under the R8 breakpoint rather than
+   * pushing the panel sideways — the server's sentences are full sentences. */
+  .drone-reports {
+    list-style: none;
+    margin: 0.4rem 0 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+    font-size: 0.9em;
+  }
+  .drone-reports li {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+  }
   .drone-pick {
     display: inline-flex;
     align-items: center;

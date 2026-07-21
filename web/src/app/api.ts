@@ -2013,6 +2013,20 @@ export interface DronesResult {
 export interface DroneActionResult {
   readonly inSpace: JsonValue;
   readonly launched: JsonValue;
+  /**
+   * R34 — the raw call RESULT dict, which is where the server writes its OWN
+   * plain-language reason for every drone it refused, keyed by droneID.
+   *
+   * ⚠ IT WAS BEING DROPPED IN THE BFF, and that was the whole of the defect
+   * R33 worked around by predicting: `droneOrderRoute` forwarded only
+   * `outcome.notifications`, so thirteen sentences the server had already
+   * written for the player never left the building. Undecoded here on purpose —
+   * `bridge/drones.ts` reads it, `bridge/refusals.ts` turns it into words.
+   *
+   * Present only for the three in-space orders. A launch answers with a
+   * different per-item shape and is still judged by `launched` alone.
+   */
+  readonly result: JsonValue;
   readonly notifications: readonly JsonValue[];
 }
 
@@ -2020,6 +2034,7 @@ function readDroneAction(data: Record<string, JsonValue>): DroneActionResult {
   return {
     inSpace: data.inSpace ?? null,
     launched: data.launched ?? null,
+    result: data.result ?? null,
     notifications: Array.isArray(data.notifications) ? data.notifications : [],
   };
 }

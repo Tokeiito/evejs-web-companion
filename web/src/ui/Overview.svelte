@@ -2345,6 +2345,37 @@
     {#if $drones.silentDecline}
       <p class="error">{$drones.silentDecline}</p>
     {/if}
+    <!--
+      R34 — WHAT THE SERVER ITSELF SAID, ONE LINE PER DRONE.
+
+      ⚠ THESE ARE NOT OUR WORDS. `droneRuntime.js` refuses a drone order one
+      drone at a time and writes a plain-language sentence for each — thirteen
+      of them across engage, mine, salvage, scoop and recall. The BFF used to
+      forward only the notifications, so every one of those sentences was
+      thrown away and a refused order looked, to the player, exactly like a
+      successful one. This is the recovered text, unedited.
+
+      ⚠ AND IT IS A LIST FOR R30'S REASON. An order fans out over the whole
+      flight and each drone answers separately; the two error paragraphs above
+      are single slots, and R30 measured what a single slot does to a fan-out —
+      with two Strip Miner Is, a later success cleared the slot and the earlier
+      refusal vanished. One drone, one line, no merging, no deduplication.
+
+      ⚠ NAMES ONLY (R7d). The server keys these by droneID; `flow.ts` spends
+      that key on a name lookup and the report type has no id field at all, so
+      there is nothing here for this markup to leak. A drone we cannot name
+      reads "One of your drones" — never the number.
+    -->
+    {#if $drones.orderReports.length > 0}
+      <ul class="drone-reports">
+        {#each $drones.orderReports as report}
+          <li class="error">
+            <span class="drone-name">{report.label ?? "One of your drones"}</span>
+            <span class="drone-outcome">{report.text}</span>
+          </li>
+        {/each}
+      </ul>
+    {/if}
 
     <h3>In space</h3>
     {#if dronesInSpace === null}

@@ -607,6 +607,129 @@ test("nothing drone-related is issued while docked", async () => {
   assert.equal(gateway.calls.call.filter((c) => c.service === "entity").length, 0);
 });
 
+// --- R34: the per-drone reason the route used to throw away ------------------
+//
+// ⚠ THIS IS A DATA LOSS, NOT A MISSING FEATURE. `droneRuntime.js` refuses a
+// drone order one drone at a time and writes a plain-language sentence for each
+// into the call RESULT dict, keyed by droneID — thirteen distinct sentences,
+// every one of them already player-ready. `droneOrderRoute` forwarded
+// `outcome.notifications` alone and dropped `outcome.result` on the floor, so
+// all thirteen died in this file. These tests pin the forwarding.
+//
+// ⚠ AND THEY PIN THAT IT IS FORWARDED RAW. The BFF does not decode, translate,
+// rank or reword it (R31: the browser is the only place a refusal becomes
+// words). A BFF that started interpreting this would put the wording out of
+// reach of the tests that hold it to R9a.
+
+/** A gateway whose drone orders refuse, exactly as `appendDroneError` writes it. */
+function refusingGateway(refusals) {
+  return fakeGateway({
+    async callMethod(service, method, args, kwargs, context, sessionID) {
+      const base = fakeGateway();
+      const outcome = await base.callMethod(service, method, args, kwargs, context, sessionID);
+      if (service !== "entity") {
+        return outcome;
+      }
+      return {
+        ...outcome,
+        result: {
+          type: "dict",
+          entries: refusals.map(([droneID, message]) => [
+            droneID,
+            ["CustomNotify", { type: "dict", entries: [["notify", message]] }],
+          ]),
+        },
+      };
+    },
+  });
+}
+
+test("R34: a refused order forwards the server's own per-drone reason", async () => {
+  const gateway = refusingGateway([
+    [9988400023314, "That drone is not currently under this ship's control."],
+  ]);
+  const { baseUrl } = await startTestServer({ gateway });
+  await apiRequest(baseUrl, "/api/bridge/select", {
+    method: "POST",
+    body: { characterID: CHARACTER_ID },
+  });
+
+  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/drones/recall", {
+    method: "POST",
+    body: { droneIDs: [9988400023314] },
+  });
+  assert.equal(response.status, 200);
+  // ⚠ A 200 IS NOT PROOF, and this is the case that shows why: the route
+  // answers 200 and the drone did not move. The reason is in `result`.
+  assert.deepEqual(payload.result.entries, [
+    [
+      9988400023314,
+      ["CustomNotify", { type: "dict", entries: [["notify", "That drone is not currently under this ship's control."]] }],
+    ],
+  ]);
+});
+
+test("R34: EVERY refused drone is forwarded — the route collapses nothing", async () => {
+  // R30's finding: a fan-out reported through one slot loses all but the last
+  // answer. The route must hand over the whole dict, untouched.
+  const gateway = refusingGateway([
+    [9500001, "That target cannot be engaged by drones."],
+    [9500002, "That drone has no supported engage profile."],
+  ]);
+  const { baseUrl } = await startTestServer({ gateway });
+  await apiRequest(baseUrl, "/api/bridge/select", {
+    method: "POST",
+    body: { characterID: CHARACTER_ID },
+  });
+
+  const { payload } = await apiRequest(baseUrl, "/api/bridge/drones/engage", {
+    method: "POST",
+    body: { droneIDs: [9500001, 9500002], targetID: RAT_ID },
+  });
+  assert.equal(payload.result.entries.length, 2);
+  assert.deepEqual(
+    payload.result.entries.map((entry) => entry[0]),
+    [9500001, 9500002],
+  );
+});
+
+test("R34: all three orders forward it, and a SUCCESS forwards an empty dict", async () => {
+  for (const [route, body] of [
+    ["engage", { droneIDs: [9500001], targetID: RAT_ID }],
+    ["mine", { droneIDs: [9500001], targetID: ROCK_ID }],
+    ["recall", { droneIDs: [9500001] }],
+  ]) {
+    const { gateway, baseUrl } = await inSpace();
+    gateway.state.space.set(9500001, gateway.droneRow(9500001));
+    const { payload } = await apiRequest(baseUrl, `/api/bridge/drones/${route}`, {
+      method: "POST",
+      body,
+    });
+    // The empty dict the runtime really answers on success. It must arrive as
+    // an empty dict rather than as an absent field, so the browser can tell
+    // "nothing was refused" from "the route does not send this".
+    assert.deepEqual(payload.result, { type: "dict", entries: [] }, `${route} must forward result`);
+  }
+});
+
+test("R34: the BFF forwards the reason RAW — it does not translate it", async () => {
+  // The sentence arrives exactly as the server wrote it, with no BFF-side
+  // rewording, prefixing or code mapping. R31's seam is in the browser.
+  const sentence = "That target cannot be mined or salvaged by drones.";
+  const gateway = refusingGateway([[9500001, sentence]]);
+  const { baseUrl } = await startTestServer({ gateway });
+  await apiRequest(baseUrl, "/api/bridge/select", {
+    method: "POST",
+    body: { characterID: CHARACTER_ID },
+  });
+  const { payload } = await apiRequest(baseUrl, "/api/bridge/drones/mine", {
+    method: "POST",
+    body: { droneIDs: [9500001], targetID: ROCK_ID },
+  });
+  const carried = JSON.stringify(payload.result);
+  assert.ok(carried.includes(sentence), "the server's sentence must survive the BFF unchanged");
+});
+
 // --- The verbs that are NOT here --------------------------------------------
 
 test("⚠ there is NO assist, guard, unanchor or abandon route", async () => {
