@@ -1,6 +1,6 @@
 # Bridge wire contract (v1) — whitelisted `callMethod` path
 
-**Status:** Active, established by goal R1 (2026-07-18); extended by goal R2 (persistent browser-backed sessions, same date), goal R3 (2026-07-19, the bound-object bridge — see "Bound-object bridge (R3)"), goal R4 (agents/missions + deferred call responses), goal R5a (2026-07-19, the space bridge — see "Space bridge & session-into-space (R5a)"), goal R5b (2026-07-19, the client-side route solver + browser autopilot decide-loop — see "Client-side route solver & browser autopilot (R5b)"), goal R6 (2026-07-19, courier completion + the Step-12 reward readout — see "Courier completion & reward readout (R6)"), goal R6a (2026-07-19, the Agent Finder — a static agent-list route + client-side jump-distance sort; see "Agent Finder static route (R6a)"), and goal R7 (2026-07-19, Local + Corp chat — presence/read/send for the browser session; see "Local + Corp chat (R7)"). Later goals build on this contract; change it deliberately and update this file with the change.
+**Status:** Active, established by goal R1 (2026-07-18); extended by goal R2 (persistent browser-backed sessions, same date), goal R3 (2026-07-19, the bound-object bridge — see "Bound-object bridge (R3)"), goal R4 (agents/missions + deferred call responses), goal R5a (2026-07-19, the space bridge — see "Space bridge & session-into-space (R5a)"), goal R5b (2026-07-19, the client-side route solver + browser autopilot decide-loop — see "Client-side route solver & browser autopilot (R5b)"), goal R6 (2026-07-19, courier completion + the Step-12 reward readout — see "Courier completion & reward readout (R6)"), goal R6a (2026-07-19, the Agent Finder — a static agent-list route + client-side jump-distance sort; see "Agent Finder static route (R6a)"), and goal R7 (2026-07-19, Local + Corp chat — presence/read/send for the browser session; see "Local + Corp chat (R7)"), and goal R35 (2026-07-21, the distribution-mission rail measured on the live server — the refused-`DoAction` shape, why the journal cannot report success, and the courier package load re-pointed from `/inventory/move` to the verifying `/inventory/transfer`; see "The distribution-mission rail, as measured live (R35)"). Later goals build on this contract; change it deliberately and update this file with the change.
 
 This is the transport seam that lets the browser drive real EveJS `Handle_*` calls. The unit it mirrors is the retail call tuple **(service, method, args, kwargs)**; the gateway dispatches it through the same seam a retail client hits: `serviceManager.lookup(service).callMethod(method, args, session, kwargs)`.
 
@@ -289,7 +289,10 @@ key — `hangar:<stationID>`, `cargo:<shipID>`, `ship:<stationID>` — re-bindin
   → `invbroker.Add(itemID, sourceLocationID, {qty?, flag})` on the **destination**
   binding (retail `Add` carries the source location and destination flag; a
   partial `qty` folds the split into the move — no separate `SplitStack`, gap
-  G4).
+  G4). ⚠ **Returns `{ok:true}` without re-reading, so it cannot tell a move from
+  a silent decline.** Prefer `POST /api/bridge/inventory/transfer`, which
+  re-reads and reports what actually happened; the courier package load was
+  re-pointed at it in R35.
 - `POST /api/bridge/inventory/stack` `{ target: "hangar"|"cargo" }` → `invbroker.StackAll(flag)`.
 - `POST /api/bridge/ship/board` `{ shipID }` → `ship.MachoBindObject` then
   `Board(shipID, oldShipID)`; on success the boarded ship becomes the active
@@ -1118,7 +1121,9 @@ allowlisted in R4:
 - `standingMgr.GetCharStandings()` → a header/lines Rowset of `[fromID, standing]`
   (standings are small floats).
 - `agentMgr.GetMyJournalDetails()` (R4) → after completion the mission is no longer
-  in the journal (cleared), the truthful "mission done" signal.
+  in the journal (cleared). ⚠ **This is NOT a "mission done" signal — see R35.**
+  Quit, decline and expire clear the row identically, so a missing row means only
+  "the row is gone". The truthful signal is `lastActionInfo.missionCompleted`.
 
 **Decoder rule:** amounts decode long-aware (`unwrapLong`, never
 `typeof === "number" ? … : 0`); ISK/LP are decimal strings, standings numbers
@@ -1130,6 +1135,118 @@ completes the mission (runtime record cleared, package consumed) and the Step-12
 reads reflect the payout (wallet grows, an LP balance for the agent corp appears,
 standing toward the corp grows, the mission leaves the journal). Deny-by-default is
 re-proven for non-allowlisted `account`/`LPSvc`/`standingMgr` siblings.
+
+## The distribution-mission rail, as measured live (R35)
+
+R6 proved the courier capstone **in process**. R35 ran it on the **live server**,
+twice, end to end. Nothing below is inferred: every claim is a captured byte.
+
+**The run.** Agent **Antaken Kamola** (3008416, L1, CBD Corporation 1000002) at
+Muvolailen 60000004 → dropoff Elonaya 60000256, **6 jumps**. Cargo **Reports x1,
+0.1 m³**. Payout **+140,250 ISK**, **+213 LP**, **standing 0 → 0.18**; second run
+**+140,250 ISK**, LP → 426, standing → 0.357. Mission title *"Tidings of Conflict
+(1 of 2)"* — the pool is full of **chain fragments**, and the next request handed
+out the chain's next mission (58607 → 58608).
+
+### `DoAction` answers 200 on every branch — judge by `lastActionInfo`
+
+A **refused** Complete (pressed docked at the **pickup** station), captured whole:
+
+```
+HTTP 200  { ok: true }
+result = tuple(
+  tuple( tuple(127958, 1382), list[] ),        # <- EMPTY actions list
+  dict{ missionCompleted: null,                # <- null, NOT false
+        missionQuit: null, missionCantReplay: null,
+        loyaltyPoints: 0, missionDeclined: null } )
+```
+
+Three things follow, and two of them contradict what was previously assumed:
+
+1. **`missionCompleted` is `null` on a refusal, not `false`.** The only safe test
+   is `=== true`. `!== false` would report a refusal as a success.
+2. **An empty `actions` list is NOT exclusively the standing gate.** It was
+   documented as "`canUseAgent` false → zero actions → do not retry". A refused
+   Complete produces the same emptiness, and **re-opening the conversation at the
+   wrong station still returns zero actions**. Emptiness alone must never be read
+   as "this agent is closed to you".
+3. **The state recovers, and action tokens are re-minted.** At the dropoff the
+   same agent offered Complete + Quit again with **new** tokens (815/816 →
+   819/820 → 821/822). **Never cache an actionID across a move or a re-open.**
+
+### The refusal is not silent — it names the unmet objective
+
+The refused call carried a notification, on a channel not previously known to
+carry a reason:
+
+```
+OnMissionsUpdated  info: ["TransportItemsPresent", "3814", "60000256", "1"]
+                   agentID: 3008416
+```
+
+That is objective / typeID / place / quantity. The BFF already forwards
+`notifications` on `POST /api/bridge/agents/:agentID/action`, so this is
+available today without any new surface.
+
+### The journal cannot tell you what happened
+
+Captured immediately before and after Complete:
+
+```
+before: tuple( list[ [2, 0, "UI/Agents/MissionTypes/Courier", 58607, 3008416, …] ],
+               list[] )
+after:  tuple( list[], list[] )
+```
+
+The row is **deleted**, never moved to `COMPLETED = 4`. Quit, decline and expire
+delete identically, so **complete / quit / decline / expire are indistinguishable
+from the journal alone**. Never infer success from a missing row.
+
+Also measured: **`lastActionInfo.loyaltyPoints` read `0` on the very completion
+that paid 213 LP.** It is not the payout; the payout is read from
+`LPSvc.GetAllMyCharacterWalletLPBalances`.
+
+### Accepting: in person, and check the hold first
+
+Remote accept is silently refused for couriers (`missionGrantsItemsOnAccept` is
+true for every transport mission), so **accept in person**. Cargo runs from
+0.1 m³ to **4,000 m³**, so read the hold's capacity **before** accepting — the
+live run flew a Badger at **4,095 m³**.
+
+### The package load goes through `/transfer`, not `/move`
+
+**Changed in R35.** The courier package load previously used
+`POST /api/bridge/inventory/move`, which answers `{ok:true}` with **no re-read**
+and so cannot distinguish a move from a silent decline. It now uses
+`POST /api/bridge/inventory/transfer` (see "Inventory depth"), which re-reads and
+judges by the **source giving something up**. Measured live with the exact payload
+the client now sends:
+
+```
+POST /api/bridge/inventory/transfer
+  { itemIDs: [9988400091902], from: {kind:"hangar"}, to: {kind:"cargo"}, qty: 1 }
+→ { ok: true, applied: true, moved: [9988400091902],
+    reminted: [], declined: [], declinedSilently: false, notFound: [] }
+```
+
+**Selecting the package needs the quantity, not just the type.** Courier cargo is
+ordinary tradeable stock — this mission hauled **Reports**, a market commodity —
+so the first hangar stack of the cargo type may well be the player's own goods.
+The client selects the stack whose quantity equals the mission quantity, and
+otherwise splits exactly that quantity off a larger one. ⚠ **Residual ambiguity,
+stated rather than hidden:** the server names the package's itemID **nowhere the
+client can read** — not in `GetMissionObjectiveInfo`, not in the journal row, not
+in the `OnMissionsUpdated` refusal — so a player stack of identical type *and*
+quantity cannot be told apart from the package by any browser-side means.
+
+### Server-side defect — recorded, not fixed
+
+`getCourierProgress` (`eve.js agentMissionRuntime.js:2524-2588`) judges delivery
+by **typeID, not itemID**. Pre-existing stock of the cargo type at the dropoff can
+therefore satisfy the objective without anything being hauled. Because courier
+cargo is ordinary market goods, this is reachable in normal play. **Server-side
+and deliberately out of scope for the client/bridge work; recorded here so the
+next reader does not rediscover it as a client bug.**
 
 ## Market — order books, your orders, placing and managing (R16)
 
