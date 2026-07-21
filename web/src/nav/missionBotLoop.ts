@@ -127,6 +127,21 @@ export const MAX_UNLOAD_ATTEMPTS = 3;
  */
 export const MAX_COMPLETE_ATTEMPTS = 3;
 /**
+ * Consecutive offers turned down because they failed one of the PLAYER's gates.
+ *
+ * ⚠ WATCHED LIVE (R39), AND IT IS THE ONE COUNTER THAT MUST SURVIVE ITS OWN
+ * ALTERNATE. An agent whose every offer is out of range re-offers indefinitely,
+ * so the ladder runs request -> offer -> gate refuses -> decline -> request, and
+ * every other counter in `bound()` is cleared by any non-wait action — so a
+ * decline counter reset by the Request that follows it would bound nothing at
+ * all. Only ACCEPTING something clears this one.
+ *
+ * This is not a harmless spin: each decline costs real standing with the agent,
+ * so an unattended bot left overnight grinds the character down while looking
+ * busy. Live capture: 5 declines in 49 s, still "running", no reason shown.
+ */
+export const MAX_DECLINE_ATTEMPTS = 3;
+/**
  * Consecutive travel starts to the SAME station without ever arriving. The
  * autopilot has its own bounds and pauses itself; this catches the outer case
  * where it keeps being restarted and never gets there.
@@ -953,6 +968,8 @@ interface BotMemory {
   // because the decision stops choosing it.
   requestAttempts: number;
   acceptAttempts: number;
+  /** Cleared ONLY by an Accept — see MAX_DECLINE_ATTEMPTS. */
+  declineAttempts: number;
   loadAttempts: number;
   unloadAttempts: number;
   completeAttempts: number;
@@ -984,6 +1001,7 @@ function freshMemory(): BotMemory {
     lpEarned: null,
     requestAttempts: 0,
     acceptAttempts: 0,
+    declineAttempts: 0,
     loadAttempts: 0,
     unloadAttempts: 0,
     completeAttempts: 0,
@@ -1219,6 +1237,22 @@ export function createMissionBot(deps: MissionBotDeps): MissionBotController {
       }
     } else if (action.kind !== "wait") {
       memory.requestAttempts = 0;
+    }
+
+    // Decline — bounded, and DELIBERATELY NOT cleared by the Request that
+    // alternates with it (see MAX_DECLINE_ATTEMPTS). Only taking a job on means
+    // the agent is offering work this player's limits actually allow, so Accept
+    // is the one thing that clears it. Everything else leaves it standing.
+    if (action.kind === "decline") {
+      memory.declineAttempts += 1;
+      if (memory.declineAttempts > MAX_DECLINE_ATTEMPTS) {
+        setPause(
+          `${MAX_DECLINE_ATTEMPTS} jobs in a row were outside the limits you set, so the bot stopped rather than keep turning work down — every job refused costs you standing with the agent. Allow more jumps, use a ship with more room, or pick a different agent.`,
+        );
+        return false;
+      }
+    } else if (action.kind === "accept") {
+      memory.declineAttempts = 0;
     }
 
     // Accept — the authority is the JOURNAL showing the mission accepted. This

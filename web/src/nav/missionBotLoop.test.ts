@@ -33,6 +33,7 @@ import {
   MAX_COMPLETE_ATTEMPTS,
   MAX_LOAD_ATTEMPTS,
   MAX_REQUEST_ATTEMPTS,
+  MAX_DECLINE_ATTEMPTS,
   MAX_TRAVEL_RESTARTS,
   MAX_UNLOAD_ATTEMPTS,
   agentActionID,
@@ -1032,6 +1033,76 @@ test("a stopped bot issues nothing further", async () => {
   const before = h.calls.length;
   await ticks(bot, 5);
   assert.equal(h.calls.length, before, "no bridge call may follow a stop");
+});
+
+test("AN OFFER THAT KEEPS FAILING A GATE BACKS OFF — decline is bounded", async () => {
+  // ⚠ WATCHED LIVE (R39). With the player's jump cap below the route, the agent
+  // re-offers the same job indefinitely and the ladder ran
+  // request -> offer -> gate refuses -> decline -> request, one decline every
+  // ~12 s, for as long as it was left alone. `bound()` had a counter for every
+  // other rung and NONE for decline, so nothing ever stopped it — and each
+  // decline costs real standing with the agent, so this is not a harmless spin.
+  //
+  // The live capture: 5 declines in 49 s, status still "running",
+  // failureReason null; the in-process probe reached 100 declines in 300 ticks.
+  const h = harness({
+    conversation: OFFERED, // Accept 815 + Decline 816, both on the table
+    briefing: BRIEFING, // the real R35 briefing: dropoff 6 jumps away
+    jumps: 6,
+  });
+  const bot = createMissionBot(h.deps);
+  // maxJumps 1 is a real value from the panel's own 1-30 range — the PLAYER's
+  // cap, not a contrived number. Every offer this agent makes fails it.
+  bot.start({ ...PLAN, maxJumps: 1 });
+
+  await ticks(bot, 60);
+
+  const declines = h.calls.filter((call) => call === `do:${AGENT}:816`).length;
+  assert.ok(
+    declines <= MAX_DECLINE_ATTEMPTS,
+    `the bot must stop turning work down after ${MAX_DECLINE_ATTEMPTS} refusals; it issued ${declines}`,
+  );
+  assert.equal(bot.snapshot().status, "paused", "an offer it can never take must stop the bot");
+  assert.match(
+    String(bot.snapshot().failureReason),
+    /outside the limits you set/,
+    "the reason must tell the player which of their own limits is refusing the work",
+  );
+});
+
+test("THE REQUEST BETWEEN TWO DECLINES DOES NOT RESET THE DECLINE COUNTER", async () => {
+  // ⚠ THIS FIXTURE IS THE LIVE LOOP, NOT A STATIC CONVERSATION. Watched on the
+  // running server: a Decline clears the offer (leaving only "ask for work"),
+  // and the very next Request puts an identical one straight back — one full
+  // cycle every ~12 s. That alternation is the whole difficulty, because
+  // `bound()` clears every other counter on any non-wait action, so a decline
+  // counter reset by the Request that follows it bounds nothing at all.
+  const h = harness({ conversation: OFFERED, briefing: BRIEFING, jumps: 6 });
+  const deps: MissionBotDeps = {
+    ...h.deps,
+    doAgentAction: async (agentID, actionID) => {
+      const back = await h.deps.doAgentAction(agentID, actionID);
+      if (actionID === 816) {
+        h.world.conversation = NO_MISSION; // declined: the offer is gone
+      } else if (actionID === 810) {
+        h.world.conversation = OFFERED; // asked again: the same job is back
+      }
+      return back;
+    },
+  };
+  const bot = createMissionBot(deps);
+  bot.start({ ...PLAN, maxJumps: 1 });
+
+  await ticks(bot, 90);
+
+  const requests = h.calls.filter((call) => call === `do:${AGENT}:810`).length;
+  const declines = h.calls.filter((call) => call === `do:${AGENT}:816`).length;
+  assert.ok(requests > 0, "the fixture must actually alternate request/decline");
+  assert.ok(
+    declines <= MAX_DECLINE_ATTEMPTS,
+    `a Request between declines must not clear the bound; the bot issued ${declines} refusals`,
+  );
+  assert.equal(bot.snapshot().status, "paused");
 });
 
 test("the readout always carries a WHY while running", async () => {
