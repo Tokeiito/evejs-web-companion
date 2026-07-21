@@ -164,6 +164,23 @@ function myDrone(): SpaceEntity {
   });
 }
 
+/**
+ * A drone I OWN but the ship no longer CONTROLS (controllerID null) — the R48
+ * live case: an abandoned `Ice Harvesting Drone II` left drifting in Perimeter
+ * II - Asteroid Belt 1. It is listed as mine, but it defends nothing and cannot
+ * be ordered, so it must NOT count as "drones already out".
+ */
+function abandonedDrone(): SpaceEntity {
+  return entity({
+    itemID: 8102,
+    kind: "drone",
+    name: "Ice Harvesting Drone II",
+    ownerID: PLAN.myCharacterID,
+    controllerID: null,
+    droneActivity: "idle",
+  });
+}
+
 function ship(overrides: Partial<SpaceShipStatus> = {}): SpaceShipStatus {
   return {
     itemID: SHIP,
@@ -619,6 +636,35 @@ test("rung 1: drones already out are not launched again — the SNAPSHOT is the 
   });
   assert.notEqual(decision.action.kind, "launch");
   assert.equal(decision.action.kind, "lock", "with the drones out it gets on with mining");
+});
+
+test("rung 1: an ABANDONED owned drone does NOT count as defence — the bay still LAUNCHES (R48 live)", () => {
+  // Perimeter II, live: a pirate on grid, a full bay, and one owned drone the
+  // ship can no longer command (controllerID null). A drone we cannot order is
+  // not defending us, so the guard must count only CONTROLLED drones — else the
+  // ship sits next to a pirate with ten combat drones still in the bay.
+  const decision = decide({
+    snapshot: snapshot([pirate(), abandonedDrone(), rock(ROCK_A, 8_000, 5_000, "Veldspar")]),
+    droneBayItemIDs: [DRONE_STACK],
+  });
+  assert.equal(decision.action.kind, "launch", "a drone we cannot command is not defence");
+  if (decision.action.kind === "launch") {
+    assert.deepEqual(decision.action.droneItemIDs, [DRONE_STACK]);
+  }
+});
+
+test("rung 1: the CONTROLLER reads the bay past an abandoned drone and launches (R48 live)", async () => {
+  // Exercises observe() as well as the decision: the bay is only read when a
+  // launch is on the table, and the same too-broad "mine" test gated that read.
+  const { deps, rec } = makeDeps({
+    status: () => status(),
+    snapshot: () => snapshot([pirate(), abandonedDrone(), rock(ROCK_A, 8_000, 5_000, "Veldspar")]),
+    bay: () => [DRONE_STACK],
+  });
+  const bot = createMiningBot(deps);
+  bot.start(PLAN);
+  await drive(bot, 3);
+  assert.ok(rec.calls.includes("launch"), "the controller sends the bay out despite the abandoned drone");
 });
 
 test("rung 1: an empty drone bay is not a reason to stop — the health floor is still armed", () => {

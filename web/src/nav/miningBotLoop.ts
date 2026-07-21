@@ -22,7 +22,7 @@
 //
 //     locked a rock          -> dogmaIM.GetTargets              (`lockedTargetIDs`)
 //     switched a laser on    -> the snapshot's ship block       (`activeModuleIDs`)
-//     launched drones        -> the snapshot's drone rows       (`isMyDrone`)
+//     launched drones        -> the snapshot's drone rows       (`canMyShipOrderDrone`)
 //     mined ore              -> the ship's mining hold          (`used` / items)
 //     unloaded              -> the ship's mining hold           (items gone)
 //     undocked / docked      -> flight status                   (`docked`)
@@ -47,7 +47,7 @@ import { refusalWords } from "../bridge/refusals.ts";
 // R44 — the rung NAMES. Instrumentation only: this module decides nothing and
 // is never read by the ladder below, which returns bare identifiers.
 import type { MiningCallerRungID, MiningRungID, MiningStepID } from "./miningLadder.ts";
-import { formatDistance, hostileRows, isMyDrone } from "../space/overview.ts";
+import { canMyShipOrderDrone, formatDistance, hostileRows } from "../space/overview.ts";
 import type {
   FlightStatus,
   MiningHold,
@@ -566,8 +566,15 @@ export function decideMiningAction(
   const nearestHostile = hostiles[0] ?? null;
   if (nearestHostile && plan.useDrones && !memory.launchGaveUp) {
     const shipID = status.shipID ?? snapshot?.shipID ?? null;
-    const mine = (snapshot?.entities ?? []).filter((entity) =>
-      isMyDrone(entity, plan.myCharacterID, shipID),
+    // "Already defended" means drones this ship COMMANDS, not merely ones we own.
+    // ⚠ R48 LIVE FINDING: `isMyDrone` (owner OR controller) counted an abandoned
+    // `Ice Harvesting Drone II` (controllerID null) drifting off Perimeter II as
+    // defence, so a pirate on grid got no drones while ten combat drones sat in
+    // the bay. A drone the ship cannot order (R33) defends nothing — so the guard
+    // reads the CONTROL predicate, and an owned-but-abandoned drone no longer
+    // suppresses the launch.
+    const mine = (snapshot?.entities ?? []).filter(
+      (entity) => canMyShipOrderDrone(entity, shipID) === true,
     );
     if (mine.length === 0) {
       const bay = observation.droneBayItemIDs;
@@ -1240,8 +1247,11 @@ export function createMiningBot(deps: MiningBotDeps): MiningBotController {
     if (current.useDrones && !memory.launchGaveUp && space) {
       const origin = space.ship?.position ?? { x: 0, y: 0, z: 0 };
       const shipID = status.shipID ?? space.shipID ?? null;
-      const mine = space.entities.filter((entity) =>
-        isMyDrone(entity, current.myCharacterID, shipID),
+      // Same control test as the launch rung (R48): only drones this ship
+      // COMMANDS count as "already out", so an abandoned owned drone does not
+      // stop the bay being read when a pirate is here.
+      const mine = space.entities.filter(
+        (entity) => canMyShipOrderDrone(entity, shipID) === true,
       );
       if (hostileRows(space, origin).length > 0 && mine.length === 0) {
         bay = await safely(() => deps.getDroneBayItemIDs());
