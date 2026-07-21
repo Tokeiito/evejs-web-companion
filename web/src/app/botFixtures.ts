@@ -18,15 +18,17 @@
 // "which of these is a miner" derivation, which is why it and not a synthetic
 // two-module ship is what the requirement check is pinned against:
 //
-//   • `Ice Harvester Upgrade II` (low slot) — matches `harvest`, and is
-//     excluded ONLY by the `/upgrade/` term in looksLikeMiningEquipment.
-//   • `Medium Ice Harvester Accelerator I` (RIG) — also matches `harvest`, and
-//     the name guess does NOT exclude it. It is dropped purely because the
-//     shared derivation skips the rig family structurally. A second,
-//     independently-written "do you have a miner" check would say yes to this
-//     ship even with no Strip Miner aboard at all.
+//   • `Ice Harvester Upgrade II` (low slot, group "Mining Upgrade") — its NAME
+//     matches `harvest`, and it is a passive you never switch on. Excluded by
+//     the SLOT filter and by group (not in MINING_GROUP_NAMES).
+//   • `Medium Ice Harvester Accelerator I` (RIG, group "Rig Resource
+//     Processing") — its name also matches `harvest`; it is dropped by the slot
+//     filter (a rig) and its group is not a mining group either.
 //
-// The two real miners are the 2× `Strip Miner I` in the high slots.
+// The two real miners are the 2× `Strip Miner I` (group "Strip Miner") in the
+// high slots. R47 — every group name below is the live `/api/names` typeGroup
+// answer captured on 2026-07-21, so a suite can tell a miner from a decoy by
+// what the GAME files it as rather than by guessing at the display name.
 
 /** Farmer's live Procurer. */
 export const SHIP_ID = 9988400023309;
@@ -45,16 +47,18 @@ interface FittedRow {
   readonly flagID: number;
   readonly groupID: number;
   readonly name: string;
+  /** The live `/api/names` typeGroup answer — how the GAME files this module. */
+  readonly groupName: string;
 }
 
 export const PROCURER_MODULES: readonly FittedRow[] = Object.freeze([
   // High slots (flags 27-28) — the miners.
-  { itemID: 9988400037240, typeID: 17482, flagID: 27, groupID: 464, name: "Strip Miner I" },
-  { itemID: 9988400037239, typeID: 17482, flagID: 28, groupID: 464, name: "Strip Miner I" },
+  { itemID: 9988400037240, typeID: 17482, flagID: 27, groupID: 464, name: "Strip Miner I", groupName: "Strip Miner" },
+  { itemID: 9988400037239, typeID: 17482, flagID: 28, groupID: 464, name: "Strip Miner I", groupName: "Strip Miner" },
   // Mid slots (flags 19-21).
-  { itemID: 9988400023312, typeID: 527, flagID: 19, groupID: 65, name: "Stasis Webifier II" },
-  { itemID: 9988400023306, typeID: 448, flagID: 20, groupID: 52, name: "Warp Scrambler II" },
-  { itemID: 9988400023317, typeID: 12058, flagID: 21, groupID: 46, name: "10MN Afterburner II" },
+  { itemID: 9988400023312, typeID: 527, flagID: 19, groupID: 65, name: "Stasis Webifier II", groupName: "Stasis Web" },
+  { itemID: 9988400023306, typeID: 448, flagID: 20, groupID: 52, name: "Warp Scrambler II", groupName: "Warp Scrambler" },
+  { itemID: 9988400023317, typeID: 12058, flagID: 21, groupID: 46, name: "10MN Afterburner II", groupName: "Propulsion Module" },
   // Low slots (flags 11-13) — note the FIRST one.
   {
     itemID: 9988400023307,
@@ -62,6 +66,7 @@ export const PROCURER_MODULES: readonly FittedRow[] = Object.freeze([
     flagID: 11,
     groupID: 546,
     name: "Ice Harvester Upgrade II",
+    groupName: "Mining Upgrade",
   },
   {
     itemID: 9988400023311,
@@ -69,6 +74,7 @@ export const PROCURER_MODULES: readonly FittedRow[] = Object.freeze([
     flagID: 12,
     groupID: 763,
     name: "Nanofiber Internal Structure II",
+    groupName: "Nanofiber Internal Structure",
   },
   {
     itemID: 9988400023315,
@@ -76,6 +82,7 @@ export const PROCURER_MODULES: readonly FittedRow[] = Object.freeze([
     flagID: 13,
     groupID: 645,
     name: "Drone Damage Amplifier II",
+    groupName: "Drone Damage Modules",
   },
   // Rigs (flags 92-94) — note the LAST one.
   {
@@ -84,6 +91,7 @@ export const PROCURER_MODULES: readonly FittedRow[] = Object.freeze([
     flagID: 92,
     groupID: 782,
     name: "Medium Low Friction Nozzle Joints II",
+    groupName: "Rig Navigation",
   },
   {
     itemID: 9988400023310,
@@ -91,6 +99,7 @@ export const PROCURER_MODULES: readonly FittedRow[] = Object.freeze([
     flagID: 93,
     groupID: 774,
     name: "Medium EM Shield Reinforcer II",
+    groupName: "Rig Shield",
   },
   {
     itemID: 9988400023313,
@@ -98,6 +107,7 @@ export const PROCURER_MODULES: readonly FittedRow[] = Object.freeze([
     flagID: 94,
     groupID: 1232,
     name: "Medium Ice Harvester Accelerator I",
+    groupName: "Rig Resource Processing",
   },
 ]);
 
@@ -238,15 +248,26 @@ export function holdsBody(oreUsed: number, items: readonly unknown[]): unknown {
   };
 }
 
-/** Every captured type name, keyed the way the names slice keys them. */
+/**
+ * Every captured name, keyed the way the names slice keys them: `type:` to the
+ * display name and `typeGroup:` to the group name. R47 — the preflight and the
+ * launcher now resolve the GROUP, so a fixture that answered only `type:` would
+ * push them into "cannot tell" and never clear a bot.
+ */
 export const TYPE_NAMES: Readonly<Record<string, string>> = Object.freeze(
-  Object.fromEntries(PROCURER_MODULES.map((row) => [`type:${row.typeID}`, row.name])),
+  Object.fromEntries(
+    PROCURER_MODULES.flatMap((row) => [
+      [`type:${row.typeID}`, row.name],
+      [`typeGroup:${row.typeID}`, row.groupName],
+    ]),
+  ),
 );
 
 /**
  * `POST /api/names`, answering only what was asked for — so a suite that wants
- * to model an UNRESOLVED name simply never asks, and the requirement check has
- * to reach its "cannot tell" arm rather than a convenient false negative.
+ * to model an UNRESOLVED name or group simply never asks, and the requirement
+ * check has to reach its "cannot tell" arm rather than a convenient false
+ * negative. Answers both `type:` and `typeGroup:` keys.
  */
 export function namesBody(request: Record<string, unknown>): unknown {
   const items = Array.isArray(request.items) ? (request.items as { kind?: string; id?: number }[]) : [];

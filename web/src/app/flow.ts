@@ -131,7 +131,7 @@ import {
   type MiningBotReads,
   type MissionBotReads,
 } from "../nav/botRegistry.ts";
-import { highSlotMiningModules, unnamedHighSlotModules } from "../space/rowActions.ts";
+import { highSlotMiningModules, ungroupedHighSlotModules } from "../space/rowActions.ts";
 import {
   DEFAULT_MAX_JUMPS,
   createMissionBot,
@@ -3762,21 +3762,27 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       await loadFitting();
       const fit = store.fitting.get();
       if (fit.slotsError === null) {
-        // Ask for every fitted module's name and WAIT, then look at the HIGH
-        // SLOTS — where every mining module lives (space/rowActions.ts).
+        // Ask for every fitted module's name AND its GROUP and WAIT, then look
+        // at the HIGH SLOTS — where every mining module lives. The GROUP is the
+        // game's own answer to "is this a laser" (space/rowActions.ts, R47).
         await resolveNamesNow(
           fit.slots
             .filter((slot) => slot.module !== null)
-            .map((slot) => ({ kind: "type" as const, id: slot.module!.typeID })),
+            .flatMap((slot) => [
+              { kind: "type" as const, id: slot.module!.typeID },
+              { kind: "typeGroup" as const, id: slot.module!.typeID },
+            ]),
         );
         const resolved = store.names.get().resolved;
         const nameOf = (typeID: number): string | null =>
           resolved[nameKey("type", typeID)] ?? null;
-        // A high-slot module nobody could name might BE a Strip Miner, so an
-        // unnamed one poisons BOTH counts rather than being read as "not a
-        // miner". Only a fit we could read end to end produces numbers.
-        if (unnamedHighSlotModules(fit.slots, nameOf).length === 0) {
-          const miners = highSlotMiningModules(fit.slots, nameOf);
+        const groupOf = (typeID: number): string | null =>
+          resolved[nameKey("typeGroup", typeID)] ?? null;
+        // A high-slot module whose GROUP nobody could resolve might BE a Strip
+        // Miner, so an ungrouped one poisons BOTH counts rather than being read
+        // as "not a miner". Only a fit we could read end to end produces numbers.
+        if (ungroupedHighSlotModules(fit.slots, nameOf, groupOf).length === 0) {
+          const miners = highSlotMiningModules(fit.slots, nameOf, groupOf);
           minersFitted = miners.length;
           minersOnline = miners.filter((row) => row.online).length;
         }

@@ -236,40 +236,66 @@ export function shipActions(ctx: ShipActionContext): readonly RowAction[] {
 }
 
 /**
- * Does this equipment's NAME read like mining gear?
+ * The groups the GAME itself files a mining module under (goal R47).
  *
- * ⚠ THIS IS A GUESS ABOUT A NAME, and it is never the last word — it decides
- * what "Mine this" reaches for, and the panel reports what each module actually
- * did afterwards, so a wrong guess is visible rather than silent. The browser
- * must never *decide* which of your modules is a mining laser, because a wrong
- * decision fires a turret at a rock.
+ * ⚠ THIS REPLACES A GUESS ABOUT A NAME WITH THE GAME'S OWN ANSWER. The old test
+ * pattern-matched the English display name (`/miner|mining|strip|harvest/…`),
+ * which is a guess dressed as a fact: it says TRUE for a "Mining Foreman Burst"
+ * (a command burst, not a laser) and had to keep a hand-tuned list of negatives
+ * (`upgrade|rig|processor`) to fend off the passives. A module's GROUP is what
+ * the server records it as, resolved through `/api/names` (`typeGroup`) with no
+ * new route — `typeGroup:17482` is "Strip Miner".
  *
- * ⚠ THE EXCLUSION IS FROM A LIVE RUN. On a real Retriever the positive half
- * alone matched "Ice Harvester Upgrade II" — a low-slot passive upgrade, not
- * something you switch on — alongside the two Strip Miner Is that actually
- * mine. "Upgrade", "Rig" and "Processor" name the passives in every case this
- * client has seen.
+ * ⚠ THIS SET IS DERIVED FROM STATIC DATA, NOT INVENTED. It is every category-7
+ * (Module) group in the SDE whose types carry the `miningLaser` (effect 67) or
+ * `miningClouds` (effect 2726) dogma effect — the exact two effect names eve.js
+ * keys a mining module on (`server/.../mining/miningDogma.js`, MINING_EFFECT_
+ * NAMES). Enumerating those groups yields precisely these six and no others; a
+ * hand-written list would be the old failure in a new costume. Ice harvesters
+ * live in "Strip Miner"; deep-core lasers in "Mining Laser"/"Frequency Mining
+ * Laser"; gas harvesters in the two Gas Cloud groups.
  */
-export function looksLikeMiningEquipment(label: string): boolean {
-  return /miner|mining|strip|harvest|deep core/i.test(label) && !/upgrade|rig|processor/i.test(label);
+export const MINING_GROUP_NAMES: ReadonlySet<string> = Object.freeze(
+  new Set([
+    "Mining Laser", // groupID 54 — Miner I/II, Deep Core Mining Laser I, …
+    "Strip Miner", // groupID 464 — Strip Miner I, Ice Harvester I/II, …
+    "Frequency Mining Laser", // groupID 483 — Modulated Strip/Deep Core Miner II
+    "Gas Cloud Scoops", // groupID 737 — Gas Cloud Scoop I/II, …
+    "Citizen Mining Laser", // groupID 2004 — Citizen Miner
+    "Gas Cloud Harvesters", // groupID 4138 — Gas Cloud Harvester I/II, …
+  ]),
+) as ReadonlySet<string>;
+
+/**
+ * Is this the name of a group the game files mining modules under?
+ *
+ * ⚠ IT IS ONLY EVER ASKED OF A RESOLVED GROUP. A group that has not resolved
+ * yet is null at the call site and is "cannot tell", never a confident "no" —
+ * the same discipline the name test needed and for the same reason: a wrong
+ * "not a miner" about a Strip Miner nobody has looked up starts a bot that
+ * immediately pauses.
+ */
+export function isMiningGroup(groupName: string): boolean {
+  return MINING_GROUP_NAMES.has(groupName);
 }
 
-// --- R43: ONE derivation of "which of these is a miner" ----------------------
+// --- R43/R47: ONE derivation of "which of these is a miner" -------------------
 //
-// ⚠ THE NAME GUESS ABOVE IS ONLY HALF OF IT, and the other half is why this
-// lives here instead of being re-written at each call site.
+// ⚠ THE GROUP TEST IS ONLY HALF OF IT, and the other half is why this lives
+// here instead of being re-written at each call site.
 //
 // A live R33 run on Farmer's Procurer carried `Medium Ice Harvester
-// Accelerator I` — a RIG. `looksLikeMiningEquipment` says TRUE for it: it
-// matches `harvest` and none of `upgrade|rig|processor` appears in its name.
-// The only reason the bot does not try to switch it on is that the derivation
-// skips the rig family STRUCTURALLY, before the name is ever consulted.
+// Accelerator I` — a RIG whose group is "Rig Resource Processing". The group
+// test excludes it, but so does the slot filter, and the slot filter is the one
+// that must never be dropped: it removes low-slot upgrades ("Mining Upgrade")
+// and rigs STRUCTURALLY, before any group is consulted. Group and slot are
+// complementary — group removes the language guess, slot removes the passives
+// that share a family name with a real laser.
 //
 // So a second, independently written "does this ship have a miner?" check that
-// reached for the name guess alone would answer YES for a hull whose actual
-// miner list is empty — the preflight would wave the bot through and the loop
-// would immediately pause with nothing to run. The two halves have to travel
-// together, so they are one function and everything shares it.
+// reached for the group test alone would still have to remember the slot
+// filter. The two halves have to travel together, so they are one function and
+// everything shares it.
 
 /** A module the client could switch on: a slot's contents, minus what is never activated. */
 export interface ActivatableModule {
@@ -277,15 +303,20 @@ export interface ActivatableModule {
   readonly typeID: number;
   readonly online: boolean;
   /**
-   * The module's name, or null when it has not resolved yet.
-   *
-   * ⚠ NULL IS NOT "Unknown module". A placeholder here would be fed to the name
-   * guess and answer a confident "not a miner" about a module nobody has looked
-   * up yet — which is a guess wearing the clothes of a fact. Callers that render
-   * substitute their own placeholder; callers that DECIDE must treat null as
-   * "cannot tell" (see nav/botRegistry.ts).
+   * The module's display name, or null when it has not resolved yet. FOR
+   * RENDERING ONLY — the mining decision reads `group`, not this. Callers that
+   * render substitute their own placeholder ("Unknown module") for null.
    */
   readonly label: string | null;
+  /**
+   * The game's GROUP name for the module, or null when it has not resolved yet.
+   *
+   * ⚠ NULL IS NOT "not a miner". A placeholder here would answer a confident
+   * "not a miner" about a module whose group nobody has looked up yet — a guess
+   * wearing the clothes of a fact. Callers that DECIDE must treat null as
+   * "cannot tell" (see nav/botRegistry.ts and ungroupedHighSlotModules below).
+   */
+  readonly group: string | null;
 }
 
 /** The shape both the store's `FittingSlot` and any test fixture satisfy. */
@@ -309,6 +340,7 @@ export interface ActivatableSlot {
 export function activatableModules(
   slots: readonly ActivatableSlot[],
   nameOf: (typeID: number) => string | null,
+  groupOf: (typeID: number) => string | null,
 ): readonly ActivatableModule[] {
   const rows: ActivatableModule[] = [];
   for (const slot of slots) {
@@ -320,90 +352,88 @@ export function activatableModules(
       typeID: slot.module.typeID,
       online: slot.module.online,
       label: nameOf(slot.module.typeID),
+      group: groupOf(slot.module.typeID),
     });
   }
   return rows;
 }
 
 /**
- * The activatable modules that are POWERED UP and read like mining gear — the
- * exact set the mining bot reaches for.
+ * The activatable modules that are POWERED UP and whose GROUP the game files as
+ * mining gear — the exact set the mining bot reaches for.
+ *
+ * A module whose group has not resolved yet (group === null) is left out, not
+ * read as "not a miner": it is the honest "cannot tell".
  */
 export function miningModules(
   modules: readonly ActivatableModule[],
 ): readonly ActivatableModule[] {
   return modules.filter(
-    (row) => row.online && row.label !== null && looksLikeMiningEquipment(row.label),
+    (row) => row.online && row.group !== null && isMiningGroup(row.group),
   );
 }
 
 /**
- * A MINING MODULE LIVES IN A HIGH SLOT (goal R43).
+ * A MINING MODULE LIVES IN A HIGH SLOT and is filed in a MINING GROUP (R43/R47).
  *
- * ⚠ THIS IS A SLOT RULE FIRST AND A NAME RULE SECOND, and that order is the
- * whole correction. The operator put it plainly: a miner is high-slot only, and
- * rigs do not matter — because once you are looking at high slots they cannot.
- * Farmer's live Procurer confirms it directly: both `Strip Miner I` sit at
- * flags 27 and 28, both high.
+ * ⚠ SLOT AND GROUP ARE COMPLEMENTARY, and both are load-bearing. The operator
+ * put the slot half plainly: a miner is high-slot only, and rigs do not matter —
+ * because once you are looking at high slots they cannot. Farmer's live Procurer
+ * confirms it directly: both `Strip Miner I` sit at flags 27 and 28, both high.
+ * The group half (R47) is the game's own answer to "is this a laser", replacing
+ * the English-name guess this used to end with.
  *
- * Every decoy that motivated the negative half of `looksLikeMiningEquipment`
- * disappears by construction here rather than by being named:
- *   • `Ice Harvester Upgrade II` is a LOW slot module.
- *   • `Medium Ice Harvester Accelerator I` is a RIG.
+ * Every low-slot / rig decoy disappears by the SLOT filter, before a group is
+ * even consulted:
+ *   • `Ice Harvester Upgrade II` is a LOW slot module (group "Mining Upgrade").
+ *   • `Medium Ice Harvester Accelerator I` is a RIG (group "Rig Resource
+ *     Processing").
  * Neither is reachable from a high-slot filter, so nothing has to remember to
- * exclude them.
+ * exclude them; and neither group is in MINING_GROUP_NAMES either.
  *
  * ⚠ IT STILL APPLIES THE BOT'S OWN PREDICATE, and that is deliberate rather
- * than leftover. `looksLikeMiningEquipment` is what the LOOP reaches for when it
- * decides which modules to switch on; intersecting with it makes this set a
- * strict SUBSET of the bot's own, which is the property that matters: the
- * preflight can never be more optimistic than the bot it is clearing. A
- * requirement that said "yes, you have a miner" about a module the loop would
- * not switch on is precisely the failure this check exists to prevent — the bot
- * starts and immediately pauses with nothing to run.
- *
- * (An authoritative signal does exist and needs no new BFF route: `/api/names`
- * resolves `typeGroup:17482` to "Strip Miner". Moving to it would break the
- * subset property unless the LOOP moved at the same time, so it is left for a
- * goal that can change both together.)
+ * than leftover. `isMiningGroup` (over the resolved group) is what the LOOP now
+ * reaches for when it decides which modules to switch on; intersecting with it
+ * makes this set a strict SUBSET of the bot's own, which is the property that
+ * matters: the preflight can never be more optimistic than the bot it is
+ * clearing. A requirement that said "yes, you have a miner" about a module the
+ * loop would not switch on is precisely the failure this check exists to
+ * prevent — the bot starts and immediately pauses with nothing to run.
  */
 export function highSlotMiningModules(
   slots: readonly ActivatableSlot[],
   nameOf: (typeID: number) => string | null,
+  groupOf: (typeID: number) => string | null,
 ): readonly ActivatableModule[] {
   return activatableModules(
     slots.filter((slot) => slot.family === "high"),
     nameOf,
-  ).filter((row) => row.label !== null && looksLikeMiningEquipment(row.label));
+    groupOf,
+  ).filter((row) => row.group !== null && isMiningGroup(row.group));
 }
 
 /**
- * Powered-up modules whose name has not arrived yet.
+ * High-slot modules whose GROUP nobody has resolved yet — the R43/R47
+ * preflight's cannot-tell.
  *
- * A caller that has to DECIDE whether this ship can mine cannot treat these as
- * "not a miner" — any one of them could be a Strip Miner nobody has looked up.
- * They are the honest "cannot tell" the R43 preflight refuses to start on.
- */
-export function unnamedOnlineModules(
-  modules: readonly ActivatableModule[],
-): readonly ActivatableModule[] {
-  return modules.filter((row) => row.online && row.label === null);
-}
-
-/**
- * High-slot modules nobody has named yet — the R43 preflight's cannot-tell.
+ * ⚠ THE GROUP ARRIVES ASYNCHRONOUSLY THROUGH `/api/names`, exactly as the label
+ * did. A high-slot module whose group has not landed could be a Strip Miner, so
+ * a caller that has to DECIDE whether this ship can mine cannot read it as "not
+ * a miner". It is the honest "cannot tell" the preflight refuses to start on.
  *
  * ⚠ IT DOES NOT FILTER ON `online`. The question the requirement asks is "is a
  * miner FITTED", which an unpowered module answers just as well as a powered
- * one; an unnamed high-slot module could be a Strip Miner either way, so it
- * poisons the count regardless of its power state.
+ * one; an unresolved-group high-slot module could be a Strip Miner either way,
+ * so it poisons the count regardless of its power state.
  */
-export function unnamedHighSlotModules(
+export function ungroupedHighSlotModules(
   slots: readonly ActivatableSlot[],
   nameOf: (typeID: number) => string | null,
+  groupOf: (typeID: number) => string | null,
 ): readonly ActivatableModule[] {
   return activatableModules(
     slots.filter((slot) => slot.family === "high"),
     nameOf,
-  ).filter((row) => row.label === null);
+    groupOf,
+  ).filter((row) => row.group === null);
 }

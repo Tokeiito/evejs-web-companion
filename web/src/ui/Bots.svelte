@@ -30,7 +30,7 @@
     type RequirementRow,
   } from "../nav/botRegistry.ts";
   import { destinationHold, holdShouldHaul } from "../nav/miningBotLoop.ts";
-  import { highSlotMiningModules, unnamedHighSlotModules } from "../space/rowActions.ts";
+  import { highSlotMiningModules, ungroupedHighSlotModules } from "../space/rowActions.ts";
   import { nameKey } from "../store/names.ts";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
@@ -82,12 +82,15 @@
     }
     const resolved = $names.resolved;
     const nameOf = (typeID: number): string | null => resolved[nameKey("type", typeID)] ?? null;
-    // A high-slot module nobody has named yet might BE a Strip Miner, so it
-    // poisons both counts instead of being quietly read as "not a miner".
-    if (unnamedHighSlotModules($fitting.slots, nameOf).length > 0) {
+    const groupOf = (typeID: number): string | null =>
+      resolved[nameKey("typeGroup", typeID)] ?? null;
+    // A high-slot module whose GROUP has not resolved yet might BE a Strip
+    // Miner, so it poisons both counts instead of being quietly read as "not a
+    // miner" (R47 — the group is the game's own answer, resolved via /api/names).
+    if (ungroupedHighSlotModules($fitting.slots, nameOf, groupOf).length > 0) {
       return { fitted: null, online: null };
     }
-    const rows = highSlotMiningModules($fitting.slots, nameOf);
+    const rows = highSlotMiningModules($fitting.slots, nameOf, groupOf);
     return { fitted: rows.length, online: rows.filter((row) => row.online).length };
   });
 
@@ -181,11 +184,15 @@
     void Promise.resolve(flow.loadMiningHolds()).catch(() => {});
   });
 
-  // Names for whatever is fitted, so "is that a Strip Miner?" is answerable.
+  // Names AND groups for whatever is fitted, so "is that a Strip Miner?" is
+  // answerable — the group is the game's own answer to that (R47).
   $effect(() => {
     const refs = $fitting.slots
       .filter((slot) => slot.module !== null)
-      .map((slot) => ({ kind: "type" as const, id: slot.module!.typeID }));
+      .flatMap((slot) => [
+        { kind: "type" as const, id: slot.module!.typeID },
+        { kind: "typeGroup" as const, id: slot.module!.typeID },
+      ]);
     if (refs.length > 0) {
       flow.requestNames(refs);
     }

@@ -16,7 +16,7 @@
   import { formatDistance } from "../space/overview.ts";
   // R30 slice E — the mining-equipment guess, shared with the cockpit's
   // "Mine this" so the bot and the one-click verb can never run different sets.
-  import { activatableModules, looksLikeMiningEquipment } from "../space/rowActions.ts";
+  import { activatableModules, isMiningGroup } from "../space/rowActions.ts";
   // R44 — the ladder, by NAME. This panel shows every rule the bot follows and
   // marks the one that fired this tick. It is a pure reader of a catalogue: the
   // order, the wording and the caveats all live in nav/miningLadder.ts next to
@@ -148,31 +148,38 @@
   interface Equipment {
     readonly itemID: number;
     readonly label: string;
+    /** The game's group name, or null until it resolves — what the default reads. */
+    readonly group: string | null;
   }
   const equipment = $derived.by<Equipment[]>(() =>
-    activatableModules($fitting.slots, (typeID) =>
+    activatableModules(
+      $fitting.slots,
       // A name that has not landed yet is null in the shared derivation; only
       // this RENDERING layer substitutes a placeholder for it.
-      $names.resolved[nameKey("type", typeID)] ?? null,
+      (typeID) => $names.resolved[nameKey("type", typeID)] ?? null,
+      (typeID) => $names.resolved[nameKey("typeGroup", typeID)] ?? null,
     )
       .filter((row) => row.online)
-      .map((row) => ({ itemID: row.itemID, label: row.label ?? "Unknown module" })),
+      .map((row) => ({ itemID: row.itemID, label: row.label ?? "Unknown module", group: row.group })),
   );
 
   /**
-   * A CONVENIENCE default, not a claim: equipment whose name reads like a
-   * mining laser is ticked to begin with. It is a guess about a NAME, so the
-   * player can change it — the browser never decides which of your modules is a
-   * mining laser, because a wrong guess fires a turret at a rock.
+   * A CONVENIENCE default, not a claim: equipment the GAME files under a mining
+   * group is ticked to begin with (R47). The player can still change it — the
+   * browser never overrides which of your modules you run; it just starts from
+   * the game's own answer instead of a guess about the English name.
    *
-   * ⚠ THE EXCLUSION IS FROM A LIVE RUN, and it now lives in ONE place —
-   * `space/rowActions.ts`, shared with the cockpit's "Mine this" (R30 slice E),
-   * which reaches for exactly the same set. Two copies of a guess drifting
-   * apart would mean the bot and the one-click verb ran different equipment
-   * while the page implied they ran the same.
+   * ⚠ THE DERIVATION LIVES IN ONE PLACE — `space/rowActions.ts`, shared with the
+   * cockpit's "Mine this" (R30 slice E) and the preflight, which reach for
+   * exactly the same set. Two copies drifting apart would mean the bot and the
+   * one-click verb ran different equipment while the page implied they ran the
+   * same. A module whose group has not resolved yet is simply not ticked (it is
+   * "cannot tell"), so the default fills in as the groups land.
    */
   const suggested = $derived(
-    equipment.filter((row) => looksLikeMiningEquipment(row.label)).map((row) => row.itemID),
+    equipment
+      .filter((row) => row.group !== null && isMiningGroup(row.group))
+      .map((row) => row.itemID),
   );
   const chosenEquipment = $derived(pickedTouched ? picked : suggested);
 

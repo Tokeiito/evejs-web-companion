@@ -33,7 +33,7 @@ import {
   activatableModules,
   highSlotMiningModules,
   miningModules,
-  unnamedHighSlotModules,
+  ungroupedHighSlotModules,
 } from "../space/rowActions.ts";
 import { BOT_ADVISORY_TEXTS, isPlainPlayerLanguage } from "../bridge/refusals.ts";
 import { PROCURER_MODULES, STRIP_MINER_ITEM_IDS } from "../app/botFixtures.ts";
@@ -205,8 +205,14 @@ function procurerSlots(online: (itemID: number) => boolean = () => true) {
 const procurerName = (typeID: number): string | null =>
   PROCURER_MODULES.find((row) => row.typeID === typeID)?.name ?? null;
 
-test("R43 — a mining module is a HIGH SLOT module, and that is the whole rule", () => {
-  const miners = highSlotMiningModules(procurerSlots(), procurerName);
+// R47 — the GAME'S GROUP for each module, as /api/names (typeGroup) resolves it.
+// The Strip Miners are group "Strip Miner"; the decoys are "Mining Upgrade" and
+// "Rig Resource Processing", neither a mining group.
+const procurerGroup = (typeID: number): string | null =>
+  PROCURER_MODULES.find((row) => row.typeID === typeID)?.groupName ?? null;
+
+test("R43/R47 — a mining module is a HIGH SLOT module in a MINING GROUP", () => {
+  const miners = highSlotMiningModules(procurerSlots(), procurerName, procurerGroup);
   assert.deepEqual(
     [...miners].map((row) => row.itemID).sort(),
     [...STRIP_MINER_ITEM_IDS].sort(),
@@ -220,31 +226,36 @@ test("R43 — a mining module is a HIGH SLOT module, and that is the whole rule"
   }
 });
 
-test("R43 — the decoys vanish BY CONSTRUCTION, not by being named", () => {
-  const miners = highSlotMiningModules(procurerSlots(), procurerName);
+test("R43/R47 — the decoys vanish BY CONSTRUCTION, by slot AND by group", () => {
+  const miners = highSlotMiningModules(procurerSlots(), procurerName, procurerGroup);
 
-  // Both decoys match the positive half of the name test on their own...
+  // Both decoys carry a mining-family WORD in their name — exactly what the old
+  // name guess tripped on...
   for (const decoy of ["Ice Harvester Upgrade II", "Medium Ice Harvester Accelerator I"]) {
-    assert.match(decoy, /miner|mining|strip|harvest|deep core/i);
+    assert.match(decoy, /harvester/i);
     assert.equal(
       miners.some((row) => row.label === decoy),
       false,
       `${decoy} must not count as a miner`,
     );
   }
-  // ...and neither is reachable from a high-slot filter, because one is a LOW
-  // slot module and the other is a RIG. Nothing had to remember to exclude them.
+  // ...and each is excluded TWICE over now. By SLOT: one is a LOW slot module,
+  // the other a RIG, so neither is reachable from a high-slot filter. And by
+  // GROUP: the game files them as "Mining Upgrade" and "Rig Resource
+  // Processing", neither of which is a mining group.
   const upgrade = PROCURER_MODULES.find((r) => r.name === "Ice Harvester Upgrade II")!;
   const rig = PROCURER_MODULES.find((r) => r.name === "Medium Ice Harvester Accelerator I")!;
   assert.ok(upgrade.flagID >= 11 && upgrade.flagID <= 18, "the Upgrade is a low slot module");
   assert.ok(rig.flagID >= 92 && rig.flagID <= 99, "the Accelerator is a rig");
+  assert.equal(upgrade.groupName, "Mining Upgrade");
+  assert.equal(rig.groupName, "Rig Resource Processing");
 });
 
 test("R43 — a hull with ONLY the decoys reports NO miner, and cannot start the bot", () => {
   const slots = procurerSlots().filter(
     (slot) => !STRIP_MINER_ITEM_IDS.includes(slot.module.itemID),
   );
-  const fitted = highSlotMiningModules(slots, procurerName).length;
+  const fitted = highSlotMiningModules(slots, procurerName, procurerGroup).length;
   assert.equal(fitted, 0, "an Ice Harvester Upgrade and an Ice Harvester rig are not miners");
 
   const preflight = evaluateRequirements(MINING_BOT_REQUIREMENTS, {
@@ -261,7 +272,7 @@ test("R43 — FITTED but SWITCHED OFF is a different answer from NOT FITTED", ()
   // one click away — and the sentence must send them to that click rather than
   // to the Fitting tab.
   const slots = procurerSlots((id) => !STRIP_MINER_ITEM_IDS.includes(id));
-  const miners = highSlotMiningModules(slots, procurerName);
+  const miners = highSlotMiningModules(slots, procurerName, procurerGroup);
   assert.equal(miners.length, 2, "they are still fitted");
   assert.equal(miners.filter((row) => row.online).length, 0, "and both are off");
 
@@ -283,13 +294,14 @@ test("R43 — FITTED but SWITCHED OFF is a different answer from NOT FITTED", ()
   assert.equal(preflight.rows.find((r) => r.id === "mining-equipment")!.verdict, "met");
 });
 
-test("R43 — an UNNAMED high-slot module poisons the count rather than reading as 'not a miner'", () => {
-  // Nobody has looked up what is in the high slots. Any one of them could be a
-  // Strip Miner, so the honest answer is "cannot tell" — and cannot-tell does
-  // not start a bot.
-  const unnamed = unnamedHighSlotModules(procurerSlots(), () => null);
-  assert.equal(unnamed.length, 2, "both high-slot modules are unnamed");
-  assert.equal(highSlotMiningModules(procurerSlots(), () => null).length, 0);
+test("R43/R47 — an UNRESOLVED-GROUP high-slot module poisons the count rather than reading as 'not a miner'", () => {
+  // Nobody has resolved the GROUP of what is in the high slots. Any one of them
+  // could be a Strip Miner, so the honest answer is "cannot tell" — and
+  // cannot-tell does not start a bot. (The name may be known; the group is what
+  // decides now, so an unresolved group alone is enough to poison the count.)
+  const ungrouped = ungroupedHighSlotModules(procurerSlots(), procurerName, () => null);
+  assert.equal(ungrouped.length, 2, "both high-slot modules have no resolved group");
+  assert.equal(highSlotMiningModules(procurerSlots(), procurerName, () => null).length, 0);
 
   const preflight = evaluateRequirements(MINING_BOT_REQUIREMENTS, {
     ...READY_TO_MINE,
@@ -308,8 +320,10 @@ test("R43 — the preflight can never be MORE OPTIMISTIC than the bot's own modu
   // mine with — it would start and immediately pause. Intersecting with the
   // loop's own predicate makes it a strict subset by construction.
   const slots = procurerSlots();
-  const botWouldRun = miningModules(activatableModules(slots, procurerName)).map((r) => r.itemID);
-  const preflightCounts = highSlotMiningModules(slots, procurerName)
+  const botWouldRun = miningModules(activatableModules(slots, procurerName, procurerGroup)).map(
+    (r) => r.itemID,
+  );
+  const preflightCounts = highSlotMiningModules(slots, procurerName, procurerGroup)
     .filter((row) => row.online)
     .map((r) => r.itemID);
   for (const id of preflightCounts) {

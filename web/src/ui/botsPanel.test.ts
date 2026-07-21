@@ -103,9 +103,17 @@ function procurerStore(options: { readonly minersOffline?: boolean } = {}) {
     slotsError: null,
     resourcesError: null,
   });
+  // R47 — the launcher now decides "is that a miner?" from the game's GROUP, so
+  // "every name resolved" must include the typeGroup answers too. Without them
+  // the panel would (correctly) sit in cannot-tell and never clear a bot.
   store.apply({
     type: "names/resolved",
-    entries: Object.fromEntries(PROCURER_MODULES.map((row) => [`type:${row.typeID}`, row.name])),
+    entries: Object.fromEntries(
+      PROCURER_MODULES.flatMap((row) => [
+        [`type:${row.typeID}`, row.name],
+        [`typeGroup:${row.typeID}`, row.groupName],
+      ]),
+    ),
   });
   store.apply({
     type: "mining/holds",

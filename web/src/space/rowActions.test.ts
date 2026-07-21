@@ -14,7 +14,8 @@ import assert from "node:assert/strict";
 import {
   actionsForRow,
   isDockableKind,
-  looksLikeMiningEquipment,
+  isMiningGroup,
+  MINING_GROUP_NAMES,
   SELECTION_GONE,
   shipActions,
   type RowActionContext,
@@ -166,17 +167,31 @@ test("Mine this states WHICH rule is stopping it, and they are the server's own"
   assert.notEqual(reason({ minerCount: 0, locked: true }), reason({ minerCount: 1, locked: false }));
 });
 
-test("the mining-equipment guess keeps the exclusion a live run paid for", () => {
-  assert.equal(looksLikeMiningEquipment("Miner I"), true);
-  assert.equal(looksLikeMiningEquipment("Strip Miner I"), true);
-  assert.equal(looksLikeMiningEquipment("Ice Harvester II"), true);
-  assert.equal(looksLikeMiningEquipment("Deep Core Mining Laser I"), true);
-  // ⚠ The regression: a low-slot PASSIVE upgrade is not something you switch
-  // on, and matching it sent "Mine this" at a module that cannot run.
-  assert.equal(looksLikeMiningEquipment("Ice Harvester Upgrade II"), false);
-  assert.equal(looksLikeMiningEquipment("Mining Laser Upgrade II"), false);
-  assert.equal(looksLikeMiningEquipment("Medium Core Defense Field Extender I"), false);
-  assert.equal(looksLikeMiningEquipment("125mm Gatling AutoCannon II"), false);
+test("R47 — a miner is decided by the GAME'S GROUP, not by guessing at the name", () => {
+  // The groups the SDE files real mining modules under, resolved live through
+  // /api/names (typeGroup). Strip Miner I -> "Strip Miner", Miner I ->
+  // "Mining Laser", etc.
+  assert.equal(isMiningGroup("Strip Miner"), true, "Strip Miner I / Ice Harvester I/II");
+  assert.equal(isMiningGroup("Mining Laser"), true, "Miner I/II, Deep Core Mining Laser I");
+  assert.equal(isMiningGroup("Frequency Mining Laser"), true, "Modulated Strip/Deep Core Miner II");
+  assert.equal(isMiningGroup("Gas Cloud Harvesters"), true);
+  assert.equal(isMiningGroup("Gas Cloud Scoops"), true);
+  assert.equal(isMiningGroup("Citizen Mining Laser"), true);
+
+  // ⚠ The names the OLD guess got wrong, now answered by the group instead of a
+  // regex over English. "Mining Upgrade" is the low-slot passive; "Rig Resource
+  // Processing" is the Ice Harvester rig; "Command Burst" / "Gang Coordinator"
+  // are mining FLEET modules that are not lasers at all.
+  assert.equal(isMiningGroup("Mining Upgrade"), false, "Ice Harvester Upgrade II lives here");
+  assert.equal(isMiningGroup("Rig Resource Processing"), false, "the Ice Harvester Accelerator rig");
+  assert.equal(isMiningGroup("Command Burst"), false, "Mining Foreman Burst is not a laser");
+  assert.equal(isMiningGroup("Gang Coordinator"), false, "a Mining Foreman Link is not a laser");
+  assert.equal(isMiningGroup("Data Miners"), false, "a Data Analyzer is not a mining laser");
+  assert.equal(isMiningGroup("Salvager"), false);
+
+  // The set is exactly those six — no more, so a new group cannot slip in
+  // unnoticed, and no fewer, so a real family cannot silently drop out.
+  assert.equal(MINING_GROUP_NAMES.size, 6);
 });
 
 // --- R30 slice E: Haul now ---------------------------------------------------

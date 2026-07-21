@@ -39,7 +39,7 @@
   // module rather than as a wall of {#if} blocks inside the grid's last column.
   import {
     actionsForRow,
-    looksLikeMiningEquipment,
+    isMiningGroup,
     SELECTION_GONE,
     shipActions,
     type RowAction,
@@ -779,6 +779,12 @@
   interface ModuleRow {
     readonly itemID: number;
     readonly label: string;
+    /**
+     * R47 — the game's GROUP name for the module, or null until it resolves.
+     * "Mine this" reads this, not the display name: the group is the game's own
+     * answer to "is this a mining laser". null is "cannot tell", never "no".
+     */
+    readonly group: string | null;
     readonly slotLabel: string;
     /**
      * R30 slice E — whether the module is POWERED UP. Offline modules are now
@@ -807,6 +813,9 @@
       rows.push({
         itemID: slot.module.itemID,
         label: resolvedName($names.resolved, "type", slot.module.typeID, "Unknown module"),
+        // Raw read, null-aware: an unresolved group must stay null so "Mine
+        // this" reads it as "cannot tell" rather than a definitive "not a miner".
+        group: $names.resolved[nameKey("typeGroup", slot.module.typeID)] ?? null,
         slotLabel:
           slot.family === "high" ? "High slot" : slot.family === "mid" ? "Mid slot" : "Low slot",
         online,
@@ -903,14 +912,15 @@
   // --- R30 slice E: Mine this, and Haul now ---------------------------------
 
   /**
-   * The equipment "Mine this" will reach for: everything POWERED UP whose name
-   * reads like mining gear. The guess lives in `space/rowActions.ts` with the
-   * live-run exclusion that paid for it; what makes the guess safe is that
-   * every module it reaches for REPORTS BACK BY NAME below, so a wrong guess is
-   * visible in one glance instead of being silently wrong.
+   * The equipment "Mine this" will reach for: everything POWERED UP whose GROUP
+   * the game files as mining gear (R47). The derivation lives in
+   * `space/rowActions.ts`; what makes it safe is that every module it reaches
+   * for REPORTS BACK BY NAME below, so a wrong reach is visible in one glance.
+   * A module whose group has not resolved yet is left out — "cannot tell", not
+   * a claim it is idle — and joins as the group lands.
    */
   const minerRows = $derived(
-    moduleRows.filter((row) => row.online && looksLikeMiningEquipment(row.label)),
+    moduleRows.filter((row) => row.online && row.group !== null && isMiningGroup(row.group)),
   );
 
   /**
@@ -1121,6 +1131,9 @@
     for (const slot of $fitting.slots) {
       if (slot.module) {
         refs.push({ kind: "type", id: slot.module.typeID });
+        // R47 — the module's GROUP too, so "Mine this" can ask the game whether
+        // it is a mining laser instead of guessing from the display name.
+        refs.push({ kind: "typeGroup", id: slot.module.typeID });
       }
     }
     for (const shot of $targeting.damageLog) {
