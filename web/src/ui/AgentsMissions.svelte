@@ -15,6 +15,8 @@
   import type { AppFlow } from "../app/flow.ts";
   import type { AgentAction, AgentRow, JournalMission } from "../store/types.ts";
   import { resolvedName, type NameRef } from "../store/names.ts";
+  // R36 — the mission bot sits with the agents it works for.
+  import MissionBot from "./MissionBot.svelte";
 
   let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
 
@@ -375,3 +377,5 @@
     {/if}
   {/if}
 </section>
+
+<MissionBot {store} {flow} />

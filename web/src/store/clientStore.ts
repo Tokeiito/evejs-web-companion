@@ -72,6 +72,7 @@ import type {
   StationServiceBits,
   StationStatic,
   MiningBotState,
+  MissionBotState,
   SkillsState,
   TravelState,
 } from "./types.ts";
@@ -135,6 +136,7 @@ export interface ClientState {
   readonly skills: SkillsState;
   readonly travel: TravelState;
   readonly bot: MiningBotState;
+  readonly missionBot: MissionBotState;
   readonly chat: ChatState;
   readonly live: LiveState;
   readonly names: NamesState;
@@ -415,6 +417,28 @@ const INITIAL_BOT: MiningBotState = Object.freeze({
   startedAt: null,
 });
 
+// R36 — the mission bot's readout. Every "unknown" is null, never 0 or "": an
+// unmeasured payout must not render as "earned nothing", and a job whose name
+// has not been read must not render as a job with no name.
+const INITIAL_MISSION_BOT: MissionBotState = Object.freeze({
+  status: "idle" as MissionBotState["status"],
+  phase: null,
+  action: null,
+  why: null,
+  agentName: null,
+  missionName: null,
+  cargoText: null,
+  destinationName: null,
+  jumpsRemaining: null,
+  missionsCompleted: 0,
+  iskEarned: null,
+  lpEarned: null,
+  caution: null,
+  failureReason: null,
+  startError: null,
+  startedAt: null,
+});
+
 // R28 skills. Every "unknown" is null and never an empty list: a failed read
 // must not look like a character who knows nothing, and an unread queue must
 // not look like a queue with nothing in it.
@@ -519,6 +543,7 @@ export interface ClientStore {
   readonly skills: ReadableSignal<SkillsState>;
   readonly travel: ReadableSignal<TravelState>;
   readonly bot: ReadableSignal<MiningBotState>;
+  readonly missionBot: ReadableSignal<MissionBotState>;
   readonly chat: ReadableSignal<ChatState>;
   readonly live: ReadableSignal<LiveState>;
   readonly names: ReadableSignal<NamesState>;
@@ -565,6 +590,7 @@ export function createClientStore(): ClientStore {
   const skills = createSignal<SkillsState>(INITIAL_SKILLS);
   const travel = createSignal<TravelState>(INITIAL_TRAVEL);
   const bot = createSignal<MiningBotState>(INITIAL_BOT);
+  const missionBot = createSignal<MissionBotState>(INITIAL_MISSION_BOT);
   const chat = createSignal<ChatState>(INITIAL_CHAT);
   const live = createSignal<LiveState>(INITIAL_LIVE);
   const names = createSignal<NamesState>(INITIAL_NAMES);
@@ -598,6 +624,7 @@ export function createClientStore(): ClientStore {
     skills: skills.get(),
     travel: travel.get(),
     bot: bot.get(),
+    missionBot: missionBot.get(),
     chat: chat.get(),
     live: live.get(),
     names: names.get(),
@@ -1447,6 +1474,45 @@ export function createClientStore(): ClientStore {
       case "bot/cleared":
         bot.set(INITIAL_BOT);
         break;
+      // --- R36: the distribution-mission bot ----------------------------
+      //
+      // Same construction as the mining bot above and for the same reason: the
+      // loop lives in the browser and pushes its readout here, and this slice
+      // records it without deciding anything.
+      case "mission-bot/started":
+        missionBot.set({
+          ...INITIAL_MISSION_BOT,
+          status: "running",
+          agentName: event.agentName,
+          destinationName: event.stationName,
+          startedAt: event.startedAt,
+        });
+        break;
+      case "mission-bot/progress":
+        missionBot.set({
+          ...missionBot.get(),
+          status: event.status,
+          phase: event.phase,
+          action: event.action,
+          why: event.why,
+          agentName: event.agentName,
+          missionName: event.missionName,
+          cargoText: event.cargoText,
+          destinationName: event.destinationName,
+          jumpsRemaining: event.jumpsRemaining,
+          missionsCompleted: event.missionsCompleted,
+          iskEarned: event.iskEarned,
+          lpEarned: event.lpEarned,
+          caution: event.caution,
+          failureReason: event.failureReason,
+        });
+        break;
+      case "mission-bot/start-error":
+        missionBot.set({ ...missionBot.get(), status: "idle", startError: event.message });
+        break;
+      case "mission-bot/cleared":
+        missionBot.set(INITIAL_MISSION_BOT);
+        break;
       case "chat/loaded": {
         const current = chat.get();
         chat.set({
@@ -1611,6 +1677,7 @@ export function createClientStore(): ClientStore {
     skills: readonlySignal(skills),
     travel: readonlySignal(travel),
     bot: readonlySignal(bot),
+    missionBot: readonlySignal(missionBot),
     chat: readonlySignal(chat),
     live: readonlySignal(live),
     names: readonlySignal(names),

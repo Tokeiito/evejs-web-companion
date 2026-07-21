@@ -55,6 +55,7 @@ const PANELS = [
   "Flight",
   "Overview",
   "MiningBot",
+  "MissionBot",
   "Mining",
   "Skills",
   "Travel",

@@ -567,6 +567,34 @@ export type FeedEvent =
   | { readonly type: "bot/start-error"; readonly message: string | null }
   // Drop the bot state (character offline / logged out).
   | { readonly type: "bot/cleared" }
+  // Goal R36 — the distribution-mission bot. The player started it on an agent.
+  | {
+      readonly type: "mission-bot/started";
+      readonly agentName: string | null;
+      readonly stationName: string | null;
+      readonly startedAt: number;
+    }
+  // A live readout push from the mission bot's loop. As with the mining bot,
+  // `why` is not optional decoration — it is the whole point of the panel.
+  | {
+      readonly type: "mission-bot/progress";
+      readonly status: MiningBotRunState;
+      readonly phase: string | null;
+      readonly action: string | null;
+      readonly why: string | null;
+      readonly agentName: string | null;
+      readonly missionName: string | null;
+      readonly cargoText: string | null;
+      readonly destinationName: string | null;
+      readonly jumpsRemaining: number | null;
+      readonly missionsCompleted: number;
+      readonly iskEarned: string | null;
+      readonly lpEarned: string | null;
+      readonly caution: string | null;
+      readonly failureReason: string | null;
+    }
+  | { readonly type: "mission-bot/start-error"; readonly message: string | null }
+  | { readonly type: "mission-bot/cleared" }
   // Goal R7 — the Chat panel (Local + Corp). A channel read completed (roster +
   // recent backlog) — the panel polls while open (READ is a backlog poll).
   | {

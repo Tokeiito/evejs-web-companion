@@ -1589,6 +1589,51 @@ export interface MiningBotState {
 }
 
 /**
+ * The R36 distribution-mission bot's readout. Like `MiningBotState`, this slice
+ * is a pure record of what the browser-side loop said — nothing here decides
+ * anything, and the panel over it is a pure reader.
+ *
+ * `why` is the field it exists for: the player must always be able to interrogate
+ * the LAST decision, not only a failure. Every string here is plain player
+ * language and carries no numeric ids (R9a / R7d).
+ *
+ * `caution` is deliberately separate from `failureReason`. It is not a stop — it
+ * is the bot declaring that a step it took could not be made certain (a hangar
+ * holding two stacks identical in type AND quantity to the mission package,
+ * which no client can tell apart). Reporting that as success would be a lie;
+ * reporting it as a failure would be wrong too.
+ */
+export interface MissionBotState {
+  readonly status: MiningBotRunState;
+  /** Where in the loop it is ("Flying", "Loading", "Handing it in"). */
+  readonly phase: string | null;
+  /** What it last did. */
+  readonly action: string | null;
+  /** WHY it did that — always present while running. */
+  readonly why: string | null;
+  /** The agent it is working with, by NAME (R7d). */
+  readonly agentName: string | null;
+  /** The job in hand, and what it is hauling, in the briefing's own terms. */
+  readonly missionName: string | null;
+  readonly cargoText: string | null;
+  /** Where it is headed, and how far there is left to go. */
+  readonly destinationName: string | null;
+  readonly jumpsRemaining: number | null;
+  /** Jobs actually confirmed complete (missionCompleted === true), never assumed. */
+  readonly missionsCompleted: number;
+  /** Earned this run, measured as a BALANCE DIFFERENCE. Decimal strings. */
+  readonly iskEarned: string | null;
+  readonly lpEarned: string | null;
+  /** Non-null when a step could not be made certain. Not a failure. */
+  readonly caution: string | null;
+  /** Set when it stopped — always a sentence a player can act on. */
+  readonly failureReason: string | null;
+  /** A problem starting it (no agent picked, not docked); null clears it. */
+  readonly startError: string | null;
+  readonly startedAt: number | null;
+}
+
+/**
  * One destination match from the Travel-tab name search (goal R7a): a solar
  * system or station resolved from the static /api/map/find route, annotated with
  * jumps from the current system (best-effort, like the Agent Finder). `id` is

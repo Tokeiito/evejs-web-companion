@@ -112,6 +112,35 @@ import {
   type MiningBotDeps,
   type MiningPlan,
 } from "../nav/miningBotLoop.ts";
+import {
+  DEFAULT_MAX_JUMPS,
+  createMissionBot,
+  type MissionBotController,
+  type MissionBotDeps,
+  type MissionPlan,
+} from "../nav/missionBotLoop.ts";
+
+/**
+ * What the player asked the mission bot to do (goal R36).
+ *
+ * `maxJumps` and `maxMissions` are the PLAYER's limits and are the whole reason
+ * the bot is safe to walk away from: the courier dropoff is the corp's
+ * lowest-`solarSystemID` station, so routes are long by construction and can
+ * cross lowsec. The bot refuses an offer that exceeds them rather than
+ * committing an unattended ship to a trip nobody sanctioned.
+ */
+export interface MissionBotRequest {
+  readonly agentID: number;
+  readonly agentName: string | null;
+  readonly agentStationID: number;
+  readonly agentStationName: string | null;
+  /** Refuse any job whose delivery is further than this. */
+  readonly maxJumps: number;
+  /** Stop after this many completed jobs; 0 keeps going until stopped. */
+  readonly maxMissions: number;
+}
+
+export { DEFAULT_MAX_JUMPS };
 
 /**
  * What the player asked the mining bot to do (goal R26).
@@ -541,6 +570,18 @@ export interface AppFlow {
   resumeMiningBot(): void;
   /** Stop the bot (it stops and never calls the bridge again). */
   stopMiningBot(): void;
+  // --- R36: the distribution-mission bot ---------------------------------
+  // A THIRD browser decide-loop. Unlike the mining bot it does not fly the ship
+  // itself: it hands destinations to the SAME autopilot the Travel panel drives,
+  // so there is one flight ladder with one set of bounds.
+  /** Start the mission bot on an agent (requesting, gating, hauling, delivering). */
+  startMissionBot(request: MissionBotRequest): Promise<void>;
+  /** Pause it (it stops issuing; the ship finishes its last move). */
+  pauseMissionBot(): void;
+  /** Resume a paused mission bot from where it left off. */
+  resumeMissionBot(): void;
+  /** Stop it (it stops, stops the autopilot, and never calls the bridge again). */
+  stopMissionBot(): void;
   /** Pause the autopilot loop (it stops issuing; the ship finishes its last move). */
   pauseRoute(): void;
   /** Resume a paused autopilot loop from where it stopped. */
@@ -3224,6 +3265,236 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     };
   }
 
+  // --- R36: the mission bot (a THIRD browser decide-loop) ------------------
+  //
+  // Wired exactly as the mining bot is, with one deliberate difference: it does
+  // NOT own a flight ladder. A courier route is multi-system, which is precisely
+  // what the R5b autopilot already solves, sequences and bounds — so `startTravel`
+  // hands the destination to the SAME `autopilot` controller the Travel panel
+  // drives, and `getTravel` reads that controller's own snapshot back. One
+  // flight ladder, one set of bounds.
+  //
+  // As with the mining bot, these deps go STRAIGHT to the api layer rather than
+  // through the flow's own agent wrappers: `runAgentAction` swallows a refusal
+  // into the store and returns normally, and the bot has to SEE the refusal to
+  // decide on it.
+  let missionBot: MissionBotController | null = null;
+
+  function makeMissionBotDeps(): MissionBotDeps {
+    return {
+      getStatus: async () => {
+        const step = await api.getFlightStatus(callOptions);
+        const status = decodeFlightStatus(step.flight);
+        void observeFlightStatus(status);
+        return status;
+      },
+      // Opening the conversation is how the tokens are re-minted. It is called
+      // fresh on every tick that could press something — never cached.
+      openConversation: async (agentID) => {
+        const result = await api.agentAction(agentID, null, callOptions);
+        const conversation = decodeConversation(result);
+        store.apply({ type: "agents/conversation", agentID, conversation });
+        return conversation;
+      },
+      // ⚠ THIS RETURNS THE CONVERSATION RATHER THAN A BOOLEAN, deliberately.
+      // `doAgentAction` answers `success: true` on every branch it has, so the
+      // caller must be able to read `lastActionInfo.missionCompleted` itself —
+      // and the loop tests it with `=== true`, because a refusal carries null.
+      doAgentAction: async (agentID, actionID) => {
+        const result = await api.agentAction(agentID, actionID, callOptions);
+        const conversation = decodeConversation(result);
+        store.apply({ type: "agents/conversation", agentID, conversation });
+        return conversation;
+      },
+      getBriefing: async (agentID) => {
+        const reads = await api.loadBriefing(agentID, callOptions);
+        const briefing = decodeBriefing(reads.briefing, reads.objective);
+        store.apply({ type: "agents/briefing", briefing });
+        return briefing;
+      },
+      getJournal: async () => {
+        const journal = decodeJournal(await api.loadJournal(callOptions));
+        store.apply({ type: "agents/journal", journal });
+        return journal;
+      },
+      getCargo: async () => {
+        const panel = await api.loadInventory(callOptions);
+        return {
+          rows: decodeInventoryRows(panel.cargo.list),
+          capacity: decodeCapacity(panel.cargo.capacity),
+        };
+      },
+      getHangar: async () => decodeInventoryRows((await api.loadInventory(callOptions)).hangar.list),
+      // ⚠ THE FIRST STACK OF THE RIGHT TYPE IS NOT THE PACKAGE, and a 200 is not
+      // a loaded one. This is the same discipline as `loadPackageIntoShip`
+      // above: match on type AND quantity, then go through the VERIFYING
+      // /transfer (which re-reads and judges by the source giving something up)
+      // and raise when nothing actually moved. The bot's own bound counts the
+      // retries; its ladder re-reads the cargo to confirm.
+      loadPackage: async (typeID, quantity) => {
+        const panel = await api.loadInventory(callOptions);
+        const candidates = decodeInventoryRows(panel.hangar.list).filter(
+          (row) => row.typeID === typeID,
+        );
+        const item =
+          candidates.find((row) => row.quantity === quantity) ??
+          candidates.find((row) => row.quantity > quantity);
+        if (!item) {
+          throw new Error(`The mission package is not in the station hangar (${quantity} needed).`);
+        }
+        const outcome = await api.transferItems(
+          [item.itemID],
+          { kind: "hangar" },
+          { kind: "cargo" },
+          quantity,
+          callOptions,
+        );
+        if (!outcome.applied) {
+          throw new Error(
+            outcome.declinedSilently
+              ? "The station refused to load the mission package and gave no reason. It did not move."
+              : "The mission package did not move into the ship.",
+          );
+        }
+      },
+      unloadPackage: async (itemIDs, quantity) => {
+        const outcome = await api.transferItems(
+          [...itemIDs],
+          { kind: "cargo" },
+          { kind: "hangar" },
+          quantity,
+          callOptions,
+        );
+        if (!outcome.applied) {
+          throw new Error(
+            outcome.declinedSilently
+              ? "The station refused to take the cargo and gave no reason. It did not move."
+              : "The cargo did not move into the hangar.",
+          );
+        }
+      },
+      // THE SHARED AUTOPILOT. Not a second flight ladder — the same controller,
+      // the same route solver, the same R24 bounds.
+      startTravel: async (stationID) => {
+        await startRoute(stationID);
+      },
+      getTravel: () => {
+        if (!autopilot) {
+          return null;
+        }
+        const progress = autopilot.snapshot();
+        return {
+          status: progress.status,
+          destinationStationID: store.travel.get().destinationStationID,
+          remainingJumps: progress.remainingJumps,
+          failureReason: progress.failureReason,
+        };
+      },
+      stopTravel: () => {
+        autopilot?.abort();
+      },
+      // The jump gate's number, from the SAME client-side graph the autopilot
+      // routes on — so the number the bot refuses on is the number it would
+      // have had to fly.
+      getJumps: async (fromSystemID, toSystemID) => {
+        if (fromSystemID === toSystemID) {
+          return 0;
+        }
+        const graph = await loadRouteGraph();
+        return distancesFrom(graph, fromSystemID).get(toSystemID) ?? null;
+      },
+      // ⚠ THE PAYOUT IS A BALANCE DIFFERENCE, NOT A FIELD. R35 watched
+      // `lastActionInfo.loyaltyPoints` read 0 on a completion that paid 213 LP,
+      // so the bot reads the ACCOUNTS either side of the Complete instead.
+      getBalances: async () => {
+        const reads = await api.loadRewards(callOptions);
+        const lp = decodeLpBalances(reads.lp);
+        store.apply({
+          type: "rewards/loaded",
+          cashBalance: decodeCashBalance(reads.cash),
+          lpBalances: lp,
+          standings: decodeCharStandings(reads.standings),
+          error: null,
+        });
+        // LP is per issuing corp; the run's total is what the player watches go
+        // up, and summing is bigint-safe because LP is kept as a string.
+        const total = lp.reduce((sum, row) => {
+          try {
+            return sum + BigInt(row.loyaltyPoints);
+          } catch {
+            return sum;
+          }
+        }, 0n);
+        return { isk: decodeCashBalance(reads.cash), lp: total.toString() };
+      },
+      sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+      onProgress: (progress) => {
+        store.apply({
+          type: "mission-bot/progress",
+          status: progress.status,
+          phase: progress.phase,
+          action: progress.action,
+          why: progress.why,
+          agentName: progress.agentName,
+          missionName: progress.missionName,
+          cargoText: progress.cargoText,
+          destinationName: progress.destinationName,
+          jumpsRemaining: progress.jumpsRemaining,
+          missionsCompleted: progress.missionsCompleted,
+          iskEarned: progress.iskEarned,
+          lpEarned: progress.lpEarned,
+          caution: progress.caution,
+          failureReason: progress.failureReason,
+        });
+        if (progress.status === "error") {
+          stopLiveStream();
+          store.apply({ type: "character/offline" });
+        }
+      },
+      isSessionLost,
+      refusalReason: (error) => flightErrorReason(error),
+    };
+  }
+
+  async function startMissionBot(request: MissionBotRequest): Promise<void> {
+    store.apply({ type: "mission-bot/start-error", message: null });
+
+    if (!(request.agentID > 0) || !(request.agentStationID > 0)) {
+      store.apply({
+        type: "mission-bot/start-error",
+        message: "Pick an agent for the bot to work with.",
+      });
+      return;
+    }
+
+    // Two loops must never steer one ship. The mission bot DRIVES the autopilot
+    // rather than competing with it, so the one it must not run alongside is the
+    // mining bot.
+    miningBot?.stop();
+
+    const plan: MissionPlan = {
+      agentID: request.agentID,
+      agentName: request.agentName,
+      agentStationID: request.agentStationID,
+      agentStationName: request.agentStationName,
+      maxJumps: request.maxJumps,
+      maxMissions: request.maxMissions,
+    };
+
+    store.apply({
+      type: "mission-bot/started",
+      agentName: request.agentName,
+      stationName: request.agentStationName,
+      startedAt: Date.now(),
+    });
+
+    if (!missionBot) {
+      missionBot = createMissionBot(makeMissionBotDeps());
+    }
+    missionBot.start(plan);
+    void missionBot.run();
+  }
+
   async function startMiningBot(request: MiningBotRequest): Promise<void> {
     store.apply({ type: "bot/start-error", message: null });
 
@@ -3927,6 +4198,23 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
     stopMiningBot() {
       miningBot?.stop();
+    },
+
+    startMissionBot,
+
+    pauseMissionBot() {
+      missionBot?.pause();
+    },
+
+    resumeMissionBot() {
+      if (missionBot) {
+        missionBot.resume();
+        void missionBot.run();
+      }
+    },
+
+    stopMissionBot() {
+      missionBot?.stop();
     },
 
     pauseRoute() {
