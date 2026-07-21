@@ -32,7 +32,9 @@
   // module rather than as a wall of {#if} blocks inside the grid's last column.
   import {
     actionsForRow,
+    looksLikeMiningEquipment,
     SELECTION_GONE,
+    shipActions,
     type RowAction,
   } from "../space/rowActions.ts";
   import MiningBot from "./MiningBot.svelte";
@@ -471,6 +473,7 @@
       locked: isLocked(row.itemID),
       acquiring: isAcquiring(row.itemID),
       gateLink: row.gateLink,
+      minerCount: minerRows.length,
     });
   });
 
@@ -485,6 +488,17 @@
   async function runRowAction(action: RowAction): Promise<void> {
     const row = selectedRow;
     if (!row || action.unavailable !== null) {
+      return;
+    }
+    // R30 slice E — the two verbs that are not a single server call. Each runs
+    // its OWN loop and does its own per-step reporting, so neither is folded
+    // into the one-call-per-branch switch below.
+    if (action.id === "mine") {
+      await mineThis(row.itemID);
+      return;
+    }
+    if (action.id === "haul") {
+      await haulNow();
       return;
     }
     await runFor(action.concern, async () => {
@@ -674,6 +688,14 @@
     readonly itemID: number;
     readonly label: string;
     readonly slotLabel: string;
+    /**
+     * R30 slice E — whether the module is POWERED UP. Offline modules are now
+     * listed too, with a control to power them up, which is what made the
+     * panel's own "turn equipment on in the Fitting tab first" untrue.
+     * Online-vs-offline and running-vs-idle are two different questions and are
+     * never collapsed into one column.
+     */
+    readonly online: boolean;
     readonly running: boolean | null;
     // R24 slice C — how long one cycle takes, and whether that figure is the
     // pilot's real one or the type's starting point. null = we have neither.
@@ -686,17 +708,25 @@
       if (slot.family === "rig" || slot.family === "subsystem" || !slot.module) {
         continue;
       }
-      if (!slot.module.online) {
-        continue;
-      }
+      // R30 slice E — an OFFLINE module is no longer skipped. It is listed with
+      // a Power up control, because sending the player to another tab for that
+      // one click is exactly the complaint this goal exists to answer.
+      const online = slot.module.online;
       rows.push({
         itemID: slot.module.itemID,
         label: resolvedName($names.resolved, "type", slot.module.typeID, "Unknown module"),
         slotLabel:
           slot.family === "high" ? "High slot" : slot.family === "mid" ? "Mid slot" : "Low slot",
+        online,
         // null = the server could not tell us. Rendered as "unknown", never
-        // as "off" — a wrong "off" would invite a double activation.
-        running: activeModuleIDs === null ? null : activeModuleIDs.includes(slot.module.itemID),
+        // as "off" — a wrong "off" would invite a double activation. A module
+        // that is not powered up cannot be running, and that is a fact rather
+        // than a guess, so it does not go through the unknown branch.
+        running: !online
+          ? false
+          : activeModuleIDs === null
+            ? null
+            : activeModuleIDs.includes(slot.module.itemID),
         cycle: $targeting.moduleCycles[slot.module.itemID] ?? null,
       });
     }
@@ -776,6 +806,144 @@
     // Whole cubic metres: the fractional part of an ore hold is noise a player
     // watching a laser run does not need.
     return `${Math.round(reading.used).toLocaleString()} / ${Math.round(reading.capacity).toLocaleString()} m³`;
+  }
+
+  // --- R30 slice E: Mine this, and Haul now ---------------------------------
+
+  /**
+   * The equipment "Mine this" will reach for: everything POWERED UP whose name
+   * reads like mining gear. The guess lives in `space/rowActions.ts` with the
+   * live-run exclusion that paid for it; what makes the guess safe is that
+   * every module it reaches for REPORTS BACK BY NAME below, so a wrong guess is
+   * visible in one glance instead of being silently wrong.
+   */
+  const minerRows = $derived(
+    moduleRows.filter((row) => row.online && looksLikeMiningEquipment(row.label)),
+  );
+
+  /**
+   * What each module did when "Mine this" reached for it.
+   *
+   * ⚠ THIS IS WHY "MINE THIS" IS NOT A FAN-OUT-AND-FORGET. Every one of these
+   * calls lands its outcome in the SAME store slot, so a loop that just fired
+   * them all would leave only the last module's answer on screen and quietly
+   * lose the other refusals. Each module is therefore read back individually,
+   * right after its own call, and a module that was accepted-then-not-run (a
+   * silent decline) is reported as distinctly as one that was refused outright.
+   */
+  interface MineReport {
+    readonly itemID: number;
+    readonly label: string;
+    readonly outcome: string;
+    readonly ok: boolean;
+  }
+  let mineReports = $state<readonly MineReport[]>([]);
+
+  async function mineThis(targetID: number): Promise<void> {
+    await runFor("module", async () => {
+      const reports: MineReport[] = [];
+      for (const module of minerRows) {
+        // repeat: -1 is what mining MEANS — cycle after cycle until something
+        // stops it. It is the same argument the mining bot uses.
+        await flow.activateModule(module.itemID, { targetID, repeat: -1 });
+        // Read the AUTHORITY, not the return value. A successful action clears
+        // both slots, so whatever is in them now belongs to THIS module.
+        const refused = $targeting.actionError;
+        const declined = $targeting.silentDecline;
+        // And confirm against the ship's own list of what is running, which is
+        // the only thing that actually knows.
+        const running = snapshot?.ship?.activeModuleIDs ?? null;
+        if (refused) {
+          reports.push({ ...module, outcome: refused, ok: false });
+        } else if (declined) {
+          reports.push({ ...module, outcome: declined, ok: false });
+        } else if (running !== null && !running.includes(module.itemID)) {
+          reports.push({
+            ...module,
+            outcome: "Started, and your ship does not show it running.",
+            ok: false,
+          });
+        } else {
+          reports.push({ ...module, outcome: "Running on it.", ok: true });
+        }
+      }
+      mineReports = reports;
+    });
+  }
+
+  /**
+   * Everything on this grid you could dock at, nearest first — where "Haul now"
+   * would take the ore. By NAME (R7d); the id never reaches the screen.
+   */
+  const stationsOnGrid = $derived(
+    overview.rows
+      .filter((row) => row.kind === "station" || row.kind === "structure")
+      .map((row) => ({ itemID: row.itemID, label: displayLabel(row) })),
+  );
+
+  /** Every stack sitting in a hold, which is what an unload actually moves. */
+  const holdItemIDs = $derived(
+    shipHolds.flatMap((hold) => (hold.items ?? []).map((item) => item.itemID)),
+  );
+
+  const haulActions = $derived(
+    shipActions({
+      nearestStationName: stationsOnGrid[0]?.label ?? null,
+      docked,
+      hasCargo: holdItemIDs.length > 0,
+    }),
+  );
+
+  /**
+   * Take the ore somewhere and put it down.
+   *
+   * Docked, that is one call. In space it is the R24 ladder (which closes the
+   * distance itself and narrates each phase) followed by a RE-READ of the holds
+   * — because the stack ids a station hangar will accept are read after the
+   * dock, not before it, and a 200 on the dock is not proof it happened.
+   */
+  async function haulNow(): Promise<void> {
+    await runFor("hold", async () => {
+      if (!docked) {
+        const station = stationsOnGrid[0];
+        if (!station) {
+          return;
+        }
+        await flow.dockAt(station.itemID);
+      }
+      await flow.loadMiningHolds();
+      const ids = shipHolds.flatMap((hold) => (hold.items ?? []).map((item) => item.itemID));
+      if (ids.length === 0) {
+        return;
+      }
+      await flow.unloadMiningHolds(ids);
+      // And read them again, so what the panel shows is what the ship has —
+      // not what the call said it would have.
+      await flow.loadMiningHolds();
+    });
+  }
+
+  /**
+   * Power a module up or down, without a trip to the Fitting tab.
+   *
+   * `setModuleOnline` re-reads the fitting itself, so the check below is
+   * against freshly-read authoritative state: if the module's own `online` flag
+   * did not move, the server declined and said nothing, and that is reported
+   * as exactly that rather than as a success.
+   */
+  let moduleNotice = $state("");
+  async function setModulePower(module: ModuleRow, online: boolean): Promise<void> {
+    moduleNotice = "";
+    await runFor("module", async () => {
+      await flow.setModuleOnline(module.itemID, online);
+      const after = $fitting.slots.find((slot) => slot.module?.itemID === module.itemID);
+      const now = after?.module?.online ?? null;
+      if (now !== null && now !== online) {
+        moduleNotice = online
+          ? `${module.label} did not power up, and your ship gave no reason.`
+          : `${module.label} did not power down, and your ship gave no reason.`;
+      }
+    });
   }
 
   // --- R23 slice B: rocks in the overview ----------------------------------
@@ -1584,9 +1752,16 @@
       Everything switched on and ready to run. Pick a locked target first if the
       equipment needs one — your ship will say so if it does.
     </p>
+    <!--
+      R30 slice E — this line used to send the player to the Fitting tab to
+      power equipment up. That instruction is DELETED, not reworded: the table
+      below now lists offline equipment alongside online, with Power up on the
+      row, so it is no longer true. A test asserts the sentence cannot come
+      back — which is why this comment describes it rather than quoting it.
+    -->
     {#if moduleRows.length === 0}
       <p class="empty">
-        Nothing is powered up. Turn equipment on in the Fitting tab first.
+        This ship has nothing fitted that can be switched on.
       </p>
     {:else}
       <p class="controls">
@@ -1631,7 +1806,17 @@
                 <td data-label="Equipment">{module.label}</td>
                 <td data-label="Fitted in">{module.slotLabel}</td>
                 <td data-label="Running">
-                  {#if module.running === null}
+                  <!--
+                    R30 slice E — POWERED UP and RUNNING are two different
+                    questions and are never collapsed into one word. A module
+                    that is not powered up cannot be running, which is a fact
+                    rather than a guess, so it does not go through the unknown
+                    branch; "Not known" stays reserved for the case where the
+                    server genuinely did not tell us.
+                  -->
+                  {#if !module.online}
+                    Not powered up
+                  {:else if module.running === null}
                     <span class="stat-unavailable">Not known</span>
                   {:else}
                     {module.running ? "Running" : "Idle"}
@@ -1662,26 +1847,51 @@
                 </td>
                 <td data-label="">
                   <span class="row-actions">
-                    <button
-                      type="button"
-                      class={module.running === true ? "active" : ""}
-                      disabled={busy || module.running === true}
-                      onclick={() =>
-                        run(() =>
-                          flow.activateModule(module.itemID, {
-                            targetID: effectiveTargetID > 0 ? effectiveTargetID : null,
-                          }),
-                        )}
-                    >
-                      Switch on
-                    </button>
-                    <button
-                      type="button"
-                      disabled={busy || module.running === false}
-                      onclick={() => run(() => flow.deactivateModule(module.itemID))}
-                    >
-                      Switch off
-                    </button>
+                    <!--
+                      R30 slice E — POWER, on the row. This is the one click the
+                      panel used to send the player to the Fitting tab for.
+                      Powering up is not the same as switching on: a module has
+                      to be online before it can run at all, so both controls
+                      are here and they are labelled as the different things
+                      they are.
+                    -->
+                    {#if !module.online}
+                      <button
+                        type="button"
+                        disabled={concernBusy("module")}
+                        onclick={() => setModulePower(module, true)}
+                      >
+                        Power up
+                      </button>
+                    {:else}
+                      <button
+                        type="button"
+                        class={module.running === true ? "active" : ""}
+                        disabled={busy || module.running === true}
+                        onclick={() =>
+                          run(() =>
+                            flow.activateModule(module.itemID, {
+                              targetID: effectiveTargetID > 0 ? effectiveTargetID : null,
+                            }),
+                          )}
+                      >
+                        Switch on
+                      </button>
+                      <button
+                        type="button"
+                        disabled={busy || module.running === false}
+                        onclick={() => run(() => flow.deactivateModule(module.itemID))}
+                      >
+                        Switch off
+                      </button>
+                      <button
+                        type="button"
+                        disabled={concernBusy("module")}
+                        onclick={() => setModulePower(module, false)}
+                      >
+                        Power down
+                      </button>
+                    {/if}
                   </span>
                 </td>
               </tr>
@@ -1701,6 +1911,18 @@
     {/if}
     {#if $targeting.silentDecline}
       <p class="error">{$targeting.silentDecline}</p>
+    {/if}
+    <!--
+      R30 slice E — a power change that did not take. `setModuleOnline` re-reads
+      the fitting itself, so this is checked against freshly-read authoritative
+      state: if the module's own online flag did not move, the server declined
+      and said nothing, and that is reported as exactly that.
+    -->
+    {#if moduleNotice}
+      <p class="error">{moduleNotice}</p>
+    {/if}
+    {#if $fitting.actionError}
+      <p class="error">{$fitting.actionError}</p>
     {/if}
   </section>
 
@@ -1766,10 +1988,35 @@
       -->
       <p class="error">{selectionNotice}</p>
     {/if}
+    <!--
+      R30 slice E — YOUR SHIP's own verb, not the selection's. Taking what you
+      have mined somewhere is squarely "what can I do right now", so it lives in
+      the same bar, and it is drawn whether or not anything is picked.
+
+      ⚠ It is ALWAYS drawn. Every reason it cannot run is a sentence on the
+      control — no station on this grid, or nothing in the holds — because a
+      player with a full hold who cannot find the haul verb has no way to tell
+      whether the app forgot it or decided against it.
+    -->
+    <span class="row-actions ship-actions">
+      {#each haulActions as action (action.id)}
+        <button
+          type="button"
+          disabled={concernBusy(action.concern) || action.unavailable !== null}
+          title={action.unavailable ?? ""}
+          onclick={() => runRowAction(action)}
+        >
+          {action.unavailable ?? action.label}
+        </button>
+      {/each}
+    </span>
+    {#if concernErrors.hold}
+      <p class="error">{concernErrors.hold}</p>
+    {/if}
     {#if !selectedRow}
       <p class="note">
         Pick anything in the list below to warp to it, fly towards it, orbit it,
-        hold a distance from it, line your ship up with it or lock it.
+        hold a distance from it, line your ship up with it, lock it or mine it.
       </p>
     {:else}
       <p class="selection-name">{displayLabel(selectedRow)}</p>
@@ -1801,11 +2048,32 @@
         kept per concern — so a refused lock does not read as a refused warp,
         and neither of them greys out anything else.
       -->
-      {#each ["move", "lock", "module", "hold", "route"] as const as concern (concern)}
+      {#each ["move", "lock", "module", "route"] as const as concern (concern)}
         {#if concernErrors[concern]}
           <p class="error">{concernErrors[concern]}</p>
         {/if}
       {/each}
+      <!--
+        R30 slice E — ⚠ WHAT EACH MODULE DID, ONE LINE EACH.
+
+        "Mine this" reaches for every powered-up module whose name reads like
+        mining gear, and every one of those calls lands its outcome in the SAME
+        store slot. Firing them all and showing the last answer would silently
+        lose the other refusals — a player with two lasers would be told it
+        worked while one of them never started. So each is read back right after
+        its own call and named here, including the accepted-then-not-running
+        case, which is a different failure from a refusal and reads differently.
+      -->
+      {#if mineReports.length > 0}
+        <ul class="mine-reports">
+          {#each mineReports as report (report.itemID)}
+            <li class={report.ok ? "" : "error"}>
+              <span class="mine-module">{report.label}</span>
+              <span class="mine-outcome">{report.outcome}</span>
+            </li>
+          {/each}
+        </ul>
+      {/if}
     {/if}
   </section>
 

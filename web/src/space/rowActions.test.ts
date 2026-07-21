@@ -11,7 +11,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { actionsForRow, isDockableKind, SELECTION_GONE, type RowActionContext } from "./rowActions.ts";
+import {
+  actionsForRow,
+  isDockableKind,
+  looksLikeMiningEquipment,
+  SELECTION_GONE,
+  shipActions,
+  type RowActionContext,
+} from "./rowActions.ts";
 import type { GateLink } from "./gateLinks.ts";
 
 const A_ROCK: RowActionContext = {
@@ -19,6 +26,7 @@ const A_ROCK: RowActionContext = {
   locked: false,
   acquiring: false,
   gateLink: null,
+  minerCount: 2,
 };
 
 function ids(ctx: RowActionContext): string[] {
@@ -129,6 +137,82 @@ test("no action is ever returned with an empty-string reason — null means usab
       assert.notEqual(action.unavailable, "", `${action.id} must use null, not ""`);
     }
   }
+});
+
+// --- R30 slice E: Mine this --------------------------------------------------
+
+test("Mine this is offered on ANYTHING — what can be mined is the server's call", () => {
+  // A browser that pre-filtered on `kind === "asteroid"` would refuse ice and
+  // gas it has never been told about. The server owns that answer.
+  for (const kind of ["asteroid", "ship", "station", "cargo", null]) {
+    assert.ok(
+      ids({ ...A_ROCK, kind, locked: true }).includes("mine"),
+      `a ${kind ?? "kind-less"} row must still offer Mine this`,
+    );
+  }
+});
+
+test("Mine this states WHICH rule is stopping it, and they are the server's own", () => {
+  const reason = (ctx: Partial<RowActionContext>) =>
+    actionsForRow({ ...A_ROCK, ...ctx }).find((a) => a.id === "mine")?.unavailable ?? null;
+
+  // Nothing powered up: there is nothing to run.
+  assert.match(reason({ minerCount: 0, locked: true }) ?? "", /switched on/i);
+  // Powered up but no lock: a module needs a fix on the target before it runs.
+  assert.match(reason({ minerCount: 1, locked: false }) ?? "", /lock/i);
+  // Both satisfied.
+  assert.equal(reason({ minerCount: 1, locked: true }), null);
+  // And the two are DIFFERENT sentences — a player fixes them differently.
+  assert.notEqual(reason({ minerCount: 0, locked: true }), reason({ minerCount: 1, locked: false }));
+});
+
+test("the mining-equipment guess keeps the exclusion a live run paid for", () => {
+  assert.equal(looksLikeMiningEquipment("Miner I"), true);
+  assert.equal(looksLikeMiningEquipment("Strip Miner I"), true);
+  assert.equal(looksLikeMiningEquipment("Ice Harvester II"), true);
+  assert.equal(looksLikeMiningEquipment("Deep Core Mining Laser I"), true);
+  // ⚠ The regression: a low-slot PASSIVE upgrade is not something you switch
+  // on, and matching it sent "Mine this" at a module that cannot run.
+  assert.equal(looksLikeMiningEquipment("Ice Harvester Upgrade II"), false);
+  assert.equal(looksLikeMiningEquipment("Mining Laser Upgrade II"), false);
+  assert.equal(looksLikeMiningEquipment("Medium Core Defense Field Extender I"), false);
+  assert.equal(looksLikeMiningEquipment("125mm Gatling AutoCannon II"), false);
+});
+
+// --- R30 slice E: Haul now ---------------------------------------------------
+
+test("Haul now is ALWAYS offered — every blocked case says why, in its own words", () => {
+  const haul = (ctx: Parameters<typeof shipActions>[0]) => {
+    const actions = shipActions(ctx);
+    assert.equal(actions.length, 1, "there is exactly one haul verb, in every case");
+    return actions[0]!;
+  };
+
+  // ⚠ The acceptance case from the goal: no station on this grid.
+  const nowhere = haul({ nearestStationName: null, docked: false, hasCargo: true });
+  assert.equal(nowhere.id, "haul", "the action is still returned, not dropped");
+  assert.match(nowhere.unavailable ?? "", /no station on this grid/i);
+
+  // Empty holds is a DIFFERENT fact and reads differently.
+  const empty = haul({ nearestStationName: "Jita IV", docked: false, hasCargo: false });
+  assert.match(empty.unavailable ?? "", /nothing in your holds/i);
+  assert.notEqual(empty.unavailable, nowhere.unavailable);
+
+  // Usable in space: it NAMES where it would fly, so pressing it is not a
+  // surprise — and it names it, never an id (R7d).
+  const flying = haul({ nearestStationName: "Jita IV", docked: false, hasCargo: true });
+  assert.equal(flying.unavailable, null);
+  assert.match(flying.label, /Jita IV/);
+  assert.doesNotMatch(flying.label, /\d{4,}/);
+
+  // Already docked: there is nowhere to fly, so it does not pretend there is.
+  const docked = haul({ nearestStationName: null, docked: true, hasCargo: true });
+  assert.equal(docked.unavailable, null, "docked with cargo, hauling is just the unload");
+  assert.match(docked.label, /Unload/i);
+});
+
+test("Haul now belongs to the hold concern, so it cannot grey out Stop or a lock", () => {
+  assert.equal(shipActions({ nearestStationName: "X", docked: false, hasCargo: true })[0]?.concern, "hold");
 });
 
 // --- The selection rule ------------------------------------------------------

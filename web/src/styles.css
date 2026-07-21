@@ -889,6 +889,27 @@
     }
   }
 
+  /* R30 slice E — ONE LINE PER MODULE, because "Mine this" reaches for every
+   * powered-up mining laser and each of them can answer differently. A single
+   * verdict would hide the one that never started. */
+  .mine-reports {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+    font-size: 0.9em;
+  }
+  .mine-reports li {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+  }
+  .mine-reports .mine-module { color: var(--color-text-bright); }
+  .mine-reports .mine-outcome { color: var(--color-muted, inherit); }
+  .mine-reports li.error .mine-outcome { color: inherit; }
+
   /* ================================ drones + hostile awareness (R25) --
    * Two components that answer two questions a miner has at the same moment:
    * "what do I have out?" and "what is shooting me?".

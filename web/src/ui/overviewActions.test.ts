@@ -459,8 +459,17 @@ test("the panel calls the generic flow methods, once each, with no parallel path
     "flow.lockTarget(": 2,
     // The threat block, the locked-target list, and the selection bar. Was 4.
     "flow.unlockTarget(": 3,
-    "flow.activateModule(": 1,
+    // R30 slice E added a second activate site: "Mine this", which runs the
+    // fan-out over every powered-up mining module with repeat: -1. It is the
+    // SAME generic flow method as the equipment table's Switch on — the two
+    // differ in what they pass, not in what they call, which is the whole point
+    // of this test. A third site would mean a parallel path.
+    "flow.activateModule(": 2,
     "flow.deactivateModule(": 1,
+    // R30 slice E — powering equipment up and down, the click that used to
+    // require the Fitting tab. One site, both directions.
+    "flow.setModuleOnline(": 1,
+    "flow.unloadMiningHolds(": 1,
     // R30 slice D — the movement verbs, each dispatched from exactly one place.
     // Before the slice these were one-per-verb too, but spread through markup;
     // now they are five adjacent branches a reader can check at a glance.
@@ -469,7 +478,10 @@ test("the panel calls the generic flow methods, once each, with no parallel path
     "flow.orbit(": 1,
     "flow.keepAtRange(": 1,
     "flow.alignTo(": 1,
-    "flow.dockAt(": 1,
+    // R30 slice E added a second dockAt site: "Haul now" in space closes the
+    // distance to the station with the SAME ladder the Dock verb uses, rather
+    // than growing its own copy of warp-then-approach-then-dock.
+    "flow.dockAt(": 2,
     "flow.jump(": 1,
   };
   for (const [call, expected] of Object.entries(callSites)) {
@@ -499,6 +511,109 @@ test("R30 slice D: the verb set is DATA from one module, not {#if} blocks in mar
     false,
     "the panel must not keep its own copy of the dockable test",
   );
+});
+
+// --- R30 slice E: the contextual verbs, and the tab switches they killed -----
+
+test("R30 slice E: the app no longer sends the player to another tab to power equipment up", () => {
+  // Deleting these sentences IS the acceptance test for the slice. Offline
+  // equipment is listed right here with Power up on the row, so every one of
+  // them is now false — and they must be gone, not reworded.
+  const miningBot = readFileSync(path.join(UI_DIR, "MiningBot.svelte"), "utf8");
+  const mining = readFileSync(path.join(UI_DIR, "Mining.svelte"), "utf8");
+
+  assert.equal(
+    SOURCE.includes("Turn equipment on in the Fitting tab first"),
+    false,
+    "Overview must no longer point at the Fitting tab",
+  );
+  assert.equal(
+    miningBot.includes("Switch your equipment on in the Fitting tab first"),
+    false,
+    "the mining bot must no longer point at the Fitting tab",
+  );
+  assert.equal(
+    mining.includes("switch your mining equipment on from Around Your Ship"),
+    false,
+    "the Mining tab must no longer direct traffic to another tab",
+  );
+  // And nothing a PLAYER can read says "Fitting tab" any more.
+  assert.equal(/Fitting tab/.test(visibleText(renderLoaded())), false);
+});
+
+test("R30 slice E: offline equipment is LISTED, with the one click that used to be a tab away", () => {
+  const store = loadedStore();
+  // The same laser, not powered up.
+  store.apply({
+    type: "fitting/loaded",
+    activeShipID: SHIP_ID,
+    slots: [
+      {
+        family: "high",
+        index: 0,
+        module: { itemID: MODULE_ID, typeID: LASER_TYPE_ID, groupID: 54, online: false },
+      },
+    ],
+    resources: {
+      cpu: { used: 0, total: 0, known: false },
+      powergrid: { used: 0, total: 0, known: false },
+      capacitor: { used: 0, total: 0, known: false },
+      calibration: { used: 0, total: 0, known: false },
+    },
+    stats: deriveShipStats(new Map()),
+    slotsError: null,
+    resourcesError: null,
+  });
+  const body = render(Overview, { props: { store, flow: fakeFlow() } }).body;
+  const text = visibleText(body);
+
+  assert.match(text, /Miner I/, "an offline module is listed, not hidden");
+  assert.match(body, /<button[^>]*>[\s\S]{0,80}Power up/, "with a real Power up button");
+  // ⚠ POWERED UP and RUNNING are different questions. An offline module reads
+  // as not powered up — never as "Idle", which would invite a switch-on that
+  // cannot work, and never as "Not known", which is reserved for the case where
+  // the server genuinely did not say.
+  assert.match(text, /Not powered up/);
+  assert.doesNotMatch(text, /\bIdle\b/);
+});
+
+test("R30 slice E: Mine this reports EVERY module by name, never one shared answer", () => {
+  // ⚠ THE RULE: "Mine this" is a fan-out, and every one of those calls lands
+  // its outcome in the SAME store slot. A loop that fired them all and showed
+  // what was left would tell a player with two lasers that it worked while one
+  // of them never started. The dispatch must therefore read each module back
+  // right after its OWN call, and render one line per module.
+  const mine = section(SOURCE, "async function mineThis", "const stationsOnGrid");
+  assert.ok(mine.length > 400, "the Mine this dispatch must be found");
+  assert.match(mine, /for \(const module of minerRows\)/, "it walks the modules one at a time");
+  assert.match(mine, /await flow\.activateModule\(/);
+  // Read back INSIDE the loop — a read after the loop would only see the last.
+  const loopBody = mine.slice(mine.indexOf("for (const module of minerRows)"));
+  assert.match(loopBody, /\$targeting\.actionError/, "a refusal is read per module");
+  assert.match(loopBody, /\$targeting\.silentDecline/, "so is a silent decline");
+  assert.match(
+    loopBody,
+    /activeModuleIDs/,
+    "and confirmed against the ship's own list of what is running",
+  );
+  assert.match(loopBody, /reports\.push/, "each module gets its own line");
+  // Three distinguishable outcomes, not a boolean: refused, accepted-then-not-
+  // running, and running. The middle one is the silent decline the goal names.
+  assert.match(mine, /does not show it running/);
+
+  // And the panel draws one line per module rather than a single verdict.
+  assert.match(SOURCE, /\{#each mineReports as report/);
+});
+
+test("R30 slice E: powering a module is verified against a RE-READ, not the call's answer", () => {
+  // A 200 is not proof. setModuleOnline re-reads the fitting itself, so the
+  // check is against freshly-read authoritative state: if the module's own
+  // online flag did not move, that is reported as exactly that.
+  const power = section(SOURCE, "async function setModulePower", "</script>");
+  assert.ok(power.length > 200, "the power dispatch must be found");
+  assert.match(power, /await flow\.setModuleOnline\(module\.itemID, online\)/);
+  assert.match(power, /\$fitting\.slots\.find/, "the fitting is re-read afterwards");
+  assert.match(power, /gave no reason/, "and a decline says so plainly");
 });
 
 test("activateModule is called WITHOUT naming an effect — the server picks it", () => {

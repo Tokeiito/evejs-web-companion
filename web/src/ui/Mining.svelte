@@ -183,9 +183,16 @@
       </button>
     </span>
   </header>
+  <!--
+    R30 slice E — this note used to end by telling the player to go and do the
+    actual mining on the Around Your Ship tab. That instruction is DELETED, not
+    reworded: that tab now has a Mine this verb on the thing you picked, so this
+    page has no reason to direct traffic. It says what it shows, and stops
+    there. A test asserts the sentence cannot come back — which is why this
+    comment describes it rather than quoting it.
+  -->
   <p class="note">
-    What you have mined, and what to do with it. To actually mine, fly to a belt,
-    then lock a rock and switch your mining equipment on from Around Your Ship.
+    What you have mined, and what to do with it.
   </p>
   {#if error}
     <p class="error">{error}</p>

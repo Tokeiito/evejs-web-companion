@@ -14,6 +14,9 @@
   import { BridgeCallError } from "../bridge/callMethod.ts";
   import { isSessionLost } from "../app/flow.ts";
   import { formatDistance } from "../space/overview.ts";
+  // R30 slice E — the mining-equipment guess, shared with the cockpit's
+  // "Mine this" so the bot and the one-click verb can never run different sets.
+  import { looksLikeMiningEquipment } from "../space/rowActions.ts";
   import { resolvedName } from "../store/names.ts";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
@@ -158,21 +161,14 @@
    * player can change it — the browser never decides which of your modules is a
    * mining laser, because a wrong guess fires a turret at a rock.
    *
-   * ⚠ THE EXCLUSION IS FROM A LIVE RUN. On a real Retriever this matched
-   * "Ice Harvester Upgrade II" — a low-slot passive upgrade, not something you
-   * switch on — alongside the two Strip Miner Is that actually mine. "Upgrade"
-   * and "Rig" name the passives in every case this client can see, so they are
-   * left unticked. The player can still tick one; the guess only chooses what
-   * starts ticked.
+   * ⚠ THE EXCLUSION IS FROM A LIVE RUN, and it now lives in ONE place —
+   * `space/rowActions.ts`, shared with the cockpit's "Mine this" (R30 slice E),
+   * which reaches for exactly the same set. Two copies of a guess drifting
+   * apart would mean the bot and the one-click verb ran different equipment
+   * while the page implied they ran the same.
    */
   const suggested = $derived(
-    equipment
-      .filter(
-        (row) =>
-          /miner|mining|strip|harvest|deep core/i.test(row.label) &&
-          !/upgrade|rig|processor/i.test(row.label),
-      )
-      .map((row) => row.itemID),
+    equipment.filter((row) => looksLikeMiningEquipment(row.label)).map((row) => row.itemID),
   );
   const chosenEquipment = $derived(pickedTouched ? picked : suggested);
 
@@ -372,7 +368,18 @@
 
       <h3>Equipment to run</h3>
       {#if equipment.length === 0}
-        <p class="empty">Nothing powered up. Switch your equipment on in the Fitting tab first.</p>
+        <!--
+          R30 slice E — this line used to end by sending the player to the
+          Fitting tab to power equipment up. That instruction is DELETED, not
+          reworded: Around Your Ship lists offline equipment with a Power up
+          control on the row, so the tab it pointed at is no longer where that
+          click lives. A test asserts the sentence cannot come back — which is
+          why this comment describes it rather than quoting it.
+        -->
+        <p class="empty">
+          Nothing powered up. Power your mining equipment up under Your equipment
+          above, then come back.
+        </p>
       {:else}
         <p class="note">
           Tick what the bot should run on the rock. Anything that looks like a
