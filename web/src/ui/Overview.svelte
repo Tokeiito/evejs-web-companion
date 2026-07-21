@@ -66,6 +66,13 @@
   // server enforces on a launch.
   // svelte-ignore state_referenced_locally
   const drones = store.drones;
+  // R30 slice C — the two things that fly the ship for you. Read ONLY so the
+  // flight strip can quote what they say about themselves; this panel never
+  // writes to either and never invents narration on their behalf.
+  // svelte-ignore state_referenced_locally
+  const bot = store.bot;
+  // svelte-ignore state_referenced_locally
+  const travel = store.travel;
 
   // How many rows we render. A busy grid can hold hundreds of objects and the
   // list re-renders every second, so the nearest few hundred is the useful set.
@@ -140,6 +147,136 @@
   // worked out for a different system than the grid it is sitting on.
   const gateLinks = $derived($space.gateLinks);
   const gateLinksError = $derived($space.gateLinksError);
+
+  // --- R30 slice C: the flight strip ---------------------------------------
+  //
+  // Three lines, and each answers a question the player previously had to leave
+  // this tab to ask: WHERE am I, what is happening, and what went wrong. The
+  // "where" line in particular did not exist anywhere on this page — Overview
+  // never showed location at all, which is a large part of why setting a
+  // destination meant a trip to another tab and back.
+
+  /**
+   * WHERE. Assembled only from what the flight slice actually reported; every
+   * part that is unknown is simply left out rather than filled with a guess or
+   * a placeholder. Names only, never an id (R7d).
+   */
+  const whereText = $derived.by(() => {
+    const status = $flight.status;
+    if (!status) {
+      return "Finding out where you are…";
+    }
+    const parts: string[] = [];
+    if (status.inSpace) {
+      parts.push(`In space${$flight.solarSystemName ? ` · ${$flight.solarSystemName}` : ""}`);
+    } else if (status.stationID !== null) {
+      parts.push(`Docked at ${$flight.stationName ?? "the station"}`);
+    } else if (status.structureID !== null) {
+      parts.push(`Docked at ${$flight.structureName ?? "a structure"}`);
+    } else {
+      parts.push("Docked");
+    }
+    // The active ship, by TYPE name, from the snapshot that is already on
+    // screen. Docked there is no snapshot, so the ship is simply not named.
+    const shipTypeID = snapshot?.ship?.typeID ?? null;
+    if (shipTypeID !== null) {
+      const name = resolvedName($names.resolved, "type", shipTypeID, "");
+      if (name.length > 0) {
+        parts.push(name);
+      }
+    }
+    return parts.join(" · ");
+  });
+
+  /**
+   * DOING — and ONLY when something is genuinely driving the ship.
+   *
+   * ⚠ This is passed straight through from the bot's or the autopilot's own
+   * `{phase, action, why}`. It is NEVER synthesized. Hand-flying produces no
+   * narration at all, because there is no authority to quote: inventing one
+   * ("Approaching…", "Idle") would make a sentence the browser guessed
+   * indistinguishable from a sentence the loop actually reported, which is
+   * exactly the line `cycleProgressPercent` already refuses to cross.
+   */
+  const doingText = $derived.by(() => {
+    // The mining bot first: when it is running it is the thing flying the ship.
+    if ($bot.status === "running" || $bot.status === "paused") {
+      const said = [$bot.phase, $bot.action, $bot.why].filter(
+        (part): part is string => typeof part === "string" && part.length > 0,
+      );
+      return said.length > 0 ? said.join(" · ") : null;
+    }
+    if ($travel.status === "running") {
+      const said = [$travel.phase, $travel.action].filter(
+        (part): part is string => typeof part === "string" && part.length > 0,
+      );
+      return said.length > 0 ? said.join(" · ") : null;
+    }
+    return null;
+  });
+
+  /**
+   * WRONG. The first reason any of the four sources is currently carrying, so a
+   * refusal is visible from the cockpit instead of only on the tab that owns it.
+   * Each source keeps rendering its own error where it happens; this is a
+   * summary, not a replacement.
+   */
+  const wrongText = $derived(
+    $flight.actionError ?? $travel.failureReason ?? $bot.failureReason ?? $targeting.actionError ?? null,
+  );
+
+  const docked = $derived($flight.status !== null && !$flight.status.inSpace);
+
+  /**
+   * Per-concern busy tracking.
+   *
+   * ⚠ DO NOT CLEAN THIS UP INTO A SINGLE `busy` FLAG. The whole reason it is a
+   * SET is that one shared flag greys out every control whenever any one of
+   * them is in flight — including Stop, in the middle of a fight, because a
+   * lock request happened to be pending. A control may only be disabled by its
+   * OWN concern being busy.
+   */
+  type Concern = "move" | "lock" | "module" | "drone" | "hold" | "route";
+  let busyConcerns = $state<readonly Concern[]>([]);
+  function concernBusy(concern: Concern): boolean {
+    return busyConcerns.includes(concern);
+  }
+  async function runFor(concern: Concern, action: () => Promise<void>): Promise<void> {
+    if (concernBusy(concern)) {
+      return;
+    }
+    busyConcerns = [...busyConcerns, concern];
+    await carry(action);
+    busyConcerns = busyConcerns.filter((entry) => entry !== concern);
+  }
+
+  /**
+   * Run something with NO busy guard at all.
+   *
+   * ⚠ This exists for Stop and nothing else, and it is the other half of the
+   * "Stop is never disabled" rule. Leaving the button enabled but dropping the
+   * click because a concern was already in flight would be the same failure
+   * wearing a friendlier face: the player presses Stop, the ship keeps going,
+   * and nothing says why. Re-issuing Stop is harmless — it means the same thing
+   * every time.
+   */
+  async function runUnguarded(action: () => Promise<void>): Promise<void> {
+    await carry(action);
+  }
+
+  async function carry(action: () => Promise<void>): Promise<void> {
+    error = "";
+    try {
+      await action();
+    } catch (cause) {
+      if (isSessionLost(cause)) {
+        error = "The live session ended (idle timeout or another client took over).";
+      } else {
+        error =
+          cause instanceof BridgeCallError ? `${cause.code}: ${cause.message}` : String(cause);
+      }
+    }
+  }
 
   // Every name this panel shows resolves through the shared name cache: a TYPE
   // name and its GROUP / CATEGORY names, all keyed off the object's typeID.
@@ -864,11 +1001,55 @@
   {/if}
 </section>
 
+<!--
+  R30 slice C — the flight strip. Where you are, what is happening, what went
+  wrong, and the one control that matters right now.
+
+  This replaced a line that told a docked player to go to another tab to do the
+  single thing they needed. Undock is here now, so that sentence is gone —
+  deleted, not reworded, and a test asserts it cannot come back.
+-->
+<section class="flight-strip">
+  <p class="strip-where">{whereText}</p>
+  <!--
+    Only rendered when a bot or the autopilot is actually running, and it is
+    THEIR words. Hand-flying shows nothing here on purpose — see doingText.
+  -->
+  {#if doingText}
+    <p class="strip-doing">{doingText}</p>
+  {/if}
+  {#if wrongText}
+    <p class="strip-wrong error">{wrongText}</p>
+  {/if}
+  <p class="controls">
+    {#if docked}
+      <button
+        type="button"
+        class="primary"
+        disabled={concernBusy("move")}
+        onclick={() => runFor("move", () => flow.undock())}
+      >
+        Undock
+      </button>
+    {:else}
+      <!--
+        ⚠ STOP HAS NO `disabled` AND MUST NEVER GET ONE. DO NOT CLEAN THIS UP.
+        It is the control a player reaches for when something is going wrong,
+        which is exactly when other requests are in flight — so any busy state,
+        even its own, would grey it out at the only moment it matters. Issuing
+        it twice is harmless: it cuts the engines and switches the autopilot
+        off, and doing that again is the same instruction, not a conflicting one.
+      -->
+      <button type="button" class="primary" onclick={() => runUnguarded(() => flow.stopShip())}>
+        Stop the ship
+      </button>
+    {/if}
+  </p>
+</section>
+
 {#if !inSpace}
   <section>
-    <p class="note">
-      You are docked. Undock on the Flight tab to see what is around your ship.
-    </p>
+    <p class="note">Undock to see what is around your ship.</p>
   </section>
 {:else}
   <section>

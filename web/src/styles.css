@@ -827,6 +827,29 @@
   .hold-strip .hold-name { color: var(--color-muted, inherit); }
   .hold-strip .hold-fill { font-variant-numeric: tabular-nums; }
 
+  /* ================================ the flight strip (R30 slice C) --
+   * Where you are, what is happening, what went wrong, and the one control
+   * that matters right now — at the top of the in-space screen, so none of
+   * those four questions needs a trip to another tab to answer.
+   *
+   * Deliberately NOT position:sticky or fixed. `styles.css` has no precedent
+   * for either, `#app` is width-capped, and a floating bar would occlude the
+   * last grid row invisibly at desktop width. It scrolls with the page. */
+  .flight-strip {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+  .flight-strip p { margin: 0; }
+  .flight-strip .strip-where {
+    color: var(--color-text-bright);
+    font-weight: 600;
+  }
+  /* The bot's / autopilot's own words, set apart from the player's own state
+   * so it reads as something being reported rather than something measured. */
+  .flight-strip .strip-doing { color: var(--color-muted, inherit); }
+  .flight-strip .controls { margin-top: 0.35rem; }
+
   /* ================================ drones + hostile awareness (R25) --
    * Two components that answer two questions a miner has at the same moment:
    * "what do I have out?" and "what is shooting me?".
