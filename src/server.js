@@ -7196,6 +7196,21 @@ app.get(/^\/dist\/?$/, (req, res) => {
   res.redirect("/");
 });
 
+// The hashed build assets must FAIL CLOSED, exactly like the icon cache above,
+// and for the same reason. Without `fallthrough: false` a request for a bundle
+// that is not on disk falls into the catch-all and comes back as `index.html`
+// with a 200 and `text/html` — so a browser holding a stale index.html asks for
+// the previous hash, is handed a document, and dies on `Unexpected token '<'`
+// instead of getting a clean 404 it could recover from. Measured on 2026-07-21:
+// a rebuild replaced index-CR6BU842.js, and the deleted name still answered 200.
+// The comment above this block already described this failure; the code did not
+// prevent it. Vite hashes every filename, so a long immutable cache is safe.
+app.use("/assets", express.static(path.join(webAppDir, "assets"), {
+  fallthrough: false,
+  immutable: true,
+  maxAge: "30d",
+}));
+
 app.use(express.static(webAppDir));
 app.get(/.*/, (req, res) => {
   res.sendFile(path.join(webAppDir, "index.html"));
