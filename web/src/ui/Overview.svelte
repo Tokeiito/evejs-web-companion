@@ -27,12 +27,14 @@
   import { droneActivityLabel, droneIsBusy } from "../bridge/drones.ts";
   // R30 slice A — what a stargate row could never say: which system is through
   // it. Read from the route graph the autopilot already caches.
+  import { gateLinkFor } from "../space/gateLinks.ts";
+  // R30 slice D — the verbs for the thing you picked, decided as DATA in a pure
+  // module rather than as a wall of {#if} blocks inside the grid's last column.
   import {
-    gateLinkFor,
-    jumpBlockedReason,
-    jumpLabel,
-    type GateLink,
-  } from "../space/gateLinks.ts";
+    actionsForRow,
+    SELECTION_GONE,
+    type RowAction,
+  } from "../space/rowActions.ts";
   import MiningBot from "./MiningBot.svelte";
   // R27 — the shared item icon: one cached picture per thing, falling back
   // to a name-derived tile whenever the icon cache has no entry (or no cache).
@@ -238,6 +240,14 @@
    */
   type Concern = "move" | "lock" | "module" | "drone" | "hold" | "route";
   let busyConcerns = $state<readonly Concern[]>([]);
+  /**
+   * And the other half of the same rule: a failure is remembered PER CONCERN so
+   * it can be drawn next to the control that caused it. One shared error string
+   * at the top of the panel makes a refused lock and a refused warp look like
+   * the same event, and puts both of them a screen away from the button that
+   * was pressed.
+   */
+  let concernErrors = $state<Partial<Record<Concern, string>>>({});
   function concernBusy(concern: Concern): boolean {
     return busyConcerns.includes(concern);
   }
@@ -246,7 +256,8 @@
       return;
     }
     busyConcerns = [...busyConcerns, concern];
-    await carry(action);
+    const message = await carry(action);
+    concernErrors = { ...concernErrors, [concern]: message };
     busyConcerns = busyConcerns.filter((entry) => entry !== concern);
   }
 
@@ -261,20 +272,20 @@
    * every time.
    */
   async function runUnguarded(action: () => Promise<void>): Promise<void> {
-    await carry(action);
+    error = await carry(action);
   }
 
-  async function carry(action: () => Promise<void>): Promise<void> {
+  /** Runs it, and hands back the words to show — "" when nothing went wrong. */
+  async function carry(action: () => Promise<void>): Promise<string> {
     error = "";
     try {
       await action();
+      return "";
     } catch (cause) {
       if (isSessionLost(cause)) {
-        error = "The live session ended (idle timeout or another client took over).";
-      } else {
-        error =
-          cause instanceof BridgeCallError ? `${cause.code}: ${cause.message}` : String(cause);
+        return "The live session ended (idle timeout or another client took over).";
       }
+      return cause instanceof BridgeCallError ? `${cause.code}: ${cause.message}` : String(cause);
     }
   }
 
@@ -398,6 +409,122 @@
       gateLink: gateLinkFor(gateLinks, row.itemID),
     })),
   );
+
+  // --- R30 slice D: one selection, one bar of verbs ------------------------
+  //
+  // The grid's last column used to hold up to nine buttons on every one of up
+  // to 200 rows. It is now a single Select, and the verbs act on what you
+  // picked — which is both how the retail client works and the only version of
+  // this that fits on a phone.
+
+  let selectedID = $state<number | null>(null);
+  /**
+   * ⚠ SELECTION NEVER SILENTLY RETARGETS.
+   *
+   * `selectedRow` is looked up in the CURRENT rows every time. It deliberately
+   * does not keep a copy of the row it was given when the player clicked: a
+   * rock gets mined out, a ship warps off, and a bar still holding the old row
+   * would keep offering verbs for something that is not there — or, worse, a
+   * bar that fell back to "the first row" would quietly point Warp to at a
+   * different destination than the one the player is looking at.
+   */
+  const selectedRow = $derived(
+    selectedID === null ? null : (gateRows.find((row) => row.itemID === selectedID) ?? null),
+  );
+  /** Said in words when the thing you picked leaves the snapshot. */
+  let selectionNotice = $state("");
+
+  function selectRow(itemID: number): void {
+    selectedID = selectedID === itemID ? null : itemID;
+    selectionNotice = "";
+    // A fresh pick starts with a clean slate: the refusal from the last thing
+    // you acted on is not a fact about this one.
+    concernErrors = {};
+  }
+
+  /**
+   * The moment the selection stops existing, say so and let it go.
+   *
+   * Guarded on being in space with a LOADED snapshot: docking legitimately
+   * empties the grid, and a poll that has not answered yet is not evidence that
+   * anything vanished. Announcing on either would cry wolf.
+   */
+  $effect(() => {
+    if (selectedID === null || !inSpace || !$space.loaded) {
+      return;
+    }
+    const stillThere = (snapshot?.entities ?? []).some((entity) => entity.itemID === selectedID);
+    if (!stillThere) {
+      selectionNotice = SELECTION_GONE;
+      selectedID = null;
+    }
+  });
+
+  /** The verbs on offer for the current selection. Empty when nothing is picked. */
+  const selectionActions = $derived.by<readonly RowAction[]>(() => {
+    const row = selectedRow;
+    if (!row) {
+      return [];
+    }
+    return actionsForRow({
+      kind: row.kind,
+      locked: isLocked(row.itemID),
+      acquiring: isAcquiring(row.itemID),
+      gateLink: row.gateLink,
+    });
+  });
+
+  /**
+   * The ONE place a selection-bar verb turns into a server call.
+   *
+   * Every branch goes through `runFor`, so each verb is disabled only by its
+   * own concern and its failure lands on its own control. An action carrying an
+   * `unavailable` reason is never dispatched — the button is already disabled
+   * and wearing that sentence, and this is the belt to that pair of braces.
+   */
+  async function runRowAction(action: RowAction): Promise<void> {
+    const row = selectedRow;
+    if (!row || action.unavailable !== null) {
+      return;
+    }
+    await runFor(action.concern, async () => {
+      switch (action.id) {
+        case "warp":
+          await flow.warpTo(row.itemID, Number(warpRange));
+          return;
+        case "approach":
+          await flow.approach(row.itemID);
+          return;
+        case "orbit":
+          await flow.orbit(row.itemID, Number(orbitRange));
+          return;
+        case "keepAtRange":
+          await flow.keepAtRange(row.itemID, Number(holdRange));
+          return;
+        case "align":
+          await flow.alignTo(row.itemID);
+          return;
+        // R24 slice B — the LADDER (close the distance, then dock), never the
+        // raw single command, which fails unless the ship is already in range.
+        case "dock":
+          await flow.dockAt(row.itemID);
+          return;
+        case "jump": {
+          const link = row.gateLink;
+          if (link) {
+            await flow.jump(row.itemID, link.destinationGateID);
+          }
+          return;
+        }
+        case "lock":
+          await flow.lockTarget(row.itemID);
+          return;
+        case "unlock":
+          await flow.unlockTarget(row.itemID);
+          return;
+      }
+    });
+  }
 
   const ship = $derived(snapshot?.ship ?? null);
 
@@ -691,12 +818,10 @@
     (snapshot?.entities ?? []).filter((entity) => entity.kind === "asteroid").length,
   );
 
-  // R24 slice B — a row you can DOCK at. The server tells us what each ball is
-  // (its runtime kind), so a station is a station by data, not by guessing from
-  // its name or its distance.
-  function isDockable(row: SpaceEntity): boolean {
-    return row.kind === "station" || row.kind === "structure";
-  }
+  // R24 slice B — "a row you can DOCK at" moved to `space/rowActions.ts` as
+  // `isDockableKind`, which is where the whole verb set now lives. It is still
+  // the server's own runtime kind for the ball that decides it — never the
+  // name, the distance or the category number.
 
   // Which locked target a module is switched on AGAINST.
   //
@@ -990,9 +1115,8 @@
     <h2>Around your ship</h2>
   </header>
   <p class="note">
-    Everything your ship can see, nearest first. Pick anything in the list to
-    warp to it, fly towards it, orbit it, hold a distance from it or line your
-    ship up with it.
+    Everything your ship can see, nearest first. Pick something in the list and
+    the bar above it shows everything you can do to it.
   </p>
   {#if error}
     <p class="error">{error}</p>
@@ -1031,6 +1155,14 @@
       >
         Undock
       </button>
+      <!--
+        R30 slice D — the refusal, at the control that caused it. Docked, the
+        selection bar is not on screen at all, so this is the only place a move
+        failure can be read; in space it is the bar's job and this is not drawn.
+      -->
+      {#if concernErrors.move}
+        <span class="error">{concernErrors.move}</span>
+      {/if}
     {:else}
       <!--
         ⚠ STOP HAS NO `disabled` AND MUST NEVER GET ONE. DO NOT CLEAN THIS UP.
@@ -1609,6 +1741,74 @@
     {/if}
   </section>
 
+  <!--
+    R30 slice D — THE SELECTION BAR.
+
+    One bar, acting on one thing, replacing up to nine buttons on every one of
+    up to 200 rows. What it offers is not decided here: `space/rowActions.ts`
+    returns the verb list as data, and this renders it. That split is the whole
+    point — a decision spelled out as {#if} blocks in markup can only be checked
+    by a regex over markup, which proves nothing about the decision.
+
+    It is `position: sticky` at desktop width so it stays reachable while you
+    scroll a long grid. Sticky, NOT fixed: a sticky element still takes up its
+    own space in the flow, so it cannot occlude the last row of the table the
+    way a floating bar would — and that occlusion would be invisible at desktop
+    width, which is where it would be shipped from. The fixed-bottom phone bar
+    is a separate piece of work with its own body padding to compensate.
+  -->
+  <section class="selection-bar" aria-label="What you have picked">
+    {#if selectionNotice}
+      <!--
+        ⚠ The selection is CLEARED and SAID, never silently moved. A bar that
+        fell back to "the first row" would have the player press Warp to
+        expecting one destination and get another.
+      -->
+      <p class="error">{selectionNotice}</p>
+    {/if}
+    {#if !selectedRow}
+      <p class="note">
+        Pick anything in the list below to warp to it, fly towards it, orbit it,
+        hold a distance from it, line your ship up with it or lock it.
+      </p>
+    {:else}
+      <p class="selection-name">{displayLabel(selectedRow)}</p>
+      <p class="selection-what">
+        {typeName(selectedRow)} · {formatDistance(selectedRow.distance)}
+      </p>
+      <span class="row-actions">
+        {#each selectionActions as action (action.id + action.label)}
+          <!--
+            An action that cannot be used right now is still DRAWN, disabled,
+            wearing the sentence that says why (as its label and as its
+            title/aria-description). Never a silent grey rectangle, and never
+            missing entirely — a player cannot tell a forgotten button from a
+            deliberate one.
+          -->
+          <button
+            type="button"
+            class={action.id === "unlock" ? "active" : ""}
+            disabled={concernBusy(action.concern) || action.unavailable !== null}
+            title={action.unavailable ?? ""}
+            onclick={() => runRowAction(action)}
+          >
+            {action.unavailable ?? action.label}
+          </button>
+        {/each}
+      </span>
+      <!--
+        The failure lands HERE, beside the buttons that caused it, and it is
+        kept per concern — so a refused lock does not read as a refused warp,
+        and neither of them greys out anything else.
+      -->
+      {#each ["move", "lock", "module", "hold", "route"] as const as concern (concern)}
+        {#if concernErrors[concern]}
+          <p class="error">{concernErrors[concern]}</p>
+        {/if}
+      {/each}
+    {/if}
+  </section>
+
   <section>
     <h2>Overview</h2>
     <p class="controls">
@@ -1711,128 +1911,28 @@
                 <td data-label="Group">{groupName(row)}</td>
                 <td class="num" data-label="Distance">{formatDistance(row.distance)}</td>
                 <td class="num" data-label="Ore left">{remainingLabel(row)}</td>
+                <!--
+                  R30 slice D — the whole per-row `.row-actions` block that used
+                  to live here is GONE, and this single control replaces it.
+
+                  There were up to nine buttons on every one of up to 200 rows,
+                  re-rendered every poll. The names and distances a player is
+                  actually reading were squeezed into whatever the buttons left,
+                  and at the phone breakpoint each row became a stack of nine
+                  full-width buttons you had to scroll past to reach the next
+                  row. Picking a thing and acting on it is how the retail client
+                  works, and it is the only version of this that fits.
+                -->
                 <td data-label="">
                   <span class="row-actions">
                     <button
                       type="button"
-                      disabled={busy}
-                      onclick={() => run(() => flow.warpTo(row.itemID, Number(warpRange)))}
+                      class={selectedID === row.itemID ? "active" : ""}
+                      aria-pressed={selectedID === row.itemID}
+                      onclick={() => selectRow(row.itemID)}
                     >
-                      Warp to
+                      {selectedID === row.itemID ? "Selected" : "Select"}
                     </button>
-                    <button
-                      type="button"
-                      disabled={busy}
-                      onclick={() => run(() => flow.approach(row.itemID))}
-                    >
-                      Approach
-                    </button>
-                    <button
-                      type="button"
-                      disabled={busy}
-                      onclick={() => run(() => flow.orbit(row.itemID, Number(orbitRange)))}
-                    >
-                      Orbit
-                    </button>
-                    <button
-                      type="button"
-                      disabled={busy}
-                      onclick={() => run(() => flow.keepAtRange(row.itemID, Number(holdRange)))}
-                    >
-                      Keep at range
-                    </button>
-                    <button
-                      type="button"
-                      disabled={busy}
-                      onclick={() => run(() => flow.alignTo(row.itemID))}
-                    >
-                      Align to
-                    </button>
-                    <!--
-                      R24 slice B — Dock, and mean it. Unlike the buttons above
-                      this is not a single move: it closes the distance itself
-                      (warp, then approach) and docks when the ship is actually
-                      in range, reporting each phase in the Travel readout and
-                      stopping with the station's own reason if it cannot get
-                      there. Only offered on something you can dock at.
-                    -->
-                    {#if isDockable(row)}
-                      <button
-                        type="button"
-                        disabled={busy}
-                        onclick={() => run(() => flow.dockAt(row.itemID))}
-                      >
-                        Dock
-                      </button>
-                    {/if}
-                    <!--
-                      R30 slice A — Jump, on the gate, naming where it goes.
-                      This is the whole slice: a player who can see a gate can
-                      now leave the system without leaving the cockpit.
-
-                      It is offered from ANY distance on purpose. The server
-                      owns the range rule and states its own refusal (it lands
-                      in the flight error below the table); inventing a distance
-                      test here would put a guessed rule on screen next to the
-                      real one. The one case we DO block is a graph edge with no
-                      gate recorded on the far side — there is nothing honest to
-                      send — and it says so on the control rather than greying
-                      out in silence.
-                    -->
-                    <!--
-                      The lookup is the {#if} CONDITION, not a {@const} hoisted
-                      to the top of the {#each}. That is deliberate and it cost
-                      a live debugging session to learn: in a keyed each block a
-                      top-level {@const} did not re-evaluate when the gate links
-                      landed asynchronously, so every gate row kept the `null`
-                      it was created with and no Jump button ever appeared —
-                      while the store held all seven correct links. Reading
-                      `gateLinks` in the condition makes this block genuinely
-                      reactive to it.
-                    -->
-                    {#if row.gateLink}
-                      {@const blocked = jumpBlockedReason(row.gateLink)}
-                      <button
-                        type="button"
-                        disabled={busy || blocked !== null}
-                        onclick={() =>
-                          run(() => flow.jump(row.itemID, (row.gateLink as GateLink).destinationGateID))}
-                      >
-                        {blocked ?? jumpLabel(row.gateLink)}
-                      </button>
-                    {/if}
-                    <!--
-                      R23 — lock / release. GENERIC: this is the same button a
-                      later combat goal uses, on the same row, for the same
-                      reason. Locking is not instant, so the middle state is
-                      shown honestly rather than pretending the lock landed.
-                    -->
-                    {#if isLocked(row.itemID)}
-                      <button
-                        type="button"
-                        class="active"
-                        disabled={busy}
-                        onclick={() => run(() => flow.unlockTarget(row.itemID))}
-                      >
-                        Release lock
-                      </button>
-                    {:else if isAcquiring(row.itemID)}
-                      <button
-                        type="button"
-                        disabled={busy}
-                        onclick={() => run(() => flow.unlockTarget(row.itemID))}
-                      >
-                        Locking… stop
-                      </button>
-                    {:else}
-                      <button
-                        type="button"
-                        disabled={busy}
-                        onclick={() => run(() => flow.lockTarget(row.itemID))}
-                      >
-                        Lock
-                      </button>
-                    {/if}
                   </span>
                 </td>
               </tr>
@@ -1862,3 +1962,4 @@
   doing, and stop it, while the ship is in the station.
 -->
 <MiningBot {store} {flow} />
+

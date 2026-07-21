@@ -850,6 +850,45 @@
   .flight-strip .strip-doing { color: var(--color-muted, inherit); }
   .flight-strip .controls { margin-top: 0.35rem; }
 
+  /* ================================ the selection bar (R30 slice D) --
+   * What you picked, and everything you can do to it — replacing up to nine
+   * buttons on every one of up to 200 grid rows.
+   *
+   * position: sticky is the FIRST in this file, and it is deliberate where the
+   * flight strip above refused it. The reason the strip refused was occlusion:
+   * a bar that leaves the flow covers whatever scrolls under it, and at desktop
+   * width — where it would be shipped from — you would never see the last grid
+   * row disappear behind it. `sticky` does not leave the flow: it keeps its own
+   * box, so nothing is ever hidden underneath it. That is the whole difference,
+   * and it is why the fixed-bottom phone bar is separate work with its own
+   * body padding to compensate.
+   *
+   * Sticky only from the desktop breakpoint up. On a phone the viewport is too
+   * short to give a multi-line bar a permanent share of it. */
+  .selection-bar {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    background: var(--color-surface, inherit);
+    padding: 0.6rem 0;
+  }
+  .selection-bar p { margin: 0; }
+  .selection-bar .selection-name {
+    color: var(--color-text-bright);
+    font-weight: 600;
+  }
+  .selection-bar .selection-what {
+    color: var(--color-muted, inherit);
+    font-size: 0.9em;
+  }
+  @media (min-width: 641px) {
+    .selection-bar {
+      position: sticky;
+      top: 0;
+      z-index: 2;
+    }
+  }
+
   /* ================================ drones + hostile awareness (R25) --
    * Two components that answer two questions a miner has at the same moment:
    * "what do I have out?" and "what is shooting me?".

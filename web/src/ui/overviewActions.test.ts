@@ -23,6 +23,9 @@ const { render } = await import("svelte/server");
 const { createClientStore } = await import("../store/clientStore.ts");
 const Overview = (await import("./Overview.svelte")).default;
 const { deriveShipStats } = await import("../bridge/shipStats.ts");
+// R30 slice D — where the panel's verb set now actually lives. The assertions
+// below that used to grep this file's markup read it here instead.
+const { actionsForRow, isDockableKind } = await import("../space/rowActions.ts");
 
 const UI_DIR = path.dirname(fileURLToPath(import.meta.url));
 const SOURCE = readFileSync(path.join(UI_DIR, "Overview.svelte"), "utf8");
@@ -319,16 +322,66 @@ test("R8: every cell in the new tables carries a data-label for the narrow layou
   }
 });
 
-test("R8: the new actions are <button type=button>, sized by the shared button rule", () => {
-  // styles.css gives every button min-height: 2.5rem (40px) — so the R8 target
-  // size is inherited, and the thing to pin here is that these ARE buttons and
-  // that they sit in the shared .row-actions group (which wraps and, at the
-  // breakpoint, stacks full-width).
-  assert.match(SOURCE, /class="row-actions"/);
-  const lockButtons = SOURCE.match(/flow\.(lock|unlock)Target\(/g) ?? [];
-  assert.ok(lockButtons.length >= 2, "lock and unlock are both offered");
+test("R8: every offered action is a real <button>, sized by the shared button rule", () => {
+  // ⚠ RE-POINTED IN R30 SLICE D, and deliberately made stronger.
+  //
+  // This used to be `assert.match(SOURCE, /class="row-actions"/)` — a regex
+  // proving that eleven characters were still somewhere in a 1,900-line
+  // template. It could not tell whether the actions were buttons, whether every
+  // action reached the screen, or whether any of them were still rendered at
+  // all. Slice D moved the verbs out of the grid and into a bar, so the regex
+  // would have kept passing while testing nothing.
+  //
+  // The claim was always "these are real buttons in the shared group, so they
+  // inherit min-height: 2.5rem (40px) for touch". That is now checked against
+  // the ACTION LIST the panel actually renders from: every action `rowActions`
+  // returns for a row must come out as a `<button type="button">`.
+  const context = {
+    kind: "station",
+    locked: false,
+    acquiring: false,
+    gateLink: {
+      gateID: 5001,
+      toSystemID: 30000142,
+      toSystemName: "Jita",
+      destinationGateID: 5002,
+    },
+  } as const;
+  const actions = actionsForRow(context);
+  assert.ok(actions.length >= 7, `a station with a gate offers the full set, saw ${actions.length}`);
+
+  // Every one of them is drawn by the bar's single {#each} as a real button in
+  // the shared .row-actions group. That is one loop over this exact array, so
+  // pinning the loop pins every action it can ever produce.
+  const bar = section(SOURCE, "R30 slice D — THE SELECTION BAR", "</section>");
+  assert.ok(bar.length > 500, "the selection bar must be found in the panel");
+  assert.match(bar, /class="row-actions"/, "the bar uses the shared, touch-sized group");
+  assert.match(bar, /\{#each selectionActions as action/, "it draws the returned actions");
+  assert.match(bar, /<button\s+type="button"/, "each one is a real button");
+  // And a button is only ever disabled by its OWN concern, never a shared flag.
+  assert.match(bar, /disabled=\{concernBusy\(action\.concern\)/);
+
   // No bare anchors standing in for actions.
   assert.equal(/<a\s+href="#/.test(SOURCE), false, "actions are buttons, not fake links");
+});
+
+test("R30 slice D: an action that cannot be used is DRAWN, wearing its reason", () => {
+  // The other half of the same rule, and the reason `unavailable` is a sentence
+  // rather than a boolean: a disabled control must say why. This is checked on
+  // the returned data (a gate with no far side is the one blocked case the
+  // module has) and on the bar rendering that sentence rather than the label.
+  const blocked = actionsForRow({
+    kind: "stargate",
+    locked: false,
+    acquiring: false,
+    gateLink: { gateID: 5001, toSystemID: 3, toSystemName: "Jita", destinationGateID: 0 },
+  }).find((action) => action.id === "jump");
+  assert.ok(blocked, "the action is still offered, not dropped");
+  assert.ok((blocked.unavailable ?? "").length > 10, "and carries a sentence, not a flag");
+
+  const bar = section(SOURCE, "R30 slice D — THE SELECTION BAR", "</section>");
+  assert.match(bar, /action\.unavailable !== null/, "an unusable action is disabled");
+  assert.match(bar, /\{action\.unavailable \?\? action\.label\}/, "and says why, on the control");
 });
 
 // --- The generality claim, pinned in source ----------------------------------
@@ -387,17 +440,37 @@ function stripComments(source: string): string {
 }
 
 test("the panel calls the generic flow methods, once each, with no parallel path", () => {
+  // ⚠ COUNTS UPDATED IN R30 SLICE D — because the duplication they were
+  // tolerating is gone, not because the rule was relaxed.
+  //
+  // The overview row used to carry its own copy of every verb, so unlock had
+  // FOUR call sites (two row states, the locked list, a threat row) and each
+  // movement verb had one buried in markup. Slice D moved the row's verbs into
+  // a single `runRowAction` dispatch, so each verb now has exactly one call
+  // site and the remaining duplicates are the two blocks that genuinely are
+  // separate surfaces: the threat list and the locked-target list.
+  //
+  // Every number here went DOWN or stayed the same. If one ever goes up, a
+  // parallel path has grown.
   const callSites: Readonly<Record<string, number>> = {
-    // R25 added a second lock site: the threat block, so a player can lock the
-    // pirate that just arrived without hunting for it in a 200-row list. It is
-    // the SAME flow method — which is the whole point of this test.
+    // The threat block (lock the pirate that just arrived without hunting for
+    // it in a 200-row list) and the selection bar. The SAME flow method — which
+    // is the whole point of this test.
     "flow.lockTarget(": 2,
-    // Unlock is offered in several places on purpose: on the overview row (two
-    // states), in the locked-target list, and on a threat row. All of them go
-    // through the SAME flow method.
-    "flow.unlockTarget(": 4,
+    // The threat block, the locked-target list, and the selection bar. Was 4.
+    "flow.unlockTarget(": 3,
     "flow.activateModule(": 1,
     "flow.deactivateModule(": 1,
+    // R30 slice D — the movement verbs, each dispatched from exactly one place.
+    // Before the slice these were one-per-verb too, but spread through markup;
+    // now they are five adjacent branches a reader can check at a glance.
+    "flow.warpTo(": 1,
+    "flow.approach(": 1,
+    "flow.orbit(": 1,
+    "flow.keepAtRange(": 1,
+    "flow.alignTo(": 1,
+    "flow.dockAt(": 1,
+    "flow.jump(": 1,
   };
   for (const [call, expected] of Object.entries(callSites)) {
     assert.equal(
@@ -406,6 +479,26 @@ test("the panel calls the generic flow methods, once each, with no parallel path
       `${call} must have exactly ${expected} call site(s)`,
     );
   }
+});
+
+test("R30 slice D: the verb set is DATA from one module, not {#if} blocks in markup", () => {
+  // The structural claim the slice rests on. `actionsForRow` is the only thing
+  // that decides what a selected row offers, and the bar renders whatever it
+  // returns — so the decision can be tested directly (see space/rowActions.test.ts)
+  // instead of being inferred from a regex over a template.
+  assert.match(SOURCE, /import \{[\s\S]{0,200}actionsForRow[\s\S]{0,200}from "\.\.\/space\/rowActions\.ts"/);
+  assert.equal(
+    SOURCE.split("actionsForRow(").length - 1,
+    1,
+    "exactly one place asks for the verb set",
+  );
+  // And the panel no longer decides dockability for itself — that moved out
+  // with the rest of the verb set, so there is no second source of truth.
+  assert.equal(
+    /function isDockable\b/.test(SOURCE),
+    false,
+    "the panel must not keep its own copy of the dockable test",
+  );
 });
 
 test("activateModule is called WITHOUT naming an effect — the server picks it", () => {
@@ -485,25 +578,62 @@ function renderWithEntity(kind: string, itemID: number): string {
   return render(Overview, { props: { store, flow: fakeFlow() } }).body;
 }
 
-test("R24: a station row offers Dock; a rock row does not", () => {
-  const station = renderWithEntity("station", STATION_ID);
-  assert.match(visibleText(station), /\bDock\b/, "a station is something you can dock at");
-  // Dockable is decided from the server's own kind for the ball — not guessed
-  // from the name, the distance, or the category number.
-  assert.doesNotMatch(
-    visibleText(renderWithEntity("asteroid", ROCK_ID)),
-    /\bDock\b/,
-    "you cannot dock at a rock",
-  );
+test("R24: a station offers Dock; a rock does not — decided from the ball's KIND", () => {
+  // ⚠ RE-POINTED IN R30 SLICE D. This used to render the panel and grep the
+  // visible text for the word "Dock", which worked only while every verb was
+  // stamped onto every row. The verbs are now on a bar that acts on the row you
+  // picked, and there is no selection in a server-rendered snapshot — so the
+  // old grep would have failed for a reason that has nothing to do with the
+  // claim it was making.
+  //
+  // The claim is unchanged and is now read where the decision is made. Note it
+  // is exercised on the SAME entity kinds the panel feeds in, so this is a
+  // stronger check than the word-search ever was: it proves a rock is refused,
+  // not merely that four letters were absent from a page.
+  const base = { locked: false, acquiring: false, gateLink: null } as const;
+  const dockable = (kind: string) =>
+    actionsForRow({ ...base, kind }).some((action) => action.id === "dock");
+
+  assert.equal(dockable("station"), true, "a station is something you can dock at");
+  assert.equal(dockable("structure"), true, "and so is a player structure");
+  assert.equal(dockable("asteroid"), false, "you cannot dock at a rock");
+  assert.equal(dockable("ship"), false, "or at another ship");
+  // And the predicate behind it — the server's own runtime kind for the ball,
+  // never its name, its distance or its category number.
+  assert.equal(isDockableKind("station"), true);
+  assert.equal(isDockableKind("asteroid"), false);
+
+  // The panel still renders both kinds of row, each pickable.
+  for (const [kind, id] of [["station", STATION_ID], ["asteroid", ROCK_ID]] as const) {
+    assert.match(
+      renderWithEntity(kind, id),
+      /<button[^>]*>[\s\S]{0,120}Select/,
+      `a ${kind} row must be selectable`,
+    );
+  }
 });
 
-test("R24: Dock is a real button in the shared row-actions group, and calls dockAt", () => {
-  // dockAt is the ladder (close the distance, then dock); flow.dock is the raw
-  // single command. The row must offer the one that finishes the job.
-  assert.match(SOURCE, /flow\.dockAt\(row\.itemID\)/);
-  const station = renderWithEntity("station", STATION_ID);
-  assert.match(station, /class="row-actions"/);
-  assert.equal(/<a\s+href="#/.test(station), false, "actions are buttons, not fake links");
+test("R24: Dock is dispatched as the LADDER (dockAt), never the raw dock command", () => {
+  // ⚠ RE-POINTED IN R30 SLICE D. The old assertion was the exact source text
+  // /flow\.dockAt\(row\.itemID\)/ — which pinned a variable name in markup, not
+  // a behaviour, and would have gone on passing or failing for reasons no
+  // player could observe.
+  //
+  // The real claim: dockAt is the ladder (warp, approach, then dock, narrating
+  // each phase); flow.dock is the raw single command that fails unless the ship
+  // is already in range. The bar must send the one that finishes the job.
+  const dispatch = section(SOURCE, "async function runRowAction", "const ship =");
+  assert.ok(dispatch.length > 200, "the selection-bar dispatch must be found");
+  const dockBranch = section(dispatch, 'case "dock"', "case \"jump\"");
+  assert.match(dockBranch, /flow\.dockAt\(/, "Dock goes through the ladder");
+  assert.doesNotMatch(
+    dockBranch,
+    /flow\.dock\(/,
+    "the raw single command must never be what the row offers",
+  );
+  // And nowhere else in the panel either.
+  assert.equal(/\bflow\.dock\(/.test(SOURCE), false, "flow.dock has no call site in this panel");
+  assert.equal(/<a\s+href="#/.test(SOURCE), false, "actions are buttons, not fake links");
 });
 
 test("R24: the station row keeps the standing invariants (no ids, plain words, data-label)", () => {
