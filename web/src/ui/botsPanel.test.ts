@@ -234,7 +234,9 @@ test("R43 — a PAUSED bot still reads as holding the ship", () => {
     action: null,
     why: "You paused the bot.",
     // R44 — the readout carries which rung fired; a paused bot fired none.
+    // R46 — and which step inside it; no rung means no step either.
     rung: null,
+    step: null,
     rockName: null,
     cyclesCompleted: 0,
     oreUnitsMined: 0,

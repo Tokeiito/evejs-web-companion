@@ -3493,6 +3493,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           action: progress.action,
           why: progress.why,
           rung: progress.rung,
+          step: progress.step,
           rockName: progress.rockName,
           cyclesCompleted: progress.cyclesCompleted,
           oreUnitsMined: progress.oreUnitsMined,

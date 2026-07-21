@@ -46,7 +46,7 @@ import {
 import { refusalWords } from "../bridge/refusals.ts";
 // R44 — the rung NAMES. Instrumentation only: this module decides nothing and
 // is never read by the ladder below, which returns bare identifiers.
-import type { MiningRungID } from "./miningLadder.ts";
+import type { MiningCallerRungID, MiningRungID, MiningStepID } from "./miningLadder.ts";
 import { formatDistance, hostileRows, isMyDrone } from "../space/overview.ts";
 import type {
   FlightStatus,
@@ -203,15 +203,39 @@ export interface MiningDecision {
   readonly action: MiningBotAction;
   readonly why: string;
   /**
-   * R44 — WHICH RUNG OF THE LADDER THIS IS, for the readout only.
+   * R44 — WHICH ROW OF THE LADDER FIRED, for the readout only.
    *
    * ⚠ IT IS REQUIRED ON PURPOSE. Every return below must name itself, so the
    * compiler — not a reviewer — is what proves the ladder on screen is the whole
    * ladder. Nothing in the loop branches on it; it is carried to the panel and
-   * dropped. See `nav/miningLadder.ts` for the names and for the four places
-   * this identifier is a LOOSER statement than the code it labels.
+   * dropped. See `nav/miningLadder.ts` for the names and for the places this
+   * identifier is a LOOSER statement than the code it labels.
+   *
+   * ⚠ R46 — this is the row the loop TRIED, never a sub-ladder's leaf. The type
+   * says so: `MiningCallerRungID` excludes every `MiningStepID`, so a leaf
+   * cannot be reported here even by accident. What the sub-ladder then chose is
+   * `step`, below, and the two are reported TOGETHER.
    */
-  readonly rung: MiningRungID;
+  readonly rung: MiningCallerRungID;
+  /**
+   * R46 — WHICH LEAF OF THE SUB-LADDER THE RUNG CALLED, or null when the rung
+   * answered on its own.
+   *
+   * ⚠ THIS FIELD EXISTS BECAUSE THE READOUT COULD OTHERWISE LIE. R44 let the
+   * adopt shortcut SUBSTITUTE its own row for the leaf's, and a decision carried
+   * exactly one row — so on a tick where the ship would not say which modules
+   * were cycling, the bot switched NOTHING on while the only lit row read
+   * "…skip the lock and go straight to the equipment". Carrying both names means
+   * the row that fired and the thing that actually happened are never in
+   * competition for the same slot, and neither can be dropped to make room for
+   * the other.
+   *
+   * Null means one of two things, and both are honest: the rung produced its own
+   * action, or it called the TRAVEL sub-ladder, whose warp / approach / closing
+   * / dock steps deliberately have no rows (see `miningLadder.ts`). The belt
+   * arrival is the one travel step that does.
+   */
+  readonly step: MiningStepID | null;
   /** This tick found a reason to abandon the belt and dock (sticky). */
   readonly headHome?: string;
   /** This tick concluded the current rock is finished with, and why. */
@@ -240,6 +264,14 @@ export interface MiningBotProgress {
    * ⚠ R7d — the panel renders the rung's NAME, never this identifier.
    */
   readonly rung: MiningRungID | null;
+  /**
+   * R46 — the LEAF the rung called, so the panel lights the caller and what it
+   * actually did at the same time. Null when the rung answered on its own, when
+   * it called the rowless travel steps, or when no rung fired at all.
+   *
+   * ⚠ R7d — this identifier never renders either.
+   */
+  readonly step: MiningStepID | null;
   /** The rock it is working, by NAME (R7d: never an id). */
   readonly rockName: string | null;
   /** Hauls completed: loads actually unloaded into the hangar. */
@@ -450,6 +482,7 @@ export function decideMiningAction(
         action: { kind: "wait", reason: "reading holds" },
         why: "Looking in the hold.",
         rung: "reading-hold",
+        step: null,
       };
     }
     const items = holdItemIDs(holds);
@@ -458,6 +491,7 @@ export function decideMiningAction(
         action: { kind: "unload", itemIDs: items },
         why: "Docked with ore aboard, so it goes into the hangar first.",
         rung: "docked-with-ore",
+        step: null,
       };
     }
     // The hold is empty and confirmed empty. If we came back for a reason
@@ -468,12 +502,14 @@ export function decideMiningAction(
         action: { kind: "pause", reason: memory.headingHome },
         why: memory.headingHome,
         rung: "run-over",
+        step: null,
       };
     }
     return {
       action: { kind: "undock" },
       why: `The hold is empty, so it is time to head back${plan.beltName ? ` to ${plan.beltName}` : " to the belt"}.`,
       rung: "docked-and-empty",
+      step: null,
     };
   }
 
@@ -482,13 +518,19 @@ export function decideMiningAction(
       action: { kind: "wait", reason: "no location" },
       why: "Waiting for the ship to say where it is.",
       rung: "no-location",
+      step: null,
     };
   }
 
   // Never act mid-warp: retail returns immediately on DSTBALL_WARP, and so does
   // every loop in this client.
   if (isWarping(status.shipMode) || isWarping(measurement?.shipMode ?? null)) {
-    return { action: { kind: "wait", reason: "in warp" }, why: "In warp.", rung: "in-warp" };
+    return {
+      action: { kind: "wait", reason: "in warp" },
+      why: "In warp.",
+      rung: "in-warp",
+      step: null,
+    };
   }
 
   // ── 1. Danger first ───────────────────────────────────────────────────────
@@ -517,6 +559,7 @@ export function decideMiningAction(
       },
       why: "A pirate is here and the ship's condition could not be read.",
       rung: "pirate-unknown-health",
+      step: null,
     };
   }
 
@@ -533,6 +576,7 @@ export function decideMiningAction(
           action: { kind: "wait", reason: "reading drone bay" },
           why: `${nearestHostile.name ?? "A pirate"} is here — looking in the drone bay.`,
           rung: "reading-drone-bay",
+          step: null,
         };
       }
       if (bay.length > 0) {
@@ -540,6 +584,7 @@ export function decideMiningAction(
           action: { kind: "launch", droneItemIDs: bay },
           why: `${nearestHostile.name ?? "A pirate"} is here, so the drones go out — they defend the ship on their own.`,
           rung: "launch-drones",
+          step: null,
         };
       }
       // No drones to send. Not an error and not a reason to stop: the health
@@ -597,6 +642,7 @@ export function decideMiningAction(
       },
       why: "The equipment is running and the hold is not growing.",
       rung: "no-yield-stop",
+      step: null,
     };
   }
 
@@ -609,6 +655,7 @@ export function decideMiningAction(
       action: { kind: "wait", reason: "reading targets" },
       why: "Checking what your ship has locked.",
       rung: "reading-targets",
+      step: null,
     };
   }
 
@@ -627,6 +674,7 @@ export function decideMiningAction(
         why: "That rock is no longer in view, so the bot is picking another.",
         dropRock: OUT_OF_VIEW,
         rung: "rock-out-of-view",
+        step: null,
       };
     }
     if (!rockHasOre(entity)) {
@@ -635,12 +683,19 @@ export function decideMiningAction(
         why: `${rowLabel(entity)} is mined out, so the bot is moving to the next rock.`,
         dropRock: "it was mined out",
         rung: "rock-mined-out",
+        step: null,
       };
     }
 
     // ── 6. Locked: run the equipment ────────────────────────────────────────
+    //
+    // R46 — this call site names ITSELF as the rung. Before R46 it passed no
+    // rung at all and simply reported the equipment leaf, so "the bot is on the
+    // rock it remembered" was invisible on every mining tick: the readout showed
+    // the equipment step with nothing saying which branch had reached it, and
+    // there was no row for this branch in the ladder to light.
     if (lockedTargetIDs.includes(currentRock)) {
-      return runTheLasers(entity, snapshot, plan, null);
+      return runTheLasers(entity, snapshot, plan, "rock-is-locked");
     }
 
     // ── 5. Ours, but not locked yet: lock it ────────────────────────────────
@@ -652,6 +707,7 @@ export function decideMiningAction(
       },
       why: `Locking ${rowLabel(entity)} — your equipment acts on what you lock.`,
       rung: "lock-current-rock",
+      step: null,
     };
   }
 
@@ -687,6 +743,7 @@ export function decideMiningAction(
       action: { kind: "wait", reason: "no rock" },
       why: "Looking for a rock to mine.",
       rung: "no-rock",
+      step: null,
     };
   }
   const where = Number.isFinite(pick.distance) ? `, ${formatDistance(pick.distance)} away` : "";
@@ -697,15 +754,20 @@ export function decideMiningAction(
   // spend a whole tick to change nothing. Adopting is a pure memory change, so
   // it costs no tick at all: the same decision goes straight to the lasers.
   //
-  // ⚠ R44 — THIS IS THE RUNG THE ROW MODEL COULD NOT HOLD WHOLE, and the choice
-  // made here is the finding, so it is written down rather than hidden. This
-  // tick does TWO things (starts the equipment AND adopts the rock) and it
-  // BORROWS its action from the equipment sub-ladder below. A single "the row
-  // that fired" can name the shortcut or name the move, not both. It names the
-  // SHORTCUT — a player watching needs to know a lock was skipped, and the move
-  // itself is already spelled out in the action and the why — and the cost is
-  // that the three equipment rows stay dark on a tick that ran the equipment.
-  // `miningLadder.ts` says so on the row.
+  // ⚠ R44 THOUGHT THIS RUNG HAD TO LOSE SOMETHING. IT DID NOT — IT LIED.
+  //
+  // This tick does TWO things (it goes on to the equipment AND adopts the rock)
+  // and it BORROWS its action from the equipment sub-ladder below. R44 made that
+  // a choice between naming the shortcut and naming the move, and chose the
+  // shortcut — so the equipment rows stayed dark on a tick that ran the
+  // equipment.
+  //
+  // THAT WAS NOT A LOSS OF DETAIL, IT WAS A FALSE STATEMENT. The row reads
+  // "…skip the lock and go straight to the equipment", and when the ship does
+  // not report its active modules the sub-ladder switches NOTHING on — so the
+  // one lit row asserted an action the bot had not taken. R46 reports the caller
+  // AND the leaf, so the shortcut and what it actually did are both on screen
+  // and neither has to be given up for the other.
   if (lockedTargetIDs.includes(pick.entity.itemID)) {
     return {
       ...runTheLasers(pick.entity, snapshot, plan, "rock-already-locked"),
@@ -722,6 +784,7 @@ export function decideMiningAction(
     why: `${rowLabel(pick.entity)} is the nearest rock with ore left${where}, so the bot is locking it.`,
     takeRock: pick.entity.itemID,
     rung: "lock-nearest-rock",
+    step: null,
   };
 }
 
@@ -739,17 +802,21 @@ function runTheLasers(
   snapshot: SpaceSnapshot | null,
   plan: MiningPlan,
   /**
-   * R44 — the rung to report INSTEAD of this sub-ladder's own leaves, or null
-   * to report the leaf. Only the adopt shortcut passes one; see its comment.
+   * R46 — the rung that CALLED this sub-ladder, reported alongside whichever
+   * leaf answers. It used to be an OVERRIDE that replaced the leaf, and that is
+   * what let the readout state something the bot had not done: see the adopt
+   * shortcut's comment above. A caller and a leaf are two different facts and
+   * they now travel in two different fields.
    */
-  rungOverride: MiningRungID | null,
+  rung: MiningCallerRungID,
 ): MiningDecision {
   const active = snapshot?.ship?.activeModuleIDs ?? null;
   if (active === null) {
     return {
       action: { kind: "wait", reason: "unknown module state" },
       why: "Your ship did not say which equipment is running, so nothing was switched on this time.",
-      rung: rungOverride ?? "equipment-unknown",
+      rung,
+      step: "equipment-unknown",
     };
   }
   const nextModule = plan.miningModuleIDs.filter((moduleID) => !active.includes(moduleID))[0];
@@ -762,7 +829,8 @@ function runTheLasers(
         label: `Switch the mining equipment on ${rowLabel(entity)}`,
       },
       why: `${rowLabel(entity)} is locked, so the mining equipment goes on.`,
-      rung: rungOverride ?? "equipment-on",
+      rung,
+      step: "equipment-on",
     };
   }
   const remaining =
@@ -772,7 +840,10 @@ function runTheLasers(
   return {
     action: { kind: "wait", reason: "mining" },
     why: `Mining ${rowLabel(entity)}${remaining}.`,
-    rung: rungOverride ?? "mining-running",
+    rung,
+    // ⚠ THE STALL CLOCK READS THIS. `noYieldCycles` is incremented on exactly
+    // the ticks that reach this return; see the controller's comment.
+    step: "mining-running",
   };
 }
 
@@ -795,18 +866,26 @@ function travelDecision(
   /**
    * R44 — the CALLER's rung, reported for every step of this sub-ladder.
    *
-   * ⚠ THIS IS WHERE THE ROW MODEL RAN OUT. These four steps are reached from
-   * FIVE different rungs, so they are not rows of their own: rendering them as
-   * rows would take a caller × step cross-product for code written once. What
-   * this sub-ladder chose shows in the action and the why instead. The ONE
-   * exception is the belt arrival below, which the ladder's own doc comment
-   * already calls a rung in its own right — and it is, because arriving at an
-   * empty belt is a different rule from travelling to it.
+   * ⚠ THIS IS WHERE THE ROW MODEL RAN OUT, AND IT STILL HAS. These four steps
+   * are reached from FIVE different rungs, so they are not rows of their own:
+   * rendering them as rows would take a caller × step cross-product for code
+   * written once. They report `step: null` and what this sub-ladder chose shows
+   * in the action and the why instead — which the `travel-to-belt` row says
+   * about itself on screen, so the omission is disclosed rather than hidden.
+   *
+   * The ONE exception is the belt arrival below, which the ladder's own doc
+   * comment already calls a rung in its own right — and it is, because arriving
+   * at an empty belt is a different rule from travelling to it. R46 reports it
+   * as this caller's STEP. It used to overwrite the caller's rung on the way
+   * out, which hid which of the five callers had got there.
    */
-  rung: MiningRungID,
+  rung: MiningCallerRungID,
 ): MiningDecision {
   const name = targetName ?? (arrival === "dock" ? "the station" : "the belt");
-  const step = decideCloseIn(
+  // ⚠ NOT `step` — that is now a field on every decision this function builds,
+  // and a shorthand `step` in one of the object literals below would silently
+  // report this local instead of the leaf id.
+  const closeIn = decideCloseIn(
     targetID,
     interactionRadiusM,
     observation.measurement,
@@ -816,32 +895,36 @@ function travelDecision(
   // Not measurable this tick — the belt or station is not on the snapshot's
   // grid, which is the normal case for somewhere you have not flown to yet.
   // Warp is the right call and the warp bound catches one that never starts.
-  if (step === null) {
+  if (closeIn === null) {
     return {
       action: { kind: "warp", destinationID: targetID, label: `Warp to ${name}` },
       why,
       rung,
+      step: null,
     };
   }
 
-  switch (step.kind) {
+  switch (closeIn.kind) {
     case "warp":
       return {
         action: { kind: "warp", destinationID: targetID, label: `Warp to ${name}` },
         why,
         rung,
+        step: null,
       };
     case "approach":
       return {
         action: { kind: "approach", destinationID: targetID, label: `Approach ${name}` },
         why,
         rung,
+        step: null,
       };
     case "closing":
       return {
         action: { kind: "wait", reason: "closing in" },
         why: `Closing in on ${name}.`,
         rung,
+        step: null,
       };
     case "arrive":
       if (arrival === "dock") {
@@ -849,6 +932,7 @@ function travelDecision(
           action: { kind: "dock", stationID: targetID, label: `Dock at ${name}` },
           why,
           rung,
+          step: null,
         };
       }
       // ── 8. At the belt with nothing left to mine. Stop; do not wander. ────
@@ -858,7 +942,8 @@ function travelDecision(
           reason: `There are no rocks with ore left at ${name}. Pick another belt and start the bot again.`,
         },
         why: `${name} has nothing left to mine.`,
-        rung: "belt-empty",
+        rung,
+        step: "belt-empty",
       };
   }
 }
@@ -908,6 +993,8 @@ interface BotMemory {
   why: string | null;
   /** R44 — the last rung the LADDER fired. Read-only instrumentation. */
   rung: MiningRungID | null;
+  /** R46 — the leaf that rung called, if it called one. Instrumentation only. */
+  step: MiningStepID | null;
   rockName: string | null;
   failureReason: string | null;
   settleTicks: number;
@@ -947,6 +1034,7 @@ function freshMemory(): BotMemory {
     action: null,
     why: null,
     rung: null,
+    step: null,
     rockName: null,
     failureReason: null,
     settleTicks: 0,
@@ -1050,6 +1138,7 @@ export function createMiningBot(deps: MiningBotDeps): MiningBotController {
       action: memory.action,
       why: memory.why,
       rung: memory.rung,
+      step: memory.step,
       rockName: memory.rockName,
       cyclesCompleted: memory.cyclesCompleted,
       oreUnitsMined: memory.oreUnitsMined,
@@ -1486,6 +1575,7 @@ export function createMiningBot(deps: MiningBotDeps): MiningBotController {
       // point: a readout that kept the last rung lit would claim a rule ran on
       // a tick where the loop never got as far as asking one.
       memory.rung = null;
+      memory.step = null;
       emit();
       return { kind: "wait", reason: "status read retry" };
     }
@@ -1502,6 +1592,7 @@ export function createMiningBot(deps: MiningBotDeps): MiningBotController {
       memory.action = "Waiting for the last move to take effect";
       // R44 — a settle window is the CONTROLLER's, not the ladder's. No rung.
       memory.rung = null;
+      memory.step = null;
       emit();
       return { kind: "wait", reason: "settling" };
     }
@@ -1553,7 +1644,23 @@ export function createMiningBot(deps: MiningBotDeps): MiningBotController {
       dropRock(decision.dropRock !== OUT_OF_VIEW);
     }
     // The stall clock only runs while the loop believes it is mining.
-    if (decision.action.kind === "wait" && decision.action.reason === "mining") {
+    //
+    // ⚠ R46 — THIS USED TO MATCH A WAIT REASON STRING (`reason === "mining"`),
+    // so the clock behind the two `unexpressible` rungs was driven by which
+    // sub-ladder leaf ran, IDENTIFIED BY PROSE. It now keys on the leaf's own
+    // id, which is the same set of ticks and not a wider or narrower one:
+    //
+    //   · `wait "mining"` is built at exactly ONE return in this module — the
+    //     third leaf of `runTheLasers` — so no other decision could ever have
+    //     satisfied the old condition.
+    //   · That same return is the ONLY place `step: "mining-running"` is set,
+    //     so nothing satisfies the new condition that did not satisfy the old.
+    //
+    // The equivalence is both ways because it is one return statement, and a
+    // test asserts the pair travels together from BOTH of that sub-ladder's
+    // callers. The three reset sites (`dropRock`, `countOre`, and adopting a
+    // rock above) are untouched and still zero the same counter.
+    if (decision.step === "mining-running") {
       memory.noYieldCycles += 1;
     }
 
@@ -1561,8 +1668,12 @@ export function createMiningBot(deps: MiningBotDeps): MiningBotController {
     memory.action = actionText(decision.action);
     memory.phase = phaseFor(decision.action, current);
     // R44 — record which rung answered. Recorded next to `why` because it is the
-    // same fact in a different form, and like `why` it is never branched on.
+    // same fact in a different form. R46 — and the leaf it called, so the panel
+    // can light the caller and what it actually did at the same time. These two
+    // are set TOGETHER, always: a tick that set one and left the other stale is
+    // the readout claiming a pairing that never happened.
     memory.rung = decision.rung;
+    memory.step = decision.step;
 
     if (decision.action.kind === "pause") {
       setPause(decision.action.reason);
@@ -1633,6 +1744,7 @@ export function createMiningBot(deps: MiningBotDeps): MiningBotController {
         memory.action = null;
         memory.why = "You paused the bot. Your ship keeps doing whatever it was last told to.";
         memory.rung = null;
+        memory.step = null;
         runToken += 1;
         emit();
       }
@@ -1654,6 +1766,7 @@ export function createMiningBot(deps: MiningBotDeps): MiningBotController {
         memory.action = null;
         memory.why = "You stopped the bot. It will not send your ship any more orders.";
         memory.rung = null;
+        memory.step = null;
         runToken += 1;
         emit();
       }

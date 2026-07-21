@@ -388,7 +388,16 @@
       <h3>{group.name}</h3>
       <ol class="ladder">
         {#each group.rungs as rung (rung.id)}
-          {@const fired = $bot.rung === rung.id}
+          <!--
+            R46 — A ROW LIGHTS IF THE LOOP NAMED IT, AS THE RULE IT TRIED **OR**
+            AS THE STEP THAT RULE TOOK. Some rules hand the work to a shared set
+            of steps, and before R46 only one of the two could be marked: the
+            shortcut rule lit while the step that actually ran stayed dark, so on
+            a tick where the ship would not report its equipment the page said
+            the equipment had been switched on when nothing had. Marking both is
+            what stops the page stating something that did not happen.
+          -->
+          {@const fired = $bot.rung === rung.id || $bot.step === rung.id}
           <li class="rung" class:fired aria-current={fired ? "step" : undefined}>
             <span class="mark" aria-hidden="true">{fired ? "▸" : ""}</span>
             <span class="rung-body">

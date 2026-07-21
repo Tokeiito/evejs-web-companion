@@ -18,13 +18,18 @@
 // recorded here rather than smoothed over, because the whole value of doing this
 // before building an editor is finding them:
 //
-//   1. THE LADDER IS NOT FLAT. `travelDecision` is a five-step sub-ladder
-//      (warp → approach → closing → arrive) reached from FIVE different rungs,
-//      and `runTheLasers` is a three-step one reached from two. A flat row list
-//      has no notion of "call", so those steps are not rows here: the rung that
-//      fired is the CALLER, and which step it took shows only in the action and
-//      the why. Rendering them as rows would mean 5 callers × 5 steps = 25 rows
-//      for something the code writes once. See `travel-*` notes below.
+//   1. THE LADDER IS NOT FLAT — AND R46 STOPPED PRETENDING IT WAS. A decision
+//      now carries TWO names: the `rung` that fired and the `step` inside the
+//      sub-ladder it called (`MiningStepID` below). The equipment sub-ladder's
+//      three leaves and the belt arrival are rows here and light ALONGSIDE
+//      their caller.
+//
+//      What is still not a row is the TRAVEL sub-ladder's warp / approach /
+//      closing / dock steps: they are reached from FIVE different rungs, and
+//      giving them rows would mean a caller × step cross-product of rows for
+//      code written once. Those ticks report `step: null` and what the sub-
+//      ladder chose shows in the action and the why — which the `travel-to-belt`
+//      row says on itself, on screen.
 //
 //   2. `headingHome` IS A LATCHED SENTENCE, NOT A FLAG. `HEALTH_FLOOR` and
 //      `NO_YIELD_HAUL` each set it to their OWN prose, and `HEADING_HOME` reads
@@ -34,11 +39,19 @@
 //      entirely. A row list cannot enumerate the sources of the state its own
 //      rows read.
 //
-//   3. THE ADOPT SHORTCUT DOES TWO THINGS. `ROCK_ALREADY_LOCKED` returns an
-//      action AND a memory write in one tick, and the action it returns is
-//      produced by the equipment sub-ladder — so naming the shortcut hides what
-//      the tick actually did, and naming what it did hides the shortcut. This
-//      catalogue chose to name the shortcut; the cost is recorded on the row.
+//   3. THE ADOPT SHORTCUT DOES TWO THINGS — and R44's answer to it was WRONG.
+//      `ROCK_ALREADY_LOCKED` returns an action AND a memory write in one tick,
+//      and the action it returns is produced by the equipment sub-ladder. R44
+//      let the shortcut SUBSTITUTE its row for the leaf's, and a decision held
+//      exactly one row, so on a tick where the ship would not say which modules
+//      were cycling the bot switched NOTHING on while the only lit row read
+//      "…skip the lock and go straight to the equipment".
+//
+//      THE READOUT COULD STATE SOMETHING THAT DID NOT HAPPEN. That is not a
+//      distortion, it is a false claim, and a panel whose whole purpose is "see
+//      why it did that" must not be able to make one. R46 carries the caller and
+//      the leaf together instead of choosing between them, which makes the lie
+//      untellable rather than documented.
 //
 //   4. `noYieldCycles` IS NOT A CONDITION A ROW CAN HOLD. See NO_YIELD_HAUL.
 //
@@ -83,8 +96,39 @@ export type MiningRungID =
   | "travel-to-belt"
   | "belt-empty"
   | "no-rock"
+  | "rock-is-locked"
   | "rock-already-locked"
   | "lock-nearest-rock";
+
+/**
+ * A row that is reached THROUGH another row rather than tried in its own right
+ * — a leaf of one of the sub-ladders (R46).
+ *
+ * These never appear as a decision's `rung`, only as its `step`, and the
+ * compiler enforces that: `MiningDecision.rung` is `MiningCallerRungID`, which
+ * excludes every id below.
+ *
+ * ⚠ WHY THESE FOUR AND NOT THE TRAVEL STEPS. A leaf earns a row when it can be
+ * named without a cross-product. The equipment sub-ladder is called from two
+ * rungs and its three answers are genuinely different outcomes ("nothing was
+ * switched on" is not "it is mining"), so they are rows. The belt arrival is the
+ * ladder's own rung 8 and always reached from one caller, so it is a row too.
+ * Travel's warp / approach / closing / dock steps are reached from five rungs
+ * and would need 5 × 4 rows for code written once — those report `step: null`,
+ * and `travel-to-belt` says so on itself.
+ */
+export type MiningStepID =
+  | "equipment-unknown"
+  | "equipment-on"
+  | "mining-running"
+  | "belt-empty";
+
+/**
+ * A row the ladder tries IN ITS OWN RIGHT — everything that is not a sub-ladder
+ * leaf. This is the type of a decision's `rung`, so it is the compiler, not a
+ * reviewer, that stops a leaf being reported as though the loop had tried it.
+ */
+export type MiningCallerRungID = Exclude<MiningRungID, MiningStepID>;
 
 /**
  * How well this rung survived being turned into a row — the R44 experiment's
@@ -248,6 +292,12 @@ export const MINING_LADDER: readonly MiningRung[] = Object.freeze([
       "This one really does finish with the rock, unlike the row above. Two rows that look alike and must never be merged.",
   },
   {
+    id: "rock-is-locked",
+    name: "The rock it is working is locked, so it goes on to the equipment",
+    group: "The rock",
+    fit: "clean",
+  },
+  {
     id: "equipment-unknown",
     name: "Your ship did not say which equipment is running, so nothing was switched on this time",
     group: "The rock",
@@ -285,7 +335,7 @@ export const MINING_LADDER: readonly MiningRung[] = Object.freeze([
     group: "The rock",
     fit: "distorted",
     caveat:
-      "This is reached through the row above rather than being tried in its own right: it is what heading for the belt turns into once the ship has arrived.",
+      "This is reached through the row above rather than being tried in its own right, so the two light together: it is what heading for the belt turns into once the ship has arrived.",
   },
   {
     id: "no-rock",
@@ -301,7 +351,7 @@ export const MINING_LADDER: readonly MiningRung[] = Object.freeze([
     group: "The rock",
     fit: "distorted",
     caveat:
-      "Two things in one tick: it starts the equipment AND remembers this rock as the one being worked. It also borrows its move from the equipment rows below, so none of those light up while this one does.",
+      "Two things in one tick: it goes on to the equipment AND remembers this rock as the one being worked. The equipment row that lights with this one is what actually happened — read them together.",
   },
   {
     id: "lock-nearest-rock",
@@ -317,6 +367,21 @@ export const MINING_LADDER: readonly MiningRung[] = Object.freeze([
 export const MINING_RUNG_IDS: readonly MiningRungID[] = Object.freeze(
   MINING_LADDER.map((rung) => rung.id),
 );
+
+/**
+ * Every SUB-LADDER LEAF id (R46) — the rows that are reached through another row
+ * rather than tried in their own right.
+ *
+ * ⚠ EVERY ONE OF THESE IS ALSO A ROW IN THE LADDER ABOVE. That is what lets the
+ * panel light a step exactly the way it lights a rung, and a test pins it: a
+ * step id with no row would be a leaf the loop reports and the page cannot show.
+ */
+export const MINING_STEP_IDS: readonly MiningStepID[] = Object.freeze([
+  "equipment-unknown",
+  "equipment-on",
+  "mining-running",
+  "belt-empty",
+]);
 
 /** The rung with this id, or null. Never throws — a readout must not crash. */
 export function findRung(id: string | null): MiningRung | null {

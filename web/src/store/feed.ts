@@ -77,7 +77,7 @@ import type {
   WalletLPBalance,
 } from "./types.ts";
 import type { ShipStats } from "../bridge/shipStats.ts";
-import type { MiningRungID } from "../nav/miningLadder.ts";
+import type { MiningRungID, MiningStepID } from "../nav/miningLadder.ts";
 
 export type FeedStatus = "idle" | "connecting" | "connected" | "disconnected";
 
@@ -622,6 +622,13 @@ export type FeedEvent =
        * leaves a readout dark while everything still compiles.
        */
       readonly rung: MiningRungID | null;
+      /**
+       * R46 — the leaf that rung called. REQUIRED for the same reason `rung`
+       * is: an optional field on a feed event is the shape that goes quietly
+       * missing, and this one going missing is how the panel would go back to
+       * claiming the equipment was switched on when it was not.
+       */
+      readonly step: MiningStepID | null;
       readonly rockName: string | null;
       readonly cyclesCompleted: number;
       readonly oreUnitsMined: number;

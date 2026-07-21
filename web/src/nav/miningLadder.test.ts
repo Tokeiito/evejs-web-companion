@@ -25,8 +25,11 @@ import assert from "node:assert/strict";
 import {
   MINING_LADDER,
   MINING_RUNG_IDS,
+  MINING_STEP_IDS,
   findRung,
+  type MiningCallerRungID,
   type MiningRungID,
+  type MiningStepID,
 } from "./miningLadder.ts";
 import {
   BELT_ARRIVAL_RADIUS_M,
@@ -411,7 +414,11 @@ test("THE TWO RELEASE RUNGS ARE DIFFERENT ROWS WITH DIFFERENT VERBS", () => {
   assert.notEqual(gone.rung, empty.rung);
 });
 
-test("the rock: the three equipment rungs", () => {
+test("the rock: the three equipment steps, each named beside the rule that called it", () => {
+  // R46 — these three are STEPS, not rules the ladder tries in its own right.
+  // The rule that reached them is `rock-is-locked`, and before R46 it had no row
+  // and no name: the readout showed the equipment step alone, so "the bot is on
+  // the rock it remembered" was invisible on every mining tick.
   const rock = entity({ itemID: ROCK_ID });
   const held = { snapshot: snapshot([rock]), lockedTargetIDs: [ROCK_ID] };
   const mem = { currentRockID: ROCK_ID };
@@ -420,17 +427,20 @@ test("the rock: the three equipment rungs", () => {
     { ...held, snapshot: snapshot([rock], { activeModuleIDs: null }) },
     mem,
   );
-  assert.equal(unknown.rung, "equipment-unknown");
+  assert.equal(unknown.rung, "rock-is-locked");
+  assert.equal(unknown.step, "equipment-unknown");
 
   const on = decide(held, mem);
-  assert.equal(on.rung, "equipment-on");
+  assert.equal(on.rung, "rock-is-locked");
+  assert.equal(on.step, "equipment-on");
   assert.equal(on.action.kind, "activate");
 
   const mining = decide(
     { ...held, snapshot: snapshot([rock], { activeModuleIDs: [MODULE_ID] }) },
     mem,
   );
-  assert.equal(mining.rung, "mining-running");
+  assert.equal(mining.rung, "rock-is-locked");
+  assert.equal(mining.step, "mining-running");
   assert.equal(mining.action.kind, "wait");
 });
 
@@ -448,19 +458,80 @@ test("the rock: locking the one it already picked, versus picking a new one", ()
   assert.equal(fresh.takeRock, ROCK_ID);
 });
 
-test("THE ADOPT SHORTCUT: one rung, one action, AND a memory write", () => {
-  // ⚠ THE R44 FINDING, ASSERTED. This tick both starts the equipment and
-  // remembers the rock. A row model of "one condition, one action" has no place
-  // to put the second half, and the row that lights is the SHORTCUT rather than
-  // the equipment row whose action it actually borrowed — so `equipment-on`
-  // stays dark on a tick that switched the equipment on.
+test("THE ADOPT SHORTCUT: a rule, the step it called, AND a memory write", () => {
+  // ⚠ THE R44 FINDING, REVISED BY R46. This tick both goes on to the equipment
+  // and remembers the rock. A row model of "one condition, one action" still has
+  // no place to put the second half — that part of the finding stands, and the
+  // row still says so.
+  //
+  // What R44 got WRONG was the first half. It reported the shortcut INSTEAD of
+  // the equipment step, so `equipment-on` stayed dark on a tick that switched
+  // the equipment on. Both are now reported, in two fields that cannot compete
+  // for one slot.
   const rock = entity({ itemID: ROCK_ID });
   const adopted = decide({ snapshot: snapshot([rock]), lockedTargetIDs: [ROCK_ID] });
 
   assert.equal(adopted.rung, "rock-already-locked");
+  assert.equal(adopted.step, "equipment-on");
   assert.equal(adopted.action.kind, "activate");
   assert.equal(adopted.takeRock, ROCK_ID, "the bookkeeping tail the row cannot express");
-  assert.notEqual(adopted.rung, "equipment-on");
+  // The rule and the step are DIFFERENT NAMES and neither stands in for the
+  // other — that substitution is the whole defect R46 removed.
+  assert.notEqual(adopted.rung, adopted.step);
+});
+
+test("R46: THE READOUT CANNOT CLAIM AN ACTION THE BOT DID NOT TAKE", () => {
+  // ⚠ THIS IS THE TEST R46 EXISTS FOR, AND IT FAILED AGAINST THE OLD CODE.
+  //
+  // The adopt shortcut borrows its move from the equipment sub-ladder. When the
+  // ship will not say which modules are cycling, that sub-ladder switches
+  // NOTHING on — it waits, on purpose, because switching a laser on twice
+  // because the ship would not answer is fabricated progress.
+  //
+  // The old code SUBSTITUTED the shortcut's row for the leaf's rather than
+  // carrying both, and a decision held exactly one row. So the single lit row
+  // read "...skip the lock and go straight to the equipment" on a tick where no
+  // equipment was touched at all, and the row that says nothing was switched on
+  // stayed dark. A readout whose whole job is "see why it did that" was able to
+  // assert something that did not happen — which is worse than no readout.
+  const rock = entity({ itemID: ROCK_ID });
+  const adopted = decide({
+    snapshot: snapshot([rock], { activeModuleIDs: null }),
+    lockedTargetIDs: [ROCK_ID],
+  });
+
+  // WHAT ACTUALLY HAPPENED: nothing was switched on.
+  assert.equal(adopted.action.kind, "wait");
+  assert.equal(
+    adopted.action.kind === "wait" ? adopted.action.reason : null,
+    "unknown module state",
+  );
+
+  // The rows this tick lights: the caller AND the leaf it called.
+  const lit = [adopted.rung, adopted.step]
+    .filter((id): id is MiningRungID => id !== null && id !== undefined)
+    .map((id) => findRung(id));
+  assert.ok(
+    lit.every((row) => row !== null),
+    "a row this tick lights is not in the catalogue at all",
+  );
+  const names = lit.map((row) => row!.name).join(" · ");
+
+  // THE CLAIM. On a tick where nothing was switched on, one of the lit rows must
+  // SAY nothing was switched on. Before the fix exactly one row lit, and it said
+  // the opposite.
+  assert.match(
+    names,
+    /nothing was switched on/i,
+    `no lit row admits that nothing was switched on: ${names}`,
+  );
+
+  // And the skipped lock stays visible — the fix must not trade one
+  // invisibility for another.
+  assert.equal(adopted.rung, "rock-already-locked");
+  assert.equal(adopted.step, "equipment-unknown");
+  // The bookkeeping tail is unchanged: it still adopts the rock.
+  assert.equal(adopted.takeRock, ROCK_ID);
 });
 
 test("the rock: heading for the belt, and arriving to find it empty", () => {
@@ -477,6 +548,10 @@ test("the rock: heading for the belt, and arriving to find it empty", () => {
   const travelling = decide({ snapshot: snapshot([belt]) });
   assert.equal(travelling.rung, "travel-to-belt");
   assert.equal(travelling.action.kind, "warp");
+  // R46 — the travel steps deliberately have NO rows (five callers × four steps
+  // would be a cross-product of rows for code written once), so this reports no
+  // step rather than inventing one. The row says so on screen.
+  assert.equal(travelling.step, null);
 
   // Standing at the belt with every rock exhausted: the SAME call site, but a
   // different rule — which is why the arrival is its own rung.
@@ -485,7 +560,11 @@ test("the rock: heading for the belt, and arriving to find it empty", () => {
     { snapshot: snapshot([entity({ ...belt, position: { x: 100, y: 0, z: 0 } }), rock]) },
     { exhaustedRockIDs: new Set([ROCK_ID]) },
   );
-  assert.equal(arrived.rung, "belt-empty");
+  // R46 — the arrival is the STEP and the rule that flew there is the RUNG. The
+  // old code overwrote the caller's rung on the way out, which hid which of the
+  // five callers had reached the arrival at all.
+  assert.equal(arrived.rung, "travel-to-belt");
+  assert.equal(arrived.step, "belt-empty");
   assert.equal(arrived.action.kind, "pause");
 });
 
@@ -531,10 +610,89 @@ test("EXHAUSTIVE: every rung the catalogue lists is reachable as a type, and vic
     "travel-to-belt": true,
     "belt-empty": true,
     "no-rock": true,
+    "rock-is-locked": true,
     "rock-already-locked": true,
     "lock-nearest-rock": true,
   };
   const declared = Object.keys(every).sort();
   const rendered = [...MINING_RUNG_IDS].sort();
   assert.deepEqual(rendered, declared, "the ladder and the rung type disagree");
+});
+
+test("R46 EXHAUSTIVE: every STEP is a row the panel can light, and the list is complete", () => {
+  // Same pinning for the new type. A step id with no row in the ladder would be
+  // a leaf the loop reports and the page has no way to show — the invisibility
+  // this goal removed, reintroduced through the other field.
+  const every: Record<MiningStepID, true> = {
+    "equipment-unknown": true,
+    "equipment-on": true,
+    "mining-running": true,
+    "belt-empty": true,
+  };
+  assert.deepEqual([...MINING_STEP_IDS].sort(), Object.keys(every).sort());
+  for (const id of MINING_STEP_IDS) {
+    assert.ok(findRung(id), `${id} is a step with no row to light`);
+  }
+
+  // ⚠ AND THE OTHER DIRECTION: a step must never be reported as a RULE. The
+  // compiler already forbids it (`MiningDecision.rung` is `MiningCallerRungID`,
+  // which excludes these four), so this asserts the two types really are
+  // disjoint rather than trusting the name.
+  const steps = new Set<string>(MINING_STEP_IDS);
+  const callers: MiningCallerRungID[] = [
+    "rock-is-locked",
+    "rock-already-locked",
+    "travel-to-belt",
+    "lock-nearest-rock",
+  ];
+  for (const caller of callers) {
+    assert.ok(!steps.has(caller), `${caller} is both a rule and a step`);
+  }
+});
+
+test("R46: the stall clock's step id and its old wait reason are the SAME ticks", () => {
+  // ⚠ WHY THIS TEST EXISTS. `noYieldCycles` used to be incremented by matching
+  // the wait reason STRING "mining" — the clock behind the two `unexpressible`
+  // rungs, driven by prose. It now keys on `step === "mining-running"`.
+  //
+  // That is only safe if the two conditions select exactly the same ticks. They
+  // do, because they are one return statement in `runTheLasers`: this asserts
+  // the pairing holds from BOTH of that sub-ladder's callers, which is every way
+  // the loop can reach it.
+  const rock = entity({ itemID: ROCK_ID });
+  const running = { activeModuleIDs: [MODULE_ID] };
+
+  // Caller 1: the rock the loop remembered.
+  const remembered = decide(
+    { snapshot: snapshot([rock], running), lockedTargetIDs: [ROCK_ID] },
+    { currentRockID: ROCK_ID },
+  );
+  // Caller 2: the adopt shortcut.
+  const adopted = decide({
+    snapshot: snapshot([rock], running),
+    lockedTargetIDs: [ROCK_ID],
+  });
+
+  for (const [name, decision] of [
+    ["the remembered rock", remembered],
+    ["the adopt shortcut", adopted],
+  ] as const) {
+    assert.equal(decision.step, "mining-running", `${name} did not report the mining step`);
+    assert.equal(decision.action.kind, "wait", `${name} did not wait`);
+    assert.equal(
+      decision.action.kind === "wait" ? decision.action.reason : null,
+      "mining",
+      `${name}: the step id and the old wait reason have come apart`,
+    );
+  }
+  assert.notEqual(remembered.rung, adopted.rung, "the two callers are not distinguished");
+
+  // And a tick that is NOT mining reports neither — so the equivalence above is
+  // not passing because everything matches.
+  const locking = decide({ snapshot: snapshot([rock]) });
+  assert.notEqual(locking.step, "mining-running");
+  assert.notEqual(
+    locking.action.kind === "wait" ? locking.action.reason : null,
+    "mining",
+  );
 });

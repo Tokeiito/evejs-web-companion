@@ -5,7 +5,7 @@
 import type { ShipStats } from "../bridge/shipStats.ts";
 import type { GateLink } from "../space/gateLinks.ts";
 import type { BotID } from "../nav/botRegistry.ts";
-import type { MiningRungID } from "../nav/miningLadder.ts";
+import type { MiningRungID, MiningStepID } from "../nav/miningLadder.ts";
 
 export type { GateLink };
 export type { BotID };
@@ -1628,6 +1628,19 @@ export interface MiningBotState {
    * plain-language name a player reads, and a panel test sweeps for every id.
    */
   readonly rung: MiningRungID | null;
+  /**
+   * R46 — the LEAF of the sub-ladder that rung called, so the panel lights the
+   * row that fired and the thing it actually did at the same time. Null when the
+   * rung answered on its own, when it called the travel steps (which have no
+   * rows), or when no rung fired at all.
+   *
+   * ⚠ THIS FIELD IS WHY THE READOUT CANNOT LIE. With one row per tick the adopt
+   * shortcut could light "…go straight to the equipment" while the equipment was
+   * not touched. Two names cannot be made to compete for one slot.
+   *
+   * ⚠ R7d — this identifier NEVER renders, exactly like `rung`.
+   */
+  readonly step: MiningStepID | null;
   /** The rock it is working, by NAME (R7d). */
   readonly rockName: string | null;
   /** The belt and station the player picked, by name. */
