@@ -3132,6 +3132,133 @@ name is public to any session that asks, and one account's cached name reveals
 nothing another could not fetch itself. Only `name`, `solarSystemID` and
 `typeID` are kept — never the owner-only fields the owner branch also returns.
 
+## Planetary Interaction — the colonies you own (R41)
+
+### ⚠ THE READ ALREADY EXISTED, AND IT IS NOT A BRIDGE CALL
+
+`GET /snapshot` has always carried the character's colonies.
+`buildPlanetRuntimeForCharacter` (`evejsWebGatewayRuntime.js:2129`) reads the
+`planetRuntimeState` root table and filters `coloniesByKey` down to rows whose
+`ownerID` is the requested character *before* the snapshot is serialized. The
+ownership check is the gateway's own `validateOwnedCharacter`, the same one
+`/skills` uses, and — like `/skills` — **no held bridge session is required**:
+reading what you have built on a planet is not an act of piloting.
+
+**So R41 added ZERO gateway allowlist pairs.** R37 added three, R38 added one,
+R40 added none, and this adds none.
+
+### ⚠ Why the obvious `planetMgr` reads were DECLINED (the R38 shape, again)
+
+`planetMgr` does expose reads, and every one of them is deliberately
+**owner-agnostic**, because in the retail client they back the *in-space* planet
+view where you can see that somebody else has a colony:
+
+| Handler | Why it is not allowlisted |
+| --- | --- |
+| `Handle_GetFullNetworkForOwner` | Takes `ownerID` from **`args[1]`**. Allowlisting it would let any logged-in browser read **any** character's pin layout on any planet by passing someone else's id. |
+| `Handle_GetCommandPinsForPlanet` | Iterates `listColoniesForPlanet` across **all** owners and returns a command-pin summary per owner. |
+| `Handle_GetExtractorsForPlanet` | Same: every owner's extractors on that planet. |
+| `Handle_GetPlanetsForChar` | Session-scoped and safe, but answers only the planet *list* — the contents still need one of the three above. |
+
+A service-granular allowlist would have handed all four to the browser. The
+snapshot answers the same question with the ownership filter already applied.
+
+**Proved live, not asserted:** with the panel fully working, a sweep of eleven
+`planetMgr` methods through `POST /api/bridge/call` returns `CALL_NOT_ALLOWED`
+for every one, and four other characters read `colonies: 0` while `Farmer`'s
+colony sits in the same table.
+
+### `GET /api/bridge/planets` (this repo)
+
+Requires the web login **and** a held bridge session (the session is what names
+the character; it is not used to *call* anything). Answers:
+
+```jsonc
+{
+  "ok": true,
+  "characterID": 140000005,
+  "serverNowMs": 1784660311765,   // sampled in THIS read; the browser's clock offset
+  "coloniesReadable": true,        // see below — NOT the same as colonies.length
+  "colonies": [
+    {
+      "planetID": 40009077,
+      "planetName": "Jita I",      // null when the static map cannot name it — NEVER the id
+      "solarSystemID": 30000142,
+      "solarSystemName": "Jita",
+      "planetTypeID": 2016,        // for the icon only (R7d)
+      "planetTypeName": "Planet (Barren)",
+      "commandCenterLevel": 5,
+      "lastSimulatedAtMs": 1784233384726,
+      "linkCount": 3,
+      "pins": [
+        {
+          "pinID": 1054656331522,
+          "typeID": 2544,
+          "typeName": "Barren Launchpad",
+          "kind": "launchpad",     // command | extractor-control | extractor | factory | storage | launchpad | other
+          "contents": [ { "typeID": 2396, "typeName": "Biofuels", "quantity": 40 } ],
+          "program": null          // only ever set on an extractor control unit
+        }
+      ],
+      "routes": [
+        { "routeID": 1, "path": [2, 4], "commodityTypeID": 2268,
+          "commodityTypeName": "Aqueous Liquids", "commodityQuantity": 2841 }
+      ]
+    }
+  ]
+}
+```
+
+### ⚠ `coloniesReadable` — the `worldHasNoContracts` rule
+
+`colonies: []` alone is ambiguous. `coloniesReadable` splits it:
+
+- `true` + empty — the snapshot carried a colony table and **none of it is
+  yours**. This is the only state that justifies telling a player they have
+  built nothing.
+- `false` — the gateway reported **no colony table at all**. That says nothing
+  about the character, and the panel words it separately: *"This server did not
+  report any colony information… That is not the same as having no colonies."*
+- A read that throws never reaches either; it becomes a `planets/error`, and the
+  store leaves `colonies: null` rather than `[]`.
+
+### ⚠ A DURATION IS IN FILETIME TICKS TOO — this cost a live round trip
+
+Instants (`expiryTime`, `installTime`, `currentSimTime`, `lastLaunchTime`) are
+Windows FILETIME **strings**, because they overflow a double. That much is
+expected. What is easy to miss is that **`cycleTime` is a duration in the same
+100ns ticks**, not seconds — `planetRuntimeStore` divides it by `SECOND_TICKS`
+(10,000,000) everywhere it uses it.
+
+The live colony on Jita I carries `cycleTime: 9000000000` = **900 s**, a
+15-minute extractor cycle, exactly what retail PI uses. The first version of
+this route copied it across as `cycleTimeSeconds` unconverted, which would have
+rendered a cycle **285 years** long — and the unit tests passed, because the
+fixture had been written with the same wrong assumption. Only the live read
+caught it. The BFF now converts, and a test drives that exact live value.
+
+`"0"` is EveJS's **"never"** (a launchpad that has never launched), not the year
+1601: every instant leaves the BFF as epoch ms **or null**, never 0.
+
+### Client modules
+
+| File | What it holds |
+| --- | --- |
+| `web/src/bridge/planets.ts` | Decoder + pure arranging: `decodeColonyReport`, `summarizeColony`, `programProgress`, `programHasExpired`, `pooledContents`, `colonyPlaceWords`, `formatDuration`. Nothing simulates a colony. |
+| `web/src/store/types.ts` | `Colony`, `ColonyPin`, `ColonyExtractionProgram`, `ColonyRoute`, `ColonyStoredItem`, `PlanetsState`. |
+| `web/src/store/clientStore.ts` | `planets` slice; `hasNoColonies` is set **only** from `coloniesReadable && colonies.length === 0`. |
+| `web/src/app/flow.ts` | `loadPlanets()`, `selectColony()`. One GET, no write. |
+| `web/src/ui/Planets.svelte` | The panel. Four outcomes, four sentences. |
+
+### Not built (deliberately)
+
+The emulator has a **write**: `submitPiRestartExtractorsCommand`
+(`POST /_evejs-web/v1/pi/restart-extractors`), with four already-player-safe
+refusal codes (`CannotManagePlanetWithoutCommandCenter`, `PinDoesNotExist`,
+`PinDoesNotHaveHeads`, `CannotPlaceHeadTooFarAway`). R41 ships **looking**
+before it ships **acting**; the restart is a natural next slice and the refusal
+seam (`web/src/bridge/refusals.ts`) is already there for it.
+
 ### How to add a page on the new stack (R2+)
 
 1. Mine the page's retail calls (`docs/retail-call-inventory.md`) and get each (service, method) pair allowlisted in eve.js (bridge-goal work, not web-side).
