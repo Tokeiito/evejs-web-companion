@@ -7172,14 +7172,33 @@ app.get("/api/agents/find", requireAuth, async (req, res, next) => {
   }
 });
 
+// ⚠ ORDER IS LOAD-BEARING BELOW THIS LINE. The icon cache MUST stay above the
+// SPA catch-all, and it MUST keep `fallthrough: false` (R27). That flag is the
+// only reason a missing icon answers 404: without it the request falls through
+// to the catch-all, the browser receives index.html with a 200, `<img onerror>`
+// never fires, and every uncached icon becomes a permanently broken image.
 app.use(config.iconCacheUrlPath, express.static(config.iconCacheDir, {
   fallthrough: false,
   immutable: true,
   maxAge: "30d",
 }));
-app.use(express.static(path.join(config.repoRoot, "public")));
+
+// R45: the Svelte SPA build is the ONLY app, and it is served at the root.
+// Its asset URLs are root-absolute (vite.config.ts `base: "/"`) — the base and
+// this mount point must always agree, or the document loads and its assets
+// 404 into the catch-all below as a 200 text/html, which renders blank.
+const webAppDir = path.join(config.repoRoot, "public", "dist");
+
+// The app used to live at /dist/. Send that bookmark to the canonical root
+// rather than serving a second copy at a second URL. 302, not 301, so the
+// redirect is never baked into a browser cache we cannot reach.
+app.get(/^\/dist\/?$/, (req, res) => {
+  res.redirect("/");
+});
+
+app.use(express.static(webAppDir));
 app.get(/.*/, (req, res) => {
-  res.sendFile(path.join(config.repoRoot, "public", "index.html"));
+  res.sendFile(path.join(webAppDir, "index.html"));
 });
 
 app.use((error, req, res, next) => {
