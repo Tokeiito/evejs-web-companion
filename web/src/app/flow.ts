@@ -2117,13 +2117,23 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // Best-effort: leave the UI on the raw-ID fallback and allow a later retry.
       return null;
     }
+    // R38 — a player structure resolves like a station (it is a dockable place
+    // and the route answers its name in stationName too), so the flight readout
+    // and Travel name it without knowing it is runtime data.
     const name =
-      resolved.kind === "station"
+      resolved.kind === "station" || resolved.kind === "structure"
         ? resolved.stationName
         : resolved.kind === "system"
           ? resolved.systemName
           : null;
-    locationNames.set(id, name);
+    // ⚠ Only a DEFINITE outcome is cached. `lookupFailed` means the structure
+    // read could not be completed, not that the place is nameless; caching that
+    // would pin the readout to its fallback for the whole session even once the
+    // lookup could succeed. Same rule the batch name cache follows for
+    // `unresolved`. A plain static miss is still cached, as it always was.
+    if (!resolved.lookupFailed) {
+      locationNames.set(id, name);
+    }
     return name;
   }
 
@@ -3728,12 +3738,22 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         }
         continue;
       }
+      // R38 — a key the server could not look up at all (a player structure
+      // with no character online, or a gateway error) is released like a
+      // transient network failure: pending mark dropped, NOTHING cached, so a
+      // later requestNames asks again. Caching it would be the client asserting
+      // "this place has no name" on the strength of a question that was never
+      // answered.
+      const unresolved = new Set(result.unresolved);
       const entries: Record<string, string | null> = {};
       for (const ref of chunk) {
         const key = nameKey(ref.kind, ref.id);
+        namePending.delete(key);
+        if (unresolved.has(key)) {
+          continue;
+        }
         const name = key in result.names ? result.names[key] : null;
         nameCache.set(key, name ?? null);
-        namePending.delete(key);
         entries[key] = name ?? null;
       }
       store.apply({ type: "names/resolved", entries });

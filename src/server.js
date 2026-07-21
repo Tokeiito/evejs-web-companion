@@ -6094,7 +6094,55 @@ app.get("/api/map/resolve/:id", requireAuth, async (req, res, next) => {
       });
       return;
     }
-    res.json({ ok: true, id, kind: "unknown", stationID: null, stationName: null, solarSystemID: null, systemName: null });
+    // R38 — the static tables have no answer, but a player structure is a legal
+    // destination and is runtime data. This is the SECOND consumer of the one
+    // shared structure resolver (the first is /api/names); Travel and the
+    // flight readout reach a structure name through here. A structure that
+    // cannot be resolved still falls through to kind:"unknown" below, so the
+    // honest fallback is unchanged when the lookup genuinely fails.
+    let structureLookupFailed = false;
+    if (isPlayerStructureID(id)) {
+      const { records, failed } = await resolveRuntimeStructureNames(req, [id]);
+      structureLookupFailed = failed.has(id);
+      const record = records.get(id);
+      const structureName = record ? record.name : null;
+      if (typeof structureName === "string") {
+        // GetStructureInfo carries the structure's solar system in the SAME
+        // payload as the name, so Travel gets a routable system for free.
+        const solarSystemID = record.solarSystemID;
+        res.json({
+          ok: true,
+          id,
+          kind: "structure",
+          structureID: id,
+          structureName,
+          // A structure is dockable, so the existing station-shaped consumers
+          // (which read stationID/stationName) keep working unchanged rather
+          // than every caller having to learn a new shape.
+          stationID: id,
+          stationName: structureName,
+          solarSystemID,
+          systemName: solarSystemID ? staticData.getSolarSystemName(solarSystemID) : null,
+          // Stated rather than implied: this resolved, so the caller may cache it.
+          lookupFailed: false,
+        });
+        return;
+      }
+    }
+    // ⚠ THE FACT, NOT A GUESS. "Nothing in the world bears this ID" and "we
+    // could not ask" both land on kind:"unknown", but only the first justifies
+    // the client caching the miss. `lookupFailed` separates them so a structure
+    // we simply could not reach is retried instead of being written off.
+    res.json({
+      ok: true,
+      id,
+      kind: "unknown",
+      stationID: null,
+      stationName: null,
+      solarSystemID: null,
+      systemName: null,
+      lookupFailed: structureLookupFailed,
+    });
   } catch (error) {
     next(error);
   }
@@ -6228,26 +6276,245 @@ app.get("/api/market/find", requireAuth, async (req, res, next) => {
   }
 });
 
+/**
+ * R38 — PLAYER-STRUCTURE NAMES. The one runtime name read, shared by every
+ * name path in this BFF.
+ *
+ * ⚠ WHY THIS EXISTS AT ALL. Every other name in this app comes from the static
+ * SDE, which is why /api/names and /api/map/resolve were both able to be
+ * honest "read-only static reference data, NOT a gateway call". A player-owned
+ * Upwell structure breaks that assumption: it is created at runtime, lives only
+ * in the game store, and appears in NO static table. Both static paths
+ * therefore answered "unknown" for a structure that very much has a name, and
+ * a docked Astrahus rendered as "an unnamed place".
+ *
+ * ⚠ THIS IS THE ONLY PLACE A STRUCTURE NAME IS FETCHED. Both /api/names (the
+ * batch path Assets/overview/contracts/market use) and /api/map/resolve/:id
+ * (the path Travel and the flight readout use) call through here. Resolving a
+ * structure name anywhere else — or teaching a panel to call the gateway
+ * itself — reintroduces exactly the duplicated mechanic this goal exists to
+ * avoid.
+ *
+ * THE READ: structureDirectory.GetStructureInfo(structureID) -> util.KeyVal.
+ * For a structure the caller's corp owns it returns the full directory record;
+ * for one it does not own, the public eight-key payload. BOTH carry `itemName`,
+ * which is the only field taken here — so this works for any structure, owned
+ * or not, docked at or not. Verified live against structure 1030000000001
+ * ("Perimeter - asdf", an Astrahus).
+ *
+ * ⚠ null IS A REAL ANSWER, NOT A FAILURE. GetStructureInfo returns null for a
+ * structure that does not exist — confirmed live for an unknown ID, for an NPC
+ * station ID, and for 0. That is a DEFINITIVE "this is not a player structure",
+ * safe for the client to cache forever. It is categorically different from "we
+ * could not ask" (no character online, gateway error), which must NOT be cached
+ * as a name-less result or the panel would be stuck on the fallback for the
+ * rest of the session. `failed` carries that second case out separately —
+ * the `worldHasNoContracts` rule: assert the negative only when the read
+ * actually succeeded.
+ */
+
+// Retail's structure ID floor. NPC stations live in the 60,000,000 range; every
+// player-deployed Upwell structure is allocated above 1e12. Below this, a miss
+// in the static station table is a genuine unknown and never worth a round trip.
+const STRUCTURE_ID_FLOOR = 1000000000000;
+
+// A names batch can legitimately carry hundreds of IDs, but only a handful can
+// ever be structures. GetStructureInfo is per-structure (see the allowlist note
+// on why the batch GetStructures is deliberately NOT reachable), so this bounds
+// the fan-out a single request can provoke.
+const STRUCTURE_NAME_LOOKUP_CAP = 25;
+
+// Structure names change only when someone renames the structure, so a short
+// TTL removes the per-panel-load round trip without letting a rename go stale
+// for long. Only DEFINITIVE outcomes are cached — never a failure.
+//
+// ⚠ PROCESS-WIDE, NOT PER-SESSION, AND THAT IS DELIBERATE. A structure's name
+// is public: Handle_GetStructureInfo applies no access check and hands its
+// public payload — itemName included — to any session that asks, owner or not.
+// So one account's cached name tells another account nothing it could not
+// fetch for itself, and sharing the cache means the second viewer of a
+// structure pays no round trip. Nothing owner-only is cached here: only the
+// name, system and type are kept, never the services/fuel/timer fields the
+// owner branch also returns.
+const STRUCTURE_NAME_TTL_MS = 60000;
+const structureNameCache = new Map();
+
+function isPlayerStructureID(id) {
+  return Number.isSafeInteger(id) && id >= STRUCTURE_ID_FLOOR;
+}
+
+function readCachedStructureName(structureID, now) {
+  const hit = structureNameCache.get(structureID);
+  if (!hit || hit.expiresAt <= now) {
+    structureNameCache.delete(structureID);
+    return undefined;
+  }
+  return { name: hit.name, solarSystemID: hit.solarSystemID, typeID: hit.typeID };
+}
+
+/**
+ * Resolve player-structure IDs on the caller's live session.
+ *
+ * Returns `{ records, failed }` where `records` maps a structureID to
+ * `{ name, solarSystemID, typeID }` — `name` null when the server said "no such
+ * structure" — and `failed` holds the IDs that could not be asked about at all.
+ * An ID never appears in both.
+ *
+ * ⚠ The system and type come out of the SAME KeyVal as the name. A caller that
+ * needs a structure's system must read it from here rather than making a second
+ * call; GetStructureInfo already carries it.
+ */
+async function resolveRuntimeStructureNames(req, structureIDs) {
+  const records = new Map();
+  const failed = new Set();
+  const wanted = [...new Set(structureIDs.filter(isPlayerStructureID))];
+  if (wanted.length === 0) {
+    return { records, failed };
+  }
+
+  const now = Date.now();
+  const toFetch = [];
+  for (const structureID of wanted) {
+    const cached = readCachedStructureName(structureID, now);
+    if (cached !== undefined) {
+      records.set(structureID, cached);
+    } else {
+      toFetch.push(structureID);
+    }
+  }
+  if (toFetch.length === 0) {
+    return { records, failed };
+  }
+
+  // No character online means no session to ask on. That is a FAILURE to look
+  // up, not a finding that the structure is nameless — the caller must be able
+  // to tell those apart, so these go to `failed` and nothing is cached.
+  const held = bridgeSessions.get(req.webSessionID) || null;
+  if (!held) {
+    for (const structureID of toFetch) {
+      failed.add(structureID);
+    }
+    return { records, failed };
+  }
+
+  const remember = (structureID, record) => {
+    records.set(structureID, record);
+    structureNameCache.set(structureID, { ...record, expiresAt: now + STRUCTURE_NAME_TTL_MS });
+  };
+
+  for (const structureID of toFetch.slice(0, STRUCTURE_NAME_LOOKUP_CAP)) {
+    try {
+      const outcome = await heldTopLevelCall(
+        held,
+        req.webSessionID,
+        "structureDirectory",
+        "GetStructureInfo",
+        [structureID],
+        null,
+      );
+      const result = outcome && outcome.result;
+      if (result === null || result === undefined) {
+        // The definitive "not a player structure" — cacheable.
+        remember(structureID, { name: null, solarSystemID: null, typeID: null });
+        continue;
+      }
+      const entries = keyValEntries(result);
+      const itemName = readKeyValField(entries, "itemName");
+      // A structure row with a blank name is a nameless structure (null), not a
+      // failed lookup — the empty string must never reach a panel as a label.
+      const name =
+        typeof itemName === "string" && itemName.trim().length > 0 ? itemName : null;
+      remember(structureID, {
+        name,
+        solarSystemID: Number(readKeyValField(entries, "solarSystemID")) || null,
+        typeID: Number(readKeyValField(entries, "typeID")) || null,
+      });
+    } catch (_error) {
+      // Refusal, transport error, reaped session: we do not know. Not cached.
+      failed.add(structureID);
+    }
+  }
+  // Anything past the cap was never asked about — also "we do not know".
+  for (const structureID of toFetch.slice(STRUCTURE_NAME_LOOKUP_CAP)) {
+    failed.add(structureID);
+  }
+  return { records, failed };
+}
+
 // Batch name resolution (goal R7c): the names-everywhere UI pass turns raw IDs
 // into names across every tab, so a list of many IDs (an inventory of typeIDs,
 // a guest list of corp IDs, ...) resolves in ONE round-trip. POST /api/names
 // takes { items: [{kind, id}] } and returns { names: { "kind:id": name } } over
-// the existing static getters. Read-only static reference data — like
-// /api/map/find and /api/agents/find, NOT a gateway/bridge call. Each item is
-// echoed (a name string, or null for a definitive unknown the client caches);
-// the batch is capped server-side so an oversized request can't scan the whole
-// item table.
+// the existing static getters. Each item is echoed (a name string, or null for a
+// definitive unknown the client caches); the batch is capped server-side so an
+// oversized request can't scan the whole item table.
+//
+// R38: no longer PURELY static. Static resolution runs first and answers
+// everything it can; only the `station`/`structure` items it could not name AND
+// whose ID is above the player-structure floor fall through to the runtime read
+// above. A request with no such items still makes zero gateway calls, so the
+// common case is unchanged. `unresolved` names the keys whose lookup could not
+// be completed — the client must not cache those as "unknown".
+// The kinds that can legally denote a place a player structure could be. A
+// structure arrives as "station" from every existing caller (Assets asks for
+// the location it found an item at, and does not know the difference); the
+// explicit "structure" kind is for callers that do.
+const STRUCTURE_NAME_KINDS = new Set(["station", "structure"]);
+
 app.post("/api/names", requireAuth, async (req, res, next) => {
   try {
     const items = Array.isArray(req.body && req.body.items) ? req.body.items : [];
     const result = staticData.resolveNames({ items });
+    const names = { ...result.names };
+
+    // Only the static misses that could be a player structure are candidates —
+    // a name the SDE already answered is never re-asked, and an ID below the
+    // structure floor is a genuine static unknown.
+    const candidates = [];
+    for (const [key, value] of Object.entries(names)) {
+      if (value !== null) {
+        continue;
+      }
+      const separator = key.indexOf(":");
+      const kind = key.slice(0, separator);
+      const id = Number(key.slice(separator + 1)) || 0;
+      if (STRUCTURE_NAME_KINDS.has(kind) && isPlayerStructureID(id)) {
+        candidates.push({ key, id });
+      }
+    }
+
+    const unresolved = [];
+    let runtimeUsed = false;
+    if (candidates.length > 0) {
+      runtimeUsed = true;
+      const { records, failed } = await resolveRuntimeStructureNames(
+        req,
+        candidates.map((candidate) => candidate.id),
+      );
+      for (const candidate of candidates) {
+        if (failed.has(candidate.id)) {
+          // Stays null in `names`, but named here so the client leaves it
+          // uncached and retries rather than believing it is nameless.
+          unresolved.push(candidate.key);
+          continue;
+        }
+        const record = records.get(candidate.id);
+        if (record && typeof record.name === "string") {
+          names[candidate.key] = record.name;
+        }
+      }
+    }
+
     res.json({
       ok: true,
-      source: "static-data",
-      count: Object.keys(result.names).length,
+      // Named on the wire so a consumer can see whether a live session was
+      // involved at all, rather than inferring it.
+      source: runtimeUsed ? "static-data+runtime-structures" : "static-data",
+      count: Object.keys(names).length,
       capped: result.capped,
       limit: result.limit,
-      names: result.names,
+      names,
+      unresolved,
     });
   } catch (error) {
     next(error);

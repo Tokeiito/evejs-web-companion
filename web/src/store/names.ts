@@ -16,6 +16,12 @@
  * resolveOneName switch (src/staticData.js). `owner` resolves an ID whose
  * entity type is unknown at the call site (a station owner or a standings
  * `fromID` — a corp, faction, character, or alliance) by trying each in turn.
+ *
+ * R38 — `structure` is a PLAYER-OWNED Upwell structure, the one kind that is
+ * runtime data rather than static reference data. Callers that cannot tell a
+ * structure from an NPC station do not need to: `station` resolves either, so
+ * every existing caller picked up structure names without changing. Use
+ * `structure` only where the call site genuinely knows.
  */
 export type NameKind =
   | "type"
@@ -28,6 +34,7 @@ export type NameKind =
   | "character"
   | "agent"
   | "station"
+  | "structure"
   | "system"
   | "region"
   | "owner";

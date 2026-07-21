@@ -1887,20 +1887,35 @@ export async function loadSystemGraph(options: ApiOptions = {}): Promise<SystemG
   };
 }
 
-/** A destination resolved from static reference data (station or system → system). */
+/**
+ * A destination resolved to its solar system — a station or system from static
+ * reference data, or (R38) a player-owned structure from the live world.
+ */
 export interface ResolvedDestination {
   readonly id: number;
-  readonly kind: "station" | "system" | "unknown";
+  readonly kind: "station" | "system" | "structure" | "unknown";
   readonly solarSystemID: number | null;
   readonly systemName: string | null;
   readonly stationID: number | null;
   readonly stationName: string | null;
+  /**
+   * R38 — true when this came back `unknown` because a player-structure lookup
+   * could not be completed, rather than because nothing bears the ID. A caller
+   * must not cache the miss when this is set.
+   */
+  readonly lookupFailed: boolean;
 }
 
 /**
  * Resolve a picked destination ID to its solar system (a courier destination is
- * a station; the route solver works on systems). Read-only static reference
- * data, like station identity — not a route or gateway call.
+ * a station; the route solver works on systems).
+ *
+ * R38 — mostly static reference data, but a player-owned structure is a legal
+ * destination that exists only at runtime, so the route answers `kind:"structure"`
+ * for one. The structure's name and system are echoed into `stationName` /
+ * `stationID` as well, because a structure IS a dockable place and every
+ * existing caller already reads those fields; a caller that needs to tell the
+ * two apart reads `kind`.
  */
 export async function resolveDestination(
   id: number,
@@ -1909,11 +1924,15 @@ export async function resolveDestination(
   const data = await getJson(`/api/map/resolve/${id}`, options);
   return {
     id,
-    kind: data.kind === "station" || data.kind === "system" ? data.kind : "unknown",
+    kind:
+      data.kind === "station" || data.kind === "system" || data.kind === "structure"
+        ? data.kind
+        : "unknown",
     solarSystemID: asNumberOrNull(data.solarSystemID),
     systemName: typeof data.systemName === "string" ? data.systemName : null,
     stationID: asNumberOrNull(data.stationID),
     stationName: typeof data.stationName === "string" ? data.stationName : null,
+    lookupFailed: data.lookupFailed === true,
   };
 }
 
@@ -1984,6 +2003,16 @@ export async function findMapLocations(
 export interface ResolveNamesResult {
   /** Keyed by `${kind}:${id}`; value is the resolved name or null (unknown). */
   readonly names: Readonly<Record<string, string | null>>;
+  /**
+   * R38 — keys whose lookup could NOT be completed (no character online, a
+   * gateway error, or past the per-request structure cap).
+   *
+   * ⚠ NOT THE SAME AS A null IN `names`. A null there is the server's definite
+   * finding that nothing bears that ID; a key listed here means the question
+   * was never answered. The name cache must not store these, or one lookup
+   * failure would pin a place to its fallback for the rest of the session.
+   */
+  readonly unresolved: readonly string[];
 }
 
 /** Batch-resolve a set of `{kind, id}` refs to names (kind:id → name | null). */
@@ -2000,7 +2029,12 @@ export async function resolveNames(
   for (const [key, value] of Object.entries(raw)) {
     names[key] = typeof value === "string" ? value : null;
   }
-  return { names };
+  const unresolved = Array.isArray(data.unresolved)
+    ? (data.unresolved as JsonValue[]).filter(
+        (key): key is string => typeof key === "string",
+      )
+    : [];
+  return { names, unresolved };
 }
 
 // --- R24 slice C: module cycle times (static reference data) ----------------

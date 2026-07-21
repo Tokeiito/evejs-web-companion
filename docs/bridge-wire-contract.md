@@ -3034,6 +3034,104 @@ plan failures through `travel.failureReason` rather than by throwing, so the
 panel renders that field; without it an unreachable destination would look like
 a button that did nothing.
 
+## Player-structure names — the one runtime name read (R38)
+
+R37 left an honest gap: a player-owned Astrahus rendered as **"an unnamed
+place."** Every other name in this app comes from the static SDE, which is why
+`/api/names` and `/api/map/resolve` could both be "read-only static reference
+data, NOT a gateway call". A player-owned Upwell structure breaks that
+assumption — it is created at runtime, lives only in the game store, and appears
+in **no** static table (`structureProfiles/data.json` has 0 rows). Both static
+paths therefore answered "unknown" for a structure that has a perfectly good
+name.
+
+### The read
+
+| Pair | Why |
+| --- | --- |
+| `structureDirectory.GetStructureInfo` | `GetStructureInfo(structureID)` → `util.KeyVal`. The **only** `structureDirectory` pair the browser can reach, and the entire R38 allowlist delta. |
+
+**Deliberately absent — and this one is not the usual "wider read" story.**
+`structureDirectory.GetStructures` is the natural **batch** form (a list of IDs
+in, a dict out, one round trip instead of N) and was the obvious pair to list.
+It is refused because of a real asymmetry in eve.js:
+
+- `Handle_GetStructureInfo` **branches on ownership** — non-owners get
+  `buildBasicStructureInfoPayload`, the public eight-key payload.
+- `Handle_GetStructures` calls `buildStructureInfoPayload` for **every**
+  requested ID with **no ownership check at all** — fuel expiry, reinforcement
+  timers, vulnerability schedule and quantum-core state for structures the
+  caller has nothing to do with.
+
+Allowlisting the batch form would put a defender's operational calendar behind a
+browser read. The BFF pays the per-structure round trip instead, bounded by a
+cap and a short TTL cache. *(Reported as a server defect; not fixed — game
+mechanics are out of scope for this client.)*
+
+`SetStructureDescription`, `structureDeployment.RenameStructure`,
+`structureControl.BoardStructure`/`EjectFromStructure` and the rest of the
+structure tree are absent too, and are named in the refusal sweep in
+`server/tests/webGatewayServiceCall.test.js`.
+
+### ⚠ Two payload shapes, both carrying the name
+
+Captured live from structure `1030000000001` ("Perimeter - asdf", an Astrahus,
+typeID 35832, in Perimeter 30000144):
+
+| Caller | Shape | Keys |
+| --- | --- | --- |
+| **Owner** (Farmer, corp 98000001) | `util.KeyVal` | 28 keys — the full directory record, including `services`, `fuelExpires`, `reinforce_*`, `state`. |
+| **Non-owner** (Test Pilot, corp 1000044, not docked there) | `util.KeyVal` | exactly 8 — `typeID`, `structureID`, `upkeepState`, `wars`, `ownerID`, `solarSystemID`, `itemName`, `inSpace`. |
+
+Both carry **`itemName`**, and that is the only field the BFF reads — so the
+lookup works for any structure, owned or not, docked at or not. The eight-key
+shape is pinned against the golden log by eve.js's own
+`structureDirectoryParity.test.js`.
+
+**`null` is a real answer, not a failure.** `GetStructureInfo` returns `null`
+for a structure that does not exist — verified live for an unknown ID, for an
+NPC station ID, and for `0`. That is a definitive "not a player structure",
+safe to cache.
+
+### One resolver, two routes
+
+`resolveRuntimeStructureNames` (`src/server.js`) is **the only place a structure
+name is fetched.** Both name paths call it; nothing else may.
+
+| Route | Change |
+| --- | --- |
+| `POST /api/names` | Static resolution runs first. Only the `station`/`structure` misses whose ID is **≥ 1e12** (retail's structure floor) fall through to the runtime read, so a batch with no structures still makes **zero** gateway calls. Adds `unresolved: string[]`. `source` becomes `static-data+runtime-structures` when a live read was involved. |
+| `GET /api/map/resolve/:id` | Answers `kind:"structure"` with `structureName` + the structure's system (read from the **same** KeyVal — no second call). The name and ID are echoed into `stationName`/`stationID` so existing station-shaped consumers work unchanged. Adds `lookupFailed: boolean`. |
+
+Every consumer of those two routes benefits with no per-panel change: Assets,
+Travel, the flight readout, dock/station displays, the overview, contracts and
+the map.
+
+### ⚠ "No name" is not "the lookup failed"
+
+The `worldHasNoContracts` rule (`src/server.js`), applied to names. A `null` in
+`names` means the server looked and found nothing bearing that ID — cacheable
+forever. A key listed in `unresolved` (or `lookupFailed:true` on the map route)
+means the question was **never answered**: no character online, a gateway error,
+or past the per-request cap.
+
+The client must not cache the second kind. `flushNameQueue` releases those
+pending marks and stores nothing, exactly as it already did for a transient
+network failure; `cachedLocationName` skips the cache when `lookupFailed` is
+set. Without this, one failed lookup would pin a real place to "an unnamed
+place" for the rest of the session.
+
+**Unknown stays honest either way** — `resolvedName(..., "an unnamed place")`,
+never the numeric ID (R7d), never a fabricated label.
+
+### Caching
+
+Process-wide, 60 s TTL, definitive outcomes only. Shared across sessions
+deliberately: `Handle_GetStructureInfo` applies no access check, so a structure's
+name is public to any session that asks, and one account's cached name reveals
+nothing another could not fetch itself. Only `name`, `solarSystemID` and
+`typeID` are kept — never the owner-only fields the owner branch also returns.
+
 ### How to add a page on the new stack (R2+)
 
 1. Mine the page's retail calls (`docs/retail-call-inventory.md`) and get each (service, method) pair allowlisted in eve.js (bridge-goal work, not web-side).
