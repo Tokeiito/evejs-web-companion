@@ -289,7 +289,13 @@
       <button
         type="button"
         disabled={busy || $agents.briefing.cargoTypeID === null}
-        onclick={() => run(() => flow.loadPackageIntoShip($agents.briefing!.cargoTypeID as number))}
+        onclick={() =>
+          run(() =>
+            flow.loadPackageIntoShip(
+              $agents.briefing!.cargoTypeID as number,
+              ($agents.briefing!.cargoQuantity ?? 1) as number,
+            ),
+          )}
       >
         Load package into ship
       </button>

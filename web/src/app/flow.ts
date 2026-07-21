@@ -319,10 +319,13 @@ export interface AppFlow {
   /** Load the mission journal (agentMgr.GetMyJournalDetails). */
   loadJournal(): Promise<void>;
   /**
-   * Load the accepted courier's package (matching the briefing cargo type) from
-   * the station hangar into the active ship (reuses the R3 inventory move).
+   * Load the accepted courier's package from the station hangar into the active
+   * ship. Both the briefing's cargo TYPE and its QUANTITY are needed: the type
+   * alone does not identify the package, because courier cargo is ordinary
+   * goods the player may already hold. Goes through the verifying
+   * /api/bridge/inventory/transfer and raises if nothing actually moved.
    */
-  loadPackageIntoShip(cargoTypeID: number): Promise<void>;
+  loadPackageIntoShip(cargoTypeID: number, cargoQuantity: number): Promise<void>;
   /**
    * Set the browser autopilot to the mission dropoff (a station): reuses the
    * R5b route solver + decide-loop via startRoute(dropoffStationID).
@@ -3708,24 +3711,45 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     async chooseAction(agentID, action) {
       await runAgentAction(async () => {
         const result = await api.agentAction(agentID, action.actionID, callOptions);
+        const decoded = decodeConversation(result);
         store.apply({
           type: "agents/conversation",
           agentID,
-          conversation: decodeConversation(result),
+          conversation: decoded,
         });
         // Accepting a courier stages the mission: pull its briefing + journal
         // entry. Completing it pays out: clear the briefing and pull the Step-12
         // reward reads (wallet / LP / standings) alongside the journal.
         // Declining clears the briefing; the journal always refreshes so the
         // offered/accepted/cleared state stays truthful.
+        //
+        // ⚠ PRESSING COMPLETE IS NOT COMPLETING. agentMgr.DoAction answers 200
+        // with a conversation on EVERY branch, refusals included. Measured live
+        // (R35, agent 3008416, Complete pressed docked at the PICKUP station):
+        // HTTP 200, ok:true, an EMPTY available-actions list, and
+        // lastActionInfo.missionCompleted === null — not false. The mission was
+        // still accepted afterwards and not one ISK had moved. So the outcome is
+        // read from lastActionInfo, the one field that only
+        // buildCompletedConversation sets, and `=== true` is deliberate: null
+        // and false are both "it did not complete".
+        //
+        // Nor can the journal stand in for this: completeMission DELETES the
+        // journal row, and quit / decline / expire delete it identically, so a
+        // missing row proves nothing. Only this flag does.
+        const completed = decoded.lastActionInfo.missionCompleted === true;
         if (action.buttonType === AGENT_BUTTON.ACCEPT || action.buttonType === AGENT_BUTTON.ACCEPT_REMOTELY) {
           await loadBriefing(agentID);
         } else if (
           action.buttonType === AGENT_BUTTON.COMPLETE ||
           action.buttonType === AGENT_BUTTON.COMPLETE_REMOTELY
         ) {
-          store.apply({ type: "agents/briefing", briefing: null });
-          await loadRewards();
+          // Only a mission that actually completed may clear its briefing and
+          // pull the payout reads. A refused Complete leaves the mission exactly
+          // as it was, and the panel must keep showing it that way.
+          if (completed) {
+            store.apply({ type: "agents/briefing", briefing: null });
+            await loadRewards();
+          }
         } else if (action.buttonType === AGENT_BUTTON.DECLINE) {
           store.apply({ type: "agents/briefing", briefing: null });
         }
@@ -3739,23 +3763,62 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
     loadRewards,
 
-    async loadPackageIntoShip(cargoTypeID) {
+    async loadPackageIntoShip(cargoTypeID, cargoQuantity) {
       await runAgentAction(async () => {
-        // Find the accepted courier's package in the station hangar (the stack
-        // whose type matches the briefing cargo) and move it into the active
-        // ship via the R3 inventory move. The BFF addresses the item by game ID.
+        // Find the accepted courier's package in the station hangar and move it
+        // into the active ship's cargo hold.
+        //
+        // ⚠ THE FIRST STACK OF THE RIGHT TYPE IS NOT THE PACKAGE. Courier cargo
+        // is ordinary tradeable goods — the R35 live run hauled Reports (3814),
+        // which any player may already be holding. Picking the first row whose
+        // typeID matched would load the player's OWN stack, in the wrong
+        // quantity, and leave the actual mission package behind.
+        //
+        // The mission quantity is the discriminator we actually have: accept
+        // stages exactly the mission's quantity as its own stack. So prefer the
+        // stack of that exact size, and otherwise take one large enough and
+        // split precisely the mission quantity off it. (The server never names
+        // the package's itemID anywhere the client can read — not in the
+        // objective, not in the journal, not in the OnMissionsUpdated refusal —
+        // so a player stack of the identical type AND quantity stays genuinely
+        // ambiguous. Nothing available to the browser can resolve that.)
+        const wanted = Number.isFinite(cargoQuantity) && cargoQuantity > 0 ? cargoQuantity : 1;
         const panel = await api.loadInventory(callOptions);
-        const item = decodeInventoryRows(panel.hangar.list).find(
+        const candidates = decodeInventoryRows(panel.hangar.list).filter(
           (row) => row.typeID === cargoTypeID,
         );
+        const item =
+          candidates.find((row) => row.quantity === wanted) ??
+          candidates.find((row) => row.quantity > wanted);
         if (!item) {
           // runAgentAction's success path clears the action-error, so signal the
           // miss by throwing — its catch surfaces the reason through the store.
           throw new Error(
-            `The mission package (type ${cargoTypeID}) is not in the station hangar.`,
+            `The mission package is not in the station hangar (${wanted} needed).`,
           );
         }
-        await api.moveItem(item.itemID, "toCargo", null, callOptions);
+
+        // ⚠ AND A 200 IS NOT A LOADED PACKAGE. /api/bridge/inventory/move
+        // answers {ok:true} without ever re-reading, so it cannot tell a move
+        // from a silent decline — and invbroker declines silently in several
+        // branches. /transfer does the re-read and judges by the SOURCE giving
+        // something up (the R29 new-itemID lesson: a split keeps the source id
+        // and shrinks it, so destination membership alone reports a completed
+        // move as a failure). Ask it, then believe what it answers.
+        const outcome = await api.transferItems(
+          [item.itemID],
+          { kind: "hangar" },
+          { kind: "cargo" },
+          wanted,
+          callOptions,
+        );
+        if (!outcome.applied) {
+          throw new Error(
+            outcome.declinedSilently
+              ? "The station refused to load the mission package and gave no reason. It did not move."
+              : "The mission package did not move into the ship.",
+          );
+        }
       });
     },
 
