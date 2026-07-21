@@ -398,6 +398,18 @@ export type FeedEvent =
       readonly repeating: boolean;
       readonly observedAtMs: number;
     }
+  // R29 — one shot, pushed as `OnDamageMessage`. Both directions arrive on this
+  // channel; the payload's own attackType says which, and the flow decodes it
+  // rather than guessing from the ids.
+  | {
+      readonly type: "targeting/damage";
+      readonly direction: "dealt" | "taken";
+      readonly otherPartyID: number | null;
+      readonly weaponTypeID: number | null;
+      readonly amount: number;
+      readonly quality: number | null;
+      readonly atMs: number;
+    }
   // Goal R23 slice B — the mining loop. The ship's mining holds, by NAME (the
   // retail flagIDs never reach the browser), each with its own read error so one
   // failed hold never blanks the rest.

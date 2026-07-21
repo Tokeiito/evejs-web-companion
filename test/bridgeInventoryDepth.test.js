@@ -263,11 +263,38 @@ function fakeGateway(options = {}) {
         return { service, method, result: null, notifications: [] };
       }
       if (method === "Add") {
+        // A dispatch failure with NOTHING applied — the ordinary error case,
+        // which must still surface as an error.
+        if (options.throwOnAdd === true) {
+          throw new Error("invbroker.Add failed: connection reset");
+        }
         const [itemID, sourceLocationID] = args;
         const item = world.get(Number(itemID));
         // The server matches the quoted source location against the item's real
         // one and declines silently when they differ.
         if (!item || item.locationID !== Number(sourceLocationID)) {
+          return { service, method, result: null, notifications: [] };
+        }
+        // LOOT. Taking from an NPC wreck DESTROYS the wreck's row and MINTS a
+        // fresh one at the destination, so the id the caller asked for never
+        // appears there. Measured against the live emulator: five items, five
+        // new itemIDs, and the wreck emptied. `mintOnAdd` reproduces exactly
+        // that, and `throwAfterAdd` reproduces eve.js raising AFTER the move
+        // has already happened (nativeNpcWreckService.js calls a scene method
+        // that does not exist, but only once the transfer is done).
+        if (options.mintOnAdd === true) {
+          world.delete(item.itemID);
+          const mintedID = (nextSplitItemID += 1);
+          world.set(mintedID, {
+            itemID: mintedID,
+            typeID: item.typeID,
+            locationID: destination,
+            flagID: flag === null ? FLAG_HANGAR : flag,
+            quantity: item.quantity,
+          });
+          if (options.throwAfterAdd === true) {
+            throw new Error("invbroker.Add failed: scene.sendSlimItemChangesToAllSessions is not a function");
+          }
           return { service, method, result: null, notifications: [] };
         }
         const qty = kwargs && Number(kwargs.qty) > 0 ? Number(kwargs.qty) : null;
@@ -483,6 +510,92 @@ test("transfer with a qty SPLITS the stack and reports it applied via the source
     (item) => item.locationID === ACTIVE_SHIP_ID && item.quantity === 300,
   );
   assert.equal(inCargo.length, 1);
+});
+
+// --- loot: the destination MINTS a new row (goal R29 slice 0, probe 3) -------
+//
+// These two pin the R29 finding. Looting an NPC wreck is a transfer whose
+// destination row is BRAND NEW: the wreck's row is destroyed and a fresh id is
+// minted in the cargo hold. Judging `applied` by destination membership — "is
+// the id I asked for now at the destination?" — is therefore false on a
+// COMPLETED loot, and the player would be told their loot vanished. The route
+// judges the SOURCE giving something up instead.
+
+test("loot reports applied even though the destination row is a NEW itemID", async () => {
+  const gateway = fakeGateway({ items: fixtureItems(), mintOnAdd: true });
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+
+  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/inventory/transfer", {
+    method: "POST",
+    body: {
+      itemIDs: [200],
+      from: { kind: "container", itemID: CONTAINER_ID },
+      to: { kind: "cargo" },
+    },
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(payload.applied, true, "the loot landed and must be reported as landed");
+  // The id the caller named is NOT at the destination and never will be.
+  assert.deepEqual(payload.moved, [], "a minted row cannot appear in `moved`");
+  assert.deepEqual(payload.reminted, [200], "so it is named as reminted instead");
+  assert.deepEqual(payload.declined, [], "nothing was declined");
+  assert.equal(payload.declinedSilently, false);
+
+  // The world agrees: the wreck row is gone, and a new row holds the goods.
+  assert.equal(gateway.world.has(200), false, "the source row was destroyed");
+  const inCargo = [...gateway.world.values()].filter(
+    (item) => item.locationID === ACTIVE_SHIP_ID && item.quantity === 40,
+  );
+  assert.equal(inCargo.length, 1, "the loot is in the cargo hold under a new id");
+  assert.notEqual(inCargo[0].itemID, 200);
+});
+
+test("a throw AFTER the move has applied is not reported as a failure", async () => {
+  // eve.js raises on the loot path once the transfer is already done. A 500 is
+  // no more proof of failure than a 200 is proof of success: the re-read wins.
+  const gateway = fakeGateway({
+    items: fixtureItems(),
+    mintOnAdd: true,
+    throwAfterAdd: true,
+  });
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+
+  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/inventory/transfer", {
+    method: "POST",
+    body: {
+      itemIDs: [200],
+      from: { kind: "container", itemID: CONTAINER_ID },
+      to: { kind: "cargo" },
+    },
+  });
+
+  assert.equal(response.status, 200, "the move applied, so the route answers 200");
+  assert.equal(payload.applied, true);
+  assert.deepEqual(payload.reminted, [200]);
+  assert.equal(gateway.world.has(200), false);
+});
+
+test("a throw with NOTHING moved is still a real failure", async () => {
+  // The guard must not swallow genuine dispatch errors: when the re-read shows
+  // the source gave up nothing, the original error is raised unchanged.
+  const gateway = fakeGateway({ items: fixtureItems(), throwOnAdd: true });
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+
+  const { response } = await apiRequest(baseUrl, "/api/bridge/inventory/transfer", {
+    method: "POST",
+    body: {
+      itemIDs: [200],
+      from: { kind: "container", itemID: CONTAINER_ID },
+      to: { kind: "cargo" },
+    },
+  });
+
+  assert.equal(response.status >= 400, true, "a move that truly failed must not answer 200");
+  assert.equal(gateway.world.get(200).locationID, CONTAINER_ID, "nothing moved");
 });
 
 test("transfer rejects a qty with more than one item", async () => {

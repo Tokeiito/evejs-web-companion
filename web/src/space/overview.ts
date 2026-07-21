@@ -320,11 +320,22 @@ export function newlyArrivedHostiles(
  * Is the ship's shield/armor/hull dropping fast enough to be worth shouting
  * about?
  *
- * The honest, sourceable version of "you are under attack". This client has NO
- * damage log to read — there is no such server read — so it does not invent
- * one. What it CAN say is what two consecutive HUD readings show: a health
+ * The honest, sourceable version of "you are under attack", and still the one
+ * this function computes: what two consecutive HUD readings show, a health
  * layer that went down. `null` for either reading means unknown, and unknown is
  * never reported as damage.
+ *
+ * ⚠ CORRECTED IN R29. This comment used to claim the client has no damage log
+ * to read and that no such server read exists. The second half is still true —
+ * there is no CALL that returns a damage history — but the first half was
+ * wrong: `OnDamageMessage` is PUSHED, in both directions, and R29 measured it
+ * live (16 frames from a rat shooting an idle ship, plus our own hits on the
+ * way back). The store keeps a bounded tail of it in `targeting.damageLog`.
+ *
+ * That log does NOT replace this function, and this function is not built on
+ * it. The push channel is lossy by design, so a quiet log is not evidence of a
+ * quiet fight; two health readings are. The log says what we were TOLD about,
+ * this says what the ship's own numbers DID. Keep them independent.
  */
 export function healthIsDropping(
   previous: { readonly shieldRatio: number | null; readonly armorRatio: number | null; readonly hullRatio: number | null } | null,

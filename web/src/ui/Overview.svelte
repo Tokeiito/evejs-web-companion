@@ -263,6 +263,19 @@
     readonly typeLabel: string;
     readonly distance: string;
     readonly acquiring: boolean;
+    /**
+     * R29 — how battered the thing you locked is, as whole percentages. The
+     * server has been sending these on every snapshot row since R11 and the
+     * page has never drawn them.
+     *
+     * PERCENTAGES ONLY, and deliberately so: the wire carries a RATIO for other
+     * ships, and the capacities needed to turn that into "412 of 500" exist for
+     * your own ship alone. There is no honest way to show a rat's hit points or
+     * a time-to-kill, so neither is shown.
+     */
+    readonly shield: number | null;
+    readonly armor: number | null;
+    readonly hull: number | null;
   }
   const lockedRows = $derived.by<LockedRow[]>(() => {
     const byID = new Map<number, SpaceEntity>();
@@ -284,6 +297,51 @@
         typeLabel: entity ? typeName(entity) : "—",
         distance: distance === undefined ? "—" : formatDistance(distance),
         acquiring: !lockedIDs.includes(itemID),
+        shield: ratioPercent(entity?.shieldRatio),
+        armor: ratioPercent(entity?.armorRatio),
+        hull: ratioPercent(entity?.hullRatio),
+      };
+    });
+  });
+
+  /**
+   * R29 — the shots, newest FIRST for reading (the store keeps them in arrival
+   * order). Everything here is named: the other party through the snapshot's
+   * own rows, the weapon through the name cache. No id is ever rendered.
+   *
+   * Damage is shown to one decimal because the server sends fractions and
+   * rounding 0.4 to "0" would make a landed hit look like a miss. A genuine
+   * zero is labelled as a miss in words rather than shown as a bare number.
+   */
+  interface DamageRow {
+    readonly id: number;
+    readonly summary: string;
+    readonly weaponLabel: string;
+    readonly amountLabel: string;
+  }
+  const damageRows = $derived.by<DamageRow[]>(() => {
+    const byID = new Map<number, SpaceEntity>();
+    for (const entity of snapshot?.entities ?? []) {
+      byID.set(entity.itemID, entity);
+    }
+    return [...$targeting.damageLog].reverse().map((shot) => {
+      const other = shot.otherPartyID === null ? null : (byID.get(shot.otherPartyID) ?? null);
+      const otherLabel = other ? displayLabel(other) : "something no longer in view";
+      const missed = shot.amount <= 0;
+      return {
+        id: shot.id,
+        summary: shot.direction === "dealt"
+          ? missed
+            ? `You shot at ${otherLabel} and missed`
+            : `You hit ${otherLabel}`
+          : missed
+            ? `${otherLabel} shot at you and missed`
+            : `${otherLabel} hit you`,
+        weaponLabel:
+          shot.weaponTypeID === null
+            ? "—"
+            : resolvedName($names.resolved, "type", shot.weaponTypeID, "—"),
+        amountLabel: missed ? "—" : shot.amount.toFixed(1),
       };
     });
   });
@@ -479,12 +537,19 @@
     return selectableTargets.length > 0 ? selectableTargets[0].itemID : 0;
   });
 
-  // Module names come from the same cache as everything else (R7d).
+  // Module names come from the same cache as everything else (R7d). The weapons
+  // in the damage log go through the same cache: a shot arrives carrying only
+  // the weapon's typeID, and an id must never reach the screen.
   $effect(() => {
     const refs: NameRef[] = [];
     for (const slot of $fitting.slots) {
       if (slot.module) {
         refs.push({ kind: "type", id: slot.module.typeID });
+      }
+    }
+    for (const shot of $targeting.damageLog) {
+      if (shot.weaponTypeID !== null) {
+        refs.push({ kind: "type", id: shot.weaponTypeID });
       }
     }
     if (refs.length > 0) {
@@ -639,10 +704,15 @@
   /**
    * ARE YOU BEING SHOT? The honest version.
    *
-   * There is no damage-log read on this server, so this page does not invent
-   * one. What it CAN say is what two consecutive HUD readings show: a health
-   * layer that went down. That is a fact, and it is enough to make a dropping
-   * shield legible at a glance.
+   * What two consecutive HUD readings show: a health layer that went down. That
+   * is a fact, and it is enough to make a dropping shield legible at a glance.
+   *
+   * ⚠ R29 found there IS a damage log after all — `OnDamageMessage` is pushed
+   * for shots in both directions, and "Shots fired" below renders it. This
+   * indicator is deliberately NOT rebuilt on it. The push channel may drop
+   * frames, so silence there is not proof nobody is shooting; the ship's own
+   * two readings cannot lie about having gone down. The log names the attacker,
+   * this proves the damage.
    */
   let previousHealth = $state<{
     shieldRatio: number | null;
@@ -809,10 +879,12 @@
       <h2>{takingDamage ? "You are taking damage" : "Hostiles nearby"}</h2>
       {#if takingDamage}
         <!--
-          The honest version of "you are under attack". There is no damage-log
-          read on this server and this page does not invent one — this says only
-          what two consecutive readings of your own ship showed: a health layer
-          went down. See the Ship condition bars above for which one.
+          The honest version of "you are under attack": this says only what two
+          consecutive readings of your own ship showed — a health layer went
+          down. See the Ship condition bars above for which one, and "Shots
+          fired" below for who has been shooting. This banner is NOT driven by
+          that log: the live channel can drop frames, and a dropping shield is
+          the fact that cannot be missed.
         -->
         <p class="note">
           Your ship's shield, armour or hull dropped in the last few seconds.
@@ -1056,6 +1128,13 @@
       equipment on something. Locking takes a moment — your ship has to get a
       fix on it first.
     </p>
+    <p class="note">
+      Condition is shown as percentages because that is all the server sends for
+      anything other than your own ship — there is no way to show a target's
+      hit points, or how long it will take to break. A full shield bar on
+      something you have not shot yet may just mean it has no shield to speak
+      of: it will drop to nothing the moment you land a hit.
+    </p>
     {#if lockedRows.length === 0}
       <p class="empty">Nothing is locked. Use Lock on any row below.</p>
     {:else}
@@ -1067,6 +1146,7 @@
               <th>Type</th>
               <th class="num">Distance</th>
               <th>State</th>
+              <th>Condition</th>
               <th></th>
             </tr>
           </thead>
@@ -1082,6 +1162,34 @@
                 </td>
                 <td class="num" data-label="Distance">{locked.distance}</td>
                 <td data-label="State">{locked.acquiring ? "Locking…" : "Locked"}</td>
+                <td data-label="Condition">
+                  {#if locked.shield === null && locked.armor === null && locked.hull === null}
+                    <span class="stat-unavailable">Not known</span>
+                  {:else}
+                    <span class="target-condition">
+                      {#each [{ key: "shield", label: "Shield", percent: locked.shield }, { key: "armor", label: "Armour", percent: locked.armor }, { key: "hull", label: "Hull", percent: locked.hull }] as layer (layer.key)}
+                        <span class="hud-gauge {layer.key}">
+                          <span class="hud-head">
+                            <span class="hud-label">{layer.label}</span>
+                            <span class="hud-value"
+                              >{layer.percent === null ? "—" : `${layer.percent}%`}</span
+                            >
+                          </span>
+                          <span
+                            class="hud-track"
+                            role="meter"
+                            aria-label={`${layer.label} on ${locked.label}`}
+                            aria-valuenow={layer.percent ?? 0}
+                            aria-valuemin="0"
+                            aria-valuemax="100"
+                          >
+                            <span class="hud-fill" style={`width: ${layer.percent ?? 0}%`}></span>
+                          </span>
+                        </span>
+                      {/each}
+                    </span>
+                  {/if}
+                </td>
                 <td data-label="">
                   <span class="row-actions">
                     <button
@@ -1224,6 +1332,43 @@
     {/if}
     {#if $targeting.silentDecline}
       <p class="error">{$targeting.silentDecline}</p>
+    {/if}
+  </section>
+
+  <section>
+    <h2>Shots fired</h2>
+    <p class="note">
+      Every hit the server told us about, newest first — both the ones you land
+      and the ones you take. This is a running commentary, not a tally: the live
+      channel is allowed to drop and pick up again, so shots can be missing from
+      this list. The condition bars above are read from your ship and your
+      target, and those are the numbers to trust.
+    </p>
+    {#if damageRows.length === 0}
+      <p class="empty">
+        Nothing has been shot at, or by, your ship since this page came online.
+      </p>
+    {:else}
+      <div class="table-wrap overflow-x-auto">
+        <table class="guests reflow">
+          <thead>
+            <tr>
+              <th>What happened</th>
+              <th>Weapon</th>
+              <th class="num">Damage</th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each damageRows as shot (shot.id)}
+              <tr>
+                <td data-label="What happened">{shot.summary}</td>
+                <td data-label="Weapon">{shot.weaponLabel}</td>
+                <td class="num" data-label="Damage">{shot.amountLabel}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
     {/if}
   </section>
 

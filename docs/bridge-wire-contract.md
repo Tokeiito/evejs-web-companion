@@ -91,6 +91,35 @@ Current pairs (defined in `eve.js` `server/src/_secondary/express/evejsWebGatewa
 | `dogmaIM` | `SetModuleOnline` | R12 (top-level: bring a module online) |
 | `dogmaIM` | `TakeModuleOffline` | R12 (top-level: take a module offline) |
 | `skillMgr` | `SaveNewQueue` | R28 (top-level: save the WHOLE training queue — the only skill write) |
+| `dogmaIM` | `LoadAmmo` | R29 (top-level: load a charge STACK into one module) |
+| `dogmaIM` | `UnloadAmmo` | R29 (top-level: take a charge back out) |
+
+R29 adds **no firing pair**: a turret, a launcher, a mining laser and a salvager
+are all `dogmaIM.Activate` with an **empty effect name**, already listed for R23,
+and the server resolves each module's own default effect from its typeID. This
+was verified live rather than read — a turret and a launcher were both fired at
+a locked rat through that one pair.
+
+Ammo is the one place the "combat needs no new pairs" claim failed, and both
+halves were measured:
+
+- Loading a charge into an **empty** module *does* work through `invbroker.Add`
+  with the module's slot flag — but it moves **one unit per call**, which is not
+  a usable weapon.
+- **Swapping** a charge type through that same `Add` is a **silent decline**:
+  200, a null body, no reason, the old charge still loaded and the source stack
+  untouched. `liveFittingState.js` raises `CHARGES_USE_LOAD_AMMO`, a string
+  produced in exactly one place and mapped nowhere, so nothing reaches a caller.
+
+`LoadAmmo(shipID, moduleIDs[], chargeItemIDs[], ammoLocationID)` is the only call
+that fills a module in one go and the only one that can replace a loaded charge.
+It sources from the ship's cargo hold when `ammoLocationID` is the ship and from
+the station hangar otherwise; both were exercised live. `UnloadAmmo` is listed
+**with** it deliberately — a rack that can only ever fill a module would strand
+the charge, leaving unfitting the weapon as the player's only way back.
+`dogmaIM.LoadAmmoToBank` is deliberately **not** listed: it is the whole-bank
+sibling, and the rack loads one module at a time so a stray click can cost at
+most one module's charge. A test names it as refused.
 
 R12 adds **no** fit/unfit pair: fitting and unfitting are `invbroker.Add` with a
 slot flag, already listed for R3. `dogmaIM.GetAllInfo` is deliberately **not**
@@ -647,8 +676,30 @@ browser names a **place**, never a flag:
   Binds `GetInventoryFromId(containerItemID)` and lists with **no flag**.
 - `POST /api/bridge/inventory/transfer` `{ itemIDs, from, to, qty? }` → one
   `Add` (single item, optionally partial-`qty` = a split) or one `MultiAdd`
-  (several). Answers `{ ok, applied, moved, declined, declinedSilently, notFound }`.
+  (several). Answers
+  `{ ok, applied, moved, reminted, declined, declinedSilently, notFound }`.
   A `qty` with more than one item is 400 `INVALID_SPLIT`.
+
+  **`applied` is judged by the SOURCE, not the destination (R29).** Three server
+  paths mint a **new itemID** at the destination, so the id the caller named can
+  never appear there and `moved` is legitimately empty on a completed move:
+  looting a wreck (the wreck row is destroyed and a fresh row minted), splitting
+  a stack, and peeling one unit off a stack to fit or load it. What all three
+  share is that the source **gave something up** — the row vanished, or its
+  quantity fell — and that is what `applied` now asks. `moved` still names the
+  items that kept their identity; **`reminted`** names those that left the source
+  and arrived under a new id.
+
+  **A throw is not proof of failure either.** Looting raises *after* the item has
+  already moved (eve.js `nativeNpcWreckService.js` calls a scene method that does
+  not exist, but only once the transfer is done). Measured: five consecutive loot
+  calls each answered `CALL_FAILED` and all five items were in the cargo hold
+  afterwards. The route therefore **remembers** a dispatch error, re-reads, and
+  re-raises it **only** if the source gave up nothing — so a genuine failure is
+  still a failure, and a completed move is never reported as a loss.
+
+  **Loot range is not enforced server-side.** A wreck 10 km away looted fine;
+  retail requires 2,500 m. Any UI must not assume the server will refuse.
 - `POST /api/bridge/inventory/merge` `{ sourceItemID, destinationItemID, place, qty? }`
   → `MultiMerge`; answers `{ ok, applied, merged, declinedSilently }`.
 - `POST /api/bridge/inventory/trash` `{ itemIDs, place, confirm: true }` →
@@ -2021,6 +2072,27 @@ full, out of range). An **absent** `activeModuleIDs` decodes to `null` =
 **unknown**, never `[]` = "nothing running": a wrong "Idle" invites a double
 activation.
 
+**`active` / `stopped` are judged as a set DELTA, not by id equality (R29).**
+`dogmaService.js Handle_Activate` silently redirects a **banked** weapon to its
+bank **master**, and the snapshot then reports only the master's itemID — so a
+weapon can start cycling without its own id ever appearing, and
+`activeModuleIDs.includes(itemID)` would call a successful shot a failure. The
+routes therefore read the running set **before** as well as after and ask "is
+this id running, **or did the running set grow?**".
+
+Measured live: banking is **not reachable from this browser today**. Banks are
+built solely by `dogmaIM.LinkWeapons`, which is **not allowlisted**; two
+same-type turrets fired together each reported **their own itemID**, and every
+`OnDamageMessage` carried `isBanked:false`. The delta is a guard against a future
+widening, not a fix for a bug firing today.
+
+It also has an honest limit. A weapon joining a bank whose master was **already
+cycling** leaves the running set unchanged, which from outside — with no bank
+map — is **indistinguishable** from the server ignoring the call. That case
+answers **`null` (unknown)**, never a confident `false`: this bridge does not get
+to guess between "your gun is firing" and "your gun is not". A set that is empty
+both before and after is unambiguous and still answers `false`.
+
 **UI (`Overview.svelte`, generic).** Every overview row carries *Lock* /
 *Locking… stop* / *Release lock*. A **Locked targets** table lists each target by
 **name** (resolved from the snapshot; a target no longer in view reads "No longer
@@ -2201,10 +2273,38 @@ the browser cannot obtain any other way, and both are verified end to end in
 |---|---|---|---|
 | `OnGodmaShipEffect` | `notifyGenericModuleEffectState`, `runtime.js:13012` | module id, isStart, and the server's **effective** cycle duration | **for its payload** — it is the only source of an effective duration |
 | `OnItemsChanged` | `syncMinedOreChangesToSession`, `miningRuntime.js:994-999` | the changed stacks | **as a trigger only** — the hold is RE-READ from the ship |
+| `OnDamageMessage` | `notifyWeaponDamageMessages`, `runtime.js` (`:17021`, `:17785`, `:17977`) | one shot: `attackType`, `source`, `target`, `weapon`, `damage`, `hitQuality`, `isBanked` | **both** — its payload is the log, and it also triggers a health RE-READ |
 
 The asymmetry is deliberate. A hold derived from a stream of deltas drifts the
 first time a frame is missed, and this channel is explicitly allowed to drop and
 resynchronise. **The authority on what is in the hold is the hold.**
+
+**`OnDamageMessage` arrives for shots in BOTH directions (R29), and a survey
+saying otherwise was wrong.** That survey concluded no NPC emits damage and that
+an "under attack" indicator was therefore impossible. Settled empirically:
+sitting in an asteroid belt with a rat shooting and **nothing of ours firing**,
+**16 frames** arrived naming `source` = the rat and `target` = our ship (14
+landed, 253.8 damage). Killing it produced the mirror image. `notifyWeaponDamage
+Messages` notifies the **target's** session as well as the attacker's, which is
+why an NPC firing through `activateGenericModule` reaches its victim's browser.
+
+The payload is a **bare marshaled dict** — `{type:"dict", entries:[[k,v],…]}` —
+**not** a `util.KeyVal` wrapper, so it needs its own reader. Direction comes from
+the payload's own **`attackType`**: `"me"` for a shot we fired (with a **null
+`attackerID`**), anything else for one fired at us (`"otherPlayerWeapons"`, with
+`attackerID` populated). It is **read, never inferred** from which id looks like
+a ship. `damage: 0` is a real value — a clean miss — and is kept, because "it
+shot and missed" is information; `hitQuality` is passed through **unnamed**,
+since this server does not publish the wording and inventing one would be
+fabricated detail.
+
+**The log is a bounded tail, and nothing sums it.** The page keeps 40 entries and
+never derives a running damage total from them: the channel trims and blanks its
+buffer on resynchronise, so a total would go quietly wrong forever after one
+dropped frame. `healthIsDropping` — two consecutive health readings — was
+**deliberately not rebuilt** on this log for the same reason: a lossy log going
+quiet is not evidence of a quiet fight, while the ship's own readings cannot lie.
+The log names the attacker; the readings prove the damage. Both are kept.
 
 **Cycle times — two sources, never conflated.** Where a cycle event has arrived,
 its duration is the pilot's real one. Where none has, attribute **73**

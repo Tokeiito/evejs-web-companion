@@ -27,6 +27,9 @@ const PASSIVE_ID = 7700002;
 const LASER_TYPE = 483; // Miner II
 const ROCK_ID = 50001248;
 const ORE_TYPE = 1230; // Veldspar
+const RAT_ID = 980000000130; // a Guristas Invader, as R29 actually fought
+const RAT_WEAPON_TYPE = 2383;
+const OUR_WEAPON_TYPE = 490; // 220mm Vulcan AutoCannon I
 const CHARACTER_ID = 7;
 
 const IN_SPACE = {
@@ -91,7 +94,7 @@ function notificationFrame(method: string, args: readonly unknown[], sequence: n
 
 /** A whole fake world whose ore hold fills as the fake server grants ore. */
 function makeWorld() {
-  const state = { holdUsed: 0, holdReads: 0 };
+  const state = { holdUsed: 0, holdReads: 0, snapshotReads: 0, ratShield: 1 };
   const fetchImpl = (async (input: unknown) => {
     const path = String(input);
     let status = 200;
@@ -143,6 +146,39 @@ function makeWorld() {
             error: null,
           },
         ],
+      };
+    } else if (path === "/api/bridge/space/snapshot") {
+      // R29: the AUTHORITATIVE health read. A shot arriving on the push channel
+      // schedules one of these; the bars come from here, never from the shot.
+      state.snapshotReads += 1;
+      body = {
+        ok: true,
+        space: {
+          inSpace: true,
+          solarSystemID: 30000142,
+          shipID: SHIP_ID,
+          sampledAtMs: Date.now(),
+          entities: [
+            {
+              kind: "ship",
+              itemID: RAT_ID,
+              typeID: 3841,
+              groupID: 562,
+              categoryID: 11,
+              name: "Guristas Invader",
+              ownerID: 1000127,
+              radius: 30,
+              position: { x: 0, y: 0, z: 0 },
+              velocity: { x: 0, y: 0, z: 0 },
+              isSelf: false,
+              shieldRatio: state.ratShield,
+              armorRatio: 1,
+              hullRatio: 1,
+            },
+          ],
+          ship: { itemID: SHIP_ID, typeID: 629, activeModuleIDs: [] },
+        },
+        notifications: [],
       };
     } else if (path.startsWith("/api/types/cycle-times")) {
       // Attribute 73 for a Miner II is 15000 ms. Static reference data.
@@ -430,4 +466,164 @@ test("E: the mining loop, step by step, with each step's observability", async (
   // 7. DEACTIVATE. OBSERVABLE — the same two surfaces as activation, and R23
   //    already verifies it against the snapshot's cycling list rather than
   //    against the Deactivate call's 200.
+});
+
+// --- R29: the damage log ----------------------------------------------------
+//
+// A feasibility survey concluded that no NPC emits damage and that an "under
+// attack" indicator was therefore impossible. That was WRONG, and these tests
+// encode what the live wire actually did: sitting in a Perimeter asteroid belt
+// with a rat shooting and NOTHING of ours firing, 16 `OnDamageMessage` frames
+// arrived naming the rat as source and our ship as target. The payloads below
+// are the real captured shapes, ids and all.
+//
+// The payload is a BARE marshaled dict, not a util.KeyVal, and `attackType` is
+// the direction signal — "me" for our own shots, "otherPlayerWeapons" for shots
+// at us. The direction is READ, never inferred from which id looks like a ship.
+
+/** One shot, in the exact shape captured off the live SSE stream. */
+function damageFrame(
+  fields: {
+    attackType: string;
+    source: number;
+    target: number;
+    weapon: number;
+    damage: number;
+    hitQuality: number;
+    attackerID: number | null;
+  },
+  sequence: number,
+) {
+  return notificationFrame(
+    "OnDamageMessage",
+    [
+      {
+        type: "dict",
+        entries: [
+          ["attackType", fields.attackType],
+          ["source", fields.source],
+          ["target", fields.target],
+          ["weapon", fields.weapon],
+          ["damage", fields.damage],
+          ["splash", ""],
+          ["hitQuality", fields.hitQuality],
+          ["isBanked", false],
+          ["attackerID", fields.attackerID],
+        ],
+      },
+    ],
+    sequence,
+  );
+}
+
+function incoming(damage: number, sequence: number, hitQuality = 3) {
+  return damageFrame(
+    {
+      attackType: "otherPlayerWeapons",
+      source: RAT_ID,
+      target: SHIP_ID,
+      weapon: RAT_WEAPON_TYPE,
+      damage,
+      hitQuality,
+      attackerID: RAT_ID,
+    },
+    sequence,
+  );
+}
+
+function outgoing(damage: number, sequence: number) {
+  return damageFrame(
+    {
+      attackType: "me",
+      source: SHIP_ID,
+      target: RAT_ID,
+      weapon: OUR_WEAPON_TYPE,
+      damage,
+      hitQuality: 4,
+      attackerID: null,
+    },
+    sequence,
+  );
+}
+
+test("R29: a shot TAKEN lands in the log, named by who fired it", async () => {
+  const { store, source } = await onlineFlow();
+
+  source.emit(incoming(19.8, 1));
+  await settle();
+
+  const log = store.targeting.get().damageLog;
+  assert.equal(log.length, 1, "the pushed shot reached the store");
+  assert.equal(log[0]!.direction, "taken", "attackType said it was fired AT us");
+  assert.equal(log[0]!.otherPartyID, RAT_ID, "and the other party is the shooter");
+  assert.equal(log[0]!.weaponTypeID, RAT_WEAPON_TYPE);
+  assert.equal(log[0]!.amount, 19.8);
+});
+
+test("R29: a shot DEALT is distinguished by attackType, not by guessing", async () => {
+  const { store, source } = await onlineFlow();
+
+  source.emit(outgoing(101.3, 1));
+  await settle();
+
+  const log = store.targeting.get().damageLog;
+  assert.equal(log[0]!.direction, "dealt");
+  assert.equal(
+    log[0]!.otherPartyID,
+    RAT_ID,
+    "for a shot we fired, the other party is the TARGET",
+  );
+  assert.equal(log[0]!.weaponTypeID, OUR_WEAPON_TYPE);
+});
+
+test("R29: a MISS is kept, because zero damage is a real thing that happened", async () => {
+  const { store, source } = await onlineFlow();
+
+  // Two of the 16 live frames were misses: damage 0, hitQuality 0. Dropping
+  // them would make a rat that is shooting and missing look like a rat that is
+  // not shooting at all.
+  source.emit(incoming(0, 1, 0));
+  await settle();
+
+  const log = store.targeting.get().damageLog;
+  assert.equal(log.length, 1, "the miss was recorded");
+  assert.equal(log[0]!.amount, 0);
+  assert.equal(log[0]!.quality, 0);
+});
+
+test("R29: the log is a BOUNDED tail, never an unbounded ledger", async () => {
+  const { store, source } = await onlineFlow();
+
+  for (let i = 0; i < 60; i += 1) {
+    source.emit(incoming(1 + i, i + 1));
+  }
+  await settle();
+
+  const log = store.targeting.get().damageLog;
+  assert.ok(log.length <= 40, `the tail is capped; saw ${log.length}`);
+  assert.equal(
+    log[log.length - 1]!.amount,
+    60,
+    "and it keeps the NEWEST shots — the oldest are the ones dropped",
+  );
+});
+
+test("R29: a burst of shots coalesces into ONE authoritative health read", async () => {
+  const { source, state } = await onlineFlow();
+  const before = state.snapshotReads;
+
+  // One frigate produced 16 frames in a single engagement. The bars must not be
+  // re-read once per bullet, and must NOT be derived from the shots at all.
+  for (let i = 0; i < 16; i += 1) {
+    source.emit(incoming(19.8, i + 1));
+  }
+  // The health window is deliberately WIDER than the hold's, so this waits past
+  // it rather than reusing settle().
+  await new Promise((resolve) => setTimeout(resolve, 700));
+
+  assert.equal(
+    state.snapshotReads - before,
+    1,
+    "sixteen shots, one read of what the ship and target actually say",
+  );
 });

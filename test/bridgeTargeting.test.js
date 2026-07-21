@@ -107,6 +107,11 @@ function fakeGateway(overrides = {}) {
     refuse: new Map(),
     // Methods that should be accepted and then do nothing (a silent decline).
     inert: new Set(),
+    // Weapon banking: slave module itemID -> the bank master that actually
+    // cycles. Empty by default, because banking is NOT reachable from this
+    // browser (banks are built only by dogmaIM.LinkWeapons, which is not
+    // allowlisted) — but the server behaviour is real, so it is pinned here.
+    bankMaster: new Map(),
   };
   function flightSnapshot() {
     return {
@@ -203,12 +208,16 @@ function fakeGateway(overrides = {}) {
           };
         case "Activate":
           if (!inert) {
-            state.active.add(Number(args[0]));
+            // WEAPON BANKING, as dogmaService.js Handle_Activate really does
+            // it: a banked weapon is silently redirected to its bank MASTER,
+            // and the snapshot then reports the master's itemID — never the
+            // slave's. `bankMaster` maps slave -> master when set.
+            state.active.add(state.bankMaster.get(Number(args[0])) ?? Number(args[0]));
           }
           return { service, method, result: 1, notifications: [] };
         case "Deactivate":
           if (!inert) {
-            state.active.delete(Number(args[0]));
+            state.active.delete(state.bankMaster.get(Number(args[0])) ?? Number(args[0]));
           }
           return { service, method, result: 1, notifications: [] };
         default:
@@ -516,6 +525,114 @@ test("deactivate is the same seam, and verifies the module actually stopped", as
     body: { itemID: MODULE_ID },
   });
   assert.equal(second.payload.stopped, false, "it is still running, so say so");
+});
+
+// --- weapon banking (goal R29) ----------------------------------------------
+//
+// dogmaService.js Handle_Activate silently redirects a BANKED weapon to its
+// bank master, and the space snapshot reports the MASTER's itemID only. So a
+// weapon can start cycling without its own id ever appearing in the running
+// set, and `activeModuleIDs.includes(itemID)` — which is what these two routes
+// used to ask — would call a successful shot a failure and then report the gun
+// as stopped while it was still firing.
+//
+// R29 measured that banking is NOT reachable from this browser today: banks are
+// created only by dogmaIM.LinkWeapons, which is not allowlisted, and two
+// same-type turrets fired together each reported their OWN itemID. These tests
+// therefore pin a guard against a real server behaviour the client cannot yet
+// trigger, so that opening LinkWeapons later cannot silently break the rack.
+
+const SLAVE_MODULE_ID = 7700002;
+
+test("a BANKED weapon reports active even though the snapshot names its master", async () => {
+  const { gateway, baseUrl } = await inSpace();
+  gateway.state.locked.add(ROCK_ID);
+  // The second gun is a slave of the first: activating it cycles the master.
+  gateway.state.bankMaster.set(SLAVE_MODULE_ID, MODULE_ID);
+
+  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/modules/activate", {
+    method: "POST",
+    body: { itemID: SLAVE_MODULE_ID, targetID: ROCK_ID },
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(
+    payload.active,
+    true,
+    "the running set GREW, so the activation landed — even under another id",
+  );
+  assert.deepEqual(
+    payload.activeModuleIDs,
+    [MODULE_ID],
+    "and the ids are reported verbatim, never rewritten to flatter the caller",
+  );
+});
+
+test("a banked weapon that is genuinely declined is still reported as not running", async () => {
+  // The set-delta must not turn every activation into a success: when the
+  // server accepts the call and cycles NOTHING, the set does not grow.
+  const { gateway, baseUrl } = await inSpace();
+  gateway.state.locked.add(ROCK_ID);
+  gateway.state.bankMaster.set(SLAVE_MODULE_ID, MODULE_ID);
+  gateway.state.inert.add("Activate");
+
+  const { payload } = await apiRequest(baseUrl, "/api/bridge/modules/activate", {
+    method: "POST",
+    body: { itemID: SLAVE_MODULE_ID, targetID: ROCK_ID },
+  });
+
+  assert.equal(payload.active, false, "nothing started, so say so");
+  assert.deepEqual(payload.activeModuleIDs, []);
+});
+
+test("joining an ALREADY-running bank is reported as unknown, not as off", async () => {
+  // The master is already cycling, so activating the slave changes the running
+  // set not at all. From outside, with no bank map, that is indistinguishable
+  // from the server ignoring the call outright — and this bridge does not get
+  // to guess between "your gun is firing" and "your gun is not". It says so.
+  const { gateway, baseUrl } = await inSpace();
+  gateway.state.locked.add(ROCK_ID);
+  gateway.state.bankMaster.set(SLAVE_MODULE_ID, MODULE_ID);
+  gateway.state.active.add(MODULE_ID);
+
+  const { payload } = await apiRequest(baseUrl, "/api/bridge/modules/activate", {
+    method: "POST",
+    body: { itemID: SLAVE_MODULE_ID, targetID: ROCK_ID },
+  });
+
+  assert.equal(
+    payload.active,
+    null,
+    "unknowable from here: null, never a confident 'off' over a firing gun",
+  );
+  assert.deepEqual(payload.activeModuleIDs, [MODULE_ID], "the ids are still reported verbatim");
+});
+
+test("deactivating a banked weapon reports stopped when the master stops", async () => {
+  const { gateway, baseUrl } = await inSpace();
+  gateway.state.bankMaster.set(SLAVE_MODULE_ID, MODULE_ID);
+  gateway.state.active.add(MODULE_ID);
+
+  const { payload } = await apiRequest(baseUrl, "/api/bridge/modules/deactivate", {
+    method: "POST",
+    body: { itemID: SLAVE_MODULE_ID },
+  });
+
+  assert.equal(payload.stopped, true, "the master left the running set");
+  assert.deepEqual(payload.activeModuleIDs, []);
+});
+
+test("an unknown running set stays UNKNOWN rather than collapsing to off", async () => {
+  const { gateway, baseUrl } = await inSpace();
+  gateway.state.locked.add(ROCK_ID);
+  gateway.state.hideActiveModules = true;
+
+  const { payload } = await apiRequest(baseUrl, "/api/bridge/modules/activate", {
+    method: "POST",
+    body: { itemID: MODULE_ID, targetID: ROCK_ID },
+  });
+
+  assert.equal(payload.active, null, "the snapshot could not answer: null, never false");
 });
 
 // --- Guards -----------------------------------------------------------------

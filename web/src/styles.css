@@ -774,6 +774,36 @@
   .hud-gauge.cpu .hud-label { color: var(--color-cpu); }
   .hud-gauge.powergrid .hud-label { color: var(--color-powergrid); }
 
+  /* ============================ how battered your target is (R29) --
+   * The same three gauges as the ship HUD, shrunk into one table cell. The
+   * server has sent these ratios on every snapshot row since R11; only now does
+   * anything draw them. Stacked rather than side by side because the cell is
+   * narrow and three tiny bars in a row read as one striped smear. */
+  .target-condition {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    min-width: 8rem;
+  }
+  .target-condition .hud-gauge {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+  }
+  .target-condition .hud-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 0.4rem;
+  }
+  .target-condition .hud-track {
+    display: block;
+    height: 0.4rem;
+  }
+  .target-condition .hud-value {
+    font-size: 12px;
+  }
+
   /* ============================================ the live hold strip (R24) --
    * What is accumulating in the ship, on the in-space screen. Deliberately a
    * one-line-per-hold strip rather than another set of gauges: this sits under

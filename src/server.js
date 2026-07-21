@@ -1162,33 +1162,47 @@ app.post("/api/bridge/inventory/transfer", requireAuth, async (req, res, next) =
 
     const kwargs = { flag: to.flag };
     let outcome;
-    if (present.length === 1 && hasQty) {
-      outcome = await boundCall(
-        held,
-        req.webSessionID,
-        to.spec,
-        "Add",
-        [present[0], sourceLocationID],
-        { ...kwargs, qty },
-      );
-    } else if (present.length === 1) {
-      outcome = await boundCall(
-        held,
-        req.webSessionID,
-        to.spec,
-        "Add",
-        [present[0], sourceLocationID],
-        kwargs,
-      );
-    } else {
-      outcome = await boundCall(
-        held,
-        req.webSessionID,
-        to.spec,
-        "MultiAdd",
-        [present, sourceLocationID],
-        kwargs,
-      );
+    // A THROW IS NOT PROOF OF FAILURE, exactly as a 200 is not proof of
+    // success. Looting an NPC wreck raises after the item has already moved
+    // (eve.js nativeNpcWreckService.js:222 calls a scene method that does not
+    // exist, but only once the transfer itself is done). Measured live: five
+    // consecutive loot calls each answered CALL_FAILED and all five items were
+    // in the cargo hold afterwards. So the dispatch error is REMEMBERED, not
+    // rethrown here, and the re-read below decides. If the re-read shows
+    // nothing moved, the original error is raised unchanged.
+    let dispatchError = null;
+    try {
+      if (present.length === 1 && hasQty) {
+        outcome = await boundCall(
+          held,
+          req.webSessionID,
+          to.spec,
+          "Add",
+          [present[0], sourceLocationID],
+          { ...kwargs, qty },
+        );
+      } else if (present.length === 1) {
+        outcome = await boundCall(
+          held,
+          req.webSessionID,
+          to.spec,
+          "Add",
+          [present[0], sourceLocationID],
+          kwargs,
+        );
+      } else {
+        outcome = await boundCall(
+          held,
+          req.webSessionID,
+          to.spec,
+          "MultiAdd",
+          [present, sourceLocationID],
+          kwargs,
+        );
+      }
+    } catch (error) {
+      dispatchError = error;
+      outcome = { notifications: [] };
     }
 
     // RE-READ. The status code above proves only that the call was dispatched.
@@ -1199,21 +1213,53 @@ app.post("/api/bridge/inventory/transfer", requireAuth, async (req, res, next) =
     const destinationIDs = new Set(destinationRows.map((row) => row.itemID));
     const sourceAfterByID = new Map(sourceRowsAfter.map((row) => [row.itemID, row]));
 
+    // Items that kept their identity and are now at the destination. This is
+    // the ONLY signal the route used to have, and it is the one that fails.
     const moved = present.filter((itemID) => destinationIDs.has(itemID));
-    const declined = present.filter((itemID) => !destinationIDs.has(itemID));
-    // A SPLIT mints a new stack at the destination and leaves the source
-    // itemID in place, so "did it land" is answered by the source SHRINKING.
-    const splitApplied =
-      hasQty &&
-      present.length === 1 &&
-      (sourceAfterByID.get(present[0])?.quantity ?? 0) <
-        (sourceByID.get(present[0])?.quantity ?? 0);
-    const applied = splitApplied || moved.length > 0;
+
+    // THE SOURCE IS THE AUTHORITY, not the destination. Three different server
+    // paths mint a NEW itemID at the destination and so can never appear in
+    // `moved`, all three measured live against this emulator:
+    //   * looting a wreck   — the wreck row is destroyed and a fresh row is
+    //                         minted in the cargo hold (5/5 items, new ids)
+    //   * splitting a stack — the source keeps its id and shrinks
+    //   * fitting from a stack / loading ammo — one unit peels off as a new row
+    // What every one of them has in common is that the SOURCE gave something
+    // up: the row vanished, or its quantity fell. That is what `applied` now
+    // asks. Judging by destination membership alone reported `applied:false`
+    // on a completed move and would have told the player their loot was lost.
+    const gaveUpAtSource = (itemID) => {
+      const before = sourceByID.get(itemID);
+      if (!before) {
+        return false;
+      }
+      const after = sourceAfterByID.get(itemID);
+      if (!after) {
+        return true; // the row is gone from the source entirely
+      }
+      return (after.quantity ?? 0) < (before.quantity ?? 0);
+    };
+    const surrendered = present.filter(gaveUpAtSource);
+    const applied = moved.length > 0 || surrendered.length > 0;
+
+    // Nothing left the source AND nothing arrived: the server took the call and
+    // did nothing, which is the silent-decline shape this bridge exists to
+    // catch. Only now is a dispatch error a real failure.
+    if (!applied && dispatchError) {
+      throw dispatchError;
+    }
+
+    const declined = present.filter(
+      (itemID) => !destinationIDs.has(itemID) && !gaveUpAtSource(itemID),
+    );
 
     res.json({
       ok: true,
       applied,
       moved,
+      // Items that left the source but arrived under a NEW id, so the caller
+      // knows the move landed even though `moved` cannot name them.
+      reminted: surrendered.filter((itemID) => !destinationIDs.has(itemID)),
       // Items the server did not move, and no reason was given: say exactly
       // that rather than inventing a cause.
       declined,
@@ -1653,6 +1699,29 @@ function decodeFittedSlotMap(result) {
   return byItemID;
 }
 
+/**
+ * Did a fit land? The named itemID is checked first, then — because fitting a
+ * unit out of a STACK mints a new row the caller cannot predict — whether any
+ * slot that was empty before is occupied now.
+ *
+ * Both maps are itemID -> flagID, so "a slot filled" is read as a flagID that
+ * was not present before. This is the same mint-at-destination problem the
+ * inventory transfer route hits with wreck loot, answered the same way: judge
+ * the OUTCOME, never the identity of the row.
+ */
+function fitLanded(before, after, itemID) {
+  if (after.has(itemID)) {
+    return true;
+  }
+  const occupiedBefore = new Set(before.values());
+  for (const flagID of after.values()) {
+    if (!occupiedBefore.has(flagID)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 // Fit a module from the station hangar or the ship's own cargo into a slot.
 // The bound object is the SHIP (the destination); the source location is the
 // station when fitting from the hangar and the ship when fitting from cargo.
@@ -1680,6 +1749,12 @@ app.post("/api/bridge/fitting/fit", requireAuth, async (req, res, next) => {
     return;
   }
   try {
+    // The slots BEFORE, so a fit that arrives under a new itemID is still
+    // recognised. Fitting ONE module out of a STACK peels a unit off and mints
+    // a fresh row: measured live, fitting two turrets from a stack of three
+    // produced ids the caller had never seen while the stack fell 3 -> 1, and
+    // judging by `fitted.has(itemID)` called both successful fits a failure.
+    const before = await readFittedItemIDs(held, req.webSessionID, shipID);
     const outcome = await boundCall(
       held,
       req.webSessionID,
@@ -1693,7 +1768,7 @@ app.post("/api/bridge/fitting/fit", requireAuth, async (req, res, next) => {
     const fitted = await readFittedItemIDs(held, req.webSessionID, shipID);
     res.json({
       ok: true,
-      applied: fitted.has(itemID),
+      applied: fitLanded(before, fitted, itemID),
       notifications: outcome.notifications,
     });
   } catch (error) {
@@ -4532,6 +4607,55 @@ async function readLockedTargetIDs(held, webSessionID) {
 }
 
 /**
+ * Did the module the caller named end up RUNNING? Answered as a set DELTA, not
+ * by asking whether that exact itemID is in the running set.
+ *
+ * The reason is weapon banking. dogmaService.js Handle_Activate silently
+ * redirects a banked weapon to its bank MASTER, and the snapshot then reports
+ * the master's itemID — so a slave weapon can start cycling without its own id
+ * ever appearing, and `ids.includes(itemID)` would call a successful shot a
+ * failure. Asking "is this id running, OR did the running set grow?" is right
+ * either way round.
+ *
+ * Measured live in R29: banking is NOT reachable from this browser today —
+ * banks are built only by dogmaIM.LinkWeapons, which is not allowlisted, and
+ * two same-type turrets fired together each reported their OWN itemID with
+ * `isBanked:false` on every damage message. This is therefore a guard against
+ * a real server behaviour the client cannot currently trigger, not a fix for a
+ * bug firing today. It costs one extra snapshot read and cannot be wrong.
+ *
+ * Returns null when either snapshot could not answer — "unknown", never "off".
+ */
+function activationLanded(idsBefore, idsAfter, itemID) {
+  if (idsAfter === null) {
+    return null;
+  }
+  if (idsAfter.includes(itemID)) {
+    return true;
+  }
+  if (idsBefore === null) {
+    return false;
+  }
+  // The named module is absent, but something new IS cycling that was not
+  // before: that is the bank master standing in for the weapon we asked for.
+  const before = new Set(idsBefore);
+  if (idsAfter.some((id) => !before.has(id))) {
+    return true;
+  }
+  // Nothing is running at all, so nothing started. Unambiguous.
+  if (idsAfter.length === 0) {
+    return false;
+  }
+  // Otherwise the running set did not change and the module we named is not in
+  // it. From OUTSIDE, with no bank map, this has two indistinguishable causes:
+  // the weapon joined a bank whose master was already cycling, or the server
+  // took the call and did nothing. This bridge does not get to guess between
+  // "your gun is firing" and "your gun is not", so it says UNKNOWN — the same
+  // answer it gives when the snapshot cannot answer at all.
+  return null;
+}
+
+/**
  * The module itemIDs the server says are CYCLING right now, read from the space
  * snapshot's ship projection (which reads the ship entity's own active-effect
  * map). There is no separate retail call for this, and the browser must never
@@ -4712,6 +4836,9 @@ app.post("/api/bridge/modules/activate", requireAuth, async (req, res, next) => 
     if (!requireInSpace(res, before.flight)) {
       return;
     }
+    // Read the running set BEFORE, so success can be judged as a set DELTA
+    // rather than by asking whether this exact itemID came back.
+    const activeBefore = await readActiveModuleIDs(held);
     const outcome = await heldTopLevelCall(
       held,
       req.webSessionID,
@@ -4726,7 +4853,7 @@ app.post("/api/bridge/modules/activate", requireAuth, async (req, res, next) => 
       ok: true,
       itemID,
       // null when the snapshot could not answer — "unknown", never "off".
-      active: active.ids === null ? null : active.ids.includes(itemID),
+      active: activationLanded(activeBefore.ids, active.ids, itemID),
       activeModuleIDs: active.ids,
       notifications: [...outcome.notifications, ...active.notifications],
     });
@@ -4754,6 +4881,7 @@ app.post("/api/bridge/modules/deactivate", requireAuth, async (req, res, next) =
     if (!requireInSpace(res, before.flight)) {
       return;
     }
+    const activeBefore = await readActiveModuleIDs(held);
     const outcome = await heldTopLevelCall(
       held,
       req.webSessionID,
@@ -4763,10 +4891,11 @@ app.post("/api/bridge/modules/deactivate", requireAuth, async (req, res, next) =
       null,
     );
     const active = await readActiveModuleIDs(held);
+    const landed = activationLanded(activeBefore.ids, active.ids, itemID);
     res.json({
       ok: true,
       itemID,
-      stopped: active.ids === null ? null : !active.ids.includes(itemID),
+      stopped: landed === null ? null : !landed,
       activeModuleIDs: active.ids,
       notifications: [...outcome.notifications, ...active.notifications],
     });

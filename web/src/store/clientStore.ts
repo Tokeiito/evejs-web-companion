@@ -58,6 +58,7 @@ import type {
   OnlineCharacterState,
   RewardsState,
   SpaceState,
+  DamageEvent,
   ModuleCycle,
   TargetingState,
   DronesState,
@@ -346,7 +347,14 @@ const INITIAL_TARGETING: TargetingState = Object.freeze({
   actionError: null,
   silentDecline: null,
   moduleCycles: Object.freeze({}) as Readonly<Record<number, ModuleCycle>>,
+  damageLog: Object.freeze([]) as readonly DamageEvent[],
 });
+
+// R29 how many shots to keep. A bounded TAIL of what the push channel told us,
+// deliberately the same shape as the live-notification cap above: the stream is
+// allowed to drop and resynchronise, so a longer buffer would only make the
+// gaps less obvious, not less real.
+const DAMAGE_LOG_LIMIT = 40;
 
 // R23 slice B — the mining loop. `taxRate` starts NULL, not 0: reprocessing
 // debits the station's tax from the wallet, and a confident zero before any
@@ -1188,6 +1196,26 @@ export function createClientStore(): ClientStore {
               repeating: event.running ? event.repeating : false,
             },
           },
+        });
+        break;
+      }
+      case "targeting/damage": {
+        const prev = targeting.get();
+        targeting.set({
+          ...prev,
+          damageLog: [
+            ...prev.damageLog,
+            {
+              // Position in the session's stream, used only as a render key.
+              id: (prev.damageLog[prev.damageLog.length - 1]?.id ?? 0) + 1,
+              direction: event.direction,
+              otherPartyID: event.otherPartyID,
+              weaponTypeID: event.weaponTypeID,
+              amount: event.amount,
+              quality: event.quality,
+              atMs: event.atMs,
+            },
+          ].slice(-DAMAGE_LOG_LIMIT),
         });
         break;
       }

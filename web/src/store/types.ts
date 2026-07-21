@@ -1211,6 +1211,51 @@ export interface TargetingState {
    * as "instant" and must never render as one.
    */
   readonly moduleCycles: Readonly<Record<number, ModuleCycle>>;
+  /**
+   * R29 — THE SHOTS, newest last, as they were pushed.
+   *
+   * A survey concluded that no NPC emits damage and that this client therefore
+   * could never show one. That was WRONG, and R29 settled it on the live wire:
+   * sitting in a Perimeter belt with a rat shooting and nothing of ours firing,
+   * 16 `OnDamageMessage` frames arrived naming the rat as source and our ship
+   * as target. Killing it produced the mirror image. Both directions are real
+   * and both are here.
+   *
+   * A BOUNDED TAIL, not a ledger. The push channel is lossy by design — the
+   * gateway trims and blanks its buffer on resynchronise — so this is what we
+   * were told about, never a running total to be trusted as arithmetic. Nothing
+   * in the page sums it into a "total damage" figure, because a dropped frame
+   * would make that figure quietly wrong forever.
+   */
+  readonly damageLog: readonly DamageEvent[];
+}
+
+/**
+ * One shot, as `OnDamageMessage` reported it (R29).
+ *
+ * The direction is taken from the payload's own `attackType`, not inferred:
+ * "me" is a shot WE fired, anything else is a shot fired at us. Measured
+ * live — outgoing frames carry attackType "me" with a null attackerID, and
+ * incoming carry "otherPlayerWeapons" with the attacker's id populated.
+ */
+export interface DamageEvent {
+  /** Monotonic within the session, for keyed rendering only. Never shown. */
+  readonly id: number;
+  readonly direction: "dealt" | "taken";
+  /** Who we hit, or who hit us. Named via the name cache — never shown raw. */
+  readonly otherPartyID: number | null;
+  /** The weapon's typeID, for naming. Null when the payload did not say. */
+  readonly weaponTypeID: number | null;
+  /** Damage this shot did. 0 is a real, meaningful value: a clean miss. */
+  readonly amount: number;
+  /**
+   * The server's own hit-quality band, or null when absent. NOT translated to
+   * retail's "Grazes"/"Wrecks" wording here: the mapping is not sourced from
+   * this server, and inventing it would be fabricated detail.
+   */
+  readonly quality: number | null;
+  /** Browser clock reading for when the frame arrived. */
+  readonly atMs: number;
 }
 
 /** One module's cycle, and where the figure came from (R24 slice C). */

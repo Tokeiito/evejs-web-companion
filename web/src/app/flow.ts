@@ -66,7 +66,7 @@ import { decodeSkillSheet, skillQueueRefusal } from "../bridge/skills.ts";
 import { createSpacePoller, type SpacePoller } from "./spacePoll.ts";
 import type { FlightStepResult } from "./api.ts";
 import { BridgeCallError } from "../bridge/callMethod.ts";
-import type { JsonValue } from "../bridge/wire.ts";
+import { readDictEntry, type JsonValue } from "../bridge/wire.ts";
 import * as api from "./api.ts";
 import type { ClientStore } from "../store/clientStore.ts";
 import type {
@@ -681,7 +681,59 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // Coalesced: mining grants ore stack by stack, so a busy cycle can push
       // several of these at once and one re-read answers all of them.
       scheduleHoldRefresh();
+      return;
     }
+    if (method === "OnDamageMessage") {
+      applyDamageNotification(args);
+    }
+  }
+
+  // `OnDamageMessage` (R29). One shot. The payload is a BARE marshaled dict —
+  // not a util.KeyVal — and the fields used here were read off the live wire:
+  //
+  //   attackType  "me" for a shot WE fired; "otherPlayerWeapons" for one fired
+  //               at us. This is the ONLY honest direction signal, and it is
+  //               read rather than inferred from the ids.
+  //   source      the shooter's itemID; `target` the thing hit.
+  //   weapon      the weapon's typeID, for naming.
+  //   damage      what this shot did. ZERO IS REAL — it is a clean miss, and it
+  //               is kept rather than dropped, because "it shot and missed" is
+  //               information the player wants.
+  //   hitQuality  the server's own band. Passed through unnamed; this server
+  //               does not publish the wording, so none is invented.
+  //
+  // Both directions were measured: a rat shooting an idle ship produced 16 of
+  // these with our ship as target, and our two turrets produced their own with
+  // attackType "me". The payload is used for its CONTENT, like the cycle event
+  // above and unlike the items event — but a health re-read is still scheduled,
+  // because the log is a lossy tail and the bars must come from the snapshot.
+  function applyDamageNotification(args: readonly unknown[]): void {
+    const payload = args[0];
+    const attackType = readDictEntry(payload, "attackType");
+    const rawAmount = readDictEntry(payload, "damage");
+    const amountValue =
+      rawAmount && typeof rawAmount === "object" && "value" in (rawAmount as Record<string, unknown>)
+        ? Number((rawAmount as Record<string, unknown>).value)
+        : Number(rawAmount);
+    if (!Number.isFinite(amountValue)) {
+      return;
+    }
+    const dealt = attackType === "me";
+    const other = dealt ? readDictEntry(payload, "target") : readDictEntry(payload, "source");
+    const otherPartyID = Number(other) > 0 ? Number(other) : null;
+    const weapon = Number(readDictEntry(payload, "weapon"));
+    const quality = Number(readDictEntry(payload, "hitQuality"));
+    store.apply({
+      type: "targeting/damage",
+      direction: dealt ? "dealt" : "taken",
+      otherPartyID,
+      weaponTypeID: weapon > 0 ? weapon : null,
+      amount: amountValue,
+      quality: Number.isFinite(quality) ? quality : null,
+      atMs: Date.now(),
+    });
+    // The bars are read, never derived from these frames.
+    scheduleSpaceRefresh();
   }
 
   // `OnGodmaShipEffect` args, positionally (godmaMultiEvent.js:44-78, and
@@ -732,6 +784,27 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }, HOLD_REFRESH_COALESCE_MS);
     if (typeof holdRefreshTimer === "object" && "unref" in holdRefreshTimer) {
       (holdRefreshTimer as { unref(): void }).unref();
+    }
+  }
+
+  // A fight pushes a shot per weapon per cycle, from both sides at once. R29
+  // measured 16 incoming frames from ONE frigate in a single engagement, so
+  // these coalesce harder than the hold does: the health bars only need to be
+  // right, not to redraw once per bullet.
+  const SPACE_REFRESH_COALESCE_MS = 400;
+  let spaceRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  function scheduleSpaceRefresh(): void {
+    if (spaceRefreshTimer !== null) {
+      return;
+    }
+    spaceRefreshTimer = setTimeout(() => {
+      spaceRefreshTimer = null;
+      // Best-effort, like the hold refresh: a failed read leaves the last good
+      // snapshot on screen rather than blanking the bars mid-fight.
+      void loadSpaceSnapshot().catch(() => {});
+    }, SPACE_REFRESH_COALESCE_MS);
+    if (typeof spaceRefreshTimer === "object" && "unref" in spaceRefreshTimer) {
+      (spaceRefreshTimer as { unref(): void }).unref();
     }
   }
 

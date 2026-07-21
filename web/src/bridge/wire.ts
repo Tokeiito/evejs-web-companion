@@ -147,6 +147,31 @@ export function readKeyVal(row: unknown, key: string): JsonValue | undefined {
 }
 
 /**
+ * Read one key from a BARE marshaled dict — `{type:"dict", entries:[[k,v],…]}`.
+ *
+ * Distinct from readKeyVal above, which only understands the util.KeyVal
+ * WRAPPER around such a dict. Some pushed notifications carry the bare form
+ * (OnDamageMessage's single argument is one), so both readers exist and neither
+ * pretends to handle the other's shape.
+ *
+ * Returns undefined when the value is not a dict or the key is absent — never a
+ * substituted default, so a caller can tell "absent" from "present and zero".
+ */
+export function readDictEntry(value: unknown, key: string): JsonValue | undefined {
+  if (typeof value !== "object" || value === null) {
+    return undefined;
+  }
+  const candidate = value as { type?: unknown; entries?: unknown };
+  if (candidate.type !== "dict" || !Array.isArray(candidate.entries)) {
+    return undefined;
+  }
+  const entry = (candidate.entries as readonly unknown[]).find(
+    (row) => Array.isArray(row) && row[0] === key,
+  );
+  return Array.isArray(entry) ? (entry[1] as JsonValue) : undefined;
+}
+
+/**
  * Unwrap a retail long to bigint. Accepts the {type:"long"} wrapper with a
  * number or decimal-string value (both are on the wire per the contract) and
  * bare integers; null for anything else (including absent/null fields).
