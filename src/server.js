@@ -1218,6 +1218,101 @@ app.get("/api/bridge/bound-inventory", requireAuth, async (req, res, next) => {
   }
 });
 
+// R76 PLUMBING — the FOURTH Phase-2 BOUND-READ batch: the 6 RB-CLONE reads (jump-
+// clone state / station+ship clones / structure clone count / install price /
+// install validator) on service "jumpCloneSvc". machoNet keys "jumpCloneSvc" as
+// null (session-global, NOT station-keyed) exactly like R73's "skillHandler", so
+// although JumpCloneService also defines MachoBindObject these reads ride the
+// ORDINARY top-level /call seam — each dispatches as heldTopLevelCall(
+// "jumpCloneSvc", <method>), NOT the bound two-step. Mirrors /api/bridge/bound-
+// skills.
+//
+// ⚠ SESSION-SCOPED — no arg-injection surface. Every one of the 6 handlers takes
+// (args, session) and forwards ONLY session to jumpCloneRuntime; the caller's args
+// are DROPPED server-side. The location filter is the SESSION's OWN docked
+// location (getCurrentDockedLocation(session)) or the session's own char/ship —
+// never a caller-supplied station/structure/char id. So the argless calls below do
+// NOT return empty: they return Farmer's own clones at his current dock. A browser
+// injecting a foreign id via /api/bridge/call cannot steer these at another
+// character's clones — verified LIVE cross-account (Farmer 140000005 vs Test Two
+// 140000002: a foreign location/char id returns Farmer's OWN clone state). No
+// handoff-doc flag needed. Clones/implants are PRIVATE.
+//
+// ValidateInstallJumpClone is a NON-MUTATING read-style validator (returns an ARRAY
+// of error labels; empty = install allowed) — it writes nothing. Every jumpCloneSvc
+// WRITE sibling (Install*/CloneJump/Destroy*/SetJumpCloneName/…) stays refused.
+//
+// readHeldFlight first, so the location-scoped reads (station clones / structure
+// count / price / validator) see the CURRENT docked station after any autopilot
+// arrival (matching /api/bridge/bound-inventory). Independent Promise.allSettled:
+// no clones at the current station, no clones in a structure/ship, a bare-0 count
+// and an empty validator error list are all legitimate states, never a blanking
+// failure — each read carries its own {result} or {error, message}. Returns the raw
+// result envelopes for web/src/bridge/boundClones.ts; NO UI consumes this yet.
+const CLONE_BOUND_READS = Object.freeze([
+  // GetCloneState() — the whole clone sheet: KeyVal{clones:Rowset, implants:Rowset,
+  // timeLastJump:long FILETIME}. Session char; args ignored.
+  ["GetCloneState", []],
+  // GetStationCloneState() — retail passes a stationID, but the handler DROPS it and
+  // filters own clones to getCurrentDockedLocation(session).locationID. Rowset.
+  ["GetStationCloneState", []],
+  // GetShipCloneState() — own clones installed in the session's active ship. Rowset.
+  ["GetShipCloneState", []],
+  // GetNumClonesInPilotsStructure() — a BARE count of own clones at the session's
+  // structure/ship; 0 when none (a legitimate empty state).
+  ["GetNumClonesInPilotsStructure", []],
+  // GetPriceForClone() — a BARE number: the current docked location's clone-bay fee.
+  // ⚠ kept bigint-safe (ISK) though it fits Number in practice.
+  ["GetPriceForClone", []],
+  // ValidateInstallJumpClone() — an ARRAY of error labels ([] = install allowed).
+  // Non-mutating pre-check; args ignored.
+  ["ValidateInstallJumpClone", []],
+]);
+
+app.get("/api/bridge/bound-clones", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  try {
+    // Sync the held session to the live position first, so the location-scoped
+    // clone reads target the CURRENT docked station (matching bound-inventory).
+    await readHeldFlight(held, req.webSessionID);
+    const settled = await Promise.allSettled(
+      CLONE_BOUND_READS.map(([method, args]) =>
+        heldTopLevelCall(held, req.webSessionID, "jumpCloneSvc", method, args, null),
+      ),
+    );
+    // A lost live session cannot be recovered by any read; surface it so the page
+    // returns to character select (matching /api/bridge/inventory).
+    for (const s of settled) {
+      if (s.status === "rejected" && s.reason && s.reason.code === "SESSION_NOT_FOUND") {
+        next(s.reason);
+        return;
+      }
+    }
+    const reads = {};
+    CLONE_BOUND_READS.forEach(([method], index) => {
+      const s = settled[index];
+      if (s.status === "fulfilled") {
+        reads[method] = { result: s.value.result };
+      } else {
+        const reason = s.reason || {};
+        reads[method] = {
+          error: String(reason.code || "READ_FAILED"),
+          message: typeof reason.message === "string" ? reason.message : null,
+        };
+      }
+    });
+    res.json({ ok: true, characterID: held.characterID, reads });
+  } catch (error) {
+    if (error && error.code === "SESSION_NOT_FOUND") {
+      forgetBridgeSession(req.webSessionID);
+    }
+    next(error);
+  }
+});
+
 // Move one item hangar <-> active-ship cargo. The bound object is the
 // DESTINATION; retail's Add(itemID, sourceLocationID, qty, flag) carries the
 // source location and the destination flag.
