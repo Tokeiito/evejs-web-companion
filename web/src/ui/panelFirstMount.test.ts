@@ -65,6 +65,9 @@ const PANELS = [
   // failure in either now takes this panel down too.
   "Bots",
   "Chat",
+  // R50 — the two wallet tabs.
+  "Wallet",
+  "CorpWallet",
 ] as const;
 
 /**
@@ -229,4 +232,91 @@ test("no component invokes a $derived binding as a function", () => {
   }
 
   assert.deepEqual(offences, []);
+});
+
+// --- 4. App's first paint selects the tab that matches WHERE the character is -
+//
+// The R50 login-default bug: `page` was `$state("station")`, so a character in
+// space landed on the Station tab. This renders App against an online store
+// whose flight flag says docked / in space and checks the ACTIVE tab and the
+// visible set — the docked-vs-in-space default selection the goal requires the
+// first-mount test to cover.
+
+function onlineStore(over: Partial<Record<string, unknown>>): unknown {
+  const store = createClientStore();
+  store.apply({ type: "session/logged-in", accountID: 1, username: "rrfarmer" });
+  store.apply({
+    type: "character/online",
+    character: {
+      characterID: 90000001,
+      characterName: "Farmer",
+      stationID: 60003760,
+      structureID: null,
+      solarSystemID: 30000142,
+      corporationID: 1000001,
+    },
+    station: null,
+  });
+  store.apply({
+    type: "flight/status",
+    status: {
+      inSpace: false,
+      docked: false,
+      solarSystemID: 30000142,
+      stationID: null,
+      structureID: null,
+      shipID: null,
+      shipMode: null,
+      shipSpeedFraction: null,
+      ...over,
+    },
+  });
+  return store;
+}
+
+function navSlice(body: string): string {
+  return body.slice(body.indexOf("<nav"), body.indexOf("</nav>") + 6);
+}
+
+function navLabels(body: string): string[] {
+  const nav = navSlice(body);
+  return [...nav.matchAll(/<button[^>]*>([^<]*)<\/button>/g)].map((m) =>
+    (m[1] ?? "").replace(/&amp;/g, "&").trim(),
+  );
+}
+
+function activeLabel(body: string): string | null {
+  const match = /<button[^>]*class="active"[^>]*>([^<]*)<\/button>/.exec(navSlice(body));
+  return match ? (match[1] ?? "").replace(/&amp;/g, "&").trim() : null;
+}
+
+test("App's first paint on a DOCKED character selects Station and hides the in-space tabs", async () => {
+  const store = onlineStore({ docked: true, inSpace: false, stationID: 60003760 });
+  const App = await loadPanel("App");
+  const output = render(App as never, { props: { store, flow: fakeFlow() } } as never);
+
+  assert.equal(activeLabel(output.body), "Station");
+  const labels = navLabels(output.body);
+  assert.ok(labels.includes("Station"));
+  assert.ok(labels.includes("Fitting"));
+  for (const hidden of ["Flight", "Around Your Ship", "Mining", "Travel", "Bots"]) {
+    assert.equal(labels.includes(hidden), false, `${hidden} must be hidden while docked`);
+  }
+  // The two wallet tabs are reachable in either state.
+  assert.ok(labels.includes("Wallet"));
+  assert.ok(labels.includes("Corp Wallet"));
+});
+
+test("App's first paint on an IN-SPACE character selects Around Your Ship, NOT Station", async () => {
+  const store = onlineStore({ docked: false, inSpace: true, stationID: null });
+  const App = await loadPanel("App");
+  const output = render(App as never, { props: { store, flow: fakeFlow() } } as never);
+
+  // The exact regression: the default must not be Station while in space.
+  assert.notEqual(activeLabel(output.body), "Station");
+  assert.equal(activeLabel(output.body), "Around Your Ship");
+  const labels = navLabels(output.body);
+  assert.ok(labels.includes("Flight"));
+  assert.equal(labels.includes("Station"), false, "Station is hidden in space");
+  assert.equal(labels.includes("Fitting"), false, "Fitting is hidden in space");
 });

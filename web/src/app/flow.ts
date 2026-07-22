@@ -55,6 +55,11 @@ import {
   decodeCharStandings,
   decodeLpBalances,
 } from "../bridge/rewards.ts";
+import {
+  decodeCashBalance as decodeWalletCash,
+  decodeCorpDivisions,
+  normalizeDivisionNames,
+} from "../bridge/wallet.ts";
 import { decodeFlightStatus } from "../bridge/flight.ts";
 import { decodeSpaceSnapshot, decodeTargetIDs } from "../bridge/space.ts";
 import {
@@ -407,6 +412,11 @@ export interface AppFlow {
    * The journal (the fourth Step-12 read) refreshes via loadJournal.
    */
   loadRewards(): Promise<void>;
+  /**
+   * R50 — the Wallet + Corp Wallet tabs: the personal ISK balance and the
+   * corporation division balances, in one pull. Both tabs call this on mount.
+   */
+  loadWallet(): Promise<void>;
   /** Refresh the flight status (location + ship movement state). */
   loadFlightStatus(): Promise<void>;
   /** Undock from the station (the session enters space). */
@@ -2003,6 +2013,35 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       lpBalances: decodeLpBalances(reads.lp),
       standings: decodeCharStandings(reads.standings),
       error: errors.length ? errors.join("; ") : null,
+    });
+  }
+
+  // R50 — the Wallet + Corp Wallet tabs. One pull carries the personal balance
+  // and the corp division balances; the two halves are independent on the BFF
+  // (Promise.allSettled) and keep their own errors here.
+  //
+  // ⚠ empty vs failed. A FAILED corp read leaves `corpDivisions` NULL and puts
+  // the reason in `corpError`. A SUCCESSFUL corp read decodes to a list — which
+  // may be empty, and an empty list is the real "this corporation has no wallet
+  // divisions" answer. The two must not collapse into one another.
+  async function loadWallet(): Promise<void> {
+    const reads = await api.loadWallet(callOptions);
+    const corpFailed = reads.errors.divisions !== null;
+    const corpError = [
+      reads.errors.divisions ? `corp wallet: ${reads.errors.divisions}` : null,
+      // A missing division NAME is cosmetic (the panel falls back to
+      // "Division N"), so a failed name read is not treated as a wallet error.
+    ]
+      .filter((entry): entry is string => entry !== null)
+      .join("; ");
+    store.apply({
+      type: "wallet/loaded",
+      cashBalance: decodeWalletCash(reads.cash),
+      cashError: reads.errors.cash,
+      corpDivisions: corpFailed
+        ? null
+        : decodeCorpDivisions(reads.divisions, normalizeDivisionNames(reads.divisionNames)),
+      corpError: corpError === "" ? null : corpError,
     });
   }
 
@@ -4441,6 +4480,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     loadJournal,
 
     loadRewards,
+
+    loadWallet,
 
     async loadPackageIntoShip(cargoTypeID, cargoQuantity) {
       await runAgentAction(async () => {

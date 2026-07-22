@@ -1,0 +1,151 @@
+// The nav tab model (goal R50 items 1 + 4): visibility driven by docked/in-space
+// as data, and the selected tab derived from the same authoritative flag. These
+// are the rules the login-default bug violated (page was hardcoded "station").
+
+import test from "node:test";
+import assert from "node:assert/strict";
+
+import {
+  TABS,
+  deriveDocked,
+  visibleTabsFor,
+  defaultTabFor,
+  resolvePage,
+  type TabID,
+} from "./tabs.ts";
+import type { FlightStatus, OnlineCharacterState } from "../store/types.ts";
+
+function flightStatus(over: Partial<FlightStatus>): FlightStatus {
+  return {
+    inSpace: false,
+    docked: false,
+    solarSystemID: null,
+    stationID: null,
+    structureID: null,
+    shipID: null,
+    shipMode: null,
+    shipSpeedFraction: null,
+    ...over,
+  };
+}
+
+function online(over: Partial<OnlineCharacterState>): OnlineCharacterState {
+  return {
+    characterID: 1,
+    characterName: "Farmer",
+    stationID: null,
+    structureID: null,
+    solarSystemID: 30000142,
+    corporationID: 1000001,
+    ...over,
+  };
+}
+
+const idsOf = (isDocked: boolean): TabID[] => visibleTabsFor(isDocked).map((t) => t.id);
+
+// --- the login-default bug: the default follows the state, not a constant -----
+
+test("the IN-SPACE default is NOT station (the login-default bug)", () => {
+  // The exact regression: a hardcoded "station" default while in space.
+  assert.notEqual(defaultTabFor(false), "station");
+  assert.equal(defaultTabFor(false), "overview");
+});
+
+test("the DOCKED default is station", () => {
+  assert.equal(defaultTabFor(true), "station");
+});
+
+// --- the visible set matches the state (item 1) ------------------------------
+
+test("docked shows station + fitting and hides the in-space-only tabs", () => {
+  const docked = idsOf(true);
+  assert.ok(docked.includes("station"));
+  assert.ok(docked.includes("fitting"));
+  for (const hidden of ["flight", "overview", "mining", "travel", "bots"] as const) {
+    assert.equal(docked.includes(hidden), false, `${hidden} must be hidden while docked`);
+  }
+});
+
+test("in space shows the flight tabs and hides station + fitting", () => {
+  const space = idsOf(false);
+  for (const shown of ["flight", "overview", "mining", "travel", "bots"] as const) {
+    assert.ok(space.includes(shown), `${shown} must be visible in space`);
+  }
+  assert.equal(space.includes("station"), false);
+  assert.equal(space.includes("fitting"), false);
+});
+
+test("the 'both' tabs (incl. the two new wallets) show in either state", () => {
+  const both = ["inventory", "market", "wallet", "corpWallet", "chat"] as const;
+  for (const id of both) {
+    assert.ok(idsOf(true).includes(id), `${id} visible docked`);
+    assert.ok(idsOf(false).includes(id), `${id} visible in space`);
+  }
+});
+
+// --- selection falls back when its tab is hidden by a state change (item 4) ---
+
+test("a now-hidden selected tab falls back to the state default", () => {
+  // Was on Flight (in-space only), then docked -> falls back to station.
+  assert.equal(resolvePage("flight", true), "station");
+  // Was on Station (docked only), then undocked -> falls back to overview.
+  assert.equal(resolvePage("station", false), "overview");
+});
+
+test("a still-visible selection is kept across a state change", () => {
+  assert.equal(resolvePage("market", true), "market");
+  assert.equal(resolvePage("market", false), "market");
+  assert.equal(resolvePage("corpWallet", false), "corpWallet");
+});
+
+test("no explicit selection follows the state default", () => {
+  assert.equal(resolvePage(null, true), "station");
+  assert.equal(resolvePage(null, false), "overview");
+});
+
+// --- deriveDocked reads the authoritative flag, not stale data ---------------
+
+test("deriveDocked trusts flight.status when it is loaded", () => {
+  assert.equal(deriveDocked(flightStatus({ docked: true, inSpace: false }), null), true);
+  assert.equal(deriveDocked(flightStatus({ docked: false, inSpace: true }), null), false);
+  // Even if the online context still carries a stale station, the loaded flight
+  // flag wins (undocked but station.online not yet cleared).
+  assert.equal(
+    deriveDocked(flightStatus({ docked: false, inSpace: true }), online({ stationID: 60003760 })),
+    false,
+  );
+});
+
+test("deriveDocked falls back to the station context before the first flight read", () => {
+  assert.equal(deriveDocked(null, online({ stationID: 60003760 })), true);
+  assert.equal(deriveDocked(null, online({ stationID: null })), false);
+  assert.equal(deriveDocked(null, null), false);
+});
+
+// --- tab-table sweep + companion matcher proof -------------------------------
+
+test("every tab id is unique and every 'where' is valid", () => {
+  const ids = TABS.map((t) => t.id);
+  assert.equal(new Set(ids).size, ids.length, "tab ids must be unique");
+  for (const tab of TABS) {
+    assert.ok(["docked", "in-space", "both"].includes(tab.where), `${tab.id} has a valid where`);
+    assert.ok(tab.label.trim().length > 0, `${tab.id} has a label`);
+  }
+});
+
+// COMPANION MATCHER PROOF. The sweep above would pass over an EMPTY table or one
+// where the filter matched nothing. These pin that TABS is non-empty and that
+// each `where` bucket actually has members the filter selects — so the sweep is
+// asserting against real data, not vacuously.
+test("the sweep is not vacuous: each where-bucket has members the filter selects", () => {
+  assert.ok(TABS.length >= 20, "the table has all the tabs");
+  const dockedOnly = TABS.filter((t) => t.where === "docked");
+  const spaceOnly = TABS.filter((t) => t.where === "in-space");
+  const both = TABS.filter((t) => t.where === "both");
+  assert.ok(dockedOnly.length > 0 && dockedOnly.some((t) => t.id === "station"));
+  assert.ok(spaceOnly.length > 0 && spaceOnly.some((t) => t.id === "flight"));
+  assert.ok(both.length > 0 && both.some((t) => t.id === "wallet"));
+  // And the derived visible sets differ by exactly the state-specific tabs.
+  assert.equal(visibleTabsFor(true).length, dockedOnly.length + both.length);
+  assert.equal(visibleTabsFor(false).length, spaceOnly.length + both.length);
+});

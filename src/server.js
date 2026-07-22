@@ -4268,6 +4268,67 @@ app.get("/api/bridge/rewards", requireAuth, async (req, res, next) => {
   }
 });
 
+// --- R50 Wallet + Corp Wallet -----------------------------------------------
+// Two nav tabs, one read. The PERSONAL balance is account.GetCashBalance(0) —
+// the SAME allowlisted read the market panel and the R6 reward readout already
+// issue (no accountKey/corp args; the corp variant is never passed here). The
+// CORP division balances are account.GetWalletDivisionsInfo — R50's single new
+// allowlist pair, the read the retail corp-wallet window itself issues
+// (corpDivisionsPanel.py), scoped server-side to the session's corporation.
+// Division NAMES come from corpRegistry.GetCorporation (already allowlisted,
+// decoded here exactly as the corp hangar route does) so the browser never
+// renders a bare division flag. Three INDEPENDENT reads (Promise.allSettled): a
+// failed corp read never blanks the personal balance and vice versa; each read
+// carries its own error code. Amounts ship raw (decoded browser-side in
+// web/src/bridge/wallet.ts). ⚠ An empty divisions list is a REAL "no corp
+// wallet" answer and is distinct from a read that FAILED (which sets errors.divisions).
+app.get("/api/bridge/wallet", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  try {
+    const [cash, divisions, corporation] = await Promise.allSettled([
+      heldTopLevelCall(held, req.webSessionID, "account", "GetCashBalance", [0], null),
+      heldTopLevelCall(held, req.webSessionID, "account", "GetWalletDivisionsInfo", [], null),
+      heldTopLevelCall(held, req.webSessionID, "corpRegistry", "GetCorporation", [], null),
+    ]);
+    // A lost live session can't be recovered by any read; surface it so the page
+    // returns to character select (as every held call does).
+    for (const settled of [cash, divisions, corporation]) {
+      if (settled.status === "rejected" && settled.reason && settled.reason.code === "SESSION_NOT_FOUND") {
+        next(settled.reason);
+        return;
+      }
+    }
+    const settledCode = (settled) =>
+      settled.status === "rejected"
+        ? String((settled.reason && settled.reason.code) || "READ_FAILED")
+        : null;
+    const settledValue = (settled) =>
+      settled.status === "fulfilled" ? settled.value.result : null;
+    res.json({
+      ok: true,
+      cash: settledValue(cash),
+      divisions: settledValue(divisions),
+      // Division ordinal (1..7) -> player-authored name; the browser falls back
+      // to a plain "Division N" label when a corporation never renamed one. A
+      // division FLAG number is never shown.
+      divisionNames:
+        corporation.status === "fulfilled"
+          ? decodeDivisionNames(corporation.value.result)
+          : {},
+      errors: {
+        cash: settledCode(cash),
+        divisions: settledCode(divisions),
+        corp: settledCode(corporation),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // --- R7 Local + Corp chat ---------------------------------------------------
 // The browser reads a channel's member roster + recent backlog and sends
 // messages to Local or Corp on the held session. Chat delivery bypasses the

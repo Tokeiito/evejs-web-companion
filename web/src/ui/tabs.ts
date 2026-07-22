@@ -1,0 +1,117 @@
+// The nav tab model (goal R50): which tabs exist, when each is visible, and
+// which one is selected — all as data + pure functions so App.svelte stays a
+// thin renderer and the rules are unit-testable without a DOM.
+//
+// Tab visibility is driven by ONE thing: is the character DOCKED or IN SPACE.
+// To move a tab between docked-only / in-space-only / both, change its `where`
+// on its one line in TABS below — nothing else needs touching (item 1). The
+// selected tab derives from the same flag (item 4): the first paint matches
+// where the character actually is, and docking / undocking that hides the
+// chosen tab falls back to that state's default.
+
+import type { FlightStatus, OnlineCharacterState } from "../store/types.ts";
+
+export type TabID =
+  | "station"
+  | "fitting"
+  | "flight"
+  | "overview"
+  | "mining"
+  | "travel"
+  | "bots"
+  | "inventory"
+  | "market"
+  | "industry"
+  | "contracts"
+  | "assets"
+  | "agents"
+  | "finder"
+  | "skills"
+  | "planets"
+  | "mail"
+  | "chat"
+  | "wallet"
+  | "corpWallet";
+
+/** Where a tab may appear: only DOCKED, only IN SPACE, or in BOTH. */
+export type Where = "docked" | "in-space" | "both";
+
+export interface TabDef {
+  readonly id: TabID;
+  readonly label: string;
+  readonly where: Where;
+}
+
+// ⚠ THE TAB TABLE — the one place tab visibility is decided. Render order is the
+// order of this list (state-specific tabs first, then the shared ones).
+export const TABS: readonly TabDef[] = [
+  // Docked only — station services and fitting need a station.
+  { id: "station", label: "Station", where: "docked" },
+  { id: "fitting", label: "Fitting", where: "docked" },
+  // In space only — flying, what's around the ship, mining, travel, bots.
+  { id: "flight", label: "Flight", where: "in-space" },
+  { id: "overview", label: "Around Your Ship", where: "in-space" },
+  { id: "mining", label: "Mining", where: "in-space" },
+  { id: "travel", label: "Travel", where: "in-space" },
+  { id: "bots", label: "Bots", where: "in-space" },
+  // Both — reachable docked or undocked.
+  { id: "inventory", label: "Inventory & Ship", where: "both" },
+  { id: "market", label: "Market", where: "both" },
+  { id: "industry", label: "Industry", where: "both" },
+  { id: "contracts", label: "Contracts", where: "both" },
+  { id: "assets", label: "Personal Assets", where: "both" },
+  { id: "agents", label: "Agents & Missions", where: "both" },
+  { id: "finder", label: "Agent Finder", where: "both" },
+  { id: "skills", label: "Skills", where: "both" },
+  { id: "planets", label: "Planets", where: "both" },
+  { id: "mail", label: "Mail", where: "both" },
+  { id: "chat", label: "Chat", where: "both" },
+  { id: "wallet", label: "Wallet", where: "both" },
+  { id: "corpWallet", label: "Corp Wallet", where: "both" },
+];
+
+/** The default landing tab for each state (item 4). */
+export const DOCKED_DEFAULT: TabID = "station";
+export const IN_SPACE_DEFAULT: TabID = "overview";
+
+/**
+ * Docked vs in space, from the AUTHORITATIVE flag. Once a flight-status read has
+ * landed, `flightStatus.docked` is the truth. Before that first read (the
+ * instant after character select), fall back to the station context the
+ * character came online in — a station ID means docked. Never a hardcoded guess
+ * (the login-default bug this replaces).
+ */
+export function deriveDocked(
+  flightStatus: FlightStatus | null,
+  online: OnlineCharacterState | null,
+): boolean {
+  if (flightStatus !== null) {
+    return flightStatus.docked;
+  }
+  return online !== null && online.stationID !== null;
+}
+
+/** The tabs visible in the current state: every "both" tab plus the matching ones. */
+export function visibleTabsFor(isDocked: boolean): readonly TabDef[] {
+  const state: Where = isDocked ? "docked" : "in-space";
+  return TABS.filter((tab) => tab.where === "both" || tab.where === state);
+}
+
+/** The default landing tab for the current state. */
+export function defaultTabFor(isDocked: boolean): TabID {
+  return isDocked ? DOCKED_DEFAULT : IN_SPACE_DEFAULT;
+}
+
+/**
+ * The effective page: the player's explicit choice while it is still visible,
+ * otherwise the current state's default. `selected` is null to follow the
+ * default. So a chosen tab that a dock/undock hides falls back sanely instead of
+ * rendering a blank or the wrong panel.
+ */
+export function resolvePage(selected: TabID | null, isDocked: boolean): TabID {
+  const visible = visibleTabsFor(isDocked);
+  if (selected !== null && visible.some((tab) => tab.id === selected)) {
+    return selected;
+  }
+  return defaultTabFor(isDocked);
+}

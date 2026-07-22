@@ -75,6 +75,7 @@ import type {
   TravelRouteStep,
   TravelStatus,
   WalletLPBalance,
+  CorpWalletDivision,
 } from "./types.ts";
 import type { ShipStats } from "../bridge/shipStats.ts";
 import type { MiningRungID, MiningStepID } from "../nav/miningLadder.ts";
@@ -353,6 +354,20 @@ export type FeedEvent =
     }
   // Drop the reward readout (character offline / logged out).
   | { readonly type: "rewards/cleared" }
+  // Goal R50 — the Wallet + Corp Wallet tabs. One BFF pull carries the personal
+  // ISK balance (account.GetCashBalance) and the corporation division balances
+  // (account.GetWalletDivisionsInfo). Each half keeps its own error.
+  // `corpDivisions` is null when the corp read failed (see `corpError`); [] is a
+  // real "no corp wallet divisions" answer.
+  | {
+      readonly type: "wallet/loaded";
+      readonly cashBalance: string | null;
+      readonly cashError: string | null;
+      readonly corpDivisions: readonly CorpWalletDivision[] | null;
+      readonly corpError: string | null;
+    }
+  // Drop the wallet readout (character offline / logged out).
+  | { readonly type: "wallet/cleared" }
   // Goal R6a — the Agent Finder. A find completed: the filtered/capped agents,
   // already annotated with jumps from the current system and sorted
   // nearest-first by the flow, plus the filter echo and match/cap counts.

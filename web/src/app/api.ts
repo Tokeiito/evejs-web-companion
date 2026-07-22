@@ -1388,6 +1388,40 @@ export async function loadRewards(options: ApiOptions = {}): Promise<RawRewardRe
   };
 }
 
+// --- R50 Wallet + Corp Wallet ----------------------------------------------
+// One pull for both tabs: the personal balance (account.GetCashBalance) and the
+// corporation division balances (account.GetWalletDivisionsInfo), plus the
+// server-side-resolved division NAMES (corpRegistry.GetCorporation). Amounts are
+// raw retail shapes decoded in web/src/bridge/wallet.ts.
+
+export interface RawWalletReads {
+  readonly cash: JsonValue;
+  readonly divisions: JsonValue;
+  /** Division ordinal (1..7) -> player-authored name, resolved by the BFF. */
+  readonly divisionNames: JsonValue;
+  readonly errors: {
+    readonly cash: string | null;
+    readonly divisions: string | null;
+    readonly corp: string | null;
+  };
+}
+
+/** The personal + corp-division wallet reads (raw; decoded in the flow). */
+export async function loadWallet(options: ApiOptions = {}): Promise<RawWalletReads> {
+  const data = await getJson("/api/bridge/wallet", options);
+  const errors = (data.errors ?? {}) as Record<string, JsonValue>;
+  return {
+    cash: data.cash ?? null,
+    divisions: data.divisions ?? null,
+    divisionNames: data.divisionNames ?? {},
+    errors: {
+      cash: typeof errors.cash === "string" ? errors.cash : null,
+      divisions: typeof errors.divisions === "string" ? errors.divisions : null,
+      corp: typeof errors.corp === "string" ? errors.corp : null,
+    },
+  };
+}
+
 // --- R7 Local + Corp chat --------------------------------------------------
 // The BFF holds the bridgeSessionID; the browser addresses channels by name.
 // READ is a backlog poll (chat delivery bypasses the notification drain), so

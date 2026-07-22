@@ -1,9 +1,10 @@
 <script lang="ts">
   // R2/R3 page flow, a pure reader of the client-state store: login form ->
-  // character selection -> docked station panel, with a tab to the R3
-  // Inventory & Ship page. All fetch/decode logic lives in app/flow.ts; the
-  // store slices are Svelte-store-contract signals, so $-auto-subscription
-  // reads them directly.
+  // character selection -> the tabbed app. Which tabs show and which is selected
+  // are driven by whether the character is DOCKED or IN SPACE (goal R50), from
+  // the authoritative flight flag — not a hardcoded default. All fetch/decode
+  // logic lives in app/flow.ts; the store slices are Svelte-store-contract
+  // signals, so $-auto-subscription reads them directly.
   import LoginForm from "./LoginForm.svelte";
   import CharacterSelect from "./CharacterSelect.svelte";
   import StationPanel from "./StationPanel.svelte";
@@ -24,6 +25,9 @@
   import Travel from "./Travel.svelte";
   import Bots from "./Bots.svelte";
   import Chat from "./Chat.svelte";
+  import Wallet from "./Wallet.svelte";
+  import CorpWallet from "./CorpWallet.svelte";
+  import { visibleTabsFor, resolvePage, deriveDocked, type TabID } from "./tabs.ts";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
 
@@ -35,29 +39,38 @@
   const session = store.session;
   // svelte-ignore state_referenced_locally
   const station = store.station;
+  // svelte-ignore state_referenced_locally
+  const flight = store.flight;
 
-  // Which docked page is showing. Local UI state only (the store mirrors EveJS
-  // state, not view navigation).
-  let page = $state<
-    | "station"
-    | "inventory"
-    | "fitting"
-    | "industry"
-    | "market"
-    | "mail"
-    | "contracts"
-    | "assets"
-    | "agents"
-    | "finder"
-    | "flight"
-    | "overview"
-    | "mining"
-    | "skills"
-    | "planets"
-    | "travel"
-    | "bots"
-    | "chat"
-  >("station");
+  // Docked vs in space, and the tabs + selection that follow from it. The tab
+  // TABLE and every rule live in tabs.ts (goal R50 items 1 + 4) so this stays a
+  // thin renderer; changing which set a tab is in is a one-line edit there.
+  const isDocked = $derived(deriveDocked($flight.status, $station.online));
+  const visibleTabs = $derived(visibleTabsFor(isDocked));
+
+  // The tab the player explicitly chose, or null to follow the state default.
+  let selected = $state<TabID | null>(null);
+
+  // The effective page: the player's choice while it is still visible, otherwise
+  // the current state's default. So the FIRST paint matches where the character
+  // actually is, and docking / undocking that hides the chosen tab falls back to
+  // that state's default instead of showing a blank or the wrong panel.
+  const page = $derived(resolvePage(selected, isDocked));
+
+  function selectTab(id: TabID): void {
+    selected = id;
+  }
+
+  // Once a character is online, read the flight status so the docked/in-space
+  // flag is authoritative (character select does not read it). Runs once —
+  // subsequent flight steps (undock / dock / travel / autopilot) keep it fresh
+  // through the same store slice. $effect never runs under SSR, so the initial
+  // paint still relies on the station-context fallback above.
+  $effect(() => {
+    if ($session.phase === "logged-in" && $station.online !== null && $flight.status === null) {
+      void flow.loadFlightStatus().catch(() => {});
+    }
+  });
 </script>
 
 <h1>EveJS Web</h1>
@@ -67,60 +80,11 @@
   <CharacterSelect {store} {flow} />
 {:else}
   <nav class="tabs">
-    <button type="button" class:active={page === "station"} onclick={() => (page = "station")}>
-      Station
-    </button>
-    <button type="button" class:active={page === "inventory"} onclick={() => (page = "inventory")}>
-      Inventory &amp; Ship
-    </button>
-    <button type="button" class:active={page === "fitting"} onclick={() => (page = "fitting")}>
-      Fitting
-    </button>
-    <button type="button" class:active={page === "industry"} onclick={() => (page = "industry")}>
-      Industry
-    </button>
-    <button type="button" class:active={page === "market"} onclick={() => (page = "market")}>
-      Market
-    </button>
-    <button type="button" class:active={page === "mail"} onclick={() => (page = "mail")}>
-      Mail
-    </button>
-    <button type="button" class:active={page === "contracts"} onclick={() => (page = "contracts")}>
-      Contracts
-    </button>
-    <button type="button" class:active={page === "assets"} onclick={() => (page = "assets")}>
-      Personal Assets
-    </button>
-    <button type="button" class:active={page === "agents"} onclick={() => (page = "agents")}>
-      Agents &amp; Missions
-    </button>
-    <button type="button" class:active={page === "finder"} onclick={() => (page = "finder")}>
-      Agent Finder
-    </button>
-    <button type="button" class:active={page === "flight"} onclick={() => (page = "flight")}>
-      Flight
-    </button>
-    <button type="button" class:active={page === "overview"} onclick={() => (page = "overview")}>
-      Around Your Ship
-    </button>
-    <button type="button" class:active={page === "mining"} onclick={() => (page = "mining")}>
-      Mining
-    </button>
-    <button type="button" class:active={page === "skills"} onclick={() => (page = "skills")}>
-      Skills
-    </button>
-    <button type="button" class:active={page === "planets"} onclick={() => (page = "planets")}>
-      Planets
-    </button>
-    <button type="button" class:active={page === "travel"} onclick={() => (page = "travel")}>
-      Travel
-    </button>
-    <button type="button" class:active={page === "bots"} onclick={() => (page = "bots")}>
-      Bots
-    </button>
-    <button type="button" class:active={page === "chat"} onclick={() => (page = "chat")}>
-      Chat
-    </button>
+    {#each visibleTabs as tab (tab.id)}
+      <button type="button" class:active={page === tab.id} onclick={() => selectTab(tab.id)}>
+        {tab.label}
+      </button>
+    {/each}
   </nav>
   {#if page === "station"}
     <StationPanel {store} {flow} />
@@ -141,7 +105,7 @@
   {:else if page === "agents"}
     <AgentsMissions {store} {flow} />
   {:else if page === "finder"}
-    <AgentFinder {store} {flow} showTravel={() => (page = "travel")} />
+    <AgentFinder {store} {flow} showTravel={() => selectTab("travel")} />
   {:else if page === "flight"}
     <Flight {store} {flow} />
   {:else if page === "overview"}
@@ -156,6 +120,10 @@
     <Travel {store} {flow} />
   {:else if page === "bots"}
     <Bots {store} {flow} />
+  {:else if page === "wallet"}
+    <Wallet {store} {flow} />
+  {:else if page === "corpWallet"}
+    <CorpWallet {store} {flow} />
   {:else}
     <Chat {store} {flow} />
   {/if}

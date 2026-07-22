@@ -924,6 +924,45 @@ export interface RewardsState {
   readonly error: string | null;
 }
 
+// --- R50 Wallet + Corp Wallet ----------------------------------------------
+
+/**
+ * One corporation wallet division from account.GetWalletDivisionsInfo (goal
+ * R50): the balance the retail corp-wallet window shows per division. `key` is
+ * the retail ACCOUNT KEY (1000..1006, never rendered); `division` is its 1..7
+ * ordinal (key - 999); `name` is the corporation's player-authored division
+ * name, or null when it was never renamed (the panel then shows "Division N").
+ * `balance` is a bigint-safe decimal string in ISK — 0 ISK is a real balance,
+ * not an absence.
+ */
+export interface CorpWalletDivision {
+  readonly key: number;
+  readonly division: number;
+  readonly name: string | null;
+  readonly balance: string;
+}
+
+/**
+ * The Wallet + Corp Wallet nav tabs (goal R50). Both tabs read from one BFF
+ * pull (/api/bridge/wallet): the PERSONAL ISK balance (account.GetCashBalance,
+ * already allowlisted) and the CORP division balances
+ * (account.GetWalletDivisionsInfo). Each half keeps its own error so a failed
+ * corp read never blanks the personal balance and vice versa.
+ *
+ * ⚠ `corpDivisions: null` means "not read yet / the corp read FAILED" (see
+ * `corpError`); an empty list `[]` is a real "this corporation has no wallet
+ * divisions" answer. The two must never look alike (the worldHasNoContracts
+ * precedent). ISK is a bigint-safe decimal string.
+ */
+export interface WalletState {
+  readonly cashBalance: string | null;
+  readonly cashError: string | null;
+  readonly corpDivisions: readonly CorpWalletDivision[] | null;
+  readonly corpError: string | null;
+  /** True once a wallet read has populated the slice. */
+  readonly loaded: boolean;
+}
+
 // --- R6a Agent Finder ------------------------------------------------------
 
 /**

@@ -83,6 +83,7 @@ import type {
   SkillsState,
   PlanetsState,
   TravelState,
+  WalletState,
 } from "./types.ts";
 import type { NamesState } from "./names.ts";
 import { deriveShipStats } from "../bridge/shipStats.ts";
@@ -137,6 +138,7 @@ export interface ClientState {
   readonly agents: AgentsState;
   readonly finder: AgentFinderState;
   readonly rewards: RewardsState;
+  readonly wallet: WalletState;
   readonly flight: FlightState;
   readonly space: SpaceState;
   readonly targeting: TargetingState;
@@ -349,6 +351,18 @@ const INITIAL_REWARDS: RewardsState = Object.freeze({
   standings: Object.freeze([]) as RewardsState["standings"],
   loaded: false,
   error: null,
+});
+
+// R50 wallet. `cashBalance`/`corpDivisions` start NULL, not 0/[]: a balance not
+// yet read must not render as 0 ISK, and an unread corp wallet must not look
+// like a corporation with no divisions. An empty `corpDivisions` list becomes a
+// real answer only from a SUCCESSFUL read that carried no divisions.
+const INITIAL_WALLET: WalletState = Object.freeze({
+  cashBalance: null,
+  cashError: null,
+  corpDivisions: null,
+  corpError: null,
+  loaded: false,
 });
 
 const INITIAL_FLIGHT: FlightState = Object.freeze({
@@ -586,6 +600,7 @@ export interface ClientStore {
   readonly agents: ReadableSignal<AgentsState>;
   readonly finder: ReadableSignal<AgentFinderState>;
   readonly rewards: ReadableSignal<RewardsState>;
+  readonly wallet: ReadableSignal<WalletState>;
   readonly flight: ReadableSignal<FlightState>;
   readonly space: ReadableSignal<SpaceState>;
   readonly targeting: ReadableSignal<TargetingState>;
@@ -636,6 +651,7 @@ export function createClientStore(): ClientStore {
   const agents = createSignal<AgentsState>(INITIAL_AGENTS);
   const finder = createSignal<AgentFinderState>(INITIAL_FINDER);
   const rewards = createSignal<RewardsState>(INITIAL_REWARDS);
+  const wallet = createSignal<WalletState>(INITIAL_WALLET);
   const flight = createSignal<FlightState>(INITIAL_FLIGHT);
   const space = createSignal<SpaceState>(INITIAL_SPACE);
   const targeting = createSignal<TargetingState>(INITIAL_TARGETING);
@@ -673,6 +689,7 @@ export function createClientStore(): ClientStore {
     agents: agents.get(),
     finder: finder.get(),
     rewards: rewards.get(),
+    wallet: wallet.get(),
     flight: flight.get(),
     space: space.get(),
     targeting: targeting.get(),
@@ -714,6 +731,7 @@ export function createClientStore(): ClientStore {
         agents.set(INITIAL_AGENTS);
         finder.set(INITIAL_FINDER);
         rewards.set(INITIAL_REWARDS);
+        wallet.set(INITIAL_WALLET);
         flight.set(INITIAL_FLIGHT);
         space.set(INITIAL_SPACE);
         targeting.set(INITIAL_TARGETING);
@@ -768,6 +786,7 @@ export function createClientStore(): ClientStore {
         agents.set(INITIAL_AGENTS);
         finder.set(INITIAL_FINDER);
         rewards.set(INITIAL_REWARDS);
+        wallet.set(INITIAL_WALLET);
         flight.set(INITIAL_FLIGHT);
         space.set(INITIAL_SPACE);
         targeting.set(INITIAL_TARGETING);
@@ -794,6 +813,7 @@ export function createClientStore(): ClientStore {
         agents.set(INITIAL_AGENTS);
         finder.set(INITIAL_FINDER);
         rewards.set(INITIAL_REWARDS);
+        wallet.set(INITIAL_WALLET);
         flight.set(INITIAL_FLIGHT);
         space.set(INITIAL_SPACE);
         targeting.set(INITIAL_TARGETING);
@@ -1180,6 +1200,22 @@ export function createClientStore(): ClientStore {
         break;
       case "rewards/cleared":
         rewards.set(INITIAL_REWARDS);
+        break;
+      // R50 wallet. The two halves land together but keep their own errors, so a
+      // failed corp read never blanks the personal balance. `corpDivisions`
+      // stays NULL on a failed corp read (carried in `corpError`); a successful
+      // empty read sets it to [] — a real "no corp wallet divisions".
+      case "wallet/loaded":
+        wallet.set({
+          cashBalance: event.cashBalance,
+          cashError: event.cashError,
+          corpDivisions: event.corpDivisions,
+          corpError: event.corpError,
+          loaded: true,
+        });
+        break;
+      case "wallet/cleared":
+        wallet.set(INITIAL_WALLET);
         break;
       case "flight/status": {
         // Preserve a resolved name only while its ID is unchanged; on any ID
@@ -1862,6 +1898,7 @@ export function createClientStore(): ClientStore {
     agents: readonlySignal(agents),
     finder: readonlySignal(finder),
     rewards: readonlySignal(rewards),
+    wallet: readonlySignal(wallet),
     flight: readonlySignal(flight),
     space: readonlySignal(space),
     targeting: readonlySignal(targeting),
