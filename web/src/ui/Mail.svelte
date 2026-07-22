@@ -437,7 +437,7 @@
     font-size: 12px;
     font-weight: 600;
     padding: 0.15rem 0.5rem;
-    border-radius: 999px;
+    border-radius: 0;
     border: 1px solid var(--color-line-strong);
     vertical-align: middle;
   }

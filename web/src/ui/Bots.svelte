@@ -288,7 +288,7 @@
   }
   .bot-card {
     border: 1px solid currentColor;
-    border-radius: 0.4rem;
+    border-radius: 0;
     padding: 0.75rem;
     /* The border is the only thing carrying "this one is live", so it is not
        colour alone — the badge says it in words too. */
@@ -310,7 +310,7 @@
   .badge {
     font-size: 0.85em;
     border: 1px solid currentColor;
-    border-radius: 0.25rem;
+    border-radius: 0;
     padding: 0.1rem 0.4rem;
     white-space: nowrap;
   }
