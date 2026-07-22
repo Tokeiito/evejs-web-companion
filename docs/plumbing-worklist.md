@@ -6,9 +6,18 @@ Complete enumeration of every retail-client `{service, method}` that has an eve.
 
 **Scale is large: 588 pairs ≈ many worker cycles.** The plumbing loop wires them in coherent batches per the PLUMBING CONTRACT (`docs/goal-prompts/r57-plumbing-toplevel-reads.md`): allowlist pair + BFF passthrough + decoder from real bytes + tests, **no UI**.
 
-**Order = reads before writes, top-level before bound:** Phase 1 (top-level reads) → Phase 2 (bound reads) → **[operator checkpoint]** → Phase 3/4 (writes).
+**Order = reads before writes, top-level before bound:** Phase 1 (top-level reads) → Phase 2 (bound reads) → Phase 3 (top-level writes) → Phase 4 (bound writes).
 
-**Decision (autonomous, flagged for the operator):** I am sweeping the **287 READS** first — they are read-only (low surface risk) and are exactly what "set up the UI easier later" needs (UI displays reads). I am **holding the 301 WRITES for an explicit operator OK** before permitting them, because at that scale they include financial and destructive calls — `account.GiveCash`/`GiveCashFromCorpAccount` (ISK transfer), `mailMgr.EmptyTrash`/`DeleteMail` (permanent delete), `contractProxy.AcceptContract`/`DeleteContract`, `killRightMgr.BuyKillRight`, `insuranceSvc.InsureShip` (spends ISK), `ship.Eject`/`SafeLogoff`, `fighterMgr.*`. Permitting 301 mutating browser-reachable calls unattended is a consequential surface expansion; the reads are unambiguous, the writes deserve a yes. The writes stay fully catalogued below, confirm-gate design noted, ready to wire on the word.
+**Both reads AND writes AUTHORIZED by the operator 2026-07-22:** *"do the writes … remember those are way more situational, so do online research if needed to know context of each operation. But I auth you to get all reads and writes plumbed."* Reads first (UI needs them), then writes.
+
+**READS ownership-leak rule (R63, mandatory per read):** a read is safe to allowlist only if it returns the session's own data OR genuinely public data. Verify LIVE what each read returns for an un-owned entity; skip + cite any that leaks another entity's private/operational data (`GetStructures`, `GetMyCharacterStructures` were skipped for leaking rival structures' fuel/reinforce/vulnerability). The orchestrator's "safe" labels are hints, not guarantees.
+
+**WRITES contract (situational — the operator's caveat):**
+- Each write = allowlist pair + BFF **POST** route with an explicit **confirm-gate** (no confirm ⇒ refused, like the existing `TrashItems`/`dockAt` pattern) + response decoder + tests.
+- **A 200 is not proof** — a write is confirmed only by re-reading authority.
+- **Research context when the operation's semantics/consequences aren't obvious** (WebSearch the EVE operation). Note per write what it does.
+- **Live-trigger policy by consequence:** SAFE/reversible writes (`MarkAsRead`, `SetNote`, label edits) may be triggered live and re-read to confirm. FINANCIAL/DESTRUCTIVE writes (`GiveCash`/`GiveCashFromCorpAccount`, `EmptyTrash`/`DeleteMail`/`DeleteContract`, `AcceptContract`/`PlaceBid`, `BuyKillRight`, `InsureShip`, `Eject`/`SafeLogoff`, `TakeOffer`, `BuyMultipleItems`) are verified by **reachability + refusal path only** — do NOT trigger the destructive/financial happy-path on the live world; the confirm-gate must exist and the route must be reachable, but the mutation stays untriggered. Document per write: live-triggered-and-reverted vs reachability-only.
+- **GM/admin-gated writes** (`GM_ExpireContract`, `sovMgr.*Skyhooks`) — wire the pair but expect a normal session to 403; note it.
 
 **Each wiring worker must one-line-grep-confirm the `Handle_<Method>` exists before adding a pair** — the handler cites below are inherited from a third-hand enumeration, not independently re-grepped in the consolidation pass. Cheap insurance against a wasted cycle.
 
