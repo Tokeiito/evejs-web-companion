@@ -6125,6 +6125,217 @@ app.get("/api/bridge/structures", requireAuth, async (req, res, next) => {
   }
 });
 
+// --- R66 plumbing sweep: pvp-info READS (bounties / wars / killmail) — no UI ---
+// PLUMBING ONLY: three routes make the bounty / war / killmail READS reachable +
+// decodable so a later goal builds UI cheaply. No panel/tab/store slice ships.
+// Bounties, wars and killmails are LARGELY PUBLIC EVE data; the one seam that
+// could leak (kill rights) is gated server-side to FOR-SALE rights the session
+// may see (killRightState.hasSaleAccess). Each route batches allowlisted
+// TOP-LEVEL reads on the held session (Promise.allSettled; empty ≠ failed, each
+// read its own error code). Raw retail-shaped results ship out, decoded
+// browser-side (web/src/bridge/{bounties,wars,killmail}.ts).
+
+// A comma-separated list of positive ids from a query string (drops blanks/0).
+// Bounty/war owner + kill-right target lists all arrive this way; real entity ids
+// here are well under 2^53, so Number holds them without loss.
+function positiveIntListQuery(value) {
+  return String(value ?? "")
+    .split(",")
+    .map((token) => Number(token.trim()))
+    .filter((id) => Number.isInteger(id) && id > 0);
+}
+
+// GET /api/bridge/bounties?targetIDs=&killRightTargetIDs=&searchTargetID= — the
+// bountyProxy reads, as up to EIGHT independent reads (GetMyKillRights is its own
+// R57 route and is not repeated here). ⚠ GetBounties / GetBountiesAndKillRights
+// with an EMPTY targetIDs resolve server-side to the whole known bounty board
+// (buildKnownBountyOwnerIds); GetKillRightsOnCharacters needs explicit target ids
+// (empty -> [], a real "asked about none"). GetMyBounties + the three ranked
+// leaderboards take no args. SearchCharBounties(targetID) is issued ONLY when
+// ?searchTargetID= is given. Bounty amounts are bigint ISK; entity ids stay data
+// (R7d). Empty (Farmer has placed none, no board seeded) is a legitimate state.
+app.get("/api/bridge/bounties", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const targetIDs = positiveIntListQuery(req.query.targetIDs);
+  const killRightTargetIDs = positiveIntListQuery(req.query.killRightTargetIDs);
+  const searchTargetID = Number(req.query.searchTargetID) || 0;
+  try {
+    const [
+      bounties,
+      myBounties,
+      killRightsOnChars,
+      bountiesAndKillRights,
+      topPilots,
+      topCorps,
+      topAlliances,
+      search,
+    ] = await Promise.allSettled([
+      heldTopLevelCall(held, req.webSessionID, "bountyProxy", "GetBounties", [targetIDs], null),
+      heldTopLevelCall(held, req.webSessionID, "bountyProxy", "GetMyBounties", [], null),
+      heldTopLevelCall(held, req.webSessionID, "bountyProxy", "GetKillRightsOnCharacters", [killRightTargetIDs], null),
+      heldTopLevelCall(held, req.webSessionID, "bountyProxy", "GetBountiesAndKillRights", [targetIDs, killRightTargetIDs], null),
+      heldTopLevelCall(held, req.webSessionID, "bountyProxy", "GetTopPilotBounties", [], null),
+      heldTopLevelCall(held, req.webSessionID, "bountyProxy", "GetTopCorpBounties", [], null),
+      heldTopLevelCall(held, req.webSessionID, "bountyProxy", "GetTopAllianceBounties", [], null),
+      searchTargetID > 0
+        ? heldTopLevelCall(held, req.webSessionID, "bountyProxy", "SearchCharBounties", [searchTargetID], null)
+        : Promise.resolve({ result: null }),
+    ]);
+    const settled = [
+      bounties, myBounties, killRightsOnChars, bountiesAndKillRights,
+      topPilots, topCorps, topAlliances, search,
+    ];
+    if (surfaceLostSession(settled, next)) {
+      return;
+    }
+    res.json({
+      ok: true,
+      requested: {
+        targetIDs,
+        killRightTargetIDs,
+        searchTargetID: searchTargetID > 0 ? searchTargetID : null,
+      },
+      bounties: settledReadValue(bounties),
+      myBounties: settledReadValue(myBounties),
+      killRightsOnChars: settledReadValue(killRightsOnChars),
+      bountiesAndKillRights: settledReadValue(bountiesAndKillRights),
+      topPilots: settledReadValue(topPilots),
+      topCorps: settledReadValue(topCorps),
+      topAlliances: settledReadValue(topAlliances),
+      search: settledReadValue(search),
+      errors: {
+        bounties: settledReadCode(bounties),
+        myBounties: settledReadCode(myBounties),
+        killRightsOnChars: settledReadCode(killRightsOnChars),
+        bountiesAndKillRights: settledReadCode(bountiesAndKillRights),
+        topPilots: settledReadCode(topPilots),
+        topCorps: settledReadCode(topCorps),
+        topAlliances: settledReadCode(topAlliances),
+        search: searchTargetID > 0 ? settledReadCode(search) : null,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// GET /api/bridge/wars?ownerID=&ownerIDs=&maxWarID=&structureID=&warID= — the
+// warsInfoMgr reads, as up to SIX independent reads. ownerID / ownerIDs default
+// to the SESSION corp (held.corporationID); GetWarsRequiringAssistance falls back
+// to the session alliance/corp server-side. GetWarsForStructure / GetPublicWarInfo
+// are issued ONLY when their id query is given. War records are PUBLIC (no fuel/
+// reinforce field); entity ids stay data (R7d), FILETIMEs bigint. Empty (Farmer's
+// corp is in no war, no wars seeded) is a legitimate state. ⚠ GetWarsByOwnerID /
+// GetTop50 wrap a CRowset in a CachedMethodCallResult (two wrappers to unpeel).
+app.get("/api/bridge/wars", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const sessionCorpID = Number(held.corporationID) || 0;
+  const ownerID = nonNegativeIntQuery(req.query.ownerID, sessionCorpID);
+  const ownerIDsParam = positiveIntListQuery(req.query.ownerIDs);
+  const ownerIDs = ownerIDsParam.length > 0 ? ownerIDsParam : (ownerID > 0 ? [ownerID] : []);
+  const maxWarID = nonNegativeIntQuery(req.query.maxWarID, 0);
+  const structureID = nonNegativeIntQuery(req.query.structureID, 0);
+  const warID = nonNegativeIntQuery(req.query.warID, 0);
+  const wantStructure = structureID > 0;
+  const wantWar = warID > 0;
+  try {
+    const [
+      byOwner,
+      byOwners,
+      top50,
+      requiringAssistance,
+      forStructure,
+      publicWarInfo,
+    ] = await Promise.allSettled([
+      heldTopLevelCall(held, req.webSessionID, "warsInfoMgr", "GetWarsByOwnerID", [ownerID], null),
+      heldTopLevelCall(held, req.webSessionID, "warsInfoMgr", "GetWarsByOwners", [ownerIDs], null),
+      heldTopLevelCall(held, req.webSessionID, "warsInfoMgr", "GetTop50", [maxWarID], null),
+      heldTopLevelCall(held, req.webSessionID, "warsInfoMgr", "GetWarsRequiringAssistance", [ownerID], null),
+      wantStructure
+        ? heldTopLevelCall(held, req.webSessionID, "warsInfoMgr", "GetWarsForStructure", [structureID], null)
+        : Promise.resolve({ result: null }),
+      wantWar
+        ? heldTopLevelCall(held, req.webSessionID, "warsInfoMgr", "GetPublicWarInfo", [warID], null)
+        : Promise.resolve({ result: null }),
+    ]);
+    const settled = [byOwner, byOwners, top50, requiringAssistance, forStructure, publicWarInfo];
+    if (surfaceLostSession(settled, next)) {
+      return;
+    }
+    res.json({
+      ok: true,
+      requested: {
+        ownerID,
+        ownerIDs,
+        maxWarID,
+        structureID: wantStructure ? structureID : null,
+        warID: wantWar ? warID : null,
+      },
+      byOwner: settledReadValue(byOwner),
+      byOwners: settledReadValue(byOwners),
+      top50: settledReadValue(top50),
+      requiringAssistance: settledReadValue(requiringAssistance),
+      forStructure: settledReadValue(forStructure),
+      publicWarInfo: settledReadValue(publicWarInfo),
+      errors: {
+        byOwner: settledReadCode(byOwner),
+        byOwners: settledReadCode(byOwners),
+        top50: settledReadCode(top50),
+        requiringAssistance: settledReadCode(requiringAssistance),
+        forStructure: wantStructure ? settledReadCode(forStructure) : null,
+        publicWarInfo: wantWar ? settledReadCode(publicWarInfo) : null,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// GET /api/bridge/killmail?killID=&hash= — one public killmail
+// (warStatisticMgr.GetKillMail). ⚠ VERIFY-FIRST BINDING (worklist): warStatisticMgr
+// is a bindable service, but Handle_GetKillMail reads killID from args[0] and never
+// touches the bound context, so it answers a plain TOP-LEVEL /call (confirmed live);
+// the bound-only siblings stay refused. killID is REQUIRED — with none the route
+// returns killmail:null and issues no read. An optional hash verifies the mail (a
+// mismatch/unknown id -> null, a real state). Killmails are public; ids stay data
+// (R7d), ISK/value fields + killTime are bigint-safe.
+app.get("/api/bridge/killmail", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const killID = Number(req.query.killID) || 0;
+  const hash = typeof req.query.hash === "string" ? req.query.hash.trim() : "";
+  if (killID <= 0) {
+    res.json({ ok: true, requested: { killID: null, hash: null }, killmail: null, error: null });
+    return;
+  }
+  try {
+    const outcome = await heldTopLevelCall(
+      held,
+      req.webSessionID,
+      "warStatisticMgr",
+      "GetKillMail",
+      hash ? [killID, hash] : [killID],
+      null,
+    );
+    res.json({
+      ok: true,
+      requested: { killID, hash: hash || null },
+      killmail: outcome.result,
+      error: null,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // --- R7 Local + Corp chat ---------------------------------------------------
 // The browser reads a channel's member roster + recent backlog and sends
 // messages to Local or Corp on the held session. Chat delivery bypasses the
