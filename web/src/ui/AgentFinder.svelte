@@ -20,6 +20,7 @@
   import type { AppFlow } from "../app/flow.ts";
   import type { AgentFinderRow } from "../store/types.ts";
   import { resolvedName } from "../store/names.ts";
+  import { filterFinderRows, parseJumpsLimit } from "./agentFinderFilter.ts";
 
   let {
     store,
@@ -49,6 +50,10 @@
   let kind = $state("courier");
   let levelFilter = $state("all");
   let searchText = $state("");
+  // "Within N jumps" is a client-side limit (R52), kept as the raw input string
+  // so a blank field reads as "no limit" (opt-in) rather than 0. It does NOT
+  // re-find — unlike kind/level, it filters rows we already hold.
+  let jumpsLimitInput = $state("");
   let busy = $state(false);
   let error = $state("");
 
@@ -81,26 +86,13 @@
     void find();
   });
 
-  // Text search is client-side over the already-nearest-sorted returned rows.
-  const filteredAgents = $derived.by<AgentFinderRow[]>(() => {
-    const query = searchText.trim().toLowerCase();
-    if (!query) {
-      return [...$finder.agents];
-    }
-    return $finder.agents.filter((agent) => {
-      const haystack = [
-        agent.name,
-        agent.solarSystemName ?? "",
-        agent.stationName ?? "",
-        agent.missionKind ?? "",
-        `l${agent.level ?? ""}`,
-        String(agent.agentID),
-      ]
-        .join(" ")
-        .toLowerCase();
-      return haystack.includes(query);
-    });
-  });
+  // The jumps limit + text search are client-side over the already-nearest-
+  // sorted returned rows (jumps filter, then text filter — see filterFinderRows);
+  // the render cap below counts what actually matched.
+  const jumpsLimit = $derived(parseJumpsLimit(jumpsLimitInput));
+  const filteredAgents = $derived<AgentFinderRow[]>(
+    filterFinderRows($finder.agents, { jumpsLimit, searchText }),
+  );
   const cappedAgents = $derived(filteredAgents.slice(0, RENDER_CAP));
 
   function jumpsText(jumps: number | null): string {
@@ -154,6 +146,18 @@
       </select>
     </label>
     <label>
+      Within jumps
+      <input
+        type="number"
+        inputmode="numeric"
+        min="0"
+        step="1"
+        placeholder="any"
+        value={jumpsLimitInput}
+        oninput={(event) => (jumpsLimitInput = event.currentTarget.value)}
+      />
+    </label>
+    <label>
       Search (name / system)
       <input type="search" placeholder="name or system" bind:value={searchText} />
     </label>
@@ -195,7 +199,8 @@
     <p class="empty">No agents match this filter.</p>
   {:else}
     <p class="note">
-      Showing {cappedAgents.length} of {filteredAgents.length} matching
+      Showing {cappedAgents.length} of {filteredAgents.length} matching{#if jumpsLimit !== null}
+        within {jumpsLimit} {jumpsLimit === 1 ? "jump" : "jumps"}{/if}
       ({$finder.total}{$finder.capped ? "+" : ""} for this filter), nearest first
       from {originText()}.
       {#if $finder.capped}
@@ -205,7 +210,9 @@
       {/if}
     </p>
     {#if cappedAgents.length === 0}
-      <p class="empty">No agents match the search.</p>
+      <p class="empty">
+        No agents match your filters{#if jumpsLimit !== null} within {jumpsLimit} {jumpsLimit === 1 ? "jump" : "jumps"} (unreachable agents are hidden){/if}.
+      </p>
     {:else}
       <div class="table-wrap overflow-x-auto">
         <table class="guests agent-finder reflow">
