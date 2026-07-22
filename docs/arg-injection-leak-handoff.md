@@ -86,3 +86,23 @@ The audit could not statically decide these; probe each with a foreign id (log i
 - The 14 pairs stay on `WEB_CALL_ALLOWLIST` and keep their BFF routes — **pre-plumbed** so the web UI can consume them the moment the handlers are scoped. Do not de-allowlist them as part of this work.
 - No BFF-level guard/denylist was added (considered and declined in favour of the handler fix).
 - The 217 other allowlisted reads were audited and are safe (session-scoped, ownership-checked, or genuinely public/global data — map/market/lookups/public info/system-keyed public state); the 58 writes/binds are out of this audit's scope.
+
+---
+
+## Addendum (R72, 2026-07-22): a BINDS-ARBITRARY-OID gateway — `fleetObjectHandler.MachoBindObject`
+
+R72 wired five gateway-**bind** reads (the Phase-2 prerequisites): `skillMgr2.GetMySkillHandler`, `dogmaIM.MachoBindObject`, `entity.MachoBindObject`, `scanMgr.GetSystemScanMgr`, `fleetObjectHandler.MachoBindObject`. Four are session-derived or session-scoped and safe (the bind target comes from the session, not from caller args). **One is not**, and belongs to the same class as the 14 above — the leak lives on the *bound read*, not the bind:
+
+| Gateway | Handler | Classification |
+|---|---|---|
+| `fleetObjectHandler.MachoBindObject` | `fleets/fleetObjectHandlerService.js:106` | **BINDS-ARBITRARY-OID.** `Handle_MachoBindObject` takes `bindParams[0]` as the `fleetID` (fallback `session.fleetid`) with **no membership check** and stores it in the bound context (`_rememberBoundContext`). The Phase-2 bound reads honor it via `_resolveFleetIDFromSession` (fleetObjectHandlerService.js:35), and `fleetRuntime.getWings` / `getMotd` / `getFleetComposition` (fleetRuntime.js:1163-1200) take a **bare `fleetID`** and return that fleet's roster (member characterIDs, ship types, locations, MOTD) with **no gate** — `ensureFleetExists` even fabricates an empty fleet for an unknown id. |
+
+**Why it is still wired:** the bind is exactly how retail's fleet two-step works — it is a prerequisite for any RB-FLEET read. The BFF binds it **session-scoped** (`fleetBindSpec()` passes `args: []` → the session's own `fleetid`), so the dedicated `/api/bridge/gateway-binds` route does not leak. **But** `POST /api/bridge/call` forwards `args` verbatim (server.js:281), so a logged-in browser can `POST /api/bridge/call {service:"fleetObjectHandler", method:"MachoBindObject", args:[[<rival fleetID>]]}` to mint a handle bound to a foreign fleet; the leak then fires on the Phase-2 bound read off that handle (currently all refused by deny-by-default — none are allowlisted yet).
+
+**The fix (do it BEFORE any RB-FLEET bound read is allowlisted):** one of —
+- Make `Handle_MachoBindObject` **validate `bindParams[0]` against the session's own fleet** (`fleetRuntime.getFleetForCharacter(session.characterID)`), ignoring / refusing a foreign fleetID; **or**
+- Scope each Phase-2 bound read (`GetWings`/`GetMotd`/`GetFleetComposition`/…) to a fleet the session is a **member** of (`fleet.members.has(session.characterID)`), returning `null`/empty otherwise.
+
+Either closes it; the first is cleaner (one place). Until then, **do not allowlist any `fleetObjectHandler` bound read.**
+
+**Verified LIVE (2026-07-22, rrfarmer → Farmer 140000005):** the bind returns a handle session-scoped through the BFF; a bound `GetFleetID`/`GetFullState` off the handle is refused `CALL_NOT_ALLOWED` (deny-by-default holds). The foreign-fleetID injection path was **not** exercised live (no second fleet seeded) — it is a static reading of the handler, same confidence level as the 14 above.

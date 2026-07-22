@@ -702,6 +702,39 @@ function agentBindSpec(agentID) {
   };
 }
 
+// R72 PLUMBING — the four OID-bind gateway specs the Phase-2 bound-read batches
+// hang off (RB-DOGMA / RB-ENTITY / RB-SCAN / RB-FLEET). Each mints a BOUND HANDLE,
+// not entity data; NO bound method is wired here (each Phase-2 bound read is its
+// own batch with its own R63 ownership check). The BFF binds them SESSION-SCOPED
+// — it passes NO caller-supplied target (args: []) so every gateway derives its
+// target from the held session, and the handle stays BFF-side (never browser JS),
+// exactly like every other bind. Mirrors the invbroker/ship/agentMgr shape.
+//
+// dogmaIM binds the active ship's dogma manager; the bound reads resolve the ship
+// from the session, so the (ignored) bind param cannot steer a foreign ship.
+function dogmaBindSpec() {
+  return { key: "dogma", service: "dogmaIM", method: "MachoBindObject", args: [], kwargs: null };
+}
+// entity binds an in-space entity; the handler ignores the bind param and the
+// bound Cmd* orders act on the session's own scene.
+function entityBindSpec() {
+  return { key: "entity", service: "entity", method: "MachoBindObject", args: [], kwargs: null };
+}
+// scanMgr.GetSystemScanMgr returns the bound handle for the session's OWN current
+// system (server-derived) — a GetXxx, not a MachoBindObject, but it returns a real
+// OID substruct so it rides the same /bound/bind two-step.
+function systemScanBindSpec() {
+  return { key: "scanMgr", service: "scanMgr", method: "GetSystemScanMgr", args: [], kwargs: null };
+}
+// ⚠ fleetObjectHandler.MachoBindObject accepts a CALLER fleetID (no membership
+// check) and stores it for the bound reads to honor — a binds-arbitrary-OID
+// gateway (docs/arg-injection-leak-handoff.md). The BFF passes NO fleetID so it
+// binds the session's OWN fleet; the leak risk lives on the Phase-2 bound READ,
+// which must add a hard ownership check. Wired because it is the retail prereq.
+function fleetBindSpec() {
+  return { key: "fleet", service: "fleetObjectHandler", method: "MachoBindObject", args: [], kwargs: null };
+}
+
 // Dispatch a bound method, binding the target on demand and caching the bind
 // under its semantic key. The cache holds the in-flight bind PROMISE, so the
 // concurrent reads of one panel load (List + GetCapacity per container) share a
@@ -825,6 +858,84 @@ app.get("/api/bridge/inventory", requireAuth, async (req, res, next) => {
       },
     });
   } catch (error) {
+    next(error);
+  }
+});
+
+// R72 PLUMBING — reachability probe for the five gateway-bind reads that every
+// Phase-2 bound-read batch hangs off (skills / dogma / entity / system-scan /
+// fleet). It performs each bind on the held session and returns the handle
+// ENVELOPE INTACT — `bound: true/false` for the four OID binds (the boundHandle
+// itself stays BFF-side, never browser JS) and the session-scoped Moniker for the
+// skills gateway — WITHOUT decoding into entity fields and WITHOUT calling any
+// bound method (those are Phase-2). Independent Promise.allSettled: a missing
+// target (no fleet, docked so nothing in space to bind) is empty-but-legitimate
+// and never blanks the rest. NO UI consumes this yet — it is the pipe.
+function decodeGatewaySettled(settled) {
+  if (settled.status === "fulfilled") {
+    return settled.value;
+  }
+  const reason = settled.reason || {};
+  return { bound: false, error: String(reason.code || "BIND_FAILED") };
+}
+
+app.get("/api/bridge/gateway-binds", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const sessionFields = { userid: held.accountID };
+  // One OID bind: mint the handle, keep only the envelope (never the secret
+  // handle string). The service/method echo back so a decoder can confirm the
+  // gateway it addressed. IDs stay as data — nothing here is decoded into fields.
+  const probeBind = (spec) =>
+    gateway
+      .bindObject(spec.service, spec.method, spec.args, spec.kwargs, sessionFields, held.bridgeSessionID)
+      .then((bound) => ({
+        bound: typeof bound.boundHandle === "string" && bound.boundHandle.length > 0,
+        service: bound.service,
+        method: bound.method,
+      }));
+  // The skills gateway is the odd one: GetMySkillHandler returns a Moniker (not an
+  // "N=" OID), so it rides the top-level /call seam. Return the moniker envelope
+  // intact — its service name is what the Phase-2 skills reads address, and its
+  // bind param (the session's OWN characterID) is kept as a STRING (R7d: an id is
+  // data, never coerced into a label).
+  const probeSkillHandler = () =>
+    gateway
+      .callMethod("skillMgr2", "GetMySkillHandler", [], null, sessionFields, held.bridgeSessionID)
+      .then((outcome) => ({ bound: true, moniker: outcome.result === undefined ? null : outcome.result }));
+  try {
+    const [skill, dogma, entityGw, systemScan, fleet] = await Promise.allSettled([
+      probeSkillHandler(),
+      probeBind(dogmaBindSpec()),
+      probeBind(entityBindSpec()),
+      probeBind(systemScanBindSpec()),
+      probeBind(fleetBindSpec()),
+    ]);
+    // A lost live session cannot be recovered by any probe; surface it so the
+    // page returns to character select (matching /api/bridge/inventory).
+    for (const settled of [skill, dogma, entityGw, systemScan, fleet]) {
+      if (settled.status === "rejected" && settled.reason && settled.reason.code === "SESSION_NOT_FOUND") {
+        forgetBridgeSession(req.webSessionID);
+        next(settled.reason);
+        return;
+      }
+    }
+    res.json({
+      ok: true,
+      gateways: {
+        skillHandler: decodeGatewaySettled(skill),
+        dogma: decodeGatewaySettled(dogma),
+        entity: decodeGatewaySettled(entityGw),
+        systemScan: decodeGatewaySettled(systemScan),
+        fleet: decodeGatewaySettled(fleet),
+      },
+    });
+  } catch (error) {
+    if (error && error.code === "SESSION_NOT_FOUND") {
+      forgetBridgeSession(req.webSessionID);
+    }
     next(error);
   }
 });
