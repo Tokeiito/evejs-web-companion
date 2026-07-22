@@ -735,6 +735,26 @@ function fleetBindSpec() {
   return { key: "fleet", service: "fleetObjectHandler", method: "MachoBindObject", args: [], kwargs: null };
 }
 
+// R77 PLUMBING — the RB-PI planet bind. Retail addresses the planetary-industry
+// bound reads on Moniker("planetMgr", planetID) (eveMoniker.GetPlanet), a genuine
+// bound two-step: planetMgr.MachoBindObject(planetID) mints the OID handle keyed
+// on the planetID, and the reads dispatch as bound methods. The BIND itself is
+// read-safe — a planetID is public celestial geography (the same id
+// GetPlanetsForChar returns), and the handler reads no colony. Binding to the
+// caller's requested planetID also SETS session._planetMgrLastPlanetID, which is
+// how the two {allowArgs:false} reads (GetResourceData, GetProgramResultInfo)
+// recover the planetID when their own args do not carry it. Keyed per planetID so
+// distinct planets get distinct cached handles.
+function planetBindSpec(planetID) {
+  return {
+    key: `planet:${Number(planetID)}`,
+    service: "planetMgr",
+    method: "MachoBindObject",
+    args: [Number(planetID)],
+    kwargs: null,
+  };
+}
+
 // Dispatch a bound method, binding the target on demand and caching the bind
 // under its semantic key. The cache holds the in-flight bind PROMISE, so the
 // concurrent reads of one panel load (List + GetCapacity per container) share a
@@ -1305,6 +1325,129 @@ app.get("/api/bridge/bound-clones", requireAuth, async (req, res, next) => {
       }
     });
     res.json({ ok: true, characterID: held.characterID, reads });
+  } catch (error) {
+    if (error && error.code === "SESSION_NOT_FOUND") {
+      forgetBridgeSession(req.webSessionID);
+    }
+    next(error);
+  }
+});
+
+// R77 PLUMBING — the FIFTH Phase-2 BOUND-READ batch: the 7 RB-PI reads (planetary-
+// industry colony + resource geography) that bind to a planetID. Unlike R73/R76's
+// session-global monikers (top-level /call seam), these ride the REAL bound two-
+// step off planetMgr.MachoBindObject(planetID) (mirrors /api/bridge/bound-dogma /
+// bound-inventory) — the BFF holds the handle, the browser never sees the OID. The
+// route requires a ?planetID (a UI reaches it from GetPlanetsForChar, R71). Six of
+// the seven also accept the planetID in args ({allowArgs:true}); the two that do
+// NOT (GetResourceData / GetProgramResultInfo) recover it from the bind that
+// planetBindSpec establishes.
+//
+// ⚠ OWNERSHIP is SPLIT for this batch (verified live cross-account, Farmer 140000005
+// owns colony planetID 40009077 vs Test Two 140000002). This route is SESSION-SCOPED
+// so it never leaks: ownerID defaults to held.characterID (the caller's OWN char),
+// so GetFullNetworkForOwner reads the caller's own colony, and GetPlanetInfo's colony
+// body is server-scoped to session.characterID regardless. But the HANDLERS leak
+// under attacker-chosen args on /api/bridge/call (NOT via this route):
+// GetFullNetworkForOwner(planetID, ownerID) returns ANY (planetID, ownerID) colony's
+// full network with no session check, and GetCommandPinsForPlanet /
+// GetExtractorsForPlanet list ALL owners' pins on a planetID — an arg-injection leak
+// flagged in docs/arg-injection-leak-handoff.md, kept pre-plumbed (operator flag-
+// only). GetPlanetResourceInfo / GetResourceData (static per-planet resource
+// geography) and GetProgramResultInfo (a computed extractor-yield estimate) read no
+// colony ownership — safe for everyone.
+//
+// Independent Promise.allSettled: a planet with no colony (empty network / no command
+// pins / no extractors) and a zeroed program estimate are legitimate states, never a
+// blanking failure — each read carries its own {result} or {error, message}. Returns
+// the raw result envelopes for web/src/bridge/boundPlanets.ts; NO UI consumes this yet.
+const PLANET_PROGRAM_HEAD_RADIUS = 0.1;
+function planetBoundReads(planetID, ownerID, resourceTypeID) {
+  const pid = Number(planetID) || 0;
+  const oid = Number(ownerID) || 0;
+  const rtid = Number(resourceTypeID) || 0;
+  return [
+    // GetPlanetInfo(planetID) — static celestial geography + (only) the SESSION
+    // char's own colony body (KeyVal). Foreign colony never appears here.
+    ["GetPlanetInfo", [pid]],
+    // GetPlanetResourceInfo(planetID) — a CachedMethodCallResult wrapping a dict
+    // {resourceTypeID -> quality} of the static per-planet resource field.
+    ["GetPlanetResourceInfo", [pid]],
+    // GetResourceData({resourceTypeID,oldBand,newBand,proximity}) — planetID from the
+    // bind; the per-resource distribution band bytes {data, numBands, proximity}. A
+    // UI supplies a real resourceTypeID (0 → an empty/default band read).
+    ["GetResourceData", [{ resourceTypeID: rtid, oldBand: 0, newBand: 15, proximity: 0 }]],
+    // GetFullNetworkForOwner(planetID, ownerID) — [pins(list of KeyVal), links(list of
+    // [endpoint1,endpoint2])]. ownerID is the SESSION's own char here (never foreign).
+    ["GetFullNetworkForOwner", [pid, oid]],
+    // GetCommandPinsForPlanet(planetID) — dict {ownerID -> command-pin KeyVal} across
+    // all colonies on the planet.
+    ["GetCommandPinsForPlanet", [pid]],
+    // GetExtractorsForPlanet(planetID) — list of extractor KeyVals across all colonies.
+    ["GetExtractorsForPlanet", [pid]],
+    // GetProgramResultInfo(planetID-ignored, resourceTypeID, heads, headRadius) —
+    // planetID from the bind; a computed [qtyToDistribute, cycleTime, numCycles]
+    // extractor-yield estimate (bigint-safe). Empty heads → a zeroed-qty estimate.
+    ["GetProgramResultInfo", [pid, rtid, [], PLANET_PROGRAM_HEAD_RADIUS]],
+  ];
+}
+
+app.get("/api/bridge/bound-planet", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const planetID = Number(req.query.planetID) || 0;
+  if (planetID <= 0) {
+    res.status(400).json({
+      ok: false,
+      error: "INVALID_PLANET",
+      message: "A positive planetID query param is required.",
+    });
+    return;
+  }
+  // ownerID defaults to the caller's OWN character so this route reads the caller's
+  // own colony; a caller-chosen foreign ownerID is the GetFullNetworkForOwner leak,
+  // reachable only via /api/bridge/call (flagged), never introduced by this route.
+  const ownerID = Number(req.query.ownerID) || held.characterID;
+  const resourceTypeID = Number(req.query.resourceTypeID) || 0;
+  const spec = planetBindSpec(planetID);
+  const reads = planetBoundReads(planetID, ownerID, resourceTypeID);
+  try {
+    const settled = await Promise.allSettled(
+      reads.map(([method, args]) =>
+        boundCall(held, req.webSessionID, spec, method, args, null),
+      ),
+    );
+    // A lost live session cannot be recovered by any read; surface it so the page
+    // returns to character select (matching /api/bridge/bound-inventory).
+    for (const s of settled) {
+      if (s.status === "rejected" && s.reason && s.reason.code === "SESSION_NOT_FOUND") {
+        next(s.reason);
+        return;
+      }
+    }
+    const out = {};
+    reads.forEach(([method], index) => {
+      const s = settled[index];
+      if (s.status === "fulfilled") {
+        out[method] = { result: s.value.result };
+      } else {
+        const reason = s.reason || {};
+        out[method] = {
+          error: String(reason.code || "READ_FAILED"),
+          message: typeof reason.message === "string" ? reason.message : null,
+        };
+      }
+    });
+    res.json({
+      ok: true,
+      characterID: held.characterID,
+      planetID,
+      ownerID,
+      resourceTypeID,
+      reads: out,
+    });
   } catch (error) {
     if (error && error.code === "SESSION_NOT_FOUND") {
       forgetBridgeSession(req.webSessionID);
