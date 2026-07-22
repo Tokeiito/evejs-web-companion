@@ -1456,6 +1456,81 @@ app.get("/api/bridge/bound-planet", requireAuth, async (req, res, next) => {
   }
 });
 
+// R78 PLUMBING — the SIXTH Phase-2 BOUND-READ batch: the 4 RB-CRIME reads
+// (crimewatch client states / own + any-char security status / sec-status
+// transaction history) on service "crimewatch". Retail obtains crimewatch as a
+// bound Moniker (CrimewatchService defines MachoBindObject and it is NOT in
+// machoNet's serviceInfo table), but the gateway dispatches serviceManager.lookup
+// ("crimewatch") directly — a real registered service — and all four handlers are
+// session/arg-derived with NO bound-state dependency, so like R73's skillHandler /
+// R76's jumpCloneSvc they ride the ORDINARY top-level /call seam (heldTopLevelCall
+// ("crimewatch", <method>)), NOT the bound two-step.
+//
+// ⚠ OWNERSHIP: this route is SESSION-SCOPED and never leaks. GetClientStates /
+// GetMySecurityStatus / GetSecurityStatusTransactions derive the char from the
+// SESSION and ignore any injected charID (verified live cross-account Farmer
+// 140000005 sec 0.1404 vs Test Two 140000002 sec 0: injecting the foreign id
+// returned the CALLER's own value). GetCharacterSecurityStatus takes a charID; the
+// route defaults it to the caller's OWN char, and an optional ?characterID= does a
+// PUBLIC sec-status lookup (a char's sec status is rendered on every EVE overview —
+// the handler returns ONLY the public float, never private crimewatch state), so
+// even the override leaks nothing. No handoff-doc flag needed.
+//
+// Independent Promise.allSettled: a clean crimewatch state (idle timers, no flagged
+// chars, safety full) and an empty transaction history (the handler returns [])
+// are legitimate states, never a blanking failure — each read carries its own
+// {result} or {error, message}. Returns the raw result envelopes for
+// web/src/bridge/boundCrimewatch.ts; NO UI consumes this yet.
+app.get("/api/bridge/bound-crimewatch", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  // GetCharacterSecurityStatus target: the caller's OWN char by default; an
+  // optional ?characterID= does a PUBLIC (safe) sec-status lookup of another char.
+  const characterID = Number(req.query.characterID) || held.characterID;
+  const CRIMEWATCH_READS = [
+    ["GetClientStates", []],
+    ["GetMySecurityStatus", []],
+    ["GetCharacterSecurityStatus", [characterID]],
+    ["GetSecurityStatusTransactions", []],
+  ];
+  try {
+    const settled = await Promise.allSettled(
+      CRIMEWATCH_READS.map(([method, args]) =>
+        heldTopLevelCall(held, req.webSessionID, "crimewatch", method, args, null),
+      ),
+    );
+    // A lost live session cannot be recovered by any read; surface it so the page
+    // returns to character select (matching /api/bridge/bound-clones).
+    for (const s of settled) {
+      if (s.status === "rejected" && s.reason && s.reason.code === "SESSION_NOT_FOUND") {
+        next(s.reason);
+        return;
+      }
+    }
+    const reads = {};
+    CRIMEWATCH_READS.forEach(([method], index) => {
+      const s = settled[index];
+      if (s.status === "fulfilled") {
+        reads[method] = { result: s.value.result };
+      } else {
+        const reason = s.reason || {};
+        reads[method] = {
+          error: String(reason.code || "READ_FAILED"),
+          message: typeof reason.message === "string" ? reason.message : null,
+        };
+      }
+    });
+    res.json({ ok: true, characterID: held.characterID, securityStatusOf: characterID, reads });
+  } catch (error) {
+    if (error && error.code === "SESSION_NOT_FOUND") {
+      forgetBridgeSession(req.webSessionID);
+    }
+    next(error);
+  }
+});
+
 // Move one item hangar <-> active-ship cargo. The bound object is the
 // DESTINATION; retail's Add(itemID, sourceLocationID, qty, flag) carries the
 // source location and the destination flag.
