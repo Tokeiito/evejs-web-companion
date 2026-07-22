@@ -4801,6 +4801,15 @@ function settledReadCode(settled) {
     ? String((settled.reason && settled.reason.code) || "READ_FAILED")
     : null;
 }
+// The captured notifications of a settled held call. Some reads (e.g. pvpFilamentMgr.
+// GetLeaderboard / GetCharacterStatistics) RETURN null and push their payload as a
+// notification the gateway drains into the response envelope; those decoders read from
+// here, not from `.result`. [] for a rejected read.
+function settledReadNotifications(settled) {
+  return settled.status === "fulfilled" && Array.isArray(settled.value.notifications)
+    ? settled.value.notifications
+    : [];
+}
 function surfaceLostSession(settledList, next) {
   for (const settled of settledList) {
     if (
@@ -6476,6 +6485,215 @@ app.get("/api/bridge/starmap", requireAuth, async (req, res, next) => {
         securityModifiedSystems: settledReadCode(securityModifiedSystems),
         incursionGlobalReport: settledReadCode(incursionGlobalReport),
         systemsInIncursions: settledReadCode(systemsInIncursions),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// --- R69 plumbing sweep: in-space info-service READS (sov / ESS / pvp-filament /
+// fleet ads) — no UI. Four routes make the sovMgr / essMgr / pvpFilamentMgr /
+// fleetProxy READS reachable + decodable so a later goal builds UI cheaply. No
+// panel/tab/store slice ships. Each route batches allowlisted TOP-LEVEL reads on the
+// held session (Promise.allSettled; empty ≠ failed, each read its own error code). Raw
+// retail-shaped results ship out, decoded browser-side (web/src/bridge/{sov,ess,
+// pvpFilaments,fleetAds}.ts). Ownership-safety was verified live on the three flagged
+// seams (see the allowlist runtime note): GetCharacterStatistics takes no charID and
+// returns hardcoded zeros; the ESS theft reads are system-scoped public data;
+// GetMyFleetFinderAdvert derives its fleet from the session with no caller id.
+
+// GET /api/bridge/sov?systemID= — the sovMgr sovereignty reads. systemID defaults to
+// the session's own system; every read is PUBLIC solar-system data (empty/null in
+// highsec — a real state). GetSovStructuresInfoForLocalSolarSystem is argless (session
+// system); the systemID-keyed reads forward [systemID].
+app.get("/api/bridge/sov", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const systemID = nonNegativeIntQuery(req.query.systemID, Number(held.solarSystemID) || 0);
+  try {
+    const [
+      localStructures,
+      systemStructures,
+      sovereigntyInfo,
+      hubInfo,
+      fuelAccessGroup,
+      isOnLocalFuelAccessGroup,
+    ] = await Promise.allSettled([
+      heldTopLevelCall(held, req.webSessionID, "sovMgr", "GetSovStructuresInfoForLocalSolarSystem", [], null),
+      heldTopLevelCall(held, req.webSessionID, "sovMgr", "GetSovStructuresInfoForSolarSystem", [systemID], null),
+      heldTopLevelCall(held, req.webSessionID, "sovMgr", "GetSystemSovereigntyInfo", [systemID], null),
+      heldTopLevelCall(held, req.webSessionID, "sovMgr", "GetInfrastructureHubInfo", [systemID], null),
+      heldTopLevelCall(held, req.webSessionID, "sovMgr", "GetSovHubFuelAccessGroup", [systemID], null),
+      heldTopLevelCall(held, req.webSessionID, "sovMgr", "IsOnLocalSovHubFuelAccessGroup", [], null),
+    ]);
+    const settled = [
+      localStructures, systemStructures, sovereigntyInfo, hubInfo,
+      fuelAccessGroup, isOnLocalFuelAccessGroup,
+    ];
+    if (surfaceLostSession(settled, next)) {
+      return;
+    }
+    res.json({
+      ok: true,
+      requested: { systemID },
+      localStructures: settledReadValue(localStructures),
+      systemStructures: settledReadValue(systemStructures),
+      sovereigntyInfo: settledReadValue(sovereigntyInfo),
+      hubInfo: settledReadValue(hubInfo),
+      fuelAccessGroup: settledReadValue(fuelAccessGroup),
+      isOnLocalFuelAccessGroup: settledReadValue(isOnLocalFuelAccessGroup),
+      errors: {
+        localStructures: settledReadCode(localStructures),
+        systemStructures: settledReadCode(systemStructures),
+        sovereigntyInfo: settledReadCode(sovereigntyInfo),
+        hubInfo: settledReadCode(hubInfo),
+        fuelAccessGroup: settledReadCode(fuelAccessGroup),
+        isOnLocalFuelAccessGroup: settledReadCode(isOnLocalFuelAccessGroup),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// GET /api/bridge/ess?systemID= — the essMgr Encounter Surveillance System reads.
+// systemID defaults to the session's own system; the data read is null when the system
+// has no ESS (a real state). GetDataForClientSolarSystem and both theft reads accept
+// systemID (args[0]); IsClientLinkedToReserveBank is session-scoped (argless).
+app.get("/api/bridge/ess", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const systemID = nonNegativeIntQuery(req.query.systemID, Number(held.solarSystemID) || 0);
+  try {
+    const [
+      data,
+      isLinkedToReserveBank,
+      mainBankThefts,
+      reserveBankThefts,
+    ] = await Promise.allSettled([
+      heldTopLevelCall(held, req.webSessionID, "essMgr", "GetDataForClientSolarSystem", [systemID], null),
+      heldTopLevelCall(held, req.webSessionID, "essMgr", "IsClientLinkedToReserveBank", [], null),
+      heldTopLevelCall(held, req.webSessionID, "essMgr", "GetMainBankTheftsForClientSolarSystem", [systemID], null),
+      heldTopLevelCall(held, req.webSessionID, "essMgr", "GetReserveBankTheftsForClientSolarSystem", [systemID], null),
+    ]);
+    const settled = [data, isLinkedToReserveBank, mainBankThefts, reserveBankThefts];
+    if (surfaceLostSession(settled, next)) {
+      return;
+    }
+    res.json({
+      ok: true,
+      requested: { systemID },
+      data: settledReadValue(data),
+      isLinkedToReserveBank: settledReadValue(isLinkedToReserveBank),
+      mainBankThefts: settledReadValue(mainBankThefts),
+      reserveBankThefts: settledReadValue(reserveBankThefts),
+      errors: {
+        data: settledReadCode(data),
+        isLinkedToReserveBank: settledReadCode(isLinkedToReserveBank),
+        mainBankThefts: settledReadCode(mainBankThefts),
+        reserveBankThefts: settledReadCode(reserveBankThefts),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// GET /api/bridge/pvp-filaments?matchTypeID=&scheduleID= — the pvpFilamentMgr abyssal
+// Proving-Grounds reads. The four event reads answer from `result`; GetLeaderboard and
+// GetCharacterStatistics RETURN null and push their payload as a NOTIFICATION, so those
+// two are issued in ISOLATION (sequentially, after the batch) and their captured
+// notifications are surfaced — a concurrent drain would let another call steal the
+// notification. matchTypeID/scheduleID default to 0 (forwarded exactly as retail sends;
+// the data is empty/zeroed in this world regardless). GetCharacterStatistics takes NO
+// charID (ownership-safe — see the allowlist note).
+app.get("/api/bridge/pvp-filaments", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const matchTypeID = nonNegativeIntQuery(req.query.matchTypeID, 0);
+  const scheduleID = nonNegativeIntQuery(req.query.scheduleID, 0);
+  try {
+    const [
+      allEvents,
+      activeEvents,
+      mostRecentEvent,
+      nextEventDate,
+    ] = await Promise.allSettled([
+      heldTopLevelCall(held, req.webSessionID, "pvpFilamentMgr", "GetAllEvents", [], null),
+      heldTopLevelCall(held, req.webSessionID, "pvpFilamentMgr", "GetActiveEvents", [], null),
+      heldTopLevelCall(held, req.webSessionID, "pvpFilamentMgr", "GetMostRecentEvent", [], null),
+      heldTopLevelCall(held, req.webSessionID, "pvpFilamentMgr", "GetNextEventDate", [], null),
+    ]);
+    // The two notification-carrying reads, isolated so each drain captures only its own
+    // OnPVPFilaments* push (the decoders key off the notification method name).
+    const [leaderboard] = await Promise.allSettled([
+      heldTopLevelCall(held, req.webSessionID, "pvpFilamentMgr", "GetLeaderboard", [matchTypeID, scheduleID], null),
+    ]);
+    const [characterStatistics] = await Promise.allSettled([
+      heldTopLevelCall(held, req.webSessionID, "pvpFilamentMgr", "GetCharacterStatistics", [matchTypeID, scheduleID], null),
+    ]);
+    const settled = [
+      allEvents, activeEvents, mostRecentEvent, nextEventDate, leaderboard, characterStatistics,
+    ];
+    if (surfaceLostSession(settled, next)) {
+      return;
+    }
+    res.json({
+      ok: true,
+      requested: { matchTypeID, scheduleID },
+      allEvents: settledReadValue(allEvents),
+      activeEvents: settledReadValue(activeEvents),
+      mostRecentEvent: settledReadValue(mostRecentEvent),
+      nextEventDate: settledReadValue(nextEventDate),
+      // These two carry the data in the notification stream, not the result.
+      leaderboardNotifications: settledReadNotifications(leaderboard),
+      characterStatisticsNotifications: settledReadNotifications(characterStatistics),
+      errors: {
+        allEvents: settledReadCode(allEvents),
+        activeEvents: settledReadCode(activeEvents),
+        mostRecentEvent: settledReadCode(mostRecentEvent),
+        nextEventDate: settledReadCode(nextEventDate),
+        leaderboard: settledReadCode(leaderboard),
+        characterStatistics: settledReadCode(characterStatistics),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// GET /api/bridge/fleet-ads — the fleetProxy fleet-finder reads. GetAvailableFleetAds is
+// the session-FILTERED public listing (empty when no open ads); GetMyFleetFinderAdvert is
+// the session's OWN advert (null when not in a fleet — the real state for a docked
+// character). Both argless and session-scoped (ownership-safe — see the allowlist note).
+app.get("/api/bridge/fleet-ads", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  try {
+    const [availableFleetAds, myFleetFinderAdvert] = await Promise.allSettled([
+      heldTopLevelCall(held, req.webSessionID, "fleetProxy", "GetAvailableFleetAds", [], null),
+      heldTopLevelCall(held, req.webSessionID, "fleetProxy", "GetMyFleetFinderAdvert", [], null),
+    ]);
+    const settled = [availableFleetAds, myFleetFinderAdvert];
+    if (surfaceLostSession(settled, next)) {
+      return;
+    }
+    res.json({
+      ok: true,
+      availableFleetAds: settledReadValue(availableFleetAds),
+      myFleetFinderAdvert: settledReadValue(myFleetFinderAdvert),
+      errors: {
+        availableFleetAds: settledReadCode(availableFleetAds),
+        myFleetFinderAdvert: settledReadCode(myFleetFinderAdvert),
       },
     });
   } catch (error) {
