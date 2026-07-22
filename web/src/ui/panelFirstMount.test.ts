@@ -68,6 +68,8 @@ const PANELS = [
   // R50 — the two wallet tabs.
   "Wallet",
   "CorpWallet",
+  // R55 — the standings page.
+  "Standings",
 ] as const;
 
 /**
@@ -305,6 +307,8 @@ test("App's first paint on a DOCKED character selects Station and hides the in-s
   // The two wallet tabs are reachable in either state.
   assert.ok(labels.includes("Wallet"));
   assert.ok(labels.includes("Corp Wallet"));
+  // R55 — Standings is reachable in either state too.
+  assert.ok(labels.includes("Standings"));
 });
 
 test("App's first paint on an IN-SPACE character selects Around Your Ship, NOT Station", async () => {

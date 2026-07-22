@@ -31,7 +31,8 @@ export type TabID =
   | "mail"
   | "chat"
   | "wallet"
-  | "corpWallet";
+  | "corpWallet"
+  | "standings";
 
 /** Where a tab may appear: only DOCKED, only IN SPACE, or in BOTH. */
 export type Where = "docked" | "in-space" | "both";
@@ -68,6 +69,7 @@ export const TABS: readonly TabDef[] = [
   { id: "chat", label: "Chat", where: "both" },
   { id: "wallet", label: "Wallet", where: "both" },
   { id: "corpWallet", label: "Corp Wallet", where: "both" },
+  { id: "standings", label: "Standings", where: "both" },
 ];
 
 /** The default landing tab for each state (item 4). */

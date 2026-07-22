@@ -1438,6 +1438,55 @@ export async function loadWallet(options: ApiOptions = {}): Promise<RawWalletRea
   };
 }
 
+// --- R55 Standings ----------------------------------------------------------
+// One pull carries the character's own standings (standingMgr.GetCharStandings)
+// and the corporation's (standingMgr.GetCorpStandings). Passing `fromID` also
+// asks for that entity's drill-down — the standing HISTORY
+// (GetStandingTransactions) and the per-member COMPOSITION
+// (GetStandingCompositions). All raw retail shapes, decoded in
+// web/src/bridge/standings.ts.
+
+export interface RawStandingsReads {
+  readonly char: JsonValue;
+  readonly corp: JsonValue;
+  /** Echoed selected entity for the drill-down; null on the base read. */
+  readonly fromID: number | null;
+  readonly transactions: JsonValue;
+  readonly compositions: JsonValue;
+  readonly errors: {
+    readonly char: string | null;
+    readonly corp: string | null;
+    readonly transactions: string | null;
+    readonly compositions: string | null;
+  };
+}
+
+/** The character + corporation standings (and, when `fromID` is given, that
+ *  entity's history + composition). Raw retail shapes, decoded in the flow. */
+export async function loadStandings(
+  fromID: number | null = null,
+  options: ApiOptions = {},
+): Promise<RawStandingsReads> {
+  const query = fromID && fromID > 0 ? `?fromID=${encodeURIComponent(String(fromID))}` : "";
+  const data = await getJson(`/api/bridge/standings${query}`, options);
+  const errors = (data.errors ?? {}) as Record<string, JsonValue>;
+  const errorText = (key: string): string | null =>
+    typeof errors[key] === "string" ? (errors[key] as string) : null;
+  return {
+    char: data.char ?? null,
+    corp: data.corp ?? null,
+    fromID: asNumberOrNull(data.fromID),
+    transactions: data.transactions ?? null,
+    compositions: data.compositions ?? null,
+    errors: {
+      char: errorText("char"),
+      corp: errorText("corp"),
+      transactions: errorText("transactions"),
+      compositions: errorText("compositions"),
+    },
+  };
+}
+
 // --- R7 Local + Corp chat --------------------------------------------------
 // The BFF holds the bridgeSessionID; the browser addresses channels by name.
 // READ is a backlog poll (chat delivery bypasses the notification drain), so

@@ -576,6 +576,10 @@ app.post("/api/bridge/select", requireAuth, async (req, res, next) => {
       bridgeSessionID: outcome.bridgeSessionID,
       characterID: Number(outcome.session.characterID) || characterID,
       accountID: Number(req.account.accountID),
+      // R55: the character's corporation, so the standings drill-down can pass it
+      // as the composition read's toID (GetStandingCompositions(fromID, corpID)).
+      // Server-held like every other session scalar; never round-trips the browser.
+      corporationID: Number(outcome.session.corporationID) || null,
       // R3: the docked-entry state the page needs to address inventories/ships
       // by their game IDs, plus the server-held bound-object handles keyed by a
       // semantic key (hangar/cargo/ship). Handles live here only — never in
@@ -4366,6 +4370,87 @@ app.get("/api/bridge/wallet", requireAuth, async (req, res, next) => {
         journal: settledCode(journal),
         transactions: settledCode(transactions),
         entryTypes: settledCode(entryTypes),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// --- R55 Standings ----------------------------------------------------------
+// The reads the retail standings panel issues (charsheet/standingsPanel). The
+// base pull is the character's own standings (standingMgr.GetCharStandings) and
+// the corporation's (standingMgr.GetCorpStandings) — both plain TOP-LEVEL reads
+// scoped server-side off the docked session, no args. Passing `fromID` also asks
+// for that entity's drill-down: the standing HISTORY
+// (GetStandingTransactions(fromID, characterID)) and the per-member COMPOSITION
+// (GetStandingCompositions(fromID, corporationID)) — the toIDs come from the
+// server-held session, never the browser. Every read is INDEPENDENT
+// (Promise.allSettled): a failed corp read never blanks the character's own
+// standings, and each read carries its own error code. An empty list is a REAL
+// "no standings" answer, distinct from a FAILED read (worldHasNoContracts
+// precedent). ⚠ Raw retail shapes ship out; the browser decodes them
+// (web/src/bridge/standings.ts) and resolves every entity id to a name (R7d).
+app.get("/api/bridge/standings", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const fromID = Number(req.query && req.query.fromID) || 0;
+  const wantDetail = fromID > 0;
+  try {
+    const [char, corp, transactions, compositions] = await Promise.allSettled([
+      heldTopLevelCall(held, req.webSessionID, "standingMgr", "GetCharStandings", [], null),
+      heldTopLevelCall(held, req.webSessionID, "standingMgr", "GetCorpStandings", [], null),
+      wantDetail
+        ? heldTopLevelCall(
+            held,
+            req.webSessionID,
+            "standingMgr",
+            "GetStandingTransactions",
+            [fromID, held.characterID],
+            null,
+          )
+        : Promise.resolve({ result: null }),
+      wantDetail
+        ? heldTopLevelCall(
+            held,
+            req.webSessionID,
+            "standingMgr",
+            "GetStandingCompositions",
+            [fromID, Number(held.corporationID) || 0],
+            null,
+          )
+        : Promise.resolve({ result: null }),
+    ]);
+    // A lost live session can't be recovered by any read; surface it so the page
+    // returns to character select (as every held call does).
+    for (const settled of [char, corp, transactions, compositions]) {
+      if (settled.status === "rejected" && settled.reason && settled.reason.code === "SESSION_NOT_FOUND") {
+        next(settled.reason);
+        return;
+      }
+    }
+    const settledCode = (settled) =>
+      settled.status === "rejected"
+        ? String((settled.reason && settled.reason.code) || "READ_FAILED")
+        : null;
+    const settledValue = (settled) =>
+      settled.status === "fulfilled" ? settled.value.result : null;
+    res.json({
+      ok: true,
+      fromID: wantDetail ? fromID : null,
+      char: settledValue(char),
+      corp: settledValue(corp),
+      transactions: settledValue(transactions),
+      compositions: settledValue(compositions),
+      errors: {
+        char: settledCode(char),
+        corp: settledCode(corp),
+        // Detail reads are only issued when a fromID was asked for; otherwise
+        // they resolve to a null result with no error.
+        transactions: wantDetail ? settledCode(transactions) : null,
+        compositions: wantDetail ? settledCode(compositions) : null,
       },
     });
   } catch (error) {

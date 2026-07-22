@@ -27,6 +27,7 @@
   import Chat from "./Chat.svelte";
   import Wallet from "./Wallet.svelte";
   import CorpWallet from "./CorpWallet.svelte";
+  import Standings from "./Standings.svelte";
   import { visibleTabsFor, resolvePage, deriveDocked, type TabID } from "./tabs.ts";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
@@ -124,6 +125,8 @@
     <Wallet {store} {flow} />
   {:else if page === "corpWallet"}
     <CorpWallet {store} {flow} />
+  {:else if page === "standings"}
+    <Standings {store} {flow} />
   {:else}
     <Chat {store} {flow} />
   {/if}

@@ -997,6 +997,65 @@ export interface WalletState {
   readonly loaded: boolean;
 }
 
+// --- R55 Standings ----------------------------------------------------------
+
+/**
+ * One row of a standing COMPOSITION (standingMgr.GetStandingCompositions): a
+ * corporation member (`ownerID`, a player character) and the standing THEY hold
+ * toward the selected NPC entity — the per-member breakdown the retail panel
+ * shows for a corp-standing row. `ownerID` is an entity id and is NEVER rendered
+ * as a number (R7d); it is resolved to a name, degrading to "Unknown entity".
+ */
+export interface StandingComposition {
+  readonly ownerID: number;
+  readonly standing: number;
+}
+
+/**
+ * One row of a standing's HISTORY (standingMgr.GetStandingTransactions): a dated
+ * event that changed the standing. `eventTypeID` is mapped to a plain label
+ * (R9a); `modification` is the recorded raw change (a small server-owned float,
+ * shown as-is — the client does not recompute standing math). `id` is a stable
+ * list key only and is never rendered; the row's own fromID/toID/int_* fields
+ * are entity ids and are NOT decoded, so no raw id can reach the panel (R7d).
+ */
+export interface StandingTransaction {
+  readonly id: string;
+  readonly date: bigint | null;
+  readonly eventTypeID: number;
+  readonly modification: number;
+}
+
+/**
+ * The Standings page (goal R55). Two lists read from one BFF pull
+ * (/api/bridge/standings): the character's own standings toward NPC entities
+ * (standingMgr.GetCharStandings) and the character's CORPORATION's standings
+ * (standingMgr.GetCorpStandings). Each keeps its own error so one failed read
+ * never blanks the other. A `fromID` is ALWAYS resolved to a name (R7d) — the
+ * page never renders a numeric entity id.
+ *
+ * ⚠ empty vs failed. `char`/`corp` start NULL (unread / read FAILED — the reason
+ * rides in the matching *Error); a SUCCESSFUL read with no rows decodes to [] —
+ * a real "no standings with anyone yet" (worldHasNoContracts precedent).
+ *
+ * The drill-down is loaded on demand for one selected entity: a character-row's
+ * standing HISTORY (`transactions`) or a corp-row's per-member COMPOSITION
+ * (`compositions`). `detailFromID`/`detailScope` say which row (and section) the
+ * loaded detail belongs to, so a late read never repaints the wrong row.
+ */
+export interface StandingsState {
+  readonly char: readonly CharStanding[] | null;
+  readonly charError: string | null;
+  readonly corp: readonly CharStanding[] | null;
+  readonly corpError: string | null;
+  readonly loaded: boolean;
+  readonly detailFromID: number | null;
+  readonly detailScope: "char" | "corp" | null;
+  readonly transactions: readonly StandingTransaction[] | null;
+  readonly compositions: readonly StandingComposition[] | null;
+  readonly detailError: string | null;
+}
+
 // --- R6a Agent Finder ------------------------------------------------------
 
 /**

@@ -77,6 +77,8 @@ import type {
   WalletLPBalance,
   CorpWalletDivision,
   LedgerEntry,
+  StandingComposition,
+  StandingTransaction,
 } from "./types.ts";
 import type { ShipStats } from "../bridge/shipStats.ts";
 import type { MiningRungID, MiningStepID } from "../nav/miningLadder.ts";
@@ -374,6 +376,39 @@ export type FeedEvent =
     }
   // Drop the wallet readout (character offline / logged out).
   | { readonly type: "wallet/cleared" }
+  // Goal R55 — the Standings page. One BFF pull carries the character's own
+  // standings (standingMgr.GetCharStandings) and the corporation's standings
+  // (standingMgr.GetCorpStandings). Each keeps its own error; a list is null when
+  // its read failed (see the matching `*Error`) or has not answered, [] a real
+  // "no standings yet".
+  | {
+      readonly type: "standings/loaded";
+      readonly char: readonly CharStanding[] | null;
+      readonly charError: string | null;
+      readonly corp: readonly CharStanding[] | null;
+      readonly corpError: string | null;
+    }
+  // A drill-down for one selected entity: a char row's standing HISTORY
+  // (transactions) or a corp row's per-member breakdown (compositions). `scope`
+  // says which section the row came from so a late read can't repaint the wrong
+  // one.
+  | {
+      readonly type: "standings/detail";
+      readonly fromID: number;
+      readonly scope: "char" | "corp";
+      readonly transactions: readonly StandingTransaction[] | null;
+      readonly compositions: readonly StandingComposition[] | null;
+    }
+  | {
+      readonly type: "standings/detail-error";
+      readonly fromID: number;
+      readonly scope: "char" | "corp";
+      readonly message: string;
+    }
+  // Close the open drill-down without loading another.
+  | { readonly type: "standings/detail-cleared" }
+  // Drop the standings readout (character offline / logged out).
+  | { readonly type: "standings/cleared" }
   // Goal R6a — the Agent Finder. A find completed: the filtered/capped agents,
   // already annotated with jumps from the current system and sorted
   // nearest-first by the flow, plus the filter echo and match/cap counts.

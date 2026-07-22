@@ -84,6 +84,7 @@ import type {
   PlanetsState,
   TravelState,
   WalletState,
+  StandingsState,
 } from "./types.ts";
 import type { NamesState } from "./names.ts";
 import { deriveShipStats } from "../bridge/shipStats.ts";
@@ -139,6 +140,7 @@ export interface ClientState {
   readonly finder: AgentFinderState;
   readonly rewards: RewardsState;
   readonly wallet: WalletState;
+  readonly standings: StandingsState;
   readonly flight: FlightState;
   readonly space: SpaceState;
   readonly targeting: TargetingState;
@@ -368,6 +370,24 @@ const INITIAL_WALLET: WalletState = Object.freeze({
   transactions: null,
   transactionsError: null,
   loaded: false,
+});
+
+// R55 standings. `char`/`corp` start NULL, not []: an unread standings list must
+// not look like a character who stands with no one. An empty list becomes a real
+// answer only from a SUCCESSFUL read that carried no rows (worldHasNoContracts
+// precedent). The drill-down (transactions/compositions) is loaded on demand and
+// tagged with the row it belongs to.
+const INITIAL_STANDINGS: StandingsState = Object.freeze({
+  char: null,
+  charError: null,
+  corp: null,
+  corpError: null,
+  loaded: false,
+  detailFromID: null,
+  detailScope: null,
+  transactions: null,
+  compositions: null,
+  detailError: null,
 });
 
 const INITIAL_FLIGHT: FlightState = Object.freeze({
@@ -606,6 +626,7 @@ export interface ClientStore {
   readonly finder: ReadableSignal<AgentFinderState>;
   readonly rewards: ReadableSignal<RewardsState>;
   readonly wallet: ReadableSignal<WalletState>;
+  readonly standings: ReadableSignal<StandingsState>;
   readonly flight: ReadableSignal<FlightState>;
   readonly space: ReadableSignal<SpaceState>;
   readonly targeting: ReadableSignal<TargetingState>;
@@ -657,6 +678,7 @@ export function createClientStore(): ClientStore {
   const finder = createSignal<AgentFinderState>(INITIAL_FINDER);
   const rewards = createSignal<RewardsState>(INITIAL_REWARDS);
   const wallet = createSignal<WalletState>(INITIAL_WALLET);
+  const standings = createSignal<StandingsState>(INITIAL_STANDINGS);
   const flight = createSignal<FlightState>(INITIAL_FLIGHT);
   const space = createSignal<SpaceState>(INITIAL_SPACE);
   const targeting = createSignal<TargetingState>(INITIAL_TARGETING);
@@ -695,6 +717,7 @@ export function createClientStore(): ClientStore {
     finder: finder.get(),
     rewards: rewards.get(),
     wallet: wallet.get(),
+    standings: standings.get(),
     flight: flight.get(),
     space: space.get(),
     targeting: targeting.get(),
@@ -737,6 +760,7 @@ export function createClientStore(): ClientStore {
         finder.set(INITIAL_FINDER);
         rewards.set(INITIAL_REWARDS);
         wallet.set(INITIAL_WALLET);
+        standings.set(INITIAL_STANDINGS);
         flight.set(INITIAL_FLIGHT);
         space.set(INITIAL_SPACE);
         targeting.set(INITIAL_TARGETING);
@@ -792,6 +816,7 @@ export function createClientStore(): ClientStore {
         finder.set(INITIAL_FINDER);
         rewards.set(INITIAL_REWARDS);
         wallet.set(INITIAL_WALLET);
+        standings.set(INITIAL_STANDINGS);
         flight.set(INITIAL_FLIGHT);
         space.set(INITIAL_SPACE);
         targeting.set(INITIAL_TARGETING);
@@ -819,6 +844,7 @@ export function createClientStore(): ClientStore {
         finder.set(INITIAL_FINDER);
         rewards.set(INITIAL_REWARDS);
         wallet.set(INITIAL_WALLET);
+        standings.set(INITIAL_STANDINGS);
         flight.set(INITIAL_FLIGHT);
         space.set(INITIAL_SPACE);
         targeting.set(INITIAL_TARGETING);
@@ -1225,6 +1251,59 @@ export function createClientStore(): ClientStore {
         break;
       case "wallet/cleared":
         wallet.set(INITIAL_WALLET);
+        break;
+      // R55 standings. The two lists land together but keep their own errors, so
+      // a failed corp read never blanks the character's own standings. `char`/
+      // `corp` stay NULL on a failed read (reason in the matching *Error); a
+      // successful empty read sets [] — a real "no standings yet". A fresh load
+      // drops any open drill-down: it described a row from the previous read.
+      case "standings/loaded":
+        standings.set({
+          ...standings.get(),
+          char: event.char,
+          charError: event.charError,
+          corp: event.corp,
+          corpError: event.corpError,
+          loaded: true,
+          detailFromID: null,
+          detailScope: null,
+          transactions: null,
+          compositions: null,
+          detailError: null,
+        });
+        break;
+      case "standings/detail":
+        standings.set({
+          ...standings.get(),
+          detailFromID: event.fromID,
+          detailScope: event.scope,
+          transactions: event.transactions,
+          compositions: event.compositions,
+          detailError: null,
+        });
+        break;
+      case "standings/detail-error":
+        standings.set({
+          ...standings.get(),
+          detailFromID: event.fromID,
+          detailScope: event.scope,
+          transactions: null,
+          compositions: null,
+          detailError: event.message,
+        });
+        break;
+      case "standings/detail-cleared":
+        standings.set({
+          ...standings.get(),
+          detailFromID: null,
+          detailScope: null,
+          transactions: null,
+          compositions: null,
+          detailError: null,
+        });
+        break;
+      case "standings/cleared":
+        standings.set(INITIAL_STANDINGS);
         break;
       case "flight/status": {
         // Preserve a resolved name only while its ID is unchanged; on any ID
@@ -1908,6 +1987,7 @@ export function createClientStore(): ClientStore {
     finder: readonlySignal(finder),
     rewards: readonlySignal(rewards),
     wallet: readonlySignal(wallet),
+    standings: readonlySignal(standings),
     flight: readonlySignal(flight),
     space: readonlySignal(space),
     targeting: readonlySignal(targeting),

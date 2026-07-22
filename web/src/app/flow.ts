@@ -63,6 +63,11 @@ import {
   decodeTransactions as decodeWalletTransactions,
   normalizeDivisionNames,
 } from "../bridge/wallet.ts";
+import {
+  classifyStandingKind,
+  decodeStandingCompositions,
+  decodeStandingTransactions,
+} from "../bridge/standings.ts";
 import { decodeFlightStatus } from "../bridge/flight.ts";
 import { decodeSpaceSnapshot, decodeTargetIDs } from "../bridge/space.ts";
 import {
@@ -420,6 +425,18 @@ export interface AppFlow {
    * corporation division balances, in one pull. Both tabs call this on mount.
    */
   loadWallet(): Promise<void>;
+  /**
+   * R55 — the Standings page: the character's own standings and the
+   * corporation's, in one pull, with every entity id resolved to a name.
+   */
+  loadStandings(): Promise<void>;
+  /**
+   * R55 — load one entity's drill-down: a char row's standing history or a corp
+   * row's per-member composition. `scope` says which section the row is in.
+   */
+  loadStandingDetail(fromID: number, scope: "char" | "corp"): Promise<void>;
+  /** R55 — close the open standings drill-down. */
+  closeStandingDetail(): void;
   /** Refresh the flight status (location + ship movement state). */
   loadFlightStatus(): Promise<void>;
   /** Undock from the station (the session enters space). */
@@ -2067,6 +2084,96 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         ? `transactions: ${reads.errors.transactions}`
         : null,
     });
+  }
+
+  // R55 — the Standings page. One pull carries the character's own standings and
+  // the corporation's; each half is independent on the BFF (Promise.allSettled)
+  // and keeps its own error here, so a failed corp read never blanks the
+  // character's own standings.
+  //
+  // ⚠ R7d is the point of this page: a standing's `fromID` is an entity id (NPC
+  // faction / NPC corporation / agent). Every id is classified by its EVE id
+  // range (classifyStandingKind — the same split the retail idCheckers uses) and
+  // resolved to a name through /api/names. The `agent` kind is asked for
+  // explicitly: the generic `owner` kind does not resolve agents.
+  async function loadStandings(): Promise<void> {
+    const reads = await api.loadStandings(null, callOptions);
+    const charFailed = reads.errors.char !== null;
+    const corpFailed = reads.errors.corp !== null;
+    const char = charFailed ? null : decodeCharStandings(reads.char);
+    const corp = corpFailed ? null : decodeCharStandings(reads.corp);
+    store.apply({
+      type: "standings/loaded",
+      char,
+      charError: reads.errors.char ? `your standings: ${reads.errors.char}` : null,
+      corp,
+      corpError: reads.errors.corp ? `corp standings: ${reads.errors.corp}` : null,
+    });
+    // Resolve every entity id to a name, each by its classified kind (R7d).
+    const refs: NameRef[] = [];
+    for (const row of [...(char ?? []), ...(corp ?? [])]) {
+      const kind = classifyStandingKind(row.fromID);
+      if (kind !== null) {
+        refs.push({ kind, id: row.fromID });
+      }
+    }
+    requestNames(refs);
+  }
+
+  // R55 — the drill-down for one selected entity. A char row shows its standing
+  // HISTORY (GetStandingTransactions); a corp row shows the per-member breakdown
+  // (GetStandingCompositions). The BFF issues both for the fromID; the panel
+  // reads the one matching `scope`. A composition's ownerID is a corp member, so
+  // it is resolved as a name too (R7d), degrading to "Unknown entity".
+  async function loadStandingDetail(
+    fromID: number,
+    scope: "char" | "corp",
+  ): Promise<void> {
+    if (!(fromID > 0)) {
+      return;
+    }
+    let reads: Awaited<ReturnType<typeof api.loadStandings>>;
+    try {
+      reads = await api.loadStandings(fromID, callOptions);
+    } catch (error) {
+      if (isSessionLost(error)) {
+        throw error;
+      }
+      store.apply({
+        type: "standings/detail-error",
+        fromID,
+        scope,
+        message: errorWords(error),
+      });
+      return;
+    }
+    const failed =
+      scope === "char" ? reads.errors.transactions : reads.errors.compositions;
+    if (failed !== null) {
+      store.apply({ type: "standings/detail-error", fromID, scope, message: failed });
+      return;
+    }
+    const compositions =
+      scope === "corp" ? decodeStandingCompositions(reads.compositions) : null;
+    store.apply({
+      type: "standings/detail",
+      fromID,
+      scope,
+      transactions:
+        scope === "char" ? decodeStandingTransactions(reads.transactions) : null,
+      compositions,
+    });
+    // Name a composition's corp-member owners (R7d): they are player characters,
+    // so `character` is the kind, and an unresolved one degrades to a fallback.
+    if (compositions && compositions.length > 0) {
+      requestNames(
+        compositions.map((row) => ({ kind: "character", id: row.ownerID }) as NameRef),
+      );
+    }
+  }
+
+  function closeStandingDetail(): void {
+    store.apply({ type: "standings/detail-cleared" });
   }
 
   // R7 — read a chat channel's roster + backlog and push it to the store. The
@@ -4506,6 +4613,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     loadRewards,
 
     loadWallet,
+
+    loadStandings,
+
+    loadStandingDetail,
+
+    closeStandingDetail,
 
     async loadPackageIntoShip(cargoTypeID, cargoQuantity) {
       await runAgentAction(async () => {
