@@ -4807,6 +4807,202 @@ app.get("/api/bridge/contact-list", requireAuth, async (req, res, next) => {
   }
 });
 
+// --- R59 plumbing sweep: comms reads — mail aux / notifications / calendar ----
+// PLUMBING ONLY: three routes make the mail-aux, notification, and calendar READS
+// reachable + decodable so a later goal builds UI cheaply. No panel/tab/store
+// slice ships. Every read is an allowlisted TOP-LEVEL call on the held session,
+// scoped to the logged-in character server-side (arg-less, session-scoped, or a
+// plain id/month arg the browser supplies), so a browser cannot point one at
+// another character's mailbox/notifications/calendar. Each route batches its
+// reads with Promise.allSettled (empty ≠ failed; each read carries its own error
+// code); a SESSION_NOT_FOUND on any read surfaces via next() so the page returns
+// to character select. The raw retail-shaped results ship out; the browser
+// decodes them (web/src/bridge/{mailAux,notifications,calendar}.ts).
+
+// GET /api/bridge/mail-aux — the mail LABELS + MAILING LISTS beside the R17
+// mailbox reads, as FIVE independent reads (Promise.allSettled):
+//   • mailMgr.GetLabels()            -> {type:"dict"} of labelID -> util.KeyVal
+//     (the character's mail folders/labels; session-scoped, arg-less).
+//   • mailingListsMgr.GetJoinedLists()-> {type:"dict"} of listID -> util.KeyVal
+//     (the lists this character has joined; session-scoped, arg-less). Empty for
+//     Farmer (no lists) is a REAL empty state, not a failure.
+//   • mailingListsMgr.GetInfo(listID)   -> util.KeyVal | null (one list summary).
+//   • mailingListsMgr.GetMembers(listID)-> {type:"dict"} memberID -> accessLevel.
+//   • mailingListsMgr.GetSettings(listID)-> util.KeyVal | null (list settings).
+// listID from ?listID= (default 0 -> the unknown-list path returns null/empty,
+// a legitimate answer). ⚠ label/member/entity IDs stay as data for later name
+// resolution (R7d); the raw shapes ship out untouched. The mail label writers
+// and every mailingLists writer stay refused server-side.
+app.get("/api/bridge/mail-aux", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const listID = nonNegativeIntQuery(req.query.listID, 0);
+  try {
+    const [labels, joinedLists, listInfo, listMembers, listSettings] =
+      await Promise.allSettled([
+        heldTopLevelCall(held, req.webSessionID, "mailMgr", "GetLabels", [], null),
+        heldTopLevelCall(held, req.webSessionID, "mailingListsMgr", "GetJoinedLists", [], null),
+        heldTopLevelCall(held, req.webSessionID, "mailingListsMgr", "GetInfo", [listID], null),
+        heldTopLevelCall(held, req.webSessionID, "mailingListsMgr", "GetMembers", [listID], null),
+        heldTopLevelCall(held, req.webSessionID, "mailingListsMgr", "GetSettings", [listID], null),
+      ]);
+    const settled = [labels, joinedLists, listInfo, listMembers, listSettings];
+    for (const outcome of settled) {
+      if (outcome.status === "rejected" && outcome.reason && outcome.reason.code === "SESSION_NOT_FOUND") {
+        next(outcome.reason);
+        return;
+      }
+    }
+    const settledCode = (outcome) =>
+      outcome.status === "rejected"
+        ? String((outcome.reason && outcome.reason.code) || "READ_FAILED")
+        : null;
+    const settledValue = (outcome) =>
+      outcome.status === "fulfilled" ? outcome.value.result : null;
+    res.json({
+      ok: true,
+      requested: { listID },
+      labels: settledValue(labels),
+      joinedLists: settledValue(joinedLists),
+      listInfo: settledValue(listInfo),
+      listMembers: settledValue(listMembers),
+      listSettings: settledValue(listSettings),
+      errors: {
+        labels: settledCode(labels),
+        joinedLists: settledCode(joinedLists),
+        listInfo: settledCode(listInfo),
+        listMembers: settledCode(listMembers),
+        listSettings: settledCode(listSettings),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// GET /api/bridge/notifications — the notificationMgr reads, as THREE independent
+// reads (Promise.allSettled):
+//   • GetAllNotifications([fromID]) -> a BARE ARRAY of util.KeyVal notification
+//     DTOs {notificationID, typeID, senderID, receiverID, processed, created
+//     (long), data}. fromID from ?fromID= (default 0 -> all).
+//   • GetUnprocessed()             -> the unread subset, same bare-array shape.
+//   • GetByGroupID(groupID)        -> the notifications in one group. groupID
+//     from ?groupID= (default 0).
+// All session-scoped; a characterID<=0 or no notifications yields [] — a REAL
+// empty state for Farmer. ⚠ senderID is an entity id kept as data (R7d); the
+// per-type `data` payload ships through untouched. The Mark*/Delete* notification
+// writers stay refused. Decoded browser-side (web/src/bridge/notifications.ts).
+app.get("/api/bridge/notifications", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const fromID = nonNegativeIntQuery(req.query.fromID, 0);
+  const groupID = nonNegativeIntQuery(req.query.groupID, 0);
+  try {
+    const [all, unprocessed, byGroup] = await Promise.allSettled([
+      heldTopLevelCall(held, req.webSessionID, "notificationMgr", "GetAllNotifications", [fromID], null),
+      heldTopLevelCall(held, req.webSessionID, "notificationMgr", "GetUnprocessed", [], null),
+      heldTopLevelCall(held, req.webSessionID, "notificationMgr", "GetByGroupID", [groupID], null),
+    ]);
+    for (const outcome of [all, unprocessed, byGroup]) {
+      if (outcome.status === "rejected" && outcome.reason && outcome.reason.code === "SESSION_NOT_FOUND") {
+        next(outcome.reason);
+        return;
+      }
+    }
+    const settledCode = (outcome) =>
+      outcome.status === "rejected"
+        ? String((outcome.reason && outcome.reason.code) || "READ_FAILED")
+        : null;
+    const settledValue = (outcome) =>
+      outcome.status === "fulfilled" ? outcome.value.result : null;
+    res.json({
+      ok: true,
+      requested: { fromID, groupID },
+      all: settledValue(all),
+      unprocessed: settledValue(unprocessed),
+      byGroup: settledValue(byGroup),
+      errors: {
+        all: settledCode(all),
+        unprocessed: settledCode(unprocessed),
+        byGroup: settledCode(byGroup),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// GET /api/bridge/calendar — the calendar READS across calendarMgr + the
+// (top-level, NOT bound) calendarProxy, as FOUR independent reads
+// (Promise.allSettled):
+//   • calendarMgr.GetResponsesForCharacter() -> {type:"list"} of util.KeyVal
+//     {eventID, status} — this character's own event responses (session-scoped).
+//   • calendarProxy.GetEventList(month, year) -> [ {type:"list"} of event-row
+//     KeyVals, null, null ] — the events visible in one month. month from ?month=
+//     (default the current UTC month, 1-12), year from ?year= (default current).
+//   • calendarMgr.GetResponsesToEvent(eventID[, ownerID]) -> {type:"list"} of
+//     util.KeyVal{characterID, status} — the responses to one event.
+//   • calendarProxy.GetEventDetails(eventID, ownerID) -> util.KeyVal{eventText,
+//     creatorID} — one event's body. ⚠ GetEventDetails/GetResponsesToEvent need a
+//     real eventID; with the default 0 (Farmer has no events) the handler rejects
+//     ("no such event") — a legitimate outcome captured as this read's error code,
+//     NOT a route failure. eventID from ?eventID=, ownerID from ?ownerID=.
+// ⚠ ownerID/eventID/characterID/creatorID stay as data for later resolution
+// (R7d). Decoded browser-side (web/src/bridge/calendar.ts).
+app.get("/api/bridge/calendar", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const now = new Date();
+  const month = nonNegativeIntQuery(req.query.month, now.getUTCMonth() + 1);
+  const year = nonNegativeIntQuery(req.query.year, now.getUTCFullYear());
+  const eventID = nonNegativeIntQuery(req.query.eventID, 0);
+  const ownerID = nonNegativeIntQuery(req.query.ownerID, 0);
+  try {
+    const [responsesForCharacter, eventList, responsesToEvent, eventDetails] =
+      await Promise.allSettled([
+        heldTopLevelCall(held, req.webSessionID, "calendarMgr", "GetResponsesForCharacter", [], null),
+        heldTopLevelCall(held, req.webSessionID, "calendarProxy", "GetEventList", [month, year], null),
+        heldTopLevelCall(held, req.webSessionID, "calendarMgr", "GetResponsesToEvent", [eventID, ownerID || null], null),
+        heldTopLevelCall(held, req.webSessionID, "calendarProxy", "GetEventDetails", [eventID, ownerID || null], null),
+      ]);
+    const settled = [responsesForCharacter, eventList, responsesToEvent, eventDetails];
+    for (const outcome of settled) {
+      if (outcome.status === "rejected" && outcome.reason && outcome.reason.code === "SESSION_NOT_FOUND") {
+        next(outcome.reason);
+        return;
+      }
+    }
+    const settledCode = (outcome) =>
+      outcome.status === "rejected"
+        ? String((outcome.reason && outcome.reason.code) || "READ_FAILED")
+        : null;
+    const settledValue = (outcome) =>
+      outcome.status === "fulfilled" ? outcome.value.result : null;
+    res.json({
+      ok: true,
+      requested: { month, year, eventID, ownerID },
+      responsesForCharacter: settledValue(responsesForCharacter),
+      eventList: settledValue(eventList),
+      responsesToEvent: settledValue(responsesToEvent),
+      eventDetails: settledValue(eventDetails),
+      errors: {
+        responsesForCharacter: settledCode(responsesForCharacter),
+        eventList: settledCode(eventList),
+        responsesToEvent: settledCode(responsesToEvent),
+        eventDetails: settledCode(eventDetails),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // --- R7 Local + Corp chat ---------------------------------------------------
 // The browser reads a channel's member roster + recent backlog and sends
 // messages to Local or Corp on the held session. Chat delivery bypasses the

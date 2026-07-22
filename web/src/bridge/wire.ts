@@ -318,6 +318,30 @@ export function readRowsetRows(
 }
 
 /**
+ * Read the entries of a BARE marshaled dict — `{type:"dict", entries:[[k,v],…]}`
+ * — as the raw `[key, value]` pairs, in wire order.
+ *
+ * Distinct from readDictEntry (one key by name): this iterates the WHOLE dict, so
+ * a caller can decode an id-keyed dict (mailMgr.GetLabels is labelID -> KeyVal;
+ * mailingListsMgr.GetMembers is memberID -> accessLevel). Keys arrive as the wire
+ * left them (numeric ids come through as JSON numbers), so a caller coerces the
+ * key itself. `[]` when the value is not a dict — a real "no entries" answer,
+ * never a substituted default.
+ */
+export function readDictPairs(value: unknown): readonly DictEntry[] {
+  if (typeof value !== "object" || value === null) {
+    return [];
+  }
+  const candidate = value as { type?: unknown; entries?: unknown };
+  if (candidate.type !== "dict" || !Array.isArray(candidate.entries)) {
+    return [];
+  }
+  return (candidate.entries as readonly unknown[]).filter(
+    (entry): entry is DictEntry => Array.isArray(entry) && entry.length >= 2,
+  );
+}
+
+/**
  * Unwrap a retail long to bigint. Accepts the {type:"long"} wrapper with a
  * number or decimal-string value (both are on the wire per the contract) and
  * bare integers; null for anything else (including absent/null fields).
