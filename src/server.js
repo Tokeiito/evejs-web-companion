@@ -6701,6 +6701,187 @@ app.get("/api/bridge/fleet-ads", requireAuth, async (req, res, next) => {
   }
 });
 
+// --- R70 plumbing sweep: character / account / support READS (no UI) --------
+// PLUMBING ONLY: these three routes make the charUnboundMgr / petitioner / charMgr
+// reads reachable + decodable so the UI is easy to build later. No panel/tab/store
+// slice ships. Each issues allowlisted TOP-LEVEL reads on the held session; every
+// read is session/account-scoped (or genuinely public/config data), so the browser
+// cannot point one at another entity. Raw retail-shaped results ship out, decoded
+// browser-side (web/src/bridge/{charAccount,petitions,killboard}.ts).
+
+// GET /api/bridge/char-account?charID=&raceID=&name= — the charUnboundMgr char-select
+// + creation reads, as SEVEN independent reads (Promise.allSettled; empty ≠ failed).
+// ⚠ GetCharacterInfo is ACCOUNT-SCOPED, not public: Handle_GetCharacterToSelect returns
+// null for a charID not on the requesting account, so it answers the account's OWN
+// character's selection data (defaulting to the session's own characterID when no charID
+// is supplied) or null. The optional ?charID lets a caller name one of their OWN alts;
+// a foreign id is rejected server-side (returns null), never leaking that character's
+// data. GetValidRandomName([raceID]) and ValidateNameEx([name]) are char-creation
+// helpers (config/validation, no character data); GetQAStarterSystemIDs / GetNumCharacters
+// / GetCharacterLockType / GetCohortsForUser are account/config reads (the last two are
+// empty-by-design stubs). Raw shapes ship out.
+app.get("/api/bridge/char-account", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  // Default to the session's OWN character; ?charID lets a caller read one of their own
+  // alts (a foreign id is rejected by the handler, returning null). ?raceID defaults to
+  // Caldari (1) so GetValidRandomName answers a real name; ?name is validated as sent.
+  const charID = nonNegativeIntQuery(req.query.charID, Number(held.characterID) || 0);
+  const raceID = nonNegativeIntQuery(req.query.raceID, 1);
+  const name = stringQuery(req.query.name);
+  try {
+    const [
+      numCharacters,
+      characterInfo,
+      characterLockType,
+      cohortsForUser,
+      validRandomName,
+      nameValidation,
+      starterSystemIDs,
+    ] = await Promise.allSettled([
+      heldTopLevelCall(held, req.webSessionID, "charUnboundMgr", "GetNumCharacters", [], null),
+      heldTopLevelCall(held, req.webSessionID, "charUnboundMgr", "GetCharacterInfo", [charID], null),
+      heldTopLevelCall(held, req.webSessionID, "charUnboundMgr", "GetCharacterLockType", [], null),
+      heldTopLevelCall(held, req.webSessionID, "charUnboundMgr", "GetCohortsForUser", [], null),
+      heldTopLevelCall(held, req.webSessionID, "charUnboundMgr", "GetValidRandomName", [raceID], null),
+      heldTopLevelCall(held, req.webSessionID, "charUnboundMgr", "ValidateNameEx", [name], null),
+      heldTopLevelCall(held, req.webSessionID, "charUnboundMgr", "GetQAStarterSystemIDs", [], null),
+    ]);
+    const settled = [
+      numCharacters, characterInfo, characterLockType, cohortsForUser,
+      validRandomName, nameValidation, starterSystemIDs,
+    ];
+    if (surfaceLostSession(settled, next)) {
+      return;
+    }
+    res.json({
+      ok: true,
+      requested: { charID, raceID, name },
+      numCharacters: settledReadValue(numCharacters),
+      characterInfo: settledReadValue(characterInfo),
+      characterLockType: settledReadValue(characterLockType),
+      cohortsForUser: settledReadValue(cohortsForUser),
+      validRandomName: settledReadValue(validRandomName),
+      nameValidation: settledReadValue(nameValidation),
+      starterSystemIDs: settledReadValue(starterSystemIDs),
+      errors: {
+        numCharacters: settledReadCode(numCharacters),
+        characterInfo: settledReadCode(characterInfo),
+        characterLockType: settledReadCode(characterLockType),
+        cohortsForUser: settledReadCode(cohortsForUser),
+        validRandomName: settledReadCode(validRandomName),
+        nameValidation: settledReadCode(nameValidation),
+        starterSystemIDs: settledReadCode(starterSystemIDs),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// GET /api/bridge/petitions?petitionID= — the petitioner (support) reads, as EIGHT
+// independent reads (Promise.allSettled; empty ≠ failed). petitioner is a STUB support
+// service in this world: every read answers constant/empty data with no per-entity store
+// lookup, so a foreign ?petitionID yields the SAME empty message list — no cross-ticket
+// access. GetMyPetitionsEx / GetUnreadMessages / GetPetitionMessages are the session's OWN
+// tickets (all empty here — a real "no petitions filed" state). GetCategories /
+// GetCategoryHierarchicalInfo are the (empty) category taxonomy; MayPetition -> -4
+// (petitioning disabled); IsZendeskEnabled -> true.
+// ⚠ GetZendeskJwtLink returns a support-link STRING treated as a CREDENTIAL: it ships out
+// in the response but is NEVER logged here, and the decoder passes it through without
+// parsing or logging. (In this world it is a public help-center URL, not a signed JWT.)
+app.get("/api/bridge/petitions", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const petitionID = nonNegativeIntQuery(req.query.petitionID, 0);
+  try {
+    const [
+      myPetitions,
+      categories,
+      categoryHierarchicalInfo,
+      petitionMessages,
+      mayPetition,
+      zendeskEnabled,
+      zendeskJwtLink,
+      unreadMessages,
+    ] = await Promise.allSettled([
+      heldTopLevelCall(held, req.webSessionID, "petitioner", "GetMyPetitionsEx", [], null),
+      heldTopLevelCall(held, req.webSessionID, "petitioner", "GetCategories", [], null),
+      heldTopLevelCall(held, req.webSessionID, "petitioner", "GetCategoryHierarchicalInfo", [], null),
+      heldTopLevelCall(held, req.webSessionID, "petitioner", "GetPetitionMessages", [petitionID], null),
+      heldTopLevelCall(held, req.webSessionID, "petitioner", "MayPetition", [], null),
+      heldTopLevelCall(held, req.webSessionID, "petitioner", "IsZendeskEnabled", [], null),
+      heldTopLevelCall(held, req.webSessionID, "petitioner", "GetZendeskJwtLink", [], null),
+      heldTopLevelCall(held, req.webSessionID, "petitioner", "GetUnreadMessages", [], null),
+    ]);
+    const settled = [
+      myPetitions, categories, categoryHierarchicalInfo, petitionMessages,
+      mayPetition, zendeskEnabled, zendeskJwtLink, unreadMessages,
+    ];
+    if (surfaceLostSession(settled, next)) {
+      return;
+    }
+    res.json({
+      ok: true,
+      requested: { petitionID },
+      myPetitions: settledReadValue(myPetitions),
+      categories: settledReadValue(categories),
+      categoryHierarchicalInfo: settledReadValue(categoryHierarchicalInfo),
+      petitionMessages: settledReadValue(petitionMessages),
+      mayPetition: settledReadValue(mayPetition),
+      zendeskEnabled: settledReadValue(zendeskEnabled),
+      // A credential string: shipped out, never logged here.
+      zendeskJwtLink: settledReadValue(zendeskJwtLink),
+      unreadMessages: settledReadValue(unreadMessages),
+      errors: {
+        myPetitions: settledReadCode(myPetitions),
+        categories: settledReadCode(categories),
+        categoryHierarchicalInfo: settledReadCode(categoryHierarchicalInfo),
+        petitionMessages: settledReadCode(petitionMessages),
+        mayPetition: settledReadCode(mayPetition),
+        zendeskEnabled: settledReadCode(zendeskEnabled),
+        zendeskJwtLink: settledReadCode(zendeskJwtLink),
+        unreadMessages: settledReadCode(unreadMessages),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// GET /api/bridge/killboard?limit=&startKillID= — the charMgr straggler
+// GetRecentShipKillsAndLosses: the SESSION character's recent kills + losses. ⚠ The args
+// are [limit, startKillID] PAGINATION, NOT a charID — Handle_GetRecentShipKillsAndLosses
+// derives the character from the session, so a caller cannot request a foreign
+// killboard. An empty list is a REAL "no recent kills/losses" answer (Farmer). The row's
+// entity ids (victim*/final*/warID) are kept as data for the browser to resolve (R7d);
+// killTime is a FILETIME bigint; iskLost/iskDestroyed are bigint-safe. Raw shape ships out.
+app.get("/api/bridge/killboard", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const limit = nonNegativeIntQuery(req.query.limit, 0);
+  const startKillID = nonNegativeIntQuery(req.query.startKillID, 0);
+  try {
+    const outcome = await heldTopLevelCall(
+      held,
+      req.webSessionID,
+      "charMgr",
+      "GetRecentShipKillsAndLosses",
+      [limit, startKillID],
+      null,
+    );
+    res.json({ ok: true, requested: { limit, startKillID }, killmails: outcome.result });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // --- R7 Local + Corp chat ---------------------------------------------------
 // The browser reads a channel's member roster + recent backlog and sends
 // messages to Local or Corp on the held session. Chat delivery bypasses the
