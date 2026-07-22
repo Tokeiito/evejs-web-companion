@@ -5435,6 +5435,242 @@ app.get("/api/bridge/corp-lp", requireAuth, async (req, res, next) => {
   }
 });
 
+// GET /api/bridge/market-trading?fromDate=&accountKey= — the market CORP-ORDER +
+// PLEX reads the R16 market panel left out (R62 plumbing sweep), as SEVEN
+// independent reads (Promise.allSettled; empty ≠ failed, each its own error
+// code). All session-scoped server-side (corpid / regionid) — no owner/region
+// argument. Decoders in web/src/bridge/marketTrading.ts:
+//   • GetCorporationOrders()        -> the SESSION corp's open orders (cached
+//     owner-orders Rowset, same shape as GetCharOrders).
+//   • CorpGetTransactions(fromDate, accountKey) -> the corp's trades (cached
+//     list; fromDate 0 = everything, accountKey null = any division).
+//   • GetPlexOrders()               -> the PLEX order book in the session region.
+//   • GetPlexBest()                 -> the best PLEX ask per typeID.
+//   • GetPlexHistory() / GetPlexOldPriceHistory() / GetPlexNewPriceHistory()
+//     -> PLEX daily price history (full dict, and the old/new halves).
+// ⚠ Daemon-backed: a market-daemon outage throws MarketUnavailable, surfaced as
+//   its own signal rather than a false "no orders". typeIDs / stationIDs stay
+//   data (R7d); orderIDs + ISK are bigint-safe.
+app.get("/api/bridge/market-trading", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const fromDate = nonNegativeIntQuery(req.query.fromDate, 0);
+  const accountKey = nonNegativeIntQuery(req.query.accountKey, -1);
+  const corpTxnArgs = [fromDate, accountKey >= 0 ? accountKey : null];
+  try {
+    const [
+      corporationOrders,
+      corpTransactions,
+      plexOrders,
+      plexBest,
+      plexHistory,
+      plexOldPriceHistory,
+      plexNewPriceHistory,
+    ] = await Promise.allSettled([
+      heldTopLevelCall(held, req.webSessionID, "marketProxy", "GetCorporationOrders", [], null),
+      heldTopLevelCall(held, req.webSessionID, "marketProxy", "CorpGetTransactions", corpTxnArgs, null),
+      heldTopLevelCall(held, req.webSessionID, "marketProxy", "GetPlexOrders", [], null),
+      heldTopLevelCall(held, req.webSessionID, "marketProxy", "GetPlexBest", [], null),
+      heldTopLevelCall(held, req.webSessionID, "marketProxy", "GetPlexHistory", [], null),
+      heldTopLevelCall(held, req.webSessionID, "marketProxy", "GetPlexOldPriceHistory", [], null),
+      heldTopLevelCall(held, req.webSessionID, "marketProxy", "GetPlexNewPriceHistory", [], null),
+    ]);
+    const settled = [
+      corporationOrders,
+      corpTransactions,
+      plexOrders,
+      plexBest,
+      plexHistory,
+      plexOldPriceHistory,
+      plexNewPriceHistory,
+    ];
+    for (const outcome of settled) {
+      if (outcome.status === "rejected" && outcome.reason && outcome.reason.code === "SESSION_NOT_FOUND") {
+        next(outcome.reason);
+        return;
+      }
+    }
+    const settledCode = (outcome) =>
+      outcome.status === "rejected"
+        ? String((outcome.reason && outcome.reason.code) || "READ_FAILED")
+        : null;
+    const settledValue = (outcome) =>
+      outcome.status === "fulfilled" ? outcome.value.result : null;
+    // The daemon-outage signal, extracted ONCE: if the market itself is not
+    // answering, "no orders" would be a lie.
+    const outage = settled.find(
+      (outcome) => outcome.status === "rejected" && isMarketUnavailable(outcome.reason),
+    );
+    res.json({
+      ok: true,
+      requested: { fromDate, accountKey: accountKey >= 0 ? accountKey : null },
+      corporationID: held.corporationID ?? null,
+      corporationOrders: settledValue(corporationOrders),
+      corpTransactions: settledValue(corpTransactions),
+      plexOrders: settledValue(plexOrders),
+      plexBest: settledValue(plexBest),
+      plexHistory: settledValue(plexHistory),
+      plexOldPriceHistory: settledValue(plexOldPriceHistory),
+      plexNewPriceHistory: settledValue(plexNewPriceHistory),
+      errors: {
+        corporationOrders: settledCode(corporationOrders),
+        corpTransactions: settledCode(corpTransactions),
+        plexOrders: settledCode(plexOrders),
+        plexBest: settledCode(plexBest),
+        plexHistory: settledCode(plexHistory),
+        plexOldPriceHistory: settledCode(plexOldPriceHistory),
+        plexNewPriceHistory: settledCode(plexNewPriceHistory),
+      },
+      marketUnavailable: outage
+        ? "The market is not answering right now, so these figures may be incomplete."
+        : null,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// GET /api/bridge/contract-items?locationID=&containerID=&itemID=&forCorp= — the
+// contractProxy BIDS / ESCROW / ITEM-SOURCE reads beside the R17 contract browse
+// (R62 plumbing sweep), as up to SEVEN independent reads (Promise.allSettled;
+// empty ≠ failed, each its own error code). All session-scoped; the item reads
+// are ownership-gated server-side, so no argument points one at another owner.
+// Decoders in web/src/bridge/contractItems.ts:
+//   • GetMyContractEscrow()     -> {isk, items} locked behind own contracts.
+//     ⚠ NOT marketProxy.GetCharEscrow — a different call, different service.
+//   • GetMyBids()               -> contracts bid on (a SERVER STUB: empty bundle).
+//   • NumOutstandingContracts() -> the outstanding-contract counts.
+//   • GetItemsInContainer(locationID, containerID, forCorp, flag) -> ⚠ ONLY when
+//     ?containerID= is given; the items in that container (a list of packedrows).
+//   • GetItemsInDockableLocation(locationID, forCorp) -> the hangar items
+//     available to contract (a __builtin__.set of packedrows). ⚠ locationID
+//     defaults to the docked station.
+//   • GetNumItemsInContainers(locationID, [containerID], forCorp, flag) -> ⚠ ONLY
+//     when ?containerID= is given; item count per container.
+//   • GetCourierContractFromItemID(itemID) -> ⚠ ONLY when ?itemID= is given; the
+//     courier contract a crate item belongs to, or null.
+// The retail signatures are location-first (captured from ClientCodeGrabber
+// contracts.py); the BFF forwards forCorp (default 0) and flag (null). item /
+// type / contract ids stay data (R7d).
+app.get("/api/bridge/contract-items", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const stationID = Number(held.stationID) || 0;
+  const locationID = nonNegativeIntQuery(req.query.locationID, stationID);
+  const containerID = nonNegativeIntQuery(req.query.containerID, 0);
+  const itemID = nonNegativeIntQuery(req.query.itemID, 0);
+  const forCorp = nonNegativeIntQuery(req.query.forCorp, 0) === 1;
+  const wantContainer = containerID > 0;
+  const wantItem = itemID > 0;
+  try {
+    const [
+      escrow,
+      myBids,
+      outstandingCounts,
+      containerItems,
+      dockableItems,
+      containerCounts,
+      courierContract,
+    ] = await Promise.allSettled([
+      heldTopLevelCall(held, req.webSessionID, "contractProxy", "GetMyContractEscrow", [], null),
+      heldTopLevelCall(held, req.webSessionID, "contractProxy", "GetMyBids", [], null),
+      heldTopLevelCall(held, req.webSessionID, "contractProxy", "NumOutstandingContracts", [], null),
+      wantContainer
+        ? heldTopLevelCall(
+            held,
+            req.webSessionID,
+            "contractProxy",
+            "GetItemsInContainer",
+            [locationID, containerID, forCorp, null],
+            null,
+          )
+        : Promise.resolve({ result: null }),
+      heldTopLevelCall(
+        held,
+        req.webSessionID,
+        "contractProxy",
+        "GetItemsInDockableLocation",
+        [locationID, forCorp],
+        null,
+      ),
+      wantContainer
+        ? heldTopLevelCall(
+            held,
+            req.webSessionID,
+            "contractProxy",
+            "GetNumItemsInContainers",
+            [locationID, [containerID], forCorp, null],
+            null,
+          )
+        : Promise.resolve({ result: null }),
+      wantItem
+        ? heldTopLevelCall(
+            held,
+            req.webSessionID,
+            "contractProxy",
+            "GetCourierContractFromItemID",
+            [itemID],
+            null,
+          )
+        : Promise.resolve({ result: null }),
+    ]);
+    const settled = [
+      escrow,
+      myBids,
+      outstandingCounts,
+      containerItems,
+      dockableItems,
+      containerCounts,
+      courierContract,
+    ];
+    for (const outcome of settled) {
+      if (outcome.status === "rejected" && outcome.reason && outcome.reason.code === "SESSION_NOT_FOUND") {
+        next(outcome.reason);
+        return;
+      }
+    }
+    const settledCode = (outcome) =>
+      outcome.status === "rejected"
+        ? String((outcome.reason && outcome.reason.code) || "READ_FAILED")
+        : null;
+    const settledValue = (outcome) =>
+      outcome.status === "fulfilled" ? outcome.value.result : null;
+    res.json({
+      ok: true,
+      requested: {
+        locationID,
+        containerID: wantContainer ? containerID : null,
+        itemID: wantItem ? itemID : null,
+        forCorp,
+      },
+      escrow: settledValue(escrow),
+      myBids: settledValue(myBids),
+      outstandingCounts: settledValue(outstandingCounts),
+      containerItems: settledValue(containerItems),
+      dockableItems: settledValue(dockableItems),
+      containerCounts: settledValue(containerCounts),
+      courierContract: settledValue(courierContract),
+      errors: {
+        escrow: settledCode(escrow),
+        myBids: settledCode(myBids),
+        outstandingCounts: settledCode(outstandingCounts),
+        // The container reads are only issued when a containerID was asked for.
+        containerItems: wantContainer ? settledCode(containerItems) : null,
+        dockableItems: settledCode(dockableItems),
+        containerCounts: wantContainer ? settledCode(containerCounts) : null,
+        // The courier read is only issued when an itemID was asked for.
+        courierContract: wantItem ? settledCode(courierContract) : null,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // --- R7 Local + Corp chat ---------------------------------------------------
 // The browser reads a channel's member roster + recent backlog and sends
 // messages to Local or Corp on the held session. Chat delivery bypasses the

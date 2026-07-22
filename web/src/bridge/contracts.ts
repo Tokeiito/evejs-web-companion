@@ -128,7 +128,7 @@ function toFiletime(value: JsonValue | undefined): bigint | null {
   return long !== null && long > 0n ? long : null;
 }
 
-function decodeContractRow(row: JsonValue): ContractRow | null {
+export function decodeContractRow(row: JsonValue): ContractRow | null {
   const contractID = toNumber(readRowField(row, "contractID"));
   if (contractID <= 0) {
     return null;
