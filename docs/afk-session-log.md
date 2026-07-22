@@ -2,6 +2,26 @@
 
 Operator went AFK granting full autonomy ("use recommended paths, note your decisions"). This is the running record of what landed and every judgment call made without the operator, so it can be reviewed on return. Newest at the bottom of each section.
 
+## SESSION SUMMARY (for review)
+
+**All 7 UI items done + 3 API head-start clusters wired. Tests 1577 → 1694. Nothing pushed. Servers healthy.**
+
+| Goal | What | Web commit |
+|---|---|---|
+| R50 | Tabs by docked/in-space (data table) · login-default tab fix · Wallet + Corp Wallet | `062245c` |
+| R51 | Move ore-hold→hangar (`shipBay` transfer source) · "Room used" not fake "of 1,000,000" | `30ae9e0` |
+| R52 | Agent Finder "within N jumps" limit (client-side over existing distances) | `ff088c4` |
+| R53 | EVE restyle — radius tokens → 0, corners squared, spacing condensed | `9fff604` |
+| R54 | Wallet **ledger** — journal + transactions, ref-types as words (API head-start) | `e4107ea` |
+| R55 | **Standings** page — entities resolved to names by id-range (API head-start) | `db95da2` |
+| R56 | **Character Sheet** — name/security/corp/home/bio/clones (API head-start) | `6f845e9` |
+
+**6 gateway pairs added, every one permitting a handler that already exists** (bridge-only boundary held): `account.GetWalletDivisionsInfo` (R50), `account.GetJournal/GetTransactions/GetEntryTypes` (R54), `standingMgr.GetCorpStandings/GetStandingTransactions/GetStandingCompositions` (R55), `charMgr.GetPublicInfo3/GetCharacterDescription/GetHomeStation/GetCloneInfo` (R56). R55 also repaired the allowlist-snapshot test (stale since R50/R54).
+
+**Held at R56** rather than wire more clusters — `docs/api-coverage-plan.md` documents the rest (LP store, jump clones, saved fittings, kill rights, corp overview) for the operator to prioritize.
+
+**Needs the operator's eyes / call** (see "Open for the operator" at the bottom): the R53 *look* (I can prove square + ≥40px, not that it looks like EVE); the deferred drone-cap display fix; "four faction themes" don't exist (my stale assumption); sub-40px density available on request; bloodline/race have no name path so are omitted (would need static reference data).
+
 ## The backlog (operator's 7 UI items + the head-start API work)
 
 1. Tabs shown driven by docked/in-space — **R50**
