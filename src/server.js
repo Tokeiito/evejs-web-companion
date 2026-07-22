@@ -4783,6 +4783,172 @@ app.get("/api/bridge/lp", requireAuth, async (req, res, next) => {
   }
 });
 
+// --- R65 plumbing sweep: utility READS (insurance / corp+alliance fittings /
+// bookmarks) — no UI. Each route batches allowlisted TOP-LEVEL reads on the held
+// session; every read scopes off the session (or is public/static reference
+// data), so the browser cannot point one at another entity. The raw retail-shaped
+// results ship out, decoded browser-side
+// (web/src/bridge/{insurance,sharedFittings,bookmarks}.ts).
+
+// A helper the three routes share for the allSettled fan-out: the read's value,
+// or null; and its error code, or null. A skipped optional read is modeled as a
+// resolved { result: null } so it reads as "no data", never an error.
+function settledReadValue(settled) {
+  return settled.status === "fulfilled" ? settled.value.result : null;
+}
+function settledReadCode(settled) {
+  return settled.status === "rejected"
+    ? String((settled.reason && settled.reason.code) || "READ_FAILED")
+    : null;
+}
+function surfaceLostSession(settledList, next) {
+  for (const settled of settledList) {
+    if (
+      settled.status === "rejected" &&
+      settled.reason &&
+      settled.reason.code === "SESSION_NOT_FOUND"
+    ) {
+      next(settled.reason);
+      return true;
+    }
+  }
+  return false;
+}
+
+// GET /api/bridge/insurance?shipID=&shipTypeID=&typeIDs= — the ship-insurance
+// reads, as up to FOUR independent reads (Promise.allSettled; empty ≠ failed).
+// GetContracts is the char's OWN active ship-insurance policies (session-scoped;
+// empty when nothing is insured — a real state). The three arg-taking reads are
+// OPTIONAL: GetContractForShip(shipID) (canSessionSeeContract gates it, so an
+// un-owned shipID reads null), GetInsurancePrice(shipTypeID) and
+// GetInsurancePrices([typeIDs]) are the PUBLIC static premium table. With no query
+// params the route returns just the always-safe session-scoped policy list. These
+// are ship-INSURANCE contracts, NOT player contracts.
+app.get("/api/bridge/insurance", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const shipID = Number(req.query.shipID) || 0;
+  const shipTypeID = Number(req.query.shipTypeID) || 0;
+  const typeIDs = String(req.query.typeIDs ?? "")
+    .split(",")
+    .map((entry) => Number.parseInt(entry, 10))
+    .filter((entry) => Number.isFinite(entry) && entry > 0);
+  try {
+    const [contracts, contractForShip, price, prices] = await Promise.allSettled([
+      heldTopLevelCall(held, req.webSessionID, "insuranceSvc", "GetContracts", [], null),
+      shipID > 0
+        ? heldTopLevelCall(held, req.webSessionID, "insuranceSvc", "GetContractForShip", [shipID], null)
+        : Promise.resolve({ result: null }),
+      shipTypeID > 0
+        ? heldTopLevelCall(held, req.webSessionID, "insuranceSvc", "GetInsurancePrice", [shipTypeID], null)
+        : Promise.resolve({ result: null }),
+      typeIDs.length > 0
+        ? heldTopLevelCall(held, req.webSessionID, "insuranceSvc", "GetInsurancePrices", [typeIDs], null)
+        : Promise.resolve({ result: null }),
+    ]);
+    if (surfaceLostSession([contracts, contractForShip, price, prices], next)) {
+      return;
+    }
+    res.json({
+      ok: true,
+      contracts: settledReadValue(contracts),
+      contractForShip: settledReadValue(contractForShip),
+      price: settledReadValue(price),
+      prices: settledReadValue(prices),
+      errors: {
+        contracts: settledReadCode(contracts),
+        contractForShip: settledReadCode(contractForShip),
+        price: settledReadCode(price),
+        prices: settledReadCode(prices),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// GET /api/bridge/shared-fittings — the corp/alliance/community saved-fit
+// libraries beside R57's char library, as THREE independent reads
+// (Promise.allSettled; empty ≠ failed, each carries its own error code):
+//   • corpFittingMgr.GetFittings         — the SESSION corp's fits (own corp only;
+//     we send no owner arg, so a foreign corp id is never reachable here).
+//   • corpFittingMgr.GetCommunityFittings — the PUBLIC community library.
+//   • allianceFittingMgr.GetFittings     — the SESSION alliance's fits; a char with
+//     NO alliance answers OWNER_SCOPE_DENIED (a real "no alliance" state, surfaced
+//     as this read's error code, not a failure of the others).
+app.get("/api/bridge/shared-fittings", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  try {
+    const [corp, community, alliance] = await Promise.allSettled([
+      heldTopLevelCall(held, req.webSessionID, "corpFittingMgr", "GetFittings", [], null),
+      heldTopLevelCall(held, req.webSessionID, "corpFittingMgr", "GetCommunityFittings", [], null),
+      heldTopLevelCall(held, req.webSessionID, "allianceFittingMgr", "GetFittings", [], null),
+    ]);
+    if (surfaceLostSession([corp, community, alliance], next)) {
+      return;
+    }
+    res.json({
+      ok: true,
+      corp: settledReadValue(corp),
+      community: settledReadValue(community),
+      alliance: settledReadValue(alliance),
+      errors: {
+        corp: settledReadCode(corp),
+        community: settledReadCode(community),
+        alliance: settledReadCode(alliance),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// GET /api/bridge/bookmarks?folderID= — the bookmark reads, as up to THREE
+// independent reads (Promise.allSettled; empty ≠ failed):
+//   • GetMyActiveBookmarks()          — [folders, bookmarks, subfolders] for the
+//     session char's active folders (scoped off session.characterID).
+//   • SearchFoldersWithAdminAccess()  — the char's personal + admin-access folders.
+//   • GetFolderInfo(folderID)         — one folder (only when folderID is given);
+//     resolveFolderView gates it, so a folder the char cannot access is refused
+//     (surfaced as this read's error code), never revealed.
+app.get("/api/bridge/bookmarks", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const folderID = Number(req.query.folderID) || 0;
+  try {
+    const [active, adminFolders, folderInfo] = await Promise.allSettled([
+      heldTopLevelCall(held, req.webSessionID, "accessGroupBookmarkMgr", "GetMyActiveBookmarks", [], null),
+      heldTopLevelCall(held, req.webSessionID, "accessGroupBookmarkMgr", "SearchFoldersWithAdminAccess", [], null),
+      folderID > 0
+        ? heldTopLevelCall(held, req.webSessionID, "accessGroupBookmarkMgr", "GetFolderInfo", [folderID], null)
+        : Promise.resolve({ result: null }),
+    ]);
+    if (surfaceLostSession([active, adminFolders, folderInfo], next)) {
+      return;
+    }
+    res.json({
+      ok: true,
+      active: settledReadValue(active),
+      adminFolders: settledReadValue(adminFolders),
+      folderInfo: settledReadValue(folderInfo),
+      errors: {
+        active: settledReadCode(active),
+        adminFolders: settledReadCode(adminFolders),
+        folderInfo: settledReadCode(folderInfo),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // --- R58 plumbing sweep: charMgr social/profile reads (no UI) ----------------
 // PLUMBING ONLY: three routes make the charMgr social/profile READS reachable +
 // decodable so a later goal builds UI cheaply. No panel/tab/store slice ships.
