@@ -5003,6 +5003,213 @@ app.get("/api/bridge/calendar", requireAuth, async (req, res, next) => {
   }
 });
 
+// --- R60 plumbing sweep: lookup / presence / social reads (no UI) -------------
+// PLUMBING ONLY: three routes make the lookupSvc SEARCH, onlineStatus presence,
+// and LSC/account social READS reachable + decodable so a later goal builds UI
+// cheaply. No panel/tab/store slice ships. Every read is an allowlisted
+// TOP-LEVEL call on the held session, scoped to the logged-in character
+// server-side; each route batches its reads with Promise.allSettled (empty ≠
+// failed; each read carries its own error code), and a SESSION_NOT_FOUND on any
+// read surfaces via next() so the page returns to character select. The raw
+// retail-shaped results ship out; the browser decodes them
+// (web/src/bridge/{lookup,presence,social}.ts).
+
+// A trimmed string from a query param, or "". Used for the lookup search term.
+function stringQuery(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+// GET /api/bridge/lookup?q=&exact=&groupID= — the lookupSvc name/id SEARCH, as
+// NINE independent reads (Promise.allSettled). ⚠ THESE TAKE A QUERY ARG: the
+// retail signature is Lookup*(searchStr, exact) read positionally (args[0] the
+// search string, args[1] the exact-match flag, 0 = partial/default), so the
+// route forwards [q, exact] to the eight name searches and [groupID, q, exact]
+// to LookupKnownLocationsByGroup (whose signature is (groupID, searchStr, exact)).
+//   • LookupCharacters / LookupEvePlayerCharacters -> character rows.
+//   • LookupCorporations / LookupFactions           -> corp / faction rows.
+//   • LookupOwners / LookupPCOwners / LookupNoneNPCAccountOwners -> owner rows.
+//   • LookupKnownLocationsByGroup -> location rows for the groupID (default 5,
+//     solar system).
+//   • LookupWarableCorporationsOrAlliances -> owners a war can be declared on.
+// ⚠ A too-short/empty query legitimately returns an EMPTY list from every read
+// (the search filter drops everything) — a real "no matches" answer, not a
+// failure. Entity ids in every row stay as data for later name resolution (R7d);
+// the raw shapes ship out untouched. lookupSvc has no mutating surface.
+app.get("/api/bridge/lookup", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const q = stringQuery(req.query.q);
+  const exact = nonNegativeIntQuery(req.query.exact, 0);
+  const groupID = nonNegativeIntQuery(req.query.groupID, 5);
+  try {
+    const [
+      characters,
+      evePlayerCharacters,
+      corporations,
+      factions,
+      owners,
+      pcOwners,
+      nonNPCAccountOwners,
+      knownLocationsByGroup,
+      warableOwners,
+    ] = await Promise.allSettled([
+      heldTopLevelCall(held, req.webSessionID, "lookupSvc", "LookupCharacters", [q, exact], null),
+      heldTopLevelCall(held, req.webSessionID, "lookupSvc", "LookupEvePlayerCharacters", [q, exact], null),
+      heldTopLevelCall(held, req.webSessionID, "lookupSvc", "LookupCorporations", [q, exact], null),
+      heldTopLevelCall(held, req.webSessionID, "lookupSvc", "LookupFactions", [q, exact], null),
+      heldTopLevelCall(held, req.webSessionID, "lookupSvc", "LookupOwners", [q, exact], null),
+      heldTopLevelCall(held, req.webSessionID, "lookupSvc", "LookupPCOwners", [q, exact], null),
+      heldTopLevelCall(held, req.webSessionID, "lookupSvc", "LookupNoneNPCAccountOwners", [q, exact], null),
+      heldTopLevelCall(held, req.webSessionID, "lookupSvc", "LookupKnownLocationsByGroup", [groupID, q, exact], null),
+      heldTopLevelCall(held, req.webSessionID, "lookupSvc", "LookupWarableCorporationsOrAlliances", [q, exact], null),
+    ]);
+    const settled = [
+      characters,
+      evePlayerCharacters,
+      corporations,
+      factions,
+      owners,
+      pcOwners,
+      nonNPCAccountOwners,
+      knownLocationsByGroup,
+      warableOwners,
+    ];
+    for (const outcome of settled) {
+      if (outcome.status === "rejected" && outcome.reason && outcome.reason.code === "SESSION_NOT_FOUND") {
+        next(outcome.reason);
+        return;
+      }
+    }
+    const settledCode = (outcome) =>
+      outcome.status === "rejected"
+        ? String((outcome.reason && outcome.reason.code) || "READ_FAILED")
+        : null;
+    const settledValue = (outcome) =>
+      outcome.status === "fulfilled" ? outcome.value.result : null;
+    res.json({
+      ok: true,
+      requested: { q, exact, groupID },
+      characters: settledValue(characters),
+      evePlayerCharacters: settledValue(evePlayerCharacters),
+      corporations: settledValue(corporations),
+      factions: settledValue(factions),
+      owners: settledValue(owners),
+      pcOwners: settledValue(pcOwners),
+      nonNPCAccountOwners: settledValue(nonNPCAccountOwners),
+      knownLocationsByGroup: settledValue(knownLocationsByGroup),
+      warableOwners: settledValue(warableOwners),
+      errors: {
+        characters: settledCode(characters),
+        evePlayerCharacters: settledCode(evePlayerCharacters),
+        corporations: settledCode(corporations),
+        factions: settledCode(factions),
+        owners: settledCode(owners),
+        pcOwners: settledCode(pcOwners),
+        nonNPCAccountOwners: settledCode(nonNPCAccountOwners),
+        knownLocationsByGroup: settledCode(knownLocationsByGroup),
+        warableOwners: settledCode(warableOwners),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// GET /api/bridge/presence?targetID= — the onlineStatus reads, as THREE
+// independent reads (Promise.allSettled). All scope off the SESSION observer:
+//   • GetOnlineStatus(targetID) -> a BARE BOOLEAN (is that character online).
+//     targetID from ?targetID= (default 0 -> false; no contact named).
+//   • GetInitialState()         -> a Rowset[contactID, online] (the observer's
+//     whole contact-presence snapshot; empty for a character with no contacts).
+//   • Prime()                   -> ⚠ NOT void here: delegates to GetInitialState,
+//     so it returns the SAME Rowset. Wired for completeness; the decoder treats
+//     it identically. ⚠ contactID stays as data for later name resolution (R7d).
+app.get("/api/bridge/presence", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const targetID = nonNegativeIntQuery(req.query.targetID, 0);
+  try {
+    const [onlineStatus, initialState, prime] = await Promise.allSettled([
+      heldTopLevelCall(held, req.webSessionID, "onlineStatus", "GetOnlineStatus", [targetID], null),
+      heldTopLevelCall(held, req.webSessionID, "onlineStatus", "GetInitialState", [], null),
+      heldTopLevelCall(held, req.webSessionID, "onlineStatus", "Prime", [], null),
+    ]);
+    for (const outcome of [onlineStatus, initialState, prime]) {
+      if (outcome.status === "rejected" && outcome.reason && outcome.reason.code === "SESSION_NOT_FOUND") {
+        next(outcome.reason);
+        return;
+      }
+    }
+    const settledCode = (outcome) =>
+      outcome.status === "rejected"
+        ? String((outcome.reason && outcome.reason.code) || "READ_FAILED")
+        : null;
+    const settledValue = (outcome) =>
+      outcome.status === "fulfilled" ? outcome.value.result : null;
+    res.json({
+      ok: true,
+      requested: { targetID },
+      onlineStatus: settledValue(onlineStatus),
+      initialState: settledValue(initialState),
+      prime: settledValue(prime),
+      errors: {
+        onlineStatus: settledCode(onlineStatus),
+        initialState: settledCode(initialState),
+        prime: settledCode(prime),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// GET /api/bridge/social — two unrelated social reads (Promise.allSettled):
+//   • LSC.GetChannels() -> a Rowset with the 16 channel-info columns, one line
+//     per channel the session is in (the docked Local channel). ownerID kept as
+//     data (R7d); the message/join/leave LSC writers stay refused.
+//   • account.GetDefaultContactCost() -> ⚠ null in this world (a `return null`
+//     stub; the CSPA contact charge is not modelled). A legitimate "no default
+//     cost" answer, not a failure.
+app.get("/api/bridge/social", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  try {
+    const [channels, defaultContactCost] = await Promise.allSettled([
+      heldTopLevelCall(held, req.webSessionID, "LSC", "GetChannels", [], null),
+      heldTopLevelCall(held, req.webSessionID, "account", "GetDefaultContactCost", [], null),
+    ]);
+    for (const outcome of [channels, defaultContactCost]) {
+      if (outcome.status === "rejected" && outcome.reason && outcome.reason.code === "SESSION_NOT_FOUND") {
+        next(outcome.reason);
+        return;
+      }
+    }
+    const settledCode = (outcome) =>
+      outcome.status === "rejected"
+        ? String((outcome.reason && outcome.reason.code) || "READ_FAILED")
+        : null;
+    const settledValue = (outcome) =>
+      outcome.status === "fulfilled" ? outcome.value.result : null;
+    res.json({
+      ok: true,
+      channels: settledValue(channels),
+      defaultContactCost: settledValue(defaultContactCost),
+      errors: {
+        channels: settledCode(channels),
+        defaultContactCost: settledCode(defaultContactCost),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // --- R7 Local + Corp chat ---------------------------------------------------
 // The browser reads a channel's member roster + recent backlog and sends
 // messages to Local or Corp on the held session. Chat delivery bypasses the
