@@ -16,6 +16,8 @@ For each read call:
 
 Then update `webGatewayServiceCall.test.js`'s allowlist snapshot (isolated runner) and restart EveJS.
 
+7. **Un-stale every per-service refusal test (MANDATORY — a whole R67 batch was spent cleaning this up).** The central snapshot is NOT the only place that asserts what's refused. Several `server/tests/webGateway*.test.js` files (e.g. `webGatewayContracts`, `webGatewayAgentMgr`, `webGatewayCourierComplete`, `webGatewayMail`) carry their OWN hardcoded "these methods are refused / this service is out of slice" lists. For **every** method/service you allowlist, `grep -rn "<Method>"` and `grep -rn "<serviceName>"` across `server/tests/webGateway*.test.js`; if any test asserts it refused/out-of-slice, update that assertion (remove the now-allowed READ; keep the still-refused WRITES asserted — never weaken a still-valid refusal). Run every affected file via the isolated runner and confirm green before committing. Skipping this leaves the suite RED and silently claims "bridge-only held" while a test is failing.
+
 ## This batch — top-level READS (all handlers confirmed to exist)
 
 - **`charFittingMgr.GetFittings`** — the saved fitting library (distinct from our active-ship fit). Handler in `eve.js/server/src/services/fitting/charFittingMgrService.js` (`super("charFittingMgr")`). Top-level.
