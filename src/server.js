@@ -6336,6 +6336,153 @@ app.get("/api/bridge/killmail", requireAuth, async (req, res, next) => {
   }
 });
 
+// --- R68 plumbing sweep: map / starmap READS (the whole map read set) — no UI --
+// PLUMBING ONLY: ONE route makes the seventeen map READS reachable + decodable so
+// a later goal builds UI cheaply. No panel/tab/store slice ships. Every read is an
+// allowlisted TOP-LEVEL call on the held session; the map service has NO owner/
+// location argument that could point a read at another player. The four flagged
+// reads were verified LIVE across two sessions (R63): GetMyExtraMapInfo/Agents are
+// hardcoded-empty (no data path); GetSolarSystemVisits is session-scoped (own
+// visits only — a second session saw a different set); GetHistory is GLOBAL
+// aggregate map stats (both sessions saw identical per-system totals). Most other
+// reads are PUBLIC starmap/region data and legitimately EMPTY in this seeded world
+// (no incursions, no sov claims, no fac-war contest, no roaming weather, no lit
+// fleet beacons). The route batches with Promise.allSettled (empty ≠ failed; each
+// read carries its own error code); a SESSION_NOT_FOUND on any read surfaces via
+// next() so the page returns to character select. Raw retail-shaped results ship
+// out; the browser decodes them (web/src/bridge/starmap.ts).
+//
+// ⚠ ARG-DRIVEN READS forward REAL ids (a map read that needs an id returns empty
+// silently otherwise): GetSolarsystemItems(systemID) defaults to the SESSION's own
+// solar system; GetHistory(statID, hours) defaults to statID 1 (jumps) / 24h;
+// GetCurrentSovData(locationID) defaults to 0 (all); GetFacWarZoneInfo(factionID)
+// and GetConstellationLPData(constellationID) are issued ONLY when their id query
+// is given (else null, no read). GetDeadspace*Map(language) default "en".
+app.get("/api/bridge/starmap", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const systemID = nonNegativeIntQuery(req.query.systemID, Number(held.solarSystemID) || 0);
+  const statID = nonNegativeIntQuery(req.query.statID, 1);
+  const hours = nonNegativeIntQuery(req.query.hours, 24);
+  const locationID = nonNegativeIntQuery(req.query.locationID, 0);
+  const factionID = nonNegativeIntQuery(req.query.factionID, 0);
+  const constellationID = nonNegativeIntQuery(req.query.constellationID, 0);
+  const language = stringQuery(req.query.language) || "en";
+  const wantSystem = systemID > 0;
+  const wantFacWar = factionID > 0;
+  const wantConstellation = constellationID > 0;
+  try {
+    const [
+      stationCount,
+      solarsystemItems,
+      history,
+      solarSystemVisits,
+      beaconCount,
+      currentSovData,
+      recentSovActivity,
+      facWarZoneInfo,
+      deadspaceAgentsMap,
+      deadspaceComplexMap,
+      myExtraMapInfo,
+      myExtraMapInfoAgents,
+      constellationLPData,
+      allRoamingWeatherSystems,
+      securityModifiedSystems,
+      incursionGlobalReport,
+      systemsInIncursions,
+    ] = await Promise.allSettled([
+      heldTopLevelCall(held, req.webSessionID, "map", "GetStationCount", [], null),
+      wantSystem
+        ? heldTopLevelCall(held, req.webSessionID, "map", "GetSolarsystemItems", [systemID], null)
+        : Promise.resolve({ result: null }),
+      heldTopLevelCall(held, req.webSessionID, "map", "GetHistory", [statID, hours], null),
+      heldTopLevelCall(held, req.webSessionID, "map", "GetSolarSystemVisits", [], null),
+      heldTopLevelCall(held, req.webSessionID, "map", "GetBeaconCount", [], null),
+      heldTopLevelCall(held, req.webSessionID, "map", "GetCurrentSovData", [locationID], null),
+      heldTopLevelCall(held, req.webSessionID, "map", "GetRecentSovActivity", [], null),
+      wantFacWar
+        ? heldTopLevelCall(held, req.webSessionID, "map", "GetFacWarZoneInfo", [factionID], null)
+        : Promise.resolve({ result: null }),
+      heldTopLevelCall(held, req.webSessionID, "map", "GetDeadspaceAgentsMap", [language], null),
+      heldTopLevelCall(held, req.webSessionID, "map", "GetDeadspaceComplexMap", [language], null),
+      heldTopLevelCall(held, req.webSessionID, "map", "GetMyExtraMapInfo", [], null),
+      heldTopLevelCall(held, req.webSessionID, "map", "GetMyExtraMapInfoAgents", [], null),
+      wantConstellation
+        ? heldTopLevelCall(held, req.webSessionID, "map", "GetConstellationLPData", [constellationID], null)
+        : Promise.resolve({ result: null }),
+      heldTopLevelCall(held, req.webSessionID, "map", "GetAllRoamingWeatherSystems", [], null),
+      heldTopLevelCall(held, req.webSessionID, "map", "GetSecurityModifiedSystems", [], null),
+      heldTopLevelCall(held, req.webSessionID, "map", "GetIncursionGlobalReport", [], null),
+      heldTopLevelCall(held, req.webSessionID, "map", "GetSystemsInIncursions", [], null),
+    ]);
+    const settled = [
+      stationCount, solarsystemItems, history, solarSystemVisits, beaconCount,
+      currentSovData, recentSovActivity, facWarZoneInfo, deadspaceAgentsMap,
+      deadspaceComplexMap, myExtraMapInfo, myExtraMapInfoAgents, constellationLPData,
+      allRoamingWeatherSystems, securityModifiedSystems, incursionGlobalReport,
+      systemsInIncursions,
+    ];
+    if (surfaceLostSession(settled, next)) {
+      return;
+    }
+    res.json({
+      ok: true,
+      requested: {
+        systemID: wantSystem ? systemID : null,
+        statID,
+        hours,
+        locationID,
+        factionID: wantFacWar ? factionID : null,
+        constellationID: wantConstellation ? constellationID : null,
+        language,
+      },
+      stationCount: settledReadValue(stationCount),
+      solarsystemItems: settledReadValue(solarsystemItems),
+      history: settledReadValue(history),
+      solarSystemVisits: settledReadValue(solarSystemVisits),
+      beaconCount: settledReadValue(beaconCount),
+      currentSovData: settledReadValue(currentSovData),
+      recentSovActivity: settledReadValue(recentSovActivity),
+      facWarZoneInfo: settledReadValue(facWarZoneInfo),
+      deadspaceAgentsMap: settledReadValue(deadspaceAgentsMap),
+      deadspaceComplexMap: settledReadValue(deadspaceComplexMap),
+      myExtraMapInfo: settledReadValue(myExtraMapInfo),
+      myExtraMapInfoAgents: settledReadValue(myExtraMapInfoAgents),
+      constellationLPData: settledReadValue(constellationLPData),
+      allRoamingWeatherSystems: settledReadValue(allRoamingWeatherSystems),
+      securityModifiedSystems: settledReadValue(securityModifiedSystems),
+      incursionGlobalReport: settledReadValue(incursionGlobalReport),
+      systemsInIncursions: settledReadValue(systemsInIncursions),
+      errors: {
+        stationCount: settledReadCode(stationCount),
+        // Issued only when a systemID resolved (session system or ?systemID=).
+        solarsystemItems: wantSystem ? settledReadCode(solarsystemItems) : null,
+        history: settledReadCode(history),
+        solarSystemVisits: settledReadCode(solarSystemVisits),
+        beaconCount: settledReadCode(beaconCount),
+        currentSovData: settledReadCode(currentSovData),
+        recentSovActivity: settledReadCode(recentSovActivity),
+        // Issued only when ?factionID= was given.
+        facWarZoneInfo: wantFacWar ? settledReadCode(facWarZoneInfo) : null,
+        deadspaceAgentsMap: settledReadCode(deadspaceAgentsMap),
+        deadspaceComplexMap: settledReadCode(deadspaceComplexMap),
+        myExtraMapInfo: settledReadCode(myExtraMapInfo),
+        myExtraMapInfoAgents: settledReadCode(myExtraMapInfoAgents),
+        // Issued only when ?constellationID= was given.
+        constellationLPData: wantConstellation ? settledReadCode(constellationLPData) : null,
+        allRoamingWeatherSystems: settledReadCode(allRoamingWeatherSystems),
+        securityModifiedSystems: settledReadCode(securityModifiedSystems),
+        incursionGlobalReport: settledReadCode(incursionGlobalReport),
+        systemsInIncursions: settledReadCode(systemsInIncursions),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // --- R7 Local + Corp chat ---------------------------------------------------
 // The browser reads a channel's member roster + recent backlog and sends
 // messages to Local or Corp on the held session. Chat delivery bypasses the
