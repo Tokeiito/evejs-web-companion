@@ -182,7 +182,7 @@ function oreHold(used: number, capacity = 5_000, items: readonly number[] = []):
 
 const EMPTY_MEMORY: MiningDecisionMemory = {
   currentRockID: null,
-  exhaustedRockIDs: new Set<number>(),
+  lockRefusedRockIDs: new Set<number>(),
   approachingTargetID: null,
   headingHome: null,
   launchGaveUp: false,
@@ -272,11 +272,13 @@ test("the four rungs the row model struggled with are marked, not smoothed over"
   assert.equal(findRung("heading-home")?.fit, "distorted");
   assert.equal(findRung("health-floor")?.fit, "distorted");
   assert.equal(findRung("rock-already-locked")?.fit, "distorted");
-  // The two release rungs are SEPARATE rows and must stay separate — merging
-  // them is the bug that empties a full belt by bookkeeping.
-  assert.notEqual(findRung("rock-out-of-view")?.id, findRung("rock-mined-out")?.id);
+  // R49 — there is now ONE release verb, and it came out CLEAN. The depletion
+  // sibling (`rock-mined-out`) is gone: the server removes a mined-out rock, so
+  // "gone from the grid" is unambiguous — forget it, pick another, never
+  // blacklist. It has no look-alike row left to be confused with.
   assert.ok(findRung("rock-out-of-view"));
-  assert.ok(findRung("rock-mined-out"));
+  assert.equal(findRung("rock-out-of-view")?.fit, "clean");
+  assert.equal(findRung("rock-mined-out"), null, "the depletion rung is gone");
 });
 
 // --- 2. The fired rung matches what the bot actually did ----------------------
@@ -393,25 +395,27 @@ test("the rock: targets unreadable means nothing that depends on a lock is decid
   assert.equal(blind.rung, "reading-targets");
 });
 
-test("THE TWO RELEASE RUNGS ARE DIFFERENT ROWS WITH DIFFERENT VERBS", () => {
-  // ⚠ THE BUG THIS GUARDS. A rock is off the grid for the whole trip to the
-  // station and back. Treating "not here" as "finished with" empties a belt by
-  // bookkeeping alone, so these two must never collapse into one row.
+test("THE SOLE RELEASE VERB: a rock gone from the grid is let go, and a stale 0-ore rock is NOT", () => {
+  // ⚠ THE BUG THIS GUARDS, still. A rock is off the grid for the whole trip to
+  // the station and back, so "not here" must never mean "finished with" — that
+  // empties a belt by bookkeeping. R49 removed the depletion sibling entirely:
+  // the server deletes a mined-out rock, so the client never predicts it, and
+  // "gone from the grid" is the ONE reactive way a rock is released.
   const gone = decide({ snapshot: snapshot([]) }, { currentRockID: ROCK_ID });
   assert.equal(gone.rung, "rock-out-of-view");
   assert.equal(gone.dropRock, OUT_OF_VIEW);
 
-  const empty = decide(
-    { snapshot: snapshot([entity({ itemID: ROCK_ID, remainingQuantity: 0 })]) },
+  // A rock the server STILL shows, even with a stale 0-ore reading, is NOT let
+  // go — the bot mines what is on field and reads no ore count to decide.
+  const stillThere = decide(
+    {
+      snapshot: snapshot([entity({ itemID: ROCK_ID, remainingQuantity: 0 })]),
+      lockedTargetIDs: [ROCK_ID],
+    },
     { currentRockID: ROCK_ID },
   );
-  assert.equal(empty.rung, "rock-mined-out");
-  assert.ok(empty.dropRock);
-  // The RELEASE VERBS differ, and the controller reads that difference by
-  // comparing against OUT_OF_VIEW — which is a string, not a field. That is the
-  // distortion, and it is asserted rather than described.
-  assert.notEqual(empty.dropRock, OUT_OF_VIEW);
-  assert.notEqual(gone.rung, empty.rung);
+  assert.equal(stillThere.dropRock, undefined, "a 0-ore rock the grid still shows is not released");
+  assert.equal(stillThere.rung, "rock-is-locked");
 });
 
 test("the rock: the three equipment steps, each named beside the rule that called it", () => {
@@ -553,12 +557,14 @@ test("the rock: heading for the belt, and arriving to find it empty", () => {
   // step rather than inventing one. The row says so on screen.
   assert.equal(travelling.step, null);
 
-  // Standing at the belt with every rock exhausted: the SAME call site, but a
-  // different rule — which is why the arrival is its own rung.
-  const rock = entity({ itemID: ROCK_ID });
+  // Standing at the belt with the only mineable rock BLACKLISTED (it refused to
+  // lock): the SAME call site, but a different rule — which is why the arrival is
+  // its own rung. The rock is a real mineable rock, so the blacklist is the
+  // reason the candidate list is empty — an observed refusal, never an ore count.
+  const rock = entity({ itemID: ROCK_ID, miningYieldTypeID: 1230, beltID: BELT_ID });
   const arrived = decide(
     { snapshot: snapshot([entity({ ...belt, position: { x: 100, y: 0, z: 0 } }), rock]) },
-    { exhaustedRockIDs: new Set([ROCK_ID]) },
+    { lockRefusedRockIDs: new Set([ROCK_ID]) },
   );
   // R46 — the arrival is the STEP and the rule that flew there is the RUNG. The
   // old code overwrote the caller's rung on the way out, which hid which of the
@@ -602,7 +608,6 @@ test("EXHAUSTIVE: every rung the catalogue lists is reachable as a type, and vic
     "no-yield-stop": true,
     "reading-targets": true,
     "rock-out-of-view": true,
-    "rock-mined-out": true,
     "equipment-unknown": true,
     "equipment-on": true,
     "mining-running": true,

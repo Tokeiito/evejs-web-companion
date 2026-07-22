@@ -389,19 +389,6 @@ export function isMineableRock(entity: SpaceEntity): boolean {
 }
 
 /**
- * Does it still have ore?
- *
- * `remainingQuantity` null is UNKNOWN — the server had no mining record for
- * that rock — and unknown is treated as "worth trying", because the alternative
- * is a client that decides a full belt is mined out. If it really is empty the
- * SERVER refuses the laser and the bot's own bounds move it on. Zero is a real
- * answer and means finished.
- */
-export function rockHasOre(entity: SpaceEntity): boolean {
-  return entity.remainingQuantity === null || entity.remainingQuantity > 0;
-}
-
-/**
  * The lowest health layer the ship reported, or null when it reported none.
  * Unknown is never reassuring and never alarming — it is unknown, and the
  * caller decides what that means where it matters (next to a pirate, it means
@@ -423,9 +410,11 @@ function isWarping(shipMode: string | null): boolean {
 }
 
 /**
- * The one  reason that must NOT exhaust the rock. A rock is off the
- * grid for the entire trip to the station and back, so treating "not here"
- * as "finished with" empties a belt by bookkeeping alone.
+ * The bot's SOLE release verb: the rock it was on is gone from the grid, so let
+ * it go and pick another. It must NOT blacklist — a rock is off the grid for the
+ * whole trip to the station and back, so treating "not here" as "finished with"
+ * would empty a belt by bookkeeping alone. Depletion is the server's: it removes
+ * a mined-out rock, and the bot reacts to whatever is still on field (R49).
  */
 export const OUT_OF_VIEW = "it went out of view";
 
@@ -439,7 +428,14 @@ function rowLabel(entity: SpaceEntity | null): string {
 /** Memory the decision reads. It never mutates it — the controller does. */
 export interface MiningDecisionMemory {
   readonly currentRockID: number | null;
-  readonly exhaustedRockIDs: ReadonlySet<number>;
+  /**
+   * Rocks the ship has DEMONSTRABLY REFUSED TO LOCK (asked, declined, past the
+   * lock bound). An observed refusal, never a predicted ore count — so the
+   * picker steps past a rock that will not lock instead of retrying the same
+   * nearest one. Depletion is not tracked here: the server removes mined-out
+   * rocks, so a rock still on the grid is always a candidate again (R49).
+   */
+  readonly lockRefusedRockIDs: ReadonlySet<number>;
   readonly approachingTargetID: number | null;
   /** Sticky: once heading home, shields regenerating does not send it back. */
   readonly headingHome: string | null;
@@ -455,15 +451,18 @@ export interface MiningDecisionMemory {
  *
  * The ladder, in order — danger, then the hold, then the rock:
  *
- *   1. danger      health floor -> abandon the belt; pirate -> get the drones out
- *   2. docked+ore  unload
- *   3. docked+empty undock
- *   4. hold full   dock at the chosen station (R24's ladder, imported)
- *   5. no rock     pick the nearest one with ore and lock it
- *   6. rock locked switch the mining equipment on
- *   7. depleted    drop it and take the next
- *   8. none left   pause with a plain reason — do NOT wander
- *   9. otherwise   wait
+ *   1. danger        health floor -> abandon the belt; pirate -> get the drones out
+ *   2. docked+ore    unload
+ *   3. docked+empty  undock
+ *   4. hold full     dock at the chosen station (R24's ladder, imported)
+ *   5. rock we are on  gone from the grid -> let it go; locked -> run the lasers
+ *   6. no rock       pick the nearest mineable rock on the grid and lock it
+ *   7. none left     pause with a plain reason — do NOT wander
+ *   8. otherwise     wait
+ *
+ * ⚠ THERE IS NO DEPLETION RUNG (R49). The bot does not decide a rock is empty;
+ * the server removes a mined-out rock from the grid, and rung 5's "gone from the
+ * grid" is that removal seen reactively. The client never predicts depletion.
  */
 export function decideMiningAction(
   observation: MiningObservation,
@@ -671,7 +670,11 @@ export function decideMiningAction(
     byID.set(entity.itemID, entity);
   }
 
-  // ── 7. Is the rock we are on still worth mining? ──────────────────────────
+  // ── 5. The rock we are on: is it still on the grid? ───────────────────────
+  //
+  // The ONLY reason the bot lets a rock go. It does not decide a rock is empty —
+  // the server removes a mined-out rock, and this is that removal seen reactively
+  // (R49). A rock the snapshot still shows is mined; its ore count is never read.
   const currentRock = memory.currentRockID;
   if (currentRock !== null) {
     const entity = byID.get(currentRock) ?? null;
@@ -681,15 +684,6 @@ export function decideMiningAction(
         why: "That rock is no longer in view, so the bot is picking another.",
         dropRock: OUT_OF_VIEW,
         rung: "rock-out-of-view",
-        step: null,
-      };
-    }
-    if (!rockHasOre(entity)) {
-      return {
-        action: { kind: "wait", reason: "rock empty" },
-        why: `${rowLabel(entity)} is mined out, so the bot is moving to the next rock.`,
-        dropRock: "it was mined out",
-        rung: "rock-mined-out",
         step: null,
       };
     }
@@ -718,11 +712,15 @@ export function decideMiningAction(
     };
   }
 
-  // ── 5. Pick a rock ────────────────────────────────────────────────────────
+  // ── 6. Pick a rock ────────────────────────────────────────────────────────
+  //
+  // The nearest rock that IS a rock (`isMineableRock`) and has not refused to
+  // lock. No ore-count filter: a rock the server still shows is mineable, and
+  // one that is truly empty is gone from `entities` because the server took it.
   const candidates = (snapshot?.entities ?? [])
     .filter(
       (entity) =>
-        isMineableRock(entity) && rockHasOre(entity) && !memory.exhaustedRockIDs.has(entity.itemID),
+        isMineableRock(entity) && !memory.lockRefusedRockIDs.has(entity.itemID),
     )
     .map((entity) => ({
       entity,
@@ -731,7 +729,7 @@ export function decideMiningAction(
     .sort((left, right) => left.distance - right.distance);
 
   if (candidates.length === 0) {
-    // ── 8. Nothing to mine. Are we even there yet? ──────────────────────────
+    // ── 7. Nothing to mine. Are we even there yet? ──────────────────────────
     return travelDecision(
       plan.beltID,
       plan.beltName,
@@ -788,7 +786,7 @@ export function decideMiningAction(
       targetID: pick.entity.itemID,
       label: `Lock ${rowLabel(pick.entity)}`,
     },
-    why: `${rowLabel(pick.entity)} is the nearest rock with ore left${where}, so the bot is locking it.`,
+    why: `${rowLabel(pick.entity)} is the nearest rock${where}, so the bot is locking it.`,
     takeRock: pick.entity.itemID,
     rung: "lock-nearest-rock",
     step: null,
@@ -840,13 +838,11 @@ function runTheLasers(
       step: "equipment-on",
     };
   }
-  const remaining =
-    entity.remainingQuantity === null
-      ? ""
-      : ` (${entity.remainingQuantity.toLocaleString()} units left)`;
   return {
     action: { kind: "wait", reason: "mining" },
-    why: `Mining ${rowLabel(entity)}${remaining}.`,
+    // No "units left" — the bot no longer tracks a depletion count, so it does
+    // not put one on screen. The server owns depletion and removes the rock (R49).
+    why: `Mining ${rowLabel(entity)}.`,
     rung,
     // ⚠ THE STALL CLOCK READS THIS. `noYieldCycles` is incremented on exactly
     // the ticks that reach this return; see the controller's comment.
@@ -946,7 +942,7 @@ function travelDecision(
       return {
         action: {
           kind: "pause",
-          reason: `There are no rocks with ore left at ${name}. Pick another belt and start the bot again.`,
+          reason: `There are no rocks left to mine at ${name}. Pick another belt and start the bot again.`,
         },
         why: `${name} has nothing left to mine.`,
         rung,
@@ -1006,7 +1002,8 @@ interface BotMemory {
   failureReason: string | null;
   settleTicks: number;
   currentRockID: number | null;
-  exhaustedRockIDs: Set<number>;
+  /** Rocks the ship refused to lock — an observed refusal, never an ore count. */
+  lockRefusedRockIDs: Set<number>;
   approachingTargetID: number | null;
   headingHome: string | null;
   launchGaveUp: boolean;
@@ -1046,7 +1043,7 @@ function freshMemory(): BotMemory {
     failureReason: null,
     settleTicks: 0,
     currentRockID: null,
-    exhaustedRockIDs: new Set<number>(),
+    lockRefusedRockIDs: new Set<number>(),
     approachingTargetID: null,
     headingHome: null,
     launchGaveUp: false,
@@ -1180,16 +1177,17 @@ export function createMiningBot(deps: MiningBotDeps): MiningBotController {
   /**
    * Let go of the rock we were on and take the next one.
    *
-   * `exhaust` is the difference between "this rock is finished with" and "this
-   * rock is not here right now", and conflating them is a real bug this loop
-   * had: a rock is off the grid for the whole haul home, so forgetting it as
-   * EXHAUSTED meant the bot came back to a belt it had emptied by bookkeeping
-   * and stopped. Only a rock that is mined out, or one the ship demonstrably
-   * cannot work, is exhausted. Out of view is just out of view.
+   * `blacklist` is the difference between a rock the ship DEMONSTRABLY WILL NOT
+   * LOCK (asked, refused, past the lock bound) and one that has merely left the
+   * grid. Only the refusal blacklists — an OBSERVED fact, never a predicted ore
+   * count. A rock is off the grid for the whole haul home, so blacklisting "not
+   * here" would empty a belt the ship has not finished, which is a bug this loop
+   * had. Depletion is the server's (R49): it removes a mined-out rock, and the
+   * bot picks whatever is still on field — so out of view is just out of view.
    */
-  function dropRock(exhaust: boolean): void {
-    if (exhaust && memory.currentRockID !== null) {
-      memory.exhaustedRockIDs.add(memory.currentRockID);
+  function dropRock(blacklist: boolean): void {
+    if (blacklist && memory.currentRockID !== null) {
+      memory.lockRefusedRockIDs.add(memory.currentRockID);
     }
     memory.currentRockID = null;
     memory.rockName = null;
@@ -1308,7 +1306,9 @@ export function createMiningBot(deps: MiningBotDeps): MiningBotController {
           return false;
         }
         memory.why = `${name} would not lock, so the bot is trying a different rock.`;
-        // This one IS exhausted: the ship has been asked to lock it and will not.
+        // Blacklist THIS rock: the ship has been asked to lock it and refuses —
+        // an observed refusal, so the picker steps past it to a different rock
+        // rather than retrying the same nearest one forever.
         dropRock(true);
         return false;
       }
@@ -1630,7 +1630,7 @@ export function createMiningBot(deps: MiningBotDeps): MiningBotController {
 
     const decision = decideMiningAction(observation, current, {
       currentRockID: memory.currentRockID,
-      exhaustedRockIDs: memory.exhaustedRockIDs,
+      lockRefusedRockIDs: memory.lockRefusedRockIDs,
       approachingTargetID: memory.approachingTargetID,
       headingHome: memory.headingHome,
       launchGaveUp: memory.launchGaveUp,
@@ -1649,9 +1649,11 @@ export function createMiningBot(deps: MiningBotDeps): MiningBotController {
       memory.noYieldCycles = 0;
     }
     if (decision.dropRock) {
-      // A mined-out rock is finished with for good; one that has merely left
-      // the grid (the whole haul home, every time) is not.
-      dropRock(decision.dropRock !== OUT_OF_VIEW);
+      // The only release verb the ladder now sets is OUT_OF_VIEW — a rock that
+      // has merely left the grid (the whole haul home, every time). It NEVER
+      // blacklists: the ship has not refused it, the server simply took it away.
+      // (The lock bound, elsewhere, is the one path that blacklists, on a refusal.)
+      dropRock(false);
     }
     // The stall clock only runs while the loop believes it is mining.
     //
@@ -1715,10 +1717,10 @@ export function createMiningBot(deps: MiningBotDeps): MiningBotController {
       if (after !== null && holdItemIDs(after).length === 0) {
         memory.cyclesCompleted += 1;
         memory.lastHoldUnits = 0;
-        // A completed haul is real progress, so rocks that merely would not
-        // lock get another chance on the next trip. Depleted ones re-exhaust
-        // immediately from `remainingQuantity`, so this cannot loop.
-        memory.exhaustedRockIDs.clear();
+        // A completed haul is real progress, so rocks that would not lock get a
+        // fresh chance on the next trip — the belt may have changed, and this
+        // blacklist keys on a refusal, not a permanent fact about the rock.
+        memory.lockRefusedRockIDs.clear();
         memory.consecutiveLockFailures = 0;
       }
     }

@@ -55,9 +55,10 @@
 //
 //   4. `noYieldCycles` IS NOT A CONDITION A ROW CAN HOLD. See NO_YIELD_HAUL.
 //
-// Two things DID come out clean and are worth saying so: the two release rungs
-// (`ROCK_OUT_OF_VIEW` vs `ROCK_MINED_OUT`) are genuinely two rows with two
-// different meanings, and the docked group is as row-shaped as anything gets.
+// The docked group came out as row-shaped as anything gets. (R44 also found the
+// release verb split into two rows — out-of-view vs mined-out. R49 removed the
+// mined-out one: depletion is the server's, which deletes a mined-out rock from
+// the grid, so the client never predicts it and there is one release verb left.)
 
 /**
  * A rung's stable identifier.
@@ -88,7 +89,6 @@ export type MiningRungID =
   // The rock
   | "reading-targets"
   | "rock-out-of-view"
-  | "rock-mined-out"
   | "equipment-unknown"
   | "equipment-on"
   | "mining-running"
@@ -277,19 +277,13 @@ export const MINING_LADDER: readonly MiningRung[] = Object.freeze([
   },
   {
     id: "rock-out-of-view",
-    name: "The rock it was working is out of view, so let it go and pick another",
+    name: "The rock it was working is gone from the grid, so let it go and pick another",
     group: "The rock",
-    fit: "distorted",
-    caveat:
-      "Letting a rock go is NOT the same as finishing with it — a rock is out of view for the whole trip to the station and back. The difference decides whether the belt slowly empties by bookkeeping, and it is not something this row says.",
-  },
-  {
-    id: "rock-mined-out",
-    name: "The rock it was working is mined out, so it is finished with for good",
-    group: "The rock",
-    fit: "distorted",
-    caveat:
-      "This one really does finish with the rock, unlike the row above. Two rows that look alike and must never be merged.",
+    // R49 — the SOLE release verb, and now unambiguous. The server removes a
+    // mined-out rock, so "gone from the grid" is the only reason the bot lets a
+    // rock go, and it always means the same thing: forget it, pick another, do
+    // not blacklist it. There is no depletion sibling left to be confused with.
+    fit: "clean",
   },
   {
     id: "rock-is-locked",
@@ -331,7 +325,7 @@ export const MINING_LADDER: readonly MiningRung[] = Object.freeze([
   },
   {
     id: "belt-empty",
-    name: "At the belt with no rocks left that have ore, so stop — do not wander",
+    name: "At the belt with no rocks left on the grid, so stop — do not wander",
     group: "The rock",
     fit: "distorted",
     caveat:
@@ -347,7 +341,7 @@ export const MINING_LADDER: readonly MiningRung[] = Object.freeze([
   },
   {
     id: "rock-already-locked",
-    name: "The nearest rock with ore is already locked, so skip the lock and go straight to the equipment",
+    name: "The nearest rock on the grid is already locked, so skip the lock and go straight to the equipment",
     group: "The rock",
     fit: "distorted",
     caveat:
@@ -355,7 +349,7 @@ export const MINING_LADDER: readonly MiningRung[] = Object.freeze([
   },
   {
     id: "lock-nearest-rock",
-    name: "The nearest rock with ore is not locked, so lock it",
+    name: "The nearest rock on the grid is not locked, so lock it",
     group: "The rock",
     fit: "distorted",
     caveat:

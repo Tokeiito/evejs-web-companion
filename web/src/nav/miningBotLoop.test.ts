@@ -37,7 +37,6 @@ import {
   holdUnits,
   isMineableRock,
   lowestHealth,
-  rockHasOre,
   type MiningBotAction,
   type MiningBotController,
   type MiningBotDeps,
@@ -235,7 +234,7 @@ function oreHold(used: number, capacity = 5_000, items: readonly number[] = []):
 
 const EMPTY_MEMORY: MiningDecisionMemory = {
   currentRockID: null,
-  exhaustedRockIDs: new Set<number>(),
+  lockRefusedRockIDs: new Set<number>(),
   approachingTargetID: null,
   headingHome: null,
   launchGaveUp: false,
@@ -379,16 +378,6 @@ test("a rock is identified by the mining fields the gateway projects, not by gue
   assert.equal(isMineableRock(pirate()), false);
 });
 
-test("ore remaining: zero is finished, UNKNOWN is worth trying", () => {
-  assert.equal(rockHasOre(rock(ROCK_A, 0, 1_000, "Veldspar")), true);
-  assert.equal(rockHasOre(rock(ROCK_A, 0, 0, "Veldspar")), false, "0 is a real answer");
-  assert.equal(
-    rockHasOre(rock(ROCK_A, 0, null, "Veldspar")),
-    true,
-    "unknown must not read as a mined-out belt",
-  );
-});
-
 test("the health floor reads the LOWEST layer, and reports unknown as unknown", () => {
   assert.equal(lowestHealth(snapshot([], { shieldRatio: 0.4, armorRatio: 1, hullRatio: 1 })), 0.4);
   assert.equal(lowestHealth(snapshot([], { shieldRatio: 1, armorRatio: 0.2, hullRatio: 1 })), 0.2);
@@ -452,22 +441,25 @@ test("rung 4: a FULL hold in space heads for the station and docks when in range
   assert.equal(close.action.kind, "dock");
 });
 
-test("rung 5: with nothing locked, the NEAREST rock with ore left is locked", () => {
+test("rung 5: with nothing locked, the NEAREST mineable rock on the grid is locked — the ore count is not consulted", () => {
   const decision = decide({
     snapshot: snapshot([
       rock(ROCK_B, 40_000, 5_000, "Scordite"),
       rock(ROCK_A, 8_000, 1_200, "Veldspar"),
-      rock(ROCK_C, 2_000, 0, "Plagioclase"), // nearest, but mined out
+      // Nearest, and its stale ore reading is 0. The bot still picks it: depletion
+      // is the server's call — it removes a mined-out rock from the grid — so a
+      // rock the server still shows is a rock to mine. R49 stopped predicting it.
+      rock(ROCK_C, 2_000, 0, "Plagioclase"),
     ]),
   });
   assert.equal(decision.action.kind, "lock");
   if (decision.action.kind === "lock") {
-    assert.equal(decision.action.targetID, ROCK_A, "nearest rock that still has ore");
+    assert.equal(decision.action.targetID, ROCK_C, "the nearest rock on the grid, whatever its ore reading");
   }
-  assert.equal(decision.takeRock, ROCK_A);
+  assert.equal(decision.takeRock, ROCK_C);
   // R9a / R7d: the reason names the ore and the distance, never an id.
-  assert.match(decision.why, /Veldspar/);
-  assert.doesNotMatch(decision.why, new RegExp(String(ROCK_A)));
+  assert.match(decision.why, /Plagioclase/);
+  assert.doesNotMatch(decision.why, new RegExp(String(ROCK_C)));
 });
 
 test("rung 6: a locked rock with idle lasers switches the equipment on, one module per tick", () => {
@@ -496,7 +488,8 @@ test("rung 6: a locked rock with idle lasers switches the equipment on, one modu
     assert.equal(second.action.moduleID, LASER_B);
   }
 
-  // Both running: it is mining, and it says which rock and how much is left.
+  // Both running: it is mining, and it says which rock — but NOT a units count.
+  // R49 removed the depletion readout, so the "why" names the rock and no more.
   const mining = decide(
     {
       snapshot: snapshot([rock(ROCK_A, 8_000, 1_200, "Veldspar")], {
@@ -508,7 +501,7 @@ test("rung 6: a locked rock with idle lasers switches the equipment on, one modu
   );
   assert.equal(mining.action.kind, "wait");
   assert.match(mining.why, /Mining Veldspar/);
-  assert.match(mining.why, /1,200/);
+  assert.doesNotMatch(mining.why, /1,200|units left/i);
 });
 
 test("a rock the ship ALREADY holds is adopted, not re-locked — and the lasers go on the same tick", () => {
@@ -556,32 +549,41 @@ test("the lock authority failing stops the bot deciding anything that depends on
   assert.match(decision.why, /what your ship has locked/i);
 });
 
-test("rung 7: a rock that is mined out, or has left the grid, is dropped for the next one", () => {
-  const depleted = decide(
+test("rung 7: the ONLY way a rock is dropped is the server removing it from the grid — a stale 0-ore rock is still mined", () => {
+  // A rock still on the grid, locked, whose stale ore reading is 0: the bot runs
+  // the lasers on it and never lets it go for the count. Depletion is the
+  // server's — it removes a mined-out rock — so the client mines what is on field.
+  const stale = decide(
     { snapshot: snapshot([rock(ROCK_A, 8_000, 0, "Veldspar")]), lockedTargetIDs: [ROCK_A] },
     memory({ currentRockID: ROCK_A }),
   );
-  assert.equal(depleted.dropRock, "it was mined out");
-  assert.match(depleted.why, /mined out/i);
+  assert.equal(stale.dropRock, undefined, "a 0-ore rock the server still shows is not dropped");
+  assert.equal(stale.rung, "rock-is-locked");
 
+  // The locked rock is simply gone from the snapshot (the server took it): the
+  // one reactive release verb fires, and it does not blacklist.
   const gone = decide(
     { snapshot: snapshot([rock(ROCK_B, 9_000, 900, "Scordite")]), lockedTargetIDs: [] },
     memory({ currentRockID: ROCK_A }),
   );
   assert.equal(gone.dropRock, "it went out of view");
+  assert.equal(gone.rung, "rock-out-of-view");
+  assert.match(gone.why, /no longer in view/i);
 });
 
-test("rung 8: at the belt with nothing left PAUSES with a plain reason — it does not wander", () => {
+test("rung 8: at the belt with NO mineable rocks on the grid PAUSES with a plain reason — it does not wander", () => {
   const decision = decide({
-    // The belt is right here (inside the arrival radius) and every rock is out.
+    // The belt is right here (inside the arrival radius) and the grid holds no
+    // rocks at all — the server has removed them as they were mined out. A rock
+    // with a stale 0-ore reading would still be MINED (see rung 5), so an empty
+    // belt is only ever an empty grid, never a client guess about ore.
     snapshot: snapshot([
       entity({ itemID: BELT, kind: "celestial", name: "Asteroid Belt 1", position: { x: 500, y: 0, z: 0 } }),
-      rock(ROCK_A, 8_000, 0, "Veldspar"),
     ]),
   });
   assert.equal(decision.action.kind, "pause");
   if (decision.action.kind === "pause") {
-    assert.match(decision.action.reason, /no rocks with ore left/i);
+    assert.match(decision.action.reason, /no rocks left to mine/i);
     assert.match(decision.action.reason, /Asteroid Belt 1/);
   }
 });

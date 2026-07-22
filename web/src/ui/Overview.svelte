@@ -562,10 +562,10 @@
       acquiring: isAcquiring(row.itemID),
       gateLink: row.gateLink,
       minerCount: minerRows.length,
-      // R33 — the same merged number the Ore left column renders (an OverviewRow
-      // IS a SpaceEntity), so the verb and the column can never disagree about
-      // whether the rock is empty.
-      remainingQuantity: remainingOre(row),
+      // R49 — no ore count is passed. Depletion is the server's: it removes a
+      // mined-out rock from the grid, so a rock still shown here is mineable. The
+      // "Ore left" column (`remainingOre` / `remainingLabel`) still renders the
+      // survey scan as a readout for the player, but it no longer gates the verb.
     });
   });
 
