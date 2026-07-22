@@ -940,6 +940,87 @@ app.get("/api/bridge/gateway-binds", requireAuth, async (req, res, next) => {
   }
 });
 
+// R73 PLUMBING — the FIRST Phase-2 BOUND-READ batch: the 13 RB-SKILL reads that
+// hang off the R72 skill-handler gateway. skillMgr2.GetMySkillHandler returns
+// Moniker("skillHandler", null, <session charID>, null); because that is a
+// Moniker (not an "N=" OID substruct) the retail client addresses these reads on
+// the ORDINARY top-level /call seam with service "skillHandler" — NOT a bound
+// two-step. So each dispatches as heldTopLevelCall("skillHandler", <method>).
+//
+// ⚠ SESSION-SCOPED. Every one of these 13 derives the character from the SESSION
+// (SkillMgrService._getCharacterId -> getCharacterIDFromSession) and IGNORES any
+// caller-supplied charID; the two arg-taking reads (CheckInjectionConstraints,
+// GetDiminishedSpFromInjectors) take an injector item/type id + counts, not a
+// charID. Verified LIVE cross-account (Farmer 140000005 vs GM Elysian 140000004:
+// injecting Farmer's id returns the caller's OWN skills, never Farmer's) — so the
+// browser-supplied-args risk on /api/bridge/call does not apply here.
+//
+// Independent Promise.allSettled: an empty queue / history / boosters / implants
+// and a REFUSED CheckInjectionConstraints (CALL_REFUSED SkillTradingItemNotFound
+// when no injector is owned) are legitimate states, never a blanking failure —
+// each read carries its own {result} or {error, message}. Returns the raw result
+// envelopes for web/src/bridge/boundSkills.ts; NO UI consumes this yet.
+const SKILL_BOUND_READS = Object.freeze([
+  ["GetSkills", []],
+  ["GetAllSkills", []],
+  ["GetAttributes", []],
+  ["GetSkillHistory", []],
+  ["GetSkillChangesForISIS", []],
+  ["GetRespecInfo", []],
+  ["GetFreeSkillPoints", []],
+  ["GetBoosters", []],
+  ["GetImplants", []],
+  // CheckInjectionConstraints(itemID, quantity) — probed with no owned injector,
+  // so it legitimately refuses; a future UI supplies a real injector itemID.
+  ["CheckInjectionConstraints", [0, 1]],
+  ["GetSkillPoints", []],
+  // GetDiminishedSpFromInjectors(typeID, quantity, nonDiminishingRemaining) —
+  // typeID 0 is not an injector, so it returns 0 (the empty preview).
+  ["GetDiminishedSpFromInjectors", [0, 1, 0]],
+  ["GetSkillQueue", []],
+]);
+
+app.get("/api/bridge/bound-skills", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  try {
+    const settled = await Promise.allSettled(
+      SKILL_BOUND_READS.map(([method, args]) =>
+        heldTopLevelCall(held, req.webSessionID, "skillHandler", method, args, null),
+      ),
+    );
+    // A lost live session cannot be recovered by any read; surface it so the page
+    // returns to character select (matching /api/bridge/inventory).
+    for (const s of settled) {
+      if (s.status === "rejected" && s.reason && s.reason.code === "SESSION_NOT_FOUND") {
+        next(s.reason);
+        return;
+      }
+    }
+    const reads = {};
+    SKILL_BOUND_READS.forEach(([method], index) => {
+      const s = settled[index];
+      if (s.status === "fulfilled") {
+        reads[method] = { result: s.value.result };
+      } else {
+        const reason = s.reason || {};
+        reads[method] = {
+          error: String(reason.code || "READ_FAILED"),
+          message: typeof reason.message === "string" ? reason.message : null,
+        };
+      }
+    });
+    res.json({ ok: true, characterID: held.characterID, reads });
+  } catch (error) {
+    if (error && error.code === "SESSION_NOT_FOUND") {
+      forgetBridgeSession(req.webSessionID);
+    }
+    next(error);
+  }
+});
+
 // Move one item hangar <-> active-ship cargo. The bound object is the
 // DESTINATION; retail's Add(itemID, sourceLocationID, qty, flag) carries the
 // source location and the destination flag.
