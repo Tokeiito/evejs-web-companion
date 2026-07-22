@@ -1021,6 +1021,106 @@ app.get("/api/bridge/bound-skills", requireAuth, async (req, res, next) => {
   }
 });
 
+// R74 PLUMBING — the SECOND Phase-2 BOUND-READ batch: the 11 RB-DOGMA reads that
+// hang off the R72 dogma bind. Unlike R73's skills (a Moniker that rides the
+// TOP-LEVEL /call seam), dogmaIM.MachoBindObject mints an "N=" OID handle, so
+// these ARE the real bound two-step — each dispatches via boundCall against the
+// dogmaBindSpec() handle (both added R72; the invbroker reads are the other
+// reference). The BFF holds the handle; the browser never sees the OID.
+//
+// ⚠ SESSION-SCOPED. Every dogma read resolves its target from the SESSION and
+// IGNORES the bound OID (dogmaService never consults getBoundObjectParams for a
+// read), so bound and top-level dispatch return identical own-ship/char/scene
+// data. The five session-derived reads (GetAllInfo/GetTargeters/
+// GetCharacterAttributes/GetDroneSettingAttributes/GetLocationInfo) take no id;
+// the four item reads (ItemGetInfo/QueryAllAttributesForItem/QueryAttributeValue/
+// FullyDescribeAttribute) COERCE a foreign/unknown itemID to the caller's OWN
+// ship (_findInventoryItemContext rejects a non-owned item, then the context
+// falls back to the session's active ship); GetLayerDamageValuesByItems returns a
+// ZEROED sentinel for a foreign item (explicit ownedByOther guard); and
+// GetRequiredSkillLevels is STATIC public type metadata. Verified LIVE
+// cross-account (Farmer vs Test Two) — foreign itemID never leaks the foreign
+// item. No handoff-doc flag needed.
+//
+// ⚠ GetAllInfo alone fires afterCallResponse side effects (post-GetAllInfo charge
+// refresh / post-undock dogma multi-event / character dogma-state sync) — the
+// routine retail bootstrap recompute; non-destructive and drained into the
+// response notifications. The other ten reads trigger nothing.
+//
+// Independent Promise.allSettled: an empty targeter list (docked, nobody locking
+// you), an empty required-skill dict (typeID 0) and an empty layer-damage dict
+// (no items requested) are legitimate states, never a blanking failure — each
+// read carries its own {result} or {error, message}. Returns the raw result
+// envelopes for web/src/bridge/boundDogma.ts; NO UI consumes this yet.
+const DOGMA_BOUND_READS = Object.freeze([
+  // GetAllInfo(getCharInfo, getShipInfo, getStructureInfo) — the full ship+char+
+  // module snapshot; [] defaults getCharInfo/getShipInfo true (whole bootstrap).
+  ["GetAllInfo", []],
+  // ItemGetInfo(itemID) — [] resolves to the session's OWN active ship (the
+  // handler's _getShipID(session) default); a future UI passes a real itemID.
+  ["ItemGetInfo", []],
+  ["GetTargeters", []],
+  ["GetDroneSettingAttributes", []],
+  ["GetCharacterAttributes", []],
+  // GetRequiredSkillLevels(typeID) — STATIC type metadata; typeID 0 legitimately
+  // returns an empty dict (a UI supplies the inspected type's id).
+  ["GetRequiredSkillLevels", []],
+  // GetLayerDamageValuesByItems([itemIDs]) — [[]] requests no items -> empty dict
+  // (a UI supplies the in-bay drone / module itemIDs).
+  ["GetLayerDamageValuesByItems", [[]]],
+  // QueryAllAttributesForItem(itemID) — [] -> the own active ship's attribute dict.
+  ["QueryAllAttributesForItem", []],
+  // QueryAttributeValue(itemID, attributeID) — [0, 4]: itemID 0 falls back to the
+  // own ship, attribute 4 = mass, so this returns a real scalar float.
+  ["QueryAttributeValue", [0, 4]],
+  // FullyDescribeAttribute(itemID, attributeID, reason) — [0, 4, ""]: own ship,
+  // attribute 4, empty reason -> a human-readable debug string list.
+  ["FullyDescribeAttribute", [0, 4, ""]],
+  ["GetLocationInfo", []],
+]);
+
+app.get("/api/bridge/bound-dogma", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const spec = dogmaBindSpec();
+  try {
+    const settled = await Promise.allSettled(
+      DOGMA_BOUND_READS.map(([method, args]) =>
+        boundCall(held, req.webSessionID, spec, method, args, null),
+      ),
+    );
+    // A lost live session cannot be recovered by any read; surface it so the page
+    // returns to character select (matching /api/bridge/inventory).
+    for (const s of settled) {
+      if (s.status === "rejected" && s.reason && s.reason.code === "SESSION_NOT_FOUND") {
+        next(s.reason);
+        return;
+      }
+    }
+    const reads = {};
+    DOGMA_BOUND_READS.forEach(([method], index) => {
+      const s = settled[index];
+      if (s.status === "fulfilled") {
+        reads[method] = { result: s.value.result };
+      } else {
+        const reason = s.reason || {};
+        reads[method] = {
+          error: String(reason.code || "READ_FAILED"),
+          message: typeof reason.message === "string" ? reason.message : null,
+        };
+      }
+    });
+    res.json({ ok: true, characterID: held.characterID, reads });
+  } catch (error) {
+    if (error && error.code === "SESSION_NOT_FOUND") {
+      forgetBridgeSession(req.webSessionID);
+    }
+    next(error);
+  }
+});
+
 // Move one item hangar <-> active-ship cargo. The bound object is the
 // DESTINATION; retail's Add(itemID, sourceLocationID, qty, flag) carries the
 // source location and the destination flag.
