@@ -25,11 +25,12 @@ Builds serialize (they share `flow.ts`, the store, and `src/server.js` — the c
 
 ## Completed this AFK stretch
 
-*(appended as each lands)*
+**R50 — tabs by state, login-default fix, wallet + corp wallet** (web `062245c`; eve.js `145b65ef`). Items 1, 4, 7. Tab visibility is now a one-place data table (`web/src/ui/tabs.ts`, `where: docked|in-space|both`); the login default derives from the authoritative docked flag (fixes the Station-in-space bug); Wallet renders `account.GetCashBalance`, Corp Wallet renders `account.GetWalletDivisionsInfo`. Tests 1577→1608. Live: personal 115.8B ISK, corp division 1000 = 80,000 ISK, docked flag flips on undock/dock. Verified independently.
 
 ## Decisions made autonomously (recommended paths)
 
-*(appended as each is made)*
+- **R50 corp wallet: wired for real, not placeholdered.** The research found `account.GetWalletDivisionsInfo` has a real handler (`accountService.js:593`), so I added the one allowlist pair (bridge-only, existing handler) rather than shipping a placeholder. Recommended path taken because the data is real and top-level-clean.
+- **eve.js gateway pair committed onto the other agent's branch tip by pathspec** (`145b65ef`), committing only our one file and leaving their staged destiny work in the index untouched. This is the established pattern — our gateway commits land wherever eve.js HEAD is; pathspec keeps it isolated. Verified their work intact.
 
 ## Open for the operator on return
 
