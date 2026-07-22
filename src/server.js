@@ -4630,6 +4630,183 @@ app.get("/api/bridge/lp", requireAuth, async (req, res, next) => {
   }
 });
 
+// --- R58 plumbing sweep: charMgr social/profile reads (no UI) ----------------
+// PLUMBING ONLY: three routes make the charMgr social/profile READS reachable +
+// decodable so a later goal builds UI cheaply. No panel/tab/store slice ships.
+// Every read is an allowlisted TOP-LEVEL call on the held session; the profile /
+// notes / contact reads scope to the logged-in character server-side (arg-less,
+// or session-scoped), so the browser cannot point one at another character. The
+// raw retail-shaped results ship out; the browser decodes them
+// (web/src/bridge/{characterProfile,characterNotes,contactList}.ts).
+
+// A non-negative integer from a query string, or a fallback. Used for the two
+// notes reads that take an id argument (GetOwnerNote(noteID) / GetNote(itemID)).
+function nonNegativeIntQuery(value, fallback) {
+  const numeric = Number.parseInt(String(value ?? ""), 10);
+  return Number.isFinite(numeric) && numeric >= 0 ? numeric : fallback;
+}
+
+// GET /api/bridge/character-profile — the charMgr profile/identity cluster, as
+// SEVEN independent TOP-LEVEL reads (Promise.allSettled; empty ≠ failed, each
+// read carries its own error code):
+//   • GetPublicInfo            -> util.KeyVal (the older public-info shape).
+//   • GetHomeStationRow        -> util.KeyVal (home station as a "row").
+//   • GetCharacterCreationDate -> {type:"long"} FILETIME.
+//   • GetSettingsInfo          -> [<py2 codeobject buffer>, 0] (opaque bytes).
+//   • GetPaperdollState        -> an INT (0..4 recustomization state).
+//   • GetCohortsForCharacter   -> {type:"list", items:[]} (empty-by-design stub).
+//   • GetPrivateInfoOnCorpChange -> CachedMethodCallResult wrapping util.KeyVal
+//     {corporationID, corporationDateTime(long)}.
+// All arg-less, so each handler scopes to session.characterID. Raw shapes ship
+// out, decoded browser-side (web/src/bridge/characterProfile.ts). SESSION_NOT_FOUND
+// surfaces via next() so the page returns to character select.
+app.get("/api/bridge/character-profile", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  try {
+    const [
+      publicInfo,
+      homeStationRow,
+      creationDate,
+      settingsInfo,
+      paperdollState,
+      cohorts,
+      corpChange,
+    ] = await Promise.allSettled([
+      heldTopLevelCall(held, req.webSessionID, "charMgr", "GetPublicInfo", [], null),
+      heldTopLevelCall(held, req.webSessionID, "charMgr", "GetHomeStationRow", [], null),
+      heldTopLevelCall(held, req.webSessionID, "charMgr", "GetCharacterCreationDate", [], null),
+      heldTopLevelCall(held, req.webSessionID, "charMgr", "GetSettingsInfo", [], null),
+      heldTopLevelCall(held, req.webSessionID, "charMgr", "GetPaperdollState", [], null),
+      heldTopLevelCall(held, req.webSessionID, "charMgr", "GetCohortsForCharacter", [], null),
+      heldTopLevelCall(held, req.webSessionID, "charMgr", "GetPrivateInfoOnCorpChange", [], null),
+    ]);
+    const settled = [
+      publicInfo,
+      homeStationRow,
+      creationDate,
+      settingsInfo,
+      paperdollState,
+      cohorts,
+      corpChange,
+    ];
+    for (const outcome of settled) {
+      if (outcome.status === "rejected" && outcome.reason && outcome.reason.code === "SESSION_NOT_FOUND") {
+        next(outcome.reason);
+        return;
+      }
+    }
+    const settledCode = (outcome) =>
+      outcome.status === "rejected"
+        ? String((outcome.reason && outcome.reason.code) || "READ_FAILED")
+        : null;
+    const settledValue = (outcome) =>
+      outcome.status === "fulfilled" ? outcome.value.result : null;
+    res.json({
+      ok: true,
+      publicInfo: settledValue(publicInfo),
+      homeStationRow: settledValue(homeStationRow),
+      creationDate: settledValue(creationDate),
+      settingsInfo: settledValue(settingsInfo),
+      paperdollState: settledValue(paperdollState),
+      cohorts: settledValue(cohorts),
+      corpChange: settledValue(corpChange),
+      errors: {
+        publicInfo: settledCode(publicInfo),
+        homeStationRow: settledCode(homeStationRow),
+        creationDate: settledCode(creationDate),
+        settingsInfo: settledCode(settingsInfo),
+        paperdollState: settledCode(paperdollState),
+        cohorts: settledCode(cohorts),
+        corpChange: settledCode(corpChange),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// GET /api/bridge/character-notes — the character NOTES cluster, as THREE
+// independent reads (Promise.allSettled):
+//   • GetOwnerNoteLabels()     -> Rowset[noteID, label] (the note index; the
+//     handler lazily seeds a default "S:Folders" note, so this is never empty).
+//   • GetOwnerNote(noteID)     -> list[util.KeyVal{noteID, label, note}] (one
+//     owner note; the empty payload for an unknown id). noteID from ?noteID=,
+//     default 1 (the always-present folders note).
+//   • GetNote(itemID)          -> a bare STRING (a note kept ABOUT an entity;
+//     "" for Farmer, who has none). itemID from ?itemID=, default 1.
+// GetOwnerNoteLabels / GetOwnerNote are session-scoped; the note WRITERS stay
+// refused. Raw shapes ship out, decoded browser-side
+// (web/src/bridge/characterNotes.ts).
+app.get("/api/bridge/character-notes", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const noteID = nonNegativeIntQuery(req.query.noteID, 1);
+  const itemID = nonNegativeIntQuery(req.query.itemID, 1);
+  try {
+    const [labels, ownerNote, entityNote] = await Promise.allSettled([
+      heldTopLevelCall(held, req.webSessionID, "charMgr", "GetOwnerNoteLabels", [], null),
+      heldTopLevelCall(held, req.webSessionID, "charMgr", "GetOwnerNote", [noteID], null),
+      heldTopLevelCall(held, req.webSessionID, "charMgr", "GetNote", [itemID], null),
+    ]);
+    for (const outcome of [labels, ownerNote, entityNote]) {
+      if (outcome.status === "rejected" && outcome.reason && outcome.reason.code === "SESSION_NOT_FOUND") {
+        next(outcome.reason);
+        return;
+      }
+    }
+    const settledCode = (outcome) =>
+      outcome.status === "rejected"
+        ? String((outcome.reason && outcome.reason.code) || "READ_FAILED")
+        : null;
+    const settledValue = (outcome) =>
+      outcome.status === "fulfilled" ? outcome.value.result : null;
+    res.json({
+      ok: true,
+      requested: { noteID, itemID },
+      labels: settledValue(labels),
+      ownerNote: settledValue(ownerNote),
+      entityNote: settledValue(entityNote),
+      errors: {
+        labels: settledCode(labels),
+        ownerNote: settledCode(ownerNote),
+        entityNote: settledCode(entityNote),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// GET /api/bridge/contact-list — the personal contacts / watchlist / blocked
+// owners (charMgr.GetContactList, session-scoped, no args). A single read ->
+// util.KeyVal{addresses: Rowset, blocked: Rowset}. Empty for Farmer (no contacts)
+// is a REAL empty state, not a failure. ⚠ Contact + blocked-owner IDs are entity
+// ids the browser resolves to names (R7d); the raw shape ships out untouched.
+app.get("/api/bridge/contact-list", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  try {
+    const outcome = await heldTopLevelCall(
+      held,
+      req.webSessionID,
+      "charMgr",
+      "GetContactList",
+      [],
+      null,
+    );
+    res.json({ ok: true, contactList: outcome.result });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // --- R7 Local + Corp chat ---------------------------------------------------
 // The browser reads a channel's member roster + recent backlog and sends
 // messages to Local or Corp on the held session. Chat delivery bypasses the

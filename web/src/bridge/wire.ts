@@ -245,6 +245,78 @@ export function readDictEntry(value: unknown, key: string): JsonValue | undefine
   return Array.isArray(entry) ? (entry[1] as JsonValue) : undefined;
 }
 
+/** A token/rawstr wrapper's text, or a bare string; "" otherwise. */
+function tokenText(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (typeof value === "object" && value !== null) {
+    const inner = (value as { value?: unknown }).value;
+    if (typeof inner === "string") {
+      return inner;
+    }
+  }
+  return "";
+}
+
+/**
+ * Read the rows of a marshaled Rowset as {column: value} records.
+ *
+ * A util.Rowset / eve.common.script.sys.rowset.Rowset is
+ *   {type:"object", name:<…Rowset…>, args:{type:"dict", entries:[
+ *     ["header",  {type:"list", items:[colName, …]}],
+ *     ["columns", {type:"list", items:[colName, …]}],
+ *     ["RowClass",{type:"token", value:"util.Row"}],
+ *     ["lines",   {type:"list", items:[<line>, …]}]]}}
+ *
+ * ⚠ A `<line>` is EITHER a bare JSON array of cells (the shape charMgr's
+ * GetContactList / GetOwnerNoteLabels emit — their rows are plain arrays) OR a
+ * `{type:"list"}` wrapper (util.Row); both are read, because a decoder that
+ * assumes one silently reads zero rows of the other. Columns come from
+ * `columns` (falling back to `header`); an absent column reads as null, never a
+ * substituted default. `[]` when the value is not a rowset or carries no
+ * columns — a real "no rows" answer.
+ */
+export function readRowsetRows(
+  rowset: unknown,
+): readonly Readonly<Record<string, JsonValue>>[] {
+  if (typeof rowset !== "object" || rowset === null) {
+    return [];
+  }
+  const candidate = rowset as { type?: unknown; args?: unknown };
+  if (candidate.type !== "object") {
+    return [];
+  }
+  const args = candidate.args as { type?: unknown; entries?: unknown } | null | undefined;
+  if (typeof args !== "object" || args === null || args.type !== "dict" || !Array.isArray(args.entries)) {
+    return [];
+  }
+  const entries = args.entries as readonly unknown[];
+  const byKey = (key: string): JsonValue | undefined => {
+    const entry = entries.find((row) => Array.isArray(row) && tokenText(row[0]) === key);
+    return Array.isArray(entry) ? (entry[1] as JsonValue) : undefined;
+  };
+  const columnsValue = byKey("columns") ?? byKey("header");
+  const columns = isListValue(columnsValue) ? columnsValue.items.map(tokenText) : [];
+  if (columns.length === 0) {
+    return [];
+  }
+  const linesValue = byKey("lines");
+  const lines = isListValue(linesValue) ? linesValue.items : [];
+  return lines.map((line) => {
+    const cells: readonly JsonValue[] = Array.isArray(line)
+      ? line
+      : isListValue(line)
+        ? line.items
+        : [];
+    const record: Record<string, JsonValue> = {};
+    columns.forEach((column, index) => {
+      record[column] = (cells[index] ?? null) as JsonValue;
+    });
+    return record;
+  });
+}
+
 /**
  * Unwrap a retail long to bigint. Accepts the {type:"long"} wrapper with a
  * number or decimal-string value (both are on the wire per the contract) and
