@@ -353,15 +353,20 @@ const INITIAL_REWARDS: RewardsState = Object.freeze({
   error: null,
 });
 
-// R50 wallet. `cashBalance`/`corpDivisions` start NULL, not 0/[]: a balance not
-// yet read must not render as 0 ISK, and an unread corp wallet must not look
-// like a corporation with no divisions. An empty `corpDivisions` list becomes a
-// real answer only from a SUCCESSFUL read that carried no divisions.
+// R50 wallet (extended R54). Every list starts NULL, not 0/[]: a balance not yet
+// read must not render as 0 ISK, and an unread corp wallet / ledger must not look
+// like a corporation with no divisions or a wallet with no history. An empty
+// `corpDivisions`/`journal`/`transactions` list becomes a real answer only from a
+// SUCCESSFUL read that carried no rows.
 const INITIAL_WALLET: WalletState = Object.freeze({
   cashBalance: null,
   cashError: null,
   corpDivisions: null,
   corpError: null,
+  journal: null,
+  journalError: null,
+  transactions: null,
+  transactionsError: null,
   loaded: false,
 });
 
@@ -1211,6 +1216,10 @@ export function createClientStore(): ClientStore {
           cashError: event.cashError,
           corpDivisions: event.corpDivisions,
           corpError: event.corpError,
+          journal: event.journal,
+          journalError: event.journalError,
+          transactions: event.transactions,
+          transactionsError: event.transactionsError,
           loaded: true,
         });
         break;

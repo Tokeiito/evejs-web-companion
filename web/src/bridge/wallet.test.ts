@@ -10,6 +10,9 @@ import assert from "node:assert/strict";
 import {
   decodeCashBalance,
   decodeCorpDivisions,
+  decodeEntryTypeLabels,
+  decodeJournal,
+  decodeTransactions,
   normalizeDivisionNames,
 } from "./wallet.ts";
 import type { JsonValue } from "./wire.ts";
@@ -81,4 +84,208 @@ test("normalizeDivisionNames keys by 1..7 ordinal and tolerates string keys", ()
     3: "Ops",
   });
   assert.deepEqual(normalizeDivisionNames(null as unknown as JsonValue), {});
+});
+
+// --- R54 Wallet ledger (journal + transactions) -----------------------------
+//
+// Fixtures reproduce EXACTLY what the eve.js account service emitted for
+// rrfarmer -> Farmer, captured live through the BFF on 2026-07-21 (documented in
+// the AFK log): GetJournal is a util.Rowset (header + POSITIONAL lines,
+// `buildJournalRowset`), GetTransactions a list<util.KeyVal>
+// (`buildTransactionList`), GetEntryTypes a CachedMethodCallResult wrapping a
+// list<KeyVal{entryTypeID, entryTypeName, …}>. The row VALUES below are the real
+// bytes off the wire, not a guessed shape.
+
+const JOURNAL_HEADER: readonly string[] = [
+  "transactionID",
+  "transactionDate",
+  "referenceID",
+  "entryTypeID",
+  "ownerID1",
+  "ownerID2",
+  "accountKey",
+  "amount",
+  "balance",
+  "description",
+  "currency",
+  "sortValue",
+];
+
+/** A util.Rowset exactly like `buildJournalRowset`: header list + positional line lists. */
+function journalRowset(lines: ReadonlyArray<readonly JsonValue[]>): JsonValue {
+  return {
+    type: "object",
+    name: "util.Rowset",
+    args: {
+      type: "dict",
+      entries: [
+        ["header", { type: "list", items: JOURNAL_HEADER as JsonValue[] }],
+        ["RowClass", { type: "token", value: "util.Row" }],
+        ["lines", { type: "list", items: lines.map((items) => ({ type: "list", items })) }],
+      ],
+    },
+  };
+}
+
+/** A list<util.KeyVal> exactly like `buildTransactionList`. */
+function txnList(rows: ReadonlyArray<Readonly<Record<string, JsonValue>>>): JsonValue {
+  return {
+    type: "list",
+    items: rows.map((fields) =>
+      keyVal(Object.entries(fields) as ReadonlyArray<readonly [string, JsonValue]>),
+    ),
+  };
+}
+
+/** The GetEntryTypes CachedMethodCallResult envelope, exactly as captured. */
+function entryTypesEnvelope(
+  pairs: ReadonlyArray<readonly [number, string]>,
+): JsonValue {
+  return {
+    type: "object",
+    name: { type: "rawstr", value: "carbon.common.script.net.objectCaching.CachedMethodCallResult" },
+    args: [
+      { type: "dict", entries: [[{ type: "rawstr", value: "versionCheck" }, { type: "rawstr", value: "run" }]] },
+      {
+        type: "substream",
+        value: {
+          type: "list",
+          items: pairs.map(([id, name]) =>
+            keyVal([
+              ["entryTypeID", id],
+              ["entryTypeNameID", 0],
+              ["entryTypeName", name],
+              ["entryJournalMessageID", 0],
+            ]),
+          ),
+        },
+      },
+    ],
+  };
+}
+
+// The three real journal rows (BountyPrize / MarketTransaction /
+// PlanetaryConstruction), value-for-value off the wire.
+const REAL_JOURNAL_LINES: ReadonlyArray<readonly JsonValue[]> = [
+  [1784675859816261, { type: "long", value: "134291494598160000" }, 21980, 17, 140000005, 140000005, 1000, 10000, 115789452720.04, "NBL:\n  21980: 1\nsolarSystemID: 30000144\nkills: 1", 1, 1],
+  [1784621463235892, { type: "long", value: "134290950632350000" }, 60015261, 2, 140000005, 1000091, 1000, -1459390, 115789394220.04, "Market purchase of Fusion M (191)", 1, 1],
+  [1784233305981917, { type: "long", value: "134287069059810000" }, 30000144, 98, 140000005, 140000005, 1000, -45000, 115700000000.04, "Planetary construction", 1, 1],
+];
+
+const REAL_LABELS = entryTypesEnvelope([
+  [2, "MarketTransaction"],
+  [3, "GMCashTransfer"],
+  [17, "BountyPrize"],
+  [98, "PlanetaryConstruction"],
+]);
+
+test("decodeEntryTypeLabels unwraps the cached envelope and humanizes the ref-type code (R9a)", () => {
+  const labels = decodeEntryTypeLabels(REAL_LABELS);
+  assert.equal(labels.get(2), "Market Transaction");
+  // The ACRONYM->Word boundary: GMCashTransfer, not "GMCash Transfer" or the code.
+  assert.equal(labels.get(3), "GM Cash Transfer");
+  assert.equal(labels.get(17), "Bounty Prize");
+  assert.equal(labels.get(98), "Planetary Construction");
+});
+
+// COMPANION MATCHER PROOF: the humanizer must actually change the code (insert a
+// space). A no-op humanizer would pass any test that only checks "a non-empty
+// label"; this pins that "MarketTransaction" is NOT what reaches the panel.
+test("decodeEntryTypeLabels never leaves a run-together code as the label", () => {
+  const labels = decodeEntryTypeLabels(REAL_LABELS);
+  assert.notEqual(labels.get(2), "MarketTransaction");
+  assert.match(labels.get(2) ?? "", / /);
+});
+
+test("decodeEntryTypeLabels: an unreadable map is empty (rows will fall back to 'Other')", () => {
+  assert.equal(decodeEntryTypeLabels(null as unknown as JsonValue).size, 0);
+  assert.equal(decodeEntryTypeLabels({ type: "list", items: [] } as JsonValue).size, 0);
+});
+
+test("decodeJournal decodes the real Rowset: amount bigint-safe, ref-type as words, date a FILETIME bigint", () => {
+  const labels = decodeEntryTypeLabels(REAL_LABELS);
+  const rows = decodeJournal(journalRowset(REAL_JOURNAL_LINES), labels);
+  assert.equal(rows.length, 3);
+  assert.deepEqual(rows[0], {
+    id: "1784675859816261",
+    date: 134291494598160000n,
+    amount: "10000",
+    refType: "Bounty Prize",
+  });
+  // A DEBIT keeps its sign; the amount stays a decimal string, never Number.
+  assert.equal(rows[1]!.amount, "-1459390");
+  assert.equal(rows[1]!.refType, "Market Transaction");
+  assert.equal(rows[2]!.refType, "Planetary Construction");
+  // The FILETIME is a bigint (it exceeds 2^53) — never coerced to a number.
+  assert.equal(typeof rows[0]!.date, "bigint");
+});
+
+// R7d STRUCTURAL PROOF: the decoded row carries ONLY {id,date,amount,refType} —
+// no referenceID (21980) and no ownerID (140000005) survive decoding, so neither
+// can ever reach rendered text.
+test("decodeJournal drops every raw id (no referenceID/ownerID in the decoded row)", () => {
+  const rows = decodeJournal(journalRowset(REAL_JOURNAL_LINES), new Map());
+  assert.deepEqual(Object.keys(rows[0]!).sort(), ["amount", "date", "id", "refType"]);
+  const serialized = JSON.stringify(rows, (_k, v) => (typeof v === "bigint" ? v.toString() : v));
+  assert.equal(serialized.includes("21980"), false, "referenceID must not survive");
+  assert.equal(serialized.includes("140000005"), false, "ownerID must not survive");
+  assert.equal(serialized.includes("30000144"), false, "solarSystemID must not survive");
+});
+
+// COMPANION to the sweep above: prove the includes()-matcher actually fires when
+// an id IS present, so the "does not include" assertions above aren't vacuous.
+test("the id-absence matcher would catch a leaked id", () => {
+  const withId = JSON.stringify([{ leak: "the ownerID is 140000005 here" }]);
+  assert.equal(withId.includes("140000005"), true);
+});
+
+// An ISK amount past 2^53 stays EXACT: the wire contract lets a long cross as
+// {type:"long"}, and a bare decimal string is the R32 flattened form. Both must
+// survive without Number rounding.
+test("decodeJournal keeps a >2^53 amount exact (long wrapper AND bare decimal string)", () => {
+  const asLong = decodeJournal(
+    journalRowset([[1, { type: "long", value: "1" }, 0, 2, 0, 0, 1000, { type: "long", value: "9007199254740993" }, 0, "", 1, 1]]),
+    new Map(),
+  );
+  assert.equal(asLong[0]!.amount, "9007199254740993");
+  const asString = decodeJournal(
+    journalRowset([[1, "134291494598160000", 0, 2, 0, 0, 1000, "9007199254740993", 0, "", 1, 1]]),
+    new Map(),
+  );
+  // R32: a FILETIME that arrived as a BARE STRING still decodes to the bigint.
+  assert.equal(asString[0]!.date, 134291494598160000n);
+  assert.equal(asString[0]!.amount, "9007199254740993");
+});
+
+test("decodeJournal: a well-formed empty Rowset -> [] (a real 'no journal entries yet')", () => {
+  assert.deepEqual(decodeJournal(journalRowset([]), new Map()), []);
+  assert.deepEqual(decodeJournal(null as unknown as JsonValue, new Map()), []);
+});
+
+test("decodeTransactions decodes the real list<KeyVal> rows and labels them", () => {
+  const labels = decodeEntryTypeLabels(REAL_LABELS);
+  const raw = txnList([
+    { transactionID: 1784675859816261, transactionDate: { type: "long", value: "134291494598160000" }, referenceID: 21980, entryTypeID: 17, ownerID1: 140000005, ownerID2: 140000005, accountKey: 1000, amount: 10000, balance: 115789452720.04, description: "NBL:\n  21980: 1", currency: 1, sortValue: 1 },
+  ]);
+  const rows = decodeTransactions(raw, labels);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0]!.amount, "10000");
+  assert.equal(rows[0]!.refType, "Bounty Prize");
+  assert.equal(rows[0]!.date, 134291494598160000n);
+  // No raw id survives here either.
+  assert.equal(Object.prototype.hasOwnProperty.call(rows[0]!, "referenceID"), false);
+});
+
+test("decodeTransactions: a well-formed empty list -> [] (a real 'no transactions yet')", () => {
+  assert.deepEqual(decodeTransactions({ type: "list", items: [] }, new Map()), []);
+  assert.deepEqual(decodeTransactions(null as unknown as JsonValue, new Map()), []);
+});
+
+// COMPANION MATCHER PROOF for the ledger row: without the entry-types map a row
+// still decodes, but labels "Other" — proving the label really comes from the
+// map (not a hardcoded default that would pass regardless).
+test("decodeJournal falls back to 'Other' (never a raw code) when the label is unknown", () => {
+  const rows = decodeJournal(journalRowset(REAL_JOURNAL_LINES), new Map());
+  assert.equal(rows[0]!.refType, "Other");
+  assert.notEqual(rows[0]!.refType, "17");
 });

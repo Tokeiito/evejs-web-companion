@@ -950,15 +950,38 @@ export interface CorpWalletDivision {
 }
 
 /**
- * The Wallet + Corp Wallet nav tabs (goal R50). Both tabs read from one BFF
- * pull (/api/bridge/wallet): the PERSONAL ISK balance (account.GetCashBalance,
- * already allowlisted) and the CORP division balances
- * (account.GetWalletDivisionsInfo). Each half keeps its own error so a failed
- * corp read never blanks the personal balance and vice versa.
+ * One wallet ledger entry (goal R54) — a row of account.GetJournal (a Rowset)
+ * or account.GetTransactions (a list<KeyVal>), both decoded to the same shape.
+ * What money moved (`amount`, signed ISK), when (`date`, a FILETIME), and why
+ * (`refType`, the human ref-type label resolved from account.GetEntryTypes).
  *
- * ⚠ `corpDivisions: null` means "not read yet / the corp read FAILED" (see
- * `corpError`); an empty list `[]` is a real "this corporation has no wallet
- * divisions" answer. The two must never look alike (the worldHasNoContracts
+ * ⚠ R7d: NO raw id is carried into rendered text. `id` is the transactionID kept
+ * ONLY as a bigint-safe key for a keyed list (never printed); the row's
+ * referenceID/ownerIDs and the server's free-text description (which embeds
+ * typeIDs/systemIDs) are deliberately NOT decoded, so nothing numeric-but-not-a-
+ * quantity can leak. `amount` is a bigint-safe decimal string (ISK exceeds
+ * 2^53); `date` is a FILETIME bigint (100 ns ticks since 1601), null when absent.
+ */
+export interface LedgerEntry {
+  readonly id: string;
+  readonly date: bigint | null;
+  readonly amount: string;
+  readonly refType: string;
+}
+
+/**
+ * The Wallet + Corp Wallet nav tabs (goal R50, extended R54). Every half reads
+ * from one BFF pull (/api/bridge/wallet): the PERSONAL ISK balance
+ * (account.GetCashBalance) and the CORP division balances
+ * (account.GetWalletDivisionsInfo), plus — R54 — the personal LEDGER
+ * (account.GetJournal + account.GetTransactions, ref-types labelled from
+ * account.GetEntryTypes). Each read keeps its own error so one failure never
+ * blanks the others.
+ *
+ * ⚠ null-vs-`[]` is load-bearing on every list: `corpDivisions`/`journal`/
+ * `transactions` are null when the read has not answered yet OR FAILED (see the
+ * matching `*Error`); an empty list `[]` is a real "no divisions / no ledger
+ * entries yet" answer. The two must never look alike (the worldHasNoContracts
  * precedent). ISK is a bigint-safe decimal string.
  */
 export interface WalletState {
@@ -966,6 +989,10 @@ export interface WalletState {
   readonly cashError: string | null;
   readonly corpDivisions: readonly CorpWalletDivision[] | null;
   readonly corpError: string | null;
+  readonly journal: readonly LedgerEntry[] | null;
+  readonly journalError: string | null;
+  readonly transactions: readonly LedgerEntry[] | null;
+  readonly transactionsError: string | null;
   /** True once a wallet read has populated the slice. */
   readonly loaded: boolean;
 }

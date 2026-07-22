@@ -1399,25 +1399,41 @@ export interface RawWalletReads {
   readonly divisions: JsonValue;
   /** Division ordinal (1..7) -> player-authored name, resolved by the BFF. */
   readonly divisionNames: JsonValue;
+  // R54 — the personal ledger: the journal (a Rowset), the transactions (a
+  // list<KeyVal>), and the ref-type -> label static map (a cached list). All raw.
+  readonly journal: JsonValue;
+  readonly transactions: JsonValue;
+  readonly entryTypes: JsonValue;
   readonly errors: {
     readonly cash: string | null;
     readonly divisions: string | null;
     readonly corp: string | null;
+    readonly journal: string | null;
+    readonly transactions: string | null;
+    readonly entryTypes: string | null;
   };
 }
 
-/** The personal + corp-division wallet reads (raw; decoded in the flow). */
+/** The personal + corp-division wallet reads plus the ledger (raw; decoded in the flow). */
 export async function loadWallet(options: ApiOptions = {}): Promise<RawWalletReads> {
   const data = await getJson("/api/bridge/wallet", options);
   const errors = (data.errors ?? {}) as Record<string, JsonValue>;
+  const errorText = (key: string): string | null =>
+    typeof errors[key] === "string" ? (errors[key] as string) : null;
   return {
     cash: data.cash ?? null,
     divisions: data.divisions ?? null,
     divisionNames: data.divisionNames ?? {},
+    journal: data.journal ?? null,
+    transactions: data.transactions ?? null,
+    entryTypes: data.entryTypes ?? null,
     errors: {
-      cash: typeof errors.cash === "string" ? errors.cash : null,
-      divisions: typeof errors.divisions === "string" ? errors.divisions : null,
-      corp: typeof errors.corp === "string" ? errors.corp : null,
+      cash: errorText("cash"),
+      divisions: errorText("divisions"),
+      corp: errorText("corp"),
+      journal: errorText("journal"),
+      transactions: errorText("transactions"),
+      entryTypes: errorText("entryTypes"),
     },
   };
 }

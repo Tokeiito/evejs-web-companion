@@ -76,6 +76,7 @@ import type {
   TravelStatus,
   WalletLPBalance,
   CorpWalletDivision,
+  LedgerEntry,
 } from "./types.ts";
 import type { ShipStats } from "../bridge/shipStats.ts";
 import type { MiningRungID, MiningStepID } from "../nav/miningLadder.ts";
@@ -354,17 +355,22 @@ export type FeedEvent =
     }
   // Drop the reward readout (character offline / logged out).
   | { readonly type: "rewards/cleared" }
-  // Goal R50 — the Wallet + Corp Wallet tabs. One BFF pull carries the personal
-  // ISK balance (account.GetCashBalance) and the corporation division balances
-  // (account.GetWalletDivisionsInfo). Each half keeps its own error.
-  // `corpDivisions` is null when the corp read failed (see `corpError`); [] is a
-  // real "no corp wallet divisions" answer.
+  // Goal R50 (extended R54) — the Wallet + Corp Wallet tabs. One BFF pull carries
+  // the personal ISK balance (account.GetCashBalance), the corporation division
+  // balances (account.GetWalletDivisionsInfo), and the personal LEDGER
+  // (account.GetJournal + account.GetTransactions). Each read keeps its own
+  // error. Every list is null when its read failed (see the matching `*Error`)
+  // or has not answered yet; [] is a real "no divisions / no ledger entries yet".
   | {
       readonly type: "wallet/loaded";
       readonly cashBalance: string | null;
       readonly cashError: string | null;
       readonly corpDivisions: readonly CorpWalletDivision[] | null;
       readonly corpError: string | null;
+      readonly journal: readonly LedgerEntry[] | null;
+      readonly journalError: string | null;
+      readonly transactions: readonly LedgerEntry[] | null;
+      readonly transactionsError: string | null;
     }
   // Drop the wallet readout (character offline / logged out).
   | { readonly type: "wallet/cleared" }
