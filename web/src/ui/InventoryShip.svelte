@@ -175,6 +175,22 @@
     return `${amount(capacity.used)} of ${amount(capacity.capacity)} m³`;
   }
 
+  /**
+   * Room used in the STATION HANGAR, which has no meaningful limit. eve.js
+   * returns a 1,000,000 m³ default for the unmapped hangar flag (R40) — a
+   * phantom ceiling, not a real one — so the hangar shows only how much room is
+   * used, with no "of {capacity}" and no gauge to fill toward. This is chosen by
+   * WHERE it is rendered (the station-hangar card), never by sniffing the
+   * 1,000,000 value, which is fragile and could legitimately appear elsewhere.
+   * Ship bays with a real finite capacity keep `capacityText` and their gauge.
+   */
+  function roomUsedText(capacity: CapacityInfo | null): string {
+    if (!capacity) {
+      return "not known";
+    }
+    return `${amount(capacity.used)} m³`;
+  }
+
   /** The gauge's fill, clamped. Zero capacity means no meaningful bar. */
   function fillPercent(capacity: CapacityInfo | null): number {
     if (!capacity || !(capacity.capacity > 0)) {
@@ -199,6 +215,11 @@
     }
     if (left.kind === "corp" && right.kind === "corp") {
       return left.division === right.division;
+    }
+    if (left.kind === "shipBay" && right.kind === "shipBay") {
+      // A tick made in the ore hold must not be treated as a tick in the drone
+      // bay: each bay is its own place.
+      return left.bay === right.bay;
     }
     return true;
   }
@@ -241,6 +262,10 @@
     if (place.kind === "cargo") {
       return $inventory.cargo.rows;
     }
+    if (place.kind === "shipBay") {
+      const bay = $inventory.openShip?.bays.find((entry) => entry.key === place.bay);
+      return bay?.items ?? [];
+    }
     if (place.kind === "container") {
       return $inventory.container && $inventory.container.itemID === place.itemID
         ? $inventory.container.rows
@@ -265,6 +290,10 @@
     }
     if (place.kind === "cargo") {
       return "Ship cargo";
+    }
+    if (place.kind === "shipBay") {
+      const bay = $inventory.openShip?.bays.find((entry) => entry.key === place.bay);
+      return bay ? bay.label : "Ship bay";
     }
     if (place.kind === "container") {
       return containerName();
@@ -411,15 +440,24 @@
   /**
    * Can the player act on what is in this bay from here?
    *
-   * ONLY the active ship's cargo hold. `transferItems` addresses a ship by the
-   * place "cargo", which the BFF resolves to the ACTIVE ship's cargo flag —
-   * there is no addressing for "the ore hold of the ship I am not flying", so
-   * offering a button for one would be offering something that cannot work.
-   * Every other bay is shown read-only, and the card says why rather than
-   * leaving the player to wonder where the buttons went.
+   * ANY bay of the ACTIVE ship (R51). The BFF can now address a bay by its key
+   * as a transfer source — the ore hold, the drone bay and the cargo hold are
+   * all valid sources — so a stack in any of them can be moved into the station
+   * hangar. There is still no addressing for "the ore hold of the ship I am not
+   * flying" (it has no source location), so a bay on an inactive hull stays
+   * read-only and the card says to board instead.
    */
   function bayIsActionable(shipItemID: number, bay: ShipBay): boolean {
-    return shipItemID === $inventory.activeShipID && bay.key === "cargo";
+    return shipItemID === $inventory.activeShipID && bay.present === true;
+  }
+
+  /**
+   * The place descriptor that addresses this bay as a transfer source. The
+   * cargo hold keeps its own long-standing "cargo" place; every other bay is a
+   * "shipBay" named by its key. The flag behind the key never leaves the BFF.
+   */
+  function bayPlace(bay: ShipBay): InventoryPlace {
+    return bay.key === "cargo" ? { kind: "cargo" } : { kind: "shipBay", bay: bay.key };
   }
 
   // --- corporation hangar ---------------------------------------------------
@@ -697,11 +735,13 @@
           {:else if bay.items.length === 0}
             <p class="empty">Nothing in here yet.</p>
           {:else if bayIsActionable(openShip.itemID, bay)}
-            {@render itemGrid(bay.items, { kind: "cargo" }, "toHangar")}
+            {@render itemGrid(bay.items, bayPlace(bay), "toHangar")}
           {:else}
-            {@render itemGrid(bay.items, { kind: "cargo" }, "none", true)}
+            {@render itemGrid(bay.items, bayPlace(bay), "none", true)}
           {/if}
-          {#if bayIsActionable(openShip.itemID, bay) && bay.items && bay.items.length > 0}
+          {#if bay.key === "cargo" && bayIsActionable(openShip.itemID, bay) && bay.items && bay.items.length > 0}
+            <!-- Stack-all is a cargo-hold convenience (`stackContainer` only
+                 knows "cargo" and "hangar"); it is not offered for other bays. -->
             <p>
               <button
                 type="button"
@@ -736,7 +776,9 @@
 <section>
   <h2>
     Hangar inventory
-    <small class="note">room used {capacityText($inventory.hangar.capacity)}</small>
+    <!-- A station has no capacity limit: only room USED, never "of {capacity}"
+         and never a gauge (R51). -->
+    <small class="note">Room used: {roomUsedText($inventory.hangar.capacity)}</small>
   </h2>
   <p>
     <button

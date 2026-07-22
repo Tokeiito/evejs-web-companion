@@ -518,6 +518,54 @@ test("a bay the bridge cannot act on is read-only, and the panel says why", () =
   assert.match(text, /Board this ship to move things in and out/);
 });
 
+// --- R51: move ore out of a bay, and no fake hangar limit -------------------
+
+test("R51: the active ship's ore hold offers 'send to hangar' on its stacks", () => {
+  // The Procurer IS the active ship; its ore hold holds Veldspar. That stack
+  // must be selectable and offer a move to the station hangar — the same
+  // affordance the cargo hold already had, now that a bay is addressable as a
+  // transfer source.
+  const body = scene({ openShipID: PROCURER_ID });
+  const shipsCard = body.slice(body.indexOf("Your ships"), body.indexOf("Hangar inventory"));
+  assert.match(shipsCard, /→ Hangar/, "the ore-hold stack can be sent to the hangar");
+  assert.match(
+    shipsCard,
+    /aria-label="Select Veldspar"/,
+    "and the ore-hold stack can be ticked for a bulk move",
+  );
+});
+
+test("R51: a bay on a ship the player is NOT flying stays read-only", () => {
+  // There is still no way to address the ore hold of a hull you are not in, so
+  // no move button is drawn for it — the player is told to board instead.
+  const body = scene({ openShipID: RUPTURE_ID, openShipType: RUPTURE_TYPE, bays: PROCURER_BAYS });
+  const shipsCard = body.slice(body.indexOf("Your ships"), body.indexOf("Hangar inventory"));
+  assert.doesNotMatch(shipsCard, /→ Hangar/, "an inactive hull's bays offer no move");
+  assert.doesNotMatch(shipsCard, /aria-label="Select Veldspar"/, "and no selection either");
+  assert.match(visibleText(shipsCard), /Board this ship to move things in and out/);
+});
+
+test("R51: the station hangar shows room used with no fake limit and no gauge", () => {
+  // eve.js returns a 1,000,000 m³ default for the unmapped hangar flag — a
+  // phantom, not a real ceiling. A station has no limit, so the hangar shows
+  // only how much room is used: no "of X", no gauge.
+  const body = scene();
+  const hangarCard = body.slice(body.indexOf("Hangar inventory"));
+  const text = visibleText(hangarCard);
+  assert.match(text, /Room used: 250,000 m³/);
+  assert.doesNotMatch(text, /of 1,000,000/, "the phantom 1,000,000 limit is gone");
+  assert.doesNotMatch(hangarCard, /hud-track/, "and there is no gauge to fill toward");
+});
+
+test("R51: a ship bay with a REAL capacity still shows 'of' and a gauge", () => {
+  // The fix keys on WHICH section is the station hangar, not on the 1,000,000
+  // value — so a ship bay's genuine, useful limit is untouched.
+  const body = scene({ openShipID: PROCURER_ID });
+  const shipsCard = body.slice(body.indexOf("Your ships"), body.indexOf("Hangar inventory"));
+  assert.match(visibleText(shipsCard), /12,375\.2 of 16,000 m³/, "the ore hold keeps its real limit");
+  assert.match(shipsCard, /hud-track/, "a finite bay still draws its fill gauge");
+});
+
 // --- R7d --------------------------------------------------------------------
 
 test("R7d: no itemID, typeID, stationID or FLAG is ever visible text", () => {

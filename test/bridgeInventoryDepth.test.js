@@ -482,6 +482,87 @@ test("transfer moves an item OUT of a container using the container as the sourc
   assert.equal(gateway.world.get(200).locationID, STATION_ID);
 });
 
+// --- ship bays as a transfer SOURCE (goal R51) ------------------------------
+//
+// The operator had ore in the Ore Hold and no way to move it into the station
+// hangar: resolvePlace could address the ship's CARGO but none of its
+// specialised bays. R51 teaches it to address any bay the hull exposes by its
+// bay KEY (the SAME R40 enumeration the /bays route uses) — the browser never
+// learns the ore hold is flag 134. The move is judged exactly like every other
+// transfer: by the SOURCE giving something up, never by the 200.
+
+const FLAG_ORE_HOLD = 134; // R40's ore-hold flag; the browser never sends it.
+
+function oreInHold(itemID = 500, quantity = 100) {
+  return { itemID, typeID: 1230, locationID: ACTIVE_SHIP_ID, flagID: FLAG_ORE_HOLD, quantity };
+}
+
+test("an ore-hold stack is a valid transfer SOURCE and lands in the hangar", async () => {
+  const gateway = fakeGateway({ items: [...fixtureItems(), oreInHold()] });
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+
+  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/inventory/transfer", {
+    method: "POST",
+    body: { itemIDs: [500], from: { kind: "shipBay", bay: "ore" }, to: { kind: "hangar" } },
+  });
+  assert.equal(response.status, 200);
+  // Judged by the SOURCE giving something up, exactly as the R29 lesson demands.
+  assert.equal(payload.applied, true);
+  assert.deepEqual(payload.moved, [500]);
+  assert.equal(payload.declinedSilently, false);
+
+  // The world agrees: the ore left the hold and now sits in the station hangar.
+  assert.equal(gateway.world.get(500).locationID, STATION_ID);
+  assert.equal(gateway.world.get(500).flagID, FLAG_HANGAR);
+
+  // The bay KEY was resolved to the ore-hold flag from R40's enumeration: the
+  // source was LISTED by that flag, and the source location quoted for the move
+  // is the SHIP itself — the same shape as ore-hold/unload.
+  const sourceList = gateway.calls.boundCall.find(
+    (call) => call.method === "List" && call.args[0] === FLAG_ORE_HOLD,
+  );
+  assert.ok(sourceList, "the ore hold was listed by its flag as the source");
+  const add = gateway.calls.boundCall.find((call) => call.method === "Add");
+  assert.deepEqual(add.args, [500, ACTIVE_SHIP_ID], "the ship is the source location");
+  assert.equal(add.kwargs.flag, FLAG_HANGAR, "and the hangar flag is the destination");
+
+  // No flag number and no bound handle ever crosses back to the browser.
+  assert.equal(JSON.stringify(payload).includes(String(FLAG_ORE_HOLD)), false);
+  assert.equal(JSON.stringify(payload).includes("handle:"), false);
+});
+
+test("an ore-hold move the server declines silently is reported applied:false", async () => {
+  // The new source path is held to the SAME discipline: a 200 with nothing moved
+  // is a silent decline, not a success.
+  const gateway = fakeGateway({ items: [...fixtureItems(), oreInHold()], declineAll: true });
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+
+  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/inventory/transfer", {
+    method: "POST",
+    body: { itemIDs: [500], from: { kind: "shipBay", bay: "ore" }, to: { kind: "hangar" } },
+  });
+  assert.equal(response.status, 200);
+  assert.equal(payload.applied, false, "the re-read says nothing left the hold");
+  assert.deepEqual(payload.declined, [500]);
+  assert.equal(payload.declinedSilently, true);
+  assert.equal(gateway.world.get(500).locationID, ACTIVE_SHIP_ID, "the ore stayed put");
+});
+
+test("transfer rejects an unknown ship bay key", async () => {
+  const gateway = fakeGateway({ items: [...fixtureItems(), oreInHold()] });
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+
+  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/inventory/transfer", {
+    method: "POST",
+    body: { itemIDs: [500], from: { kind: "shipBay", bay: "nonsense" }, to: { kind: "hangar" } },
+  });
+  assert.equal(response.status, 400);
+  assert.equal(payload.error, "INVALID_BAY");
+});
+
 // --- split ------------------------------------------------------------------
 
 test("transfer with a qty SPLITS the stack and reports it applied via the source shrinking", async () => {

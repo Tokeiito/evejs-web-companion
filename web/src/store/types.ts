@@ -177,11 +177,18 @@ export interface OpenShipState {
 /**
  * A place items can live. The browser names a place; the retail flagIDs that
  * back them (4 hangar, 5 cargo, 0 container contents, 115-121 corporation
- * divisions) live on the BFF and never reach here.
+ * divisions, and the specialised-bay flags behind a `shipBay`) live on the BFF
+ * and never reach here.
+ *
+ * A `shipBay` names one specialised bay of the ACTIVE ship by its bay KEY
+ * ("ore", "drone", "fleet", …) — the same key R40's /bays route hands over. The
+ * BFF maps the key to the bay's flag, so a stack in the ore hold can be moved
+ * out without the browser ever learning the ore hold is flag 134.
  */
 export type InventoryPlace =
   | { readonly kind: "hangar" }
   | { readonly kind: "cargo" }
+  | { readonly kind: "shipBay"; readonly bay: string }
   | { readonly kind: "container"; readonly itemID: number }
   | { readonly kind: "corp"; readonly division: number };
 

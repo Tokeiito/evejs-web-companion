@@ -1152,6 +1152,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     if (current.corp.loaded) {
       await loadCorpHangar();
     }
+    // A move out of a ship bay (R51) changes what that bay holds, so the open
+    // ship's bays are re-read too — otherwise the ore just moved out would keep
+    // showing in the hold until the next manual refresh.
+    if (current.openShip) {
+      await openShipBays(current.openShip.itemID);
+    }
   }
 
   // Run a mutation and report what the SERVER says actually happened. The BFF

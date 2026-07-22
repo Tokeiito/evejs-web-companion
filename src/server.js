@@ -1077,6 +1077,7 @@ async function readCorpOffice(held, webSessionID) {
 // flag, and the source location to quote when moving OUT of it.
 //   { kind: "hangar" }                     the docked station hangar
 //   { kind: "cargo" }                      the active ship's cargo hold
+//   { kind: "shipBay", bay: "ore" }        a specialised bay of the ACTIVE ship
 //   { kind: "container", itemID }          a container in the hangar or cargo
 //   { kind: "corp", division: 1..7 }       a corporation hangar division
 async function resolvePlace(held, webSessionID, descriptor) {
@@ -1091,6 +1092,28 @@ async function resolvePlace(held, webSessionID, descriptor) {
     return {
       spec: cargoBindSpec(held, held.activeShipID),
       flag: ITEM_FLAG_CARGO_HOLD,
+      locationID: held.activeShipID,
+    };
+  }
+  // A specialised bay of the ACTIVE ship (ore hold, drone bay, fleet hangar, …),
+  // addressed by its bay KEY. The key -> flag mapping is R40's SHIP_BAYS, the
+  // very enumeration the /bays route reads with — so a bay is never guessed and
+  // the browser never sends a flag number. A bay is just a flag on the ship's
+  // own inventory, so the bind and the source location are identical to cargo's;
+  // only the flag differs. (There is deliberately no addressing for a bay on a
+  // hull the player is NOT flying — that has no source location here.)
+  if (kind === "shipBay") {
+    if (!held.activeShipID) {
+      throw Object.assign(new Error("No active ship."), { code: "NO_ACTIVE_SHIP", status: 409 });
+    }
+    const bayKey = String((descriptor && descriptor.bay) || "");
+    const bay = SHIP_BAYS.find((entry) => entry.key === bayKey);
+    if (!bay) {
+      throw Object.assign(new Error("Unknown ship bay."), { code: "INVALID_BAY", status: 400 });
+    }
+    return {
+      spec: cargoBindSpec(held, held.activeShipID),
+      flag: bay.flag,
       locationID: held.activeShipID,
     };
   }
