@@ -4518,6 +4518,118 @@ app.get("/api/bridge/character-sheet", requireAuth, async (req, res, next) => {
   }
 });
 
+// --- R57 plumbing sweep: top-level reads (fittings / kill rights / LP) -------
+// PLUMBING ONLY: these three routes make the reads reachable + decodable so the
+// UI is easy to build later. No panel/tab/store slice ships with them. Each
+// issues an allowlisted TOP-LEVEL read on the held session, arg-less, so the
+// handler scopes to the logged-in character; the raw retail-shaped result ships
+// out and the browser decodes it (web/src/bridge/{fittings,killRights,lpStore}.ts).
+
+// GET /api/bridge/fittings — the saved FITTING LIBRARY (charFittingMgr.GetFittings,
+// the CHARACTER service — not corp/alliance). A single read: GetFittings scopes
+// to session.characterID (empty args -> resolveRequestedOwnerID falls through to
+// the session), so no cross-character read is possible. An empty library is a
+// REAL "no saved fittings" answer, not a failure. SESSION_NOT_FOUND surfaces via
+// next() so the page returns to character select, as every held call does.
+app.get("/api/bridge/fittings", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  try {
+    const outcome = await heldTopLevelCall(
+      held,
+      req.webSessionID,
+      "charFittingMgr",
+      "GetFittings",
+      [],
+      null,
+    );
+    res.json({ ok: true, fittings: outcome.result });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// GET /api/bridge/kill-rights — the kill rights this character HOLDS
+// (bountyProxy.GetMyKillRights, scoped to session.characterID, no args). A single
+// read. An empty list is a REAL "no kill rights" answer, not a failure. ⚠ The
+// row's fromID/toID/restrictedTo are entity ids the browser resolves to names
+// (R7d); the raw shape ships out untouched.
+app.get("/api/bridge/kill-rights", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  try {
+    const outcome = await heldTopLevelCall(
+      held,
+      req.webSessionID,
+      "bountyProxy",
+      "GetMyKillRights",
+      [],
+      null,
+    );
+    res.json({ ok: true, killRights: outcome.result });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// GET /api/bridge/lp — the LP store reads. THREE independent LPSvc reads
+// (Promise.allSettled; empty ≠ failed, each read carries its own error code):
+//   • GetLPsForCharacter    — this character's per-issuer LP balances, as a list
+//     of [issuerCorpID, loyaltyPoints] pairs (the retail LP-store list shape).
+//   • GetLPExchangeRates    — the LP-store exchange-rate table.
+//   • GetAvailableOffersFromCorp — the offers a corp publishes for LP.
+// ⚠ GetLPExchangeRates and GetAvailableOffersFromCorp are EMPTY-BY-DESIGN in this
+// world (the handlers return buildList([]) with no seed data) — an empty list is
+// a legitimate "no rates / no offers yet" state, not a bug. The plumbing lands so
+// a UI can render them the moment data exists. GetLPsForCharacter is the same
+// data as R6's GetAllMyCharacterWalletLPBalances (the /rewards route) but in the
+// list shape; both are session-scoped. Raw shapes ship out, decoded browser-side
+// (web/src/bridge/lpStore.ts).
+app.get("/api/bridge/lp", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  try {
+    const [balances, exchangeRates, offers] = await Promise.allSettled([
+      heldTopLevelCall(held, req.webSessionID, "LPSvc", "GetLPsForCharacter", [], null),
+      heldTopLevelCall(held, req.webSessionID, "LPSvc", "GetLPExchangeRates", [], null),
+      heldTopLevelCall(held, req.webSessionID, "LPSvc", "GetAvailableOffersFromCorp", [], null),
+    ]);
+    // A lost live session can't be recovered by any read; surface it so the page
+    // returns to character select (as every held call does).
+    for (const settled of [balances, exchangeRates, offers]) {
+      if (settled.status === "rejected" && settled.reason && settled.reason.code === "SESSION_NOT_FOUND") {
+        next(settled.reason);
+        return;
+      }
+    }
+    const settledCode = (settled) =>
+      settled.status === "rejected"
+        ? String((settled.reason && settled.reason.code) || "READ_FAILED")
+        : null;
+    const settledValue = (settled) =>
+      settled.status === "fulfilled" ? settled.value.result : null;
+    res.json({
+      ok: true,
+      balances: settledValue(balances),
+      exchangeRates: settledValue(exchangeRates),
+      offers: settledValue(offers),
+      errors: {
+        balances: settledCode(balances),
+        exchangeRates: settledCode(exchangeRates),
+        offers: settledCode(offers),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // --- R7 Local + Corp chat ---------------------------------------------------
 // The browser reads a channel's member roster + recent backlog and sends
 // messages to Local or Corp on the held session. Chat delivery bypasses the
