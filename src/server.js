@@ -5671,6 +5671,141 @@ app.get("/api/bridge/contract-items", requireAuth, async (req, res, next) => {
   }
 });
 
+// --- R63 plumbing sweep: structure directory reads (no UI) -------------------
+// GET /api/bridge/structures?solarSystemID=&structureID=&structureIDs=&ownerID=
+// — the structureDirectory SESSION/ACCESS-SCOPED reads (R63 plumbing sweep), as up
+// to TEN independent reads (Promise.allSettled; empty ≠ failed, each its own
+// error code). Every read is scoped off the session or gated on the character's
+// access/roles server-side, so no argument points one at a structure the
+// character has no relationship with. Decoders in web/src/bridge/structures.ts:
+//   • GetMyCorporationStructures()    -> dict of the SESSION corp's OWN structures
+//     (ROLE-GATED: CrpAccessDenied without Station/Brand Manager — a real state).
+//   • GetCorporationStructures()      -> the SAME handler (delegates; no arbitrary corpID).
+//   • GetMyDockableStructures([sys])  -> a bare id list; sys defaults to the current system.
+//   • GetStructureMapData([sys])      -> a CRowset (name/type/position; NO fuel/reinforce).
+//   • GetMyAccessibleOnlineCynoBeaconStructures() -> access-scoped cyno-beacon entries.
+//   • GetSolarSystemsWithBeacons()    -> a bare solar-system id list.
+//   • GetValidWarHQs(ownerID)         -> war-HQ payloads, GATED to the session corp/
+//     alliance; ownerID defaults to the session corp.
+//   • GetJumpBridgesWithMyAccess()    -> [pairs, hasAccessIDs, hasNoAccessIDs].
+//   • GetStructureDescription(id)     -> ⚠ ONLY when ?structureID= is given; the bio string.
+//   • CheckMyDockingAccessToStructures([ids]) -> ⚠ ONLY when ?structureIDs= is given;
+//     the subset of those ids the char can dock at.
+// ⚠ structureDirectory.GetStructures is NOT wired (R38): it leaks fuel/reinforcement/
+// vulnerability for arbitrary un-owned structures. ⚠ GetMyCharacterStructures is ALSO
+// NOT wired: despite the "My" prefix it returns every DOCKABLE structure with the same
+// operational payload, so it leaked a NON-owned structure's reinforce/vulnerability
+// schedule live (see the allowlist runtime note). The OWNED-corp directory
+// (GetMyCorporationStructures) is the safe read for that payload.
+// structure / owner / system ids stay data (R7d).
+app.get("/api/bridge/structures", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const sessionSystemID = Number(held.solarSystemID) || 0;
+  const sessionCorpID = Number(held.corporationID) || 0;
+  const solarSystemID = nonNegativeIntQuery(req.query.solarSystemID, sessionSystemID);
+  const structureID = nonNegativeIntQuery(req.query.structureID, 0);
+  const ownerID = nonNegativeIntQuery(req.query.ownerID, sessionCorpID);
+  // A comma-separated list of structure ids to test docking access against. These
+  // stay exact through Number: real structure ids here are ~1e12 (> 2^32 but well
+  // under 2^53), so a JS number holds them without loss.
+  const structureIDs = String(req.query.structureIDs || "")
+    .split(",")
+    .map((token) => Number(token.trim()))
+    .filter((id) => Number.isInteger(id) && id > 0);
+  const wantDescription = structureID > 0;
+  const wantDockingAccess = structureIDs.length > 0;
+  try {
+    const [
+      myCorporationStructures,
+      corporationStructures,
+      myDockableStructures,
+      structureMapData,
+      cynoBeacons,
+      solarSystemsWithBeacons,
+      validWarHQs,
+      jumpBridges,
+      structureDescription,
+      dockingAccess,
+    ] = await Promise.allSettled([
+      heldTopLevelCall(held, req.webSessionID, "structureDirectory", "GetMyCorporationStructures", [], null),
+      heldTopLevelCall(held, req.webSessionID, "structureDirectory", "GetCorporationStructures", [], null),
+      heldTopLevelCall(held, req.webSessionID, "structureDirectory", "GetMyDockableStructures", [solarSystemID], null),
+      heldTopLevelCall(held, req.webSessionID, "structureDirectory", "GetStructureMapData", [solarSystemID], null),
+      heldTopLevelCall(held, req.webSessionID, "structureDirectory", "GetMyAccessibleOnlineCynoBeaconStructures", [], null),
+      heldTopLevelCall(held, req.webSessionID, "structureDirectory", "GetSolarSystemsWithBeacons", [], null),
+      heldTopLevelCall(held, req.webSessionID, "structureDirectory", "GetValidWarHQs", [ownerID], null),
+      heldTopLevelCall(held, req.webSessionID, "structureDirectory", "GetJumpBridgesWithMyAccess", [], null),
+      wantDescription
+        ? heldTopLevelCall(held, req.webSessionID, "structureDirectory", "GetStructureDescription", [structureID], null)
+        : Promise.resolve({ result: null }),
+      wantDockingAccess
+        ? heldTopLevelCall(held, req.webSessionID, "structureDirectory", "CheckMyDockingAccessToStructures", [structureIDs], null)
+        : Promise.resolve({ result: null }),
+    ]);
+    const settled = [
+      myCorporationStructures,
+      corporationStructures,
+      myDockableStructures,
+      structureMapData,
+      cynoBeacons,
+      solarSystemsWithBeacons,
+      validWarHQs,
+      jumpBridges,
+      structureDescription,
+      dockingAccess,
+    ];
+    for (const outcome of settled) {
+      if (outcome.status === "rejected" && outcome.reason && outcome.reason.code === "SESSION_NOT_FOUND") {
+        next(outcome.reason);
+        return;
+      }
+    }
+    const settledCode = (outcome) =>
+      outcome.status === "rejected"
+        ? String((outcome.reason && outcome.reason.code) || "READ_FAILED")
+        : null;
+    const settledValue = (outcome) =>
+      outcome.status === "fulfilled" ? outcome.value.result : null;
+    res.json({
+      ok: true,
+      requested: {
+        solarSystemID,
+        structureID: wantDescription ? structureID : null,
+        structureIDs: wantDockingAccess ? structureIDs : null,
+        ownerID,
+      },
+      myCorporationStructures: settledValue(myCorporationStructures),
+      corporationStructures: settledValue(corporationStructures),
+      myDockableStructures: settledValue(myDockableStructures),
+      structureMapData: settledValue(structureMapData),
+      cynoBeacons: settledValue(cynoBeacons),
+      solarSystemsWithBeacons: settledValue(solarSystemsWithBeacons),
+      validWarHQs: settledValue(validWarHQs),
+      jumpBridges: settledValue(jumpBridges),
+      structureDescription: settledValue(structureDescription),
+      dockingAccess: settledValue(dockingAccess),
+      errors: {
+        myCorporationStructures: settledCode(myCorporationStructures),
+        corporationStructures: settledCode(corporationStructures),
+        myDockableStructures: settledCode(myDockableStructures),
+        structureMapData: settledCode(structureMapData),
+        cynoBeacons: settledCode(cynoBeacons),
+        solarSystemsWithBeacons: settledCode(solarSystemsWithBeacons),
+        validWarHQs: settledCode(validWarHQs),
+        jumpBridges: settledCode(jumpBridges),
+        // The description / docking reads are only issued when their query is given.
+        structureDescription: wantDescription ? settledCode(structureDescription) : null,
+        dockingAccess: wantDockingAccess ? settledCode(dockingAccess) : null,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // --- R7 Local + Corp chat ---------------------------------------------------
 // The browser reads a channel's member roster + recent backlog and sends
 // messages to Local or Corp on the held session. Chat delivery bypasses the
