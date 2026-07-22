@@ -1531,6 +1531,106 @@ app.get("/api/bridge/bound-crimewatch", requireAuth, async (req, res, next) => {
   }
 });
 
+// R79 — the 8 "small-service tail" Phase-2 BOUND reads across FOUR services
+// (wars / scan / PI-tax / corp-station), the last of the small Phase-2 binds
+// (PLUMBING ONLY — no UI, no writes). Retail addresses each on a bound Moniker
+// (warRegistry via eveMoniker.GetWar keyed on owner; scanMgr via GetSystemScanMgr;
+// planetOrbitalRegistryBroker + corpStationMgr via MachoBindObject), but every
+// handler resolves its target from the SESSION or plain caller args with NO
+// bound-state dependency and each is a real registered BaseService, so — like R73
+// skillHandler / R76 jumpCloneSvc / R78 crimewatch — each dispatches as
+// heldTopLevelCall(<svc>, <method>) on the ORDINARY top-level /call seam; NO
+// MachoBindObject two-step. scanMgr.GetSystemScanMgr (R72) stays wired but is not
+// needed here (GetFullState/GetScanTargetID recover the system from the session).
+//
+// ⚠ OWNERSHIP: this route issues SESSION-SCOPED / PUBLIC default args and does not
+// leak. GetFullState (args voided → session's own system), GetNegotiations (session
+// corp only), IsAllianceOrCorpLocal (constant) and GetTaxRate (public per-office)
+// are safe. GetWars defaults to the session corp ([]) with an optional ?ownerID for
+// a PUBLIC per-owner war lookup (war declarations are public — same as warsInfoMgr.
+// GetWarsByOwnerID). GetScanTargetID takes a ?siteID within the session's OWN system.
+// DoStandingCheckForStationService runs for the SESSION's own char (no charID arg is
+// passed here) at ?serviceID. ⚠ Two of the eight leak via /api/bridge/call's verbatim
+// arg forwarding (NOT via this route): GetWarNegotiation(id) reads any negotiation's
+// private terms with no session check, and DoStandingCheckForStationService(_, charID)
+// is a standing-gate oracle for a foreign charID — both FLAGGED in
+// docs/arg-injection-leak-handoff.md, kept pre-plumbed (operator flag-only). ?warNeg
+// otiationID is exposed here for verification but defaults to 0 (returns null in this
+// world — no negotiation seeded).
+//
+// Independent Promise.allSettled: an empty war/negotiation set, an all-empty scan
+// full-state, a null GetWarNegotiation and a null (passed) standing check are all
+// LEGITIMATE states, never a blanking failure — each read carries its own {result}
+// or {error, message}. A gate FAILURE on the standing check comes back as {error}
+// (the handler throws a CustomNotify), which the decoder reads as passed:false.
+// Returns the raw result envelopes for web/src/bridge/boundSmallServices.ts; NO UI
+// consumes this yet.
+app.get("/api/bridge/bound-small-services", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  // Optional overrides for the arg-taking reads. GetWars defaults to the session
+  // corp ([]); a ?ownerID does a PUBLIC per-owner war lookup. The rest carry
+  // benign defaults so the route is reachable with no query.
+  const siteID = Number(req.query.siteID) || 0;
+  const ownerID = Number(req.query.ownerID) || 0;
+  const warNegotiationID = Number(req.query.warNegotiationID) || 0;
+  const orbitalID = Number(req.query.orbitalID) || 0;
+  const serviceID = Number(req.query.serviceID) || 1;
+  const SMALL_SERVICE_READS = [
+    ["scanMgr", "GetFullState", []],
+    ["scanMgr", "GetScanTargetID", [siteID]],
+    ["warRegistry", "GetWars", ownerID > 0 ? [ownerID] : []],
+    ["warRegistry", "GetNegotiations", []],
+    ["warRegistry", "GetWarNegotiation", [warNegotiationID]],
+    ["warRegistry", "IsAllianceOrCorpLocal", []],
+    ["planetOrbitalRegistryBroker", "GetTaxRate", [orbitalID]],
+    // Session's OWN char (no charID arg) — the gate check for a station service.
+    ["corpStationMgr", "DoStandingCheckForStationService", [serviceID]],
+  ];
+  try {
+    const settled = await Promise.allSettled(
+      SMALL_SERVICE_READS.map(([service, method, args]) =>
+        heldTopLevelCall(held, req.webSessionID, service, method, args, null),
+      ),
+    );
+    // A lost live session cannot be recovered by any read; surface it so the page
+    // returns to character select (matching /api/bridge/bound-crimewatch).
+    for (const s of settled) {
+      if (s.status === "rejected" && s.reason && s.reason.code === "SESSION_NOT_FOUND") {
+        next(s.reason);
+        return;
+      }
+    }
+    const reads = {};
+    SMALL_SERVICE_READS.forEach(([, method], index) => {
+      const s = settled[index];
+      if (s.status === "fulfilled") {
+        reads[method] = { result: s.value.result };
+      } else {
+        const reason = s.reason || {};
+        reads[method] = {
+          error: String(reason.code || "READ_FAILED"),
+          message: typeof reason.message === "string" ? reason.message : null,
+        };
+      }
+    });
+    res.json({
+      ok: true,
+      characterID: held.characterID,
+      corporationID: held.corporationID,
+      solarSystemID: held.solarSystemID,
+      reads,
+    });
+  } catch (error) {
+    if (error && error.code === "SESSION_NOT_FOUND") {
+      forgetBridgeSession(req.webSessionID);
+    }
+    next(error);
+  }
+});
+
 // Move one item hangar <-> active-ship cargo. The bound object is the
 // DESTINATION; retail's Add(itemID, sourceLocationID, qty, flag) carries the
 // source location and the destination flag.
