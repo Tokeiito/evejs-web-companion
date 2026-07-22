@@ -44,7 +44,7 @@ The 17 `map` read calls (minus any skipped for leak/no-handler, with reason) are
 
 ## Constraints
 
-- **Known pre-existing failures — do not touch:** `droneRuntimeParity`, `webGatewayMarket`/`GetCharEscrow`. `webGatewayServiceCall` needs the **isolated runner**; rare `skillsPanel`/`planetsPanel` time-flakes rerun green — rerun the full suite before assuming a single failure is yours.
+- **Known pre-existing failures — do not touch:** `droneRuntimeParity`, `webGatewayMarket`/`GetCharEscrow` (value 4650≠2450), `webGatewayPersistentSession`:244 (station-id 60000004≠60003760 — world-data drift, predates the sweep, an allowlist gate cannot cause/fix it). `webGatewayServiceCall` needs the **isolated runner**; rare `skillsPanel`/`planetsPanel` time-flakes rerun green — rerun the full suite before assuming a single failure is yours. The isolated runner reports pass/fail at the FILE level — a one-subtest red shows as "0 passed, 1 failed"; check subtest tallies.
 - **Watch new tests fail first** — twenty+ tests here have been caught passing while asserting nothing.
 - Servers: :26002 EveJS, :26500 web (SPA at `/`), :40111 market daemon RPC (RPC not HTTP; curl 000 normal). **You add gateway pairs → restart EveJS (detached `Start-Process`, canonical `EVEJS_PROXY_LOCAL_INTERCEPT=1`) after edit/before commit; verify live.** Own the process; no other `EVEJS_*` overrides; leave all three healthy. Confirm current PIDs from a fresh `netstat`/health check — do not trust a stale PID.
 - **A separate session is editing market files — stay off them.** Preserve `_local`, `data/`, icon caches, manifests. `icon-typeids*.txt` are the orchestrator's. **Logins:** `rrfarmer` → Farmer, `test2` → Test Two; any password.
