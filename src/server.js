@@ -9147,6 +9147,179 @@ app.get("/api/bridge/planets", requireAuth, async (req, res, next) => {
   }
 });
 
+// --- R71 plumbing sweep: Phase-1 DATA finisher (PI + asset-safety + strays) --
+// Reachable + decodable so a later goal builds UI cheaply; NO panel/store slice
+// this pass. Every route below issues the held-session call and ships the RAW
+// retail-shaped result envelope out for the browser decoder to interpret.
+// ⚠ structureDirectory.GetNearbyJumpBridges is NOT wired — R63 LEAK (no access
+// gate; returns rival corps' Ansiblex owner/name/destination). See the gateway
+// runtime + webGatewayServiceCall refusal sweep.
+
+// GET /api/bridge/pi-colonies — the SESSION character's PI top-level reads, as TWO
+// independent CRowset reads (Promise.allSettled; empty ≠ failed). Both handlers
+// scope to session.characterID and IGNORE args (the "ForChar" name is a decoy — no
+// foreign-charID path). Farmer has no colonies/launches: both are a real empty CRowset.
+//   • colonies = GetPlanetsForChar()   -> CRowset[solarSystemID, planetID, typeID,
+//     numberOfPins, celestialIndex].
+//   • launches = GetMyLaunchesDetails() -> CRowset[launchID, solarSystemID, itemID,
+//     ownerID, planetID, status, launchTime(long FILETIME), x, y, z].
+// ids stay data (R7d); launchTime bigint-safe. Decoder: web/src/bridge/piColonies.ts.
+app.get("/api/bridge/pi-colonies", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  try {
+    const [colonies, launches] = await Promise.allSettled([
+      heldTopLevelCall(held, req.webSessionID, "planetMgr", "GetPlanetsForChar", [], null),
+      heldTopLevelCall(held, req.webSessionID, "planetMgr", "GetMyLaunchesDetails", [], null),
+    ]);
+    for (const outcome of [colonies, launches]) {
+      if (outcome.status === "rejected" && outcome.reason && outcome.reason.code === "SESSION_NOT_FOUND") {
+        next(outcome.reason);
+        return;
+      }
+    }
+    const settledValue = (outcome) => (outcome.status === "fulfilled" ? outcome.value.result : null);
+    const settledCode = (outcome) =>
+      outcome.status === "rejected" ? String((outcome.reason && outcome.reason.code) || "READ_FAILED") : null;
+    res.json({
+      ok: true,
+      characterID: held.characterID,
+      colonies: settledValue(colonies),
+      launches: settledValue(launches),
+      errors: {
+        colonies: settledCode(colonies),
+        launches: settledCode(launches),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// GET /api/bridge/asset-safety?solarSystemID=&wrapIDs= — the SESSION's asset-safety
+// surface, as up to FOUR independent reads (Promise.allSettled; empty ≠ failed).
+//   • charItems = GetItemsInSafetyForCharacter() -> {type:"list", items:[KeyVal wrap]}
+//     — the session character's own wraps (args ignored, session.characterID-scoped).
+//   • corpItems = GetItemsInSafetyForCorp()       -> CachedMethodCallResult wrapping the
+//     same wrap-list for the session corp (session.corporationID-scoped; own corp only).
+//   • deliverTo = GetStructuresICanDeliverTo(solarSystemID) -> [list|empty, station|null]
+//     — the session's deliverable structures in a system, ONLY when own wraps exist
+//     there. The ?solarSystemID= arg is a SYSTEM selector, not an ownership selector;
+//     omitted → arg-less (null system) → empty.
+//   • wrapNames = GetWrapNames([wrapIDs]) -> {type:"dict", entries:[[wrapID, name|null]]}
+//     — a NAME lookup for wraps the caller already holds (?wrapIDs=1,2,3); omitted → {}.
+// Farmer has no wraps: charItems/corpItems empty, deliverTo [empty,null], wrapNames {}.
+// Decoder: web/src/bridge/assetSafety.ts. ids/ejectTime(long)/FILETIMEs bigint-safe.
+app.get("/api/bridge/asset-safety", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const solarSystemID = nonNegativeIntQuery(req.query.solarSystemID, 0);
+  const wrapIDs = String(req.query.wrapIDs ?? "")
+    .split(",")
+    .map((token) => Number.parseInt(token.trim(), 10))
+    .filter((value) => Number.isInteger(value) && value > 0);
+  try {
+    const [charItems, corpItems, deliverTo, wrapNames] = await Promise.allSettled([
+      heldTopLevelCall(held, req.webSessionID, "structureAssetSafety", "GetItemsInSafetyForCharacter", [], null),
+      heldTopLevelCall(held, req.webSessionID, "structureAssetSafety", "GetItemsInSafetyForCorp", [], null),
+      heldTopLevelCall(
+        held,
+        req.webSessionID,
+        "structureAssetSafety",
+        "GetStructuresICanDeliverTo",
+        solarSystemID > 0 ? [solarSystemID] : [],
+        null,
+      ),
+      heldTopLevelCall(
+        held,
+        req.webSessionID,
+        "structureAssetSafety",
+        "GetWrapNames",
+        wrapIDs.length > 0 ? [wrapIDs] : [],
+        null,
+      ),
+    ]);
+    for (const outcome of [charItems, corpItems, deliverTo, wrapNames]) {
+      if (outcome.status === "rejected" && outcome.reason && outcome.reason.code === "SESSION_NOT_FOUND") {
+        next(outcome.reason);
+        return;
+      }
+    }
+    const settledValue = (outcome) => (outcome.status === "fulfilled" ? outcome.value.result : null);
+    const settledCode = (outcome) =>
+      outcome.status === "rejected" ? String((outcome.reason && outcome.reason.code) || "READ_FAILED") : null;
+    res.json({
+      ok: true,
+      requested: { solarSystemID: solarSystemID > 0 ? solarSystemID : null, wrapIDs },
+      charItems: settledValue(charItems),
+      corpItems: settledValue(corpItems),
+      deliverTo: settledValue(deliverTo),
+      wrapNames: settledValue(wrapNames),
+      errors: {
+        charItems: settledCode(charItems),
+        corpItems: settledCode(corpItems),
+        deliverTo: settledCode(deliverTo),
+        wrapNames: settledCode(wrapNames),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// GET /api/bridge/ship-configuration — the SESSION's own active-ship SMB / fleet-hangar
+// sharing flags (ship.GetShipConfiguration). ⚠ Called ARG-LESS on purpose: the handler
+// does NOT ownership-check a supplied shipID, so forwarding one would let a caller read a
+// FOREIGN ship's config — the route pins it to the session's active ship (_getShipID).
+//   -> {type:"dict", entries:[[allowFleetSMBUsage,bool], …six boolean flags…]}.
+// Decoder: web/src/bridge/shipConfiguration.ts.
+app.get("/api/bridge/ship-configuration", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  try {
+    const outcome = await heldTopLevelCall(
+      held,
+      req.webSessionID,
+      "ship",
+      "GetShipConfiguration",
+      [],
+      null,
+    );
+    res.json({ ok: true, configuration: outcome.result });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// GET /api/bridge/formations — the STATIC fleet formation-shape reference data
+// (beyonce.GetFormations). No session/entity state; a CachedMethodCallResult wrapping
+// [["Diamond",[[x,y,z],…]], ["Arrow",[…]]]. Decoder: web/src/bridge/formations.ts.
+app.get("/api/bridge/formations", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  try {
+    const outcome = await heldTopLevelCall(
+      held,
+      req.webSessionID,
+      "beyonce",
+      "GetFormations",
+      [],
+      null,
+    );
+    res.json({ ok: true, formations: outcome.result });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // --- R5b Travel: client-side route solver static data ----------------------
 // The browser autopilot's route solver is client-side (roadmap §7 / G2): the
 // system-adjacency graph it runs BFS over is read-only static reference data
