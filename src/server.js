@@ -4239,6 +4239,159 @@ app.get("/api/bridge/journal", requireAuth, async (req, res, next) => {
   }
 });
 
+// R64 PLUMBING (no UI): the agent / mission READ bundle for one agent. Wires the
+// nine R64 agentMgr reads so a later goal builds an agent-info / mission page
+// cheaply. All reads are INDEPENDENT (Promise.allSettled) — one failure never
+// blanks the rest; each carries its own error code. Raw retail-shaped results are
+// decoded browser side (web/src/bridge/agentInfo.ts).
+//
+//   • FIVE top-level reads on the held session: GetAgentStaticInfo([agentID]) and
+//     GetAgentByID([agentID]) (public NPC-agent reference info — identical shape),
+//     GetSolarSystemOfAgent([agentID]) (the agent's system), GetMyEpicArcStatus([])
+//     (the char's OWN epic-arc progress, session-scoped), and
+//     GetCompletedCareerAgentIDs([[agentIDs]]) (which of the passed ids the char has
+//     completed — the LIST is the single positional arg; defaults to [agentID]).
+//   • THREE bound reads on the agent moniker (Moniker('agentMgr', agentID) via
+//     MachoBindObject, the R4 two-step): GetInfoServiceDetails, GetMissionJournalInfo,
+//     GetEntryPoint — each resolves the agentID from the bound context + the charID
+//     from the session, so they read the SESSION char's own agent relationship.
+//   • GetDungeonShipRestrictions([dungeonID, gateID]) — a STATIC reference read
+//     issued ONLY when ?dungeonID= is given (no dungeon → no read).
+// ⚠ Every agentMgr MUTATOR (RemoveOfferFromJournal / GotoLocation / WarpToLocation /
+// WarpToAgentInSpace) is NEVER dispatched here. Wire contract: docs/bridge-wire-contract.md.
+app.get("/api/bridge/agent-info", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const agentID = Number(req.query.agentID) || 0;
+  if (agentID <= 0) {
+    res.status(400).json({
+      ok: false,
+      error: "INVALID_AGENT",
+      message: "A positive agentID query parameter is required.",
+    });
+    return;
+  }
+  // GetCompletedCareerAgentIDs takes a LIST of agent ids to CHECK (its single
+  // positional arg); default to the primary agent when none are named. The result
+  // is scoped off session.characterID, so the list only chooses WHICH ids to test.
+  const agentIDs = String(req.query.agentIDs || "")
+    .split(",")
+    .map((raw) => Number(raw.trim()) || 0)
+    .filter((id) => id > 0);
+  const careerAgentIDs = agentIDs.length > 0 ? agentIDs : [agentID];
+  // GetDungeonShipRestrictions is a conditional STATIC read — issued only when a
+  // dungeon is named. gateID (optional) scopes it to one acceleration gate.
+  const dungeonID = Number(req.query.dungeonID) || 0;
+  const gateID = Number(req.query.gateID) || 0;
+  const wantDungeon = dungeonID > 0;
+
+  try {
+    const spec = agentBindSpec(agentID);
+    const [
+      staticInfo,
+      agentByID,
+      solarSystem,
+      epicArcStatus,
+      completedCareerAgents,
+      infoServiceDetails,
+      missionJournal,
+      entryPoint,
+      dungeonShipRestrictions,
+    ] = await Promise.allSettled([
+      heldTopLevelCall(held, req.webSessionID, "agentMgr", "GetAgentStaticInfo", [agentID], null),
+      heldTopLevelCall(held, req.webSessionID, "agentMgr", "GetAgentByID", [agentID], null),
+      heldTopLevelCall(held, req.webSessionID, "agentMgr", "GetSolarSystemOfAgent", [agentID], null),
+      heldTopLevelCall(held, req.webSessionID, "agentMgr", "GetMyEpicArcStatus", [], null),
+      heldTopLevelCall(
+        held,
+        req.webSessionID,
+        "agentMgr",
+        "GetCompletedCareerAgentIDs",
+        [careerAgentIDs],
+        null,
+      ),
+      boundCall(held, req.webSessionID, spec, "GetInfoServiceDetails", [], null),
+      boundCall(held, req.webSessionID, spec, "GetMissionJournalInfo", [], null),
+      boundCall(held, req.webSessionID, spec, "GetEntryPoint", [], null),
+      wantDungeon
+        ? heldTopLevelCall(
+            held,
+            req.webSessionID,
+            "agentMgr",
+            "GetDungeonShipRestrictions",
+            [dungeonID, gateID > 0 ? gateID : null],
+            null,
+          )
+        : Promise.resolve(null),
+    ]);
+
+    // A lost live session can't be recovered by any read; surface it so the page
+    // returns to character select (as every held call does).
+    for (const settled of [
+      staticInfo,
+      agentByID,
+      solarSystem,
+      epicArcStatus,
+      completedCareerAgents,
+      infoServiceDetails,
+      missionJournal,
+      entryPoint,
+      dungeonShipRestrictions,
+    ]) {
+      if (
+        settled.status === "rejected" &&
+        settled.reason &&
+        settled.reason.code === "SESSION_NOT_FOUND"
+      ) {
+        next(settled.reason);
+        return;
+      }
+    }
+
+    const settledCode = (settled) =>
+      settled.status === "rejected"
+        ? String((settled.reason && settled.reason.code) || "READ_FAILED")
+        : null;
+    const settledValue = (settled) =>
+      settled.status === "fulfilled" && settled.value ? settled.value.result : null;
+
+    res.json({
+      ok: true,
+      agentID,
+      requested: {
+        agentID,
+        careerAgentIDs,
+        dungeonID: wantDungeon ? dungeonID : null,
+        gateID: wantDungeon && gateID > 0 ? gateID : null,
+      },
+      staticInfo: settledValue(staticInfo),
+      agentByID: settledValue(agentByID),
+      solarSystem: settledValue(solarSystem),
+      epicArcStatus: settledValue(epicArcStatus),
+      completedCareerAgents: settledValue(completedCareerAgents),
+      infoServiceDetails: settledValue(infoServiceDetails),
+      missionJournal: settledValue(missionJournal),
+      entryPoint: settledValue(entryPoint),
+      dungeonShipRestrictions: wantDungeon ? settledValue(dungeonShipRestrictions) : null,
+      errors: {
+        staticInfo: settledCode(staticInfo),
+        agentByID: settledCode(agentByID),
+        solarSystem: settledCode(solarSystem),
+        epicArcStatus: settledCode(epicArcStatus),
+        completedCareerAgents: settledCode(completedCareerAgents),
+        infoServiceDetails: settledCode(infoServiceDetails),
+        missionJournal: settledCode(missionJournal),
+        entryPoint: settledCode(entryPoint),
+        dungeonShipRestrictions: wantDungeon ? settledCode(dungeonShipRestrictions) : null,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // R6 courier-completion reward readout (inventory Step 12): the wallet / LP /
 // standings pull reads a panel issues after Complete pays out. These are plain
 // TOP-LEVEL server-tier reads on the held session (no bind). The mission
