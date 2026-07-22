@@ -5,3 +5,4 @@ public/dist/
 .env
 .env.local
 npm-debug.log*
+logs-bff-*.log
