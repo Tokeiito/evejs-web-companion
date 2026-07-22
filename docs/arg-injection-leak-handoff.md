@@ -106,3 +106,25 @@ R72 wired five gateway-**bind** reads (the Phase-2 prerequisites): `skillMgr2.Ge
 Either closes it; the first is cleaner (one place). Until then, **do not allowlist any `fleetObjectHandler` bound read.**
 
 **Verified LIVE (2026-07-22, rrfarmer → Farmer 140000005):** the bind returns a handle session-scoped through the BFF; a bound `GetFleetID`/`GetFullState` off the handle is refused `CALL_NOT_ALLOWED` (deny-by-default holds). The foreign-fleetID injection path was **not** exercised live (no second fleet seeded) — it is a static reading of the handler, same confidence level as the 14 above.
+
+---
+
+## Addendum (R75, 2026-07-22): three unowned INVENTORY reads — `invbroker.GetItem` / `GetItems` / `GetContainerContents`
+
+R75 wired the 8 RB-INV bound reads (`invbroker.GetItem` / `GetItems` / `GetContainerContents` / `ListDroneBay` / `ListFighterBay` / `GetItemDescriptor` / `GetAvailableTurretSlots` / `GetDamageForCrystals`) off the already-wired invbroker manager bind. Five are session-scoped and safe (the bays void their args and read the session's active ship; `GetItemDescriptor` is a static schema; `GetDamageForCrystals` has an explicit `ownerID !== characterID` guard). **Three belong to the same class as the 14 above** — they take a caller item/container id and return the found record's own data with no session check:
+
+| # | Pair | Handler | What leaks / the trusted arg |
+|---|---|---|---|
+| 15 | `invbroker.GetItem` | `inventory/invBrokerService.js:6621` | caller `itemID` → `_buildContainerItemOverrides` (:5397) → `_buildInventoryItemOverrides` (:5171) copies the record's OWN `ownerID`/`typeID`/`locationID`/`quantity`/`flagID` (:5218-5225, `ownerID: itemRecord.ownerID`); `findShipItemById`/`findItemById` are NOT owner-scoped. **A single foreign item's descriptor (type, owner, location, hull category, quantity).** |
+| 16 | `invbroker.GetItems` | `inventory/invBrokerService.js:6655` | caller `[itemIDs]` → `_itemOverridesFromId` (:5869) copies each found record's own `ownerID`/`typeID`/`locationID`/`quantity` verbatim. The batch form of #15 — one call reads N foreign item descriptors. |
+| 17 | `invbroker.GetContainerContents` | `inventory/invBrokerService.js:7102` | caller `containerID`. The station / corp-office / own-ship / hangar branches ARE owner-scoped (they filter by the session char / corp). **The leak is the GENERIC-CONTAINER branch** (:7149) `listContainerItems(this._getGenericContainerContentsOwnerID(session, rec), containerID, null)`: `_getGenericContainerContentsOwnerID` returns `null` for a plain container (`containerLocationID>0 && containerFlagID===0 && !ship && !structure`, :477-484), and `listContainerItems(null, …)` (itemStore.js:4387) is **UNFILTERED** — every item in a foreign anchored/jettisoned container. The MOBILE-DEPOT branch (:7143) also passes `null` (gated by `_getMobileDepotCargoAccessError`). |
+
+**The fix (server-side, per handler):** for `GetItem`/`GetItems`, validate each found `record.ownerID` against the session char (`characterBelongsToAccount` / `ownerID === session.characterID`) and return `null` / skip the row when it fails, OR fall back to the session's own item (as dogma's `_findInventoryItemContext` does). For `GetContainerContents`, the generic-container branch must never pass `null` as the owner — filter by the session char, or add a container-access check (retail gates container contents by ownership / anchoring access).
+
+**Verified LIVE (2026-07-22, cross-account, Farmer 140000005 vs Test Two 140000002):**
+- **`GetItem`(`9988400091900` = Test Two's Capsule) → LEAK confirmed:** Farmer received `{typeID: 648, ownerID: 140000002, locationID: 60000004, categoryID: 6}` — Test Two's own ship descriptor, not Farmer's.
+- **`GetItems`(`[9988400091900]`) → LEAK confirmed:** returned the same foreign descriptor row.
+- **`GetContainerContents`(Test Two's ship `9988400091900`) → owner-scoped, empty** (the ship branch filters by Farmer's char); **(Test Two's station `60000004`) → empty** (station branch owner-scoped). The generic flagID-0-container / mobile-depot leak branch was **NOT exercised live** — no foreign anchored/jettisoned container or mobile depot is seeded in this world (both accounts are docked; Test Two is in a bare Capsule). It is a **static reading of the handler**, same confidence level as the fleet addendum above. Kept flagged because the code path returns unowned contents with no check.
+- The five safe reads were confirmed session-scoped live: `ListDroneBay([Test Two's shipID])` still returned Farmer's OWN 7-drone bay (args ignored); `GetAvailableTurretSlots([foreign])` ignored the arg; `GetDamageForCrystals([foreign itemID])` returned an empty dict (ownerID guard dropped it).
+
+**What the web side is doing (deliberate):** the three pairs stay on `WEB_CALL_ALLOWLIST` + reachable via `/api/bridge/bound-inventory` (which issues session-scoped default args, so THAT route does not leak) — pre-plumbed so the web UI can consume them once the handlers are scoped. The leak is via `/api/bridge/call`'s verbatim arg forwarding, exactly as for the 14 above. Not de-allowlisted (operator's flag-only decision).

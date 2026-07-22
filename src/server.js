@@ -1121,6 +1121,103 @@ app.get("/api/bridge/bound-dogma", requireAuth, async (req, res, next) => {
   }
 });
 
+// R75 PLUMBING — the THIRD Phase-2 BOUND-READ batch: the 8 RB-INV reads that hang
+// off the ALREADY-WIRED invbroker bind. Unlike R73's skills (a Moniker on the
+// TOP-LEVEL /call seam), these ARE the real bound two-step — each dispatches via
+// boundCall against the inventory-MANAGER moniker
+// (inventoryManagerBindSpec: invbroker.MachoBindObject[[stationID, groupStation]],
+// the SAME handle TrashItems uses). The BFF holds the handle; the browser never
+// sees the OID. Mirrors /api/bridge/bound-dogma.
+//
+// ⚠ OWNERSHIP is SPLIT for this batch (verified live cross-account, Farmer vs Test
+// Two). The BFF issues SESSION-SCOPED default args here (no caller id), so THIS
+// route never leaks: GetContainerContents/GetItem default to the session's own
+// hangar/item, GetItems/GetDamageForCrystals request nothing (empty). But five of
+// the eight are session-scoped in the HANDLER too (ListDroneBay/ListFighterBay/
+// GetAvailableTurretSlots ignore args → session ship; GetItemDescriptor is a static
+// schema; GetDamageForCrystals drops foreign crystals via an explicit ownerID
+// guard), while GetItem/GetItems/GetContainerContents COPY a caller-supplied item/
+// container's OWN owner/type/location/quantity with no session check — an arg-
+// injection leak reachable via /api/bridge/call (NOT via this route), flagged in
+// docs/arg-injection-leak-handoff.md and kept pre-plumbed (operator flag-only).
+//
+// Independent Promise.allSettled: an empty drone/fighter bay, no crystals, an empty
+// GetItems list are legitimate states, never a blanking failure — each read carries
+// its own {result} or {error, message}. Returns the raw result envelopes for
+// web/src/bridge/boundInventory.ts; NO UI consumes this yet.
+const INVENTORY_BOUND_READS = Object.freeze([
+  // GetContainerContents(containerID, locationID) — [] defaults containerID to the
+  // session's OWN station hangar (Handle default _getStationId(session)); a UI
+  // passes a real container itemID. Rowset of util.Row lines.
+  ["GetContainerContents", []],
+  // GetItem(itemID) — [] resolves to the bound context's inventory (this manager
+  // bind → the station) / the session ship; a UI passes a real itemID. util.Row.
+  ["GetItem", []],
+  // GetItems([itemIDs]) — [[]] requests no items → an empty list (a UI supplies the
+  // itemIDs). {type:"list", items:[util.Row, …]}.
+  ["GetItems", [[]]],
+  // ListDroneBay / ListFighterBay — args are VOIDED; both read the session's active
+  // ship bay. {type:"list", items:[packedrow, …]}; empty is a legitimate state.
+  ["ListDroneBay", []],
+  ["ListFighterBay", []],
+  // GetItemDescriptor() — a STATIC blue.DBRowDescriptor schema (column names +
+  // typecodes); no per-entity data, no args.
+  ["GetItemDescriptor", []],
+  // GetAvailableTurretSlots() — a BARE integer, the session active-ship's free
+  // turret-hardpoint count; args ignored.
+  ["GetAvailableTurretSlots", []],
+  // GetDamageForCrystals([itemIDs]) — [[]] requests no crystals → an empty dict (a
+  // UI supplies the crystal itemIDs). dict[itemID → damageRatio], foreign crystals
+  // dropped by the handler's ownerID guard.
+  ["GetDamageForCrystals", [[]]],
+]);
+
+app.get("/api/bridge/bound-inventory", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  try {
+    // Sync held station/ship to the live position first, so the manager bind
+    // targets the CURRENT station and the bay reads see the CURRENT active ship
+    // after a new dock (matching /api/bridge/inventory).
+    await readHeldFlight(held, req.webSessionID);
+    const spec = inventoryManagerBindSpec(held);
+    const settled = await Promise.allSettled(
+      INVENTORY_BOUND_READS.map(([method, args]) =>
+        boundCall(held, req.webSessionID, spec, method, args, null),
+      ),
+    );
+    // A lost live session cannot be recovered by any read; surface it so the page
+    // returns to character select (matching /api/bridge/inventory).
+    for (const s of settled) {
+      if (s.status === "rejected" && s.reason && s.reason.code === "SESSION_NOT_FOUND") {
+        next(s.reason);
+        return;
+      }
+    }
+    const reads = {};
+    INVENTORY_BOUND_READS.forEach(([method], index) => {
+      const s = settled[index];
+      if (s.status === "fulfilled") {
+        reads[method] = { result: s.value.result };
+      } else {
+        const reason = s.reason || {};
+        reads[method] = {
+          error: String(reason.code || "READ_FAILED"),
+          message: typeof reason.message === "string" ? reason.message : null,
+        };
+      }
+    });
+    res.json({ ok: true, characterID: held.characterID, reads });
+  } catch (error) {
+    if (error && error.code === "SESSION_NOT_FOUND") {
+      forgetBridgeSession(req.webSessionID);
+    }
+    next(error);
+  }
+});
+
 // Move one item hangar <-> active-ship cargo. The bound object is the
 // DESTINATION; retail's Add(itemID, sourceLocationID, qty, flag) carries the
 // source location and the destination flag.
