@@ -5210,6 +5210,231 @@ app.get("/api/bridge/social", requireAuth, async (req, res, next) => {
   }
 });
 
+// --- R61 plumbing sweep: corp reads (corpmgr / corp LP; no UI) ----------------
+// PLUMBING ONLY: three routes make the corp READS reachable + decodable so a
+// later goal builds UI cheaply. No panel/tab/store slice ships. Every read is an
+// allowlisted TOP-LEVEL call on the held session; corp-scoped reads default to
+// the session corporation (held.corporationID) and char-scoped ones to the
+// session character, so a browser cannot point one at another owner. The raw
+// retail-shaped results ship out; the browser decodes them
+// (web/src/bridge/{corpInfo,corpAssets,corpLp}.ts).
+
+// GET /api/bridge/corp?corporationID=&charID=&memberID= — the corpmgr identity /
+// settings / audit reads, as SIX independent reads (Promise.allSettled; empty ≠
+// failed, each carries its own error code):
+//   • GetPublicInfo(corpID)              -> util.KeyVal (public corp identity).
+//   • GetCorporations(corpID)            -> a single util.Row (51 columns).
+//   • GetCorporationIDForCharacter(charID) -> a bare INT (the char's corp id).
+//   • GetAggressionSettings(corpID)      -> a named AggressionSettings object.
+//   • GetAggressionSettingsForCorps([corpID]) -> a per-corp dict of the same.
+//   • AuditMember(memberID)              -> ⚠ ONLY when ?memberID= is given (a
+//     2-tuple of CRowsets, DIRECTOR/AUDITOR-gated — the empty pair without the
+//     role, a legitimate state). corporationID defaults to the session corp,
+//     charID to the session character. Corp / char / member ids stay data (R7d).
+app.get("/api/bridge/corp", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const sessionCorpID = Number(held.corporationID) || 0;
+  const corporationID = nonNegativeIntQuery(req.query.corporationID, sessionCorpID);
+  const charID = nonNegativeIntQuery(req.query.charID, Number(held.characterID) || 0);
+  const memberID = nonNegativeIntQuery(req.query.memberID, 0);
+  const wantAudit = memberID > 0;
+  try {
+    const [
+      publicInfo,
+      corporations,
+      corporationIDForCharacter,
+      aggressionSettings,
+      aggressionSettingsForCorps,
+      auditMember,
+    ] = await Promise.allSettled([
+      heldTopLevelCall(held, req.webSessionID, "corpmgr", "GetPublicInfo", [corporationID], null),
+      heldTopLevelCall(held, req.webSessionID, "corpmgr", "GetCorporations", [corporationID], null),
+      heldTopLevelCall(held, req.webSessionID, "corpmgr", "GetCorporationIDForCharacter", [charID], null),
+      heldTopLevelCall(held, req.webSessionID, "corpmgr", "GetAggressionSettings", [corporationID], null),
+      heldTopLevelCall(held, req.webSessionID, "corpmgr", "GetAggressionSettingsForCorps", [[corporationID]], null),
+      wantAudit
+        ? heldTopLevelCall(held, req.webSessionID, "corpmgr", "AuditMember", [memberID], null)
+        : Promise.resolve({ result: null }),
+    ]);
+    const settled = [
+      publicInfo,
+      corporations,
+      corporationIDForCharacter,
+      aggressionSettings,
+      aggressionSettingsForCorps,
+      auditMember,
+    ];
+    for (const outcome of settled) {
+      if (outcome.status === "rejected" && outcome.reason && outcome.reason.code === "SESSION_NOT_FOUND") {
+        next(outcome.reason);
+        return;
+      }
+    }
+    const settledCode = (outcome) =>
+      outcome.status === "rejected"
+        ? String((outcome.reason && outcome.reason.code) || "READ_FAILED")
+        : null;
+    const settledValue = (outcome) =>
+      outcome.status === "fulfilled" ? outcome.value.result : null;
+    res.json({
+      ok: true,
+      requested: { corporationID, charID, memberID: wantAudit ? memberID : null },
+      publicInfo: settledValue(publicInfo),
+      corporations: settledValue(corporations),
+      corporationIDForCharacter: settledValue(corporationIDForCharacter),
+      aggressionSettings: settledValue(aggressionSettings),
+      aggressionSettingsForCorps: settledValue(aggressionSettingsForCorps),
+      auditMember: settledValue(auditMember),
+      errors: {
+        publicInfo: settledCode(publicInfo),
+        corporations: settledCode(corporations),
+        corporationIDForCharacter: settledCode(corporationIDForCharacter),
+        aggressionSettings: settledCode(aggressionSettings),
+        aggressionSettingsForCorps: settledCode(aggressionSettingsForCorps),
+        // The audit read is only issued when a memberID was asked for; otherwise
+        // it resolves to a null result with no error.
+        auditMember: wantAudit ? settledCode(auditMember) : null,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// GET /api/bridge/corp-assets?which=&locationID=&categoryID=&groupID=&typeID=&minimumQuantity=
+// — the corpmgr ASSET reads, as THREE independent reads (Promise.allSettled).
+// ⚠ ALL THREE RETURN A CRowset WRAPPED IN A CachedMethodCallResult — the browser
+// unwraps both layers (web/src/bridge/corpAssets.ts):
+//   • GetAssetInventory(corpID, which)  -> the corp's asset LOCATIONS for a bucket
+//     (`which`, default "offices").
+//   • GetAssetInventoryForLocation(corpID, locationID, which) -> ⚠ ONLY when
+//     ?locationID= is given; the ITEMS at one location.
+//   • SearchAssets(which, categoryID, groupID, typeID, minimumQuantity) -> matching
+//     LOCATIONS. ⚠ corporationID comes from the SESSION in the handler, not args.
+// corporationID defaults to the session corp. ⚠ Farmer's player corp 98000001 may
+// have SPARSE corp assets — an empty CRowset is a legitimate "no corp assets"
+// state, not a failure. Location / item / type ids stay data (R7d).
+app.get("/api/bridge/corp-assets", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const corporationID = Number(held.corporationID) || 0;
+  const which = stringQuery(req.query.which) || "offices";
+  const locationID = nonNegativeIntQuery(req.query.locationID, 0);
+  const categoryID = nonNegativeIntQuery(req.query.categoryID, 0);
+  const groupID = nonNegativeIntQuery(req.query.groupID, 0);
+  const typeID = nonNegativeIntQuery(req.query.typeID, 0);
+  const minimumQuantity = nonNegativeIntQuery(req.query.minimumQuantity, 0);
+  const wantLocation = locationID > 0;
+  try {
+    const [inventory, locationInventory, search] = await Promise.allSettled([
+      heldTopLevelCall(held, req.webSessionID, "corpmgr", "GetAssetInventory", [corporationID, which], null),
+      wantLocation
+        ? heldTopLevelCall(
+            held,
+            req.webSessionID,
+            "corpmgr",
+            "GetAssetInventoryForLocation",
+            [corporationID, locationID, which],
+            null,
+          )
+        : Promise.resolve({ result: null }),
+      heldTopLevelCall(
+        held,
+        req.webSessionID,
+        "corpmgr",
+        "SearchAssets",
+        [which, categoryID, groupID, typeID, minimumQuantity],
+        null,
+      ),
+    ]);
+    for (const outcome of [inventory, locationInventory, search]) {
+      if (outcome.status === "rejected" && outcome.reason && outcome.reason.code === "SESSION_NOT_FOUND") {
+        next(outcome.reason);
+        return;
+      }
+    }
+    const settledCode = (outcome) =>
+      outcome.status === "rejected"
+        ? String((outcome.reason && outcome.reason.code) || "READ_FAILED")
+        : null;
+    const settledValue = (outcome) =>
+      outcome.status === "fulfilled" ? outcome.value.result : null;
+    res.json({
+      ok: true,
+      requested: {
+        corporationID,
+        which,
+        locationID: wantLocation ? locationID : null,
+        filters: { categoryID, groupID, typeID, minimumQuantity },
+      },
+      inventory: settledValue(inventory),
+      locationInventory: settledValue(locationInventory),
+      search: settledValue(search),
+      errors: {
+        inventory: settledCode(inventory),
+        // The per-location read is only issued when a locationID was asked for.
+        locationInventory: wantLocation ? settledCode(locationInventory) : null,
+        search: settledCode(search),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// GET /api/bridge/corp-lp?corpID= — the corp LP reads, as TWO independent reads
+// (Promise.allSettled; empty ≠ failed):
+//   • LPSvc.GetAllMyCorporationWalletLPBalances() -> a CRowset[issuerCorpID,
+//     loyaltyPoints] (the SESSION corp's per-issuer LP; the corp sibling of R6's
+//     character balances). Empty for a corp with no LP is a REAL empty state.
+//   • LPStoreMgr.GetAvailableOffersFromCorp(corpID) -> {type:"list"} of offer
+//     KeyVals. ⚠ LPStoreMgr is a DISTINCT service from LPSvc. corpID defaults to
+//     the Heraldry corp (emblem offers) when ?corpID= is absent. issuerCorpID /
+//     typeIDs stay data (R7d); LP / ISK costs are bigint-safe.
+app.get("/api/bridge/corp-lp", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const corpID = nonNegativeIntQuery(req.query.corpID, 0);
+  const offersArgs = corpID > 0 ? [corpID] : [];
+  try {
+    const [balances, offers] = await Promise.allSettled([
+      heldTopLevelCall(held, req.webSessionID, "LPSvc", "GetAllMyCorporationWalletLPBalances", [], null),
+      heldTopLevelCall(held, req.webSessionID, "LPStoreMgr", "GetAvailableOffersFromCorp", offersArgs, null),
+    ]);
+    for (const outcome of [balances, offers]) {
+      if (outcome.status === "rejected" && outcome.reason && outcome.reason.code === "SESSION_NOT_FOUND") {
+        next(outcome.reason);
+        return;
+      }
+    }
+    const settledCode = (outcome) =>
+      outcome.status === "rejected"
+        ? String((outcome.reason && outcome.reason.code) || "READ_FAILED")
+        : null;
+    const settledValue = (outcome) =>
+      outcome.status === "fulfilled" ? outcome.value.result : null;
+    res.json({
+      ok: true,
+      requested: { corpID: corpID > 0 ? corpID : null },
+      balances: settledValue(balances),
+      offers: settledValue(offers),
+      errors: {
+        balances: settledCode(balances),
+        offers: settledCode(offers),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // --- R7 Local + Corp chat ---------------------------------------------------
 // The browser reads a channel's member roster + recent backlog and sends
 // messages to Local or Corp on the held session. Chat delivery bypasses the
