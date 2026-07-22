@@ -79,6 +79,8 @@ import type {
   LedgerEntry,
   StandingComposition,
   StandingTransaction,
+  CharacterIdentity,
+  CloneSummary,
 } from "./types.ts";
 import type { ShipStats } from "../bridge/shipStats.ts";
 import type { MiningRungID, MiningStepID } from "../nav/miningLadder.ts";
@@ -409,6 +411,25 @@ export type FeedEvent =
   | { readonly type: "standings/detail-cleared" }
   // Drop the standings readout (character offline / logged out).
   | { readonly type: "standings/cleared" }
+  // Goal R56 — the Character Sheet page. One BFF pull carries four independent
+  // charMgr reads (public info, description, home station, clone info); each
+  // keeps its OWN error so one failure never blanks the rest. `identity`/`clone`
+  // are null when unread or FAILED (see the matching `*Error`); `description` is
+  // null unread/failed but "" is a real empty bio; `homeStationID` is the id only
+  // (the page resolves its NAME through /api/names, R7d).
+  | {
+      readonly type: "character-sheet/loaded";
+      readonly identity: CharacterIdentity | null;
+      readonly identityError: string | null;
+      readonly description: string | null;
+      readonly descriptionError: string | null;
+      readonly homeStationID: number | null;
+      readonly homeStationError: string | null;
+      readonly clone: CloneSummary | null;
+      readonly cloneError: string | null;
+    }
+  // Drop the character sheet (character offline / logged out).
+  | { readonly type: "character-sheet/cleared" }
   // Goal R6a — the Agent Finder. A find completed: the filtered/capped agents,
   // already annotated with jumps from the current system and sorted
   // nearest-first by the flow, plus the filter echo and match/cap counts.

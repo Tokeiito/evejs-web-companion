@@ -1487,6 +1487,47 @@ export async function loadStandings(
   };
 }
 
+// --- R56 Character Sheet ----------------------------------------------------
+// One pull carries four independent charMgr reads: GetPublicInfo3 (identity),
+// GetCharacterDescription (bio), GetHomeStation, GetCloneInfo. Each keeps its own
+// error on the BFF (Promise.allSettled), so one failure never blanks the rest.
+// All raw retail shapes, decoded in web/src/bridge/characterSheet.ts.
+
+export interface RawCharacterSheetReads {
+  readonly publicInfo: JsonValue;
+  readonly description: JsonValue;
+  readonly homeStation: JsonValue;
+  readonly cloneInfo: JsonValue;
+  readonly errors: {
+    readonly publicInfo: string | null;
+    readonly description: string | null;
+    readonly homeStation: string | null;
+    readonly cloneInfo: string | null;
+  };
+}
+
+/** The four character-sheet reads (raw retail shapes, decoded in the flow). */
+export async function loadCharacterSheet(
+  options: ApiOptions = {},
+): Promise<RawCharacterSheetReads> {
+  const data = await getJson("/api/bridge/character-sheet", options);
+  const errors = (data.errors ?? {}) as Record<string, JsonValue>;
+  const errorText = (key: string): string | null =>
+    typeof errors[key] === "string" ? (errors[key] as string) : null;
+  return {
+    publicInfo: data.publicInfo ?? null,
+    description: data.description ?? null,
+    homeStation: data.homeStation ?? null,
+    cloneInfo: data.cloneInfo ?? null,
+    errors: {
+      publicInfo: errorText("publicInfo"),
+      description: errorText("description"),
+      homeStation: errorText("homeStation"),
+      cloneInfo: errorText("cloneInfo"),
+    },
+  };
+}
+
 // --- R7 Local + Corp chat --------------------------------------------------
 // The BFF holds the bridgeSessionID; the browser addresses channels by name.
 // READ is a backlog poll (chat delivery bypasses the notification drain), so

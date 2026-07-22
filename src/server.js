@@ -4458,6 +4458,66 @@ app.get("/api/bridge/standings", requireAuth, async (req, res, next) => {
   }
 });
 
+// --- R56 Character Sheet -----------------------------------------------------
+// "Who is this character." Four plain TOP-LEVEL charMgr reads the retail
+// charactersheet window issues, each scoped server-side off the docked session:
+//   • charMgr.GetPublicInfo3   -> {type:"list", items:[util.KeyVal{name, corp,
+//     alliance, security, ...}]} — public identity.
+//   • charMgr.GetCharacterDescription -> a plain STRING (the bio).
+//   • charMgr.GetHomeStation   -> util.KeyVal carrying the home stationID.
+//   • charMgr.GetCloneInfo     -> util.KeyVal{clones(dict), implants(dict), ...}.
+// Every read is issued with NO ARGUMENT so the handler falls through to
+// session.characterID — there is no way for the browser to point one at another
+// character. Each read is INDEPENDENT (Promise.allSettled): a failed clone read
+// never blanks the identity, and each carries its own error code. An empty implant
+// set is a REAL "clean clone" answer, distinct from a FAILED read
+// (worldHasNoContracts precedent). ⚠ Raw retail shapes ship out; the browser
+// decodes them (web/src/bridge/characterSheet.ts) and resolves every entity id to
+// a name (R7d) — corp / alliance / home station / implant typeIDs — via /api/names.
+app.get("/api/bridge/character-sheet", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  try {
+    const [publicInfo, description, homeStation, cloneInfo] = await Promise.allSettled([
+      heldTopLevelCall(held, req.webSessionID, "charMgr", "GetPublicInfo3", [], null),
+      heldTopLevelCall(held, req.webSessionID, "charMgr", "GetCharacterDescription", [], null),
+      heldTopLevelCall(held, req.webSessionID, "charMgr", "GetHomeStation", [], null),
+      heldTopLevelCall(held, req.webSessionID, "charMgr", "GetCloneInfo", [], null),
+    ]);
+    // A lost live session can't be recovered by any read; surface it so the page
+    // returns to character select (as every held call does).
+    for (const settled of [publicInfo, description, homeStation, cloneInfo]) {
+      if (settled.status === "rejected" && settled.reason && settled.reason.code === "SESSION_NOT_FOUND") {
+        next(settled.reason);
+        return;
+      }
+    }
+    const settledCode = (settled) =>
+      settled.status === "rejected"
+        ? String((settled.reason && settled.reason.code) || "READ_FAILED")
+        : null;
+    const settledValue = (settled) =>
+      settled.status === "fulfilled" ? settled.value.result : null;
+    res.json({
+      ok: true,
+      publicInfo: settledValue(publicInfo),
+      description: settledValue(description),
+      homeStation: settledValue(homeStation),
+      cloneInfo: settledValue(cloneInfo),
+      errors: {
+        publicInfo: settledCode(publicInfo),
+        description: settledCode(description),
+        homeStation: settledCode(homeStation),
+        cloneInfo: settledCode(cloneInfo),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // --- R7 Local + Corp chat ---------------------------------------------------
 // The browser reads a channel's member roster + recent backlog and sends
 // messages to Local or Corp on the held session. Chat delivery bypasses the

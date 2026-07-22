@@ -68,6 +68,12 @@ import {
   decodeStandingCompositions,
   decodeStandingTransactions,
 } from "../bridge/standings.ts";
+import {
+  decodeCharacterDescription,
+  decodeCharacterIdentity,
+  decodeCloneSummary,
+  decodeHomeStationID,
+} from "../bridge/characterSheet.ts";
 import { decodeFlightStatus } from "../bridge/flight.ts";
 import { decodeSpaceSnapshot, decodeTargetIDs } from "../bridge/space.ts";
 import {
@@ -437,6 +443,12 @@ export interface AppFlow {
   loadStandingDetail(fromID: number, scope: "char" | "corp"): Promise<void>;
   /** R55 — close the open standings drill-down. */
   closeStandingDetail(): void;
+  /**
+   * R56 — the Character Sheet page: who the character is (name / security / corp
+   * / alliance), the bio, the home station and the clone's implants, in one pull,
+   * with every entity id resolved to a name (R7d). Called on the panel's mount.
+   */
+  loadCharacterSheet(): Promise<void>;
   /** Refresh the flight status (location + ship movement state). */
   loadFlightStatus(): Promise<void>;
   /** Undock from the station (the session enters space). */
@@ -2174,6 +2186,67 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
   function closeStandingDetail(): void {
     store.apply({ type: "standings/detail-cleared" });
+  }
+
+  // R56 — the Character Sheet page. One pull carries four independent charMgr
+  // reads (public info, description, home station, clone info); each half is
+  // independent on the BFF (Promise.allSettled) and keeps its own error here, so
+  // a failed clone read never blanks the identity, and vice versa.
+  //
+  // ⚠ R7d: every id is resolved to a name. corporationID / allianceID (from the
+  // public info), the home stationID and every implant typeID are asked for
+  // through /api/names. An id static data cannot name (a PLAYER corp resolves to
+  // null) degrades to "Unknown …" in the page — never the number. bloodline /
+  // race / ancestry carry no name path and are not decoded at all.
+  async function loadCharacterSheet(): Promise<void> {
+    const reads = await api.loadCharacterSheet(callOptions);
+    const identity = reads.errors.publicInfo
+      ? null
+      : decodeCharacterIdentity(reads.publicInfo);
+    const description = reads.errors.description
+      ? null
+      : decodeCharacterDescription(reads.description);
+    const homeStationID = reads.errors.homeStation
+      ? null
+      : decodeHomeStationID(reads.homeStation);
+    const clone = reads.errors.cloneInfo ? null : decodeCloneSummary(reads.cloneInfo);
+    store.apply({
+      type: "character-sheet/loaded",
+      identity,
+      identityError: reads.errors.publicInfo
+        ? `your character info: ${reads.errors.publicInfo}`
+        : null,
+      description,
+      descriptionError: reads.errors.description
+        ? `your bio: ${reads.errors.description}`
+        : null,
+      homeStationID,
+      homeStationError: reads.errors.homeStation
+        ? `your home station: ${reads.errors.homeStation}`
+        : null,
+      clone,
+      cloneError: reads.errors.cloneInfo ? `your clone: ${reads.errors.cloneInfo}` : null,
+    });
+    // Resolve every id to a name (R7d). An id the batch cannot resolve is cached
+    // as a definitive unknown by the store, and the page shows a fallback.
+    const refs: NameRef[] = [];
+    if (identity) {
+      if (identity.corporationID > 0) {
+        refs.push({ kind: "corporation", id: identity.corporationID });
+      }
+      if (identity.allianceID !== null) {
+        refs.push({ kind: "alliance", id: identity.allianceID });
+      }
+    }
+    if (homeStationID !== null) {
+      refs.push({ kind: "station", id: homeStationID });
+    }
+    if (clone) {
+      for (const implant of clone.implants) {
+        refs.push({ kind: "type", id: implant.typeID });
+      }
+    }
+    requestNames(refs);
   }
 
   // R7 — read a chat channel's roster + backlog and push it to the store. The
@@ -4619,6 +4692,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     loadStandingDetail,
 
     closeStandingDetail,
+
+    loadCharacterSheet,
 
     async loadPackageIntoShip(cargoTypeID, cargoQuantity) {
       await runAgentAction(async () => {

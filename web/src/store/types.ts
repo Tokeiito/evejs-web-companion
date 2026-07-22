@@ -1056,6 +1056,76 @@ export interface StandingsState {
   readonly detailError: string | null;
 }
 
+// --- R56 Character Sheet ----------------------------------------------------
+
+/**
+ * Who this character is, from charMgr.GetPublicInfo3 (goal R56). Public identity
+ * only — the same fields any character can see about another. Every id here is
+ * kept ONLY to be resolved to a name (R7d): `corporationID`/`allianceID` are
+ * name-resolved by the page and NEVER rendered as numbers; a PLAYER corp that
+ * static data cannot name degrades to "Unknown corporation" (Farmer's own corp
+ * does exactly this). `securityStatus` is a FLOAT, not an id, and is shown as-is.
+ *
+ * ⚠ bloodlineID / raceID / ancestryID are NOT here on purpose: they have no name
+ * path (no /api/names kind, no staticData resolver), so decoding them would only
+ * create a number with nowhere to resolve. They are omitted, not rendered raw.
+ */
+export interface CharacterIdentity {
+  readonly characterID: number;
+  readonly characterName: string;
+  /** 0 when absent; resolved to a name by the page (R7d). */
+  readonly corporationID: number;
+  /** null when the character is in no alliance. */
+  readonly allianceID: number | null;
+  /** A signed float on the −10..+10 security scale. Shown as-is, never an id. */
+  readonly securityStatus: number;
+}
+
+/**
+ * One implant in the active clone (charMgr.GetCloneInfo). `typeID` is resolved to
+ * a name by the page (R7d); `slot` is the 1..10 implant slot, a plain ordinal.
+ */
+export interface CharacterImplant {
+  readonly typeID: number;
+  readonly slot: number;
+}
+
+/**
+ * The clone summary from charMgr.GetCloneInfo (goal R56): the active clone's
+ * implants and how many jump clones the character has installed. Farmer measured
+ * live has NEITHER — a "clean" clone with an empty implants dict — which is a
+ * REAL answer the page renders honestly, not a failure.
+ */
+export interface CloneSummary {
+  readonly homeStationID: number;
+  readonly cloneStationID: number;
+  readonly implants: readonly CharacterImplant[];
+  readonly jumpCloneCount: number;
+}
+
+/**
+ * The Character Sheet page (goal R56): who the character is, where home is, and
+ * their clone. Four independent BFF reads (/api/bridge/character-sheet), each
+ * with its own error so one failure never blanks the rest.
+ *
+ * ⚠ empty vs failed, per field. `identity`/`clone` are null while unread OR when
+ * that read FAILED (the reason rides in the matching `*Error`). `description` is
+ * null unread/failed but "" is a REAL empty bio (a character who wrote none).
+ * `homeStationID` is null unread/failed; a resolved station NAME comes from
+ * /api/names, never the id.
+ */
+export interface CharacterSheetState {
+  readonly identity: CharacterIdentity | null;
+  readonly identityError: string | null;
+  readonly description: string | null;
+  readonly descriptionError: string | null;
+  readonly homeStationID: number | null;
+  readonly homeStationError: string | null;
+  readonly clone: CloneSummary | null;
+  readonly cloneError: string | null;
+  readonly loaded: boolean;
+}
+
 // --- R6a Agent Finder ------------------------------------------------------
 
 /**

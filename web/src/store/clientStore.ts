@@ -85,6 +85,7 @@ import type {
   TravelState,
   WalletState,
   StandingsState,
+  CharacterSheetState,
 } from "./types.ts";
 import type { NamesState } from "./names.ts";
 import { deriveShipStats } from "../bridge/shipStats.ts";
@@ -141,6 +142,7 @@ export interface ClientState {
   readonly rewards: RewardsState;
   readonly wallet: WalletState;
   readonly standings: StandingsState;
+  readonly characterSheet: CharacterSheetState;
   readonly flight: FlightState;
   readonly space: SpaceState;
   readonly targeting: TargetingState;
@@ -390,6 +392,22 @@ const INITIAL_STANDINGS: StandingsState = Object.freeze({
   detailError: null,
 });
 
+// R56 character sheet. Every read starts null/unloaded: an unread sheet must not
+// look like a character with no corp, no bio and no home. `identity`/`clone`
+// become non-null only from a SUCCESSFUL read; `description` "" is a real empty
+// bio and is distinct from null (unread/failed). Cleared with the character.
+const INITIAL_CHARACTER_SHEET: CharacterSheetState = Object.freeze({
+  identity: null,
+  identityError: null,
+  description: null,
+  descriptionError: null,
+  homeStationID: null,
+  homeStationError: null,
+  clone: null,
+  cloneError: null,
+  loaded: false,
+});
+
 const INITIAL_FLIGHT: FlightState = Object.freeze({
   status: null,
   loaded: false,
@@ -627,6 +645,7 @@ export interface ClientStore {
   readonly rewards: ReadableSignal<RewardsState>;
   readonly wallet: ReadableSignal<WalletState>;
   readonly standings: ReadableSignal<StandingsState>;
+  readonly characterSheet: ReadableSignal<CharacterSheetState>;
   readonly flight: ReadableSignal<FlightState>;
   readonly space: ReadableSignal<SpaceState>;
   readonly targeting: ReadableSignal<TargetingState>;
@@ -679,6 +698,7 @@ export function createClientStore(): ClientStore {
   const rewards = createSignal<RewardsState>(INITIAL_REWARDS);
   const wallet = createSignal<WalletState>(INITIAL_WALLET);
   const standings = createSignal<StandingsState>(INITIAL_STANDINGS);
+  const characterSheet = createSignal<CharacterSheetState>(INITIAL_CHARACTER_SHEET);
   const flight = createSignal<FlightState>(INITIAL_FLIGHT);
   const space = createSignal<SpaceState>(INITIAL_SPACE);
   const targeting = createSignal<TargetingState>(INITIAL_TARGETING);
@@ -718,6 +738,7 @@ export function createClientStore(): ClientStore {
     rewards: rewards.get(),
     wallet: wallet.get(),
     standings: standings.get(),
+    characterSheet: characterSheet.get(),
     flight: flight.get(),
     space: space.get(),
     targeting: targeting.get(),
@@ -761,6 +782,7 @@ export function createClientStore(): ClientStore {
         rewards.set(INITIAL_REWARDS);
         wallet.set(INITIAL_WALLET);
         standings.set(INITIAL_STANDINGS);
+        characterSheet.set(INITIAL_CHARACTER_SHEET);
         flight.set(INITIAL_FLIGHT);
         space.set(INITIAL_SPACE);
         targeting.set(INITIAL_TARGETING);
@@ -817,6 +839,7 @@ export function createClientStore(): ClientStore {
         rewards.set(INITIAL_REWARDS);
         wallet.set(INITIAL_WALLET);
         standings.set(INITIAL_STANDINGS);
+        characterSheet.set(INITIAL_CHARACTER_SHEET);
         flight.set(INITIAL_FLIGHT);
         space.set(INITIAL_SPACE);
         targeting.set(INITIAL_TARGETING);
@@ -845,6 +868,7 @@ export function createClientStore(): ClientStore {
         rewards.set(INITIAL_REWARDS);
         wallet.set(INITIAL_WALLET);
         standings.set(INITIAL_STANDINGS);
+        characterSheet.set(INITIAL_CHARACTER_SHEET);
         flight.set(INITIAL_FLIGHT);
         space.set(INITIAL_SPACE);
         targeting.set(INITIAL_TARGETING);
@@ -1304,6 +1328,26 @@ export function createClientStore(): ClientStore {
         break;
       case "standings/cleared":
         standings.set(INITIAL_STANDINGS);
+        break;
+      // R56 character sheet. The four reads land together but keep their own
+      // errors, so one failed read never blanks the rest. `identity`/`clone` stay
+      // null on a failed read (reason in the matching *Error); `description` may be
+      // "" (a real empty bio) on a successful read.
+      case "character-sheet/loaded":
+        characterSheet.set({
+          identity: event.identity,
+          identityError: event.identityError,
+          description: event.description,
+          descriptionError: event.descriptionError,
+          homeStationID: event.homeStationID,
+          homeStationError: event.homeStationError,
+          clone: event.clone,
+          cloneError: event.cloneError,
+          loaded: true,
+        });
+        break;
+      case "character-sheet/cleared":
+        characterSheet.set(INITIAL_CHARACTER_SHEET);
         break;
       case "flight/status": {
         // Preserve a resolved name only while its ID is unchanged; on any ID
@@ -1988,6 +2032,7 @@ export function createClientStore(): ClientStore {
     rewards: readonlySignal(rewards),
     wallet: readonlySignal(wallet),
     standings: readonlySignal(standings),
+    characterSheet: readonlySignal(characterSheet),
     flight: readonlySignal(flight),
     space: readonlySignal(space),
     targeting: readonlySignal(targeting),
