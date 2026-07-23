@@ -6565,6 +6565,184 @@ app.get("/api/bridge/corp-lp", requireAuth, async (req, res, next) => {
   }
 });
 
+// --- R80 plumbing sweep: corpRegistry batch A (member / info core; no UI) -------
+// PLUMBING ONLY: three routes make the corpRegistry MEMBER + REGISTRY-META READS
+// reachable + decodable so a later goal builds UI cheaply. No panel/tab/store slice
+// ships. corpRegistry is retail-bound per corp (eveMoniker.GetCorpRegistry(corpID)),
+// but the gateway dispatches these TOP-LEVEL on the held session; every handler
+// resolves its corp from the SESSION (resolveCorporationID), and corpRegistry.
+// MachoBindObject is NOT allowlisted, so a browser cannot bind a foreign corp. The
+// raw retail-shaped results ship out; the browser decodes them
+// (web/src/bridge/{corpMembers,corpMemberTracking,corpRegistryMeta}.ts).
+
+// GET /api/bridge/corp-members?page=&memberID=&memberIDs= — the corp ROSTER +
+// member-tracking reads, as SIX independent reads (Promise.allSettled; empty ≠
+// failed, each its own error code). All SESSION-CORP-SCOPED (args cannot redirect
+// the corp; a foreign memberID misses the session corp's member table):
+//   • GetMembersPaged(page)          -> one page of the session corp's members
+//     (PagedResultSet; page defaults to 1).
+//   • GetEveOwners()                 -> name-resolution rows for the corp members.
+//   • GetMemberTrackingInfo()        -> member tracking (last-login / location),
+//     wrapped in a CachedMethodCallResult.
+//   • GetMemberTrackingInfoSimple()  -> the SAME tracking rows, un-cached.
+//   • GetMember(memberID)            -> ⚠ ONLY when ?memberID= is given; that member
+//     (null when the id is not in the session corp).
+//   • GetMembersByIds([memberIDs])   -> ⚠ ONLY when ?memberIDs= (a CSV) is given; the
+//     members among those ids (foreign ids drop out). Member / char ids stay data (R7d).
+app.get("/api/bridge/corp-members", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const page = Math.max(1, nonNegativeIntQuery(req.query.page, 1));
+  const memberID = nonNegativeIntQuery(req.query.memberID, 0);
+  const memberIDs = String(req.query.memberIDs || "")
+    .split(",")
+    .map((token) => Number(String(token).trim()))
+    .filter((value) => Number.isSafeInteger(value) && value > 0);
+  const wantMember = memberID > 0;
+  const wantByIds = memberIDs.length > 0;
+  try {
+    const [
+      membersPaged,
+      eveOwners,
+      trackingInfo,
+      trackingSimple,
+      member,
+      membersByIds,
+    ] = await Promise.allSettled([
+      heldTopLevelCall(held, req.webSessionID, "corpRegistry", "GetMembersPaged", [page], null),
+      heldTopLevelCall(held, req.webSessionID, "corpRegistry", "GetEveOwners", [], null),
+      heldTopLevelCall(held, req.webSessionID, "corpRegistry", "GetMemberTrackingInfo", [], null),
+      heldTopLevelCall(held, req.webSessionID, "corpRegistry", "GetMemberTrackingInfoSimple", [], null),
+      wantMember
+        ? heldTopLevelCall(held, req.webSessionID, "corpRegistry", "GetMember", [memberID], null)
+        : Promise.resolve({ result: null }),
+      wantByIds
+        ? heldTopLevelCall(held, req.webSessionID, "corpRegistry", "GetMembersByIds", [memberIDs], null)
+        : Promise.resolve({ result: null }),
+    ]);
+    const settled = [membersPaged, eveOwners, trackingInfo, trackingSimple, member, membersByIds];
+    for (const outcome of settled) {
+      if (outcome.status === "rejected" && outcome.reason && outcome.reason.code === "SESSION_NOT_FOUND") {
+        next(outcome.reason);
+        return;
+      }
+    }
+    const settledCode = (outcome) =>
+      outcome.status === "rejected"
+        ? String((outcome.reason && outcome.reason.code) || "READ_FAILED")
+        : null;
+    const settledValue = (outcome) =>
+      outcome.status === "fulfilled" ? outcome.value.result : null;
+    res.json({
+      ok: true,
+      requested: {
+        page,
+        memberID: wantMember ? memberID : null,
+        memberIDs: wantByIds ? memberIDs : null,
+      },
+      membersPaged: settledValue(membersPaged),
+      eveOwners: settledValue(eveOwners),
+      trackingInfo: settledValue(trackingInfo),
+      trackingSimple: settledValue(trackingSimple),
+      member: settledValue(member),
+      membersByIds: settledValue(membersByIds),
+      errors: {
+        membersPaged: settledCode(membersPaged),
+        eveOwners: settledCode(eveOwners),
+        trackingInfo: settledCode(trackingInfo),
+        trackingSimple: settledCode(trackingSimple),
+        member: wantMember ? settledCode(member) : null,
+        membersByIds: wantByIds ? settledCode(membersByIds) : null,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// GET /api/bridge/corp-registry-meta — the session corp's TITLE scheme, contact
+// LABELS, CONTACTS and BULLETINS, as FOUR independent reads (Promise.allSettled).
+// All SESSION-CORP-SCOPED (args ignored). ⚠ Farmer's corp seeds no labels/contacts/
+// bulletins — an empty CIndexedRowset / dict / CRowset is a legitimate state, not a
+// failure. The default 16-title scheme ships even for a fresh corp. ids stay data (R7d):
+//   • GetTitles() / GetLabels() / GetCorporateContacts() / GetBulletins().
+app.get("/api/bridge/corp-registry-meta", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  try {
+    const [titles, labels, contacts, bulletins] = await Promise.allSettled([
+      heldTopLevelCall(held, req.webSessionID, "corpRegistry", "GetTitles", [], null),
+      heldTopLevelCall(held, req.webSessionID, "corpRegistry", "GetLabels", [], null),
+      heldTopLevelCall(held, req.webSessionID, "corpRegistry", "GetCorporateContacts", [], null),
+      heldTopLevelCall(held, req.webSessionID, "corpRegistry", "GetBulletins", [], null),
+    ]);
+    for (const outcome of [titles, labels, contacts, bulletins]) {
+      if (outcome.status === "rejected" && outcome.reason && outcome.reason.code === "SESSION_NOT_FOUND") {
+        next(outcome.reason);
+        return;
+      }
+    }
+    const settledCode = (outcome) =>
+      outcome.status === "rejected"
+        ? String((outcome.reason && outcome.reason.code) || "READ_FAILED")
+        : null;
+    const settledValue = (outcome) =>
+      outcome.status === "fulfilled" ? outcome.value.result : null;
+    res.json({
+      ok: true,
+      titles: settledValue(titles),
+      labels: settledValue(labels),
+      contacts: settledValue(contacts),
+      bulletins: settledValue(bulletins),
+      errors: {
+        titles: settledCode(titles),
+        labels: settledCode(labels),
+        contacts: settledCode(contacts),
+        bulletins: settledCode(bulletins),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// GET /api/bridge/corp-char-info?charID= — corpRegistry.GetInfoWindowDataForChar,
+// the character info-window corp data (corpID / allianceID / factionID / the char's
+// title + title1..title16 scheme). charID defaults to the SESSION character.
+// ⚠ CROSS-CHARACTER by design: the handler derives the corp from the TARGET char, so
+// a foreign charID returns THAT char's corp identity + title scheme — an arg-injection
+// leak kept pre-plumbed and FLAGGED in docs/arg-injection-leak-handoff.md (operator
+// flag-only). corpID/allianceID/the char's own title are retail-public info-window
+// fields; the full 16-title-name dump of the foreign corp is the sensitive part.
+app.get("/api/bridge/corp-char-info", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const charID = nonNegativeIntQuery(req.query.charID, Number(held.characterID) || 0);
+  try {
+    const infoWindow = await heldTopLevelCall(
+      held,
+      req.webSessionID,
+      "corpRegistry",
+      "GetInfoWindowDataForChar",
+      charID > 0 ? [charID] : [],
+      null,
+    );
+    res.json({
+      ok: true,
+      requested: { charID: charID > 0 ? charID : null },
+      infoWindow: infoWindow.result,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // GET /api/bridge/market-trading?fromDate=&accountKey= — the market CORP-ORDER +
 // PLEX reads the R16 market panel left out (R62 plumbing sweep), as SEVEN
 // independent reads (Promise.allSettled; empty ≠ failed, each its own error
