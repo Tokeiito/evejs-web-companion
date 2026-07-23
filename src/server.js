@@ -7786,6 +7786,274 @@ app.post("/api/bridge/corpreg/war/declare", requireAuth, async (req, res, next) 
   ]);
 });
 
+// --- R99 Phase-4 top-level WRITES: allianceRegistry + warRegistry + corpStationMgr ---
+//
+// WB-ALLYREG (10) + WB-WARREG (9) + WB-CORPSTN (1) = 20 writes. Like the R83/R84
+// allianceRegistry reads and the R79 warRegistry/corpStationMgr reads, each of these
+// three services dispatches on the ORDINARY top-level /call seam (heldTopLevelCall) —
+// NO MachoBindObject two-step is opened. The acting ALLIANCE derives from the SESSION
+// (resolveAllianceIDFromSession), the acting WAR ENTITY from the SESSION
+// (resolveWarEntityID), and the acting CORP from the SESSION (resolveCorporationID),
+// so a browser cannot name a FOREIGN alliance/war/corp as the ACTING party.
+//
+// Every route is CONFIRM-GATED (requireWriteConfirmation: no `confirm:true` ⇒ 400
+// CONFIRMATION_REQUIRED, nothing dispatches). allianceRegistry/warRegistry writes are
+// exec-role-gated server-side — a role refusal is CORRECT, not a bug.
+//
+// ⚠⚠ FINANCIAL / DESTRUCTIVE / CONSEQUENTIAL — reachable + refused-without-confirm ONLY,
+// NEVER fired on the live world in this plumbing pass:
+//   • allianceRegistry.PayBill (spends ISK), .DeleteRelationship (destroys)
+//   • warRegistry.AcceptAllyNegotiation (spends ISK), .AcceptSurrender /
+//     .DeclineSurrender (end / change a war), .RetractMutualWar (ends a war)
+//   • corpStationMgr.MoveCorpHQHere (moves the corp HQ — consequential)
+// The rest are governance writes (confirm-gated; exec-role-gated).
+//
+// ⚠ ARG-INJECTION (flagged in docs/arg-injection-leak-handoff.md, NOT fixed here): the
+// warRegistry accept/decline/retract/set verbs and allianceRegistry.UpdateAlliance act
+// on a CALLER-SUPPLIED warNegotiationID / warID / allianceID with no session-party gate.
+// The dedicated routes pass the natural payload; a fix + QA come later server-side.
+//
+// FAST-MODE educated-guess decoders (writesAllianceWarStation.ts): every one of these
+// handlers returns null (AddBulletin edits in place and also returns null), so `applied`
+// is the confirm-gate's did-not-throw signal and a panel re-reads to confirm. Never
+// fired, so never QA'd.
+
+// allianceRegistry (10) — acting ALLIANCE derived from the session server-side.
+app.post("/api/bridge/ally/relationship/set", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This sets your alliance's standing toward another entity. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  await dispatchBridgeWrite(req, res, next, "allianceRegistry", "SetRelationship", [
+    Number(body.relationship) || 0,
+    Number(body.toID) || 0,
+  ]);
+});
+
+// ⚠ DESTRUCTIVE — removes a standing your alliance holds.
+app.post("/api/bridge/ally/relationship/delete", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "Deleting an alliance relationship is destructive. This must be confirmed explicitly.")) {
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "allianceRegistry", "DeleteRelationship", [
+    Number((req.body || {}).toID) || 0,
+  ]);
+});
+
+app.post("/api/bridge/ally/contact/add", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This adds an alliance contact. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  await dispatchBridgeWrite(req, res, next, "allianceRegistry", "AddAllianceContact", [
+    Number(body.contactID) || 0,
+    Number(body.relationshipID) || 0,
+  ]);
+});
+
+// AddBulletin(title, body, bulletinID?) — omit bulletinID (null) to create; a
+// bulletinID edits that bulletin in place. Alliance derived server-side.
+app.post("/api/bridge/ally/bulletin/add", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This posts an alliance bulletin. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  await dispatchBridgeWrite(req, res, next, "allianceRegistry", "AddBulletin", [
+    typeof body.title === "string" ? body.title : "",
+    typeof body.body === "string" ? body.body : "",
+    body.bulletinID === undefined ? null : Number(body.bulletinID) || null,
+  ]);
+});
+
+// UpdateApplication(corporationID, applicationText, state) — the alliance responds
+// to a CORP's membership application (state 2 accepts it → adds the corp). Alliance
+// derived server-side; corporationID is the applicant corp being responded to.
+app.post("/api/bridge/ally/application/update", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This responds to a corporation's alliance-membership application (accepting one adds the corporation to your alliance). Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  await dispatchBridgeWrite(req, res, next, "allianceRegistry", "UpdateApplication", [
+    Number(body.corporationID) || 0,
+    typeof body.applicationText === "string" ? body.applicationText : "",
+    Number(body.state) || 0,
+  ]);
+});
+
+// ⚠ SPENDS ISK — PayBill(billID) pays out of the SESSION corp's wallet (payer =
+// session.corporationID server-side; billID is the bill being settled). Optional
+// fromAccountKey second arg.
+app.post("/api/bridge/ally/bill/pay", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This pays an alliance bill out of your corporation's wallet. This spends ISK and must be confirmed explicitly.")) {
+    return;
+  }
+  const body = req.body || {};
+  await dispatchBridgeWrite(req, res, next, "allianceRegistry", "PayBill", [
+    Number(body.billID) || 0,
+    body.fromAccountKey === undefined ? 1000 : Number(body.fromAccountKey) || 1000,
+  ]);
+});
+
+app.post("/api/bridge/ally/prime-hour/set", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This sets your alliance's sovereignty prime hour. Confirm to continue.")) {
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "allianceRegistry", "SetPrimeHour", [
+    Number((req.body || {}).hour) || 0,
+  ]);
+});
+
+app.post("/api/bridge/ally/capital-system/set", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This sets your alliance's capital system. Confirm to continue.")) {
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "allianceRegistry", "SetCapitalSystem", [
+    Number((req.body || {}).solarSystemID) || 0,
+  ]);
+});
+
+// DeclareExecutorSupport(chosenExecutorCorporationID) — the SESSION corp votes which
+// member corp should be alliance executor (supporter corp derived server-side).
+app.post("/api/bridge/ally/executor-support/declare", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This declares your corporation's support for an alliance executor. Confirm to continue.")) {
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "allianceRegistry", "DeclareExecutorSupport", [
+    Number((req.body || {}).chosenExecutorCorporationID) || 0,
+  ]);
+});
+
+// UpdateAlliance(description, url) — edits the SESSION alliance's public description /
+// url. ⚠ ARG-INJECTION: the server's resolveAllianceIDFromArgs reads args[0] as a
+// possible allianceID before falling back to the session alliance — a numeric-string
+// description could steer a foreign alliance. Flagged; not fixed here.
+app.post("/api/bridge/ally/update", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This edits your alliance's description and url. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  await dispatchBridgeWrite(req, res, next, "allianceRegistry", "UpdateAlliance", [
+    typeof body.description === "string" ? body.description : "",
+    typeof body.url === "string" ? body.url : "",
+  ]);
+});
+
+// warRegistry (9) — acting WAR ENTITY (corp/alliance) derived from the session.
+// ⚠ ARG-INJECTION: the accept/decline/retract/set verbs act on the caller-supplied
+// warNegotiationID / warID with NO session-party gate (flagged, not fixed).
+
+// CreateWarAllyOffer(warID, iskValue, defenderID, description) — offers to fight as an
+// ally in a war; iskValue is the fee the offeror requests. Owner derived server-side.
+app.post("/api/bridge/war/ally-offer/create", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This creates a war ally offer. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  await dispatchBridgeWrite(req, res, next, "warRegistry", "CreateWarAllyOffer", [
+    Number(body.warID) || 0,
+    Number(body.iskValue) || 0,
+    Number(body.defenderID) || 0,
+    typeof body.description === "string" ? body.description : "",
+  ]);
+});
+
+app.post("/api/bridge/war/ally-offer/retract", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This retracts a war ally offer. Confirm to continue.")) {
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "warRegistry", "RetractWarAllyOffer", [
+    Number((req.body || {}).warNegotiationID) || 0,
+  ]);
+});
+
+// CreateSurrenderNegotiation(warID, iskValue, description) — offers surrender terms
+// (iskValue is the reparation offered). Owner derived server-side.
+app.post("/api/bridge/war/surrender/create", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This opens a surrender negotiation, offering reparation terms to end a war. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  await dispatchBridgeWrite(req, res, next, "warRegistry", "CreateSurrenderNegotiation", [
+    Number(body.warID) || 0,
+    Number(body.iskValue) || 0,
+    typeof body.description === "string" ? body.description : "",
+  ]);
+});
+
+// ⚠ CONSEQUENTIAL + SPENDS ISK — accepting an ally negotiation debits the accepting
+// party's wallet (CONCORD fee + ally fee) and binds the ally to the war.
+app.post("/api/bridge/war/ally-negotiation/accept", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "Accepting a war ally negotiation binds an ally and debits the CONCORD + ally fee from the paying wallet. This spends ISK and changes a war, and must be confirmed explicitly.")) {
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "warRegistry", "AcceptAllyNegotiation", [
+    Number((req.body || {}).warNegotiationID) || 0,
+  ]);
+});
+
+app.post("/api/bridge/war/ally-offer/decline", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This declines a war ally offer. Confirm to continue.")) {
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "warRegistry", "DeclineAllyOffer", [
+    Number((req.body || {}).warNegotiationID) || 0,
+  ]);
+});
+
+// ⚠ CONSEQUENTIAL — accepting a surrender ENDS a war.
+app.post("/api/bridge/war/surrender/accept", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "Accepting a surrender ends the war. This changes a war and must be confirmed explicitly.")) {
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "warRegistry", "AcceptSurrender", [
+    Number((req.body || {}).warNegotiationID) || 0,
+  ]);
+});
+
+// ⚠ CONSEQUENTIAL — declining a surrender changes a war negotiation's state.
+app.post("/api/bridge/war/surrender/decline", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "Declining a surrender changes a war negotiation. This must be confirmed explicitly.")) {
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "warRegistry", "DeclineSurrender", [
+    Number((req.body || {}).warNegotiationID) || 0,
+  ]);
+});
+
+// ⚠ CONSEQUENTIAL — retracting a mutual war ENDS it. RetractMutualWar(warID);
+// retractedBy derived from the session.
+app.post("/api/bridge/war/mutual/retract", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "Retracting a mutual war ends it. This changes a war and must be confirmed explicitly.")) {
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "warRegistry", "RetractMutualWar", [
+    Number((req.body || {}).warID) || 0,
+  ]);
+});
+
+// SetOpenForAllies(warID, state) — toggles whether a war accepts allies.
+app.post("/api/bridge/war/open-for-allies/set", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This toggles whether a war is open for allies. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  await dispatchBridgeWrite(req, res, next, "warRegistry", "SetOpenForAllies", [
+    Number(body.warID) || 0,
+    body.state === true,
+  ]);
+});
+
+// corpStationMgr (1) — ⚠ CONSEQUENTIAL/ISK. MoveCorpHQHere(stationID?) — moves the
+// SESSION corp's HQ (corp derived server-side); stationID defaults to the session's
+// current station when omitted.
+app.post("/api/bridge/corpstn/hq/move-here", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This moves your corporation's headquarters to this station. This is consequential and must be confirmed explicitly.")) {
+    return;
+  }
+  const stationID = Number((req.body || {}).stationID) || null;
+  await dispatchBridgeWrite(req, res, next, "corpStationMgr", "MoveCorpHQHere", [stationID]);
+});
+
 // --- R17 Contracts (contractProxy bridge) -----------------------------------
 //
 // Like mail and market, the whole contract surface is TOP-LEVEL
