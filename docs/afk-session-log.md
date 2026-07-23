@@ -561,6 +561,8 @@ Builds serialize (they share `flow.ts`, the store, and `src/server.js` — the c
 
 **Suite:** combined web `node --test` **2279 → 2284** (+5); `tsc` + `build:web` clean. **Servers:** EveJS restarted 17220 → 43976 (detached hidden, canonical `EVEJS_PROXY_LOCAL_INTERCEPT=1`, node `.` from `eve.js/server`, logs → session scratchpad); web BFF restarted 37664 → 59644 for the routes; market (:40111, PID 54808) untouched; all three healthy. **Live smoke (rrfarmer → Farmer 140000005, docked):** 8 sampled routes incl. both destructive → `400 CONFIRMATION_REQUIRED` without confirm; WITH confirm (no session) → `409 NO_LIVE_SESSION`. Session released, Farmer docked. **NO destructive write fired.** Commits by pathspec only (eve.js onto `ReconcileEliteMode` tip); other agent's work + `market*.ts` intact (`git status` verified both repos); did NOT push.
 
+- **✅ ORCHESTRATOR-VERIFIED (fast-mode lighter check)** — eve.js `7ed336c8` = 3 files (allowlist + 2 tests), web-poc `4d333fcc` = 5 files; other agent intact; only untracked web-poc files are the orchestrator's `icon-typeids*.txt`; confirm-gate present (25 `CONFIRMATION_REQUIRED`/`requireMailConfirmation` hits in `src/server.js`); `webGatewayServiceCall` + `webGatewayMail` both 1/0. **Writes phase: 16/301 done.** (Per operator's fast-mode direction, verification is integrity + confirm-gate + suite-green, not deep per-write probing — QA later.)
+
 ## Open for the operator on return
 
 *(anything that genuinely needs a human call)*
