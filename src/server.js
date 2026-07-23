@@ -6896,6 +6896,216 @@ app.post("/api/bridge/fleet/broadcast/system", requireAuth, async (req, res, nex
   ]);
 });
 
+// --- R95 Phase-4 top-level WRITES — skills + clones + safety ----------------
+//
+// The FIRST Phase-4 batch: 17 writes across the SAME three session-scoped
+// services the R73/R76/R78 reads opened — skillHandler (WB-SKILL, 8),
+// jumpCloneSvc (WB-CLONE, 8), crimewatch (WB-CRIME, 1). Every one dispatches on
+// the ORDINARY top-level /call seam (dispatchBridgeWrite → heldTopLevelCall),
+// NOT a bound two-step, exactly like its sibling reads. Every route is
+// CONFIRM-GATED via requireWriteConfirmation (no `confirm: true` ⇒ 400
+// CONFIRMATION_REQUIRED, no dispatch). The destructive/financial ones
+// (ExtractSkills / InjectSkillIntoBrain destroy SP / consume a skillbook;
+// InstallCloneInStation/Structure / CloneJump spend ISK; DestroyInstalledClone
+// destroys a clone) carry an extra-explicit message and are reachability +
+// refuses-without-confirm ONLY — never fired on the live world in this pass.
+//
+// ⚠ ALL SESSION-SCOPED. Each handler derives the character from the session; the
+// id args they take (injector itemID, jumpCloneID, safety level) resolve against
+// the session's OWN records, so a foreign id misses ("not found"), never mutates
+// another character. See docs/arg-injection-leak-handoff.md — no new leak here.
+
+// WB-SKILL (skillHandler) ----------------------------------------------------
+
+// CharStartTrainingSkill(itemID, [toLevel]) — queues a skillbook item's skill to
+// train (args[0] = skillbook itemID; optional target level).
+app.post("/api/bridge/skills/start-training", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This queues that skill for training. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const itemID = Number(body.itemID) || 0;
+  const toLevel = Number(body.toLevel) || null;
+  await dispatchBridgeWrite(req, res, next, "skillHandler", "CharStartTrainingSkill", [itemID, toLevel]);
+});
+
+// AbortTraining() — stops the current training (reversible; re-queue any time).
+app.post("/api/bridge/skills/abort-training", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This stops your current skill training. Confirm to continue.")) {
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "skillHandler", "AbortTraining", []);
+});
+
+// ApplyFreeSkillPoints(skills, points) — spends unallocated free SP into skills.
+app.post("/api/bridge/skills/apply-free-points", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This spends your free skill points. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  await dispatchBridgeWrite(req, res, next, "skillHandler", "ApplyFreeSkillPoints", [
+    body.skills ?? null,
+    body.points ?? null,
+  ]);
+});
+
+// ⚠ DESTRUCTIVE — ExtractSkills(skills, injectorTypeID) turns trained SP into a
+// skill extractor, permanently removing SP. Reachable + gated, never fired live.
+app.post("/api/bridge/skills/extract", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "Extracting skills permanently DESTROYS trained skill points into an extractor. This must be confirmed explicitly.")) {
+    return;
+  }
+  const body = req.body || {};
+  await dispatchBridgeWrite(req, res, next, "skillHandler", "ExtractSkills", [
+    body.skills ?? null,
+    Number(body.injectorTypeID) || 0,
+  ]);
+});
+
+// InjectSkillpoints(amount, quantity) — applies large-skill-injector SP.
+app.post("/api/bridge/skills/inject-skillpoints", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This injects skill points from an injector. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  await dispatchBridgeWrite(req, res, next, "skillHandler", "InjectSkillpoints", [
+    Number(body.amount) || 0,
+    Number(body.quantity) || 1,
+  ]);
+});
+
+// SplitSkillInjector(itemID, quantity) — splits a large injector into smalls.
+app.post("/api/bridge/skills/split-injector", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This splits that skill injector. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  await dispatchBridgeWrite(req, res, next, "skillHandler", "SplitSkillInjector", [
+    Number(body.itemID) || 0,
+    Number(body.quantity) || 1,
+  ]);
+});
+
+// CombineSkillInjector(itemID, quantity) — combines smalls into a large injector.
+app.post("/api/bridge/skills/combine-injector", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This combines those skill injectors. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  await dispatchBridgeWrite(req, res, next, "skillHandler", "CombineSkillInjector", [
+    Number(body.itemID) || 0,
+    Number(body.quantity) || 1,
+  ]);
+});
+
+// ⚠ CONSUMES A SKILLBOOK — InjectSkillIntoBrain(itemIDs) learns skillbook items,
+// destroying them. Reachable + gated, never fired live.
+app.post("/api/bridge/skills/inject-skillbook", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "Injecting a skillbook CONSUMES it permanently. This must be confirmed explicitly.")) {
+    return;
+  }
+  const itemIDs = bridgeIDList((req.body || {}).itemIDs);
+  await dispatchBridgeWrite(req, res, next, "skillHandler", "InjectSkillIntoBrain", [itemIDs]);
+});
+
+// WB-CLONE (jumpCloneSvc) ----------------------------------------------------
+
+// ⚠ FINANCIAL — InstallCloneInStation() installs a jump clone at the current
+// station for an ISK fee. Reachable + gated, never fired live.
+app.post("/api/bridge/clones/install-station", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "Installing a jump clone SPENDS ISK (the install fee). This must be confirmed explicitly.")) {
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "jumpCloneSvc", "InstallCloneInStation", []);
+});
+
+// ⚠ FINANCIAL — InstallCloneInStructure() installs a jump clone at the current
+// structure for an ISK fee. Reachable + gated, never fired live.
+app.post("/api/bridge/clones/install-structure", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "Installing a jump clone SPENDS ISK (the install fee). This must be confirmed explicitly.")) {
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "jumpCloneSvc", "InstallCloneInStructure", []);
+});
+
+// ⚠ FINANCIAL/DESTRUCTIVE — CloneJump(destLocationID, cloneID, cost, confirmed)
+// jumps the pilot's consciousness to a jump clone (leaves the current body
+// behind; may incur a cost). Reachable + gated, never fired live.
+app.post("/api/bridge/clones/jump", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "Jumping clones moves you to another clone and leaves your current body behind. This must be confirmed explicitly.")) {
+    return;
+  }
+  const body = req.body || {};
+  await dispatchBridgeWrite(req, res, next, "jumpCloneSvc", "CloneJump", [
+    Number(body.destinationLocationID) || 0,
+    Number(body.cloneID) || 0,
+    body.cost ?? null,
+    body.confirmed === true,
+  ]);
+});
+
+// ⚠ DESTRUCTIVE — DestroyInstalledClone(cloneID) removes one of your own jump
+// clones. Reachable + gated, never fired live. Foreign cloneID misses (own-only).
+app.post("/api/bridge/clones/destroy", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "Destroying a jump clone is permanent. This must be confirmed explicitly.")) {
+    return;
+  }
+  const cloneID = Number((req.body || {}).cloneID) || 0;
+  await dispatchBridgeWrite(req, res, next, "jumpCloneSvc", "DestroyInstalledClone", [cloneID]);
+});
+
+// SetJumpCloneName(cloneID, name) — renames one of your own jump clones.
+app.post("/api/bridge/clones/set-name", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This renames that jump clone. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  await dispatchBridgeWrite(req, res, next, "jumpCloneSvc", "SetJumpCloneName", [
+    Number(body.cloneID) || 0,
+    typeof body.name === "string" ? body.name : "",
+  ]);
+});
+
+// OfferShipCloneInstallation(targetCharID) — offers to install a ship clone for
+// another character (a handshake; Accept/Cancel below complete it).
+app.post("/api/bridge/clones/ship/offer", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This offers a ship-clone installation. Confirm to continue.")) {
+    return;
+  }
+  const targetCharID = Number((req.body || {}).targetCharID) || 0;
+  await dispatchBridgeWrite(req, res, next, "jumpCloneSvc", "OfferShipCloneInstallation", [targetCharID]);
+});
+
+// AcceptShipCloneInstallation() — accepts a pending ship-clone offer.
+app.post("/api/bridge/clones/ship/accept", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This accepts the ship-clone installation. Confirm to continue.")) {
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "jumpCloneSvc", "AcceptShipCloneInstallation", []);
+});
+
+// CancelShipCloneInstallation() — cancels a pending ship-clone offer.
+app.post("/api/bridge/clones/ship/cancel", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This cancels the ship-clone installation. Confirm to continue.")) {
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "jumpCloneSvc", "CancelShipCloneInstallation", []);
+});
+
+// WB-CRIME (crimewatch) ------------------------------------------------------
+
+// SetSafetyLevel(level) — sets the character's weapons-safety flag (session-
+// scoped; safe-ish and reversible, but confirm-gated for consistency).
+app.post("/api/bridge/safety/set-level", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This changes your weapons safety setting. Confirm to continue.")) {
+    return;
+  }
+  const level = Number((req.body || {}).level);
+  await dispatchBridgeWrite(req, res, next, "crimewatch", "SetSafetyLevel", [
+    Number.isFinite(level) ? level : 2,
+  ]);
+});
+
 // --- R17 Contracts (contractProxy bridge) -----------------------------------
 //
 // Like mail and market, the whole contract surface is TOP-LEVEL
