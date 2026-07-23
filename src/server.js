@@ -8054,6 +8054,154 @@ app.post("/api/bridge/corpstn/hq/move-here", requireAuth, async (req, res, next)
   await dispatchBridgeWrite(req, res, next, "corpStationMgr", "MoveCorpHQHere", [stationID]);
 });
 
+// --- R100 WB-DOGMA batch A: the 11 Phase-4 BOUND dogma module-op WRITES -------
+//
+// These ride the SAME dogmaIM.MachoBindObject bind the R74 reads use (dogmaBindSpec
+// / boundCall — the real bound two-step; the BFF holds the OID handle, the browser
+// never sees it). Unlike the R99 top-level writes above (dispatchBridgeWrite over
+// heldTopLevelCall), each of these dispatches as a BOUND method off the dogma bind.
+// Ship-module ops — target-drop, module overload / stop-overload, nanite module-
+// repair, weapon-bank link/merge — all reversible-ish in-space actions, no ISK, no
+// permanent asset destruction. Every route is confirm-gated: without `confirm:true`
+// it answers 400 CONFIRMATION_REQUIRED and NOTHING dispatches.
+//
+// FAST-MODE (R86–R99 pattern): none fired live this batch (operator owns EveJS; no
+// server restart). The handlers' returns vary (null / itemID / bool / moduleID list
+// / a [success, missingCharges, failed] triple / a weapon-bank state dict); the ack
+// carries `result` through untouched for a future ship/fitting UI to decode.
+//
+// ⚠ ARG-INJECTION: RemoveTargets/ClearTargets and the overload/module-repair ops
+// resolve their scene/ship from the SESSION (spaceRuntime.<op>(session, …) /
+// _startModuleRepair(session, itemID)). LinkWeapons/MergeModuleGroups accept a
+// caller-supplied shipID as args[0] (falling back to _getShipID(session)) — flagged
+// in docs/arg-injection-leak-handoff.md for a server-side session-scoping fix + QA;
+// kept plumbed + confirm-gated. This BFF passes only the session ship's own module
+// ids from a future UI, but the handler does not enforce that.
+
+/** Dispatch one confirm-gated BOUND dogma write off the dogma bind; uniform ack. */
+async function dispatchBoundDogmaWrite(req, res, next, method, args) {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  try {
+    const outcome = await boundCall(held, req.webSessionID, dogmaBindSpec(), method, args, null);
+    res.json({ ok: true, applied: true, result: outcome.result ?? null, notifications: outcome.notifications });
+  } catch (error) {
+    if (error && error.code === "SESSION_NOT_FOUND") {
+      forgetBridgeSession(req.webSessionID);
+    }
+    next(error);
+  }
+}
+
+// RemoveTargets([targetIDs]) — drop a set of locks in one call. Session-scoped.
+app.post("/api/bridge/dogma/targets/remove", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This drops those target locks. Confirm to continue.")) {
+    return;
+  }
+  await dispatchBoundDogmaWrite(req, res, next, "RemoveTargets", [bridgeIDList((req.body || {}).targetIDs)]);
+});
+
+// ClearTargets() — drop EVERY lock in one call. Session-scoped, no args.
+app.post("/api/bridge/dogma/targets/clear", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This drops all your target locks. Confirm to continue.")) {
+    return;
+  }
+  await dispatchBoundDogmaWrite(req, res, next, "ClearTargets", []);
+});
+
+// Overload(moduleID, effectID) — overload one module's effect.
+app.post("/api/bridge/dogma/module/overload", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This overloads that module. Confirm to continue.")) {
+    return;
+  }
+  const moduleID = Number((req.body || {}).moduleID) || 0;
+  const effectID = Number((req.body || {}).effectID) || 0;
+  await dispatchBoundDogmaWrite(req, res, next, "Overload", [moduleID, effectID]);
+});
+
+// OverloadRack(moduleID) — overload the whole rack the module belongs to.
+app.post("/api/bridge/dogma/module/overload-rack", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This overloads that module's whole rack. Confirm to continue.")) {
+    return;
+  }
+  const moduleID = Number((req.body || {}).moduleID) || 0;
+  await dispatchBoundDogmaWrite(req, res, next, "OverloadRack", [moduleID]);
+});
+
+// StopOverload(moduleID, effectID) — stop overloading one module's effect.
+app.post("/api/bridge/dogma/module/stop-overload", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This stops overloading that module. Confirm to continue.")) {
+    return;
+  }
+  const moduleID = Number((req.body || {}).moduleID) || 0;
+  const effectID = Number((req.body || {}).effectID) || 0;
+  await dispatchBoundDogmaWrite(req, res, next, "StopOverload", [moduleID, effectID]);
+});
+
+// StopOverloadRack(moduleID) — stop overloading the module's whole rack.
+app.post("/api/bridge/dogma/module/stop-overload-rack", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This stops overloading that module's whole rack. Confirm to continue.")) {
+    return;
+  }
+  const moduleID = Number((req.body || {}).moduleID) || 0;
+  await dispatchBoundDogmaWrite(req, res, next, "StopOverloadRack", [moduleID]);
+});
+
+// InitiateModuleRepair(moduleID) — start a nanite paste repair on one module.
+app.post("/api/bridge/dogma/module/repair/start", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This starts a nanite repair on that module (consumes repair paste). Confirm to continue.")) {
+    return;
+  }
+  const moduleID = Number((req.body || {}).moduleID) || 0;
+  await dispatchBoundDogmaWrite(req, res, next, "InitiateModuleRepair", [moduleID]);
+});
+
+// InitiateModuleRepairMany([moduleIDs]) — start repairs on several modules at once.
+app.post("/api/bridge/dogma/module/repair/start-many", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This starts nanite repairs on those modules (consumes repair paste). Confirm to continue.")) {
+    return;
+  }
+  await dispatchBoundDogmaWrite(req, res, next, "InitiateModuleRepairMany", [bridgeIDList((req.body || {}).moduleIDs)]);
+});
+
+// StopModuleRepair(moduleID) — stop an in-progress module repair.
+app.post("/api/bridge/dogma/module/repair/stop", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This stops that module's repair. Confirm to continue.")) {
+    return;
+  }
+  const moduleID = Number((req.body || {}).moduleID) || 0;
+  await dispatchBoundDogmaWrite(req, res, next, "StopModuleRepair", [moduleID]);
+});
+
+// LinkWeapons(shipID, masterModuleID, slaveModuleID) — bank a slave weapon to a
+// master. ⚠ shipID is caller-supplied (arg-injection-flagged); the BFF forwards
+// the browser's shipID (a future UI sends the session's own active ship id).
+app.post("/api/bridge/dogma/weapons/link", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This links those weapons into one bank. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const shipID = Number(body.shipID) || 0;
+  const masterModuleID = Number(body.masterModuleID) || 0;
+  const slaveModuleID = Number(body.slaveModuleID) || 0;
+  await dispatchBoundDogmaWrite(req, res, next, "LinkWeapons", [shipID, masterModuleID, slaveModuleID]);
+});
+
+// MergeModuleGroups(shipID, targetMasterID, sourceMasterID) — merge two weapon
+// banks. ⚠ shipID is caller-supplied (arg-injection-flagged), as LinkWeapons.
+app.post("/api/bridge/dogma/weapons/merge-groups", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This merges those two weapon banks. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const shipID = Number(body.shipID) || 0;
+  const targetMasterID = Number(body.targetMasterID) || 0;
+  const sourceMasterID = Number(body.sourceMasterID) || 0;
+  await dispatchBoundDogmaWrite(req, res, next, "MergeModuleGroups", [shipID, targetMasterID, sourceMasterID]);
+});
+
 // --- R17 Contracts (contractProxy bridge) -----------------------------------
 //
 // Like mail and market, the whole contract surface is TOP-LEVEL
