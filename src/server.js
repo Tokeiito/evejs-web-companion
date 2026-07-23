@@ -8202,6 +8202,146 @@ app.post("/api/bridge/dogma/weapons/merge-groups", requireAuth, async (req, res,
   await dispatchBoundDogmaWrite(req, res, next, "MergeModuleGroups", [shipID, targetMasterID, sourceMasterID]);
 });
 
+// --- R101 WB-DOGMA batch B: the 11 remaining Phase-4 BOUND dogma WRITES --------
+// (CLOSES WB-DOGMA, 22/22)
+//
+// Same bind as R100 (dispatchBoundDogmaWrite → boundCall(dogmaBindSpec(), …)):
+// weapon-bank link/unlink/destroy, probe launch, drone settings, and the char-
+// brain implant/booster/skill ops. Every route is confirm-gated; the destructive /
+// consumable ones (DestroyWeaponBank / InjectSkillIntoBrain / InjectImplant /
+// DestroyImplant / UseBooster) carry an EXTRA-EXPLICIT confirm message. FAST-MODE:
+// none fired live this batch (operator owns EveJS; no restart); `result` carries
+// each handler's varied return through untouched for a future ship/brain UI.
+//
+// ⚠ ARG-INJECTION: LaunchProbes / ChangeDroneSettings resolve ship+char from the
+// SESSION (args are the probe launcher moduleID+count / a drone-settings dict);
+// InjectSkillIntoBrain / InjectImplant / DestroyImplant / UseBooster act on the
+// SESSION char (_getCharID(session)) with caller-supplied item ids only. The
+// weapon-bank quintet (PeelAndLink / UnlinkModule / LinkAllWeapons /
+// UnlinkAllModules / DestroyWeaponBank) accepts a caller-supplied shipID (args[0]
+// → _getShipID(session) fallback) — same pattern as R100's LinkWeapons /
+// MergeModuleGroups, flagged in docs/arg-injection-leak-handoff.md.
+
+// PeelAndLink(shipID, targetMasterID, sourceMasterID) — peel a weapon off a bank
+// and link it to another master. ⚠ shipID caller-supplied (arg-injection-flagged).
+app.post("/api/bridge/dogma/weapons/peel-and-link", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This re-links that weapon into a different bank. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const shipID = Number(body.shipID) || 0;
+  const targetMasterID = Number(body.targetMasterID) || 0;
+  const sourceMasterID = Number(body.sourceMasterID) || 0;
+  await dispatchBoundDogmaWrite(req, res, next, "PeelAndLink", [shipID, targetMasterID, sourceMasterID]);
+});
+
+// UnlinkModule(shipID, masterModuleID) — peel one module out of its weapon bank.
+// ⚠ shipID caller-supplied (arg-injection-flagged).
+app.post("/api/bridge/dogma/weapons/unlink-module", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This unlinks that module from its weapon bank. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const shipID = Number(body.shipID) || 0;
+  const masterModuleID = Number(body.masterModuleID) || 0;
+  await dispatchBoundDogmaWrite(req, res, next, "UnlinkModule", [shipID, masterModuleID]);
+});
+
+// LinkAllWeapons(shipID) — bank every compatible weapon on the ship in one call.
+// ⚠ shipID caller-supplied (arg-injection-flagged).
+app.post("/api/bridge/dogma/weapons/link-all", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This links all your weapons into banks. Confirm to continue.")) {
+    return;
+  }
+  const shipID = Number((req.body || {}).shipID) || 0;
+  await dispatchBoundDogmaWrite(req, res, next, "LinkAllWeapons", [shipID]);
+});
+
+// UnlinkAllModules(shipID) — break every weapon bank on the ship in one call.
+// ⚠ shipID caller-supplied (arg-injection-flagged).
+app.post("/api/bridge/dogma/weapons/unlink-all", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This breaks all your weapon banks. Confirm to continue.")) {
+    return;
+  }
+  const shipID = Number((req.body || {}).shipID) || 0;
+  await dispatchBoundDogmaWrite(req, res, next, "UnlinkAllModules", [shipID]);
+});
+
+// ⚠ DESTRUCTIVE. DestroyWeaponBank(shipID, masterModuleID) — tear a whole bank
+// down. ⚠ shipID caller-supplied (arg-injection-flagged).
+app.post("/api/bridge/dogma/weapons/destroy-bank", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This DESTROYS that weapon bank grouping. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const shipID = Number(body.shipID) || 0;
+  const masterModuleID = Number(body.masterModuleID) || 0;
+  await dispatchBoundDogmaWrite(req, res, next, "DestroyWeaponBank", [shipID, masterModuleID]);
+});
+
+// LaunchProbes(moduleID, requestedCount) — launch scanner probes from a probe
+// launcher. Session-scoped (ship+char+system resolved from the session).
+app.post("/api/bridge/dogma/probes/launch", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This launches scanner probes into space. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const moduleID = Number(body.moduleID) || 0;
+  const requestedCount = Math.max(1, Number(body.count) || 1);
+  await dispatchBoundDogmaWrite(req, res, next, "LaunchProbes", [moduleID, requestedCount]);
+});
+
+// ChangeDroneSettings(settings) — persist the session char's drone behavior dict.
+// Session-scoped; args[0] is a plain settings map (aggression / focus-fire / etc).
+app.post("/api/bridge/dogma/drones/settings", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This changes your drone settings. Confirm to continue.")) {
+    return;
+  }
+  const settings = (req.body || {}).settings;
+  await dispatchBoundDogmaWrite(req, res, next, "ChangeDroneSettings", [settings && typeof settings === "object" ? settings : {}]);
+});
+
+// ⚠ CONSUMES A SKILLBOOK. InjectSkillIntoBrain([itemIDs]) — inject one or more
+// skillbook items into the session char's brain. Acts on _getCharID(session).
+app.post("/api/bridge/dogma/brain/inject-skill", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This CONSUMES those skillbooks, injecting them permanently. Confirm to continue.")) {
+    return;
+  }
+  await dispatchBoundDogmaWrite(req, res, next, "InjectSkillIntoBrain", [bridgeIDList((req.body || {}).itemIDs)]);
+});
+
+// ⚠ INSTALLS AN IMPLANT (a plugged implant is consumed on removal). InjectImplant(itemID)
+// — plug an implant into the session char's brain. Acts on _getCharID(session).
+app.post("/api/bridge/dogma/implant/inject", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This plugs that implant into your clone. Confirm to continue.")) {
+    return;
+  }
+  const itemID = Number((req.body || {}).itemID) || 0;
+  await dispatchBoundDogmaWrite(req, res, next, "InjectImplant", [itemID]);
+});
+
+// ⚠ DESTRUCTIVE. DestroyImplant(itemID) — rip a plugged implant out (destroys it).
+// Acts on the session char (_getCharID(session)).
+app.post("/api/bridge/dogma/implant/destroy", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This DESTROYS that plugged-in implant permanently. Confirm to continue.")) {
+    return;
+  }
+  const itemID = Number((req.body || {}).itemID) || 0;
+  await dispatchBoundDogmaWrite(req, res, next, "DestroyImplant", [itemID]);
+});
+
+// ⚠ CONSUMES A BOOSTER. UseBooster(itemID, locationID) — pop a combat booster.
+// Acts on the session char (_getCharID(session)).
+app.post("/api/bridge/dogma/booster/use", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This CONSUMES that booster, applying its effects (and side-effects). Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const itemID = Number(body.itemID) || 0;
+  const locationID = Number(body.locationID) || 0;
+  await dispatchBoundDogmaWrite(req, res, next, "UseBooster", [itemID, locationID]);
+});
+
 // --- R17 Contracts (contractProxy bridge) -----------------------------------
 //
 // Like mail and market, the whole contract surface is TOP-LEVEL

@@ -22,6 +22,12 @@
 // So `applied` is the confirm-gate's did-not-throw signal and a panel re-reads
 // (GetAllInfo / the ship snapshot) to prove the mutation.
 //
+// R101 WB-DOGMA batch B (CLOSES WB-DOGMA, 22/22) reuses this SAME decoder for its
+// 11 writes — weapon-bank peel/unlink/link-all/unlink-all/destroy, probe launch,
+// drone settings, and the char-brain inject-skill / inject-implant / destroy-
+// implant / use-booster ops — every one folds its (varied) return into the same
+// {ok, applied, result} ack. See boundDogmaWrites.test.ts for the R101 shape cases.
+//
 // ⚠ These are WRITES: never call a decoder to DRIVE a mutation — the confirm-gated
 // BFF route is the only path, and it refuses without `confirm: true`.
 
