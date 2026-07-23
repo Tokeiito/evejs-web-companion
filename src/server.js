@@ -6727,6 +6727,175 @@ app.post("/api/bridge/asset-safety/deliver-wrap", requireAuth, async (req, res, 
   }
 });
 
+// --- R94 FLEET TOP-LEVEL WRITES (fleetObjectHandler / fleetProxy / fleetMgr) --
+//
+// The LAST Phase-3 top-level writes batch (CLOSES Phase-3 top-level writes; the
+// 3 deferred PLEX writes aside), following the R86-R93 pattern: allowlist pair +
+// confirm-gated BFF route (dispatchBridgeWrite) + educated-guess decoder
+// (fleetWrites.ts) + basic test. Eleven writes across three fleet services whose
+// seams were wired earlier (fleetProxy READS R69 / fleetObjectHandler bind R72 +
+// bound reads R85). Every route is confirm-gated (no `confirm:true` => 400, no
+// dispatch). Farmer is DOCKED + fleetless, so the fleet-management writes return a
+// not-in-fleet error and none is live-exercisable — reachability + refusal only.
+//
+// ⚠ EXTRA-CARE OUTWARD PAIR: fleetMgr.BroadcastToBubble / BroadcastToSystem send a
+// message to every fleet member in the session char's bubble / system. Reachable +
+// confirm-gated but NEVER broadcast on the live world in this plumbing pass.
+// fleetObjectHandler.CreateFleet mints a whole fleet — likewise reachable + gated
+// but NEVER fired live.
+//
+// ⚠ ARG-INJECTION (checked): the advert / management / broadcast writes resolve the
+// fleet from the SESSION (session.characterID / session.fleetid), not a caller id.
+// ApplyToJoinFleet takes a caller-supplied fleetID — but that is the TARGET public
+// advert to apply to (intended fleet-finder semantics), not a foreign-fleet
+// mutation; noted in the R94 arg-injection addendum, kept plumbed.
+
+// fleetObjectHandler.CreateFleet — mints a new fleet for the session character
+// (no args). ⚠ NEVER fired live (it would actually create a fleet).
+app.post("/api/bridge/fleet/create", requireAuth, async (req, res, next) => {
+  if (
+    !requireWriteConfirmation(
+      req,
+      res,
+      "Creating a fleet forms a new fleet under your character. This must be confirmed explicitly.",
+    )
+  ) {
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "fleetObjectHandler", "CreateFleet", []);
+});
+
+// fleetProxy fleet-finder WRITES ---------------------------------------------
+
+// ApplyToJoinFleet(fleetID, [autoAccept]) — apply to a PUBLIC advertised fleet.
+app.post("/api/bridge/fleet/apply", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This applies to join that advertised fleet. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  await dispatchBridgeWrite(req, res, next, "fleetProxy", "ApplyToJoinFleet", [
+    Number(body.fleetID) || 0,
+    body.autoAccept === true,
+  ]);
+});
+
+// AddFleetFinderAdvert(advertData) — post the session fleet's public advert.
+app.post("/api/bridge/fleet/advert/add", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This posts a public fleet-finder advert for your fleet. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const advertData =
+    body.advertData && typeof body.advertData === "object" ? body.advertData : {};
+  await dispatchBridgeWrite(req, res, next, "fleetProxy", "AddFleetFinderAdvert", [advertData]);
+});
+
+// RemoveFleetFinderAdvert() — pull the session fleet's public advert (no args).
+app.post("/api/bridge/fleet/advert/remove", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This removes your fleet's public advert. Confirm to continue.")) {
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "fleetProxy", "RemoveFleetFinderAdvert", []);
+});
+
+// UpdateAdvertInfo(numMembers, [allowedDiff]) — edit the session fleet's advert.
+app.post("/api/bridge/fleet/advert/update", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This updates your fleet's public advert. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const allowedDiff =
+    body.allowedDiff && typeof body.allowedDiff === "object" ? body.allowedDiff : {};
+  await dispatchBridgeWrite(req, res, next, "fleetProxy", "UpdateAdvertInfo", [
+    Number(body.numMembers) || 0,
+    allowedDiff,
+  ]);
+});
+
+// fleetMgr fleet-management WRITES -------------------------------------------
+
+// ForceLeaveFleet() — remove the session char from its fleet (no args).
+app.post("/api/bridge/fleet/leave", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This removes you from your current fleet. Confirm to continue.")) {
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "fleetMgr", "ForceLeaveFleet", []);
+});
+
+// AddToWatchlist(charIDs, favorites) — tune the session fleet watchlist.
+app.post("/api/bridge/fleet/watchlist/add", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This adds those members to your fleet watchlist. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  await dispatchBridgeWrite(req, res, next, "fleetMgr", "AddToWatchlist", [
+    bridgeIDList(body.charIDs),
+    body.favorites === true,
+  ]);
+});
+
+// RemoveFromWatchlist(charID, favorites).
+app.post("/api/bridge/fleet/watchlist/remove", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This removes that member from your fleet watchlist. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  await dispatchBridgeWrite(req, res, next, "fleetMgr", "RemoveFromWatchlist", [
+    Number(body.charID) || 0,
+    body.favorites === true,
+  ]);
+});
+
+// RegisterForDamageUpdates(favorites) — session-scoped damage-update subscription.
+app.post("/api/bridge/fleet/damage-updates", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This registers your fleet for damage updates. Confirm to continue.")) {
+    return;
+  }
+  const favorites = (req.body || {}).favorites === true;
+  await dispatchBridgeWrite(req, res, next, "fleetMgr", "RegisterForDamageUpdates", [favorites]);
+});
+
+// ⚠ EXTRA-CARE OUTWARD — BroadcastToBubble / BroadcastToSystem message the fleet.
+// Reachable + confirm-gated but NEVER broadcast on the live world. Args to
+// sendBroadcast: (name, scope, itemID, typeID).
+app.post("/api/bridge/fleet/broadcast/bubble", requireAuth, async (req, res, next) => {
+  if (
+    !requireWriteConfirmation(
+      req,
+      res,
+      "This BROADCASTS a message to every fleet member in your bubble. This must be confirmed explicitly.",
+    )
+  ) {
+    return;
+  }
+  const body = req.body || {};
+  await dispatchBridgeWrite(req, res, next, "fleetMgr", "BroadcastToBubble", [
+    typeof body.name === "string" ? body.name : "",
+    body.scope ?? null,
+    Number(body.itemID) || 0,
+    Number(body.typeID) || 0,
+  ]);
+});
+
+app.post("/api/bridge/fleet/broadcast/system", requireAuth, async (req, res, next) => {
+  if (
+    !requireWriteConfirmation(
+      req,
+      res,
+      "This BROADCASTS a message to every fleet member in your solar system. This must be confirmed explicitly.",
+    )
+  ) {
+    return;
+  }
+  const body = req.body || {};
+  await dispatchBridgeWrite(req, res, next, "fleetMgr", "BroadcastToSystem", [
+    typeof body.name === "string" ? body.name : "",
+    body.scope ?? null,
+    Number(body.itemID) || 0,
+    Number(body.typeID) || 0,
+  ]);
+});
+
 // --- R17 Contracts (contractProxy bridge) -----------------------------------
 //
 // Like mail and market, the whole contract surface is TOP-LEVEL
