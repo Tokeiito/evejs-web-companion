@@ -4898,6 +4898,17 @@ function bridgeIDList(value) {
 }
 
 /**
+ * Forward an optional positional-args array for writes whose handler ignores its
+ * args (the abyssal / pvp rejection stubs). The browser MAY send `{ args: [...] }`;
+ * anything else yields `[]`. Kept deliberately generic — these handlers reject or
+ * no-op regardless of what is passed, so there is no per-arg coercion to do.
+ */
+function bridgeArgs(req) {
+  const value = (req.body || {}).args;
+  return Array.isArray(value) ? value : [];
+}
+
+/**
  * Dispatch one confirm-gated write and answer a uniform ack. FAST-MODE: most of
  * these handlers return null, so `applied` is true whenever the dispatch did not
  * throw; a panel re-reads to prove the mutation. A route that needs the return
@@ -6294,6 +6305,192 @@ app.post("/api/bridge/corp-fittings/save-many", requireAuth, async (req, res, ne
   const ownerID = Number(body.ownerID) || 0;
   const fittings = body.fittings ?? [];
   await dispatchBridgeWrite(req, res, next, "corpFittingMgr", "SaveManyFittings", [ownerID, fittings]);
+});
+
+// --- R92 IN-SPACE SERVICE WRITES --------------------------------------------
+//
+// The Phase-3 "in-space services" writes batch, following the R86-R91 pattern:
+// allowlist pair + confirm-gated BFF route (dispatchBridgeWrite) + educated-guess
+// decoder + basic test. Sixteen writes across four TOP-LEVEL services (sovMgr /
+// essMgr / abyssalMgr / pvpFilamentMgr — sm.RemoteSvc / ProxySvc, no bound-object
+// step). Farmer is DOCKED so NONE is live-exercisable — reachability + refusal
+// only. Every route is confirm-gated (no `confirm:true` => 400, no dispatch).
+//
+// ⚠ NEVER FIRED LIVE: sov DestroySkyhooks / AcquireSkyhooks (destructive
+// sovereignty mutations) and ess RequestUnlockReserveBank (ISK payout).
+//
+// ⚠ ARG-INJECTION (flagged, kept plumbed — see docs/arg-injection-leak-handoff.md):
+// the three sovMgr writes take a CALLER-SUPPLIED solarSystemID / skyhookID list with
+// NO session scope check and NO handler-level admin gate. The ESS bank writes resolve
+// solarSystemID from the SESSION; the abyssal + pvp actions are server-side
+// rejection/no-op stubs (no runtime abyssal content in this world).
+
+// --- sovMgr WRITES (3) — ⚠ caller-supplied scope, no admin gate --------------
+
+app.post("/api/bridge/sov/hub/set-fuel-access-group", requireAuth, async (req, res, next) => {
+  if (
+    !requireWriteConfirmation(
+      req,
+      res,
+      "This changes the fuel-access group of a sovereignty hub. Confirm to continue.",
+    )
+  ) {
+    return;
+  }
+  const body = req.body || {};
+  const solarSystemID = Number(body.solarSystemID) || 0;
+  const fuelAccessGroupID = Number(body.fuelAccessGroupID) || 0;
+  await dispatchBridgeWrite(req, res, next, "sovMgr", "SetSovHubFuelAccessGroup", [
+    solarSystemID,
+    fuelAccessGroupID,
+  ]);
+});
+
+// ⚠ DESTRUCTIVE — reachable + confirm-gated, NEVER fired on the live world in this
+// plumbing pass. DestroySkyhooks deletes the named skyhooks outright.
+app.post("/api/bridge/sov/skyhooks/destroy", requireAuth, async (req, res, next) => {
+  if (
+    !requireWriteConfirmation(
+      req,
+      res,
+      "Destroying skyhooks is permanent and cannot be undone. This must be confirmed explicitly.",
+    )
+  ) {
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "sovMgr", "DestroySkyhooks", [
+    bridgeIDList((req.body || {}).skyhookIDs),
+  ]);
+});
+
+// ⚠ DESTRUCTIVE — reachable + confirm-gated, NEVER fired live. AcquireSkyhooks
+// reassigns the named skyhooks into the session's own corp/system.
+app.post("/api/bridge/sov/skyhooks/acquire", requireAuth, async (req, res, next) => {
+  if (
+    !requireWriteConfirmation(
+      req,
+      res,
+      "Acquiring these skyhooks reassigns them to your corporation. This must be confirmed explicitly.",
+    )
+  ) {
+    return;
+  }
+  const body = req.body || {};
+  await dispatchBridgeWrite(req, res, next, "sovMgr", "AcquireSkyhooks", [
+    bridgeIDList(body.skyhookIDs),
+    Number(body.fuelAccessGroupID) || 0,
+  ]);
+});
+
+// --- essMgr WRITES (5) — session-resolved solarSystemID ----------------------
+
+app.post("/api/bridge/ess/main-bank/link", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This links your ship to the ESS main bank. Confirm to continue.")) {
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "essMgr", "AttemptLinkToMainBank", []);
+});
+
+app.post("/api/bridge/ess/reserve-bank/link", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This links your ship to the ESS reserve bank. Confirm to continue.")) {
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "essMgr", "AttemptLinkToReserveBank", []);
+});
+
+app.post("/api/bridge/ess/main-bank/unlink", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This unlinks the ESS main bank. Confirm to continue.")) {
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "essMgr", "RequestMainBankUnlink", []);
+});
+
+app.post("/api/bridge/ess/reserve-bank/unlink", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This unlinks the ESS reserve bank. Confirm to continue.")) {
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "essMgr", "RequestReserveBankUnlink", []);
+});
+
+// ⚠ ISK PAYOUT — reachable + confirm-gated, NEVER fired on the live world in this
+// plumbing pass. RequestUnlockReserveBank consumes a key and pays out the reserve.
+app.post("/api/bridge/ess/reserve-bank/unlock", requireAuth, async (req, res, next) => {
+  if (
+    !requireWriteConfirmation(
+      req,
+      res,
+      "Unlocking the reserve bank consumes a key and pays out ISK. This must be confirmed explicitly.",
+    )
+  ) {
+    return;
+  }
+  const keyTypeID = Number((req.body || {}).keyTypeID) || 0;
+  await dispatchBridgeWrite(req, res, next, "essMgr", "RequestUnlockReserveBank", [keyTypeID]);
+});
+
+// --- abyssalMgr WRITES (5) — server-side rejection/no-op stubs ----------------
+// No runtime abyssal content exists in this world, so the four gate/deploy actions
+// throw an abyss error and ClientIsReady returns null. Args are forwarded verbatim
+// but ignored by the (rejecting) handlers.
+
+app.post("/api/bridge/abyssal/entrance/deploy", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This deploys an abyssal filament entrance. Confirm to continue.")) {
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "abyssalMgr", "AbyssalEntranceDeployment", bridgeArgs(req));
+});
+
+app.post("/api/bridge/abyssal/entrance/activate", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This activates the abyssal entrance gate. Confirm to continue.")) {
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "abyssalMgr", "AbyssalEntranceGateActivation", bridgeArgs(req));
+});
+
+app.post("/api/bridge/abyssal/gate/activate", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This activates an abyssal pocket gate. Confirm to continue.")) {
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "abyssalMgr", "AbyssalGateActivation", bridgeArgs(req));
+});
+
+app.post("/api/bridge/abyssal/end-gate/activate", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This activates the abyssal exit gate. Confirm to continue.")) {
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "abyssalMgr", "AbyssalEndGateActivation", bridgeArgs(req));
+});
+
+app.post("/api/bridge/abyssal/client-ready", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This signals the client is ready in the abyssal pocket. Confirm to continue.")) {
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "abyssalMgr", "ClientIsReady", []);
+});
+
+// --- pvpFilamentMgr WRITES (3) — server-side rejection/no-op stubs ------------
+// No active Proving Grounds event in this world: JoinPVPQueue and
+// AbyssalPVPEndGateActivation throw; LeavePVPQueue returns null.
+
+app.post("/api/bridge/pvp/queue/join", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This joins the abyssal PvP (Proving Grounds) queue. Confirm to continue.")) {
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "pvpFilamentMgr", "JoinPVPQueue", bridgeArgs(req));
+});
+
+app.post("/api/bridge/pvp/queue/leave", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This leaves the abyssal PvP queue. Confirm to continue.")) {
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "pvpFilamentMgr", "LeavePVPQueue", []);
+});
+
+app.post("/api/bridge/pvp/end-gate/activate", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This activates the abyssal PvP exit gate. Confirm to continue.")) {
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "pvpFilamentMgr", "AbyssalPVPEndGateActivation", bridgeArgs(req));
 });
 
 // --- R17 Contracts (contractProxy bridge) -----------------------------------
