@@ -238,13 +238,15 @@ test("no component invokes a $derived binding as a function", () => {
   assert.deepEqual(offences, []);
 });
 
-// --- 4. App's first paint selects the tab that matches WHERE the character is -
+// --- 4. App's first paint renders the SHELL that matches WHERE the character is
 //
-// The R50 login-default bug: `page` was `$state("station")`, so a character in
-// space landed on the Station tab. This renders App against an online store
-// whose flight flag says docked / in space and checks the ACTIVE tab and the
-// visible set — the docked-vs-in-space default selection the goal requires the
-// first-mount test to cover.
+// The whole UI follows the docked/in-space flag: docked paints the station
+// interior (StationShell), in space paints the flight HUD (SpaceShell) — not a
+// filtered tab bar. (This subsumes the old R50 login-default bug, where a
+// character in space wrongly landed on the Station tab: now an in-space
+// character must not get the station shell at all.) This renders App against an
+// online store whose flight flag says docked / in space and checks which shell
+// landed; the shells' own contents are covered in depth by shellRender.test.ts.
 
 function onlineStore(over: Partial<Record<string, unknown>>): unknown {
   const store = createClientStore();
@@ -278,53 +280,29 @@ function onlineStore(over: Partial<Record<string, unknown>>): unknown {
   return store;
 }
 
-function navSlice(body: string): string {
-  return body.slice(body.indexOf("<nav"), body.indexOf("</nav>") + 6);
-}
-
-function navLabels(body: string): string[] {
-  const nav = navSlice(body);
-  return [...nav.matchAll(/<button[^>]*>([^<]*)<\/button>/g)].map((m) =>
-    (m[1] ?? "").replace(/&amp;/g, "&").trim(),
-  );
-}
-
-function activeLabel(body: string): string | null {
-  const match = /<button[^>]*class="active"[^>]*>([^<]*)<\/button>/.exec(navSlice(body));
-  return match ? (match[1] ?? "").replace(/&amp;/g, "&").trim() : null;
-}
-
-test("App's first paint on a DOCKED character selects Station and hides the in-space tabs", async () => {
+test("App's first paint on a DOCKED character renders the station shell, not the space HUD", async () => {
   const store = onlineStore({ docked: true, inSpace: false, stationID: 60003760 });
   const App = await loadPanel("App");
-  const output = render(App as never, { props: { store, flow: fakeFlow() } } as never);
+  const body = render(App as never, { props: { store, flow: fakeFlow() } } as never).body;
 
-  assert.equal(activeLabel(output.body), "Station");
-  const labels = navLabels(output.body);
-  assert.ok(labels.includes("Station"));
-  assert.ok(labels.includes("Fitting"));
-  for (const hidden of ["Flight", "Around Your Ship", "Mining", "Travel", "Bots"]) {
-    assert.equal(labels.includes(hidden), false, `${hidden} must be hidden while docked`);
-  }
-  // The two wallet tabs are reachable in either state.
-  assert.ok(labels.includes("Wallet"));
-  assert.ok(labels.includes("Corp Wallet"));
-  // R55 — Standings is reachable in either state too.
-  assert.ok(labels.includes("Standings"));
-  // R56 — the Character Sheet is reachable in either state.
-  assert.ok(labels.includes("Character Sheet"));
+  // The station interior: the docked badge, the services rail, the online pilot.
+  assert.match(body, /Docked/, "no docked state badge");
+  assert.match(body, /Services/, "the station services rail is missing");
+  assert.match(body, /Farmer/, "the docked pilot is not shown");
+  // And NOT the in-space HUD.
+  assert.doesNotMatch(body, /In Space/, "the space HUD leaked into the docked shell");
 });
 
-test("App's first paint on an IN-SPACE character selects Around Your Ship, NOT Station", async () => {
+test("App's first paint on an IN-SPACE character renders the space HUD, not the station shell", async () => {
   const store = onlineStore({ docked: false, inSpace: true, stationID: null });
   const App = await loadPanel("App");
-  const output = render(App as never, { props: { store, flow: fakeFlow() } } as never);
+  const body = render(App as never, { props: { store, flow: fakeFlow() } } as never).body;
 
-  // The exact regression: the default must not be Station while in space.
-  assert.notEqual(activeLabel(output.body), "Station");
-  assert.equal(activeLabel(output.body), "Around Your Ship");
-  const labels = navLabels(output.body);
-  assert.ok(labels.includes("Flight"));
-  assert.equal(labels.includes("Station"), false, "Station is hidden in space");
-  assert.equal(labels.includes("Fitting"), false, "Fitting is hidden in space");
+  // The flight HUD: the in-space badge and the overview.
+  assert.match(body, /In Space/, "no in-space state badge");
+  assert.match(body, /Overview/, "the overview HUD is missing");
+  // The exact old regression, re-expressed: an in-space character must NOT get
+  // the docked station shell (its services rail / docked badge).
+  assert.doesNotMatch(body, /Services/, "the station services rail leaked into space");
+  assert.doesNotMatch(body, /Docked/, "the docked badge leaked into space");
 });

@@ -1595,6 +1595,197 @@
     min-height: 40px;
   }
 
+  /* ================================================= docked/space shells --
+   * The two top-level layouts (StationShell / SpaceShell). Docked is a station
+   * interior: a header, a services rail down the left, station panels to the
+   * right. In space is a HUD: a viewport with the overview at its right and the
+   * ship gauges + module rack + nav docked along the bottom. Both collapse to a
+   * single column on narrow screens (the shared @media below). Panels inside are
+   * placeholders this pass — dashed borders + a "placeholder" pill say so. */
+  .station-shell {
+    display: grid;
+    grid-template-columns: minmax(12rem, 15rem) 1fr;
+    grid-template-rows: auto 1fr;
+    grid-template-areas: "head head" "rail main";
+    gap: 0.9rem;
+    min-height: 60vh;
+  }
+  .station-shell > .shell-head { grid-area: head; }
+  .station-shell > .services-rail { grid-area: rail; }
+  .station-shell > .shell-main { grid-area: main; }
+
+  .space-shell {
+    display: grid;
+    grid-template-columns: 1fr minmax(14rem, 20rem);
+    grid-template-rows: auto 1fr auto;
+    grid-template-areas: "head head" "viewport overview" "dock dock";
+    gap: 0.9rem;
+    min-height: 60vh;
+  }
+  .space-shell > .shell-head { grid-area: head; }
+  .space-shell > .space-viewport { grid-area: viewport; }
+  .space-shell > .overview-hud { grid-area: overview; }
+  .space-shell > .hud-dock { grid-area: dock; }
+
+  /* The context bar shared by both shells. */
+  .shell-head {
+    display: flex;
+    align-items: center;
+    gap: 0.8rem;
+    flex-wrap: wrap;
+    padding: 0.6rem 0.9rem;
+    background: var(--color-panel);
+    border: 1px solid var(--color-line);
+  }
+  .shell-head-where {
+    display: flex;
+    flex-direction: column;
+    line-height: 1.2;
+  }
+  .shell-head-where strong { color: var(--color-text-bright); }
+  .shell-head-where .muted { color: var(--color-muted); font-size: 0.85rem; }
+  .shell-head-pilot { margin-left: auto; color: var(--color-text); }
+  .undock-btn { min-height: 40px; }
+
+  .state-badge {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.09em;
+    font-weight: 700;
+    padding: 0.25rem 0.5rem;
+    border: 1px solid var(--color-line);
+    color: var(--color-muted);
+  }
+  .state-badge.docked { color: var(--color-accent); border-color: var(--color-accent); }
+  .state-badge.in-space { color: var(--color-good); border-color: var(--color-good); }
+
+  /* Docked — the services rail. */
+  .services-rail {
+    background: var(--color-panel);
+    border: 1px solid var(--color-line);
+    padding: 0.5rem;
+  }
+  .rail-title {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.09em;
+    color: var(--color-muted);
+    margin: 0.2rem 0.3rem 0.5rem;
+  }
+  .services-rail ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+  }
+  .rail-item {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    text-align: left;
+    min-height: 40px;
+    background: var(--color-panel-2);
+    border: 1px solid var(--color-line);
+    color: var(--color-text);
+  }
+  .rail-item.unbuilt .rail-item-label { color: var(--color-muted); }
+  .rail-item-tag {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--color-muted);
+    border: 1px solid var(--color-line);
+    padding: 0.05rem 0.3rem;
+  }
+  .shell-main {
+    display: flex;
+    flex-direction: column;
+    gap: 0.9rem;
+  }
+
+  /* In space — the viewport + HUD dock. */
+  .space-viewport {
+    position: relative;
+    border: 1px solid var(--color-line);
+    background: radial-gradient(120% 80% at 50% 30%, #0b1626 0%, var(--color-bg) 70%);
+    min-height: 18rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .viewport-note {
+    color: var(--color-muted);
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    font-size: 12px;
+  }
+  .floating-selected {
+    position: absolute;
+    top: 0.7rem;
+    left: 0.7rem;
+    max-width: 16rem;
+    background: var(--color-panel);
+  }
+  .hud-dock {
+    display: grid;
+    grid-template-columns: 2fr 3fr 2fr;
+    gap: 0.9rem;
+  }
+  .hud-cluster {
+    background: var(--color-panel);
+    border: 1px solid var(--color-line);
+    padding: 0.6rem 0.8rem;
+  }
+  .module-slots {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    margin-top: 0.4rem;
+  }
+  .module-slot {
+    width: 2.2rem;
+    height: 2.2rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--color-line);
+    background: var(--color-panel-3);
+    color: var(--color-muted);
+    font-size: 11px;
+    font-weight: 700;
+  }
+
+  /* Placeholder affordance — dashed panel + a pill, so a stub never reads as a
+   * finished panel that happens to be empty. */
+  .placeholder-panel { border-style: dashed; }
+  .placeholder-hint { color: var(--color-muted); margin: 0.4rem 0 0; }
+  .soon-pill {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--color-muted);
+    border: 1px solid var(--color-line);
+    padding: 0.05rem 0.35rem;
+  }
+
+  /* Both shells collapse to one column when there isn't width for the rail /
+   * side HUD (tablet and down), before the phone table reflow below. */
+  @media (max-width: 900px) {
+    .station-shell {
+      grid-template-columns: 1fr;
+      grid-template-areas: "head" "rail" "main";
+    }
+    .space-shell {
+      grid-template-columns: 1fr;
+      grid-template-areas: "head" "viewport" "overview" "dock";
+    }
+    .hud-dock { grid-template-columns: 1fr; }
+  }
+
   /* ======================================================================
    * 4. REFLOW — the R8 responsive contract
    * ----------------------------------------------------------------------
