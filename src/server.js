@@ -7334,6 +7334,224 @@ app.post("/api/bridge/corpreg/title/update-many", requireAuth, async (req, res, 
   await dispatchBridgeWrite(req, res, next, "corpRegistry", "UpdateTitles", [titles]);
 });
 
+// --- R97 Phase-4 top-level WRITES — corpRegistry batch B ---------------------
+//
+// WB-CORPREG split 2 of ~3: member config (2) + corp config (4) + member/corp
+// settings (6) + titles-delete (1) + a generic corp-action executor (1) = 14
+// writes on the SAME "corpRegistry" service the R80-82 reads and the R96 batch-A
+// writes opened. Every one dispatches on the ORDINARY top-level /call seam
+// (dispatchBridgeWrite → heldTopLevelCall), NOT a bound two-step: each handler
+// resolves the corp from the SESSION (resolveCorporationID(session)), so there is
+// no MachoBindObject step and no way for the browser to steer a FOREIGN corp.
+// UpdateMember/UpdateMembers scope the target member to the SESSION-CORP runtime
+// (runtime.members[memberID]); a memberID not in this corp simply MISSES (no-op),
+// so there is no cross-corp mutation vector. Every route is CONFIRM-GATED via
+// requireWriteConfirmation (no `confirm: true` ⇒ 400 CONFIRMATION_REQUIRED).
+//
+// ⚠ ROLE-GATED: corpRegistry writes are CEO/director-role-gated server-side; a
+// session lacking the role gets a role refusal / error return — CORRECT server
+// behavior, NOT a bridge bug.
+//
+// ⚠⚠ EXTRA-CARE — NEVER fired on the live world (reachability + refuses-without-
+// confirm only): DeleteTitle (destructive) and ExecuteActions (a generic corp-
+// action executor that can drive multiple role-gated member mutations). Their
+// confirm messages say so explicitly.
+//
+// FAST-MODE educated-guess decoders (writesCorpRegistryConfig.ts): all but two
+// return null (SetAccountKey echoes a boolean; RegisterNewAggressionSettings
+// echoes an aggression-settings payload) — the panel re-reads to prove the edit.
+
+// Member config (2) ----------------------------------------------------------
+
+// UpdateMember(memberID, [title], [divisionID], [squadronID], [roles],
+// [grantableRoles], [rolesAtHQ], [grantableRolesAtHQ], [rolesAtBase],
+// [grantableRolesAtBase], [rolesAtOther], [grantableRolesAtOther], [baseID],
+// [titleMask], [blockRoles]) — edits one member of the SESSION corp; a memberID
+// not in this corp misses. FAST-MODE: absent named fields pass as null.
+app.post("/api/bridge/corpreg/member/update", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This updates a corporation member's roles/assignment. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  await dispatchBridgeWrite(req, res, next, "corpRegistry", "UpdateMember", [
+    Number(body.memberID) || 0,
+    body.title ?? null,
+    body.divisionID ?? null,
+    body.squadronID ?? null,
+    body.roles ?? null,
+    body.grantableRoles ?? null,
+    body.rolesAtHQ ?? null,
+    body.grantableRolesAtHQ ?? null,
+    body.rolesAtBase ?? null,
+    body.grantableRolesAtBase ?? null,
+    body.rolesAtOther ?? null,
+    body.grantableRolesAtOther ?? null,
+    body.baseID ?? null,
+    body.titleMask ?? null,
+    body.blockRoles ?? null,
+  ]);
+});
+
+// UpdateMembers(rows) — bulk member update: a list of per-member row arrays, each
+// shaped like UpdateMember's positional args. Each row is scoped to the session corp.
+app.post("/api/bridge/corpreg/member/update-many", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This updates multiple corporation members. Confirm to continue.")) {
+    return;
+  }
+  const rows = Array.isArray((req.body || {}).members) ? (req.body || {}).members : [];
+  await dispatchBridgeWrite(req, res, next, "corpRegistry", "UpdateMembers", [rows]);
+});
+
+// Corp config (4) ------------------------------------------------------------
+
+// UpdateCorporation(description, url, taxRate, applicationsEnabled, lpTaxRate) —
+// edits the session corp's description/url/tax/recruitment.
+app.post("/api/bridge/corpreg/corp/update", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This updates your corporation's description/URL/tax rate. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  await dispatchBridgeWrite(req, res, next, "corpRegistry", "UpdateCorporation", [
+    typeof body.description === "string" ? body.description : "",
+    typeof body.url === "string" ? body.url : "",
+    Number(body.taxRate) || 0,
+    body.applicationsEnabled ? 1 : 0,
+    Number(body.loyaltyPointTaxRate) || 0,
+  ]);
+});
+
+// UpdateCorporationAbilities(applicationsEnabled) — toggles whether the corp
+// accepts membership applications.
+app.post("/api/bridge/corpreg/corp/abilities", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This changes whether your corporation accepts applications. Confirm to continue.")) {
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "corpRegistry", "UpdateCorporationAbilities", [
+    (req.body || {}).applicationsEnabled ? 1 : 0,
+  ]);
+});
+
+// UpdateLogo(shape1, shape2, shape3, color1, color2, color3, typeface) — sets the
+// corp emblem shapes/colors.
+app.post("/api/bridge/corpreg/corp/logo", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This updates your corporation logo. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const n = (key) => (body[key] === undefined ? null : Number(body[key]) || null);
+  await dispatchBridgeWrite(req, res, next, "corpRegistry", "UpdateLogo", [
+    n("shape1"), n("shape2"), n("shape3"),
+    n("color1"), n("color2"), n("color3"),
+    n("typeface"),
+  ]);
+});
+
+// UpdateDivisionNames(name1 … name14) — renames the corp's 14 wallet/hangar divisions.
+app.post("/api/bridge/corpreg/corp/division-names", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This renames your corporation's divisions. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const names = Array.isArray(body.names) ? body.names : [];
+  const args = [];
+  for (let i = 0; i < 14; i += 1) {
+    args.push(typeof names[i] === "string" ? names[i] : null);
+  }
+  await dispatchBridgeWrite(req, res, next, "corpRegistry", "UpdateDivisionNames", args);
+});
+
+// Member / corp settings (6) -------------------------------------------------
+
+// SetAccountKey(accountKey) — sets the calling member's active corp-wallet
+// division key. Returns a boolean.
+app.post("/api/bridge/corpreg/member/account-key", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This changes your active corporation wallet division. Confirm to continue.")) {
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "corpRegistry", "SetAccountKey", [
+    Number((req.body || {}).accountKey) || 1000,
+  ]);
+});
+
+// SetCorpWelcomeMail(welcomeMail) — sets the corp's new-member welcome mail body.
+app.post("/api/bridge/corpreg/corp/welcome-mail", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This updates your corporation's welcome mail. Confirm to continue.")) {
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "corpRegistry", "SetCorpWelcomeMail", [
+    typeof (req.body || {}).welcomeMail === "string" ? (req.body || {}).welcomeMail : "",
+  ]);
+});
+
+// SetStructureReinforceDefault(hour) — sets the corp's default structure
+// reinforcement hour.
+app.post("/api/bridge/corpreg/corp/reinforce-default", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This updates your corporation's default structure reinforcement timer. Confirm to continue.")) {
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "corpRegistry", "SetStructureReinforceDefault", [
+    Number((req.body || {}).hour) || 0,
+  ]);
+});
+
+// RegisterNewAggressionSettings(friendlyFireLegal) — schedules the corp's
+// friendly-fire (aggression) setting. Returns an aggression-settings payload.
+app.post("/api/bridge/corpreg/settings/aggression", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This changes your corporation's friendly-fire (aggression) setting. Confirm to continue.")) {
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "corpRegistry", "RegisterNewAggressionSettings", [
+    (req.body || {}).friendlyFireLegal ? true : false,
+  ]);
+});
+
+// RegisterNewAcceptStructureSettings(acceptStructures) — toggles whether the corp
+// accepts anchored structures.
+app.post("/api/bridge/corpreg/settings/accept-structures", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This changes whether your corporation accepts structures. Confirm to continue.")) {
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "corpRegistry", "RegisterNewAcceptStructureSettings", [
+    (req.body || {}).acceptStructures ? true : false,
+  ]);
+});
+
+// RegisterNewCorpMailRestrictionSettings(restrictCorpMails) — toggles who may send
+// corp mails.
+app.post("/api/bridge/corpreg/settings/mail-restriction", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This changes your corporation's mail restriction setting. Confirm to continue.")) {
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "corpRegistry", "RegisterNewCorpMailRestrictionSettings", [
+    (req.body || {}).restrictCorpMails ? true : false,
+  ]);
+});
+
+// Titles-delete (1) + generic executor (1) — EXTRA-CARE ----------------------
+
+// ⚠ EXTRA-CARE (destructive — permanently removes a corp title). DeleteTitle(titleID).
+app.post("/api/bridge/corpreg/title/delete", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "Deleting a corporation title is permanent. This must be confirmed explicitly.")) {
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "corpRegistry", "DeleteTitle", [
+    Number((req.body || {}).titleID) || 0,
+  ]);
+});
+
+// ⚠ EXTRA-CARE (a generic corp-action executor — drives multiple role-gated member
+// mutations, e.g. kick/apply-title). ExecuteActions(targetIDs, actions).
+app.post("/api/bridge/corpreg/member/execute-actions", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This runs corporation member actions (which may kick members or change roles). This must be confirmed explicitly.")) {
+    return;
+  }
+  const body = req.body || {};
+  await dispatchBridgeWrite(req, res, next, "corpRegistry", "ExecuteActions", [
+    bridgeIDList(body.targetIDs),
+    body.actions ?? null,
+  ]);
+});
+
 // --- R17 Contracts (contractProxy bridge) -----------------------------------
 //
 // Like mail and market, the whole contract surface is TOP-LEVEL
