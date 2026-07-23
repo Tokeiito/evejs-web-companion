@@ -7106,6 +7106,234 @@ app.post("/api/bridge/safety/set-level", requireAuth, async (req, res, next) => 
   ]);
 });
 
+// --- R96 Phase-4 top-level WRITES — corpRegistry batch A ---------------------
+//
+// WB-CORPREG split 1 of ~3: bulletins (4) + labels (5) + contacts (4) + titles
+// (2), 15 writes on the SAME "corpRegistry" service the R80/R81/R82 reads opened.
+// Every one dispatches on the ORDINARY top-level /call seam (dispatchBridgeWrite →
+// heldTopLevelCall), NOT a bound two-step: each server handler resolves the corp
+// from the SESSION (resolveCorporationID(session)), so there is no MachoBindObject
+// step and no way for the browser to steer a FOREIGN corp — a bulletinID/labelID/
+// titleID/contactID that is not in the session-corp table simply MISSES (no-op).
+// Every route is CONFIRM-GATED via requireWriteConfirmation (no `confirm: true` ⇒
+// 400 CONFIRMATION_REQUIRED, no dispatch).
+//
+// ⚠ ROLE-GATED: corpRegistry writes are CEO/director-role-gated server-side; a
+// session lacking the role gets a role refusal / error return — CORRECT server
+// behavior, surfaced as a non-applied ack / thrown error, NOT a bridge bug.
+//
+// ⚠⚠ EXTRA-CARE — NEVER fired on the live world (reachability + refuses-without-
+// confirm only): DeleteBulletin, DeleteLabel, RemoveCorporateContacts. Their
+// confirm messages say so explicitly.
+//
+// FAST-MODE educated-guess decoders (writesCorpRegistry.ts): AddBulletin /
+// UpdateBulletin return a bulletinID, CreateLabel a labelID; the rest return null.
+
+// Bulletins (4) --------------------------------------------------------------
+
+// AddBulletin(title, body, [bulletinID], [editDateTime]) — posts a bulletin;
+// returns the allocated bulletinID.
+app.post("/api/bridge/corpreg/bulletin/add", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This posts a corporation bulletin. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const title = typeof body.title === "string" ? body.title : "";
+  const bulletinBody = typeof body.body === "string" ? body.body : "";
+  const bulletinID = Number(body.bulletinID) || null;
+  await dispatchBridgeWrite(req, res, next, "corpRegistry", "AddBulletin", [
+    title,
+    bulletinBody,
+    bulletinID,
+    body.editDateTime ?? null,
+  ]);
+});
+
+// UpdateBulletin(bulletinID, title, body, [editDateTime]) — edits an existing
+// bulletin (the handler reorders to AddBulletin under the hood); returns bulletinID.
+app.post("/api/bridge/corpreg/bulletin/update", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This edits that corporation bulletin. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const bulletinID = Number(body.bulletinID) || 0;
+  const title = typeof body.title === "string" ? body.title : "";
+  const bulletinBody = typeof body.body === "string" ? body.body : "";
+  await dispatchBridgeWrite(req, res, next, "corpRegistry", "UpdateBulletin", [
+    bulletinID,
+    title,
+    bulletinBody,
+    body.editDateTime ?? null,
+  ]);
+});
+
+// UpdateBulletinOrder(newOrder) — reorders bulletins by a list of bulletinIDs.
+app.post("/api/bridge/corpreg/bulletin/reorder", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This reorders the corporation bulletins. Confirm to continue.")) {
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "corpRegistry", "UpdateBulletinOrder", [
+    bridgeIDList((req.body || {}).order),
+  ]);
+});
+
+// ⚠ EXTRA-CARE (destructive — permanently removes a bulletin). DeleteBulletin(bulletinID).
+app.post("/api/bridge/corpreg/bulletin/delete", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "Deleting a corporation bulletin is permanent. This must be confirmed explicitly.")) {
+    return;
+  }
+  const bulletinID = Number((req.body || {}).bulletinID) || 0;
+  await dispatchBridgeWrite(req, res, next, "corpRegistry", "DeleteBulletin", [bulletinID]);
+});
+
+// Contact labels (5) ---------------------------------------------------------
+
+// CreateLabel(name, color) — creates a corp-contact label; returns the labelID.
+app.post("/api/bridge/corpreg/label/create", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This creates a corporation contact label. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const name = typeof body.name === "string" ? body.name : "";
+  const color = Number(body.color) || 0;
+  await dispatchBridgeWrite(req, res, next, "corpRegistry", "CreateLabel", [name, color]);
+});
+
+// EditLabel(labelID, [name], [color]) — renames / recolors a contact label.
+app.post("/api/bridge/corpreg/label/edit", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This edits that corporation contact label. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const labelID = Number(body.labelID) || 0;
+  const args = [labelID];
+  if (typeof body.name === "string") {
+    args.push(body.name);
+    if (body.color !== undefined) {
+      args.push(Number(body.color) || 0);
+    }
+  }
+  await dispatchBridgeWrite(req, res, next, "corpRegistry", "EditLabel", args);
+});
+
+// ⚠ EXTRA-CARE (destructive — removes the label and clears it from every contact).
+// DeleteLabel(labelID).
+app.post("/api/bridge/corpreg/label/delete", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "Deleting a corporation contact label is permanent. This must be confirmed explicitly.")) {
+    return;
+  }
+  const labelID = Number((req.body || {}).labelID) || 0;
+  await dispatchBridgeWrite(req, res, next, "corpRegistry", "DeleteLabel", [labelID]);
+});
+
+// AssignLabels(contactIDs, labelMask) — adds a label mask to the given contacts.
+app.post("/api/bridge/corpreg/label/assign", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This assigns labels to those corporation contacts. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  await dispatchBridgeWrite(req, res, next, "corpRegistry", "AssignLabels", [
+    bridgeIDList(body.contactIDs),
+    Number(body.labelMask) || 0,
+  ]);
+});
+
+// RemoveLabels(contactIDs, labelMask) — clears a label mask from the given contacts.
+app.post("/api/bridge/corpreg/label/remove", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This removes labels from those corporation contacts. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  await dispatchBridgeWrite(req, res, next, "corpRegistry", "RemoveLabels", [
+    bridgeIDList(body.contactIDs),
+    Number(body.labelMask) || 0,
+  ]);
+});
+
+// Corporate contacts (4) -----------------------------------------------------
+
+// AddCorporateContact(contactID, relationshipID) — adds a corp contact.
+app.post("/api/bridge/corpreg/contact/add", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This adds a corporation contact. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  await dispatchBridgeWrite(req, res, next, "corpRegistry", "AddCorporateContact", [
+    Number(body.contactID) || 0,
+    Number(body.relationshipID) || 0,
+  ]);
+});
+
+// EditCorporateContact(contactID, relationshipID) — updates a corp contact
+// (server alias of AddCorporateContact).
+app.post("/api/bridge/corpreg/contact/edit", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This edits that corporation contact. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  await dispatchBridgeWrite(req, res, next, "corpRegistry", "EditCorporateContact", [
+    Number(body.contactID) || 0,
+    Number(body.relationshipID) || 0,
+  ]);
+});
+
+// ⚠ EXTRA-CARE (destructive — removes corp contacts). RemoveCorporateContacts(contactIDs).
+app.post("/api/bridge/corpreg/contact/remove", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "Removing corporation contacts is permanent. This must be confirmed explicitly.")) {
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "corpRegistry", "RemoveCorporateContacts", [
+    bridgeIDList((req.body || {}).contactIDs),
+  ]);
+});
+
+// EditContactsRelationshipID(contactIDs, relationshipID) — sets standing on contacts.
+app.post("/api/bridge/corpreg/contact/set-standing", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This changes those corporation contacts' standing. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  await dispatchBridgeWrite(req, res, next, "corpRegistry", "EditContactsRelationshipID", [
+    bridgeIDList(body.contactIDs),
+    Number(body.relationshipID) || 0,
+  ]);
+});
+
+// Titles (2) -----------------------------------------------------------------
+
+// UpdateTitle(titleID, titleName, roles, grantableRoles, rolesAtHQ,
+// grantableRolesAtHQ, rolesAtBase, grantableRolesAtBase, rolesAtOther,
+// grantableRolesAtOther) — edits a corp title's name + role masks.
+app.post("/api/bridge/corpreg/title/update", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This updates a corporation title's roles. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const roleAt = (key) => (body[key] === undefined ? 0 : body[key]);
+  await dispatchBridgeWrite(req, res, next, "corpRegistry", "UpdateTitle", [
+    Number(body.titleID) || 0,
+    typeof body.titleName === "string" ? body.titleName : "",
+    roleAt("roles"),
+    roleAt("grantableRoles"),
+    roleAt("rolesAtHQ"),
+    roleAt("grantableRolesAtHQ"),
+    roleAt("rolesAtBase"),
+    roleAt("grantableRolesAtBase"),
+    roleAt("rolesAtOther"),
+    roleAt("grantableRolesAtOther"),
+  ]);
+});
+
+// UpdateTitles(titles) — bulk title update: a list of per-title row arrays, each
+// shaped like UpdateTitle's positional args.
+app.post("/api/bridge/corpreg/title/update-many", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This updates multiple corporation titles' roles. Confirm to continue.")) {
+    return;
+  }
+  const titles = Array.isArray((req.body || {}).titles) ? (req.body || {}).titles : [];
+  await dispatchBridgeWrite(req, res, next, "corpRegistry", "UpdateTitles", [titles]);
+});
+
 // --- R17 Contracts (contractProxy bridge) -----------------------------------
 //
 // Like mail and market, the whole contract surface is TOP-LEVEL
