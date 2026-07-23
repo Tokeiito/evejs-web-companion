@@ -2,6 +2,8 @@
 
 Complete enumeration of every retail-client `{service, method}` that has an eve.js handler and is not yet allowlisted. Produced 2026-07-22 by a fan-out over the decompiled client cross-referenced against eve.js handlers + our allowlist. **588 plumbable pairs.** This doc drives the plumbing loop; the worklist body (phases/batches) follows the header.
 
+> **🏁 STATUS 2026-07-23 — SWEEP EFFECTIVELY COMPLETE: 585/588 plumbed.** 287/287 reads (R57–R85) + 298/301 writes (R86–R105), every batch orchestrator-verified, zero de-allowlisted. **Only the 3 PLEX writes remain** (deferred — spend real PLEX/ISK, need the operator's explicit OK). All writes confirm-gated; NOT ONE fired live (fast mode — educated-guess decoders/args, QA deferred by operator directive). No UI built (bridge-only). Open follow-ups: (1) 3 PLEX writes; (2) the live QA pass over all fast-mode writes; (3) the 30 read + 18 write arg-injection leaks + 1 bind-gateway in `docs/arg-injection-leak-handoff.md` (flag-only, separate session). See `docs/afk-session-log.md` for the full per-batch record.
+
 ## Orchestrator plan & scale (READ THIS FIRST)
 
 **Scale is large: 588 pairs ≈ many worker cycles.** The plumbing loop wires them in coherent batches per the PLUMBING CONTRACT (`docs/goal-prompts/r57-plumbing-toplevel-reads.md`): allowlist pair + BFF passthrough + decoder from real bytes + tests, **no UI**.
