@@ -8647,6 +8647,149 @@ app.post("/api/bridge/planet/abandon", requireAuth, async (req, res, next) => {
   await dispatchBoundPlanetWrite(req, res, next, planetID, "UserAbandonPlanet", []);
 });
 
+// --- R104 WB-SCAN: the 9 Phase-4 BOUND probe / scan-control WRITES ------------
+//
+// These ride the SAME scanMgr.GetSystemScanMgr bind (systemScanBindSpec — the R72
+// RB-SCAN gateway) the scan reads use. Unlike planetMgr.MachoBindObject(planetID),
+// GetSystemScanMgr takes NO caller args: it always binds the SESSION's OWN current-
+// system scan manager (server-derived), so the bind CANNOT be pointed at a foreign
+// system — the good security property. The BFF holds the OID handle server-side; the
+// browser never sees it. Each write dispatches as a BOUND method off that handle,
+// mirroring dispatchBoundInventoryWrite / dispatchBoundPlanetWrite. Every route is
+// confirm-gated; DestroyProbe — which destroys a launched probe — carries an extra-
+// explicit message. FAST-MODE: none fired live (operator owns EveJS). The handlers
+// return null / a directional-scan list (ConeScan) / a recovered-probeID list
+// (RecoverProbes); the ack carries `result` through for a future scan UI to decode.
+// Args are EDUCATED-GUESS from the handler shapes.
+//
+// ⚠ ARG-INJECTION: the bind is session-scoped (no caller args), AND every handler
+// resolves characterID = this._getCharacterID(session) and operates on
+// probeRuntimeState keyed on THAT characterID. The caller-supplied probeIDs
+// (SetProbeDestination / SetProbeRangeStep / DestroyProbe / RecoverProbes /
+// SetActivityState) only ever SELECT among the session char's OWN probes
+// (getCharacterSystemProbes / removeCharacterProbes / synchronizeCharacterProbeGeometry
+// are all characterID-scoped), so a foreign probeID launched by another char simply
+// MISSES — it cannot mutate or destroy another player's probes. Probes are inherently
+// session-scoped; no handoff-doc flag added.
+
+/** Dispatch one confirm-gated BOUND scan write off the session-scoped scanMgr bind. */
+async function dispatchBoundScanWrite(req, res, next, method, args, kwargs = null) {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  try {
+    const outcome = await boundCall(held, req.webSessionID, systemScanBindSpec(), method, args, kwargs);
+    res.json({ ok: true, applied: true, result: outcome.result ?? null, notifications: outcome.notifications });
+  } catch (error) {
+    if (error && error.code === "SESSION_NOT_FOUND") {
+      forgetBridgeSession(req.webSessionID);
+    }
+    next(error);
+  }
+}
+
+// SignalTrackerRegister() — register the session char as a signal-tracker listener
+// for its current system (server pushes OnSignalTrackerFullState). No caller args.
+app.post("/api/bridge/scan/signal-tracker/register", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This registers you for live signal-tracker updates. Confirm to continue.")) {
+    return;
+  }
+  await dispatchBoundScanWrite(req, res, next, "SignalTrackerRegister", []);
+});
+
+// SetProbeDestination(probeID, destination) — move one of the session char's own
+// probes to a destination. A foreign probeID misses the caller's probe set (no-op).
+app.post("/api/bridge/scan/probe/set-destination", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This repositions that scan probe. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const probeID = Number(body.probeID) || 0;
+  const destination = body.destination === undefined ? null : body.destination;
+  await dispatchBoundScanWrite(req, res, next, "SetProbeDestination", [probeID, destination]);
+});
+
+// SetProbeRangeStep(probeID, rangeStep) — set the scan range step of one of the
+// session char's own probes. Clamped server-side to the probe type's range table.
+app.post("/api/bridge/scan/probe/set-range-step", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This changes that probe's scan range. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const probeID = Number(body.probeID) || 0;
+  const rangeStep = Number(body.rangeStep) || 0;
+  await dispatchBoundScanWrite(req, res, next, "SetProbeRangeStep", [probeID, rangeStep]);
+});
+
+// ConeScan(angle, range, dx, dy, dz) — run a directional (D-scan) sweep from the
+// session's own ship. Returns the visible-entity list; session/scene-scoped.
+app.post("/api/bridge/scan/cone-scan", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This runs a directional scan. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const angle = Number(body.angle) || 0;
+  const range = Number(body.range) || 0;
+  const dx = Number(body.dx) || 0;
+  const dy = Number(body.dy) || 0;
+  const dz = Number(body.dz) || 0;
+  await dispatchBoundScanWrite(req, res, next, "ConeScan", [angle, range, dx, dy, dz]);
+});
+
+// RequestScans(probeMap) — run a probe scan for the session char's own probes
+// (probeMap keyed by probeID → geometry). Foreign probeIDs are dropped server-side.
+app.post("/api/bridge/scan/request-scans", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This launches a probe scan. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const probeMap = body.probeMap && typeof body.probeMap === "object" ? body.probeMap : {};
+  await dispatchBoundScanWrite(req, res, next, "RequestScans", [probeMap]);
+});
+
+// ReconnectToLostProbes() — replay lost-probe notifications for the session char's
+// own probes in its current system. No caller args.
+app.post("/api/bridge/scan/probe/reconnect", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This reconnects to your lost probes. Confirm to continue.")) {
+    return;
+  }
+  await dispatchBoundScanWrite(req, res, next, "ReconnectToLostProbes", []);
+});
+
+// ⚠ DESTROYS A PROBE. DestroyProbe(probeID) — permanently destroys one of the
+// session char's own launched probes (removeCharacterProbes, characterID-scoped —
+// a foreign probeID cannot be destroyed). Extra-explicit confirm.
+app.post("/api/bridge/scan/probe/destroy", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This DESTROYS that launched scan probe — it is gone and cannot be recovered. This is destructive and must be confirmed explicitly.")) {
+    return;
+  }
+  const probeID = Number((req.body || {}).probeID) || 0;
+  await dispatchBoundScanWrite(req, res, next, "DestroyProbe", [probeID]);
+});
+
+// RecoverProbes([probeIDs]) — recover the session char's own launched probes back
+// to the ship (restores charges). characterID-scoped; returns the removed-probeID list.
+app.post("/api/bridge/scan/probe/recover", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This recovers those launched probes to your ship. Confirm to continue.")) {
+    return;
+  }
+  const probeIDs = bridgeIDList((req.body || {}).probeIDs);
+  await dispatchBoundScanWrite(req, res, next, "RecoverProbes", [probeIDs]);
+});
+
+// SetActivityState([probeIDs], active) — toggle the active/idle state of the session
+// char's own probes. characterID-scoped; foreign probeIDs are ignored.
+app.post("/api/bridge/scan/probe/set-activity", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This changes those probes' activity state. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const probeIDs = bridgeIDList(body.probeIDs);
+  const active = body.active === true;
+  await dispatchBoundScanWrite(req, res, next, "SetActivityState", [probeIDs, active]);
+});
+
 // --- R17 Contracts (contractProxy bridge) -----------------------------------
 //
 // Like mail and market, the whole contract surface is TOP-LEVEL
