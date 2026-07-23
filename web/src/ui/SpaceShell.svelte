@@ -6,6 +6,7 @@
   // onOpen. Gauges read the last space snapshot; a null ratio renders dashed
   // rather than inventing a value.
   import Overview from "./Overview.svelte";
+  import ModuleRack from "./ModuleRack.svelte";
   import { SPACE_PANELS, type ShellSlot } from "./shell.ts";
   import type { TabID } from "./tabs.ts";
   import type { ClientStore } from "../store/clientStore.ts";
@@ -21,6 +22,17 @@
   const flight = store.flight;
   // svelte-ignore state_referenced_locally
   const space = store.space;
+  // svelte-ignore state_referenced_locally
+  const fitting = store.fitting;
+
+  // The HUD module rack needs the ship's fit, but Fitting is a docked-only tab —
+  // so pull it once here. Fire-and-forget: if the read is unavailable the rack
+  // stays empty with its neutral hint. $effect never runs under SSR.
+  $effect(() => {
+    if (!$fitting.loaded) {
+      void flow.loadFitting().catch(() => {});
+    }
+  });
 
   const systemName = $derived($flight.solarSystemName ?? null);
   const shipMode = $derived($flight.status?.shipMode ?? null);
@@ -82,13 +94,8 @@
     <section class="hud-cluster module-rack" aria-labelledby="hud-modules-h">
       <div class="panel-head">
         <h3 id="hud-modules-h">Modules</h3>
-        <span class="controls"><span class="soon-pill">placeholder</span></span>
       </div>
-      <div class="module-slots">
-        {#each ["High", "High", "High", "Mid", "Mid", "Low", "Low", "Low"] as rack, i (i)}
-          <span class="module-slot" title={`${rack} slot`}>{rack[0]}</span>
-        {/each}
-      </div>
+      <ModuleRack {store} />
     </section>
 
     <nav class="hud-cluster hud-nav" aria-label="Flight panels">

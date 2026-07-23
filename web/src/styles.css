@@ -1824,11 +1824,30 @@
     border: 1px solid var(--color-line);
     padding: 0.6rem 0.8rem;
   }
-  .module-slots {
+  /* The HUD module rack — three rows (high / mid / low) of slot tiles. */
+  .module-rack-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    margin-top: 0.4rem;
+  }
+  .rack-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+  .rack-row-label {
+    flex: 0 0 2.4rem;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--color-muted);
+  }
+  .rack-slots {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.4rem;
-    margin-top: 0.4rem;
+    gap: 0.3rem;
+    min-width: 0;
   }
   .module-slot {
     width: 2.2rem;
@@ -1836,12 +1855,22 @@
     display: flex;
     align-items: center;
     justify-content: center;
+    overflow: hidden;
     border: 1px solid var(--color-line);
     background: var(--color-panel-3);
     color: var(--color-muted);
     font-size: 11px;
     font-weight: 700;
   }
+  /* A cycling module glows in the accent; an offline one is dimmed. */
+  .module-slot.active {
+    border-color: var(--color-accent);
+    box-shadow: inset 0 0 0 1px var(--color-accent);
+  }
+  .module-slot.offline { opacity: 0.45; }
+  .module-slot.empty { background: var(--color-field); }
+  .rack-empty { padding: 0 0.3rem; }
+  .rack-hint { font-size: 0.8rem; margin: 0.3rem 0 0; }
 
   /* Placeholder affordance — dashed panel + a pill, so a stub never reads as a
    * finished panel that happens to be empty. */

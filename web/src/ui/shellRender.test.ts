@@ -157,9 +157,16 @@ test("in space renders the HUD: badge, system, ship gauges, module rack, nav", (
   assert.match(text, /Mining/, "no mining nav control");
 });
 
-test("the module rack is still marked a placeholder", () => {
-  // The station panel + overview are live now; only the module rack is a stub.
-  assert.match(visibleText(renderSpace(inSpaceStore())), /placeholder/i, "module rack not marked");
+test("the module rack renders real high/mid/low rows (no longer a placeholder)", () => {
+  const text = visibleText(renderSpace(inSpaceStore()));
+  // The three EVE activation racks are always drawn...
+  assert.match(text, /High/, "no high rack row");
+  assert.match(text, /Mid/, "no mid rack row");
+  assert.match(text, /Low/, "no low rack row");
+  // ...and with no fit loaded (this store never loaded fitting) the neutral hint
+  // shows instead of an invented module — and the "placeholder" pill is gone.
+  assert.match(text, /fitting has loaded/, "no empty-rack hint");
+  assert.doesNotMatch(text, /placeholder/i, "the module rack still claims to be a placeholder");
 });
 
 function renderNeocom(isDocked: boolean): string {
