@@ -8,6 +8,7 @@
   import Overview from "./Overview.svelte";
   import ModuleRack from "./ModuleRack.svelte";
   import TargetBracket from "./TargetBracket.svelte";
+  import ShipHud from "./ShipHud.svelte";
   import { SPACE_PANELS, type ShellSlot } from "./shell.ts";
   import { nearestDockable } from "./dockTarget.ts";
   import { resolvedName } from "../store/names.ts";
@@ -82,18 +83,6 @@
   // The HUD dock's nav buttons — everything in SPACE_PANELS that opens a panel
   // other than the overview (which is the inline home content).
   const navSlots = $derived(SPACE_PANELS.filter((s) => s.wires !== null && s.wires !== "overview"));
-
-  const gauges = $derived(
-    (() => {
-      const ship = $space.snapshot?.ship ?? null;
-      return [
-        { cls: "shield", label: "Shield", ratio: ship?.shieldRatio ?? null },
-        { cls: "armor", label: "Armor", ratio: ship?.armorRatio ?? null },
-        { cls: "hull", label: "Hull", ratio: ship?.hullRatio ?? null },
-        { cls: "capacitor", label: "Capacitor", ratio: ship?.capacitorRatio ?? null },
-      ];
-    })(),
-  );
 </script>
 
 <section class="space-shell">
@@ -124,21 +113,7 @@
 
   <div class="hud-dock">
     <section class="hud-cluster ship-gauges" aria-label="Ship status">
-      <div class="hud">
-        {#each gauges as g (g.cls)}
-          <div class="hud-gauge {g.cls}">
-            <div class="hud-head">
-              <span class="hud-label">{g.label}</span>
-              <span class="hud-value">{g.ratio != null ? `${Math.round(g.ratio * 100)}%` : "—"}</span>
-            </div>
-            <div class="hud-track">
-              {#if g.ratio != null}
-                <span class="hud-fill" style={`width:${Math.round(g.ratio * 100)}%`}></span>
-              {/if}
-            </div>
-          </div>
-        {/each}
-      </div>
+      <ShipHud {store} />
     </section>
 
     <section class="hud-cluster module-rack" aria-labelledby="hud-modules-h">
