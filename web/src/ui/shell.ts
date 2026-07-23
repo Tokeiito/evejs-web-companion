@@ -56,6 +56,20 @@ export const STATION_SERVICES: readonly ShellSlot[] = [
   { id: "svc-insurance", label: "Insurance", wires: null, hint: "Insure the active ship. (Service — not yet built.)" },
 ];
 
+/** A labelled group of services in the rail — like EVE's station panel sections. */
+export interface ServiceGroup {
+  readonly label: string;
+  readonly slots: readonly ShellSlot[];
+}
+
+// The rail splits into what opens a real panel and the true station services not
+// yet built — small headings, EVE's station-panel sections. Derived from the one
+// STATION_SERVICES list so a slot is only ever declared once.
+export const STATION_SERVICE_GROUPS: readonly ServiceGroup[] = [
+  { label: "Panels", slots: STATION_SERVICES.filter((s) => s.wires !== null) },
+  { label: "Station Services", slots: STATION_SERVICES.filter((s) => s.wires === null) },
+];
+
 // ── In space: the HUD panels reachable from the viewport chrome ──
 export const SPACE_PANELS: readonly ShellSlot[] = [
   { id: "hud-overview", label: "Overview", wires: "overview", hint: "Everything around your ship." },

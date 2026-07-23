@@ -10,6 +10,7 @@ import {
   shellFor,
   shellSlotIDs,
   STATION_SERVICES,
+  STATION_SERVICE_GROUPS,
   SPACE_PANELS,
   type ShellSlot,
 } from "./shell.ts";
@@ -47,4 +48,18 @@ test("the docked services host the docked-only tabs (fitting, travel, bots)", ()
 
 test("the HUD hosts the overview slot", () => {
   assert.ok(SPACE_PANELS.some((s) => s.wires === "overview"), "no HUD slot hosts the overview");
+});
+
+test("the service groups partition STATION_SERVICES: wired panels vs not-yet-built", () => {
+  const grouped = STATION_SERVICE_GROUPS.flatMap((g) => g.slots);
+  // Every service appears in exactly one group, none lost or duplicated.
+  assert.equal(grouped.length, STATION_SERVICES.length);
+  assert.deepEqual(
+    new Set(grouped.map((s) => s.id)),
+    new Set(STATION_SERVICES.map((s) => s.id)),
+  );
+  const panels = STATION_SERVICE_GROUPS.find((g) => g.label === "Panels")!;
+  const services = STATION_SERVICE_GROUPS.find((g) => g.label === "Station Services")!;
+  assert.ok(panels.slots.every((s) => s.wires !== null), "a Panels entry opens no panel");
+  assert.ok(services.slots.every((s) => s.wires === null), "a Station Services entry is unexpectedly wired");
 });

@@ -7,7 +7,7 @@
   // (identity, services row, guests) renders inline from the store.
   import StationPanel from "./StationPanel.svelte";
   import ShipHangar from "./ShipHangar.svelte";
-  import { STATION_SERVICES } from "./shell.ts";
+  import { STATION_SERVICE_GROUPS } from "./shell.ts";
   import { BridgeCallError } from "../bridge/callMethod.ts";
   import { isSessionLost } from "../app/flow.ts";
   import type { TabID } from "./tabs.ts";
@@ -86,23 +86,27 @@
   </header>
 
   <aside class="services-rail" aria-label="Station services">
-    <h2 class="rail-title">Services</h2>
-    <ul>
-      {#each STATION_SERVICES as svc (svc.id)}
-        <li>
-          {#if svc.wires !== null}
-            <button type="button" class="rail-item" title={svc.hint} onclick={() => onOpen(svc.wires as TabID)}>
-              <span class="rail-item-label">{svc.label}</span>
-            </button>
-          {:else}
-            <button type="button" class="rail-item unbuilt" disabled title={svc.hint}>
-              <span class="rail-item-label">{svc.label}</span>
-              <span class="rail-item-tag">soon</span>
-            </button>
-          {/if}
-        </li>
-      {/each}
-    </ul>
+    {#each STATION_SERVICE_GROUPS as group (group.label)}
+      {#if group.slots.length > 0}
+        <h2 class="rail-title">{group.label}</h2>
+        <ul>
+          {#each group.slots as svc (svc.id)}
+            <li>
+              {#if svc.wires !== null}
+                <button type="button" class="rail-item" title={svc.hint} onclick={() => onOpen(svc.wires as TabID)}>
+                  <span class="rail-item-label">{svc.label}</span>
+                </button>
+              {:else}
+                <button type="button" class="rail-item unbuilt" disabled title={svc.hint}>
+                  <span class="rail-item-label">{svc.label}</span>
+                  <span class="rail-item-tag">soon</span>
+                </button>
+              {/if}
+            </li>
+          {/each}
+        </ul>
+      {/if}
+    {/each}
   </aside>
 
   <div class="shell-main">
