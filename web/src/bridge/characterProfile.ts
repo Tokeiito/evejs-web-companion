@@ -312,3 +312,46 @@ export function decodeCorpChange(
     corporationDateTime: toFiletime(readKeyVal(inner, "corporationDateTime")),
   };
 }
+
+// --- R88 write acks ---------------------------------------------------------
+//
+// The Phase-3 charMgr WRITES (SetCharacterDescription / SetActivityStatus /
+// LogSettings, the contact + block writers, and the note writers). FAST-MODE
+// educated-guess decoders reading the small JSON ack the confirm-gated BFF route
+// emits. Every charMgr writer here returns null server-side EXCEPT AddOwnerNote
+// (a new noteID, surfaced via `result`); the panel re-reads the profile / notes
+// to prove the mutation. These are EDUCATED GUESSES from the client + server
+// code, not captured bytes (QA / real impl comes later). Every write is
+// SESSION-scoped server-side (sessionCharacterID) — no foreign mutation.
+
+/** The uniform ack every confirm-gated charMgr write returns. */
+export interface CharWriteAck {
+  readonly ok: boolean;
+  readonly applied: boolean;
+}
+
+function charAckTruthy(value: JsonValue | undefined): boolean {
+  return value === true;
+}
+
+/** Decode a plain charMgr write ack (description / status / contacts / notes). */
+export function decodeCharWriteAck(response: JsonValue): CharWriteAck {
+  return {
+    ok: charAckTruthy(readKeyVal(response, "ok")),
+    applied: charAckTruthy(readKeyVal(response, "applied")),
+  };
+}
+
+/** An AddOwnerNote ack: `applied` plus the new noteID (null when none). */
+export interface OwnerNoteCreatedAck extends CharWriteAck {
+  readonly noteID: number | null;
+}
+
+export function decodeOwnerNoteCreatedAck(response: JsonValue): OwnerNoteCreatedAck {
+  const noteID = toInt(readKeyVal(response, "result"));
+  return {
+    ok: charAckTruthy(readKeyVal(response, "ok")),
+    applied: charAckTruthy(readKeyVal(response, "applied")),
+    noteID: noteID > 0 ? noteID : null,
+  };
+}

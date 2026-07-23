@@ -9,7 +9,9 @@ import {
   decodeChatChannel,
   decodeChatChannelName,
   decodeSentMessage,
+  decodeChatSendAck,
 } from "./chat.ts";
+import type { JsonValue } from "./wire.ts";
 
 const RAW_LOCAL = {
   channel: "local",
@@ -104,4 +106,26 @@ test("decodeSentMessage reads the echoed send entry", () => {
   assert.equal(entry.message, "hello");
   assert.equal(entry.characterName, "Me");
   assert.equal(decodeSentMessage({ channel: "local", sent: true }), null);
+});
+
+// --- R88 write ack (Phase-3 LSC.SendMessage WRITE) ---------------------------
+
+/** A util.KeyVal wrapper around plain fields (the BFF write-ack shape the decoder reads). */
+function chatAckKeyVal(fields: Record<string, JsonValue>): JsonValue {
+  return {
+    type: "object",
+    name: "util.KeyVal",
+    args: { type: "dict", entries: Object.entries(fields) },
+  };
+}
+
+test("R88 — a chat send ack decodes to {ok, applied}", () => {
+  const ack = decodeChatSendAck(chatAckKeyVal({ ok: true, applied: true, result: null }));
+  assert.deepEqual(ack, { ok: true, applied: true });
+});
+
+test("R88 — a declined chat send is read as not-applied, not a throw", () => {
+  const ack = decodeChatSendAck(chatAckKeyVal({ ok: true, applied: false }));
+  assert.equal(ack.ok, true);
+  assert.equal(ack.applied, false);
 });

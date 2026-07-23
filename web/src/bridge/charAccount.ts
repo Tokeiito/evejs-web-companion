@@ -242,3 +242,48 @@ export function decodeStarterSystemIDs(
   }
   return ids;
 }
+
+// --- R88 write acks ---------------------------------------------------------
+//
+// The Phase-3 charUnboundMgr WRITES. FAST-MODE educated-guess decoders reading
+// the small JSON ack the confirm-gated BFF route emits. CancelCharacterDeletePrepare,
+// UpdateCharacterGender and UpdateCharacterBloodline return null server-side;
+// ToggleValidation returns a bool and CreateCharacterWithDoll the new characterID
+// (both surfaced via `result`). ⚠ CreateCharacterWithDoll (creates a whole
+// character) and CancelCharacterDeletePrepare (char-lifecycle) are never fired
+// live in the plumbing pass. ⚠ UpdateCharacterGender / UpdateCharacterBloodline
+// are WRITE-SIDE arg-injection (a caller-supplied charId mutates that record) —
+// flagged in docs/arg-injection-leak-handoff.md, kept plumbed + confirm-gated.
+// These are EDUCATED GUESSES from the client + server code, not captured bytes.
+
+/** The uniform ack every confirm-gated charUnboundMgr write returns. */
+export interface CharUnboundWriteAck {
+  readonly ok: boolean;
+  readonly applied: boolean;
+}
+
+function charUnboundAckTruthy(value: JsonValue | undefined): boolean {
+  return value === true;
+}
+
+/** Decode a plain charUnboundMgr write ack (cancel-delete / update gender / bloodline / toggle). */
+export function decodeCharUnboundWriteAck(response: JsonValue): CharUnboundWriteAck {
+  return {
+    ok: charUnboundAckTruthy(readKeyVal(response, "ok")),
+    applied: charUnboundAckTruthy(readKeyVal(response, "applied")),
+  };
+}
+
+/** A CreateCharacterWithDoll ack: `applied` plus the new characterID (null when declined). */
+export interface CharacterCreatedAck extends CharUnboundWriteAck {
+  readonly characterID: number | null;
+}
+
+export function decodeCharacterCreatedAck(response: JsonValue): CharacterCreatedAck {
+  const characterID = toNumber(readKeyVal(response, "result"));
+  return {
+    ok: charUnboundAckTruthy(readKeyVal(response, "ok")),
+    applied: charUnboundAckTruthy(readKeyVal(response, "applied")),
+    characterID: characterID > 0 ? characterID : null,
+  };
+}

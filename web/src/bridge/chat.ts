@@ -4,7 +4,7 @@
 // the typed ChatChannelState the store holds, tolerating malformed rows (a bad
 // row is skipped, never a throw) and decoding every numeric long-aware.
 
-import { unwrapLong, type JsonValue } from "./wire.ts";
+import { readKeyVal, unwrapLong, type JsonValue } from "./wire.ts";
 import type {
   ChatChannel,
   ChatChannelState,
@@ -104,4 +104,27 @@ export function decodeSentMessage(raw: JsonValue | undefined): ChatMessage | nul
  */
 export function decodeMessageEntry(raw: JsonValue | undefined): ChatMessage | null {
   return raw === undefined || raw === null ? null : decodeMessage(raw);
+}
+
+// --- R88 write ack ----------------------------------------------------------
+//
+// The Phase-3 LSC.SendMessage WRITE. FAST-MODE educated-guess decoder reading
+// the small JSON ack the confirm-gated BFF route emits. SendMessage returns null
+// server-side (the message is broadcast / handled as a command), so this only
+// reads the uniform `applied` flag. ⚠ SendMessage sends an OUTWARD chat message
+// and is NEVER fired live in the plumbing pass. EDUCATED GUESS from client +
+// server code, not captured bytes.
+
+/** The uniform ack the confirm-gated chat send route returns. */
+export interface ChatSendAck {
+  readonly ok: boolean;
+  readonly applied: boolean;
+}
+
+/** Decode the LSC.SendMessage write ack. */
+export function decodeChatSendAck(response: JsonValue): ChatSendAck {
+  return {
+    ok: readKeyVal(response, "ok") === true,
+    applied: readKeyVal(response, "applied") === true,
+  };
 }

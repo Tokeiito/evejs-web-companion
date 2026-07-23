@@ -5263,6 +5263,253 @@ app.post("/api/bridge/bookmarks/move", requireAuth, async (req, res, next) => {
   await dispatchBridgeWrite(req, res, next, "accessGroupBookmarkMgr", "MoveBookmarksToFolderAndSubfolder", args);
 });
 
+// --- R88 character + social WRITES ------------------------------------------
+// (charMgr / charUnboundMgr / LSC)
+//
+// The Phase-3 "character + social" writes batch, following the R86/R87 pattern.
+// Every write is a TOP-LEVEL call on the held session (heldTopLevelCall) and
+// every route is CONFIRM-GATED via requireWriteConfirmation (from R87): it
+// refuses outright (400 CONFIRMATION_REQUIRED, NO dispatch) unless the browser
+// passes `confirm: true`. A stray click / stray POST cannot mutate anything.
+//
+// ⚠ SCOPE — where the write lands:
+//   • charMgr Set*/Log*/Add/Delete/Block/Unblock/*Note all resolve the acting
+//     character from the SESSION (sessionCharacterID(session)) server-side. The
+//     contact/block/note stores are keyed by the session character, so no
+//     browser arg can redirect the mutation at a FOREIGN character's list. A
+//     note-about-an-item (SetNote(itemID)) / owner-note is the SESSION char's
+//     own note store keyed by that id — session-scoped storage, not a foreign
+//     mutation.
+//   • charUnboundMgr CancelCharacterDeletePrepare(charId) is guarded by
+//     session.userid (cancelCharacterDeletePrepare(charId, userid)); ToggleValidation
+//     is a debug-only session flag (a normal session is a no-op returning true).
+//   • ⚠ charUnboundMgr UpdateCharacterGender(charId,...) / UpdateCharacterBloodline(charId,...)
+//     take a CALLER-SUPPLIED charId and mutate that character record directly with
+//     no ownership check on the record write (only the session-mirror of gender is
+//     account-scoped). These are character-CREATION-flow writes (a pre-birth doll),
+//     but the handler trusts the arg — WRITE-SIDE ARG-INJECTION candidate, flagged
+//     in docs/arg-injection-leak-handoff.md. Kept plumbed (server-side fix + QA
+//     later); confirm-gated here.
+//
+// ⚠ EXTRA-CARE writes — reachable + confirm-gated, NEVER fired on the live world
+// in this plumbing pass: CreateCharacterWithDoll (creates a whole character),
+// LSC.SendMessage (sends an OUTWARD chat message), CancelCharacterDeletePrepare
+// (char-lifecycle).
+//
+// FAST-MODE educated-guess responses: every handler returns null except
+// AddOwnerNote (a new noteID), ToggleValidation (a bool) and CreateCharacterWithDoll
+// (the new characterID) — dispatchBridgeWrite surfaces `result` for those; the
+// decoders (web/src/bridge/{characterProfile,charAccount,chat}.ts) read the acks.
+
+// --- charMgr WRITES (12) — all SESSION-scoped -------------------------------
+
+app.post("/api/bridge/character/set-description", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This updates your character bio. Confirm to continue.")) {
+    return;
+  }
+  const description = typeof (req.body || {}).description === "string" ? req.body.description : "";
+  await dispatchBridgeWrite(req, res, next, "charMgr", "SetCharacterDescription", [description]);
+});
+
+app.post("/api/bridge/character/set-activity-status", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This sets your activity status. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const status = Number(body.status) || 0;
+  const extraInfo = body.extraInfo !== undefined ? body.extraInfo : null;
+  await dispatchBridgeWrite(req, res, next, "charMgr", "SetActivityStatus", [status, extraInfo]);
+});
+
+app.post("/api/bridge/character/log-settings", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This records your settings telemetry. Confirm to continue.")) {
+    return;
+  }
+  const settings = (req.body || {}).settings ?? {};
+  await dispatchBridgeWrite(req, res, next, "charMgr", "LogSettings", [settings]);
+});
+
+app.post("/api/bridge/character/contacts/add", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This adds a contact. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const contactID = Number(body.contactID) || 0;
+  if (contactID <= 0) {
+    res.status(400).json({ ok: false, error: "CONTACT_INVALID", message: "A contact is required." });
+    return;
+  }
+  const args = [contactID, Number(body.relationshipID) || 0, Boolean(body.inWatchlist)];
+  await dispatchBridgeWrite(req, res, next, "charMgr", "AddContact", args);
+});
+
+app.post("/api/bridge/character/contacts/delete", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This removes those contacts. Confirm to continue.")) {
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "charMgr", "DeleteContacts", [bridgeIDList((req.body || {}).contactIDs)]);
+});
+
+app.post("/api/bridge/character/contacts/edit-relationship", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This changes those contacts' standing. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const args = [bridgeIDList(body.contactIDs), Number(body.relationshipID) || 0];
+  await dispatchBridgeWrite(req, res, next, "charMgr", "EditContactsRelationshipID", args);
+});
+
+app.post("/api/bridge/character/block-owners", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This blocks those owners. Confirm to continue.")) {
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "charMgr", "BlockOwners", [bridgeIDList((req.body || {}).ownerIDs)]);
+});
+
+app.post("/api/bridge/character/unblock-owners", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This unblocks those owners. Confirm to continue.")) {
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "charMgr", "UnblockOwners", [bridgeIDList((req.body || {}).ownerIDs)]);
+});
+
+// SetNote(itemID, noteText) — the session char's private note ABOUT an entity.
+app.post("/api/bridge/character/notes/set", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This saves your note. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const itemID = Number(body.itemID) || 0;
+  if (itemID <= 0) {
+    res.status(400).json({ ok: false, error: "NOTE_ITEM_INVALID", message: "A subject item is required." });
+    return;
+  }
+  const noteText = typeof body.note === "string" ? body.note : "";
+  await dispatchBridgeWrite(req, res, next, "charMgr", "SetNote", [itemID, noteText]);
+});
+
+// AddOwnerNote(label, note) — answers the new noteID (surfaced via result).
+app.post("/api/bridge/character/owner-notes/add", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This adds an owner note. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const label = typeof body.label === "string" ? body.label : "";
+  const noteText = typeof body.note === "string" ? body.note : "";
+  await dispatchBridgeWrite(req, res, next, "charMgr", "AddOwnerNote", [label, noteText]);
+});
+
+app.post("/api/bridge/character/owner-notes/edit", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This edits that owner note. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const noteID = Number(body.noteID) || 0;
+  if (noteID <= 0) {
+    res.status(400).json({ ok: false, error: "OWNER_NOTE_INVALID", message: "A note is required." });
+    return;
+  }
+  const label = typeof body.label === "string" ? body.label : "";
+  const noteText = typeof body.note === "string" ? body.note : "";
+  await dispatchBridgeWrite(req, res, next, "charMgr", "EditOwnerNote", [noteID, label, noteText]);
+});
+
+app.post("/api/bridge/character/owner-notes/remove", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This removes that owner note. Confirm to continue.")) {
+    return;
+  }
+  const noteID = Number((req.body || {}).noteID) || 0;
+  if (noteID <= 0) {
+    res.status(400).json({ ok: false, error: "OWNER_NOTE_INVALID", message: "A note is required." });
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "charMgr", "RemoveOwnerNote", [noteID]);
+});
+
+// --- charUnboundMgr WRITES (5) ----------------------------------------------
+
+// ⚠ EXTRA-CARE (char-lifecycle) — reachable + gated, never fired live.
+// CancelCharacterDeletePrepare(charId); server guards on session.userid.
+app.post("/api/bridge/character/cancel-delete-prepare", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This cancels a pending character deletion. This must be confirmed explicitly.")) {
+    return;
+  }
+  const charID = Number((req.body || {}).charID) || 0;
+  if (charID <= 0) {
+    res.status(400).json({ ok: false, error: "CHARACTER_INVALID", message: "A character is required." });
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "charUnboundMgr", "CancelCharacterDeletePrepare", [charID]);
+});
+
+// ToggleValidation() — debug-only creation-flow flag (a normal session no-ops
+// and returns true); surfaced via result.
+app.post("/api/bridge/character/toggle-validation", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This toggles character-creation validation. Confirm to continue.")) {
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "charUnboundMgr", "ToggleValidation", []);
+});
+
+// ⚠ EXTRA-CARE (creates a whole character) — reachable + gated, NEVER fired live.
+// CreateCharacterWithDoll(name, ...creation args); FAST-MODE forwards a raw args
+// list from the body and surfaces the new characterID via result.
+app.post("/api/bridge/character/create-with-doll", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This creates a NEW character. This must be confirmed explicitly.")) {
+    return;
+  }
+  const body = req.body || {};
+  const args = Array.isArray(body.args) ? body.args : [];
+  await dispatchBridgeWrite(req, res, next, "charUnboundMgr", "CreateCharacterWithDoll", args);
+});
+
+// ⚠ WRITE-SIDE ARG-INJECTION (flagged) — UpdateCharacterGender(charId, genderID)
+// mutates the caller-supplied character record directly (creation-flow write).
+app.post("/api/bridge/character/update-gender", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This updates the character's gender. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const charID = Number(body.charID) || 0;
+  if (charID <= 0) {
+    res.status(400).json({ ok: false, error: "CHARACTER_INVALID", message: "A character is required." });
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "charUnboundMgr", "UpdateCharacterGender", [charID, Number(body.genderID) || 1]);
+});
+
+// ⚠ WRITE-SIDE ARG-INJECTION (flagged) — UpdateCharacterBloodline(charId, bloodlineID).
+app.post("/api/bridge/character/update-bloodline", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This updates the character's bloodline. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const charID = Number(body.charID) || 0;
+  if (charID <= 0) {
+    res.status(400).json({ ok: false, error: "CHARACTER_INVALID", message: "A character is required." });
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "charUnboundMgr", "UpdateCharacterBloodline", [charID, Number(body.bloodlineID) || 1]);
+});
+
+// --- LSC WRITES (1) ---------------------------------------------------------
+
+// ⚠ EXTRA-CARE (OUTWARD — sends a live chat message) — reachable + gated, NEVER
+// fired live. SendMessage(channelID, message).
+app.post("/api/bridge/chat/send-message", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This sends a message to that channel. This must be confirmed explicitly.")) {
+    return;
+  }
+  const body = req.body || {};
+  const message = typeof body.message === "string" ? body.message : "";
+  if (!message.trim()) {
+    res.status(400).json({ ok: false, error: "MESSAGE_EMPTY", message: "A message is required." });
+    return;
+  }
+  const channelID = body.channelID !== undefined ? Number(body.channelID) || 0 : 0;
+  await dispatchBridgeWrite(req, res, next, "LSC", "SendMessage", [channelID, message]);
+});
+
 // --- R17 Contracts (contractProxy bridge) -----------------------------------
 //
 // Like mail and market, the whole contract surface is TOP-LEVEL
