@@ -7123,6 +7123,155 @@ app.get("/api/bridge/corp-name-suggestions", requireAuth, async (req, res, next)
   }
 });
 
+// --- R83 plumbing sweep: allianceRegistry batch A (alliance info / members /
+// relationships; no UI) -----------------------------------------------------
+// PLUMBING ONLY: three routes make the allianceRegistry INFO / MEMBER / RELATIONSHIP
+// READS reachable + decodable so a later goal builds UI cheaply. No panel/tab/store
+// slice ships. allianceRegistry is retail-bound to an allianceID (like corpRegistry→
+// corpID), but the gateway dispatches these TOP-LEVEL on the held session and
+// allianceRegistry.MachoBindObject is NOT allowlisted, so a browser cannot BIND a
+// foreign alliance. Ownership verified LIVE (Farmer 140000005 / corp 98000001,
+// ALLIANCE-LESS): the identity/member/tenure reads are alliance-PUBLIC even for an
+// injected foreign allianceID, and GetRelationships is session-scoped (ignores args).
+// Decoders: web/src/bridge/{allianceInfo,allianceMembers,allianceRelationships}.ts.
+
+// GET /api/bridge/alliance-info?allianceID=&maxLen= — the alliance IDENTITY reads, as
+// THREE independent reads (Promise.allSettled; empty ≠ failed). ?allianceID= targets a
+// specific alliance (EVE-PUBLIC identity lookup, safe); omitted → the SESSION alliance
+// (null/empty when the caller's corp is alliance-less — a real state). ids stay data (R7d):
+//   • GetAlliance([allianceID?]) / GetAlliancePublicInfo([allianceID?]) -> util.KeyVal
+//     identity, or null.
+//   • GetRankedAlliances([maxLen]) -> the public alliance-browser list (maxLen def 100).
+app.get("/api/bridge/alliance-info", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const allianceID = nonNegativeIntQuery(req.query.allianceID, 0);
+  const maxLen = Math.max(1, nonNegativeIntQuery(req.query.maxLen, 100));
+  const allianceArgs = allianceID > 0 ? [allianceID] : [];
+  try {
+    const [alliance, publicInfo, ranked] = await Promise.allSettled([
+      heldTopLevelCall(held, req.webSessionID, "allianceRegistry", "GetAlliance", allianceArgs, null),
+      heldTopLevelCall(held, req.webSessionID, "allianceRegistry", "GetAlliancePublicInfo", allianceArgs, null),
+      heldTopLevelCall(held, req.webSessionID, "allianceRegistry", "GetRankedAlliances", [maxLen], null),
+    ]);
+    for (const outcome of [alliance, publicInfo, ranked]) {
+      if (outcome.status === "rejected" && outcome.reason && outcome.reason.code === "SESSION_NOT_FOUND") {
+        next(outcome.reason);
+        return;
+      }
+    }
+    const settledCode = (outcome) =>
+      outcome.status === "rejected"
+        ? String((outcome.reason && outcome.reason.code) || "READ_FAILED")
+        : null;
+    const settledValue = (outcome) =>
+      outcome.status === "fulfilled" ? outcome.value.result : null;
+    res.json({
+      ok: true,
+      requested: { allianceID: allianceID > 0 ? allianceID : null, maxLen },
+      alliance: settledValue(alliance),
+      publicInfo: settledValue(publicInfo),
+      ranked: settledValue(ranked),
+      errors: {
+        alliance: settledCode(alliance),
+        publicInfo: settledCode(publicInfo),
+        ranked: settledCode(ranked),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// GET /api/bridge/alliance-members?allianceID=&corporationID=&minDays= — the alliance
+// MEMBERSHIP / TENURE / HISTORY reads, as FOUR independent reads (Promise.allSettled).
+// ?allianceID= targets a specific alliance (member corps + tenure are EVE-PUBLIC — safe);
+// omitted → the SESSION alliance (empty when alliance-less). corp/alliance ids stay data:
+//   • GetAllianceMembers([allianceID?])                 -> member-corp Rowset.
+//   • GetAllianceMembersOlderThan([allianceID?, minDays]) -> member corpIDs by tenure.
+//   • GetDaysInAlliance([allianceID?, corporationID?])  -> integer days (needs BOTH ids).
+//   • GetEmploymentRecord([corporationID?])             -> a corp's alliance history.
+app.get("/api/bridge/alliance-members", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const allianceID = nonNegativeIntQuery(req.query.allianceID, 0);
+  const corporationID = nonNegativeIntQuery(req.query.corporationID, 0);
+  const minDays = nonNegativeIntQuery(req.query.minDays, 0);
+  const membersArgs = allianceID > 0 ? [allianceID] : [];
+  const olderThanArgs = [allianceID > 0 ? allianceID : 0, minDays];
+  const daysArgs = [allianceID > 0 ? allianceID : 0, corporationID > 0 ? corporationID : 0];
+  const employmentArgs = corporationID > 0 ? [corporationID] : [];
+  try {
+    const [members, olderThan, days, employment] = await Promise.allSettled([
+      heldTopLevelCall(held, req.webSessionID, "allianceRegistry", "GetAllianceMembers", membersArgs, null),
+      heldTopLevelCall(held, req.webSessionID, "allianceRegistry", "GetAllianceMembersOlderThan", olderThanArgs, null),
+      heldTopLevelCall(held, req.webSessionID, "allianceRegistry", "GetDaysInAlliance", daysArgs, null),
+      heldTopLevelCall(held, req.webSessionID, "allianceRegistry", "GetEmploymentRecord", employmentArgs, null),
+    ]);
+    for (const outcome of [members, olderThan, days, employment]) {
+      if (outcome.status === "rejected" && outcome.reason && outcome.reason.code === "SESSION_NOT_FOUND") {
+        next(outcome.reason);
+        return;
+      }
+    }
+    const settledCode = (outcome) =>
+      outcome.status === "rejected"
+        ? String((outcome.reason && outcome.reason.code) || "READ_FAILED")
+        : null;
+    const settledValue = (outcome) =>
+      outcome.status === "fulfilled" ? outcome.value.result : null;
+    res.json({
+      ok: true,
+      requested: {
+        allianceID: allianceID > 0 ? allianceID : null,
+        corporationID: corporationID > 0 ? corporationID : null,
+        minDays,
+      },
+      members: settledValue(members),
+      olderThan: settledValue(olderThan),
+      days: settledValue(days),
+      employment: settledValue(employment),
+      errors: {
+        members: settledCode(members),
+        olderThan: settledCode(olderThan),
+        days: settledCode(days),
+        employment: settledCode(employment),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// GET /api/bridge/alliance-relationships — the SESSION alliance's standings dict
+// {ownerID -> relationship}. SESSION-ALLIANCE-SCOPED: the handler resolves the alliance
+// from the session ONLY and ignores args, so there is no allianceID query param — a
+// browser can only ever read its own alliance's standings. Empty {} is a real answer
+// (alliance-less session, or an alliance that seeds no standings). ids stay data (R7d).
+app.get("/api/bridge/alliance-relationships", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  try {
+    const relationships = await heldTopLevelCall(
+      held,
+      req.webSessionID,
+      "allianceRegistry",
+      "GetRelationships",
+      [],
+      null,
+    );
+    res.json({ ok: true, relationships: relationships.result });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // GET /api/bridge/market-trading?fromDate=&accountKey= — the market CORP-ORDER +
 // PLEX reads the R16 market panel left out (R62 plumbing sweep), as SEVEN
 // independent reads (Promise.allSettled; empty ≠ failed, each its own error
