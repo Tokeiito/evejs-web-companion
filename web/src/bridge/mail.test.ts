@@ -19,6 +19,9 @@ import {
   audienceOf,
   checkDraft,
   decodeMailbox,
+  decodeMailLabelCreatedAck,
+  decodeMailWriteAck,
+  decodeMailingListCreatedAck,
   mailRefusalMessage,
   readFlags,
   splitRecipientIDs,
@@ -275,4 +278,39 @@ test("⚠ an UNMAPPED refusal is passed through verbatim, never reworded", () =>
     "MailSomethingNobodyAnticipated",
     "inventing a friendly cause the server never gave is exactly the failure mode to avoid",
   );
+});
+
+// --- R86 write acks (Phase-3 mail + mailing-list WRITES) ---------------------
+
+test("R86 — a plain mail write ack decodes to {ok, applied}", () => {
+  const ack = decodeMailWriteAck(
+    keyVal({ ok: true, applied: true, result: null }),
+  );
+  assert.deepEqual(ack, { ok: true, applied: true });
+});
+
+test("R86 — a declined write (applied false) is read as not-applied, not a throw", () => {
+  const ack = decodeMailWriteAck(keyVal({ ok: true, applied: false }));
+  assert.equal(ack.ok, true);
+  assert.equal(ack.applied, false);
+});
+
+test("R86 — a label-creation ack carries the new labelID", () => {
+  const ack = decodeMailLabelCreatedAck(
+    keyVal({ ok: true, applied: true, labelID: 8 }),
+  );
+  assert.deepEqual(ack, { ok: true, applied: true, labelID: 8 });
+});
+
+test("R86 — a label-creation the server declined has a null labelID and applied false", () => {
+  const ack = decodeMailLabelCreatedAck(keyVal({ ok: true, applied: false, labelID: null }));
+  assert.equal(ack.applied, false);
+  assert.equal(ack.labelID, null);
+});
+
+test("R86 — a mailing-list-creation ack carries the new listID", () => {
+  const ack = decodeMailingListCreatedAck(
+    keyVal({ ok: true, applied: true, listID: 105 }),
+  );
+  assert.deepEqual(ack, { ok: true, applied: true, listID: 105 });
 });

@@ -4556,6 +4556,300 @@ app.post("/api/bridge/mail/send", requireAuth, async (req, res, next) => {
   }
 });
 
+// --- R86 Mail + mailing-list WRITES (mailMgr / mailingListsMgr) -------------
+//
+// The FIRST Phase-3 writes batch. Every retail mail write is TOP-LEVEL
+// (sm.RemoteSvc("mailMgr") / sm.RemoteSvc("mailingListsMgr")) — no bound-object
+// step — so heldTopLevelCall carries them, exactly like the R17 reads/SendMail.
+//
+// ⚠ EVERY ROUTE IS CONFIRM-GATED. Mirroring the R14 TrashItems / R16 market
+// pattern: the route refuses outright (400 CONFIRMATION_REQUIRED, NO dispatch)
+// unless the browser passes `confirm: true`. Neither a stray click nor a stray
+// POST can trash, delete, relabel, or join/leave a list. The two permanent-
+// delete writes (DeleteMail / EmptyTrash) carry the same gate; the UI puts its
+// own two-step confirm in front of that.
+//
+// ⚠ ALL SESSION-SCOPED. Every mailMgr write resolves its mailbox from the
+// SESSION character (resolveSessionCharacterID); a messageID/labelID the session
+// does not own is simply absent from its rows and the write is a silent no-op —
+// no arg a browser sends mutates another character's mail. mailingListsMgr
+// Join/Leave self-add / self-remove the session char; Create makes a new list
+// owned by the session. FAST-MODE educated-guess responses: every handler
+// returns null except CreateLabel (labelID), mailingListsMgr.Create (listID),
+// and mailingListsMgr.Join (a list-info KeyVal) — the decoders read those.
+
+/** The confirm gate every R86 mail write sits behind (mirrors TrashItems/market). */
+function requireMailConfirmation(req, res, message) {
+  if ((req.body || {}).confirm === true) {
+    return true;
+  }
+  res.status(400).json({ ok: false, error: "CONFIRMATION_REQUIRED", message });
+  return false;
+}
+
+/** Coerce a browser-sent messageIDs/labelIDs payload to a clean positive-int list. */
+function mailIDList(value) {
+  const raw = Array.isArray(value) ? value : [value];
+  return [...new Set(raw.map((v) => Number(v) || 0).filter((v) => v > 0))];
+}
+
+/**
+ * Dispatch one confirm-gated mail write and answer a uniform ack. FAST-MODE:
+ * the server returns null on every status/trash/label write, so `applied` is
+ * true whenever the dispatch did not throw; the panel re-reads the mailbox
+ * itself to prove the mutation. A route that needs the return value (label /
+ * list creation) reads `outcome.result` directly instead of calling this.
+ */
+async function dispatchMailWrite(req, res, next, method, args) {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  try {
+    const outcome = await heldTopLevelCall(held, req.webSessionID, "mailMgr", method, args, null);
+    res.json({ ok: true, applied: true, result: outcome.result ?? null, notifications: outcome.notifications });
+  } catch (error) {
+    next(error);
+  }
+}
+
+// Status writes: MarkAsRead / MarkAsUnread take a messageID list (args[0]).
+app.post("/api/bridge/mail/mark-read", requireAuth, async (req, res, next) => {
+  if (!requireMailConfirmation(req, res, "This marks those messages read. Confirm to continue.")) {
+    return;
+  }
+  await dispatchMailWrite(req, res, next, "MarkAsRead", [mailIDList((req.body || {}).messageIDs)]);
+});
+
+app.post("/api/bridge/mail/mark-unread", requireAuth, async (req, res, next) => {
+  if (!requireMailConfirmation(req, res, "This marks those messages unread. Confirm to continue.")) {
+    return;
+  }
+  await dispatchMailWrite(req, res, next, "MarkAsUnread", [mailIDList((req.body || {}).messageIDs)]);
+});
+
+// MarkAllAsRead takes no args — the whole mailbox.
+app.post("/api/bridge/mail/mark-all-read", requireAuth, async (req, res, next) => {
+  if (!requireMailConfirmation(req, res, "This marks your whole inbox read. Confirm to continue.")) {
+    return;
+  }
+  await dispatchMailWrite(req, res, next, "MarkAllAsRead", []);
+});
+
+// Trash moves (reversible): MoveToTrash / MoveFromTrash take a messageID list.
+app.post("/api/bridge/mail/trash", requireAuth, async (req, res, next) => {
+  if (!requireMailConfirmation(req, res, "This moves those messages to the trash. Confirm to continue.")) {
+    return;
+  }
+  await dispatchMailWrite(req, res, next, "MoveToTrash", [mailIDList((req.body || {}).messageIDs)]);
+});
+
+app.post("/api/bridge/mail/untrash", requireAuth, async (req, res, next) => {
+  if (!requireMailConfirmation(req, res, "This restores those messages from the trash. Confirm to continue.")) {
+    return;
+  }
+  await dispatchMailWrite(req, res, next, "MoveFromTrash", [mailIDList((req.body || {}).messageIDs)]);
+});
+
+// MoveAllToTrash takes no args — everything not already trashed.
+app.post("/api/bridge/mail/trash-all", requireAuth, async (req, res, next) => {
+  if (!requireMailConfirmation(req, res, "This moves your whole inbox to the trash. Confirm to continue.")) {
+    return;
+  }
+  await dispatchMailWrite(req, res, next, "MoveAllToTrash", []);
+});
+
+// ⚠ PERMANENT-DELETE PAIR — reachable + confirm-gated, NEVER fired on the live
+// world in this plumbing pass. DeleteMail purges the named messages; EmptyTrash
+// purges everything already in the trash. removeMessageStatuses / emptyTrash
+// erase the rows outright — there is no untrash after this.
+app.post("/api/bridge/mail/delete", requireAuth, async (req, res, next) => {
+  if (
+    !requireMailConfirmation(
+      req,
+      res,
+      "Deleting these messages is permanent — they cannot be restored. This must be confirmed explicitly.",
+    )
+  ) {
+    return;
+  }
+  await dispatchMailWrite(req, res, next, "DeleteMail", [mailIDList((req.body || {}).messageIDs)]);
+});
+
+app.post("/api/bridge/mail/empty-trash", requireAuth, async (req, res, next) => {
+  if (
+    !requireMailConfirmation(
+      req,
+      res,
+      "Emptying the trash permanently deletes everything in it. This must be confirmed explicitly.",
+    )
+  ) {
+    return;
+  }
+  await dispatchMailWrite(req, res, next, "EmptyTrash", []);
+});
+
+// Label WRITES. CreateLabel(name, color) answers the new labelID; EditLabel
+// (labelID, name, color) / DeleteLabel(labelID) / AssignLabels(messageIDs,
+// labelMask) / RemoveLabels(messageIDs, labelMask) answer null.
+app.post("/api/bridge/mail/label/create", requireAuth, async (req, res, next) => {
+  if (!requireMailConfirmation(req, res, "This creates a new mail label. Confirm to continue.")) {
+    return;
+  }
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const body = req.body || {};
+  const name = typeof body.name === "string" ? body.name.trim() : "";
+  if (!name) {
+    res.status(400).json({ ok: false, error: "MAIL_LABEL_NO_NAME", message: "Give the label a name first." });
+    return;
+  }
+  const color = Number(body.color) || 0;
+  try {
+    const outcome = await heldTopLevelCall(held, req.webSessionID, "mailMgr", "CreateLabel", [name, color], null);
+    const labelID = mailNumber(outcome.result);
+    res.json({ ok: true, applied: labelID > 0, labelID: labelID > 0 ? labelID : null, notifications: outcome.notifications });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/bridge/mail/label/edit", requireAuth, async (req, res, next) => {
+  if (!requireMailConfirmation(req, res, "This renames or recolours that label. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const labelID = Number(body.labelID) || 0;
+  if (labelID <= 0) {
+    res.status(400).json({ ok: false, error: "MAIL_LABEL_INVALID", message: "A label is required." });
+    return;
+  }
+  const args = [labelID];
+  if (typeof body.name === "string") {
+    args.push(body.name);
+    if (Number.isFinite(Number(body.color))) {
+      args.push(Number(body.color));
+    }
+  }
+  await dispatchMailWrite(req, res, next, "EditLabel", args);
+});
+
+app.post("/api/bridge/mail/label/delete", requireAuth, async (req, res, next) => {
+  if (!requireMailConfirmation(req, res, "This deletes that label. Confirm to continue.")) {
+    return;
+  }
+  const labelID = Number((req.body || {}).labelID) || 0;
+  if (labelID <= 0) {
+    res.status(400).json({ ok: false, error: "MAIL_LABEL_INVALID", message: "A label is required." });
+    return;
+  }
+  await dispatchMailWrite(req, res, next, "DeleteLabel", [labelID]);
+});
+
+app.post("/api/bridge/mail/label/assign", requireAuth, async (req, res, next) => {
+  if (!requireMailConfirmation(req, res, "This applies that label to the messages. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const labelMask = Number(body.labelMask ?? body.labelID) || 0;
+  await dispatchMailWrite(req, res, next, "AssignLabels", [mailIDList(body.messageIDs), labelMask]);
+});
+
+app.post("/api/bridge/mail/label/remove", requireAuth, async (req, res, next) => {
+  if (!requireMailConfirmation(req, res, "This removes that label from the messages. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const labelMask = Number(body.labelMask ?? body.labelID) || 0;
+  await dispatchMailWrite(req, res, next, "RemoveLabels", [mailIDList(body.messageIDs), labelMask]);
+});
+
+// --- R86 mailing-list WRITES (mailingListsMgr — a DISTINCT service) ---------
+//
+// Join(listID) self-adds the session char and answers the joined list's info
+// KeyVal; Leave(listID) self-removes and answers null; Create(name, ...) makes a
+// new list owned by the session char and answers the new listID.
+
+app.post("/api/bridge/mailing-list/join", requireAuth, async (req, res, next) => {
+  if (!requireMailConfirmation(req, res, "This joins you to that mailing list. Confirm to continue.")) {
+    return;
+  }
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const body = req.body || {};
+  // Join takes a name OR an id (resolveMailingListByNameOrID); pass through as sent.
+  const target = body.listID !== undefined ? Number(body.listID) || body.listID : body.name;
+  if (target === undefined || target === null || target === "") {
+    res.status(400).json({ ok: false, error: "MAILING_LIST_INVALID", message: "A mailing list is required." });
+    return;
+  }
+  try {
+    const outcome = await heldTopLevelCall(held, req.webSessionID, "mailingListsMgr", "Join", [target], null);
+    res.json({ ok: true, applied: outcome.result != null, list: outcome.result ?? null, notifications: outcome.notifications });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/bridge/mailing-list/leave", requireAuth, async (req, res, next) => {
+  if (!requireMailConfirmation(req, res, "This removes you from that mailing list. Confirm to continue.")) {
+    return;
+  }
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const listID = Number((req.body || {}).listID) || 0;
+  if (listID <= 0) {
+    res.status(400).json({ ok: false, error: "MAILING_LIST_INVALID", message: "A mailing list is required." });
+    return;
+  }
+  try {
+    const outcome = await heldTopLevelCall(held, req.webSessionID, "mailingListsMgr", "Leave", [listID], null);
+    res.json({ ok: true, applied: true, result: outcome.result ?? null, notifications: outcome.notifications });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/bridge/mailing-list/create", requireAuth, async (req, res, next) => {
+  if (!requireMailConfirmation(req, res, "This creates a new mailing list you will own. Confirm to continue.")) {
+    return;
+  }
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const body = req.body || {};
+  const name = typeof body.name === "string" ? body.name.trim() : "";
+  if (!name) {
+    res.status(400).json({ ok: false, error: "MAILING_LIST_NO_NAME", message: "Give the mailing list a name first." });
+    return;
+  }
+  // Create(name, defaultAccess, defaultMemberAccess, cost) — all optional past name.
+  const args = [name];
+  if (body.defaultAccess !== undefined) {
+    args.push(Number(body.defaultAccess));
+  }
+  if (body.defaultMemberAccess !== undefined) {
+    args.push(Number(body.defaultMemberAccess));
+  }
+  if (body.cost !== undefined) {
+    args.push(Number(body.cost) || 0);
+  }
+  try {
+    const outcome = await heldTopLevelCall(held, req.webSessionID, "mailingListsMgr", "Create", args, null);
+    const listID = mailNumber(outcome.result);
+    res.json({ ok: true, applied: listID > 0, listID: listID > 0 ? listID : null, notifications: outcome.notifications });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // --- R17 Contracts (contractProxy bridge) -----------------------------------
 //
 // Like mail and market, the whole contract surface is TOP-LEVEL

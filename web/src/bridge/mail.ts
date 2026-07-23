@@ -259,6 +259,66 @@ export function checkDraft(draft: {
   return { ok: true, message: null };
 }
 
+// --- R86 write acks ---------------------------------------------------------
+//
+// The Phase-3 mail + mailing-list WRITES. FAST-MODE educated-guess decoders:
+// the BFF has already turned each server return into a small JSON ack, so these
+// only read the shape the BFF emits — a `applied` flag plus, for the two
+// creation writes, the new id. Every mailMgr status/trash/label write answers
+// `null` server-side (the panel re-reads the mailbox to prove the mutation), so
+// its ack carries only `applied`. CreateLabel / mailingListsMgr.Create answer a
+// new id; mailingListsMgr.Join answers the joined list's info KeyVal.
+//
+// ⚠ These are EDUCATED GUESSES captured from the client + server code, not from
+// real bytes — the reads-era live-capture grind is deliberately skipped for
+// writes (QA/real-implementation comes later).
+
+/** The uniform ack every confirm-gated mail write returns. */
+export interface MailWriteAck {
+  readonly ok: boolean;
+  readonly applied: boolean;
+}
+
+function truthy(value: JsonValue | undefined): boolean {
+  return value === true;
+}
+
+/** Decode the plain status/trash ack (MarkAsRead, MoveToTrash, DeleteMail, …). */
+export function decodeMailWriteAck(response: JsonValue): MailWriteAck {
+  return {
+    ok: truthy(readKeyVal(response, "ok")),
+    applied: truthy(readKeyVal(response, "applied")),
+  };
+}
+
+/** A label-creation ack: `applied` plus the new labelID (null when declined). */
+export interface MailLabelCreatedAck extends MailWriteAck {
+  readonly labelID: number | null;
+}
+
+export function decodeMailLabelCreatedAck(response: JsonValue): MailLabelCreatedAck {
+  const labelID = toNumber(readKeyVal(response, "labelID"));
+  return {
+    ok: truthy(readKeyVal(response, "ok")),
+    applied: truthy(readKeyVal(response, "applied")),
+    labelID: labelID > 0 ? labelID : null,
+  };
+}
+
+/** A mailing-list-creation ack: `applied` plus the new listID (null when declined). */
+export interface MailingListCreatedAck extends MailWriteAck {
+  readonly listID: number | null;
+}
+
+export function decodeMailingListCreatedAck(response: JsonValue): MailingListCreatedAck {
+  const listID = toNumber(readKeyVal(response, "listID"));
+  return {
+    ok: truthy(readKeyVal(response, "ok")),
+    applied: truthy(readKeyVal(response, "applied")),
+    listID: listID > 0 ? listID : null,
+  };
+}
+
 // --- Refusals ---------------------------------------------------------------
 
 /**
