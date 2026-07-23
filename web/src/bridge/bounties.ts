@@ -22,7 +22,7 @@
 // never forced into a label here. bounty / amount are ISK amounts kept as bigint-
 // safe decimal strings (never zeroed by a `typeof === "number"` test).
 
-import { isListValue, readRowField, unwrapLong, type JsonValue } from "./wire.ts";
+import { isListValue, readKeyVal, readRowField, unwrapLong, type JsonValue } from "./wire.ts";
 import { toAmountString } from "./rewards.ts";
 import { decodeKillRights, type KillRight } from "./killRights.ts";
 
@@ -194,5 +194,32 @@ export function decodeBountiesAndKillRights(
   return {
     bounties: decodeBountyPools(value[0] as JsonValue),
     killRights: decodeKillRights(value[1] as JsonValue),
+  };
+}
+
+// --- R89 bountyProxy financial write acks -----------------------------------
+//
+// FAST-MODE educated-guess decoders for the confirm-gated bountyProxy WRITES
+// (AddToBounty / SellKillRight / CancelSellKillRight). All return null server-side.
+// ⚠ AddToBounty SPENDS ISK (debited from the session char's wallet) and is NEVER
+// fired live in the plumbing pass. SellKillRight / CancelSellKillRight list/withdraw
+// a kill right the session owns. Educated guesses from the client + server code, not
+// captured bytes.
+
+/** The uniform ack every confirm-gated bountyProxy write returns. */
+export interface BountyWriteAck {
+  readonly ok: boolean;
+  readonly applied: boolean;
+}
+
+function bountyAckTruthy(value: JsonValue | undefined): boolean {
+  return value === true;
+}
+
+/** Decode a plain bountyProxy write ack (add-bounty / sell-kill-right / cancel-sell). */
+export function decodeBountyWriteAck(response: JsonValue): BountyWriteAck {
+  return {
+    ok: bountyAckTruthy(readKeyVal(response, "ok")),
+    applied: bountyAckTruthy(readKeyVal(response, "applied")),
   };
 }

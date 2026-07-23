@@ -14,6 +14,7 @@
 import {
   isListValue,
   readDictEntry,
+  readKeyVal,
   readRowField,
   unwrapLong,
   type JsonValue,
@@ -226,4 +227,53 @@ export function decodeTransactions(
     return [];
   }
   return result.items.map((row) => decodeLedgerRow(row, labels));
+}
+
+// --- R89 account financial write acks ---------------------------------------
+//
+// FAST-MODE educated-guess decoders for the confirm-gated account WRITES
+// (SetContactCost / GiveCash / GiveCashFromCorpAccount). SetContactCost and a
+// GiveCash to a CHARACTER return null server-side; a GiveCash to a CORPORATION
+// answers a [fromBalance, toBalance] pair (surfaced via `result`). ⚠ GiveCash /
+// GiveCashFromCorpAccount TRANSFER ISK and are NEVER fired live in the plumbing
+// pass — these acks are educated guesses from the client + server code, not
+// captured bytes; the funding source is always session-scoped (see server.js).
+
+/** The uniform ack every confirm-gated account write returns. */
+export interface AccountWriteAck {
+  readonly ok: boolean;
+  readonly applied: boolean;
+}
+
+function accountAckTruthy(value: JsonValue | undefined): boolean {
+  return value === true;
+}
+
+/** Decode a plain account write ack (set-contact-cost / give-cash to a char / corp transfer). */
+export function decodeAccountWriteAck(response: JsonValue): AccountWriteAck {
+  return {
+    ok: accountAckTruthy(readKeyVal(response, "ok")),
+    applied: accountAckTruthy(readKeyVal(response, "applied")),
+  };
+}
+
+/** A GiveCash-to-corp ack: `applied` plus the [from, to] wallet balances (null when a char transfer / declined). */
+export interface GiveCashBalancesAck extends AccountWriteAck {
+  readonly fromBalance: number | null;
+  readonly toBalance: number | null;
+}
+
+export function decodeGiveCashAck(response: JsonValue): GiveCashBalancesAck {
+  const result = readKeyVal(response, "result");
+  const pair = isListValue(result) ? result.items : Array.isArray(result) ? result : [];
+  const toBalanceNumber = (value: JsonValue | undefined): number | null => {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : null;
+  };
+  return {
+    ok: accountAckTruthy(readKeyVal(response, "ok")),
+    applied: accountAckTruthy(readKeyVal(response, "applied")),
+    fromBalance: pair.length > 0 ? toBalanceNumber(pair[0] as JsonValue) : null,
+    toBalance: pair.length > 1 ? toBalanceNumber(pair[1] as JsonValue) : null,
+  };
 }

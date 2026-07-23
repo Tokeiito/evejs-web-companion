@@ -14,6 +14,8 @@ import {
   decodeJournal,
   decodeTransactions,
   normalizeDivisionNames,
+  decodeAccountWriteAck,
+  decodeGiveCashAck,
 } from "./wallet.ts";
 import type { JsonValue } from "./wire.ts";
 
@@ -288,4 +290,41 @@ test("decodeJournal falls back to 'Other' (never a raw code) when the label is u
   const rows = decodeJournal(journalRowset(REAL_JOURNAL_LINES), new Map());
   assert.equal(rows[0]!.refType, "Other");
   assert.notEqual(rows[0]!.refType, "17");
+});
+
+// --- R89 account financial write acks (Phase-3 WRITES) ----------------------
+
+/** A util.KeyVal wrapper around plain fields (the BFF write-ack shape the decoder reads). */
+function accountAckKeyVal(fields: Record<string, JsonValue>): JsonValue {
+  return {
+    type: "object",
+    name: "util.KeyVal",
+    args: { type: "dict", entries: Object.entries(fields) },
+  };
+}
+
+test("R89 — an account write ack decodes to {ok, applied}", () => {
+  const ack = decodeAccountWriteAck(accountAckKeyVal({ ok: true, applied: true, result: null }));
+  assert.deepEqual(ack, { ok: true, applied: true });
+});
+
+test("R89 — a declined account write is read as not-applied, not a throw", () => {
+  const ack = decodeAccountWriteAck(accountAckKeyVal({ ok: true, applied: false }));
+  assert.equal(ack.ok, true);
+  assert.equal(ack.applied, false);
+});
+
+test("R89 — a GiveCash-to-corp ack surfaces the [from, to] balances from result", () => {
+  const ack = decodeGiveCashAck(
+    accountAckKeyVal({ ok: true, applied: true, result: { type: "list", items: [1000, 5000] } }),
+  );
+  assert.equal(ack.applied, true);
+  assert.equal(ack.fromBalance, 1000);
+  assert.equal(ack.toBalance, 5000);
+});
+
+test("R89 — a GiveCash-to-char ack (null result) reads both balances null", () => {
+  const ack = decodeGiveCashAck(accountAckKeyVal({ ok: true, applied: true, result: null }));
+  assert.equal(ack.fromBalance, null);
+  assert.equal(ack.toBalance, null);
 });

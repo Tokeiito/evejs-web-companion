@@ -12,6 +12,7 @@ import {
   decodeCharStandings,
   decodeLpBalances,
   toAmountString,
+  decodeLpWriteAck,
 } from "./rewards.ts";
 import type { JsonValue } from "./wire.ts";
 
@@ -106,4 +107,25 @@ test("the decoders tolerate malformed input without throwing", () => {
   assert.deepEqual(decodeLpBalances({ type: "dict", entries: [] } as JsonValue), []);
   assert.deepEqual(decodeCharStandings(null), []);
   assert.deepEqual(decodeCharStandings(42 as unknown as JsonValue), []);
+});
+
+// --- R89 LPSvc financial write acks (Phase-3 WRITES) ------------------------
+
+function lpAckKeyVal(fields: Record<string, JsonValue>): JsonValue {
+  return {
+    type: "object",
+    name: "util.KeyVal",
+    args: { type: "dict", entries: Object.entries(fields) },
+  };
+}
+
+test("R89 — an LPSvc transfer ack decodes to {ok, applied}", () => {
+  const ack = decodeLpWriteAck(lpAckKeyVal({ ok: true, applied: true, result: null }));
+  assert.deepEqual(ack, { ok: true, applied: true });
+});
+
+test("R89 — a declined LP transfer is read as not-applied, not a throw", () => {
+  const ack = decodeLpWriteAck(lpAckKeyVal({ ok: true, applied: false }));
+  assert.equal(ack.ok, true);
+  assert.equal(ack.applied, false);
 });

@@ -22,7 +22,7 @@
 // resolve to a corporation name; loyaltyPoints is kept as a bigint-safe decimal
 // string (never zeroed by a `typeof === "number"` test).
 
-import { isListValue, unwrapLong, type JsonValue } from "./wire.ts";
+import { isListValue, readKeyVal, unwrapLong, type JsonValue } from "./wire.ts";
 import { toAmountString } from "./rewards.ts";
 
 /** One issuer's LP balance for this character. */
@@ -93,4 +93,32 @@ export function decodeLpExchangeRates(result: JsonValue): readonly JsonValue[] {
  */
 export function decodeLpOffers(result: JsonValue): readonly JsonValue[] {
   return listItems(result);
+}
+
+// --- R89 LPStoreMgr financial write acks ------------------------------------
+//
+// FAST-MODE educated-guess decoders for the confirm-gated LPStoreMgr WRITES
+// (TakeOfferForCharacter / TakeOfferForCorporation). TakeOfferForCharacter
+// returns true on success (surfaced via `result`); TakeOfferForCorporation is a
+// stub returning null. ⚠ Both SPEND LP and are NEVER fired live in the plumbing
+// pass — the funding source is session-scoped (the session char / corp's LP; see
+// server.js). Educated guesses, not captured bytes.
+
+/** A TakeOffer ack: `applied` plus `taken` (the server's success bool, false when a stub/declined). */
+export interface TakeOfferAck {
+  readonly ok: boolean;
+  readonly applied: boolean;
+  readonly taken: boolean;
+}
+
+function takeOfferAckTruthy(value: JsonValue | undefined): boolean {
+  return value === true;
+}
+
+export function decodeTakeOfferAck(response: JsonValue): TakeOfferAck {
+  return {
+    ok: takeOfferAckTruthy(readKeyVal(response, "ok")),
+    applied: takeOfferAckTruthy(readKeyVal(response, "applied")),
+    taken: takeOfferAckTruthy(readKeyVal(response, "result")),
+  };
 }

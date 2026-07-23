@@ -9,7 +9,7 @@
 // ISK and LP are kept as bigint-safe decimal strings; standings are small
 // floats kept as numbers.
 
-import { unwrapLong, type JsonValue } from "./wire.ts";
+import { readKeyVal, unwrapLong, type JsonValue } from "./wire.ts";
 import type { CharStanding, WalletLPBalance } from "../store/types.ts";
 
 /**
@@ -143,4 +143,32 @@ export function decodeCharStandings(result: JsonValue): CharStanding[] {
     }
   }
   return rows;
+}
+
+// --- R89 LPSvc financial write acks -----------------------------------------
+//
+// FAST-MODE educated-guess decoders for the confirm-gated LPSvc WRITES
+// (ExchangeConcordLP / TransferLPFromMyWalletToOtherCorp /
+// TransferLPFromMyCorpWalletToOtherCorp). All return null server-side (a failed
+// transfer throws, surfaced as a BFF error). ⚠ The two transfers MOVE LP and are
+// NEVER fired live in the plumbing pass — the funding source is session-scoped
+// (character wallet / session corp with a role check; see server.js). Educated
+// guesses from the client + server code, not captured bytes.
+
+/** The uniform ack every confirm-gated LPSvc write returns. */
+export interface LpWriteAck {
+  readonly ok: boolean;
+  readonly applied: boolean;
+}
+
+function lpAckTruthy(value: JsonValue | undefined): boolean {
+  return value === true;
+}
+
+/** Decode a plain LPSvc write ack (concord exchange / wallet transfer / corp transfer). */
+export function decodeLpWriteAck(response: JsonValue): LpWriteAck {
+  return {
+    ok: lpAckTruthy(readKeyVal(response, "ok")),
+    applied: lpAckTruthy(readKeyVal(response, "applied")),
+  };
 }

@@ -5510,6 +5510,280 @@ app.post("/api/bridge/chat/send-message", requireAuth, async (req, res, next) =>
   await dispatchBridgeWrite(req, res, next, "LSC", "SendMessage", [channelID, message]);
 });
 
+// --- R89 FINANCIAL WRITES ---------------------------------------------------
+// (account / LPSvc / LPStoreMgr / insuranceSvc / bountyProxy / killRightMgr)
+//
+// The Phase-3 "financial" writes batch, following the R86–R88 pattern. Every
+// write is a TOP-LEVEL call on the held session (dispatchBridgeWrite) and every
+// route is CONFIRM-GATED via requireWriteConfirmation: it refuses outright
+// (400 CONFIRMATION_REQUIRED, NO dispatch) unless the browser passes
+// `confirm: true`. A stray click / stray POST cannot move ISK or LP.
+//
+// ⚠⚠ SAFETY — EVERY write here SPENDS/TRANSFERS ISK or LP, or affects a kill
+// right. NONE is ever fired on the live world in the plumbing pass: these routes
+// are verified only for reachability + refuses-without-confirm. The ISK/LP
+// spenders carry an explicit "this spends/transfers ISK/LP" confirm message.
+//
+// ⚠ SCOPE — where the money leaves (all session-scoped, no foreign source):
+//   • account.GiveCash debits session.characterID; GiveCashFromCorpAccount debits
+//     the SESSION's corp wallet (server resolveSessionCorporationID) — the
+//     fromAccountKey only picks a division WITHIN that corp. SetContactCost sets
+//     the session character's contact price.
+//   • LPSvc.TransferLPFromMyWalletToOtherCorp / TransferLPFromMyCorpWalletToOtherCorp
+//     resolve the source from the SESSION (character wallet / session.corporationID
+//     with a corp-role check); the first arg is the RECEIVER corp, the second the
+//     LP issuer namespace — never the source. ExchangeConcordLP is a stub.
+//   • LPStoreMgr.TakeOfferForCharacter spends the SESSION char's LP (corpID selects
+//     the STORE); TakeOfferForCorporation is a stub.
+//   • insuranceSvc.InsureShip debits the session; itemID is the ship to insure.
+//   • bountyProxy.AddToBounty debits the session char's wallet; SellKillRight /
+//     CancelSellKillRight list/withdraw a kill right the session owns.
+//   • killRightMgr.ActivateKillRight / BuyKillRight act on the session character.
+// No caller-supplied FOREIGN source was found — nothing appended to
+// docs/arg-injection-leak-handoff.md for this batch.
+//
+// FAST-MODE educated-guess responses: most handlers return null (GiveCash to a
+// corp answers a [from,to] balance pair; TakeOfferForCharacter a bool) — the
+// decoders (web/src/bridge/{wallet,rewards,lpStore,insurance,bounties,killRights}.ts)
+// read the acks. These are EDUCATED GUESSES, never exercised (never fired live).
+
+// --- account WRITES (3) — session-scoped source -----------------------------
+
+// SetContactCost(cost) — the price other chars pay to add the session char.
+app.post("/api/bridge/account/set-contact-cost", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This sets your contact price. Confirm to continue.")) {
+    return;
+  }
+  const cost = Number((req.body || {}).cost) || 0;
+  await dispatchBridgeWrite(req, res, next, "account", "SetContactCost", [cost]);
+});
+
+// ⚠ FINANCIAL (transfers ISK from YOUR wallet) — reachable + gated, NEVER fired live.
+// GiveCash(toID, amount, reason).
+app.post("/api/bridge/account/give-cash", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This TRANSFERS ISK from your wallet to another party. This must be confirmed explicitly.")) {
+    return;
+  }
+  const body = req.body || {};
+  const toID = Number(body.toID) || 0;
+  const amount = Number(body.amount) || 0;
+  if (toID <= 0 || amount <= 0) {
+    res.status(400).json({ ok: false, error: "TRANSFER_INVALID", message: "A recipient and a positive amount are required." });
+    return;
+  }
+  const reason = typeof body.reason === "string" ? body.reason : "";
+  await dispatchBridgeWrite(req, res, next, "account", "GiveCash", [toID, amount, reason]);
+});
+
+// ⚠ FINANCIAL (transfers ISK from your CORP wallet) — reachable + gated, NEVER fired live.
+// GiveCashFromCorpAccount(toID, amount, fromAccountKey, reason). The source corp
+// is the SESSION's corp (server-resolved); fromAccountKey picks the division.
+app.post("/api/bridge/account/give-cash-from-corp", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This TRANSFERS ISK from your corporation wallet. This must be confirmed explicitly.")) {
+    return;
+  }
+  const body = req.body || {};
+  const toID = Number(body.toID) || 0;
+  const amount = Number(body.amount) || 0;
+  if (toID <= 0 || amount <= 0) {
+    res.status(400).json({ ok: false, error: "TRANSFER_INVALID", message: "A recipient and a positive amount are required." });
+    return;
+  }
+  const fromAccountKey = body.fromAccountKey !== undefined ? Number(body.fromAccountKey) || null : null;
+  const reason = typeof body.reason === "string" ? body.reason : "";
+  await dispatchBridgeWrite(req, res, next, "account", "GiveCashFromCorpAccount", [toID, amount, fromAccountKey, reason]);
+});
+
+// --- LPSvc WRITES (3) — session-scoped source -------------------------------
+
+// ExchangeConcordLP() — a stub in this world; still confirm-gated (LP mover).
+app.post("/api/bridge/lp/exchange-concord", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This EXCHANGES your CONCORD LP. This must be confirmed explicitly.")) {
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "LPSvc", "ExchangeConcordLP", []);
+});
+
+// ⚠ FINANCIAL (moves LP from YOUR wallet) — reachable + gated, NEVER fired live.
+// TransferLPFromMyWalletToOtherCorp(receiverCorpID, issuerCorpID, lpAmount).
+app.post("/api/bridge/lp/transfer-from-my-wallet", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This TRANSFERS LP from your wallet to another corporation. This must be confirmed explicitly.")) {
+    return;
+  }
+  const body = req.body || {};
+  const receiverCorpID = Number(body.receiverCorpID) || 0;
+  const lpAmount = Number(body.lpAmount) || 0;
+  if (receiverCorpID <= 0 || lpAmount <= 0) {
+    res.status(400).json({ ok: false, error: "LP_TRANSFER_INVALID", message: "A receiver corporation and a positive LP amount are required." });
+    return;
+  }
+  const issuerCorpID = body.issuerCorpID !== undefined ? Number(body.issuerCorpID) || 0 : 0;
+  await dispatchBridgeWrite(req, res, next, "LPSvc", "TransferLPFromMyWalletToOtherCorp", [receiverCorpID, issuerCorpID, lpAmount]);
+});
+
+// ⚠ FINANCIAL (moves LP from your CORP wallet) — reachable + gated, NEVER fired live.
+// TransferLPFromMyCorpWalletToOtherCorp(receiverCorpID, issuerCorpID, lpAmount).
+// Source corp = the SESSION's corp (role-gated); receiverCorpID is the destination.
+app.post("/api/bridge/lp/transfer-from-my-corp", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This TRANSFERS LP from your corporation wallet. This must be confirmed explicitly.")) {
+    return;
+  }
+  const body = req.body || {};
+  const receiverCorpID = Number(body.receiverCorpID) || 0;
+  const lpAmount = Number(body.lpAmount) || 0;
+  if (receiverCorpID <= 0 || lpAmount <= 0) {
+    res.status(400).json({ ok: false, error: "LP_TRANSFER_INVALID", message: "A receiver corporation and a positive LP amount are required." });
+    return;
+  }
+  const issuerCorpID = body.issuerCorpID !== undefined ? Number(body.issuerCorpID) || 0 : 0;
+  await dispatchBridgeWrite(req, res, next, "LPSvc", "TransferLPFromMyCorpWalletToOtherCorp", [receiverCorpID, issuerCorpID, lpAmount]);
+});
+
+// --- LPStoreMgr WRITES (2) — session-scoped source --------------------------
+
+// ⚠ FINANCIAL (spends YOUR LP on a store offer) — reachable + gated, NEVER fired live.
+// TakeOfferForCharacter(corpID, offerID, numberOfOffers).
+app.post("/api/bridge/lp-store/take-offer-character", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This SPENDS your loyalty points on that store offer. This must be confirmed explicitly.")) {
+    return;
+  }
+  const body = req.body || {};
+  const offerID = Number(body.offerID) || 0;
+  if (offerID <= 0) {
+    res.status(400).json({ ok: false, error: "OFFER_INVALID", message: "A store offer is required." });
+    return;
+  }
+  const corpID = body.corpID !== undefined ? Number(body.corpID) || 0 : 0;
+  const numberOfOffers = Number(body.numberOfOffers) || 1;
+  await dispatchBridgeWrite(req, res, next, "LPStoreMgr", "TakeOfferForCharacter", [corpID, offerID, numberOfOffers]);
+});
+
+// ⚠ FINANCIAL (spends CORP LP on a store offer) — reachable + gated, NEVER fired live.
+// TakeOfferForCorporation(corpID, offerID, numberOfOffers).
+app.post("/api/bridge/lp-store/take-offer-corp", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This SPENDS your corporation's loyalty points on that store offer. This must be confirmed explicitly.")) {
+    return;
+  }
+  const body = req.body || {};
+  const offerID = Number(body.offerID) || 0;
+  if (offerID <= 0) {
+    res.status(400).json({ ok: false, error: "OFFER_INVALID", message: "A store offer is required." });
+    return;
+  }
+  const corpID = body.corpID !== undefined ? Number(body.corpID) || 0 : 0;
+  const numberOfOffers = Number(body.numberOfOffers) || 1;
+  await dispatchBridgeWrite(req, res, next, "LPStoreMgr", "TakeOfferForCorporation", [corpID, offerID, numberOfOffers]);
+});
+
+// --- insuranceSvc WRITES (2) — session-scoped source ------------------------
+
+// ⚠ FINANCIAL (spends ISK on a policy) — reachable + gated, NEVER fired live.
+// InsureShip(itemID, quotedPremium, isCorpItem).
+app.post("/api/bridge/insurance/insure-ship", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This SPENDS ISK to insure that ship. This must be confirmed explicitly.")) {
+    return;
+  }
+  const body = req.body || {};
+  const itemID = Number(body.itemID) || 0;
+  if (itemID <= 0) {
+    res.status(400).json({ ok: false, error: "SHIP_INVALID", message: "A ship is required." });
+    return;
+  }
+  const quotedPremium = Number(body.quotedPremium) || 0;
+  const isCorpItem = body.isCorpItem ? 1 : 0;
+  await dispatchBridgeWrite(req, res, next, "insuranceSvc", "InsureShip", [itemID, quotedPremium, isCorpItem]);
+});
+
+// UnInsureShip(itemID) — voids a policy (no refund); still confirm-gated.
+app.post("/api/bridge/insurance/uninsure-ship", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This VOIDS that ship's insurance policy (no refund). This must be confirmed explicitly.")) {
+    return;
+  }
+  const itemID = Number((req.body || {}).itemID) || 0;
+  if (itemID <= 0) {
+    res.status(400).json({ ok: false, error: "SHIP_INVALID", message: "A ship is required." });
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "insuranceSvc", "UnInsureShip", [itemID]);
+});
+
+// --- bountyProxy WRITES (3) — session-scoped source -------------------------
+
+// ⚠ FINANCIAL (spends ISK to place a bounty) — reachable + gated, NEVER fired live.
+// AddToBounty(targetID, amount).
+app.post("/api/bridge/bounty/add", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This SPENDS ISK to place a bounty. This must be confirmed explicitly.")) {
+    return;
+  }
+  const body = req.body || {};
+  const targetID = Number(body.targetID) || 0;
+  const amount = Number(body.amount) || 0;
+  if (targetID <= 0 || amount <= 0) {
+    res.status(400).json({ ok: false, error: "BOUNTY_INVALID", message: "A target and a positive amount are required." });
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "bountyProxy", "AddToBounty", [targetID, amount]);
+});
+
+// SellKillRight(killRightID, price) — lists a kill right the session owns for sale.
+app.post("/api/bridge/kill-right/sell", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This lists that kill right for sale. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const killRightID = Number(body.killRightID) || 0;
+  if (killRightID <= 0) {
+    res.status(400).json({ ok: false, error: "KILL_RIGHT_INVALID", message: "A kill right is required." });
+    return;
+  }
+  const price = Number(body.price) || 0;
+  await dispatchBridgeWrite(req, res, next, "bountyProxy", "SellKillRight", [killRightID, price]);
+});
+
+// CancelSellKillRight(killRightID) — withdraws a listed kill right.
+app.post("/api/bridge/kill-right/cancel-sell", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This withdraws that kill right from sale. Confirm to continue.")) {
+    return;
+  }
+  const killRightID = Number((req.body || {}).killRightID) || 0;
+  if (killRightID <= 0) {
+    res.status(400).json({ ok: false, error: "KILL_RIGHT_INVALID", message: "A kill right is required." });
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "bountyProxy", "CancelSellKillRight", [killRightID]);
+});
+
+// --- killRightMgr WRITES (2) — session-scoped source ------------------------
+
+// ActivateKillRight(killRightID) — activates a kill right the session owns.
+app.post("/api/bridge/kill-right/activate", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This activates that kill right. This must be confirmed explicitly.")) {
+    return;
+  }
+  const killRightID = Number((req.body || {}).killRightID) || 0;
+  if (killRightID <= 0) {
+    res.status(400).json({ ok: false, error: "KILL_RIGHT_INVALID", message: "A kill right is required." });
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "killRightMgr", "ActivateKillRight", [killRightID]);
+});
+
+// ⚠ FINANCIAL (spends ISK to buy a kill right) — reachable + gated, NEVER fired live.
+// BuyKillRight(killRightID, price).
+app.post("/api/bridge/kill-right/buy", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This SPENDS ISK to buy that kill right. This must be confirmed explicitly.")) {
+    return;
+  }
+  const body = req.body || {};
+  const killRightID = Number(body.killRightID) || 0;
+  if (killRightID <= 0) {
+    res.status(400).json({ ok: false, error: "KILL_RIGHT_INVALID", message: "A kill right is required." });
+    return;
+  }
+  const price = Number(body.price) || 0;
+  await dispatchBridgeWrite(req, res, next, "killRightMgr", "BuyKillRight", [killRightID, price]);
+});
+
 // --- R17 Contracts (contractProxy bridge) -----------------------------------
 //
 // Like mail and market, the whole contract surface is TOP-LEVEL

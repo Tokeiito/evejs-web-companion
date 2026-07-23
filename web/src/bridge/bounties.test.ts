@@ -23,6 +23,7 @@ import {
   decodeBountyLeaderboard,
   decodeMyBounties,
   decodeBountiesAndKillRights,
+  decodeBountyWriteAck,
 } from "./bounties.ts";
 import type { JsonValue } from "./wire.ts";
 
@@ -188,4 +189,25 @@ test("R7d: a decoded pool preserves targetID/corporationID/allianceID as numeric
 test("the pool id-field extractor actually reads the decoded content", () => {
   assert.deepEqual(poolIdFields({ targetID: 11, corporationID: 22, allianceID: 33 }), [11, 22, 33]);
   assert.deepEqual(poolIdFields({ targetID: 11, corporationID: null, allianceID: null }), [11]);
+});
+
+// --- R89 bountyProxy financial write acks (Phase-3 WRITES) ------------------
+
+function bountyAckKeyVal(fields: Record<string, JsonValue>): JsonValue {
+  return {
+    type: "object",
+    name: "util.KeyVal",
+    args: { type: "dict", entries: Object.entries(fields) },
+  };
+}
+
+test("R89 — a bountyProxy write ack decodes to {ok, applied}", () => {
+  const ack = decodeBountyWriteAck(bountyAckKeyVal({ ok: true, applied: true, result: null }));
+  assert.deepEqual(ack, { ok: true, applied: true });
+});
+
+test("R89 — a declined bounty write is read as not-applied, not a throw", () => {
+  const ack = decodeBountyWriteAck(bountyAckKeyVal({ ok: true, applied: false }));
+  assert.equal(ack.ok, true);
+  assert.equal(ack.applied, false);
 });

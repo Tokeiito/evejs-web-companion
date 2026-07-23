@@ -16,7 +16,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { decodeKillRights } from "./killRights.ts";
+import { decodeKillRights, decodeKillRightWriteAck } from "./killRights.ts";
 import type { JsonValue } from "./wire.ts";
 
 // buildKillRightPayload's exact shape, one for-sale right and one plain right.
@@ -112,4 +112,25 @@ test("the kill-right id-field extractor actually reads the decoded content", () 
   // Companion: distinct fields yield distinct ids, so the sweep is not vacuous.
   const ids = killRightIdFields({ fromID: 11, toID: 22, restrictedTo: 33 });
   assert.deepEqual(ids, [11, 22, 33]);
+});
+
+// --- R89 killRightMgr financial write acks (Phase-3 WRITES) -----------------
+
+function killRightAckKeyVal(fields: Record<string, JsonValue>): JsonValue {
+  return {
+    type: "object",
+    name: "util.KeyVal",
+    args: { type: "dict", entries: Object.entries(fields) },
+  };
+}
+
+test("R89 — a killRightMgr write ack decodes to {ok, applied}", () => {
+  const ack = decodeKillRightWriteAck(killRightAckKeyVal({ ok: true, applied: true, result: null }));
+  assert.deepEqual(ack, { ok: true, applied: true });
+});
+
+test("R89 — a declined kill-right write is read as not-applied, not a throw", () => {
+  const ack = decodeKillRightWriteAck(killRightAckKeyVal({ ok: true, applied: false }));
+  assert.equal(ack.ok, true);
+  assert.equal(ack.applied, false);
 });

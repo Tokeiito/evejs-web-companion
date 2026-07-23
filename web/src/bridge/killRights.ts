@@ -23,7 +23,7 @@
 // decimal string (never zeroed by a `typeof === "number"` test). `expiryTime` is a
 // FILETIME bigint.
 
-import { isListValue, readRowField, unwrapLong, type JsonValue } from "./wire.ts";
+import { isListValue, readKeyVal, readRowField, unwrapLong, type JsonValue } from "./wire.ts";
 import { toAmountString } from "./rewards.ts";
 
 /** One kill right the character holds. */
@@ -98,4 +98,30 @@ export function decodeKillRights(result: JsonValue): KillRight[] {
     });
   }
   return rows;
+}
+
+// --- R89 killRightMgr financial write acks ----------------------------------
+//
+// FAST-MODE educated-guess decoders for the confirm-gated killRightMgr WRITES
+// (ActivateKillRight / BuyKillRight). Both return null server-side. ⚠ BuyKillRight
+// SPENDS ISK (debited from the session character) and is NEVER fired live in the
+// plumbing pass; ActivateKillRight acts on a kill right the session owns. Educated
+// guesses from the client + server code, not captured bytes.
+
+/** The uniform ack every confirm-gated killRightMgr write returns. */
+export interface KillRightWriteAck {
+  readonly ok: boolean;
+  readonly applied: boolean;
+}
+
+function killRightAckTruthy(value: JsonValue | undefined): boolean {
+  return value === true;
+}
+
+/** Decode a plain killRightMgr write ack (activate / buy a kill right). */
+export function decodeKillRightWriteAck(response: JsonValue): KillRightWriteAck {
+  return {
+    ok: killRightAckTruthy(readKeyVal(response, "ok")),
+    applied: killRightAckTruthy(readKeyVal(response, "applied")),
+  };
 }

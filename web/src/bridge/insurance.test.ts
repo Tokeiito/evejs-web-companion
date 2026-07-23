@@ -32,6 +32,7 @@ import {
   decodeInsuranceContracts,
   decodeInsurancePrice,
   decodeInsurancePrices,
+  decodeInsuranceWriteAck,
 } from "./insurance.ts";
 import type { JsonValue } from "./wire.ts";
 
@@ -106,4 +107,25 @@ test("decodeInsurancePrices decodes the real {typeID -> price} dict, sorted by t
 
 test("decodeInsurancePrices on an empty dict is [] (a real 'no prices asked')", () => {
   assert.deepEqual(decodeInsurancePrices({ type: "dict", entries: [] }), []);
+});
+
+// --- R89 insuranceSvc financial write acks (Phase-3 WRITES) -----------------
+
+function insuranceAckKeyVal(fields: Record<string, JsonValue>): JsonValue {
+  return {
+    type: "object",
+    name: "util.KeyVal",
+    args: { type: "dict", entries: Object.entries(fields) },
+  };
+}
+
+test("R89 — an insurance write ack decodes to {ok, applied}", () => {
+  const ack = decodeInsuranceWriteAck(insuranceAckKeyVal({ ok: true, applied: true, result: null }));
+  assert.deepEqual(ack, { ok: true, applied: true });
+});
+
+test("R89 — a declined insurance write is read as not-applied, not a throw", () => {
+  const ack = decodeInsuranceWriteAck(insuranceAckKeyVal({ ok: true, applied: false }));
+  assert.equal(ack.ok, true);
+  assert.equal(ack.applied, false);
 });

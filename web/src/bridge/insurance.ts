@@ -19,7 +19,7 @@
 // DO exceed 2^53, arrive as {type:"long", value:"<decimal>"} and are decoded to
 // bigint. R7d: contractID / shipID / typeID / ownerID stay numeric fields.
 
-import { readRowField, readDictPairs, unwrapLong, type JsonValue } from "./wire.ts";
+import { readKeyVal, readRowField, readDictPairs, unwrapLong, type JsonValue } from "./wire.ts";
 
 /** One ship-insurance policy (buildClientContract). */
 export interface InsuranceContract {
@@ -152,4 +152,30 @@ export function decodeInsurancePrices(result: JsonValue): InsurancePrice[] {
   }
   rows.sort((left, right) => left.typeID - right.typeID);
   return rows;
+}
+
+// --- R89 insuranceSvc financial write acks ----------------------------------
+//
+// FAST-MODE educated-guess decoders for the confirm-gated insuranceSvc WRITES
+// (InsureShip / UnInsureShip). InsureShip answers the new policy object; UnInsureShip
+// voids one. ⚠ InsureShip SPENDS ISK on a premium and is NEVER fired live in the
+// plumbing pass — the premium is debited from the session (see server.js). Educated
+// guesses from the client + server code, not captured bytes.
+
+/** The uniform ack every confirm-gated insurance write returns. */
+export interface InsuranceWriteAck {
+  readonly ok: boolean;
+  readonly applied: boolean;
+}
+
+function insuranceAckTruthy(value: JsonValue | undefined): boolean {
+  return value === true;
+}
+
+/** Decode a plain insurance write ack (insure / uninsure a ship). */
+export function decodeInsuranceWriteAck(response: JsonValue): InsuranceWriteAck {
+  return {
+    ok: insuranceAckTruthy(readKeyVal(response, "ok")),
+    applied: insuranceAckTruthy(readKeyVal(response, "applied")),
+  };
 }
