@@ -6493,6 +6493,240 @@ app.post("/api/bridge/pvp/end-gate/activate", requireAuth, async (req, res, next
   await dispatchBridgeWrite(req, res, next, "pvpFilamentMgr", "AbyssalPVPEndGateActivation", bridgeArgs(req));
 });
 
+// --- R93 MISC UTILITY WRITES ------------------------------------------------
+//
+// The Phase-3 "misc utility" writes batch, following the R86-R92 pattern:
+// allowlist pair + confirm-gated BFF route (dispatchBridgeWrite) + educated-guess
+// decoder + basic test. Thirteen writes across six TOP-LEVEL services whose READS
+// were wired earlier (agentMgr R64 / petitioner R70 / industryManager R15 /
+// planetMgr + structureAssetSafety R71 / structureDirectory R63). Every route is
+// confirm-gated (no `confirm:true` => 400, no dispatch). Farmer is DOCKED so the
+// nav writes return not-in-space and none of the consequential writes is
+// live-exercisable — reachability + refusal only.
+//
+// ⚠ NEVER FIRED LIVE (extra-care): planetMgr.DeleteLaunch (destructive), the three
+// structureAssetSafety MOVE writes (relocate assets), and petitioner.CreatePetition
+// (opens a support ticket — outward). Reachable + confirm-gated only.
+//
+// ⚠ ARG-INJECTION (checked): SetStructureDescription is GUARDED server-side
+// (canManageStructure throws for a structure the session cannot manage); the
+// asset-safety moves resolve the owner from the SESSION (not a caller id);
+// DeleteLaunch passes session.characterID to the store. No new unguarded
+// caller-supplied-id write in this batch.
+
+// --- agentMgr nav/journal WRITES (4) — docked => not-in-space -----------------
+
+app.post("/api/bridge/agent/journal/remove-offer", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This removes the declined offer from your agent journal. Confirm to continue.")) {
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "agentMgr", "RemoveOfferFromJournal", []);
+});
+
+// GotoLocation(locationType, [deviationOverride], [referringAgentID]).
+app.post("/api/bridge/agent/goto-location", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This moves your ship toward the agent mission location. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  await dispatchBridgeWrite(req, res, next, "agentMgr", "GotoLocation", [
+    typeof body.locationType === "string" ? body.locationType : (body.locationType ?? null),
+    body.deviationOverride ?? null,
+    Number(body.referringAgentID) || 0,
+  ]);
+});
+
+// WarpToLocation(locationType, [itemID], [warpRange], [deviation], [referringAgentID]).
+app.post("/api/bridge/agent/warp-to-location", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This warps your ship to the agent mission location. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  await dispatchBridgeWrite(req, res, next, "agentMgr", "WarpToLocation", [
+    typeof body.locationType === "string" ? body.locationType : (body.locationType ?? null),
+    body.itemID ?? null,
+    Number(body.warpRange) || 0,
+    body.deviation ?? null,
+    Number(body.referringAgentID) || 0,
+  ]);
+});
+
+// WarpToAgentInSpace([agentID]) — warp to the bound agent's in-space location.
+app.post("/api/bridge/agent/warp-to-agent", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This warps your ship to the agent in space. Confirm to continue.")) {
+    return;
+  }
+  const agentID = Number((req.body || {}).agentID) || 0;
+  await dispatchBridgeWrite(req, res, next, "agentMgr", "WarpToAgentInSpace", [agentID]);
+});
+
+// --- petitioner support WRITES (3) ------------------------------------------
+
+// ⚠ OUTWARD — CreatePetition opens a support ticket. Reachable + confirm-gated,
+// NEVER fired live in this plumbing pass. In this stub world it records an audit
+// event and returns false (rejected). Args: (subject, body, categoryID, ...kwargs).
+app.post("/api/bridge/petition/create", requireAuth, async (req, res, next) => {
+  if (
+    !requireWriteConfirmation(
+      req,
+      res,
+      "Creating a petition opens a support ticket. This must be confirmed explicitly.",
+    )
+  ) {
+    return;
+  }
+  const body = req.body || {};
+  await dispatchBridgeWrite(req, res, next, "petitioner", "CreatePetition", [
+    typeof body.subject === "string" ? body.subject : "",
+    typeof body.body === "string" ? body.body : "",
+    Number(body.categoryID) || 0,
+  ]);
+});
+
+// PetitionerChat(petitionID, message) — post a message on a ticket.
+app.post("/api/bridge/petition/chat", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This posts a message on the support ticket. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  await dispatchBridgeWrite(req, res, next, "petitioner", "PetitionerChat", [
+    Number(body.petitionID) || 0,
+    typeof body.message === "string" ? body.message : "",
+  ]);
+});
+
+// CancelPetition(petitionID) — withdraw a ticket.
+app.post("/api/bridge/petition/cancel", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This cancels the support ticket. Confirm to continue.")) {
+    return;
+  }
+  const petitionID = Number((req.body || {}).petitionID) || 0;
+  await dispatchBridgeWrite(req, res, next, "petitioner", "CancelPetition", [petitionID]);
+});
+
+// --- industryManager WRITES (1) ---------------------------------------------
+
+// CompleteManyJobs(jobs) — the BATCH delivery. `jobs` is a list of job entries
+// (each a jobID or a job dict); the handler delivers each and returns the list of
+// delivered job payloads. Forwarded verbatim as a single positional arg.
+app.post("/api/bridge/industry/complete-many", requireAuth, async (req, res, next) => {
+  if (
+    !requireWriteConfirmation(
+      req,
+      res,
+      "This delivers ALL the selected industry jobs at once. Confirm to continue.",
+    )
+  ) {
+    return;
+  }
+  const jobs = Array.isArray((req.body || {}).jobs) ? req.body.jobs : [];
+  await dispatchBridgeWrite(req, res, next, "industryManager", "CompleteManyJobs", [jobs]);
+});
+
+// --- planetMgr WRITES (1) — ⚠ DESTRUCTIVE -----------------------------------
+
+// ⚠ DESTRUCTIVE — DeleteLaunch removes a customs-office launch by id. Reachable +
+// confirm-gated, NEVER fired on the live world in this plumbing pass. The store
+// scopes deletion to session.characterID.
+app.post("/api/bridge/planet/launch/delete", requireAuth, async (req, res, next) => {
+  if (
+    !requireWriteConfirmation(
+      req,
+      res,
+      "Deleting a planetary launch is permanent and cannot be undone. This must be confirmed explicitly.",
+    )
+  ) {
+    return;
+  }
+  const launchID = Number((req.body || {}).launchID) || 0;
+  await dispatchBridgeWrite(req, res, next, "planetMgr", "DeleteLaunch", [launchID]);
+});
+
+// --- structureDirectory WRITES (1) — canManageStructure-guarded --------------
+
+// SetStructureDescription(structureID, description). GUARDED server-side
+// (canManageStructure throws StructureManagementDenied for a structure the session
+// cannot manage). Returns null; a panel re-reads GetStructureDescription.
+app.post("/api/bridge/structure/set-description", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This changes the structure's description. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  await dispatchBridgeWrite(req, res, next, "structureDirectory", "SetStructureDescription", [
+    Number(body.structureID) || 0,
+    typeof body.description === "string" ? body.description : "",
+  ]);
+});
+
+// --- structureAssetSafety MOVE WRITES (3) — ⚠ consequential ------------------
+// Owner is resolved from the SESSION (personal => session character, corp =>
+// session corp), not a caller-supplied id. Each returns null. ⚠ NEVER fired live.
+
+app.post("/api/bridge/asset-safety/move-personal", requireAuth, async (req, res, next) => {
+  if (
+    !requireWriteConfirmation(
+      req,
+      res,
+      "This relocates your personal assets to asset safety. This must be confirmed explicitly.",
+    )
+  ) {
+    return;
+  }
+  const body = req.body || {};
+  await dispatchBridgeWrite(req, res, next, "structureAssetSafety", "MovePersonalAssetsToSafety", [
+    Number(body.solarSystemID) || 0,
+    Number(body.structureID) || 0,
+  ]);
+});
+
+app.post("/api/bridge/asset-safety/move-corp", requireAuth, async (req, res, next) => {
+  if (
+    !requireWriteConfirmation(
+      req,
+      res,
+      "This relocates your corporation's assets to asset safety. This must be confirmed explicitly.",
+    )
+  ) {
+    return;
+  }
+  const body = req.body || {};
+  await dispatchBridgeWrite(req, res, next, "structureAssetSafety", "MoveCorpAssetsToSafety", [
+    Number(body.solarSystemID) || 0,
+    Number(body.structureID) || 0,
+  ]);
+});
+
+// MoveSafetyWrapToStructure(assetWrapID, solarSystemID) + kwargs{ destinationID }.
+app.post("/api/bridge/asset-safety/deliver-wrap", requireAuth, async (req, res, next) => {
+  if (
+    !requireWriteConfirmation(
+      req,
+      res,
+      "This delivers the asset-safety wrap to a structure. This must be confirmed explicitly.",
+    )
+  ) {
+    return;
+  }
+  const body = req.body || {};
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  try {
+    const outcome = await heldTopLevelCall(
+      held,
+      req.webSessionID,
+      "structureAssetSafety",
+      "MoveSafetyWrapToStructure",
+      [Number(body.assetWrapID) || 0, Number(body.solarSystemID) || 0],
+      { destinationID: Number(body.destinationID) || 0 },
+    );
+    res.json({ ok: true, applied: true, result: outcome.result ?? null, notifications: outcome.notifications });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // --- R17 Contracts (contractProxy bridge) -----------------------------------
 //
 // Like mail and market, the whole contract surface is TOP-LEVEL
