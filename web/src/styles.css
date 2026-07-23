@@ -1719,7 +1719,17 @@
   .shell-head-where strong { color: var(--color-text-bright); }
   .shell-head-where .muted { color: var(--color-muted); font-size: 0.85rem; }
   .shell-head-pilot { margin-left: auto; color: var(--color-text); }
-  .undock-btn { min-height: 40px; }
+  .shell-head-actions { margin-left: auto; display: flex; gap: 0.4rem; }
+  .undock-btn,
+  .dock-btn { min-height: 40px; }
+  /* A shell-level action failure (undock/dock refused) — the server's reason. */
+  .shell-error {
+    margin: 0;
+    padding: 0.4rem 0.6rem;
+    color: var(--color-danger);
+    border: 1px solid var(--color-danger);
+    background: var(--color-panel);
+  }
 
   .state-badge {
     font-size: 11px;

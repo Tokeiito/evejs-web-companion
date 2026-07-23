@@ -9,6 +9,10 @@
   import ModuleRack from "./ModuleRack.svelte";
   import TargetBracket from "./TargetBracket.svelte";
   import { SPACE_PANELS, type ShellSlot } from "./shell.ts";
+  import { nearestDockable } from "./dockTarget.ts";
+  import { resolvedName } from "../store/names.ts";
+  import { BridgeCallError } from "../bridge/callMethod.ts";
+  import { isSessionLost } from "../app/flow.ts";
   import type { TabID } from "./tabs.ts";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
@@ -25,6 +29,38 @@
   const space = store.space;
   // svelte-ignore state_referenced_locally
   const fitting = store.fitting;
+  // svelte-ignore state_referenced_locally
+  const names = store.names;
+
+  // The Dock control targets the nearest station/structure on grid (EVE only
+  // docks at something in view). Docking is one-click (the BFF confirm lives in
+  // flow.dockAt); success flips the flight flag and App swaps in the station
+  // shell. Disabled when nothing on grid can be docked at.
+  const dockTarget = $derived(
+    nearestDockable($space.snapshot?.entities, $space.snapshot?.ship?.position ?? null),
+  );
+  const dockName = $derived(
+    dockTarget ? (dockTarget.name ?? resolvedName($names.resolved, "type", dockTarget.typeID)) : null,
+  );
+
+  let busy = $state(false);
+  let error = $state("");
+  async function run(action: () => Promise<void>): Promise<void> {
+    if (busy) return;
+    busy = true;
+    error = "";
+    try {
+      await action();
+    } catch (cause) {
+      if (isSessionLost(cause)) {
+        error = "The live session ended (idle timeout or another client took over).";
+      } else {
+        error = cause instanceof BridgeCallError ? `${cause.code}: ${cause.message}` : String(cause);
+      }
+    } finally {
+      busy = false;
+    }
+  }
 
   // The HUD module rack needs the ship's fit, but Fitting is a docked-only tab —
   // so pull it once here. Fire-and-forget: if the read is unavailable the rack
@@ -67,9 +103,21 @@
       <strong>{systemName ?? "In space"}</strong>
       {#if shipMode}<span class="muted">{shipMode}{#if speedPct !== null} · {speedPct}%{/if}</span>{/if}
     </div>
+    <div class="shell-head-actions">
+      {#if dockTarget}
+        <button type="button" class="dock-btn" disabled={busy} title={`Dock at ${dockName}`} onclick={() => run(() => flow.dockAt(dockTarget.itemID))}>
+          {busy ? "Docking…" : "Dock"}
+        </button>
+      {:else}
+        <button type="button" class="dock-btn" disabled title="No station on this grid to dock at">Dock</button>
+      {/if}
+    </div>
   </header>
 
   <div class="space-viewport">
+    {#if error}
+      <p class="shell-error" role="alert">{error}</p>
+    {/if}
     <TargetBracket {store} />
     <Overview {store} {flow} />
   </div>

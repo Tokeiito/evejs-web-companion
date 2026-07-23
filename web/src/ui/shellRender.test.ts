@@ -143,6 +143,8 @@ test("docked renders the station interior: badge, station context, services rail
   // Travel + Bots moved into the docked services rail.
   assert.match(text, /Travel/, "Travel is not in the docked services");
   assert.match(text, /Bots/, "Bots is not in the docked services");
+  // The Undock control is present.
+  assert.match(text, /Undock/, "no undock control");
 });
 
 test("in space renders the HUD: badge, system, ship gauges, module rack, nav", () => {
@@ -157,6 +159,8 @@ test("in space renders the HUD: badge, system, ship gauges, module rack, nav", (
   assert.match(text, /Modules/, "no module rack");
   // The HUD dock's nav opens Mining as a full panel.
   assert.match(text, /Mining/, "no mining nav control");
+  // The Dock control is present (disabled here — no station on this empty grid).
+  assert.match(text, /Dock/, "no dock control");
 });
 
 test("the module rack renders real high/mid/low rows (no longer a placeholder)", () => {

@@ -8,6 +8,8 @@
   import StationPanel from "./StationPanel.svelte";
   import ShipHangar from "./ShipHangar.svelte";
   import { STATION_SERVICES } from "./shell.ts";
+  import { BridgeCallError } from "../bridge/callMethod.ts";
+  import { isSessionLost } from "../app/flow.ts";
   import type { TabID } from "./tabs.ts";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
@@ -32,6 +34,29 @@
     }
   });
 
+  // Undock is a one-click movement write (as in EVE — no confirm dialog); the
+  // BFF confirm is handled inside flow.undock(). Success flips the flight flag,
+  // and App swaps this shell for the space HUD on its own. The run() guard
+  // mirrors the Flight panel's: one action at a time, the server's own refusal.
+  let busy = $state(false);
+  let error = $state("");
+  async function run(action: () => Promise<void>): Promise<void> {
+    if (busy) return;
+    busy = true;
+    error = "";
+    try {
+      await action();
+    } catch (cause) {
+      if (isSessionLost(cause)) {
+        error = "The live session ended (idle timeout or another client took over).";
+      } else {
+        error = cause instanceof BridgeCallError ? `${cause.code}: ${cause.message}` : String(cause);
+      }
+    } finally {
+      busy = false;
+    }
+  }
+
   const stationName = $derived(
     $station.station?.stationName ?? $flight.stationName ?? "this station",
   );
@@ -55,8 +80,8 @@
     {#if $station.online}
       <span class="shell-head-pilot">{$station.online.characterName}</span>
     {/if}
-    <button type="button" class="undock-btn" disabled title="Undocking is wired in a later pass">
-      Undock
+    <button type="button" class="undock-btn" disabled={busy} onclick={() => run(() => flow.undock())}>
+      {busy ? "Undocking…" : "Undock"}
     </button>
   </header>
 
@@ -81,6 +106,9 @@
   </aside>
 
   <div class="shell-main">
+    {#if error}
+      <p class="shell-error" role="alert">{error}</p>
+    {/if}
     <ShipHangar {store} {onOpen} />
     <StationPanel {store} {flow} />
   </div>
