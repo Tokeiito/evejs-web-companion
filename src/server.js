@@ -1631,6 +1631,97 @@ app.get("/api/bridge/bound-small-services", requireAuth, async (req, res, next) 
   }
 });
 
+// R85 — the 5 RB-FLEET Phase-2 BOUND reads (roster/init-state, wings, MOTD,
+// join-requests, composition), the LAST Phase-2 bound-read batch — CLOSES Phase-2
+// bound reads (111/111). PLUMBING ONLY — no UI, no writes. Retail addresses these
+// on the fleet bound Moniker (fleetObjectHandler.MachoBindObject), a genuine bound
+// two-step: the bind mints the OID handle keyed on the session's fleetID and the
+// reads dispatch as bound methods. This route rides boundCall over fleetBindSpec()
+// (the R72 bind, session-scoped: NO fleetID arg → the session's OWN fleet), same as
+// /api/bridge/bound-inventory / bound-planet — the BFF holds the handle, the browser
+// never sees the OID.
+//
+// ⚠ OWNERSHIP: this route is SESSION-SCOPED and never leaks — fleetBindSpec() passes
+// no fleetID, so the bound context is the session's own fleet (fleetid 0 → no fleet,
+// which is the real state for a docked/fleetless char). But ALL FIVE HANDLERS leak
+// under attacker-chosen args on /api/bridge/call (NOT via this route): a browser can
+// POST /api/bridge/call {service:"fleetObjectHandler", method:"MachoBindObject",
+// args:[[<rival fleetID>]]} to mint a handle bound to a FOREIGN fleet, then the bound
+// read off it returns that fleet's roster/wings/MOTD/join-requests/composition with no
+// membership check — the R72 BINDS-ARBITRARY-OID gateway, flagged in
+// docs/arg-injection-leak-handoff.md, kept pre-plumbed (operator flag-only). None of
+// fleetRuntime.getFleetState/getWings/getMotd/getJoinRequests/getFleetComposition calls
+// ensureFleetMembership (that gate guards only the fleet WRITES).
+//
+// Independent Promise.allSettled: with no fleet, ensureFleetExists(0) throws
+// FleetNotFound, so each read comes back as {error:"CALL_REFUSED", message:
+// "FleetNotFound"} (verified live) — a LEGITIMATE "not in a fleet" state, never a
+// blanking failure. A char IN a fleet gets
+// the populated envelopes. Each read carries its own {result} or {error, message}.
+// Returns the raw result envelopes for web/src/bridge/boundFleet.ts; NO UI consumes
+// this yet.
+app.get("/api/bridge/bound-fleet", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const spec = fleetBindSpec();
+  const FLEET_READS = [
+    // GetInitState() — the full fleet KeyVal {motd, options, fleetID, members(dict),
+    // isLootLogging, squads(dict), wings(dict)}.
+    ["GetInitState", []],
+    // GetWings() — dict {wingID -> wing KeyVal{wingID, name, squads(dict)}}.
+    ["GetWings", []],
+    // GetMotd() — the MOTD string.
+    ["GetMotd", []],
+    // GetJoinRequests() — dict {charID -> join-request KeyVal{charID, corpID,
+    // allianceID, warFactionID, securityStatus}}.
+    ["GetJoinRequests", []],
+    // GetFleetComposition() — list of composition KeyVals {characterID, solarSystemID,
+    // stationID, shipTypeID, skills, skillIDs}.
+    ["GetFleetComposition", []],
+  ];
+  try {
+    const settled = await Promise.allSettled(
+      FLEET_READS.map(([method, args]) =>
+        boundCall(held, req.webSessionID, spec, method, args, null),
+      ),
+    );
+    // A lost live session cannot be recovered by any read; surface it so the page
+    // returns to character select (matching /api/bridge/bound-planet).
+    for (const s of settled) {
+      if (s.status === "rejected" && s.reason && s.reason.code === "SESSION_NOT_FOUND") {
+        next(s.reason);
+        return;
+      }
+    }
+    const reads = {};
+    FLEET_READS.forEach(([method], index) => {
+      const s = settled[index];
+      if (s.status === "fulfilled") {
+        reads[method] = { result: s.value.result };
+      } else {
+        const reason = s.reason || {};
+        reads[method] = {
+          error: String(reason.code || "READ_FAILED"),
+          message: typeof reason.message === "string" ? reason.message : null,
+        };
+      }
+    });
+    res.json({
+      ok: true,
+      characterID: held.characterID,
+      fleetID: held.fleetID || null,
+      reads,
+    });
+  } catch (error) {
+    if (error && error.code === "SESSION_NOT_FOUND") {
+      forgetBridgeSession(req.webSessionID);
+    }
+    next(error);
+  }
+});
+
 // Move one item hangar <-> active-ship cargo. The bound object is the
 // DESTINATION; retail's Add(itemID, sourceLocationID, qty, flag) carries the
 // source location and the destination flag.
