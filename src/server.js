@@ -6057,6 +6057,245 @@ app.post("/api/bridge/fighters/scoop-abandoned", requireAuth, async (req, res, n
   await dispatchBridgeWrite(req, res, next, "fighterMgr", "CmdScoopAbandonedFighterFromSpace", args);
 });
 
+// --- R91 CONTRACT + FITTING WRITES ------------------------------------------
+//
+// The Phase-3 "contracts + fittings" writes batch, following the R86–R90 pattern.
+// Every write is a TOP-LEVEL call on the held session (heldTopLevelCall via
+// dispatchBridgeWrite) and every route is CONFIRM-GATED (requireWriteConfirmation):
+// it refuses outright (400 CONFIRMATION_REQUIRED, NO dispatch) unless the browser
+// passes `confirm: true`. A stray click or stray POST cannot create, accept,
+// complete, delete, or bid on a contract, nor save/rename/delete a fitting.
+//
+// ⚠ EXTRA-CARE, never fired live in this plumbing pass: AcceptContract / PlaceBid
+// (move ISK/items), DeleteContract / DeleteMultipleContracts / DeleteFitting /
+// DeleteManyFittings (destroy data), GM_ExpireContract (admin — returns false /
+// 403-equivalent for a normal non-GM session; wired + noted).
+//
+// ⚠ ARG-INJECTION — GUARDED server-side (unlike the contract READS, handoff #11):
+//   • contractProxy deleteContract throws unless isIssuedBySession; acceptContract
+//     throws unless canAcceptContract (and refuses your own unassigned contract);
+//     deleteMultipleContracts loops deleteContract so inherits the guard. PlaceBid /
+//     FinishAuction / SplitStack / the two notification deletes are server-side
+//     stubs (null/false). GM_ExpireContract is GM-only.
+//   • charFittingMgr / corpFittingMgr writes resolve the ownerID
+//     (resolveRequestedOwnerID; 0 → the SESSION owner) and then
+//     assertSessionCanMutateOwner BEFORE any store mutation — a foreign ownerID is
+//     a permission throw, never a foreign mutation.
+// Nothing added to arg-injection-leak-handoff.md on the write side — the guards hold.
+
+// --- contractProxy WRITES (11) ----------------------------------------------
+
+app.post("/api/bridge/contracts/create", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This creates a new contract. Confirm to continue.")) {
+    return;
+  }
+  const info = (req.body || {}).info ?? null;
+  await dispatchBridgeWrite(req, res, next, "contractProxy", "CreateContract", [info]);
+});
+
+// ⚠ FINANCIAL — moves ISK and items. Reachable + confirm-gated, never fired live.
+app.post("/api/bridge/contracts/accept", requireAuth, async (req, res, next) => {
+  if (
+    !requireWriteConfirmation(
+      req,
+      res,
+      "Accepting a contract transfers ISK and items and cannot be undone. This must be confirmed explicitly.",
+    )
+  ) {
+    return;
+  }
+  const body = req.body || {};
+  const contractID = Number(body.contractID) || 0;
+  const forCorp = body.forCorp === true;
+  await dispatchBridgeWrite(req, res, next, "contractProxy", "AcceptContract", [contractID, forCorp]);
+});
+
+app.post("/api/bridge/contracts/complete", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This completes that contract. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const contractID = Number(body.contractID) || 0;
+  const args = body.status !== undefined ? [contractID, Number(body.status) || 0] : [contractID];
+  await dispatchBridgeWrite(req, res, next, "contractProxy", "CompleteContract", args);
+});
+
+// ⚠ DESTRUCTIVE — deletes a contract you issued. Reachable + confirm-gated, never fired live.
+app.post("/api/bridge/contracts/delete", requireAuth, async (req, res, next) => {
+  if (
+    !requireWriteConfirmation(
+      req,
+      res,
+      "Deleting a contract is permanent — it cannot be restored. This must be confirmed explicitly.",
+    )
+  ) {
+    return;
+  }
+  const contractID = Number((req.body || {}).contractID) || 0;
+  await dispatchBridgeWrite(req, res, next, "contractProxy", "DeleteContract", [contractID]);
+});
+
+// ⚠ DESTRUCTIVE — bulk delete. Reachable + confirm-gated, never fired live.
+app.post("/api/bridge/contracts/delete-multiple", requireAuth, async (req, res, next) => {
+  if (
+    !requireWriteConfirmation(
+      req,
+      res,
+      "Deleting these contracts is permanent — they cannot be restored. This must be confirmed explicitly.",
+    )
+  ) {
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "contractProxy", "DeleteMultipleContracts", [
+    bridgeIDList((req.body || {}).contractIDs),
+  ]);
+});
+
+// ⚠ ISK — places a bid (spends ISK). Server-side stub in this world; confirm-gated, never fired live.
+app.post("/api/bridge/contracts/bid", requireAuth, async (req, res, next) => {
+  if (
+    !requireWriteConfirmation(
+      req,
+      res,
+      "Placing a bid commits ISK to that auction. This must be confirmed explicitly.",
+    )
+  ) {
+    return;
+  }
+  const body = req.body || {};
+  const contractID = Number(body.contractID) || 0;
+  const amount = body.amount !== undefined ? Number(body.amount) || 0 : undefined;
+  const args = amount !== undefined ? [contractID, amount] : [contractID];
+  await dispatchBridgeWrite(req, res, next, "contractProxy", "PlaceBid", args);
+});
+
+app.post("/api/bridge/contracts/finish-auction", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This finishes that auction. Confirm to continue.")) {
+    return;
+  }
+  const contractID = Number((req.body || {}).contractID) || 0;
+  await dispatchBridgeWrite(req, res, next, "contractProxy", "FinishAuction", [contractID]);
+});
+
+app.post("/api/bridge/contracts/split-stack", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This splits that stack. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const itemID = Number(body.itemID) || 0;
+  const quantity = Number(body.quantity) || 0;
+  await dispatchBridgeWrite(req, res, next, "contractProxy", "SplitStack", [itemID, quantity]);
+});
+
+app.post("/api/bridge/contracts/notification/delete", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This dismisses that contract notification. Confirm to continue.")) {
+    return;
+  }
+  const notificationID = Number((req.body || {}).notificationID) || 0;
+  await dispatchBridgeWrite(req, res, next, "contractProxy", "DeleteNotification", [notificationID]);
+});
+
+app.post("/api/bridge/contracts/notification/delete-contract", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This dismisses that contract's notification. Confirm to continue.")) {
+    return;
+  }
+  const contractID = Number((req.body || {}).contractID) || 0;
+  await dispatchBridgeWrite(req, res, next, "contractProxy", "DeleteContractNotification", [contractID]);
+});
+
+// ⚠ ADMIN — GM-only. A normal session gets a false / 403-equivalent from the
+// handler (it is NOT a GM). Wired + confirm-gated for completeness; never fired live.
+app.post("/api/bridge/contracts/gm-expire", requireAuth, async (req, res, next) => {
+  if (
+    !requireWriteConfirmation(
+      req,
+      res,
+      "GM-force-expiring a contract is an admin action. This must be confirmed explicitly.",
+    )
+  ) {
+    return;
+  }
+  const contractID = Number((req.body || {}).contractID) || 0;
+  await dispatchBridgeWrite(req, res, next, "contractProxy", "GM_ExpireContract", [contractID]);
+});
+
+// --- charFittingMgr / corpFittingMgr WRITES (5) -----------------------------
+// ownerID defaults to 0 → the SESSION owner (resolveRequestedOwnerID); a foreign
+// ownerID is a server-side permission throw (assertSessionCanMutateOwner).
+
+app.post("/api/bridge/fittings/save-many", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This saves these fittings to your library. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const ownerID = Number(body.ownerID) || 0;
+  const fittings = body.fittings ?? [];
+  await dispatchBridgeWrite(req, res, next, "charFittingMgr", "SaveManyFittings", [ownerID, fittings]);
+});
+
+// ⚠ DESTRUCTIVE — deletes a saved fitting. Reachable + confirm-gated, never fired live.
+app.post("/api/bridge/fittings/delete", requireAuth, async (req, res, next) => {
+  if (
+    !requireWriteConfirmation(
+      req,
+      res,
+      "Deleting a saved fitting is permanent — it cannot be restored. This must be confirmed explicitly.",
+    )
+  ) {
+    return;
+  }
+  const body = req.body || {};
+  const ownerID = Number(body.ownerID) || 0;
+  const fittingID = Number(body.fittingID) || 0;
+  await dispatchBridgeWrite(req, res, next, "charFittingMgr", "DeleteFitting", [ownerID, fittingID]);
+});
+
+// ⚠ DESTRUCTIVE — bulk delete saved fittings. Reachable + confirm-gated, never fired live.
+app.post("/api/bridge/fittings/delete-many", requireAuth, async (req, res, next) => {
+  if (
+    !requireWriteConfirmation(
+      req,
+      res,
+      "Deleting these saved fittings is permanent — they cannot be restored. This must be confirmed explicitly.",
+    )
+  ) {
+    return;
+  }
+  const body = req.body || {};
+  const ownerID = Number(body.ownerID) || 0;
+  await dispatchBridgeWrite(req, res, next, "charFittingMgr", "DeleteManyFittings", [
+    ownerID,
+    bridgeIDList(body.fittingIDs),
+  ]);
+});
+
+app.post("/api/bridge/fittings/update-name", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This renames or re-describes that fitting. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const fittingID = Number(body.fittingID) || 0;
+  const ownerID = Number(body.ownerID) || 0;
+  const name = typeof body.name === "string" ? body.name : "";
+  const description = typeof body.description === "string" ? body.description : "";
+  await dispatchBridgeWrite(req, res, next, "charFittingMgr", "UpdateNameAndDescription", [
+    fittingID,
+    ownerID,
+    name,
+    description,
+  ]);
+});
+
+app.post("/api/bridge/corp-fittings/save-many", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This saves these fittings to your corp library. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const ownerID = Number(body.ownerID) || 0;
+  const fittings = body.fittings ?? [];
+  await dispatchBridgeWrite(req, res, next, "corpFittingMgr", "SaveManyFittings", [ownerID, fittings]);
+});
+
 // --- R17 Contracts (contractProxy bridge) -----------------------------------
 //
 // Like mail and market, the whole contract surface is TOP-LEVEL

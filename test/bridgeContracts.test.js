@@ -621,3 +621,58 @@ test("both contract routes need a held session", async () => {
     assert.notEqual(response.status, 200, `${path} must refuse without a held session`);
   }
 });
+
+// --- R91 contract WRITES (confirm-gated) ------------------------------------
+//
+// Every write route REFUSES (400 CONFIRMATION_REQUIRED, no dispatch) unless the
+// browser passes `confirm: true`. The financial/destructive/admin writes carry
+// the same gate. These tests prove the gate, then prove one gated dispatch lands
+// on contractProxy with the right method — reachability, never a live mutation.
+
+const R91_CONTRACT_WRITE_ROUTES = [
+  ["/api/bridge/contracts/create", {}],
+  ["/api/bridge/contracts/accept", { contractID: CONTRACT_ID }],
+  ["/api/bridge/contracts/complete", { contractID: CONTRACT_ID }],
+  ["/api/bridge/contracts/delete", { contractID: CONTRACT_ID }],
+  ["/api/bridge/contracts/delete-multiple", { contractIDs: [CONTRACT_ID] }],
+  ["/api/bridge/contracts/bid", { contractID: CONTRACT_ID, amount: 1 }],
+  ["/api/bridge/contracts/finish-auction", { contractID: CONTRACT_ID }],
+  ["/api/bridge/contracts/split-stack", { itemID: 1, quantity: 1 }],
+  ["/api/bridge/contracts/notification/delete", { notificationID: 1 }],
+  ["/api/bridge/contracts/notification/delete-contract", { contractID: CONTRACT_ID }],
+  ["/api/bridge/contracts/gm-expire", { contractID: CONTRACT_ID }],
+];
+
+test("⚠ every R91 contract write REFUSES without confirm — no dispatch", async () => {
+  const gateway = fakeGateway();
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+  for (const [path, body] of R91_CONTRACT_WRITE_ROUTES) {
+    const { response, payload } = await apiRequest(baseUrl, path, { method: "POST", body });
+    assert.equal(response.status, 400, `${path} must refuse without confirm`);
+    assert.equal(payload.error, "CONFIRMATION_REQUIRED", `${path} must answer CONFIRMATION_REQUIRED`);
+  }
+  // Not one write reached the gateway.
+  const writeCalls = gateway.calls.topLevel.filter(
+    (c) => c.service === "contractProxy" && c.method !== "SearchContracts",
+  );
+  assert.equal(writeCalls.length, 0, "a refused write must not dispatch");
+});
+
+test("a confirmed contract write dispatches on contractProxy with the right method", async () => {
+  const gateway = fakeGateway();
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+  // CompleteContract is a non-financial write — safe to exercise against the fake.
+  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/contracts/complete", {
+    method: "POST",
+    body: { contractID: CONTRACT_ID, confirm: true },
+  });
+  assert.equal(response.status, 200);
+  assert.equal(payload.ok, true);
+  assert.equal(payload.applied, true);
+  const call = gateway.calls.topLevel.find((c) => c.method === "CompleteContract");
+  assert.ok(call, "CompleteContract must reach the gateway once confirmed");
+  assert.equal(call.service, "contractProxy");
+  assert.equal(Number(call.args[0]), CONTRACT_ID);
+});

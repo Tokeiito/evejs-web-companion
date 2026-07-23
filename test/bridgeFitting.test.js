@@ -619,3 +619,51 @@ test("every fitting route needs a live session, and authentication", async () =>
     assert.equal(response.status, 401, `${method} ${path} unauthenticated`);
   }
 });
+
+// --- R91 fitting-library WRITES (confirm-gated) -----------------------------
+//
+// SaveManyFittings / DeleteFitting / DeleteManyFittings / UpdateNameAndDescription
+// on charFittingMgr and SaveManyFittings on corpFittingMgr. Every route REFUSES
+// (400 CONFIRMATION_REQUIRED, no dispatch) unless the browser passes
+// `confirm: true`; the two destructive deletes carry the same gate. These tests
+// prove the gate, then prove one gated save dispatches on the right service.
+
+const R91_FITTING_WRITE_ROUTES = [
+  ["/api/bridge/fittings/save-many", { fittings: [] }, "charFittingMgr", "SaveManyFittings"],
+  ["/api/bridge/fittings/delete", { fittingID: 1 }, "charFittingMgr", "DeleteFitting"],
+  ["/api/bridge/fittings/delete-many", { fittingIDs: [1] }, "charFittingMgr", "DeleteManyFittings"],
+  ["/api/bridge/fittings/update-name", { fittingID: 1, name: "x" }, "charFittingMgr", "UpdateNameAndDescription"],
+  ["/api/bridge/corp-fittings/save-many", { fittings: [] }, "corpFittingMgr", "SaveManyFittings"],
+];
+
+test("⚠ every R91 fitting write REFUSES without confirm — no dispatch", async () => {
+  const gateway = fakeGateway();
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+  for (const [path, body] of R91_FITTING_WRITE_ROUTES) {
+    const { response, payload } = await apiRequest(baseUrl, path, { method: "POST", body });
+    assert.equal(response.status, 400, `${path} must refuse without confirm`);
+    assert.equal(payload.error, "CONFIRMATION_REQUIRED", `${path} must answer CONFIRMATION_REQUIRED`);
+  }
+  const writeCalls = gateway.calls.topLevel.filter(
+    (c) => c.service === "charFittingMgr" || c.service === "corpFittingMgr",
+  );
+  assert.equal(writeCalls.length, 0, "a refused fitting write must not dispatch");
+});
+
+test("a confirmed fitting save dispatches on the right service and method", async () => {
+  const gateway = fakeGateway();
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/fittings/save-many", {
+    method: "POST",
+    body: { fittings: [], confirm: true },
+  });
+  assert.equal(response.status, 200);
+  assert.equal(payload.ok, true);
+  const call = gateway.calls.topLevel.find((c) => c.method === "SaveManyFittings");
+  assert.ok(call, "SaveManyFittings must reach the gateway once confirmed");
+  assert.equal(call.service, "charFittingMgr");
+  // ownerID defaults to 0 → the SESSION owner resolves it server-side.
+  assert.equal(Number(call.args[0]), 0);
+});
