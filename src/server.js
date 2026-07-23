@@ -5784,6 +5784,279 @@ app.post("/api/bridge/kill-right/buy", requireAuth, async (req, res, next) => {
   await dispatchBridgeWrite(req, res, next, "killRightMgr", "BuyKillRight", [killRightID, price]);
 });
 
+// --- R90 SHIP + FIGHTER IN-SPACE WRITES -------------------------------------
+// (ship / fighterMgr)
+//
+// The Phase-3 "ship + fighter in-space ops" writes batch, following the R86–R89
+// pattern. Every write is a TOP-LEVEL call on the held session
+// (dispatchBridgeWrite) and every route is CONFIRM-GATED via
+// requireWriteConfirmation: it refuses outright (400 CONFIRMATION_REQUIRED, NO
+// dispatch) unless the browser passes `confirm: true`.
+//
+// ⚡ FAST MODE — Farmer is DOCKED, so most of these return a not-in-space error
+// and are NOT live-exercisable. Routes are verified for reachability +
+// refuses-without-confirm only; the decoders are educated guesses (QA later).
+//
+// ⚠⚠ EXTRA-CARE — NEVER fired on the live world even where reachable:
+//   • ship.Eject / ship.SafeLogoff — change the pilot's session state.
+//   • ship.Jettison / ship.Drop — dump cargo/orbitals to space (could lose items).
+//   • fighterMgr.CmdAbandonFighter — abandons a fighter in space.
+// Their confirm messages say so explicitly.
+//
+// ⚠ SCOPE (all session-scoped — no foreign ship/fighter mutation):
+//   • Every ship write resolves the ACTIVE ship / capsule from the SESSION
+//     (server this._getShipID(session) / ejectSession(session) /
+//     getActiveShipRecord(session.characterID)). AssembleShip / FitShips list the
+//     packaged ships by session characterID (findCharacterShip / char-scoped
+//     multifit lister — ownership-checked). The itemID/objectID-taking ops
+//     (Scoop / ScoopToMobileDepotHold / Jettison / LaunchFromShip /
+//     LaunchFromContainer / Drop) act on space objects near the session's ship,
+//     gated on proximity/owner in the server helpers — no foreign ship boarded.
+//   • Every fighterMgr write resolves the controller HOST from the SESSION and
+//     validates each fighter against that host before moving it — a fighterID the
+//     host does not own is a no-op.
+// No caller-supplied FOREIGN source found — nothing appended to
+// docs/arg-injection-leak-handoff.md for this batch.
+
+// --- ship WRITES (14) -------------------------------------------------------
+
+// ⚠ EXTRA-CARE (changes session state — leaves the ship as a capsule in space).
+// Eject() — no args; the ship is resolved from the session.
+app.post("/api/bridge/ship/eject", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This EJECTS you from your ship, leaving it in space as an abandoned hull. This must be confirmed explicitly.")) {
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "ship", "Eject", []);
+});
+
+// LeaveShip(shipID) — docked: swaps the active ship; in space: ejects.
+app.post("/api/bridge/ship/leave", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This leaves your current ship. Confirm to continue.")) {
+    return;
+  }
+  const shipID = Number((req.body || {}).shipID) || 0;
+  await dispatchBridgeWrite(req, res, next, "ship", "LeaveShip", [shipID]);
+});
+
+// BoardStoredShip(structureID, shipID) — board a ship stored in a maintenance bay.
+app.post("/api/bridge/ship/board-stored", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This boards a stored ship. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const structureID = Number(body.structureID) || 0;
+  const shipID = Number(body.shipID) || 0;
+  await dispatchBridgeWrite(req, res, next, "ship", "BoardStoredShip", [structureID, shipID]);
+});
+
+// StoreVessel(sourceLocationID) — stow the active ship into a maintenance bay.
+app.post("/api/bridge/ship/store-vessel", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This stores your active ship in a maintenance bay. Confirm to continue.")) {
+    return;
+  }
+  const sourceLocationID = Number((req.body || {}).sourceLocationID) || 0;
+  await dispatchBridgeWrite(req, res, next, "ship", "StoreVessel", [sourceLocationID]);
+});
+
+// AssembleShip(shipIDs, name?, subSystems?) — unpackage packaged ships (docked).
+app.post("/api/bridge/ship/assemble", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This assembles the selected ship(s). Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const shipIDs = bridgeIDList(body.shipIDs);
+  const name = typeof body.name === "string" ? body.name : "";
+  const subSystems = Array.isArray(body.subSystems) ? body.subSystems : null;
+  await dispatchBridgeWrite(req, res, next, "ship", "AssembleShip", [shipIDs, name, subSystems]);
+});
+
+// FitShips(shipTypeID, fitInfo, itemLocationID, cargoItemsByType, fitRigs, name,
+// numToFit, itemContainerID) — multi-fit packaged ships from a saved fitting.
+app.post("/api/bridge/ship/fit-ships", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This fits the selected ships. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const shipTypeID = Number(body.shipTypeID) || 0;
+  const fitInfo = body.fitInfo && typeof body.fitInfo === "object" ? body.fitInfo : {};
+  const itemLocationID = Number(body.itemLocationID) || 0;
+  const cargoItemsByType = body.cargoItemsByType && typeof body.cargoItemsByType === "object" ? body.cargoItemsByType : {};
+  const fitRigs = body.fitRigs === undefined ? true : Boolean(body.fitRigs);
+  const name = typeof body.name === "string" ? body.name : "";
+  const numToFit = Number(body.numToFit) || 0;
+  const itemContainerID = Number(body.itemContainerID) || 0;
+  await dispatchBridgeWrite(req, res, next, "ship", "FitShips", [shipTypeID, fitInfo, itemLocationID, cargoItemsByType, fitRigs, name, numToFit, itemContainerID]);
+});
+
+// ConfigureShip(config) — set the active ship's SMB / fleet-hangar access flags.
+app.post("/api/bridge/ship/configure", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This changes your ship's access configuration. Confirm to continue.")) {
+    return;
+  }
+  const config = (req.body || {}).config && typeof (req.body || {}).config === "object" ? (req.body || {}).config : {};
+  await dispatchBridgeWrite(req, res, next, "ship", "ConfigureShip", [config]);
+});
+
+// Scoop(objectID, password?) — scoop a deployable/container into cargo.
+app.post("/api/bridge/ship/scoop", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This scoops the target into your cargo. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const objectID = Number(body.objectID) || 0;
+  const password = typeof body.password === "string" ? body.password : "";
+  await dispatchBridgeWrite(req, res, next, "ship", "Scoop", [objectID, password]);
+});
+
+// ScoopToMobileDepotHold(objectID) — scoop a mobile depot into its own hold.
+app.post("/api/bridge/ship/scoop-to-depot-hold", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This scoops the target into the mobile depot hold. Confirm to continue.")) {
+    return;
+  }
+  const objectID = Number((req.body || {}).objectID) || 0;
+  await dispatchBridgeWrite(req, res, next, "ship", "ScoopToMobileDepotHold", [objectID]);
+});
+
+// ⚠ EXTRA-CARE (dumps cargo to space — items can be lost). Jettison(itemIDs).
+app.post("/api/bridge/ship/jettison", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This JETTISONS the selected items into space, where anyone can take them. This must be confirmed explicitly.")) {
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "ship", "Jettison", [bridgeIDList((req.body || {}).itemIDs)]);
+});
+
+// LaunchFromShip(itemIDs) — launch orbitals (drones/deployables) from the ship.
+app.post("/api/bridge/ship/launch-from-ship", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This launches the selected items from your ship. Confirm to continue.")) {
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "ship", "LaunchFromShip", [bridgeIDList((req.body || {}).itemIDs)]);
+});
+
+// LaunchFromContainer(sourceLocationID, itemID) — launch a ship from a maintenance bay.
+app.post("/api/bridge/ship/launch-from-container", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This launches a ship from the maintenance bay. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const sourceLocationID = Number(body.sourceLocationID) || 0;
+  const itemID = Number(body.itemID) || 0;
+  await dispatchBridgeWrite(req, res, next, "ship", "LaunchFromContainer", [sourceLocationID, itemID]);
+});
+
+// ⚠ EXTRA-CARE (dumps orbitals to space). Drop(launchRequests, whoseBehalfID?, ignoreWarning?).
+app.post("/api/bridge/ship/drop", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This DROPS the selected orbitals into space, where they can be lost. This must be confirmed explicitly.")) {
+    return;
+  }
+  const body = req.body || {};
+  const launchRequests = Array.isArray(body.launchRequests) ? body.launchRequests : [];
+  const whoseBehalfID = Number(body.whoseBehalfID) || 0;
+  const ignoreWarning = Boolean(body.ignoreWarning);
+  await dispatchBridgeWrite(req, res, next, "ship", "Drop", [launchRequests, whoseBehalfID, ignoreWarning]);
+});
+
+// ⚠ EXTRA-CARE (changes session state — schedules a safe logoff). SafeLogoff().
+app.post("/api/bridge/ship/safe-logoff", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This initiates a SAFE LOGOFF, taking your character offline. This must be confirmed explicitly.")) {
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "ship", "SafeLogoff", []);
+});
+
+// --- fighterMgr WRITES (9) --------------------------------------------------
+
+// LoadFightersToTube(fighterID, tubeFlagID).
+app.post("/api/bridge/fighters/load-to-tube", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This loads a fighter squadron into a tube. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const fighterID = Number(body.fighterID) || 0;
+  const tubeFlagID = Number(body.tubeFlagID) || 0;
+  await dispatchBridgeWrite(req, res, next, "fighterMgr", "LoadFightersToTube", [fighterID, tubeFlagID]);
+});
+
+// UnloadTubeToFighterBay(tubeFlagID).
+app.post("/api/bridge/fighters/unload-tube", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This unloads a tube back to the fighter bay. Confirm to continue.")) {
+    return;
+  }
+  const tubeFlagID = Number((req.body || {}).tubeFlagID) || 0;
+  await dispatchBridgeWrite(req, res, next, "fighterMgr", "UnloadTubeToFighterBay", [tubeFlagID]);
+});
+
+// LaunchFightersFromTubes(tubeFlagIDs).
+app.post("/api/bridge/fighters/launch", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This launches fighters from the selected tubes. Confirm to continue.")) {
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "fighterMgr", "LaunchFightersFromTubes", [bridgeIDList((req.body || {}).tubeFlagIDs)]);
+});
+
+// RecallFightersToTubes(fighterIDs).
+app.post("/api/bridge/fighters/recall", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This recalls the selected fighters to their tubes. Confirm to continue.")) {
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "fighterMgr", "RecallFightersToTubes", [bridgeIDList((req.body || {}).fighterIDs)]);
+});
+
+// ExecuteMovementCommandOnFighters(fighterIDs, command, ...rest).
+app.post("/api/bridge/fighters/move", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This commands the selected fighters to move. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const fighterIDs = bridgeIDList(body.fighterIDs);
+  const command = body.command !== undefined ? body.command : null;
+  const rest = Array.isArray(body.rest) ? body.rest : [];
+  await dispatchBridgeWrite(req, res, next, "fighterMgr", "ExecuteMovementCommandOnFighters", [fighterIDs, command, ...rest]);
+});
+
+// CmdActivateAbilitySlots(fighterIDs, slotIndex?, target?).
+app.post("/api/bridge/fighters/activate-ability", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This activates a fighter ability slot. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const fighterIDs = bridgeIDList(body.fighterIDs);
+  const slotIndex = body.slotIndex !== undefined ? Number(body.slotIndex) || 0 : null;
+  const target = body.target !== undefined ? Number(body.target) || 0 : null;
+  await dispatchBridgeWrite(req, res, next, "fighterMgr", "CmdActivateAbilitySlots", [fighterIDs, slotIndex, target]);
+});
+
+// CmdDeactivateAbilitySlots(fighterIDs, slotIndex?).
+app.post("/api/bridge/fighters/deactivate-ability", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This deactivates a fighter ability slot. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const fighterIDs = bridgeIDList(body.fighterIDs);
+  const slotIndex = body.slotIndex !== undefined ? Number(body.slotIndex) || 0 : null;
+  await dispatchBridgeWrite(req, res, next, "fighterMgr", "CmdDeactivateAbilitySlots", [fighterIDs, slotIndex]);
+});
+
+// ⚠ EXTRA-CARE (abandons a fighter in space). CmdAbandonFighter(fighterIDs).
+app.post("/api/bridge/fighters/abandon", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This ABANDONS the selected fighter(s) in space, where they can be lost or scooped by others. This must be confirmed explicitly.")) {
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "fighterMgr", "CmdAbandonFighter", [bridgeIDList((req.body || {}).fighterIDs)]);
+});
+
+// CmdScoopAbandonedFighterFromSpace(fighterID, destinationFlagID?).
+app.post("/api/bridge/fighters/scoop-abandoned", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This scoops an abandoned fighter from space. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const fighterID = Number(body.fighterID) || 0;
+  const destinationFlagID = body.destinationFlagID !== undefined ? Number(body.destinationFlagID) || 0 : undefined;
+  const args = destinationFlagID !== undefined ? [fighterID, destinationFlagID] : [fighterID];
+  await dispatchBridgeWrite(req, res, next, "fighterMgr", "CmdScoopAbandonedFighterFromSpace", args);
+});
+
 // --- R17 Contracts (contractProxy bridge) -----------------------------------
 //
 // Like mail and market, the whole contract surface is TOP-LEVEL
