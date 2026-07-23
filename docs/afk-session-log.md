@@ -724,6 +724,8 @@ Builds serialize (they share `flow.ts`, the store, and `src/server.js` — the c
 
 **✅ ORCHESTRATOR-VERIFIED — R94 (fast-mode):** eve.js `b2367d5f` = 2 files, web-poc `70272dd`; other agent intact; confirm-gate present (138 hits); snapshot 1/0. **✅ PHASE-3 TOP-LEVEL WRITES COMPLETE (149/152 — the 3 PLEX writes deferred to the market-decoder session).** Writes phase 149/301 (49%). Next: Phase-4 bound writes (149) — same confirm-gated fast-mode pattern, off the bind gateways (skill/clone/crimewatch/corp/alliance/war/PI dispatch top-level session-scoped like their reads; dogma/invbroker/entity/scan/fleet off the MachoBindObject two-step).
 
+**✅ ORCHESTRATOR-VERIFIED — R95 (fast-mode, first Phase-4 batch):** eve.js `ed6d1ada` = 2 files (on the other agent's Carbon commit `dce18db3`), web-poc `5d34050`; other agent intact; confirm-gate present (156 hits); snapshot 1/0. Confirmed Phase-4 bound writes dispatch TOP-LEVEL session-scoped like their reads (skillHandler/jumpCloneSvc/crimewatch). Writes 166/301.
+
 ## Open for the operator on return
 
 *(anything that genuinely needs a human call)*
