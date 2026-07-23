@@ -8342,6 +8342,213 @@ app.post("/api/bridge/dogma/booster/use", requireAuth, async (req, res, next) =>
   await dispatchBoundDogmaWrite(req, res, next, "UseBooster", [itemID, locationID]);
 });
 
+// --- R102 WB-ENTITY: the 4 Phase-4 BOUND drone-command WRITES ----------------
+//
+// These ride the entity.MachoBindObject bind (wired R72; entityBindSpec()), the
+// SAME bound two-step the dogma writes use — the BFF holds the OID handle, the
+// browser never sees it. Each dispatches as a BOUND Cmd* method off the entity
+// bind. Drone orders — recall home, salvage, abandon, reconnect. Every route is
+// confirm-gated: without `confirm:true` it answers 400 CONFIRMATION_REQUIRED and
+// NOTHING dispatches.
+//
+// FAST-MODE (R86–R101 pattern): none fired live this batch (operator owns EveJS;
+// no server restart). The handlers return a per-drone multi-result dict; the ack
+// carries `result` through untouched for a future drone UI to decode.
+//
+// ⚠ ARG-INJECTION: SESSION-SCOPED. All four resolve the acting ship + scene from
+// the session (getShipStateForSession) and droneRuntime rejects any caller droneID
+// whose controllerID !== the session ship's itemID ("not currently under this
+// ship's control"). A foreign droneID cannot be commanded — no handoff-doc flag.
+
+/** Dispatch one confirm-gated BOUND entity write off the entity bind; uniform ack. */
+async function dispatchBoundEntityWrite(req, res, next, method, args) {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  try {
+    const outcome = await boundCall(held, req.webSessionID, entityBindSpec(), method, args, null);
+    res.json({ ok: true, applied: true, result: outcome.result ?? null, notifications: outcome.notifications });
+  } catch (error) {
+    if (error && error.code === "SESSION_NOT_FOUND") {
+      forgetBridgeSession(req.webSessionID);
+    }
+    next(error);
+  }
+}
+
+// CmdReturnHome([droneIDs]) — recall those drones to their home/orbit point.
+app.post("/api/bridge/entity/drones/return-home", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This recalls those drones. Confirm to continue.")) {
+    return;
+  }
+  await dispatchBoundEntityWrite(req, res, next, "CmdReturnHome", [bridgeIDList((req.body || {}).droneIDs)]);
+});
+
+// CmdSalvage([droneIDs], targetID) — order salvage drones onto a wreck (targetID
+// optional; 0 lets the runtime auto-pick a salvageable wreck).
+app.post("/api/bridge/entity/drones/salvage", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This sends those drones to salvage. Confirm to continue.")) {
+    return;
+  }
+  const targetID = Number((req.body || {}).targetID) || 0;
+  await dispatchBoundEntityWrite(req, res, next, "CmdSalvage", [bridgeIDList((req.body || {}).droneIDs), targetID]);
+});
+
+// ⚠ ABANDONS DRONES. CmdAbandonDrone([droneIDs]) — PERMANENTLY DISOWNS those
+// drones; they become free salvage for anyone. Session-scoped (own drones only).
+app.post("/api/bridge/entity/drones/abandon", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This ABANDONS those drones permanently — they become anyone's salvage and cannot be recovered. This is destructive and must be confirmed explicitly.")) {
+    return;
+  }
+  await dispatchBoundEntityWrite(req, res, next, "CmdAbandonDrone", [bridgeIDList((req.body || {}).droneIDs)]);
+});
+
+// CmdReconnectToDrones([droneIDs]) — re-establish control over abandoned/orphaned
+// drones the session ship can still reach.
+app.post("/api/bridge/entity/drones/reconnect", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This reconnects to those drones. Confirm to continue.")) {
+    return;
+  }
+  await dispatchBoundEntityWrite(req, res, next, "CmdReconnectToDrones", [bridgeIDList((req.body || {}).droneIDs)]);
+});
+
+// --- R102 WB-INV: the 7 Phase-4 BOUND inventory WRITES -----------------------
+//
+// These ride the invbroker inventory-MANAGER moniker (inventoryManagerBindSpec —
+// Moniker("invbroker", (stationID, groupStation)), the TrashItems handle) the R75
+// reads use. Label / fit / unfit / container / corp-delivery ops. Each dispatches
+// as a BOUND method off that manager bind (the BFF holds the handle). Every route
+// is confirm-gated; StripFitting (unfits a whole ship) carries an extra-explicit
+// message. FAST-MODE: none fired live (operator owns EveJS). Most handlers return
+// null / true / a change list; the ack carries `result` through for a future
+// fitting/inventory UI to decode. Args are EDUCATED-GUESS from the handler shapes.
+//
+// ⚠ ARG-INJECTION: SetLabel has an explicit ItemNotYours owner guard, StripFitting
+// is session/bound-scoped, AssembleCargoContainer/BreakPlasticWrap/DeliverToCorp
+// Member are server-side no-ops. FitFitting (caller shipID falls back past the
+// session-char scope) and DeliverToCorpHangar (caller itemIDs looked up with no
+// owner check) mutate caller-supplied item/ship ids with no session-ownership gate
+// — flagged in docs/arg-injection-leak-handoff.md (server-side fix + QA later; kept
+// plumbed + confirm-gated).
+
+/** Dispatch one confirm-gated BOUND inventory write off the manager bind. */
+async function dispatchBoundInventoryWrite(req, res, next, method, args, kwargs = null) {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  try {
+    // Sync held station/ship to the live position first so the manager bind
+    // targets the CURRENT station (matching /api/bridge/bound-inventory).
+    await readHeldFlight(held, req.webSessionID);
+    const outcome = await boundCall(held, req.webSessionID, inventoryManagerBindSpec(held), method, args, kwargs);
+    res.json({ ok: true, applied: true, result: outcome.result ?? null, notifications: outcome.notifications });
+  } catch (error) {
+    if (error && error.code === "SESSION_NOT_FOUND") {
+      forgetBridgeSession(req.webSessionID);
+    }
+    next(error);
+  }
+}
+
+// SetLabel(itemID, label) — rename an item / ship the session char owns (handler
+// enforces ownership, throwing ItemNotYours for a foreign item).
+app.post("/api/bridge/inventory/set-label", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This renames that item. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const itemID = Number(body.itemID) || 0;
+  const label = String(body.label ?? "");
+  await dispatchBoundInventoryWrite(req, res, next, "SetLabel", [itemID, label]);
+});
+
+// ⚠ UNFITS THE SHIP. StripFitting() — removes every fitted module from the
+// session's active ship into the hangar. Session/bound-scoped (no caller id).
+app.post("/api/bridge/inventory/strip-fitting", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This UNFITS your entire ship — every fitted module is stripped to the hangar. This is consequential and must be confirmed explicitly.")) {
+    return;
+  }
+  await dispatchBoundInventoryWrite(req, res, next, "StripFitting", []);
+});
+
+// FitFitting(shipID, …, itemsByType, sourceLocationID, modulesByFlag, cargoByType,
+// fitRigs) — apply a saved fitting to a ship. Educated-guess positional shape.
+app.post("/api/bridge/inventory/fit-fitting", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This applies that fitting to the ship (moves/fits modules). Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const shipID = Number(body.shipID) || 0;
+  const sourceLocationID = Number(body.sourceLocationID) || 0;
+  const itemsByType = body.itemsByType && typeof body.itemsByType === "object" ? body.itemsByType : {};
+  const modulesByFlag = body.modulesByFlag && typeof body.modulesByFlag === "object" ? body.modulesByFlag : {};
+  const cargoItemsByType = body.cargoItemsByType && typeof body.cargoItemsByType === "object" ? body.cargoItemsByType : {};
+  const fitRigs = body.fitRigs === undefined ? true : Boolean(body.fitRigs);
+  await dispatchBoundInventoryWrite(req, res, next, "FitFitting", [shipID, null, itemsByType, sourceLocationID, modulesByFlag, cargoItemsByType, fitRigs]);
+});
+
+// AssembleCargoContainer(itemID) — assemble a packaged cargo container. Server-side
+// no-op today; plumbed for parity.
+app.post("/api/bridge/inventory/assemble-container", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This assembles that cargo container. Confirm to continue.")) {
+    return;
+  }
+  const itemID = Number((req.body || {}).itemID) || 0;
+  await dispatchBoundInventoryWrite(req, res, next, "AssembleCargoContainer", [itemID]);
+});
+
+// BreakPlasticWrap(itemID) — unpackage a plastic-wrapped (sealed) item. Server-side
+// no-op today; plumbed for parity.
+app.post("/api/bridge/inventory/break-plastic-wrap", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This breaks the plastic wrap on that item. Confirm to continue.")) {
+    return;
+  }
+  const itemID = Number((req.body || {}).itemID) || 0;
+  await dispatchBoundInventoryWrite(req, res, next, "BreakPlasticWrap", [itemID]);
+});
+
+// DeliverToCorpHangar([itemIDs], officeID, flag) — move items into a corp hangar
+// division. Args passed as kwargs so the handler reads them unambiguously.
+app.post("/api/bridge/inventory/deliver-to-corp-hangar", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This delivers those items into your corporation's hangar. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const itemIDs = bridgeIDList(body.itemIDs);
+  const officeID = Number(body.officeID) || 0;
+  const flag = Number(body.flag) || 0;
+  const qty = body.quantity === undefined ? null : Number(body.quantity) || null;
+  await dispatchBoundInventoryWrite(
+    req,
+    res,
+    next,
+    "DeliverToCorpHangar",
+    [],
+    { itemIDs, officeID, flag, qty },
+  );
+});
+
+// DeliverToCorpMember([itemIDs], memberID) — deliver items to a corp member's
+// hangar. Server-side no-op today; plumbed for parity (kwargs-shaped).
+app.post("/api/bridge/inventory/deliver-to-corp-member", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This delivers those items to that corporation member. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const itemIDs = bridgeIDList(body.itemIDs);
+  const memberID = Number(body.memberID) || 0;
+  await dispatchBoundInventoryWrite(
+    req,
+    res,
+    next,
+    "DeliverToCorpMember",
+    [itemIDs, memberID],
+    { itemIDs, memberID },
+  );
+});
+
 // --- R17 Contracts (contractProxy bridge) -----------------------------------
 //
 // Like mail and market, the whole contract surface is TOP-LEVEL
