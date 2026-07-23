@@ -96,3 +96,30 @@ export function decodeNotifications(
   }
   return notifications;
 }
+
+// --- R87 write acks ---------------------------------------------------------
+//
+// The Phase-3 notificationMgr WRITES (Mark*/Delete*/LogNotificationInteraction).
+// FAST-MODE educated-guess decoders: the BFF turns each server return (every
+// notification write answers null) into a small JSON ack, so this only reads the
+// uniform `applied` flag the confirm-gated route emits. The panel re-reads the
+// notification list to prove the mutation. These are EDUCATED GUESSES from the
+// client + server code, not captured real bytes (QA/real-impl comes later).
+
+/** The uniform ack every confirm-gated notification write returns. */
+export interface NotificationWriteAck {
+  readonly ok: boolean;
+  readonly applied: boolean;
+}
+
+function truthy(value: JsonValue | undefined): boolean {
+  return value === true;
+}
+
+/** Decode a notification write ack (Mark / Delete / LogNotificationInteraction). */
+export function decodeNotificationWriteAck(response: JsonValue): NotificationWriteAck {
+  return {
+    ok: truthy(readKeyVal(response, "ok")),
+    applied: truthy(readKeyVal(response, "applied")),
+  };
+}

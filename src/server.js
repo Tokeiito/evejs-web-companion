@@ -4850,6 +4850,419 @@ app.post("/api/bridge/mailing-list/create", requireAuth, async (req, res, next) 
   }
 });
 
+// --- R87 notifications + calendar + bookmark WRITES -------------------------
+// (notificationMgr / calendarMgr / accessGroupBookmarkMgr)
+//
+// The Phase-3 "personal + org" writes batch, following the R86 mail pattern.
+// Every write is a TOP-LEVEL call on the held session (heldTopLevelCall) and
+// every route is CONFIRM-GATED: it refuses outright (400 CONFIRMATION_REQUIRED,
+// NO dispatch) unless the browser passes `confirm: true`. A stray click or
+// stray POST cannot mark, delete, create, edit, or move anything.
+//
+// ⚠ SESSION / ACCESS SCOPED — no write mutates a FOREIGN entity:
+//   • notificationMgr writes resolve the mailbox from the SESSION character
+//     (getSessionCharacterID); a group/id the session does not own is simply
+//     absent from its rows, so the write is a silent no-op.
+//   • calendarMgr Edit/Delete/Respond/UpdateParticipants all pass through
+//     access.canEditOrDeleteEvent(event, session) server-side — a foreign
+//     eventID is a permission error, never a foreign mutation. Create*Corp /
+//     Create*Alliance / UpdateEventParticipants are role/scope gated (a normal
+//     member gets a 403 / CustomNotify — that is CORRECT).
+//   • accessGroupBookmarkMgr writes resolve the folder via resolveFolderView
+//     against the SESSION character's access level and gate on
+//     canWriteFolder / canManageFolder / ACCESS_ADMIN — a foreign folderID is
+//     FolderAccessDenied, never a foreign mutation.
+//
+// ⚠ DESTRUCTIVE PAIRS — reachable + confirm-gated, NEVER fired on the live
+// world in this plumbing pass: notifications delete-group / delete-all /
+// delete, calendar event/delete, bookmark folder/delete + bookmarks/delete.
+//
+// FAST-MODE educated-guess responses: every handler returns null except the
+// three calendar Create*Event writes (an eventID), bookmark folder/add (the
+// folder view payload) and folder/update (an access level int). The decoders
+// (web/src/bridge/{notifications,calendar,bookmarks}.ts) read those.
+
+/** The confirm gate every R87 write sits behind (mirrors requireMailConfirmation). */
+function requireWriteConfirmation(req, res, message) {
+  if ((req.body || {}).confirm === true) {
+    return true;
+  }
+  res.status(400).json({ ok: false, error: "CONFIRMATION_REQUIRED", message });
+  return false;
+}
+
+/** Coerce a browser-sent id-list payload to a clean positive-int list. */
+function bridgeIDList(value) {
+  const raw = Array.isArray(value) ? value : [value];
+  return [...new Set(raw.map((v) => Number(v) || 0).filter((v) => v > 0))];
+}
+
+/**
+ * Dispatch one confirm-gated write and answer a uniform ack. FAST-MODE: most of
+ * these handlers return null, so `applied` is true whenever the dispatch did not
+ * throw; a panel re-reads to prove the mutation. A route that needs the return
+ * value (an event/folder id) reads `outcome.result` directly instead.
+ */
+async function dispatchBridgeWrite(req, res, next, service, method, args) {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  try {
+    const outcome = await heldTopLevelCall(held, req.webSessionID, service, method, args, null);
+    res.json({ ok: true, applied: true, result: outcome.result ?? null, notifications: outcome.notifications });
+  } catch (error) {
+    next(error);
+  }
+}
+
+// --- notificationMgr WRITES -------------------------------------------------
+// Mark* clear the "unprocessed" flag (reversible-ish); Delete* purge rows
+// (destructive). MarkGroupAsProcessed/DeleteGroupNotifications take a groupID;
+// MarkAsProcessed/DeleteNotifications take a notificationID list; the All*
+// variants take no args. LogNotificationInteraction records a referenceID.
+
+app.post("/api/bridge/notifications/mark-group-processed", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This marks that notification group processed. Confirm to continue.")) {
+    return;
+  }
+  const groupID = Number((req.body || {}).groupID) || 0;
+  await dispatchBridgeWrite(req, res, next, "notificationMgr", "MarkGroupAsProcessed", [groupID]);
+});
+
+app.post("/api/bridge/notifications/mark-all-processed", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This marks all your notifications processed. Confirm to continue.")) {
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "notificationMgr", "MarkAllAsProcessed", []);
+});
+
+app.post("/api/bridge/notifications/mark-processed", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This marks those notifications processed. Confirm to continue.")) {
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "notificationMgr", "MarkAsProcessed", [bridgeIDList((req.body || {}).notificationIDs)]);
+});
+
+// ⚠ DESTRUCTIVE — reachable + gated, never fired live in the plumbing pass.
+app.post("/api/bridge/notifications/delete-group", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "Deleting a notification group is permanent. This must be confirmed explicitly.")) {
+    return;
+  }
+  const groupID = Number((req.body || {}).groupID) || 0;
+  await dispatchBridgeWrite(req, res, next, "notificationMgr", "DeleteGroupNotifications", [groupID]);
+});
+
+app.post("/api/bridge/notifications/delete-all", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "Deleting all your notifications is permanent. This must be confirmed explicitly.")) {
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "notificationMgr", "DeleteAllNotifications", []);
+});
+
+app.post("/api/bridge/notifications/delete", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "Deleting those notifications is permanent. This must be confirmed explicitly.")) {
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "notificationMgr", "DeleteNotifications", [bridgeIDList((req.body || {}).notificationIDs)]);
+});
+
+app.post("/api/bridge/notifications/log-interaction", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This logs a notification interaction. Confirm to continue.")) {
+    return;
+  }
+  const referenceID = Number((req.body || {}).referenceID) || 0;
+  await dispatchBridgeWrite(req, res, next, "notificationMgr", "LogNotificationInteraction", [referenceID]);
+});
+
+// --- calendarMgr WRITES -----------------------------------------------------
+// The three Create*Event writes answer the new eventID; Edit / Delete / Respond
+// / UpdateParticipants answer null. Corp/alliance create + participant updates
+// are role/scope gated server-side (a normal member gets a CustomNotify/403).
+
+/** Build the shared Create*Event arg tuple (dateTime, duration, title, desc, importance[, invitees]). */
+function calendarCreateArgs(body, withInvitees) {
+  const args = [
+    body.eventDateTime ?? null,
+    Number(body.duration) || 0,
+    typeof body.title === "string" ? body.title : "",
+    typeof body.description === "string" ? body.description : "",
+    Number(body.importance) || 0,
+  ];
+  if (withInvitees) {
+    args.push(bridgeIDList(body.invitees));
+  }
+  return args;
+}
+
+/** Dispatch a Create*Event and answer the new eventID (null when declined). */
+async function dispatchCalendarCreate(req, res, next, method, args) {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  try {
+    const outcome = await heldTopLevelCall(held, req.webSessionID, "calendarMgr", method, args, null);
+    const eventID = mailNumber(outcome.result);
+    res.json({ ok: true, applied: eventID > 0, eventID: eventID > 0 ? eventID : null, notifications: outcome.notifications });
+  } catch (error) {
+    next(error);
+  }
+}
+
+app.post("/api/bridge/calendar/event/create-personal", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This creates a personal calendar event. Confirm to continue.")) {
+    return;
+  }
+  await dispatchCalendarCreate(req, res, next, "CreatePersonalEvent", calendarCreateArgs(req.body || {}, true));
+});
+
+app.post("/api/bridge/calendar/event/create-corporation", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This creates a corporation calendar event. Confirm to continue.")) {
+    return;
+  }
+  await dispatchCalendarCreate(req, res, next, "CreateCorporationEvent", calendarCreateArgs(req.body || {}, false));
+});
+
+app.post("/api/bridge/calendar/event/create-alliance", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This creates an alliance calendar event. Confirm to continue.")) {
+    return;
+  }
+  await dispatchCalendarCreate(req, res, next, "CreateAllianceEvent", calendarCreateArgs(req.body || {}, false));
+});
+
+// EditPersonalEvent(eventID, oldDateTime, eventDateTime, duration, title, description, importance).
+app.post("/api/bridge/calendar/event/edit", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This edits that calendar event. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const eventID = Number(body.eventID) || 0;
+  if (eventID <= 0) {
+    res.status(400).json({ ok: false, error: "CALENDAR_EVENT_INVALID", message: "An event is required." });
+    return;
+  }
+  const args = [
+    eventID,
+    body.oldDateTime ?? null,
+    body.eventDateTime ?? null,
+    Number(body.duration) || 0,
+    typeof body.title === "string" ? body.title : "",
+    typeof body.description === "string" ? body.description : "",
+    Number(body.importance) || 0,
+  ];
+  await dispatchBridgeWrite(req, res, next, "calendarMgr", "EditPersonalEvent", args);
+});
+
+// ⚠ DESTRUCTIVE — reachable + gated, never fired live. DeleteEvent(eventID, ownerID);
+// canEditOrDeleteEvent gates it server-side, so a foreign eventID is refused.
+app.post("/api/bridge/calendar/event/delete", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "Deleting a calendar event is permanent. This must be confirmed explicitly.")) {
+    return;
+  }
+  const body = req.body || {};
+  const eventID = Number(body.eventID) || 0;
+  if (eventID <= 0) {
+    res.status(400).json({ ok: false, error: "CALENDAR_EVENT_INVALID", message: "An event is required." });
+    return;
+  }
+  const ownerID = body.ownerID !== undefined ? Number(body.ownerID) || null : null;
+  await dispatchBridgeWrite(req, res, next, "calendarMgr", "DeleteEvent", [eventID, ownerID]);
+});
+
+// SendEventResponse(eventID, ownerID, response) — accept/decline/maybe an invite.
+app.post("/api/bridge/calendar/event/respond", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This sends your response to that event. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const eventID = Number(body.eventID) || 0;
+  if (eventID <= 0) {
+    res.status(400).json({ ok: false, error: "CALENDAR_EVENT_INVALID", message: "An event is required." });
+    return;
+  }
+  const ownerID = body.ownerID !== undefined ? Number(body.ownerID) || null : null;
+  const response = Number(body.response) || 0;
+  await dispatchBridgeWrite(req, res, next, "calendarMgr", "SendEventResponse", [eventID, ownerID, response]);
+});
+
+// UpdateEventParticipants(eventID, addList, removeList) — personal events only,
+// canEditOrDeleteEvent gated (a non-owner is refused).
+app.post("/api/bridge/calendar/event/participants", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This updates that event's participants. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const eventID = Number(body.eventID) || 0;
+  if (eventID <= 0) {
+    res.status(400).json({ ok: false, error: "CALENDAR_EVENT_INVALID", message: "An event is required." });
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "calendarMgr", "UpdateEventParticipants", [eventID, bridgeIDList(body.add), bridgeIDList(body.remove)]);
+});
+
+// --- accessGroupBookmarkMgr WRITES ------------------------------------------
+// (reads were wired R65; these are the CRUD writers on the same service.)
+// AddFolder answers the folder view payload; UpdateFolder answers an access-level
+// int; BookmarkStaticLocation answers a bookmark reply tuple; DeleteBookmarks
+// answers the list of deleted ids; DeleteFolder / UpdateBookmark / MoveBookmarks
+// answer null. Every write resolves the folder against the SESSION character's
+// access level (FolderAccessDenied for a foreign folder).
+
+/** Build the shared folder access-group arg tail (admin/manage/use/view group ids, null when absent). */
+function bookmarkGroupArgs(body) {
+  const groupOrNull = (v) => (v !== undefined && v !== null ? Number(v) || null : null);
+  return [
+    groupOrNull(body.adminGroupID),
+    groupOrNull(body.manageGroupID),
+    groupOrNull(body.useGroupID),
+    groupOrNull(body.viewGroupID),
+  ];
+}
+
+app.post("/api/bridge/bookmarks/folder/add", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This creates a bookmark folder. Confirm to continue.")) {
+    return;
+  }
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const body = req.body || {};
+  const isPersonal = body.isPersonal !== undefined ? Boolean(body.isPersonal) : true;
+  const folderName = typeof body.folderName === "string" ? body.folderName : "My Locations";
+  const description = typeof body.description === "string" ? body.description : "";
+  const args = [isPersonal, folderName, description, ...bookmarkGroupArgs(body)];
+  try {
+    const outcome = await heldTopLevelCall(held, req.webSessionID, "accessGroupBookmarkMgr", "AddFolder", args, null);
+    res.json({ ok: true, applied: outcome.result != null, folder: outcome.result ?? null, notifications: outcome.notifications });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/bridge/bookmarks/folder/update", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This updates that bookmark folder. Confirm to continue.")) {
+    return;
+  }
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const body = req.body || {};
+  const folderID = Number(body.folderID) || 0;
+  if (folderID <= 0) {
+    res.status(400).json({ ok: false, error: "BOOKMARK_FOLDER_INVALID", message: "A folder is required." });
+    return;
+  }
+  const folderName = typeof body.folderName === "string" ? body.folderName : "";
+  const description = typeof body.description === "string" ? body.description : "";
+  const args = [folderID, folderName, description, ...bookmarkGroupArgs(body)];
+  try {
+    const outcome = await heldTopLevelCall(held, req.webSessionID, "accessGroupBookmarkMgr", "UpdateFolder", args, null);
+    const accessLevel = mailNumber(outcome.result);
+    res.json({ ok: true, applied: true, accessLevel, notifications: outcome.notifications });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ⚠ DESTRUCTIVE — reachable + gated, never fired live. DeleteFolder(folderID);
+// non-personal folders require ACCESS_ADMIN server-side.
+app.post("/api/bridge/bookmarks/folder/delete", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "Deleting a bookmark folder is permanent. This must be confirmed explicitly.")) {
+    return;
+  }
+  const folderID = Number((req.body || {}).folderID) || 0;
+  if (folderID <= 0) {
+    res.status(400).json({ ok: false, error: "BOOKMARK_FOLDER_INVALID", message: "A folder is required." });
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "accessGroupBookmarkMgr", "DeleteFolder", [folderID]);
+});
+
+// BookmarkStaticLocation(itemID, folderID, name, comment, expiryMode, subfolderID).
+app.post("/api/bridge/bookmarks/create-static", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This saves a bookmark. Confirm to continue.")) {
+    return;
+  }
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const body = req.body || {};
+  const itemID = Number(body.itemID) || 0;
+  if (itemID <= 0) {
+    res.status(400).json({ ok: false, error: "BOOKMARK_ITEM_INVALID", message: "A location item is required." });
+    return;
+  }
+  const args = [
+    itemID,
+    Number(body.folderID) || 0,
+    typeof body.name === "string" ? body.name : "",
+    typeof body.comment === "string" ? body.comment : "",
+    Number(body.expiryMode) || 0,
+    body.subfolderID !== undefined ? Number(body.subfolderID) || null : null,
+  ];
+  try {
+    const outcome = await heldTopLevelCall(held, req.webSessionID, "accessGroupBookmarkMgr", "BookmarkStaticLocation", args, null);
+    res.json({ ok: true, applied: outcome.result != null, bookmark: outcome.result ?? null, notifications: outcome.notifications });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// UpdateBookmark(bookmarkID, folderID, name, note, subfolderID, newFolderID, expiryCancel).
+app.post("/api/bridge/bookmarks/update", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This updates that bookmark. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const bookmarkID = Number(body.bookmarkID) || 0;
+  if (bookmarkID <= 0) {
+    res.status(400).json({ ok: false, error: "BOOKMARK_INVALID", message: "A bookmark is required." });
+    return;
+  }
+  const folderID = Number(body.folderID) || 0;
+  const args = [
+    bookmarkID,
+    folderID,
+    typeof body.name === "string" ? body.name : "",
+    typeof body.note === "string" ? body.note : "",
+    body.subfolderID !== undefined ? Number(body.subfolderID) || null : null,
+    body.newFolderID !== undefined ? Number(body.newFolderID) || folderID : folderID,
+    Boolean(body.expiryCancel),
+  ];
+  await dispatchBridgeWrite(req, res, next, "accessGroupBookmarkMgr", "UpdateBookmark", args);
+});
+
+// ⚠ DESTRUCTIVE — reachable + gated, never fired live. DeleteBookmarks(folderID,
+// bookmarkIDs); each id must sit in a folder the session char can manage (or be
+// its creator).
+app.post("/api/bridge/bookmarks/delete", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "Deleting those bookmarks is permanent. This must be confirmed explicitly.")) {
+    return;
+  }
+  const body = req.body || {};
+  const folderID = Number(body.folderID) || 0;
+  await dispatchBridgeWrite(req, res, next, "accessGroupBookmarkMgr", "DeleteBookmarks", [folderID, bridgeIDList(body.bookmarkIDs)]);
+});
+
+// MoveBookmarksToFolderAndSubfolder(oldFolderID, newFolderID, subfolderID, bookmarkIDs).
+app.post("/api/bridge/bookmarks/move", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This moves those bookmarks. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const args = [
+    Number(body.oldFolderID) || 0,
+    Number(body.newFolderID) || 0,
+    body.subfolderID !== undefined ? Number(body.subfolderID) || null : null,
+    bridgeIDList(body.bookmarkIDs),
+  ];
+  await dispatchBridgeWrite(req, res, next, "accessGroupBookmarkMgr", "MoveBookmarksToFolderAndSubfolder", args);
+});
+
 // --- R17 Contracts (contractProxy bridge) -----------------------------------
 //
 // Like mail and market, the whole contract surface is TOP-LEVEL

@@ -199,3 +199,45 @@ export function decodeEventDetails(
     creatorID: toNumber(readKeyVal(result, "creatorID")),
   };
 }
+
+// --- R87 write acks ---------------------------------------------------------
+//
+// The Phase-3 calendarMgr WRITES. FAST-MODE educated-guess decoders reading the
+// small JSON ack the confirm-gated BFF route emits. The three Create*Event
+// writes answer the new eventID; Edit / Delete / Respond / UpdateParticipants
+// answer null (the panel re-reads the calendar to prove the mutation). Corp /
+// alliance create + participant updates are role/scope gated server-side — a
+// normal member's 403 is surfaced by the fetch layer, not this decoder. These
+// are EDUCATED GUESSES from the client + server code, not captured bytes.
+
+/** The uniform ack every confirm-gated calendar write returns. */
+export interface CalendarWriteAck {
+  readonly ok: boolean;
+  readonly applied: boolean;
+}
+
+function ackTruthy(value: JsonValue | undefined): boolean {
+  return value === true;
+}
+
+/** Decode a plain calendar write ack (Edit / Delete / Respond / UpdateParticipants). */
+export function decodeCalendarWriteAck(response: JsonValue): CalendarWriteAck {
+  return {
+    ok: ackTruthy(readKeyVal(response, "ok")),
+    applied: ackTruthy(readKeyVal(response, "applied")),
+  };
+}
+
+/** A Create*Event ack: `applied` plus the new eventID (null when declined). */
+export interface CalendarEventCreatedAck extends CalendarWriteAck {
+  readonly eventID: number | null;
+}
+
+export function decodeCalendarEventCreatedAck(response: JsonValue): CalendarEventCreatedAck {
+  const eventID = toNumber(readKeyVal(response, "eventID"));
+  return {
+    ok: ackTruthy(readKeyVal(response, "ok")),
+    applied: ackTruthy(readKeyVal(response, "applied")),
+    eventID: eventID > 0 ? eventID : null,
+  };
+}

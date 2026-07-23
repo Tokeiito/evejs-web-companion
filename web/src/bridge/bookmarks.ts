@@ -16,7 +16,7 @@
 // R7d: folderID / bookmarkID / itemID / typeID / locationID / creatorID / group
 // ids stay numeric fields for a future UI to resolve; the decoder renders nothing.
 
-import { readRowField, unwrapLong, type JsonValue } from "./wire.ts";
+import { readKeyVal, readRowField, unwrapLong, type JsonValue } from "./wire.ts";
 
 export interface BookmarkFolder {
   readonly folderID: number;
@@ -243,4 +243,46 @@ export function decodeFolderInfo(result: JsonValue): BookmarkFolder | null {
     return null;
   }
   return decodeFolderRow(result);
+}
+
+// --- R87 write acks ---------------------------------------------------------
+//
+// The Phase-3 accessGroupBookmarkMgr WRITES (folder + bookmark CRUD; reads were
+// wired R65). FAST-MODE educated-guess decoders reading the small JSON ack the
+// confirm-gated BFF route emits. AddFolder carries the new folder payload,
+// UpdateFolder carries the resulting access-level int; BookmarkStaticLocation
+// carries the new bookmark tuple, DeleteBookmarks the deleted-id list; the rest
+// answer null (the panel re-reads to prove the mutation). Every write is scoped
+// to the SESSION character's folder access server-side. EDUCATED GUESSES from
+// the client + server code, not captured bytes.
+
+/** The uniform ack every confirm-gated bookmark write returns. */
+export interface BookmarkWriteAck {
+  readonly ok: boolean;
+  readonly applied: boolean;
+}
+
+function bookmarkAckTruthy(value: JsonValue | undefined): boolean {
+  return value === true;
+}
+
+/** Decode a plain bookmark write ack (DeleteFolder / UpdateBookmark / DeleteBookmarks / Move / …). */
+export function decodeBookmarkWriteAck(response: JsonValue): BookmarkWriteAck {
+  return {
+    ok: bookmarkAckTruthy(readKeyVal(response, "ok")),
+    applied: bookmarkAckTruthy(readKeyVal(response, "applied")),
+  };
+}
+
+/** An UpdateFolder ack: `applied` plus the resulting access-level int. */
+export interface BookmarkFolderUpdatedAck extends BookmarkWriteAck {
+  readonly accessLevel: number;
+}
+
+export function decodeBookmarkFolderUpdatedAck(response: JsonValue): BookmarkFolderUpdatedAck {
+  return {
+    ok: bookmarkAckTruthy(readKeyVal(response, "ok")),
+    applied: bookmarkAckTruthy(readKeyVal(response, "applied")),
+    accessLevel: toNumber(readKeyVal(response, "accessLevel")),
+  };
 }

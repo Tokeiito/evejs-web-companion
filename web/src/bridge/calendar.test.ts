@@ -18,6 +18,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  decodeCalendarEventCreatedAck,
+  decodeCalendarWriteAck,
   decodeEventDetails,
   decodeEventList,
   decodeResponsesForCharacter,
@@ -142,4 +144,27 @@ test("the calendar id assertions actually read distinct decoded content (not vac
   // Companion: a different owner id decodes to a different value.
   const events = decodeEventList([list([keyVal([["eventID", 7], ["ownerID", 42]])]), null, null]);
   assert.equal(events[0]!.ownerID, 42);
+});
+
+// --- R87 write acks (Phase-3 calendarMgr WRITES) -----------------------------
+
+test("R87 — a plain calendar write ack decodes to {ok, applied}", () => {
+  const ack = decodeCalendarWriteAck(keyVal([["ok", true], ["applied", true], ["result", null]]));
+  assert.deepEqual(ack, { ok: true, applied: true });
+});
+
+test("R87 — a declined calendar write is read as not-applied, not a throw", () => {
+  const ack = decodeCalendarWriteAck(keyVal([["ok", true], ["applied", false]]));
+  assert.equal(ack.applied, false);
+});
+
+test("R87 — a Create*Event ack carries the new eventID", () => {
+  const ack = decodeCalendarEventCreatedAck(keyVal([["ok", true], ["applied", true], ["eventID", 980000000042]]));
+  assert.deepEqual(ack, { ok: true, applied: true, eventID: 980000000042 });
+});
+
+test("R87 — a create the server declined has a null eventID and applied false", () => {
+  const ack = decodeCalendarEventCreatedAck(keyVal([["ok", true], ["applied", false], ["eventID", null]]));
+  assert.equal(ack.applied, false);
+  assert.equal(ack.eventID, null);
 });

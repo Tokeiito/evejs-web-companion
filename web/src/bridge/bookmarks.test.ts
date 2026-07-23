@@ -28,6 +28,8 @@ import assert from "node:assert/strict";
 
 import {
   decodeActiveBookmarks,
+  decodeBookmarkFolderUpdatedAck,
+  decodeBookmarkWriteAck,
   decodeFolderInfo,
   decodeFolderList,
 } from "./bookmarks.ts";
@@ -175,4 +177,21 @@ test("decodeFolderInfo reads one folder KeyVal, and null/absent stays null", () 
   // decodable row; a null/garbage value decodes to null rather than an empty row.
   assert.equal(decodeFolderInfo(null), null);
   assert.equal(decodeFolderInfo({ type: "list", items: [] }), null);
+});
+
+// --- R87 write acks (Phase-3 accessGroupBookmarkMgr WRITES) ------------------
+
+test("R87 — a plain bookmark write ack decodes to {ok, applied}", () => {
+  const ack = decodeBookmarkWriteAck(folderKeyVal([["ok", true], ["applied", true], ["result", null]]));
+  assert.deepEqual(ack, { ok: true, applied: true });
+});
+
+test("R87 — a declined bookmark write is read as not-applied, not a throw", () => {
+  const ack = decodeBookmarkWriteAck(folderKeyVal([["ok", true], ["applied", false]]));
+  assert.equal(ack.applied, false);
+});
+
+test("R87 — an UpdateFolder ack carries the resulting access-level int", () => {
+  const ack = decodeBookmarkFolderUpdatedAck(folderKeyVal([["ok", true], ["applied", true], ["accessLevel", 3]]));
+  assert.deepEqual(ack, { ok: true, applied: true, accessLevel: 3 });
 });
