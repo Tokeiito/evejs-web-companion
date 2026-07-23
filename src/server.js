@@ -6743,6 +6743,184 @@ app.get("/api/bridge/corp-char-info", requireAuth, async (req, res, next) => {
   }
 });
 
+// --- R81 plumbing sweep: corpRegistry batch B (shares / applications / welcome
+// mail; no UI) --------------------------------------------------------------
+// PLUMBING ONLY: three routes make the corpRegistry SHARE-LEDGER, APPLICATION and
+// WELCOME-MAIL reads reachable + decodable so a later goal builds UI cheaply. No
+// panel/tab/store slice ships. Same dispatch as R80 batch A: corpRegistry is retail-
+// bound per corp (eveMoniker.GetCorpRegistry(corpID)) but the gateway dispatches these
+// TOP-LEVEL on the held session; every handler resolves its corp (or char) from the
+// SESSION (resolveCorporationID / resolveCharacterID), and corpRegistry.MachoBindObject
+// is NOT allowlisted, so a browser cannot bind a foreign corp. Decoders in
+// web/src/bridge/{corpShares,corpMemberQueries,corpApplications}.ts.
+
+// GET /api/bridge/corp-shares?corpID=&company= — the corp SHARE ledger + the
+// caller's own shareholding, as TWO independent reads (Promise.allSettled).
+//   • GetShareholders(corpID)        -> the corp's full shareholder ledger (a Rowset
+//     of [shareholderID, corporationID, shares]). corpID defaults to the SESSION corp.
+//     ⚠ ARG-INJECTION: args[0] IS a caller-chosen corpID — a foreign ?corpID= returns
+//     THAT corp's ledger with no session check (leak kept pre-plumbed + FLAGGED in
+//     docs/arg-injection-leak-handoff.md; the ?corpID= override exists to prove it).
+//   • GetSharesByShareholder(flag)   -> the caller's OWN shareholding, as a CRowset of
+//     one [shareholderID, corporationID, shares] row. ⚠ args[0] is a COMPANY-vs-PERSONAL
+//     1/0 FLAG (?company=1 → the session corp's own shares in itself; else the session
+//     CHAR's shares), NOT a shareholder lookup — SESSION-SCOPED, cannot read a foreign
+//     holder. shares / ids stay data (R7d).
+app.get("/api/bridge/corp-shares", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const corpID = nonNegativeIntQuery(req.query.corpID, 0);
+  const company = nonNegativeIntQuery(req.query.company, 0) === 1 ? 1 : 0;
+  try {
+    const [shareholders, sharesByShareholder] = await Promise.allSettled([
+      heldTopLevelCall(held, req.webSessionID, "corpRegistry", "GetShareholders", corpID > 0 ? [corpID] : [], null),
+      heldTopLevelCall(held, req.webSessionID, "corpRegistry", "GetSharesByShareholder", [company], null),
+    ]);
+    for (const outcome of [shareholders, sharesByShareholder]) {
+      if (outcome.status === "rejected" && outcome.reason && outcome.reason.code === "SESSION_NOT_FOUND") {
+        next(outcome.reason);
+        return;
+      }
+    }
+    const settledCode = (outcome) =>
+      outcome.status === "rejected"
+        ? String((outcome.reason && outcome.reason.code) || "READ_FAILED")
+        : null;
+    const settledValue = (outcome) =>
+      outcome.status === "fulfilled" ? outcome.value.result : null;
+    res.json({
+      ok: true,
+      requested: { corpID: corpID > 0 ? corpID : null, company: company === 1 },
+      shareholders: settledValue(shareholders),
+      sharesByShareholder: settledValue(sharesByShareholder),
+      errors: {
+        shareholders: settledCode(shareholders),
+        sharesByShareholder: settledCode(sharesByShareholder),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// GET /api/bridge/corp-membership-queries — the session corp's member-id QUERY reads,
+// as FOUR independent reads (Promise.allSettled). All SESSION-CORP-SCOPED (args ignored
+// or applied WITHIN the session corp; a foreign id cannot redirect the corp):
+//   • GetMemberIDsByQuery([]) -> the session corp's member characterIDs (an empty query
+//     = no criteria = ALL members; a structured criteria list is not exposed here).
+//   • GetMemberIDsWithMoreThanAvgShares() -> members holding above the corp average.
+//   • GetPendingAutoKicks()   -> the pending auto-kick queue (empty for a healthy corp).
+//   • GetNumberOfPotentialCEOs() -> the member ids eligible to become CEO. All lists of
+//     characterIDs — ids stay data (R7d). Empty is a legitimate answer.
+app.get("/api/bridge/corp-membership-queries", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  try {
+    const [byQuery, aboveAvgShares, pendingAutoKicks, potentialCEOs] = await Promise.allSettled([
+      heldTopLevelCall(held, req.webSessionID, "corpRegistry", "GetMemberIDsByQuery", [[], false, false], null),
+      heldTopLevelCall(held, req.webSessionID, "corpRegistry", "GetMemberIDsWithMoreThanAvgShares", [], null),
+      heldTopLevelCall(held, req.webSessionID, "corpRegistry", "GetPendingAutoKicks", [], null),
+      heldTopLevelCall(held, req.webSessionID, "corpRegistry", "GetNumberOfPotentialCEOs", [], null),
+    ]);
+    for (const outcome of [byQuery, aboveAvgShares, pendingAutoKicks, potentialCEOs]) {
+      if (outcome.status === "rejected" && outcome.reason && outcome.reason.code === "SESSION_NOT_FOUND") {
+        next(outcome.reason);
+        return;
+      }
+    }
+    const settledCode = (outcome) =>
+      outcome.status === "rejected"
+        ? String((outcome.reason && outcome.reason.code) || "READ_FAILED")
+        : null;
+    const settledValue = (outcome) =>
+      outcome.status === "fulfilled" ? outcome.value.result : null;
+    res.json({
+      ok: true,
+      byQuery: settledValue(byQuery),
+      aboveAvgShares: settledValue(aboveAvgShares),
+      pendingAutoKicks: settledValue(pendingAutoKicks),
+      potentialCEOs: settledValue(potentialCEOs),
+      errors: {
+        byQuery: settledCode(byQuery),
+        aboveAvgShares: settledCode(aboveAvgShares),
+        pendingAutoKicks: settledCode(pendingAutoKicks),
+        potentialCEOs: settledCode(potentialCEOs),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// GET /api/bridge/corp-applications — the corp/char APPLICATION reads + the corp
+// WELCOME MAIL, as SIX independent reads (Promise.allSettled). ⚠ A small corp with no
+// pending applications is a legitimate EMPTY state, not a failure. All SESSION-SCOPED
+// (args ignored):
+//   • GetApplications()        -> the SESSION corp's incoming applications, a dict
+//     {applicantCharID -> list of application packedrows}. (Retail director-gated; eve.js
+//     is own-corp only.)
+//   • GetOldApplications()     -> the session corp's ARCHIVED applications (a list).
+//   • GetMyApplications()      -> the SESSION char's own applications across corps, a
+//     dict {corpID -> list of application packedrows}.
+//   • GetMyOldApplications()   -> the session char's own ARCHIVED applications (a list).
+//   • GetAllianceApplications() -> the session corp's OUTGOING alliance applications, an
+//     IndexRowset keyed by allianceID.
+//   • GetCorpWelcomeMail()     -> the corp welcome-mail KeyVal (editor charID / change
+//     FILETIME / the mail string). FILETIMEs bigint-safe; charIDs stay data (R7d).
+app.get("/api/bridge/corp-applications", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  try {
+    const [applications, oldApplications, myApplications, myOldApplications, allianceApplications, welcomeMail] =
+      await Promise.allSettled([
+        heldTopLevelCall(held, req.webSessionID, "corpRegistry", "GetApplications", [], null),
+        heldTopLevelCall(held, req.webSessionID, "corpRegistry", "GetOldApplications", [], null),
+        heldTopLevelCall(held, req.webSessionID, "corpRegistry", "GetMyApplications", [], null),
+        heldTopLevelCall(held, req.webSessionID, "corpRegistry", "GetMyOldApplications", [], null),
+        heldTopLevelCall(held, req.webSessionID, "corpRegistry", "GetAllianceApplications", [], null),
+        heldTopLevelCall(held, req.webSessionID, "corpRegistry", "GetCorpWelcomeMail", [], null),
+      ]);
+    const settled = [applications, oldApplications, myApplications, myOldApplications, allianceApplications, welcomeMail];
+    for (const outcome of settled) {
+      if (outcome.status === "rejected" && outcome.reason && outcome.reason.code === "SESSION_NOT_FOUND") {
+        next(outcome.reason);
+        return;
+      }
+    }
+    const settledCode = (outcome) =>
+      outcome.status === "rejected"
+        ? String((outcome.reason && outcome.reason.code) || "READ_FAILED")
+        : null;
+    const settledValue = (outcome) =>
+      outcome.status === "fulfilled" ? outcome.value.result : null;
+    res.json({
+      ok: true,
+      applications: settledValue(applications),
+      oldApplications: settledValue(oldApplications),
+      myApplications: settledValue(myApplications),
+      myOldApplications: settledValue(myOldApplications),
+      allianceApplications: settledValue(allianceApplications),
+      welcomeMail: settledValue(welcomeMail),
+      errors: {
+        applications: settledCode(applications),
+        oldApplications: settledCode(oldApplications),
+        myApplications: settledCode(myApplications),
+        myOldApplications: settledCode(myOldApplications),
+        allianceApplications: settledCode(allianceApplications),
+        welcomeMail: settledCode(welcomeMail),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // GET /api/bridge/market-trading?fromDate=&accountKey= — the market CORP-ORDER +
 // PLEX reads the R16 market panel left out (R62 plumbing sweep), as SEVEN
 // independent reads (Promise.allSettled; empty ≠ failed, each its own error
