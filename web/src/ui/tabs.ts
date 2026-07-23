@@ -101,6 +101,16 @@ export function visibleTabsFor(isDocked: boolean): readonly TabDef[] {
   return TABS.filter((tab) => tab.where === "both" || tab.where === state);
 }
 
+/**
+ * The STATIC tabs — reachable in BOTH states, so they persist regardless of
+ * docked/undocked. These fill the Neocom rail; the docked/in-space SHELL is the
+ * state-specific part beside them. Deliberately state-independent (no argument):
+ * that the set never changes with dock/undock is the point.
+ */
+export function staticTabs(): readonly TabDef[] {
+  return TABS.filter((tab) => tab.where === "both");
+}
+
 /** The default landing tab for the current state. */
 export function defaultTabFor(isDocked: boolean): TabID {
   return isDocked ? DOCKED_DEFAULT : IN_SPACE_DEFAULT;

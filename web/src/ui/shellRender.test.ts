@@ -15,6 +15,13 @@ const { render } = await import("svelte/server");
 const { createClientStore } = await import("../store/clientStore.ts");
 const StationShell = (await import("./StationShell.svelte")).default;
 const SpaceShell = (await import("./SpaceShell.svelte")).default;
+const Neocom = (await import("./Neocom.svelte")).default;
+const StaticPanel = (await import("./StaticPanel.svelte")).default;
+
+/** A flow stub — the server generator never runs onMount / handlers. */
+function fakeFlow(): unknown {
+  return new Proxy({}, { get: () => async () => {} });
+}
 
 const SHIP_ID = 9001;
 const SHIP_TYPE_ID = 622;
@@ -144,6 +151,42 @@ test("in space renders the HUD: badge, system, overview, ship gauges, module rac
 test("placeholder panels announce themselves as placeholders", () => {
   assert.match(visibleText(renderStation(dockedStore())), /placeholder/i, "docked stub not marked");
   assert.match(visibleText(renderSpace(inSpaceStore())), /placeholder/i, "space stub not marked");
+});
+
+function renderNeocom(isDocked: boolean): string {
+  return render(Neocom as never, {
+    props: { isDocked, selected: null, onSelect: () => {}, onHome: () => {} },
+  } as never).body;
+}
+
+test("the neocom carries the SAME static tabs in both states (only the badge differs)", () => {
+  const docked = visibleText(renderNeocom(true));
+  const space = visibleText(renderNeocom(false));
+  // The static set — reachable docked or in space — is identical in both.
+  for (const label of ["Market", "Wallet", "Mail", "Skills", "Standings", "Planets"]) {
+    assert.match(docked, new RegExp(label), `${label} missing from the docked neocom`);
+    assert.match(space, new RegExp(label), `${label} missing from the in-space neocom`);
+  }
+  // The home badge tracks state...
+  assert.match(docked, /Docked/);
+  assert.match(space, /In Space/);
+  // ...but state-specific tabs (Flight is in-space-only) are NOT in the static rail —
+  // they belong to their shell, not the persistent neocom.
+  assert.doesNotMatch(docked, /Flight/, "an in-space-only tab leaked into the docked neocom");
+  assert.doesNotMatch(space, /Flight/, "an in-space-only tab leaked into the neocom");
+});
+
+test("the static-panel host renders the real panel for a selected tab", () => {
+  const wallet = render(StaticPanel as never, {
+    props: { store: createClientStore(), flow: fakeFlow(), tab: "wallet" },
+  } as never).body;
+  const market = render(StaticPanel as never, {
+    props: { store: createClientStore(), flow: fakeFlow(), tab: "market" },
+  } as never).body;
+  assert.equal(typeof wallet, "string");
+  assert.ok(wallet.length > 0, "the wallet static panel rendered nothing");
+  // Different tabs render different panels (not one hardcoded fallback).
+  assert.notEqual(wallet, market, "wallet and market rendered identical output");
 });
 
 test("no bare numeric IDs leak onto either shell (R7d)", () => {

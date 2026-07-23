@@ -1,16 +1,18 @@
 <script lang="ts">
   // Page flow, a pure reader of the client-state store: login form -> character
-  // selection -> one of TWO top-level SHELLS. Which shell renders is driven by
-  // whether the character is DOCKED or IN SPACE (the authoritative flight flag,
-  // via deriveDocked) — the whole UI, not just a tab set, follows that state:
-  // the station interior when docked, the flight HUD in space. Each shell hosts
-  // its own panels (this pass: placeholders — see shell.ts). All fetch/decode
-  // lives in app/flow.ts; the store slices are Svelte-store-contract signals.
+  // selection -> the workspace. The workspace is a persistent Neocom rail (the
+  // STATIC tabs, present in both states) beside a main area that shows EITHER a
+  // selected static panel OR the state-specific SHELL. Which shell is the
+  // station interior when docked, the flight HUD in space — driven by the
+  // authoritative flight flag (deriveDocked). All fetch/decode lives in
+  // app/flow.ts; the store slices are Svelte-store-contract signals.
   import LoginForm from "./LoginForm.svelte";
   import CharacterSelect from "./CharacterSelect.svelte";
+  import Neocom from "./Neocom.svelte";
+  import StaticPanel from "./StaticPanel.svelte";
   import StationShell from "./StationShell.svelte";
   import SpaceShell from "./SpaceShell.svelte";
-  import { deriveDocked } from "./tabs.ts";
+  import { deriveDocked, type TabID } from "./tabs.ts";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
 
@@ -26,8 +28,13 @@
   const flight = store.flight;
 
   // Docked vs in space, from the authoritative flag (the rule lives in tabs.ts
-  // so both the shell switch here and any tab logic share one source of truth).
+  // so the shell switch and the Neocom badge share one source of truth).
   const isDocked = $derived(deriveDocked($flight.status, $station.online));
+
+  // The selected static tab, or null to show the state shell ("home"). It is a
+  // Neocom pick only (always a "both" tab), and it PERSISTS across dock/undock —
+  // that a static panel stays put when the ship docks is the whole point.
+  let selected = $state<TabID | null>(null);
 
   // Once a character is online, read the flight status so the docked/in-space
   // flag is authoritative (character select does not read it). Runs once —
@@ -46,8 +53,23 @@
   <LoginForm {flow} />
 {:else if $station.online === null}
   <CharacterSelect {store} {flow} />
-{:else if isDocked}
-  <StationShell {store} />
 {:else}
-  <SpaceShell {store} />
+  <div class="app-shell">
+    <Neocom
+      {store}
+      {isDocked}
+      {selected}
+      onSelect={(id) => (selected = id)}
+      onHome={() => (selected = null)}
+    />
+    <main class="app-main">
+      {#if selected !== null}
+        <StaticPanel {store} {flow} tab={selected} />
+      {:else if isDocked}
+        <StationShell {store} />
+      {:else}
+        <SpaceShell {store} />
+      {/if}
+    </main>
+  </div>
 {/if}

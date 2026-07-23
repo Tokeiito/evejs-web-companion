@@ -1595,6 +1595,80 @@
     min-height: 40px;
   }
 
+  /* ===================================================== workspace + neocom --
+   * The logged-in workspace: a persistent Neocom rail (the static tabs, present
+   * in both states) beside a main area that shows a selected static panel OR the
+   * state shell. On phones the rail collapses to a horizontal scroller above the
+   * content (web-native, no floating windows). */
+  .app-shell {
+    display: grid;
+    grid-template-columns: minmax(9rem, 12rem) minmax(0, 1fr);
+    gap: 0.9rem;
+    align-items: start;
+  }
+  .app-main { min-width: 0; }
+
+  .neocom {
+    background: var(--color-panel);
+    border: 1px solid var(--color-line);
+    padding: 0.5rem;
+    position: sticky;
+    top: 0.5rem;
+  }
+  .neocom-home {
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.3rem;
+    min-height: 40px;
+    margin-bottom: 0.5rem;
+    background: var(--color-panel-2);
+    border: 1px solid var(--color-line);
+    color: var(--color-text);
+  }
+  .neocom-home-label { color: var(--color-text-bright); font-weight: 600; }
+  .neocom-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+  .neocom-item {
+    width: 100%;
+    text-align: left;
+    min-height: 40px;
+    white-space: nowrap;
+    background: transparent;
+    border: 1px solid transparent;
+    color: var(--color-text);
+  }
+  .neocom-item:hover {
+    background: var(--color-panel-2);
+    border-color: var(--color-line);
+  }
+  .neocom-item.active,
+  .neocom-home.active {
+    border-color: var(--color-accent);
+    color: var(--color-text-bright);
+  }
+
+  /* Phone / tablet: the rail becomes a horizontal scroller above the content. */
+  @media (max-width: 900px) {
+    .app-shell { grid-template-columns: 1fr; }
+    .neocom { position: static; }
+    .neocom-home { flex-direction: row; align-items: center; }
+    .neocom-list {
+      flex-direction: row;
+      flex-wrap: nowrap;
+      overflow-x: auto;
+      gap: 0.3rem;
+    }
+    .neocom-item { width: auto; padding-inline: 0.7rem; }
+  }
+
   /* ================================================= docked/space shells --
    * The two top-level layouts (StationShell / SpaceShell). Docked is a station
    * interior: a header, a services rail down the left, station panels to the
