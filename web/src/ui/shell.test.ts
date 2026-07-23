@@ -39,10 +39,13 @@ test("every wired slot targets a real tab", () => {
   }
 });
 
-test("the docked default panel (station) and in-space default (overview) each have a slot", () => {
-  assert.ok(
-    [...STATION_SERVICES, ...STATION_PANELS].some((s) => s.wires === "station"),
-    "no docked slot hosts the station panel",
-  );
+test("the docked services host the docked-only tabs (fitting, travel, bots)", () => {
+  const wired = STATION_SERVICES.filter((s) => s.wires !== null).map((s) => s.wires);
+  for (const tab of ["fitting", "travel", "bots"] as const) {
+    assert.ok(wired.includes(tab), `the docked services do not open ${tab}`);
+  }
+});
+
+test("the HUD hosts the overview slot", () => {
   assert.ok(SPACE_PANELS.some((s) => s.wires === "overview"), "no HUD slot hosts the overview");
 });

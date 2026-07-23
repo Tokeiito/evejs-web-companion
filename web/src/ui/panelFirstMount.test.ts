@@ -298,9 +298,9 @@ test("App's first paint on an IN-SPACE character renders the space HUD, not the 
   const App = await loadPanel("App");
   const body = render(App as never, { props: { store, flow: fakeFlow() } } as never).body;
 
-  // The flight HUD: the in-space badge and the overview.
+  // The flight HUD: the in-space badge and the ship gauges.
   assert.match(body, /In Space/, "no in-space state badge");
-  assert.match(body, /Overview/, "the overview HUD is missing");
+  assert.match(body, /Shield/, "the ship HUD gauges are missing");
   // The exact old regression, re-expressed: an in-space character must NOT get
   // the docked station shell (its services rail / docked badge).
   assert.doesNotMatch(body, /Services/, "the station services rail leaked into space");

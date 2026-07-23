@@ -1,18 +1,21 @@
 <script lang="ts">
-  // The IN-SPACE shell: a HUD over a space viewport. The overview sits to the
-  // right, the ship's resource gauges + module rack + nav readout dock along the
-  // bottom, and the selected-item panel floats over the viewport — the retail
-  // client's spatial arrangement. This first pass renders PLACEHOLDER panels in
-  // each slot (shell.ts names the real panel destined for each).
-  //
-  // A pure reader of the store. The header + gauges show the live flight context
-  // already loaded (system name, ship mode/speed, resource ratios from the last
-  // space snapshot); no fetch of its own. Gauges fall back to a dashed "no
-  // reading yet" state before the first snapshot rather than inventing a value.
+  // The IN-SPACE shell: a HUD over the overview. The overview (what's around the
+  // ship) is the main "home" content; the ship's resource gauges + module rack +
+  // nav controls dock along the bottom, always visible — the retail client's
+  // spatial arrangement. Flight and Mining open as full panels from the dock via
+  // onOpen. Gauges read the last space snapshot; a null ratio renders dashed
+  // rather than inventing a value.
+  import Overview from "./Overview.svelte";
   import { SPACE_PANELS, type ShellSlot } from "./shell.ts";
+  import type { TabID } from "./tabs.ts";
   import type { ClientStore } from "../store/clientStore.ts";
+  import type { AppFlow } from "../app/flow.ts";
 
-  let { store }: { store: ClientStore } = $props();
+  let {
+    store,
+    flow,
+    onOpen,
+  }: { store: ClientStore; flow: AppFlow; onOpen: (tab: TabID) => void } = $props();
 
   // svelte-ignore state_referenced_locally
   const flight = store.flight;
@@ -27,19 +30,10 @@
       : null,
   );
 
-  function slot(id: string): ShellSlot {
-    return (
-      SPACE_PANELS.find((s) => s.id === id) ?? { id, label: id, wires: null, hint: "" }
-    );
-  }
-  const overview = $derived(slot("hud-overview"));
-  const selected = $derived(slot("hud-selected"));
-  const nav = $derived(slot("hud-nav"));
-  const modules = $derived(slot("hud-modules"));
+  // The HUD dock's nav buttons — everything in SPACE_PANELS that opens a panel
+  // other than the overview (which is the inline home content).
+  const navSlots = $derived(SPACE_PANELS.filter((s) => s.wires !== null && s.wires !== "overview"));
 
-  // The ship resource triad + capacitor, from the last snapshot. A ratio of null
-  // (no snapshot yet, or the server did not send it) renders as a dashed empty
-  // gauge, never a fabricated bar.
   const gauges = $derived(
     (() => {
       const ship = $space.snapshot?.ship ?? null;
@@ -62,26 +56,9 @@
     </div>
   </header>
 
-  <div class="space-viewport" aria-label="Space viewport">
-    <p class="viewport-note">Space view</p>
-    <section class="panel placeholder-panel floating-selected" aria-labelledby="hud-selected-h">
-      <div class="panel-head">
-        <h3 id="hud-selected-h">{selected.label}</h3>
-        <span class="controls"><span class="soon-pill">placeholder</span></span>
-      </div>
-      <p class="placeholder-hint">{selected.hint}</p>
-    </section>
+  <div class="space-viewport">
+    <Overview {store} {flow} />
   </div>
-
-  <aside class="overview-hud" aria-label="Overview">
-    <section class="panel placeholder-panel" aria-labelledby="hud-overview-h">
-      <div class="panel-head">
-        <h2 id="hud-overview-h">{overview.label}</h2>
-        <span class="controls"><span class="soon-pill">placeholder</span></span>
-      </div>
-      <p class="placeholder-hint">{overview.hint}</p>
-    </section>
-  </aside>
 
   <div class="hud-dock">
     <section class="hud-cluster ship-gauges" aria-label="Ship status">
@@ -104,7 +81,7 @@
 
     <section class="hud-cluster module-rack" aria-labelledby="hud-modules-h">
       <div class="panel-head">
-        <h3 id="hud-modules-h">{modules.label}</h3>
+        <h3 id="hud-modules-h">Modules</h3>
         <span class="controls"><span class="soon-pill">placeholder</span></span>
       </div>
       <div class="module-slots">
@@ -114,12 +91,12 @@
       </div>
     </section>
 
-    <section class="hud-cluster nav-readout" aria-labelledby="hud-nav-h">
-      <div class="panel-head">
-        <h3 id="hud-nav-h">{nav.label}</h3>
-        <span class="controls"><span class="soon-pill">placeholder</span></span>
-      </div>
-      <p class="placeholder-hint">{nav.hint}</p>
-    </section>
+    <nav class="hud-cluster hud-nav" aria-label="Flight panels">
+      {#each navSlots as slot (slot.id)}
+        <button type="button" class="hud-nav-item" title={slot.hint} onclick={() => onOpen(slot.wires as TabID)}>
+          {slot.label}
+        </button>
+      {/each}
+    </nav>
   </div>
 </section>

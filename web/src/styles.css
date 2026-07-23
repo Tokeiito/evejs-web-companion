@@ -1671,11 +1671,12 @@
 
   /* ================================================= docked/space shells --
    * The two top-level layouts (StationShell / SpaceShell). Docked is a station
-   * interior: a header, a services rail down the left, station panels to the
-   * right. In space is a HUD: a viewport with the overview at its right and the
-   * ship gauges + module rack + nav docked along the bottom. Both collapse to a
-   * single column on narrow screens (the shared @media below). Panels inside are
-   * placeholders this pass — dashed borders + a "placeholder" pill say so. */
+   * interior: a header, a services rail down the left, and the live station
+   * panel as the main content. In space is a HUD: the overview as the main view
+   * with the ship gauges + module rack + nav controls docked along the bottom.
+   * Both collapse to a single column on narrow screens (the shared @media
+   * below). The station panel + overview are live; the module rack is still a
+   * placeholder (a "placeholder" pill says so). */
   .station-shell {
     display: grid;
     grid-template-columns: minmax(12rem, 15rem) 1fr;
@@ -1690,15 +1691,14 @@
 
   .space-shell {
     display: grid;
-    grid-template-columns: 1fr minmax(14rem, 20rem);
+    grid-template-columns: 1fr;
     grid-template-rows: auto 1fr auto;
-    grid-template-areas: "head head" "viewport overview" "dock dock";
+    grid-template-areas: "head" "viewport" "dock";
     gap: 0.9rem;
     min-height: 60vh;
   }
   .space-shell > .shell-head { grid-area: head; }
   .space-shell > .space-viewport { grid-area: viewport; }
-  .space-shell > .overview-hud { grid-area: overview; }
   .space-shell > .hud-dock { grid-area: dock; }
 
   /* The context bar shared by both shells. */
@@ -1779,35 +1779,45 @@
     display: flex;
     flex-direction: column;
     gap: 0.9rem;
+    min-width: 0;
   }
-
-  /* In space — the viewport + HUD dock. */
-  .space-viewport {
-    position: relative;
-    border: 1px solid var(--color-line);
-    background: radial-gradient(120% 80% at 50% 30%, #0b1626 0%, var(--color-bg) 70%);
-    min-height: 18rem;
+  /* Docked — the ship/item hangar shortcut above the live station panel. */
+  .hangar-shortcut {
     display: flex;
-    align-items: center;
-    justify-content: center;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.2rem;
+    text-align: left;
+    min-height: 40px;
+    background: var(--color-panel-2);
+    border: 1px solid var(--color-line);
+    color: var(--color-text);
   }
-  .viewport-note {
-    color: var(--color-muted);
-    letter-spacing: 0.2em;
-    text-transform: uppercase;
-    font-size: 12px;
-  }
-  .floating-selected {
-    position: absolute;
-    top: 0.7rem;
-    left: 0.7rem;
-    max-width: 16rem;
-    background: var(--color-panel);
-  }
+  .hangar-shortcut-label { color: var(--color-text-bright); font-weight: 600; }
+  .hangar-shortcut .muted { color: var(--color-muted); font-size: 0.85rem; }
+
+  /* In space — the viewport (holds the live overview) + the HUD dock. */
+  .space-viewport { min-width: 0; }
   .hud-dock {
     display: grid;
     grid-template-columns: 2fr 3fr 2fr;
     gap: 0.9rem;
+  }
+  .hud-nav {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+  }
+  .hud-nav-item {
+    min-height: 40px;
+    text-align: left;
+    background: var(--color-panel-2);
+    border: 1px solid var(--color-line);
+    color: var(--color-text);
+  }
+  .hud-nav-item:hover {
+    border-color: var(--color-accent);
+    color: var(--color-text-bright);
   }
   .hud-cluster {
     background: var(--color-panel);
@@ -1852,10 +1862,6 @@
     .station-shell {
       grid-template-columns: 1fr;
       grid-template-areas: "head" "rail" "main";
-    }
-    .space-shell {
-      grid-template-columns: 1fr;
-      grid-template-areas: "head" "viewport" "overview" "dock";
     }
     .hud-dock { grid-template-columns: 1fr; }
   }

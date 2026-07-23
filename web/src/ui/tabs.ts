@@ -47,15 +47,16 @@ export interface TabDef {
 // ⚠ THE TAB TABLE — the one place tab visibility is decided. Render order is the
 // order of this list (state-specific tabs first, then the shared ones).
 export const TABS: readonly TabDef[] = [
-  // Docked only — station services and fitting need a station.
+  // Docked only — station services + fitting need a station; route planning and
+  // the automation bots are set up while docked (moved here from in-space).
   { id: "station", label: "Station", where: "docked" },
   { id: "fitting", label: "Fitting", where: "docked" },
-  // In space only — flying, what's around the ship, mining, travel, bots.
+  { id: "travel", label: "Travel", where: "docked" },
+  { id: "bots", label: "Bots", where: "docked" },
+  // In space only — flying, what's around the ship, mining.
   { id: "flight", label: "Flight", where: "in-space" },
   { id: "overview", label: "Around Your Ship", where: "in-space" },
   { id: "mining", label: "Mining", where: "in-space" },
-  { id: "travel", label: "Travel", where: "in-space" },
-  { id: "bots", label: "Bots", where: "in-space" },
   // Both — reachable docked or undocked.
   { id: "inventory", label: "Inventory & Ship", where: "both" },
   { id: "market", label: "Market", where: "both" },

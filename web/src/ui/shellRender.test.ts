@@ -16,7 +16,7 @@ const { createClientStore } = await import("../store/clientStore.ts");
 const StationShell = (await import("./StationShell.svelte")).default;
 const SpaceShell = (await import("./SpaceShell.svelte")).default;
 const Neocom = (await import("./Neocom.svelte")).default;
-const StaticPanel = (await import("./StaticPanel.svelte")).default;
+const PanelHost = (await import("./PanelHost.svelte")).default;
 
 /** A flow stub — the server generator never runs onMount / handlers. */
 function fakeFlow(): unknown {
@@ -121,10 +121,14 @@ function inSpaceStore(): unknown {
 }
 
 function renderStation(store: unknown): string {
-  return render(StationShell as never, { props: { store } } as never).body;
+  return render(StationShell as never, {
+    props: { store, flow: fakeFlow(), onOpen: () => {} },
+  } as never).body;
 }
 function renderSpace(store: unknown): string {
-  return render(SpaceShell as never, { props: { store } } as never).body;
+  return render(SpaceShell as never, {
+    props: { store, flow: fakeFlow(), onOpen: () => {} },
+  } as never).body;
 }
 
 test("docked renders the station interior: badge, station context, services rail", () => {
@@ -133,24 +137,29 @@ test("docked renders the station interior: badge, station context, services rail
   assert.match(text, /Jita IV - Moon 4/, "the station name is not shown");
   assert.match(text, /Services/, "no services rail heading");
   assert.match(text, /Fitting/, "the fitting service is not listed");
-  assert.match(text, /Ship Hangar/, "no ship-hangar panel");
+  assert.match(text, /Hangar/, "no ship/item hangar shortcut");
+  // Travel + Bots moved into the docked services rail.
+  assert.match(text, /Travel/, "Travel is not in the docked services");
+  assert.match(text, /Bots/, "Bots is not in the docked services");
 });
 
-test("in space renders the HUD: badge, system, overview, ship gauges, module rack", () => {
+test("in space renders the HUD: badge, system, ship gauges, module rack, nav", () => {
   const text = visibleText(renderSpace(inSpaceStore()));
   assert.match(text, /In Space/, "no in-space state badge");
   assert.match(text, /Jita/, "the system name is not shown");
-  assert.match(text, /Overview/, "no overview panel");
   assert.match(text, /Shield/, "no shield gauge");
   assert.match(text, /Armor/, "no armor gauge");
   assert.match(text, /Capacitor/, "no capacitor gauge");
   // The armor ratio was 0.5 — the gauge shows it as a percentage, not a raw id.
   assert.match(text, /50%/, "the armor gauge does not read its ratio");
+  assert.match(text, /Modules/, "no module rack");
+  // The HUD dock's nav opens Mining as a full panel.
+  assert.match(text, /Mining/, "no mining nav control");
 });
 
-test("placeholder panels announce themselves as placeholders", () => {
-  assert.match(visibleText(renderStation(dockedStore())), /placeholder/i, "docked stub not marked");
-  assert.match(visibleText(renderSpace(inSpaceStore())), /placeholder/i, "space stub not marked");
+test("the module rack is still marked a placeholder", () => {
+  // The station panel + overview are live now; only the module rack is a stub.
+  assert.match(visibleText(renderSpace(inSpaceStore())), /placeholder/i, "module rack not marked");
 });
 
 function renderNeocom(isDocked: boolean): string {
@@ -176,17 +185,20 @@ test("the neocom carries the SAME static tabs in both states (only the badge dif
   assert.doesNotMatch(space, /Flight/, "an in-space-only tab leaked into the neocom");
 });
 
-test("the static-panel host renders the real panel for a selected tab", () => {
-  const wallet = render(StaticPanel as never, {
+test("the panel host renders the real panel for a selected tab (static or state-specific)", () => {
+  const wallet = render(PanelHost as never, {
     props: { store: createClientStore(), flow: fakeFlow(), tab: "wallet" },
   } as never).body;
-  const market = render(StaticPanel as never, {
+  const market = render(PanelHost as never, {
     props: { store: createClientStore(), flow: fakeFlow(), tab: "market" },
   } as never).body;
-  assert.equal(typeof wallet, "string");
-  assert.ok(wallet.length > 0, "the wallet static panel rendered nothing");
-  // Different tabs render different panels (not one hardcoded fallback).
+  // A state-specific tab (Fitting is docked-only) resolves through the same host.
+  const fitting = render(PanelHost as never, {
+    props: { store: createClientStore(), flow: fakeFlow(), tab: "fitting" },
+  } as never).body;
+  assert.ok(wallet.length > 0, "the wallet panel rendered nothing");
   assert.notEqual(wallet, market, "wallet and market rendered identical output");
+  assert.notEqual(wallet, fitting, "wallet and fitting rendered identical output");
 });
 
 test("no bare numeric IDs leak onto either shell (R7d)", () => {

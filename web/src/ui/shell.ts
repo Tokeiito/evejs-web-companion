@@ -41,30 +41,31 @@ export interface ShellSlot {
 }
 
 // ── Docked: the station-services rail (left), mirroring EVE's station panel ──
-// Order matches the retail services column top-to-bottom, app panels first.
+// The retail station column mixes true station services (reprocess/repair/
+// insurance) with the panels a docked pilot reaches most (fitting, market,
+// industry) plus our docked tools (travel, bots). A slot with a `wires` opens
+// that real panel; a null `wires` is a station service with no panel built yet.
 export const STATION_SERVICES: readonly ShellSlot[] = [
-  { id: "svc-hangar", label: "Ship & Item Hangar", wires: "inventory", hint: "Your ships and items in this station." },
   { id: "svc-fitting", label: "Fitting", wires: "fitting", hint: "Fit the active ship." },
   { id: "svc-market", label: "Market", wires: "market", hint: "Regional market — buy and sell." },
   { id: "svc-industry", label: "Industry", wires: "industry", hint: "Jobs, blueprints, and facilities." },
-  { id: "svc-contracts", label: "Contracts", wires: "contracts", hint: "Courier, item-exchange, and auctions." },
+  { id: "svc-travel", label: "Travel", wires: "travel", hint: "Plan and set your autopilot route." },
+  { id: "svc-bots", label: "Bots", wires: "bots", hint: "Mining and mission automation." },
   { id: "svc-repair", label: "Repair Shop", wires: null, hint: "Repair modules and hull. (Service — not yet built.)" },
   { id: "svc-reprocess", label: "Reprocessing", wires: null, hint: "Reprocess items to minerals. (Service — not yet built.)" },
   { id: "svc-insurance", label: "Insurance", wires: null, hint: "Insure the active ship. (Service — not yet built.)" },
 ];
 
-// ── Docked: the main docked panels (centre/right) ──
+// ── Docked: the ship/item hangar shortcuts beside the live station panel ──
 export const STATION_PANELS: readonly ShellSlot[] = [
-  { id: "stn-hangar", label: "Ship Hangar", wires: "inventory", hint: "The ship you are flying and other hulls in the bay." },
-  { id: "stn-info", label: "Station Information", wires: "station", hint: "This station, its services, and who else is docked." },
+  { id: "stn-hangar", label: "Ship & Item Hangar", wires: "inventory", hint: "The ship you are flying and the items in this station." },
 ];
 
-// ── In space: the HUD panels arranged around the viewport ──
+// ── In space: the HUD panels reachable from the viewport chrome ──
 export const SPACE_PANELS: readonly ShellSlot[] = [
   { id: "hud-overview", label: "Overview", wires: "overview", hint: "Everything around your ship." },
-  { id: "hud-selected", label: "Selected Item", wires: null, hint: "The locked/selected object and its actions." },
   { id: "hud-nav", label: "Navigation & Flight", wires: "flight", hint: "Where you are, where you're headed, and manual flight." },
-  { id: "hud-modules", label: "Modules", wires: null, hint: "High / mid / low slots and their activation." },
+  { id: "hud-mining", label: "Mining", wires: "mining", hint: "Mining lasers, targets, and yield." },
 ];
 
 /** Sanity for the model — every slot id across a shell is unique. */

@@ -1,26 +1,27 @@
 <script lang="ts">
   // The DOCKED shell: a station interior. A services rail down the left (the
-  // retail station-services column), the docked context in the header, and the
-  // main station panels to its right. This first pass renders PLACEHOLDER panels
-  // in each slot — the slot model (shell.ts) names the real panel destined for
-  // each, so wiring them in later is a mechanical swap, not a redesign.
-  //
-  // A pure reader of the store: the header shows the live docked context that is
-  // already loaded (station identity + who is online), no fetch of its own.
+  // retail station-services column — Fitting, Market, Industry, Travel, Bots,
+  // plus the not-yet-built station services), the docked context in the header,
+  // and the live station panel as the main "home" content. Rail items and the
+  // hangar shortcut open their real panel via onOpen; the station itself
+  // (identity, services row, guests) renders inline from the store.
+  import StationPanel from "./StationPanel.svelte";
   import { STATION_SERVICES, STATION_PANELS } from "./shell.ts";
+  import type { TabID } from "./tabs.ts";
   import type { ClientStore } from "../store/clientStore.ts";
+  import type { AppFlow } from "../app/flow.ts";
 
-  let { store }: { store: ClientStore } = $props();
+  let {
+    store,
+    flow,
+    onOpen,
+  }: { store: ClientStore; flow: AppFlow; onOpen: (tab: TabID) => void } = $props();
 
-  // Stable store identity; slice signals are Svelte-store-contract objects.
   // svelte-ignore state_referenced_locally
   const station = store.station;
   // svelte-ignore state_referenced_locally
   const flight = store.flight;
 
-  // The station name comes from the client-local static identity (as retail
-  // resolves station names from its static DB); fall back to the resolved
-  // flight-location name, then a neutral label. The raw ID is never shown.
   const stationName = $derived(
     $station.station?.stationName ?? $flight.stationName ?? "this station",
   );
@@ -54,10 +55,16 @@
     <ul>
       {#each STATION_SERVICES as svc (svc.id)}
         <li>
-          <button type="button" class="rail-item" class:unbuilt={svc.wires === null} disabled title={svc.hint}>
-            <span class="rail-item-label">{svc.label}</span>
-            <span class="rail-item-tag">soon</span>
-          </button>
+          {#if svc.wires !== null}
+            <button type="button" class="rail-item" title={svc.hint} onclick={() => onOpen(svc.wires as TabID)}>
+              <span class="rail-item-label">{svc.label}</span>
+            </button>
+          {:else}
+            <button type="button" class="rail-item unbuilt" disabled title={svc.hint}>
+              <span class="rail-item-label">{svc.label}</span>
+              <span class="rail-item-tag">soon</span>
+            </button>
+          {/if}
         </li>
       {/each}
     </ul>
@@ -65,13 +72,16 @@
 
   <div class="shell-main">
     {#each STATION_PANELS as slot (slot.id)}
-      <section class="panel placeholder-panel" aria-labelledby={`${slot.id}-h`}>
-        <div class="panel-head">
-          <h2 id={`${slot.id}-h`}>{slot.label}</h2>
-          <span class="controls"><span class="soon-pill">placeholder</span></span>
-        </div>
-        <p class="placeholder-hint">{slot.hint}</p>
-      </section>
+      <button
+        type="button"
+        class="hangar-shortcut"
+        title={slot.hint}
+        onclick={() => slot.wires && onOpen(slot.wires)}
+      >
+        <span class="hangar-shortcut-label">{slot.label}</span>
+        <span class="muted">{slot.hint}</span>
+      </button>
     {/each}
+    <StationPanel {store} {flow} />
   </div>
 </section>

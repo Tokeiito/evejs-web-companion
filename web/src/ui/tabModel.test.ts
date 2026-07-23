@@ -57,22 +57,25 @@ test("the DOCKED default is station", () => {
 
 // --- the visible set matches the state (item 1) ------------------------------
 
-test("docked shows station + fitting and hides the in-space-only tabs", () => {
+test("docked shows station + fitting + travel + bots and hides the in-space-only tabs", () => {
   const docked = idsOf(true);
-  assert.ok(docked.includes("station"));
-  assert.ok(docked.includes("fitting"));
-  for (const hidden of ["flight", "overview", "mining", "travel", "bots"] as const) {
+  // station, fitting, and now travel + bots are docked-only.
+  for (const shown of ["station", "fitting", "travel", "bots"] as const) {
+    assert.ok(docked.includes(shown), `${shown} must be visible while docked`);
+  }
+  for (const hidden of ["flight", "overview", "mining"] as const) {
     assert.equal(docked.includes(hidden), false, `${hidden} must be hidden while docked`);
   }
 });
 
-test("in space shows the flight tabs and hides station + fitting", () => {
+test("in space shows the flight tabs and hides station + fitting + travel + bots", () => {
   const space = idsOf(false);
-  for (const shown of ["flight", "overview", "mining", "travel", "bots"] as const) {
+  for (const shown of ["flight", "overview", "mining"] as const) {
     assert.ok(space.includes(shown), `${shown} must be visible in space`);
   }
-  assert.equal(space.includes("station"), false);
-  assert.equal(space.includes("fitting"), false);
+  for (const hidden of ["station", "fitting", "travel", "bots"] as const) {
+    assert.equal(space.includes(hidden), false, `${hidden} must be hidden in space`);
+  }
 });
 
 test("the 'both' tabs (incl. the two new wallets) show in either state", () => {

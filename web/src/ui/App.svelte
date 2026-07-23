@@ -9,10 +9,10 @@
   import LoginForm from "./LoginForm.svelte";
   import CharacterSelect from "./CharacterSelect.svelte";
   import Neocom from "./Neocom.svelte";
-  import StaticPanel from "./StaticPanel.svelte";
+  import PanelHost from "./PanelHost.svelte";
   import StationShell from "./StationShell.svelte";
   import SpaceShell from "./SpaceShell.svelte";
-  import { deriveDocked, type TabID } from "./tabs.ts";
+  import { deriveDocked, visibleTabsFor, type TabID } from "./tabs.ts";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
 
@@ -31,10 +31,25 @@
   // so the shell switch and the Neocom badge share one source of truth).
   const isDocked = $derived(deriveDocked($flight.status, $station.online));
 
-  // The selected static tab, or null to show the state shell ("home"). It is a
-  // Neocom pick only (always a "both" tab), and it PERSISTS across dock/undock —
-  // that a static panel stays put when the ship docks is the whole point.
+  // The open tab, or null to show the state shell ("home"). It can be a Neocom
+  // pick (a static "both" tab) OR a state-specific tab a shell control opened
+  // (Fitting from the station rail, Overview from the HUD). A static pick
+  // persists across dock/undock; a state-specific one that the new state hides
+  // is dropped back to the shell by the guard below.
   let selected = $state<TabID | null>(null);
+  const open = (id: TabID): void => {
+    selected = id;
+  };
+
+  // The panel actually shown: the chosen tab while it is still visible in the
+  // current state, otherwise null (fall back to the shell). So undocking with
+  // the Fitting panel open lands you on the space HUD instead of a stuck panel,
+  // while a static tab (visible in both) stays put.
+  const effective = $derived(
+    selected !== null && visibleTabsFor(isDocked).some((t) => t.id === selected)
+      ? selected
+      : null,
+  );
 
   // Once a character is online, read the flight status so the docked/in-space
   // flag is authoritative (character select does not read it). Runs once —
@@ -58,17 +73,17 @@
     <Neocom
       {store}
       {isDocked}
-      {selected}
-      onSelect={(id) => (selected = id)}
+      selected={effective}
+      onSelect={open}
       onHome={() => (selected = null)}
     />
     <main class="app-main">
-      {#if selected !== null}
-        <StaticPanel {store} {flow} tab={selected} />
+      {#if effective !== null}
+        <PanelHost {store} {flow} tab={effective} onOpen={open} />
       {:else if isDocked}
-        <StationShell {store} />
+        <StationShell {store} {flow} onOpen={open} />
       {:else}
-        <SpaceShell {store} />
+        <SpaceShell {store} {flow} onOpen={open} />
       {/if}
     </main>
   </div>
