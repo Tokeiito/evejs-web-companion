@@ -671,6 +671,8 @@ Builds serialize (they share `flow.ts`, the store, and `src/server.js` — the c
 
 **Suite:** combined web `node --test` **2342 → 2348** (+6); `tsc` + `build:web` clean (only the pre-existing chunk-size warning). **Servers:** EveJS restarted 45436 → 46608 (detached hidden, canonical `EVEJS_PROXY_LOCAL_INTERCEPT=1`, no other `EVEJS_*`, node `.` from `eve.js/server`, logs → session scratchpad) for the pairs; web BFF restarted 66280 → 69776 (`node src/server.js`) for the routes; market (:40111, PID 54808) untouched; all three healthy. **NO destructive/financial/admin write fired on the live world — no sovereignty config changed, no skyhook destroyed/acquired, no reserve bank unlocked.** Commits by pathspec only (eve.js onto `ReconcileEliteMode` tip); other agent's in-flight destiny work + `market*.ts` INTACT (`git status` verified both repos); `icon-typeids*.txt` left untracked; did NOT push. **Known pre-existing reds untouched:** `droneRuntimeParity`; `webGatewayMarket`/`GetCharEscrow` (4650≠2450); `webGatewayPersistentSession`:244 (world-drift). **✅ Writes phase: 125/301 done. Handoff-doc flags: 30 read leaks + 5 write leaks (#31-#35) + 1 bind-gateway.**
 
+**✅ ORCHESTRATOR-VERIFIED (fast-mode):** eve.js `3364e487` = 2 files, web-poc `a71371e` = 6 files; other agent intact; confirm-gate present (114 hits); snapshot 1/0. sovMgr destructive write-side leak confirmed (`DestroySkyhooks` `map/sovMgrService.js:76` passes no `session` to `destroySkyhooks(args[0])` → deletes any skyhook by id) — rows 33-35, the most dangerous write leaks so far (no admin gate; only our confirm-gate + never-fire protects the live world). Writes 125/301.
+
 ## Open for the operator on return
 
 *(anything that genuinely needs a human call)*
