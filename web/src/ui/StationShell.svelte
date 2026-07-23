@@ -6,7 +6,8 @@
   // hangar shortcut open their real panel via onOpen; the station itself
   // (identity, services row, guests) renders inline from the store.
   import StationPanel from "./StationPanel.svelte";
-  import { STATION_SERVICES, STATION_PANELS } from "./shell.ts";
+  import ShipHangar from "./ShipHangar.svelte";
+  import { STATION_SERVICES } from "./shell.ts";
   import type { TabID } from "./tabs.ts";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
@@ -21,6 +22,15 @@
   const station = store.station;
   // svelte-ignore state_referenced_locally
   const flight = store.flight;
+  // svelte-ignore state_referenced_locally
+  const inventory = store.inventory;
+
+  // Populate the hangar summary. Fire-and-forget; $effect never runs under SSR.
+  $effect(() => {
+    if (!$inventory.loaded) {
+      void flow.loadInventory().catch(() => {});
+    }
+  });
 
   const stationName = $derived(
     $station.station?.stationName ?? $flight.stationName ?? "this station",
@@ -71,17 +81,7 @@
   </aside>
 
   <div class="shell-main">
-    {#each STATION_PANELS as slot (slot.id)}
-      <button
-        type="button"
-        class="hangar-shortcut"
-        title={slot.hint}
-        onclick={() => slot.wires && onOpen(slot.wires)}
-      >
-        <span class="hangar-shortcut-label">{slot.label}</span>
-        <span class="muted">{slot.hint}</span>
-      </button>
-    {/each}
+    <ShipHangar {store} {onOpen} />
     <StationPanel {store} {flow} />
   </div>
 </section>

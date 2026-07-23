@@ -1781,20 +1781,35 @@
     gap: 0.9rem;
     min-width: 0;
   }
-  /* Docked — the ship/item hangar shortcut above the live station panel. */
-  .hangar-shortcut {
+  /* Docked — the ship-hangar summary above the live station panel. */
+  .ship-hangar .hull-list {
+    list-style: none;
+    margin: 0.4rem 0 0;
+    padding: 0;
     display: flex;
     flex-direction: column;
-    align-items: flex-start;
-    gap: 0.2rem;
-    text-align: left;
-    min-height: 40px;
-    background: var(--color-panel-2);
-    border: 1px solid var(--color-line);
-    color: var(--color-text);
+    gap: 0.3rem;
   }
-  .hangar-shortcut-label { color: var(--color-text-bright); font-weight: 600; }
-  .hangar-shortcut .muted { color: var(--color-muted); font-size: 0.85rem; }
+  .hull-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+  .hull-row.active {
+    padding: 0.3rem 0.4rem;
+    border: 1px solid var(--color-accent);
+    background: var(--color-panel-2);
+  }
+  .hull-name { color: var(--color-text-bright); }
+  .hull-tag {
+    margin-left: auto;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--color-accent);
+    border: 1px solid var(--color-accent);
+    padding: 0.05rem 0.35rem;
+  }
 
   /* In space — the viewport (holds the target bracket + live overview) + dock. */
   .space-viewport { min-width: 0; }

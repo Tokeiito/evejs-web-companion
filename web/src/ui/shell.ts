@@ -56,11 +56,6 @@ export const STATION_SERVICES: readonly ShellSlot[] = [
   { id: "svc-insurance", label: "Insurance", wires: null, hint: "Insure the active ship. (Service — not yet built.)" },
 ];
 
-// ── Docked: the ship/item hangar shortcuts beside the live station panel ──
-export const STATION_PANELS: readonly ShellSlot[] = [
-  { id: "stn-hangar", label: "Ship & Item Hangar", wires: "inventory", hint: "The ship you are flying and the items in this station." },
-];
-
 // ── In space: the HUD panels reachable from the viewport chrome ──
 export const SPACE_PANELS: readonly ShellSlot[] = [
   { id: "hud-overview", label: "Overview", wires: "overview", hint: "Everything around your ship." },
@@ -70,7 +65,6 @@ export const SPACE_PANELS: readonly ShellSlot[] = [
 
 /** Sanity for the model — every slot id across a shell is unique. */
 export function shellSlotIDs(kind: ShellKind): readonly string[] {
-  const slots =
-    kind === "station" ? [...STATION_SERVICES, ...STATION_PANELS] : SPACE_PANELS;
+  const slots = kind === "station" ? STATION_SERVICES : SPACE_PANELS;
   return slots.map((s) => s.id);
 }

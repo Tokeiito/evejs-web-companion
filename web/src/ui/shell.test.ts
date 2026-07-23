@@ -10,7 +10,6 @@ import {
   shellFor,
   shellSlotIDs,
   STATION_SERVICES,
-  STATION_PANELS,
   SPACE_PANELS,
   type ShellSlot,
 } from "./shell.ts";
@@ -31,7 +30,7 @@ test("slot ids are unique within each shell", () => {
 });
 
 test("every wired slot targets a real tab", () => {
-  const all: readonly ShellSlot[] = [...STATION_SERVICES, ...STATION_PANELS, ...SPACE_PANELS];
+  const all: readonly ShellSlot[] = [...STATION_SERVICES, ...SPACE_PANELS];
   for (const slot of all) {
     if (slot.wires !== null) {
       assert.ok(TAB_IDS.has(slot.wires), `slot ${slot.id} wires to unknown tab ${slot.wires}`);

@@ -18,6 +18,7 @@ const SpaceShell = (await import("./SpaceShell.svelte")).default;
 const Neocom = (await import("./Neocom.svelte")).default;
 const PanelHost = (await import("./PanelHost.svelte")).default;
 const TargetBracket = (await import("./TargetBracket.svelte")).default;
+const ShipHangar = (await import("./ShipHangar.svelte")).default;
 
 /** A flow stub — the server generator never runs onMount / handlers. */
 function fakeFlow(): unknown {
@@ -168,6 +169,13 @@ test("the module rack renders real high/mid/low rows (no longer a placeholder)",
   // shows instead of an invented module — and the "placeholder" pill is gone.
   assert.match(text, /fitting has loaded/, "no empty-rack hint");
   assert.doesNotMatch(text, /placeholder/i, "the module rack still claims to be a placeholder");
+});
+
+test("the ship-hangar summary renders (docked home content)", () => {
+  const text = visibleText(
+    render(ShipHangar as never, { props: { store: createClientStore(), onOpen: () => {} } } as never).body,
+  );
+  assert.match(text, /Ship Hangar/, "no ship-hangar heading");
 });
 
 test("the target bracket names a locked target and shows its condition", () => {
