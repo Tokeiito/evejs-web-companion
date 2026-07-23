@@ -1796,8 +1796,37 @@
   .hangar-shortcut-label { color: var(--color-text-bright); font-weight: 600; }
   .hangar-shortcut .muted { color: var(--color-muted); font-size: 0.85rem; }
 
-  /* In space — the viewport (holds the live overview) + the HUD dock. */
+  /* In space — the viewport (holds the target bracket + live overview) + dock. */
   .space-viewport { min-width: 0; }
+
+  /* The locked-targets bracket across the top of the view. */
+  .target-bracket {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-bottom: 0.6rem;
+  }
+  .target-card {
+    min-width: 9rem;
+    max-width: 15rem;
+    padding: 0.4rem 0.6rem;
+    background: var(--color-panel);
+    border: 1px solid var(--color-line);
+  }
+  .target-card.acquiring { border-color: var(--color-accent); }
+  .target-card.lost { opacity: 0.5; }
+  .target-name {
+    display: block;
+    margin-bottom: 0.3rem;
+    color: var(--color-text-bright);
+    font-weight: 600;
+    font-size: 0.85rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .target-locking { color: var(--color-accent); font-size: 0.8rem; }
+  .target-card .target-condition { min-width: 0; }
   .hud-dock {
     display: grid;
     grid-template-columns: 2fr 3fr 2fr;

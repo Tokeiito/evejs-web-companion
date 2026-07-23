@@ -17,6 +17,7 @@ const StationShell = (await import("./StationShell.svelte")).default;
 const SpaceShell = (await import("./SpaceShell.svelte")).default;
 const Neocom = (await import("./Neocom.svelte")).default;
 const PanelHost = (await import("./PanelHost.svelte")).default;
+const TargetBracket = (await import("./TargetBracket.svelte")).default;
 
 /** A flow stub — the server generator never runs onMount / handlers. */
 function fakeFlow(): unknown {
@@ -167,6 +168,56 @@ test("the module rack renders real high/mid/low rows (no longer a placeholder)",
   // shows instead of an invented module — and the "placeholder" pill is gone.
   assert.match(text, /fitting has loaded/, "no empty-rack hint");
   assert.doesNotMatch(text, /placeholder/i, "the module rack still claims to be a placeholder");
+});
+
+test("the target bracket names a locked target and shows its condition", () => {
+  const store = createClientStore();
+  const target = {
+    kind: "ship",
+    itemID: 7777,
+    typeID: 587,
+    groupID: null,
+    categoryID: null,
+    name: "Guristas Wight",
+    ownerID: null,
+    radius: 30,
+    position: { x: 0, y: 0, z: 0 },
+    velocity: { x: 0, y: 0, z: 0 },
+    isSelf: false,
+    shieldRatio: 0.4,
+    armorRatio: 0.9,
+    hullRatio: 1,
+    characterID: null,
+    corporationID: null,
+    allianceID: null,
+    securityStatus: null,
+    maxVelocity: null,
+    mode: null,
+    capacitorRatio: null,
+    remainingQuantity: null,
+    miningYieldTypeID: null,
+    beltID: null,
+    isNpc: true,
+    npcEntityType: "npc",
+  };
+  store.apply({
+    type: "space/snapshot",
+    snapshot: {
+      inSpace: true,
+      solarSystemID: SYSTEM_ID,
+      shipID: SHIP_ID,
+      sampledAtMs: 1_700_000_000_000,
+      entities: [target],
+      ship: null,
+    },
+  } as never);
+  store.apply({ type: "targeting/targets", targetIDs: [7777] } as never);
+
+  const text = visibleText(render(TargetBracket as never, { props: { store } } as never).body);
+  assert.match(text, /Guristas Wight/, "the locked target's name is missing");
+  assert.match(text, /40%/, "the target's shield condition is missing");
+  // The target's own itemID must never render (R7d).
+  assert.doesNotMatch(text, /7777/, "a target itemID leaked");
 });
 
 function renderNeocom(isDocked: boolean): string {

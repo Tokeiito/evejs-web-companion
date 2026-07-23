@@ -7,6 +7,7 @@
   // rather than inventing a value.
   import Overview from "./Overview.svelte";
   import ModuleRack from "./ModuleRack.svelte";
+  import TargetBracket from "./TargetBracket.svelte";
   import { SPACE_PANELS, type ShellSlot } from "./shell.ts";
   import type { TabID } from "./tabs.ts";
   import type { ClientStore } from "../store/clientStore.ts";
@@ -69,6 +70,7 @@
   </header>
 
   <div class="space-viewport">
+    <TargetBracket {store} />
     <Overview {store} {flow} />
   </div>
 
