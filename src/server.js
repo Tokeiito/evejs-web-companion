@@ -6921,6 +6921,208 @@ app.get("/api/bridge/corp-applications", requireAuth, async (req, res, next) => 
   }
 });
 
+// --- R82 plumbing sweep: corpRegistry batch C (kills / settings / checks / name
+// suggestions; no UI — CLOSES corpRegistry at 34/34) ------------------------
+// PLUMBING ONLY: four routes make the corpRegistry KILLBOARD, SETTINGS, MEMBERSHIP-CHECK
+// and NAME-SUGGESTION reads reachable + decodable so a later goal builds UI cheaply. No
+// panel/tab/store slice ships. Same top-level dispatch as splits A/B: corpRegistry is
+// retail-bound per corp (eveMoniker.GetCorpRegistry(corpID)) but the gateway dispatches
+// these TOP-LEVEL; corp/char are resolved from the SESSION, and corpRegistry.MachoBindObject
+// is NOT allowlisted, so a browser cannot bind a foreign corp. Decoders in
+// web/src/bridge/{corpKillboard,corpSettings,corpMembershipChecks,corpNameSuggestions}.ts.
+
+// GET /api/bridge/corp-killboard?limit=&startKillID= — the SESSION corp's recent kills +
+// losses, as TWO independent reads (Promise.allSettled). Both SESSION-CORP-SCOPED: corp =
+// resolveCorporationID(session); args[0]/args[1] are a paging LIMIT + start-kill cursor,
+// NOT a corpID — a browser can only ever read its OWN corp's board. Each returns a Cached
+// MethodCallResult wrapping (substream) a CRowset of killmail rows; FILETIMEs bigint-safe,
+// ids stay data (R7d). ⚠ An empty board (Farmer's corp has 0 losses) is a legitimate state.
+app.get("/api/bridge/corp-killboard", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const limit = nonNegativeIntQuery(req.query.limit, 0);
+  const startKillID = nonNegativeIntQuery(req.query.startKillID, 0);
+  const killArgs = limit > 0 || startKillID > 0 ? [limit, startKillID > 0 ? startKillID : null] : [];
+  try {
+    const [kills, losses] = await Promise.allSettled([
+      heldTopLevelCall(held, req.webSessionID, "corpRegistry", "GetRecentKills", killArgs, null),
+      heldTopLevelCall(held, req.webSessionID, "corpRegistry", "GetRecentLosses", killArgs, null),
+    ]);
+    for (const outcome of [kills, losses]) {
+      if (outcome.status === "rejected" && outcome.reason && outcome.reason.code === "SESSION_NOT_FOUND") {
+        next(outcome.reason);
+        return;
+      }
+    }
+    const settledCode = (outcome) =>
+      outcome.status === "rejected"
+        ? String((outcome.reason && outcome.reason.code) || "READ_FAILED")
+        : null;
+    const settledValue = (outcome) =>
+      outcome.status === "fulfilled" ? outcome.value.result : null;
+    res.json({
+      ok: true,
+      requested: { limit: limit > 0 ? limit : null, startKillID: startKillID > 0 ? startKillID : null },
+      kills: settledValue(kills),
+      losses: settledValue(losses),
+      errors: { kills: settledCode(kills), losses: settledCode(losses) },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// GET /api/bridge/corp-settings — the SESSION corp's aggression / structure / mail settings,
+// as FOUR independent reads (Promise.allSettled). All SESSION-CORP-SCOPED (args ignored):
+//   • GetAggressionSettings        -> the friendly-fire enable/disable FILETIME schedule
+//     (a named AggressionSettings object).
+//   • GetStructureReinforceDefault -> [reinforceWeekday, reinforceHour] (a bare 2-int array).
+//   • DoesMyCorpAcceptStructures   -> a 0/1 flag.
+//   • DoesCorpRestrictCorpMails    -> a 0/1 flag. FILETIMEs bigint-safe. Decoder in
+//     web/src/bridge/corpSettings.ts.
+app.get("/api/bridge/corp-settings", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  try {
+    const [aggression, reinforce, acceptStructures, restrictMails] = await Promise.allSettled([
+      heldTopLevelCall(held, req.webSessionID, "corpRegistry", "GetAggressionSettings", [], null),
+      heldTopLevelCall(held, req.webSessionID, "corpRegistry", "GetStructureReinforceDefault", [], null),
+      heldTopLevelCall(held, req.webSessionID, "corpRegistry", "DoesMyCorpAcceptStructures", [], null),
+      heldTopLevelCall(held, req.webSessionID, "corpRegistry", "DoesCorpRestrictCorpMails", [], null),
+    ]);
+    for (const outcome of [aggression, reinforce, acceptStructures, restrictMails]) {
+      if (outcome.status === "rejected" && outcome.reason && outcome.reason.code === "SESSION_NOT_FOUND") {
+        next(outcome.reason);
+        return;
+      }
+    }
+    const settledCode = (outcome) =>
+      outcome.status === "rejected"
+        ? String((outcome.reason && outcome.reason.code) || "READ_FAILED")
+        : null;
+    const settledValue = (outcome) =>
+      outcome.status === "fulfilled" ? outcome.value.result : null;
+    res.json({
+      ok: true,
+      aggression: settledValue(aggression),
+      reinforce: settledValue(reinforce),
+      acceptStructures: settledValue(acceptStructures),
+      restrictMails: settledValue(restrictMails),
+      errors: {
+        aggression: settledCode(aggression),
+        reinforce: settledCode(reinforce),
+        acceptStructures: settledCode(acceptStructures),
+        restrictMails: settledCode(restrictMails),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// GET /api/bridge/corp-membership-checks?charID= — three membership/war checks, as THREE
+// independent reads (Promise.allSettled).
+//   • CanLeaveCurrentCorporation() -> the SESSION char's own [canLeave, errorCode, details]
+//     triple (resolveCharacterID(session, []) IGNORES args) → SESSION-CHAR-SCOPED.
+//   • CanBeKickedOut([charID])      -> whether charID is a kickable member of the SESSION
+//     corp (member lookup scoped to the session corp; a foreign non-member → 0). charID
+//     defaults to 0 (→ 0) when ?charID= is omitted → SESSION-CORP-SCOPED.
+//   • CharGetAllyBaseCost([charID]) -> the war-ally base cost (ISK) for charID (fallback the
+//     session char). ⚠ ARG-INJECTION: args[0] is a caller-chosen charID and the cost encodes
+//     that char's Diplomatic Relations skill level, so a foreign ?charID= leaks it (kept pre-
+//     plumbed + FLAGGED in docs/arg-injection-leak-handoff.md; the ?charID= override exists to
+//     prove it). With ?charID= omitted the route is SESSION-scoped (own ally cost). Decoder in
+//     web/src/bridge/corpMembershipChecks.ts.
+app.get("/api/bridge/corp-membership-checks", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const charID = nonNegativeIntQuery(req.query.charID, 0);
+  const charArgs = charID > 0 ? [charID] : [];
+  try {
+    const [canLeave, canBeKickedOut, allyBaseCost] = await Promise.allSettled([
+      heldTopLevelCall(held, req.webSessionID, "corpRegistry", "CanLeaveCurrentCorporation", [], null),
+      heldTopLevelCall(held, req.webSessionID, "corpRegistry", "CanBeKickedOut", charArgs, null),
+      heldTopLevelCall(held, req.webSessionID, "corpRegistry", "CharGetAllyBaseCost", charArgs, null),
+    ]);
+    for (const outcome of [canLeave, canBeKickedOut, allyBaseCost]) {
+      if (outcome.status === "rejected" && outcome.reason && outcome.reason.code === "SESSION_NOT_FOUND") {
+        next(outcome.reason);
+        return;
+      }
+    }
+    const settledCode = (outcome) =>
+      outcome.status === "rejected"
+        ? String((outcome.reason && outcome.reason.code) || "READ_FAILED")
+        : null;
+    const settledValue = (outcome) =>
+      outcome.status === "fulfilled" ? outcome.value.result : null;
+    res.json({
+      ok: true,
+      requested: { charID: charID > 0 ? charID : null },
+      canLeave: settledValue(canLeave),
+      canBeKickedOut: settledValue(canBeKickedOut),
+      allyBaseCost: settledValue(allyBaseCost),
+      errors: {
+        canLeave: settledCode(canLeave),
+        canBeKickedOut: settledCode(canBeKickedOut),
+        allyBaseCost: settledCode(allyBaseCost),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// GET /api/bridge/corp-name-suggestions?allianceBase= — the two PUBLIC name generators, as
+// TWO independent reads (Promise.allSettled). Neither handler takes a session or reads any
+// corp/char data — nothing to own or leak:
+//   • GetSuggestedTickerNames()             -> a random corp-ticker suggestion (list of KeyVal).
+//   • GetSuggestedAllianceShortNames([base]) -> short-name variants of the ?allianceBase= base
+//     name (list of KeyVal). Decoder in web/src/bridge/corpNameSuggestions.ts.
+app.get("/api/bridge/corp-name-suggestions", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const allianceBase = stringQuery(req.query.allianceBase);
+  try {
+    const [tickerNames, allianceShortNames] = await Promise.allSettled([
+      heldTopLevelCall(held, req.webSessionID, "corpRegistry", "GetSuggestedTickerNames", [], null),
+      heldTopLevelCall(held, req.webSessionID, "corpRegistry", "GetSuggestedAllianceShortNames", allianceBase ? [allianceBase] : [], null),
+    ]);
+    for (const outcome of [tickerNames, allianceShortNames]) {
+      if (outcome.status === "rejected" && outcome.reason && outcome.reason.code === "SESSION_NOT_FOUND") {
+        next(outcome.reason);
+        return;
+      }
+    }
+    const settledCode = (outcome) =>
+      outcome.status === "rejected"
+        ? String((outcome.reason && outcome.reason.code) || "READ_FAILED")
+        : null;
+    const settledValue = (outcome) =>
+      outcome.status === "fulfilled" ? outcome.value.result : null;
+    res.json({
+      ok: true,
+      requested: { allianceBase: allianceBase || null },
+      tickerNames: settledValue(tickerNames),
+      allianceShortNames: settledValue(allianceShortNames),
+      errors: {
+        tickerNames: settledCode(tickerNames),
+        allianceShortNames: settledCode(allianceShortNames),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // GET /api/bridge/market-trading?fromDate=&accountKey= — the market CORP-ORDER +
 // PLEX reads the R16 market panel left out (R62 plumbing sweep), as SEVEN
 // independent reads (Promise.allSettled; empty ≠ failed, each its own error
