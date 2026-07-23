@@ -7272,6 +7272,155 @@ app.get("/api/bridge/alliance-relationships", requireAuth, async (req, res, next
   }
 });
 
+// --- R84 plumbing sweep: allianceRegistry batch B (contacts / applications /
+// bulletins / bills / sovereignty config; no UI) — CLOSES allianceRegistry -----
+// PLUMBING ONLY: three routes make the allianceRegistry GOVERNANCE / FINANCIAL /
+// SOVEREIGNTY reads reachable + decodable so a later goal builds UI cheaply. No
+// panel/tab/store slice ships. Same top-level seam as R83, but EVERY read here is
+// STRICTLY SESSION-SCOPED and IGNORES args (the handler resolves the alliance from
+// resolveAllianceIDFromSession(session), or, for GetBillBalance, from the session
+// corp / account key). There is NO allianceID query param because no args path can
+// redirect any of these to a foreign alliance — verified LIVE: as Farmer
+// (alliance-less) INJECTING allianceID 99000000 every read returned his OWN
+// empty/zero state (prime hour 0, not Elysian's 2; bill balance = his own corp's),
+// never the foreign alliance's contacts/applications/bulletins/bills. All 7 SAFE,
+// nothing flagged. Decoders: web/src/bridge/{allianceGovernance,allianceBills,
+// allianceSovereignty}.ts.
+
+// GET /api/bridge/alliance-governance — the SESSION alliance's GOVERNANCE reads, as
+// THREE independent reads (Promise.allSettled; empty ≠ failed). ids stay data (R7d):
+//   • GetAllianceContacts -> a dict {contactID -> KeyVal(contactID/relationshipID/
+//       labelMask)} — the alliance's standings-contact list.
+//   • GetApplications -> an IndexRowset (keyed by corporationID) of the alliance's
+//       INCOMING corp applications (allianceID/corporationID/applicationText/state/
+//       applicationDateTime FILETIME).
+//   • GetBulletins -> a list of packed bulletin rows (bulletinID/ownerID/create+edit
+//       FILETIME/editCharacterID/title/body/sortOrder).
+app.get("/api/bridge/alliance-governance", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  try {
+    const [contacts, applications, bulletins] = await Promise.allSettled([
+      heldTopLevelCall(held, req.webSessionID, "allianceRegistry", "GetAllianceContacts", [], null),
+      heldTopLevelCall(held, req.webSessionID, "allianceRegistry", "GetApplications", [], null),
+      heldTopLevelCall(held, req.webSessionID, "allianceRegistry", "GetBulletins", [], null),
+    ]);
+    for (const outcome of [contacts, applications, bulletins]) {
+      if (outcome.status === "rejected" && outcome.reason && outcome.reason.code === "SESSION_NOT_FOUND") {
+        next(outcome.reason);
+        return;
+      }
+    }
+    const settledCode = (outcome) =>
+      outcome.status === "rejected"
+        ? String((outcome.reason && outcome.reason.code) || "READ_FAILED")
+        : null;
+    const settledValue = (outcome) =>
+      outcome.status === "fulfilled" ? outcome.value.result : null;
+    res.json({
+      ok: true,
+      contacts: settledValue(contacts),
+      applications: settledValue(applications),
+      bulletins: settledValue(bulletins),
+      errors: {
+        contacts: settledCode(contacts),
+        applications: settledCode(applications),
+        bulletins: settledCode(bulletins),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// GET /api/bridge/alliance-bills — the SESSION alliance's FINANCIAL reads, as TWO
+// independent reads (Promise.allSettled). Alliance financials, but only ever the
+// caller's OWN alliance / corp (session-scoped; args ignored). ISK amounts + FILETIMEs
+// kept bigint-safe as decimal strings in the decoder; ids stay data (R7d):
+//   • GetBills -> a list of the alliance's OWED bills (billID/billTypeID/amount/
+//       interest/debtorID/creditorID/dueDateTime FILETIME/paid/…).
+//   • GetBillBalance -> the SESSION corp's wallet balance (a bare number) for its
+//       default account key — what a "pay bill" flow would draw against. 0 when corp-less.
+app.get("/api/bridge/alliance-bills", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  try {
+    const [bills, balance] = await Promise.allSettled([
+      heldTopLevelCall(held, req.webSessionID, "allianceRegistry", "GetBills", [], null),
+      heldTopLevelCall(held, req.webSessionID, "allianceRegistry", "GetBillBalance", [], null),
+    ]);
+    for (const outcome of [bills, balance]) {
+      if (outcome.status === "rejected" && outcome.reason && outcome.reason.code === "SESSION_NOT_FOUND") {
+        next(outcome.reason);
+        return;
+      }
+    }
+    const settledCode = (outcome) =>
+      outcome.status === "rejected"
+        ? String((outcome.reason && outcome.reason.code) || "READ_FAILED")
+        : null;
+    const settledValue = (outcome) =>
+      outcome.status === "fulfilled" ? outcome.value.result : null;
+    res.json({
+      ok: true,
+      bills: settledValue(bills),
+      balance: settledValue(balance),
+      errors: {
+        bills: settledCode(bills),
+        balance: settledCode(balance),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// GET /api/bridge/alliance-sovereignty — the SESSION alliance's SOVEREIGNTY-CONFIG
+// reads, as TWO independent reads (Promise.allSettled). Session-scoped; args ignored:
+//   • GetCapitalSystemInfo -> KeyVal(currentCapitalSystem / newCapitalSystem /
+//       newCapitalSystemValidAfter FILETIME) — the capital-system transition state.
+//   • GetPrimeTimeInfo -> KeyVal(currentPrimeHour / newPrimeHour /
+//       newPrimeHourValidAfter FILETIME) — the sovereignty prime-hour (small int).
+app.get("/api/bridge/alliance-sovereignty", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  try {
+    const [capital, prime] = await Promise.allSettled([
+      heldTopLevelCall(held, req.webSessionID, "allianceRegistry", "GetCapitalSystemInfo", [], null),
+      heldTopLevelCall(held, req.webSessionID, "allianceRegistry", "GetPrimeTimeInfo", [], null),
+    ]);
+    for (const outcome of [capital, prime]) {
+      if (outcome.status === "rejected" && outcome.reason && outcome.reason.code === "SESSION_NOT_FOUND") {
+        next(outcome.reason);
+        return;
+      }
+    }
+    const settledCode = (outcome) =>
+      outcome.status === "rejected"
+        ? String((outcome.reason && outcome.reason.code) || "READ_FAILED")
+        : null;
+    const settledValue = (outcome) =>
+      outcome.status === "fulfilled" ? outcome.value.result : null;
+    res.json({
+      ok: true,
+      capital: settledValue(capital),
+      prime: settledValue(prime),
+      errors: {
+        capital: settledCode(capital),
+        prime: settledCode(prime),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // GET /api/bridge/market-trading?fromDate=&accountKey= — the market CORP-ORDER +
 // PLEX reads the R16 market panel left out (R62 plumbing sweep), as SEVEN
 // independent reads (Promise.allSettled; empty ≠ failed, each its own error
