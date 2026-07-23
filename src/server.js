@@ -8549,6 +8549,104 @@ app.post("/api/bridge/inventory/deliver-to-corp-member", requireAuth, async (req
   );
 });
 
+// --- R103 WB-PI: the 4 Phase-4 BOUND planet colony-op WRITES ------------------
+//
+// These ride the SAME planetMgr.MachoBindObject(planetID) bind (planetBindSpec —
+// keyed per planetID) the R77 RB-PI reads use. The browser sends the target
+// planetID; the BFF binds it (holding the OID handle server-side, the browser
+// never sees it) and dispatches each write as a BOUND method off that handle —
+// mirroring dispatchBoundInventoryWrite / dispatchBoundDogmaWrite. Every route is
+// confirm-gated; UserAbandonPlanet — which DESTROYS the colony — carries an
+// extra-explicit message. FAST-MODE: none fired live (operator owns EveJS). The
+// handlers return a serialized colony / a [simTime,runTime] pair / null; the ack
+// carries `result` through for a future PI UI to decode. Args are EDUCATED-GUESS
+// from the handler shapes (planetID comes from the bind, allowArgs:false).
+//
+// ⚠ ARG-INJECTION: the planetID is caller-supplied via the bind, BUT every handler
+// forces ownerID = getSessionCharacterID(session) (UserAbandonPlanet →
+// abandonColony(planetID, session.characterID)). The colony operated on is always
+// (planetID, SESSION-char), so — UNLIKE the R77 READ leak #18-#20 where
+// GetFullNetworkForOwner took a caller-supplied ownerID and returned a FOREIGN
+// owner's colony — these writes cannot reconfigure or abandon another player's
+// colony; a caller can only touch its OWN colony on the chosen planet. Owner-gated,
+// so NOT the write realization of #18-#20; no handoff-doc flag added.
+
+/** Dispatch one confirm-gated BOUND planet write off the planetMgr planetID bind. */
+async function dispatchBoundPlanetWrite(req, res, next, planetID, method, args, kwargs = null) {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const pid = Number(planetID) || 0;
+  if (pid <= 0) {
+    res.status(400).json({
+      ok: false,
+      error: "INVALID_PLANET",
+      message: "A positive planetID is required.",
+    });
+    return;
+  }
+  try {
+    const outcome = await boundCall(held, req.webSessionID, planetBindSpec(pid), method, args, kwargs);
+    res.json({ ok: true, applied: true, result: outcome.result ?? null, notifications: outcome.notifications });
+  } catch (error) {
+    if (error && error.code === "SESSION_NOT_FOUND") {
+      forgetBridgeSession(req.webSessionID);
+    }
+    next(error);
+  }
+}
+
+// UserUpdateNetwork(serializedChanges) — apply a colony network edit (build/move/
+// remove pins + links). `changes` is the serialized command list; the planetID is
+// bound. Debits the construction cost from the PI wallet server-side.
+app.post("/api/bridge/planet/network/update", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This applies that colony network edit (may debit construction cost). Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const planetID = Number(body.planetID) || 0;
+  const changes = Array.isArray(body.changes) ? body.changes : [];
+  await dispatchBoundPlanetWrite(req, res, next, planetID, "UserUpdateNetwork", [changes]);
+});
+
+// UserLaunchCommodities(commandPinID, commodities) — launch commodities off the
+// colony to space (customs-office export). Debits export tax server-side.
+app.post("/api/bridge/planet/commodities/launch", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This launches those commodities from the colony (debits export tax). Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const planetID = Number(body.planetID) || 0;
+  const commandPinID = Number(body.commandPinID) || 0;
+  const commodities = body.commodities && typeof body.commodities === "object" ? body.commodities : {};
+  await dispatchBoundPlanetWrite(req, res, next, planetID, "UserLaunchCommodities", [commandPinID, commodities]);
+});
+
+// UserTransferCommodities(path, commodities) — route commodities between pins
+// along `path` (an ordered pin id list). Session colony only.
+app.post("/api/bridge/planet/commodities/transfer", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This transfers those commodities between colony pins. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const planetID = Number(body.planetID) || 0;
+  const path = Array.isArray(body.path) ? body.path : [];
+  const commodities = body.commodities && typeof body.commodities === "object" ? body.commodities : {};
+  await dispatchBoundPlanetWrite(req, res, next, planetID, "UserTransferCommodities", [path, commodities]);
+});
+
+// ⚠ ABANDONS THE COLONY. UserAbandonPlanet() — PERMANENTLY DESTROYS the caller's
+// colony on the bound planet: all structures lost, cannot be recovered. Owner is
+// forced to the session char server-side (only your OWN colony can be abandoned).
+app.post("/api/bridge/planet/abandon", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This ABANDONS the colony — all structures are lost and cannot be recovered. This is destructive and must be confirmed explicitly.")) {
+    return;
+  }
+  const planetID = Number((req.body || {}).planetID) || 0;
+  await dispatchBoundPlanetWrite(req, res, next, planetID, "UserAbandonPlanet", []);
+});
+
 // --- R17 Contracts (contractProxy bridge) -----------------------------------
 //
 // Like mail and market, the whole contract surface is TOP-LEVEL
@@ -13223,6 +13321,159 @@ app.post("/api/bridge/flight/stop", requireAuth, async (req, res, next) => {
   } catch (error) {
     next(error);
   }
+});
+
+// --- R103 WB-BEYONCE: the 7 Phase-4 BOUND nav/bookmark WRITES -----------------
+//
+// These ride the SAME beyonce remote-park bind (parkBindSpec(solarSystemID) —
+// Moniker("beyonce", solarSystemID)) the R5a/R13 movement verbs use. The BFF
+// reads the session's OWN live flight to recover the current solarSystemID, binds
+// the park for that system, and dispatches each write as a BOUND method off that
+// handle (mirroring the warp/jump/dock routes above). Every route is confirm-gated
+// and requires the ship to be in space. FAST-MODE: none fired live (operator owns
+// EveJS). Handlers return null / a bookmark id; the ack carries `result` through
+// for a future nav/bookmark UI. Args are EDUCATED-GUESS from the handler shapes.
+//
+// ⚠ ARG-INJECTION: every handler resolves ship / scene / char from the SESSION
+// (spaceRuntime.<op>(session, …) / fleetRuntime.<op>(session, …) / creatorID =
+// session.characterID for the bookmark writers). CmdJumpThroughFleet takes a
+// fleet-mate's (charID, shipID) but validates them against the SESSION's own fleet
+// membership and looks up the bridge scoped to the session char — the legitimate
+// cyno-jump mechanism, not a caller-forgeable foreign ship. No foreign-id write —
+// no handoff-doc flag.
+
+/**
+ * Dispatch one confirm-gated BOUND beyonce write off the park bind. Reads the
+ * session's live flight to bind the CURRENT solar system and require in-space;
+ * a lost session drops the held session (page returns to character select).
+ */
+async function dispatchBoundBeyonceWrite(req, res, next, method, args, kwargs = null) {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  try {
+    const before = await readHeldFlight(held, req.webSessionID);
+    if (!requireInSpace(res, before.flight)) {
+      return;
+    }
+    const outcome = await boundCall(
+      held,
+      req.webSessionID,
+      parkBindSpec(before.flight.solarSystemID),
+      method,
+      args,
+      kwargs,
+    );
+    const after = await readHeldFlight(held, req.webSessionID);
+    res.json({
+      ok: true,
+      applied: true,
+      result: outcome.result ?? null,
+      flight: after.flight,
+      notifications: [...outcome.notifications, ...after.notifications],
+    });
+  } catch (error) {
+    if (error && error.code === "SESSION_NOT_FOUND") {
+      forgetBridgeSession(req.webSessionID);
+    }
+    next(error);
+  }
+}
+
+// CmdGotoPoint(x, y, z) — free-flight steer the ship toward an absolute point.
+app.post("/api/bridge/flight/goto-point", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This flies the ship toward that point. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const x = Number(body.x) || 0;
+  const y = Number(body.y) || 0;
+  const z = Number(body.z) || 0;
+  await dispatchBoundBeyonceWrite(req, res, next, "CmdGotoPoint", [x, y, z]);
+});
+
+// CmdGotoBookmark(bookmarkID) — free-flight steer toward a saved bookmark.
+app.post("/api/bridge/flight/goto-bookmark", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This flies the ship toward that bookmark. Confirm to continue.")) {
+    return;
+  }
+  const bookmarkID = Number((req.body || {}).bookmarkID) || 0;
+  await dispatchBoundBeyonceWrite(req, res, next, "CmdGotoBookmark", [bookmarkID]);
+});
+
+// CmdAbandonLoot([itemIDs]) — abandon loot the session ship is holding onto in
+// space (the runtime drops it from the session's inventory-loot claim).
+app.post("/api/bridge/flight/abandon-loot", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This abandons those loot items. Confirm to continue.")) {
+    return;
+  }
+  await dispatchBoundBeyonceWrite(req, res, next, "CmdAbandonLoot", [bridgeIDList((req.body || {}).itemIDs)]);
+});
+
+// CmdFleetTagTarget(itemID, tag) — set (or clear, tag=null) the fleet target tag
+// on an entity. Fleet-scoped server-side.
+app.post("/api/bridge/flight/fleet-tag-target", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This sets that fleet target tag. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const itemID = Number(body.itemID) || 0;
+  const tag = body.tag === undefined || body.tag === null ? null : String(body.tag);
+  await dispatchBoundBeyonceWrite(req, res, next, "CmdFleetTagTarget", [itemID, tag]);
+});
+
+// CmdJumpThroughFleet(otherCharID, otherShipID, beaconID, solarSystemID) — jump
+// through a fleet-mate's cyno bridge. Validated against the session's own fleet
+// membership server-side (the (charID, shipID) name the bridge, not a foreign ship
+// to hijack). Consumes bridge fuel + transitions the session to a new system.
+app.post("/api/bridge/flight/jump-through-fleet", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This jumps your ship through that fleet bridge (changes system). Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const otherCharID = Number(body.otherCharID) || 0;
+  const otherShipID = Number(body.otherShipID) || 0;
+  const beaconID = Number(body.beaconID) || 0;
+  const solarSystemID = Number(body.solarSystemID) || 0;
+  await dispatchBoundBeyonceWrite(req, res, next, "CmdJumpThroughFleet", [otherCharID, otherShipID, beaconID, solarSystemID]);
+});
+
+// BookmarkLocation(itemID, folderID, name, comment, expiryMode, subfolderID?) —
+// create a bookmark for an in-space location/entity (creatorID = session char).
+app.post("/api/bridge/flight/bookmark-location", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This creates a location bookmark. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const itemID = Number(body.itemID) || 0;
+  const folderID = Number(body.folderID) || 0;
+  const name = String(body.name ?? "");
+  const comment = String(body.comment ?? "");
+  const expiryMode = Number(body.expiryMode) || 0;
+  const kwargs = body.subfolderID === undefined || body.subfolderID === null
+    ? null
+    : { subfolderID: Number(body.subfolderID) || 0 };
+  await dispatchBoundBeyonceWrite(req, res, next, "BookmarkLocation", [itemID, folderID, name, comment, expiryMode], kwargs);
+});
+
+// BookmarkScanResult(locationID, name, comment, resultID, folderID, expiryMode,
+// subfolderID?) — bookmark a probe-scan result (creatorID = session char).
+app.post("/api/bridge/flight/bookmark-scan-result", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This creates a bookmark from that scan result. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const locationID = Number(body.locationID) || 0;
+  const name = String(body.name ?? "");
+  const comment = String(body.comment ?? "");
+  const resultID = Number(body.resultID) || 0;
+  const folderID = Number(body.folderID) || 0;
+  const expiryMode = Number(body.expiryMode) || 0;
+  const kwargs = body.subfolderID === undefined || body.subfolderID === null
+    ? null
+    : { subfolderID: Number(body.subfolderID) || 0 };
+  await dispatchBoundBeyonceWrite(req, res, next, "BookmarkScanResult", [locationID, name, comment, resultID, folderID, expiryMode], kwargs);
 });
 
 // --- R23 slice A: targeting + module activation -----------------------------
