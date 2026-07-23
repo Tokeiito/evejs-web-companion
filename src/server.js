@@ -5795,6 +5795,85 @@ app.post("/api/bridge/kill-right/buy", requireAuth, async (req, res, next) => {
   await dispatchBridgeWrite(req, res, next, "killRightMgr", "BuyKillRight", [killRightID, price]);
 });
 
+// --- R106 marketProxy FINANCIAL WRITES (3) — CLOSES THE PLUMBING SWEEP -------
+//
+// The three real-value marketProxy writes deferred the WHOLE sweep because each
+// SPENDS or COMMITS real value. The operator EXPLICITLY authorized them on
+// 2026-07-23. marketProxy is TOP-LEVEL (sm.ProxySvc("marketProxy") — no
+// MachoBindObject step), so every write is a plain dispatchBridgeWrite on the
+// held session, exactly like the account.GiveCash financial pattern above. NOT
+// the dead "market" stub — the allowlist refuses that by name.
+//
+// ⚠⚠ SAFETY — EVERY write here spends or commits real value. NONE is ever fired
+// on the live world in the plumbing pass: reachability-only + refuses-without-
+// confirm. Each route is CONFIRM-GATED (requireWriteConfirmation refuses 400
+// CONFIRMATION_REQUIRED with NO dispatch unless confirm:true) and carries an
+// EXTRA-EXPLICIT financial confirm message.
+//
+// ⚠ SCOPE — all session-scoped (no foreign source found; nothing appended to
+// docs/arg-injection-leak-handoff.md for this batch):
+//   • PlacePlexSellOrder lists PLEX FROM the session char's own inventory
+//     (executeSellEntry works off the session; useCorp asserted personal-only).
+//   • ModifyPlexCharOrder delegates to Handle_ModifyCharOrder, which loads the
+//     order via loadCharacterOrderOrThrow — an OWNER CHECK that throws unless
+//     order.owner_id === the session characterID. It cannot re-price a foreign
+//     order.
+//   • BuyMultipleItems debits the SESSION char's wallet (characterID/regionID
+//     read from the session; useCorp asserted personal-only). No caller-supplied
+//     wallet/charID.
+
+// ⚠ FINANCIAL (lists your PLEX for sale on the live market) — reachable + gated, NEVER fired live.
+// PlacePlexSellOrder([entry{itemID,typeID,stationID,price,quantity}, useCorp, durationDays, expectedBrokerFee]).
+app.post("/api/bridge/market/plex/sell", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This LISTS your PLEX for sale on the live market — it commits an asset to a real sell order. This must be confirmed explicitly.")) {
+    return;
+  }
+  const body = req.body || {};
+  const entry = body.entry !== undefined && body.entry !== null && typeof body.entry === "object" ? body.entry : null;
+  if (!entry) {
+    res.status(400).json({ ok: false, error: "SELL_INVALID", message: "A PLEX inventory item entry is required." });
+    return;
+  }
+  const durationDays = Number(body.durationDays) || 0;
+  const expectedBrokerFee = body.expectedBrokerFee !== undefined ? body.expectedBrokerFee : null;
+  await dispatchBridgeWrite(req, res, next, "marketProxy", "PlacePlexSellOrder", [entry, false, durationDays, expectedBrokerFee]);
+});
+
+// ⚠ FINANCIAL (re-prices your live PLEX order) — reachable + gated, NEVER fired live.
+// ModifyPlexCharOrder([orderID, newPrice, ...retail-tail]); the server reads only
+// orderID + newPrice and owner-checks the order, so we forward the clean pair.
+app.post("/api/bridge/market/plex/modify", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This RE-PRICES your live PLEX market order (charges a modification fee). This must be confirmed explicitly.")) {
+    return;
+  }
+  const body = req.body || {};
+  const orderID = Number(body.orderID) || 0;
+  const newPrice = Number(body.newPrice) || 0;
+  if (orderID <= 0 || newPrice <= 0) {
+    res.status(400).json({ ok: false, error: "MODIFY_INVALID", message: "An order and a positive new price are required." });
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "marketProxy", "ModifyPlexCharOrder", [orderID, newPrice]);
+});
+
+// ⚠⚠ FINANCIAL (SPENDS ISK immediately to buy at market) — the most consequential
+// of the three. Reachable + gated, NEVER fired live.
+// BuyMultipleItems([stationID, itemList, useCorp]) — batch instant-buy; the
+// session char's wallet is debited once per list entry.
+app.post("/api/bridge/market/buy-multiple", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This SPENDS ISK immediately to buy at market against existing sell orders — irreversible. This must be confirmed explicitly.")) {
+    return;
+  }
+  const body = req.body || {};
+  const stationID = Number(body.stationID) || 0;
+  const itemList = Array.isArray(body.itemList) ? body.itemList : [];
+  if (stationID <= 0 || itemList.length === 0) {
+    res.status(400).json({ ok: false, error: "BUY_INVALID", message: "A station and at least one item are required." });
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "marketProxy", "BuyMultipleItems", [stationID, itemList, false]);
+});
+
 // --- R90 SHIP + FIGHTER IN-SPACE WRITES -------------------------------------
 // (ship / fighterMgr)
 //
