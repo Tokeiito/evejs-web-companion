@@ -7552,6 +7552,240 @@ app.post("/api/bridge/corpreg/member/execute-actions", requireAuth, async (req, 
   ]);
 });
 
+// --- R98 Phase-4 top-level WRITES — corpRegistry batch C ---------------------
+//
+// WB-CORPREG split 3 of 3 (CLOSES corpRegistry writes at 43/43): shares (2) +
+// dividend (1) + kicks (2) + CEO-resign (1) + applications (3) + alliance (3) +
+// war (1) + corp-creation (1) = 14 writes on the SAME "corpRegistry" service the
+// R80-82 reads and the R96/R97 batch-A/B writes opened. Every one dispatches on
+// the ORDINARY top-level /call seam (dispatchBridgeWrite → heldTopLevelCall), NOT
+// a bound two-step: the DECLARER / ACTOR / SPENDER is derived from the SESSION
+// (resolveCorporationID / resolveCharacterID server-side), so corpRegistry.
+// MachoBindObject is NOT allowlisted and the browser cannot steer a FOREIGN corp
+// as the acting party. Every route is CONFIRM-GATED via requireWriteConfirmation
+// (no `confirm: true` ⇒ 400 CONFIRMATION_REQUIRED, nothing dispatches).
+//
+// ⚠⚠ EVERY ONE IS FINANCIAL OR DESTRUCTIVE — reachability + refuses-without-
+// confirm ONLY, NEVER fired on the live world (no shares moved, no dividend paid,
+// no member kicked, no CEO resigned, no corp/alliance created, no war declared):
+//   PayoutDividend / AddCorporation / CreateAlliance / DeclareWarAgainst spend ISK;
+//   KickOutMember / KickOutMembers / ResignFromCEO are destructive;
+//   MoveCompanyShares / MovePrivateShares move share-asset ownership;
+//   the application / alliance writes mutate membership state.
+// The confirm messages say so explicitly.
+//
+// ⚠ ROLE-GATED server-side (CEO/director) — a role refusal is CORRECT, not a bug.
+//
+// ⚠ ARG-INJECTION (flagged in docs/arg-injection-leak-handoff.md, not fixed here):
+// server-side _MoveShares reads args[0] as a caller-supplied corporationID
+// (defaulting to the session corp). These dedicated routes pass NO corporationID
+// (arg[0] = null) so the handler resolves the SESSION corp — but the generic
+// /api/bridge/call seam could still steer a foreign corp's company-share treasury.
+// InsertApplication/UpdateApplicationOffer legitimately take a target corporationID
+// (you apply to OTHER corps); UpdateApplicationOffer's caller-supplied corp on the
+// RESPONDER side is noted in the handoff.
+//
+// FAST-MODE educated-guess decoders (writesCorpRegistryShareWar.ts): the share
+// moves / kicks / alliance-deletes answer null; the ID-returning writes
+// (InsertApplication → applicationID, InsertInvitation → invitationID,
+// AddCorporation → corporationID, CreateAlliance → allianceID, DeclareWarAgainst →
+// war record) pass their raw return through `result`. Never fired, so never QA'd.
+
+// Shares (2) — MoveCompanyShares/MovePrivateShares(corporationID, toShareholderID,
+// numberOfShares). ⚠ Pass corporationID = null so the handler resolves the SESSION
+// corp (never a caller-supplied foreign corp treasury).
+app.post("/api/bridge/corpreg/shares/move-company", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This moves your corporation's company shares to another shareholder. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  await dispatchBridgeWrite(req, res, next, "corpRegistry", "MoveCompanyShares", [
+    null,
+    Number(body.toShareholderID) || 0,
+    Number(body.numberOfShares) || 0,
+  ]);
+});
+
+app.post("/api/bridge/corpreg/shares/move-private", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This moves your own shares to another shareholder. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  await dispatchBridgeWrite(req, res, next, "corpRegistry", "MovePrivateShares", [
+    null,
+    Number(body.toShareholderID) || 0,
+    Number(body.numberOfShares) || 0,
+  ]);
+});
+
+// Dividend (1) — ⚠ SPENDS ISK. PayoutDividend(payShareholders, payoutAmount) —
+// pays out of the SESSION corp's master wallet (corp derived server-side).
+app.post("/api/bridge/corpreg/dividend/payout", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This pays an ISK dividend out of your corporation's wallet. This spends corporation ISK and must be confirmed explicitly.")) {
+    return;
+  }
+  const body = req.body || {};
+  await dispatchBridgeWrite(req, res, next, "corpRegistry", "PayoutDividend", [
+    body.payShareholders === false ? 0 : 1,
+    Number(body.payoutAmount) || 0,
+  ]);
+});
+
+// Kicks + CEO-resign (3) — ⚠ DESTRUCTIVE. Actor corp derived server-side.
+app.post("/api/bridge/corpreg/member/kick", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "Kicking a member out of your corporation is destructive. This must be confirmed explicitly.")) {
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "corpRegistry", "KickOutMember", [
+    Number((req.body || {}).characterID) || 0,
+  ]);
+});
+
+app.post("/api/bridge/corpreg/member/kick-many", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "Kicking multiple members out of your corporation is destructive. This must be confirmed explicitly.")) {
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "corpRegistry", "KickOutMembers", [
+    bridgeIDList((req.body || {}).characterIDs),
+  ]);
+});
+
+// ResignFromCEO(newCEOID) — ⚠ DESTRUCTIVE (hands the corp to another member).
+app.post("/api/bridge/corpreg/ceo/resign", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "Resigning as CEO hands your corporation to another member. This is irreversible and must be confirmed explicitly.")) {
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "corpRegistry", "ResignFromCEO", [
+    Number((req.body || {}).newCEOID) || 0,
+  ]);
+});
+
+// Applications (3) --------------------------------------------------------------
+
+// InsertApplication(corporationID, applicationText) — apply to JOIN a corp; the
+// target corp is legitimately caller-supplied (you apply to another corp), the
+// applicant is the SESSION character (server-side). Returns applicationID.
+app.post("/api/bridge/corpreg/application/insert", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This files a membership application to a corporation on your behalf. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  await dispatchBridgeWrite(req, res, next, "corpRegistry", "InsertApplication", [
+    Number(body.corporationID) || 0,
+    typeof body.applicationText === "string" ? body.applicationText : "",
+  ]);
+});
+
+// InsertInvitation(characterID) — invite a character into the SESSION corp
+// (corp derived server-side). Returns invitationID.
+app.post("/api/bridge/corpreg/application/invite", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This invites a character to join your corporation. Confirm to continue.")) {
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "corpRegistry", "InsertInvitation", [
+    Number((req.body || {}).characterID) || 0,
+  ]);
+});
+
+// UpdateApplicationOffer(applicationID, characterID, corporationID, applicationText,
+// status, customMessage) — the corp responds to an application (accept/reject may
+// add a member). ⚠ corporationID is caller-supplied on this responder side (noted
+// in the arg-injection handoff).
+app.post("/api/bridge/corpreg/application/update-offer", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This responds to a corporation membership application (accepting one adds a member). Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  await dispatchBridgeWrite(req, res, next, "corpRegistry", "UpdateApplicationOffer", [
+    Number(body.applicationID) || 0,
+    Number(body.characterID) || 0,
+    Number(body.corporationID) || 0,
+    typeof body.applicationText === "string" ? body.applicationText : "",
+    Number(body.status) || 0,
+    typeof body.customMessage === "string" ? body.customMessage : "",
+  ]);
+});
+
+// Alliance (3) ------------------------------------------------------------------
+
+// AddCorporation(name, ticker, description, url, taxRate, shape1..3, color1..3,
+// typeface, applicationsEnabled, friendlyFireEnabled, lpTaxRate) — ⚠ SPENDS ISK
+// (founding fee debited from the SESSION character's wallet server-side) and
+// CREATES a corp. 15 positional args; absent fields pass null.
+app.post("/api/bridge/corpreg/corp/create", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This founds a new corporation, debiting the founding fee from your ISK wallet. This spends ISK and creates a corporation, and must be confirmed explicitly.")) {
+    return;
+  }
+  const body = req.body || {};
+  const orNull = (v) => (v === undefined ? null : v);
+  await dispatchBridgeWrite(req, res, next, "corpRegistry", "AddCorporation", [
+    typeof body.name === "string" ? body.name : "",
+    typeof body.tickerName === "string" ? body.tickerName : "",
+    typeof body.description === "string" ? body.description : "",
+    typeof body.url === "string" ? body.url : "",
+    Number(body.taxRate) || 0,
+    orNull(body.shape1), orNull(body.shape2), orNull(body.shape3),
+    orNull(body.color1), orNull(body.color2), orNull(body.color3),
+    orNull(body.typeface),
+    body.applicationsEnabled ? 1 : 0,
+    body.friendlyFireEnabled ? 1 : 0,
+    Number(body.loyaltyPointTaxRate) || 0,
+  ]);
+});
+
+// CreateAlliance(name, shortName, description, url) — ⚠ SPENDS ISK and CREATES an
+// alliance for the SESSION corp (corp/spender derived server-side).
+app.post("/api/bridge/corpreg/alliance/create", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This founds a new alliance, debiting the founding fee. This spends ISK and creates an alliance, and must be confirmed explicitly.")) {
+    return;
+  }
+  const body = req.body || {};
+  await dispatchBridgeWrite(req, res, next, "corpRegistry", "CreateAlliance", [
+    typeof body.name === "string" ? body.name : "",
+    typeof body.shortName === "string" ? body.shortName : "",
+    typeof body.description === "string" ? body.description : "",
+    typeof body.url === "string" ? body.url : "",
+  ]);
+});
+
+// ApplyToJoinAlliance(allianceID, applicationText) — the SESSION corp applies to
+// an alliance (applicant corp derived server-side; target alliance caller-supplied).
+app.post("/api/bridge/corpreg/alliance/apply", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This applies for your corporation to join an alliance. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  await dispatchBridgeWrite(req, res, next, "corpRegistry", "ApplyToJoinAlliance", [
+    Number(body.allianceID) || 0,
+    typeof body.applicationText === "string" ? body.applicationText : "",
+  ]);
+});
+
+// DeleteAllianceApplication(allianceID) — withdraws the SESSION corp's pending
+// alliance application (corp derived server-side).
+app.post("/api/bridge/corpreg/alliance/delete-application", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This withdraws your corporation's alliance application. Confirm to continue.")) {
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "corpRegistry", "DeleteAllianceApplication", [
+    Number((req.body || {}).allianceID) || 0,
+  ]);
+});
+
+// War (1) — ⚠ SPENDS ISK + DECLARES WAR. DeclareWarAgainst(againstID, warHQ) —
+// the DECLARER is the SESSION corp (server-side); againstID is the caller-supplied
+// target (declaring war is intentionally cross-entity). Bill debits the session corp.
+app.post("/api/bridge/corpreg/war/declare", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This declares war on another entity on behalf of your corporation, filing a CONCORD war bill (spends ISK). This must be confirmed explicitly.")) {
+    return;
+  }
+  const body = req.body || {};
+  await dispatchBridgeWrite(req, res, next, "corpRegistry", "DeclareWarAgainst", [
+    Number(body.againstID) || 0,
+    body.warHQ === undefined ? null : Number(body.warHQ) || null,
+  ]);
+});
+
 // --- R17 Contracts (contractProxy bridge) -----------------------------------
 //
 // Like mail and market, the whole contract surface is TOP-LEVEL
