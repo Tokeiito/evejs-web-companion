@@ -8790,6 +8790,224 @@ app.post("/api/bridge/scan/probe/set-activity", requireAuth, async (req, res, ne
   await dispatchBoundScanWrite(req, res, next, "SetActivityState", [probeIDs, active]);
 });
 
+// --- R105 Phase-4 BOUND fleet WRITES — WB-FLEET (16) ------------------------
+//
+// The 16 fleet composition / membership / broadcast writes off the R72
+// fleetObjectHandler.MachoBindObject bind (the same bind the R85 bound reads on
+// /api/bridge/bound-fleet ride). CLOSES WB-FLEET (21/21 with the R94/R95 top-level
+// fleet writes) → writes 298/301. PLUMBING ONLY — no UI.
+//
+// Each write dispatches as a BOUND method off fleetBindSpec() (dispatchBoundFleetWrite
+// below), mirroring dispatchBoundScanWrite / dispatchBoundInventoryWrite. The BFF holds
+// the OID handle; the browser never sees it.
+//
+// ⚠ OWNERSHIP: fleetObjectHandler.MachoBindObject ACCEPTS a caller fleetID (no membership
+// check — the R72 binds-arbitrary-OID gateway), but fleetBindSpec() passes args:[], so the
+// server binds the SESSION's OWN fleet (session.fleetid; documented ~fleetObjectHandler-
+// Service line 1644 as "never leaks"). These dedicated routes NEVER pass a caller fleetID —
+// the caller-fleetID leak lives only on the generic /api/bridge/call seam (#26-#30 bind-
+// gateway, flagged separately in docs/arg-injection-leak-handoff.md), not here. AND every
+// roster mutator is role-gated server-side by the session char's fleet job/role before it
+// touches the roster (KickMember/MoveMember/CreateSquad → ensureCommanderOrBoss;
+// DisbandFleet/MakeLeader/CreateWing/SetOptions → ensureFleetBoss; the rest →
+// ensureFleetMembership); UpdateMemberInfo acts on the SESSION char only (args[0] is a
+// shipTypeID, not a memberID). A non-boss cannot kick/disband/promote — no privilege-
+// escalation-within-fleet path, so no handoff-doc flag.
+//
+// Every route is confirm-gated (refuses without `confirm:true`). ⚠ DisbandFleet (destroys
+// the whole fleet) and KickMember (removes another char) carry EXTRA-EXPLICIT confirm
+// messages. FAST-MODE: none fired live (operator owns EveJS; no server restart) — the
+// handlers return true / null / an ack, carried through `result`. Args are EDUCATED-GUESS
+// from the fleetObjectHandlerService handler shapes.
+
+/** Dispatch one confirm-gated BOUND fleet write off the session-scoped fleet bind. */
+async function dispatchBoundFleetWrite(req, res, next, method, args, kwargs = null) {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  try {
+    const outcome = await boundCall(held, req.webSessionID, fleetBindSpec(), method, args, kwargs);
+    res.json({ ok: true, applied: true, result: outcome.result ?? null, notifications: outcome.notifications });
+  } catch (error) {
+    if (error && error.code === "SESSION_NOT_FOUND") {
+      forgetBridgeSession(req.webSessionID);
+    }
+    next(error);
+  }
+}
+
+// CreateWing() — add a wing to the session's own fleet (boss-only server-side). No args.
+app.post("/api/bridge/fleet/wing/create", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This creates a new wing in your fleet. Confirm to continue.")) {
+    return;
+  }
+  await dispatchBoundFleetWrite(req, res, next, "CreateWing", []);
+});
+
+// CreateSquad(wingID) — add a squad under a wing of the session's own fleet (boss/
+// commander-only server-side; an unknown wingID errors FleetNotFound).
+app.post("/api/bridge/fleet/squad/create", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This creates a new squad in that wing. Confirm to continue.")) {
+    return;
+  }
+  const wingID = Number((req.body || {}).wingID) || 0;
+  await dispatchBoundFleetWrite(req, res, next, "CreateSquad", [wingID]);
+});
+
+// MoveMember(characterID, wingID, squadID, role) — relocate a member within the
+// session's own fleet (boss/commander-only server-side).
+app.post("/api/bridge/fleet/member/move", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This moves that member to a new wing/squad. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const characterID = Number(body.characterID) || 0;
+  const wingID = Number(body.wingID) || 0;
+  const squadID = Number(body.squadID) || 0;
+  const role = body.role === undefined ? null : body.role;
+  await dispatchBoundFleetWrite(req, res, next, "MoveMember", [characterID, wingID, squadID, role]);
+});
+
+// ⚠ REMOVES A MEMBER. KickMember(characterID) — removes another char from the session's
+// own fleet (boss/commander-only server-side). Extra-explicit confirm.
+app.post("/api/bridge/fleet/member/kick", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This KICKS that character out of your fleet — they are removed immediately. This affects another player and must be confirmed explicitly.")) {
+    return;
+  }
+  const characterID = Number((req.body || {}).characterID) || 0;
+  await dispatchBoundFleetWrite(req, res, next, "KickMember", [characterID]);
+});
+
+// MakeLeader(characterID) — hand fleet-boss to another member of the session's own
+// fleet (current-boss-only server-side).
+app.post("/api/bridge/fleet/member/make-leader", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This hands fleet command to that member — you stop being boss. Confirm to continue.")) {
+    return;
+  }
+  const characterID = Number((req.body || {}).characterID) || 0;
+  await dispatchBoundFleetWrite(req, res, next, "MakeLeader", [characterID]);
+});
+
+// LeaveFleet() — the session char leaves its own fleet. No args. ⚠ Distinct PATH from
+// the R94 /api/bridge/fleet/leave (fleetMgr.ForceLeaveFleet, a top-level write) — this is
+// the BOUND fleetObjectHandler.LeaveFleet variant off the session fleet bind.
+app.post("/api/bridge/fleet/member/leave", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This removes you from your fleet. Confirm to continue.")) {
+    return;
+  }
+  await dispatchBoundFleetWrite(req, res, next, "LeaveFleet", []);
+});
+
+// ⚠ DESTROYS THE FLEET. DisbandFleet() — destroys the session's own fleet entirely
+// (boss-only server-side). A disbanded fleet is re-formable, but every member is
+// dropped. Extra-explicit confirm.
+app.post("/api/bridge/fleet/disband", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This DISBANDS the entire fleet — every member is removed and the fleet is destroyed. This is destructive and must be confirmed explicitly.")) {
+    return;
+  }
+  await dispatchBoundFleetWrite(req, res, next, "DisbandFleet", []);
+});
+
+// SetOptions(options) — set the session fleet's options (free-move, voice, registration,
+// …; boss-only server-side).
+app.post("/api/bridge/fleet/options", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This changes your fleet's options. Confirm to continue.")) {
+    return;
+  }
+  const options = (req.body || {}).options;
+  await dispatchBoundFleetWrite(req, res, next, "SetOptions", [options && typeof options === "object" ? options : {}]);
+});
+
+// SetMotdEx(motd) — set the session fleet's message of the day (any member server-side).
+app.post("/api/bridge/fleet/motd", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This updates your fleet's message of the day. Confirm to continue.")) {
+    return;
+  }
+  const motd = String((req.body || {}).motd ?? "");
+  await dispatchBoundFleetWrite(req, res, next, "SetMotdEx", [motd]);
+});
+
+// UpdateMemberInfo(shipTypeID) — refresh the SESSION char's own member row (ship/system/
+// station derived from the session). args[0] is a shipTypeID, NOT a memberID.
+app.post("/api/bridge/fleet/member/update-info", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This refreshes your own fleet member info. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const shipTypeID = body.shipTypeID === undefined ? null : Number(body.shipTypeID) || null;
+  await dispatchBoundFleetWrite(req, res, next, "UpdateMemberInfo", [shipTypeID]);
+});
+
+// SendBroadcast(name, scope, itemID, typeID) — send a fleet broadcast in the session's
+// own fleet (any member server-side).
+app.post("/api/bridge/fleet/broadcast", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This sends a broadcast to your fleet. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const name = String(body.name ?? "");
+  const scope = body.scope === undefined ? null : body.scope;
+  const itemID = body.itemID === undefined ? null : Number(body.itemID) || null;
+  const typeID = body.typeID === undefined ? null : Number(body.typeID) || null;
+  await dispatchBoundFleetWrite(req, res, next, "SendBroadcast", [name, scope, itemID, typeID]);
+});
+
+// Invite(inviteeCharID, wingID, squadID, role) — invite a character into the session's
+// own fleet (any member server-side; inviting others is normal).
+app.post("/api/bridge/fleet/invite", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This invites that character to your fleet. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const inviteeCharID = Number(body.inviteeCharID) || 0;
+  const wingID = Number(body.wingID) || 0;
+  const squadID = Number(body.squadID) || 0;
+  const role = body.role === undefined ? null : body.role;
+  await dispatchBoundFleetWrite(req, res, next, "Invite", [inviteeCharID, wingID, squadID, role]);
+});
+
+// MassInvite([characterIDs], wingID, squadID, role) — invite several characters into the
+// session's own fleet at once (any member server-side).
+app.post("/api/bridge/fleet/mass-invite", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This invites those characters to your fleet. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const characterIDs = bridgeIDList(body.characterIDs);
+  const wingID = Number(body.wingID) || 0;
+  const squadID = Number(body.squadID) || 0;
+  const role = body.role === undefined ? null : body.role;
+  await dispatchBoundFleetWrite(req, res, next, "MassInvite", [characterIDs, wingID, squadID, role]);
+});
+
+// AcceptInvite(shipTypeID) — accept a pending fleet invite for the session char.
+app.post("/api/bridge/fleet/invite/accept", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This accepts the fleet invitation. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const shipTypeID = body.shipTypeID === undefined ? null : Number(body.shipTypeID) || null;
+  await dispatchBoundFleetWrite(req, res, next, "AcceptInvite", [shipTypeID]);
+});
+
+// RejectInvite(alreadyInFleet) — decline a pending fleet invite for the session char.
+app.post("/api/bridge/fleet/invite/reject", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This declines the fleet invitation. Confirm to continue.")) {
+    return;
+  }
+  const alreadyInFleet = (req.body || {}).alreadyInFleet === true;
+  await dispatchBoundFleetWrite(req, res, next, "RejectInvite", [alreadyInFleet]);
+});
+
+// Reconnect() — re-sync the session char into its own fleet after a reconnect. No args.
+app.post("/api/bridge/fleet/reconnect", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This reconnects you to your fleet. Confirm to continue.")) {
+    return;
+  }
+  await dispatchBoundFleetWrite(req, res, next, "Reconnect", []);
+});
+
 // --- R17 Contracts (contractProxy bridge) -----------------------------------
 //
 // Like mail and market, the whole contract surface is TOP-LEVEL
