@@ -5,9 +5,10 @@
 // pushing store updates (ship keeps moving) but Svelte's scheduler is wedged, so
 // the DOM never flushes past the last good render.
 //
-// This renders App against the exact state at that moment — in space, a custom
-// bot running, a snapshot carrying the ship, a controlled drone, a locked rock,
-// and a hostile NPC — and asserts it does not throw.
+// This renders the workspace against the exact state at that moment — in space,
+// a custom bot running, a snapshot carrying the ship, a controlled drone, a
+// locked rock, and a hostile NPC — and asserts it does not throw. (R107 moved
+// the in-space paint out of App, now the multibox roster, into Workspace.)
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -76,10 +77,10 @@ function inSpaceBotStore(): ReturnType<typeof createClientStore> {
   return store;
 }
 
-test("App survives the first in-space paint with a running custom bot, drones, a lock, and a pirate", async () => {
+test("the workspace survives the first in-space paint with a running custom bot, drones, a lock, and a pirate", async () => {
   const store = inSpaceBotStore();
-  const App = (await import("./App.svelte")).default;
-  const body = render(App as never, { props: { store, flow: fakeFlow() } } as never).body;
+  const Workspace = (await import("./Workspace.svelte")).default;
+  const body = render(Workspace as never, { props: { store, flow: fakeFlow() } } as never).body;
   assert.equal(typeof body, "string");
   assert.match(body, /In Space/);
 });

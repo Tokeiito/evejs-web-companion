@@ -1683,9 +1683,15 @@
    * desktop owns the whole screen and window coordinates stay stable; the
    * login/character-select screens still render in the normal centered #app
    * flow (this frame only mounts once a character is online). */
+  /* R107 — the fixed character bar owns the very top strip; both workspaces
+   * (desktop + mobile) start just below it. `--char-bar-h` keeps the bar height
+   * and the offset in lockstep. */
+  :root {
+    --char-bar-h: 2.75rem;
+  }
   .workspace {
     position: fixed;
-    inset: 0;
+    inset: var(--char-bar-h) 0 0 0;
     display: grid;
     grid-template-columns: minmax(8.5rem, 12rem) minmax(0, 1fr);
     background:
@@ -1761,6 +1767,146 @@
   .ws-head-error { color: var(--color-danger); font-size: 0.85rem; }
   .ws-head .undock-btn,
   .ws-head .dock-btn { min-height: 36px; }
+
+  /* ===================================================== R107 character bar --
+   * Fixed strip across the top of the tab: every online pilot as a chip, the
+   * active one lit with the accent spine, plus Add character. One cockpit shows
+   * below at a time; a chip click just switches which pilot the workspace drives.
+   * Sits above the workspace (which is offset down by --char-bar-h). */
+  .char-bar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: var(--char-bar-h);
+    z-index: 40;
+    display: flex;
+    align-items: stretch;
+    gap: 0.5rem;
+    padding: 0 0.5rem;
+    background: var(--color-panel);
+    border-bottom: 1px solid var(--color-line-strong);
+  }
+  .char-bar-brand {
+    display: flex;
+    align-items: center;
+    padding-inline: 0.35rem;
+    font-weight: 700;
+    letter-spacing: 0.22em;
+    font-size: 0.72rem;
+    color: var(--color-accent);
+    flex: 0 0 auto;
+  }
+  .char-bar-list {
+    display: flex;
+    align-items: stretch;
+    gap: 0.35rem;
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+  .char-bar-add {
+    flex: 0 0 auto;
+    align-self: center;
+    min-height: 2rem;
+    padding-inline: 0.7rem;
+    font-size: 0.8rem;
+    white-space: nowrap;
+  }
+
+  /* One pilot's chip: a docked/in-space dot, the name, and where they are. */
+  .char-chip {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    align-self: center;
+    max-width: 15rem;
+    min-height: 2.1rem;
+    padding: 0.2rem 0.7rem;
+    background: var(--color-panel-3);
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-control);
+    color: var(--color-text);
+    text-align: left;
+    cursor: pointer;
+  }
+  .char-chip:hover { background: var(--color-panel-2); border-color: var(--color-line-strong); }
+  .char-chip.active {
+    background: var(--color-panel-2);
+    border-color: var(--color-accent);
+    color: var(--color-text-bright);
+    box-shadow: inset 2px 0 0 var(--color-accent);
+  }
+  /* A small SQUARE status pip — the design system is hard corners (R53), so the
+   * lone circle stays the fit-ring guide, not this. */
+  .char-chip-dot {
+    flex: 0 0 auto;
+    width: 0.45rem;
+    height: 0.45rem;
+    background: var(--color-muted);
+  }
+  .char-chip-dot.docked { background: var(--color-good); }
+  .char-chip-dot.in-space { background: var(--color-accent-bright); }
+  .char-chip-body { display: flex; flex-direction: column; line-height: 1.15; min-width: 0; }
+  .char-chip-name {
+    font-weight: 600;
+    font-size: 0.82rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .char-chip-where {
+    font-size: 0.68rem;
+    color: var(--color-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* ===================================================== R107 add-character --
+   * The "Add character" login/select flow rides an overlay above the live
+   * workspace, so the current pilots keep running behind the dim. */
+  .onboarding-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    padding: 3rem 1rem;
+    overflow-y: auto;
+    background: color-mix(in srgb, var(--color-bg) 82%, transparent);
+    backdrop-filter: blur(2px);
+  }
+  .onboarding-frame {
+    width: min(30rem, 100%);
+    background: var(--color-panel);
+    border: 1px solid var(--color-line-strong);
+    border-radius: var(--radius-frame);
+    box-shadow: 0 1.5rem 4rem rgb(0 0 0 / 55%);
+  }
+  .onboarding-frame-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 0.7rem 1rem;
+    border-bottom: 1px solid var(--color-line);
+  }
+  .onboarding-frame-title {
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    font-size: 0.8rem;
+    color: var(--color-accent);
+  }
+  /* Inside the frame the login/select panels drop their full-screen centering
+   * (these are the global component classes from LoginForm / CharacterSelect). */
+  .onboarding-frame .login-screen { min-height: 0; padding: 0; }
+  .onboarding-frame .panel { border: 0; }
+
+  .workspace-shell-empty { position: fixed; inset: var(--char-bar-h) 0 0 0; background: var(--color-bg); }
 
   /* The desktop surface — floating windows are absolutely placed within it. A
    * faint grid gives it "desktop" depth without competing with panel content. */
@@ -2045,7 +2191,7 @@
    * (the "Station"/"Ship" home chip stays pinned at the left). */
   .mobile-ws {
     position: fixed;
-    inset: 0;
+    inset: var(--char-bar-h) 0 0 0;
     display: flex;
     flex-direction: column;
     background:

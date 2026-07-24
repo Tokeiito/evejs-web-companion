@@ -1,179 +1,113 @@
 <script lang="ts">
-  // Page flow + the workspace, a pure reader of the client-state store: login ->
-  // character select -> the WORKSPACE. The workspace is an always-open desktop:
-  //   • the Neocom launcher rail down the left (opens panels as windows),
-  //   • a context header (where you are + Dock/Undock),
-  //   • the desktop itself — floating, self-contained panel windows you keep open
-  //     side by side, so opening Market never hides your Inventory,
-  //   • a fixed, collapsible top-right dock panel (Overview in space / Station
-  //     services when docked), and
-  //   • a persistent bottom HUD bar while in space (gauges, module rack, nav).
-  // The open windows + dock-collapse state are remembered per character. All
-  // fetch/decode lives in app/flow.ts; the store slices are store-contract signals.
-  import LoginForm from "./LoginForm.svelte";
-  import CharacterSelect from "./CharacterSelect.svelte";
-  import Neocom from "./Neocom.svelte";
-  import Desktop from "./Desktop.svelte";
-  import DockPanel from "./DockPanel.svelte";
-  import HudBar from "./HudBar.svelte";
-  import WorkspaceHeader from "./WorkspaceHeader.svelte";
-  import MobileWorkspace from "./MobileWorkspace.svelte";
-  import TargetsPanel from "./TargetsPanel.svelte";
-  import CustomBotReadout from "./CustomBotReadout.svelte";
-  import { deriveDocked, type TabID } from "./tabs.ts";
-  import {
-    openWindow,
-    focusWindow,
-    closeWindow,
-    moveWindow,
-    resizeWindow,
-    toggleCollapse,
-    focusedId as computeFocusedId,
-    loadLayout,
-    saveLayout,
-    DEFAULT_DOCK_WIDTH,
-    DEFAULT_TARGETS_POS,
-    type WinState,
-  } from "./desktop.ts";
-  import type { ClientStore } from "../store/clientStore.ts";
-  import type { AppFlow } from "../app/flow.ts";
+  // R107 multibox — the whole tab. Several pilots are online at once, each a
+  // fully isolated session (its own store + its own per-session-token flow, see
+  // app/sessions.ts). This component owns the roster:
+  //   • `sessions`  — the ONLINE pilots, one chip each in the character bar,
+  //   • `activeId`  — which pilot's cockpit (Workspace) is showing right now,
+  //   • `onboarding`— the pilot currently logging in / selecting a character,
+  //                   shown full-screen at boot or over the workspace for "Add".
+  // Exactly one Workspace is mounted (the active pilot); every other pilot's
+  // store+flow stay live in memory and keep refreshing themselves on the BFF, so
+  // switching is instant and safe. Login/select and all fetch/decode live
+  // elsewhere; this file is pure orchestration.
+  import CharacterBar from "./CharacterBar.svelte";
+  import Onboarding from "./Onboarding.svelte";
+  import Workspace from "./Workspace.svelte";
+  import { createSession, type Session } from "../app/sessions.ts";
 
-  let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
+  // The online roster, the active pilot, and the one being added. The first
+  // pilot starts onboarding immediately (createSession warms its health ping).
+  let sessions = $state<Session[]>([]);
+  let activeId = $state<string | null>(null);
+  let onboarding = $state<Session | null>(createSession());
 
-  // The store's identity is stable for the app's lifetime; capturing the slice
-  // signals once is intended (they are store-contract objects).
-  // svelte-ignore state_referenced_locally
-  const session = store.session;
-  // svelte-ignore state_referenced_locally
-  const station = store.station;
-  // svelte-ignore state_referenced_locally
-  const flight = store.flight;
+  const active = $derived(sessions.find((s) => s.id === activeId) ?? null);
 
-  // Docked vs in space, from the authoritative flag (rule lives in tabs.ts).
-  const isDocked = $derived(deriveDocked($flight.status, $station.online));
+  // A pilot finished login+select: promote it from onboarding into the online
+  // roster and make it the active cockpit (matches "Add character makes it
+  // active", and is the natural landing for the first pilot too).
+  function completeOnboarding(): void {
+    const s = onboarding;
+    if (!s) return;
+    sessions = [...sessions, s];
+    activeId = s.id;
+    onboarding = null;
+  }
 
-  // Narrow viewport -> the simplified single-panel mobile UI instead of the
-  // floating-window desktop (a desktop of draggable windows is unusable on a
-  // phone). matchMedia so it flips live when the window crosses the breakpoint.
-  let isMobile = $state(false);
+  // Log another pilot in WITHOUT disturbing the current ones: a fresh isolated
+  // session in an overlay. One add at a time.
+  function addCharacter(): void {
+    if (onboarding) return;
+    onboarding = createSession();
+  }
+
+  // Abandon an in-progress add: tear the pending session down (best-effort, so a
+  // partial BFF login does not linger past its TTL) and drop the overlay.
+  function cancelOnboarding(): void {
+    const s = onboarding;
+    onboarding = null;
+    if (s) void s.flow.logout().catch(() => {});
+  }
+
+  function switchTo(id: string): void {
+    activeId = id;
+  }
+
+  // Remove a pilot the instant its store reports offline — release, logout, or a
+  // lost session from inside its own workspace. Re-fix the active cockpit, and if
+  // the tab is now empty, drop back to a fresh full-screen login.
+  function removeSession(id: string): void {
+    const remaining = sessions.filter((s) => s.id !== id);
+    if (remaining.length === sessions.length) return;
+    sessions = remaining;
+    if (activeId === id) {
+      activeId = remaining.length > 0 ? remaining[remaining.length - 1].id : null;
+    }
+    if (remaining.length === 0 && onboarding === null) {
+      onboarding = createSession();
+    }
+  }
+
+  // Watch every online pilot's station slice; when one goes offline, prune it.
+  // Re-subscribes when the roster changes. The signal fires synchronously with
+  // the current value on subscribe, which for an online pilot is a no-op, so
+  // this never prunes a pilot that is still live.
   $effect(() => {
-    const mq = window.matchMedia("(max-width: 720px)");
-    const update = (): void => { isMobile = mq.matches; };
-    update();
-    // Both signals: matchMedia fires on the breakpoint crossing, resize covers
-    // environments (and rotations) where the media-change event is unreliable.
-    mq.addEventListener("change", update);
-    window.addEventListener("resize", update);
+    const unsubs = sessions.map((s) =>
+      s.store.station.subscribe((slice) => {
+        if (slice.online === null) removeSession(s.id);
+      }),
+    );
     return () => {
-      mq.removeEventListener("change", update);
-      window.removeEventListener("resize", update);
+      for (const unsub of unsubs) unsub();
     };
-  });
-
-  // ── the desktop: open windows + the collapsible dock panel ──────────────
-  let wins = $state<WinState[]>([]);
-  let dockCollapsed = $state(false);
-  let dockWidth = $state(DEFAULT_DOCK_WIDTH);
-  let targetsX = $state(DEFAULT_TARGETS_POS.x);
-  let targetsY = $state(DEFAULT_TARGETS_POS.y);
-  const openIds = $derived(new Set(wins.map((w) => w.id)));
-  const focused = $derived(computeFocusedId(wins));
-
-  const open = (id: TabID): void => { wins = openWindow(wins, id); };
-  const focus = (id: TabID): void => { wins = focusWindow(wins, id); };
-  const close = (id: TabID): void => { wins = closeWindow(wins, id); };
-  const move = (id: TabID, x: number, y: number): void => { wins = moveWindow(wins, id, x, y); };
-  const resize = (id: TabID, w: number, h: number): void => { wins = resizeWindow(wins, id, w, h); };
-  const collapse = (id: TabID): void => { wins = toggleCollapse(wins, id); };
-  const toggleDock = (): void => { dockCollapsed = !dockCollapsed; };
-
-  // Restore the saved layout when a character comes online (keyed by characterID)
-  // and clear it on logout, so a different pilot in the same tab gets their own
-  // desktop. Guarded on the loaded id so it runs once per character.
-  let loadedFor = $state<number | null>(null);
-  $effect(() => {
-    const online = $station.online;
-    if (online && loadedFor !== online.characterID) {
-      const saved = loadLayout(online.characterID);
-      wins = saved ? saved.wins.slice() : [];
-      dockCollapsed = saved ? saved.dockCollapsed : false;
-      dockWidth = saved ? saved.dockWidth : DEFAULT_DOCK_WIDTH;
-      targetsX = saved ? saved.targetsX : DEFAULT_TARGETS_POS.x;
-      targetsY = saved ? saved.targetsY : DEFAULT_TARGETS_POS.y;
-      loadedFor = online.characterID;
-    } else if (!online && loadedFor !== null) {
-      wins = [];
-      dockCollapsed = false;
-      dockWidth = DEFAULT_DOCK_WIDTH;
-      targetsX = DEFAULT_TARGETS_POS.x;
-      targetsY = DEFAULT_TARGETS_POS.y;
-      loadedFor = null;
-    }
-  });
-
-  // Persist on any layout change, debounced so a drag doesn't hammer storage.
-  $effect(() => {
-    const id = loadedFor;
-    const layout = { wins: wins.map((w) => ({ ...w })), dockCollapsed, dockWidth, targetsX, targetsY };
-    if (id === null) return;
-    const handle = setTimeout(() => saveLayout(id, layout), 300);
-    return () => clearTimeout(handle);
-  });
-
-  // Read flight status once online so the docked/in-space flag is authoritative
-  // (character select does not read it). Subsequent flight steps keep it fresh.
-  $effect(() => {
-    if ($session.phase === "logged-in" && $station.online !== null && $flight.status === null) {
-      void flow.loadFlightStatus().catch(() => {});
-    }
   });
 </script>
 
-{#if $session.phase !== "logged-in"}
-  <h1>EveJS Web</h1>
-  <LoginForm {store} {flow} />
-{:else if $station.online === null}
-  <h1>EveJS Web</h1>
-  <CharacterSelect {store} {flow} />
-{:else if isMobile}
-  <MobileWorkspace {store} {flow} {isDocked} />
-{:else}
-  <div class="workspace" class:in-space={!isDocked}>
-    <Neocom {store} {isDocked} {openIds} focusedId={focused} onSelect={open} />
-    <div class="work">
-      <WorkspaceHeader {store} {flow} {isDocked} />
-      <!-- A running bot's readout, always visible while it runs, nothing when idle. -->
-      <CustomBotReadout {store} {flow} />
-      <div class="work-main">
-        <Desktop
-          {store}
-          {flow}
-          {wins}
-          {focused}
-          {isDocked}
-          onFocus={focus}
-          onClose={close}
-          onToggleCollapse={collapse}
-          onMove={move}
-          onResize={resize}
-          onOpen={open}
-        />
-        <DockPanel
-          {store}
-          {flow}
-          {isDocked}
-          collapsed={dockCollapsed}
-          width={dockWidth}
-          onToggle={toggleDock}
-          onResize={(w) => (dockWidth = w)}
-        />
-        {#if !isDocked}
-          <TargetsPanel {store} x={targetsX} y={targetsY} onMove={(nx, ny) => { targetsX = nx; targetsY = ny; }} />
-        {/if}
+{#if active}
+  <CharacterBar {sessions} {activeId} onSwitch={switchTo} onAdd={addCharacter} />
+  <!-- Remount on switch: each Workspace binds one stable store/flow for its
+       whole life, and the in-memory store makes the remount instant. -->
+  {#key active.id}
+    <Workspace store={active.store} flow={active.flow} />
+  {/key}
+{/if}
+
+{#if onboarding}
+  {#if active}
+    <!-- Add character: an overlay over the live workspace, which keeps running. -->
+    <div class="onboarding-overlay">
+      <div class="onboarding-frame">
+        <div class="onboarding-frame-head">
+          <span class="onboarding-frame-title">Add character</span>
+          <button type="button" class="minor" onclick={cancelOnboarding}>Cancel</button>
+        </div>
+        <Onboarding store={onboarding.store} flow={onboarding.flow} onOnline={completeOnboarding} />
       </div>
-      {#if !isDocked}
-        <HudBar {store} {flow} onOpen={open} />
-      {/if}
     </div>
-  </div>
+  {:else}
+    <!-- First pilot: full-screen login, nothing behind it. -->
+    <h1>EveJS Web</h1>
+    <Onboarding store={onboarding.store} flow={onboarding.flow} onOnline={completeOnboarding} />
+  {/if}
 {/if}

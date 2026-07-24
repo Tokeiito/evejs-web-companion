@@ -7,11 +7,14 @@
 // in its cookie-session store and attaches it to bridge calls itself.
 
 import { BridgeCallError } from "../bridge/callMethod.ts";
+import { decodeBoundDogma, type BoundDogma } from "../bridge/boundDogma.ts";
 import {
   clearSessionToken,
   sessionAuthHeaders,
   setSessionToken,
+  tokenAuthHeaders,
   withSessionTokenQuery,
+  withTokenQuery,
 } from "./sessionToken.ts";
 import type { JsonValue } from "../bridge/wire.ts";
 import type {
@@ -27,6 +30,12 @@ import type { NameRef } from "../store/names.ts";
 export interface LoginResult {
   readonly accountID: number;
   readonly username: string;
+  /**
+   * R107 — the signed session token the BFF handed back, so a per-session flow
+   * can capture it onto its own call options instead of the per-tab global.
+   * Null when the BFF returned no token (it always does on success today).
+   */
+  readonly sessionToken: string | null;
 }
 
 export interface SelectResult {
@@ -40,14 +49,28 @@ export interface ApiOptions {
   readonly baseUrl?: string;
   /** Injectable fetch for tests; default globalThis.fetch. */
   readonly fetch?: typeof fetch;
+  /**
+   * R107 multibox — this call's OWN session token, threaded per flow so several
+   * live characters can share one browser tab. When the `token` KEY is present
+   * (even as null), this call is per-session: it authenticates with exactly this
+   * token (Bearer when a non-empty string, no auth header when null) and NEVER
+   * falls back to the per-tab global. When the key is ABSENT, the call keeps the
+   * pre-R107 behavior and rides the global `sessionAuthHeaders()` / cookie. The
+   * presence of the key — not its value — is what selects the mode.
+   */
+  readonly token?: string | null;
 }
 
-// R42 — THE one place every BFF request in this file picks up its session
-// token. The tab's own token (sessionStorage, per-tab) goes on as
-// `Authorization: Bearer`; the cookie still rides along under
-// `credentials: "same-origin"` so a tab that has not stored a token yet keeps
-// working. Attaching it here rather than at each call site is the point: there
-// are well over a hundred callers below and none of them should know about it.
+// R42/R107 — THE one place every BFF request in this file picks up its session
+// token. Two modes, chosen by whether `options.token` is present:
+//   • per-session (R107 multibox, key present): this flow's OWN token goes on as
+//     `Authorization: Bearer`, and it NEVER falls back to the global — so a
+//     backgrounded pilot's self-refresh can never ride the active pilot's token.
+//   • single-session (pre-R107, key absent): the per-tab global token
+//     (sessionStorage) rides as before, with the cookie under
+//     `credentials: "same-origin"` as the migration fallback.
+// Attaching it here rather than at each call site is the point: there are well
+// over a hundred callers below and none of them should know about it.
 async function requestJson(
   path: string,
   init: RequestInit,
@@ -60,7 +83,7 @@ async function requestJson(
       credentials: "same-origin",
       ...init,
       headers: {
-        ...sessionAuthHeaders(),
+        ...("token" in options ? tokenAuthHeaders(options.token) : sessionAuthHeaders()),
         ...((init.headers as Record<string, string> | undefined) ?? {}),
       },
     });
@@ -133,17 +156,25 @@ export async function login(
   options: ApiOptions = {},
 ): Promise<LoginResult> {
   const data = await postJson("/api/login", { username, password }, options);
-  // R42: take the token the BFF handed back into this TAB's storage before
-  // anything else runs, so every request after this one — and the SSE stream —
-  // carries this tab's identity rather than whichever account last wrote the
-  // shared cookie.
-  if (typeof data.sessionToken === "string" && data.sessionToken.length > 0) {
-    setSessionToken(data.sessionToken);
+  const sessionToken =
+    typeof data.sessionToken === "string" && data.sessionToken.length > 0
+      ? data.sessionToken
+      : null;
+  // R42/R107: where the token lands depends on the mode.
+  //   • single-session (no `token` key): take it into this TAB's global storage
+  //     so every later request — and the SSE stream — carries this identity
+  //     rather than whichever account last wrote the shared cookie.
+  //   • per-session (key present): do NOT touch the global, or a second login in
+  //     the same tab would collapse every flow onto the last account. The caller
+  //     captures the returned token onto its own call options instead.
+  if (sessionToken !== null && !("token" in options)) {
+    setSessionToken(sessionToken);
   }
   const account = (data.account ?? {}) as { accountID?: JsonValue; username?: JsonValue };
   return {
     accountID: asNumberOrNull(account.accountID) ?? 0,
     username: typeof account.username === "string" ? account.username : username,
+    sessionToken,
   };
 }
 
@@ -151,11 +182,16 @@ export async function logout(options: ApiOptions = {}): Promise<void> {
   try {
     await postJson("/api/logout", {}, options);
   } finally {
-    // R42 — logout clears BOTH carriers: the BFF expires the cookie, this drops
-    // the tab's stored token. In a `finally` because a logout that failed on
-    // the wire must still leave this tab signed out locally, or the next
-    // request would go out wearing a session the player thinks they left.
-    clearSessionToken();
+    // R42/R107 — logout clears the carriers the BFF expires the cookie itself.
+    // In single-session mode this also drops the tab's stored global token; in
+    // per-session mode the global was never written (the flow owns its token and
+    // clears its own call options), so leave it untouched. In a `finally`
+    // because a logout that failed on the wire must still sign this session out
+    // locally, or the next request would wear a session the player thinks they
+    // left.
+    if (!("token" in options)) {
+      clearSessionToken();
+    }
   }
 }
 
@@ -591,6 +627,19 @@ export async function destroyRig(
     options,
   );
   return { applied: data.applied === true };
+}
+
+/**
+ * R21 slice B — the bound-dogma snapshot: the active ship and every fitted
+ * module, each with the SERVER's post-dogma attribute map (skills + hull +
+ * in-space effects already applied). Read alongside the fitting panel so a
+ * clicked module can show its EFFECTIVE stats; decoded by bridge/boundDogma.ts,
+ * which folds each of the 11 independent reads' {result}/{error} envelopes into
+ * typed cells. The Fitting window consumes only `allInfo`.
+ */
+export async function boundDogma(options: ApiOptions = {}): Promise<BoundDogma> {
+  const data = await getJson("/api/bridge/bound-dogma", options);
+  return decodeBoundDogma(data);
 }
 
 // --- R15 Industry ----------------------------------------------------------
@@ -1602,13 +1651,17 @@ export function subscribeBridgeEvents(
   handlers: BridgeEventHandlers,
   options: BridgeEventOptions = {},
 ): BridgeEventSubscription {
-  // R42 — `EventSource` cannot set request headers, so this is the one URL in
-  // the client that carries the session token in its query string. Without it
-  // the stream would fall back to the shared cookie and tab two would watch
-  // tab one's account go about its business: a per-tab session with a
-  // shared push channel is half a feature. See `requireStreamAuth` in
-  // src/server.js for why the query carrier is bounded to this route alone.
-  const url = withSessionTokenQuery(`${options.baseUrl ?? ""}/api/bridge/events`);
+  // R42/R107 — `EventSource` cannot set request headers, so this is the one URL
+  // in the client that carries the session token in its query string. Without it
+  // the stream would fall back to the shared cookie and a second character would
+  // watch the first's account go about its business: a per-session subscription
+  // with a shared push channel is half a feature. Per-session (key present)
+  // carries this flow's OWN token; otherwise the per-tab global. See
+  // `requireStreamAuth` in src/server.js for why the query carrier is bounded to
+  // this route alone.
+  const eventsPath = `${options.baseUrl ?? ""}/api/bridge/events`;
+  const url =
+    "token" in options ? withTokenQuery(eventsPath, options.token) : withSessionTokenQuery(eventsPath);
   const factory =
     options.eventSource ??
     (typeof globalThis.EventSource === "function"

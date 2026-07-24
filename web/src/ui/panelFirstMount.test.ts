@@ -38,9 +38,12 @@ const { createAppFlow } = await import("../app/flow.ts");
 
 const UI_DIR = path.dirname(fileURLToPath(import.meta.url));
 
-/** Every panel App can swap in, plus the pre-login pages and App itself. */
+/** Every panel App can swap in, plus the pre-login pages, App, and the
+ * per-pilot Workspace (R107 — App is now the multibox roster; the docked/
+ * in-space workspace it used to be lives in Workspace.svelte). */
 const PANELS = [
   "App",
+  "Workspace",
   "LoginForm",
   "CharacterSelect",
   "StationPanel",
@@ -240,14 +243,16 @@ test("no component invokes a $derived binding as a function", () => {
   assert.deepEqual(offences, []);
 });
 
-// --- 4. App's first paint renders the SHELL that matches WHERE the character is
+// --- 4. The workspace's first paint renders the SHELL that matches WHERE the
+// character is.
 //
 // The whole UI follows the docked/in-space flag: docked paints the station
 // interior (StationShell), in space paints the flight HUD (SpaceShell) — not a
 // filtered tab bar. (This subsumes the old R50 login-default bug, where a
 // character in space wrongly landed on the Station tab: now an in-space
-// character must not get the station shell at all.) This renders App against an
-// online store whose flight flag says docked / in space and checks which shell
+// character must not get the station shell at all.) R107 moved this out of App
+// (now the multibox roster) into Workspace, so render Workspace against an
+// online store whose flight flag says docked / in space and check which shell
 // landed; the shells' own contents are covered in depth by shellRender.test.ts.
 
 function onlineStore(over: Partial<Record<string, unknown>>): unknown {
@@ -282,10 +287,10 @@ function onlineStore(over: Partial<Record<string, unknown>>): unknown {
   return store;
 }
 
-test("App's first paint on a DOCKED character renders the station shell, not the space HUD", async () => {
+test("the workspace's first paint on a DOCKED character renders the station shell, not the space HUD", async () => {
   const store = onlineStore({ docked: true, inSpace: false, stationID: 60003760 });
-  const App = await loadPanel("App");
-  const body = render(App as never, { props: { store, flow: fakeFlow() } } as never).body;
+  const Workspace = await loadPanel("Workspace");
+  const body = render(Workspace as never, { props: { store, flow: fakeFlow() } } as never).body;
 
   // The docked workspace: the docked badge, the docked-only Undock action, the
   // online pilot. (Post-windowing, the docked chrome is the header + station dock
@@ -297,10 +302,10 @@ test("App's first paint on a DOCKED character renders the station shell, not the
   assert.doesNotMatch(body, /In Space/, "the space HUD leaked into the docked workspace");
 });
 
-test("App's first paint on an IN-SPACE character renders the space HUD, not the station shell", async () => {
+test("the workspace's first paint on an IN-SPACE character renders the space HUD, not the station shell", async () => {
   const store = onlineStore({ docked: false, inSpace: true, stationID: null });
-  const App = await loadPanel("App");
-  const body = render(App as never, { props: { store, flow: fakeFlow() } } as never).body;
+  const Workspace = await loadPanel("Workspace");
+  const body = render(Workspace as never, { props: { store, flow: fakeFlow() } } as never).body;
 
   // The flight HUD: the in-space badge and the ship gauges.
   assert.match(body, /In Space/, "no in-space state badge");
