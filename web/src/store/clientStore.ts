@@ -33,6 +33,7 @@ import type {
   FittingResources,
   FittingSlot,
   FittingState,
+  DogmaState,
   IndustryBlueprintRow,
   IndustryDefinition,
   IndustryFacilityRow,
@@ -138,6 +139,7 @@ export interface ClientState {
   readonly station: StationSlice;
   readonly inventory: InventoryState;
   readonly fitting: FittingState;
+  readonly dogma: DogmaState;
   readonly industry: IndustryState;
   readonly market: MarketState;
   readonly mail: MailState;
@@ -240,6 +242,14 @@ const INITIAL_FITTING: FittingState = Object.freeze({
   slotsError: null,
   resourcesError: null,
   actionError: null,
+});
+
+// R21 slice B — the bound-dogma snapshot. Empty until the Fitting window loads
+// it; a failed read keeps its own error so the fit still shows.
+const INITIAL_DOGMA: DogmaState = Object.freeze({
+  allInfo: null,
+  loaded: false,
+  error: null,
 });
 
 const INITIAL_INDUSTRY: IndustryState = Object.freeze({
@@ -659,6 +669,7 @@ export interface ClientStore {
   readonly station: ReadableSignal<StationSlice>;
   readonly inventory: ReadableSignal<InventoryState>;
   readonly fitting: ReadableSignal<FittingState>;
+  readonly dogma: ReadableSignal<DogmaState>;
   readonly industry: ReadableSignal<IndustryState>;
   readonly market: ReadableSignal<MarketState>;
   readonly mail: ReadableSignal<MailState>;
@@ -714,6 +725,7 @@ export function createClientStore(): ClientStore {
   const station = createSignal<StationSlice>(INITIAL_STATION);
   const inventory = createSignal<InventoryState>(INITIAL_INVENTORY);
   const fitting = createSignal<FittingState>(INITIAL_FITTING);
+  const dogma = createSignal<DogmaState>(INITIAL_DOGMA);
   const industry = createSignal<IndustryState>(INITIAL_INDUSTRY);
   const market = createSignal<MarketState>(INITIAL_MARKET);
   const mail = createSignal<MailState>(INITIAL_MAIL);
@@ -756,6 +768,7 @@ export function createClientStore(): ClientStore {
     station: station.get(),
     inventory: inventory.get(),
     fitting: fitting.get(),
+    dogma: dogma.get(),
     industry: industry.get(),
     market: market.get(),
     mail: mail.get(),
@@ -805,6 +818,7 @@ export function createClientStore(): ClientStore {
         station.set(INITIAL_STATION);
         inventory.set(INITIAL_INVENTORY);
         fitting.set(INITIAL_FITTING);
+        dogma.set(INITIAL_DOGMA);
         industry.set(INITIAL_INDUSTRY);
         market.set(INITIAL_MARKET);
         mail.set(INITIAL_MAIL);
@@ -863,6 +877,7 @@ export function createClientStore(): ClientStore {
         });
         inventory.set(INITIAL_INVENTORY);
         fitting.set(INITIAL_FITTING);
+        dogma.set(INITIAL_DOGMA);
         industry.set(INITIAL_INDUSTRY);
         market.set(INITIAL_MARKET);
         mail.set(INITIAL_MAIL);
@@ -893,6 +908,7 @@ export function createClientStore(): ClientStore {
         station.set(INITIAL_STATION);
         inventory.set(INITIAL_INVENTORY);
         fitting.set(INITIAL_FITTING);
+        dogma.set(INITIAL_DOGMA);
         industry.set(INITIAL_INDUSTRY);
         market.set(INITIAL_MARKET);
         mail.set(INITIAL_MAIL);
@@ -1070,6 +1086,20 @@ export function createClientStore(): ClientStore {
         break;
       case "fitting/cleared":
         fitting.set(INITIAL_FITTING);
+        dogma.set(INITIAL_DOGMA);
+        break;
+      // R21 slice B — the bound-dogma snapshot, refreshed alongside the fit. A
+      // failed read carries its error and keeps whatever snapshot we last had,
+      // so a hiccup mid-session never blanks the module stats already on screen.
+      case "dogma/loaded":
+        dogma.set({
+          allInfo: event.allInfo ?? dogma.get().allInfo,
+          loaded: true,
+          error: event.error,
+        });
+        break;
+      case "dogma/cleared":
+        dogma.set(INITIAL_DOGMA);
         break;
       case "industry/loaded":
         industry.set({
@@ -2079,6 +2109,7 @@ export function createClientStore(): ClientStore {
     station: readonlySignal(station),
     inventory: readonlySignal(inventory),
     fitting: readonlySignal(fitting),
+    dogma: readonlySignal(dogma),
     industry: readonlySignal(industry),
     market: readonlySignal(market),
     mail: readonlySignal(mail),

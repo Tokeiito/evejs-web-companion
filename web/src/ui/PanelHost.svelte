@@ -51,7 +51,7 @@
 {:else if tab === "inventory"}
   <InventoryShip {store} {flow} />
 {:else if tab === "fitting"}
-  <Fitting {store} {flow} />
+  <Fitting {store} {flow} showInventory={() => onOpen?.("inventory")} />
 {:else if tab === "industry"}
   <Industry {store} {flow} />
 {:else if tab === "market"}
