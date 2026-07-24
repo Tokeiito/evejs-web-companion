@@ -1908,6 +1908,53 @@
 
   .workspace-shell-empty { position: fixed; inset: var(--char-bar-h) 0 0 0; background: var(--color-bg); }
 
+  /* R107 — the "Your pilots" quick-pick above the login form: remembered pilots
+   * as one-click rows (name over a muted detail line) plus a forget ×. Echoes
+   * the character-select list; square corners like the rest of the UI. */
+  .known-chars { margin-bottom: 0.9rem; }
+  .known-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+  }
+  .known-row { display: flex; align-items: stretch; gap: 0.4rem; }
+  .known {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+    align-items: flex-start;
+    text-align: left;
+    padding: 0.5rem 0.7rem;
+    min-height: 2.75rem;
+    background: var(--color-panel-3);
+    border: 1px solid var(--color-line);
+    color: var(--color-text);
+    cursor: pointer;
+  }
+  .known:hover:not(:disabled) { background: var(--color-panel-2); border-color: var(--color-line-strong); }
+  .known:disabled { opacity: 0.55; cursor: default; }
+  .known .name { font-weight: 600; color: var(--color-text-bright); }
+  .known .detail { font-size: 0.78rem; color: var(--color-muted); }
+  .known .known-state { color: var(--color-accent); }
+  .known-forget {
+    flex: 0 0 auto;
+    width: 2.2rem;
+    align-self: stretch;
+    background: var(--color-panel-3);
+    border: 1px solid var(--color-line);
+    color: var(--color-muted);
+    font-size: 1.1rem;
+    line-height: 1;
+    cursor: pointer;
+  }
+  .known-forget:hover:not(:disabled) { color: var(--color-danger); border-color: var(--color-line-strong); }
+  .known-forget:disabled { opacity: 0.4; cursor: default; }
+
   /* The desktop surface — floating windows are absolutely placed within it. A
    * faint grid gives it "desktop" depth without competing with panel content. */
   .desktop {

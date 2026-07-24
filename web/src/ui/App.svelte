@@ -53,6 +53,19 @@
     activeId = id;
   }
 
+  // The characters already live in this tab, so the "Add character" picker can
+  // disable a quick-add that would just be refused as "already in use". Kept in
+  // sync by the same station subscriptions that drive pruning, below.
+  let onlineIDs = $state<Set<number>>(new Set());
+  function recomputeOnline(): void {
+    const ids = new Set<number>();
+    for (const s of sessions) {
+      const on = s.store.station.get().online;
+      if (on) ids.add(on.characterID);
+    }
+    onlineIDs = ids;
+  }
+
   // Remove a pilot the instant its store reports offline — release, logout, or a
   // lost session from inside its own workspace. Re-fix the active cockpit, and if
   // the tab is now empty, drop back to a fresh full-screen login.
@@ -76,8 +89,10 @@
     const unsubs = sessions.map((s) =>
       s.store.station.subscribe((slice) => {
         if (slice.online === null) removeSession(s.id);
+        recomputeOnline();
       }),
     );
+    recomputeOnline();
     return () => {
       for (const unsub of unsubs) unsub();
     };
@@ -102,12 +117,12 @@
           <span class="onboarding-frame-title">Add character</span>
           <button type="button" class="minor" onclick={cancelOnboarding}>Cancel</button>
         </div>
-        <Onboarding store={onboarding.store} flow={onboarding.flow} onOnline={completeOnboarding} />
+        <Onboarding store={onboarding.store} flow={onboarding.flow} {onlineIDs} onOnline={completeOnboarding} />
       </div>
     </div>
   {:else}
     <!-- First pilot: full-screen login, nothing behind it. -->
     <h1>EveJS Web</h1>
-    <Onboarding store={onboarding.store} flow={onboarding.flow} onOnline={completeOnboarding} />
+    <Onboarding store={onboarding.store} flow={onboarding.flow} {onlineIDs} onOnline={completeOnboarding} />
   {/if}
 {/if}
