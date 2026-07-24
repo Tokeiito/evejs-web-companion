@@ -242,6 +242,8 @@ export interface MarketOrderRequest {
 }
 
 export interface AppFlow {
+  /** Boot health ping — sets the health slice online/offline (gates the login). */
+  checkHealth(): Promise<void>;
   /** Who-cares login, then the typed reference call to fill the character list. */
   login(username: string, password: string): Promise<void>;
   /** Select a character onto the persistent session, then run the docked reads. */
@@ -5260,6 +5262,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   }
 
   return {
+    async checkHealth() {
+      // One shot, called at boot (main.ts) — never a poll. Any failure resolves
+      // to offline inside api.getHealth, so this never throws.
+      const { ready } = await api.getHealth(callOptions);
+      store.apply({ type: "health/status", status: ready ? "online" : "offline" });
+    },
+
     async login(username, password) {
       const result = await api.login(username, password, callOptions);
       store.apply({

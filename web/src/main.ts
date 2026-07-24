@@ -26,3 +26,7 @@ const target = document.getElementById("app");
 if (target) {
   mount(App, { target, props: { store, flow } });
 }
+
+// One health ping per page load (never a poll): the login screen stays gated
+// until it answers, and refuses login if the server is offline.
+void flow.checkHealth();

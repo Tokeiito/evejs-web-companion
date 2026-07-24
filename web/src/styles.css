@@ -1737,6 +1737,30 @@
     background: var(--color-panel);
   }
 
+  /* The centred login screen + its server-status banner. */
+  .login-screen {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 70vh;
+  }
+  .login-screen .panel {
+    width: 100%;
+    max-width: 22rem;
+  }
+  .login-status {
+    margin: 0 0 0.75rem;
+    padding: 0.5rem 0.7rem;
+    border: 1px solid var(--color-line);
+    font-size: 0.9rem;
+  }
+  .login-status.offline {
+    color: var(--color-danger);
+    border-color: var(--color-danger);
+  }
+  .login-status.checking { color: var(--color-muted); }
+
   .state-badge {
     font-size: 11px;
     text-transform: uppercase;

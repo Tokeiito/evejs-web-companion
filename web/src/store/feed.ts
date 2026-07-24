@@ -94,7 +94,12 @@ export type FeedStatus = "idle" | "connecting" | "connected" | "disconnected";
  * the R2-R6 rail (inventory, journal, space, ... slices arrive with their
  * pages).
  */
+/** Server reachability as the login screen sees it: unknown until the boot
+ * health ping answers, then online (BFF up + gateway runtime ready) or offline. */
+export type HealthStatus = "unknown" | "online" | "offline";
+
 export type FeedEvent =
+  | { readonly type: "health/status"; readonly status: HealthStatus }
   | { readonly type: "session/logged-in"; readonly accountID: number; readonly username: string }
   | { readonly type: "session/logged-out" }
   | { readonly type: "character/list"; readonly characters: readonly CharacterSummary[] }

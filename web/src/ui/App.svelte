@@ -66,7 +66,7 @@
 
 <h1>EveJS Web</h1>
 {#if $session.phase !== "logged-in"}
-  <LoginForm {flow} />
+  <LoginForm {store} {flow} />
 {:else if $station.online === null}
   <CharacterSelect {store} {flow} />
 {:else}

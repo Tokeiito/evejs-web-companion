@@ -18,7 +18,7 @@ import {
   type ReadableSignal,
   type Unsubscribe,
 } from "./signals.ts";
-import type { FeedAdapter, FeedEvent, FeedSink, FeedStatus } from "./feed.ts";
+import type { FeedAdapter, FeedEvent, FeedSink, FeedStatus, HealthStatus } from "./feed.ts";
 // R43 — the bot registry owns the BotID union and what "holding the ship"
 // means, so the store and flow.ts can never disagree about either.
 import { BOT_IDS, holdsTheShip, type BotID } from "../nav/botRegistry.ts";
@@ -127,6 +127,11 @@ export interface FeedSlice {
   readonly status: FeedStatus;
 }
 
+/** Server reachability from the boot health ping — gates the login screen. */
+export interface HealthSlice {
+  readonly status: HealthStatus;
+}
+
 export interface ClientState {
   readonly session: SessionSlice;
   readonly character: CharacterSlice;
@@ -160,6 +165,7 @@ export interface ClientState {
   readonly live: LiveState;
   readonly names: NamesState;
   readonly feed: FeedSlice;
+  readonly health: HealthSlice;
 }
 
 const INITIAL_SESSION: SessionSlice = Object.freeze({
@@ -640,6 +646,10 @@ const INITIAL_FEED: FeedSlice = Object.freeze({
   status: "idle" as FeedStatus,
 });
 
+const INITIAL_HEALTH: HealthSlice = Object.freeze({
+  status: "unknown" as HealthStatus,
+});
+
 // --- Store -----------------------------------------------------------------
 
 export interface ClientStore {
@@ -676,6 +686,7 @@ export interface ClientStore {
   readonly live: ReadableSignal<LiveState>;
   readonly names: ReadableSignal<NamesState>;
   readonly feed: ReadableSignal<FeedSlice>;
+  readonly health: ReadableSignal<HealthSlice>;
 
   /** Whole-state snapshot. */
   get(): ClientState;
@@ -730,6 +741,7 @@ export function createClientStore(): ClientStore {
   const live = createSignal<LiveState>(INITIAL_LIVE);
   const names = createSignal<NamesState>(INITIAL_NAMES);
   const feed = createSignal<FeedSlice>(INITIAL_FEED);
+  const health = createSignal<HealthSlice>(INITIAL_HEALTH);
 
   // Whole-store notification: bumped once per applied change so multi-slice
   // reducers still produce a single store-level notification.
@@ -771,10 +783,14 @@ export function createClientStore(): ClientStore {
     live: live.get(),
     names: names.get(),
     feed: feed.get(),
+    health: health.get(),
   });
 
   const reduce = (event: FeedEvent): void => {
     switch (event.type) {
+      case "health/status":
+        health.set({ status: event.status });
+        break;
       case "session/logged-in":
         session.set({
           phase: "logged-in",
@@ -2090,6 +2106,7 @@ export function createClientStore(): ClientStore {
     live: readonlySignal(live),
     names: readonlySignal(names),
     feed: readonlySignal(feed),
+    health: readonlySignal(health),
     get,
     subscribe,
     apply,

@@ -1691,6 +1691,31 @@ export async function getFlightStatus(options: ApiOptions = {}): Promise<FlightS
   return readFlightStep(await getJson("/api/bridge/flight/status", options));
 }
 
+export interface HealthResult {
+  /** The BFF answered AND the EveJS gateway runtime reports ready. */
+  readonly ready: boolean;
+}
+
+/**
+ * The boot health ping (GET /api/health). "Ready" means the BFF answered ok AND
+ * its gateway status carries `ready: true` — the EveJS runtime is live, so a
+ * login can actually complete. Deliberately never throws: an unreachable BFF, a
+ * 500, or a not-ready gateway all resolve to `{ ready: false }`, so the login
+ * screen can gate on one boolean without a try/catch of its own.
+ */
+export async function getHealth(options: ApiOptions = {}): Promise<HealthResult> {
+  try {
+    const data = await getJson("/api/health", options);
+    const gateway =
+      data.gateway && typeof data.gateway === "object" && !Array.isArray(data.gateway)
+        ? (data.gateway as Record<string, JsonValue>)
+        : null;
+    return { ready: data.ok === true && gateway?.ready === true };
+  } catch {
+    return { ready: false };
+  }
+}
+
 /** Undock from the station (ship.Undock; the session enters space). */
 export async function undock(options: ApiOptions = {}): Promise<FlightStepResult> {
   return readFlightStep(await postJson("/api/bridge/flight/undock", {}, options));
