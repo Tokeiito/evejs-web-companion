@@ -37,9 +37,23 @@ test("online when the BFF is ok and the gateway is ready", async () => {
   assert.equal(await statusAfterHealth({ body: { ok: true, gateway: { ready: true } } }), "online");
 });
 
-test("offline when the gateway is not ready (EveJS runtime down)", async () => {
+test("online when the RUNTIME is ready even though top-level gateway.ready is false", async () => {
+  // The real live-server shape: gateway.ready is false because the optional
+  // characterEvents token is unset, but the runtime is up and login works. This
+  // is the case that wrongly reported offline before the fix.
   assert.equal(
-    await statusAfterHealth({ body: { ok: true, gateway: { available: true, ready: false } } }),
+    await statusAfterHealth({
+      body: { ok: true, gateway: { available: true, ready: false, runtime: { ready: true } } },
+    }),
+    "online",
+  );
+});
+
+test("offline when neither the runtime nor the gateway is ready (EveJS runtime down)", async () => {
+  assert.equal(
+    await statusAfterHealth({
+      body: { ok: true, gateway: { available: true, ready: false, runtime: { ready: false } } },
+    }),
     "offline",
   );
 });

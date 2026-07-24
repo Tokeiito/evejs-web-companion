@@ -1692,25 +1692,40 @@ export async function getFlightStatus(options: ApiOptions = {}): Promise<FlightS
 }
 
 export interface HealthResult {
-  /** The BFF answered AND the EveJS gateway runtime reports ready. */
+  /** The BFF answered AND the EveJS gateway RUNTIME is up, so a login can land. */
   readonly ready: boolean;
 }
 
+function asObject(value: JsonValue | undefined): Record<string, JsonValue> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, JsonValue>)
+    : null;
+}
+
 /**
- * The boot health ping (GET /api/health). "Ready" means the BFF answered ok AND
- * its gateway status carries `ready: true` — the EveJS runtime is live, so a
- * login can actually complete. Deliberately never throws: an unreachable BFF, a
- * 500, or a not-ready gateway all resolve to `{ ready: false }`, so the login
- * screen can gate on one boolean without a try/catch of its own.
+ * The boot health ping (GET /api/health). "Ready" = the BFF answered ok AND the
+ * EveJS gateway RUNTIME reports ready (`gateway.runtime.ready`) — which is all a
+ * login needs (it only reads `/account` off the gateway).
+ *
+ * ⚠ NOT the top-level `gateway.ready`: that flag is stricter than login — it
+ * also demands the optional characterEvents gateway TOKEN, so a perfectly usable
+ * server with that token unset (the normal dev setup) reports `gateway.ready:
+ * false` while `gateway.runtime.ready: true`. Gating on the top-level flag is
+ * what made login refuse against a live server. `gateway.ready` is still honored
+ * as a fallback for fully-configured deployments.
+ *
+ * Deliberately never throws: an unreachable BFF/gateway (getStatus rejects → the
+ * route 500s), or a not-ready runtime, all resolve to `{ ready: false }`.
  */
 export async function getHealth(options: ApiOptions = {}): Promise<HealthResult> {
   try {
     const data = await getJson("/api/health", options);
-    const gateway =
-      data.gateway && typeof data.gateway === "object" && !Array.isArray(data.gateway)
-        ? (data.gateway as Record<string, JsonValue>)
-        : null;
-    return { ready: data.ok === true && gateway?.ready === true };
+    if (data.ok !== true) {
+      return { ready: false };
+    }
+    const gateway = asObject(data.gateway);
+    const runtime = asObject(gateway?.runtime);
+    return { ready: runtime?.ready === true || gateway?.ready === true };
   } catch {
     return { ready: false };
   }
