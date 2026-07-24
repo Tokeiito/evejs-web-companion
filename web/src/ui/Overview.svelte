@@ -47,6 +47,9 @@
   // R27 — the shared item icon: one cached picture per thing, falling back
   // to a name-derived tile whenever the icon cache has no entry (or no cache).
   import TypeIcon from "./TypeIcon.svelte";
+  // Flying-distance preferences, shared with the Settings panel (where they are
+  // now picked). This panel only READS them to fly what you have selected.
+  import { flyingDistances, WARP_RANGES, HOLD_RANGES, rangeLabel } from "./flyingDistances.ts";
   import { resolvedName, nameKey, type NameRef } from "../store/names.ts";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
@@ -98,54 +101,15 @@
   // work — putting a set of range pickers on all 200 rows would be unusable.
   // Labels are written out rather than formatted so a fixed menu reads as
   // "10 km", never "10.0 km" and never a raw metre count.
-  interface RangeChoice {
-    readonly metres: number;
-    readonly label: string;
-  }
-  // Retail's warp-range menu, and retail's own default: right on top, not 10 km.
-  const WARP_RANGES: readonly RangeChoice[] = [
-    { metres: 0, label: "As close as it can" },
-    { metres: 10000, label: "10 km" },
-    { metres: 20000, label: "20 km" },
-    { metres: 30000, label: "30 km" },
-    { metres: 50000, label: "50 km" },
-    { metres: 70000, label: "70 km" },
-    { metres: 100000, label: "100 km" },
-  ];
-  // Orbit / hold distances, defaulting to retail's 1000 m.
-  const HOLD_RANGES: readonly RangeChoice[] = [
-    { metres: 500, label: "500 m" },
-    { metres: 1000, label: "1 km" },
-    { metres: 2500, label: "2.5 km" },
-    { metres: 5000, label: "5 km" },
-    { metres: 10000, label: "10 km" },
-    { metres: 20000, label: "20 km" },
-    { metres: 30000, label: "30 km" },
-  ];
-
-  /**
-   * R30 slice F — a collapsed panel must never hide what it is SET to. Each
-   * label is read back out of the same fixed menu the picker offers, so the
-   * summary can only ever say something the player could have chosen — it is
-   * never formatted from the raw metre count, which is how "10 km" turns into
-   * "10.0 km" or, worse, "10000".
-   */
-  function rangeLabel(choices: readonly RangeChoice[], metres: string): string {
-    return choices.find((choice) => String(choice.metres) === metres)?.label ?? "—";
-  }
-
   let busy = $state(false);
   let error = $state("");
   let search = $state("");
   let sort = $state<OverviewSort>("distance");
   let categoryFilter = $state("");
   let groupFilter = $state("");
-  let warpRange = $state("0");
-  let orbitRange = $state("1000");
-  let holdRange = $state("1000");
-  const warpLabel = $derived(rangeLabel(WARP_RANGES, warpRange));
-  const orbitLabel = $derived(rangeLabel(HOLD_RANGES, orbitRange));
-  const holdLabel = $derived(rangeLabel(HOLD_RANGES, holdRange));
+  const warpLabel = $derived(rangeLabel(WARP_RANGES, $flyingDistances.warp));
+  const orbitLabel = $derived(rangeLabel(HOLD_RANGES, $flyingDistances.orbit));
+  const holdLabel = $derived(rangeLabel(HOLD_RANGES, $flyingDistances.hold));
 
   const snapshot = $derived($space.snapshot);
   const inSpace = $derived(snapshot?.inSpace === true || $flight.status?.inSpace === true);
@@ -600,16 +564,16 @@
     await runFor(action.concern, async () => {
       switch (action.id) {
         case "warp":
-          await flow.warpTo(row.itemID, Number(warpRange));
+          await flow.warpTo(row.itemID, Number($flyingDistances.warp));
           return;
         case "approach":
           await flow.approach(row.itemID);
           return;
         case "orbit":
-          await flow.orbit(row.itemID, Number(orbitRange));
+          await flow.orbit(row.itemID, Number($flyingDistances.orbit));
           return;
         case "keepAtRange":
-          await flow.keepAtRange(row.itemID, Number(holdRange));
+          await flow.keepAtRange(row.itemID, Number($flyingDistances.hold));
           return;
         case "align":
           await flow.alignTo(row.itemID);
@@ -2331,35 +2295,11 @@
       </span>
     </summary>
     <p class="note">
-      Pick the distances you want, then use Warp to, Orbit and Keep at range on
-      whatever you have picked. Stop cuts the engines — and switches the
-      autopilot off, so nothing starts flying you somewhere again.
+      Warp to, Orbit and Keep at range use these distances on whatever you have
+      picked — change them under <strong>Settings</strong>. Stop cuts the engines
+      and switches the autopilot off, so nothing starts flying you somewhere again.
     </p>
     <p class="controls">
-      <label>
-        Warp to within
-        <select bind:value={warpRange}>
-          {#each WARP_RANGES as choice (choice.metres)}
-            <option value={String(choice.metres)}>{choice.label}</option>
-          {/each}
-        </select>
-      </label>
-      <label>
-        Orbit at
-        <select bind:value={orbitRange}>
-          {#each HOLD_RANGES as choice (choice.metres)}
-            <option value={String(choice.metres)}>{choice.label}</option>
-          {/each}
-        </select>
-      </label>
-      <label>
-        Hold at
-        <select bind:value={holdRange}>
-          {#each HOLD_RANGES as choice (choice.metres)}
-            <option value={String(choice.metres)}>{choice.label}</option>
-          {/each}
-        </select>
-      </label>
       <button type="button" disabled={busy} onclick={() => run(() => flow.stopShip())}>
         Stop the ship
       </button>

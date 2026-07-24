@@ -11,6 +11,7 @@
     startIconPull,
     type IconCacheStatus,
   } from "../app/iconCache.ts";
+  import { flyingDistances, WARP_RANGES, HOLD_RANGES, setDistance } from "./flyingDistances.ts";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
 
@@ -117,5 +118,37 @@
     {:else}
       <p class="error">{error}</p>
     {/if}
+  </section>
+
+  <section class="settings-group">
+    <h3>Flying distances</h3>
+    <p class="muted">
+      The ranges Warp to, Orbit and Keep at range use on whatever you have selected
+      in the overview.
+    </p>
+    <div class="settings-field">
+      <label for="fd-warp">Warp to within</label>
+      <select id="fd-warp" value={$flyingDistances.warp} onchange={(e) => setDistance("warp", e.currentTarget.value)}>
+        {#each WARP_RANGES as choice (choice.metres)}
+          <option value={String(choice.metres)}>{choice.label}</option>
+        {/each}
+      </select>
+    </div>
+    <div class="settings-field">
+      <label for="fd-orbit">Orbit at</label>
+      <select id="fd-orbit" value={$flyingDistances.orbit} onchange={(e) => setDistance("orbit", e.currentTarget.value)}>
+        {#each HOLD_RANGES as choice (choice.metres)}
+          <option value={String(choice.metres)}>{choice.label}</option>
+        {/each}
+      </select>
+    </div>
+    <div class="settings-field">
+      <label for="fd-hold">Keep at range</label>
+      <select id="fd-hold" value={$flyingDistances.hold} onchange={(e) => setDistance("hold", e.currentTarget.value)}>
+        {#each HOLD_RANGES as choice (choice.metres)}
+          <option value={String(choice.metres)}>{choice.label}</option>
+        {/each}
+      </select>
+    </div>
   </section>
 </section>

@@ -2136,6 +2136,13 @@
   .settings-toggle input { margin-top: 0.2rem; }
   .settings-toggle-text { display: flex; flex-direction: column; gap: 0.2rem; }
   .settings-actions { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+  .settings-field {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.8rem;
+  }
+  .settings-field select { min-width: 11rem; }
   .settings-progress { display: flex; align-items: center; gap: 0.5rem; color: var(--color-text); }
   /* A squared spinner — the design system keeps radii at 0 (the fit-ring guide
    * is the single deliberate circle), so the loading mark is a rotating square. */
