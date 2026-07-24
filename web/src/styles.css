@@ -1268,6 +1268,94 @@
     margin-bottom: 0.5rem;
   }
 
+  /* ================================================== inventory tabs (R60) --
+   * The Inventory & Ship panel sorted into four tabs (Ship Inventory / Ship
+   * Hangar / Item Hangar / Corporate Hangar) so it fits the right-hand dock
+   * window without a long scroll. ALL four panels stay in the DOM; the inactive
+   * ones carry `hidden`, so a selection made in one survives a tab switch and
+   * nothing remounts. */
+  .inventory-panel {
+    min-width: 0;
+  }
+  .inv-controls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: end;
+    gap: 0.5rem 0.9rem;
+    margin: 0.2rem 0 0.6rem;
+  }
+  .inv-qty {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    font-size: 0.85rem;
+    color: var(--color-muted);
+  }
+  .inv-qty input {
+    max-width: 8rem;
+  }
+
+  /* An underline tab bar — real buttons, keyboard reachable, squared to match
+   * the design system. The active tab is never colour alone: it is bolder and
+   * carries `aria-selected`. */
+  .inv-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.15rem;
+    border-bottom: 1px solid var(--color-line);
+    margin-bottom: 0.8rem;
+  }
+  .inv-tab {
+    appearance: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    background: transparent;
+    color: var(--color-muted);
+    padding: 0.45rem 0.7rem;
+    margin-bottom: -1px;
+    cursor: pointer;
+    font-size: 0.9rem;
+    border-radius: 0;
+  }
+  .inv-tab:hover:not(.active) {
+    color: var(--color-text);
+  }
+  .inv-tab.active {
+    color: var(--color-accent-bright);
+    border-bottom-color: var(--color-accent);
+    font-weight: 600;
+  }
+  .inv-tab:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: -2px;
+  }
+  .inv-tabpanel {
+    min-width: 0;
+  }
+  .inv-tabpanel[hidden] {
+    display: none;
+  }
+  .inv-tabpanel > h3:first-child {
+    margin-top: 0;
+  }
+  /* The open container hangs below the item grid in the Item Hangar tab. */
+  .inv-container {
+    margin-top: 1rem;
+    border-top: 1px solid var(--color-line);
+    padding-top: 0.6rem;
+  }
+  /* In the dock window the panel is tight, so its own big header is dropped
+   * (the dock frame titles it with the station name) and the controls compact. */
+  .dock-inventory {
+    min-width: 0;
+  }
+  .inventory-panel.dock .inv-controls {
+    margin-top: 0;
+  }
+  .inventory-panel.dock .inv-qty {
+    font-size: 0.8rem;
+  }
+
   /* =============================================== the fitting window (R21) --
    * A real fitting window: the ship in the middle, its slots as SOCKETS on
    * arcs around it. The arcs' angles are computed in

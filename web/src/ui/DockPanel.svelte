@@ -1,13 +1,16 @@
 <script lang="ts">
   // The fixed top-right dock panel — your always-on situational awareness.
-  // Docked: the live Station panel (services, identity, guests). In space: the
-  // (compact) Overview — what's around your ship. Ship condition, the module rack
-  // and the locked-target brackets are deliberately NOT here — they live in the
-  // persistent bottom HUD and the floating TargetsPanel respectively. Collapsible
-  // to a thin strip, and expandable by dragging its left edge; both the collapse
-  // state and the width are remembered per character.
+  // Docked (R60): the tabbed Inventory & Ship — Ship Inventory / Ship Hangar /
+  // Item Hangar / Corporate Hangar — headed by the station's NAME (the station
+  // services/guests moved to their own Neocom "Station" window). In space: the
+  // (compact) Overview — what's around your ship. Ship
+  // condition, the module rack and the locked-target brackets are deliberately
+  // NOT here — they live in the persistent bottom HUD and the floating
+  // TargetsPanel respectively. Collapsible to a thin strip, and expandable by
+  // dragging its left edge; both the collapse state and the width are remembered
+  // per character.
   import Overview from "./Overview.svelte";
-  import StationPanel from "./StationPanel.svelte";
+  import InventoryShip from "./InventoryShip.svelte";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
 
@@ -29,7 +32,15 @@
     onResize: (w: number) => void;
   } = $props();
 
-  const title = $derived(isDocked ? "Station" : "Around Your Ship");
+  // svelte-ignore state_referenced_locally
+  const station = store.station;
+
+  // When docked the header carries the STATION NAME (the "station info in the
+  // header only" the tabs replaced the services block with); until the static
+  // read resolves it falls back to the plain word rather than an id.
+  const title = $derived(
+    isDocked ? ($station.station?.stationName ?? "Station") : "Around Your Ship",
+  );
   const MIN_W = 240;
   const MAX_W = 900;
 
@@ -69,7 +80,9 @@
     </header>
     <div class="dock-panel-body">
       {#if isDocked}
-        <StationPanel {store} {flow} />
+        <div class="dock-inventory">
+          <InventoryShip {store} {flow} dock />
+        </div>
       {:else}
         <div class="dock-overview">
           <Overview {store} {flow} compact />
