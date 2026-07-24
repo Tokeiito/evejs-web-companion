@@ -2168,6 +2168,30 @@
     white-space: nowrap;
   }
 
+  /* R107 — server connection indicator, sat just before Add character: a dot
+   * plus a short label (Connected / Connecting… / Server offline). */
+  .char-bar-status {
+    flex: 0 0 auto;
+    align-self: center;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding-inline: 0.4rem;
+    font-size: 0.75rem;
+    color: var(--color-muted);
+    white-space: nowrap;
+  }
+  .char-bar-status-dot {
+    width: 0.5rem;
+    height: 0.5rem;
+    background: var(--color-muted);
+  }
+  .char-bar-status-online .char-bar-status-dot { background: var(--color-good); }
+  .char-bar-status-online .char-bar-status-text { color: var(--color-good); }
+  .char-bar-status-offline .char-bar-status-dot { background: var(--color-danger); }
+  .char-bar-status-offline .char-bar-status-text { color: var(--color-danger); }
+  .char-bar-status-checking .char-bar-status-dot { background: var(--color-warn); }
+
   /* One pilot's chip: a docked/in-space dot, the name, and where they are. */
   .char-chip {
     display: flex;

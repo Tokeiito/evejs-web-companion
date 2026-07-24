@@ -19,6 +19,8 @@
     savePersistedSessions,
     type PersistedSessions,
   } from "../app/persistedSessions.ts";
+  import { setSessionToken, clearSessionToken } from "../app/sessionToken.ts";
+  import { getHealth } from "../app/api.ts";
 
   // Read the roster retained across a refresh ONCE, before any write effect can
   // clobber it, so a reload can bring the same pilots back online.
@@ -171,10 +173,47 @@
       roster.find((s) => s.id === current)?.store.get().station.online?.characterID ?? null;
     savePersistedSessions({ pilots, activeCharacterID });
   });
+
+  // R107 — mirror the ACTIVE pilot's token into the per-tab global. A few panels
+  // still call the API WITHOUT per-session options — the Bot Builder's
+  // create/update/list/deleteBotScript and iconCache's admin routes — and those
+  // fall back to this global. Multibox otherwise leaves it empty, so before this
+  // they rode the leftover login COOKIE (the last pilot added) and saved/read a
+  // DIFFERENT account's bot scripts than the one on screen. Pointing the global
+  // at the active pilot makes those legacy calls act as the pilot you're looking
+  // at. Per-session flows are unaffected — they carry their own token on
+  // callOptions and never read the global.
+  $effect(() => {
+    const token = active?.flow.sessionToken() ?? null;
+    if (token) setSessionToken(token);
+    else clearSessionToken();
+  });
+
+  // Server connection status for the character bar: a light poll of the
+  // unauthenticated /api/health (BFF reachable + gateway ready), independent of
+  // any pilot, so it flips to "offline" the moment the server or gateway drops.
+  let serverStatus = $state<"checking" | "online" | "offline">("checking");
+  $effect(() => {
+    let cancelled = false;
+    const ping = async (): Promise<void> => {
+      try {
+        const { ready } = await getHealth({});
+        if (!cancelled) serverStatus = ready ? "online" : "offline";
+      } catch {
+        if (!cancelled) serverStatus = "offline";
+      }
+    };
+    void ping();
+    const handle = setInterval(() => void ping(), 10_000);
+    return () => {
+      cancelled = true;
+      clearInterval(handle);
+    };
+  });
 </script>
 
 {#if active}
-  <CharacterBar {sessions} {activeId} onSwitch={switchTo} onAdd={addCharacter} />
+  <CharacterBar {sessions} {activeId} {serverStatus} onSwitch={switchTo} onAdd={addCharacter} />
   <!-- Remount on switch: each Workspace binds one stable store/flow for its
        whole life, and the in-memory store makes the remount instant. -->
   {#key active.id}
