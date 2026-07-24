@@ -44,7 +44,6 @@
     shipActions,
     type RowAction,
   } from "../space/rowActions.ts";
-  import MiningBot from "./MiningBot.svelte";
   // R27 — the shared item icon: one cached picture per thing, falling back
   // to a name-derived tile whenever the icon cache has no entry (or no cache).
   import TypeIcon from "./TypeIcon.svelte";
@@ -1310,10 +1309,24 @@
   let seenHostileIDs = $state<ReadonlySet<number>>(new Set<number>());
   let primedHostiles = $state(false);
   let arrivalNotice = $state("");
+  /** Does the set already hold exactly these ids? Compared by VALUE (no-op if so). */
+  function sameIDSet(set: ReadonlySet<number>, ids: readonly number[]): boolean {
+    if (set.size !== ids.length) {
+      return false;
+    }
+    for (const id of ids) {
+      if (!set.has(id)) {
+        return false;
+      }
+    }
+    return true;
+  }
   $effect(() => {
     if (!inSpace) {
       // A dock (or a system change) resets the whole idea of "who was here".
-      seenHostileIDs = new Set<number>();
+      if (seenHostileIDs.size > 0) {
+        seenHostileIDs = new Set<number>();
+      }
       primedHostiles = false;
       arrivalNotice = "";
       return;
@@ -1322,8 +1335,9 @@
       return;
     }
     const current = threats;
+    const currentIDs = current.map((row) => row.itemID);
     if (!primedHostiles) {
-      seenHostileIDs = new Set(current.map((row) => row.itemID));
+      seenHostileIDs = new Set(currentIDs);
       primedHostiles = true;
       return;
     }
@@ -1336,8 +1350,13 @@
           : `${arrived.length} hostiles have arrived. The nearest is ${displayLabel(arrived[0])}, ${formatDistance(arrived[0].distance)} away.`;
     }
     // Forget the ones that are gone, so a rat that leaves and comes back warns
-    // again rather than sneaking in on a stale id.
-    seenHostileIDs = new Set(current.map((row) => row.itemID));
+    // again. ⚠ WRITE ONLY WHEN THE ID SET ACTUALLY CHANGED: this effect READS
+    // `seenHostileIDs` (via newlyArrivedHostiles) and WRITES it, so a fresh Set
+    // with the same ids every run would re-trigger forever
+    // (`effect_update_depth_exceeded`) — the freeze this guard fixes.
+    if (!sameIDSet(seenHostileIDs, currentIDs)) {
+      seenHostileIDs = new Set(currentIDs);
+    }
   });
 
   /**
@@ -1353,15 +1372,23 @@
    * two readings cannot lie about having gone down. The log names the attacker,
    * this proves the damage.
    */
-  let previousHealth = $state<{
+  interface HealthReading {
     shieldRatio: number | null;
     armorRatio: number | null;
     hullRatio: number | null;
-  } | null>(null);
+  }
+  /** Same three ratios? Compared by VALUE so an unchanged reading is a no-op. */
+  function sameReading(a: HealthReading | null, b: HealthReading | null): boolean {
+    if (a === null || b === null) {
+      return a === b;
+    }
+    return a.shieldRatio === b.shieldRatio && a.armorRatio === b.armorRatio && a.hullRatio === b.hullRatio;
+  }
+  let previousHealth = $state<HealthReading | null>(null);
   let takingDamageUntilMs = $state(0);
   let damageClock = $state(Date.now());
   $effect(() => {
-    const current = ship
+    const current: HealthReading | null = ship
       ? { shieldRatio: ship.shieldRatio, armorRatio: ship.armorRatio, hullRatio: ship.hullRatio }
       : null;
     if (healthIsDropping(previousHealth, current)) {
@@ -1369,7 +1396,14 @@
       // happen to read the same value.
       takingDamageUntilMs = Date.now() + 6000;
     }
-    previousHealth = current;
+    // ⚠ WRITE ONLY WHEN THE READING ACTUALLY CHANGED. This effect READS
+    // `previousHealth` and WRITES it; assigning a fresh object with identical
+    // values every run would re-trigger the effect forever
+    // (`effect_update_depth_exceeded`) the whole time the ship is in space with a
+    // health reading. Guarding the write lets it settle after one update.
+    if (!sameReading(previousHealth, current)) {
+      previousHealth = current;
+    }
   });
   $effect(() => {
     if (takingDamageUntilMs <= 0) {
@@ -1848,10 +1882,13 @@
         R23 slice B — the survey scanner. The ship can see the rocks around it
         without this, but not always how much ore is left in them; a scan fills
         the "Ore left" column in. Read-only: it mines nothing and moves nothing.
+        Only offered when there are actually rocks on grid to scan.
       -->
-      <button type="button" disabled={busy} onclick={() => run(() => flow.runSurveyScan())}>
-        Scan the rocks
-      </button>
+      {#if rockCount > 0}
+        <button type="button" disabled={busy} onclick={() => run(() => flow.runSurveyScan())}>
+          Scan the rocks
+        </button>
+      {/if}
     </p>
     {#if $mining.surveyError}
       <p class="error">{$mining.surveyError}</p>
@@ -1868,13 +1905,12 @@
     {:else if overview.rows.length === 0}
       <p class="empty">Nothing matches — clear the search or filters to see everything.</p>
     {:else}
-      <p class="note">
-        Showing {overview.rows.length} of {overview.matched} nearby.
-        {#if overview.matched > overview.rows.length}
-          Search or filter to narrow the list.
-        {/if}
-      </p>
-      <div class="table-wrap overflow-x-auto">
+      {#if overview.matched > overview.rows.length}
+        <!-- The only line kept: a truncation warning, so the 200-row cap never
+             silently hides rows. The plain "showing x of y" count is gone. -->
+        <p class="note">Only the nearest {overview.rows.length} are listed — search or filter to see the rest.</p>
+      {/if}
+      <div class="table-wrap overflow-x-auto overview-scroll">
         <table class="guests overview reflow">
           <thead>
             <tr>
@@ -2556,10 +2592,4 @@
   </section>
 {/if}
 
-<!--
-  R26 — the mining bot. Deliberately OUTSIDE the in-space guard above: the bot
-  docks itself to unload, and a player must still be able to see what it is
-  doing, and stop it, while the ship is in the station.
--->
-<MiningBot {store} {flow} />
 

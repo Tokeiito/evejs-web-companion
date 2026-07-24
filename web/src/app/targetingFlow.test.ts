@@ -100,6 +100,32 @@ test("target IDs decode long-aware — a {type:'long'} wrapper is not zeroed", a
   assert.deepEqual(store.targeting.get().lockedTargetIDs, [ROCK_ID]);
 });
 
+test("loadTargets swallows a transient read failure — no banner, last locks kept", async () => {
+  const store = createClientStore();
+  let failNext = false;
+  const { fetch } = makeFakeFetch((path) => {
+    if (path === "/api/bridge/targets") {
+      if (failNext) {
+        throw new Error("gateway timeout"); // a transient, non-session-loss failure
+      }
+      return { status: 200, body: { ok: true, targetIDs: [ROCK_ID], notifications: [] } };
+    }
+    throw new Error(`unexpected ${path}`);
+  });
+  const flow = createAppFlow(store, { fetch });
+
+  await flow.loadTargets();
+  assert.deepEqual(store.targeting.get().lockedTargetIDs, [ROCK_ID]);
+  assert.equal(store.targeting.get().actionError, null);
+
+  // The read is best-effort (overview poll / mount). A transient timeout must NOT
+  // raise a sticky banner, and must leave the last-known lock list in place.
+  failNext = true;
+  await flow.loadTargets();
+  assert.equal(store.targeting.get().actionError, null, "a best-effort read failure must not surface a banner");
+  assert.deepEqual(store.targeting.get().lockedTargetIDs, [ROCK_ID], "last-known locks are kept");
+});
+
 // --- Locking ----------------------------------------------------------------
 
 test("lockTarget records the action and lands the server's re-read", async () => {

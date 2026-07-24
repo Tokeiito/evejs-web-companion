@@ -38,9 +38,10 @@ import {
  * (AlreadyInNewbieShip, ErrorCreatingNewbieShip, MustBeDocked),
  * Handle_InitiateModuleRepair (NotEnoughRepairMaterialToFinishAllRepairs),
  * the overload path (DontHaveThermoDynamicsSkill), the probe-launch and
- * warp-disrupt-field-generator paths, Handle_Scoop (NotEnoughCargoSpace,
- * ShpScoopSecureCC) and the fleet-bridge helpers (FleetNotInFleet) are all real
- * UserError sites behind methods this client cannot call.
+ * warp-disrupt-field-generator paths, Handle_Scoop (ShpScoopSecureCC) and the
+ * fleet-bridge helpers (FleetNotInFleet) are all real UserError sites behind
+ * methods this client cannot call. (NotEnoughCargoSpace WAS here too, until the
+ * docked hangar→ship-hold move made invbroker's copy of it reachable.)
  *
  * If eve.js widens the allowlist, this test fails and the table gets an entry —
  * which is the point.
@@ -69,6 +70,8 @@ const EVEJS_REFUSAL_VOCABULARY: readonly string[] = [
   "ModuleReactivationDelayed2",
   "NoCharges",
   "NotEnoughCapacitorForOnline",
+  // invbroker Add/MultiAdd — reachable via the docked hangar→ship-hold move.
+  "NotEnoughCargoSpace",
   "TargetNotWithinRangeGeneric",
   "TargetTooFar",
   "TargetingAttemptCancelled",

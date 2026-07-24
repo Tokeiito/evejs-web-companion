@@ -723,6 +723,12 @@
     width: 100%;
     overflow-x: auto;
   }
+  /* A long list (the space overview) scrolls inside its own box rather than
+     growing the whole page — so the ship HUD and controls above it stay put. */
+  .overview-scroll {
+    max-height: 65vh;
+    overflow-y: auto;
+  }
 
   /* ===================================================== meters / gauges --
    * Labelled percentage bars for used-vs-total resources: shield, armor, hull,

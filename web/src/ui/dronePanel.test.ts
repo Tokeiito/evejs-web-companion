@@ -214,7 +214,9 @@ function scene(options: SceneOptions = {}): string {
     type: "names/resolved",
     resolved: { [`type:${DRONE_TYPE_ID}`]: "Hobgoblin I" },
   } as never);
-  return render(Overview, { props: { store, flow: fakeFlow() } }).body;
+  return render(Overview, {
+    props: { store, flow: fakeFlow() },
+  }).body;
 }
 
 const A_SPACE_DRONE = {
@@ -353,6 +355,9 @@ test("the threat badge is a WORD, so colour is never the only signal", () => {
 });
 
 test("a hostile is marked in the ordinary overview list too", () => {
+  // Rocks and rats are always in the overview table now (the "Hide rocks & rats"
+  // toggle was removed), so a rat shows both in the loud "Hostiles nearby" block
+  // AND as a marked row in the list a player is already reading.
   const body = scene({
     hostiles: [{ itemID: RAT_ID, name: "Serpentis Scout", npcEntityType: "npc" }],
   });

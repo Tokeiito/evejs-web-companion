@@ -12,6 +12,12 @@ import { mount } from "svelte";
 import App from "./ui/App.svelte";
 import { createClientStore } from "./store/clientStore.ts";
 import { createAppFlow } from "./app/flow.ts";
+import { installErrorOverlay } from "./app/errorOverlay.ts";
+
+// Before anything else: a framework-free net for uncaught errors and unhandled
+// rejections, so a throw that wedges the UI still shows a message instead of a
+// silent freeze.
+installErrorOverlay();
 
 const store = createClientStore();
 const flow = createAppFlow(store);

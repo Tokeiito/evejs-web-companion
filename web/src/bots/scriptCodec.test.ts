@@ -1,0 +1,351 @@
+// A2 — the codec is the untrusted-input gate, so its tests are adversarial by
+// design. A clean document must round-trip byte-for-meaning; a hostile one must
+// refuse with a plain sentence or be safely fixed with a spoken warning, and
+// NEVER crash, pollute, or quietly drop an action.
+
+import test from "node:test";
+import assert from "node:assert/strict";
+
+import {
+  decodeScriptText,
+  decodeScriptValue,
+  encodeScriptDoc,
+} from "./scriptCodec.ts";
+import { MAX_DOC_BYTES, SCRIPT_FORMAT, SCRIPT_VERSION, type BotScript } from "./botScript.ts";
+
+// A clean, warning-free document — the design's "Belt runner". Each test that
+// needs a malformed one clones this and breaks exactly one thing.
+function golden(): BotScript {
+  return {
+    format: SCRIPT_FORMAT,
+    version: SCRIPT_VERSION,
+    name: "Belt runner",
+    notes: "Mines until 90% then hauls.",
+    home: { entity: "station", id: 60000004, name: "Home Station", systemName: "Aunia" },
+    interrupts: [
+      { id: "i0", builtIn: "safety-floor", when: { kind: "health-below", fraction: 0.5 }, respond: "dock-and-pause" },
+      { id: "i1", when: { kind: "shield-below", fraction: 0.3 }, respond: "dock-and-pause" },
+    ],
+    program: [
+      {
+        id: "s1",
+        kind: "loop",
+        repeat: { kind: "times", count: 50 },
+        body: [
+          {
+            id: "s2",
+            kind: "macro",
+            macro: "mine-at-belt",
+            args: {
+              belt: { kind: "belt", belt: { mode: "nearest" } },
+              equipment: { kind: "equipment", equipment: { groupID: 17482, label: "Strip Miners" } },
+            },
+            until: { kind: "ore-hold-at-least", fraction: 0.9 },
+          },
+          {
+            id: "s3",
+            kind: "macro",
+            macro: "deliver-ore",
+            args: {
+              station: {
+                kind: "station",
+                ref: { entity: "station", id: 60000004, name: "Home Station", systemName: "Aunia" },
+              },
+            },
+          },
+        ],
+      },
+    ],
+  };
+}
+
+// A deep, deliberately UNTYPED clone. These tests break one field at a time into
+// shapes the type system would reject on purpose (an unknown macro, a garbage
+// condition, an out-of-range number) — the whole point is to feed the codec what
+// a hostile file could. `any` is the right tool for adversarial input; every
+// RESULT is still read back through the typed `mustAccept`/`mustRefuse`.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function clone(): any {
+  return structuredClone(golden());
+}
+
+function mustRefuse(result: ReturnType<typeof decodeScriptValue>): string {
+  assert.equal(result.ok, false, "expected a refusal");
+  assert.ok(!result.ok);
+  return result.refusal;
+}
+
+function mustAccept(result: ReturnType<typeof decodeScriptValue>): { doc: BotScript; warnings: readonly string[] } {
+  assert.equal(result.ok, true, result.ok ? "" : `unexpected refusal: ${result.refusal}`);
+  assert.ok(result.ok);
+  return { doc: result.doc, warnings: result.warnings };
+}
+
+// ─── The happy path ──────────────────────────────────────────────────────────
+
+test("a clean document decodes with no warnings and equals itself", () => {
+  const { doc, warnings } = mustAccept(decodeScriptValue(golden()));
+  assert.deepStrictEqual(doc, golden());
+  assert.deepStrictEqual([...warnings], []);
+});
+
+test("encode then decode is a lossless round trip", () => {
+  const text = encodeScriptDoc(golden());
+  const { doc, warnings } = mustAccept(decodeScriptText(text));
+  assert.deepStrictEqual(doc, golden());
+  assert.deepStrictEqual([...warnings], []);
+});
+
+test("encoded output is stable and pretty-printed", () => {
+  assert.equal(encodeScriptDoc(golden()), encodeScriptDoc(golden()));
+  assert.match(encodeScriptDoc(golden()), /\n {2}"format": "evejs-bot-script"/);
+});
+
+// ─── Transport-level refusals (before the shape is even read) ─────────────────
+
+test("an oversized file is refused before it is parsed", () => {
+  const huge = "x".repeat(MAX_DOC_BYTES + 1);
+  assert.match(mustRefuse(decodeScriptText(huge)), /too big/i);
+});
+
+test("text that is not JSON is refused", () => {
+  assert.match(mustRefuse(decodeScriptText("{ not json")), /not a bot script/i);
+});
+
+test("a non-object top level is refused", () => {
+  assert.equal(decodeScriptValue([]).ok, false);
+  assert.equal(decodeScriptValue(5).ok, false);
+  assert.equal(decodeScriptValue(null).ok, false);
+});
+
+// ─── Envelope refusals ───────────────────────────────────────────────────────
+
+test("the wrong format tag is refused", () => {
+  const bad = { ...clone(), format: "something-else" } as unknown;
+  assert.match(mustRefuse(decodeScriptValue(bad)), /not a bot script/i);
+});
+
+test("a newer version is refused with the update sentence", () => {
+  const bad = { ...clone(), version: SCRIPT_VERSION + 998 } as unknown;
+  assert.match(mustRefuse(decodeScriptValue(bad)), /newer version/i);
+});
+
+test("a non-integer version is refused", () => {
+  assert.equal(decodeScriptValue({ ...clone(), version: 0 }).ok, false);
+  assert.equal(decodeScriptValue({ ...clone(), version: 1.5 }).ok, false);
+  assert.equal(decodeScriptValue({ ...clone(), version: "1" }).ok, false);
+});
+
+test("an unknown top-level key is refused", () => {
+  const bad = { ...clone(), surprise: true } as unknown;
+  assert.match(mustRefuse(decodeScriptValue(bad)), /does not recognise/i);
+});
+
+test("a missing name is refused; an empty program is refused", () => {
+  const noName = clone() as Record<string, unknown>;
+  delete noName["name"];
+  assert.equal(decodeScriptValue(noName).ok, false);
+
+  const empty = { ...clone(), program: [] } as unknown;
+  assert.match(mustRefuse(decodeScriptValue(empty)), /no steps/i);
+});
+
+// ─── Prototype pollution ─────────────────────────────────────────────────────
+
+test("a __proto__ key is treated as an unknown key and pollutes nothing", () => {
+  const text =
+    '{"format":"evejs-bot-script","version":1,"__proto__":{"polluted":true},' +
+    '"name":"x","notes":"","home":{"entity":"station","id":1,"name":null,"systemName":null},' +
+    '"interrupts":[],"program":[{"id":"s1","kind":"macro","macro":"undock","args":{}}]}';
+  assert.equal(decodeScriptText(text).ok, false);
+  assert.equal(({} as Record<string, unknown>)["polluted"], undefined);
+});
+
+// ─── Program-shape refusals ──────────────────────────────────────────────────
+
+test("an unknown macro is refused, and the echoed name is sanitised", () => {
+  const bad = clone();
+  const loop = bad.program[0];
+  assert.ok(loop && loop.kind === "loop");
+  const step = loop.body[0] as Record<string, unknown>;
+  // A hostile macro name carrying a bidi override and HTML-ish junk.
+  step["macro"] = "mine‮evil<script>alert";
+  const refusal = mustRefuse(decodeScriptValue(bad));
+  assert.match(refusal, /does not have/i);
+  assert.match(refusal, /mineevil/i, "the safe token survives");
+  assert.doesNotMatch(refusal, /[<>‮]/, "no hostile characters reach the sentence");
+});
+
+test("an unknown condition kind is refused", () => {
+  const bad = clone();
+  const loop = bad.program[0];
+  assert.ok(loop && loop.kind === "loop");
+  (loop.body[0] as Record<string, unknown>)["until"] = { kind: "moon-is-full" };
+  assert.match(mustRefuse(decodeScriptValue(bad)), /does not have/i);
+});
+
+test("a grid-only condition in an until is refused (the belt-empty class)", () => {
+  const bad = clone();
+  const loop = bad.program[0];
+  assert.ok(loop && loop.kind === "loop");
+  (loop.body[0] as Record<string, unknown>)["until"] = { kind: "hostile-on-grid" };
+  assert.match(mustRefuse(decodeScriptValue(bad)), /out in space/i);
+});
+
+test("a mining step with no until is refused", () => {
+  const bad = clone();
+  const loop = bad.program[0];
+  assert.ok(loop && loop.kind === "loop");
+  delete (loop.body[0] as Record<string, unknown>)["until"];
+  assert.match(mustRefuse(decodeScriptValue(bad)), /when to stop/i);
+});
+
+test("a missing required argument is refused; an unknown argument key is refused", () => {
+  const noBelt = clone();
+  let loop = noBelt.program[0];
+  assert.ok(loop && loop.kind === "loop");
+  delete (loop.body[0] as { args: Record<string, unknown> }).args["belt"];
+  assert.match(mustRefuse(decodeScriptValue(noBelt)), /missing something/i);
+
+  const strayArg = clone();
+  loop = strayArg.program[0];
+  assert.ok(loop && loop.kind === "loop");
+  (loop.body[0] as { args: Record<string, unknown> }).args["gadget"] = { kind: "belt", belt: { mode: "nearest" } };
+  assert.match(mustRefuse(decodeScriptValue(strayArg)), /does not recognise/i);
+});
+
+test("a loop with no repeat, an empty loop, and a nested loop are each refused", () => {
+  const noRepeat = clone();
+  delete (noRepeat.program[0] as Record<string, unknown>)["repeat"];
+  assert.match(mustRefuse(decodeScriptValue(noRepeat)), /how many times/i);
+
+  const emptyLoop = clone();
+  (emptyLoop.program[0] as { body: unknown[] }).body = [];
+  assert.match(mustRefuse(decodeScriptValue(emptyLoop)), /no steps inside/i);
+
+  const nested = clone();
+  (nested.program[0] as { body: unknown[] }).body = [
+    { id: "n1", kind: "loop", repeat: { kind: "forever" }, body: [{ id: "n2", kind: "macro", macro: "undock", args: {} }] },
+  ];
+  assert.match(mustRefuse(decodeScriptValue(nested)), /cannot contain another loop/i);
+});
+
+test("too many nodes and too many steps are refused", () => {
+  const step = { kind: "macro", macro: "undock", args: {} };
+  const manyNodes = { ...clone(), program: Array.from({ length: 33 }, (_, i) => ({ id: `s${i}`, ...step })) } as unknown;
+  assert.match(mustRefuse(decodeScriptValue(manyNodes)), /too many steps/i);
+
+  const bigBody = Array.from({ length: 65 }, (_, i) => ({ id: `b${i}`, ...step }));
+  const manySteps = {
+    ...clone(),
+    program: [{ id: "loop", kind: "loop", repeat: { kind: "forever" }, body: bigBody }],
+  } as unknown;
+  assert.match(mustRefuse(decodeScriptValue(manySteps)), /too many steps/i);
+});
+
+// ─── Numbers: clamp with a spoken warning, or refuse the truly broken ─────────
+
+test("an out-of-range ore-hold fraction is clamped to 90% with a warning", () => {
+  const bad = clone();
+  const loop = bad.program[0];
+  assert.ok(loop && loop.kind === "loop");
+  (loop.body[0] as { until: { fraction: number } }).until.fraction = 2.4;
+  const { doc, warnings } = mustAccept(decodeScriptValue(bad));
+  const outLoop = doc.program[0];
+  assert.ok(outLoop && outLoop.kind === "loop");
+  const until = outLoop.body[0]?.until;
+  assert.ok(until && until.kind === "ore-hold-at-least");
+  assert.equal(until.fraction, 0.9);
+  assert.ok(warnings.some((w) => /brought back to 90%/i.test(w)));
+});
+
+test("a shield threshold below the floor is clamped up to 5%", () => {
+  const bad = clone();
+  bad.interrupts[1] = { id: "i1", when: { kind: "shield-below", fraction: -3 }, respond: "dock-and-pause" };
+  const { doc, warnings } = mustAccept(decodeScriptValue(bad));
+  const row = doc.interrupts[1];
+  assert.ok(row && row.when.kind === "shield-below");
+  assert.equal(row.when.fraction, 0.05);
+  assert.ok(warnings.some((w) => /brought back to 5%/i.test(w)));
+});
+
+test("an out-of-range repeat count is clamped into range with a warning", () => {
+  const bad = clone();
+  (bad.program[0] as { repeat: { kind: "times"; count: number } }).repeat.count = 9999;
+  const { doc, warnings } = mustAccept(decodeScriptValue(bad));
+  const loop = doc.program[0];
+  assert.ok(loop && loop.kind === "loop" && loop.repeat.kind === "times");
+  assert.equal(loop.repeat.count, 500);
+  assert.ok(warnings.some((w) => /into range/i.test(w)));
+});
+
+test("Infinity (from 1e999) is refused as not a real number", () => {
+  const text = encodeScriptDoc(golden()).replace('"fraction": 0.9', '"fraction": 1e999');
+  assert.match(mustRefuse(decodeScriptText(text)), /not a real number/i);
+});
+
+// ─── World references ────────────────────────────────────────────────────────
+
+test("an absurd world id is forgotten (nulled) with a warning, not a crash", () => {
+  const bad = clone();
+  bad.home = { entity: "station", id: -5, name: "Home", systemName: "Aunia" };
+  const { doc, warnings } = mustAccept(decodeScriptValue(bad));
+  assert.equal(doc.home.id, null);
+  assert.equal(doc.home.name, "Home");
+  assert.ok(warnings.some((w) => /forgotten/i.test(w)));
+});
+
+// ─── Control characters ──────────────────────────────────────────────────────
+
+test("bidi and control characters are stripped from a name with a warning", () => {
+  const bad = { ...clone(), name: "Belt‮runner" } as unknown;
+  const { doc, warnings } = mustAccept(decodeScriptValue(bad));
+  assert.equal(doc.name, "Beltrunner");
+  assert.ok(warnings.some((w) => /cannot be shown/i.test(w)));
+});
+
+// ─── Interrupts are the player's now ─────────────────────────────────────────
+
+test("interrupts are read exactly as given — no floor is injected", () => {
+  const bad = clone();
+  bad.interrupts = [
+    { id: "w1", when: { kind: "shield-below", fraction: 0.3 }, respond: "dock-and-pause" },
+    { id: "w2", when: { kind: "armor-below", fraction: 0.4 }, respond: "dock-and-pause" },
+  ];
+  const { doc, warnings } = mustAccept(decodeScriptValue(bad));
+  assert.equal(doc.interrupts.length, 2, "nothing added, nothing dropped");
+  assert.deepEqual(doc.interrupts.map((r) => r.when.kind), ["shield-below", "armor-below"]);
+  assert.deepEqual([...warnings], []);
+});
+
+test("an empty interrupt list stays empty", () => {
+  const bad = { ...clone(), interrupts: [] } as unknown;
+  const { doc } = mustAccept(decodeScriptValue(bad));
+  assert.equal(doc.interrupts.length, 0);
+});
+
+// ─── Ids ─────────────────────────────────────────────────────────────────────
+
+test("duplicate or missing ids are reassigned to unique handles, with a warning", () => {
+  const bad = clone();
+  const loop = bad.program[0];
+  assert.ok(loop && loop.kind === "loop");
+  (loop.body[1] as { id: string }).id = "s2"; // collide with body[0]
+  const { doc, warnings } = mustAccept(decodeScriptValue(bad));
+  const ids: string[] = [];
+  for (const row of doc.interrupts) ids.push(row.id);
+  for (const node of doc.program) {
+    ids.push(node.id);
+    if (node.kind === "loop") for (const s of node.body) ids.push(s.id);
+  }
+  assert.equal(new Set(ids).size, ids.length, "all ids unique after fix");
+  assert.ok(warnings.some((w) => /Renamed some step handles/i.test(w)));
+});
+
+// ─── Parity: stored bytes are as untrusted as a paste ────────────────────────
+
+test("decodeScriptValue and decodeScriptText agree on a clean document", () => {
+  const fromValue = mustAccept(decodeScriptValue(golden()));
+  const fromText = mustAccept(decodeScriptText(encodeScriptDoc(golden())));
+  assert.deepStrictEqual(fromValue.doc, fromText.doc);
+});

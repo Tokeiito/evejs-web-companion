@@ -66,22 +66,38 @@ function unwrapRowList(result: JsonValue): JsonValue {
   return result;
 }
 
-function decodeRowFields(fields: Record<string, JsonValue>): InventoryItemRow {
+/** typeID → m³ per unit, keyed by the string the wire sends; null when unknown. */
+export type VolumeMap = Readonly<Record<string, number>>;
+
+function volumeFor(typeID: number, volumes: VolumeMap | undefined): number | null {
+  if (volumes === undefined) {
+    return null;
+  }
+  const v = volumes[String(typeID)];
+  return typeof v === "number" && Number.isFinite(v) && v > 0 ? v : null;
+}
+
+function decodeRowFields(fields: Record<string, JsonValue>, volumes: VolumeMap | undefined): InventoryItemRow {
   const quantity = toNumber(fields.quantity);
   const stacksize = toNumber(fields.stacksize);
+  const typeID = toNumber(fields.typeID);
   return {
     itemID: toNumber(fields.itemID),
-    typeID: toNumber(fields.typeID),
+    typeID,
     groupID: toNumberOrNull(fields.groupID),
     categoryID: toNumberOrNull(fields.categoryID),
     flagID: toNumberOrNull(fields.flagID),
     quantity: quantity || stacksize,
     singleton: toNumber(fields.singleton) === 1,
+    volume: volumeFor(typeID, volumes),
   };
 }
 
-/** Decode an invbroker List result into plain rows; malformed rows are dropped. */
-export function decodeInventoryRows(result: JsonValue): InventoryItemRow[] {
+/**
+ * Decode an invbroker List result into plain rows; malformed rows are dropped.
+ * `volumes` (from the inventory read) attaches per-unit m³ where known.
+ */
+export function decodeInventoryRows(result: JsonValue, volumes?: VolumeMap): InventoryItemRow[] {
   const listValue = unwrapRowList(result);
   if (!isListValue(listValue)) {
     return [];
@@ -98,7 +114,7 @@ export function decodeInventoryRows(result: JsonValue): InventoryItemRow[] {
       candidate.fields !== null
         ? (candidate.fields as Record<string, JsonValue>)
         : (item as Record<string, JsonValue>);
-    const row = decodeRowFields(fields);
+    const row = decodeRowFields(fields, volumes);
     if (row.itemID > 0) {
       rows.push(row);
     }
@@ -124,9 +140,10 @@ export function decodeContainer(
   list: JsonValue,
   capacity: JsonValue,
   error: string | null,
+  volumes?: VolumeMap,
 ): InventoryContainerState {
   return {
-    rows: list === null || list === undefined ? [] : decodeInventoryRows(list),
+    rows: list === null || list === undefined ? [] : decodeInventoryRows(list, volumes),
     capacity: capacity === null || capacity === undefined ? null : decodeCapacity(capacity),
     error,
   };

@@ -20,6 +20,8 @@
   import { onMount } from "svelte";
   import MiningBot from "./MiningBot.svelte";
   import MissionBot from "./MissionBot.svelte";
+  import { listBotScripts, getBotScript, type BotScriptSummary } from "../app/api.ts";
+  import { decodeScriptValue } from "../bots/scriptCodec.ts";
   import {
     BOTS,
     MINING_BOT_REQUIREMENTS,
@@ -54,6 +56,39 @@
 
   /** Which bot's controls are open. Local view state, never the store's. */
   let opened = $state<BotID | null>(null);
+
+  // The player's saved bots (from the web server) that can be launched here.
+  let savedBots = $state<BotScriptSummary[]>([]);
+  let savedError = $state<string | null>(null);
+  async function refreshSavedBots(): Promise<void> {
+    try {
+      savedBots = await listBotScripts();
+      savedError = null;
+    } catch {
+      savedBots = [];
+      savedError = "Could not load your saved bots — are you still logged in?";
+    }
+  }
+  async function startSaved(scriptID: string): Promise<void> {
+    try {
+      const record = await getBotScript(scriptID);
+      if (record === null) {
+        savedError = "That bot could not be found.";
+        return;
+      }
+      const decoded = decodeScriptValue(record.doc);
+      if (!decoded.ok) {
+        savedError = decoded.refusal;
+        return;
+      }
+      await flow.startCustomBot(decoded.doc);
+    } catch {
+      savedError = "Could not start that bot.";
+    }
+  }
+  onMount(() => {
+    void refreshSavedBots();
+  });
 
   /**
    * The reads BEHIND THE CHECKLIST, and they are deliberately the store's.
@@ -219,6 +254,23 @@
 </section>
 
 <section>
+  <h2>Your bots</h2>
+  {#if savedError}<p class="note error">{savedError}</p>{/if}
+  {#if savedBots.length === 0}
+    <p class="note">No saved bots yet. Build one in the Bot Builder tab, then Save it.</p>
+  {:else}
+    <ul class="saved-bots">
+      {#each savedBots as meta (meta.scriptID)}
+        <li class="saved-bot">
+          <span class="saved-name">{meta.name}</span>
+          <button class="primary" onclick={() => startSaved(meta.scriptID)}>Start</button>
+        </li>
+      {/each}
+    </ul>
+  {/if}
+</section>
+
+<section>
   <h2>What you can run</h2>
   <div class="bot-list">
     {#each BOTS as entry (entry.id)}
@@ -337,6 +389,30 @@
   }
   /* R8 — a comfortable target on a phone. */
   .bot-card button {
+    min-height: 40px;
+  }
+  .saved-bots {
+    list-style: none;
+    margin: 0.4rem 0 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+  }
+  .saved-bot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.6rem;
+    border: 1px solid var(--color-row-line);
+    border-radius: 4px;
+    background: var(--color-panel-3);
+    padding: 0.5rem 0.6rem;
+  }
+  .saved-name {
+    color: var(--color-text-bright);
+  }
+  .saved-bot button {
     min-height: 40px;
   }
 </style>

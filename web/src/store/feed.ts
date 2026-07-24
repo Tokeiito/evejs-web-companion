@@ -746,6 +746,21 @@ export type FeedEvent =
     }
   | { readonly type: "mission-bot/start-error"; readonly message: string | null }
   | { readonly type: "mission-bot/cleared" }
+  // The player Bot Builder runner's readout (pushed each tick; survives the shell switch).
+  | { readonly type: "custom-bot/started"; readonly name: string }
+  | {
+      readonly type: "custom-bot/progress";
+      readonly status: "idle" | "running" | "paused" | "stopped" | "error";
+      readonly phase: string | null;
+      readonly why: string | null;
+      readonly stepPath: string | null;
+      readonly interruptID: string | null;
+      readonly pauseReason: string | null;
+      /** The run board as one line ("Working with <agent>"), or null. */
+      readonly note?: string | null;
+    }
+  | { readonly type: "custom-bot/start-error"; readonly message: string | null }
+  | { readonly type: "custom-bot/cleared" }
   // Goal R7 — the Chat panel (Local + Corp). A channel read completed (roster +
   // recent backlog) — the panel polls while open (READ is a backlog poll).
   | {

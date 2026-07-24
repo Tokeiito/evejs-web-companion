@@ -12,6 +12,7 @@
   import PanelHost from "./PanelHost.svelte";
   import StationShell from "./StationShell.svelte";
   import SpaceShell from "./SpaceShell.svelte";
+  import CustomBotReadout from "./CustomBotReadout.svelte";
   import { deriveDocked, visibleTabsFor, type TabID } from "./tabs.ts";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
@@ -78,6 +79,11 @@
       onHome={() => (selected = null)}
     />
     <main class="app-main">
+      <!-- A running player bot's readout, ABOVE the tab/shell switch so it stays
+           visible on every tab and in both shells (docked and in space) while it
+           runs, and renders nothing when none is. This is why it survives the
+           undock shell switch that hid it before. -->
+      <CustomBotReadout {store} {flow} />
       {#if effective !== null}
         <PanelHost {store} {flow} tab={effective} onOpen={open} />
       {:else if isDocked}

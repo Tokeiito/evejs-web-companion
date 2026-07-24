@@ -35,6 +35,7 @@
     isOpenableContainer,
   } from "../bridge/inventoryShip.ts";
   import { presentBays, unreadableBays } from "../bridge/shipBays.ts";
+  import { holdFreeM3, unitsThatFit } from "../bridge/holdFit.ts";
   import { BridgeCallError } from "../bridge/callMethod.ts";
   import { isSessionLost } from "../app/flow.ts";
   // R27 — the shared item icon: one cached picture per thing, falling back
@@ -156,6 +157,13 @@
     void run(async () => {
       await flow.loadInventory();
       await flow.loadCorpHangar();
+      // Open the ACTIVE ship's holds up front, so its Ore hold (and its free
+      // space, for the fit) is offered as a move destination without the player
+      // having to expand the ship by hand.
+      const activeID = store.inventory.get().activeShipID;
+      if (activeID !== null) {
+        await flow.openShipBays(activeID).catch(() => {});
+      }
     });
   });
 
@@ -324,6 +332,23 @@
     if ($inventory.activeShipID && !samePlace(current, { kind: "cargo" })) {
       options.push({ label: "Ship cargo", place: { kind: "cargo" } });
     }
+    // The ACTIVE ship's specialty holds (Ore hold, etc.) — a valid move target
+    // only for the ship you are flying, and only once its bays have been read.
+    // Cargo is already offered above, so it is skipped here. The server still
+    // judges whether a given type belongs in a given hold; this only offers the
+    // destination and (below) sends the amount that fits.
+    const active = $inventory.openShip;
+    if (active && active.itemID === $inventory.activeShipID) {
+      for (const bay of active.bays) {
+        if (bay.present !== true || bay.key === "cargo") {
+          continue;
+        }
+        const place: InventoryPlace = { kind: "shipBay", bay: bay.key };
+        if (!samePlace(current, place)) {
+          options.push({ label: bay.label, place });
+        }
+      }
+    }
     const container = $inventory.container;
     if (container && !samePlace(current, { kind: "container", itemID: container.itemID })) {
       options.push({
@@ -345,12 +370,40 @@
     return options;
   });
 
+  /** The active ship's bay by key, or null (only the ship you're flying counts). */
+  function activeBayByKey(key: string): ShipBay | null {
+    const active = $inventory.openShip;
+    if (!active || active.itemID !== $inventory.activeShipID) {
+      return null;
+    }
+    return active.bays.find((bay) => bay.key === key) ?? null;
+  }
+
   async function moveSelectionTo(destination: InventoryPlace): Promise<void> {
     const from = selectionPlace;
     if (!from || selection.length === 0) {
       return;
     }
-    const qty = selection.length === 1 ? qtyArg() : null;
+    let qty = selection.length === 1 ? qtyArg() : null;
+    // Moving a SINGLE stack into a ship hold: send only what fits, so the server
+    // is never asked to overflow the hold (which it refuses outright rather than
+    // partially filling). A quantity the player TYPED still wins — they asked for
+    // a specific amount; otherwise we compute the fit from the hold's free space
+    // and the item's per-unit volume. Unknown volume/capacity → whole stack, and
+    // the server draws the line.
+    if (destination.kind === "shipBay" && selection.length === 1 && qty === null) {
+      const row = selectedRows[0];
+      const bay = activeBayByKey(destination.bay);
+      if (row) {
+        const fit = unitsThatFit(row.quantity, row.volume, holdFreeM3(bay?.capacity));
+        if (fit <= 0) {
+          error = `The ${bay?.label ?? "hold"} has no room for that.`;
+          return;
+        }
+        // Only send a quantity for a PARTIAL move; the whole stack keeps qty null.
+        qty = fit < row.quantity ? fit : null;
+      }
+    }
     await run(async () => {
       await flow.transferItems([...selection], from, destination, qty);
       selectionPlace = null;
@@ -597,56 +650,6 @@
   {/if}
 </section>
 
-{#if selectedCount > 0 && selectionPlace}
-  <section class="bulk">
-    <h2>{selectedCount} selected in {placeName(selectionPlace)}</h2>
-    <p class="row-actions">
-      {#each destinations as destination (destination.label)}
-        <button type="button" disabled={busy} onclick={() => moveSelectionTo(destination.place)}>
-          Move to {destination.label}
-        </button>
-      {/each}
-      {#if mergeable}
-        <button type="button" class="minor" disabled={busy} onclick={() => mergeSelection()}>
-          Merge the two stacks
-        </button>
-      {/if}
-      <button
-        type="button"
-        class="minor"
-        disabled={busy}
-        onclick={() => {
-          flow.clearSelection();
-          selectionPlace = null;
-          trashArmed = false;
-        }}
-      >
-        Clear selection
-      </button>
-    </p>
-    <p class="row-actions">
-      <!-- Two-step destroy: the first press only arms it. -->
-      {#if trashArmed}
-        <button type="button" class="danger" disabled={busy} onclick={() => trashSelection()}>
-          Destroy {selectedCount} permanently — confirm
-        </button>
-        <button type="button" class="minor" disabled={busy} onclick={() => (trashArmed = false)}>
-          Cancel
-        </button>
-      {:else}
-        <button type="button" class="minor" disabled={busy} onclick={() => (trashArmed = true)}>
-          Trash…
-        </button>
-      {/if}
-    </p>
-    {#if trashArmed}
-      <p class="error">
-        Trashing destroys these items permanently. There is no way to get them back.
-      </p>
-    {/if}
-  </section>
-{/if}
-
 <!-- ============================================================ CARD 1 — SHIPS -->
 <section>
   <h2>Your ships</h2>
@@ -771,6 +774,59 @@
     {/if}
   {/if}
 </section>
+
+<!-- The move bar sits DIRECTLY ABOVE the hangar (and below the ship's holds),
+     because that is where a selection is made and where its destination buttons
+     need to be visible without scrolling back to the top of the page. -->
+{#if selectedCount > 0 && selectionPlace}
+  <section class="bulk">
+    <h2>{selectedCount} selected in {placeName(selectionPlace)}</h2>
+    <p class="row-actions">
+      {#each destinations as destination (destination.label)}
+        <button type="button" disabled={busy} onclick={() => moveSelectionTo(destination.place)}>
+          Move to {destination.label}
+        </button>
+      {/each}
+      {#if mergeable}
+        <button type="button" class="minor" disabled={busy} onclick={() => mergeSelection()}>
+          Merge the two stacks
+        </button>
+      {/if}
+      <button
+        type="button"
+        class="minor"
+        disabled={busy}
+        onclick={() => {
+          flow.clearSelection();
+          selectionPlace = null;
+          trashArmed = false;
+        }}
+      >
+        Clear selection
+      </button>
+    </p>
+    <p class="row-actions">
+      <!-- Two-step destroy: the first press only arms it. -->
+      {#if trashArmed}
+        <button type="button" class="danger" disabled={busy} onclick={() => trashSelection()}>
+          Destroy {selectedCount} permanently — confirm
+        </button>
+        <button type="button" class="minor" disabled={busy} onclick={() => (trashArmed = false)}>
+          Cancel
+        </button>
+      {:else}
+        <button type="button" class="minor" disabled={busy} onclick={() => (trashArmed = true)}>
+          Trash…
+        </button>
+      {/if}
+    </p>
+    {#if trashArmed}
+      <p class="error">
+        Trashing destroys these items permanently. There is no way to get them back.
+      </p>
+    {/if}
+  </section>
+{/if}
 
 <!-- ================================================ CARD 2 — HANGAR INVENTORY -->
 <section>

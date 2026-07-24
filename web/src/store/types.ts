@@ -80,6 +80,15 @@ export interface InventoryItemRow {
   readonly flagID: number | null;
   readonly quantity: number;
   readonly singleton: boolean;
+  /**
+   * m³ PER UNIT, from static reference data (attached to the hangar/cargo read
+   * the same way the assets route attaches it). Lets the browser work out how
+   * much of a stack fits in a hold before trying the move. `null`/absent means
+   * the static tables do not know the type OR the row came from a read that does
+   * not carry volume (ship-bay contents) — the UI treats that as "unknown", never
+   * zero, and falls back to letting the server judge the fit.
+   */
+  readonly volume?: number | null;
 }
 
 /** Decoded invbroker.GetCapacity result (util.KeyVal {capacity, used}). */
@@ -1813,6 +1822,24 @@ export type MiningBotRunState = "idle" | "running" | "paused" | "stopped" | "err
  * `holdUsed` / `holdCapacity` are null for UNKNOWN, never 0: a hull that did not
  * report a capacity must not render as an empty hold with room to spare.
  */
+/**
+ * The player Bot Builder runner's live readout (a browser loop pushes it here so
+ * it survives dock/undock and the shell switch — the bug the first cut hit when
+ * this lived in the docked-only editor component).
+ */
+export interface CustomBotState {
+  readonly status: "idle" | "running" | "paused" | "stopped" | "error";
+  readonly name: string | null;
+  readonly phase: string | null;
+  readonly why: string | null;
+  readonly stepPath: string | null;
+  readonly interruptID: string | null;
+  readonly pauseReason: string | null;
+  /** The run board as one line ("Working with <agent>"), or null. */
+  readonly note: string | null;
+  readonly startError: string | null;
+}
+
 export interface MiningBotState {
   readonly status: MiningBotRunState;
   /** Where in the loop it is ("Mining", "Hauling", "Docking"). */

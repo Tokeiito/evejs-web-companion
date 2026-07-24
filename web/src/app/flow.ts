@@ -135,11 +135,14 @@ import {
 import {
   createMiningBot,
   destinationHold,
+  holdItemIDs,
   holdShouldHaul,
+  lowestHealth,
   type MiningBotController,
   type MiningBotDeps,
   type MiningPlan,
 } from "../nav/miningBotLoop.ts";
+import { canMyShipOrderDrone, hostileRows } from "../space/overview.ts";
 // R43 — one declaration of which bots exist, what each needs before it can
 // start, and who is allowed to hold the ship.
 import {
@@ -150,7 +153,7 @@ import {
   type MiningBotReads,
   type MissionBotReads,
 } from "../nav/botRegistry.ts";
-import { highSlotMiningModules, ungroupedHighSlotModules } from "../space/rowActions.ts";
+import { highSlotMiningModules, isDockableKind, ungroupedHighSlotModules } from "../space/rowActions.ts";
 import {
   DEFAULT_MAX_JUMPS,
   createMissionBot,
@@ -158,6 +161,19 @@ import {
   type MissionBotDeps,
   type MissionPlan,
 } from "../nav/missionBotLoop.ts";
+// Player Bot Builder runner — the fourth decide-loop, composing the SAME calls
+// the mining/mission bots fire, driven by the player's blocks.
+import {
+  createScriptRunner,
+  type ScriptRunnerController,
+  type ScriptRunnerDeps,
+} from "../nav/scriptRunner.ts";
+import { SCRIPT_MACROS, scriptTravelHome } from "../nav/scriptMacros.ts";
+import type { ScriptObservation } from "../nav/scriptConditions.ts";
+import { decodeFullState } from "../bridge/boundSmallServices.ts";
+import { decodeFittings } from "../bridge/fittings.ts";
+import { decodeActiveBookmarks } from "../bridge/bookmarks.ts";
+import type { BotScript } from "../bots/botScript.ts";
 
 /**
  * What the player asked the mission bot to do (goal R36).
@@ -676,6 +692,24 @@ export interface AppFlow {
   resumeMissionBot(): void;
   /** Stop it (it stops, stops the autopilot, and never calls the bridge again). */
   stopMissionBot(): void;
+  // --- Player Bot Builder runner (the fourth decide-loop) ----------------
+  /** Start a player-built script; the live readout is pushed to `store.customBot`. */
+  startCustomBot(doc: BotScript): Promise<void>;
+  /** Pause it (it stops issuing; the ship finishes its last move). */
+  pauseCustomBot(): void;
+  /** Resume a paused script from where it stopped. */
+  resumeCustomBot(): void;
+  /** Stop it (it stops and never calls the bridge again). */
+  stopCustomBot(): void;
+  /** The character's saved-fitting library (for the Bot Builder's fitting picker). */
+  listSavedFittings(): Promise<readonly import("../bridge/fittings.ts").SavedFitting[]>;
+  /** The character's saved bookmarks (for the Bot Builder's saved-spot picker). */
+  listBookmarks(): Promise<readonly { bookmarkID: number; name: string }[]>;
+  /**
+   * Manual escape hatch: stop every loop, recall drones, and dock at the nearest
+   * station on grid. Always available while a bot runs — the operator's override.
+   */
+  panicRecallAndDock(): Promise<void>;
   /** Pause the autopilot loop (it stops issuing; the ship finishes its last move). */
   pauseRoute(): void;
   /** Resume a paused autopilot loop from where it stopped. */
@@ -1119,8 +1153,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       type: "inventory/loaded",
       stationID: panel.stationID,
       activeShipID: panel.activeShipID,
-      hangar: decodeContainer(panel.hangar.list, panel.hangar.capacity, panel.hangar.error),
-      cargo: decodeContainer(panel.cargo.list, panel.cargo.capacity, panel.cargo.error),
+      hangar: decodeContainer(panel.hangar.list, panel.hangar.capacity, panel.hangar.error, panel.volumes),
+      cargo: decodeContainer(panel.cargo.list, panel.cargo.capacity, panel.cargo.error, panel.volumes),
     });
   }
 
@@ -2496,6 +2530,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     if (status.inSpace) {
       resumeSpacePolling();
     }
+    // Once the ship is NOT docked, forget which station the panels are synced to,
+    // so the NEXT dock reconciles the docked context even if it is the SAME
+    // station we left. Without this, a bot that undocks, mines, and returns home
+    // re-docks at `syncedStationID` and `syncDockedStation` skips the refresh —
+    // leaving the docked panel stale/empty after the round trip.
+    if (!status.docked) {
+      syncedStationID = null;
+    }
     void resolveFlightLocation(status);
     return syncDockedStation(status);
   }
@@ -2514,6 +2556,37 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         store.apply({ type: "character/offline" });
       }
       throw error;
+    }
+  }
+
+  /**
+   * Docking is not instant — the dock command returns while the ship is still
+   * "landing", so its immediate flight status is usually NOT docked yet. If
+   * nothing is ambiently polling (e.g. no space panel is mounted, or a bot that
+   * had been reading status has stopped), the store never learns the ship
+   * actually docked and the UI stays on the space shell. So after a dock we
+   * re-read a few times until the docked state lands, applying each read (which
+   * flips the shell through the normal funnel). Bounded and best-effort.
+   */
+  async function settleUntilDocked(): Promise<void> {
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      let status: FlightStatus | null = null;
+      try {
+        status = decodeFlightStatus((await api.getFlightStatus(callOptions)).flight);
+      } catch (error) {
+        if (isSessionLost(error)) {
+          stopLiveStream();
+          store.apply({ type: "character/offline" });
+          return;
+        }
+      }
+      if (status !== null) {
+        void observeFlightStatus(status);
+        if (status.docked) {
+          return;
+        }
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1500));
     }
   }
 
@@ -2631,7 +2704,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // is best-effort: it must never make a snapshot read look like a failure.
     refresh: async () => {
       await loadSpaceSnapshot();
-      if (store.space.get().snapshot?.inSpace === true) {
+      // Skip the targets read while the custom bot is running: its own tick already
+      // reads the locks and pushes them to the store, so polling them again here
+      // only doubles the gateway load — the contention that was timing this read
+      // out. The overview's lock list stays fresh from the bot's push. (The poller
+      // stays armed either way, so it resumes reading targets the moment the bot
+      // stops — no re-arm needed.)
+      if (store.space.get().snapshot?.inSpace === true && store.customBot.get().status !== "running") {
         await loadTargets().catch(() => {});
       }
     },
@@ -2719,11 +2798,17 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         store.apply({ type: "character/offline" });
         throw error;
       }
-      // A targets read failing is not fatal to the overview; say so plainly.
-      store.apply({
-        type: "targeting/action-error",
-        message: `The locked-target list could not be read: ${flightRefusalWords(error)}`,
-      });
+      // BEST-EFFORT, and it must STAY quiet on a transient failure. Every caller is
+      // a background beat (the ~1s overview poll, the panel's mount) wrapped in its
+      // own `.catch`, so a one-off gateway timeout here is not news to the player —
+      // and the targeting slice has no self-clearing read-error slot, so surfacing
+      // it would leave a banner stuck on screen long after the very next beat
+      // succeeded. The last-known lock list stays; a real gateway outage still shows
+      // through the snapshot read, which owns the "are we connected" story. So we
+      // swallow it (a console note for diagnosis) rather than alarm over it.
+      if (typeof console !== "undefined") {
+        console.warn("loadTargets: locked-target read failed (transient, ignored)", error);
+      }
       return;
     }
     store.apply({ type: "targeting/targets", targetIDs: decodeTargetIDs(result.targetIDs) });
@@ -4172,6 +4257,771 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     void miningBot.run();
   }
 
+  // --- Player Bot Builder runner --------------------------------------------
+  // The fourth decide-loop. It composes the SAME calls the mining/mission bots
+  // fire; the player's blocks choose which, in which order.
+  let scriptRunner: ScriptRunnerController | null = null;
+  // Bumped on every start/stop/panic. `startCustomBot` awaits a fitting read
+  // before it creates the runner; without this a second Start (or a Stop) during
+  // that gap would leave the FIRST run() loop orphaned and unstoppable — two
+  // loops driving one hull. Whoever bumps last wins; a superseded start bails.
+  let customBotGeneration = 0;
+
+  /**
+   * The ship's fitted mining-module item ids, resolved ONCE at start (the same
+   * high-slot + resolved-group rule the mining bot's preflight uses). The mine
+   * block runs exactly these; empty when the fit could not be read.
+   */
+  async function resolveMiningModuleIDs(): Promise<readonly number[]> {
+    try {
+      await loadFitting();
+      const fit = store.fitting.get();
+      if (fit.slotsError !== null) {
+        return [];
+      }
+      await resolveNamesNow(
+        fit.slots
+          .filter((slot) => slot.module !== null)
+          .flatMap((slot) => [
+            { kind: "type" as const, id: slot.module!.typeID },
+            { kind: "typeGroup" as const, id: slot.module!.typeID },
+          ]),
+      );
+      const resolved = store.names.get().resolved;
+      const nameOf = (typeID: number): string | null => resolved[nameKey("type", typeID)] ?? null;
+      const groupOf = (typeID: number): string | null => resolved[nameKey("typeGroup", typeID)] ?? null;
+      return highSlotMiningModules(fit.slots, nameOf, groupOf).map((row) => row.itemID);
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * The fitted SALVAGERS, by the game's own group name ("Salvager") — the same
+   * resolve-then-judge pass the miner resolution makes. Runs after
+   * resolveMiningModuleIDs, so the names are already in the cache.
+   */
+  /**
+   * The fitted DEFENSE modules by the game's own group names, for the repair
+   * watch and the hardeners block. Same resolve-then-judge pass as the miners;
+   * runs after resolveMiningModuleIDs so the names are already cached. Reps live
+   * in mids/lows, so every family is scanned (not just high slots).
+   */
+  function resolveDefenseModuleIDs(): {
+    readonly shield: readonly number[];
+    readonly armor: readonly number[];
+    readonly hull: readonly number[];
+    readonly hardeners: readonly number[];
+    readonly weapons: readonly number[];
+  } {
+    const fit = store.fitting.get();
+    const shield: number[] = [];
+    const armor: number[] = [];
+    const hull: number[] = [];
+    const hardeners: number[] = [];
+    const weapons: number[] = [];
+    if (fit.slotsError === null) {
+      const resolved = store.names.get().resolved;
+      for (const slot of fit.slots) {
+        if (slot.module === null || !slot.module.online || slot.family === "rig" || slot.family === "subsystem") {
+          continue;
+        }
+        const group = resolved[nameKey("typeGroup", slot.module.typeID)] ?? null;
+        if (group === null) {
+          continue; // cannot tell what it is — never run a mystery module
+        }
+        if (/shield boost/i.test(group)) {
+          shield.push(slot.module.itemID);
+        } else if (/armor repair/i.test(group)) {
+          armor.push(slot.module.itemID);
+        } else if (/hull repair/i.test(group)) {
+          hull.push(slot.module.itemID);
+        } else if (/hardener|damage control|resistance/i.test(group)) {
+          hardeners.push(slot.module.itemID);
+        } else if (slot.family === "high" && /weapon|launcher|turret/i.test(group)) {
+          // "Projectile Weapon", "Hybrid Weapon", "Energy Weapon", "Missile
+          // Launcher …" — the game's own turret/launcher groups, high slots only.
+          weapons.push(slot.module.itemID);
+        }
+      }
+    }
+    return { shield, armor, hull, hardeners, weapons };
+  }
+
+  function resolveSalvageModuleIDs(): readonly number[] {
+    const fit = store.fitting.get();
+    if (fit.slotsError !== null) {
+      return [];
+    }
+    const resolved = store.names.get().resolved;
+    const ids: number[] = [];
+    for (const slot of fit.slots) {
+      if (slot.family !== "high" || slot.module === null || !slot.module.online) {
+        continue;
+      }
+      const group = resolved[nameKey("typeGroup", slot.module.typeID)] ?? null;
+      if (group !== null && /salvager/i.test(group)) {
+        ids.push(slot.module.itemID);
+      }
+    }
+    return ids;
+  }
+
+  // Which mission blocks need which extra reads — so a mining bot's tick never
+  // pays for an agent-conversation read (the observe HINT gates them).
+  const MISSION_MACROS = new Set([
+    "find-distribution-agent",
+    "request-mission",
+    "accept-mission",
+    "load-mission-cargo",
+    "travel-to-dropoff",
+    "turn-in-mission",
+    "return-to-agent",
+    "find-combat-agent",
+    "fly-to-mission-site",
+  ]);
+  const CONVO_MACROS = new Set(["request-mission", "accept-mission", "turn-in-mission"]);
+  const CARGO_MACROS = new Set(["accept-mission", "load-mission-cargo", "turn-in-mission", "unload-cargo", "refine-ore", "refit-ship", "move-items", "repair-ship"]);
+
+  interface DefenseModuleIDs {
+    readonly shield: readonly number[];
+    readonly armor: readonly number[];
+    readonly hull: readonly number[];
+    readonly hardeners: readonly number[];
+    readonly weapons: readonly number[];
+  }
+  const NO_DEFENSE: DefenseModuleIDs = { shield: [], armor: [], hull: [], hardeners: [], weapons: [] };
+
+  function makeScriptRunnerDeps(
+    miningModuleIDs: readonly number[],
+    startingStationID: number | null,
+    salvageModuleIDs: readonly number[] = [],
+    defense: DefenseModuleIDs = NO_DEFENSE,
+  ): ScriptRunnerDeps {
+    // One finder result per run: the found agent does not change under the bot.
+    let foundAgentCache: NonNullable<ScriptObservation["foundAgent"]> | null = null;
+    return {
+      observe: async (hint) => {
+        const [flightStep, spaceResult, targetsResult, holdsResult, dronesResult] = await Promise.all([
+          api.getFlightStatus(callOptions),
+          api.getSpaceSnapshot(callOptions),
+          api.getTargets(callOptions),
+          api.getMiningHolds(callOptions),
+          api.getDrones(callOptions),
+        ]);
+        const status = decodeFlightStatus(flightStep.flight);
+        void observeFlightStatus(status);
+        const snapshot = decodeSpaceSnapshot(spaceResult.space);
+        store.apply({ type: "space/snapshot", snapshot, gateLinks: gateLinksForSnapshot(snapshot) });
+        const lockedTargetIDs = decodeTargetIDs(targetsResult.targetIDs);
+        store.apply({ type: "targeting/targets", targetIDs: lockedTargetIDs });
+        const holds = decodeMiningHolds(holdsResult.holds);
+        store.apply({ type: "mining/holds", holds });
+        const bay = decodeDroneBay(dronesResult.bay);
+        const droneBayItemIDs = bay === null ? null : bay.map((stack) => stack.itemID);
+
+        const ship = snapshot?.ship ?? null;
+        const hold = destinationHold(holds);
+        const capacity = hold?.capacity ?? null;
+        const used = capacity?.used ?? null;
+        const total = capacity?.capacity ?? null;
+        const oreHoldFraction =
+          typeof used === "number" && typeof total === "number" && total > 0 ? used / total : null;
+        const holdEmpty = holds === null ? null : holdItemIDs(holds).length === 0;
+        const origin = ship?.position ?? { x: 0, y: 0, z: 0 };
+        const hostileOnGrid = snapshot === null ? null : hostileRows(snapshot, origin).length > 0;
+        const dronesOut =
+          snapshot === null
+            ? null
+            : snapshot.entities.some((entity) => canMyShipOrderDrone(entity, ship?.itemID ?? null));
+
+        // ── Mission reads, gated by the active block (see MISSION_MACROS). Every
+        // read is best-effort: a failure lands as null (unreadable, never "no").
+        const macro = hint.activeMacro;
+        const boardAgentID =
+          typeof hint.board["agentID"] === "number" ? (hint.board["agentID"] as number) : null;
+        let conversation: ScriptObservation["conversation"] = null;
+        let briefing: ScriptObservation["briefing"] = null;
+        let journal: ScriptObservation["journal"] = null;
+        let cargo: ScriptObservation["cargo"] = null;
+        let stationHangar: ScriptObservation["stationHangar"] = null;
+        let foundAgent: ScriptObservation["foundAgent"] = null;
+        let jumpsToDropoff: ScriptObservation["jumpsToDropoff"] = null;
+        let anomalies: ScriptObservation["anomalies"] = null;
+        let savedFittings: ScriptObservation["savedFittings"] = null;
+        let colonies: ScriptObservation["colonies"] = null;
+        let damagedItemIDs: ScriptObservation["damagedItemIDs"] = null;
+        if (macro === "repair-ship" && status.docked) {
+          try {
+            // Quote the ACTIVE SHIP and everything fitted to it; the ids with a
+            // non-empty quote row list are what the shop calls damaged.
+            const shipID = store.inventory.get().activeShipID;
+            const fitted = store.fitting
+              .get()
+              .slots.filter((slot) => slot.module !== null)
+              .map((slot) => slot.module!.itemID);
+            const targets = [...(shipID !== null ? [shipID] : []), ...fitted];
+            if (targets.length > 0) {
+              const raw = await api.getRepairQuotes(targets, callOptions);
+              const dict =
+                raw !== null && typeof raw === "object" && !Array.isArray(raw) && (raw as { type?: unknown }).type === "dict"
+                  ? ((raw as { entries?: unknown }).entries as readonly [unknown, unknown][] | undefined) ?? []
+                  : [];
+              damagedItemIDs = dict
+                .filter(([, rows]) => {
+                  const list = rows as { items?: unknown } | null;
+                  return Array.isArray(list?.items) && list.items.length > 0;
+                })
+                .map(([id]) => Number(id))
+                .filter((id) => Number.isSafeInteger(id) && id > 0);
+            } else {
+              damagedItemIDs = null;
+            }
+          } catch {
+            damagedItemIDs = null;
+          }
+        }
+        if (macro === "restart-extractors") {
+          try {
+            const readAt = Date.now();
+            const report = decodeColonyReport((await api.getPlanets(callOptions)).planets, readAt);
+            // Expiries below are judged against the SERVER clock via the offset.
+            colonies = report.colonies.map((colony) => ({
+              planetID: colony.planetID,
+              planetName: colony.planetName,
+              extractors: colony.pins
+                .filter((pin) => pin.kind === "extractor-control" || pin.kind === "extractor")
+                .map((pin) => ({
+                  pinID: pin.pinID,
+                  resourceTypeID: pin.program?.resourceTypeID ?? null,
+                  expiresAtMs:
+                    pin.program?.expiresAtMs === null || pin.program?.expiresAtMs === undefined
+                      ? null
+                      : pin.program.expiresAtMs - report.clockOffsetMs,
+                })),
+            }));
+          } catch {
+            colonies = null;
+          }
+        }
+        let bookmarks: ScriptObservation["bookmarks"] = null;
+        if (macro === "warp-to-bookmark" || macro === "fly-to-mission-site") {
+          try {
+            const active = decodeActiveBookmarks(await api.loadActiveBookmarks(callOptions));
+            const folderName = new Map(active.folders.map((f) => [f.folderID, f.folderName]));
+            bookmarks = active.bookmarks.map((bm) => ({
+              bookmarkID: bm.bookmarkID,
+              name: bm.memo,
+              solarSystemID: bm.locationID > 0 ? bm.locationID : null,
+              folderName: folderName.get(bm.folderID) ?? null,
+              hasSpot: bm.x !== null && bm.y !== null && bm.z !== null,
+            }));
+          } catch {
+            bookmarks = null;
+          }
+        }
+        let activeShipID: ScriptObservation["activeShipID"] = null;
+        if (macro === "refit-ship") {
+          try {
+            savedFittings = decodeFittings(await api.loadSavedFittings(callOptions));
+          } catch {
+            savedFittings = null;
+          }
+        }
+        if (macro === "warp-to-anomaly") {
+          try {
+            const full = decodeFullState(await api.loadScanFullState(callOptions));
+            anomalies = full.anomalies
+              .map((site) => site.targetID)
+              .filter((label): label is string => label !== null);
+          } catch {
+            anomalies = null;
+          }
+        }
+        // The travel reading is a synchronous look at the shared autopilot — no
+        // gateway call — so EVERY tick carries it (travel-to-station rides it too).
+        const travel: ScriptObservation["travel"] = autopilot
+          ? {
+              status: autopilot.snapshot().status,
+              destinationStationID: store.travel.get().destinationStationID,
+              remainingJumps: autopilot.snapshot().remainingJumps,
+              failureReason: autopilot.snapshot().failureReason,
+            }
+          : null;
+        if (macro !== null && (MISSION_MACROS.has(macro) || CARGO_MACROS.has(macro))) {
+          if (MISSION_MACROS.has(macro)) {
+            try {
+              journal = decodeJournal(await api.loadJournal(callOptions));
+              store.apply({ type: "agents/journal", journal });
+            } catch {
+              journal = null;
+            }
+          }
+          if (boardAgentID !== null && CONVO_MACROS.has(macro)) {
+            try {
+              // Opening the conversation re-mints the button tokens — read fresh
+              // every tick that could press one, never cached (the R35 rule).
+              const result = await api.agentAction(boardAgentID, null, callOptions);
+              conversation = decodeConversation(result);
+              store.apply({ type: "agents/conversation", agentID: boardAgentID, conversation });
+            } catch {
+              conversation = null;
+            }
+          }
+          if (boardAgentID !== null && macro !== "find-distribution-agent" && macro !== "return-to-agent") {
+            try {
+              const reads = await api.loadBriefing(boardAgentID, callOptions);
+              briefing = decodeBriefing(reads.briefing, reads.objective);
+            } catch {
+              briefing = null;
+            }
+          }
+          if (CARGO_MACROS.has(macro)) {
+            try {
+              const panel = await api.loadInventory(callOptions);
+              cargo = {
+                rows: decodeInventoryRows(panel.cargo.list),
+                capacity: decodeCapacity(panel.cargo.capacity),
+              };
+              stationHangar = status.docked ? decodeInventoryRows(panel.hangar.list) : null;
+              activeShipID = panel.activeShipID;
+            } catch {
+              cargo = null;
+              stationHangar = null;
+            }
+          }
+          if (macro === "accept-mission" && briefing?.destinationSystemID != null) {
+            try {
+              const origin = status.solarSystemID;
+              if (origin !== null) {
+                const graph = await loadRouteGraph();
+                jumpsToDropoff =
+                  origin === briefing.destinationSystemID
+                    ? 0
+                    : (distancesFrom(graph, origin).get(briefing.destinationSystemID) ?? null);
+              }
+            } catch {
+              jumpsToDropoff = null;
+            }
+          }
+          if ((macro === "find-distribution-agent" || macro === "find-combat-agent") && boardAgentID === null) {
+            if (foundAgentCache !== null) {
+              foundAgent = foundAgentCache;
+            } else if (typeof hint.board["findLevel"] === "number") {
+              try {
+                // Distribution missions come from COURIER agents — the same static
+                // finder table the Agent Finder page reads. Filter by corp, rank
+                // by jumps from here, honour the player's ceiling.
+                const found = await api.findAgents(
+                  {
+                    kind: typeof hint.board["findKind"] === "string" ? (hint.board["findKind"] as string) : "courier",
+                    level: hint.board["findLevel"] as number,
+                    limit: 200,
+                  },
+                  callOptions,
+                );
+                const corpID =
+                  typeof hint.board["findCorpID"] === "number" ? (hint.board["findCorpID"] as number) : null;
+                const maxJumps =
+                  typeof hint.board["findMaxJumps"] === "number" ? (hint.board["findMaxJumps"] as number) : null;
+                const origin = status.solarSystemID;
+                const graph = origin !== null ? await loadRouteGraph() : null;
+                const distances = graph !== null && origin !== null ? distancesFrom(graph, origin) : null;
+                let best: { agent: (typeof found.agents)[number]; jumps: number } | null = null;
+                for (const agent of found.agents) {
+                  if (agent.stationID === null || agent.solarSystemID === null) {
+                    continue; // an agent in space cannot be docked with
+                  }
+                  if (corpID !== null && agent.corporationID !== corpID) {
+                    continue;
+                  }
+                  const jumps =
+                    origin !== null && agent.solarSystemID === origin
+                      ? 0
+                      : (distances?.get(agent.solarSystemID) ?? Number.POSITIVE_INFINITY);
+                  if (maxJumps !== null && jumps > maxJumps) {
+                    continue;
+                  }
+                  if (best === null || jumps < best.jumps) {
+                    best = { agent, jumps };
+                  }
+                }
+                if (best !== null && best.agent.stationID !== null) {
+                  foundAgentCache = {
+                    agentID: best.agent.agentID,
+                    stationID: best.agent.stationID,
+                    name: best.agent.name,
+                    stationName: best.agent.stationName,
+                  };
+                  foundAgent = foundAgentCache;
+                }
+              } catch {
+                foundAgent = null;
+              }
+            }
+          }
+        }
+
+        return {
+          conversation,
+          briefing,
+          journal,
+          cargo,
+          stationHangar,
+          travel,
+          foundAgent,
+          jumpsToDropoff,
+          anomalies,
+          savedFittings,
+          activeShipID,
+          bookmarks,
+          colonies,
+          damagedItemIDs,
+          inSpace: status.inSpace,
+          docked: status.docked,
+          inWarp: status.shipMode === null ? null : /warp/i.test(status.shipMode),
+          shieldRatio: ship?.shieldRatio ?? null,
+          armorRatio: ship?.armorRatio ?? null,
+          hullRatio: ship?.hullRatio ?? null,
+          health: lowestHealth(snapshot),
+          oreHoldFraction,
+          holdEmpty,
+          hostileOnGrid,
+          dronesOut,
+          flightStatus: status,
+          snapshot,
+          lockedTargetIDs,
+          holds,
+          droneBayItemIDs,
+          miningModuleIDs,
+          salvageModuleIDs,
+          shieldRepairerIDs: defense.shield,
+          armorRepairerIDs: defense.armor,
+          hullRepairerIDs: defense.hull,
+          hardenerModuleIDs: defense.hardeners,
+          weaponModuleIDs: defense.weapons,
+          capacitorRatio: ship?.capacitorRatio ?? null,
+          startingStationID,
+          myCharacterID: store.station.get().online?.characterID ?? null,
+          myCorporationID: store.station.get().online?.corporationID ?? null,
+        };
+      },
+      issue: async (action) => {
+        switch (action.kind) {
+          case "wait":
+            return;
+          case "undock":
+            await api.undock(callOptions);
+            return;
+          case "warp":
+            await api.warpTo(action.targetID, AUTOPILOT_WARP_MIN_RANGE_M, callOptions);
+            return;
+          case "approach":
+            await api.approach(action.targetID, 0, callOptions);
+            return;
+          case "align":
+            await api.alignTo(action.targetID, callOptions);
+            return;
+          case "orbit":
+            await api.orbit(action.targetID, action.range, callOptions);
+            return;
+          case "dock":
+            await api.dock(action.stationID, callOptions);
+            return;
+          case "jump":
+            await api.jump(action.fromGateID, action.toGateID, callOptions);
+            return;
+          case "lock":
+            await api.lockTarget(action.targetID, callOptions);
+            return;
+          case "activate":
+            // targetID 0 = a SELF-targeted module (repairer, hardener) — the
+            // target key is omitted so the server activates it on the ship.
+            await api.activateModule(
+              action.moduleID,
+              action.targetID > 0 ? { targetID: action.targetID, repeat: -1 } : { repeat: -1 },
+              callOptions,
+            );
+            return;
+          case "deactivate":
+            await api.deactivateModule(action.moduleID, {}, callOptions);
+            return;
+          case "launchDrones":
+            if (action.droneItemIDs.length > 0) {
+              await api.launchDrones(
+                action.droneItemIDs.map((itemID) => ({ itemID, quantity: 1 })),
+                callOptions,
+              );
+            }
+            return;
+          case "engageDrones":
+            if (action.droneIDs.length > 0) {
+              await api.engageDrones(action.droneIDs, action.targetID, callOptions);
+            }
+            return;
+          case "recallDrones":
+            if (action.droneIDs.length > 0) {
+              await api.recallDrones(action.droneIDs, callOptions);
+            }
+            return;
+          case "unloadOre":
+            if (action.itemIDs.length > 0) {
+              await api.unloadMiningHolds(action.itemIDs, callOptions);
+            }
+            return;
+          case "agentButton": {
+            // The same call the mission bot presses buttons with; the fresh
+            // conversation it answers with lands in the store for the panel.
+            const result = await api.agentAction(action.agentID, action.actionID, callOptions);
+            store.apply({
+              type: "agents/conversation",
+              agentID: action.agentID,
+              conversation: decodeConversation(result),
+            });
+            return;
+          }
+          case "startRoute":
+            // The SHARED autopilot — same solver, same bounds, multi-system.
+            await startRoute(action.stationID);
+            return;
+          case "loadMissionCargo": {
+            // Match on type AND quantity, then the VERIFYING transfer (it
+            // re-reads and judges by the source giving something up). A miss is
+            // not a crash — the block re-reads and retries within its bound.
+            const panel = await api.loadInventory(callOptions);
+            const candidates = decodeInventoryRows(panel.hangar.list).filter(
+              (row) => row.typeID === action.typeID,
+            );
+            const item =
+              candidates.find((row) => row.quantity === action.quantity) ??
+              candidates.find((row) => row.quantity > action.quantity);
+            if (item !== undefined) {
+              await api.transferItems(
+                [item.itemID],
+                { kind: "hangar" },
+                { kind: "cargo" },
+                action.quantity,
+                callOptions,
+              );
+            }
+            return;
+          }
+          case "unloadMissionCargo":
+            if (action.itemIDs.length > 0) {
+              await api.transferItems(
+                [...action.itemIDs],
+                { kind: "cargo" },
+                { kind: "hangar" },
+                null,
+                callOptions,
+              );
+            }
+            return;
+          case "salvageDrones":
+            if (action.droneIDs.length > 0) {
+              await api.salvageDrones(action.droneIDs, action.targetID, callOptions);
+            }
+            return;
+          case "warpScan":
+            await api.warpToScanSite(action.target, 0, callOptions);
+            return;
+          case "warpBookmark":
+            await api.warpToBookmark(action.bookmarkID, 0, callOptions);
+            return;
+          case "restartExtractor":
+            await api.restartExtractorProgram(action.planetID, action.pinID, action.resourceTypeID, callOptions);
+            return;
+          case "repairItems":
+            if (action.itemIDs.length > 0) {
+              await api.repairItems(action.itemIDs, callOptions);
+            }
+            return;
+          case "boardShip":
+            await api.boardShip(action.shipID, callOptions);
+            return;
+          case "moveItems": {
+            const asPlace = (place: string): InventoryPlace =>
+              place === "hangar"
+                ? { kind: "hangar" }
+                : place === "cargo"
+                  ? { kind: "cargo" }
+                  : { kind: "shipBay", bay: "ore" };
+            if (action.itemIDs.length > 0) {
+              await api.transferItems(
+                [...action.itemIDs],
+                asPlace(action.from),
+                asPlace(action.to),
+                action.qty,
+                callOptions,
+              );
+            }
+            return;
+          }
+          case "applyFitting": {
+            // Re-read the library at issue time (never a stale module list), then
+            // hand the server the {flag: type} plan; it pulls from this hangar.
+            const library = decodeFittings(await api.loadSavedFittings(callOptions));
+            const fitting = library.find((f) => f.fittingID === action.fittingID);
+            const stationID = store.flight.get().status?.stationID ?? null;
+            const shipID = store.inventory.get().activeShipID;
+            if (fitting !== undefined && stationID !== null && shipID !== null) {
+              const modulesByFlag: Record<number, number> = {};
+              for (const module of fitting.modules) {
+                if (module.flagID > 0 && module.typeID > 0 && modulesByFlag[module.flagID] === undefined) {
+                  modulesByFlag[module.flagID] = module.typeID;
+                }
+              }
+              await api.applySavedFitting(shipID, stationID, modulesByFlag, callOptions);
+              await loadInventory().catch(() => {});
+            }
+            return;
+          }
+          case "reprocessOre":
+            if (action.itemIDs.length > 0) {
+              // The BFF verifies by re-reading the hangar; the block confirms on
+              // its own next-tick read too, so a silent decline just retries
+              // within the block's bound instead of being believed.
+              await api.reprocessItems(action.itemIDs, callOptions);
+            }
+            return;
+          case "lootWreck": {
+            // Read the wreck's contents, then move the lot into the cargo hold.
+            // The wreck is addressed as a plain container; the transfer route
+            // re-reads and even absorbs the loot-raises-after-move server quirk.
+            const contents = await api.openContainer(action.wreckID, callOptions);
+            const rows = decodeInventoryRows(contents.list);
+            if (rows.length > 0) {
+              await api.transferItems(
+                rows.map((row) => row.itemID),
+                { kind: "container", itemID: action.wreckID },
+                { kind: "cargo" },
+                null,
+                callOptions,
+              );
+            }
+            return;
+          }
+        }
+      },
+      sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+      // The readout goes to the STORE, not a component callback, so it survives
+      // dock/undock and the shell switch (the bug the first cut hit).
+      onProgress: (snapshot) => {
+        store.apply({
+          type: "custom-bot/progress",
+          status: snapshot.status,
+          phase: snapshot.phase,
+          why: snapshot.why,
+          stepPath: snapshot.stepPath,
+          interruptID: snapshot.interruptID,
+          pauseReason: snapshot.pauseReason,
+          note: snapshot.note,
+        });
+        if (snapshot.status === "error") {
+          stopLiveStream();
+          store.apply({ type: "character/offline" });
+        }
+      },
+      isSessionLost,
+      registry: SCRIPT_MACROS,
+      travelHome: scriptTravelHome,
+    };
+  }
+
+  async function startCustomBot(doc: BotScript): Promise<void> {
+    // One hull, one driver. Until the custom bot joins the structural ship claim,
+    // the others are stopped by hand here.
+    const gen = (customBotGeneration += 1);
+    autopilot?.abort();
+    miningBot?.stop();
+    missionBot?.stop();
+    scriptRunner?.stop();
+    store.apply({ type: "custom-bot/started", name: doc.name });
+    // Resolve, ONCE at start, the two runtime facts the blocks need: which fitted
+    // modules are miners, and where "the starting station" is (where we are now).
+    const miningModuleIDs = await resolveMiningModuleIDs();
+    if (gen !== customBotGeneration) {
+      return; // a newer start / a stop / a panic superseded us during the read
+    }
+    const salvageModuleIDs = resolveSalvageModuleIDs();
+    const defense = resolveDefenseModuleIDs();
+    const startStatus = store.flight.get().status;
+    const startingStationID = startStatus !== null && startStatus.docked ? startStatus.stationID : null;
+    scriptRunner = createScriptRunner(makeScriptRunnerDeps(miningModuleIDs, startingStationID, salvageModuleIDs, defense));
+    scriptRunner.start(doc);
+    void scriptRunner.run();
+  }
+
+  /**
+   * The manual escape hatch behind the readout's "Recall drones & dock" button:
+   * stop every loop, bring any controllable drones home, and dock at the nearest
+   * station/structure on grid. A player can always pull the ship to safety by
+   * hand, whatever a bot (or a bug) is doing. Best-effort and bounded — each step
+   * is independent, so a failed recall still attempts the dock.
+   */
+  async function panicRecallAndDock(): Promise<void> {
+    customBotGeneration += 1; // cancel any start still mid-await
+    scriptRunner?.stop();
+    // The player has ended the bot by hand — clear its readout to idle so it
+    // does not linger showing the last thing it was doing ("Mining the rock")
+    // once we are docked. `stop()` alone leaves the slice at status "stopped"
+    // with that stale phase/why still on it.
+    store.apply({ type: "custom-bot/cleared" });
+    autopilot?.abort();
+    miningBot?.stop();
+    missionBot?.stop();
+    await loadSpaceSnapshot().catch(() => {});
+    const snapshot = store.space.get().snapshot;
+    if (snapshot === null) {
+      return;
+    }
+    // Nearest dockable station/structure on grid (centre-to-centre) — where we head.
+    const origin = snapshot.ship?.position ?? null;
+    let best: { readonly itemID: number; readonly d: number } | null = null;
+    for (const entity of snapshot.entities) {
+      if (entity.isSelf || !isDockableKind(entity.kind)) {
+        continue;
+      }
+      const dx = origin ? origin.x - entity.position.x : 0;
+      const dy = origin ? origin.y - entity.position.y : 0;
+      const dz = origin ? origin.z - entity.position.z : 0;
+      const d = dx * dx + dy * dy + dz * dz;
+      if (best === null || d < best.d) {
+        best = { itemID: entity.itemID, d };
+      }
+    }
+
+    // Which drones can this hull still order home, from the freshest snapshot.
+    const dronesStillOut = (): readonly number[] => {
+      const s = store.space.get().snapshot;
+      if (s === null) {
+        return [];
+      }
+      const sid = s.ship?.itemID ?? null;
+      return s.entities.filter((e) => canMyShipOrderDrone(e, sid) === true).map((e) => e.itemID);
+    };
+
+    // The align-out-and-recall move: call the drones home, align toward the exit
+    // so the ship is ready to warp, then HOLD until 0 are left in space before we
+    // let the dock (which warps) proceed — warping with drones out abandons them.
+    // Bounded (~15s) so it can never hang; after that we leave regardless.
+    const out = dronesStillOut();
+    if (out.length > 0) {
+      await recallDrones(out).catch(() => {});
+      if (best !== null) {
+        await api.alignTo(best.itemID, callOptions).catch(() => {});
+      }
+      for (let i = 0; i < 10 && dronesStillOut().length > 0; i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        await loadSpaceSnapshot().catch(() => {});
+      }
+    }
+
+    if (best !== null) {
+      await dockAt(best.itemID);
+    }
+  }
+
   // R7a — search the static map by name so a player can set a destination
   // without knowing EVE IDs. The static /api/map/find read (login-gated, no
   // bridge session) returns systems + stations; we annotate each with jumps from
@@ -4835,6 +5685,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
     async dock(stationID) {
       await runFlightStep("Dock", () => api.dock(stationID, callOptions));
+      // Docking lands a beat later than the command returns; keep reading until
+      // the store sees "docked" so the UI switches back to the station shell.
+      await settleUntilDocked();
     },
     dockAt,
 
@@ -4878,6 +5731,37 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
     stopMissionBot() {
       missionBot?.stop();
+    },
+
+    startCustomBot,
+
+    pauseCustomBot() {
+      scriptRunner?.pause();
+    },
+
+    resumeCustomBot() {
+      if (scriptRunner) {
+        scriptRunner.resume();
+        void scriptRunner.run();
+      }
+    },
+
+    stopCustomBot() {
+      customBotGeneration += 1;
+      scriptRunner?.stop();
+    },
+
+    panicRecallAndDock,
+
+    async listSavedFittings() {
+      return decodeFittings(await api.loadSavedFittings(callOptions));
+    },
+
+    async listBookmarks() {
+      const active = decodeActiveBookmarks(await api.loadActiveBookmarks(callOptions));
+      return active.bookmarks
+        .filter((bm) => bm.memo.length > 0)
+        .map((bm) => ({ bookmarkID: bm.bookmarkID, name: bm.memo }));
     },
 
     pauseRoute() {

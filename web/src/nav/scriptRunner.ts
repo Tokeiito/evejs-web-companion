@@ -1,0 +1,285 @@
+// B2 — the script runner controller: the fourth instance of the proven loop
+// shape (autopilot / mining / mission), driving the pure `decideScriptAction`
+// tick. It owns the run lifecycle and NOTHING about the world — every read, every
+// world call, the sleep, and the session-loss test are injected, so the runner
+// is the same discipline the three shipping bots already follow and is testable
+// with fakes.
+//
+// ⚠ THE DISCIPLINE, UNCHANGED FROM THE OTHER LOOPS:
+//   • ONE call per tick, at most. `decideScriptAction` returns one action.
+//   • A `runToken`, bumped on every start/pause/resume/stop, so a stale `run()`
+//     that was mid-await when the player pressed pause stops driving.
+//   • STATUS IS RE-CHECKED AFTER EVERY await — pause/stop can fire during a read
+//     or an issue, and nothing may be issued afterwards.
+//   • SETTLE TICKS after a world call — a few ticks of not-deciding so the world
+//     reflects what was just done before it is judged (a 200 is not proof).
+//   • Session loss is the one error allowed to end the run; any other failed read
+//     becomes a wait, never a confident empty.
+
+import type { BotScript } from "../bots/botScript.ts";
+import {
+  activeMacroID,
+  decideScriptAction,
+  describeBoard,
+  initialMemory,
+  isWorldCall,
+  type HomeTravelDecider,
+  type MacroRegistry,
+  type ScriptAction,
+  type ScriptBoard,
+  type ScriptMemory,
+} from "./scriptDecide.ts";
+import type { ScriptObservation } from "./scriptConditions.ts";
+
+/**
+ * What the next decide will look at — so `observe` reads ONLY what that macro
+ * needs (a mining block never pays for an agent-conversation read, and the
+ * agent id the mission reads need rides in on the board).
+ */
+export interface ObserveHint {
+  readonly activeMacro: string | null;
+  readonly board: ScriptBoard;
+}
+
+export const SCRIPT_CADENCE_MS = 2000;
+export const SETTLE_TICKS = 2;
+export const MAX_READ_FAILURES = 5;
+
+export type ScriptRunnerStatus = "idle" | "running" | "paused" | "stopped" | "error";
+
+/** The readout pushed to the store every tick. */
+export interface ScriptRunnerSnapshot {
+  readonly status: ScriptRunnerStatus;
+  readonly phase: string | null;
+  readonly why: string | null;
+  readonly stepPath: string | null;
+  readonly interruptID: string | null;
+  readonly pauseReason: string | null;
+  /** The run board as one line ("Working with <agent>"), or null. */
+  readonly note: string | null;
+}
+
+/**
+ * Everything the runner needs from the outside. `observe` builds a fresh
+ * observation from live reads (B3); `issue` performs one world call (a wait is a
+ * no-op it is never asked to perform); `registry` and `travelHome` are the macro
+ * deciders (B1). All injected so the loop itself touches no globals.
+ */
+export interface ScriptRunnerDeps {
+  observe(hint: ObserveHint): Promise<ScriptObservation>;
+  issue(action: ScriptAction): Promise<void>;
+  sleep(ms: number): Promise<void>;
+  onProgress(snapshot: ScriptRunnerSnapshot): void;
+  isSessionLost(error: unknown): boolean;
+  readonly registry: MacroRegistry;
+  readonly travelHome: HomeTravelDecider;
+}
+
+export interface ScriptRunnerController {
+  start(script: BotScript): void;
+  pause(): void;
+  resume(): void;
+  stop(): void;
+  tick(): Promise<void>;
+  run(): Promise<void>;
+  snapshot(): ScriptRunnerSnapshot;
+  getStatus(): ScriptRunnerStatus;
+}
+
+const IDLE_SNAPSHOT: ScriptRunnerSnapshot = {
+  status: "idle",
+  phase: null,
+  why: null,
+  stepPath: null,
+  interruptID: null,
+  pauseReason: null,
+  note: null,
+};
+
+const SETTLING = "Waiting between actions — watching your ship.";
+const READ_RETRY = "Could not read your ship just now — waiting to try again.";
+const READ_GAVE_UP = "Could not read your ship for several tries, so the bot stopped.";
+const SESSION_LOST = "Lost the connection to your ship, so the bot stopped.";
+const DECIDE_FAILED = "The bot hit an unexpected problem working out its next move, so it stopped.";
+
+export function createScriptRunner(deps: ScriptRunnerDeps): ScriptRunnerController {
+  let status: ScriptRunnerStatus = "idle";
+  let runToken = 0;
+  let script: BotScript | null = null;
+  let memory: ScriptMemory | null = null;
+  let settle = 0;
+  let readFailures = 0;
+  let last: ScriptRunnerSnapshot = IDLE_SNAPSHOT;
+
+  function emit(next: ScriptRunnerSnapshot): void {
+    last = next;
+    deps.onProgress(next);
+  }
+
+  function setError(reason: string): void {
+    runToken += 1;
+    status = "error";
+    emit({ ...last, status: "error", why: reason, pauseReason: reason });
+  }
+
+  async function tick(): Promise<void> {
+    const token = runToken;
+    if (status !== "running" || script === null || memory === null) {
+      return;
+    }
+
+    // Settle: let a just-issued action land before deciding again.
+    if (settle > 0) {
+      settle -= 1;
+      emit({ ...last, status: "running", phase: SETTLING });
+      return;
+    }
+
+    let obs: ScriptObservation;
+    try {
+      obs = await deps.observe({ activeMacro: activeMacroID(script, memory), board: memory.board });
+    } catch (error) {
+      if (deps.isSessionLost(error)) {
+        setError(SESSION_LOST);
+        return;
+      }
+      readFailures += 1;
+      if (readFailures >= MAX_READ_FAILURES) {
+        pauseWith(READ_GAVE_UP);
+        return;
+      }
+      emit({ ...last, status: "running", phase: READ_RETRY, why: READ_RETRY });
+      return;
+    }
+    if (token !== runToken || status !== "running") {
+      return; // pause/stop fired during the read
+    }
+    readFailures = 0;
+
+    // Deciding is pure and total BY DESIGN, but a macro adapter reaching into a
+    // live snapshot could still throw on a shape the tests never saw. If it does,
+    // an unwrapped throw would reject run() and kill the loop SILENTLY — the ship
+    // freezes mid-task with no reason on screen. So a throw here becomes a plain
+    // pause the player can read and recover from, never a dead loop.
+    let result: ReturnType<typeof decideScriptAction>;
+    try {
+      result = decideScriptAction(script, obs, memory, deps.registry, deps.travelHome);
+    } catch (error) {
+      pauseWith(`${DECIDE_FAILED} (${String(error)})`);
+      return;
+    }
+    memory = result.memory;
+
+    if (result.status === "paused") {
+      pauseWith(result.pauseReason ?? result.why, result);
+      return;
+    }
+    if (result.status === "done") {
+      runToken += 1;
+      status = "stopped";
+      emit(toSnapshot(result, "stopped"));
+      return;
+    }
+
+    if (isWorldCall(result.action)) {
+      try {
+        await deps.issue(result.action);
+      } catch (error) {
+        if (deps.isSessionLost(error)) {
+          setError(SESSION_LOST);
+          return;
+        }
+        // A refusal is not a crash — the next tick re-reads and decides again.
+      }
+      if (token !== runToken || status !== "running") {
+        return;
+      }
+      settle = SETTLE_TICKS;
+    }
+
+    emit(toSnapshot(result, "running"));
+  }
+
+  function pauseWith(reason: string, result?: ReturnType<typeof decideScriptAction>): void {
+    runToken += 1;
+    status = "paused";
+    emit(
+      result !== undefined
+        ? toSnapshot(result, "paused")
+        : { ...last, status: "paused", why: reason, pauseReason: reason, phase: "Stopped" },
+    );
+  }
+
+  async function run(): Promise<void> {
+    const token = runToken;
+    while (runToken === token && status === "running") {
+      try {
+        await tick();
+      } catch (error) {
+        // The backstop: tick() handles its own read/decide/issue failures, so
+        // reaching here means something truly unexpected threw (a store push,
+        // say). Pause with a reason rather than let `void run()` die silently.
+        pauseWith(`${DECIDE_FAILED} (${String(error)})`);
+        return;
+      }
+      if (runToken !== token || status !== "running") {
+        break;
+      }
+      await deps.sleep(SCRIPT_CADENCE_MS);
+    }
+  }
+
+  return {
+    start(next: BotScript): void {
+      runToken += 1;
+      script = next;
+      memory = initialMemory(next);
+      settle = 0;
+      readFailures = 0;
+      status = "running";
+      emit({ status: "running", phase: "Starting", why: null, stepPath: null, interruptID: null, pauseReason: null, note: null });
+    },
+    pause(): void {
+      if (status === "running") {
+        runToken += 1;
+        status = "paused";
+        emit({ ...last, status: "paused" });
+      }
+    },
+    resume(): void {
+      if (status === "paused") {
+        runToken += 1;
+        status = "running";
+        emit({ ...last, status: "running" });
+      }
+    },
+    stop(): void {
+      runToken += 1;
+      status = "stopped";
+      emit({ ...last, status: "stopped" });
+    },
+    tick,
+    run,
+    snapshot(): ScriptRunnerSnapshot {
+      return last;
+    },
+    getStatus(): ScriptRunnerStatus {
+      return status;
+    },
+  };
+}
+
+function toSnapshot(
+  result: ReturnType<typeof decideScriptAction>,
+  status: ScriptRunnerStatus,
+): ScriptRunnerSnapshot {
+  return {
+    status,
+    phase: result.phase,
+    why: result.why,
+    stepPath: result.stepPath,
+    interruptID: result.interruptID,
+    pauseReason: result.pauseReason,
+    note: describeBoard(result.memory.board),
+  };
+}

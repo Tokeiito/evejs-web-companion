@@ -12,6 +12,24 @@ const eveGatewayClient = require("./eveGatewayClient");
 const webAuth = require("./webAuth");
 const staticDataModule = require("./staticData");
 const config = require("./config");
+const botScriptStoreModule = require("./botScriptStore");
+
+// Map a bot-script store error (it carries a .code) to an HTTP status + envelope.
+const BOTSCRIPT_STATUS = {
+  BOTSCRIPT_INVALID: 400,
+  BOTSCRIPT_TOO_BIG: 413,
+  BOTSCRIPT_LIMIT_REACHED: 409,
+  SCRIPT_REV_CONFLICT: 409,
+  BOTSCRIPT_NOT_FOUND: 404,
+};
+function sendBotScriptError(res, error, next) {
+  const status = error && BOTSCRIPT_STATUS[error.code];
+  if (status) {
+    res.status(status).json({ ok: false, error: error.code, message: error.message });
+    return;
+  }
+  next(error);
+}
 
 function createApp(options = {}) {
 const app = express();
@@ -19,6 +37,10 @@ const store = options.eveStore || eveStore;
 const gateway = options.eveGatewayClient || eveGatewayClient;
 const auth = options.webAuth || webAuth;
 const staticData = options.staticData || staticDataModule;
+// The player Bot Builder library — web-app data in data/bot-scripts.json, keyed
+// per account. Never eve.js's store; this is our own JSON file.
+const botScripts =
+  options.botScriptStore || botScriptStoreModule.createBotScriptStore({ dataDir: config.dataDir });
 // Persistent-session handles (goal R2): webSessionID -> the opaque
 // bridgeSessionID the gateway minted, held server-side only. The browser
 // never sees the handle; it just gets its character/station state back.
@@ -875,6 +897,16 @@ app.get("/api/bridge/inventory", requireAuth, async (req, res, next) => {
         list: settledValue(cargoList),
         capacity: settledValue(cargoCap),
         error: settledCode(cargoList) || settledCode(cargoCap),
+      },
+      // Per-type VOLUME (m³) for every type in the hangar/cargo, from static
+      // reference data — the SAME read the assets route does, no bridge call and
+      // no new allowlist pair. Volume is a property of the TYPE, not the stack,
+      // so it cannot vary by player. The browser needs it to work out how much of
+      // a stack fits in a hold before it tries the move; absent for a type the
+      // static tables do not know (handled as "unknown", never zero).
+      volumes: {
+        ...readTypeVolumes(settledValue(hangarList)),
+        ...readTypeVolumes(settledValue(cargoList)),
       },
     });
   } catch (error) {
@@ -13466,6 +13498,139 @@ app.post("/api/bridge/flight/warp", requireAuth, async (req, res, next) => {
   }
 });
 
+// Warp to a SCANNED SITE (an anomaly / signature) by its scan-signature label
+// ("QEE-288") — beyonce.CmdWarpToStuff("scan", <label>). The server resolves the
+// label to the site's entity or point itself (resolveScanWarpTarget), which is
+// exactly how retail's scanner window warps. The labels come from
+// scanMgr.GetFullState (served by /api/bridge/bound-small-services), always the
+// session's OWN system — so this cannot be aimed at anything the pilot could
+// not see in their own scanner.
+app.post("/api/bridge/flight/warp-scan", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const target = typeof (req.body && req.body.target) === "string" ? req.body.target.trim() : "";
+  if (target === "" || target.length > 32) {
+    res.status(400).json({ ok: false, error: "INVALID_TARGET", message: "A scan-site label is required." });
+    return;
+  }
+  const minRange = Number(req.body && req.body.minRange) || 0;
+  try {
+    const before = await readHeldFlight(held, req.webSessionID);
+    if (!requireInSpace(res, before.flight)) {
+      return;
+    }
+    const outcome = await boundCall(
+      held,
+      req.webSessionID,
+      parkBindSpec(before.flight.solarSystemID),
+      "CmdWarpToStuff",
+      ["scan", target],
+      minRange > 0 ? { minRange } : null,
+    );
+    const after = await readHeldFlight(held, req.webSessionID);
+    res.json({
+      ok: true,
+      result: outcome.result,
+      flight: after.flight,
+      notifications: [...outcome.notifications, ...after.notifications],
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// The station repair shop (repairSvc) — the quote and the fix. Quotes are the
+// read (what is damaged and what the shop would charge); RepairItems debits the
+// wallet server-side and repairs. Both take explicit item ids, so the browser
+// can never repair (or be charged for) more than it named.
+app.get("/api/bridge/station/repair-quotes", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const itemIDs = String(req.query.itemIDs || "")
+    .split(",")
+    .map((token) => Number(token))
+    .filter((id) => Number.isSafeInteger(id) && id > 0);
+  if (itemIDs.length === 0) {
+    res.status(400).json({ ok: false, error: "INVALID_TARGET", message: "At least one item is required." });
+    return;
+  }
+  try {
+    const outcome = await heldTopLevelCall(held, req.webSessionID, "repairSvc", "GetRepairQuotes", [itemIDs], null);
+    res.json({ ok: true, quotes: outcome.result });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/bridge/station/repair", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This repairs those items and the station charges your wallet for it. Confirm to continue.")) {
+    return;
+  }
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const body = req.body || {};
+  const itemIDs = (Array.isArray(body.itemIDs) ? body.itemIDs : [])
+    .map((value) => Number(value))
+    .filter((id) => Number.isSafeInteger(id) && id > 0);
+  if (itemIDs.length === 0) {
+    res.status(400).json({ ok: false, error: "INVALID_TARGET", message: "At least one item is required." });
+    return;
+  }
+  try {
+    const outcome = await heldTopLevelCall(held, req.webSessionID, "repairSvc", "RepairItems", [itemIDs, null], null);
+    res.json({ ok: true, result: outcome.result, notifications: outcome.notifications });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Warp to a SAVED BOOKMARK — beyonce.CmdWarpToStuff("bookmark", bookmarkID).
+// The server resolves the bookmark itself (site entity, raw point, or a
+// mission-scoped instance via its metadata) and refuses one that is not the
+// session's to use (BookmarkNotAvailable) — so this cannot be aimed at another
+// character's spots.
+app.post("/api/bridge/flight/warp-bookmark", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const bookmarkID = Number(req.body && req.body.bookmarkID) || 0;
+  if (bookmarkID <= 0) {
+    res.status(400).json({ ok: false, error: "INVALID_TARGET", message: "A bookmark is required." });
+    return;
+  }
+  const minRange = Number(req.body && req.body.minRange) || 0;
+  try {
+    const before = await readHeldFlight(held, req.webSessionID);
+    if (!requireInSpace(res, before.flight)) {
+      return;
+    }
+    const outcome = await boundCall(
+      held,
+      req.webSessionID,
+      parkBindSpec(before.flight.solarSystemID),
+      "CmdWarpToStuff",
+      ["bookmark", bookmarkID],
+      minRange > 0 ? { minRange } : null,
+    );
+    const after = await readHeldFlight(held, req.webSessionID);
+    res.json({
+      ok: true,
+      result: outcome.result,
+      flight: after.flight,
+      notifications: [...outcome.notifications, ...after.notifications],
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // Jump through an NPC stargate: beyonce.CmdStargateJump(fromGateID, toGateID,
 // shipID). The system transition completes after a short handoff delay; the
 // page polls flight status to see the new system.
@@ -16387,6 +16552,62 @@ app.get("/api/agents/find", requireAuth, async (req, res, next) => {
       count: result.agents.length,
       agents: result.agents,
     });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ── Player Bot Builder library (goal D2) ───────────────────────────────────
+// Per-account CRUD over data/bot-scripts.json. requireAuth gives req.account, so
+// the account is always known; the store enforces ownership, quotas, and the
+// optimistic revision. This is WEB-APP data — it never touches eve.js.
+app.get("/api/botscripts", requireAuth, (req, res, next) => {
+  try {
+    res.json({ ok: true, scripts: botScripts.list(req.account.accountID) });
+  } catch (error) {
+    next(error);
+  }
+});
+app.get("/api/botscripts/:scriptID", requireAuth, (req, res, next) => {
+  try {
+    const record = botScripts.get(req.account.accountID, req.params.scriptID);
+    if (!record) {
+      res.status(404).json({ ok: false, error: "BOTSCRIPT_NOT_FOUND", message: "That bot could not be found." });
+      return;
+    }
+    res.json({
+      ok: true,
+      scriptID: record.scriptID,
+      rev: record.rev,
+      name: record.name,
+      updatedAt: record.updatedAt,
+      doc: record.doc,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+app.post("/api/botscripts", requireAuth, (req, res, next) => {
+  try {
+    const result = botScripts.create(req.account.accountID, req.body ? req.body.doc : undefined);
+    res.json({ ok: true, ...result });
+  } catch (error) {
+    sendBotScriptError(res, error, next);
+  }
+});
+app.post("/api/botscripts/:scriptID", requireAuth, (req, res, next) => {
+  try {
+    const body = req.body || {};
+    const result = botScripts.update(req.account.accountID, req.params.scriptID, body.doc, body.baseRev);
+    res.json({ ok: true, ...result });
+  } catch (error) {
+    sendBotScriptError(res, error, next);
+  }
+});
+app.post("/api/botscripts/:scriptID/delete", requireAuth, (req, res, next) => {
+  try {
+    const removed = botScripts.remove(req.account.accountID, req.params.scriptID);
+    res.json({ ok: true, removed });
   } catch (error) {
     next(error);
   }

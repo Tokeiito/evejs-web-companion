@@ -59,10 +59,19 @@ test("decodeInventoryRows decodes a packed-row list, dropping rows without an it
     flagID: 4,
     quantity: 750,
     singleton: false,
+    volume: null, // no volume map supplied → unknown
   });
   assert.equal(rows[1]!.itemID, 200);
   assert.equal(rows[1]!.singleton, true);
   assert.equal(rows[1]!.categoryID, 6);
+});
+
+test("decodeInventoryRows attaches per-unit volume from the supplied map", () => {
+  // Tritanium (typeID 34) at 0.01 m³/unit; an unknown type stays null.
+  const rows = decodeInventoryRows(HANGAR_LIST, { "34": 0.01 });
+  assert.equal(rows[0]!.typeID, 34);
+  assert.equal(rows[0]!.volume, 0.01);
+  assert.equal(rows[1]!.volume, null, "a type absent from the map is unknown, never zero");
 });
 
 test("decodeInventoryRows unwraps an empty python set to no rows", () => {

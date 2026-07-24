@@ -232,6 +232,8 @@ export interface RawInventoryPanel {
   readonly activeShipID: number | null;
   readonly hangar: RawContainer;
   readonly cargo: RawContainer & { readonly shipID: number | null };
+  /** Per-type m³ from static data (typeID → volume); a type it does not know is absent. */
+  readonly volumes: Readonly<Record<string, number>>;
 }
 
 function readRawContainer(value: JsonValue | undefined): RawContainer {
@@ -249,11 +251,16 @@ export async function loadInventory(
 ): Promise<RawInventoryPanel> {
   const data = await getJson("/api/bridge/inventory", options);
   const cargo = (data.cargo ?? {}) as Record<string, JsonValue>;
+  const volumes =
+    data.volumes && typeof data.volumes === "object" && !Array.isArray(data.volumes)
+      ? (data.volumes as Record<string, number>)
+      : {};
   return {
     stationID: asNumberOrNull(data.stationID),
     activeShipID: asNumberOrNull(data.activeShipID),
     hangar: readRawContainer(data.hangar),
     cargo: { ...readRawContainer(data.cargo), shipID: asNumberOrNull(cargo.shipID) },
+    volumes,
   };
 }
 
@@ -2192,6 +2199,74 @@ export async function findMapLocations(
   };
 }
 
+// ─── Player Bot Builder library (goal D2/D3) ─────────────────────────────────
+// Per-account CRUD over the BFF's data/bot-scripts.json (src/botScriptStore.js).
+// Web-app data, NOT a bridge/gateway call. The caller decodes a loaded `doc`
+// through the browser codec (decode-on-read) before trusting it.
+
+export interface BotScriptSummary {
+  readonly scriptID: string;
+  readonly name: string;
+  readonly rev: number;
+  readonly updatedAt: string;
+}
+
+function asBotScriptSummary(value: JsonValue): BotScriptSummary {
+  const row = (value ?? {}) as Record<string, JsonValue>;
+  return {
+    scriptID: typeof row.scriptID === "string" ? row.scriptID : "",
+    name: typeof row.name === "string" ? row.name : "Untitled bot",
+    rev: asNumberOrNull(row.rev) ?? 1,
+    updatedAt: typeof row.updatedAt === "string" ? row.updatedAt : "",
+  };
+}
+
+export async function listBotScripts(options: ApiOptions = {}): Promise<BotScriptSummary[]> {
+  const data = await getJson("/api/botscripts", options);
+  return Array.isArray(data.scripts) ? data.scripts.map(asBotScriptSummary) : [];
+}
+
+export async function getBotScript(
+  scriptID: string,
+  options: ApiOptions = {},
+): Promise<{ scriptID: string; rev: number; doc: JsonValue } | null> {
+  try {
+    const data = await getJson(`/api/botscripts/${encodeURIComponent(scriptID)}`, options);
+    return {
+      scriptID: typeof data.scriptID === "string" ? data.scriptID : scriptID,
+      rev: asNumberOrNull(data.rev) ?? 1,
+      doc: data.doc ?? null,
+    };
+  } catch (error) {
+    if (error instanceof BridgeCallError && error.status === 404) {
+      return null;
+    }
+    throw error;
+  }
+}
+
+export async function createBotScript(
+  doc: unknown,
+  options: ApiOptions = {},
+): Promise<{ scriptID: string; rev: number }> {
+  const data = await postJson("/api/botscripts", { doc }, options);
+  return { scriptID: typeof data.scriptID === "string" ? data.scriptID : "", rev: asNumberOrNull(data.rev) ?? 1 };
+}
+
+export async function updateBotScript(
+  scriptID: string,
+  doc: unknown,
+  baseRev: number,
+  options: ApiOptions = {},
+): Promise<{ rev: number }> {
+  const data = await postJson(`/api/botscripts/${encodeURIComponent(scriptID)}`, { doc, baseRev }, options);
+  return { rev: asNumberOrNull(data.rev) ?? 1 };
+}
+
+export async function deleteBotScript(scriptID: string, options: ApiOptions = {}): Promise<void> {
+  await postJson(`/api/botscripts/${encodeURIComponent(scriptID)}/delete`, {}, options);
+}
+
 // --- R7c Batch name resolution (names everywhere) --------------------------
 // Turn raw IDs into names across every tab in ONE round-trip. POST /api/names
 // takes { items: [{kind, id}] } and returns { names: { "kind:id": name|null } }
@@ -2401,6 +2476,112 @@ export async function recallDrones(
 ): Promise<DroneActionResult> {
   return readDroneAction(
     await postJson("/api/bridge/drones/recall", { droneIDs: [...droneIDs] }, options),
+  );
+}
+
+/** The repair shop's quote for these items: which of them it lists as damaged. */
+export async function getRepairQuotes(
+  itemIDs: readonly number[],
+  options: ApiOptions = {},
+): Promise<JsonValue> {
+  const query = itemIDs.map((id) => encodeURIComponent(String(id))).join(",");
+  const data = await getJson(`/api/bridge/station/repair-quotes?itemIDs=${query}`, options);
+  return data.quotes ?? null;
+}
+
+/** Pay the station to repair these items (the server debits the wallet). */
+export async function repairItems(
+  itemIDs: readonly number[],
+  options: ApiOptions = {},
+): Promise<void> {
+  await postJson("/api/bridge/station/repair", { itemIDs: [...itemIDs], confirm: true }, options);
+}
+
+/** Apply one PI network edit (restart an extractor programme). */
+export async function restartExtractorProgram(
+  planetID: number,
+  pinID: number,
+  resourceTypeID: number,
+  options: ApiOptions = {},
+): Promise<void> {
+  // Command 13 = INSTALLPROGRAM(pinID, programTypeID, headRadius). A null head
+  // radius keeps the pin's existing drill area — a pure "run it again".
+  await postJson(
+    "/api/bridge/planet/network/update",
+    { planetID, changes: [[13, [pinID, resourceTypeID, null]]], confirm: true },
+    options,
+  );
+}
+
+/** The character's saved-fitting library, raw (decoded by bridge/fittings.ts). */
+export async function loadSavedFittings(options: ApiOptions = {}): Promise<JsonValue> {
+  const data = await getJson("/api/bridge/fittings", options);
+  return data.fittings ?? null;
+}
+
+/** Apply a saved fitting to a ship — modules pulled from the docked hangar. */
+export async function applySavedFitting(
+  shipID: number,
+  sourceLocationID: number,
+  modulesByFlag: Readonly<Record<number, number>>,
+  options: ApiOptions = {},
+): Promise<void> {
+  await postJson(
+    "/api/bridge/inventory/fit-fitting",
+    { shipID, sourceLocationID, modulesByFlag: modulesByFlag as unknown as JsonValue, confirm: true },
+    options,
+  );
+}
+
+/**
+ * The onboard scanner's full state — the session's OWN system's anomalies /
+ * signatures / static sites / structures, raw (decoded by
+ * bridge/boundSmallServices.decodeFullState). Rides the small-services route.
+ */
+export async function loadScanFullState(options: ApiOptions = {}): Promise<JsonValue> {
+  const data = await getJson("/api/bridge/bound-small-services", options);
+  const reads = (data.reads ?? {}) as Record<string, JsonValue>;
+  const slot = (reads.GetFullState ?? {}) as Record<string, JsonValue>;
+  return slot.result ?? null;
+}
+
+/** The character's active bookmarks, raw (decoded by bridge/bookmarks.ts). */
+export async function loadActiveBookmarks(options: ApiOptions = {}): Promise<JsonValue> {
+  const data = await getJson("/api/bridge/bookmarks", options);
+  return data.active ?? null;
+}
+
+/** Warp to a saved bookmark (the server resolves site/point/mission scope). */
+export async function warpToBookmark(
+  bookmarkID: number,
+  minRange: number,
+  options: ApiOptions = {},
+): Promise<FlightStepResult> {
+  return readFlightStep(await postJson("/api/bridge/flight/warp-bookmark", { bookmarkID, minRange }, options));
+}
+
+/** Warp to a scanned site by its scan-signature label ("QEE-288"). */
+export async function warpToScanSite(
+  target: string,
+  minRange: number,
+  options: ApiOptions = {},
+): Promise<FlightStepResult> {
+  return readFlightStep(await postJson("/api/bridge/flight/warp-scan", { target, minRange }, options));
+}
+
+/**
+ * Order salvage drones onto a wreck (entity.CmdSalvage). targetID 0 lets the
+ * runtime AUTO-PICK a salvageable wreck — the sane default for a sweep.
+ */
+export async function salvageDrones(
+  droneIDs: readonly number[],
+  targetID: number,
+  options: ApiOptions = {},
+): Promise<void> {
+  await postJson(
+    "/api/bridge/entity/drones/salvage",
+    { droneIDs: [...droneIDs], targetID, confirm: true },
+    options,
   );
 }
 

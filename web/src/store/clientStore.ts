@@ -78,6 +78,7 @@ import type {
   StationGuest,
   StationServiceBits,
   StationStatic,
+  CustomBotState,
   MiningBotState,
   MissionBotState,
   SkillsState,
@@ -153,6 +154,7 @@ export interface ClientState {
   readonly travel: TravelState;
   readonly bot: MiningBotState;
   readonly missionBot: MissionBotState;
+  readonly customBot: CustomBotState;
   readonly bots: BotsState;
   readonly chat: ChatState;
   readonly live: LiveState;
@@ -503,6 +505,18 @@ const INITIAL_BOT: MiningBotState = Object.freeze({
   startedAt: null,
 });
 
+const INITIAL_CUSTOM_BOT: CustomBotState = Object.freeze({
+  status: "idle" as CustomBotState["status"],
+  name: null,
+  phase: null,
+  why: null,
+  stepPath: null,
+  interruptID: null,
+  pauseReason: null,
+  note: null,
+  startError: null,
+});
+
 // R36 — the mission bot's readout. Every "unknown" is null, never 0 or "": an
 // unmeasured payout must not render as "earned nothing", and a job whose name
 // has not been read must not render as a job with no name.
@@ -656,6 +670,7 @@ export interface ClientStore {
   readonly travel: ReadableSignal<TravelState>;
   readonly bot: ReadableSignal<MiningBotState>;
   readonly missionBot: ReadableSignal<MissionBotState>;
+  readonly customBot: ReadableSignal<CustomBotState>;
   readonly bots: ReadableSignal<BotsState>;
   readonly chat: ReadableSignal<ChatState>;
   readonly live: ReadableSignal<LiveState>;
@@ -709,6 +724,7 @@ export function createClientStore(): ClientStore {
   const travel = createSignal<TravelState>(INITIAL_TRAVEL);
   const bot = createSignal<MiningBotState>(INITIAL_BOT);
   const missionBot = createSignal<MissionBotState>(INITIAL_MISSION_BOT);
+  const customBot = createSignal<CustomBotState>(INITIAL_CUSTOM_BOT);
   const bots = createSignal<BotsState>(INITIAL_BOTS);
   const chat = createSignal<ChatState>(INITIAL_CHAT);
   const live = createSignal<LiveState>(INITIAL_LIVE);
@@ -749,6 +765,7 @@ export function createClientStore(): ClientStore {
     travel: travel.get(),
     bot: bot.get(),
     missionBot: missionBot.get(),
+    customBot: customBot.get(),
     bots: bots.get(),
     chat: chat.get(),
     live: live.get(),
@@ -792,6 +809,7 @@ export function createClientStore(): ClientStore {
         planets.set(INITIAL_PLANETS);
         travel.set(INITIAL_TRAVEL);
         bot.set(INITIAL_BOT);
+        customBot.set(INITIAL_CUSTOM_BOT);
         chat.set(INITIAL_CHAT);
         live.set(INITIAL_LIVE);
         break;
@@ -847,6 +865,7 @@ export function createClientStore(): ClientStore {
         drones.set(INITIAL_DRONES);
         travel.set(INITIAL_TRAVEL);
         bot.set(INITIAL_BOT);
+        customBot.set(INITIAL_CUSTOM_BOT);
         chat.set(INITIAL_CHAT);
         live.set(INITIAL_LIVE);
         break;
@@ -876,6 +895,7 @@ export function createClientStore(): ClientStore {
         drones.set(INITIAL_DRONES);
         travel.set(INITIAL_TRAVEL);
         bot.set(INITIAL_BOT);
+        customBot.set(INITIAL_CUSTOM_BOT);
         chat.set(INITIAL_CHAT);
         live.set(INITIAL_LIVE);
         break;
@@ -1808,6 +1828,27 @@ export function createClientStore(): ClientStore {
       case "bot/cleared":
         bot.set(INITIAL_BOT);
         break;
+      case "custom-bot/started":
+        customBot.set({ ...INITIAL_CUSTOM_BOT, status: "running", name: event.name });
+        break;
+      case "custom-bot/progress":
+        customBot.set({
+          ...customBot.get(),
+          status: event.status,
+          phase: event.phase,
+          why: event.why,
+          stepPath: event.stepPath,
+          interruptID: event.interruptID,
+          pauseReason: event.pauseReason,
+          note: event.note ?? null,
+        });
+        break;
+      case "custom-bot/start-error":
+        customBot.set({ ...customBot.get(), status: "idle", startError: event.message });
+        break;
+      case "custom-bot/cleared":
+        customBot.set(INITIAL_CUSTOM_BOT);
+        break;
       // --- R36: the distribution-mission bot ----------------------------
       //
       // Same construction as the mining bot above and for the same reason: the
@@ -2043,6 +2084,7 @@ export function createClientStore(): ClientStore {
     travel: readonlySignal(travel),
     bot: readonlySignal(bot),
     missionBot: readonlySignal(missionBot),
+    customBot: readonlySignal(customBot),
     bots: readonlySignal(bots),
     chat: readonlySignal(chat),
     live: readonlySignal(live),

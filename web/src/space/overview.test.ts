@@ -153,6 +153,19 @@ test("filtering narrows by category, by group, and by free text", () => {
   assert.equal(none.matched, 0);
 });
 
+test("rocks and rats are always listed — nothing but self is hidden", () => {
+  const gate = entity({ itemID: 1, name: "Stargate", kind: "celestial" });
+  const rock = entity({ itemID: 2, name: "Veldspar", kind: "asteroid", miningYieldTypeID: 1230, beltID: 99 });
+  const rat = entity({ itemID: 3, name: "Pirate", kind: "ship", isNpc: true, npcEntityType: "npc" });
+  const player = entity({ itemID: 4, name: "Someone", kind: "ship", isNpc: false });
+  const snapshot = snapshotOf([gate, rock, rat, player]);
+
+  // The "hide rocks & rats" clutter filter was removed — the overview shows every
+  // object around the ship (only the ship itself is dropped).
+  const result = buildOverviewRows(snapshot, ORIGIN, { filter: {} });
+  assert.deepEqual(result.rows.map((row) => row.itemID).sort(), [1, 2, 3, 4]);
+});
+
 test("text search matches the resolved type and group names a player sees", () => {
   const ship = entity({ itemID: 77, kind: "ship", name: null, typeID: 670 });
   const snapshot = snapshotOf([ship]);

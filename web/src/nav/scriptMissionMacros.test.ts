@@ -1,0 +1,562 @@
+// The distribution-mission blocks' key transitions: find publishes the agent to
+// the board; request travels/talks/asks; accept gates then accepts (or declines
+// and re-asks); load confirms aboard; travel rides the autopilot; turn-in
+// unloads then completes; return heads back. Pure, over fixture observations.
+
+import test from "node:test";
+import assert from "node:assert/strict";
+
+import type {
+  AgentConversation,
+  CourierBriefing,
+  FlightStatus,
+  InventoryItemRow,
+  JournalState,
+} from "../store/types.ts";
+import type { MacroStep } from "../bots/botScript.ts";
+import type { ScriptObservation } from "./scriptConditions.ts";
+import type { ScriptBoard } from "./scriptDecide.ts";
+import { SCRIPT_MACROS } from "./scriptMacros.ts";
+
+const AGENT = 3018920;
+const AGENT_STATION = 60000004;
+const PICKUP = 60000004;
+const DROPOFF = 60000007;
+const CARGO_TYPE = 3814;
+
+function flight(over: Partial<FlightStatus> = {}): FlightStatus {
+  return { inSpace: false, docked: true, solarSystemID: 30000142, stationID: AGENT_STATION, structureID: null, shipID: 9001, shipMode: null, shipSpeedFraction: null, ...over };
+}
+
+function obs(over: Partial<ScriptObservation> = {}): ScriptObservation {
+  return {
+    inSpace: false, docked: true, inWarp: false,
+    shieldRatio: 1, armorRatio: 1, hullRatio: 1, health: 1,
+    oreHoldFraction: 0, holdEmpty: true, hostileOnGrid: false, dronesOut: false,
+    flightStatus: flight(), journal: { active: [], offered: [] },
+    ...over,
+  };
+}
+
+function convo(actions: readonly { actionID: number; buttonType: number }[], completedFlag = false): AgentConversation {
+  return {
+    agentSays: "…",
+    contentID: 1,
+    actions: actions.map((a) => ({ ...a, label: "btn" })),
+    lastActionInfo: { missionCompleted: completedFlag, missionDeclined: null, missionQuit: null, loyaltyPoints: null },
+  };
+}
+
+function briefing(over: Partial<CourierBriefing> = {}): CourierBriefing {
+  return {
+    missionTitleID: 1, cargoTypeID: CARGO_TYPE, cargoQuantity: 10, cargoVolume: 50,
+    pickupLocationID: PICKUP, pickupSystemID: 30000142,
+    destinationLocationID: DROPOFF, destinationSystemID: 30000144,
+    rewardISK: "100000", bonusISK: null, loyaltyPoints: 10, expirationTime: null, acceptTimestamp: null,
+    ...over,
+  } as CourierBriefing;
+}
+
+function acceptedJournal(): JournalState {
+  return { active: [{ missionState: 1, missionTypeLabel: "Courier", missionTitleID: 1, agentID: AGENT, missionID: 7, expirationTime: null }], offered: [] };
+}
+
+function row(over: Partial<InventoryItemRow> & { itemID: number }): InventoryItemRow {
+  return { typeID: CARGO_TYPE, groupID: null, categoryID: null, flagID: null, quantity: 10, singleton: false, ...over };
+}
+
+function step(macro: MacroStep["macro"], args: MacroStep["args"] = {}): MacroStep {
+  return { id: "s", kind: "macro", macro, args };
+}
+
+const find = SCRIPT_MACROS["find-distribution-agent"]!;
+const request = SCRIPT_MACROS["request-mission"]!;
+const accept = SCRIPT_MACROS["accept-mission"]!;
+const load = SCRIPT_MACROS["load-mission-cargo"]!;
+const travel = SCRIPT_MACROS["travel-to-dropoff"]!;
+const turnIn = SCRIPT_MACROS["turn-in-mission"]!;
+const back = SCRIPT_MACROS["return-to-agent"]!;
+const NB: ScriptBoard = {};
+const ONBOARD: ScriptBoard = { agentID: AGENT, agentStationID: AGENT_STATION, cargoTypeID: CARGO_TYPE, cargoQuantity: 10, pickupStationID: PICKUP, dropoffStationID: DROPOFF };
+
+test("find: first tick publishes the search criteria to the board", () => {
+  const t = find(step("find-distribution-agent", { level: { kind: "count", value: 2 } }), obs(), {}, NB);
+  assert.equal(t.action.kind, "wait");
+  assert.equal(t.boardPatch?.["findLevel"], 2);
+});
+
+test("find: a match from the finder lands the agent on the board and finishes", () => {
+  const t = find(
+    step("find-distribution-agent"),
+    obs({ foundAgent: { agentID: AGENT, stationID: AGENT_STATION, name: "Aursa", stationName: "Home" } }),
+    {},
+    NB,
+  );
+  assert.equal(t.outcome.kind, "done");
+  assert.equal(t.boardPatch?.["agentID"], AGENT);
+  assert.equal(t.boardPatch?.["agentStationID"], AGENT_STATION);
+});
+
+test("request: no agent anywhere -> blocked with a plain fix", () => {
+  const t = request(step("request-mission"), obs(), {}, NB);
+  assert.equal(t.outcome.kind, "blocked");
+});
+
+test("request: docked with the agent, no offer -> press Request", () => {
+  const t = request(
+    step("request-mission"),
+    obs({ conversation: convo([{ actionID: 815, buttonType: 2 }]) }),
+    {},
+    ONBOARD,
+  );
+  assert.ok(t.action.kind === "agentButton" && t.action.actionID === 815 && t.action.agentID === AGENT);
+});
+
+test("request: an offer on the table -> done", () => {
+  const t = request(step("request-mission"), obs({ briefing: briefing() }), {}, ONBOARD);
+  assert.equal(t.outcome.kind, "done");
+});
+
+test("request: not at the agent's station -> ride the autopilot there", () => {
+  const t = request(
+    step("request-mission"),
+    obs({ flightStatus: flight({ docked: false, inSpace: true, stationID: null }) }),
+    {},
+    ONBOARD,
+  );
+  assert.ok(t.action.kind === "startRoute" && t.action.stationID === AGENT_STATION);
+});
+
+test("accept: a fitting offer -> press Accept", () => {
+  const t = accept(
+    step("accept-mission"),
+    obs({
+      briefing: briefing(),
+      conversation: convo([{ actionID: 816, buttonType: 3 }]),
+      cargo: { rows: [], capacity: { capacity: 450, used: 0 } },
+      jumpsToDropoff: 3,
+    }),
+    {},
+    ONBOARD,
+  );
+  assert.ok(t.action.kind === "agentButton" && t.action.actionID === 816);
+});
+
+test("accept: cargo too big for the ship -> Decline instead", () => {
+  const t = accept(
+    step("accept-mission"),
+    obs({
+      briefing: briefing({ cargoVolume: 9000 }),
+      conversation: convo([{ actionID: 816, buttonType: 3 }, { actionID: 819, buttonType: 9 }]),
+      cargo: { rows: [], capacity: { capacity: 450, used: 0 } },
+      jumpsToDropoff: 3,
+    }),
+    {},
+    ONBOARD,
+  );
+  assert.ok(t.action.kind === "agentButton" && t.action.actionID === 819, "should press Decline");
+});
+
+test("accept: over the player's jump limit -> Decline", () => {
+  const t = accept(
+    step("accept-mission", { maxJumps: { kind: "count", value: 2 } }),
+    obs({
+      briefing: briefing(),
+      conversation: convo([{ actionID: 816, buttonType: 3 }, { actionID: 819, buttonType: 9 }]),
+      cargo: { rows: [], capacity: { capacity: 450, used: 0 } },
+      jumpsToDropoff: 8,
+    }),
+    {},
+    ONBOARD,
+  );
+  assert.ok(t.action.kind === "agentButton" && t.action.actionID === 819);
+});
+
+test("accept: journal says accepted -> done, mission facts on the board", () => {
+  const t = accept(step("accept-mission"), obs({ journal: acceptedJournal(), briefing: briefing() }), {}, ONBOARD);
+  assert.equal(t.outcome.kind, "done");
+  assert.equal(t.boardPatch?.["dropoffStationID"], DROPOFF);
+});
+
+test("load: package in the hangar -> move it aboard", () => {
+  const t = load(
+    step("load-mission-cargo"),
+    obs({ briefing: briefing(), journal: acceptedJournal(), cargo: { rows: [], capacity: { capacity: 450, used: 0 } }, stationHangar: [row({ itemID: 42 })] }),
+    {},
+    ONBOARD,
+  );
+  assert.ok(t.action.kind === "loadMissionCargo" && t.action.typeID === CARGO_TYPE && t.action.quantity === 10);
+});
+
+test("load: package aboard -> done", () => {
+  const t = load(
+    step("load-mission-cargo"),
+    obs({ briefing: briefing(), cargo: { rows: [row({ itemID: 43 })], capacity: { capacity: 450, used: 50 } } }),
+    {},
+    ONBOARD,
+  );
+  assert.equal(t.outcome.kind, "done");
+});
+
+test("travel: not there -> startRoute to the drop-off; docked there -> done", () => {
+  const going = travel(step("travel-to-dropoff"), obs({ flightStatus: flight({ docked: false, inSpace: true, stationID: null }) }), {}, ONBOARD);
+  assert.ok(going.action.kind === "startRoute" && going.action.stationID === DROPOFF);
+
+  const there = travel(step("travel-to-dropoff"), obs({ flightStatus: flight({ stationID: DROPOFF }) }), {}, ONBOARD);
+  assert.equal(there.outcome.kind, "done");
+});
+
+test("turn-in: cargo still aboard -> unload it first", () => {
+  const t = turnIn(
+    step("turn-in-mission"),
+    obs({ journal: acceptedJournal(), flightStatus: flight({ stationID: DROPOFF }), cargo: { rows: [row({ itemID: 44 })], capacity: null } }),
+    {},
+    ONBOARD,
+  );
+  assert.ok(t.action.kind === "unloadMissionCargo" && t.action.itemIDs.includes(44));
+});
+
+test("turn-in: unloaded, Complete offered -> press it; journal cleared -> done", () => {
+  const press = turnIn(
+    step("turn-in-mission"),
+    obs({ journal: acceptedJournal(), flightStatus: flight({ stationID: DROPOFF }), cargo: { rows: [], capacity: null }, conversation: convo([{ actionID: 821, buttonType: 7 }]) }),
+    {},
+    ONBOARD,
+  );
+  assert.ok(press.action.kind === "agentButton" && press.action.actionID === 821);
+
+  const done = turnIn(step("turn-in-mission"), obs({ journal: { active: [], offered: [] } }), {}, ONBOARD);
+  assert.equal(done.outcome.kind, "done");
+});
+
+test("wait: counts down its seconds in ticks, then finishes", () => {
+  const wait = SCRIPT_MACROS["wait"]!;
+  const s = step("wait", { seconds: { kind: "count", value: 6 } }); // 6s @ 2s/tick = 3 ticks
+  const t1 = wait(s, obs(), {}, NB);
+  assert.equal(t1.action.kind, "wait");
+  assert.equal(t1.outcome.kind, "acting");
+  assert.equal(t1.armed, true, "armed from tick one so an `until` can end it early");
+  const t2 = wait(s, obs(), t1.nextMem, NB);
+  assert.equal(t2.outcome.kind, "acting");
+  const t3 = wait(s, obs(), t2.nextMem, NB);
+  assert.equal(t3.outcome.kind, "done");
+});
+
+test("wait: defaults to 10 seconds when no number is set", () => {
+  const wait = SCRIPT_MACROS["wait"]!;
+  let mem = {};
+  let done = 0;
+  for (let i = 0; i < 5; i += 1) {
+    const t = wait(step("wait"), obs(), mem, NB);
+    mem = t.nextMem;
+    if (t.outcome.kind === "done") {
+      done = i + 1;
+      break;
+    }
+  }
+  assert.equal(done, 5, "10s at the 2s cadence is 5 ticks");
+});
+
+test("unload-cargo: docked with cargo -> move it all; empty hold -> done; undocked -> blocked", () => {
+  const unload = SCRIPT_MACROS["unload-cargo"]!;
+  const move = unload(step("unload-cargo"), obs({ cargo: { rows: [row({ itemID: 51 }), row({ itemID: 52, typeID: 34 })], capacity: null } }), {}, NB);
+  assert.ok(move.action.kind === "unloadMissionCargo" && move.action.itemIDs.length === 2);
+
+  const done = unload(step("unload-cargo"), obs({ cargo: { rows: [], capacity: null } }), {}, NB);
+  assert.equal(done.outcome.kind, "done");
+
+  const undocked = unload(step("unload-cargo"), obs({ flightStatus: flight({ docked: false, inSpace: true, stationID: null }) }), {}, NB);
+  assert.equal(undocked.outcome.kind, "blocked");
+});
+
+test("refine-ore: refines only what is CERTAINLY ore; unknown category is left alone", () => {
+  const refine = SCRIPT_MACROS["refine-ore"]!;
+  const s = step("refine-ore" as never);
+  const ore = row({ itemID: 61, typeID: 1230, categoryID: 25 });
+  const mystery = row({ itemID: 62, typeID: 999, categoryID: null });
+  const module_ = row({ itemID: 63, typeID: 3634, categoryID: 7 });
+
+  const t = refine(s, obs({ stationHangar: [ore, mystery, module_] }), {}, NB);
+  assert.ok(t.action.kind === "reprocessOre");
+  assert.deepEqual(t.action.kind === "reprocessOre" ? [...t.action.itemIDs] : [], [61], "only the certain ore stack");
+
+  const done = refine(s, obs({ stationHangar: [mystery, module_] }), {}, NB);
+  assert.equal(done.outcome.kind, "done");
+
+  const undocked = refine(s, obs({ flightStatus: flight({ docked: false, inSpace: true, stationID: null }) }), {}, NB);
+  assert.equal(undocked.outcome.kind, "blocked");
+});
+
+test("repair watch: a thermostat — on when hurt, off when the cap starves, off when healed", async () => {
+  const { decideScriptAction, initialMemory } = await import("./scriptDecide.ts");
+  const { scriptTravelHome } = await import("./scriptMacros.ts");
+  const script = {
+    format: "evejs-bot-script", version: 1, name: "t", notes: "",
+    home: { entity: "station", id: null, name: null, systemName: null, starting: true },
+    interrupts: [{ id: "w", when: { kind: "shield-below", fraction: 0.5 }, respond: "repair" }],
+    program: [{ id: "s1", kind: "macro", macro: "wait", args: {} }],
+  } as never;
+  const mem = initialMemory(script as never);
+  const base = {
+    snapshot: { inSpace: true, solarSystemID: 1, shipID: 9001, sampledAtMs: 1, entities: [], ship: { itemID: 9001, typeID: 1, name: null, mode: null, maxVelocity: 1, radius: 1, position: { x: 0, y: 0, z: 0 }, velocity: { x: 0, y: 0, z: 0 }, shieldRatio: 0.3, armorRatio: 1, hullRatio: 1, capacitorRatio: 0.8, shieldCapacity: null, armorCapacity: null, hullCapacity: null, activeModuleIDs: [] } },
+    shieldRepairerIDs: [700],
+  };
+
+  // Hurt + cap healthy + rep idle -> switch it ON (self-targeted).
+  const on = decideScriptAction(script as never, obs({ ...base, shieldRatio: 0.3, capacitorRatio: 0.8 } as never), mem, {}, scriptTravelHome);
+  assert.ok(on.action.kind === "activate" && on.action.moduleID === 700 && on.action.targetID === 0);
+
+  // Hurt but the CAP is starved and the rep is running -> switch it OFF.
+  const starvedShip = { ...base.snapshot, ship: { ...base.snapshot.ship, activeModuleIDs: [700] } };
+  const off = decideScriptAction(script as never, obs({ ...base, snapshot: starvedShip, shieldRatio: 0.3, capacitorRatio: 0.1 } as never), mem, {}, scriptTravelHome);
+  assert.ok(off.action.kind === "deactivate" && off.action.moduleID === 700);
+
+  // HEALED with the rep still running -> switch it off (the shutdown half).
+  const healed = decideScriptAction(script as never, obs({ ...base, snapshot: starvedShip, shieldRatio: 0.95, capacitorRatio: 0.8 } as never), mem, {}, scriptTravelHome);
+  assert.ok(healed.action.kind === "deactivate" && healed.action.moduleID === 700);
+
+  // Hurt, rep already running, cap fine -> nothing to do; the program continues.
+  const running = decideScriptAction(script as never, obs({ ...base, snapshot: starvedShip, shieldRatio: 0.3, capacitorRatio: 0.8 } as never), mem, {}, scriptTravelHome);
+  assert.equal(running.action.kind, "wait", "the wait step keeps working while the rep cycles");
+});
+
+test("capacitor-below condition: tri-state over the cap reading", async () => {
+  const { evaluateCondition } = await import("./scriptConditions.ts");
+  assert.equal(evaluateCondition({ kind: "capacitor-below", fraction: 0.3 }, obs({ capacitorRatio: 0.2 } as never)), "met");
+  assert.equal(evaluateCondition({ kind: "capacitor-below", fraction: 0.3 }, obs({ capacitorRatio: 0.8 } as never)), "not-met");
+  assert.equal(evaluateCondition({ kind: "capacitor-below", fraction: 0.3 }, obs({ capacitorRatio: null } as never)), "cannot-tell");
+});
+
+test("warp-to-anomaly: walks the scanner's dens one by one, never repeating one this run", () => {
+  const anom = SCRIPT_MACROS["warp-to-anomaly"]!;
+  const s = step("warp-to-anomaly" as never);
+  const inSpace = flight({ docked: false, inSpace: true, stationID: null });
+
+  // First pick: the first unvisited den, remembered on the board.
+  const go = anom(s, obs({ flightStatus: inSpace, anomalies: ["QEE-288", "ABC-123"] }), {}, NB);
+  assert.ok(go.action.kind === "warpScan" && go.action.target === "QEE-288");
+  assert.equal(go.boardPatch?.["anomsVisited"], "QEE-288");
+
+  // Already visited QEE-288 -> the NEXT den.
+  const next = anom(s, obs({ flightStatus: inSpace, anomalies: ["QEE-288", "ABC-123"] }), {}, { anomsVisited: "QEE-288" });
+  assert.ok(next.action.kind === "warpScan" && next.action.target === "ABC-123");
+
+  // All visited -> blocked with a plain reason.
+  const dry = anom(s, obs({ flightStatus: inSpace, anomalies: ["QEE-288"] }), {}, { anomsVisited: "QEE-288" });
+  assert.equal(dry.outcome.kind, "blocked");
+
+  // Warp lifecycle: issued -> in warp -> landed = done.
+  const riding = anom(s, obs({ flightStatus: inSpace, inWarp: true }), { issued: true }, NB);
+  assert.equal(riding.action.kind, "wait");
+  const landed = anom(s, obs({ flightStatus: inSpace, inWarp: false }), { issued: true, sawWarp: true }, NB);
+  assert.equal(landed.outcome.kind, "done");
+
+  // Docked -> blocked (undock first).
+  const docked = anom(s, obs({}), {}, NB);
+  assert.equal(docked.outcome.kind, "blocked");
+});
+
+test("refit-ship: boards the right hull when needed, applies by NAME, done after apply", () => {
+  const refit = SCRIPT_MACROS["refit-ship"]!;
+  const s: MacroStep = { id: "r", kind: "macro", macro: "refit-ship", args: { fitting: { kind: "fitting", fittingID: 5, name: "Ratting Vexor" } } } as never;
+  const fitting = { fittingID: 5, name: "Ratting Vexor", description: "", shipTypeID: 626, ownerID: 1, savedDate: null, modules: [{ typeID: 500, flagID: 27, quantity: 1 }] };
+  const dockedObs = (over: Record<string, unknown>) => obs({ savedFittings: [fitting], activeShipID: 9001, ...over } as never);
+
+  // Flying the wrong hull (type 17476) with a Vexor (626) in the hangar -> board it.
+  const wrongHull = dockedObs({
+    stationHangar: [row({ itemID: 9001, typeID: 17476, categoryID: 6, singleton: true }), row({ itemID: 9002, typeID: 626, categoryID: 6, singleton: true })],
+  });
+  const board = refit(s, wrongHull, {}, NB);
+  assert.ok(board.action.kind === "boardShip" && board.action.shipID === 9002);
+
+  // Right hull already -> apply the fitting, then done next tick.
+  const rightHull = dockedObs({
+    stationHangar: [row({ itemID: 9001, typeID: 626, categoryID: 6, singleton: true })],
+  });
+  const apply = refit(s, rightHull, {}, NB);
+  assert.ok(apply.action.kind === "applyFitting" && apply.action.fittingID === 5);
+  const done = refit(s, rightHull, apply.nextMem, NB);
+  assert.equal(done.outcome.kind, "done");
+
+  // Fitting missing from the library -> blocked; undocked -> blocked.
+  const missing = refit(s, dockedObs({ savedFittings: [], stationHangar: [] }), {}, NB);
+  assert.equal(missing.outcome.kind, "blocked");
+  const undocked = refit(s, obs({ flightStatus: flight({ docked: false, inSpace: true, stationID: null }) }), {}, NB);
+  assert.equal(undocked.outcome.kind, "blocked");
+});
+
+test("move-items: moves all stacks in one go, or a set amount by splitting; done confirmed by re-read", () => {
+  const move = SCRIPT_MACROS["move-items"]!;
+  const args = {
+    item: { kind: "itemType", typeID: 34, name: "Tritanium" },
+    from: { kind: "place", place: "hangar" },
+    to: { kind: "place", place: "cargo" },
+  } as const;
+  const s: MacroStep = { id: "mv", kind: "macro", macro: "move-items", args } as never;
+  const trit = (itemID: number, quantity: number) => row({ itemID, typeID: 34, quantity });
+
+  // Move ALL: every matching stack in one action.
+  const all = move(s, obs({ stationHangar: [trit(1, 100), trit(2, 50), row({ itemID: 3, typeID: 999 })] }), {}, NB);
+  assert.ok(all.action.kind === "moveItems" && all.action.itemIDs.length === 2 && all.action.qty === null);
+
+  // A set amount smaller than the stack: split.
+  const some: MacroStep = { ...s, args: { ...args, amount: { kind: "count", value: 30 } } } as never;
+  const split = move(some, obs({ stationHangar: [trit(1, 100)] }), {}, NB);
+  assert.ok(split.action.kind === "moveItems" && split.action.qty === 30);
+
+  // The FROM place empty of the item -> done.
+  const done = move(s, obs({ stationHangar: [row({ itemID: 3, typeID: 999 })] }), {}, NB);
+  assert.equal(done.outcome.kind, "done");
+
+  // Same place both sides / undocked -> blocked.
+  const bad: MacroStep = { ...s, args: { ...args, to: { kind: "place", place: "hangar" } } } as never;
+  assert.equal(move(bad, obs({ stationHangar: [] }), {}, NB).outcome.kind, "blocked");
+  assert.equal(move(s, obs({ flightStatus: flight({ docked: false, inSpace: true, stationID: null }) }), {}, NB).outcome.kind, "blocked");
+});
+
+test("warp-to-bookmark: matches by NAME, warps in-system only, done when the warp lands", () => {
+  const warpBm = SCRIPT_MACROS["warp-to-bookmark"]!;
+  const s: MacroStep = { id: "bm", kind: "macro", macro: "warp-to-bookmark", args: { bookmark: { kind: "bookmark", bookmarkID: null, name: "Safe spot" } } } as never;
+  const inSpace = flight({ docked: false, inSpace: true, stationID: null });
+
+  // Name-matched from the live list -> warp.
+  const go = warpBm(s, obs({ flightStatus: inSpace, bookmarks: [{ bookmarkID: 77, name: "Safe spot", solarSystemID: 30000142 }] }), {}, NB);
+  assert.ok(go.action.kind === "warpBookmark" && go.action.bookmarkID === 77);
+
+  // The spot lives in ANOTHER system -> blocked with the travel hint.
+  const elsewhere = warpBm(s, obs({ flightStatus: inSpace, bookmarks: [{ bookmarkID: 77, name: "Safe spot", solarSystemID: 30009999 }] }), {}, NB);
+  assert.equal(elsewhere.outcome.kind, "blocked");
+
+  // Warp lifecycle -> done; docked -> blocked.
+  const landed = warpBm(s, obs({ flightStatus: inSpace, inWarp: false }), { issued: true, sawWarp: true }, NB);
+  assert.equal(landed.outcome.kind, "done");
+  assert.equal(warpBm(s, obs({}), {}, NB).outcome.kind, "blocked");
+});
+
+test("find-combat-agent: publishes the ENCOUNTER kind so the finder searches security agents", () => {
+  const findCombat = SCRIPT_MACROS["find-combat-agent"]!;
+  const t = findCombat(step("find-combat-agent" as never, { level: { kind: "count", value: 2 } }), obs(), {}, NB);
+  assert.equal(t.boardPatch?.["findKind"], "encounter");
+  assert.equal(t.boardPatch?.["findLevel"], 2);
+});
+
+test("accept: an ENCOUNTER offer (no cargo) skips the volume gate and accepts on jumps alone", () => {
+  const noCargo = briefing({ cargoTypeID: null, cargoQuantity: null, cargoVolume: null });
+  const t = accept(
+    step("accept-mission", { maxJumps: { kind: "count", value: 10 } }),
+    obs({ briefing: noCargo, conversation: convo([{ actionID: 816, buttonType: 3 }]), jumpsToDropoff: 3 }),
+    {},
+    ONBOARD,
+  );
+  assert.ok(t.action.kind === "agentButton" && t.action.actionID === 816, "no-cargo offer must not be volume-gated");
+});
+
+test("fly-to-mission-site: warps to the Agent Missions bookmark, preferring the real spot", () => {
+  const fly = SCRIPT_MACROS["fly-to-mission-site"]!;
+  const s = step("fly-to-mission-site" as never);
+  const inSpace = flight({ docked: false, inSpace: true, stationID: null });
+  const marks = [
+    { bookmarkID: 70, name: "", solarSystemID: 30000142, folderName: "Agent Missions", hasSpot: false },
+    { bookmarkID: 71, name: "", solarSystemID: 30000142, folderName: "Agent Missions", hasSpot: true },
+    { bookmarkID: 72, name: "Safe", solarSystemID: 30000142, folderName: "Spots", hasSpot: true },
+  ];
+  const go = fly(s, obs({ flightStatus: inSpace, bookmarks: marks }), {}, NB);
+  assert.ok(go.action.kind === "warpBookmark" && go.action.bookmarkID === 71, "the coordinates bookmark wins");
+
+  // No mission marks at all -> blocked with "accept a mission first".
+  const none = fly(s, obs({ flightStatus: inSpace, bookmarks: [marks[2]!] }), {}, NB);
+  assert.equal(none.outcome.kind, "blocked");
+
+  // Site in another system -> blocked with the travel hint.
+  const far = fly(s, obs({ flightStatus: inSpace, bookmarks: [{ ...marks[1]!, solarSystemID: 30009999 }] }), {}, NB);
+  assert.equal(far.outcome.kind, "blocked");
+});
+
+test("restart-extractors: restarts only EXPIRED programs on their own resource, one per tick", () => {
+  const restart = SCRIPT_MACROS["restart-extractors"]!;
+  const s = step("restart-extractors" as never);
+  const past = Date.now() - 60_000;
+  const future = Date.now() + 60_000;
+  const colonies = [
+    {
+      planetID: 40000001,
+      planetName: "Matar V",
+      extractors: [
+        { pinID: 1, resourceTypeID: 2268, expiresAtMs: past }, // expired -> restart
+        { pinID: 2, resourceTypeID: 2305, expiresAtMs: future }, // running -> leave
+        { pinID: 3, resourceTypeID: null, expiresAtMs: past }, // unknown resource -> never guess
+      ],
+    },
+  ];
+
+  const first = restart(s, obs({ colonies } as never), {}, NB);
+  assert.ok(first.action.kind === "restartExtractor" && first.action.pinID === 1 && first.action.resourceTypeID === 2268);
+
+  // Pin 1 already restarted this run: the unknown-resource pin is SKIPPED (with
+  // the skip said out loud), and the running one untouched -> done.
+  const second = restart(s, obs({ colonies } as never), first.nextMem, NB);
+  assert.equal(second.outcome.kind, "done");
+  assert.match(second.why, /left alone/);
+
+  // No colonies at all -> done, plainly.
+  const none = restart(s, obs({ colonies: [] } as never), {}, NB);
+  assert.equal(none.outcome.kind, "done");
+});
+
+test("repair-ship: the shop's quote decides; repairs then done only on a clean re-quote", () => {
+  const repair = SCRIPT_MACROS["repair-ship"]!;
+  const s = step("repair-ship" as never);
+
+  const fix = repair(s, obs({ damagedItemIDs: [9001, 700] } as never), {}, NB);
+  assert.ok(fix.action.kind === "repairItems" && fix.action.itemIDs.length === 2);
+
+  const clean = repair(s, obs({ damagedItemIDs: [] } as never), fix.nextMem, NB);
+  assert.equal(clean.outcome.kind, "done");
+
+  const undocked = repair(s, obs({ flightStatus: flight({ docked: false, inSpace: true, stationID: null }) }), {}, NB);
+  assert.equal(undocked.outcome.kind, "blocked");
+
+  // Damage that never clears (no money) -> bounded, then a plain reason.
+  let mem: Record<string, unknown> = {};
+  let last = fix;
+  for (let i = 0; i < 8; i += 1) {
+    last = repair(s, obs({ damagedItemIDs: [9001] } as never), mem, NB);
+    mem = { ...last.nextMem };
+    if (last.outcome.kind === "blocked") break;
+  }
+  assert.equal(last.outcome.kind, "blocked");
+});
+
+test("describeBoard: names only, never ids; silent when there is nothing to say", async () => {
+  const { describeBoard } = await import("./scriptDecide.ts");
+  assert.equal(describeBoard({}), null);
+  assert.equal(describeBoard({ agentID: 3018920 }), null, "an id alone renders NOTHING (R7d)");
+  assert.equal(describeBoard({ agentName: "Aursa" }), "Working with Aursa");
+  assert.equal(
+    describeBoard({ agentName: "Aursa", agentStationName: "Home Station" }),
+    "Working with Aursa (Home Station)",
+  );
+});
+
+test("travel-home (safety fly-home): rides the autopilot from ANY system; docked anywhere = safe", async () => {
+  const { scriptTravelHome } = await import("./scriptMacros.ts");
+  // In space, home off-grid (another system entirely) -> hand it to the autopilot.
+  const going = scriptTravelHome(obs({ flightStatus: flight({ docked: false, inSpace: true, stationID: null }), startingStationID: AGENT_STATION, snapshot: null }), {});
+  assert.ok(going.action.kind === "startRoute" && going.action.stationID === AGENT_STATION);
+
+  // Docked — anywhere — is safe; the latch can fire its pause.
+  const safe = scriptTravelHome(obs({ flightStatus: flight({ docked: true, stationID: 60000099 }), startingStationID: AGENT_STATION }), {});
+  assert.equal(safe.outcome.kind, "done");
+
+  // No home known -> stop where we are rather than fly to a guess.
+  const noHome = scriptTravelHome(obs({ startingStationID: null }), {});
+  assert.equal(noHome.outcome.kind, "done");
+});
+
+test("return: rides home to the agent's station and is done when docked there", () => {
+  const going = back(step("return-to-agent"), obs({ flightStatus: flight({ docked: false, inSpace: true, stationID: null }) }), {}, ONBOARD);
+  assert.ok(going.action.kind === "startRoute" && going.action.stationID === AGENT_STATION);
+
+  const there = back(step("return-to-agent"), obs(), {}, ONBOARD);
+  assert.equal(there.outcome.kind, "done");
+});

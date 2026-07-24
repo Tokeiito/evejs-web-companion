@@ -19,6 +19,7 @@ export type TabID =
   | "mining"
   | "travel"
   | "bots"
+  | "botBuilder"
   | "inventory"
   | "market"
   | "industry"
@@ -53,6 +54,7 @@ export const TABS: readonly TabDef[] = [
   { id: "fitting", label: "Fitting", where: "docked" },
   { id: "travel", label: "Travel", where: "docked" },
   { id: "bots", label: "Bots", where: "docked" },
+  { id: "botBuilder", label: "Bot Builder", where: "docked" },
   // In space only — flying, what's around the ship, mining.
   { id: "flight", label: "Flight", where: "in-space" },
   { id: "overview", label: "Around Your Ship", where: "in-space" },

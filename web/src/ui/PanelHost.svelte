@@ -21,6 +21,7 @@
   import Planets from "./Planets.svelte";
   import Travel from "./Travel.svelte";
   import Bots from "./Bots.svelte";
+  import BotBuilder from "./BotBuilder.svelte";
   import Chat from "./Chat.svelte";
   import Wallet from "./Wallet.svelte";
   import CorpWallet from "./CorpWallet.svelte";
@@ -78,6 +79,8 @@
   <Travel {store} {flow} />
 {:else if tab === "bots"}
   <Bots {store} {flow} />
+{:else if tab === "botBuilder"}
+  <BotBuilder {store} {flow} />
 {:else if tab === "wallet"}
   <Wallet {store} {flow} />
 {:else if tab === "corpWallet"}

@@ -51,6 +51,7 @@ export const STATION_SERVICES: readonly ShellSlot[] = [
   { id: "svc-industry", label: "Industry", wires: "industry", hint: "Jobs, blueprints, and facilities." },
   { id: "svc-travel", label: "Travel", wires: "travel", hint: "Plan and set your autopilot route." },
   { id: "svc-bots", label: "Bots", wires: "bots", hint: "Mining and mission automation." },
+  { id: "svc-bot-builder", label: "Bot Builder", wires: "botBuilder", hint: "Build your own bot from ready-made steps." },
   { id: "svc-repair", label: "Repair Shop", wires: null, hint: "Repair modules and hull. (Service — not yet built.)" },
   { id: "svc-reprocess", label: "Reprocessing", wires: null, hint: "Reprocess items to minerals. (Service — not yet built.)" },
   { id: "svc-insurance", label: "Insurance", wires: null, hint: "Insure the active ship. (Service — not yet built.)" },

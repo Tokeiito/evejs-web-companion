@@ -64,6 +64,8 @@ const PANELS = [
   // R43 — the launcher. It embeds MiningBot and MissionBot, so a first-mount
   // failure in either now takes this panel down too.
   "Bots",
+  // The player Bot Builder editor.
+  "BotBuilder",
   "Chat",
   // R50 — the two wallet tabs.
   "Wallet",

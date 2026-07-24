@@ -172,6 +172,12 @@ const SERVER_REFUSALS: Readonly<Record<string, string>> = Object.freeze({
   // so the sentence covers what the arm covers rather than what the code says.
   NotEnoughCapacitorForOnline:
     "Your ship does not have enough power, CPU or capacitor to bring that module online.",
+  // invbroker Add / MultiAdd — the destination hold has no room for the stack.
+  // Reachable via the docked hangar→ship-hold move. The client moves only what
+  // fits, so this is the backstop for a hold that is already full (or a capacity
+  // read that went stale between the fit calc and the move).
+  NotEnoughCargoSpace:
+    "There isn't enough room in that hold.",
   // dogma `_throwModuleActivationUserError` — TARGET_OUT_OF_RANGE for anything
   // that is not a mining laser.
   TargetNotWithinRangeGeneric:
