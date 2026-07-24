@@ -7,6 +7,7 @@ const path = require("path");
 // R17 mail: mailMgr.GetBody answers a zlib-DEFLATED buffer, and inflating it is
 // this file's job — see mailBodyText. The browser never sees a compressed byte.
 const zlib = require("zlib");
+const { spawn } = require("child_process");
 const eveStore = require("./eveStore");
 const eveGatewayClient = require("./eveGatewayClient");
 const webAuth = require("./webAuth");
@@ -16611,6 +16612,182 @@ app.post("/api/botscripts/:scriptID/delete", requireAuth, (req, res, next) => {
   } catch (error) {
     next(error);
   }
+});
+
+// ── Icon cache admin (the Settings panel) ───────────────────────────────────
+// Two ways to fill data/icon-cache so type icons serve locally instead of the
+// lettered fallback tile:
+//   1. AUTO-FILL (opt-in, OFF by default): a miss on the icon route is fetched
+//      from images.evetech.net BY THE BFF, saved, and then served — icons fill
+//      in as you browse, downloading only what you actually look at. The BROWSER
+//      still only ever talks to /icon-cache, so R27's "browser never touches an
+//      external image host" rule holds; the BFF is the one reaching the CDN,
+//      exactly as scripts/cache-icons.js already does.
+//   2. BULK PULL: spawn scripts/cache-icons.js to pre-download a whole source —
+//      the gamestore set (fast) or every published type (comprehensive).
+// Off by default keeps the R27 "named tile is the normal case" contract intact
+// until someone opts in here.
+const ICON_SETTINGS_PATH = path.join(config.dataDir, "icon-settings.json");
+const ICON_CACHE_SOURCES = new Set(["gamestore", "all-types"]);
+const ICON_REMOTE_VARIATIONS = new Set(["icon", "bp", "bpc"]);
+
+let iconSettings = { autoDownload: false };
+try {
+  const parsed = JSON.parse(fs.readFileSync(ICON_SETTINGS_PATH, "utf8"));
+  iconSettings = { autoDownload: parsed && parsed.autoDownload === true };
+} catch {
+  // No settings file yet — the off-by-default stands.
+}
+function saveIconSettings() {
+  try {
+    fs.mkdirSync(config.dataDir, { recursive: true });
+    fs.writeFileSync(ICON_SETTINGS_PATH, `${JSON.stringify(iconSettings, null, 2)}\n`);
+  } catch {
+    // Best-effort; the toggle still applies in-memory for this run.
+  }
+}
+
+let iconCacheJob = {
+  running: false,
+  source: null,
+  progress: "",
+  startedAt: null,
+  finishedAt: null,
+  lastResult: null,
+};
+
+function countCachedIcons() {
+  let count = 0;
+  const walk = (dir) => {
+    let entries;
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.isFile() && entry.name.endsWith(".png")) count += 1;
+    }
+  };
+  walk(config.iconCacheDir);
+  return count;
+}
+
+// AUTO-FILL — sits in front of the icon static mount below. On a miss (auto-fill
+// on), fetch the icon from the CDN, save it, and fall through to let the static
+// mount serve the now-present file. ANY failure just falls through, so the R27
+// 404 contract is preserved unchanged when auto-fill is off or the CDN misses.
+app.get(/^\/icon-cache\/types\/(\d+)\/([a-z]+)\/(\d+)\.png$/, async (req, res, next) => {
+  if (!iconSettings.autoDownload) {
+    next();
+    return;
+  }
+  const size = Number(req.params[0]);
+  const variation = String(req.params[1]);
+  const typeID = Number(req.params[2]);
+  if (!ICON_REMOTE_VARIATIONS.has(variation) || !Number.isInteger(typeID) || typeID <= 0) {
+    next();
+    return;
+  }
+  const target = path.join(config.iconCacheDir, "types", String(size), variation, `${typeID}.png`);
+  if (fs.existsSync(target)) {
+    next();
+    return;
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 8000);
+  try {
+    const url = staticDataModule.getRemoteTypeIconUrl(typeID, size, variation);
+    if (url) {
+      const response = await fetch(url, { signal: controller.signal });
+      const ctype = String(response.headers.get("content-type") || "");
+      if (response.ok && ctype.startsWith("image/")) {
+        const bytes = Buffer.from(await response.arrayBuffer());
+        if (bytes.length > 0) {
+          fs.mkdirSync(path.dirname(target), { recursive: true });
+          const tmp = `${target}.tmp-${process.pid}`;
+          fs.writeFileSync(tmp, bytes);
+          fs.renameSync(tmp, target);
+        }
+      }
+    }
+  } catch {
+    // Fall through to the static 404 on any CDN/write failure.
+  } finally {
+    clearTimeout(timer);
+  }
+  next();
+});
+
+app.get("/api/icons/status", requireAuth, (req, res) => {
+  res.json({
+    ok: true,
+    cachedCount: countCachedIcons(),
+    autoDownload: iconSettings.autoDownload,
+    running: iconCacheJob.running,
+    source: iconCacheJob.source,
+    progress: iconCacheJob.progress,
+    startedAt: iconCacheJob.startedAt,
+    finishedAt: iconCacheJob.finishedAt,
+    lastResult: iconCacheJob.lastResult,
+  });
+});
+
+app.post("/api/icons/settings", requireAuth, (req, res) => {
+  const autoDownload = Boolean(req.body && req.body.autoDownload);
+  iconSettings = { autoDownload };
+  saveIconSettings();
+  res.json({ ok: true, autoDownload });
+});
+
+app.post("/api/icons/cache", requireAuth, (req, res) => {
+  if (iconCacheJob.running) {
+    res.status(409).json({ ok: false, error: "ICON_CACHE_BUSY", message: "An icon pull is already running." });
+    return;
+  }
+  const source = String((req.body && req.body.source) || "all-types");
+  if (!ICON_CACHE_SOURCES.has(source)) {
+    res.status(400).json({ ok: false, error: "ICON_CACHE_BAD_SOURCE", message: "source must be 'gamestore' or 'all-types'." });
+    return;
+  }
+  let child;
+  try {
+    child = spawn(process.execPath, ["scripts/cache-icons.js", "--source", source, "--delay-ms", "50"], {
+      cwd: config.repoRoot,
+      env: process.env,
+      windowsHide: true,
+    });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: "ICON_CACHE_SPAWN_FAILED", message: String((error && error.message) || error) });
+    return;
+  }
+  iconCacheJob = {
+    running: true,
+    source,
+    progress: "Starting…",
+    startedAt: new Date().toISOString(),
+    finishedAt: null,
+    lastResult: null,
+  };
+  const onData = (buf) => {
+    const lines = String(buf).split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    if (lines.length) iconCacheJob.progress = lines[lines.length - 1].slice(0, 200);
+  };
+  child.stdout.on("data", onData);
+  child.stderr.on("data", onData);
+  child.on("error", (error) => {
+    iconCacheJob.running = false;
+    iconCacheJob.finishedAt = new Date().toISOString();
+    iconCacheJob.lastResult = `Error: ${error.message}`;
+  });
+  child.on("close", (code) => {
+    iconCacheJob.running = false;
+    iconCacheJob.finishedAt = new Date().toISOString();
+    iconCacheJob.lastResult = code === 0 ? "Done." : `Exited with code ${code}.`;
+  });
+  res.json({ ok: true, started: true, source });
 });
 
 // ⚠ ORDER IS LOAD-BEARING BELOW THIS LINE. The icon cache MUST stay above the

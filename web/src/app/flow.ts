@@ -223,6 +223,15 @@ export interface AppFlowOptions {
    * to the browser's own EventSource; tests supply a fake.
    */
   readonly eventSource?: (url: string) => api.EventSourceLike;
+  /**
+   * R107 multibox — when true, this flow carries its OWN session token on every
+   * call (via `callOptions.token`) instead of the per-tab global in
+   * sessionToken.ts, so several flows can be live in ONE browser tab without
+   * their calls colliding on the shared token/cookie. The login handler captures
+   * the token onto the call options; logout clears it. Default false keeps the
+   * single-session path (main.ts, every existing test) byte-for-byte unchanged.
+   */
+  readonly perSessionToken?: boolean;
 }
 
 /**
@@ -246,6 +255,13 @@ export interface AppFlow {
   checkHealth(): Promise<void>;
   /** Who-cares login, then the typed reference call to fill the character list. */
   login(username: string, password: string): Promise<void>;
+  /**
+   * R107 multibox — the session token THIS flow authenticates as, for the
+   * character bar and verification. Non-null between login and logout in
+   * per-session mode; null otherwise (single-session flows keep the token in the
+   * per-tab global, not here).
+   */
+  sessionToken(): string | null;
   /** Select a character onto the persistent session, then run the docked reads. */
   selectCharacter(characterID: number): Promise<void>;
   /** Refresh the docked station-panel reads on the live session. */
@@ -291,6 +307,13 @@ export interface AppFlow {
   selectCorpDivision(division: number): void;
   /** Load the Fitting panel (the active ship's slots + resource readings). */
   loadFitting(): Promise<void>;
+  /**
+   * Load the bound-dogma snapshot (active ship + fitted modules with their
+   * SERVER-effective attributes), so a clicked module can show its effective
+   * stats. Refreshed automatically alongside loadFitting; exposed for a manual
+   * refresh too.
+   */
+  loadDogma(): Promise<void>;
   /**
    * Fit a module from the station hangar or the ship's cargo. `slot` picks a
    * specific slot by family + index, or "auto" to let the SERVER choose one.
@@ -806,10 +829,22 @@ function errorWords(error: unknown): string {
 const sayRefusal = sayRefusalWords;
 
 export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}): AppFlow {
-  const callOptions = {
+  // R107 — in per-session mode the `token` key is present (starting null) so
+  // every api.ts / callMethod.ts call authenticates with THIS flow's token and
+  // never the per-tab global; the login handler fills it in and logout clears
+  // it. In single-session mode the key is absent, so the same call sites fall
+  // back to the global exactly as before. `callOptions` is passed by reference
+  // to every call site below, so mutating `.token` here is seen by later calls.
+  const callOptions: {
+    baseUrl?: string;
+    fetch?: typeof fetch;
+    eventSource?: (url: string) => api.EventSourceLike;
+    token?: string | null;
+  } = {
     ...(options.baseUrl !== undefined ? { baseUrl: options.baseUrl } : {}),
     ...(options.fetch !== undefined ? { fetch: options.fetch } : {}),
     ...(options.eventSource !== undefined ? { eventSource: options.eventSource } : {}),
+    ...(options.perSessionToken ? { token: null } : {}),
   };
 
   // R6b — the docked station the station-scoped panels are currently synced to,
@@ -1423,6 +1458,45 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // been switched on. Best-effort and never blocking: it is reference data,
     // and a module with no figure simply has none rather than a fabricated one.
     void seedBaseCycleTimes(store.fitting.get().slots).catch(() => {});
+    // R21 slice B — the per-module EFFECTIVE attributes, refreshed on the same
+    // beat as the fit (and after every fitting action, which reloads via this
+    // path). Fire-and-forget: loadDogma keeps its own error, so the fit is never
+    // held up — or blanked — by a dogma read that stumbles.
+    void loadDogma().catch(() => {});
+  }
+
+  /**
+   * Load the bound-dogma snapshot for the Fitting window: the active ship plus
+   * every fitted module, each carrying the SERVER's post-dogma attribute map
+   * (skills + hull bonuses + in-space effects already applied). The Fitting
+   * panel looks a clicked module up here by itemID to show its effective stats;
+   * nothing is recomputed in the browser.
+   *
+   * Resilient by design. A lost live session unwinds to select exactly like
+   * loadFitting; every OTHER failure is recorded on the slice's own error and
+   * swallowed, because the dogma read is a companion to the fit, never a gate on
+   * it — a fit that loaded must still render even when its module stats do not.
+   */
+  async function loadDogma(): Promise<void> {
+    let decoded: Awaited<ReturnType<typeof api.boundDogma>>;
+    try {
+      decoded = await api.boundDogma(callOptions);
+    } catch (error) {
+      if (isSessionLost(error)) {
+        stopLiveStream();
+        store.apply({ type: "character/offline" });
+        return;
+      }
+      store.apply({ type: "dogma/loaded", allInfo: null, error: errorWords(error) });
+      return;
+    }
+    // The snapshot rides on GetAllInfo; carry that read's own error through so a
+    // partial refusal is stated rather than shown as an empty ship.
+    store.apply({
+      type: "dogma/loaded",
+      allInfo: decoded.allInfo.value,
+      error: decoded.allInfo.error,
+    });
   }
 
   /**
@@ -5269,8 +5343,20 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       store.apply({ type: "health/status", status: ready ? "online" : "offline" });
     },
 
+    sessionToken() {
+      return callOptions.token ?? null;
+    },
+
     async login(username, password) {
       const result = await api.login(username, password, callOptions);
+      // R107 — in per-session mode capture the token onto our own call options
+      // (api.login deliberately did NOT write the global), so every later call
+      // and the SSE stream authenticate as THIS character. In single-session
+      // mode `token` is not a key on callOptions and api.login already wrote the
+      // global, so this assignment is skipped.
+      if (options.perSessionToken) {
+        callOptions.token = result.sessionToken;
+      }
       store.apply({
         type: "session/logged-in",
         accountID: result.accountID,
@@ -5389,6 +5475,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     },
 
     loadFitting,
+
+    loadDogma,
 
     async fitModule(itemID, source, slot) {
       await runFittingAction(() => api.fitModule(itemID, source, slot, callOptions));
@@ -5817,6 +5905,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       try {
         await api.logout(callOptions);
       } finally {
+        // R107 — this flow is fully signed out, so drop its per-session token
+        // (in single-session mode `token` is not a key here and api.logout
+        // cleared the global instead). releaseSession keeps the token: it only
+        // takes the character offline, the web login stays.
+        if (options.perSessionToken) {
+          callOptions.token = null;
+        }
         syncedStationID = null;
         store.apply({ type: "session/logged-out" });
       }

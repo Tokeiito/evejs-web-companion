@@ -1,96 +1,113 @@
 <script lang="ts">
-  // Page flow, a pure reader of the client-state store: login form -> character
-  // selection -> the workspace. The workspace is a persistent Neocom rail (the
-  // STATIC tabs, present in both states) beside a main area that shows EITHER a
-  // selected static panel OR the state-specific SHELL. Which shell is the
-  // station interior when docked, the flight HUD in space — driven by the
-  // authoritative flight flag (deriveDocked). All fetch/decode lives in
-  // app/flow.ts; the store slices are Svelte-store-contract signals.
-  import LoginForm from "./LoginForm.svelte";
-  import CharacterSelect from "./CharacterSelect.svelte";
-  import Neocom from "./Neocom.svelte";
-  import PanelHost from "./PanelHost.svelte";
-  import StationShell from "./StationShell.svelte";
-  import SpaceShell from "./SpaceShell.svelte";
-  import CustomBotReadout from "./CustomBotReadout.svelte";
-  import { deriveDocked, visibleTabsFor, type TabID } from "./tabs.ts";
-  import type { ClientStore } from "../store/clientStore.ts";
-  import type { AppFlow } from "../app/flow.ts";
+  // R107 multibox — the whole tab. Several pilots are online at once, each a
+  // fully isolated session (its own store + its own per-session-token flow, see
+  // app/sessions.ts). This component owns the roster:
+  //   • `sessions`  — the ONLINE pilots, one chip each in the character bar,
+  //   • `activeId`  — which pilot's cockpit (Workspace) is showing right now,
+  //   • `onboarding`— the pilot currently logging in / selecting a character,
+  //                   shown full-screen at boot or over the workspace for "Add".
+  // Exactly one Workspace is mounted (the active pilot); every other pilot's
+  // store+flow stay live in memory and keep refreshing themselves on the BFF, so
+  // switching is instant and safe. Login/select and all fetch/decode live
+  // elsewhere; this file is pure orchestration.
+  import CharacterBar from "./CharacterBar.svelte";
+  import Onboarding from "./Onboarding.svelte";
+  import Workspace from "./Workspace.svelte";
+  import { createSession, type Session } from "../app/sessions.ts";
 
-  let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
+  // The online roster, the active pilot, and the one being added. The first
+  // pilot starts onboarding immediately (createSession warms its health ping).
+  let sessions = $state<Session[]>([]);
+  let activeId = $state<string | null>(null);
+  let onboarding = $state<Session | null>(createSession());
 
-  // The store's identity is stable for the app's lifetime; capturing the slice
-  // signals once is intended (they are Svelte-store-contract objects).
-  // svelte-ignore state_referenced_locally
-  const session = store.session;
-  // svelte-ignore state_referenced_locally
-  const station = store.station;
-  // svelte-ignore state_referenced_locally
-  const flight = store.flight;
+  const active = $derived(sessions.find((s) => s.id === activeId) ?? null);
 
-  // Docked vs in space, from the authoritative flag (the rule lives in tabs.ts
-  // so the shell switch and the Neocom badge share one source of truth).
-  const isDocked = $derived(deriveDocked($flight.status, $station.online));
+  // A pilot finished login+select: promote it from onboarding into the online
+  // roster and make it the active cockpit (matches "Add character makes it
+  // active", and is the natural landing for the first pilot too).
+  function completeOnboarding(): void {
+    const s = onboarding;
+    if (!s) return;
+    sessions = [...sessions, s];
+    activeId = s.id;
+    onboarding = null;
+  }
 
-  // The open tab, or null to show the state shell ("home"). It can be a Neocom
-  // pick (a static "both" tab) OR a state-specific tab a shell control opened
-  // (Fitting from the station rail, Overview from the HUD). A static pick
-  // persists across dock/undock; a state-specific one that the new state hides
-  // is dropped back to the shell by the guard below.
-  let selected = $state<TabID | null>(null);
-  const open = (id: TabID): void => {
-    selected = id;
-  };
+  // Log another pilot in WITHOUT disturbing the current ones: a fresh isolated
+  // session in an overlay. One add at a time.
+  function addCharacter(): void {
+    if (onboarding) return;
+    onboarding = createSession();
+  }
 
-  // The panel actually shown: the chosen tab while it is still visible in the
-  // current state, otherwise null (fall back to the shell). So undocking with
-  // the Fitting panel open lands you on the space HUD instead of a stuck panel,
-  // while a static tab (visible in both) stays put.
-  const effective = $derived(
-    selected !== null && visibleTabsFor(isDocked).some((t) => t.id === selected)
-      ? selected
-      : null,
-  );
+  // Abandon an in-progress add: tear the pending session down (best-effort, so a
+  // partial BFF login does not linger past its TTL) and drop the overlay.
+  function cancelOnboarding(): void {
+    const s = onboarding;
+    onboarding = null;
+    if (s) void s.flow.logout().catch(() => {});
+  }
 
-  // Once a character is online, read the flight status so the docked/in-space
-  // flag is authoritative (character select does not read it). Runs once —
-  // subsequent flight steps (undock / dock / travel / autopilot) keep it fresh
-  // through the same store slice. $effect never runs under SSR, so the initial
-  // paint still relies on the station-context fallback in deriveDocked.
-  $effect(() => {
-    if ($session.phase === "logged-in" && $station.online !== null && $flight.status === null) {
-      void flow.loadFlightStatus().catch(() => {});
+  function switchTo(id: string): void {
+    activeId = id;
+  }
+
+  // Remove a pilot the instant its store reports offline — release, logout, or a
+  // lost session from inside its own workspace. Re-fix the active cockpit, and if
+  // the tab is now empty, drop back to a fresh full-screen login.
+  function removeSession(id: string): void {
+    const remaining = sessions.filter((s) => s.id !== id);
+    if (remaining.length === sessions.length) return;
+    sessions = remaining;
+    if (activeId === id) {
+      activeId = remaining.length > 0 ? remaining[remaining.length - 1].id : null;
     }
+    if (remaining.length === 0 && onboarding === null) {
+      onboarding = createSession();
+    }
+  }
+
+  // Watch every online pilot's station slice; when one goes offline, prune it.
+  // Re-subscribes when the roster changes. The signal fires synchronously with
+  // the current value on subscribe, which for an online pilot is a no-op, so
+  // this never prunes a pilot that is still live.
+  $effect(() => {
+    const unsubs = sessions.map((s) =>
+      s.store.station.subscribe((slice) => {
+        if (slice.online === null) removeSession(s.id);
+      }),
+    );
+    return () => {
+      for (const unsub of unsubs) unsub();
+    };
   });
 </script>
 
-<h1>EveJS Web</h1>
-{#if $session.phase !== "logged-in"}
-  <LoginForm {store} {flow} />
-{:else if $station.online === null}
-  <CharacterSelect {store} {flow} />
-{:else}
-  <div class="app-shell">
-    <Neocom
-      {store}
-      {isDocked}
-      selected={effective}
-      onSelect={open}
-      onHome={() => (selected = null)}
-    />
-    <main class="app-main">
-      <!-- A running player bot's readout, ABOVE the tab/shell switch so it stays
-           visible on every tab and in both shells (docked and in space) while it
-           runs, and renders nothing when none is. This is why it survives the
-           undock shell switch that hid it before. -->
-      <CustomBotReadout {store} {flow} />
-      {#if effective !== null}
-        <PanelHost {store} {flow} tab={effective} onOpen={open} />
-      {:else if isDocked}
-        <StationShell {store} {flow} onOpen={open} />
-      {:else}
-        <SpaceShell {store} {flow} onOpen={open} />
-      {/if}
-    </main>
-  </div>
+{#if active}
+  <CharacterBar {sessions} {activeId} onSwitch={switchTo} onAdd={addCharacter} />
+  <!-- Remount on switch: each Workspace binds one stable store/flow for its
+       whole life, and the in-memory store makes the remount instant. -->
+  {#key active.id}
+    <Workspace store={active.store} flow={active.flow} />
+  {/key}
+{/if}
+
+{#if onboarding}
+  {#if active}
+    <!-- Add character: an overlay over the live workspace, which keeps running. -->
+    <div class="onboarding-overlay">
+      <div class="onboarding-frame">
+        <div class="onboarding-frame-head">
+          <span class="onboarding-frame-title">Add character</span>
+          <button type="button" class="minor" onclick={cancelOnboarding}>Cancel</button>
+        </div>
+        <Onboarding store={onboarding.store} flow={onboarding.flow} onOnline={completeOnboarding} />
+      </div>
+    </div>
+  {:else}
+    <!-- First pilot: full-screen login, nothing behind it. -->
+    <h1>EveJS Web</h1>
+    <Onboarding store={onboarding.store} flow={onboarding.flow} onOnline={completeOnboarding} />
+  {/if}
 {/if}

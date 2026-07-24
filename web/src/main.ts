@@ -10,8 +10,6 @@
 import "./styles.css";
 import { mount } from "svelte";
 import App from "./ui/App.svelte";
-import { createClientStore } from "./store/clientStore.ts";
-import { createAppFlow } from "./app/flow.ts";
 import { installErrorOverlay } from "./app/errorOverlay.ts";
 
 // Before anything else: a framework-free net for uncaught errors and unhandled
@@ -19,14 +17,10 @@ import { installErrorOverlay } from "./app/errorOverlay.ts";
 // silent freeze.
 installErrorOverlay();
 
-const store = createClientStore();
-const flow = createAppFlow(store);
-
+// R107 — App owns the pilot roster now: it creates one isolated session per
+// pilot (store + per-session-token flow) and warms each one's health ping
+// itself (app/sessions.ts). There is no single app-wide store/flow any more.
 const target = document.getElementById("app");
 if (target) {
-  mount(App, { target, props: { store, flow } });
+  mount(App, { target });
 }
-
-// One health ping per page load (never a poll): the login screen stays gated
-// until it answers, and refuses login if the server is offline.
-void flow.checkHealth();

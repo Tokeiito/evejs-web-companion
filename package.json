@@ -5,8 +5,8 @@
   "description": "Minimal browser companion POC for EveJS.",
   "main": "src/server.js",
   "scripts": {
-    "start": "node src/server.js",
-    "dev": "node --watch src/server.js",
+    "start": "node --env-file-if-exists=.env src/server.js",
+    "dev": "node --watch --env-file-if-exists=.env src/server.js",
     "dev:web": "vite",
     "build:web": "tsc -p tsconfig.json && vite build",
     "typecheck": "tsc -p tsconfig.json",

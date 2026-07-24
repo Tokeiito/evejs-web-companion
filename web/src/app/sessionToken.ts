@@ -100,25 +100,44 @@ export function clearSessionToken(): void {
 }
 
 /**
- * The Authorization header for this tab, or nothing at all when signed out —
- * an absent header lets the legacy cookie carry the request during migration,
- * where an empty one would not.
+ * The Authorization header for an EXPLICIT token — Bearer when it is a non-empty
+ * string, nothing at all when it is null/empty/undefined. An absent header lets
+ * the legacy cookie carry the request during migration, where an empty one would
+ * not. R107 multibox threads a per-session token through here so several flows
+ * can share one tab without colliding on the per-tab global below.
  */
-export function sessionAuthHeaders(): Readonly<Record<string, string>> {
-  const token = getSessionToken();
-  return token === null ? {} : { authorization: `Bearer ${token}` };
+export function tokenAuthHeaders(
+  token: string | null | undefined,
+): Readonly<Record<string, string>> {
+  return typeof token === "string" && token.length > 0
+    ? { authorization: `Bearer ${token}` }
+    : {};
 }
 
 /**
- * Put the token in a URL's query string. ONLY for the SSE stream, whose
- * `EventSource` cannot set headers — see `requireStreamAuth` in src/server.js
- * for why a credential in a URL is tolerable there and refused everywhere else.
+ * Put an EXPLICIT token in a URL's query string, or return the URL unchanged
+ * when there is none. ONLY for the SSE stream, whose `EventSource` cannot set
+ * headers — see `requireStreamAuth` in src/server.js for why a credential in a
+ * URL is tolerable there and refused everywhere else.
  */
-export function withSessionTokenQuery(url: string): string {
-  const token = getSessionToken();
-  if (token === null) {
+export function withTokenQuery(url: string, token: string | null | undefined): string {
+  if (typeof token !== "string" || token.length === 0) {
     return url;
   }
   const separator = url.includes("?") ? "&" : "?";
   return `${url}${separator}access_token=${encodeURIComponent(token)}`;
+}
+
+/**
+ * The Authorization header for THIS TAB's global token, or nothing when signed
+ * out. The single-session (pre-R107) carrier; per-session flows use
+ * `tokenAuthHeaders` with their own token instead.
+ */
+export function sessionAuthHeaders(): Readonly<Record<string, string>> {
+  return tokenAuthHeaders(getSessionToken());
+}
+
+/** As `withTokenQuery`, but for THIS TAB's global token (single-session path). */
+export function withSessionTokenQuery(url: string): string {
+  return withTokenQuery(url, getSessionToken());
 }

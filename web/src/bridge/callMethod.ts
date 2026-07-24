@@ -7,7 +7,7 @@
 // same-origin cookie as the migration fallback — and pins the bridge session
 // identity to the logged-in account.
 
-import { sessionAuthHeaders } from "../app/sessionToken.ts";
+import { sessionAuthHeaders, tokenAuthHeaders } from "../app/sessionToken.ts";
 import type {
   BridgeCallRequestBody,
   BridgeCallSuccessBody,
@@ -34,6 +34,17 @@ export interface CallMethodOptions {
   /** Injectable fetch for tests; default globalThis.fetch. */
   readonly fetch?: typeof fetch;
   readonly signal?: AbortSignal;
+  /**
+   * R107 multibox — this call's OWN session token. Same contract as
+   * `ApiOptions.token` in app/api.ts: when the KEY is present the call is
+   * per-session (Bearer with exactly this token, or no header when null, never
+   * the global fallback); when absent it rides the per-tab global as before.
+   * Character-scoped bridge helpers (bridge/stationPanel.ts,
+   * bridge/characterSelection.ts) forward the flow's call options here, so this
+   * route must honor it or a background pilot's station reads would run as
+   * whoever last wrote the shared cookie.
+   */
+  readonly token?: string | null;
 }
 
 /** Client-side (non-server) failure codes, alongside the wire's BridgeErrorCode set. */
@@ -95,11 +106,15 @@ export async function callMethod<TResult = JsonValue>(
   try {
     response = await doFetch(`${options.baseUrl ?? ""}/api/bridge/call`, {
       method: "POST",
-      // R42 — the tab's own session token, alongside the cookie. This route is
-      // the second fetch site in the client (api.ts's requestJson is the
-      // other), so it needs the header too or character selection and the
-      // station panel would silently run as whoever last wrote the cookie.
-      headers: { ...sessionAuthHeaders(), "content-type": "application/json" },
+      // R42/R107 — the session's own token, alongside the cookie. This route is
+      // the second fetch site in the client (api.ts's requestJson is the other),
+      // so it needs the header too or character selection and the station panel
+      // would silently run as whoever last wrote the cookie. Per-session (token
+      // key present) uses this flow's token; otherwise the per-tab global.
+      headers: {
+        ...("token" in options ? tokenAuthHeaders(options.token) : sessionAuthHeaders()),
+        "content-type": "application/json",
+      },
       credentials: "same-origin",
       body: JSON.stringify(body),
       ...(options.signal ? { signal: options.signal } : {}),
