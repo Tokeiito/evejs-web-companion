@@ -68,12 +68,14 @@ test("docked shows station + fitting + travel + bots and hides the in-space-only
   }
 });
 
-test("in space shows the flight tabs and hides station + fitting + travel + bots", () => {
+test("in space shows the flight tabs + bots and hides station + fitting + travel", () => {
   const space = idsOf(false);
-  for (const shown of ["flight", "overview", "mining"] as const) {
+  // `bots` is where:"both" (b0de9c9 kept Bots/Bot Builder reachable in space), so
+  // it shows here too; only station/fitting/travel are docked-only.
+  for (const shown of ["flight", "overview", "mining", "bots"] as const) {
     assert.ok(space.includes(shown), `${shown} must be visible in space`);
   }
-  for (const hidden of ["station", "fitting", "travel", "bots"] as const) {
+  for (const hidden of ["station", "fitting", "travel"] as const) {
     assert.equal(space.includes(hidden), false, `${hidden} must be hidden in space`);
   }
 });
