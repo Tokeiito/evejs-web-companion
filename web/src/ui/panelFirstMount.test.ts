@@ -287,12 +287,14 @@ test("App's first paint on a DOCKED character renders the station shell, not the
   const App = await loadPanel("App");
   const body = render(App as never, { props: { store, flow: fakeFlow() } } as never).body;
 
-  // The station interior: the docked badge, the services rail, the online pilot.
+  // The docked workspace: the docked badge, the docked-only Undock action, the
+  // online pilot. (Post-windowing, the docked chrome is the header + station dock
+  // panel rather than a services rail, but the docked-not-space guarantee holds.)
   assert.match(body, /Docked/, "no docked state badge");
-  assert.match(body, /Services/, "the station services rail is missing");
+  assert.match(body, /Undock/, "the docked Undock action is missing");
   assert.match(body, /Farmer/, "the docked pilot is not shown");
   // And NOT the in-space HUD.
-  assert.doesNotMatch(body, /In Space/, "the space HUD leaked into the docked shell");
+  assert.doesNotMatch(body, /In Space/, "the space HUD leaked into the docked workspace");
 });
 
 test("App's first paint on an IN-SPACE character renders the space HUD, not the station shell", async () => {

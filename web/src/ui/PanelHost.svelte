@@ -27,6 +27,7 @@
   import CorpWallet from "./CorpWallet.svelte";
   import Standings from "./Standings.svelte";
   import CharacterSheet from "./CharacterSheet.svelte";
+  import Settings from "./Settings.svelte";
   import type { TabID } from "./tabs.ts";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
@@ -89,6 +90,8 @@
   <Standings {store} {flow} />
 {:else if tab === "characterSheet"}
   <CharacterSheet {store} {flow} />
+{:else if tab === "settings"}
+  <Settings {store} {flow} />
 {:else}
   <Chat {store} {flow} />
 {/if}

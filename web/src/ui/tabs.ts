@@ -34,7 +34,8 @@ export type TabID =
   | "wallet"
   | "corpWallet"
   | "standings"
-  | "characterSheet";
+  | "characterSheet"
+  | "settings";
 
 /** Where a tab may appear: only DOCKED, only IN SPACE, or in BOTH. */
 export type Where = "docked" | "in-space" | "both";
@@ -75,6 +76,8 @@ export const TABS: readonly TabDef[] = [
   { id: "corpWallet", label: "Corp Wallet", where: "both" },
   { id: "standings", label: "Standings", where: "both" },
   { id: "characterSheet", label: "Character Sheet", where: "both" },
+  // The local client's own settings (icon cache, …) — reachable anywhere.
+  { id: "settings", label: "Settings", where: "both" },
 ];
 
 /** The default landing tab for each state (item 4). */
@@ -102,6 +105,16 @@ export function deriveDocked(
 export function visibleTabsFor(isDocked: boolean): readonly TabDef[] {
   const state: Where = isDocked ? "docked" : "in-space";
   return TABS.filter((tab) => tab.where === "both" || tab.where === state);
+}
+
+/** The display label for a tab id (falls back to the id if somehow unknown). */
+export function tabLabel(id: TabID): string {
+  return TABS.find((tab) => tab.id === id)?.label ?? id;
+}
+
+/** Whether a tab id is openable in the current state (used to filter windows). */
+export function isTabVisible(id: TabID, isDocked: boolean): boolean {
+  return visibleTabsFor(isDocked).some((tab) => tab.id === id);
 }
 
 /**

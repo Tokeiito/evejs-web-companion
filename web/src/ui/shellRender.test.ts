@@ -234,25 +234,29 @@ test("the target bracket names a locked target and shows its condition", () => {
 
 function renderNeocom(isDocked: boolean): string {
   return render(Neocom as never, {
-    props: { isDocked, selected: null, onSelect: () => {}, onHome: () => {} },
+    props: { isDocked, openIds: new Set(), focusedId: null, onSelect: () => {} },
   } as never).body;
 }
 
-test("the neocom carries the SAME static tabs in both states (only the badge differs)", () => {
+test("the neocom launches every openable panel for the current state (badge tracks state)", () => {
   const docked = visibleText(renderNeocom(true));
   const space = visibleText(renderNeocom(false));
-  // The static set — reachable docked or in space — is identical in both.
+  // The static set — reachable docked or in space — is in both.
   for (const label of ["Market", "Wallet", "Mail", "Skills", "Standings", "Planets"]) {
     assert.match(docked, new RegExp(label), `${label} missing from the docked neocom`);
     assert.match(space, new RegExp(label), `${label} missing from the in-space neocom`);
   }
-  // The home badge tracks state...
+  // The badge tracks state.
   assert.match(docked, /Docked/);
   assert.match(space, /In Space/);
-  // ...but state-specific tabs (Flight is in-space-only) are NOT in the static rail —
-  // they belong to their shell, not the persistent neocom.
+  // The windowing refactor makes the neocom the launcher for the state's panels,
+  // so state-specific tabs DO appear now — but only in their own state.
+  assert.match(space, /Flight/, "the in-space Flight tab is missing from the in-space neocom");
   assert.doesNotMatch(docked, /Flight/, "an in-space-only tab leaked into the docked neocom");
-  assert.doesNotMatch(space, /Flight/, "an in-space-only tab leaked into the neocom");
+  assert.match(docked, /Fitting/, "the docked Fitting tab is missing from the docked neocom");
+  assert.doesNotMatch(space, /Fitting/, "a docked-only tab leaked into the in-space neocom");
+  // The two fixed-chrome panels live in the top-right dock panel, not the rail.
+  assert.doesNotMatch(space, /Around Your Ship/, "the overview (chrome) leaked into the neocom");
 });
 
 test("the panel host renders the real panel for a selected tab (static or state-specific)", () => {
