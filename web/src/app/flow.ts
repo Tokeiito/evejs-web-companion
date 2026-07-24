@@ -767,9 +767,23 @@ export interface AppFlow {
   logout(): Promise<void>;
 }
 
-/** True when the session the BFF held is gone (TTL, takeover, restart). */
+/**
+ * True when the session the BFF held can no longer act — the character is not
+ * online on it. Two codes mean this, and both must unwind the same way (stop the
+ * stream, flip the slice offline, so App prunes the pilot rather than leaving a
+ * cockpit whose every read fails):
+ *   • SESSION_NOT_FOUND — the held bridge session is gone (TTL / restart).
+ *   • NO_LIVE_SESSION   — the session is held but its character was taken over
+ *     by another client (retail takeover) or released, so the gateway reports no
+ *     character online. This is exactly what a multibox re-select does to a
+ *     character being flown elsewhere, so R107 must treat it as a lost session
+ *     or the yanked pilot lingers as a zombie cockpit.
+ */
 export function isSessionLost(error: unknown): boolean {
-  return error instanceof BridgeCallError && error.code === "SESSION_NOT_FOUND";
+  return (
+    error instanceof BridgeCallError &&
+    (error.code === "SESSION_NOT_FOUND" || error.code === "NO_LIVE_SESSION")
+  );
 }
 
 /**
