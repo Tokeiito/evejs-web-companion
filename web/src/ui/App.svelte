@@ -30,6 +30,7 @@
     focusedId as computeFocusedId,
     loadLayout,
     saveLayout,
+    DEFAULT_DOCK_WIDTH,
     type WinState,
   } from "./desktop.ts";
   import type { ClientStore } from "../store/clientStore.ts";
@@ -70,6 +71,7 @@
   // ── the desktop: open windows + the collapsible dock panel ──────────────
   let wins = $state<WinState[]>([]);
   let dockCollapsed = $state(false);
+  let dockWidth = $state(DEFAULT_DOCK_WIDTH);
   const openIds = $derived(new Set(wins.map((w) => w.id)));
   const focused = $derived(computeFocusedId(wins));
 
@@ -91,10 +93,12 @@
       const saved = loadLayout(online.characterID);
       wins = saved ? saved.wins.slice() : [];
       dockCollapsed = saved ? saved.dockCollapsed : false;
+      dockWidth = saved ? saved.dockWidth : DEFAULT_DOCK_WIDTH;
       loadedFor = online.characterID;
     } else if (!online && loadedFor !== null) {
       wins = [];
       dockCollapsed = false;
+      dockWidth = DEFAULT_DOCK_WIDTH;
       loadedFor = null;
     }
   });
@@ -102,7 +106,7 @@
   // Persist on any layout change, debounced so a drag doesn't hammer storage.
   $effect(() => {
     const id = loadedFor;
-    const layout = { wins: wins.map((w) => ({ ...w })), dockCollapsed };
+    const layout = { wins: wins.map((w) => ({ ...w })), dockCollapsed, dockWidth };
     if (id === null) return;
     const handle = setTimeout(() => saveLayout(id, layout), 300);
     return () => clearTimeout(handle);
@@ -146,7 +150,15 @@
           onResize={resize}
           onOpen={open}
         />
-        <DockPanel {store} {flow} {isDocked} collapsed={dockCollapsed} onToggle={toggleDock} />
+        <DockPanel
+          {store}
+          {flow}
+          {isDocked}
+          collapsed={dockCollapsed}
+          width={dockWidth}
+          onToggle={toggleDock}
+          onResize={(w) => (dockWidth = w)}
+        />
       </div>
       {#if !isDocked}
         <HudBar {store} {flow} onOpen={open} />

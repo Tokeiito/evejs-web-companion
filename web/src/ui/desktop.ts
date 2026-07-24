@@ -112,9 +112,13 @@ export function toggleCollapse(wins: readonly WinState[], id: TabID): WinState[]
 
 // ── persistence: per-character desktop layout in localStorage ──────────────
 
+export const DEFAULT_DOCK_WIDTH = 340;
+const MIN_DOCK_WIDTH = 240;
+
 export interface DesktopLayout {
   readonly wins: readonly WinState[];
   readonly dockCollapsed: boolean;
+  readonly dockWidth: number;
 }
 
 const STORAGE_VERSION = 1;
@@ -153,7 +157,9 @@ export function loadLayout(characterID: number): DesktopLayout | null {
     if (!parsed || typeof parsed !== "object") return null;
     const o = parsed as Record<string, unknown>;
     const wins = Array.isArray(o.wins) ? o.wins.filter(isWinState) : [];
-    return { wins, dockCollapsed: o.dockCollapsed === true };
+    const dockWidth =
+      typeof o.dockWidth === "number" && o.dockWidth >= MIN_DOCK_WIDTH ? o.dockWidth : DEFAULT_DOCK_WIDTH;
+    return { wins, dockCollapsed: o.dockCollapsed === true, dockWidth };
   } catch {
     return null;
   }

@@ -52,7 +52,12 @@
   import type { AppFlow } from "../app/flow.ts";
   import type { DestinationMatch, ModuleCycle, SpaceEntity } from "../store/types.ts";
 
-  let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
+  // `compact` (the top-right dock panel) trims this full cockpit down to just the
+  // overview list + its command bar: the ship-condition gauges, locked-targets
+  // table and "Your equipment" rack are hidden because they already live in the
+  // persistent bottom HUD / a separate targets panel. Everything still computes;
+  // it is only hidden (see .overview-compact in styles.css).
+  let { store, flow, compact = false }: { store: ClientStore; flow: AppFlow; compact?: boolean } = $props();
 
   // svelte-ignore state_referenced_locally
   const space = store.space;
@@ -1467,7 +1472,7 @@
   });
 </script>
 
-<section class="panel">
+<section class="panel" class:overview-compact={compact}>
   <header class="panel-head">
     <h2>Around your ship</h2>
   </header>
@@ -1615,7 +1620,7 @@
   {/if}
 
 
-  <section>
+  <section class="ov-ship-condition">
     <h2>Ship condition</h2>
     {#if !ship}
       <p class="note">Reading your ship's condition…</p>
@@ -1936,7 +1941,13 @@
                 colour is never the only signal (a player who cannot tell red
                 from grey still reads "Pirate").
               -->
-              <tr class:hostile={rowIsHostile(row)}>
+              <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_noninteractive_element_interactions -->
+              <tr
+                class="overview-row"
+                class:hostile={rowIsHostile(row)}
+                class:selected={selectedID === row.itemID}
+                onclick={() => selectRow(row.itemID)}
+              >
                 <td data-label="Name">
                   {#if rowIsHostile(row)}<span class="threat-badge">{rowBadge(row)}</span>{/if}
                   {displayLabel(row)}
@@ -1968,7 +1979,7 @@
                       type="button"
                       class={selectedID === row.itemID ? "active" : ""}
                       aria-pressed={selectedID === row.itemID}
-                      onclick={() => selectRow(row.itemID)}
+                      onclick={(e) => { e.stopPropagation(); selectRow(row.itemID); }}
                     >
                       {selectedID === row.itemID ? "Selected" : "Select"}
                     </button>
@@ -2031,7 +2042,7 @@
     which knows anything about mining: what you have locked, and what you can
     switch on. A later combat goal renders exactly these two sections.
   -->
-  <section>
+  <section class="ov-locked-targets">
     <h2>Locked targets</h2>
     <p class="note">
       What your ship has a lock on. You need a lock before you can use most
@@ -2119,7 +2130,7 @@
     {/if}
   </section>
 
-  <section>
+  <section class="ov-equipment">
     <h2>Your equipment</h2>
     <p class="note">
       Everything switched on and ready to run. Pick a locked target first if the
