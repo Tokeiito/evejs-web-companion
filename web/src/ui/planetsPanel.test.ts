@@ -108,7 +108,11 @@ function colonyState(): unknown {
           cycleTimeSeconds: 3600,
           quantityPerCycle: 2841,
           installedAtMs: NOW - 3 * HOUR,
-          expiresAtMs: NOW + 21 * HOUR,
+          // +30s so the readout floors to a clean "21 hours" no matter how many
+          // milliseconds pass between pinning the clock and rendering. At exactly
+          // NOW + 21h the countdown floors to "20h 59m" the instant any time
+          // elapses (which it does under full-suite load), making this flaky.
+          expiresAtMs: NOW + 21 * HOUR + 30_000,
           headCount: 3,
         },
       },
