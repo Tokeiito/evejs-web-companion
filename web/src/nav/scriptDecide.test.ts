@@ -7,7 +7,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import type { BotScript, InterruptRow, MacroStep, ProgramNode } from "../bots/botScript.ts";
+import type { BotScript, Condition, InterruptRow, MacroStep, ProgramNode } from "../bots/botScript.ts";
 import type { ScriptObservation } from "./scriptConditions.ts";
 import {
   MAX_STEP_TICKS,
@@ -137,6 +137,66 @@ test("a loop whose body can never do anything pauses on the livelock guard", () 
   const r = decideScriptAction(s, obs({ inSpace: true }), initialMemory(s), registry, home);
   assert.equal(r.status, "paused");
   assert.match(r.pauseReason ?? "", /nothing it can do/i);
+});
+
+// ─── Branches ────────────────────────────────────────────────────────────────
+
+function branchNode(id: string, when: Condition, thenSteps: MacroStep[], elseSteps: MacroStep[]): ProgramNode {
+  return { id, kind: "branch", when, then: thenSteps, else: elseSteps };
+}
+
+test("a branch runs the THEN side when its condition holds", () => {
+  const s = script([branchNode("br", { kind: "shield-below", fraction: 0.5 }, [macroStep("t", "deliver-ore")], [macroStep("e", "undock")])], []);
+  const { results } = run(s, [
+    obs({ shieldRatio: 0.2, holdEmpty: false }), // shields low -> THEN: deliver acts
+    obs({ shieldRatio: 0.2, holdEmpty: true }),  // deliver done -> branch done -> program done
+  ]);
+  assert.equal(results[0]?.stepPath, "t");
+  assert.equal(results[0]?.action.kind, "unloadOre");
+  assert.equal(results.at(-1)?.status, "done");
+});
+
+test("a branch runs the ELSE side when its condition does not hold", () => {
+  const s = script([branchNode("br", { kind: "shield-below", fraction: 0.5 }, [macroStep("t", "undock")], [macroStep("e", "deliver-ore")])], []);
+  const { results } = run(s, [obs({ shieldRatio: 0.9, holdEmpty: false })]); // shields fine -> ELSE: deliver acts
+  assert.equal(results[0]?.stepPath, "e");
+  assert.equal(results[0]?.action.kind, "unloadOre");
+});
+
+test("a branch cannot-tell waits rather than pick a side blind", () => {
+  const s = script([branchNode("br", { kind: "shield-below", fraction: 0.5 }, [macroStep("t", "deliver-ore")], [macroStep("e", "undock")])], []);
+  const r = decideScriptAction(s, obs({ shieldRatio: null }), initialMemory(s), registry, home);
+  assert.equal(r.status, "running");
+  assert.equal(r.action.kind, "wait");
+  assert.equal(r.stepPath, "br"); // tied to the branch, no side chosen
+});
+
+test("an empty chosen side is skipped, not stuck", () => {
+  const s = script([branchNode("br", { kind: "shield-below", fraction: 0.5 }, [], [macroStep("e", "undock")])], []);
+  const r = decideScriptAction(s, obs({ shieldRatio: 0.2 }), initialMemory(s), registry, home);
+  assert.equal(r.status, "done"); // THEN empty + met -> skip the branch -> nothing after -> done
+});
+
+test("a branch commits to its side on entry and never flips mid-side", () => {
+  const s = script(
+    [
+      branchNode(
+        "br",
+        { kind: "shield-below", fraction: 0.5 },
+        [macroStep("t1", "undock"), macroStep("t2", "deliver-ore")],
+        [macroStep("e", "mine-at-belt", { kind: "ore-hold-at-least", fraction: 0.9 })],
+      ),
+    ],
+    [],
+  );
+  const { results } = run(s, [
+    obs({ shieldRatio: 0.2, inSpace: false, holdEmpty: false }), // enter THEN (shields low): t1 undock acts
+    obs({ shieldRatio: 0.9, inSpace: true, holdEmpty: false }),  // shields now FINE, but committed: t1 done -> t2 deliver acts
+    obs({ shieldRatio: 0.9, inSpace: true, holdEmpty: true }),   // t2 done -> branch done -> program done
+  ]);
+  assert.equal(results[0]?.stepPath, "t1");
+  assert.equal(results[1]?.stepPath, "t2", "stayed in the THEN side after the condition flipped");
+  assert.equal(results.at(-1)?.status, "done");
 });
 
 // ─── Arming (the belt-empty guard) ───────────────────────────────────────────

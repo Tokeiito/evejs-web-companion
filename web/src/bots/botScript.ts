@@ -146,6 +146,18 @@ export interface EquipmentArg {
 export const MIN_COUNT_ARG = 1;
 export const MAX_COUNT_ARG = 500;
 
+/**
+ * An ISK amount a player sets — a buy ceiling, a sell floor, a wallet threshold.
+ * Capped at 100 billion: far above any sane per-unit price, far under the 2^53
+ * point where a number stops being exact (so a comparison never lies).
+ */
+export const MIN_ISK_ARG = 1;
+export const MAX_ISK_ARG = 100_000_000_000;
+
+/** A market quantity (units to buy) — past the small-count cap, still exact. */
+export const MIN_QTY_ARG = 1;
+export const MAX_QTY_ARG = 10_000_000;
+
 export type Arg =
   | { readonly kind: "belt"; readonly belt: BeltArg }
   | { readonly kind: "station"; readonly ref: WorldRef }
@@ -169,7 +181,13 @@ export type Arg =
   | { readonly kind: "place"; readonly place: ItemPlace }
   /** A saved BOOKMARK. The id is a same-world hint; the NAME (its label) is what
    * the block matches at run time, so an imported script still finds "Safe spot". */
-  | { readonly kind: "bookmark"; readonly bookmarkID: number | null; readonly name: string | null };
+  | { readonly kind: "bookmark"; readonly bookmarkID: number | null; readonly name: string | null }
+  /** An ISK amount the player sets — a buy ceiling or a sell floor (per unit). */
+  | { readonly kind: "isk"; readonly value: number }
+  /** A market quantity — how many units a buy order is for. */
+  | { readonly kind: "qty"; readonly value: number }
+  /** A character to act on (invite to a fleet). null charID = an unbound slot to pick. */
+  | { readonly kind: "character"; readonly charID: number | null; readonly name: string | null };
 
 /** The move block's place vocabulary. */
 export type ItemPlace = "hangar" | "cargo" | "ore-hold";
@@ -196,6 +214,9 @@ export type Condition =
   | { readonly kind: "hull-below"; readonly fraction: number }
   | { readonly kind: "health-below"; readonly fraction: number }
   | { readonly kind: "capacitor-below"; readonly fraction: number }
+  /** Wallet thresholds carry an absolute ISK amount, not a 0..1 fraction. */
+  | { readonly kind: "wallet-below"; readonly isk: number }
+  | { readonly kind: "wallet-above"; readonly isk: number }
   | { readonly kind: "hostile-on-grid" };
 
 export type ConditionKind = Condition["kind"];
@@ -209,6 +230,8 @@ export const CONDITION_KINDS: readonly ConditionKind[] = Object.freeze<Condition
   "hull-below",
   "health-below",
   "capacitor-below",
+  "wallet-below",
+  "wallet-above",
   "hostile-on-grid",
 ]);
 
@@ -305,7 +328,17 @@ export type MacroID =
   | "find-combat-agent"
   | "fly-to-mission-site"
   | "restart-extractors"
-  | "repair-ship";
+  | "repair-ship"
+  // ── The market set. Place orders at the station's market (server confirm-gated).
+  | "buy-item"
+  | "sell-item"
+  // ── The fleet-support set. Remote-repair friendly ships on grid (logistics).
+  | "remote-rep"
+  | "orbit-and-boost"
+  // ── The fleet-management set. Form up / invite / join (multibox alt-fleeting).
+  | "create-fleet"
+  | "invite-to-fleet"
+  | "join-fleet";
 
 /** Every macro id — for exhaustive iteration in menus and tests. */
 export const MACRO_IDS: readonly MacroID[] = Object.freeze<MacroID[]>([
@@ -336,6 +369,13 @@ export const MACRO_IDS: readonly MacroID[] = Object.freeze<MacroID[]>([
   "fly-to-mission-site",
   "restart-extractors",
   "repair-ship",
+  "buy-item",
+  "sell-item",
+  "remote-rep",
+  "orbit-and-boost",
+  "create-fleet",
+  "invite-to-fleet",
+  "join-fleet",
 ]);
 
 /**
@@ -371,7 +411,25 @@ export interface LoopBlock {
   readonly body: readonly MacroStep[];
 }
 
-export type ProgramNode = MacroStep | LoopBlock;
+/**
+ * A branch block: evaluate `when` ONCE on entry, then run the `then` steps if it
+ * holds or the `else` steps if it does not, and carry on past the branch. The one
+ * place the program forks — and it stays cycle-free: both sides are forward-only
+ * `MacroStep` lists (no loops, no nested branches — one level, like a loop body),
+ * so the only backward edge in the whole format is still a loop re-entering its
+ * body. `when` is an own-ship test (the `until` site), never a grid read that
+ * would be unreadable at an arbitrary point; a cannot-tell `when` waits rather
+ * than pick a side blind. A side may be empty ("do nothing on that branch").
+ */
+export interface BranchBlock {
+  readonly id: string;
+  readonly kind: "branch";
+  readonly when: Condition;
+  readonly then: readonly MacroStep[];
+  readonly else: readonly MacroStep[];
+}
+
+export type ProgramNode = MacroStep | LoopBlock | BranchBlock;
 
 // ─── The document ────────────────────────────────────────────────────────────
 
@@ -408,14 +466,25 @@ export function isMacroStep(node: ProgramNode): node is MacroStep {
   return node.kind === "macro";
 }
 
+/** Narrow a node to a branch block. */
+export function isBranch(node: ProgramNode): node is BranchBlock {
+  return node.kind === "branch";
+}
+
+/** Both sides of a branch as one list — the steps it can run. */
+export function branchSteps(branch: BranchBlock): readonly MacroStep[] {
+  return [...branch.then, ...branch.else];
+}
+
 /**
- * Total macro steps in a program, counting loop bodies. This is the count the
- * `MAX_TOTAL_STEPS` cap bounds — a loop of 3 steps is 3, not 1.
+ * Total macro steps in a program, counting loop bodies and BOTH sides of a
+ * branch. This is the count the `MAX_TOTAL_STEPS` cap bounds — a loop of 3 steps
+ * is 3, and a branch of 2-then + 1-else is 3, not 1.
  */
 export function countSteps(program: readonly ProgramNode[]): number {
   let total = 0;
   for (const node of program) {
-    total += node.kind === "loop" ? node.body.length : 1;
+    total += node.kind === "loop" ? node.body.length : node.kind === "branch" ? node.then.length + node.else.length : 1;
   }
   return total;
 }
@@ -431,8 +500,14 @@ export function findStep(script: BotScript, id: string): MacroStep | null {
       if (node.id === id) {
         return node;
       }
-    } else {
+    } else if (node.kind === "loop") {
       for (const step of node.body) {
+        if (step.id === id) {
+          return step;
+        }
+      }
+    } else {
+      for (const step of branchSteps(node)) {
         if (step.id === id) {
           return step;
         }

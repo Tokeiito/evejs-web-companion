@@ -173,6 +173,7 @@ import type { ScriptObservation } from "../nav/scriptConditions.ts";
 import { decodeFullState } from "../bridge/boundSmallServices.ts";
 import { decodeFittings } from "../bridge/fittings.ts";
 import { decodeActiveBookmarks } from "../bridge/bookmarks.ts";
+import { decodeBoundFleet } from "../bridge/boundFleet.ts";
 import type { BotScript } from "../bots/botScript.ts";
 
 /**
@@ -4438,6 +4439,39 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     return { shield, armor, hull, hardeners, weapons };
   }
 
+  /**
+   * The fitted REMOTE repairers (they repair ANOTHER ship), by the game's own
+   * group names — the fleet-support blocks run these. Same resolve-then-judge pass
+   * as the local reps; the "remote" prefix in the group name is what separates a
+   * Remote Shield Booster from a self shield booster.
+   */
+  function resolveRemoteRepModuleIDs(): RemoteRepModuleIDs {
+    const fit = store.fitting.get();
+    const shield: number[] = [];
+    const armor: number[] = [];
+    const hull: number[] = [];
+    if (fit.slotsError === null) {
+      const resolved = store.names.get().resolved;
+      for (const slot of fit.slots) {
+        if (slot.module === null || !slot.module.online || slot.family === "rig" || slot.family === "subsystem") {
+          continue;
+        }
+        const group = resolved[nameKey("typeGroup", slot.module.typeID)] ?? null;
+        if (group === null) {
+          continue; // cannot tell what it is — never run a mystery module
+        }
+        if (/remote shield/i.test(group)) {
+          shield.push(slot.module.itemID);
+        } else if (/remote armor/i.test(group)) {
+          armor.push(slot.module.itemID);
+        } else if (/remote (hull|structure)/i.test(group)) {
+          hull.push(slot.module.itemID);
+        }
+      }
+    }
+    return { shield, armor, hull };
+  }
+
   function resolveSalvageModuleIDs(): readonly number[] {
     const fit = store.fitting.get();
     if (fit.slotsError !== null) {
@@ -4471,7 +4505,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     "fly-to-mission-site",
   ]);
   const CONVO_MACROS = new Set(["request-mission", "accept-mission", "turn-in-mission"]);
-  const CARGO_MACROS = new Set(["accept-mission", "load-mission-cargo", "turn-in-mission", "unload-cargo", "refine-ore", "refit-ship", "move-items", "repair-ship"]);
+  const CARGO_MACROS = new Set(["accept-mission", "load-mission-cargo", "turn-in-mission", "unload-cargo", "refine-ore", "refit-ship", "move-items", "repair-ship", "sell-item"]);
 
   interface DefenseModuleIDs {
     readonly shield: readonly number[];
@@ -4481,12 +4515,23 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     readonly weapons: readonly number[];
   }
   const NO_DEFENSE: DefenseModuleIDs = { shield: [], armor: [], hull: [], hardeners: [], weapons: [] };
+  interface RemoteRepModuleIDs {
+    readonly shield: readonly number[];
+    readonly armor: readonly number[];
+    readonly hull: readonly number[];
+  }
+  const NO_REMOTE_REPS: RemoteRepModuleIDs = { shield: [], armor: [], hull: [] };
+  // Market orders a bot places rest the retail maximum, so a resting order does
+  // not quietly expire under a long-running bot.
+  const BOT_ORDER_DURATION_DAYS = 90;
 
   function makeScriptRunnerDeps(
     miningModuleIDs: readonly number[],
     startingStationID: number | null,
     salvageModuleIDs: readonly number[] = [],
     defense: DefenseModuleIDs = NO_DEFENSE,
+    walletWatched = false,
+    remoteReps: RemoteRepModuleIDs = NO_REMOTE_REPS,
   ): ScriptRunnerDeps {
     // One finder result per run: the found agent does not change under the bot.
     let foundAgentCache: NonNullable<ScriptObservation["foundAgent"]> | null = null;
@@ -4638,6 +4683,29 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
               failureReason: autopilot.snapshot().failureReason,
             }
           : null;
+        // Own wallet balance — read only when a wallet watch is set (static for
+        // the run), since that watch is checked every tick. Best-effort: a failed
+        // read stays null (unreadable, never a false "below" that fires a watch).
+        let walletBalance: ScriptObservation["walletBalance"] = null;
+        if (walletWatched) {
+          try {
+            const cash = decodeCashBalance((await api.loadWallet(callOptions)).cash);
+            walletBalance = cash === null ? null : Number(cash);
+          } catch {
+            walletBalance = null;
+          }
+        }
+        // Fleet membership — read only for the fleet-management blocks. A char with
+        // no fleet reads a real "not in a fleet" (fleetID null), so false is
+        // authoritative; only a failed read is null (unreadable).
+        let inFleet: ScriptObservation["inFleet"] = null;
+        if (macro === "create-fleet" || macro === "invite-to-fleet" || macro === "join-fleet") {
+          try {
+            inFleet = decodeBoundFleet(await api.loadBoundFleet(callOptions)).fleetID !== null;
+          } catch {
+            inFleet = null;
+          }
+        }
         if (macro !== null && (MISSION_MACROS.has(macro) || CARGO_MACROS.has(macro))) {
           if (MISSION_MACROS.has(macro)) {
             try {
@@ -4788,9 +4856,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           shieldRepairerIDs: defense.shield,
           armorRepairerIDs: defense.armor,
           hullRepairerIDs: defense.hull,
+          remoteShieldRepairerIDs: remoteReps.shield,
+          remoteArmorRepairerIDs: remoteReps.armor,
+          remoteHullRepairerIDs: remoteReps.hull,
+          inFleet,
           hardenerModuleIDs: defense.hardeners,
           weaponModuleIDs: defense.weapons,
           capacitorRatio: ship?.capacitorRatio ?? null,
+          walletBalance,
           startingStationID,
           myCharacterID: store.station.get().online?.characterID ?? null,
           myCorporationID: store.station.get().online?.corporationID ?? null,
@@ -4991,6 +5064,35 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             }
             return;
           }
+          case "placeBuyOrder":
+            // A resting order rests the full 90 days; the API's own confirm gate
+            // is the second lock behind the server's. The block is one-shot, so a
+            // silent decline just means no order — never a double buy.
+            await api.placeMarketBuyOrder(
+              { typeID: action.typeID, price: action.price, quantity: action.quantity, durationDays: BOT_ORDER_DURATION_DAYS },
+              callOptions,
+            );
+            return;
+          case "placeSellOrder":
+            // The listed stack leaves the hangar, which is how the block confirms
+            // next tick — a decline leaves it, and the block retries within bound.
+            await api.placeMarketSellOrder(
+              { itemID: action.itemID, typeID: action.typeID, price: action.price, quantity: action.quantity, durationDays: BOT_ORDER_DURATION_DAYS },
+              callOptions,
+            );
+            return;
+          case "createFleet":
+            // Confirmed by the next bound-fleet read (inFleet flips true).
+            await api.createFleet(callOptions);
+            return;
+          case "inviteToFleet":
+            await api.inviteToFleet(action.charID, callOptions);
+            return;
+          case "acceptFleetInvite":
+            // Errors when no invite is pending — swallowed; the block re-tries until
+            // inFleet reads true or its wait bound trips.
+            await api.acceptFleetInvite(callOptions);
+            return;
         }
       },
       sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
@@ -5035,11 +5137,46 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
     const salvageModuleIDs = resolveSalvageModuleIDs();
     const defense = resolveDefenseModuleIDs();
+    const remoteReps = resolveRemoteRepModuleIDs();
     const startStatus = store.flight.get().status;
     const startingStationID = startStatus !== null && startStatus.docked ? startStatus.stationID : null;
-    scriptRunner = createScriptRunner(makeScriptRunnerDeps(miningModuleIDs, startingStationID, salvageModuleIDs, defense));
+    // Whether ANY watch or stop-when reads the wallet — decided once, so observe
+    // only pays for the per-tick wallet read when a bot actually needs it.
+    const walletWatched = scriptWatchesWallet(doc);
+    scriptRunner = createScriptRunner(
+      makeScriptRunnerDeps(miningModuleIDs, startingStationID, salvageModuleIDs, defense, walletWatched, remoteReps),
+    );
     scriptRunner.start(doc);
     void scriptRunner.run();
+  }
+
+  /** True when any interrupt or any step/loop `until` in the doc reads the wallet. */
+  function scriptWatchesWallet(doc: BotScript): boolean {
+    const isWallet = (kind: string): boolean => kind === "wallet-below" || kind === "wallet-above";
+    if (doc.interrupts.some((row) => isWallet(row.when.kind))) {
+      return true;
+    }
+    for (const node of doc.program) {
+      if (node.kind === "loop") {
+        if (node.until !== undefined && isWallet(node.until.kind)) {
+          return true;
+        }
+        if (node.body.some((s) => s.until !== undefined && isWallet(s.until.kind))) {
+          return true;
+        }
+      } else if (node.kind === "branch") {
+        // A branch that FORKS on the wallet needs the read, as do its bodies' stops.
+        if (isWallet(node.when.kind)) {
+          return true;
+        }
+        if ([...node.then, ...node.else].some((s) => s.until !== undefined && isWallet(s.until.kind))) {
+          return true;
+        }
+      } else if (node.until !== undefined && isWallet(node.until.kind)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /**

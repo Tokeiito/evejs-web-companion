@@ -49,6 +49,8 @@ export interface ScriptObservation {
   readonly health: number | null;
   /** Own-ship capacitor, 0..1. Optional: older observations simply cannot tell. */
   readonly capacitorRatio?: number | null;
+  /** Own wallet balance in ISK. Optional: read only when a wallet watch is set. */
+  readonly walletBalance?: number | null;
   readonly oreHoldFraction: number | null;
   readonly holdEmpty: boolean | null;
   readonly hostileOnGrid: boolean | null;
@@ -76,6 +78,12 @@ export interface ScriptObservation {
   readonly shieldRepairerIDs?: readonly number[];
   readonly armorRepairerIDs?: readonly number[];
   readonly hullRepairerIDs?: readonly number[];
+  /** Fitted REMOTE repairers (repair another ship), resolved once at start (the fleet-support blocks run these). */
+  readonly remoteShieldRepairerIDs?: readonly number[];
+  readonly remoteArmorRepairerIDs?: readonly number[];
+  readonly remoteHullRepairerIDs?: readonly number[];
+  /** Whether the character is in a fleet — read for the fleet-management blocks. true/false/null=unreadable. */
+  readonly inFleet?: boolean | null;
   /** Fitted hardeners + damage controls, resolved once at start (the hardeners-on block). */
   readonly hardenerModuleIDs?: readonly number[];
   /** Fitted WEAPONS (turrets/launchers), resolved once at start (the fight block runs these). */
@@ -167,6 +175,13 @@ function atLeast(value: number | null, threshold: number): Verdict {
   return value >= threshold ? "met" : "not-met";
 }
 
+function above(value: number | null, threshold: number): Verdict {
+  if (value === null) {
+    return "cannot-tell";
+  }
+  return value > threshold ? "met" : "not-met";
+}
+
 function fromBool(value: boolean | null): Verdict {
   if (value === null) {
     return "cannot-tell";
@@ -191,6 +206,10 @@ export function evaluateCondition(condition: Condition, obs: ScriptObservation):
       return below(obs.health, condition.fraction);
     case "capacitor-below":
       return below(obs.capacitorRatio ?? null, condition.fraction);
+    case "wallet-below":
+      return below(obs.walletBalance ?? null, condition.isk);
+    case "wallet-above":
+      return above(obs.walletBalance ?? null, condition.isk);
     case "hostile-on-grid":
       return fromBool(obs.hostileOnGrid);
   }

@@ -985,6 +985,34 @@ export async function modifyMarketOrder(
   return asMarketChange(data);
 }
 
+// --- Fleet management writes + the fleet-state read (fleet-mgmt bot blocks) ---
+// The writes are confirm-gated server-side; the reader passes `confirm:true` as the
+// second gate. Each returns the uniform ack; callers re-read /bound-fleet to prove
+// the mutation (⚠ these decoders are fast-mode educated guesses — never fired live,
+// so a live QA pass is owed). The bound-fleet READ, by contrast, is verified live:
+// a char with no fleet gets a FleetNotFound per read (a real "not in a fleet"), so
+// a null fleetID after decode is authoritative, not a blanking failure.
+
+/** Raw /api/bridge/bound-fleet envelope; decode with bridge/boundFleet.decodeBoundFleet. */
+export async function loadBoundFleet(options: ApiOptions = {}): Promise<Record<string, JsonValue>> {
+  return getJson("/api/bridge/bound-fleet", options);
+}
+
+/** FORM a fleet (you become boss). Confirm-gated. */
+export async function createFleet(options: ApiOptions = {}): Promise<void> {
+  await postJson("/api/bridge/fleet/create", { confirm: true }, options);
+}
+
+/** INVITE a character into the session's own fleet (must already be in one). */
+export async function inviteToFleet(inviteeCharID: number, options: ApiOptions = {}): Promise<void> {
+  await postJson("/api/bridge/fleet/invite", { inviteeCharID, confirm: true }, options);
+}
+
+/** ACCEPT a pending fleet invite for the session character (in the current ship). */
+export async function acceptFleetInvite(options: ApiOptions = {}): Promise<void> {
+  await postJson("/api/bridge/fleet/invite/accept", { confirm: true }, options);
+}
+
 // --- R17 Mail ---------------------------------------------------------------
 // The BFF cold-starts the delta sync and hands back the RAW retail-shaped
 // arms, decoded in the flow with bridge/mail.ts — except the message BODY,

@@ -33,8 +33,12 @@ import {
   INTERRUPT_RESPONSES,
   MAX_CONDITION_FRACTION,
   MAX_COUNT_ARG,
+  MAX_ISK_ARG,
+  MAX_QTY_ARG,
   MIN_CONDITION_FRACTION,
   MIN_COUNT_ARG,
+  MIN_ISK_ARG,
+  MIN_QTY_ARG,
   MIN_REPEAT_TIMES,
   ITEM_PLACES,
   SCRIPT_FORMAT,
@@ -43,6 +47,7 @@ import {
   type Arg,
   type BeltArg,
   type BotScript,
+  type BranchBlock,
   type Condition,
   type ConditionSite,
   type InterruptResponse,
@@ -115,6 +120,8 @@ const SAY = {
   noRepeat: "Every loop must say how many times it may repeat.",
   emptyLoop: "A loop has no steps inside it.",
   nestedLoop: "A loop cannot contain another loop.",
+  nestedBranch: "A branch cannot contain a loop or another branch.",
+  emptyBranch: "A branch has no steps in either choice.",
   badResponse: "This script answers a warning in a way this app does not know.",
 } as const;
 
@@ -124,6 +131,7 @@ const WARN = {
     `${label} was brought back to ${Math.round(toFraction * 100)}%.`,
   clampRepeat: (to: number): string => `A loop's repeat count was brought into range (now ${to}).`,
   clampCount: (label: string, to: number): string => `A step's ${label} was brought into range (now ${to}).`,
+  clampIsk: (to: number): string => `A wallet amount was brought into range (now ${to.toLocaleString()} ISK).`,
   forgotWorldId: "A saved location did not look valid and was forgotten — pick it again.",
   reassignedIds: "Renamed some step handles that were missing or repeated.",
 } as const;
@@ -287,7 +295,7 @@ function readProgram(raw: unknown, ctx: Ctx): readonly ProgramNode[] {
 
   let steps = 0;
   for (const node of program) {
-    steps += node.kind === "loop" ? node.body.length : 1;
+    steps += node.kind === "loop" ? node.body.length : node.kind === "branch" ? node.then.length + node.else.length : 1;
   }
   if (steps > MAX_TOTAL_STEPS) {
     refuse(SAY.tooManySteps);
@@ -304,7 +312,44 @@ function readProgramNode(raw: unknown, ctx: Ctx): ProgramNode {
   if (kind === "loop") {
     return readLoopBlock(obj, ctx);
   }
+  if (kind === "branch") {
+    return readBranchBlock(obj, ctx);
+  }
   return refuse(SAY.unknownNode);
+}
+
+// ─── Branch blocks ───────────────────────────────────────────────────────────
+
+function readBranchBlock(obj: Readonly<Record<string, unknown>>, ctx: Ctx): BranchBlock {
+  const id = readRawId(obj["id"]);
+  // A branch tests an own-ship condition at a program point — the same site rule
+  // as an `until` (so a grid-only read like hostile-on-grid is refused here).
+  const when = readCondition(obj["when"], "until", ctx);
+  const thenSide = readBranchSide(obj["then"], ctx);
+  const elseSide = readBranchSide(obj["else"], ctx);
+  if (thenSide.length === 0 && elseSide.length === 0) {
+    refuse(SAY.emptyBranch);
+  }
+  return { id, kind: "branch", when, then: thenSide, else: elseSide };
+}
+
+/** One side of a branch: a list of macro steps only (no loop, no nested branch);
+ * absent or empty is allowed ("do nothing on that side"). */
+function readBranchSide(raw: unknown, ctx: Ctx): readonly MacroStep[] {
+  if (raw === undefined) {
+    return [];
+  }
+  const arr = asArray(raw, SAY.unknownNode);
+  return arr.map((node) => {
+    const nodeObj = asObject(node, SAY.unknownNode);
+    if (nodeObj["kind"] === "loop" || nodeObj["kind"] === "branch") {
+      refuse(SAY.nestedBranch);
+    }
+    if (nodeObj["kind"] !== "macro") {
+      refuse(SAY.unknownNode);
+    }
+    return readMacroStep(nodeObj, ctx);
+  });
 }
 
 function readMacroStep(obj: Readonly<Record<string, unknown>>, ctx: Ctx): MacroStep {
@@ -380,6 +425,40 @@ function readArg(raw: unknown, expected: Arg["kind"], label: string, ctx: Ctx): 
       ctx.warn(WARN.clampCount(label, clamped));
     }
     return { kind: "count", value: clamped };
+  }
+  if (expected === "isk") {
+    const value = obj["value"];
+    if (typeof value !== "number" || !Number.isSafeInteger(value)) {
+      refuse(SAY.badArg(label));
+    }
+    const clamped = Math.min(MAX_ISK_ARG, Math.max(MIN_ISK_ARG, value));
+    if (clamped !== value) {
+      ctx.warn(WARN.clampCount(label, clamped));
+    }
+    return { kind: "isk", value: clamped };
+  }
+  if (expected === "qty") {
+    const value = obj["value"];
+    if (typeof value !== "number" || !Number.isSafeInteger(value)) {
+      refuse(SAY.badArg(label));
+    }
+    const clamped = Math.min(MAX_QTY_ARG, Math.max(MIN_QTY_ARG, value));
+    if (clamped !== value) {
+      ctx.warn(WARN.clampCount(label, clamped));
+    }
+    return { kind: "qty", value: clamped };
+  }
+  if (expected === "character") {
+    const id = obj["charID"];
+    if (id !== null && id !== undefined && (typeof id !== "number" || !Number.isSafeInteger(id) || id <= 0)) {
+      refuse(SAY.badArg(label));
+    }
+    const nameRaw = obj["name"];
+    const name =
+      nameRaw === null || nameRaw === undefined
+        ? null
+        : readText(nameRaw, { min: 0, max: MAX_WORLD_NAME_LEN, allowNewline: false }, ctx, SAY.badArg(label));
+    return { kind: "character", charID: id === null || id === undefined ? null : (id as number), name };
   }
   if (expected === "fitting") {
     const id = obj["fittingID"];
@@ -546,9 +625,25 @@ function buildCondition(obj: Readonly<Record<string, unknown>>, kind: unknown, c
         kind,
         fraction: readFraction(obj["fraction"], MIN_CONDITION_FRACTION, MAX_CONDITION_FRACTION, thresholdLabel(kind), ctx),
       };
+    case "wallet-below":
+    case "wallet-above":
+      return { kind, isk: readIskThreshold(obj["isk"], ctx) };
     default:
       return refuse(SAY.unknownCondition);
   }
+}
+
+/** A wallet ISK threshold: a real integer, clamped into range with a warning. */
+function readIskThreshold(raw: unknown, ctx: Ctx): number {
+  if (typeof raw !== "number" || !Number.isFinite(raw)) {
+    refuse(SAY.badNumber);
+  }
+  const n = Math.trunc(raw);
+  const clamped = Math.min(MAX_ISK_ARG, Math.max(MIN_ISK_ARG, n));
+  if (clamped !== n) {
+    ctx.warn(WARN.clampIsk(clamped));
+  }
+  return clamped;
 }
 
 function thresholdLabel(
@@ -622,6 +717,10 @@ function withValidIds(doc: BotScript, ctx: Ctx): BotScript {
       for (const step of node.body) {
         ids.push(step.id);
       }
+    } else if (node.kind === "branch") {
+      for (const step of [...node.then, ...node.else]) {
+        ids.push(step.id);
+      }
     }
   }
   const clean = ids.every((id) => id.length > 0) && new Set(ids).size === ids.length;
@@ -633,11 +732,20 @@ function withValidIds(doc: BotScript, ctx: Ctx): BotScript {
   let n = 0;
   const nextId = (): string => `n${(n += 1)}`;
   const interrupts = doc.interrupts.map((row) => ({ ...row, id: nextId() }));
-  const program = doc.program.map((node) =>
-    node.kind === "loop"
-      ? { ...node, id: nextId(), body: node.body.map((step) => ({ ...step, id: nextId() })) }
-      : { ...node, id: nextId() },
-  );
+  const program = doc.program.map((node) => {
+    if (node.kind === "loop") {
+      return { ...node, id: nextId(), body: node.body.map((step) => ({ ...step, id: nextId() })) };
+    }
+    if (node.kind === "branch") {
+      return {
+        ...node,
+        id: nextId(),
+        then: node.then.map((step) => ({ ...step, id: nextId() })),
+        else: node.else.map((step) => ({ ...step, id: nextId() })),
+      };
+    }
+    return { ...node, id: nextId() };
+  });
   return { ...doc, interrupts, program };
 }
 
@@ -770,9 +878,13 @@ function orderRef(ref: WorldRef): unknown {
 }
 
 function orderCondition(condition: Condition): unknown {
-  return "fraction" in condition
-    ? { kind: condition.kind, fraction: condition.fraction }
-    : { kind: condition.kind };
+  if ("fraction" in condition) {
+    return { kind: condition.kind, fraction: condition.fraction };
+  }
+  if ("isk" in condition) {
+    return { kind: condition.kind, isk: condition.isk };
+  }
+  return { kind: condition.kind };
 }
 
 function orderInterrupt(row: InterruptRow): unknown {
@@ -795,8 +907,36 @@ function orderArg(arg: Arg): unknown {
         : { kind: "belt", belt: { mode: "chosen", ref: orderRef(arg.belt.ref) } };
     case "station":
       return { kind: "station", ref: orderRef(arg.ref) };
+    case "agent":
+      return { kind: "agent", ref: orderRef(arg.ref) };
     case "equipment":
       return { kind: "equipment", equipment: { groupID: arg.equipment.groupID, label: arg.equipment.label } };
+    case "count":
+      return { kind: "count", value: arg.value };
+    case "corp":
+      return { kind: "corp", id: arg.id, name: arg.name };
+    case "fitting":
+      return { kind: "fitting", fittingID: arg.fittingID, name: arg.name };
+    case "itemType":
+      return { kind: "itemType", typeID: arg.typeID, name: arg.name };
+    case "place":
+      return { kind: "place", place: arg.place };
+    case "bookmark":
+      return { kind: "bookmark", bookmarkID: arg.bookmarkID, name: arg.name };
+    case "isk":
+      return { kind: "isk", value: arg.value };
+    case "qty":
+      return { kind: "qty", value: arg.value };
+    case "character":
+      return { kind: "character", charID: arg.charID, name: arg.name };
+    default: {
+      // ⚠ EXHAUSTIVE ON PURPOSE. Every Arg kind MUST serialise here, or an export
+      // silently drops it (the reader accepts an arg the writer forgets). A new
+      // kind added to the union without a case above fails to compile, exactly as
+      // it should — a dropped action is a different, unsafe program.
+      const _exhaustive: never = arg;
+      return _exhaustive;
+    }
   }
 }
 
@@ -827,6 +967,15 @@ function orderNode(node: ProgramNode): unknown {
     }
     base["body"] = node.body.map(orderNode);
     return base;
+  }
+  if (node.kind === "branch") {
+    return {
+      id: node.id,
+      kind: "branch",
+      when: orderCondition(node.when),
+      then: node.then.map(orderNode),
+      else: node.else.map(orderNode),
+    };
   }
   const base: Record<string, unknown> = {
     id: node.id,

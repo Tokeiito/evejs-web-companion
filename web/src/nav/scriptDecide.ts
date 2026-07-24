@@ -26,7 +26,7 @@
 // stays unreadable trips the cannot-tell streak. Every way of doing nothing has
 // a bound.
 
-import type { BotScript, Condition, LoopBlock, MacroStep } from "../bots/botScript.ts";
+import type { BotScript, BranchBlock, Condition, LoopBlock, MacroStep } from "../bots/botScript.ts";
 import { conditionSentence } from "../bots/scriptText.ts";
 import {
   SENTENCE as COND_SENTENCE,
@@ -87,7 +87,23 @@ export type ScriptAction =
       readonly from: string;
       readonly to: string;
       readonly qty: number | null;
-    };
+    }
+  /** Place a market BUY order (server confirm-gated; spends ISK + broker fee). */
+  | { readonly kind: "placeBuyOrder"; readonly typeID: number; readonly price: number; readonly quantity: number }
+  /** Place a market SELL order for one owned stack (server confirm-gated). */
+  | {
+      readonly kind: "placeSellOrder";
+      readonly itemID: number;
+      readonly typeID: number;
+      readonly price: number;
+      readonly quantity: number;
+    }
+  /** Form a fleet (server confirm-gated). */
+  | { readonly kind: "createFleet" }
+  /** Invite a character into the session's own fleet (server confirm-gated). */
+  | { readonly kind: "inviteToFleet"; readonly charID: number }
+  /** Accept a pending fleet invite (server confirm-gated). */
+  | { readonly kind: "acceptFleetInvite" };
 
 export function isWorldCall(action: ScriptAction): boolean {
   return action.kind !== "wait";
@@ -157,6 +173,11 @@ const HOME_MEM_KEY = "__home__";
 type Position =
   | { readonly kind: "step"; readonly node: number }
   | { readonly kind: "loop"; readonly node: number; readonly body: number }
+  // A branch not yet entered: the next tick evaluates its `when` and commits to a
+  // side. Kept distinct from "branch" so the condition is read ONCE on entry, not
+  // re-read (and possibly flipped) each tick while a side runs.
+  | { readonly kind: "branch-enter"; readonly node: number }
+  | { readonly kind: "branch"; readonly node: number; readonly side: "then" | "else"; readonly body: number }
   | { readonly kind: "done" };
 
 interface Latched {
@@ -211,7 +232,7 @@ export function describeBoard(board: ScriptBoard): string | null {
  * the program is done or heading home (only the ship reads are needed then).
  */
 export function activeMacroID(script: BotScript, mem: ScriptMemory): string | null {
-  if (mem.position.kind === "done" || mem.latched !== null) {
+  if (mem.position.kind === "done" || mem.position.kind === "branch-enter" || mem.latched !== null) {
     return null;
   }
   const step = activeStep(script, mem.position);
@@ -495,6 +516,45 @@ function runProgram(
       }
     }
 
+    // Entering a branch: read its `when` ONCE and commit to a side (or skip an
+    // empty side, or wait when it cannot be read — a side is never chosen blind).
+    // Committing on entry is why a `when` that flips mid-side never bounces.
+    if (position.kind === "branch-enter") {
+      const branch = script.program[position.node] as BranchBlock;
+      const verdict = evaluateCondition(branch.when, obs);
+      if (verdict === "cannot-tell") {
+        const samePlace = positionKey(position) === positionKey(mem.position);
+        const stepTicks = (samePlace ? mem.stepTicks : 0) + 1;
+        if (stepTicks > MAX_STEP_TICKS) {
+          return paused(SAY.stepTooLong, { ...mem, position, loopPass, macroMem, board }, branch.id);
+        }
+        const streak = bumpCannotTellStreak(mem.cannotTellStreak, true);
+        if (cannotTellStreakExhausted(streak)) {
+          return paused(COND_SENTENCE.cannotTellStreak, { ...mem, position, loopPass, macroMem, board }, branch.id);
+        }
+        return {
+          action: WAIT,
+          why: `Working out whether ${conditionSentence(branch.when)}.`,
+          phase: "Choosing a branch",
+          stepPath: branch.id,
+          interruptID: null,
+          status: "running",
+          pauseReason: null,
+          memory: { position, loopPass, stepTicks, cannotTellStreak: streak, latched: null, macroMem, board },
+        };
+      }
+      const side = verdict === "met" ? "then" : "else";
+      const body = side === "then" ? branch.then : branch.else;
+      if (body.length === 0) {
+        // The chosen side is empty ("do nothing on this branch") — carry on past it.
+        position = startOfNode(script, position.node + 1);
+        loopPass = 0;
+        continue;
+      }
+      position = { kind: "branch", node: position.node, side, body: 0 };
+      continue;
+    }
+
     const step = activeStep(script, position);
     const decider = registry[step.macro];
     if (decider === undefined) {
@@ -591,9 +651,13 @@ function startOfNode(script: BotScript, node: number): Position {
     return { kind: "done" };
   }
   const target = script.program[node];
-  return target !== undefined && target.kind === "loop"
-    ? { kind: "loop", node, body: 0 }
-    : { kind: "step", node };
+  if (target?.kind === "loop") {
+    return { kind: "loop", node, body: 0 };
+  }
+  if (target?.kind === "branch") {
+    return { kind: "branch-enter", node };
+  }
+  return { kind: "step", node };
 }
 
 interface Advance {
@@ -621,6 +685,15 @@ function advance(script: BotScript, position: Position, loopPass: number): Advan
     }
     return { position: startOfNode(script, position.node + 1), loopPass: 0, wrapped: false };
   }
+  if (position.kind === "branch") {
+    const branch = script.program[position.node] as BranchBlock;
+    const side = position.side === "then" ? branch.then : branch.else;
+    if (position.body + 1 < side.length) {
+      return { position: { kind: "branch", node: position.node, side: position.side, body: position.body + 1 }, loopPass, wrapped: false };
+    }
+    // The chosen side is finished — leave the branch (never a backward edge).
+    return { position: startOfNode(script, position.node + 1), loopPass: 0, wrapped: false };
+  }
   return { position: { kind: "done" }, loopPass: 0, wrapped: false };
 }
 
@@ -629,6 +702,11 @@ function activeStep(script: BotScript, position: Position): MacroStep {
     const loop = script.program[position.node] as LoopBlock;
     return loop.body[position.body] as MacroStep;
   }
+  if (position.kind === "branch") {
+    const branch = script.program[position.node] as BranchBlock;
+    const side = position.side === "then" ? branch.then : branch.else;
+    return side[position.body] as MacroStep;
+  }
   // position.kind === "step"
   return script.program[(position as { node: number }).node] as MacroStep;
 }
@@ -636,6 +714,12 @@ function activeStep(script: BotScript, position: Position): MacroStep {
 function positionKey(position: Position): string {
   if (position.kind === "loop") {
     return `loop:${position.node}:${position.body}`;
+  }
+  if (position.kind === "branch") {
+    return `branch:${position.node}:${position.side}:${position.body}`;
+  }
+  if (position.kind === "branch-enter") {
+    return `branch-enter:${position.node}`;
   }
   if (position.kind === "step") {
     return `step:${position.node}`;
@@ -665,7 +749,7 @@ function omit(
 function totalSteps(script: BotScript): number {
   let total = 0;
   for (const node of script.program) {
-    total += node.kind === "loop" ? node.body.length : 1;
+    total += node.kind === "loop" ? node.body.length : node.kind === "branch" ? node.then.length + node.else.length : 1;
   }
   return total;
 }

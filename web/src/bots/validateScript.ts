@@ -13,6 +13,7 @@ import {
   MIN_REPEAT_TIMES,
   conditionAllowedAt,
   type BotScript,
+  type BranchBlock,
   type Condition,
   type ConditionSite,
   type InterruptRow,
@@ -33,6 +34,10 @@ const ARG_LABEL: Readonly<Record<string, string>> = {
   belt: "a belt to work",
   station: "a station to go to",
   equipment: "mining equipment to run",
+  item: "an item to trade",
+  quantity: "how many to buy",
+  price: "a price per unit",
+  who: "a pilot to invite",
 };
 
 /** Every fixable problem in a draft, in reading order. Empty means ready to start. */
@@ -53,6 +58,8 @@ export function validateScript(script: BotScript): readonly ScriptProblem[] {
   for (const node of script.program) {
     if (node.kind === "loop") {
       validateLoop(node, problems);
+    } else if (node.kind === "branch") {
+      validateBranch(node, problems);
     } else {
       validateStep(node, problems);
     }
@@ -110,13 +117,16 @@ function validateStep(step: MacroStep, problems: ScriptProblem[]): void {
       problems.push({ path: step.id, sentence: "Pick the saved spot for this step." });
     }
     if (arg.kind === "itemType" && arg.typeID === null) {
-      problems.push({ path: step.id, sentence: "Pick the item this step moves." });
+      problems.push({ path: step.id, sentence: "Pick the item for this step." });
     }
     if (arg.kind === "fitting" && arg.fittingID === null && (arg.name === null || arg.name === "")) {
       problems.push({ path: step.id, sentence: "Pick the saved fitting for this step." });
     }
     if (arg.kind === "agent" && arg.ref.id === null) {
       problems.push({ path: step.id, sentence: "Pick the agent for this step, or remove the pick to use the one your bot finds." });
+    }
+    if (arg.kind === "character" && arg.charID === null) {
+      problems.push({ path: step.id, sentence: "Pick the pilot to invite." });
     }
   }
 
@@ -139,6 +149,16 @@ function validateStep(step: MacroStep, problems: ScriptProblem[]): void {
   }
   if (step.until !== undefined) {
     validateCondition(step.until, "until", step.id, problems);
+  }
+}
+
+function validateBranch(branch: BranchBlock, problems: ScriptProblem[]): void {
+  validateCondition(branch.when, "until", branch.id, problems);
+  if (branch.then.length === 0 && branch.else.length === 0) {
+    problems.push({ path: branch.id, sentence: "This branch needs at least one step in one of its choices." });
+  }
+  for (const step of [...branch.then, ...branch.else]) {
+    validateStep(step, problems);
   }
 }
 

@@ -96,6 +96,119 @@ test("encode then decode is a lossless round trip", () => {
   assert.deepStrictEqual([...warnings], []);
 });
 
+// The golden fixture only exercises belt/station/equipment args, so on its own it
+// cannot catch a serialiser that forgets a kind. This document uses EVERY OTHER
+// arg kind (count, corp, agent, fitting, itemType, place, bookmark) — if any is
+// dropped on encode it round-trips lossily and this fails.
+function everyArgKind(): BotScript {
+  return {
+    format: SCRIPT_FORMAT,
+    version: SCRIPT_VERSION,
+    name: "Every arg kind",
+    notes: "",
+    home: { entity: "station", id: null, name: null, systemName: null, starting: true },
+    interrupts: [],
+    program: [
+      {
+        id: "a1",
+        kind: "macro",
+        macro: "find-distribution-agent",
+        args: {
+          level: { kind: "count", value: 3 },
+          corporation: { kind: "corp", id: 1000035, name: "Caldari Navy" },
+        },
+      },
+      {
+        id: "a2",
+        kind: "macro",
+        macro: "request-mission",
+        args: { agent: { kind: "agent", ref: { entity: "agent", id: 3018770, name: "An Agent", systemName: "Jita" } } },
+      },
+      {
+        id: "a3",
+        kind: "macro",
+        macro: "refit-ship",
+        args: { fitting: { kind: "fitting", fittingID: 42, name: "PvE Fit" } },
+      },
+      {
+        id: "a4",
+        kind: "macro",
+        macro: "move-items",
+        args: {
+          item: { kind: "itemType", typeID: 34, name: "Tritanium" },
+          from: { kind: "place", place: "hangar" },
+          to: { kind: "place", place: "cargo" },
+          amount: { kind: "count", value: 100 },
+        },
+      },
+      {
+        id: "a5",
+        kind: "macro",
+        macro: "warp-to-bookmark",
+        args: { bookmark: { kind: "bookmark", bookmarkID: 77, name: "Safe Spot" } },
+      },
+      {
+        id: "a6",
+        kind: "macro",
+        macro: "buy-item",
+        args: {
+          item: { kind: "itemType", typeID: 34, name: "Tritanium" },
+          quantity: { kind: "qty", value: 5000 },
+          price: { kind: "isk", value: 6 },
+        },
+      },
+      {
+        id: "a7",
+        kind: "macro",
+        macro: "invite-to-fleet",
+        args: { who: { kind: "character", charID: 90000001, name: "Alt Pilot" } },
+      },
+    ],
+  };
+}
+
+test("encode then decode round-trips EVERY arg kind losslessly", () => {
+  const text = encodeScriptDoc(everyArgKind());
+  const { doc, warnings } = mustAccept(decodeScriptText(text));
+  assert.deepStrictEqual(doc, everyArgKind());
+  assert.deepStrictEqual([...warnings], []);
+});
+
+test("a valid branch decodes; nested / all-empty / off-site branches are refused", () => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const base = (): any => ({
+    format: "evejs-bot-script",
+    version: 1,
+    name: "B",
+    notes: "",
+    home: { entity: "station", id: 1, name: "H", systemName: null },
+    interrupts: [],
+    program: [
+      {
+        id: "br",
+        kind: "branch",
+        when: { kind: "shield-below", fraction: 0.5 },
+        then: [{ id: "t", kind: "macro", macro: "undock", args: {} }],
+        else: [{ id: "e", kind: "macro", macro: "refine-ore", args: {} }],
+      },
+    ],
+  });
+  mustAccept(decodeScriptValue(base()));
+
+  const nested = base(); // a branch inside a branch side — one level only
+  nested.program[0].then[0] = { id: "n", kind: "branch", when: { kind: "shield-below", fraction: 0.5 }, then: [{ id: "x", kind: "macro", macro: "undock", args: {} }], else: [] };
+  mustRefuse(decodeScriptValue(nested));
+
+  const bothEmpty = base();
+  bothEmpty.program[0].then = [];
+  bothEmpty.program[0].else = [];
+  mustRefuse(decodeScriptValue(bothEmpty));
+
+  const offSite = base(); // hostile-on-grid is a grid read — never a branch's `when`
+  offSite.program[0].when = { kind: "hostile-on-grid" };
+  mustRefuse(decodeScriptValue(offSite));
+});
+
 test("encoded output is stable and pretty-printed", () => {
   assert.equal(encodeScriptDoc(golden()), encodeScriptDoc(golden()));
   assert.match(encodeScriptDoc(golden()), /\n {2}"format": "evejs-bot-script"/);

@@ -1566,6 +1566,317 @@ const repairShip: MacroDecider = (_step, obs, mem) => {
   );
 };
 
+// ── buy-item ─────────────────────────────────────────────────────────────────
+// Docked: place ONE buy order at this station's market for the picked item, at
+// the player's price ceiling, for the quantity they set. One-shot — it places the
+// order (the server confirm-gates it and charges the broker fee) and is done; it
+// does not wait for the order to fill (a resting order may take time, an
+// aggressive price fills at once). Inside a loop it re-orders each lap, by design.
+const buyItem: MacroDecider = (step, obs, mem) => {
+  if (obs.flightStatus?.docked !== true) {
+    return tick(WAIT, "Not docked - orders are placed at a station's market.", "Buying", {
+      kind: "blocked",
+      reason: "Dock at a station first - this block places a buy order at its market.",
+    });
+  }
+  const item = step.args["item"];
+  const qty = step.args["quantity"];
+  const price = step.args["price"];
+  if (
+    item === undefined || item.kind !== "itemType" || item.typeID === null ||
+    qty === undefined || qty.kind !== "qty" ||
+    price === undefined || price.kind !== "isk"
+  ) {
+    return tick(WAIT, "This step is not fully set up.", "Buying", {
+      kind: "blocked",
+      reason: "Pick the item, how many to buy, and the most to pay for each.",
+    });
+  }
+  if (flag(mem, "placed")) {
+    return tick(WAIT, "The buy order is placed.", "Buying", { kind: "done" });
+  }
+  return tick(
+    { kind: "placeBuyOrder", typeID: item.typeID, price: price.value, quantity: qty.value },
+    `Placing a buy order for ${qty.value.toLocaleString()} at up to ${price.value.toLocaleString()} ISK each.`,
+    "Buying",
+    ACTING,
+    false,
+    { ...mem, placed: true },
+  );
+};
+
+// ── sell-item ────────────────────────────────────────────────────────────────
+// Docked: list EVERY stack of the picked item from the hangar onto the market at
+// the player's price floor, one order per tick. A listed stack LEAVES the hangar
+// (into the order), so the next hangar re-read shows it gone - that is the
+// confirmation, no 200 trusted. Done when no stack of the item is left. Only
+// plain (non-singleton) stacks are sold, never an assembled ship or module.
+const sellItem: MacroDecider = (step, obs, mem) => {
+  if (obs.flightStatus?.docked !== true) {
+    return tick(WAIT, "Not docked - selling happens at a station's market.", "Selling", {
+      kind: "blocked",
+      reason: "Dock at a station first - this block lists your items on its market.",
+    });
+  }
+  const item = step.args["item"];
+  const price = step.args["price"];
+  if (
+    item === undefined || item.kind !== "itemType" || item.typeID === null ||
+    price === undefined || price.kind !== "isk"
+  ) {
+    return tick(WAIT, "This step is not fully set up.", "Selling", {
+      kind: "blocked",
+      reason: "Pick the item to sell and the least to take for each.",
+    });
+  }
+  const hangar = obs.stationHangar ?? null;
+  if (hangar === null) {
+    return tick(WAIT, "Reading the hangar.", "Selling", ACTING, false, mem);
+  }
+  const stacks = hangar.filter((row) => row.typeID === item.typeID && !row.singleton && row.quantity > 0);
+  if (stacks.length === 0) {
+    return tick(WAIT, "Every stack of that item is listed.", "Selling", { kind: "done" });
+  }
+  const attempts = (num(mem, "attempts") ?? 0) + 1;
+  if (attempts > MAX_BLOCK_ATTEMPTS * 2) {
+    return tick(WAIT, "The market kept refusing the sell.", "Selling", {
+      kind: "blocked",
+      reason: "The market kept not listing the item, so the bot stopped.",
+    });
+  }
+  const stack = stacks[0]!;
+  return tick(
+    { kind: "placeSellOrder", itemID: stack.itemID, typeID: item.typeID, price: price.value, quantity: stack.quantity },
+    `Listing ${stack.quantity.toLocaleString()} at ${price.value.toLocaleString()} ISK each.`,
+    "Selling",
+    ACTING,
+    false,
+    { ...mem, attempts },
+  );
+};
+
+// ═══ The fleet-support set ══════════════════════════════════════════════════
+// Remote-repair friendly ships on grid. Players are FRIENDLY in this world
+// (operator decision), so a "fleet-mate" is any non-NPC ship on the grid that is
+// not your own. Both blocks ride the SAME lock + activate the engine already
+// proves; only picking the target (the most-hurt friendly) is new. No new gateway
+// read: the space snapshot already carries every ship's health and owner.
+
+const REMOTE_REP_HURT = 0.95; // anyone not essentially full is worth a rep
+const ORBIT_BOOST_RANGE_M = 2000; // stay close so remote reps reach
+
+/** Friendly ships on grid: another player's hull, never an NPC, never your own. */
+function friendliesOnGrid(snapshot: SpaceSnapshot | null, selfID: number | null): readonly SpaceEntity[] {
+  if (snapshot === null) {
+    return [];
+  }
+  return snapshot.entities.filter(
+    (e) => e.kind === "ship" && e.isNpc === false && e.isSelf === false && e.itemID !== selfID && e.characterID !== null,
+  );
+}
+
+/** The lowest readable health layer of a ship (shield/armor/hull), or null. */
+function lowestShipRatio(e: SpaceEntity): number | null {
+  const ratios = [e.shieldRatio, e.armorRatio, e.hullRatio].filter((r): r is number => r !== null);
+  return ratios.length === 0 ? null : Math.min(...ratios);
+}
+
+/** The most-hurt friendly below the rep threshold, or null when all are full. */
+function mostHurtFriendly(friendlies: readonly SpaceEntity[]): SpaceEntity | null {
+  let best: SpaceEntity | null = null;
+  let bestRatio = REMOTE_REP_HURT;
+  for (const e of friendlies) {
+    const r = lowestShipRatio(e);
+    if (r !== null && r < bestRatio) {
+      best = e;
+      bestRatio = r;
+    }
+  }
+  return best;
+}
+
+function remoteRepIDs(obs: ScriptObservation): readonly number[] {
+  return [
+    ...(obs.remoteShieldRepairerIDs ?? []),
+    ...(obs.remoteArmorRepairerIDs ?? []),
+    ...(obs.remoteHullRepairerIDs ?? []),
+  ];
+}
+
+/**
+ * The shared logistics action: lock the hurt fleet-mate (bounded), then switch on
+ * any idle remote rep onto it. Returns the tick to emit, or null when there is
+ * nobody to rep right now — the caller decides what "nothing to rep" means.
+ */
+function repHurtMate(obs: ScriptObservation, mem: MacroMemory, phase: string): MacroTick | null {
+  const snapshot = obs.snapshot ?? null;
+  if (snapshot === null) {
+    return null;
+  }
+  const target = mostHurtFriendly(friendliesOnGrid(snapshot, snapshot.ship?.itemID ?? null));
+  if (target === null) {
+    return null;
+  }
+  const locked = (obs.lockedTargetIDs ?? []).includes(target.itemID);
+  if (!locked) {
+    if (num(mem, "repLockOn") !== target.itemID) {
+      return tick({ kind: "lock", targetID: target.itemID }, "Locking the hurt fleet-mate.", phase, ACTING, true, { ...mem, repLockOn: target.itemID, repWaited: 0 });
+    }
+    const waited = (num(mem, "repWaited") ?? 0) + 1;
+    if (waited > MAX_LOCK_WAIT_TICKS) {
+      return tick(WAIT, "That fleet-mate would not lock - watching for another.", phase, ACTING, true, { ...mem, repLockOn: null });
+    }
+    return tick(WAIT, "Waiting for the lock.", phase, ACTING, true, { ...mem, repWaited: waited });
+  }
+  const active = new Set(snapshot.ship?.activeModuleIDs ?? []);
+  const idle = remoteRepIDs(obs).find((id) => !active.has(id));
+  if (idle !== undefined) {
+    return tick({ kind: "activate", moduleID: idle, targetID: target.itemID }, "Running the remote reps on the fleet-mate.", phase, ACTING, true, mem);
+  }
+  return tick(WAIT, "Repping the fleet-mate.", phase, ACTING, true, mem);
+}
+
+// ── remote-rep ───────────────────────────────────────────────────────────────
+// Reactive: rep the most-hurt fleet-mate; done once everyone on grid is full.
+const remoteRep: MacroDecider = (_step, obs, mem) => {
+  if (obs.inWarp === true) {
+    return tick(WAIT, "In warp - nothing decided mid-warp.", "Supporting", ACTING, false, mem);
+  }
+  if (obs.inSpace !== true || obs.snapshot == null) {
+    return tick(WAIT, "Waiting for the ship to be out in space.", "Supporting", ACTING, false, mem);
+  }
+  if (remoteRepIDs(obs).length === 0) {
+    return tick(WAIT, "No remote reps fitted.", "Supporting", {
+      kind: "blocked",
+      reason: "This ship has no remote shield or armor repairer fitted.",
+    });
+  }
+  const rep = repHurtMate(obs, mem, "Supporting");
+  if (rep === null) {
+    return tick(WAIT, "Everyone on grid is at full health.", "Supporting", { kind: "done" });
+  }
+  return rep;
+};
+
+// ── orbit-and-boost ──────────────────────────────────────────────────────────
+// Sustained: orbit the nearest fleet-mate up close and keep repping whoever is
+// hurt. Never finishes on its own - a watch or the player stops it. Orbits ONCE
+// (re-issued only when the anchor changes), so it does not spam orbit commands.
+const orbitAndBoost: MacroDecider = (_step, obs, mem) => {
+  if (obs.inWarp === true) {
+    return tick(WAIT, "In warp - nothing decided mid-warp.", "Boosting", ACTING, false, mem);
+  }
+  if (obs.inSpace !== true || obs.snapshot == null) {
+    return tick(WAIT, "Waiting for the ship to be out in space.", "Boosting", ACTING, false, mem);
+  }
+  if (remoteRepIDs(obs).length === 0) {
+    return tick(WAIT, "No remote reps fitted.", "Boosting", {
+      kind: "blocked",
+      reason: "This ship has no remote shield or armor repairer fitted.",
+    });
+  }
+  const snapshot = obs.snapshot;
+  const friendlies = friendliesOnGrid(snapshot, snapshot.ship?.itemID ?? null);
+  if (friendlies.length === 0) {
+    return tick(WAIT, "No fleet-mate on grid to support yet.", "Boosting", ACTING, false, mem);
+  }
+  const anchor = nearest(friendlies, measureSpace(snapshot));
+  if (anchor !== null && num(mem, "orbiting") !== anchor.itemID) {
+    return tick(
+      { kind: "orbit", targetID: anchor.itemID, range: ORBIT_BOOST_RANGE_M },
+      "Orbiting the fleet-mate to stay in rep range.",
+      "Boosting",
+      ACTING,
+      false,
+      { ...mem, orbiting: anchor.itemID },
+    );
+  }
+  const rep = repHurtMate(obs, mem, "Boosting");
+  if (rep !== null) {
+    return rep;
+  }
+  return tick(WAIT, "Boosting - everyone's healthy for now.", "Boosting", ACTING, false, mem);
+};
+
+// ═══ The fleet-management set ═══════════════════════════════════════════════
+// Form up / invite / join — the multibox alt-fleeting loop. All confirm-gated
+// server-side; each confirms by re-reading the bound-fleet state (`obs.inFleet`,
+// which is authoritative: a char with no fleet reads a real "not in a fleet",
+// never a blank). ⚠ the WRITES were never fired live — flagged for QA.
+
+// ── create-fleet ─────────────────────────────────────────────────────────────
+const createFleet: MacroDecider = (_step, obs, mem) => {
+  const inFleet = obs.inFleet ?? null;
+  if (inFleet === true) {
+    return tick(WAIT, "You are already in a fleet.", "Forming a fleet", { kind: "done" });
+  }
+  if (inFleet === null) {
+    return tick(WAIT, "Checking your fleet status.", "Forming a fleet", ACTING, false, mem);
+  }
+  const tries = (num(mem, "tries") ?? 0) + 1;
+  if (tries > MAX_BLOCK_ATTEMPTS) {
+    return tick(WAIT, "The fleet would not form.", "Forming a fleet", {
+      kind: "blocked",
+      reason: "The fleet would not form after several tries, so the bot stopped.",
+    });
+  }
+  return tick({ kind: "createFleet" }, "Forming a fleet.", "Forming a fleet", ACTING, false, { ...mem, tries });
+};
+
+// ── invite-to-fleet ──────────────────────────────────────────────────────────
+const inviteToFleet: MacroDecider = (step, obs, mem) => {
+  const who = step.args["who"];
+  if (who === undefined || who.kind !== "character" || who.charID === null) {
+    return tick(WAIT, "No pilot picked to invite.", "Inviting", {
+      kind: "blocked",
+      reason: "Pick the pilot this block invites.",
+    });
+  }
+  const inFleet = obs.inFleet ?? null;
+  if (inFleet === null) {
+    return tick(WAIT, "Checking your fleet status.", "Inviting", ACTING, false, mem);
+  }
+  if (inFleet === false) {
+    return tick(WAIT, "You are not in a fleet to invite into.", "Inviting", {
+      kind: "blocked",
+      reason: "Form or join a fleet first - put a Form-a-fleet block before this one.",
+    });
+  }
+  if (flag(mem, "invited")) {
+    return tick(WAIT, "The invite is sent.", "Inviting", { kind: "done" });
+  }
+  return tick(
+    { kind: "inviteToFleet", charID: who.charID },
+    who.name !== null && who.name.length > 0 ? `Inviting ${who.name} to the fleet.` : "Inviting a pilot to the fleet.",
+    "Inviting",
+    ACTING,
+    false,
+    { ...mem, invited: true },
+  );
+};
+
+// ── join-fleet ───────────────────────────────────────────────────────────────
+// Reactive: keep accepting a pending invite until this character is in a fleet.
+// Bounded so a bot that is never invited stops rather than trying forever.
+const JOIN_MAX_WAIT_TICKS = 150; // a few minutes at the settle-paced cadence
+const joinFleet: MacroDecider = (_step, obs, mem) => {
+  const inFleet = obs.inFleet ?? null;
+  if (inFleet === true) {
+    return tick(WAIT, "You are in a fleet now.", "Joining a fleet", { kind: "done" });
+  }
+  if (inFleet === null) {
+    return tick(WAIT, "Checking your fleet status.", "Joining a fleet", ACTING, false, mem);
+  }
+  const waited = (num(mem, "waited") ?? 0) + 1;
+  if (waited > JOIN_MAX_WAIT_TICKS) {
+    return tick(WAIT, "No fleet invitation arrived.", "Joining a fleet", {
+      kind: "blocked",
+      reason: "No fleet invitation arrived in time, so the bot stopped.",
+    });
+  }
+  return tick({ kind: "acceptFleetInvite" }, "Waiting for a fleet invite to accept.", "Joining a fleet", ACTING, false, { ...mem, waited });
+};
+
 /** The registry the runner dispatches on, keyed by MacroID. */
 export const SCRIPT_MACROS: Readonly<Record<string, MacroDecider>> = {
   undock,
@@ -1595,6 +1906,13 @@ export const SCRIPT_MACROS: Readonly<Record<string, MacroDecider>> = {
   "fly-to-mission-site": flyToMissionSite,
   "restart-extractors": restartExtractors,
   "repair-ship": repairShip,
+  "buy-item": buyItem,
+  "sell-item": sellItem,
+  "remote-rep": remoteRep,
+  "orbit-and-boost": orbitAndBoost,
+  "create-fleet": createFleet,
+  "invite-to-fleet": inviteToFleet,
+  "join-fleet": joinFleet,
 };
 
 /**

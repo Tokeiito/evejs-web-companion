@@ -13,6 +13,7 @@
 
 import type {
   BeltArg,
+  BranchBlock,
   Condition,
   InterruptResponse,
   InterruptRow,
@@ -25,6 +26,15 @@ import type {
 /** A percentage a player reads — always with its unit, never a bare number. */
 function pct(fraction: number): string {
   return `${Math.round(fraction * 100)}%`;
+}
+
+/**
+ * An ISK amount a player reads — grouped with its unit. Grouping is pinned to
+ * en-US so a big amount always breaks into runs of three digits (never a bare
+ * 5+-digit run, which R7d treats as a leaked id), whatever the runtime locale.
+ */
+function isk(amount: number): string {
+  return `${amount.toLocaleString("en-US")} ISK`;
 }
 
 /** A world reference as words — its name, or a "you pick" phrase; never its id (R7d). */
@@ -102,6 +112,20 @@ export function macroName(macro: MacroID): string {
       return "Restart the planet extractors";
     case "repair-ship":
       return "Repair the ship";
+    case "buy-item":
+      return "Buy from the market";
+    case "sell-item":
+      return "Sell to the market";
+    case "remote-rep":
+      return "Remote-repair the fleet";
+    case "orbit-and-boost":
+      return "Orbit and boost a fleet-mate";
+    case "create-fleet":
+      return "Form a fleet";
+    case "invite-to-fleet":
+      return "Invite a pilot to your fleet";
+    case "join-fleet":
+      return "Join a fleet";
   }
 }
 
@@ -136,9 +160,20 @@ export function conditionSentence(condition: Condition): string {
       return `ship health drops below ${pct(condition.fraction)}`;
     case "capacitor-below":
       return `the capacitor drops below ${pct(condition.fraction)}`;
+    case "wallet-below":
+      return `your wallet drops below ${isk(condition.isk)}`;
+    case "wallet-above":
+      return `your wallet rises above ${isk(condition.isk)}`;
     case "hostile-on-grid":
       return "a pirate shows up";
   }
+}
+
+/** A branch's header line: the fork it makes, in plain words. */
+export function branchSentence(branch: BranchBlock): string {
+  const thenPart = branch.then.length === 0 ? "do nothing" : "do the first steps";
+  const elsePart = branch.else.length === 0 ? "do nothing" : "do the other steps";
+  return `If ${conditionSentence(branch.when)}, ${thenPart}; otherwise ${elsePart}`;
 }
 
 /** How a loop's repeat reads on its header row. */
@@ -298,5 +333,43 @@ function macroPhrase(step: MacroStep): string {
       return "Loot your own wrecks on this grid";
     case "refine-ore":
       return "Refine the ore in the hangar";
+    case "buy-item": {
+      const item = step.args["item"];
+      const what =
+        item !== undefined && item.kind === "itemType" && item.name !== null && item.name.length > 0
+          ? item.name
+          : "an item you pick";
+      const qty = step.args["quantity"];
+      const howMany = qty !== undefined && qty.kind === "qty" ? qty.value.toLocaleString() : "some";
+      const price = step.args["price"];
+      const cap = price !== undefined && price.kind === "isk" ? ` at up to ${isk(price.value)} each` : "";
+      return `Buy ${howMany} ${what}${cap}`;
+    }
+    case "sell-item": {
+      const item = step.args["item"];
+      const what =
+        item !== undefined && item.kind === "itemType" && item.name !== null && item.name.length > 0
+          ? item.name
+          : "an item you pick";
+      const price = step.args["price"];
+      const floor = price !== undefined && price.kind === "isk" ? ` at ${isk(price.value)} or more each` : "";
+      return `Sell all your ${what}${floor}`;
+    }
+    case "remote-rep":
+      return "Remote-repair the most hurt fleet-mate on grid";
+    case "orbit-and-boost":
+      return "Orbit a fleet-mate and keep the remote reps running";
+    case "create-fleet":
+      return "Form a fleet with you as the boss";
+    case "invite-to-fleet": {
+      const who = step.args["who"];
+      const name =
+        who !== undefined && who.kind === "character" && who.name !== null && who.name.length > 0
+          ? who.name
+          : "a pilot you pick";
+      return `Invite ${name} to your fleet`;
+    }
+    case "join-fleet":
+      return "Accept a fleet invitation when one arrives";
   }
 }

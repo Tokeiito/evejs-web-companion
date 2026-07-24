@@ -8,6 +8,7 @@
   // validate, and import/export a bot; running one comes next.
 
   import {
+    type Arg,
     type BotScript,
     type Condition,
     type ConditionKind,
@@ -18,10 +19,19 @@
     type MacroStep,
     type ProgramNode,
     type WorldRef,
+    MAX_ISK_ARG,
+    MAX_QTY_ARG,
+    MIN_ISK_ARG,
+    MIN_QTY_ARG,
     conditionAllowedAt,
     startingStation,
   } from "../bots/botScript.ts";
-  import { MACRO_CATALOG_LIST } from "../bots/macroCatalogView.ts";
+  import {
+    MACRO_CATALOG_LIST,
+    CATEGORY_LABEL,
+    categoriesInUse,
+    type BlockCategory,
+  } from "../bots/macroCatalogView.ts";
   import { EXAMPLE_BOTS, type ExampleBot } from "../bots/exampleBots.ts";
   import { stepSentence } from "../bots/scriptText.ts";
   import { validateScript, type ScriptProblem } from "../bots/validateScript.ts";
@@ -39,6 +49,7 @@
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
   import { nameKey } from "../store/names.ts";
+  import { loadKnownCharacters } from "../app/knownCharacters.ts";
 
   let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
 
@@ -79,6 +90,34 @@
   let importText = $state("");
   let importNote = $state<string | null>(null);
 
+  // The flat editor (a step list + one outer repeat) cannot represent BRANCH
+  // logic. When a loaded bot contains a branch, its whole program is kept here
+  // verbatim so it runs and round-trips UNMANGLED; the step list below shows a
+  // flattened read-only preview, and branches are edited through the JSON box.
+  // Adding a block clears this (an explicit switch to a flat bot).
+  let advancedProgram = $state<readonly ProgramNode[] | null>(null);
+
+  // ── Palette search + category filter ─────────────────────────────────────────
+  // The palette can hold dozens of blocks; a search box and one-tap category
+  // chips keep it findable. Search matches the name, the "what it does", the
+  // "needs", and the category label, so a word like "drone" or "sell" lands.
+  let blockSearch = $state("");
+  let activeCategory = $state<BlockCategory | "all">("all");
+  const paletteCategories = categoriesInUse();
+  const filteredBlocks = $derived.by(() => {
+    const q = blockSearch.trim().toLowerCase();
+    return MACRO_CATALOG_LIST.filter((e) => {
+      if (activeCategory !== "all" && e.category !== activeCategory) return false;
+      if (q.length === 0) return true;
+      return (
+        e.name.toLowerCase().includes(q) ||
+        e.does.toLowerCase().includes(q) ||
+        (e.needs?.toLowerCase().includes(q) ?? false) ||
+        CATEGORY_LABEL[e.category].toLowerCase().includes(q)
+      );
+    });
+  });
+
   // Saved bots — kept per account on the web server (src/botScriptStore.js).
   let savedList = $state<BotScriptSummary[]>([]);
   let currentSavedId = $state<string | null>(null);
@@ -104,19 +143,23 @@
   const problemsByPath = $derived(groupProblems(problems));
 
   function buildScript(): BotScript {
+    // A preserved branch program is returned verbatim (only name/home/watches are
+    // still editable here); otherwise the flat step list builds the program.
     const program: readonly ProgramNode[] =
-      steps.length === 0
-        ? []
-        : repeatMode === "once"
-          ? [...steps]
-          : [
-              {
-                id: "main-loop",
-                kind: "loop",
-                repeat: repeatMode === "forever" ? { kind: "forever" } : { kind: "times", count: repeatCount },
-                body: [...steps],
-              },
-            ];
+      advancedProgram !== null
+        ? advancedProgram
+        : steps.length === 0
+          ? []
+          : repeatMode === "once"
+            ? [...steps]
+            : [
+                {
+                  id: "main-loop",
+                  kind: "loop",
+                  repeat: repeatMode === "forever" ? { kind: "forever" } : { kind: "times", count: repeatCount },
+                  body: [...steps],
+                },
+              ];
     return { format: "evejs-bot-script", version: 1, name, notes: "", home, interrupts: [...watches], program };
   }
 
@@ -180,8 +223,17 @@
   }
   function addWatch(kind: ConditionKind): void {
     if (hasWatch(kind)) return;
-    const when: Condition = kind === "hostile-on-grid" ? { kind } : ({ kind, fraction: 0.3 } as Condition);
-    const respond: InterruptResponse = kind === "hostile-on-grid" ? "launch-drones" : "dock-and-pause";
+    const isWallet = kind === "wallet-below" || kind === "wallet-above";
+    const when: Condition =
+      kind === "hostile-on-grid"
+        ? { kind }
+        : isWallet
+          ? ({ kind, isk: 10_000_000 } as Condition)
+          : ({ kind, fraction: 0.3 } as Condition);
+    // A wallet watch just stops (money is not a danger); a pirate launches drones;
+    // a health watch heads home.
+    const respond: InterruptResponse =
+      kind === "hostile-on-grid" ? "launch-drones" : isWallet ? "pause" : "dock-and-pause";
     watches = [...watches, { id: makeId(), when, respond }];
   }
   function removeWatch(id: string): void {
@@ -192,11 +244,18 @@
       w.id === id && "fraction" in w.when ? { ...w, when: { ...w.when, fraction: clampFraction(percent / 100) } } : w,
     );
   }
+  function setWatchIsk(id: string, amount: number): void {
+    const value = Math.min(MAX_ISK_ARG, Math.max(MIN_ISK_ARG, Math.trunc(amount) || MIN_ISK_ARG));
+    watches = watches.map((w) => (w.id === id && "isk" in w.when ? { ...w, when: { ...w.when, isk: value } } : w));
+  }
   function setWatchResponse(id: string, respond: InterruptResponse): void {
     watches = watches.map((w) => (w.id === id ? { ...w, respond } : w));
   }
   // ── Blocks (steps) ───────────────────────────────────────────────────────────
   function addStep(macro: MacroID): void {
+    // Adding a block means flat-editing from here — drop any preserved branch
+    // program (the flattened preview steps are what carries forward).
+    advancedProgram = null;
     if (macro === "mine-at-belt") {
       steps = [
         ...steps,
@@ -220,6 +279,34 @@
         ...steps,
         { id: makeId(), kind: "macro", macro, args: { from: { kind: "place", place: "hangar" }, to: { kind: "place", place: "cargo" } } },
       ];
+      return;
+    }
+    if (macro === "buy-item") {
+      // Item stays to pick; quantity and price get starting values to edit.
+      steps = [
+        ...steps,
+        {
+          id: makeId(),
+          kind: "macro",
+          macro,
+          args: {
+            item: { kind: "itemType", typeID: null, name: null },
+            quantity: { kind: "qty", value: 100 },
+            price: { kind: "isk", value: 1000 },
+          },
+        },
+      ];
+      return;
+    }
+    if (macro === "sell-item") {
+      steps = [
+        ...steps,
+        { id: makeId(), kind: "macro", macro, args: { item: { kind: "itemType", typeID: null, name: null }, price: { kind: "isk", value: 1000 } } },
+      ];
+      return;
+    }
+    if (macro === "invite-to-fleet") {
+      steps = [...steps, { id: makeId(), kind: "macro", macro, args: { who: { kind: "character", charID: null, name: null } } }];
       return;
     }
     steps = [...steps, { id: makeId(), kind: "macro", macro, args: {} }];
@@ -266,6 +353,12 @@
   // ── The refit block's saved-fitting picker ─────────────────────────────────
   let savedFittings = $state<readonly { fittingID: number; name: string }[]>([]);
   let savedSpots = $state<readonly { bookmarkID: number; name: string }[]>([]);
+  // The known-pilots roster (multibox onboarding records it) — the invite block's
+  // picker. Names + ids only, from localStorage; no token, no live read.
+  let knownPilots = $state<readonly { characterID: number; characterName: string }[]>([]);
+  onMount(() => {
+    knownPilots = loadKnownCharacters().map((k) => ({ characterID: k.characterID, characterName: k.characterName }));
+  });
   onMount(() => {
     void flow
       .listSavedFittings()
@@ -294,6 +387,17 @@
   function fittingArgID(step: MacroStep): number | null {
     const arg = step.args["fitting"];
     return arg !== undefined && arg.kind === "fitting" ? arg.fittingID : null;
+  }
+  function whoArgID(step: MacroStep): number | null {
+    const arg = step.args["who"];
+    return arg !== undefined && arg.kind === "character" ? arg.charID : null;
+  }
+  function setStepWho(i: number, charID: number): void {
+    const match = knownPilots.find((p) => p.characterID === charID);
+    if (match === undefined) return;
+    steps = steps.map((s, idx) =>
+      idx === i ? { ...s, args: { ...s.args, who: { kind: "character", charID: match.characterID, name: match.characterName } } } : s,
+    );
   }
   function setStepFitting(i: number, fittingID: number): void {
     const match = savedFittings.find((f) => f.fittingID === fittingID);
@@ -348,6 +452,25 @@
     const arg = step.args[key];
     return arg !== undefined && arg.kind === "count" ? arg.value : null;
   }
+  // The market blocks' number args: a quantity (qty) and a price (isk). One
+  // reader for any numeric arg, one setter that stamps the right kind.
+  function numericArgValue(step: MacroStep, key: string): number | null {
+    const arg = step.args[key];
+    if (arg === undefined) return null;
+    return arg.kind === "count" || arg.kind === "isk" || arg.kind === "qty" ? arg.value : null;
+  }
+  function setStepNumericArg(i: number, key: string, raw: string, kind: "isk" | "qty", min: number, max: number): void {
+    steps = steps.map((s, idx) => {
+      if (idx !== i) return s;
+      const parsed = Number(raw);
+      if (raw.trim() === "" || !Number.isSafeInteger(parsed)) {
+        const { [key]: _dropped, ...rest } = s.args;
+        return { ...s, args: rest };
+      }
+      const value = Math.min(max, Math.max(min, parsed));
+      return { ...s, args: { ...s.args, [key]: { kind, value } as Arg } };
+    });
+  }
   /** Set (or clear, on empty input) a bounded number arg on a step. */
   function setStepCountArg(i: number, key: string, raw: string, min: number, max: number): void {
     steps = steps.map((s, idx) => {
@@ -399,7 +522,15 @@
     home = doc.home;
     watches = [...doc.interrupts];
     const first = doc.program[0];
-    if (doc.program.length === 1 && first !== undefined && first.kind === "loop") {
+    const hasBranch = doc.program.some((n) => n.kind === "branch");
+    if (hasBranch) {
+      // Keep the branch program verbatim so it runs + round-trips; the step list is
+      // a flattened, read-only preview (branches are edited through the JSON box).
+      advancedProgram = doc.program;
+      steps = flattenProgram(doc.program);
+      repeatMode = "once";
+    } else if (doc.program.length === 1 && first !== undefined && first.kind === "loop") {
+      advancedProgram = null;
       const loop = first as LoopBlock;
       steps = [...loop.body];
       if (loop.repeat.kind === "forever") {
@@ -412,16 +543,35 @@
       // A mixed program (steps beside loops) does not fit this flat editor; the
       // steps are FLATTENED IN ORDER (loop bodies inlined) rather than silently
       // dropping whatever sat inside a loop.
-      steps = doc.program.flatMap((n): MacroStep[] => (n.kind === "macro" ? [n] : [...n.body]));
+      advancedProgram = null;
+      steps = flattenProgram(doc.program);
       repeatMode = "once";
     }
     idSeed += 1000;
   }
 
+  /** Every macro step of a program, in order, with loop bodies and branch sides
+   * inlined — a display-only flattening (structure is not preserved). */
+  function flattenProgram(program: readonly ProgramNode[]): MacroStep[] {
+    return program.flatMap((n): MacroStep[] =>
+      n.kind === "macro" ? [n] : n.kind === "loop" ? [...n.body] : [...n.then, ...n.else],
+    );
+  }
+
   // ── Saved bots (per-account, on the web server) ──────────────────────────────
+  // Multibox: saved bots are keyed per ACCOUNT on the server, so with several
+  // pilots online in one tab these calls must carry the ACTIVE flow's token — not
+  // the empty per-tab global, which would save to / list the WRONG account. The
+  // token key is included ONLY when this flow has one; in single-session mode it
+  // is null, and the key's ABSENCE is exactly what falls the call back to the
+  // global token (the correct one there). So this is safe in both modes.
+  function botOpts(): { token?: string } {
+    const token = flow.sessionToken();
+    return token !== null ? { token } : {};
+  }
   async function refreshSaved(): Promise<void> {
     try {
-      savedList = await listBotScripts();
+      savedList = await listBotScripts(botOpts());
       libraryError = null;
     } catch {
       savedList = [];
@@ -431,11 +581,11 @@
   async function saveBot(): Promise<void> {
     try {
       if (currentSavedId !== null) {
-        const { rev } = await updateBotScript(currentSavedId, builtDoc, currentRev);
+        const { rev } = await updateBotScript(currentSavedId, builtDoc, currentRev, botOpts());
         currentRev = rev;
         importNote = `Saved changes to "${name}".`;
       } else {
-        const { scriptID, rev } = await createBotScript(builtDoc);
+        const { scriptID, rev } = await createBotScript(builtDoc, botOpts());
         currentSavedId = scriptID;
         currentRev = rev;
         importNote = `Saved "${name}" to your account.`;
@@ -447,7 +597,7 @@
   }
   async function loadSaved(id: string): Promise<void> {
     try {
-      const record = await getBotScript(id);
+      const record = await getBotScript(id, botOpts());
       if (record === null) {
         importNote = "That saved bot could not be found.";
         return;
@@ -467,7 +617,7 @@
   }
   async function deleteSaved(id: string): Promise<void> {
     try {
-      await deleteBotScript(id);
+      await deleteBotScript(id, botOpts());
       if (currentSavedId === id) {
         currentSavedId = null;
         currentRev = 0;
@@ -514,6 +664,8 @@
     <button onclick={() => addWatch("hull-below")} disabled={hasWatch("hull-below")}>Watch Hull</button>
     <button onclick={() => addWatch("capacitor-below")} disabled={hasWatch("capacitor-below")}>Watch Capacitor</button>
     <button onclick={() => addWatch("hostile-on-grid")} disabled={hasWatch("hostile-on-grid")}>Watch for Rats</button>
+    <button onclick={() => addWatch("wallet-below")} disabled={hasWatch("wallet-below")}>Watch Wallet (low)</button>
+    <button onclick={() => addWatch("wallet-above")} disabled={hasWatch("wallet-above")}>Watch Wallet (high)</button>
   </div>
   <ul class="rows">
     {#each watches as row (row.id)}
@@ -522,6 +674,15 @@
         <div class="body">
           {#if row.when.kind === "hostile-on-grid"}
             <span class="sentence">If a pirate shows up, send out combat drones to fight it off.</span>
+          {:else if "isk" in row.when}
+            <span class="sentence">If your wallet {row.when.kind === "wallet-below" ? "drops below" : "rises above"}</span>
+            <span class="inline-edit">
+              <input class="isk-in" type="number" min={MIN_ISK_ARG} max={MAX_ISK_ARG} step="1000000" value={row.when.isk} oninput={(e) => setWatchIsk(row.id, Number(e.currentTarget.value))} /> ISK
+              →
+              <select value={row.respond} onchange={(e) => setWatchResponse(row.id, e.currentTarget.value as InterruptResponse)}>
+                {#each RESPONSE_OPTIONS as opt}<option value={opt.value}>{opt.label}</option>{/each}
+              </select>
+            </span>
           {:else if "fraction" in row.when}
             <span class="sentence">{WATCH_LABEL[row.when.kind]} drop below</span>
             <span class="inline-edit">
@@ -563,6 +724,13 @@
   {#each problemsByPath.get("program") ?? [] as sentence}<p class="prob">{sentence}</p>{/each}
   {#each problemsByPath.get("main-loop") ?? [] as sentence}<p class="prob">{sentence}</p>{/each}
 
+  {#if advancedProgram !== null}
+    <p class="note advanced-note">
+      ⚠ This bot uses <strong>branch logic</strong>. It runs correctly and round-trips through the box below — the
+      steps shown here are a flattened, read-only preview. Edit its branches in the <strong>Import / export</strong>
+      box; adding a block turns it into a plain flat bot.
+    </p>
+  {/if}
   {#if steps.length === 0}
     <p class="empty">No blocks yet. Add one from the palette below.</p>
   {/if}
@@ -653,6 +821,45 @@
               seconds
             </span>
           {/if}
+          {#if step.macro === "buy-item"}
+            <span class="inline-edit">
+              buy
+              <input class="pct" type="number" min={MIN_QTY_ARG} max={MAX_QTY_ARG} placeholder="how many" value={numericArgValue(step, "quantity") ?? ""} oninput={(e) => setStepNumericArg(i, "quantity", e.currentTarget.value, "qty", MIN_QTY_ARG, MAX_QTY_ARG)} />
+              ×
+              <select value={moveArg(step, "item")} onchange={(e) => setMoveItem(i, e.currentTarget.value)}>
+                <option value="" disabled>pick an item…</option>
+                {#each knownItems as it (it.typeID)}<option value={it.typeID}>{it.name}</option>{/each}
+              </select>
+              at up to
+              <input class="isk-in" type="number" min={MIN_ISK_ARG} max={MAX_ISK_ARG} step="100" placeholder="ISK each" value={numericArgValue(step, "price") ?? ""} oninput={(e) => setStepNumericArg(i, "price", e.currentTarget.value, "isk", MIN_ISK_ARG, MAX_ISK_ARG)} />
+              ISK each
+            </span>
+          {/if}
+          {#if step.macro === "sell-item"}
+            <span class="inline-edit">
+              sell all
+              <select value={moveArg(step, "item")} onchange={(e) => setMoveItem(i, e.currentTarget.value)}>
+                <option value="" disabled>pick an item…</option>
+                {#each knownItems as it (it.typeID)}<option value={it.typeID}>{it.name}</option>{/each}
+              </select>
+              at
+              <input class="isk-in" type="number" min={MIN_ISK_ARG} max={MAX_ISK_ARG} step="100" placeholder="ISK each" value={numericArgValue(step, "price") ?? ""} oninput={(e) => setStepNumericArg(i, "price", e.currentTarget.value, "isk", MIN_ISK_ARG, MAX_ISK_ARG)} />
+              ISK or more each
+            </span>
+          {/if}
+          {#if step.macro === "invite-to-fleet"}
+            <span class="inline-edit">
+              invite
+              {#if knownPilots.length === 0}
+                <em>(no known pilots yet — add one from the login screen)</em>
+              {:else}
+                <select value={whoArgID(step) ?? ""} onchange={(e) => setStepWho(i, Number(e.currentTarget.value))}>
+                  <option value="" disabled>pick a pilot…</option>
+                  {#each knownPilots as p (p.characterID)}<option value={p.characterID}>{p.characterName}</option>{/each}
+                </select>
+              {/if}
+            </span>
+          {/if}
           {#each problemsByPath.get(step.id) ?? [] as sentence}<p class="prob">{sentence}</p>{/each}
         </div>
         <div class="ops">
@@ -671,18 +878,42 @@
 
   <!-- Palette -->
   <h3>Add a block</h3>
-  <div class="palette">
-    {#each MACRO_CATALOG_LIST as entry}
-      <div class="macro-card">
-        <div class="macro-name">{entry.name}</div>
-        <div class="macro-does">{entry.does}</div>
-        {#if entry.needs}<div class="macro-needs">Needs: {entry.needs}</div>{/if}
-        <div class="macro-add">
-          <button class="primary tiny" onclick={() => addStep(entry.id)}>Add</button>
-        </div>
-      </div>
-    {/each}
+  <div class="palette-controls">
+    <input
+      class="block-search"
+      type="search"
+      placeholder="Search blocks…"
+      bind:value={blockSearch}
+      aria-label="Search blocks"
+    />
+    <div class="cat-chips" role="group" aria-label="Filter blocks by category">
+      <button class="chip" class:active={activeCategory === "all"} onclick={() => (activeCategory = "all")}>
+        All
+      </button>
+      {#each paletteCategories as cat (cat)}
+        <button class="chip" class:active={activeCategory === cat} onclick={() => (activeCategory = cat)}>
+          {CATEGORY_LABEL[cat]}
+        </button>
+      {/each}
+    </div>
   </div>
+  {#if filteredBlocks.length === 0}
+    <p class="empty">No blocks match. Try a different word or category.</p>
+  {:else}
+    <div class="palette">
+      {#each filteredBlocks as entry (entry.id)}
+        <div class="macro-card">
+          <div class="macro-name">{entry.name}</div>
+          <div class="macro-cat">{CATEGORY_LABEL[entry.category]}</div>
+          <div class="macro-does">{entry.does}</div>
+          {#if entry.needs}<div class="macro-needs">Needs: {entry.needs}</div>{/if}
+          <div class="macro-add">
+            <button class="primary tiny" onclick={() => addStep(entry.id)}>Add</button>
+          </div>
+        </div>
+      {/each}
+    </div>
+  {/if}
 
   <!-- Saved bots -->
   <h3>Your saved bots</h3>
@@ -727,6 +958,12 @@
   .note {
     color: var(--color-muted);
     max-width: 60ch;
+  }
+  .advanced-note {
+    color: var(--color-text);
+    max-width: 70ch;
+    border-left: 3px solid var(--color-accent);
+    padding-left: 0.6rem;
   }
   .subnote {
     color: var(--color-muted);
@@ -822,6 +1059,9 @@
   input.count {
     width: 4rem;
   }
+  input.isk-in {
+    width: 8rem;
+  }
   .ops {
     flex: none;
     display: flex;
@@ -843,6 +1083,45 @@
     border-radius: 4px;
     padding: 0.8rem;
     text-align: center;
+  }
+  .palette-controls {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    margin: 0.4rem 0 0.8rem;
+  }
+  .block-search {
+    width: 100%;
+    max-width: 22rem;
+    min-height: 36px;
+  }
+  .cat-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+  }
+  .chip {
+    min-height: 32px;
+    padding: 0.2rem 0.7rem;
+    border: 1px solid var(--color-line);
+    border-radius: 999px;
+    background: var(--color-panel-3);
+    color: var(--color-muted);
+    font-size: 0.82rem;
+    cursor: pointer;
+  }
+  .chip.active {
+    border-color: var(--color-accent);
+    color: var(--color-accent-bright);
+    background: color-mix(in srgb, var(--color-accent) 18%, transparent);
+    font-weight: 600;
+  }
+  .macro-cat {
+    color: var(--color-accent-dim);
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin-top: 0.05rem;
   }
   .palette {
     display: grid;
