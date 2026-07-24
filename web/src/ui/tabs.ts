@@ -54,8 +54,10 @@ export const TABS: readonly TabDef[] = [
   { id: "station", label: "Station", where: "docked" },
   { id: "fitting", label: "Fitting", where: "docked" },
   { id: "travel", label: "Travel", where: "docked" },
-  { id: "bots", label: "Bots", where: "docked" },
-  { id: "botBuilder", label: "Bot Builder", where: "docked" },
+  // Bots run IN SPACE (mining/mission loops), so their commands must stay
+  // reachable after undocking — available in both states.
+  { id: "bots", label: "Bots", where: "both" },
+  { id: "botBuilder", label: "Bot Builder", where: "both" },
   // In space only — flying, what's around the ship, mining.
   { id: "flight", label: "Flight", where: "in-space" },
   { id: "overview", label: "Around Your Ship", where: "in-space" },
