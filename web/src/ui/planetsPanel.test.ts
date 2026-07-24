@@ -108,7 +108,11 @@ function colonyState(): unknown {
           cycleTimeSeconds: 3600,
           quantityPerCycle: 2841,
           installedAtMs: NOW - 3 * HOUR,
-          expiresAtMs: NOW + 21 * HOUR,
+          // Half an hour off the hour boundary ON PURPOSE: the panel reads its
+          // own Date.now() a tick after `scene` pinned the offset, and an exact
+          // 21h would flip to "20h 59m" on any ms of drift (a real intermittent
+          // red). Thirty minutes of slack makes the words drift-proof.
+          expiresAtMs: NOW + 21 * HOUR + HOUR / 2,
           headCount: 3,
         },
       },
@@ -238,8 +242,8 @@ test("opening a colony shows what is on the planet, in player words", () => {
 
 test("a running program counts down, and a finished one says finished", () => {
   const { text } = scene({ open: true });
-  // 21 hours left on the server's clock — never a raw instant, never negative.
-  assert.match(text, /Running — 21 hours left/);
+  // 21h 30m left on the server's clock — never a raw instant, never negative.
+  assert.match(text, /Running — 21h 30m left/);
   assert.match(text, /Finished — this extractor has stopped/);
   assert.doesNotMatch(text, /-\d+ (hour|minute|day)/);
   // The server's own cycle numbers are shown as given.

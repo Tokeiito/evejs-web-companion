@@ -236,9 +236,11 @@ const INITIAL_FITTING: FittingState = Object.freeze({
   // Before any read, every statistic is honestly unavailable rather than zero
   // — deriving from an empty attribute map produces exactly that.
   stats: deriveShipStats(new Map()),
+  dogma: null,
   loaded: false,
   slotsError: null,
   resourcesError: null,
+  dogmaError: null,
   actionError: null,
 });
 
@@ -1058,11 +1060,25 @@ export function createClientStore(): ClientStore {
           slots: [...event.slots],
           resources: event.resources,
           stats: event.stats,
+          // The dogma snapshot rides a separate read that lands just after this
+          // one; carry the previous one through so a refresh never blanks the
+          // module stats in between.
+          dogma: fitting.get().dogma,
           loaded: true,
           slotsError: event.slotsError,
           resourcesError: event.resourcesError,
+          dogmaError: fitting.get().dogmaError,
           // A successful load clears any stale action error.
           actionError: null,
+        });
+        break;
+      case "dogma/loaded":
+        // A companion to the fit, never a gate on it: a failed read records its
+        // reason and drops the snapshot, leaving the slots and bars untouched.
+        fitting.set({
+          ...fitting.get(),
+          dogma: event.allInfo,
+          dogmaError: event.error,
         });
         break;
       case "fitting/action-error":

@@ -2,6 +2,7 @@
 // These are the *decoded* browser-side shapes; the marshaled wire shapes
 // (util.KeyVal rows, {type:"long"} wrappers, ...) live in ../bridge/wire.ts.
 
+import type { BoundDogmaAllInfo } from "../bridge/boundDogma.ts";
 import type { ShipStats } from "../bridge/shipStats.ts";
 import type { GateLink } from "../space/gateLinks.ts";
 import type { BotID } from "../nav/botRegistry.ts";
@@ -311,12 +312,21 @@ export interface FittingState {
    * its reason instead of a number; see `bridge/shipStats.ts`.
    */
   readonly stats: ShipStats;
+  /**
+   * R21 slice B — the bound-dogma snapshot that rides alongside the fit: the
+   * active ship and every fitted module with the SERVER's post-dogma attribute
+   * map, so a clicked module can show its EFFECTIVE stats. Null until the
+   * companion read lands (or when it failed) — a fit always renders without it.
+   */
+  readonly dogma: BoundDogmaAllInfo | null;
   /** True once a fitting read has populated the slice. */
   readonly loaded: boolean;
   /** Non-null when the slot read failed (the resource bars still show). */
   readonly slotsError: string | null;
   /** Non-null when the resource read failed (the slots still show). */
   readonly resourcesError: string | null;
+  /** Non-null when the dogma companion read failed (the fit still shows). */
+  readonly dogmaError: string | null;
   /** Non-null when the last fitting action failed or was declined. */
   readonly actionError: string | null;
 }
