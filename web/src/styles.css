@@ -2220,6 +2220,15 @@
   .known-forget:hover:not(:disabled) { color: var(--color-danger); border-color: var(--color-line-strong); }
   .known-forget:disabled { opacity: 0.4; cursor: default; }
 
+  /* R107 — the brief "bringing your pilots back" note shown while a refresh
+   * restore is in flight and no cockpit is up yet. */
+  .restoring-note {
+    max-width: 32rem;
+    margin: 1.5rem auto;
+    text-align: center;
+    color: var(--color-muted);
+  }
+
   /* The desktop surface — floating windows are absolutely placed within it. A
    * faint grid gives it "desktop" depth without competing with panel content. */
   .desktop {

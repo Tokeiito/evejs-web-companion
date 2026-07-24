@@ -14,14 +14,66 @@
   import Onboarding from "./Onboarding.svelte";
   import Workspace from "./Workspace.svelte";
   import { createSession, type Session } from "../app/sessions.ts";
+  import {
+    loadPersistedSessions,
+    savePersistedSessions,
+    type PersistedSessions,
+  } from "../app/persistedSessions.ts";
 
-  // The online roster, the active pilot, and the one being added. The first
-  // pilot starts onboarding immediately (createSession warms its health ping).
+  // Read the roster retained across a refresh ONCE, before any write effect can
+  // clobber it, so a reload can bring the same pilots back online.
+  const retained = loadPersistedSessions();
+  const hasRetained = retained.pilots.length > 0;
+
+  // The online roster, the active pilot, and the one being added. On a fresh tab
+  // the first pilot starts onboarding immediately; when there's a retained roster
+  // we restore it instead (createSession warms its health ping either way).
   let sessions = $state<Session[]>([]);
   let activeId = $state<string | null>(null);
-  let onboarding = $state<Session | null>(createSession());
+  let restoring = $state(hasRetained);
+  let onboarding = $state<Session | null>(hasRetained ? null : createSession());
 
   const active = $derived(sessions.find((s) => s.id === activeId) ?? null);
+
+  // Restore-on-refresh: bring each retained pilot back online by re-signing in
+  // (any password) and re-selecting — the same tested path as a manual add, so
+  // no token is persisted and a since-expired BFF session just re-selects. Done
+  // sequentially: the first sign-in warms a cold gateway, and pilots light up in
+  // the bar one at a time. A pilot that can't come back (account gone, character
+  // taken, server down) is skipped rather than blocking the rest.
+  async function restoreSessions(saved: PersistedSessions): Promise<void> {
+    for (const pilot of saved.pilots) {
+      const session = createSession();
+      try {
+        await session.flow.login(pilot.accountName, "");
+        await session.flow.selectCharacter(pilot.characterID);
+        sessions = [...sessions, session];
+        if (activeId === null || pilot.characterID === saved.activeCharacterID) {
+          activeId = session.id;
+        }
+      } catch {
+        try {
+          await session.flow.logout();
+        } catch {
+          // best-effort teardown of a half-restored session
+        }
+      }
+    }
+    restoring = false;
+    // Nothing came back (e.g. the server was down) — fall through to a login.
+    if (sessions.length === 0 && onboarding === null) {
+      onboarding = createSession();
+    }
+  }
+
+  // Kick the restore off once, after mount. `retained` is a plain const, so this
+  // effect has no reactive dependencies and never re-runs.
+  let restoreStarted = false;
+  $effect(() => {
+    if (restoreStarted) return;
+    restoreStarted = true;
+    if (hasRetained) void restoreSessions(retained);
+  });
 
   // A pilot finished login+select: promote it from onboarding into the online
   // roster and make it the active cockpit (matches "Add character makes it
@@ -97,6 +149,28 @@
       for (const unsub of unsubs) unsub();
     };
   });
+
+  // Retain the online roster (account + character + which is active, NO token)
+  // across a refresh. Fires on roster / active-pilot changes, not on every
+  // in-store tick. Skipped while restoring so a transient empty roster can't
+  // clobber the one we are still bringing back — and `retained` was already read
+  // into a const above, so even a stray write is harmless.
+  $effect(() => {
+    const roster = sessions;
+    const current = activeId;
+    if (restoring) return;
+    const pilots = roster
+      .map((s) => {
+        const snapshot = s.store.get();
+        return snapshot.station.online && snapshot.session.username
+          ? { accountName: snapshot.session.username, characterID: snapshot.station.online.characterID }
+          : null;
+      })
+      .filter((p): p is { accountName: string; characterID: number } => p !== null);
+    const activeCharacterID =
+      roster.find((s) => s.id === current)?.store.get().station.online?.characterID ?? null;
+    savePersistedSessions({ pilots, activeCharacterID });
+  });
 </script>
 
 {#if active}
@@ -106,6 +180,10 @@
   {#key active.id}
     <Workspace store={active.store} flow={active.flow} />
   {/key}
+{:else if restoring}
+  <!-- Refresh restore in flight and no cockpit up yet: bringing pilots back. -->
+  <h1>EveJS Web</h1>
+  <p class="restoring-note">Restoring your pilots…</p>
 {/if}
 
 {#if onboarding}
