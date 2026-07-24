@@ -2174,7 +2174,10 @@
     align-items: center;
     gap: 0.45rem;
     align-self: center;
-    max-width: 15rem;
+    /* Fixed width so every character tab is identical regardless of name length;
+     * the name truncates with an ellipsis (below) and the bar scrolls when the
+     * tabs overflow. Pairs with the short "Docked"/"In space" label. */
+    flex: 0 0 11rem;
     min-height: 2.1rem;
     padding: 0.2rem 0.7rem;
     background: var(--color-panel-3);
