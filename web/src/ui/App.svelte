@@ -18,6 +18,7 @@
   import HudBar from "./HudBar.svelte";
   import WorkspaceHeader from "./WorkspaceHeader.svelte";
   import MobileWorkspace from "./MobileWorkspace.svelte";
+  import TargetsPanel from "./TargetsPanel.svelte";
   import CustomBotReadout from "./CustomBotReadout.svelte";
   import { deriveDocked, type TabID } from "./tabs.ts";
   import {
@@ -31,6 +32,7 @@
     loadLayout,
     saveLayout,
     DEFAULT_DOCK_WIDTH,
+    DEFAULT_TARGETS_POS,
     type WinState,
   } from "./desktop.ts";
   import type { ClientStore } from "../store/clientStore.ts";
@@ -72,6 +74,8 @@
   let wins = $state<WinState[]>([]);
   let dockCollapsed = $state(false);
   let dockWidth = $state(DEFAULT_DOCK_WIDTH);
+  let targetsX = $state(DEFAULT_TARGETS_POS.x);
+  let targetsY = $state(DEFAULT_TARGETS_POS.y);
   const openIds = $derived(new Set(wins.map((w) => w.id)));
   const focused = $derived(computeFocusedId(wins));
 
@@ -94,11 +98,15 @@
       wins = saved ? saved.wins.slice() : [];
       dockCollapsed = saved ? saved.dockCollapsed : false;
       dockWidth = saved ? saved.dockWidth : DEFAULT_DOCK_WIDTH;
+      targetsX = saved ? saved.targetsX : DEFAULT_TARGETS_POS.x;
+      targetsY = saved ? saved.targetsY : DEFAULT_TARGETS_POS.y;
       loadedFor = online.characterID;
     } else if (!online && loadedFor !== null) {
       wins = [];
       dockCollapsed = false;
       dockWidth = DEFAULT_DOCK_WIDTH;
+      targetsX = DEFAULT_TARGETS_POS.x;
+      targetsY = DEFAULT_TARGETS_POS.y;
       loadedFor = null;
     }
   });
@@ -106,7 +114,7 @@
   // Persist on any layout change, debounced so a drag doesn't hammer storage.
   $effect(() => {
     const id = loadedFor;
-    const layout = { wins: wins.map((w) => ({ ...w })), dockCollapsed, dockWidth };
+    const layout = { wins: wins.map((w) => ({ ...w })), dockCollapsed, dockWidth, targetsX, targetsY };
     if (id === null) return;
     const handle = setTimeout(() => saveLayout(id, layout), 300);
     return () => clearTimeout(handle);
@@ -159,6 +167,9 @@
           onToggle={toggleDock}
           onResize={(w) => (dockWidth = w)}
         />
+        {#if !isDocked}
+          <TargetsPanel {store} x={targetsX} y={targetsY} onMove={(nx, ny) => { targetsX = nx; targetsY = ny; }} />
+        {/if}
       </div>
       {#if !isDocked}
         <HudBar {store} {flow} onOpen={open} />

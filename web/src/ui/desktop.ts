@@ -115,10 +115,15 @@ export function toggleCollapse(wins: readonly WinState[], id: TabID): WinState[]
 export const DEFAULT_DOCK_WIDTH = 340;
 const MIN_DOCK_WIDTH = 240;
 
+// The floating "Locked targets" panel's default spot (top-left of the work area).
+export const DEFAULT_TARGETS_POS = { x: 20, y: 12 };
+
 export interface DesktopLayout {
   readonly wins: readonly WinState[];
   readonly dockCollapsed: boolean;
   readonly dockWidth: number;
+  readonly targetsX: number;
+  readonly targetsY: number;
 }
 
 const STORAGE_VERSION = 1;
@@ -159,7 +164,9 @@ export function loadLayout(characterID: number): DesktopLayout | null {
     const wins = Array.isArray(o.wins) ? o.wins.filter(isWinState) : [];
     const dockWidth =
       typeof o.dockWidth === "number" && o.dockWidth >= MIN_DOCK_WIDTH ? o.dockWidth : DEFAULT_DOCK_WIDTH;
-    return { wins, dockCollapsed: o.dockCollapsed === true, dockWidth };
+    const targetsX = isFiniteNumber(o.targetsX) ? o.targetsX : DEFAULT_TARGETS_POS.x;
+    const targetsY = isFiniteNumber(o.targetsY) ? o.targetsY : DEFAULT_TARGETS_POS.y;
+    return { wins, dockCollapsed: o.dockCollapsed === true, dockWidth, targetsX, targetsY };
   } catch {
     return null;
   }

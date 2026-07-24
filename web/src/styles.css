@@ -1701,6 +1701,7 @@
     padding: 0.6rem;
   }
   .work-main {
+    position: relative;
     flex: 1;
     min-height: 0;
     display: flex;
@@ -1930,34 +1931,49 @@
     touch-action: none;
   }
 
-  /* In space: locked targets in a narrow left column, the overview filling the rest. */
-  .dock-inspace { display: flex; gap: 0.5rem; height: 100%; min-height: 0; }
-  .dock-targets {
-    flex: 0 0 auto;
-    width: 7.5rem;
-    min-width: 0;
-    overflow-y: auto;
-    border-right: 1px solid var(--color-line);
-    padding-right: 0.4rem;
+  /* In space the dock panel is just the compact overview (locked targets are a
+   * separate floating panel now, ship condition / modules are in the HUD). */
+  .dock-overview { flex: 1; min-width: 0; overflow: auto; }
+
+  /* The floating "Locked targets" panel — a free strip over the work area,
+   * draggable by its bar, HORIZONTAL by default (the brackets lay left-to-right).
+   * Sits above the desktop windows so it stays legible while you fight. */
+  .targets-panel {
+    position: absolute;
+    z-index: 400;
+    max-width: min(90%, 60rem);
+    background: var(--color-panel);
+    border: 1px solid var(--color-line-strong);
+    box-shadow: 0 0.6rem 1.6rem rgba(0, 0, 0, 0.5);
   }
-  .dock-targets h3 {
-    margin: 0 0 0.4rem;
+  .targets-panel-bar {
+    display: flex;
+    align-items: center;
+    padding: 0.25rem 0.5rem;
+    background: var(--color-panel-2);
+    border-bottom: 1px solid var(--color-line);
+    cursor: move;
+    user-select: none;
+    touch-action: none;
+  }
+  .targets-panel-title {
     font-size: 10px;
     text-transform: uppercase;
     letter-spacing: 0.08em;
     color: var(--color-muted);
   }
-  /* The bracket cards stack down the column instead of wrapping across the top. */
-  .dock-targets .target-bracket { flex-direction: column; gap: 0.35rem; margin: 0; }
-  .dock-targets .target-card { min-width: 0; width: 100%; }
-  .dock-overview { flex: 1; min-width: 0; overflow: auto; }
+  .targets-panel-body { padding: 0.4rem 0.5rem; overflow-x: auto; }
+  /* Horizontal by default: the bracket cards flow left-to-right and never wrap to
+   * a second row (the body scrolls sideways when there are many locks). */
+  .targets-panel .target-bracket { flex-wrap: nowrap; margin: 0; }
 
   /* The compact overview (dock panel): hide what the bottom HUD already shows and
    * the relocated targets table, and keep every row on ONE line (its own box
    * scrolls sideways rather than wrapping to two lines). */
   .dock-overview .ov-ship-condition,
   .dock-overview .ov-locked-targets,
-  .dock-overview .ov-equipment { display: none; }
+  .dock-overview .ov-equipment,
+  .dock-overview .ov-shots { display: none; }
   .dock-overview table.overview th,
   .dock-overview table.overview td { white-space: nowrap; }
   .dock-overview .cell-item { white-space: nowrap; }
@@ -1974,9 +1990,33 @@
   .hud-bar {
     flex: 0 0 auto;
     display: grid;
-    grid-template-columns: 2fr 3fr 2fr;
+    grid-template-columns: 2fr 3fr 2.4fr 1.3fr;
     gap: 0.6rem;
   }
+
+  /* Shots-fired cluster in the HUD (moved out of the Overview cockpit). A short
+   * scrolling combat log so the bar height stays in line with the gauges. */
+  .hud-shots { min-width: 0; }
+  .hud-shots-empty { margin: 0.3rem 0 0; color: var(--color-muted); font-size: 0.85rem; }
+  .hud-shots-list {
+    list-style: none;
+    margin: 0.3rem 0 0;
+    padding: 0;
+    max-height: 7.5rem;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+  }
+  .hud-shots-list li {
+    display: flex;
+    justify-content: space-between;
+    gap: 0.6rem;
+    padding: 0.15rem 0;
+    border-bottom: 1px solid var(--color-row-line);
+  }
+  .hud-shot-summary { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .hud-shot-meta { flex: 0 0 auto; color: var(--color-muted); font-variant-numeric: tabular-nums; }
 
   /* Narrow screens: stack the rail on top and drop the dock panel below the
    * desktop. The desktop windowing is a large-screen feature; this only keeps

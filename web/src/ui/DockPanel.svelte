@@ -1,14 +1,13 @@
 <script lang="ts">
   // The fixed top-right dock panel — your always-on situational awareness.
   // Docked: the live Station panel (services, identity, guests). In space: the
-  // locked-target brackets down a narrow column on the LEFT, and the (compact)
-  // Overview — what's around your ship — filling the rest. Ship condition and the
-  // module rack are deliberately NOT here; they live in the persistent bottom HUD.
-  // Collapsible to a thin strip, and expandable by dragging its left edge; both
-  // the collapse state and the width are remembered per character.
+  // (compact) Overview — what's around your ship. Ship condition, the module rack
+  // and the locked-target brackets are deliberately NOT here — they live in the
+  // persistent bottom HUD and the floating TargetsPanel respectively. Collapsible
+  // to a thin strip, and expandable by dragging its left edge; both the collapse
+  // state and the width are remembered per character.
   import Overview from "./Overview.svelte";
   import StationPanel from "./StationPanel.svelte";
-  import TargetBracket from "./TargetBracket.svelte";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
 
@@ -72,14 +71,8 @@
       {#if isDocked}
         <StationPanel {store} {flow} />
       {:else}
-        <div class="dock-inspace">
-          <div class="dock-targets" aria-label="Locked targets">
-            <h3>Locked targets</h3>
-            <TargetBracket {store} />
-          </div>
-          <div class="dock-overview">
-            <Overview {store} {flow} compact />
-          </div>
+        <div class="dock-overview">
+          <Overview {store} {flow} compact />
         </div>
       {/if}
     </div>

@@ -2565,7 +2565,7 @@
     {/if}
   </details>
 
-  <section>
+  <section class="ov-shots">
     <h2>Shots fired</h2>
     <p class="note">
       Every hit the server told us about, newest first — both the ones you land
