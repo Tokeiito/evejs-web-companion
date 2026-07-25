@@ -330,6 +330,28 @@ export async function boardShip(
   await postJson("/api/bridge/ship/board", { shipID }, options);
 }
 
+/**
+ * Board the character's corvette while docked (the retail station-services
+ * "Board my Corvette"): the server spawns one in the hangar if needed, applies
+ * its starter fit, and makes it the active ship. The route's confirm gate
+ * protects against stray POSTs; the deliberate button press satisfies it here.
+ */
+export async function boardCorvette(options: ApiOptions = {}): Promise<void> {
+  await postJson("/api/bridge/ship/board-corvette", { confirm: true }, options);
+}
+
+/**
+ * Leave the active ship while docked — the character ends up in their capsule
+ * (the server creates one at the station if none exists). The ship stays in
+ * the hangar, so this is reversible by boarding it again.
+ */
+export async function leaveShip(
+  shipID: number,
+  options: ApiOptions = {},
+): Promise<void> {
+  await postJson("/api/bridge/ship/leave", { shipID, confirm: true }, options);
+}
+
 // --- R14 Inventory depth + corporation hangars ------------------------------
 // The browser names a PLACE — the hangar, the ship's cargo, a container, a
 // corporation division by its ordinal — and the BFF maps that to the retail

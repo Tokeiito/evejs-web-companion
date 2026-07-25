@@ -29,7 +29,10 @@ const CASCADE_STEP = 28;
 const CASCADE_ORIGIN = 16;
 
 // Panels that are fixed chrome (the top-right dock), never floating windows.
-const CHROME_TABS = new Set<TabID>(["station", "overview"]);
+// "station" left this set when the docked dock panel became the hangar tabs
+// (InventoryShip): the Station panel (services / guests / ship actions) is a
+// normal Neocom window again — otherwise it is reachable nowhere.
+const CHROME_TABS = new Set<TabID>(["overview"]);
 
 /** True when this tab opens as a floating window (i.e. is not fixed chrome). */
 export function isWindowTab(id: TabID): boolean {

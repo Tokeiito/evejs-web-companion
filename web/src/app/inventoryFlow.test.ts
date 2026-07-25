@@ -149,6 +149,51 @@ test("stackContainer and boardShip post their BFF mutations then reload", async 
   assert.equal(requests.filter((r) => r.path === "/api/bridge/inventory").length, 2);
 });
 
+test("boardCorvette and leaveShip post their confirmed ship swaps then reload", async () => {
+  const store = createClientStore();
+  const { fetch, requests } = makeFakeFetch((path) => {
+    if (path === "/api/bridge/ship/board-corvette") {
+      return { status: 200, body: { ok: true, applied: true } };
+    }
+    if (path === "/api/bridge/ship/leave") {
+      return { status: 200, body: { ok: true, applied: true } };
+    }
+    return { status: 200, body: inventoryPanel() };
+  });
+  const flow = createAppFlow(store, { fetch });
+
+  // Load first so leaveShip can name the real active hull.
+  await flow.loadInventory();
+  await flow.boardCorvette();
+  await flow.leaveShip();
+
+  const corvette = requests.find((r) => r.path === "/api/bridge/ship/board-corvette");
+  assert.ok(corvette, "board-corvette was posted");
+  assert.deepEqual(corvette!.body, { confirm: true });
+  const leave = requests.find((r) => r.path === "/api/bridge/ship/leave");
+  assert.ok(leave, "leave was posted");
+  assert.deepEqual(leave!.body, { shipID: 9001, confirm: true });
+  // Each mutation reloaded the panel (plus the explicit initial load).
+  assert.equal(requests.filter((r) => r.path === "/api/bridge/inventory" && r.method === "GET").length, 3);
+  assert.equal(store.inventory.get().actionError, null);
+});
+
+test("leaveShip before the panel has loaded sends shipID 0 (the server resolves the session's ship)", async () => {
+  const store = createClientStore();
+  const { fetch, requests } = makeFakeFetch((path) => {
+    if (path === "/api/bridge/ship/leave") {
+      return { status: 200, body: { ok: true, applied: true } };
+    }
+    return { status: 200, body: inventoryPanel() };
+  });
+  const flow = createAppFlow(store, { fetch });
+
+  await flow.leaveShip();
+
+  const leave = requests.find((r) => r.path === "/api/bridge/ship/leave");
+  assert.deepEqual(leave!.body, { shipID: 0, confirm: true });
+});
+
 test("a refused mutation is surfaced through the store, not thrown", async () => {
   const store = createClientStore();
   const { fetch, requests } = makeFakeFetch((path) => {
