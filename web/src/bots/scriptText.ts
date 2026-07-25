@@ -13,6 +13,7 @@
 
 import type {
   BeltArg,
+  BoardSlot,
   BranchBlock,
   Condition,
   InterruptResponse,
@@ -39,6 +40,9 @@ function isk(amount: number): string {
 
 /** A world reference as words — its name, or a "you pick" phrase; never its id (R7d). */
 function worldRefPhrase(ref: WorldRef | null, pickNoun: string): string {
+  if (ref !== null && ref.slot !== undefined) {
+    return boardSlotPhrase(ref.slot);
+  }
   if (ref !== null && ref.starting === true) {
     return "your starting station";
   }
@@ -129,6 +133,18 @@ export function macroName(macro: MacroID): string {
   }
 }
 
+/** A named board slot, as a player reads it — never a key, never an id. */
+export function boardSlotPhrase(slot: BoardSlot): string {
+  switch (slot) {
+    case "agent-station":
+      return "the agent's station";
+    case "pickup-station":
+      return "the mission's pickup station";
+    case "dropoff-station":
+      return "the mission's drop-off station";
+  }
+}
+
 /** A place, as a player reads it. */
 export function placePhrase(place: string): string {
   switch (place) {
@@ -167,6 +183,13 @@ export function conditionSentence(condition: Condition): string {
     case "hostile-on-grid":
       return "a pirate shows up";
   }
+}
+
+/** A "run one of my saved bots" row, in plain words. */
+export function subBotSentence(node: { readonly name: string | null }): string {
+  return node.name !== null && node.name.length > 0
+    ? `Run your saved bot "${node.name}"`
+    : "Run a saved bot you pick";
 }
 
 /** A branch's header line: the fork it makes, in plain words. */

@@ -10,14 +10,16 @@
   import {
     type Arg,
     type BotScript,
+    type BranchBlock,
     type Condition,
     type ConditionKind,
     type InterruptResponse,
     type InterruptRow,
-    type LoopBlock,
+    type LoopBodyNode,
     type MacroID,
     type MacroStep,
     type ProgramNode,
+    type SubBotNode,
     type WorldRef,
     MAX_ISK_ARG,
     MAX_QTY_ARG,
@@ -33,7 +35,7 @@
     type BlockCategory,
   } from "../bots/macroCatalogView.ts";
   import { EXAMPLE_BOTS, type ExampleBot } from "../bots/exampleBots.ts";
-  import { stepSentence } from "../bots/scriptText.ts";
+  import { branchSentence, stepSentence, subBotSentence } from "../bots/scriptText.ts";
   import { validateScript, type ScriptProblem } from "../bots/validateScript.ts";
   import { decodeScriptText, decodeScriptValue, encodeScriptDoc } from "../bots/scriptCodec.ts";
   import {
@@ -71,7 +73,11 @@
   let watches = $state<InterruptRow[]>([
     { id: "w-shield", when: { kind: "shield-below", fraction: 0.3 }, respond: "dock-and-pause" },
   ]);
-  let steps = $state<MacroStep[]>([
+  // The editor's list is exactly what a LOOP BODY may hold (steps and branches),
+  // plus sub-bot nodes which are legal only at the top level — so the same list
+  // builds either a looped bot or a run-once one.
+  type EditorNode = MacroStep | BranchBlock | SubBotNode;
+  let steps = $state<EditorNode[]>([
     { id: "s-undock", kind: "macro", macro: "undock", args: {} },
     {
       id: "s-mine",
@@ -90,11 +96,10 @@
   let importText = $state("");
   let importNote = $state<string | null>(null);
 
-  // The flat editor (a step list + one outer repeat) cannot represent BRANCH
-  // logic. When a loaded bot contains a branch, its whole program is kept here
-  // verbatim so it runs and round-trips UNMANGLED; the step list below shows a
-  // flattened read-only preview, and branches are edited through the JSON box.
-  // Adding a block clears this (an explicit switch to a flat bot).
+  // Branches and sub-bots are authored right in the list now. This still catches
+  // the shapes the one-list editor cannot hold — several loops, or a loop beside
+  // loose steps — by keeping such a program verbatim so it runs and round-trips
+  // UNMANGLED while the list shows a flattened, read-only preview.
   let advancedProgram = $state<readonly ProgramNode[] | null>(null);
 
   // ── Palette search + category filter ─────────────────────────────────────────
@@ -138,26 +143,30 @@
 
   const currentStation = $derived<{ id: number; name: string } | null>(stations[0] ?? null);
   const someWatchDocks = $derived(watches.some((w) => w.respond === "dock-and-pause"));
+  const hasSubBot = $derived(steps.some((n) => n.kind === "sub-bot"));
   const builtDoc = $derived<BotScript>(buildScript());
   const problems = $derived(validateScript(builtDoc));
   const problemsByPath = $derived(groupProblems(problems));
 
   function buildScript(): BotScript {
-    // A preserved branch program is returned verbatim (only name/home/watches are
-    // still editable here); otherwise the flat step list builds the program.
+    // A program the one-list editor cannot hold is returned verbatim (only
+    // name/home/watches stay editable); otherwise the list builds the program.
+    // ⚠ A sub-bot node is legal only at the TOP level (an included bot may carry
+    // loops of its own), so a list containing one always builds a run-once bot —
+    // the repeat control says as much.
     const program: readonly ProgramNode[] =
       advancedProgram !== null
         ? advancedProgram
         : steps.length === 0
           ? []
-          : repeatMode === "once"
+          : repeatMode === "once" || hasSubBot
             ? [...steps]
             : [
                 {
                   id: "main-loop",
                   kind: "loop",
                   repeat: repeatMode === "forever" ? { kind: "forever" } : { kind: "times", count: repeatCount },
-                  body: [...steps],
+                  body: steps.filter((n): n is LoopBodyNode => n.kind !== "sub-bot"),
                 },
               ];
     return { format: "evejs-bot-script", version: 1, name, notes: "", home, interrupts: [...watches], program };
@@ -252,64 +261,53 @@
     watches = watches.map((w) => (w.id === id ? { ...w, respond } : w));
   }
   // ── Blocks (steps) ───────────────────────────────────────────────────────────
-  function addStep(macro: MacroID): void {
-    // Adding a block means flat-editing from here — drop any preserved branch
-    // program (the flattened preview steps are what carries forward).
-    advancedProgram = null;
+  /** A fresh step of this block, with the sensible starting args. Shared by the
+   * palette and by the "add to this side" pickers inside a branch. */
+  function newStepFor(macro: MacroID): MacroStep {
+    const id = makeId();
     if (macro === "mine-at-belt") {
-      steps = [
-        ...steps,
-        {
-          id: makeId(),
-          kind: "macro",
-          macro,
-          args: { belt: { kind: "belt", belt: { mode: "nearest" } } },
-          until: { kind: "ore-hold-at-least", fraction: 0.9 },
-        },
-      ];
-      return;
+      return {
+        id,
+        kind: "macro",
+        macro,
+        args: { belt: { kind: "belt", belt: { mode: "nearest" } } },
+        until: { kind: "ore-hold-at-least", fraction: 0.9 },
+      };
     }
     if (macro === "deliver-ore" || macro === "travel-to-station") {
-      steps = [...steps, { id: makeId(), kind: "macro", macro, args: { station: { kind: "station", ref: startingStation() } } }];
-      return;
+      return { id, kind: "macro", macro, args: { station: { kind: "station", ref: startingStation() } } };
     }
     if (macro === "move-items") {
       // Sensible defaults: hangar -> cargo; the item stays to pick.
-      steps = [
-        ...steps,
-        { id: makeId(), kind: "macro", macro, args: { from: { kind: "place", place: "hangar" }, to: { kind: "place", place: "cargo" } } },
-      ];
-      return;
+      return { id, kind: "macro", macro, args: { from: { kind: "place", place: "hangar" }, to: { kind: "place", place: "cargo" } } };
     }
     if (macro === "buy-item") {
       // Item stays to pick; quantity and price get starting values to edit.
-      steps = [
-        ...steps,
-        {
-          id: makeId(),
-          kind: "macro",
-          macro,
-          args: {
-            item: { kind: "itemType", typeID: null, name: null },
-            quantity: { kind: "qty", value: 100 },
-            price: { kind: "isk", value: 1000 },
-          },
+      return {
+        id,
+        kind: "macro",
+        macro,
+        args: {
+          item: { kind: "itemType", typeID: null, name: null },
+          quantity: { kind: "qty", value: 100 },
+          price: { kind: "isk", value: 1000 },
         },
-      ];
-      return;
+      };
     }
     if (macro === "sell-item") {
-      steps = [
-        ...steps,
-        { id: makeId(), kind: "macro", macro, args: { item: { kind: "itemType", typeID: null, name: null }, price: { kind: "isk", value: 1000 } } },
-      ];
-      return;
+      return { id, kind: "macro", macro, args: { item: { kind: "itemType", typeID: null, name: null }, price: { kind: "isk", value: 1000 } } };
     }
     if (macro === "invite-to-fleet") {
-      steps = [...steps, { id: makeId(), kind: "macro", macro, args: { who: { kind: "character", charID: null, name: null } } }];
-      return;
+      return { id, kind: "macro", macro, args: { who: { kind: "character", charID: null, name: null } } };
     }
-    steps = [...steps, { id: makeId(), kind: "macro", macro, args: {} }];
+    return { id, kind: "macro", macro, args: {} };
+  }
+
+  function addStep(macro: MacroID): void {
+    // Adding a block means editing this list from here — drop any program that
+    // was preserved verbatim (the flattened preview steps carry forward).
+    advancedProgram = null;
+    steps = [...steps, newStepFor(macro)];
   }
   function moveStep(i: number, delta: number): void {
     const j = i + delta;
@@ -328,26 +326,122 @@
   function duplicateStep(i: number): void {
     const s = steps[i];
     if (s === undefined) return;
-    const clone: MacroStep = { ...structuredClone(s), id: makeId() };
+    const clone = { ...structuredClone($state.snapshot(s) as EditorNode), id: makeId() } as EditorNode;
     steps = [...steps.slice(0, i + 1), clone, ...steps.slice(i + 1)];
   }
-  function setStepStationRef(i: number, ref: WorldRef): void {
-    steps = steps.map((s, idx) => (idx === i ? { ...s, args: { ...s.args, station: { kind: "station", ref } } } : s));
+
+  // ── Branches and sub-bots ───────────────────────────────────────────────────
+  /** Add a fork: "if <check>, do these; otherwise do those." Starts with one
+   * step on the THEN side so it is valid the moment it appears. */
+  function addBranch(): void {
+    advancedProgram = null;
+    const branch: BranchBlock = {
+      id: makeId(),
+      kind: "branch",
+      when: { kind: "shield-below", fraction: 0.5 },
+      then: [{ id: makeId(), kind: "macro", macro: "repair-ship", args: {} }],
+      else: [],
+    };
+    steps = [...steps, branch];
   }
-  function setStepUntilKind(i: number, kind: ConditionKind): void {
-    steps = steps.map((s, idx) => {
-      if (idx !== i) return s;
-      const keep = s.until && "fraction" in s.until ? s.until.fraction : 0.3;
-      const until: Condition = untilHasFraction(kind) ? ({ kind, fraction: kind === "ore-hold-at-least" ? Math.min(keep, 0.9) : keep } as Condition) : ({ kind } as Condition);
-      return { ...s, until };
+  /** Add a "run one of my saved bots" step. */
+  function addSubBot(): void {
+    advancedProgram = null;
+    steps = [...steps, { id: makeId(), kind: "sub-bot", scriptID: null, name: null }];
+  }
+  function updateBranch(i: number, fn: (b: BranchBlock) => BranchBlock): void {
+    steps = steps.map((n, idx) => (idx === i && n.kind === "branch" ? fn(n) : n));
+  }
+  function setBranchWhenKind(i: number, kind: ConditionKind): void {
+    updateBranch(i, (b) => {
+      const keep = "fraction" in b.when ? b.when.fraction : 0.5;
+      const when: Condition = untilHasFraction(kind)
+        ? ({ kind, fraction: kind === "ore-hold-at-least" ? Math.min(keep, 0.9) : keep } as Condition)
+        : ({ kind } as Condition);
+      return { ...b, when };
     });
   }
-  function setStepUntilFraction(i: number, percent: number): void {
-    steps = steps.map((s, idx) => {
-      if (idx !== i || !s.until || !("fraction" in s.until)) return s;
-      const cap = s.until.kind === "ore-hold-at-least" ? 0.9 : 0.95;
-      return { ...s, until: { ...s.until, fraction: Math.min(cap, clampFraction(percent / 100)) } };
+  function setBranchWhenFraction(i: number, percent: number): void {
+    updateBranch(i, (b) => {
+      if (!("fraction" in b.when)) return b;
+      const cap = b.when.kind === "ore-hold-at-least" ? 0.9 : 0.95;
+      return { ...b, when: { ...b.when, fraction: Math.min(cap, clampFraction(percent / 100)) } };
     });
+  }
+  function addToBranchSide(i: number, side: Side, macro: MacroID): void {
+    if (!macro) return;
+    const step = newStepFor(macro);
+    updateBranch(i, (b) => (side === "then" ? { ...b, then: [...b.then, step] } : { ...b, else: [...b.else, step] }));
+  }
+  function removeFromBranchSide(i: number, side: Side, j: number): void {
+    updateBranch(i, (b) => {
+      const list = (side === "then" ? b.then : b.else).filter((_, k) => k !== j);
+      return side === "then" ? { ...b, then: list } : { ...b, else: list };
+    });
+  }
+  function moveInBranchSide(i: number, side: Side, j: number, delta: number): void {
+    updateBranch(i, (b) => {
+      const list = [...(side === "then" ? b.then : b.else)];
+      const k = j + delta;
+      if (k < 0 || k >= list.length) return b;
+      const a = list[j];
+      const c = list[k];
+      if (a === undefined || c === undefined) return b;
+      list[j] = c;
+      list[k] = a;
+      return side === "then" ? { ...b, then: list } : { ...b, else: list };
+    });
+  }
+  function setSubBotName(i: number, botName: string): void {
+    steps = steps.map((n, idx) => (idx === i && n.kind === "sub-bot" ? { ...n, name: botName || null } : n));
+  }
+
+  // ── Editing one step, wherever it sits ──────────────────────────────────────
+  // A step can be top of the list OR inside a branch side, so every arg editor
+  // addresses it the same way: the list index, plus (for a branch) which side and
+  // which position in it. The template's top-level calls pass just the index, so
+  // they read exactly as before; the branch rows pass the extra two.
+  type Side = "then" | "else";
+  function updateStep(i: number, fn: (s: MacroStep) => MacroStep, side: Side | null = null, j = -1): void {
+    steps = steps.map((node, idx) => {
+      if (idx !== i) return node;
+      if (side === null) {
+        return node.kind === "macro" ? fn(node) : node;
+      }
+      if (node.kind !== "branch") return node;
+      const list = side === "then" ? node.then : node.else;
+      const next = list.map((s, k) => (k === j ? fn(s) : s));
+      return side === "then" ? { ...node, then: next } : { ...node, else: next };
+    });
+  }
+  function setStepStationRef(i: number, ref: WorldRef, side: Side | null = null, j = -1): void {
+    updateStep(i, (s) => ({ ...s, args: { ...s.args, station: { kind: "station", ref } } }), side, j);
+  }
+  function setStepUntilKind(i: number, kind: ConditionKind, side: Side | null = null, j = -1): void {
+    updateStep(
+      i,
+      (s) => {
+        const keep = s.until && "fraction" in s.until ? s.until.fraction : 0.3;
+        const until: Condition = untilHasFraction(kind)
+          ? ({ kind, fraction: kind === "ore-hold-at-least" ? Math.min(keep, 0.9) : keep } as Condition)
+          : ({ kind } as Condition);
+        return { ...s, until };
+      },
+      side,
+      j,
+    );
+  }
+  function setStepUntilFraction(i: number, percent: number, side: Side | null = null, j = -1): void {
+    updateStep(
+      i,
+      (s) => {
+        if (!s.until || !("fraction" in s.until)) return s;
+        const cap = s.until.kind === "ore-hold-at-least" ? 0.9 : 0.95;
+        return { ...s, until: { ...s.until, fraction: Math.min(cap, clampFraction(percent / 100)) } };
+      },
+      side,
+      j,
+    );
   }
 
   // ── The refit block's saved-fitting picker ─────────────────────────────────
@@ -377,11 +471,14 @@
     const arg = step.args["bookmark"];
     return arg !== undefined && arg.kind === "bookmark" ? arg.bookmarkID : null;
   }
-  function setStepBookmark(i: number, bookmarkID: number): void {
+  function setStepBookmark(i: number, bookmarkID: number, side: Side | null = null, j = -1): void {
     const match = savedSpots.find((bm) => bm.bookmarkID === bookmarkID);
     if (match === undefined) return;
-    steps = steps.map((s, idx) =>
-      idx === i ? { ...s, args: { ...s.args, bookmark: { kind: "bookmark", bookmarkID: match.bookmarkID, name: match.name } } } : s,
+    updateStep(
+      i,
+      (s) => ({ ...s, args: { ...s.args, bookmark: { kind: "bookmark", bookmarkID: match.bookmarkID, name: match.name } } }),
+      side,
+      j,
     );
   }
   function fittingArgID(step: MacroStep): number | null {
@@ -392,18 +489,24 @@
     const arg = step.args["who"];
     return arg !== undefined && arg.kind === "character" ? arg.charID : null;
   }
-  function setStepWho(i: number, charID: number): void {
+  function setStepWho(i: number, charID: number, side: Side | null = null, j = -1): void {
     const match = knownPilots.find((p) => p.characterID === charID);
     if (match === undefined) return;
-    steps = steps.map((s, idx) =>
-      idx === i ? { ...s, args: { ...s.args, who: { kind: "character", charID: match.characterID, name: match.characterName } } } : s,
+    updateStep(
+      i,
+      (s) => ({ ...s, args: { ...s.args, who: { kind: "character", charID: match.characterID, name: match.characterName } } }),
+      side,
+      j,
     );
   }
-  function setStepFitting(i: number, fittingID: number): void {
+  function setStepFitting(i: number, fittingID: number, side: Side | null = null, j = -1): void {
     const match = savedFittings.find((f) => f.fittingID === fittingID);
     if (match === undefined) return;
-    steps = steps.map((s, idx) =>
-      idx === i ? { ...s, args: { ...s.args, fitting: { kind: "fitting", fittingID: match.fittingID, name: match.name } } } : s,
+    updateStep(
+      i,
+      (s) => ({ ...s, args: { ...s.args, fitting: { kind: "fitting", fittingID: match.fittingID, name: match.name } } }),
+      side,
+      j,
     );
   }
 
@@ -433,18 +536,14 @@
     if (arg.kind === "place") return arg.place;
     return "";
   }
-  function setMoveItem(i: number, raw: string): void {
+  function setMoveItem(i: number, raw: string, side: Side | null = null, j = -1): void {
     const typeID = Number(raw);
     const match = knownItems.find((it) => it.typeID === typeID);
     if (match === undefined) return;
-    steps = steps.map((s, idx) =>
-      idx === i ? { ...s, args: { ...s.args, item: { kind: "itemType", typeID: match.typeID, name: match.name } } } : s,
-    );
+    updateStep(i, (s) => ({ ...s, args: { ...s.args, item: { kind: "itemType", typeID: match.typeID, name: match.name } } }), side, j);
   }
-  function setMovePlace(i: number, key: "from" | "to", place: string): void {
-    steps = steps.map((s, idx) =>
-      idx === i ? { ...s, args: { ...s.args, [key]: { kind: "place", place: place as never } } } : s,
-    );
+  function setMovePlace(i: number, key: "from" | "to", place: string, side: Side | null = null, j = -1): void {
+    updateStep(i, (s) => ({ ...s, args: { ...s.args, [key]: { kind: "place", place: place as never } } }), side, j);
   }
 
   // ── Mission-block number args (agent level, max jumps) ─────────────────────
@@ -459,30 +558,55 @@
     if (arg === undefined) return null;
     return arg.kind === "count" || arg.kind === "isk" || arg.kind === "qty" ? arg.value : null;
   }
-  function setStepNumericArg(i: number, key: string, raw: string, kind: "isk" | "qty", min: number, max: number): void {
-    steps = steps.map((s, idx) => {
-      if (idx !== i) return s;
-      const parsed = Number(raw);
-      if (raw.trim() === "" || !Number.isSafeInteger(parsed)) {
-        const { [key]: _dropped, ...rest } = s.args;
-        return { ...s, args: rest };
-      }
-      const value = Math.min(max, Math.max(min, parsed));
-      return { ...s, args: { ...s.args, [key]: { kind, value } as Arg } };
-    });
+  function setStepNumericArg(
+    i: number,
+    key: string,
+    raw: string,
+    kind: "isk" | "qty",
+    min: number,
+    max: number,
+    side: Side | null = null,
+    j = -1,
+  ): void {
+    updateStep(
+      i,
+      (s) => {
+        const parsed = Number(raw);
+        if (raw.trim() === "" || !Number.isSafeInteger(parsed)) {
+          const { [key]: _dropped, ...rest } = s.args;
+          return { ...s, args: rest };
+        }
+        const value = Math.min(max, Math.max(min, parsed));
+        return { ...s, args: { ...s.args, [key]: { kind, value } as Arg } };
+      },
+      side,
+      j,
+    );
   }
   /** Set (or clear, on empty input) a bounded number arg on a step. */
-  function setStepCountArg(i: number, key: string, raw: string, min: number, max: number): void {
-    steps = steps.map((s, idx) => {
-      if (idx !== i) return s;
-      const parsed = Number(raw);
-      if (raw.trim() === "" || !Number.isSafeInteger(parsed)) {
-        const { [key]: _dropped, ...rest } = s.args;
-        return { ...s, args: rest };
-      }
-      const value = Math.min(max, Math.max(min, parsed));
-      return { ...s, args: { ...s.args, [key]: { kind: "count", value } } };
-    });
+  function setStepCountArg(
+    i: number,
+    key: string,
+    raw: string,
+    min: number,
+    max: number,
+    side: Side | null = null,
+    j = -1,
+  ): void {
+    updateStep(
+      i,
+      (s) => {
+        const parsed = Number(raw);
+        if (raw.trim() === "" || !Number.isSafeInteger(parsed)) {
+          const { [key]: _dropped, ...rest } = s.args;
+          return { ...s, args: rest };
+        }
+        const value = Math.min(max, Math.max(min, parsed));
+        return { ...s, args: { ...s.args, [key]: { kind: "count", value } } };
+      },
+      side,
+      j,
+    );
   }
 
   // ── Import / export ──────────────────────────────────────────────────────────
@@ -522,28 +646,27 @@
     home = doc.home;
     watches = [...doc.interrupts];
     const first = doc.program[0];
-    const hasBranch = doc.program.some((n) => n.kind === "branch");
-    if (hasBranch) {
-      // Keep the branch program verbatim so it runs + round-trips; the step list is
-      // a flattened, read-only preview (branches are edited through the JSON box).
-      advancedProgram = doc.program;
-      steps = flattenProgram(doc.program);
-      repeatMode = "once";
-    } else if (doc.program.length === 1 && first !== undefined && first.kind === "loop") {
+    if (doc.program.length === 1 && first !== undefined && first.kind === "loop") {
+      // One loop = the list IS its body (steps and branches alike).
       advancedProgram = null;
-      const loop = first as LoopBlock;
-      steps = [...loop.body];
-      if (loop.repeat.kind === "forever") {
+      steps = [...first.body];
+      if (first.repeat.kind === "forever") {
         repeatMode = "forever";
       } else {
         repeatMode = "times";
-        repeatCount = loop.repeat.count;
+        repeatCount = first.repeat.count;
       }
-    } else {
-      // A mixed program (steps beside loops) does not fit this flat editor; the
-      // steps are FLATTENED IN ORDER (loop bodies inlined) rather than silently
-      // dropping whatever sat inside a loop.
+    } else if (doc.program.every((n) => n.kind !== "loop")) {
+      // No loop at all = a run-once list, which the editor holds directly
+      // (steps, branches and sub-bots are all legal at the top level).
       advancedProgram = null;
+      steps = doc.program.filter((n): n is EditorNode => n.kind !== "loop");
+      repeatMode = "once";
+    } else {
+      // Several loops, or a loop beside loose steps — not a shape one list can
+      // hold. Keep it VERBATIM so it still runs and round-trips, and show a
+      // flattened read-only preview rather than silently dropping anything.
+      advancedProgram = doc.program;
       steps = flattenProgram(doc.program);
       repeatMode = "once";
     }
@@ -710,15 +833,21 @@
   <div class="steps-head">
     <h3>Steps</h3>
     <span class="repeat-control">
-      Repeat
-      <select bind:value={repeatMode}>
-        <option value="forever">forever</option>
-        <option value="times">a set number of times</option>
-        <option value="once">just once</option>
-      </select>
-      {#if repeatMode === "times"}
-        <input class="count" type="number" min="1" max="500" bind:value={repeatCount} />
+      {#if hasSubBot}
+        <span class="repeat-note">Runs through once (a bot that runs other bots cannot repeat as a whole)</span>
+      {:else}
+        Repeat
+        <select bind:value={repeatMode}>
+          <option value="forever">forever</option>
+          <option value="times">a set number of times</option>
+          <option value="once">just once</option>
+        </select>
+        {#if repeatMode === "times"}
+          <input class="count" type="number" min="1" max="500" bind:value={repeatCount} />
+        {/if}
       {/if}
+      <button class="tiny" onclick={addBranch} title="Do one thing or another, depending on a check">+ Branch</button>
+      <button class="tiny" onclick={addSubBot} title="Run one of your other saved bots here">+ Saved bot</button>
     </span>
   </div>
   {#each problemsByPath.get("program") ?? [] as sentence}<p class="prob">{sentence}</p>{/each}
@@ -734,42 +863,40 @@
   {#if steps.length === 0}
     <p class="empty">No blocks yet. Add one from the palette below.</p>
   {/if}
-  <ol class="rows program">
-    {#each steps as step, i (step.id)}
-      <li class="row node">
-        <span class="num">{i + 1}</span>
-        <div class="body">
-          <span class="sentence">{stepSentence(step)}</span>
+  <!-- Every block's own settings, in ONE place — rendered for a top-level block
+       (side = null) and for a block inside a branch side (side + position), so a
+       branch's steps are as editable as any other. -->
+  {#snippet macroEditors(step: MacroStep, i: number, side: "then" | "else" | null, j: number)}
           {#if step.macro === "mine-at-belt"}
             <span class="inline-edit">
               stop when
-              <select value={step.until?.kind ?? "ore-hold-at-least"} onchange={(e) => setStepUntilKind(i, e.currentTarget.value as ConditionKind)}>
+              <select value={step.until?.kind ?? "ore-hold-at-least"} onchange={(e) => setStepUntilKind(i, e.currentTarget.value as ConditionKind, side, j)}>
                 {#each untilKinds as k}<option value={k}>{UNTIL_LABEL[k]}</option>{/each}
               </select>
               {#if step.until && "fraction" in step.until}
-                <input class="pct" type="number" min="5" max="95" value={pct(step.until.fraction)} oninput={(e) => setStepUntilFraction(i, Number(e.currentTarget.value))} />%
+                <input class="pct" type="number" min="5" max="95" value={pct(step.until.fraction)} oninput={(e) => setStepUntilFraction(i, Number(e.currentTarget.value), side, j)} />%
               {/if}
             </span>
           {/if}
           {#if step.macro === "deliver-ore" || step.macro === "travel-to-station"}
             <span class="inline-edit">
               at
-              <StationPicker {flow} value={stationArgRef(step)} current={currentStation} onPick={(ref) => setStepStationRef(i, ref)} />
+              <StationPicker {flow} value={stationArgRef(step)} current={currentStation} onPick={(ref) => setStepStationRef(i, ref, side, j)} />
             </span>
           {/if}
           {#if step.macro === "find-distribution-agent" || step.macro === "find-combat-agent"}
             <span class="inline-edit">
               level
-              <input class="pct" type="number" min="1" max="5" placeholder="1" value={countArgValue(step, "level") ?? ""} oninput={(e) => setStepCountArg(i, "level", e.currentTarget.value, 1, 5)} />
+              <input class="pct" type="number" min="1" max="5" placeholder="1" value={countArgValue(step, "level") ?? ""} oninput={(e) => setStepCountArg(i, "level", e.currentTarget.value, 1, 5, side, j)} />
               · within
-              <input class="pct" type="number" min="1" max="50" placeholder="any" value={countArgValue(step, "maxJumps") ?? ""} oninput={(e) => setStepCountArg(i, "maxJumps", e.currentTarget.value, 1, 50)} />
+              <input class="pct" type="number" min="1" max="50" placeholder="any" value={countArgValue(step, "maxJumps") ?? ""} oninput={(e) => setStepCountArg(i, "maxJumps", e.currentTarget.value, 1, 50, side, j)} />
               jumps
             </span>
           {/if}
           {#if step.macro === "accept-mission"}
             <span class="inline-edit">
               only if
-              <input class="pct" type="number" min="1" max="50" placeholder="any" value={countArgValue(step, "maxJumps") ?? ""} oninput={(e) => setStepCountArg(i, "maxJumps", e.currentTarget.value, 1, 50)} />
+              <input class="pct" type="number" min="1" max="50" placeholder="any" value={countArgValue(step, "maxJumps") ?? ""} oninput={(e) => setStepCountArg(i, "maxJumps", e.currentTarget.value, 1, 50, side, j)} />
               jumps or fewer
             </span>
           {/if}
@@ -778,7 +905,7 @@
               using
               <select
                 value={fittingArgID(step) ?? ""}
-                onchange={(e) => setStepFitting(i, Number(e.currentTarget.value))}
+                onchange={(e) => setStepFitting(i, Number(e.currentTarget.value), side, j)}
               >
                 <option value="" disabled>pick a saved fitting…</option>
                 {#each savedFittings as f (f.fittingID)}
@@ -789,18 +916,18 @@
           {/if}
           {#if step.macro === "move-items"}
             <span class="inline-edit">
-              <select value={moveArg(step, "item")} onchange={(e) => setMoveItem(i, e.currentTarget.value)}>
+              <select value={moveArg(step, "item")} onchange={(e) => setMoveItem(i, e.currentTarget.value, side, j)}>
                 <option value="" disabled>pick an item…</option>
                 {#each knownItems as it (it.typeID)}<option value={it.typeID}>{it.name}</option>{/each}
               </select>
               ×
-              <input class="pct" type="number" min="1" max="500" placeholder="all" value={countArgValue(step, "amount") ?? ""} oninput={(e) => setStepCountArg(i, "amount", e.currentTarget.value, 1, 500)} />
+              <input class="pct" type="number" min="1" max="500" placeholder="all" value={countArgValue(step, "amount") ?? ""} oninput={(e) => setStepCountArg(i, "amount", e.currentTarget.value, 1, 500, side, j)} />
               from
-              <select value={moveArg(step, "from")} onchange={(e) => setMovePlace(i, "from", e.currentTarget.value)}>
+              <select value={moveArg(step, "from")} onchange={(e) => setMovePlace(i, "from", e.currentTarget.value, side, j)}>
                 {#each PLACE_OPTIONS as p (p.value)}<option value={p.value}>{p.label}</option>{/each}
               </select>
               to
-              <select value={moveArg(step, "to")} onchange={(e) => setMovePlace(i, "to", e.currentTarget.value)}>
+              <select value={moveArg(step, "to")} onchange={(e) => setMovePlace(i, "to", e.currentTarget.value, side, j)}>
                 {#each PLACE_OPTIONS as p (p.value)}<option value={p.value}>{p.label}</option>{/each}
               </select>
             </span>
@@ -808,7 +935,7 @@
           {#if step.macro === "warp-to-bookmark"}
             <span class="inline-edit">
               to
-              <select value={bookmarkArgID(step) ?? ""} onchange={(e) => setStepBookmark(i, Number(e.currentTarget.value))}>
+              <select value={bookmarkArgID(step) ?? ""} onchange={(e) => setStepBookmark(i, Number(e.currentTarget.value), side, j)}>
                 <option value="" disabled>pick a saved spot…</option>
                 {#each savedSpots as bm (bm.bookmarkID)}<option value={bm.bookmarkID}>{bm.name}</option>{/each}
               </select>
@@ -817,33 +944,33 @@
           {#if step.macro === "wait"}
             <span class="inline-edit">
               for
-              <input class="pct" type="number" min="1" max="500" placeholder="10" value={countArgValue(step, "seconds") ?? ""} oninput={(e) => setStepCountArg(i, "seconds", e.currentTarget.value, 1, 500)} />
+              <input class="pct" type="number" min="1" max="500" placeholder="10" value={countArgValue(step, "seconds") ?? ""} oninput={(e) => setStepCountArg(i, "seconds", e.currentTarget.value, 1, 500, side, j)} />
               seconds
             </span>
           {/if}
           {#if step.macro === "buy-item"}
             <span class="inline-edit">
               buy
-              <input class="pct" type="number" min={MIN_QTY_ARG} max={MAX_QTY_ARG} placeholder="how many" value={numericArgValue(step, "quantity") ?? ""} oninput={(e) => setStepNumericArg(i, "quantity", e.currentTarget.value, "qty", MIN_QTY_ARG, MAX_QTY_ARG)} />
+              <input class="pct" type="number" min={MIN_QTY_ARG} max={MAX_QTY_ARG} placeholder="how many" value={numericArgValue(step, "quantity") ?? ""} oninput={(e) => setStepNumericArg(i, "quantity", e.currentTarget.value, "qty", MIN_QTY_ARG, MAX_QTY_ARG, side, j)} />
               ×
-              <select value={moveArg(step, "item")} onchange={(e) => setMoveItem(i, e.currentTarget.value)}>
+              <select value={moveArg(step, "item")} onchange={(e) => setMoveItem(i, e.currentTarget.value, side, j)}>
                 <option value="" disabled>pick an item…</option>
                 {#each knownItems as it (it.typeID)}<option value={it.typeID}>{it.name}</option>{/each}
               </select>
               at up to
-              <input class="isk-in" type="number" min={MIN_ISK_ARG} max={MAX_ISK_ARG} step="100" placeholder="ISK each" value={numericArgValue(step, "price") ?? ""} oninput={(e) => setStepNumericArg(i, "price", e.currentTarget.value, "isk", MIN_ISK_ARG, MAX_ISK_ARG)} />
+              <input class="isk-in" type="number" min={MIN_ISK_ARG} max={MAX_ISK_ARG} step="100" placeholder="ISK each" value={numericArgValue(step, "price") ?? ""} oninput={(e) => setStepNumericArg(i, "price", e.currentTarget.value, "isk", MIN_ISK_ARG, MAX_ISK_ARG, side, j)} />
               ISK each
             </span>
           {/if}
           {#if step.macro === "sell-item"}
             <span class="inline-edit">
               sell all
-              <select value={moveArg(step, "item")} onchange={(e) => setMoveItem(i, e.currentTarget.value)}>
+              <select value={moveArg(step, "item")} onchange={(e) => setMoveItem(i, e.currentTarget.value, side, j)}>
                 <option value="" disabled>pick an item…</option>
                 {#each knownItems as it (it.typeID)}<option value={it.typeID}>{it.name}</option>{/each}
               </select>
               at
-              <input class="isk-in" type="number" min={MIN_ISK_ARG} max={MAX_ISK_ARG} step="100" placeholder="ISK each" value={numericArgValue(step, "price") ?? ""} oninput={(e) => setStepNumericArg(i, "price", e.currentTarget.value, "isk", MIN_ISK_ARG, MAX_ISK_ARG)} />
+              <input class="isk-in" type="number" min={MIN_ISK_ARG} max={MAX_ISK_ARG} step="100" placeholder="ISK each" value={numericArgValue(step, "price") ?? ""} oninput={(e) => setStepNumericArg(i, "price", e.currentTarget.value, "isk", MIN_ISK_ARG, MAX_ISK_ARG, side, j)} />
               ISK or more each
             </span>
           {/if}
@@ -853,14 +980,87 @@
               {#if knownPilots.length === 0}
                 <em>(no known pilots yet — add one from the login screen)</em>
               {:else}
-                <select value={whoArgID(step) ?? ""} onchange={(e) => setStepWho(i, Number(e.currentTarget.value))}>
+                <select value={whoArgID(step) ?? ""} onchange={(e) => setStepWho(i, Number(e.currentTarget.value), side, j)}>
                   <option value="" disabled>pick a pilot…</option>
                   {#each knownPilots as p (p.characterID)}<option value={p.characterID}>{p.characterName}</option>{/each}
                 </select>
               {/if}
             </span>
           {/if}
-          {#each problemsByPath.get(step.id) ?? [] as sentence}<p class="prob">{sentence}</p>{/each}
+  {/snippet}
+
+  <ol class="rows program">
+    {#each steps as node, i (node.id)}
+      <li class="row node" class:is-branch={node.kind === "branch"}>
+        <span class="num">{i + 1}</span>
+        <div class="body">
+          {#if node.kind === "macro"}
+            <span class="sentence">{stepSentence(node)}</span>
+            {@render macroEditors(node, i, null, -1)}
+          {:else if node.kind === "branch"}
+            <!-- A FORK: the check, then the two sides. -->
+            <span class="sentence">{branchSentence(node)}</span>
+            <span class="inline-edit">
+              if
+              <select value={node.when.kind} onchange={(e) => setBranchWhenKind(i, e.currentTarget.value as ConditionKind)}>
+                {#each untilKinds as k}<option value={k}>{UNTIL_LABEL[k]}</option>{/each}
+              </select>
+              {#if "fraction" in node.when}
+                <input class="pct" type="number" min="5" max="95" value={pct(node.when.fraction)} oninput={(e) => setBranchWhenFraction(i, Number(e.currentTarget.value))} />%
+              {/if}
+            </span>
+            {#each ["then", "else"] as const as side (side)}
+              {@const sideSteps = side === "then" ? node.then : node.else}
+              <div class="branch-side">
+                <span class="side-label">{side === "then" ? "then" : "otherwise"}</span>
+                {#if sideSteps.length === 0}
+                  <span class="side-empty">do nothing</span>
+                {/if}
+                <ol class="side-list">
+                  {#each sideSteps as sub, j (sub.id)}
+                    <li class="side-row">
+                      <div class="body">
+                        <span class="sentence">{stepSentence(sub)}</span>
+                        {@render macroEditors(sub, i, side, j)}
+                        {#each problemsByPath.get(sub.id) ?? [] as sentence}<p class="prob">{sentence}</p>{/each}
+                      </div>
+                      <div class="ops">
+                        <button class="tiny" onclick={() => moveInBranchSide(i, side, j, -1)} aria-label="Move up">↑</button>
+                        <button class="tiny" onclick={() => moveInBranchSide(i, side, j, 1)} aria-label="Move down">↓</button>
+                        <button class="tiny danger" onclick={() => removeFromBranchSide(i, side, j)} aria-label="Delete">✕</button>
+                      </div>
+                    </li>
+                  {/each}
+                </ol>
+                <select
+                  class="side-add"
+                  value=""
+                  onchange={(e) => {
+                    addToBranchSide(i, side, e.currentTarget.value as MacroID);
+                    e.currentTarget.value = "";
+                  }}
+                >
+                  <option value="">+ add a block…</option>
+                  {#each MACRO_CATALOG_LIST as entry (entry.id)}<option value={entry.id}>{entry.name}</option>{/each}
+                </select>
+              </div>
+            {/each}
+          {:else}
+            <!-- Run one of my other saved bots here. -->
+            <span class="sentence">{subBotSentence(node)}</span>
+            <span class="inline-edit">
+              run
+              {#if savedList.length === 0}
+                <em>(no saved bots yet — save one first)</em>
+              {:else}
+                <select value={node.name ?? ""} onchange={(e) => setSubBotName(i, e.currentTarget.value)}>
+                  <option value="" disabled>pick a saved bot…</option>
+                  {#each savedList as meta (meta.scriptID)}<option value={meta.name}>{meta.name}</option>{/each}
+                </select>
+              {/if}
+            </span>
+          {/if}
+          {#each problemsByPath.get(node.id) ?? [] as sentence}<p class="prob">{sentence}</p>{/each}
         </div>
         <div class="ops">
           <button class="tiny" onclick={() => moveStep(i, -1)} aria-label="Move up">↑</button>
@@ -1061,6 +1261,55 @@
   }
   input.isk-in {
     width: 8rem;
+  }
+  /* A branch reads as one block with two indented sides. */
+  .row.is-branch {
+    border-left: 3px solid var(--color-accent-dim);
+  }
+  .branch-side {
+    margin: 0.35rem 0 0 0.6rem;
+    padding-left: 0.6rem;
+    border-left: 1px dashed var(--color-line);
+  }
+  .side-label {
+    color: var(--color-accent-bright);
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    font-size: 0.72rem;
+  }
+  .side-empty {
+    color: var(--color-muted);
+    font-size: 0.85rem;
+    margin-left: 0.4rem;
+  }
+  .side-list {
+    list-style: none;
+    margin: 0.2rem 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+  .side-row {
+    display: flex;
+    gap: 0.5rem;
+    align-items: baseline;
+    flex-wrap: wrap;
+    background: var(--color-panel-2);
+    border-radius: 3px;
+    padding: 0.3rem 0.4rem;
+  }
+  .side-row .body {
+    flex: 1;
+    min-width: 0;
+  }
+  select.side-add {
+    margin-top: 0.15rem;
+    font-size: 0.85rem;
+  }
+  .repeat-note {
+    color: var(--color-muted);
+    font-size: 0.85rem;
   }
   .ops {
     flex: none;

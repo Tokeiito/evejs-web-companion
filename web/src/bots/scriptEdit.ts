@@ -17,6 +17,7 @@ import type {
   InterruptRow,
   LoopBlock,
   MacroID,
+  LoopBodyNode,
   MacroStep,
   ProgramNode,
 } from "./botScript.ts";
@@ -110,7 +111,9 @@ export function duplicateNode(program: readonly ProgramNode[], index: number, ma
 function withLoopBody(
   program: readonly ProgramNode[],
   loopIndex: number,
-  transform: (body: readonly MacroStep[]) => readonly MacroStep[],
+  // A loop body holds steps AND branches, so these list ops are over the wider
+  // element type; the callers below still insert plain steps.
+  transform: (body: readonly LoopBodyNode[]) => readonly LoopBodyNode[],
 ): readonly ProgramNode[] {
   const node = program[loopIndex];
   if (node === undefined || node.kind !== "loop") {

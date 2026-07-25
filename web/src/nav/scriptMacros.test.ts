@@ -351,6 +351,27 @@ test("defend: pirate dead and drones home -> done", () => {
   assert.equal(t.outcome.kind, "done");
 });
 
+// ── Named board slots ────────────────────────────────────────────────────────
+
+test("a station arg can point at a BOARD SLOT an earlier block filled in", () => {
+  const travel = SCRIPT_MACROS["travel-to-station"]!;
+  const slotStep: MacroStep = {
+    id: "t",
+    kind: "macro",
+    macro: "travel-to-station",
+    args: { station: { kind: "station", ref: { entity: "station", id: null, name: null, systemName: null, slot: "agent-station" } } },
+  };
+  // The board says the agent's station is 60009999 — and we are docked there, so
+  // the block resolves the slot and reports arrival rather than "no station".
+  const docked = obs({ flightStatus: flight({ docked: true, inSpace: false, stationID: 60009999 }) });
+  const done = travel(slotStep, docked, {}, { agentStationID: 60009999 });
+  assert.equal(done.outcome.kind, "done", "resolved the slot to the board's station");
+
+  // With the slot UNFILLED the block blocks with a plain reason — never a guess.
+  const empty = travel(slotStep, docked, {}, {});
+  assert.equal(empty.outcome.kind, "blocked");
+});
+
 // ── The market set ───────────────────────────────────────────────────────────
 
 function invRow(over: Partial<import("../store/types.ts").InventoryItemRow> & { itemID: number }): import("../store/types.ts").InventoryItemRow {

@@ -175,6 +175,8 @@ import { decodeFittings } from "../bridge/fittings.ts";
 import { decodeActiveBookmarks } from "../bridge/bookmarks.ts";
 import { decodeBoundFleet } from "../bridge/boundFleet.ts";
 import type { BotScript } from "../bots/botScript.ts";
+import { decodeScriptValue } from "../bots/scriptCodec.ts";
+import { expandSubBots, hasSubBots, subBotNames } from "../bots/subBots.ts";
 
 /**
  * What the player asked the mission bot to do (goal R36).
@@ -5120,7 +5122,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     };
   }
 
-  async function startCustomBot(doc: BotScript): Promise<void> {
+  async function startCustomBot(input: BotScript): Promise<void> {
     // One hull, one driver. Until the custom bot joins the structural ship claim,
     // the others are stopped by hand here.
     const gen = (customBotGeneration += 1);
@@ -5128,6 +5130,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     miningBot?.stop();
     missionBot?.stop();
     scriptRunner?.stop();
+    // COMPOSITION, resolved once here: a bot that includes other saved bots is
+    // expanded into one flat program BEFORE the runner ever sees it, so the whole
+    // engine keeps reasoning about a single program. A bot that cannot be
+    // included is skipped with a plain reason rather than failing the run.
+    const doc = await expandSavedSubBots(input);
+    if (gen !== customBotGeneration) {
+      return; // superseded while the included bots were read
+    }
     store.apply({ type: "custom-bot/started", name: doc.name });
     // Resolve, ONCE at start, the two runtime facts the blocks need: which fitted
     // modules are miners, and where "the starting station" is (where we are now).
@@ -5150,6 +5160,54 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     void scriptRunner.run();
   }
 
+  /**
+   * Expand "run one of my saved bots" nodes by pulling those bots off the
+   * server and splicing their programs in. Returns the doc unchanged when it
+   * asks for none. Every fetched bot goes through the CODEC first (a stored bot
+   * is untrusted bytes like any other), and anything that cannot be included is
+   * reported on the readout rather than stopping the run.
+   */
+  async function expandSavedSubBots(doc: BotScript): Promise<BotScript> {
+    if (!hasSubBots(doc)) {
+      return doc;
+    }
+    const wanted = subBotNames(doc);
+    const byName = new Map<string, BotScript>();
+    try {
+      const summaries = await api.listBotScripts(callOptions);
+      for (const name of wanted) {
+        const match = summaries.find((s) => s.name.trim().toLowerCase() === name.toLowerCase());
+        if (match === undefined) {
+          continue;
+        }
+        const record = await api.getBotScript(match.scriptID, callOptions);
+        if (record === null) {
+          continue;
+        }
+        const decoded = decodeScriptValue(record.doc);
+        if (decoded.ok) {
+          byName.set(name.toLowerCase(), decoded.doc);
+        }
+      }
+    } catch {
+      // Could not read the library — expansion below reports each miss plainly.
+    }
+    const result = expandSubBots(doc, (name) => byName.get(name.trim().toLowerCase()) ?? null);
+    if (result.problems.length > 0) {
+      store.apply({
+        type: "custom-bot/progress",
+        status: "running",
+        phase: "Starting",
+        why: result.problems.join(" "),
+        stepPath: null,
+        interruptID: null,
+        pauseReason: null,
+        note: null,
+      });
+    }
+    return result.doc;
+  }
+
   /** True when any interrupt or any step/loop `until` in the doc reads the wallet. */
   function scriptWatchesWallet(doc: BotScript): boolean {
     const isWallet = (kind: string): boolean => kind === "wallet-below" || kind === "wallet-above";
@@ -5161,8 +5219,18 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         if (node.until !== undefined && isWallet(node.until.kind)) {
           return true;
         }
-        if (node.body.some((s) => s.until !== undefined && isWallet(s.until.kind))) {
-          return true;
+        // A loop body holds steps AND branches — check each element's own test.
+        for (const element of node.body) {
+          if (element.kind === "branch") {
+            if (isWallet(element.when.kind)) {
+              return true;
+            }
+            if ([...element.then, ...element.else].some((s) => s.until !== undefined && isWallet(s.until.kind))) {
+              return true;
+            }
+          } else if (element.until !== undefined && isWallet(element.until.kind)) {
+            return true;
+          }
         }
       } else if (node.kind === "branch") {
         // A branch that FORKS on the wallet needs the read, as do its bodies' stops.
@@ -5172,9 +5240,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         if ([...node.then, ...node.else].some((s) => s.until !== undefined && isWallet(s.until.kind))) {
           return true;
         }
-      } else if (node.until !== undefined && isWallet(node.until.kind)) {
+      } else if (node.kind === "macro" && node.until !== undefined && isWallet(node.until.kind)) {
         return true;
       }
+      // A sub-bot node is already expanded by the time this runs, so it has no
+      // test of its own to check here.
     }
     return false;
   }

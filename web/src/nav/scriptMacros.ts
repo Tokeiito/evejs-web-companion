@@ -10,6 +10,7 @@
 
 import type { HomeTravelDecider, MacroDecider, MacroMemory, MacroTick, ScriptBoard } from "./scriptDecide.ts";
 import type { ScriptObservation } from "./scriptConditions.ts";
+import { BOARD_SLOT_KEY } from "../bots/botScript.ts";
 import type { MacroStep } from "../bots/botScript.ts";
 import type { SpaceEntity, SpaceSnapshot } from "../store/types.ts";
 import { BELT_ARRIVAL_RADIUS_M, holdItemIDs, isMineableRock } from "./miningBotLoop.ts";
@@ -132,11 +133,20 @@ function recallBeforeLeaving(
   );
 }
 
-/** The station id a station-arg points at: a chosen id, or the starting station. */
-function stationTarget(step: MacroStep, obs: ScriptObservation): number | null {
+/**
+ * The station id a station-arg points at. Three ways to say it: a chosen id, the
+ * STARTING station, or a NAMED BOARD SLOT filled in by an earlier block ("the
+ * agent's station", "the mission's drop-off"). The slot reads the run board, so
+ * a bot follows whatever agent/mission it actually picked up; an unfilled slot
+ * reads null, which the callers treat as "not set yet" rather than guessing.
+ */
+function stationTarget(step: MacroStep, obs: ScriptObservation, board: ScriptBoard = {}): number | null {
   const arg = step.args["station"];
   if (arg === undefined || arg.kind !== "station") {
     return null;
+  }
+  if (arg.ref.slot !== undefined) {
+    return boardNum(board, BOARD_SLOT_KEY[arg.ref.slot]);
   }
   if (arg.ref.starting === true) {
     return obs.startingStationID ?? null;
@@ -257,8 +267,8 @@ const mineAtBelt: MacroDecider = (_step, obs, mem) => {
 // Fly to the station — same system or across the map, on the SHARED autopilot —
 // and unload; done once the hold is empty AT THE TARGET (an unload anywhere
 // else would scatter the ore across stations).
-const deliverOre: MacroDecider = (step, obs, mem) => {
-  const target = stationTarget(step, obs);
+const deliverOre: MacroDecider = (step, obs, mem, board) => {
+  const target = stationTarget(step, obs, board);
   if (target === null) {
     return tick(WAIT, "No station picked to unload at.", "Hauling", {
       kind: "blocked",
@@ -290,8 +300,8 @@ const deliverOre: MacroDecider = (step, obs, mem) => {
 // Fly to ANY station and dock — same system or across the map. The trip rides
 // the SHARED autopilot (route solver, gate jumps, the R24 dock ladder), so this
 // block is a destination plus the never-abandon-drones send-off.
-const travelToStation: MacroDecider = (step, obs, mem) => {
-  const target = stationTarget(step, obs);
+const travelToStation: MacroDecider = (step, obs, mem, board) => {
+  const target = stationTarget(step, obs, board);
   if (target === null) {
     return tick(WAIT, "No station picked.", "Travelling", { kind: "blocked", reason: "This step needs a station to go to." });
   }

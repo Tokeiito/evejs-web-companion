@@ -44,11 +44,16 @@ import {
   SCRIPT_FORMAT,
   SCRIPT_VERSION,
   conditionAllowedAt,
+  BOARD_SLOTS,
+  countProgramNode,
   type Arg,
+  type BoardSlot,
   type BeltArg,
   type BotScript,
   type BranchBlock,
   type Condition,
+  type LoopBodyNode,
+  type SubBotNode,
   type ConditionSite,
   type InterruptResponse,
   type InterruptRow,
@@ -122,6 +127,7 @@ const SAY = {
   nestedLoop: "A loop cannot contain another loop.",
   nestedBranch: "A branch cannot contain a loop or another branch.",
   emptyBranch: "A branch has no steps in either choice.",
+  subBotInLoop: "A saved bot can only be run as a step of its own, not inside a repeat or a branch.",
   badResponse: "This script answers a warning in a way this app does not know.",
 } as const;
 
@@ -295,7 +301,7 @@ function readProgram(raw: unknown, ctx: Ctx): readonly ProgramNode[] {
 
   let steps = 0;
   for (const node of program) {
-    steps += node.kind === "loop" ? node.body.length : node.kind === "branch" ? node.then.length + node.else.length : 1;
+    steps += countProgramNode(node);
   }
   if (steps > MAX_TOTAL_STEPS) {
     refuse(SAY.tooManySteps);
@@ -315,7 +321,27 @@ function readProgramNode(raw: unknown, ctx: Ctx): ProgramNode {
   if (kind === "branch") {
     return readBranchBlock(obj, ctx);
   }
+  if (kind === "sub-bot") {
+    return readSubBotNode(obj, ctx);
+  }
   return refuse(SAY.unknownNode);
+}
+
+/** "Run one of my saved bots here" — matched by NAME when it is expanded. */
+function readSubBotNode(obj: Readonly<Record<string, unknown>>, ctx: Ctx): SubBotNode {
+  const id = readRawId(obj["id"]);
+  const rawScriptID = obj["scriptID"];
+  if (rawScriptID !== null && rawScriptID !== undefined && typeof rawScriptID !== "string") {
+    refuse(SAY.badArg("saved bot"));
+  }
+  const scriptID =
+    typeof rawScriptID === "string" ? stripControl(rawScriptID, false).slice(0, MAX_ID_LEN) : null;
+  const nameRaw = obj["name"];
+  const name =
+    nameRaw === null || nameRaw === undefined
+      ? null
+      : readText(nameRaw, { min: 0, max: MAX_NAME_LEN, allowNewline: false }, ctx, SAY.badArg("saved bot"));
+  return { id, kind: "sub-bot", scriptID: scriptID === null || scriptID.length === 0 ? null : scriptID, name };
 }
 
 // ─── Branch blocks ───────────────────────────────────────────────────────────
@@ -344,6 +370,9 @@ function readBranchSide(raw: unknown, ctx: Ctx): readonly MacroStep[] {
     const nodeObj = asObject(node, SAY.unknownNode);
     if (nodeObj["kind"] === "loop" || nodeObj["kind"] === "branch") {
       refuse(SAY.nestedBranch);
+    }
+    if (nodeObj["kind"] === "sub-bot") {
+      refuse(SAY.subBotInLoop);
     }
     if (nodeObj["kind"] !== "macro") {
       refuse(SAY.unknownNode);
@@ -552,10 +581,20 @@ function readLoopBlock(obj: Readonly<Record<string, unknown>>, ctx: Ctx): LoopBl
   if (bodyRaw.length === 0) {
     refuse(SAY.emptyLoop);
   }
-  const body = bodyRaw.map((node) => {
+  // A loop body holds steps and BRANCHES (a fork each pass) — but never another
+  // loop, and a branch's own sides stay step-only, so nesting is capped at two.
+  const body = bodyRaw.map((node): LoopBodyNode => {
     const nodeObj = asObject(node, SAY.unknownNode);
     if (nodeObj["kind"] === "loop") {
       refuse(SAY.nestedLoop);
+    }
+    if (nodeObj["kind"] === "branch") {
+      return readBranchBlock(nodeObj, ctx);
+    }
+    if (nodeObj["kind"] === "sub-bot") {
+      // An included bot may carry loops of its own, so inlining one here could
+      // make a loop inside a loop. Top level only.
+      refuse(SAY.subBotInLoop);
     }
     if (nodeObj["kind"] !== "macro") {
       refuse(SAY.unknownNode);
@@ -685,6 +724,16 @@ function readWorldRef(raw: unknown, expected: WorldEntity, ctx: Ctx, refuseSente
 
   const name = readNullableText(obj["name"], MAX_WORLD_NAME_LEN, ctx);
   const systemName = readNullableText(obj["systemName"], MAX_WORLD_NAME_LEN, ctx);
+  // A named BOARD SLOT ("the station the find-agent block found") is a runtime
+  // binding like `starting`, and station-only. An unknown slot name is refused
+  // rather than silently dropped — a bot that flew to "whatever" is not this bot.
+  const rawSlot = obj["slot"];
+  if (rawSlot !== undefined && rawSlot !== null) {
+    if (expected !== "station" || typeof rawSlot !== "string" || !BOARD_SLOTS.includes(rawSlot as BoardSlot)) {
+      refuse(refuseSentence);
+    }
+    return { entity: "station", id: null, name, systemName, slot: rawSlot as BoardSlot };
+  }
   // "starting" (station only) is included only when literally true, so a plain
   // chosen/unbound ref round-trips without an extra field.
   if (expected === "station" && obj["starting"] === true) {
@@ -714,8 +763,13 @@ function withValidIds(doc: BotScript, ctx: Ctx): BotScript {
   for (const node of doc.program) {
     ids.push(node.id);
     if (node.kind === "loop") {
-      for (const step of node.body) {
-        ids.push(step.id);
+      for (const element of node.body) {
+        ids.push(element.id);
+        if (element.kind === "branch") {
+          for (const step of [...element.then, ...element.else]) {
+            ids.push(step.id);
+          }
+        }
       }
     } else if (node.kind === "branch") {
       for (const step of [...node.then, ...node.else]) {
@@ -734,7 +788,20 @@ function withValidIds(doc: BotScript, ctx: Ctx): BotScript {
   const interrupts = doc.interrupts.map((row) => ({ ...row, id: nextId() }));
   const program = doc.program.map((node) => {
     if (node.kind === "loop") {
-      return { ...node, id: nextId(), body: node.body.map((step) => ({ ...step, id: nextId() })) };
+      return {
+        ...node,
+        id: nextId(),
+        body: node.body.map((element) =>
+          element.kind === "branch"
+            ? {
+                ...element,
+                id: nextId(),
+                then: element.then.map((step) => ({ ...step, id: nextId() })),
+                else: element.else.map((step) => ({ ...step, id: nextId() })),
+              }
+            : { ...element, id: nextId() },
+        ),
+      };
     }
     if (node.kind === "branch") {
       return {
@@ -874,6 +941,9 @@ function orderRef(ref: WorldRef): unknown {
   if (ref.starting === true) {
     base["starting"] = true;
   }
+  if (ref.slot !== undefined) {
+    base["slot"] = ref.slot;
+  }
   return base;
 }
 
@@ -976,6 +1046,9 @@ function orderNode(node: ProgramNode): unknown {
       then: node.then.map(orderNode),
       else: node.else.map(orderNode),
     };
+  }
+  if (node.kind === "sub-bot") {
+    return { id: node.id, kind: "sub-bot", scriptID: node.scriptID, name: node.name };
   }
   const base: Record<string, unknown> = {
     id: node.id,

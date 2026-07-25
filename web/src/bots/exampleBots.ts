@@ -129,31 +129,39 @@ const PLANET_KEEPER: BotScript = {
   ],
 };
 
-/** A branch demo: mine a belt and haul home, then FORK on the ship's shields —
- * repair if it took a beating, otherwise refine what it mined. */
+/** A branch demo, forever: mine a belt, haul home, then FORK on the ship's
+ * shields — repair if it took a beating this lap, otherwise refine what it
+ * mined. The branch lives INSIDE the loop, so the choice is made fresh each lap. */
 const SMART_MINER: BotScript = {
   ...FORMAT,
   name: "Smart miner",
-  notes: "Mines the nearest belt and hauls home, then repairs the ship if it got hurt or refines the ore if it did not.",
+  notes: "Mines and hauls on a loop, then each lap either repairs the ship (if it got hurt) or refines the ore.",
   home: startingStation(),
   interrupts: [{ id: "w-hull", when: { kind: "hull-below", fraction: 0.4 }, respond: "dock-and-pause" }],
   program: [
-    { id: "s1", kind: "macro", macro: "undock", args: {} },
     {
-      id: "s2",
-      kind: "macro",
-      macro: "mine-at-belt",
-      args: { belt: { kind: "belt", belt: { mode: "nearest" } } },
-      until: { kind: "ore-hold-at-least", fraction: 0.9 },
-    },
-    { id: "s3", kind: "macro", macro: "deliver-ore", args: { station: { kind: "station", ref: startingStation() } } },
-    // Docked at home now — fork on how the shields held up.
-    {
-      id: "br",
-      kind: "branch",
-      when: { kind: "shield-below", fraction: 0.6 },
-      then: [{ id: "t1", kind: "macro", macro: "repair-ship", args: {} }],
-      else: [{ id: "e1", kind: "macro", macro: "refine-ore", args: {} }],
+      id: "loop",
+      kind: "loop",
+      repeat: { kind: "forever" },
+      body: [
+        { id: "s1", kind: "macro", macro: "undock", args: {} },
+        {
+          id: "s2",
+          kind: "macro",
+          macro: "mine-at-belt",
+          args: { belt: { kind: "belt", belt: { mode: "nearest" } } },
+          until: { kind: "ore-hold-at-least", fraction: 0.9 },
+        },
+        { id: "s3", kind: "macro", macro: "deliver-ore", args: { station: { kind: "station", ref: startingStation() } } },
+        // Docked at home now — fork on how the shields held up THIS lap.
+        {
+          id: "br",
+          kind: "branch",
+          when: { kind: "shield-below", fraction: 0.6 },
+          then: [{ id: "t1", kind: "macro", macro: "repair-ship", args: {} }],
+          else: [{ id: "e1", kind: "macro", macro: "refine-ore", args: {} }],
+        },
+      ],
     },
   ],
 };

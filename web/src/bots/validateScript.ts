@@ -60,6 +60,10 @@ export function validateScript(script: BotScript): readonly ScriptProblem[] {
       validateLoop(node, problems);
     } else if (node.kind === "branch") {
       validateBranch(node, problems);
+    } else if (node.kind === "sub-bot") {
+      if (node.name === null || node.name.trim().length === 0) {
+        problems.push({ path: node.id, sentence: "Pick which saved bot this step runs." });
+      }
     } else {
       validateStep(node, problems);
     }
@@ -88,8 +92,13 @@ function validateLoop(loop: LoopBlock, problems: ScriptProblem[]): void {
   if (loop.until !== undefined) {
     validateCondition(loop.until, "until", loop.id, problems);
   }
-  for (const step of loop.body) {
-    validateStep(step, problems);
+  for (const element of loop.body) {
+    // A loop body holds steps and branches; both get their own validation.
+    if (element.kind === "branch") {
+      validateBranch(element, problems);
+    } else {
+      validateStep(element, problems);
+    }
   }
 }
 
@@ -105,7 +114,9 @@ function validateStep(step: MacroStep, problems: ScriptProblem[]): void {
       }
       continue;
     }
-    if (arg.kind === "station" && arg.ref.id === null && arg.ref.starting !== true) {
+    // A station is unset only when it is neither pinned NOR a runtime binding
+    // (the starting station, or a named board slot an earlier block fills in).
+    if (arg.kind === "station" && arg.ref.id === null && arg.ref.starting !== true && arg.ref.slot === undefined) {
       problems.push({ path: step.id, sentence: "Pick the station for this step." });
     }
     if (arg.kind === "belt" && arg.belt.mode === "chosen" && arg.belt.ref.id === null) {

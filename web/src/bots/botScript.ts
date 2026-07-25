@@ -104,11 +104,50 @@ export interface WorldRef {
    * slot the player must still fill. Omitted (not `false`) when not a starting ref.
    */
   readonly starting?: boolean;
+  /**
+   * STATION ONLY. A NAMED BOARD SLOT — "the station an earlier block found",
+   * resolved at run time from the run's board instead of being pinned now. Same
+   * idea as `starting` (and as a belt's "nearest"): a runtime binding, so a bot
+   * adapts to whatever agent/mission it picked up rather than a baked-in id, and
+   * stays portable across characters. When set, `id` is null and no picking is
+   * needed. Omitted (not null) when the ref is not a slot.
+   */
+  readonly slot?: BoardSlot;
 }
+
+/**
+ * The facts a block can point at instead of a fixed station. Each maps to one
+ * key an earlier block publishes on the run board; a closed vocabulary so the
+ * codec can validate it and the editor can list it.
+ */
+export type BoardSlot = "agent-station" | "pickup-station" | "dropoff-station";
+
+export const BOARD_SLOTS: readonly BoardSlot[] = Object.freeze<BoardSlot[]>([
+  "agent-station",
+  "pickup-station",
+  "dropoff-station",
+]);
+
+/** The run-board key each slot reads. */
+export const BOARD_SLOT_KEY: Readonly<Record<BoardSlot, string>> = {
+  "agent-station": "agentStationID",
+  "pickup-station": "pickupStationID",
+  "dropoff-station": "dropoffStationID",
+};
 
 /** True when a station ref means "wherever the ship started". */
 export function isStartingStation(ref: WorldRef): boolean {
   return ref.starting === true;
+}
+
+/** The board slot a station ref points at, or null when it is not a slot ref. */
+export function refBoardSlot(ref: WorldRef): BoardSlot | null {
+  return ref.slot ?? null;
+}
+
+/** A "use the station an earlier block found" station ref. */
+export function boardSlotStation(slot: BoardSlot): WorldRef {
+  return { entity: "station", id: null, name: null, systemName: null, slot };
 }
 
 /** A "return to where you started" station ref — the portable default. */
@@ -403,12 +442,20 @@ export type Repeat =
   | { readonly kind: "forever" }
   | { readonly kind: "times"; readonly count: number };
 
+/**
+ * What may sit inside a loop body: a plain step, or a BRANCH (so a loop can fork
+ * each pass — "mine; if the hold is full, haul home, else keep going"). A loop
+ * still cannot contain another LOOP, and a branch's own sides stay step-only, so
+ * the nesting is bounded at exactly two levels and stays cycle-free.
+ */
+export type LoopBodyNode = MacroStep | BranchBlock;
+
 export interface LoopBlock {
   readonly id: string;
   readonly kind: "loop";
   readonly repeat: Repeat;
   readonly until?: Condition;
-  readonly body: readonly MacroStep[];
+  readonly body: readonly LoopBodyNode[];
 }
 
 /**
@@ -429,7 +476,34 @@ export interface BranchBlock {
   readonly else: readonly MacroStep[];
 }
 
-export type ProgramNode = MacroStep | LoopBlock | BranchBlock;
+/**
+ * "Run one of my other saved bots here" — composition without copy-paste.
+ *
+ * ⚠ IT IS EXPANDED (INLINED) BEFORE THE RUN STARTS, never resolved mid-run: the
+ * runner only ever sees a plain program, so every safety property (the forward
+ * scan, the livelock proof, the step caps) holds unchanged and needs no new
+ * reasoning. The NAME is what is matched at expansion time (the id is a
+ * same-world hint), so a shared script still finds "Belt loop" on another
+ * character. Cycles and runaway nesting are refused at expansion (a bot can
+ * never include itself, directly or through a chain).
+ *
+ * TOP-LEVEL ONLY: a sub-bot may carry loops of its own, and inlining one inside
+ * a loop body would make a loop-in-a-loop, so the codec refuses it there.
+ * The included bot's OWN watches and home are ignored — the bot you start
+ * governs the run.
+ */
+export interface SubBotNode {
+  readonly id: string;
+  readonly kind: "sub-bot";
+  /** Same-world hint only; `name` is what expansion matches on. */
+  readonly scriptID: string | null;
+  readonly name: string | null;
+}
+
+/** How deep a chain of included bots may go before expansion refuses. */
+export const MAX_SUBBOT_DEPTH = 3;
+
+export type ProgramNode = MacroStep | LoopBlock | BranchBlock | SubBotNode;
 
 // ─── The document ────────────────────────────────────────────────────────────
 
@@ -476,17 +550,42 @@ export function branchSteps(branch: BranchBlock): readonly MacroStep[] {
   return [...branch.then, ...branch.else];
 }
 
+/** Macro steps in one loop-body element: a branch counts BOTH its sides. */
+export function countLoopBodyNode(node: LoopBodyNode): number {
+  return node.kind === "branch" ? node.then.length + node.else.length : 1;
+}
+
+/** Macro steps contributed by one program node (a loop counts its whole body).
+ * A sub-bot counts as ONE here — it is replaced by its real steps at expansion,
+ * and the expanded program is re-checked against the caps then. */
+export function countProgramNode(node: ProgramNode): number {
+  if (node.kind === "loop") {
+    let total = 0;
+    for (const element of node.body) {
+      total += countLoopBodyNode(element);
+    }
+    return total;
+  }
+  return node.kind === "branch" ? node.then.length + node.else.length : 1;
+}
+
 /**
- * Total macro steps in a program, counting loop bodies and BOTH sides of a
- * branch. This is the count the `MAX_TOTAL_STEPS` cap bounds — a loop of 3 steps
- * is 3, and a branch of 2-then + 1-else is 3, not 1.
+ * Total macro steps in a program, counting loop bodies and BOTH sides of every
+ * branch (including branches inside a loop). This is the count the
+ * `MAX_TOTAL_STEPS` cap bounds — a loop of 3 steps is 3, and a branch of 2-then
+ * + 1-else is 3, not 1.
  */
 export function countSteps(program: readonly ProgramNode[]): number {
   let total = 0;
   for (const node of program) {
-    total += node.kind === "loop" ? node.body.length : node.kind === "branch" ? node.then.length + node.else.length : 1;
+    total += countProgramNode(node);
   }
   return total;
+}
+
+/** Every macro step inside one loop-body element, in order. */
+export function loopBodySteps(node: LoopBodyNode): readonly MacroStep[] {
+  return node.kind === "branch" ? branchSteps(node) : [node];
 }
 
 /**
@@ -501,18 +600,21 @@ export function findStep(script: BotScript, id: string): MacroStep | null {
         return node;
       }
     } else if (node.kind === "loop") {
-      for (const step of node.body) {
-        if (step.id === id) {
-          return step;
+      for (const element of node.body) {
+        for (const step of loopBodySteps(element)) {
+          if (step.id === id) {
+            return step;
+          }
         }
       }
-    } else {
+    } else if (node.kind === "branch") {
       for (const step of branchSteps(node)) {
         if (step.id === id) {
           return step;
         }
       }
     }
+    // A sub-bot node holds no steps of its own (it is replaced before the run).
   }
   return null;
 }
