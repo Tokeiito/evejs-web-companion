@@ -1,7 +1,7 @@
 @echo off
 rem Starts the EvEJS web companion BFF, logging to data\bff.log.
 rem Rotates the log at startup when it exceeds 5 MB (keeps bff.log.1..3).
-rem Run hidden via start-bff-hidden.vbs by the "EvEJS Web Companion BFF" scheduled task.
+rem See docs/bff-log-rotation.md. Edit the paths below to match your machine.
 cd /d C:\evejs-web-companion
 
 set size=0
