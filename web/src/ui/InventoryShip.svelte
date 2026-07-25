@@ -68,6 +68,7 @@
     store,
     flow,
     dock = false,
+    ping = 0,
   }: {
     store: ClientStore;
     flow: AppFlow;
@@ -77,6 +78,13 @@
      * lays its controls out compactly.
      */
     dock?: boolean;
+    /**
+     * Bumped by the workspace when the Neocom's "Inventory & Ship" is picked
+     * while docked — snap to the Ship Inventory tab so the pick visibly
+     * responds even when this panel was already on screen (e.g. sitting on
+     * the Station Services tab). 0 = never picked; never fires on mount.
+     */
+    ping?: number;
   } = $props();
 
   // svelte-ignore state_referenced_locally
@@ -120,6 +128,13 @@
   const visibleTabs = $derived(isDockedNow ? TABS : TABS.filter((tab) => tab.id !== "station"));
   $effect(() => {
     if (!isDockedNow && activeTab === "station") {
+      activeTab = "shipInventory";
+    }
+  });
+
+  // The Neocom pick's visible response (see the `ping` prop).
+  $effect(() => {
+    if (ping > 0) {
       activeTab = "shipInventory";
     }
   });

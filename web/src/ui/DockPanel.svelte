@@ -22,6 +22,7 @@
     width,
     onToggle,
     onResize,
+    inventoryPing = 0,
   }: {
     store: ClientStore;
     flow: AppFlow;
@@ -30,6 +31,12 @@
     width: number;
     onToggle: () => void;
     onResize: (w: number) => void;
+    /**
+     * Bumped when the Neocom's "Inventory & Ship" is picked while docked:
+     * the panel snaps to the Ship Inventory tab so the pick has a visible
+     * response even when the dock was already expanded.
+     */
+    inventoryPing?: number;
   } = $props();
 
   // The docked title is a static word: the workspace header directly above
@@ -77,7 +84,7 @@
     <div class="dock-panel-body">
       {#if isDocked}
         <div class="dock-inventory">
-          <InventoryShip {store} {flow} dock />
+          <InventoryShip {store} {flow} dock ping={inventoryPing} />
         </div>
       {:else}
         <div class="dock-overview">
