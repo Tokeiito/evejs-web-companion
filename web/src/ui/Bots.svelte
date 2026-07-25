@@ -99,12 +99,14 @@
   /**
    * Run a saved bot ON THE SERVER, flying THIS TAB's current character.
    *
-   * One hull, one driver: the server refuses a character any web session
-   * holds — including ours — so the tab RELEASES its session first (the shell
-   * drops to character select, where the ServerBots readout lives) and only
-   * then asks the server to take the hull. If the server then refuses anyway,
-   * the tab takes the character back rather than stranding the player offline
-   * over a start that changed nothing.
+   * The handover is the SERVER's, in one request: /api/bots/start releases the
+   * caller's own held session and claims the character for the bot atomically.
+   * Started-first matters twice over — the login/select screens this tab falls
+   * to poll the bot-flying marks, and a bot that already exists is on their
+   * FIRST read (release-first left them blank until the next poll); and a
+   * refused start changes nothing, so the tab just keeps flying (no take-the-
+   * hull-back dance). The releaseSession afterwards only syncs THIS tab's UI —
+   * its server-side session is already gone.
    */
   async function startSavedOnServer(scriptID: string): Promise<void> {
     if (serverStartBusy !== null) {
@@ -118,19 +120,16 @@
     serverStartBusy = scriptID;
     savedError = null;
     try {
+      await startServerBot(current.characterID, scriptID);
+    } catch (cause) {
+      savedError = cause instanceof Error ? cause.message : "Could not start that bot on the server.";
+      serverStartBusy = null;
+      return;
+    }
+    try {
       await flow.releaseSession();
-      try {
-        await startServerBot(current.characterID, scriptID);
-      } catch (cause) {
-        try {
-          await flow.selectCharacter(current.characterID);
-        } catch {
-          // The hull could not be taken back either; character select says why.
-        }
-        savedError = cause instanceof Error ? cause.message : "Could not start that bot on the server.";
-      }
     } catch {
-      savedError = "Could not hand the character over to the server.";
+      // The bot has the hull either way; the tab's next read notices.
     } finally {
       serverStartBusy = null;
     }

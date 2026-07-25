@@ -13,6 +13,14 @@
   import KnownCharacterPicker from "./KnownCharacterPicker.svelte";
   import { BridgeCallError } from "../bridge/callMethod.ts";
   import {
+    listActiveServerBots,
+    listServerBots,
+    login as apiLogin,
+    logout as apiLogout,
+    stopServerBot,
+    type ActiveServerBot,
+  } from "../app/api.ts";
+  import {
     loadKnownCharacters,
     rememberCharacters,
     forgetKnownCharacter,
@@ -90,12 +98,96 @@
     forgetKnownCharacter(characterID);
     known = loadKnownCharacters();
   }
+
+  // Which pilots a SERVER BOT is flying right now — and how each ship is
+  // doing — so the picker and the character list can mark them before a click
+  // gets refused. Unauthenticated read (this screen exists before any
+  // sign-in); a failed poll keeps the last known rows rather than blinking
+  // the markers off. The poll is 5s for a snappy badge; the vitals inside
+  // only move at the host's own ~15s sample cadence.
+  let botStatuses = $state<Map<number, ActiveServerBot>>(new Map());
+  const botFlownIDs = $derived(new Set(botStatuses.keys()));
+  let botPollAlive = true;
+  async function refreshBotFlown(): Promise<void> {
+    try {
+      const rows = await listActiveServerBots();
+      if (botPollAlive) botStatuses = new Map(rows.map((row) => [row.characterID, row]));
+    } catch {
+      // Keep the last known rows; the next poll retries.
+    }
+  }
+  $effect(() => {
+    void refreshBotFlown();
+    const handle = setInterval(() => void refreshBotFlown(), 5000);
+    return () => {
+      botPollAlive = false;
+      clearInterval(handle);
+    };
+  });
+
+  // Stop a server bot FROM THE LANDING PAGE. Without this, a roster where
+  // every pilot is bot-flown locks the player out of their own bots (nothing
+  // clickable leads to a Stop). Stopping needs auth, and the row already
+  // names its account — on a server whose login takes any password, that IS
+  // the credential: sign in on a THROWAWAY per-session token ({token: ...}
+  // keeps the tab's global storage untouched), stop the bot, sign the token
+  // out again. No character is ever selected, so no hull moves.
+  let stoppingID = $state<number | null>(null);
+  async function stopBotFor(pick: KnownCharacter): Promise<void> {
+    if (stoppingID !== null) return;
+    stoppingID = pick.characterID;
+    error = "";
+    try {
+      const result = await apiLogin(pick.accountName, "", { token: null });
+      if (result.sessionToken === null) {
+        throw new Error("The server did not return a session token.");
+      }
+      const asOwner = { token: result.sessionToken };
+      try {
+        const bots = await listServerBots(asOwner);
+        const bot = bots.find(
+          (row) =>
+            row.characterID === pick.characterID &&
+            (row.status === "running" || row.status === "paused" || row.status === "starting"),
+        );
+        if (bot) {
+          await stopServerBot(bot.botID, asOwner);
+        }
+      } finally {
+        await apiLogout(asOwner).catch(() => {});
+      }
+      await refreshBotFlown();
+    } catch (cause) {
+      error =
+        cause instanceof BridgeCallError
+          ? cause.code === "UNKNOWN_EVEJS_ACCOUNT"
+            ? `Account "${pick.accountName}" no longer exists.`
+            : `${cause.code}: ${cause.message}`
+          : String(cause);
+    } finally {
+      stoppingID = null;
+    }
+  }
 </script>
 
 {#if $session.phase !== "logged-in"}
-  <KnownCharacterPicker {known} {onlineIDs} {busyID} onPick={quickAdd} onForget={forget} />
-  {#if error}<p class="error" role="alert">{error}</p>{/if}
-  <LoginForm {store} {flow} />
+  <!-- One centred column: pilots first, the login card directly beneath (the
+       login screen's own full-height centring is neutralised inside). -->
+  <div class="onboarding-screen">
+    <KnownCharacterPicker
+      {known}
+      {onlineIDs}
+      {busyID}
+      {botFlownIDs}
+      {botStatuses}
+      {stoppingID}
+      onPick={quickAdd}
+      onForget={forget}
+      onStopBot={stopBotFor}
+    />
+    {#if error}<p class="error" role="alert">{error}</p>{/if}
+    <LoginForm {store} {flow} />
+  </div>
 {:else if $station.online === null}
-  <CharacterSelect {store} {flow} />
+  <CharacterSelect {store} {flow} {botFlownIDs} />
 {/if}

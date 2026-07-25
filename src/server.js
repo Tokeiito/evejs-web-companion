@@ -56,6 +56,11 @@ const botHost =
   botHostModule.createBotHost({
     webAuth: auth,
     baseUrl: options.botHostBaseUrl || `http://127.0.0.1:${config.port}`,
+    // Durable roster: running bots are mirrored here and startServer calls
+    // botHost.resume() once listening, so a BFF restart brings them back.
+    persistPath: path.join(config.dataDir, "server-bots.json"),
+    loadAccount: (username) => store.getAccount(username),
+    loadScript: (accountID, scriptID) => botScripts.get(accountID, scriptID),
     // ONE HULL, ONE DRIVER, direction 1: a bot may not take a character any
     // live web session is flying. (Direction 2 — a tab may not take a bot's
     // character — is the guard in /api/bridge/select.)
@@ -16672,6 +16677,21 @@ app.get("/api/bots", requireAuth, (req, res, next) => {
   }
 });
 
+// Which characters a server bot is flying, and how each ship is doing —
+// WITHOUT auth, deliberately: the login and character screens mark bot-flown
+// pilots and show their vitals BEFORE any sign-in exists. Exposure is game
+// state only (character IDs, bot phase, shield/armor/hull, hold fill — no
+// account names, script ids, bot ids, or any control), on a server whose
+// login already accepts any password (see the LAN note above /api/login).
+// Everything that inspects or DRIVES a bot stays behind requireAuth.
+app.get("/api/bots/active", (req, res, next) => {
+  try {
+    res.json({ ok: true, characterIDs: botHost.activeCharacterIDs(), bots: botHost.activeBots() });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.post("/api/bots/start", requireAuth, async (req, res, next) => {
   try {
     const body = req.body || {};
@@ -16691,6 +16711,18 @@ app.post("/api/bots/start", requireAuth, async (req, res, next) => {
     if (!record) {
       res.status(404).json({ ok: false, error: "BOTSCRIPT_NOT_FOUND", message: "That bot could not be found." });
       return;
+    }
+    // THE HANDOVER IS SERVER-SIDE AND ATOMIC: when the caller's OWN session is
+    // the one flying this character, release it here — then the bot exists the
+    // moment this request answers. The old shape (tab releases itself, THEN
+    // asks the server) left a window where the tab had already fallen to the
+    // login screen while no bot was registered yet, so its bot-flying marks
+    // polled empty until the next tick. Only the caller's own hull moves:
+    // any OTHER session flying the character is still refused by the host's
+    // CHARACTER_IN_USE check below.
+    const callerHeld = bridgeSessions.get(req.webSessionID);
+    if (callerHeld && Number(callerHeld.characterID) === characterID) {
+      await releaseHeldBridgeSession(req.webSessionID);
     }
     const outcome = await botHost.start({
       account: req.account,
@@ -16974,6 +17006,11 @@ function startServer(options = {}) {
     if (options.silent !== true) {
       console.log(`EveJS Web POC listening on http://${host}:${activePort}`);
       console.log(`Using EveJS gateway: ${process.env.EVEJS_GATEWAY_URL || "http://127.0.0.1:26002/_evejs-web/v1"}`);
+    }
+    // Bots that were running when the server last stopped come back now —
+    // AFTER listen, because every server bot drives this server over loopback.
+    if (options.resumeServerBots !== false) {
+      void appToStart.locals.botHost?.resume().catch((error) => console.error(error));
     }
   });
   return server;

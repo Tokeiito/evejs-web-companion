@@ -79,7 +79,8 @@
 <section>
   <h2>On the server</h2>
   <p class="note">
-    These bots run on the server itself — closing this tab does not stop them.
+    These bots run on the server itself — closing this tab does not stop them,
+    and they come back if the server restarts (starting their script over).
     A character a server bot is flying cannot be selected until the bot stops.
   </p>
   {#if error}<p class="note error">{error}</p>{/if}
@@ -110,6 +111,10 @@
               </button>
             {/if}
           </div>
+          {#if bot.resumedAt}
+            <!-- Honest about what a restart means: the script started over. -->
+            <p class="note why">Restarted with the server — the script began again from its first step.</p>
+          {/if}
           {#if bot.why}
             <p class="note why">{bot.why}</p>
           {/if}

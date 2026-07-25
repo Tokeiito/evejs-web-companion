@@ -2,6 +2,9 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 const { createBotHost } = require("./botHost");
 
 // The host is exercised with a FAKE browser stack (the loadStack seam): the
@@ -28,7 +31,13 @@ function makeFakeStack(log) {
         : { ok: false, refusal: "That bot could not be read." },
     createClientStore: () => {
       const listeners = new Set();
-      const state = { station: { online: null }, customBot: { ...IDLE_SLICE } };
+      const state = {
+        station: { online: null },
+        customBot: { ...IDLE_SLICE },
+        flight: { status: null },
+        space: { snapshot: null },
+        mining: { holds: [] },
+      };
       const store = {
         _set(partial) {
           Object.assign(state, partial);
@@ -38,6 +47,9 @@ function makeFakeStack(log) {
         },
         station: { get: () => state.station },
         customBot: { get: () => state.customBot },
+        flight: { get: () => state.flight },
+        space: { get: () => state.space },
+        mining: { get: () => state.mining },
         subscribe(listener) {
           listeners.add(listener);
           return () => listeners.delete(listener);
@@ -63,18 +75,38 @@ function makeFakeStack(log) {
         async logout() {
           log.push(["logout"]);
         },
+        // The vitals sampler's reads: populate the slices like the real flow.
+        async loadFlightStatus() {
+          store._set({ flight: { status: { docked: false, stationID: null } } });
+        },
+        async loadSpaceSnapshot() {
+          store._set({
+            space: { snapshot: { ship: { shieldRatio: 0.9, armorRatio: 1, hullRatio: 1 } } },
+          });
+        },
+        async loadMiningHolds() {
+          store._set({
+            mining: {
+              holds: [
+                { label: "Ore hold", present: true, capacity: { used: 6000, capacity: 8000 } },
+                { label: "Fuel bay", present: false, capacity: null },
+              ],
+            },
+          });
+        },
       };
     },
   });
 }
 
-function makeHost({ log = [], isCharacterHeld = () => false } = {}) {
+function makeHost({ log = [], isCharacterHeld = () => false, ...extras } = {}) {
   return createBotHost({
     webAuth: { createSessionToken: () => "bot-token" },
     baseUrl: "http://127.0.0.1:0",
     isCharacterHeld,
     errorLogger: () => {},
     loadStack: makeFakeStack(log),
+    ...extras,
   });
 }
 
@@ -148,6 +180,15 @@ test("stop releases the claim and the character", async () => {
   assert.equal(host.list(7).length, 1);
 });
 
+test("activeCharacterIDs names exactly the characters bots are flying", async () => {
+  const host = makeHost();
+  assert.deepEqual(host.activeCharacterIDs(), []);
+  const started = await host.start(START);
+  assert.deepEqual(host.activeCharacterIDs(), [140000001]);
+  await host.stop(started.bot.botID, 7);
+  assert.deepEqual(host.activeCharacterIDs(), []);
+});
+
 test("stop is scoped to the owning account", async () => {
   const host = makeHost();
   const started = await host.start(START);
@@ -194,3 +235,97 @@ function lastStore(log) {
   assert.notEqual(call, undefined, "no store was captured — did start() succeed?");
   return call[1];
 }
+
+// ── Durability: the running roster survives a restart ───────────────────────
+
+function tempRosterPath() {
+  return path.join(fs.mkdtempSync(path.join(os.tmpdir(), "bot-host-")), "server-bots.json");
+}
+
+function readRosterFile(rosterPath) {
+  return JSON.parse(fs.readFileSync(rosterPath, "utf8")).bots;
+}
+
+test("the running roster is mirrored to disk and cleared when the bot ends", async () => {
+  const rosterPath = tempRosterPath();
+  const host = makeHost({ persistPath: rosterPath });
+  const started = await host.start(START);
+  const persisted = readRosterFile(rosterPath);
+  assert.equal(persisted.length, 1);
+  assert.deepEqual(persisted[0], {
+    accountID: 7,
+    username: "test",
+    characterID: 140000001,
+    scriptID: "s1",
+    scriptName: "Miner",
+    startedAt: started.bot.startedAt,
+  });
+  await host.stop(started.bot.botID, 7);
+  assert.equal(readRosterFile(rosterPath).length, 0);
+});
+
+test("resume restarts a persisted bot on a fresh host (the restart path)", async () => {
+  const rosterPath = tempRosterPath();
+  const before = makeHost({ persistPath: rosterPath });
+  await before.start(START);
+  // "The BFF restarted": a brand-new host, same file, no in-memory state.
+  const after = makeHost({
+    persistPath: rosterPath,
+    loadAccount: async (username) => (username === "test" ? { ...ACCOUNT } : null),
+    loadScript: (accountID, scriptID) =>
+      accountID === 7 && scriptID === "s1"
+        ? { scriptID: "s1", name: "Miner", doc: { valid: true } }
+        : null,
+  });
+  await after.resume();
+  const listed = after.list(7);
+  assert.equal(listed.length, 1);
+  assert.equal(listed[0].status, "running");
+  assert.notEqual(listed[0].resumedAt, null);
+  assert.equal(after.claimedBy(140000001), listed[0].botID);
+  // The file now names the NEW run.
+  const persisted = readRosterFile(rosterPath);
+  assert.equal(persisted.length, 1);
+  assert.equal(persisted[0].startedAt, listed[0].startedAt);
+});
+
+test("vitals sampling projects ship health, hold fill and the bot's words", async () => {
+  const host = makeHost();
+  await host.start(START);
+  await host.sampleAllVitals();
+  const rows = host.activeBots();
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].characterID, 140000001);
+  assert.equal(rows[0].status, "running");
+  assert.equal(rows[0].phase, "Working");
+  const vitals = rows[0].vitals;
+  assert.equal(vitals.docked, false);
+  assert.equal(vitals.shield, 0.9);
+  assert.equal(vitals.armor, 1);
+  assert.equal(vitals.hull, 1);
+  // Only PRESENT holds are reported.
+  assert.deepEqual(vitals.holds, [{ label: "Ore hold", used: 6000, capacity: 8000 }]);
+  // Nothing controllable or identifying rides on the unauthenticated rows.
+  assert.equal("botID" in rows[0], false);
+  assert.equal("accountID" in rows[0], false);
+  assert.equal("scriptID" in rows[0], false);
+});
+
+test("a bot whose script vanished leaves a visible error record, not silence", async () => {
+  const rosterPath = tempRosterPath();
+  const before = makeHost({ persistPath: rosterPath });
+  await before.start(START);
+  const after = makeHost({
+    persistPath: rosterPath,
+    loadAccount: async () => ({ ...ACCOUNT }),
+    loadScript: () => null,
+  });
+  await after.resume();
+  const listed = after.list(7);
+  assert.equal(listed.length, 1);
+  assert.equal(listed[0].status, "error");
+  assert.match(String(listed[0].why), /restarted/);
+  assert.equal(after.claimedBy(140000001), null);
+  // The failure is dropped from the roster file — it must not retry forever.
+  assert.equal(readRosterFile(rosterPath).length, 0);
+});

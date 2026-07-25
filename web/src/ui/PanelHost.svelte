@@ -22,6 +22,7 @@
   import Travel from "./Travel.svelte";
   import Bots from "./Bots.svelte";
   import BotBuilder from "./BotBuilder.svelte";
+  import ServerBots from "./ServerBots.svelte";
   import Chat from "./Chat.svelte";
   import Wallet from "./Wallet.svelte";
   import CorpWallet from "./CorpWallet.svelte";
@@ -82,6 +83,8 @@
   <Bots {store} {flow} />
 {:else if tab === "botBuilder"}
   <BotBuilder {store} {flow} />
+{:else if tab === "serverBots"}
+  <ServerBots />
 {:else if tab === "wallet"}
   <Wallet {store} {flow} />
 {:else if tab === "corpWallet"}

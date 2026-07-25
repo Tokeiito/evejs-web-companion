@@ -8,7 +8,12 @@
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
 
-  let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
+  let { store, flow, botFlownIDs = new Set<number>() }: {
+    store: ClientStore;
+    flow: AppFlow;
+    /** Pilots a SERVER BOT is flying right now — marked so a click isn't a surprise refusal. */
+    botFlownIDs?: Set<number>;
+  } = $props();
 
   // Stable store identity; slice signals are Svelte-store-contract objects.
   // svelte-ignore state_referenced_locally
@@ -62,6 +67,7 @@
   {:else}
     <ul class="character-list">
       {#each $character.characters as row (row.characterID)}
+        {@const botFlown = botFlownIDs.has(row.characterID)}
         <li>
           <button
             type="button"
@@ -69,7 +75,13 @@
             disabled={busyCharacterID !== null}
             onclick={() => select(row.characterID)}
           >
-            <span class="name">{row.characterName}</span>
+            <span class="name">
+              {row.characterName}
+              {#if botFlown}
+                <!-- Words with the mark, never the mark alone (R9a). -->
+                <span class="bot-flying-badge" title="A server bot is flying this pilot">⚙ Bot flying</span>
+              {/if}
+            </span>
             <span class="detail">
               {row.shipName ?? "No ship"}
               · {row.skillPoints ?? 0} SP
@@ -77,6 +89,8 @@
             </span>
             {#if busyCharacterID === row.characterID}
               <span class="detail">Entering station…</span>
+            {:else if botFlown}
+              <span class="detail">A server bot is flying this pilot — stop it below to fly it yourself.</span>
             {/if}
           </button>
         </li>

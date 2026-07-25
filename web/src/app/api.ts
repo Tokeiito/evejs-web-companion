@@ -2408,6 +2408,8 @@ export interface ServerBot {
   readonly note: string | null;
   readonly startedAt: string;
   readonly endedAt: string | null;
+  /** Set when the server restarted this bot after coming back up. */
+  readonly resumedAt: string | null;
 }
 
 function asServerBot(value: JsonValue): ServerBot {
@@ -2426,12 +2428,85 @@ function asServerBot(value: JsonValue): ServerBot {
     note: typeof row.note === "string" ? row.note : null,
     startedAt: typeof row.startedAt === "string" ? row.startedAt : "",
     endedAt: typeof row.endedAt === "string" ? row.endedAt : null,
+    resumedAt: typeof row.resumedAt === "string" ? row.resumedAt : null,
   };
 }
 
 export async function listServerBots(options: ApiOptions = {}): Promise<ServerBot[]> {
   const data = await getJson("/api/bots", options);
   return Array.isArray(data.bots) ? data.bots.map(asServerBot) : [];
+}
+
+/** One hold's fill level in a bot-flown ship's vitals sample. */
+export interface ActiveBotHold {
+  readonly label: string;
+  readonly used: number | null;
+  readonly capacity: number | null;
+}
+
+/** The last ship-state sample the host took for a running bot (~15s cadence). */
+export interface ActiveBotVitals {
+  readonly sampledAt: string | null;
+  /** null = not known yet; true = docked (health bars don't apply). */
+  readonly docked: boolean | null;
+  readonly shield: number | null;
+  readonly armor: number | null;
+  readonly hull: number | null;
+  readonly holds: readonly ActiveBotHold[];
+}
+
+/** A running server bot as the UNAUTHENTICATED landing screens see it. */
+export interface ActiveServerBot {
+  readonly characterID: number;
+  readonly status: string;
+  readonly phase: string | null;
+  readonly why: string | null;
+  readonly note: string | null;
+  readonly vitals: ActiveBotVitals | null;
+}
+
+function asActiveServerBot(value: JsonValue): ActiveServerBot {
+  const row = (value ?? {}) as Record<string, JsonValue>;
+  const rawVitals =
+    typeof row.vitals === "object" && row.vitals !== null && !Array.isArray(row.vitals)
+      ? (row.vitals as Record<string, JsonValue>)
+      : null;
+  return {
+    characterID: asNumberOrNull(row.characterID) ?? 0,
+    status: typeof row.status === "string" ? row.status : "unknown",
+    phase: typeof row.phase === "string" ? row.phase : null,
+    why: typeof row.why === "string" ? row.why : null,
+    note: typeof row.note === "string" ? row.note : null,
+    vitals: rawVitals
+      ? {
+          sampledAt: typeof rawVitals.sampledAt === "string" ? rawVitals.sampledAt : null,
+          docked: typeof rawVitals.docked === "boolean" ? rawVitals.docked : null,
+          shield: asNumberOrNull(rawVitals.shield),
+          armor: asNumberOrNull(rawVitals.armor),
+          hull: asNumberOrNull(rawVitals.hull),
+          holds: Array.isArray(rawVitals.holds)
+            ? rawVitals.holds.map((hold) => {
+                const entry = (hold ?? {}) as Record<string, JsonValue>;
+                return {
+                  label: typeof entry.label === "string" ? entry.label : "Hold",
+                  used: asNumberOrNull(entry.used),
+                  capacity: asNumberOrNull(entry.capacity),
+                };
+              })
+            : [],
+        }
+      : null,
+  };
+}
+
+/**
+ * The running server bots as the landing screens see them. Unauthenticated by
+ * design — the login/character screens mark bot-flown pilots and show their
+ * ship vitals before any sign-in exists.
+ */
+export async function listActiveServerBots(options: ApiOptions = {}): Promise<ActiveServerBot[]> {
+  const data = await getJson("/api/bots/active", options);
+  return Array.isArray(data.bots) ? data.bots.map(asActiveServerBot) : [];
 }
 
 export async function startServerBot(

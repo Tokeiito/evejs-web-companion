@@ -2812,6 +2812,77 @@
     width: 100%;
     max-width: 22rem;
   }
+
+  /* The boot onboarding: "Your pilots" WIDE on the left, the login card
+   * BESIDE it on the right (wrapping under on a phone). The pilots panel
+   * carries per-row bot readouts now, so it gets the room; the login card
+   * keeps its form width. flex-wrap is the responsive story: under ~52rem the
+   * login drops below the picker, and with no picker at all (empty roster)
+   * justify-content centres the lone login card. This also neutralises the
+   * login screen's own 70vh centring, which used to float the card a whole
+   * empty screen below the picker — same move the add-character overlay makes
+   * (.onboarding-frame above). */
+  .onboarding-screen {
+    width: 100%;
+    max-width: 72rem;
+    margin: 0 auto;
+    padding: 1.5rem 0.75rem 2rem;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    justify-content: center;
+    gap: 1.25rem;
+  }
+  .onboarding-screen .known-chars {
+    flex: 1 1 30rem;
+    min-width: 0;
+    margin-bottom: 0;
+  }
+  .onboarding-screen .login-screen {
+    flex: 0 1 22rem;
+    min-height: 0;
+  }
+  .onboarding-screen .login-screen .panel {
+    max-width: none;
+  }
+  /* A quick-add error concerns the whole screen, not either column. */
+  .onboarding-screen > .error {
+    flex-basis: 100%;
+    margin: 0;
+  }
+
+  /* The landing page's own Stop for a bot-flown pilot (beside the forget ×).
+   * Centred, not stretched — a row tall with vitals must not inflate the
+   * button into a slab. R8 — a comfortable target on a phone. */
+  .known-stop {
+    align-self: center;
+    min-height: 40px;
+    padding: 0 0.7rem;
+    white-space: nowrap;
+    border-color: var(--color-danger);
+    color: var(--color-danger);
+  }
+
+  /* The bot-flown pilot's ship readout line (health + hold fill). */
+  .bot-vitals {
+    color: var(--color-accent);
+  }
+
+  /* "A server bot is flying this pilot" — the mark on login/character rows.
+   * Words beside the glyph, never the glyph alone (R9a); the app's accent
+   * colour, and legible on a disabled row. */
+  .bot-flying-badge {
+    display: inline-block;
+    margin-left: 0.45rem;
+    padding: 0.05rem 0.4rem;
+    border: 1px solid var(--color-accent);
+    color: var(--color-accent);
+    font-size: 0.72em;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    white-space: nowrap;
+    vertical-align: middle;
+  }
   .login-status {
     margin: 0 0 0.75rem;
     padding: 0.5rem 0.7rem;
