@@ -20,7 +20,13 @@
   import { onMount } from "svelte";
   import MiningBot from "./MiningBot.svelte";
   import MissionBot from "./MissionBot.svelte";
-  import { listBotScripts, getBotScript, type BotScriptSummary } from "../app/api.ts";
+  import ServerBots from "./ServerBots.svelte";
+  import {
+    listBotScripts,
+    getBotScript,
+    startServerBot,
+    type BotScriptSummary,
+  } from "../app/api.ts";
   import { decodeScriptValue } from "../bots/scriptCodec.ts";
   import {
     BOTS,
@@ -84,6 +90,48 @@
       await flow.startCustomBot(decoded.doc);
     } catch {
       savedError = "Could not start that bot.";
+    }
+  }
+
+  /** Which saved bot a server start is in flight for (disables its buttons). */
+  let serverStartBusy = $state<string | null>(null);
+
+  /**
+   * Run a saved bot ON THE SERVER, flying THIS TAB's current character.
+   *
+   * The handover is the SERVER's, in one request: /api/bots/start releases the
+   * caller's own held session and claims the character for the bot atomically.
+   * Started-first matters twice over — the login/select screens this tab falls
+   * to poll the bot-flying marks, and a bot that already exists is on their
+   * FIRST read (release-first left them blank until the next poll); and a
+   * refused start changes nothing, so the tab just keeps flying (no take-the-
+   * hull-back dance). The releaseSession afterwards only syncs THIS tab's UI —
+   * its server-side session is already gone.
+   */
+  async function startSavedOnServer(scriptID: string): Promise<void> {
+    if (serverStartBusy !== null) {
+      return;
+    }
+    const current = store.station.get().online;
+    if (current === null) {
+      savedError = "Bring a character online first — the server bot flies your current character.";
+      return;
+    }
+    serverStartBusy = scriptID;
+    savedError = null;
+    try {
+      await startServerBot(current.characterID, scriptID);
+    } catch (cause) {
+      savedError = cause instanceof Error ? cause.message : "Could not start that bot on the server.";
+      serverStartBusy = null;
+      return;
+    }
+    try {
+      await flow.releaseSession();
+    } catch {
+      // The bot has the hull either way; the tab's next read notices.
+    } finally {
+      serverStartBusy = null;
     }
   }
   onMount(() => {
@@ -241,7 +289,9 @@
   <p class="note">
     Everything this client can run for you. A bot runs in this tab: close it and
     your ship finishes what it was last told to do and sits. Only one bot can fly
-    your ship at a time — starting one stops whatever else was running.
+    your ship at a time — starting one stops whatever else was running. A saved
+    bot can instead run <em>on the server</em>, which keeps flying after this tab
+    is gone.
   </p>
   {#if runningName}
     <p class="stat-line">
@@ -263,12 +313,33 @@
       {#each savedBots as meta (meta.scriptID)}
         <li class="saved-bot">
           <span class="saved-name">{meta.name}</span>
-          <button class="primary" onclick={() => startSaved(meta.scriptID)}>Start</button>
+          <span class="saved-actions">
+            <!--
+              Two very different promises. "Run here" is the in-tab runner:
+              close the tab and the ship sits. "Run on server" hands the hull
+              to the BFF: the tab (and the phone it is on) stops mattering.
+            -->
+            <button
+              class="primary"
+              disabled={serverStartBusy !== null}
+              onclick={() => startSaved(meta.scriptID)}
+            >
+              Run here
+            </button>
+            <button
+              disabled={serverStartBusy !== null}
+              onclick={() => startSavedOnServer(meta.scriptID)}
+            >
+              {serverStartBusy === meta.scriptID ? "Handing over…" : "Run on server"}
+            </button>
+          </span>
         </li>
       {/each}
     </ul>
   {/if}
 </section>
+
+<ServerBots />
 
 <section>
   <h2>What you can run</h2>
@@ -411,6 +482,10 @@
   }
   .saved-name {
     color: var(--color-text-bright);
+  }
+  .saved-actions {
+    display: flex;
+    gap: 0.4rem;
   }
   .saved-bot button {
     min-height: 40px;

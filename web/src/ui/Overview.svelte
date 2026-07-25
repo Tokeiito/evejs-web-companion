@@ -1277,7 +1277,21 @@
    * belt would announce every rat in it as an arrival. */
   let seenHostileIDs = $state<ReadonlySet<number>>(new Set<number>());
   let primedHostiles = $state(false);
-  let arrivalNotice = $state("");
+  /**
+   * The last arrival announcement, kept as STRUCTURED data — never a frozen
+   * string. The distance is looked up LIVE when the banner renders (see the
+   * `arrivalNotice` derived below), so the headline tracks the named hostile as
+   * it closes in instead of freezing at the range it first arrived at while the
+   * threat rows beneath it update every poll.
+   */
+  let arrival = $state<{
+    readonly count: number;
+    readonly label: string;
+    readonly name: string;
+    readonly itemID: number;
+    /** The range at arrival — the fallback shown once the hostile is out of sight. */
+    readonly lastDistance: number;
+  } | null>(null);
   /** Does the set already hold exactly these ids? Compared by VALUE (no-op if so). */
   function sameIDSet(set: ReadonlySet<number>, ids: readonly number[]): boolean {
     if (set.size !== ids.length) {
@@ -1297,7 +1311,7 @@
         seenHostileIDs = new Set<number>();
       }
       primedHostiles = false;
-      arrivalNotice = "";
+      arrival = null;
       return;
     }
     if (!$space.loaded) {
@@ -1312,11 +1326,17 @@
     }
     const arrived = newlyArrivedHostiles(current, seenHostileIDs);
     if (arrived.length > 0) {
-      const label = hostileLabel(arrived[0]) ?? "hostile";
-      arrivalNotice =
-        arrived.length === 1
-          ? `A ${label.toLowerCase()} has arrived — ${displayLabel(arrived[0])}, ${formatDistance(arrived[0].distance)} away.`
-          : `${arrived.length} hostiles have arrived. The nearest is ${displayLabel(arrived[0])}, ${formatDistance(arrived[0].distance)} away.`;
+      // Capture only what an arrival FIXES — who arrived, how many, and which
+      // one to point at. The distance is deliberately NOT frozen here; the
+      // `arrivalNotice` derived reads it live so the headline keeps pace with
+      // the hostile as it approaches.
+      arrival = {
+        count: arrived.length,
+        label: hostileLabel(arrived[0]) ?? "hostile",
+        name: displayLabel(arrived[0]),
+        itemID: arrived[0].itemID,
+        lastDistance: arrived[0].distance,
+      };
     }
     // Forget the ones that are gone, so a rat that leaves and comes back warns
     // again. ⚠ WRITE ONLY WHEN THE ID SET ACTUALLY CHANGED: this effect READS
@@ -1326,6 +1346,24 @@
     if (!sameIDSet(seenHostileIDs, currentIDs)) {
       seenHostileIDs = new Set(currentIDs);
     }
+  });
+
+  /**
+   * The arrival banner text, with the named hostile's CURRENT distance. Reading
+   * the range here — rather than baking it into `arrival` — is the whole fix:
+   * while the hostile is still on the field we show where it is NOW, falling
+   * back to the range we last saw it at only once it leaves.
+   */
+  const arrivalNotice = $derived.by(() => {
+    const a = arrival;
+    if (!a) {
+      return "";
+    }
+    const live = threats.find((row) => row.itemID === a.itemID);
+    const distance = formatDistance(live ? live.distance : a.lastDistance);
+    return a.count === 1
+      ? `A ${a.label.toLowerCase()} has arrived — ${a.name}, ${distance} away.`
+      : `${a.count} hostiles have arrived. The nearest is ${a.name}, ${distance} away.`;
   });
 
   /**

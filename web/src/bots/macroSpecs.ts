@@ -123,4 +123,38 @@ export const MACRO_SPECS: Readonly<Record<MacroID, MacroSpec>> = {
   // Docked: quote the active ship + its fitted modules at the repair shop and
   // fix whatever is damaged (the station charges the wallet).
   "repair-ship": { args: [], untilRequired: false },
+  // ── The market set (docked). Every arg is REQUIRED: an order with no item,
+  // no price or (for a buy) no quantity is meaningless, so the block will not
+  // start until they are set. Prices are ISK per unit; the server confirm-gates
+  // every order and charges the broker fee.
+  "buy-item": {
+    args: [
+      { key: "item", kind: "itemType", required: true },
+      { key: "quantity", kind: "qty", required: true },
+      { key: "price", kind: "isk", required: true },
+    ],
+    untilRequired: false,
+  },
+  "sell-item": {
+    args: [
+      { key: "item", kind: "itemType", required: true },
+      { key: "price", kind: "isk", required: true },
+    ],
+    untilRequired: false,
+  },
+  // ── The fleet-support set (in space). Both argless: they read the grid and the
+  // fitted remote reps, so there is nothing to pick.
+  //   • remote-rep is reactive — done once no friendly on grid is hurt.
+  //   • orbit-and-boost is sustained — it stays on the fleet and never ends on
+  //     its own (stopped by a watch or by hand), so no `until` is forced.
+  "remote-rep": { args: [], untilRequired: false },
+  "orbit-and-boost": { args: [], untilRequired: false },
+  // ── The fleet-management set (multibox alt-fleeting). create/join are argless;
+  // invite names WHO to bring in (a character from your known-pilots roster).
+  "create-fleet": { args: [], untilRequired: false },
+  "invite-to-fleet": {
+    args: [{ key: "who", kind: "character", required: true }],
+    untilRequired: false,
+  },
+  "join-fleet": { args: [], untilRequired: false },
 };

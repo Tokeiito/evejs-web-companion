@@ -129,9 +129,47 @@ const PLANET_KEEPER: BotScript = {
   ],
 };
 
+/** A branch demo, forever: mine a belt, haul home, then FORK on the ship's
+ * shields — repair if it took a beating this lap, otherwise refine what it
+ * mined. The branch lives INSIDE the loop, so the choice is made fresh each lap. */
+const SMART_MINER: BotScript = {
+  ...FORMAT,
+  name: "Smart miner",
+  notes: "Mines and hauls on a loop, then each lap either repairs the ship (if it got hurt) or refines the ore.",
+  home: startingStation(),
+  interrupts: [{ id: "w-hull", when: { kind: "hull-below", fraction: 0.4 }, respond: "dock-and-pause" }],
+  program: [
+    {
+      id: "loop",
+      kind: "loop",
+      repeat: { kind: "forever" },
+      body: [
+        { id: "s1", kind: "macro", macro: "undock", args: {} },
+        {
+          id: "s2",
+          kind: "macro",
+          macro: "mine-at-belt",
+          args: { belt: { kind: "belt", belt: { mode: "nearest" } } },
+          until: { kind: "ore-hold-at-least", fraction: 0.9 },
+        },
+        { id: "s3", kind: "macro", macro: "deliver-ore", args: { station: { kind: "station", ref: startingStation() } } },
+        // Docked at home now — fork on how the shields held up THIS lap.
+        {
+          id: "br",
+          kind: "branch",
+          when: { kind: "shield-below", fraction: 0.6 },
+          then: [{ id: "t1", kind: "macro", macro: "repair-ship", args: {} }],
+          else: [{ id: "e1", kind: "macro", macro: "refine-ore", args: {} }],
+        },
+      ],
+    },
+  ],
+};
+
 export const EXAMPLE_BOTS: readonly ExampleBot[] = Object.freeze([
   { key: "mining", label: "Mining day", blurb: "Mine, haul home, refine — forever.", doc: MINING_DAY },
   { key: "delivery", label: "Delivery runs", blurb: "Find an agent, run 20 deliveries.", doc: DELIVERY_RUNS },
   { key: "ratting", label: "Ratting night", blurb: "Den to den: fight, salvage, loot.", doc: RATTING_NIGHT },
   { key: "planets", label: "Planet keeper", blurb: "Keep the extractors running.", doc: PLANET_KEEPER },
+  { key: "smart", label: "Smart miner", blurb: "Mine, haul, then repair or refine.", doc: SMART_MINER },
 ]);

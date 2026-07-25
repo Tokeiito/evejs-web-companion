@@ -173,7 +173,10 @@ import type { ScriptObservation } from "../nav/scriptConditions.ts";
 import { decodeFullState } from "../bridge/boundSmallServices.ts";
 import { decodeFittings } from "../bridge/fittings.ts";
 import { decodeActiveBookmarks } from "../bridge/bookmarks.ts";
+import { decodeBoundFleet } from "../bridge/boundFleet.ts";
 import type { BotScript } from "../bots/botScript.ts";
+import { decodeScriptValue } from "../bots/scriptCodec.ts";
+import { expandSubBots, hasSubBots, subBotNames } from "../bots/subBots.ts";
 
 /**
  * What the player asked the mission bot to do (goal R36).
@@ -232,6 +235,22 @@ export interface AppFlowOptions {
    * single-session path (main.ts, every existing test) byte-for-byte unchanged.
    */
   readonly perSessionToken?: boolean;
+  /**
+   * Server bot host — a session token this flow starts out holding, so a
+   * headless flow whose owner ALREADY authenticated (the bot-start route runs
+   * under requireAuth) can skip `login()` entirely instead of round-tripping a
+   * password the server would have to accept. Only read in per-session mode:
+   * a shared-global flow has no per-flow token to seed.
+   */
+  readonly initialSessionToken?: string | null;
+  /**
+   * Multibox — whether this flow may hold a live push (SSE) connection.
+   * Default true keeps the single-session path unchanged; roster sessions
+   * start false and the App enables exactly one (the active pilot), because
+   * each open EventSource occupies one of the browser's ~6 per-origin
+   * connections for its whole life. See AppFlow.setLivePush.
+   */
+  readonly livePush?: boolean;
 }
 
 /**
@@ -762,14 +781,40 @@ export interface AppFlow {
    * lands).
    */
   requestNames(refs: readonly NameRef[]): void;
+  /**
+   * Multibox — open or close this pilot's live push channel (SSE). Browsers
+   * allow only ~6 concurrent HTTP/1.1 connections per origin, and every open
+   * EventSource holds one for its whole life, so a tab full of pilots each
+   * holding a stream starves the pool and the NEXT pilot's login/select hangs
+   * forever in the browser's request queue. The roster owner (App.svelte)
+   * keeps push on for the ACTIVE pilot only. A pilot without push still works:
+   * every bridge response carries its notification drain and the panels poll;
+   * only live chat/notification push waits until the pilot is active again.
+   * Enabling while the character is online (re-)opens the stream immediately.
+   */
+  setLivePush(enabled: boolean): void;
   /** Release the persistent session (character offline), back to the select list. */
   releaseSession(): Promise<void>;
   logout(): Promise<void>;
 }
 
-/** True when the session the BFF held is gone (TTL, takeover, restart). */
+/**
+ * True when the session the BFF held can no longer act — the character is not
+ * online on it. Two codes mean this, and both must unwind the same way (stop the
+ * stream, flip the slice offline, so App prunes the pilot rather than leaving a
+ * cockpit whose every read fails):
+ *   • SESSION_NOT_FOUND — the held bridge session is gone (TTL / restart).
+ *   • NO_LIVE_SESSION   — the session is held but its character was taken over
+ *     by another client (retail takeover) or released, so the gateway reports no
+ *     character online. This is exactly what a multibox re-select does to a
+ *     character being flown elsewhere, so R107 must treat it as a lost session
+ *     or the yanked pilot lingers as a zombie cockpit.
+ */
 export function isSessionLost(error: unknown): boolean {
-  return error instanceof BridgeCallError && error.code === "SESSION_NOT_FOUND";
+  return (
+    error instanceof BridgeCallError &&
+    (error.code === "SESSION_NOT_FOUND" || error.code === "NO_LIVE_SESSION")
+  );
 }
 
 /**
@@ -844,7 +889,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     ...(options.baseUrl !== undefined ? { baseUrl: options.baseUrl } : {}),
     ...(options.fetch !== undefined ? { fetch: options.fetch } : {}),
     ...(options.eventSource !== undefined ? { eventSource: options.eventSource } : {}),
-    ...(options.perSessionToken ? { token: null } : {}),
+    ...(options.perSessionToken ? { token: options.initialSessionToken ?? null } : {}),
   };
 
   // R6b — the docked station the station-scoped panels are currently synced to,
@@ -1091,8 +1136,16 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
   }
 
+  // Multibox — gate on the live push channel (see AppFlow.setLivePush): while
+  // false this flow opens NO EventSource, so a background pilot never holds one
+  // of the browser's ~6 per-origin connections.
+  let livePushEnabled = options.livePush ?? true;
+
   function startLiveStream(): void {
     stopLiveStream();
+    if (!livePushEnabled) {
+      return; // status stays idle; reads still carry their notification drains
+    }
     store.apply({ type: "live/status", status: "connecting" });
     liveStream = api.subscribeBridgeEvents(
       {
@@ -4424,6 +4477,39 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     return { shield, armor, hull, hardeners, weapons };
   }
 
+  /**
+   * The fitted REMOTE repairers (they repair ANOTHER ship), by the game's own
+   * group names — the fleet-support blocks run these. Same resolve-then-judge pass
+   * as the local reps; the "remote" prefix in the group name is what separates a
+   * Remote Shield Booster from a self shield booster.
+   */
+  function resolveRemoteRepModuleIDs(): RemoteRepModuleIDs {
+    const fit = store.fitting.get();
+    const shield: number[] = [];
+    const armor: number[] = [];
+    const hull: number[] = [];
+    if (fit.slotsError === null) {
+      const resolved = store.names.get().resolved;
+      for (const slot of fit.slots) {
+        if (slot.module === null || !slot.module.online || slot.family === "rig" || slot.family === "subsystem") {
+          continue;
+        }
+        const group = resolved[nameKey("typeGroup", slot.module.typeID)] ?? null;
+        if (group === null) {
+          continue; // cannot tell what it is — never run a mystery module
+        }
+        if (/remote shield/i.test(group)) {
+          shield.push(slot.module.itemID);
+        } else if (/remote armor/i.test(group)) {
+          armor.push(slot.module.itemID);
+        } else if (/remote (hull|structure)/i.test(group)) {
+          hull.push(slot.module.itemID);
+        }
+      }
+    }
+    return { shield, armor, hull };
+  }
+
   function resolveSalvageModuleIDs(): readonly number[] {
     const fit = store.fitting.get();
     if (fit.slotsError !== null) {
@@ -4457,7 +4543,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     "fly-to-mission-site",
   ]);
   const CONVO_MACROS = new Set(["request-mission", "accept-mission", "turn-in-mission"]);
-  const CARGO_MACROS = new Set(["accept-mission", "load-mission-cargo", "turn-in-mission", "unload-cargo", "refine-ore", "refit-ship", "move-items", "repair-ship"]);
+  const CARGO_MACROS = new Set(["accept-mission", "load-mission-cargo", "turn-in-mission", "unload-cargo", "refine-ore", "refit-ship", "move-items", "repair-ship", "sell-item"]);
 
   interface DefenseModuleIDs {
     readonly shield: readonly number[];
@@ -4467,12 +4553,23 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     readonly weapons: readonly number[];
   }
   const NO_DEFENSE: DefenseModuleIDs = { shield: [], armor: [], hull: [], hardeners: [], weapons: [] };
+  interface RemoteRepModuleIDs {
+    readonly shield: readonly number[];
+    readonly armor: readonly number[];
+    readonly hull: readonly number[];
+  }
+  const NO_REMOTE_REPS: RemoteRepModuleIDs = { shield: [], armor: [], hull: [] };
+  // Market orders a bot places rest the retail maximum, so a resting order does
+  // not quietly expire under a long-running bot.
+  const BOT_ORDER_DURATION_DAYS = 90;
 
   function makeScriptRunnerDeps(
     miningModuleIDs: readonly number[],
     startingStationID: number | null,
     salvageModuleIDs: readonly number[] = [],
     defense: DefenseModuleIDs = NO_DEFENSE,
+    walletWatched = false,
+    remoteReps: RemoteRepModuleIDs = NO_REMOTE_REPS,
   ): ScriptRunnerDeps {
     // One finder result per run: the found agent does not change under the bot.
     let foundAgentCache: NonNullable<ScriptObservation["foundAgent"]> | null = null;
@@ -4624,6 +4721,29 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
               failureReason: autopilot.snapshot().failureReason,
             }
           : null;
+        // Own wallet balance — read only when a wallet watch is set (static for
+        // the run), since that watch is checked every tick. Best-effort: a failed
+        // read stays null (unreadable, never a false "below" that fires a watch).
+        let walletBalance: ScriptObservation["walletBalance"] = null;
+        if (walletWatched) {
+          try {
+            const cash = decodeCashBalance((await api.loadWallet(callOptions)).cash);
+            walletBalance = cash === null ? null : Number(cash);
+          } catch {
+            walletBalance = null;
+          }
+        }
+        // Fleet membership — read only for the fleet-management blocks. A char with
+        // no fleet reads a real "not in a fleet" (fleetID null), so false is
+        // authoritative; only a failed read is null (unreadable).
+        let inFleet: ScriptObservation["inFleet"] = null;
+        if (macro === "create-fleet" || macro === "invite-to-fleet" || macro === "join-fleet") {
+          try {
+            inFleet = decodeBoundFleet(await api.loadBoundFleet(callOptions)).fleetID !== null;
+          } catch {
+            inFleet = null;
+          }
+        }
         if (macro !== null && (MISSION_MACROS.has(macro) || CARGO_MACROS.has(macro))) {
           if (MISSION_MACROS.has(macro)) {
             try {
@@ -4774,9 +4894,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           shieldRepairerIDs: defense.shield,
           armorRepairerIDs: defense.armor,
           hullRepairerIDs: defense.hull,
+          remoteShieldRepairerIDs: remoteReps.shield,
+          remoteArmorRepairerIDs: remoteReps.armor,
+          remoteHullRepairerIDs: remoteReps.hull,
+          inFleet,
           hardenerModuleIDs: defense.hardeners,
           weaponModuleIDs: defense.weapons,
           capacitorRatio: ship?.capacitorRatio ?? null,
+          walletBalance,
           startingStationID,
           myCharacterID: store.station.get().online?.characterID ?? null,
           myCorporationID: store.station.get().online?.corporationID ?? null,
@@ -4977,6 +5102,35 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             }
             return;
           }
+          case "placeBuyOrder":
+            // A resting order rests the full 90 days; the API's own confirm gate
+            // is the second lock behind the server's. The block is one-shot, so a
+            // silent decline just means no order — never a double buy.
+            await api.placeMarketBuyOrder(
+              { typeID: action.typeID, price: action.price, quantity: action.quantity, durationDays: BOT_ORDER_DURATION_DAYS },
+              callOptions,
+            );
+            return;
+          case "placeSellOrder":
+            // The listed stack leaves the hangar, which is how the block confirms
+            // next tick — a decline leaves it, and the block retries within bound.
+            await api.placeMarketSellOrder(
+              { itemID: action.itemID, typeID: action.typeID, price: action.price, quantity: action.quantity, durationDays: BOT_ORDER_DURATION_DAYS },
+              callOptions,
+            );
+            return;
+          case "createFleet":
+            // Confirmed by the next bound-fleet read (inFleet flips true).
+            await api.createFleet(callOptions);
+            return;
+          case "inviteToFleet":
+            await api.inviteToFleet(action.charID, callOptions);
+            return;
+          case "acceptFleetInvite":
+            // Errors when no invite is pending — swallowed; the block re-tries until
+            // inFleet reads true or its wait bound trips.
+            await api.acceptFleetInvite(callOptions);
+            return;
         }
       },
       sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
@@ -5004,7 +5158,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     };
   }
 
-  async function startCustomBot(doc: BotScript): Promise<void> {
+  async function startCustomBot(input: BotScript): Promise<void> {
     // One hull, one driver. Until the custom bot joins the structural ship claim,
     // the others are stopped by hand here.
     const gen = (customBotGeneration += 1);
@@ -5012,6 +5166,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     miningBot?.stop();
     missionBot?.stop();
     scriptRunner?.stop();
+    // COMPOSITION, resolved once here: a bot that includes other saved bots is
+    // expanded into one flat program BEFORE the runner ever sees it, so the whole
+    // engine keeps reasoning about a single program. A bot that cannot be
+    // included is skipped with a plain reason rather than failing the run.
+    const doc = await expandSavedSubBots(input);
+    if (gen !== customBotGeneration) {
+      return; // superseded while the included bots were read
+    }
     store.apply({ type: "custom-bot/started", name: doc.name });
     // Resolve, ONCE at start, the two runtime facts the blocks need: which fitted
     // modules are miners, and where "the starting station" is (where we are now).
@@ -5021,11 +5183,106 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
     const salvageModuleIDs = resolveSalvageModuleIDs();
     const defense = resolveDefenseModuleIDs();
+    const remoteReps = resolveRemoteRepModuleIDs();
     const startStatus = store.flight.get().status;
     const startingStationID = startStatus !== null && startStatus.docked ? startStatus.stationID : null;
-    scriptRunner = createScriptRunner(makeScriptRunnerDeps(miningModuleIDs, startingStationID, salvageModuleIDs, defense));
+    // Whether ANY watch or stop-when reads the wallet — decided once, so observe
+    // only pays for the per-tick wallet read when a bot actually needs it.
+    const walletWatched = scriptWatchesWallet(doc);
+    scriptRunner = createScriptRunner(
+      makeScriptRunnerDeps(miningModuleIDs, startingStationID, salvageModuleIDs, defense, walletWatched, remoteReps),
+    );
     scriptRunner.start(doc);
     void scriptRunner.run();
+  }
+
+  /**
+   * Expand "run one of my saved bots" nodes by pulling those bots off the
+   * server and splicing their programs in. Returns the doc unchanged when it
+   * asks for none. Every fetched bot goes through the CODEC first (a stored bot
+   * is untrusted bytes like any other), and anything that cannot be included is
+   * reported on the readout rather than stopping the run.
+   */
+  async function expandSavedSubBots(doc: BotScript): Promise<BotScript> {
+    if (!hasSubBots(doc)) {
+      return doc;
+    }
+    const wanted = subBotNames(doc);
+    const byName = new Map<string, BotScript>();
+    try {
+      const summaries = await api.listBotScripts(callOptions);
+      for (const name of wanted) {
+        const match = summaries.find((s) => s.name.trim().toLowerCase() === name.toLowerCase());
+        if (match === undefined) {
+          continue;
+        }
+        const record = await api.getBotScript(match.scriptID, callOptions);
+        if (record === null) {
+          continue;
+        }
+        const decoded = decodeScriptValue(record.doc);
+        if (decoded.ok) {
+          byName.set(name.toLowerCase(), decoded.doc);
+        }
+      }
+    } catch {
+      // Could not read the library — expansion below reports each miss plainly.
+    }
+    const result = expandSubBots(doc, (name) => byName.get(name.trim().toLowerCase()) ?? null);
+    if (result.problems.length > 0) {
+      store.apply({
+        type: "custom-bot/progress",
+        status: "running",
+        phase: "Starting",
+        why: result.problems.join(" "),
+        stepPath: null,
+        interruptID: null,
+        pauseReason: null,
+        note: null,
+      });
+    }
+    return result.doc;
+  }
+
+  /** True when any interrupt or any step/loop `until` in the doc reads the wallet. */
+  function scriptWatchesWallet(doc: BotScript): boolean {
+    const isWallet = (kind: string): boolean => kind === "wallet-below" || kind === "wallet-above";
+    if (doc.interrupts.some((row) => isWallet(row.when.kind))) {
+      return true;
+    }
+    for (const node of doc.program) {
+      if (node.kind === "loop") {
+        if (node.until !== undefined && isWallet(node.until.kind)) {
+          return true;
+        }
+        // A loop body holds steps AND branches — check each element's own test.
+        for (const element of node.body) {
+          if (element.kind === "branch") {
+            if (isWallet(element.when.kind)) {
+              return true;
+            }
+            if ([...element.then, ...element.else].some((s) => s.until !== undefined && isWallet(s.until.kind))) {
+              return true;
+            }
+          } else if (element.until !== undefined && isWallet(element.until.kind)) {
+            return true;
+          }
+        }
+      } else if (node.kind === "branch") {
+        // A branch that FORKS on the wallet needs the read, as do its bodies' stops.
+        if (isWallet(node.when.kind)) {
+          return true;
+        }
+        if ([...node.then, ...node.else].some((s) => s.until !== undefined && isWallet(s.until.kind))) {
+          return true;
+        }
+      } else if (node.kind === "macro" && node.until !== undefined && isWallet(node.until.kind)) {
+        return true;
+      }
+      // A sub-bot node is already expanded by the time this runs, so it has no
+      // test of its own to check here.
+    }
+    return false;
   }
 
   /**
@@ -5885,6 +6142,23 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     },
 
     requestNames,
+
+    setLivePush(enabled) {
+      if (enabled === livePushEnabled) {
+        return;
+      }
+      livePushEnabled = enabled;
+      if (!enabled) {
+        stopLiveStream();
+        return;
+      }
+      // Becoming the active pilot with a character online: attach now. The
+      // server replays from its cursor when it can; the flow's own
+      // snapshot/resync handling covers the gap when it cannot.
+      if (store.station.get().online !== null) {
+        startLiveStream();
+      }
+    },
 
     async releaseSession() {
       // R10: stop consuming the push channel first — the session it belongs to

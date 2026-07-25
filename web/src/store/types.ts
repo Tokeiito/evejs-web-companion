@@ -331,6 +331,23 @@ export interface FittingState {
   readonly actionError: string | null;
 }
 
+/**
+ * The bound-dogma snapshot for the Fitting window (goal R21, slice B): the
+ * active ship followed by every fitted module, each carrying the SERVER's
+ * post-dogma attribute map (skills + hull bonuses + in-space effects already
+ * applied). Clicking a module socket looks that module up here by itemID and
+ * renders its EFFECTIVE stats — see bridge/moduleAttributes.ts. Refreshed
+ * alongside the fitting slice; a failed read keeps its own error and never
+ * blanks the fit itself.
+ */
+export interface DogmaState {
+  readonly allInfo: BoundDogmaAllInfo | null;
+  /** True once a bound-dogma read has populated the slice. */
+  readonly loaded: boolean;
+  /** Non-null when the bound-dogma read failed (the fit still shows). */
+  readonly error: string | null;
+}
+
 // --- R15 Industry ----------------------------------------------------------
 
 /**

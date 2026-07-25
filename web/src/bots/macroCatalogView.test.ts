@@ -8,7 +8,13 @@ import assert from "node:assert/strict";
 import { MACRO_IDS } from "./botScript.ts";
 import { MACRO_SPECS } from "./macroSpecs.ts";
 import { macroName } from "./scriptText.ts";
-import { MACRO_CATALOG_LIST, macroEntry } from "./macroCatalogView.ts";
+import {
+  CATEGORY_LABEL,
+  CATEGORY_ORDER,
+  MACRO_CATALOG_LIST,
+  categoriesInUse,
+  macroEntry,
+} from "./macroCatalogView.ts";
 
 const JARGON = /\b(typeGroup|groupID|macro|args?|until|stationID|beltID|kind|null)\b/i;
 const DIGITS = /\d/;
@@ -60,6 +66,25 @@ test("undock needs nothing; mine-at-belt needs a belt, equipment, and an until",
   assert.equal(mine.params.find((p) => p.key === "belt")?.required, true);
   assert.equal(mine.params.find((p) => p.key === "equipment")?.required, false, "equipment is optional (auto)");
   assert.equal(mine.untilRequired, true);
+});
+
+test("every macro has a category with a label, and the filter offers no empty bucket", () => {
+  for (const e of MACRO_CATALOG_LIST) {
+    assert.ok(CATEGORY_LABEL[e.category], `${e.id} has category "${e.category}" with no label`);
+    assert.ok(CATEGORY_ORDER.includes(e.category), `${e.category} is missing from CATEGORY_ORDER`);
+  }
+  const inUse = categoriesInUse();
+  // Every offered category must have at least one block behind it…
+  const present = new Set(MACRO_CATALOG_LIST.map((e) => e.category));
+  for (const c of inUse) {
+    assert.ok(present.has(c), `${c} is offered but has no block`);
+  }
+  // …and every block's category must be offered.
+  for (const e of MACRO_CATALOG_LIST) {
+    assert.ok(inUse.includes(e.category), `${e.category} has a block but is not offered`);
+  }
+  // The chips read in CATEGORY_ORDER (a stable, deduped subsequence).
+  assert.deepEqual(inUse, CATEGORY_ORDER.filter((c) => inUse.includes(c)));
 });
 
 test("travel and deliver both take a station picker", () => {

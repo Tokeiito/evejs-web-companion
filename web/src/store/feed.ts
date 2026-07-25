@@ -221,6 +221,16 @@ export type FeedEvent =
   | { readonly type: "fitting/action-error"; readonly message: string | null }
   // Drop the fitting state (character offline / logged out).
   | { readonly type: "fitting/cleared" }
+  // R21 slice B — the bound-dogma snapshot (active ship + fitted modules with
+  // their SERVER-effective attributes), loaded alongside the fitting slice. A
+  // failed read carries its own error and never blanks the fit.
+  | {
+      readonly type: "dogma/loaded";
+      readonly allInfo: BoundDogmaAllInfo | null;
+      readonly error: string | null;
+    }
+  // Drop the dogma snapshot (character offline / logged out).
+  | { readonly type: "dogma/cleared" }
   // Goal R15 — the Industry page. A full panel load: the player's blueprints
   // with their efficiencies and runs, their jobs with the status the SERVER
   // computed, how many job slots each activity is using, and the facilities

@@ -14,14 +14,68 @@
   import Onboarding from "./Onboarding.svelte";
   import Workspace from "./Workspace.svelte";
   import { createSession, type Session } from "../app/sessions.ts";
+  import {
+    loadPersistedSessions,
+    savePersistedSessions,
+    type PersistedSessions,
+  } from "../app/persistedSessions.ts";
+  import { setSessionToken, clearSessionToken } from "../app/sessionToken.ts";
+  import { getHealth } from "../app/api.ts";
 
-  // The online roster, the active pilot, and the one being added. The first
-  // pilot starts onboarding immediately (createSession warms its health ping).
+  // Read the roster retained across a refresh ONCE, before any write effect can
+  // clobber it, so a reload can bring the same pilots back online.
+  const retained = loadPersistedSessions();
+  const hasRetained = retained.pilots.length > 0;
+
+  // The online roster, the active pilot, and the one being added. On a fresh tab
+  // the first pilot starts onboarding immediately; when there's a retained roster
+  // we restore it instead (createSession warms its health ping either way).
   let sessions = $state<Session[]>([]);
   let activeId = $state<string | null>(null);
-  let onboarding = $state<Session | null>(createSession());
+  let restoring = $state(hasRetained);
+  let onboarding = $state<Session | null>(hasRetained ? null : createSession());
 
   const active = $derived(sessions.find((s) => s.id === activeId) ?? null);
+
+  // Restore-on-refresh: bring each retained pilot back online by re-signing in
+  // (any password) and re-selecting — the same tested path as a manual add, so
+  // no token is persisted and a since-expired BFF session just re-selects. Done
+  // sequentially: the first sign-in warms a cold gateway, and pilots light up in
+  // the bar one at a time. A pilot that can't come back (account gone, character
+  // taken, server down) is skipped rather than blocking the rest.
+  async function restoreSessions(saved: PersistedSessions): Promise<void> {
+    for (const pilot of saved.pilots) {
+      const session = createSession();
+      try {
+        await session.flow.login(pilot.accountName, "");
+        await session.flow.selectCharacter(pilot.characterID);
+        sessions = [...sessions, session];
+        if (activeId === null || pilot.characterID === saved.activeCharacterID) {
+          activeId = session.id;
+        }
+      } catch {
+        try {
+          await session.flow.logout();
+        } catch {
+          // best-effort teardown of a half-restored session
+        }
+      }
+    }
+    restoring = false;
+    // Nothing came back (e.g. the server was down) — fall through to a login.
+    if (sessions.length === 0 && onboarding === null) {
+      onboarding = createSession();
+    }
+  }
+
+  // Kick the restore off once, after mount. `retained` is a plain const, so this
+  // effect has no reactive dependencies and never re-runs.
+  let restoreStarted = false;
+  $effect(() => {
+    if (restoreStarted) return;
+    restoreStarted = true;
+    if (hasRetained) void restoreSessions(retained);
+  });
 
   // A pilot finished login+select: promote it from onboarding into the online
   // roster and make it the active cockpit (matches "Add character makes it
@@ -53,6 +107,19 @@
     activeId = id;
   }
 
+  // The characters already live in this tab, so the "Add character" picker can
+  // disable a quick-add that would just be refused as "already in use". Kept in
+  // sync by the same station subscriptions that drive pruning, below.
+  let onlineIDs = $state<Set<number>>(new Set());
+  function recomputeOnline(): void {
+    const ids = new Set<number>();
+    for (const s of sessions) {
+      const on = s.store.station.get().online;
+      if (on) ids.add(on.characterID);
+    }
+    onlineIDs = ids;
+  }
+
   // Remove a pilot the instant its store reports offline — release, logout, or a
   // lost session from inside its own workspace. Re-fix the active cockpit, and if
   // the tab is now empty, drop back to a fresh full-screen login.
@@ -76,21 +143,99 @@
     const unsubs = sessions.map((s) =>
       s.store.station.subscribe((slice) => {
         if (slice.online === null) removeSession(s.id);
+        recomputeOnline();
       }),
     );
+    recomputeOnline();
     return () => {
       for (const unsub of unsubs) unsub();
+    };
+  });
+
+  // Retain the online roster (account + character + which is active, NO token)
+  // across a refresh. Fires on roster / active-pilot changes, not on every
+  // in-store tick. Skipped while restoring so a transient empty roster can't
+  // clobber the one we are still bringing back — and `retained` was already read
+  // into a const above, so even a stray write is harmless.
+  $effect(() => {
+    const roster = sessions;
+    const current = activeId;
+    if (restoring) return;
+    const pilots = roster
+      .map((s) => {
+        const snapshot = s.store.get();
+        return snapshot.station.online && snapshot.session.username
+          ? { accountName: snapshot.session.username, characterID: snapshot.station.online.characterID }
+          : null;
+      })
+      .filter((p): p is { accountName: string; characterID: number } => p !== null);
+    const activeCharacterID =
+      roster.find((s) => s.id === current)?.store.get().station.online?.characterID ?? null;
+    savePersistedSessions({ pilots, activeCharacterID });
+  });
+
+  // One live push (SSE) connection per TAB, held by the active pilot. Roster
+  // sessions are created with livePush OFF (see app/sessions.ts): an open
+  // EventSource occupies one of the browser's ~6 per-origin connections for
+  // its whole life, so letting every pilot keep one starved the pool and hung
+  // the 7th pilot's login/select in the browser queue. Background pilots keep
+  // refreshing themselves over ordinary reads (every bridge response carries
+  // its notification drain); the switched-to pilot re-attaches here.
+  $effect(() => {
+    for (const s of sessions) {
+      s.flow.setLivePush(s.id === activeId);
+    }
+  });
+
+  // R107 — mirror the ACTIVE pilot's token into the per-tab global. A few panels
+  // still call the API WITHOUT per-session options — the Bot Builder's
+  // create/update/list/deleteBotScript and iconCache's admin routes — and those
+  // fall back to this global. Multibox otherwise leaves it empty, so before this
+  // they rode the leftover login COOKIE (the last pilot added) and saved/read a
+  // DIFFERENT account's bot scripts than the one on screen. Pointing the global
+  // at the active pilot makes those legacy calls act as the pilot you're looking
+  // at. Per-session flows are unaffected — they carry their own token on
+  // callOptions and never read the global.
+  $effect(() => {
+    const token = active?.flow.sessionToken() ?? null;
+    if (token) setSessionToken(token);
+    else clearSessionToken();
+  });
+
+  // Server connection status for the character bar: a light poll of the
+  // unauthenticated /api/health (BFF reachable + gateway ready), independent of
+  // any pilot, so it flips to "offline" the moment the server or gateway drops.
+  let serverStatus = $state<"checking" | "online" | "offline">("checking");
+  $effect(() => {
+    let cancelled = false;
+    const ping = async (): Promise<void> => {
+      try {
+        const { ready } = await getHealth({});
+        if (!cancelled) serverStatus = ready ? "online" : "offline";
+      } catch {
+        if (!cancelled) serverStatus = "offline";
+      }
+    };
+    void ping();
+    const handle = setInterval(() => void ping(), 10_000);
+    return () => {
+      cancelled = true;
+      clearInterval(handle);
     };
   });
 </script>
 
 {#if active}
-  <CharacterBar {sessions} {activeId} onSwitch={switchTo} onAdd={addCharacter} />
+  <CharacterBar {sessions} {activeId} {serverStatus} onSwitch={switchTo} onAdd={addCharacter} />
   <!-- Remount on switch: each Workspace binds one stable store/flow for its
        whole life, and the in-memory store makes the remount instant. -->
   {#key active.id}
     <Workspace store={active.store} flow={active.flow} />
   {/key}
+{:else if restoring}
+  <!-- Refresh restore in flight and no cockpit up yet: bringing pilots back. -->
+  <h1>EveJS Web</h1>
+  <p class="restoring-note">Restoring your pilots…</p>
 {/if}
 
 {#if onboarding}
@@ -102,12 +247,12 @@
           <span class="onboarding-frame-title">Add character</span>
           <button type="button" class="minor" onclick={cancelOnboarding}>Cancel</button>
         </div>
-        <Onboarding store={onboarding.store} flow={onboarding.flow} onOnline={completeOnboarding} />
+        <Onboarding store={onboarding.store} flow={onboarding.flow} {onlineIDs} onOnline={completeOnboarding} />
       </div>
     </div>
   {:else}
     <!-- First pilot: full-screen login, nothing behind it. -->
     <h1>EveJS Web</h1>
-    <Onboarding store={onboarding.store} flow={onboarding.flow} onOnline={completeOnboarding} />
+    <Onboarding store={onboarding.store} flow={onboarding.flow} {onlineIDs} onOnline={completeOnboarding} />
   {/if}
 {/if}

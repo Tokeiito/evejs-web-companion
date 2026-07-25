@@ -985,6 +985,34 @@ export async function modifyMarketOrder(
   return asMarketChange(data);
 }
 
+// --- Fleet management writes + the fleet-state read (fleet-mgmt bot blocks) ---
+// The writes are confirm-gated server-side; the reader passes `confirm:true` as the
+// second gate. Each returns the uniform ack; callers re-read /bound-fleet to prove
+// the mutation (⚠ these decoders are fast-mode educated guesses — never fired live,
+// so a live QA pass is owed). The bound-fleet READ, by contrast, is verified live:
+// a char with no fleet gets a FleetNotFound per read (a real "not in a fleet"), so
+// a null fleetID after decode is authoritative, not a blanking failure.
+
+/** Raw /api/bridge/bound-fleet envelope; decode with bridge/boundFleet.decodeBoundFleet. */
+export async function loadBoundFleet(options: ApiOptions = {}): Promise<Record<string, JsonValue>> {
+  return getJson("/api/bridge/bound-fleet", options);
+}
+
+/** FORM a fleet (you become boss). Confirm-gated. */
+export async function createFleet(options: ApiOptions = {}): Promise<void> {
+  await postJson("/api/bridge/fleet/create", { confirm: true }, options);
+}
+
+/** INVITE a character into the session's own fleet (must already be in one). */
+export async function inviteToFleet(inviteeCharID: number, options: ApiOptions = {}): Promise<void> {
+  await postJson("/api/bridge/fleet/invite", { inviteeCharID, confirm: true }, options);
+}
+
+/** ACCEPT a pending fleet invite for the session character (in the current ship). */
+export async function acceptFleetInvite(options: ApiOptions = {}): Promise<void> {
+  await postJson("/api/bridge/fleet/invite/accept", { confirm: true }, options);
+}
+
 // --- R17 Mail ---------------------------------------------------------------
 // The BFF cold-starts the delta sync and hands back the RAW retail-shaped
 // arms, decoded in the flow with bridge/mail.ts — except the message BODY,
@@ -2358,6 +2386,141 @@ export async function updateBotScript(
 
 export async function deleteBotScript(scriptID: string, options: ApiOptions = {}): Promise<void> {
   await postJson(`/api/botscripts/${encodeURIComponent(scriptID)}/delete`, {}, options);
+}
+
+// ─── Server-side bots (src/botHost.js) ───────────────────────────────────────
+// A bot the SERVER flies on a session of its own, so it keeps running when
+// this tab goes away. These calls are the remote control: start a saved
+// script on a character, watch its readout, stop it. Account-scoped like the
+// script library above.
+
+export interface ServerBot {
+  readonly botID: string;
+  readonly characterID: number;
+  readonly characterName: string | null;
+  readonly scriptID: string;
+  readonly scriptName: string;
+  readonly status: string;
+  readonly phase: string | null;
+  readonly why: string | null;
+  readonly stepPath: string | null;
+  readonly pauseReason: string | null;
+  readonly note: string | null;
+  readonly startedAt: string;
+  readonly endedAt: string | null;
+  /** Set when the server restarted this bot after coming back up. */
+  readonly resumedAt: string | null;
+}
+
+function asServerBot(value: JsonValue): ServerBot {
+  const row = (value ?? {}) as Record<string, JsonValue>;
+  return {
+    botID: typeof row.botID === "string" ? row.botID : "",
+    characterID: asNumberOrNull(row.characterID) ?? 0,
+    characterName: typeof row.characterName === "string" ? row.characterName : null,
+    scriptID: typeof row.scriptID === "string" ? row.scriptID : "",
+    scriptName: typeof row.scriptName === "string" ? row.scriptName : "Untitled bot",
+    status: typeof row.status === "string" ? row.status : "unknown",
+    phase: typeof row.phase === "string" ? row.phase : null,
+    why: typeof row.why === "string" ? row.why : null,
+    stepPath: typeof row.stepPath === "string" ? row.stepPath : null,
+    pauseReason: typeof row.pauseReason === "string" ? row.pauseReason : null,
+    note: typeof row.note === "string" ? row.note : null,
+    startedAt: typeof row.startedAt === "string" ? row.startedAt : "",
+    endedAt: typeof row.endedAt === "string" ? row.endedAt : null,
+    resumedAt: typeof row.resumedAt === "string" ? row.resumedAt : null,
+  };
+}
+
+export async function listServerBots(options: ApiOptions = {}): Promise<ServerBot[]> {
+  const data = await getJson("/api/bots", options);
+  return Array.isArray(data.bots) ? data.bots.map(asServerBot) : [];
+}
+
+/** One hold's fill level in a bot-flown ship's vitals sample. */
+export interface ActiveBotHold {
+  readonly label: string;
+  readonly used: number | null;
+  readonly capacity: number | null;
+}
+
+/** The last ship-state sample the host took for a running bot (~15s cadence). */
+export interface ActiveBotVitals {
+  readonly sampledAt: string | null;
+  /** null = not known yet; true = docked (health bars don't apply). */
+  readonly docked: boolean | null;
+  readonly shield: number | null;
+  readonly armor: number | null;
+  readonly hull: number | null;
+  readonly holds: readonly ActiveBotHold[];
+}
+
+/** A running server bot as the UNAUTHENTICATED landing screens see it. */
+export interface ActiveServerBot {
+  readonly characterID: number;
+  readonly status: string;
+  readonly phase: string | null;
+  readonly why: string | null;
+  readonly note: string | null;
+  readonly vitals: ActiveBotVitals | null;
+}
+
+function asActiveServerBot(value: JsonValue): ActiveServerBot {
+  const row = (value ?? {}) as Record<string, JsonValue>;
+  const rawVitals =
+    typeof row.vitals === "object" && row.vitals !== null && !Array.isArray(row.vitals)
+      ? (row.vitals as Record<string, JsonValue>)
+      : null;
+  return {
+    characterID: asNumberOrNull(row.characterID) ?? 0,
+    status: typeof row.status === "string" ? row.status : "unknown",
+    phase: typeof row.phase === "string" ? row.phase : null,
+    why: typeof row.why === "string" ? row.why : null,
+    note: typeof row.note === "string" ? row.note : null,
+    vitals: rawVitals
+      ? {
+          sampledAt: typeof rawVitals.sampledAt === "string" ? rawVitals.sampledAt : null,
+          docked: typeof rawVitals.docked === "boolean" ? rawVitals.docked : null,
+          shield: asNumberOrNull(rawVitals.shield),
+          armor: asNumberOrNull(rawVitals.armor),
+          hull: asNumberOrNull(rawVitals.hull),
+          holds: Array.isArray(rawVitals.holds)
+            ? rawVitals.holds.map((hold) => {
+                const entry = (hold ?? {}) as Record<string, JsonValue>;
+                return {
+                  label: typeof entry.label === "string" ? entry.label : "Hold",
+                  used: asNumberOrNull(entry.used),
+                  capacity: asNumberOrNull(entry.capacity),
+                };
+              })
+            : [],
+        }
+      : null,
+  };
+}
+
+/**
+ * The running server bots as the landing screens see them. Unauthenticated by
+ * design — the login/character screens mark bot-flown pilots and show their
+ * ship vitals before any sign-in exists.
+ */
+export async function listActiveServerBots(options: ApiOptions = {}): Promise<ActiveServerBot[]> {
+  const data = await getJson("/api/bots/active", options);
+  return Array.isArray(data.bots) ? data.bots.map(asActiveServerBot) : [];
+}
+
+export async function startServerBot(
+  characterID: number,
+  scriptID: string,
+  options: ApiOptions = {},
+): Promise<ServerBot> {
+  const data = await postJson("/api/bots/start", { characterID, scriptID }, options);
+  return asServerBot(data.bot ?? null);
+}
+
+export async function stopServerBot(botID: string, options: ApiOptions = {}): Promise<ServerBot> {
+  const data = await postJson(`/api/bots/${encodeURIComponent(botID)}/stop`, {}, options);
+  return asServerBot(data.bot ?? null);
 }
 
 // --- R7c Batch name resolution (names everywhere) --------------------------

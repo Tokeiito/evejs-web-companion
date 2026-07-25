@@ -140,6 +140,12 @@ export interface LayerTank {
 export interface ShipStats {
   readonly tank: Readonly<Record<LayerName, LayerTank>>;
   readonly totalEhp: Stat;
+  /**
+   * Seconds for the shield to recharge from empty (attribute 479 / 1000). The
+   * ship reports this directly, so it is sourced — unlike the ACTIVE repair
+   * rates, which need per-module reads and stay unavailable.
+   */
+  readonly shieldRechargeSeconds: Stat;
   readonly damageProfile: DamageProfile;
 
   readonly capacitor: {
@@ -383,10 +389,18 @@ export function deriveShipStats(
 
   const sensorReading = sensor(attributes);
   const rechargeMs = readPositive(attributes, ATTR.capacitorRechargeTime, "its capacitor recharge");
+  const shieldRechargeMs = readPositive(
+    attributes,
+    ATTR.shieldRechargeTime,
+    "its shield recharge",
+  );
 
   return {
     tank,
     totalEhp,
+    shieldRechargeSeconds: shieldRechargeMs.known
+      ? known(shieldRechargeMs.value / 1000)
+      : shieldRechargeMs,
     damageProfile: profile,
 
     capacitor: {

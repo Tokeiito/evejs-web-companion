@@ -1,13 +1,19 @@
-// The R40 Inventory panel as it actually RENDERS: two cards, and a hangar you
+// The Inventory panel as it actually RENDERS: four tabs (R60), and a hangar you
 // can look at.
 //
-// The panel used to be one 778-line mixed reflow table with ships and ore in
-// the same list. It is now:
+// The panel used to be one 778-line mixed reflow table; R40 split it into a
+// ships card and a hangar grid; R60 sorts the same content into four tabs so it
+// fits the right-hand dock window:
 //
-//   YOUR SHIPS        the hulls, and — when one is picked — ITS BAYS, each with
-//                     how full it is and what is inside.
-//   HANGAR INVENTORY  everything that is not a ship, as a grid of pictures
-//                     captioned with the name and the amount.
+//   SHIP INVENTORY    the OPENED ship's bays (defaults to the active hull), each
+//                     with how full it is and what is inside.
+//   SHIP HANGAR       the hulls; "Open" hands one to the Ship Inventory tab.
+//   ITEM HANGAR       everything that is not a ship, as a grid of pictures
+//                     captioned with the name and the amount, plus any container.
+//   CORPORATE HANGAR  the corporation's divisions at this station.
+//
+// The four panels ALL render; inactive ones carry `hidden`, so a selection made
+// in one survives a tab switch.
 //
 // WHAT THIS SUITE GUARDS, in order of how much damage getting it wrong does:
 //
@@ -130,6 +136,7 @@ interface Scene {
   corp?: boolean;
   container?: boolean;
   names?: boolean;
+  dock?: boolean;
 }
 
 function scene(options: Scene = {}): string {
@@ -206,7 +213,7 @@ function scene(options: Scene = {}): string {
     } as never);
   }
   return render(InventoryShip as never, {
-    props: { store, flow: fakeFlow() },
+    props: { store, flow: fakeFlow(), dock: options.dock ?? false },
   } as never).body;
 }
 
@@ -526,10 +533,12 @@ test("R51: the active ship's ore hold offers 'send to hangar' on its stacks", ()
   // affordance the cargo hold already had, now that a bay is addressable as a
   // transfer source.
   const body = scene({ openShipID: PROCURER_ID });
-  const shipsCard = body.slice(body.indexOf("Your ships"), body.indexOf("Hangar inventory"));
-  assert.match(shipsCard, /→ Hangar/, "the ore-hold stack can be sent to the hangar");
+  // R60 — the bays live in the Ship Inventory tab now, ahead of the Ship Hangar
+  // tab's "Your ships" heading, so slice that panel out by its own bounds.
+  const bayTab = body.slice(body.indexOf("its bays"), body.indexOf("Your ships"));
+  assert.match(bayTab, /→ Hangar/, "the ore-hold stack can be sent to the hangar");
   assert.match(
-    shipsCard,
+    bayTab,
     /aria-label="Select Veldspar"/,
     "and the ore-hold stack can be ticked for a bulk move",
   );
@@ -539,10 +548,11 @@ test("R51: a bay on a ship the player is NOT flying stays read-only", () => {
   // There is still no way to address the ore hold of a hull you are not in, so
   // no move button is drawn for it — the player is told to board instead.
   const body = scene({ openShipID: RUPTURE_ID, openShipType: RUPTURE_TYPE, bays: PROCURER_BAYS });
-  const shipsCard = body.slice(body.indexOf("Your ships"), body.indexOf("Hangar inventory"));
-  assert.doesNotMatch(shipsCard, /→ Hangar/, "an inactive hull's bays offer no move");
-  assert.doesNotMatch(shipsCard, /aria-label="Select Veldspar"/, "and no selection either");
-  assert.match(visibleText(shipsCard), /Board this ship to move things in and out/);
+  // R60 — the opened (inactive) hull's bays are in the Ship Inventory tab.
+  const bayTab = body.slice(body.indexOf("its bays"), body.indexOf("Your ships"));
+  assert.doesNotMatch(bayTab, /→ Hangar/, "an inactive hull's bays offer no move");
+  assert.doesNotMatch(bayTab, /aria-label="Select Veldspar"/, "and no selection either");
+  assert.match(visibleText(bayTab), /Board this ship to move things in and out/);
 });
 
 test("R51: the station hangar shows room used with no fake limit and no gauge", () => {
@@ -561,9 +571,57 @@ test("R51: a ship bay with a REAL capacity still shows 'of' and a gauge", () => 
   // The fix keys on WHICH section is the station hangar, not on the 1,000,000
   // value — so a ship bay's genuine, useful limit is untouched.
   const body = scene({ openShipID: PROCURER_ID });
-  const shipsCard = body.slice(body.indexOf("Your ships"), body.indexOf("Hangar inventory"));
-  assert.match(visibleText(shipsCard), /12,375\.2 of 16,000 m³/, "the ore hold keeps its real limit");
-  assert.match(shipsCard, /hud-track/, "a finite bay still draws its fill gauge");
+  // R60 — the ore hold is in the Ship Inventory tab.
+  const bayTab = body.slice(body.indexOf("its bays"), body.indexOf("Your ships"));
+  assert.match(visibleText(bayTab), /12,375\.2 of 16,000 m³/, "the ore hold keeps its real limit");
+  assert.match(bayTab, /hud-track/, "a finite bay still draws its fill gauge");
+});
+
+// --- R60: the four tabs -----------------------------------------------------
+
+test("R60: the panel sorts its content into four named tabs", () => {
+  const body = scene();
+  assert.match(body, /role="tablist"/, "a real tablist, keyboard-reachable");
+  for (const label of ["Ship Inventory", "Ship Hangar", "Item Hangar", "Corporate Hangar"]) {
+    assert.ok(body.includes(label), `the ${label} tab is named in plain language`);
+  }
+  assert.equal((body.match(/role="tab"/g) ?? []).length, 4, "four tabs, each a real button");
+});
+
+test("R60: inactive tabs are HIDDEN but still in the DOM, so a selection survives a switch", () => {
+  // All four panels render; the three that are not the default active one carry
+  // `hidden`. This is the whole reason a tick made in one tab is not lost when
+  // the player moves to another — nothing remounts.
+  const body = scene();
+  assert.equal((body.match(/role="tabpanel"/g) ?? []).length, 4, "all four panels render");
+  assert.equal(
+    (body.match(/role="tabpanel"[^>]*hidden/g) ?? []).length,
+    3,
+    "three of them are hidden, one is shown",
+  );
+  // The content of a hidden tab is genuinely present, not conditionally unmounted.
+  assert.match(body, /Hangar inventory/, "the Item Hangar tab's grid is in the DOM");
+  assert.match(body, /Corporation hangar/, "and so is the corp hangar's");
+});
+
+test("R60: the dock variant drops the panel's own big header (the frame titles it)", () => {
+  const windowed = scene();
+  const docked = scene({ dock: true });
+  assert.match(windowed, /<h2>Inventory &amp; Ship<\/h2>/, "the Neocom window keeps its own title");
+  assert.doesNotMatch(docked, /Inventory &amp; Ship/, "the dock frame supplies the station-name title instead");
+  // The tabs and their content are present in both.
+  assert.match(docked, /Ship Inventory/);
+  assert.match(docked, /role="tablist"/);
+});
+
+test("R60: opening a ship in the Ship Hangar hands it to the Ship Inventory tab", () => {
+  // The Ship Hangar tiles offer "Open" rather than an inline bays toggle; the
+  // handler opens the hull's bays AND switches to the Ship Inventory tab, so
+  // "the bays I am looking at" is ONE piece of state, not two tabs fighting.
+  assert.match(SOURCE, /function openInInventory\(row: InventoryItemRow\)/);
+  assert.match(SOURCE, /activeTab = "shipInventory";/);
+  assert.match(SOURCE, /flow\.openShipBays\(row\.itemID\)/);
+  assert.match(SOURCE, /onclick=\{\(\) => openInInventory\(ship\)\}/, "the tile's Open is wired to it");
 });
 
 // --- R7d --------------------------------------------------------------------

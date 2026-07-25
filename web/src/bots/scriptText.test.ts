@@ -32,6 +32,9 @@ function sampleCondition(kind: ConditionKind): Condition {
     case "health-below":
     case "capacitor-below":
       return { kind, fraction: 0.3 };
+    case "wallet-below":
+    case "wallet-above":
+      return { kind, isk: 100_000_000 };
     case "hold-empty":
     case "hostile-on-grid":
       return { kind };

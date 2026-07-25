@@ -313,6 +313,48 @@ test("a lost session on the inventory tab unwinds to character select", async ()
   );
 });
 
+test("isSessionLost treats a gone session AND a taken-over character as lost", () => {
+  // Both codes mean the held session can no longer act; a multibox re-select of
+  // a character being flown elsewhere yields NO_LIVE_SESSION, so it must count.
+  assert.equal(isSessionLost(new BridgeCallError("SESSION_NOT_FOUND", "gone", 404)), true);
+  assert.equal(
+    isSessionLost(new BridgeCallError("NO_LIVE_SESSION", "No character is online.", 409)),
+    true,
+    "a taken-over character (NO_LIVE_SESSION) is a lost session too",
+  );
+  assert.equal(isSessionLost(new BridgeCallError("CALL_REFUSED", "nope", 400)), false);
+  assert.equal(isSessionLost(new Error("plain")), false);
+});
+
+test("a taken-over character (NO_LIVE_SESSION) flips the slice offline so the pilot is pruned", async () => {
+  // The exact R107 zombie-cockpit bug: another client took the character, so
+  // reads come back NO_LIVE_SESSION. The space read must unwind to offline, not
+  // sit there erroring on every panel.
+  let taken = false;
+  const { fetch } = makeFakeFetch((path, body) => {
+    if (path === "/api/bridge/space/snapshot" && taken) {
+      return { status: 409, body: { ok: false, error: "NO_LIVE_SESSION", message: "No character is online." } };
+    }
+    return bridgeCallResponder(path, body);
+  });
+  const store = createClientStore();
+  const flow = createAppFlow(store, { fetch });
+
+  await flow.login("test2", "");
+  await flow.selectCharacter(140000003);
+  assert.equal(store.station.get().online?.characterID, 140000003);
+
+  taken = true;
+  // The read rethrows the lost-session error after flipping offline (it unwinds
+  // the poll); the point is the slice went offline so App prunes the pilot.
+  await assert.rejects(flow.loadSpaceSnapshot(), (error: unknown) => isSessionLost(error));
+  assert.equal(
+    store.station.get().online,
+    null,
+    "a taken-over character must flip offline, not linger as a broken cockpit",
+  );
+});
+
 test("select refusals propagate the handler's message and leave the flow at character select", async () => {
   const { fetch } = makeFakeFetch((path, body) => {
     if (path === "/api/bridge/select") {

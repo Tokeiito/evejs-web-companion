@@ -11,7 +11,8 @@
 
   import type { AppFlow } from "../app/flow.ts";
   import type { DestinationMatch } from "../store/types.ts";
-  import { startingStation, type WorldRef } from "../bots/botScript.ts";
+  import { BOARD_SLOTS, boardSlotStation, startingStation, type BoardSlot, type WorldRef } from "../bots/botScript.ts";
+  import { boardSlotPhrase } from "../bots/scriptText.ts";
 
   let {
     flow,
@@ -66,13 +67,19 @@
   function chooseStarting(): void {
     onPick(startingStation());
   }
+  function chooseSlot(slot: BoardSlot): void {
+    onPick(boardSlotStation(slot));
+  }
   function clearChoice(): void {
     onPick({ entity: "station", id: null, name: null, systemName: null });
   }
 </script>
 
 <span class="station-picker">
-  {#if value.starting === true}
+  {#if value.slot !== undefined}
+    <span class="picked">{boardSlotPhrase(value.slot)}</span>
+    <button class="tiny" onclick={clearChoice}>Change</button>
+  {:else if value.starting === true}
     <span class="picked">Your starting station</span>
     <button class="tiny" onclick={clearChoice}>Change</button>
   {:else if value.id !== null}
@@ -94,6 +101,11 @@
     {#if current !== null}
       <button class="tiny" onclick={chooseCurrent}>Use current station</button>
     {/if}
+    <!-- Runtime bindings: follow whatever an earlier block found, instead of a
+         station pinned now. -->
+    {#each BOARD_SLOTS as slot (slot)}
+      <button class="tiny" onclick={() => chooseSlot(slot)}>{boardSlotPhrase(slot)}</button>
+    {/each}
     {#if error}<span class="prob">{error}</span>{/if}
     {#if results.length > 0}
       <ul class="results">

@@ -14,6 +14,7 @@ const webAuth = require("./webAuth");
 const staticDataModule = require("./staticData");
 const config = require("./config");
 const botScriptStoreModule = require("./botScriptStore");
+const botHostModule = require("./botHost");
 
 // Map a bot-script store error (it carries a .code) to an HTTP status + envelope.
 const BOTSCRIPT_STATUS = {
@@ -47,6 +48,33 @@ const botScripts =
 // never sees the handle; it just gets its character/station state back.
 const bridgeSessions = options.bridgeSessionStore || new Map();
 const errorLogger = options.errorLogger || ((error) => console.error(error));
+// Server-side bot host (see src/botHost.js): runs the browser bot stack in
+// THIS process, driving the routes below over loopback as just another
+// session, so a bot outlives the tab (or phone) that started it.
+const botHost =
+  options.botHost ||
+  botHostModule.createBotHost({
+    webAuth: auth,
+    baseUrl: options.botHostBaseUrl || `http://127.0.0.1:${config.port}`,
+    // Durable roster: running bots are mirrored here and startServer calls
+    // botHost.resume() once listening, so a BFF restart brings them back.
+    persistPath: path.join(config.dataDir, "server-bots.json"),
+    loadAccount: (username) => store.getAccount(username),
+    loadScript: (accountID, scriptID) => botScripts.get(accountID, scriptID),
+    // ONE HULL, ONE DRIVER, direction 1: a bot may not take a character any
+    // live web session is flying. (Direction 2 — a tab may not take a bot's
+    // character — is the guard in /api/bridge/select.)
+    isCharacterHeld: (characterID) => {
+      for (const held of bridgeSessions.values()) {
+        if (Number(held.characterID) === Number(characterID)) {
+          return true;
+        }
+      }
+      return false;
+    },
+    errorLogger,
+  });
+app.locals.botHost = botHost;
 app.locals.bridgeSessions = bridgeSessions;
 fs.mkdirSync(config.iconCacheDir, { recursive: true });
 
@@ -581,6 +609,20 @@ app.post("/api/bridge/select", requireAuth, async (req, res, next) => {
     );
     if (!character) {
       res.status(404).json({ ok: false, error: "CHARACTER_NOT_FOUND" });
+      return;
+    }
+    // ONE HULL, ONE DRIVER, direction 2: while a server bot claims this
+    // character, a tab selecting it would put two drivers on one ship — the
+    // takeover would kick the bot mid-script. Refused with a plain remedy;
+    // the bot's OWN select passes because its fetch names it. Tab-vs-tab
+    // takeover (desktop to phone) is untouched.
+    const claimingBotID = botHost.claimedBy(characterID);
+    if (claimingBotID !== null && req.get(botHostModule.BOT_HEADER) !== claimingBotID) {
+      res.status(409).json({
+        ok: false,
+        error: "CHARACTER_IN_USE_BY_BOT",
+        message: "A server bot is flying this character. Stop the bot first (Bots tab).",
+      });
       return;
     }
     // One client session per web login: switching characters releases the
@@ -16614,6 +16656,108 @@ app.post("/api/botscripts/:scriptID/delete", requireAuth, (req, res, next) => {
   }
 });
 
+// ── Server-side bots (src/botHost.js) ───────────────────────────────────────
+// A bot the SERVER flies: it keeps running when the tab that started it goes
+// away. Start names a saved Bot Builder script; the host runs it on a session
+// of its own. Everything is account-scoped through requireAuth, same as the
+// script library above.
+const BOT_START_STATUS = {
+  BOTSCRIPT_INVALID: 400,
+  BOT_ALREADY_RUNNING: 409,
+  CHARACTER_IN_USE: 409,
+  BOT_STACK_UNAVAILABLE: 500,
+  BOT_START_FAILED: 502,
+};
+
+app.get("/api/bots", requireAuth, (req, res, next) => {
+  try {
+    res.json({ ok: true, bots: botHost.list(req.account.accountID) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Which characters a server bot is flying, and how each ship is doing —
+// WITHOUT auth, deliberately: the login and character screens mark bot-flown
+// pilots and show their vitals BEFORE any sign-in exists. Exposure is game
+// state only (character IDs, bot phase, shield/armor/hull, hold fill — no
+// account names, script ids, bot ids, or any control), on a server whose
+// login already accepts any password (see the LAN note above /api/login).
+// Everything that inspects or DRIVES a bot stays behind requireAuth.
+app.get("/api/bots/active", (req, res, next) => {
+  try {
+    res.json({ ok: true, characterIDs: botHost.activeCharacterIDs(), bots: botHost.activeBots() });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/bots/start", requireAuth, async (req, res, next) => {
+  try {
+    const body = req.body || {};
+    const characterID = Number(body.characterID || 0);
+    const scriptID = String(body.scriptID || "");
+    if (!Number.isSafeInteger(characterID) || characterID <= 0) {
+      res.status(400).json({ ok: false, error: "INVALID_CHARACTER", message: "A positive characterID is required." });
+      return;
+    }
+    // The character must be the caller's — the same ownership read select does.
+    const character = await store.getCharacterForAccount(req.account.accountID, characterID);
+    if (!character) {
+      res.status(404).json({ ok: false, error: "CHARACTER_NOT_FOUND" });
+      return;
+    }
+    const record = botScripts.get(req.account.accountID, scriptID);
+    if (!record) {
+      res.status(404).json({ ok: false, error: "BOTSCRIPT_NOT_FOUND", message: "That bot could not be found." });
+      return;
+    }
+    // THE HANDOVER IS SERVER-SIDE AND ATOMIC: when the caller's OWN session is
+    // the one flying this character, release it here — then the bot exists the
+    // moment this request answers. The old shape (tab releases itself, THEN
+    // asks the server) left a window where the tab had already fallen to the
+    // login screen while no bot was registered yet, so its bot-flying marks
+    // polled empty until the next tick. Only the caller's own hull moves:
+    // any OTHER session flying the character is still refused by the host's
+    // CHARACTER_IN_USE check below.
+    const callerHeld = bridgeSessions.get(req.webSessionID);
+    if (callerHeld && Number(callerHeld.characterID) === characterID) {
+      await releaseHeldBridgeSession(req.webSessionID);
+    }
+    const outcome = await botHost.start({
+      account: req.account,
+      characterID,
+      scriptID: record.scriptID,
+      scriptName: record.name,
+      doc: record.doc,
+    });
+    if (!outcome.ok) {
+      res.status(BOT_START_STATUS[outcome.code] || 500).json({
+        ok: false,
+        error: outcome.code,
+        message: outcome.message,
+      });
+      return;
+    }
+    res.json({ ok: true, bot: outcome.bot });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/bots/:botID/stop", requireAuth, async (req, res, next) => {
+  try {
+    const outcome = await botHost.stop(req.params.botID, req.account.accountID);
+    if (!outcome.ok) {
+      res.status(404).json({ ok: false, error: "BOT_NOT_FOUND", message: "No such bot." });
+      return;
+    }
+    res.json({ ok: true, bot: outcome.bot });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // ── Icon cache admin (the Settings panel) ───────────────────────────────────
 // Two ways to fill data/icon-cache so type icons serve locally instead of the
 // lettered fallback tile:
@@ -16862,6 +17006,11 @@ function startServer(options = {}) {
     if (options.silent !== true) {
       console.log(`EveJS Web POC listening on http://${host}:${activePort}`);
       console.log(`Using EveJS gateway: ${process.env.EVEJS_GATEWAY_URL || "http://127.0.0.1:26002/_evejs-web/v1"}`);
+    }
+    // Bots that were running when the server last stopped come back now —
+    // AFTER listen, because every server bot drives this server over loopback.
+    if (options.resumeServerBots !== false) {
+      void appToStart.locals.botHost?.resume().catch((error) => console.error(error));
     }
   });
   return server;

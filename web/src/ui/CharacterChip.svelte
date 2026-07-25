@@ -19,6 +19,10 @@
 
   const online = $derived($station.online);
   const isDocked = $derived(deriveDocked($flight.status, $station.online));
+  // A SHORT, uniform state word on the chip so every tab is about the same size:
+  // a docked station name (e.g. "Jita IV - Moon 4 - Caldari Navy Assembly Plant")
+  // blew the widths right out. The full location is kept for the hover title.
+  const stateLabel = $derived(isDocked ? "Docked" : "In space");
   const where = $derived(
     $station.station?.stationName ??
       $station.station?.solarSystemName ??
@@ -33,12 +37,12 @@
     class="char-chip"
     class:active
     onclick={onSelect}
-    title={`${online.characterName}${where ? ` — ${where}` : ""}`}
+    title={`${online.characterName} — ${stateLabel}${where ? ` · ${where}` : ""}`}
   >
     <span class="char-chip-dot" class:docked={isDocked} class:in-space={!isDocked}></span>
     <span class="char-chip-body">
       <span class="char-chip-name">{online.characterName}</span>
-      {#if where}<span class="char-chip-where">{isDocked ? "Docked · " : ""}{where}</span>{/if}
+      <span class="char-chip-where">{stateLabel}</span>
     </span>
   </button>
 {/if}

@@ -32,7 +32,12 @@ function nextSessionId(): string {
  */
 export function createSession(options: AppFlowOptions = {}): Session {
   const store = createClientStore();
-  const flow = createAppFlow(store, { ...options, perSessionToken: true });
+  // livePush starts OFF: every open EventSource pins one of the browser's ~6
+  // per-origin connections for its whole life, so a roster of pilots each
+  // holding one starves the pool and the NEXT pilot's login/select hangs in
+  // the browser's request queue (seen live at pilot 7). App.svelte turns push
+  // on for exactly one session — the active pilot.
+  const flow = createAppFlow(store, { livePush: false, ...options, perSessionToken: true });
   void flow.checkHealth();
   return { id: nextSessionId(), store, flow };
 }

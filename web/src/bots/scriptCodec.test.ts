@@ -96,6 +96,191 @@ test("encode then decode is a lossless round trip", () => {
   assert.deepStrictEqual([...warnings], []);
 });
 
+// The golden fixture only exercises belt/station/equipment args, so on its own it
+// cannot catch a serialiser that forgets a kind. This document uses EVERY OTHER
+// arg kind (count, corp, agent, fitting, itemType, place, bookmark) — if any is
+// dropped on encode it round-trips lossily and this fails.
+function everyArgKind(): BotScript {
+  return {
+    format: SCRIPT_FORMAT,
+    version: SCRIPT_VERSION,
+    name: "Every arg kind",
+    notes: "",
+    home: { entity: "station", id: null, name: null, systemName: null, starting: true },
+    interrupts: [],
+    program: [
+      {
+        id: "a1",
+        kind: "macro",
+        macro: "find-distribution-agent",
+        args: {
+          level: { kind: "count", value: 3 },
+          corporation: { kind: "corp", id: 1000035, name: "Caldari Navy" },
+        },
+      },
+      {
+        id: "a2",
+        kind: "macro",
+        macro: "request-mission",
+        args: { agent: { kind: "agent", ref: { entity: "agent", id: 3018770, name: "An Agent", systemName: "Jita" } } },
+      },
+      {
+        id: "a3",
+        kind: "macro",
+        macro: "refit-ship",
+        args: { fitting: { kind: "fitting", fittingID: 42, name: "PvE Fit" } },
+      },
+      {
+        id: "a4",
+        kind: "macro",
+        macro: "move-items",
+        args: {
+          item: { kind: "itemType", typeID: 34, name: "Tritanium" },
+          from: { kind: "place", place: "hangar" },
+          to: { kind: "place", place: "cargo" },
+          amount: { kind: "count", value: 100 },
+        },
+      },
+      {
+        id: "a5",
+        kind: "macro",
+        macro: "warp-to-bookmark",
+        args: { bookmark: { kind: "bookmark", bookmarkID: 77, name: "Safe Spot" } },
+      },
+      {
+        id: "a6",
+        kind: "macro",
+        macro: "buy-item",
+        args: {
+          item: { kind: "itemType", typeID: 34, name: "Tritanium" },
+          quantity: { kind: "qty", value: 5000 },
+          price: { kind: "isk", value: 6 },
+        },
+      },
+      {
+        id: "a7",
+        kind: "macro",
+        macro: "invite-to-fleet",
+        args: { who: { kind: "character", charID: 90000001, name: "Alt Pilot" } },
+      },
+    ],
+  };
+}
+
+test("encode then decode round-trips EVERY arg kind losslessly", () => {
+  const text = encodeScriptDoc(everyArgKind());
+  const { doc, warnings } = mustAccept(decodeScriptText(text));
+  assert.deepStrictEqual(doc, everyArgKind());
+  assert.deepStrictEqual([...warnings], []);
+});
+
+test("a valid branch decodes; nested / all-empty / off-site branches are refused", () => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const base = (): any => ({
+    format: "evejs-bot-script",
+    version: 1,
+    name: "B",
+    notes: "",
+    home: { entity: "station", id: 1, name: "H", systemName: null },
+    interrupts: [],
+    program: [
+      {
+        id: "br",
+        kind: "branch",
+        when: { kind: "shield-below", fraction: 0.5 },
+        then: [{ id: "t", kind: "macro", macro: "undock", args: {} }],
+        else: [{ id: "e", kind: "macro", macro: "refine-ore", args: {} }],
+      },
+    ],
+  });
+  mustAccept(decodeScriptValue(base()));
+
+  const nested = base(); // a branch inside a branch side — one level only
+  nested.program[0].then[0] = { id: "n", kind: "branch", when: { kind: "shield-below", fraction: 0.5 }, then: [{ id: "x", kind: "macro", macro: "undock", args: {} }], else: [] };
+  mustRefuse(decodeScriptValue(nested));
+
+  const bothEmpty = base();
+  bothEmpty.program[0].then = [];
+  bothEmpty.program[0].else = [];
+  mustRefuse(decodeScriptValue(bothEmpty));
+
+  const offSite = base(); // hostile-on-grid is a grid read — never a branch's `when`
+  offSite.program[0].when = { kind: "hostile-on-grid" };
+  mustRefuse(decodeScriptValue(offSite));
+});
+
+test("a branch INSIDE a loop decodes and round-trips; a loop inside one is refused", () => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const withLoopBranch = (): any => ({
+    format: "evejs-bot-script",
+    version: 1,
+    name: "Loop fork",
+    notes: "",
+    home: { entity: "station", id: null, name: null, systemName: null, starting: true },
+    interrupts: [],
+    program: [
+      {
+        id: "L",
+        kind: "loop",
+        repeat: { kind: "forever" },
+        body: [
+          { id: "s", kind: "macro", macro: "undock", args: {} },
+          {
+            id: "br",
+            kind: "branch",
+            when: { kind: "hold-empty" },
+            then: [{ id: "t", kind: "macro", macro: "refine-ore", args: {} }],
+            else: [{ id: "e", kind: "macro", macro: "unload-cargo", args: {} }],
+          },
+        ],
+      },
+    ],
+  });
+  const { doc } = mustAccept(decodeScriptValue(withLoopBranch()));
+  const loop = doc.program[0];
+  assert.ok(loop && loop.kind === "loop");
+  assert.equal(loop.body[1]?.kind, "branch", "the branch survives inside the loop body");
+  // And it round-trips through the text encoder unchanged.
+  const again = mustAccept(decodeScriptText(encodeScriptDoc(doc)));
+  assert.deepStrictEqual(again.doc, doc);
+
+  // A LOOP nested in a loop body is still refused (only branches may nest).
+  const nestedLoop = withLoopBranch();
+  nestedLoop.program[0].body[1] = { id: "n", kind: "loop", repeat: { kind: "forever" }, body: [{ id: "x", kind: "macro", macro: "undock", args: {} }] };
+  mustRefuse(decodeScriptValue(nestedLoop));
+});
+
+test("a named board slot round-trips; an unknown slot name is refused", () => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const withSlot = (): any => ({
+    format: "evejs-bot-script",
+    version: 1,
+    name: "Slots",
+    notes: "",
+    home: { entity: "station", id: null, name: null, systemName: null, starting: true },
+    interrupts: [],
+    program: [
+      {
+        id: "t",
+        kind: "macro",
+        macro: "travel-to-station",
+        args: { station: { kind: "station", ref: { entity: "station", id: null, name: null, systemName: null, slot: "dropoff-station" } } },
+      },
+    ],
+  });
+  const { doc } = mustAccept(decodeScriptValue(withSlot()));
+  const step = doc.program[0];
+  assert.ok(step && step.kind === "macro");
+  const arg = step.args["station"];
+  assert.ok(arg && arg.kind === "station");
+  assert.equal(arg.ref.slot, "dropoff-station");
+  assert.deepStrictEqual(mustAccept(decodeScriptText(encodeScriptDoc(doc))).doc, doc);
+
+  const bogus = withSlot();
+  bogus.program[0].args.station.ref.slot = "wherever";
+  mustRefuse(decodeScriptValue(bogus));
+});
+
 test("encoded output is stable and pretty-printed", () => {
   assert.equal(encodeScriptDoc(golden()), encodeScriptDoc(golden()));
   assert.match(encodeScriptDoc(golden()), /\n {2}"format": "evejs-bot-script"/);
@@ -253,7 +438,9 @@ test("an out-of-range ore-hold fraction is clamped to 90% with a warning", () =>
   const { doc, warnings } = mustAccept(decodeScriptValue(bad));
   const outLoop = doc.program[0];
   assert.ok(outLoop && outLoop.kind === "loop");
-  const until = outLoop.body[0]?.until;
+  const first = outLoop.body[0];
+  assert.ok(first && first.kind === "macro");
+  const until = first.until;
   assert.ok(until && until.kind === "ore-hold-at-least");
   assert.equal(until.fraction, 0.9);
   assert.ok(warnings.some((w) => /brought back to 90%/i.test(w)));

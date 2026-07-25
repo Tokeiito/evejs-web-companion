@@ -20,6 +20,7 @@ export type TabID =
   | "travel"
   | "bots"
   | "botBuilder"
+  | "serverBots"
   | "inventory"
   | "market"
   | "industry"
@@ -58,6 +59,9 @@ export const TABS: readonly TabDef[] = [
   // reachable after undocking — available in both states.
   { id: "bots", label: "Bots", where: "both" },
   { id: "botBuilder", label: "Bot Builder", where: "both" },
+  // Server-side bots keep flying with the tab closed, so the readout that
+  // watches them must be reachable from anywhere, in any state.
+  { id: "serverBots", label: "Server Bots", where: "both" },
   // In space only — flying, what's around the ship, mining.
   { id: "flight", label: "Flight", where: "in-space" },
   { id: "overview", label: "Around Your Ship", where: "in-space" },

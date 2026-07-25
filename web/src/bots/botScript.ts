@@ -104,11 +104,50 @@ export interface WorldRef {
    * slot the player must still fill. Omitted (not `false`) when not a starting ref.
    */
   readonly starting?: boolean;
+  /**
+   * STATION ONLY. A NAMED BOARD SLOT — "the station an earlier block found",
+   * resolved at run time from the run's board instead of being pinned now. Same
+   * idea as `starting` (and as a belt's "nearest"): a runtime binding, so a bot
+   * adapts to whatever agent/mission it picked up rather than a baked-in id, and
+   * stays portable across characters. When set, `id` is null and no picking is
+   * needed. Omitted (not null) when the ref is not a slot.
+   */
+  readonly slot?: BoardSlot;
 }
+
+/**
+ * The facts a block can point at instead of a fixed station. Each maps to one
+ * key an earlier block publishes on the run board; a closed vocabulary so the
+ * codec can validate it and the editor can list it.
+ */
+export type BoardSlot = "agent-station" | "pickup-station" | "dropoff-station";
+
+export const BOARD_SLOTS: readonly BoardSlot[] = Object.freeze<BoardSlot[]>([
+  "agent-station",
+  "pickup-station",
+  "dropoff-station",
+]);
+
+/** The run-board key each slot reads. */
+export const BOARD_SLOT_KEY: Readonly<Record<BoardSlot, string>> = {
+  "agent-station": "agentStationID",
+  "pickup-station": "pickupStationID",
+  "dropoff-station": "dropoffStationID",
+};
 
 /** True when a station ref means "wherever the ship started". */
 export function isStartingStation(ref: WorldRef): boolean {
   return ref.starting === true;
+}
+
+/** The board slot a station ref points at, or null when it is not a slot ref. */
+export function refBoardSlot(ref: WorldRef): BoardSlot | null {
+  return ref.slot ?? null;
+}
+
+/** A "use the station an earlier block found" station ref. */
+export function boardSlotStation(slot: BoardSlot): WorldRef {
+  return { entity: "station", id: null, name: null, systemName: null, slot };
 }
 
 /** A "return to where you started" station ref — the portable default. */
@@ -146,6 +185,18 @@ export interface EquipmentArg {
 export const MIN_COUNT_ARG = 1;
 export const MAX_COUNT_ARG = 500;
 
+/**
+ * An ISK amount a player sets — a buy ceiling, a sell floor, a wallet threshold.
+ * Capped at 100 billion: far above any sane per-unit price, far under the 2^53
+ * point where a number stops being exact (so a comparison never lies).
+ */
+export const MIN_ISK_ARG = 1;
+export const MAX_ISK_ARG = 100_000_000_000;
+
+/** A market quantity (units to buy) — past the small-count cap, still exact. */
+export const MIN_QTY_ARG = 1;
+export const MAX_QTY_ARG = 10_000_000;
+
 export type Arg =
   | { readonly kind: "belt"; readonly belt: BeltArg }
   | { readonly kind: "station"; readonly ref: WorldRef }
@@ -169,7 +220,13 @@ export type Arg =
   | { readonly kind: "place"; readonly place: ItemPlace }
   /** A saved BOOKMARK. The id is a same-world hint; the NAME (its label) is what
    * the block matches at run time, so an imported script still finds "Safe spot". */
-  | { readonly kind: "bookmark"; readonly bookmarkID: number | null; readonly name: string | null };
+  | { readonly kind: "bookmark"; readonly bookmarkID: number | null; readonly name: string | null }
+  /** An ISK amount the player sets — a buy ceiling or a sell floor (per unit). */
+  | { readonly kind: "isk"; readonly value: number }
+  /** A market quantity — how many units a buy order is for. */
+  | { readonly kind: "qty"; readonly value: number }
+  /** A character to act on (invite to a fleet). null charID = an unbound slot to pick. */
+  | { readonly kind: "character"; readonly charID: number | null; readonly name: string | null };
 
 /** The move block's place vocabulary. */
 export type ItemPlace = "hangar" | "cargo" | "ore-hold";
@@ -196,6 +253,9 @@ export type Condition =
   | { readonly kind: "hull-below"; readonly fraction: number }
   | { readonly kind: "health-below"; readonly fraction: number }
   | { readonly kind: "capacitor-below"; readonly fraction: number }
+  /** Wallet thresholds carry an absolute ISK amount, not a 0..1 fraction. */
+  | { readonly kind: "wallet-below"; readonly isk: number }
+  | { readonly kind: "wallet-above"; readonly isk: number }
   | { readonly kind: "hostile-on-grid" };
 
 export type ConditionKind = Condition["kind"];
@@ -209,6 +269,8 @@ export const CONDITION_KINDS: readonly ConditionKind[] = Object.freeze<Condition
   "hull-below",
   "health-below",
   "capacitor-below",
+  "wallet-below",
+  "wallet-above",
   "hostile-on-grid",
 ]);
 
@@ -305,7 +367,17 @@ export type MacroID =
   | "find-combat-agent"
   | "fly-to-mission-site"
   | "restart-extractors"
-  | "repair-ship";
+  | "repair-ship"
+  // ── The market set. Place orders at the station's market (server confirm-gated).
+  | "buy-item"
+  | "sell-item"
+  // ── The fleet-support set. Remote-repair friendly ships on grid (logistics).
+  | "remote-rep"
+  | "orbit-and-boost"
+  // ── The fleet-management set. Form up / invite / join (multibox alt-fleeting).
+  | "create-fleet"
+  | "invite-to-fleet"
+  | "join-fleet";
 
 /** Every macro id — for exhaustive iteration in menus and tests. */
 export const MACRO_IDS: readonly MacroID[] = Object.freeze<MacroID[]>([
@@ -336,6 +408,13 @@ export const MACRO_IDS: readonly MacroID[] = Object.freeze<MacroID[]>([
   "fly-to-mission-site",
   "restart-extractors",
   "repair-ship",
+  "buy-item",
+  "sell-item",
+  "remote-rep",
+  "orbit-and-boost",
+  "create-fleet",
+  "invite-to-fleet",
+  "join-fleet",
 ]);
 
 /**
@@ -363,15 +442,68 @@ export type Repeat =
   | { readonly kind: "forever" }
   | { readonly kind: "times"; readonly count: number };
 
+/**
+ * What may sit inside a loop body: a plain step, or a BRANCH (so a loop can fork
+ * each pass — "mine; if the hold is full, haul home, else keep going"). A loop
+ * still cannot contain another LOOP, and a branch's own sides stay step-only, so
+ * the nesting is bounded at exactly two levels and stays cycle-free.
+ */
+export type LoopBodyNode = MacroStep | BranchBlock;
+
 export interface LoopBlock {
   readonly id: string;
   readonly kind: "loop";
   readonly repeat: Repeat;
   readonly until?: Condition;
-  readonly body: readonly MacroStep[];
+  readonly body: readonly LoopBodyNode[];
 }
 
-export type ProgramNode = MacroStep | LoopBlock;
+/**
+ * A branch block: evaluate `when` ONCE on entry, then run the `then` steps if it
+ * holds or the `else` steps if it does not, and carry on past the branch. The one
+ * place the program forks — and it stays cycle-free: both sides are forward-only
+ * `MacroStep` lists (no loops, no nested branches — one level, like a loop body),
+ * so the only backward edge in the whole format is still a loop re-entering its
+ * body. `when` is an own-ship test (the `until` site), never a grid read that
+ * would be unreadable at an arbitrary point; a cannot-tell `when` waits rather
+ * than pick a side blind. A side may be empty ("do nothing on that branch").
+ */
+export interface BranchBlock {
+  readonly id: string;
+  readonly kind: "branch";
+  readonly when: Condition;
+  readonly then: readonly MacroStep[];
+  readonly else: readonly MacroStep[];
+}
+
+/**
+ * "Run one of my other saved bots here" — composition without copy-paste.
+ *
+ * ⚠ IT IS EXPANDED (INLINED) BEFORE THE RUN STARTS, never resolved mid-run: the
+ * runner only ever sees a plain program, so every safety property (the forward
+ * scan, the livelock proof, the step caps) holds unchanged and needs no new
+ * reasoning. The NAME is what is matched at expansion time (the id is a
+ * same-world hint), so a shared script still finds "Belt loop" on another
+ * character. Cycles and runaway nesting are refused at expansion (a bot can
+ * never include itself, directly or through a chain).
+ *
+ * TOP-LEVEL ONLY: a sub-bot may carry loops of its own, and inlining one inside
+ * a loop body would make a loop-in-a-loop, so the codec refuses it there.
+ * The included bot's OWN watches and home are ignored — the bot you start
+ * governs the run.
+ */
+export interface SubBotNode {
+  readonly id: string;
+  readonly kind: "sub-bot";
+  /** Same-world hint only; `name` is what expansion matches on. */
+  readonly scriptID: string | null;
+  readonly name: string | null;
+}
+
+/** How deep a chain of included bots may go before expansion refuses. */
+export const MAX_SUBBOT_DEPTH = 3;
+
+export type ProgramNode = MacroStep | LoopBlock | BranchBlock | SubBotNode;
 
 // ─── The document ────────────────────────────────────────────────────────────
 
@@ -408,16 +540,52 @@ export function isMacroStep(node: ProgramNode): node is MacroStep {
   return node.kind === "macro";
 }
 
+/** Narrow a node to a branch block. */
+export function isBranch(node: ProgramNode): node is BranchBlock {
+  return node.kind === "branch";
+}
+
+/** Both sides of a branch as one list — the steps it can run. */
+export function branchSteps(branch: BranchBlock): readonly MacroStep[] {
+  return [...branch.then, ...branch.else];
+}
+
+/** Macro steps in one loop-body element: a branch counts BOTH its sides. */
+export function countLoopBodyNode(node: LoopBodyNode): number {
+  return node.kind === "branch" ? node.then.length + node.else.length : 1;
+}
+
+/** Macro steps contributed by one program node (a loop counts its whole body).
+ * A sub-bot counts as ONE here — it is replaced by its real steps at expansion,
+ * and the expanded program is re-checked against the caps then. */
+export function countProgramNode(node: ProgramNode): number {
+  if (node.kind === "loop") {
+    let total = 0;
+    for (const element of node.body) {
+      total += countLoopBodyNode(element);
+    }
+    return total;
+  }
+  return node.kind === "branch" ? node.then.length + node.else.length : 1;
+}
+
 /**
- * Total macro steps in a program, counting loop bodies. This is the count the
- * `MAX_TOTAL_STEPS` cap bounds — a loop of 3 steps is 3, not 1.
+ * Total macro steps in a program, counting loop bodies and BOTH sides of every
+ * branch (including branches inside a loop). This is the count the
+ * `MAX_TOTAL_STEPS` cap bounds — a loop of 3 steps is 3, and a branch of 2-then
+ * + 1-else is 3, not 1.
  */
 export function countSteps(program: readonly ProgramNode[]): number {
   let total = 0;
   for (const node of program) {
-    total += node.kind === "loop" ? node.body.length : 1;
+    total += countProgramNode(node);
   }
   return total;
+}
+
+/** Every macro step inside one loop-body element, in order. */
+export function loopBodySteps(node: LoopBodyNode): readonly MacroStep[] {
+  return node.kind === "branch" ? branchSteps(node) : [node];
 }
 
 /**
@@ -431,13 +599,22 @@ export function findStep(script: BotScript, id: string): MacroStep | null {
       if (node.id === id) {
         return node;
       }
-    } else {
-      for (const step of node.body) {
+    } else if (node.kind === "loop") {
+      for (const element of node.body) {
+        for (const step of loopBodySteps(element)) {
+          if (step.id === id) {
+            return step;
+          }
+        }
+      }
+    } else if (node.kind === "branch") {
+      for (const step of branchSteps(node)) {
         if (step.id === id) {
           return step;
         }
       }
     }
+    // A sub-bot node holds no steps of its own (it is replaced before the run).
   }
   return null;
 }

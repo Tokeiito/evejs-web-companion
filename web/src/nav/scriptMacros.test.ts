@@ -350,3 +350,134 @@ test("defend: pirate dead and drones home -> done", () => {
   const t = defend({ id: "d", kind: "macro", macro: "defend-with-drones", args: {} }, obs({ snapshot: snapshot([]), dronesOut: true }), NM, {});
   assert.equal(t.outcome.kind, "done");
 });
+
+// ── Named board slots ────────────────────────────────────────────────────────
+
+test("a station arg can point at a BOARD SLOT an earlier block filled in", () => {
+  const travel = SCRIPT_MACROS["travel-to-station"]!;
+  const slotStep: MacroStep = {
+    id: "t",
+    kind: "macro",
+    macro: "travel-to-station",
+    args: { station: { kind: "station", ref: { entity: "station", id: null, name: null, systemName: null, slot: "agent-station" } } },
+  };
+  // The board says the agent's station is 60009999 — and we are docked there, so
+  // the block resolves the slot and reports arrival rather than "no station".
+  const docked = obs({ flightStatus: flight({ docked: true, inSpace: false, stationID: 60009999 }) });
+  const done = travel(slotStep, docked, {}, { agentStationID: 60009999 });
+  assert.equal(done.outcome.kind, "done", "resolved the slot to the board's station");
+
+  // With the slot UNFILLED the block blocks with a plain reason — never a guess.
+  const empty = travel(slotStep, docked, {}, {});
+  assert.equal(empty.outcome.kind, "blocked");
+});
+
+// ── The market set ───────────────────────────────────────────────────────────
+
+function invRow(over: Partial<import("../store/types.ts").InventoryItemRow> & { itemID: number }): import("../store/types.ts").InventoryItemRow {
+  return { typeID: 34, groupID: null, categoryID: null, flagID: null, quantity: 100, singleton: false, ...over };
+}
+
+const buy = SCRIPT_MACROS["buy-item"]!;
+const sell = SCRIPT_MACROS["sell-item"]!;
+const buyStep: MacroStep = {
+  id: "b", kind: "macro", macro: "buy-item",
+  args: { item: { kind: "itemType", typeID: 34, name: "Tritanium" }, quantity: { kind: "qty", value: 5000 }, price: { kind: "isk", value: 6 } },
+};
+const sellStep: MacroStep = {
+  id: "s", kind: "macro", macro: "sell-item",
+  args: { item: { kind: "itemType", typeID: 34, name: "Tritanium" }, price: { kind: "isk", value: 5 } },
+};
+
+test("buy-item: docked -> places one buy order, then done; not docked -> blocked", () => {
+  const first = buy(buyStep, obs({ flightStatus: flight({ docked: true, inSpace: false }) }), {}, {});
+  assert.ok(first.action.kind === "placeBuyOrder" && first.action.typeID === 34 && first.action.quantity === 5000 && first.action.price === 6);
+  // The mem it returns marks it placed -> the next tick is done (no double buy).
+  const second = buy(buyStep, obs({ flightStatus: flight({ docked: true, inSpace: false }) }), first.nextMem, {});
+  assert.equal(second.outcome.kind, "done");
+  assert.equal(buy(buyStep, obs({ flightStatus: flight({ docked: false }) }), {}, {}).outcome.kind, "blocked");
+});
+
+test("buy-item: an unfilled item/price/quantity -> blocked, never a bad order", () => {
+  const bad: MacroStep = { id: "b", kind: "macro", macro: "buy-item", args: { item: { kind: "itemType", typeID: null, name: null }, quantity: { kind: "qty", value: 1 }, price: { kind: "isk", value: 1 } } };
+  assert.equal(buy(bad, obs({ flightStatus: flight({ docked: true, inSpace: false }) }), {}, {}).outcome.kind, "blocked");
+});
+
+test("sell-item: lists each hangar stack, done when none left; not docked -> blocked", () => {
+  const docked = obs({ flightStatus: flight({ docked: true, inSpace: false }), stationHangar: [invRow({ itemID: 111, quantity: 200 }), invRow({ itemID: 222, typeID: 99, quantity: 5 })] });
+  const t = sell(sellStep, docked, {}, {});
+  assert.ok(t.action.kind === "placeSellOrder" && t.action.itemID === 111 && t.action.quantity === 200 && t.action.price === 5);
+  // Hangar now empty of type 34 -> done (the listed stack left the hangar).
+  const empty = obs({ flightStatus: flight({ docked: true, inSpace: false }), stationHangar: [invRow({ itemID: 222, typeID: 99 })] });
+  assert.equal(sell(sellStep, empty, {}, {}).outcome.kind, "done");
+  // A singleton (an assembled item) of the type is never listed.
+  const onlySingleton = obs({ flightStatus: flight({ docked: true, inSpace: false }), stationHangar: [invRow({ itemID: 333, singleton: true })] });
+  assert.equal(sell(sellStep, onlySingleton, {}, {}).outcome.kind, "done");
+  assert.equal(sell(sellStep, obs({ flightStatus: flight({ docked: false }) }), {}, {}).outcome.kind, "blocked");
+});
+
+// ── The fleet-support set ────────────────────────────────────────────────────
+
+const remoteRep = SCRIPT_MACROS["remote-rep"]!;
+const orbitBoost = SCRIPT_MACROS["orbit-and-boost"]!;
+const repStep: MacroStep = { id: "rr", kind: "macro", macro: "remote-rep", args: {} };
+const boostStep: MacroStep = { id: "ob", kind: "macro", macro: "orbit-and-boost", args: {} };
+
+test("remote-rep: no remote reps fitted -> blocked", () => {
+  const hurt = entity({ itemID: 7001, kind: "ship", characterID: 5001, shieldRatio: 0.4 });
+  assert.equal(remoteRep(repStep, obs({ snapshot: snapshot([hurt]), remoteShieldRepairerIDs: [] }), {}, {}).outcome.kind, "blocked");
+});
+
+test("remote-rep: hurt friendly -> lock then rep it; everyone full -> done", () => {
+  const hurt = entity({ itemID: 7001, kind: "ship", characterID: 5001, shieldRatio: 0.4, armorRatio: 1, hullRatio: 1 });
+  const lock = remoteRep(repStep, obs({ snapshot: snapshot([hurt]), remoteShieldRepairerIDs: [600] }), {}, {});
+  assert.ok(lock.action.kind === "lock" && lock.action.targetID === 7001);
+  const rep = remoteRep(repStep, obs({ snapshot: snapshot([hurt]), remoteShieldRepairerIDs: [600], lockedTargetIDs: [7001] }), lock.nextMem, {});
+  assert.ok(rep.action.kind === "activate" && rep.action.moduleID === 600 && rep.action.targetID === 7001);
+  const full = entity({ itemID: 7001, kind: "ship", characterID: 5001, shieldRatio: 1, armorRatio: 1, hullRatio: 1 });
+  assert.equal(remoteRep(repStep, obs({ snapshot: snapshot([full]), remoteShieldRepairerIDs: [600] }), {}, {}).outcome.kind, "done");
+});
+
+test("remote-rep: an NPC or your own hull is never a rep target", () => {
+  const npc = entity({ itemID: 7002, kind: "ship", isNpc: true, shieldRatio: 0.2 });
+  // No FRIENDLY is hurt (the NPC is skipped), so the block is done — never reps a rat.
+  assert.equal(remoteRep(repStep, obs({ snapshot: snapshot([npc]), remoteShieldRepairerIDs: [600] }), {}, {}).outcome.kind, "done");
+});
+
+test("orbit-and-boost: no mate -> waits (never done); a mate present -> orbit it", () => {
+  const none = orbitBoost(boostStep, obs({ snapshot: snapshot([]), remoteShieldRepairerIDs: [600] }), {}, {});
+  assert.equal(none.outcome.kind, "acting");
+  assert.equal(none.action.kind, "wait");
+  const mate = entity({ itemID: 7003, kind: "ship", characterID: 5002, shieldRatio: 1, armorRatio: 1, hullRatio: 1, position: { x: 5000, y: 0, z: 0 } });
+  const orb = orbitBoost(boostStep, obs({ snapshot: snapshot([mate]), remoteShieldRepairerIDs: [600] }), {}, {});
+  assert.ok(orb.action.kind === "orbit" && orb.action.targetID === 7003);
+});
+
+// ── The fleet-management set ─────────────────────────────────────────────────
+
+const createF = SCRIPT_MACROS["create-fleet"]!;
+const inviteF = SCRIPT_MACROS["invite-to-fleet"]!;
+const joinF = SCRIPT_MACROS["join-fleet"]!;
+const createStep: MacroStep = { id: "cf", kind: "macro", macro: "create-fleet", args: {} };
+const inviteStep: MacroStep = { id: "if", kind: "macro", macro: "invite-to-fleet", args: { who: { kind: "character", charID: 90001, name: "Alt" } } };
+const joinStep: MacroStep = { id: "jf", kind: "macro", macro: "join-fleet", args: {} };
+
+test("create-fleet: not in a fleet -> form one; already in one -> done; unread -> wait", () => {
+  assert.equal(createF(createStep, obs({ inFleet: false }), {}, {}).action.kind, "createFleet");
+  assert.equal(createF(createStep, obs({ inFleet: true }), {}, {}).outcome.kind, "done");
+  assert.equal(createF(createStep, obs({ inFleet: null }), {}, {}).action.kind, "wait"); // reading, not deciding blind
+});
+
+test("invite-to-fleet: in a fleet -> invite once then done; not in a fleet -> blocked; no pilot -> blocked", () => {
+  const inv = inviteF(inviteStep, obs({ inFleet: true }), {}, {});
+  assert.ok(inv.action.kind === "inviteToFleet" && inv.action.charID === 90001);
+  assert.equal(inviteF(inviteStep, obs({ inFleet: true }), inv.nextMem, {}).outcome.kind, "done");
+  assert.equal(inviteF(inviteStep, obs({ inFleet: false }), {}, {}).outcome.kind, "blocked");
+  const noWho: MacroStep = { id: "if", kind: "macro", macro: "invite-to-fleet", args: { who: { kind: "character", charID: null, name: null } } };
+  assert.equal(inviteF(noWho, obs({ inFleet: true }), {}, {}).outcome.kind, "blocked");
+});
+
+test("join-fleet: not in a fleet -> keep accepting; in a fleet -> done", () => {
+  assert.equal(joinF(joinStep, obs({ inFleet: false }), {}, {}).action.kind, "acceptFleetInvite");
+  assert.equal(joinF(joinStep, obs({ inFleet: true }), {}, {}).outcome.kind, "done");
+});

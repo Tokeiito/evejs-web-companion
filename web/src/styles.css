@@ -1268,6 +1268,94 @@
     margin-bottom: 0.5rem;
   }
 
+  /* ================================================== inventory tabs (R60) --
+   * The Inventory & Ship panel sorted into four tabs (Ship Inventory / Ship
+   * Hangar / Item Hangar / Corporate Hangar) so it fits the right-hand dock
+   * window without a long scroll. ALL four panels stay in the DOM; the inactive
+   * ones carry `hidden`, so a selection made in one survives a tab switch and
+   * nothing remounts. */
+  .inventory-panel {
+    min-width: 0;
+  }
+  .inv-controls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: end;
+    gap: 0.5rem 0.9rem;
+    margin: 0.2rem 0 0.6rem;
+  }
+  .inv-qty {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    font-size: 0.85rem;
+    color: var(--color-muted);
+  }
+  .inv-qty input {
+    max-width: 8rem;
+  }
+
+  /* An underline tab bar — real buttons, keyboard reachable, squared to match
+   * the design system. The active tab is never colour alone: it is bolder and
+   * carries `aria-selected`. */
+  .inv-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.15rem;
+    border-bottom: 1px solid var(--color-line);
+    margin-bottom: 0.8rem;
+  }
+  .inv-tab {
+    appearance: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    background: transparent;
+    color: var(--color-muted);
+    padding: 0.45rem 0.7rem;
+    margin-bottom: -1px;
+    cursor: pointer;
+    font-size: 0.9rem;
+    border-radius: 0;
+  }
+  .inv-tab:hover:not(.active) {
+    color: var(--color-text);
+  }
+  .inv-tab.active {
+    color: var(--color-accent-bright);
+    border-bottom-color: var(--color-accent);
+    font-weight: 600;
+  }
+  .inv-tab:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: -2px;
+  }
+  .inv-tabpanel {
+    min-width: 0;
+  }
+  .inv-tabpanel[hidden] {
+    display: none;
+  }
+  .inv-tabpanel > h3:first-child {
+    margin-top: 0;
+  }
+  /* The open container hangs below the item grid in the Item Hangar tab. */
+  .inv-container {
+    margin-top: 1rem;
+    border-top: 1px solid var(--color-line);
+    padding-top: 0.6rem;
+  }
+  /* In the dock window the panel is tight, so its own big header is dropped
+   * (the dock frame titles it with the station name) and the controls compact. */
+  .dock-inventory {
+    min-width: 0;
+  }
+  .inventory-panel.dock .inv-controls {
+    margin-top: 0;
+  }
+  .inventory-panel.dock .inv-qty {
+    font-size: 0.8rem;
+  }
+
   /* =============================================== the fitting window (R21) --
    * A real fitting window: the ship in the middle, its slots as SOCKETS on
    * arcs around it. The arcs' angles are computed in
@@ -1516,6 +1604,271 @@
     color: var(--color-muted);
     font-style: italic;
     font-weight: 400;
+  }
+
+  /* --------------------------------------------------- EVE fitting window --
+   * R21+ — the fitting panel modelled on EVE's own: a slim toolbar down the
+   * left, the ring in the middle with its read-outs beneath, and a COLLAPSIBLE
+   * statistics panel down the right. A flex row that WRAPS (rather than a media
+   * query) so the stats panel drops below the ring when the WINDOW — not the
+   * viewport — is narrow, which is the axis a resizable desktop window varies
+   * on. The list view (kept for phones) uses the plain stacked sections. */
+  .fit-window {
+    padding-top: 0.6rem;
+  }
+  .fit-stage {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.9rem;
+    align-items: flex-start;
+  }
+  /* The slim left toolbar. Its two glyphs (Fitting, Cargo) are always labelled
+   * for a screen reader; the active one is never colour alone. */
+  .fit-toolbar {
+    flex: 0 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+  }
+  .fit-tool {
+    width: 2.4rem;
+    height: 2.4rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    border: 1px solid var(--color-line-strong);
+    background: var(--color-panel-3);
+    color: var(--color-muted);
+    cursor: pointer;
+  }
+  .fit-tool:hover:not(:disabled) {
+    color: var(--color-text);
+    border-color: var(--color-accent-dim);
+  }
+  .fit-tool.active {
+    color: var(--color-accent-bright);
+    border-color: var(--color-accent-dim);
+    background: var(--color-panel-2);
+  }
+  .fit-tool:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
+  .fit-tool:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+
+  /* The centre column: the ring, the selected-socket detail, and the footer.
+   * `flex: 3` lets it take the lion's share of the width; the stats panel gets
+   * the rest and wraps under once there is no longer room for both. */
+  .fit-center {
+    flex: 3 1 22rem;
+    min-width: 0;
+  }
+  .fit-topline {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding-bottom: 0.5rem;
+    margin-bottom: 0.4rem;
+    border-bottom: 1px solid var(--color-line);
+  }
+  .fit-ship-name {
+    color: var(--color-text-bright);
+    font-weight: 600;
+  }
+  .fit-ship-class {
+    color: var(--color-muted);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+  .fit-info {
+    margin-left: auto;
+    color: var(--color-muted);
+    cursor: help;
+    font-size: 1rem;
+  }
+  .fit-hint {
+    margin: 0 0 0.5rem;
+  }
+
+  /* The right-hand collapsible statistics panel. */
+  .fit-stats {
+    flex: 1 1 15rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+  }
+  .fit-sec {
+    border: 1px solid var(--color-line);
+    background: var(--color-panel-3);
+  }
+  /* A section header is a <summary>: native collapse, keyboard-reachable, and
+   * carrying its headline value the way EVE's ▸/▾ rows do. */
+  .fit-sec-head {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    padding: 0.4rem 0.6rem;
+    cursor: pointer;
+    list-style: none;
+    user-select: none;
+  }
+  .fit-sec-head::-webkit-details-marker {
+    display: none;
+  }
+  .fit-sec-head::before {
+    content: "▸";
+    flex: 0 0 auto;
+    color: var(--color-muted);
+    font-size: 0.8em;
+  }
+  .fit-sec[open] > .fit-sec-head::before {
+    content: "▾";
+  }
+  .fit-sec-head:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: -2px;
+  }
+  .fit-sec-name {
+    color: var(--color-accent-bright);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-size: 12px;
+  }
+  .fit-sec-headline {
+    margin-left: auto;
+    color: var(--color-text-bright);
+    font-variant-numeric: tabular-nums;
+  }
+  .fit-sec-body {
+    padding: 0.1rem 0.6rem 0.6rem;
+  }
+  .fit-sec-body table {
+    margin-top: 0.2rem;
+  }
+  .fit-sec-body .note {
+    font-size: 0.8rem;
+    margin-bottom: 0;
+  }
+
+  /* The bottom read-out strip: CPU + powergrid bars, then the calibration, the
+   * bays and the fit's value. */
+  .fit-footer {
+    margin-top: 0.8rem;
+    padding-top: 0.7rem;
+    border-top: 1px solid var(--color-line);
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+  }
+  .fit-bars {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.6rem;
+  }
+  .fit-readouts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem 1.4rem;
+    margin: 0;
+  }
+  .fit-readouts > div {
+    display: flex;
+    flex-direction: column;
+  }
+  .fit-readouts dt {
+    color: var(--color-muted);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+  .fit-readouts dd {
+    margin: 0;
+    color: var(--color-text-bright);
+    font-variant-numeric: tabular-nums;
+  }
+  /* The fit's ISK value sits at the far right, the way EVE anchors it. */
+  .fit-readout-value {
+    margin-left: auto;
+    text-align: right;
+  }
+
+  /* The four damage-type column chips on the defence grid — colour AND a two-
+   * letter label, so the type is never carried by colour alone. */
+  .dmg-chip {
+    display: inline-block;
+    padding: 0 0.3rem;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    border: 1px solid transparent;
+  }
+  .dmg-em {
+    color: #9ec7ff;
+    border-color: #3a5f92;
+  }
+  .dmg-therm {
+    color: #e69a9a;
+    border-color: #8a4141;
+  }
+  .dmg-kin {
+    color: #cdd6e2;
+    border-color: #4a5a6c;
+  }
+  .dmg-exp {
+    color: #e6c07a;
+    border-color: #8a6a2f;
+  }
+
+  /* Resistance strength grading — a stronger resist reads greener. Always shown
+   * next to the number, so the colour is reinforcement and never the signal. */
+  .resist-hi {
+    color: var(--color-good);
+  }
+  .resist-med {
+    color: var(--color-accent-bright);
+  }
+  .resist-lo {
+    color: var(--color-warn);
+  }
+  .resist-none {
+    color: var(--color-danger);
+  }
+  .fit-subnote {
+    color: var(--color-muted);
+    font-size: 10px;
+    margin-left: 0.35rem;
+    white-space: nowrap;
+  }
+
+  /* A clicked module's EFFECTIVE stats (with the pilot's skills and this hull). */
+  .module-stats {
+    margin-top: 0.7rem;
+    padding-top: 0.6rem;
+    border-top: 1px dashed var(--color-line);
+  }
+  .module-stats-title {
+    margin: 0 0 0.4rem;
+    color: var(--color-accent);
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .module-stats-table {
+    max-width: 24rem;
+  }
+  .module-stats-disclose {
+    margin-top: 0.3rem;
+  }
+  .module-stats-disclose > summary {
+    cursor: pointer;
+    color: var(--color-accent);
+    font-size: 0.85rem;
   }
 
   /* ------------------------------------------------- overview + ship HUD --
@@ -1815,13 +2168,40 @@
     white-space: nowrap;
   }
 
+  /* R107 — server connection indicator, sat just before Add character: a dot
+   * plus a short label (Connected / Connecting… / Server offline). */
+  .char-bar-status {
+    flex: 0 0 auto;
+    align-self: center;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding-inline: 0.4rem;
+    font-size: 0.75rem;
+    color: var(--color-muted);
+    white-space: nowrap;
+  }
+  .char-bar-status-dot {
+    width: 0.5rem;
+    height: 0.5rem;
+    background: var(--color-muted);
+  }
+  .char-bar-status-online .char-bar-status-dot { background: var(--color-good); }
+  .char-bar-status-online .char-bar-status-text { color: var(--color-good); }
+  .char-bar-status-offline .char-bar-status-dot { background: var(--color-danger); }
+  .char-bar-status-offline .char-bar-status-text { color: var(--color-danger); }
+  .char-bar-status-checking .char-bar-status-dot { background: var(--color-warn); }
+
   /* One pilot's chip: a docked/in-space dot, the name, and where they are. */
   .char-chip {
     display: flex;
     align-items: center;
     gap: 0.45rem;
     align-self: center;
-    max-width: 15rem;
+    /* Fixed width so every character tab is identical regardless of name length;
+     * the name truncates with an ellipsis (below) and the bar scrolls when the
+     * tabs overflow. Pairs with the short "Docked"/"In space" label. */
+    flex: 0 0 11rem;
     min-height: 2.1rem;
     padding: 0.2rem 0.7rem;
     background: var(--color-panel-3);
@@ -1907,6 +2287,62 @@
   .onboarding-frame .panel { border: 0; }
 
   .workspace-shell-empty { position: fixed; inset: var(--char-bar-h) 0 0 0; background: var(--color-bg); }
+
+  /* R107 — the "Your pilots" quick-pick above the login form: remembered pilots
+   * as one-click rows (name over a muted detail line) plus a forget ×. Echoes
+   * the character-select list; square corners like the rest of the UI. */
+  .known-chars { margin-bottom: 0.9rem; }
+  .known-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+  }
+  .known-row { display: flex; align-items: stretch; gap: 0.4rem; }
+  .known {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+    align-items: flex-start;
+    text-align: left;
+    padding: 0.5rem 0.7rem;
+    min-height: 2.75rem;
+    background: var(--color-panel-3);
+    border: 1px solid var(--color-line);
+    color: var(--color-text);
+    cursor: pointer;
+  }
+  .known:hover:not(:disabled) { background: var(--color-panel-2); border-color: var(--color-line-strong); }
+  .known:disabled { opacity: 0.55; cursor: default; }
+  .known .name { font-weight: 600; color: var(--color-text-bright); }
+  .known .detail { font-size: 0.78rem; color: var(--color-muted); }
+  .known .known-state { color: var(--color-accent); }
+  .known-forget {
+    flex: 0 0 auto;
+    width: 2.2rem;
+    align-self: stretch;
+    background: var(--color-panel-3);
+    border: 1px solid var(--color-line);
+    color: var(--color-muted);
+    font-size: 1.1rem;
+    line-height: 1;
+    cursor: pointer;
+  }
+  .known-forget:hover:not(:disabled) { color: var(--color-danger); border-color: var(--color-line-strong); }
+  .known-forget:disabled { opacity: 0.4; cursor: default; }
+
+  /* R107 — the brief "bringing your pilots back" note shown while a refresh
+   * restore is in flight and no cockpit is up yet. */
+  .restoring-note {
+    max-width: 32rem;
+    margin: 1.5rem auto;
+    text-align: center;
+    color: var(--color-muted);
+  }
 
   /* The desktop surface — floating windows are absolutely placed within it. A
    * faint grid gives it "desktop" depth without competing with panel content. */
@@ -2375,6 +2811,77 @@
   .login-screen .panel {
     width: 100%;
     max-width: 22rem;
+  }
+
+  /* The boot onboarding: "Your pilots" WIDE on the left, the login card
+   * BESIDE it on the right (wrapping under on a phone). The pilots panel
+   * carries per-row bot readouts now, so it gets the room; the login card
+   * keeps its form width. flex-wrap is the responsive story: under ~52rem the
+   * login drops below the picker, and with no picker at all (empty roster)
+   * justify-content centres the lone login card. This also neutralises the
+   * login screen's own 70vh centring, which used to float the card a whole
+   * empty screen below the picker — same move the add-character overlay makes
+   * (.onboarding-frame above). */
+  .onboarding-screen {
+    width: 100%;
+    max-width: 72rem;
+    margin: 0 auto;
+    padding: 1.5rem 0.75rem 2rem;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    justify-content: center;
+    gap: 1.25rem;
+  }
+  .onboarding-screen .known-chars {
+    flex: 1 1 30rem;
+    min-width: 0;
+    margin-bottom: 0;
+  }
+  .onboarding-screen .login-screen {
+    flex: 0 1 22rem;
+    min-height: 0;
+  }
+  .onboarding-screen .login-screen .panel {
+    max-width: none;
+  }
+  /* A quick-add error concerns the whole screen, not either column. */
+  .onboarding-screen > .error {
+    flex-basis: 100%;
+    margin: 0;
+  }
+
+  /* The landing page's own Stop for a bot-flown pilot (beside the forget ×).
+   * Centred, not stretched — a row tall with vitals must not inflate the
+   * button into a slab. R8 — a comfortable target on a phone. */
+  .known-stop {
+    align-self: center;
+    min-height: 40px;
+    padding: 0 0.7rem;
+    white-space: nowrap;
+    border-color: var(--color-danger);
+    color: var(--color-danger);
+  }
+
+  /* The bot-flown pilot's ship readout line (health + hold fill). */
+  .bot-vitals {
+    color: var(--color-accent);
+  }
+
+  /* "A server bot is flying this pilot" — the mark on login/character rows.
+   * Words beside the glyph, never the glyph alone (R9a); the app's accent
+   * colour, and legible on a disabled row. */
+  .bot-flying-badge {
+    display: inline-block;
+    margin-left: 0.45rem;
+    padding: 0.05rem 0.4rem;
+    border: 1px solid var(--color-accent);
+    color: var(--color-accent);
+    font-size: 0.72em;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    white-space: nowrap;
+    vertical-align: middle;
   }
   .login-status {
     margin: 0 0 0.75rem;

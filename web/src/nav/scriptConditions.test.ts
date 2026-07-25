@@ -54,6 +54,20 @@ test("ore-hold-at-least reads the fill fraction the other way round", () => {
   assert.equal(evaluateCondition(c, obs({ oreHoldFraction: null })), "cannot-tell");
 });
 
+test("wallet thresholds read an absolute ISK balance, unread never fires", () => {
+  const below: Condition = { kind: "wallet-below", isk: 100_000_000 };
+  assert.equal(evaluateCondition(below, obs({ walletBalance: 50_000_000 })), "met");
+  assert.equal(evaluateCondition(below, obs({ walletBalance: 150_000_000 })), "not-met");
+  assert.equal(evaluateCondition(below, obs({ walletBalance: null })), "cannot-tell");
+  // Absent entirely (a bot that does not read the wallet) is unreadable, not zero.
+  assert.equal(evaluateCondition(below, obs()), "cannot-tell");
+
+  const above: Condition = { kind: "wallet-above", isk: 100_000_000 };
+  assert.equal(evaluateCondition(above, obs({ walletBalance: 150_000_000 })), "met");
+  assert.equal(evaluateCondition(above, obs({ walletBalance: 100_000_000 })), "not-met"); // strict >
+  assert.equal(evaluateCondition(above, obs({ walletBalance: null })), "cannot-tell");
+});
+
 test("boolean conditions are tri-state too", () => {
   assert.equal(evaluateCondition({ kind: "hold-empty" }, obs({ holdEmpty: true })), "met");
   assert.equal(evaluateCondition({ kind: "hold-empty" }, obs({ holdEmpty: false })), "not-met");

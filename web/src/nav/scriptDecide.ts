@@ -26,7 +26,8 @@
 // stays unreadable trips the cannot-tell streak. Every way of doing nothing has
 // a bound.
 
-import type { BotScript, Condition, LoopBlock, MacroStep } from "../bots/botScript.ts";
+import { countSteps } from "../bots/botScript.ts";
+import type { BotScript, BranchBlock, Condition, LoopBlock, MacroStep } from "../bots/botScript.ts";
 import { conditionSentence } from "../bots/scriptText.ts";
 import {
   SENTENCE as COND_SENTENCE,
@@ -87,7 +88,23 @@ export type ScriptAction =
       readonly from: string;
       readonly to: string;
       readonly qty: number | null;
-    };
+    }
+  /** Place a market BUY order (server confirm-gated; spends ISK + broker fee). */
+  | { readonly kind: "placeBuyOrder"; readonly typeID: number; readonly price: number; readonly quantity: number }
+  /** Place a market SELL order for one owned stack (server confirm-gated). */
+  | {
+      readonly kind: "placeSellOrder";
+      readonly itemID: number;
+      readonly typeID: number;
+      readonly price: number;
+      readonly quantity: number;
+    }
+  /** Form a fleet (server confirm-gated). */
+  | { readonly kind: "createFleet" }
+  /** Invite a character into the session's own fleet (server confirm-gated). */
+  | { readonly kind: "inviteToFleet"; readonly charID: number }
+  /** Accept a pending fleet invite (server confirm-gated). */
+  | { readonly kind: "acceptFleetInvite" };
 
 export function isWorldCall(action: ScriptAction): boolean {
   return action.kind !== "wait";
@@ -157,6 +174,23 @@ const HOME_MEM_KEY = "__home__";
 type Position =
   | { readonly kind: "step"; readonly node: number }
   | { readonly kind: "loop"; readonly node: number; readonly body: number }
+  // A branch not yet entered: the next tick evaluates its `when` and commits to a
+  // side. Kept distinct from "branch" so the condition is read ONCE on entry, not
+  // re-read (and possibly flipped) each tick while a side runs.
+  | { readonly kind: "branch-enter"; readonly node: number }
+  | { readonly kind: "branch"; readonly node: number; readonly side: "then" | "else"; readonly body: number }
+  // The same two states for a branch sitting INSIDE a loop body: `body` is the
+  // branch's index in the loop body, `inner` its index within the chosen side.
+  // It is re-entered (and so re-evaluated) on every pass — which is the point: a
+  // loop that forks each lap.
+  | { readonly kind: "loop-branch-enter"; readonly node: number; readonly body: number }
+  | {
+      readonly kind: "loop-branch";
+      readonly node: number;
+      readonly body: number;
+      readonly side: "then" | "else";
+      readonly inner: number;
+    }
   | { readonly kind: "done" };
 
 interface Latched {
@@ -211,7 +245,12 @@ export function describeBoard(board: ScriptBoard): string | null {
  * the program is done or heading home (only the ship reads are needed then).
  */
 export function activeMacroID(script: BotScript, mem: ScriptMemory): string | null {
-  if (mem.position.kind === "done" || mem.latched !== null) {
+  if (
+    mem.position.kind === "done" ||
+    mem.position.kind === "branch-enter" ||
+    mem.position.kind === "loop-branch-enter" ||
+    mem.latched !== null
+  ) {
     return null;
   }
   const step = activeStep(script, mem.position);
@@ -486,13 +525,77 @@ function runProgram(
     }
 
     // At the top of a loop pass, a loop-level `until` can end the loop early.
-    if (position.kind === "loop" && position.body === 0) {
+    // (The first body element may itself be a branch, so both entry kinds count.)
+    if ((position.kind === "loop" || position.kind === "loop-branch-enter") && position.body === 0) {
       const loop = script.program[position.node] as LoopBlock;
       if (loop.until !== undefined && evaluateCondition(loop.until, obs) === "met") {
         position = startOfNode(script, position.node + 1);
         loopPass = 0;
         continue;
       }
+    }
+
+    // Entering a branch: read its `when` ONCE and commit to a side (or skip an
+    // empty side, or wait when it cannot be read — a side is never chosen blind).
+    // Committing on entry is why a `when` that flips mid-side never bounces.
+    // Handles a top-level branch and one inside a loop body with the same code.
+    if (position.kind === "branch-enter" || position.kind === "loop-branch-enter") {
+      // `loopBodyIndex` is the branch's slot in a loop body, or null at top level
+      // — one value that both narrows the union and says which case we are in.
+      const loopBodyIndex = position.kind === "loop-branch-enter" ? position.body : null;
+      const branchNode = position.node;
+      const branch =
+        loopBodyIndex !== null
+          ? ((script.program[branchNode] as LoopBlock).body[loopBodyIndex] as BranchBlock)
+          : (script.program[branchNode] as BranchBlock);
+      const verdict = evaluateCondition(branch.when, obs);
+      if (verdict === "cannot-tell") {
+        const samePlace = positionKey(position) === positionKey(mem.position);
+        const stepTicks = (samePlace ? mem.stepTicks : 0) + 1;
+        if (stepTicks > MAX_STEP_TICKS) {
+          return paused(SAY.stepTooLong, { ...mem, position, loopPass, macroMem, board }, branch.id);
+        }
+        const streak = bumpCannotTellStreak(mem.cannotTellStreak, true);
+        if (cannotTellStreakExhausted(streak)) {
+          return paused(COND_SENTENCE.cannotTellStreak, { ...mem, position, loopPass, macroMem, board }, branch.id);
+        }
+        return {
+          action: WAIT,
+          why: `Working out whether ${conditionSentence(branch.when)}.`,
+          phase: "Choosing a branch",
+          stepPath: branch.id,
+          interruptID: null,
+          status: "running",
+          pauseReason: null,
+          memory: { position, loopPass, stepTicks, cannotTellStreak: streak, latched: null, macroMem, board },
+        };
+      }
+      const side = verdict === "met" ? "then" : "else";
+      const sideBody = side === "then" ? branch.then : branch.else;
+      if (sideBody.length === 0) {
+        // The chosen side is empty ("do nothing on this branch") — carry on past
+        // it: out of the loop body (which may wrap the pass), or past the node.
+        if (loopBodyIndex !== null) {
+          const next = advanceLoopBody(script, branchNode, loopBodyIndex, loopPass);
+          position = next.position;
+          loopPass = next.loopPass;
+          if (next.wrapped) {
+            wraps += 1;
+            if (wraps >= 2) {
+              return paused(SAY.livelock, { ...mem, position, loopPass, macroMem, board }, null);
+            }
+          }
+        } else {
+          position = startOfNode(script, branchNode + 1);
+          loopPass = 0;
+        }
+        continue;
+      }
+      position =
+        loopBodyIndex !== null
+          ? { kind: "loop-branch", node: branchNode, body: loopBodyIndex, side, inner: 0 }
+          : { kind: "branch", node: branchNode, side, body: 0 };
+      continue;
     }
 
     const step = activeStep(script, position);
@@ -591,9 +694,25 @@ function startOfNode(script: BotScript, node: number): Position {
     return { kind: "done" };
   }
   const target = script.program[node];
-  return target !== undefined && target.kind === "loop"
-    ? { kind: "loop", node, body: 0 }
-    : { kind: "step", node };
+  if (target?.kind === "loop") {
+    // The first body element may itself be a branch — enter it properly.
+    return startOfLoopBody(script, node, 0);
+  }
+  if (target?.kind === "branch") {
+    return { kind: "branch-enter", node };
+  }
+  return { kind: "step", node };
+}
+
+/**
+ * The position at a given index of a loop body — a plain step, or the ENTRY to a
+ * branch sitting there (so its `when` is read fresh on every pass).
+ */
+function startOfLoopBody(script: BotScript, node: number, body: number): Position {
+  const loop = script.program[node] as LoopBlock;
+  return loop.body[body]?.kind === "branch"
+    ? { kind: "loop-branch-enter", node, body }
+    : { kind: "loop", node, body };
 }
 
 interface Advance {
@@ -603,22 +722,55 @@ interface Advance {
   readonly wrapped: boolean;
 }
 
+/**
+ * Leave one loop-body ELEMENT (a step, or a whole branch) and take the next —
+ * wrapping the pass against the repeat when the body is finished. The single
+ * place the loop's backward edge is produced, for both element kinds.
+ */
+function advanceLoopBody(script: BotScript, node: number, body: number, loopPass: number): Advance {
+  const loop = script.program[node] as LoopBlock;
+  if (body + 1 < loop.body.length) {
+    return { position: startOfLoopBody(script, node, body + 1), loopPass, wrapped: false };
+  }
+  // Body finished — one pass done.
+  const donePasses = loopPass + 1;
+  const another = loop.repeat.kind === "forever" || donePasses < loop.repeat.count;
+  if (another) {
+    return { position: startOfLoopBody(script, node, 0), loopPass: donePasses, wrapped: true };
+  }
+  return { position: startOfNode(script, node + 1), loopPass: 0, wrapped: false };
+}
+
 /** Move forward one step, wrapping a loop body against its repeat. */
 function advance(script: BotScript, position: Position, loopPass: number): Advance {
   if (position.kind === "step") {
     return { position: startOfNode(script, position.node + 1), loopPass: 0, wrapped: false };
   }
   if (position.kind === "loop") {
+    return advanceLoopBody(script, position.node, position.body, loopPass);
+  }
+  if (position.kind === "loop-branch") {
     const loop = script.program[position.node] as LoopBlock;
-    if (position.body + 1 < loop.body.length) {
-      return { position: { kind: "loop", node: position.node, body: position.body + 1 }, loopPass, wrapped: false };
+    const branch = loop.body[position.body] as BranchBlock;
+    const side = position.side === "then" ? branch.then : branch.else;
+    if (position.inner + 1 < side.length) {
+      return {
+        position: { kind: "loop-branch", node: position.node, body: position.body, side: position.side, inner: position.inner + 1 },
+        loopPass,
+        wrapped: false,
+      };
     }
-    // Body finished — one pass done.
-    const donePasses = loopPass + 1;
-    const another = loop.repeat.kind === "forever" || donePasses < loop.repeat.count;
-    if (another) {
-      return { position: { kind: "loop", node: position.node, body: 0 }, loopPass: donePasses, wrapped: true };
+    // The chosen side is finished — leave the branch, i.e. leave this loop-body
+    // element (which may wrap the pass). Never a backward edge of its own.
+    return advanceLoopBody(script, position.node, position.body, loopPass);
+  }
+  if (position.kind === "branch") {
+    const branch = script.program[position.node] as BranchBlock;
+    const side = position.side === "then" ? branch.then : branch.else;
+    if (position.body + 1 < side.length) {
+      return { position: { kind: "branch", node: position.node, side: position.side, body: position.body + 1 }, loopPass, wrapped: false };
     }
+    // The chosen side is finished — leave the branch (never a backward edge).
     return { position: startOfNode(script, position.node + 1), loopPass: 0, wrapped: false };
   }
   return { position: { kind: "done" }, loopPass: 0, wrapped: false };
@@ -629,6 +781,17 @@ function activeStep(script: BotScript, position: Position): MacroStep {
     const loop = script.program[position.node] as LoopBlock;
     return loop.body[position.body] as MacroStep;
   }
+  if (position.kind === "loop-branch") {
+    const loop = script.program[position.node] as LoopBlock;
+    const branch = loop.body[position.body] as BranchBlock;
+    const side = position.side === "then" ? branch.then : branch.else;
+    return side[position.inner] as MacroStep;
+  }
+  if (position.kind === "branch") {
+    const branch = script.program[position.node] as BranchBlock;
+    const side = position.side === "then" ? branch.then : branch.else;
+    return side[position.body] as MacroStep;
+  }
   // position.kind === "step"
   return script.program[(position as { node: number }).node] as MacroStep;
 }
@@ -636,6 +799,18 @@ function activeStep(script: BotScript, position: Position): MacroStep {
 function positionKey(position: Position): string {
   if (position.kind === "loop") {
     return `loop:${position.node}:${position.body}`;
+  }
+  if (position.kind === "branch") {
+    return `branch:${position.node}:${position.side}:${position.body}`;
+  }
+  if (position.kind === "branch-enter") {
+    return `branch-enter:${position.node}`;
+  }
+  if (position.kind === "loop-branch") {
+    return `loop-branch:${position.node}:${position.body}:${position.side}:${position.inner}`;
+  }
+  if (position.kind === "loop-branch-enter") {
+    return `loop-branch-enter:${position.node}:${position.body}`;
   }
   if (position.kind === "step") {
     return `step:${position.node}`;
@@ -663,11 +838,7 @@ function omit(
 }
 
 function totalSteps(script: BotScript): number {
-  let total = 0;
-  for (const node of script.program) {
-    total += node.kind === "loop" ? node.body.length : 1;
-  }
-  return total;
+  return countSteps(script.program);
 }
 
 function safetyFloorID(script: BotScript): string | null {

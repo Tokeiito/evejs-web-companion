@@ -72,8 +72,10 @@ test("duplicate deep-copies with fresh ids, including a loop's body", () => {
   assert.equal(dup.length, 2);
   const copy = dup[1] as LoopBlock;
   assert.notEqual(copy.id, loop.id, "the loop copy has a fresh id");
-  assert.notEqual(copy.body[0]?.id, inner.id, "the body step copy has a fresh id too");
-  assert.equal(copy.body[0]?.macro, "mine-at-belt", "contents are preserved");
+  const copied = copy.body[0];
+  assert.notEqual(copied?.id, inner.id, "the body step copy has a fresh id too");
+  assert.ok(copied && copied.kind === "macro");
+  assert.equal(copied.macro, "mine-at-belt", "contents are preserved");
 });
 
 test("loop-body edits work, and emptying a loop removes it", () => {
