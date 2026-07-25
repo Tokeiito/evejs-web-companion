@@ -64,8 +64,16 @@ function decodeMessage(value: JsonValue): ChatMessage | null {
 /** Decode the raw `chat` object from a /api/bridge/chat/:channel read. */
 export function decodeChatChannel(raw: JsonValue | undefined): ChatChannelState {
   const chat = asRecord(raw);
+  // One member, one row. The roster is rendered by a keyed `{#each ...
+  // (member.characterID)}`, which THROWS rather than draws when the same key
+  // arrives twice — and the throw aborts the render flush, so a roster the
+  // gateway happens to repeat someone in would freeze the page on every poll.
+  const seenMembers = new Set<number>();
   const roster = Array.isArray(chat.roster)
-    ? chat.roster.map(decodeMember).filter((m): m is ChatMember => m !== null)
+    ? chat.roster
+        .map(decodeMember)
+        .filter((m): m is ChatMember => m !== null)
+        .filter((m) => (seenMembers.has(m.characterID) ? false : (seenMembers.add(m.characterID), true)))
     : [];
   const messages = Array.isArray(chat.messages)
     ? chat.messages.map(decodeMessage).filter((m): m is ChatMessage => m !== null)

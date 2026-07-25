@@ -209,20 +209,41 @@ function decodeIDList(value: JsonValue | undefined): readonly number[] | null {
 }
 
 /**
+ * An itemID is what identifies a ROW on screen, so a list of them that repeats
+ * one is not a longer list — it is the same object twice, and Svelte's keyed
+ * `{#each}` refuses to render it AT ALL (`each_key_duplicate`). That throw
+ * aborts the render flush, and because these lists are re-read by the poll it
+ * throws again every tick: the page freezes while the loops keep running.
+ *
+ * The wire is the right place to stop it. Nothing downstream can tell a
+ * repeated id apart from a real second object, and there is no reading of "the
+ * same ball twice on one grid" that is more true than "once". Order is kept and
+ * the first sighting wins.
+ */
+function distinctIDs(ids: readonly number[]): readonly number[] {
+  const seen = new Set<number>();
+  return ids.filter((id) => (seen.has(id) ? false : (seen.add(id), true)));
+}
+
+/**
  * The itemIDs the server says are locked, from the targets read (goal R23).
  * Shared by the poll and by every lock/unlock re-read, because both answer the
  * same `targetIDs` array — the ONLY authority on what is locked.
  */
 export function decodeTargetIDs(raw: JsonValue | undefined): readonly number[] {
-  return decodeIDList(raw) ?? [];
+  return distinctIDs(decodeIDList(raw) ?? []);
 }
 
 export function decodeSpaceSnapshot(raw: JsonValue | undefined): SpaceSnapshot {
   const space = asObject(raw);
+  const seen = new Set<number>();
   const entities = Array.isArray(space.entities)
     ? (space.entities as JsonValue[])
         .map(decodeEntity)
         .filter((row): row is SpaceEntity => row !== null)
+        // Same rule as distinctIDs, applied to the rows themselves: every
+        // overview list keys off entity.itemID.
+        .filter((row) => (seen.has(row.itemID) ? false : (seen.add(row.itemID), true)))
     : [];
   return {
     inSpace: space.inSpace === true,

@@ -11,6 +11,7 @@
   // per character.
   import Overview from "./Overview.svelte";
   import InventoryShip from "./InventoryShip.svelte";
+  import ErrorBoundary from "./ErrorBoundary.svelte";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
 
@@ -84,11 +85,15 @@
     <div class="dock-panel-body">
       {#if isDocked}
         <div class="dock-inventory">
-          <InventoryShip {store} {flow} dock ping={inventoryPing} />
+          <ErrorBoundary name="Inventory &amp; Ship">
+            <InventoryShip {store} {flow} dock ping={inventoryPing} />
+          </ErrorBoundary>
         </div>
       {:else}
         <div class="dock-overview">
-          <Overview {store} {flow} compact />
+          <ErrorBoundary name="Overview">
+            <Overview {store} {flow} compact />
+          </ErrorBoundary>
         </div>
       {/if}
     </div>

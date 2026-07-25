@@ -71,15 +71,19 @@ function decodeBayItems(value: JsonValue | undefined): readonly InventoryItemRow
     return null;
   }
   const rows: InventoryItemRow[] = [];
+  // One itemID, one row: these are rendered by a keyed `{#each}`, which throws
+  // on a repeated key and freezes the render (see distinctIDs in space.ts).
+  const seen = new Set<number>();
   for (const entry of value as JsonValue[]) {
     const raw = asObject(entry);
     const itemID = idOrNull(raw.itemID);
     const typeID = idOrNull(raw.typeID);
     // A row we cannot identify is DROPPED rather than kept with a zero — an
     // unreadable stack is not a stack of nothing.
-    if (itemID === null || typeID === null) {
+    if (itemID === null || typeID === null || seen.has(itemID)) {
       continue;
     }
+    seen.add(itemID);
     const singleton = raw.singleton === true;
     rows.push({
       itemID,

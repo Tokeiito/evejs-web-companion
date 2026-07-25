@@ -164,7 +164,18 @@ export function loadLayout(characterID: number): DesktopLayout | null {
     const parsed = JSON.parse(raw) as unknown;
     if (!parsed || typeof parsed !== "object") return null;
     const o = parsed as Record<string, unknown>;
-    const wins = Array.isArray(o.wins) ? o.wins.filter(isWinState) : [];
+    // ONE window per TabID is this model's core invariant, and the reducers all
+    // keep it — but storage is not a reducer. A layout saved by any build that
+    // ever let a tab in twice comes back with a duplicate id and Desktop's
+    // keyed `{#each ... (win.id)}` throws on every render from then on, for
+    // good, because the bad layout is written back on the next change. First
+    // one wins; the rest are dropped on the way in.
+    const seen = new Set<TabID>();
+    const wins = (Array.isArray(o.wins) ? o.wins.filter(isWinState) : []).filter((w) => {
+      if (seen.has(w.id)) return false;
+      seen.add(w.id);
+      return true;
+    });
     const dockWidth =
       typeof o.dockWidth === "number" && o.dockWidth >= MIN_DOCK_WIDTH ? o.dockWidth : DEFAULT_DOCK_WIDTH;
     const targetsX = isFiniteNumber(o.targetsX) ? o.targetsX : DEFAULT_TARGETS_POS.x;

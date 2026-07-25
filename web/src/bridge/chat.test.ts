@@ -129,3 +129,18 @@ test("R88 — a declined chat send is read as not-applied, not a throw", () => {
   assert.equal(ack.ok, true);
   assert.equal(ack.applied, false);
 });
+
+test("a roster that lists the same member twice shows them once", () => {
+  // A keyed `{#each ... (member.characterID)}` throws on a repeated key and
+  // takes the render flush with it, so the repeat has to die at the decoder.
+  const state = decodeChatChannel({
+    roomName: "Local",
+    roster: [
+      { characterID: 140000005, characterName: "Farmer" },
+      { characterID: 140000006, characterName: "Miner" },
+      { characterID: 140000005, characterName: "Farmer" },
+    ],
+    messages: [],
+  } as unknown as JsonValue);
+  assert.deepEqual(state.roster.map((m) => m.characterID), [140000005, 140000006]);
+});

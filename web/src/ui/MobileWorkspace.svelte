@@ -12,6 +12,7 @@
   import ShipHud from "./ShipHud.svelte";
   import ModuleRack from "./ModuleRack.svelte";
   import TargetBracket from "./TargetBracket.svelte";
+  import ErrorBoundary from "./ErrorBoundary.svelte";
   import { visibleTabsFor, type TabID } from "./tabs.ts";
   import { isWindowTab } from "./desktop.ts";
   import type { ClientStore } from "../store/clientStore.ts";
@@ -40,7 +41,9 @@
 </script>
 
 <div class="mobile-ws">
-  <WorkspaceHeader {store} {flow} {isDocked} />
+  <ErrorBoundary name="Workspace header">
+    <WorkspaceHeader {store} {flow} {isDocked} />
+  </ErrorBoundary>
 
   <main class="mobile-main">
     {#if effective !== null}
@@ -49,14 +52,20 @@
       <!-- Docked home = the same tabbed dock content as the desktop's right
            panel (hangars + Station Services); the header above already names
            the station, so the dock variant's compact layout fits here too. -->
-      <InventoryShip {store} {flow} dock />
+      <ErrorBoundary name="Inventory &amp; Ship">
+        <InventoryShip {store} {flow} dock />
+      </ErrorBoundary>
     {:else}
-      <section class="mobile-hud">
-        <ShipHud {store} />
-        <ModuleRack {store} />
-      </section>
-      <TargetBracket {store} />
-      <Overview {store} {flow} />
+      <ErrorBoundary name="Ship HUD">
+        <section class="mobile-hud">
+          <ShipHud {store} />
+          <ModuleRack {store} />
+        </section>
+        <TargetBracket {store} />
+      </ErrorBoundary>
+      <ErrorBoundary name="Overview">
+        <Overview {store} {flow} />
+      </ErrorBoundary>
     {/if}
   </main>
 

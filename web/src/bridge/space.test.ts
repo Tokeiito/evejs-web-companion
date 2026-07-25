@@ -308,3 +308,40 @@ test("a facility with junk in its typelists keeps only the real ids", () => {
   } as unknown as JsonValue);
   assert.deepEqual(snapshot?.entities[0]?.compressionFacility?.typeListIDs, [1, 3]);
 });
+
+// --- the same object twice on the wire ---------------------------------------
+//
+// A repeated id is not a longer list, and a keyed `{#each}` handed the same key
+// twice throws instead of rendering — which aborts the render flush and, because
+// the poll re-reads these every tick, freezes the page for good. The wire is
+// where it has to stop.
+
+test("a locked-target list that repeats an id locks that target ONCE", () => {
+  assert.deepEqual(decodeTargetIDs([9001, 9002, 9001, 9003, 9002]), [9001, 9002, 9003]);
+});
+
+test("a snapshot that carries the same ball twice draws one row for it", () => {
+  const entity = (itemID: number, name: string): JsonValue =>
+    ({
+      kind: "ship",
+      itemID,
+      typeID: 670,
+      name,
+      radius: 25,
+      position: { x: 1, y: 2, z: 3 },
+      velocity: { x: 0, y: 0, z: 0 },
+    }) as unknown as JsonValue;
+  const snapshot = decodeSpaceSnapshot({
+    inSpace: true,
+    solarSystemID: 30000142,
+    shipID: 9001,
+    // The SECOND 7001 is the same object, not a second one.
+    entities: [entity(7001, "Rifter"), entity(7002, "Punisher"), entity(7001, "Rifter")],
+  } as unknown as JsonValue);
+  assert.deepEqual(
+    snapshot.entities.map((row) => row.itemID),
+    [7001, 7002],
+  );
+  // First sighting wins, and the order of the rest is untouched.
+  assert.equal(snapshot.entities[0]?.name, "Rifter");
+});

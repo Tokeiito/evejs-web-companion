@@ -13,6 +13,7 @@
   import CharacterBar from "./CharacterBar.svelte";
   import Onboarding from "./Onboarding.svelte";
   import Workspace from "./Workspace.svelte";
+  import ErrorBoundary from "./ErrorBoundary.svelte";
   import { createSession, type Session } from "../app/sessions.ts";
   import {
     loadPersistedSessions,
@@ -226,11 +227,18 @@
 </script>
 
 {#if active}
-  <CharacterBar {sessions} {activeId} {serverStatus} onSwitch={switchTo} onAdd={addCharacter} />
+  <ErrorBoundary name="Character bar">
+    <CharacterBar {sessions} {activeId} {serverStatus} onSwitch={switchTo} onAdd={addCharacter} />
+  </ErrorBoundary>
   <!-- Remount on switch: each Workspace binds one stable store/flow for its
        whole life, and the in-memory store makes the remount instant. -->
   {#key active.id}
-    <Workspace store={active.store} flow={active.flow} />
+    <!-- The outermost net. Every panel and every piece of chrome has its own
+         boundary inside; this one only catches what escapes them all, so one
+         pilot's cockpit can never take the character bar down with it. -->
+    <ErrorBoundary name="Cockpit">
+      <Workspace store={active.store} flow={active.flow} />
+    </ErrorBoundary>
   {/key}
 {:else if restoring}
   <!-- Refresh restore in flight and no cockpit up yet: bringing pilots back. -->

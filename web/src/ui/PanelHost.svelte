@@ -28,7 +28,8 @@
   import Standings from "./Standings.svelte";
   import CharacterSheet from "./CharacterSheet.svelte";
   import Settings from "./Settings.svelte";
-  import type { TabID } from "./tabs.ts";
+  import ErrorBoundary from "./ErrorBoundary.svelte";
+  import { tabLabel, type TabID } from "./tabs.ts";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
 
@@ -46,6 +47,10 @@
   } = $props();
 </script>
 
+<!-- One panel's failure is that panel's failure: a boundary per host keeps a
+     broken Market from taking the Overview, the HUD and the character bar down
+     with it, and names the panel in the report (see ErrorBoundary.svelte). -->
+<ErrorBoundary name={tabLabel(tab)}>
 {#if tab === "inventory"}
   <InventoryShip {store} {flow} />
 {:else if tab === "fitting"}
@@ -95,3 +100,4 @@
 {:else}
   <Chat {store} {flow} />
 {/if}
+</ErrorBoundary>

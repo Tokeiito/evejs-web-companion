@@ -406,3 +406,27 @@ test("R34: the decoder never invents a sentence the server did not send", () => 
   } as JsonValue);
   assert.deepEqual(refusals, []);
 });
+
+// --- one drone, one row -------------------------------------------------------
+//
+// Both lists are rendered by a keyed `{#each ... (itemID)}`, which throws rather
+// than draw when handed the same key twice — and that throw takes the whole
+// render flush with it. A repeat on the wire is the same drone, not a new one.
+
+test("a bay that lists the same stack twice yields one stack", () => {
+  const bay = decodeDroneBay([
+    { itemID: 501, typeID: 2456, quantity: 5 },
+    { itemID: 502, typeID: 2456, quantity: 3 },
+    { itemID: 501, typeID: 2456, quantity: 5 },
+  ] as unknown as JsonValue);
+  assert.deepEqual((bay ?? []).map((stack) => stack.itemID), [501, 502]);
+});
+
+test("a snapshot that lists the same drone twice yields one drone", () => {
+  const drones = decodeDronesInSpace([
+    { itemID: 601, typeID: 2456, activity: "Attacking" },
+    { itemID: 601, typeID: 2456, activity: "Attacking" },
+    { itemID: 602, typeID: 2456, activity: null },
+  ] as unknown as JsonValue);
+  assert.deepEqual((drones ?? []).map((drone) => drone.itemID), [601, 602]);
+});

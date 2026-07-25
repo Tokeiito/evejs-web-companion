@@ -96,13 +96,18 @@ export function decodeDroneBay(raw: JsonValue | undefined): readonly DroneBaySta
     return null;
   }
   const stacks: DroneBayStack[] = [];
+  // The panel keys its rows by itemID, and a keyed `{#each}` given the same key
+  // twice throws instead of rendering — which freezes the page, not just the
+  // list (see distinctIDs in bridge/space.ts). One stack, one row.
+  const seen = new Set<number>();
   for (const entry of raw as JsonValue[]) {
     const row = asObject(entry);
     const itemID = idOrNull(row.itemID);
     const typeID = idOrNull(row.typeID);
-    if (itemID === null || typeID === null) {
+    if (itemID === null || typeID === null || seen.has(itemID)) {
       continue;
     }
+    seen.add(itemID);
     stacks.push({ itemID, typeID, quantity: numberOrNull(row.quantity) ?? 1 });
   }
   return stacks;
@@ -117,12 +122,15 @@ export function decodeDronesInSpace(raw: JsonValue | undefined): readonly DroneI
     return null;
   }
   const drones: DroneInSpace[] = [];
+  // One drone, one row — same reason as the bay above.
+  const seen = new Set<number>();
   for (const entry of raw as JsonValue[]) {
     const row = asObject(entry);
     const itemID = idOrNull(row.itemID);
-    if (itemID === null) {
+    if (itemID === null || seen.has(itemID)) {
       continue;
     }
+    seen.add(itemID);
     drones.push({
       itemID,
       typeID: idOrNull(row.typeID),

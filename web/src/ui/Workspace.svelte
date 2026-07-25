@@ -20,6 +20,7 @@
   import MobileWorkspace from "./MobileWorkspace.svelte";
   import TargetsPanel from "./TargetsPanel.svelte";
   import CustomBotReadout from "./CustomBotReadout.svelte";
+  import ErrorBoundary from "./ErrorBoundary.svelte";
   import { deriveDocked, type TabID } from "./tabs.ts";
   import {
     openWindow,
@@ -158,25 +159,36 @@
   <MobileWorkspace {store} {flow} {isDocked} />
 {:else}
   <div class="workspace" class:in-space={!isDocked}>
-    <Neocom {store} {isDocked} openIds={neocomOpenIds} focusedId={focused} onSelect={openFromNeocom} />
+    <!-- Every piece of always-on chrome gets its own boundary. These are mounted
+         for the whole session and refresh on every poll, so before this an error
+         in any one of them froze the entire tab (see ErrorBoundary.svelte). -->
+    <ErrorBoundary name="Launcher rail">
+      <Neocom {store} {isDocked} openIds={neocomOpenIds} focusedId={focused} onSelect={openFromNeocom} />
+    </ErrorBoundary>
     <div class="work">
-      <WorkspaceHeader {store} {flow} {isDocked} />
+      <ErrorBoundary name="Workspace header">
+        <WorkspaceHeader {store} {flow} {isDocked} />
+      </ErrorBoundary>
       <!-- A running bot's readout, always visible while it runs, nothing when idle. -->
-      <CustomBotReadout {store} {flow} />
+      <ErrorBoundary name="Bot readout">
+        <CustomBotReadout {store} {flow} />
+      </ErrorBoundary>
       <div class="work-main">
-        <Desktop
-          {store}
-          {flow}
-          {wins}
-          {focused}
-          {isDocked}
-          onFocus={focus}
-          onClose={close}
-          onToggleCollapse={collapse}
-          onMove={move}
-          onResize={resize}
-          onOpen={open}
-        />
+        <ErrorBoundary name="Desktop">
+          <Desktop
+            {store}
+            {flow}
+            {wins}
+            {focused}
+            {isDocked}
+            onFocus={focus}
+            onClose={close}
+            onToggleCollapse={collapse}
+            onMove={move}
+            onResize={resize}
+            onOpen={open}
+          />
+        </ErrorBoundary>
         <DockPanel
           {store}
           {flow}
@@ -188,11 +200,15 @@
           onResize={(w) => (dockWidth = w)}
         />
         {#if !isDocked}
-          <TargetsPanel {store} x={targetsX} y={targetsY} onMove={(nx, ny) => { targetsX = nx; targetsY = ny; }} />
+          <ErrorBoundary name="Locked targets">
+            <TargetsPanel {store} x={targetsX} y={targetsY} onMove={(nx, ny) => { targetsX = nx; targetsY = ny; }} />
+          </ErrorBoundary>
         {/if}
       </div>
       {#if !isDocked}
-        <HudBar {store} {flow} onOpen={open} />
+        <ErrorBoundary name="HUD bar">
+          <HudBar {store} {flow} onOpen={open} />
+        </ErrorBoundary>
       {/if}
     </div>
   </div>

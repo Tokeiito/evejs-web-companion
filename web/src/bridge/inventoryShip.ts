@@ -103,6 +103,11 @@ export function decodeInventoryRows(result: JsonValue, volumes?: VolumeMap): Inv
     return [];
   }
   const rows: InventoryItemRow[] = [];
+  // itemID is the row key everywhere these rows are rendered, and a keyed
+  // `{#each}` handed the same key twice throws rather than draws — taking the
+  // whole render flush with it (see distinctIDs in bridge/space.ts). One
+  // itemID is one stack; a repeat on the wire is not a second stack.
+  const seen = new Set<number>();
   for (const item of listValue.items) {
     if (typeof item !== "object" || item === null || Array.isArray(item)) {
       continue;
@@ -115,7 +120,8 @@ export function decodeInventoryRows(result: JsonValue, volumes?: VolumeMap): Inv
         ? (candidate.fields as Record<string, JsonValue>)
         : (item as Record<string, JsonValue>);
     const row = decodeRowFields(fields, volumes);
-    if (row.itemID > 0) {
+    if (row.itemID > 0 && !seen.has(row.itemID)) {
+      seen.add(row.itemID);
       rows.push(row);
     }
   }
