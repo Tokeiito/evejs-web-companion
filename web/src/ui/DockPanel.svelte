@@ -22,6 +22,7 @@
     width,
     onToggle,
     onResize,
+    inventoryPing = 0,
   }: {
     store: ClientStore;
     flow: AppFlow;
@@ -30,17 +31,19 @@
     width: number;
     onToggle: () => void;
     onResize: (w: number) => void;
+    /**
+     * Bumped when the Neocom's "Inventory & Ship" is picked while docked:
+     * the panel snaps to the Ship Inventory tab so the pick has a visible
+     * response even when the dock was already expanded.
+     */
+    inventoryPing?: number;
   } = $props();
 
-  // svelte-ignore state_referenced_locally
-  const station = store.station;
-
-  // When docked the header carries the STATION NAME (the "station info in the
-  // header only" the tabs replaced the services block with); until the static
-  // read resolves it falls back to the plain word rather than an id.
-  const title = $derived(
-    isDocked ? ($station.station?.stationName ?? "Station") : "Around Your Ship",
-  );
+  // The docked title is a static word: the workspace header directly above
+  // already spells out the full station name + system, so repeating it here
+  // (where it wrapped over two lines) was pure duplication. In space the
+  // panel is the Overview and keeps its descriptive name.
+  const title = $derived(isDocked ? "Station" : "Around Your Ship");
   const MIN_W = 240;
   const MAX_W = 900;
 
@@ -81,7 +84,7 @@
     <div class="dock-panel-body">
       {#if isDocked}
         <div class="dock-inventory">
-          <InventoryShip {store} {flow} dock />
+          <InventoryShip {store} {flow} dock ping={inventoryPing} />
         </div>
       {:else}
         <div class="dock-overview">

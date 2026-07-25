@@ -78,6 +78,28 @@
   const focused = $derived(computeFocusedId(wins));
 
   const open = (id: TabID): void => { wins = openWindow(wins, id); };
+  // The Neocom pick, with one de-dupe: while docked, Inventory & Ship IS the
+  // permanent dock panel — expand it, snap it to the Ship Inventory tab (the
+  // visible response when it was already expanded, e.g. sitting on Station
+  // Services), and fold any open inventory window in, instead of putting a
+  // second identical copy on screen. In space, and for every other tab, it
+  // opens/focuses a window as always.
+  let dockInventoryPing = $state(0);
+  const openFromNeocom = (id: TabID): void => {
+    if (id === "inventory" && isDocked) {
+      dockCollapsed = false;
+      dockInventoryPing += 1;
+      wins = closeWindow(wins, "inventory");
+      return;
+    }
+    open(id);
+  };
+  // The rail highlights what is on screen. While docked, the expanded dock
+  // panel IS the Inventory & Ship content, so its entry lights up like an
+  // open window's would (openIds itself only tracks floating windows).
+  const neocomOpenIds = $derived(
+    isDocked && !dockCollapsed ? new Set<TabID>([...openIds, "inventory"]) : openIds,
+  );
   const focus = (id: TabID): void => { wins = focusWindow(wins, id); };
   const close = (id: TabID): void => { wins = closeWindow(wins, id); };
   const move = (id: TabID, x: number, y: number): void => { wins = moveWindow(wins, id, x, y); };
@@ -136,7 +158,7 @@
   <MobileWorkspace {store} {flow} {isDocked} />
 {:else}
   <div class="workspace" class:in-space={!isDocked}>
-    <Neocom {store} {isDocked} {openIds} focusedId={focused} onSelect={open} />
+    <Neocom {store} {isDocked} openIds={neocomOpenIds} focusedId={focused} onSelect={openFromNeocom} />
     <div class="work">
       <WorkspaceHeader {store} {flow} {isDocked} />
       <!-- A running bot's readout, always visible while it runs, nothing when idle. -->
@@ -159,6 +181,7 @@
           {store}
           {flow}
           {isDocked}
+          inventoryPing={dockInventoryPing}
           collapsed={dockCollapsed}
           width={dockWidth}
           onToggle={toggleDock}

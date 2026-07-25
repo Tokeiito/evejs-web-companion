@@ -246,9 +246,11 @@ test("the neocom launches every openable panel for the current state (badge trac
     assert.match(docked, new RegExp(label), `${label} missing from the docked neocom`);
     assert.match(space, new RegExp(label), `${label} missing from the in-space neocom`);
   }
-  // The badge tracks state.
-  assert.match(docked, /Docked/);
-  assert.match(space, /In Space/);
+  // No state badge in the rail: the workspace header's badge and the character
+  // chips already carry docked/in-space — the rail proves its state through
+  // WHICH tabs it offers (asserted below), not a third label.
+  assert.doesNotMatch(docked, /Docked/);
+  assert.doesNotMatch(space, /In Space/);
   // The windowing refactor makes the neocom the launcher for the state's panels,
   // so state-specific tabs DO appear now — but only in their own state.
   assert.match(space, /Flight/, "the in-space Flight tab is missing from the in-space neocom");

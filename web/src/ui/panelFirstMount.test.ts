@@ -297,7 +297,8 @@ test("the workspace's first paint on a DOCKED character renders the station shel
   // panel rather than a services rail, but the docked-not-space guarantee holds.)
   assert.match(body, /Docked/, "no docked state badge");
   assert.match(body, /Undock/, "the docked Undock action is missing");
-  assert.match(body, /Farmer/, "the docked pilot is not shown");
+  // (No pilot-name assertion: the header deliberately does not repeat the
+  // character bar's chip — the chip is the one "who am I flying" indicator.)
   // And NOT the in-space HUD.
   assert.doesNotMatch(body, /In Space/, "the space HUD leaked into the docked workspace");
 });
