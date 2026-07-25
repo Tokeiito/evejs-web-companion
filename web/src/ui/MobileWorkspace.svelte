@@ -8,7 +8,7 @@
   import WorkspaceHeader from "./WorkspaceHeader.svelte";
   import PanelHost from "./PanelHost.svelte";
   import Overview from "./Overview.svelte";
-  import StationPanel from "./StationPanel.svelte";
+  import InventoryShip from "./InventoryShip.svelte";
   import ShipHud from "./ShipHud.svelte";
   import ModuleRack from "./ModuleRack.svelte";
   import TargetBracket from "./TargetBracket.svelte";
@@ -41,7 +41,10 @@
     {#if effective !== null}
       <PanelHost {store} {flow} tab={effective} onOpen={(id) => (selected = id)} />
     {:else if isDocked}
-      <StationPanel {store} {flow} />
+      <!-- Docked home = the same tabbed dock content as the desktop's right
+           panel (hangars + Station Services); the header above already names
+           the station, so the dock variant's compact layout fits here too. -->
+      <InventoryShip {store} {flow} dock />
     {:else}
       <section class="mobile-hud">
         <ShipHud {store} />

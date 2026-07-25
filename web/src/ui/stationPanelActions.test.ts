@@ -1,8 +1,9 @@
-// The docked Station panel's ship actions (goal: the retail station-services
-// strip). A docked character must be offered "Board your corvette" and
-// "Leave ship", and a refused action's words (which land in
-// inventory.actionError via the shared mutation path) must surface on THIS
-// panel — the player pressed the button here, not on the Inventory tab.
+// The Station Services tab inside Inventory & Ship (the docked dock-panel
+// content). A docked character must be offered the tab with "Board your
+// corvette" and "Leave ship", the guest list lives there too, and a refused
+// action's words (which land in inventory.actionError via the shared mutation
+// path) surface on this panel. In space the tab must NOT be offered — station
+// services mean nothing without a station.
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -18,7 +19,7 @@ function fakeFlow(): unknown {
   return new Proxy({}, { get: () => async () => {} });
 }
 
-function dockedStore() {
+function onlineStore(stationID: number | null) {
   const store = createClientStore();
   store.apply({ type: "session/logged-in", accountID: 1, username: "rrfarmer" });
   store.apply({
@@ -26,7 +27,7 @@ function dockedStore() {
     character: {
       characterID: 90000001,
       characterName: "Farmer",
-      stationID: 60003760,
+      stationID,
       structureID: null,
       solarSystemID: 30000142,
       corporationID: 1000001,
@@ -36,23 +37,34 @@ function dockedStore() {
   return store;
 }
 
-test("the docked station panel offers the corvette and leave-ship actions", async () => {
-  const store = dockedStore();
-  const { default: StationPanel } = (await import("./StationPanel.svelte")) as { default: unknown };
-  const body = render(StationPanel as never, { props: { store, flow: fakeFlow() } } as never).body;
+async function renderInventory(store: unknown): Promise<string> {
+  const { default: InventoryShip } = (await import("./InventoryShip.svelte")) as { default: unknown };
+  return render(InventoryShip as never, { props: { store, flow: fakeFlow(), dock: true } } as never).body;
+}
 
+test("docked, the Station Services tab offers the corvette and leave-ship actions and the guests", async () => {
+  const body = await renderInventory(onlineStore(60003760));
+
+  assert.match(body, /Station Services/, "the Station Services tab is missing");
   assert.match(body, /Board your corvette/, "the corvette action is missing");
   assert.match(body, /Leave ship/, "the leave-ship action is missing");
+  assert.match(body, /Guests/, "the guest list is missing");
 });
 
-test("a refused ship action's words surface on the station panel", async () => {
-  const store = dockedStore();
+test("in space the Station Services tab is not offered", async () => {
+  const body = await renderInventory(onlineStore(null));
+
+  assert.doesNotMatch(body, /id="inv-tab-station"/, "the station tab leaked into space");
+  assert.doesNotMatch(body, /Board your corvette/, "the corvette action leaked into space");
+});
+
+test("a refused ship action's words surface on the panel", async () => {
+  const store = onlineStore(60003760);
   store.apply({
     type: "inventory/action-error",
     message: "You are already in your corvette.",
   });
-  const { default: StationPanel } = (await import("./StationPanel.svelte")) as { default: unknown };
-  const body = render(StationPanel as never, { props: { store, flow: fakeFlow() } } as never).body;
+  const body = await renderInventory(store);
 
   assert.match(body, /You are already in your corvette\./, "the refusal words are not shown");
 });

@@ -29,9 +29,9 @@ const CASCADE_STEP = 28;
 const CASCADE_ORIGIN = 16;
 
 // Panels that are fixed chrome (the top-right dock), never floating windows.
-// "station" left this set when the docked dock panel became the hangar tabs
-// (InventoryShip): the Station panel (services / guests / ship actions) is a
-// normal Neocom window again — otherwise it is reachable nowhere.
+// Only the in-space Overview remains: while docked the dock panel hosts the
+// Inventory & Ship tabs, and the station services/guests are a TAB inside it
+// (there is no separate station window to float).
 const CHROME_TABS = new Set<TabID>(["overview"]);
 
 /** True when this tab opens as a floating window (i.e. is not fixed chrome). */
