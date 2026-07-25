@@ -411,10 +411,18 @@ export function decodeBoundFleet(raw: JsonValue | null | undefined): BoundFleet 
     const { result, error } = pick(reads, key);
     return { value: decode(result), error };
   };
+  const initState = map("GetInitState", decodeFleetInitState);
   return {
     characterID: numberOrNull(root.characterID),
-    fleetID: numberOrNull(root.fleetID),
-    initState: map("GetInitState", decodeFleetInitState),
+    // ⚠ THE READ OUTRANKS THE CACHED FIELD. `root.fleetID` is the BFF's held-session
+    // snapshot, taken when the character came online and never refreshed — so a fleet
+    // formed or joined SINCE then reads as no fleet at all. That is how the
+    // create-fleet block could not notice it had just succeeded: caught live, with
+    // GetInitState answering fleetID 654500010000 while this field still said null.
+    // GetInitState is the fleet answering for itself, so it wins; the cached field
+    // stays as the fallback for when that read failed.
+    fleetID: numberOrNull(initState.value.fleetID) ?? numberOrNull(root.fleetID),
+    initState,
     wings: map("GetWings", decodeFleetWings),
     motd: map("GetMotd", decodeFleetMotd),
     joinRequests: map("GetJoinRequests", decodeFleetJoinRequests),

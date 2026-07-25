@@ -6906,6 +6906,23 @@ app.post("/api/bridge/asset-safety/deliver-wrap", requireAuth, async (req, res, 
 
 // fleetObjectHandler.CreateFleet — mints a new fleet for the session character
 // (no args). ⚠ NEVER fired live (it would actually create a fleet).
+// ⚠ CREATING A FLEET IS TWO CALLS, AND THE SECOND IS NOT OPTIONAL.
+//
+// This route used to be a bare `CreateFleet`, which answers ok:true and leaves
+// the caller in NO FLEET — caught live: the creator's own bound-fleet read still
+// said FleetNotFound and the very next Invite refused for the same reason.
+//
+// `Handle_CreateFleet` (fleetObjectHandlerService.js) mints the fleet record and
+// returns a BOUND object for it, but `createFleetRecord` (fleetRuntime.js) adds
+// no member row and no characterToFleet mapping. It is `Init` on that bound
+// object that calls `fleet.members.set(...)` + `characterToFleet.set(...)` and
+// makes the creator the boss. CreateFleet alone builds a fleet nobody is in —
+// which from outside is indistinguishable from no fleet at all.
+//
+// So: bind THROUGH CreateFleet (the mint IS the bind — it returns the OID), then
+// Init on that handle. Both Init args are optional; it falls back to the
+// session's own ship type. The bind key is unique per request so a second create
+// mints a second fleet rather than re-initialising a stale handle.
 app.post("/api/bridge/fleet/create", requireAuth, async (req, res, next) => {
   if (
     !requireWriteConfirmation(
@@ -6916,7 +6933,28 @@ app.post("/api/bridge/fleet/create", requireAuth, async (req, res, next) => {
   ) {
     return;
   }
-  await dispatchBridgeWrite(req, res, next, "fleetObjectHandler", "CreateFleet", []);
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const bindSpec = {
+    key: `fleet-create:${Date.now()}:${Math.random().toString(36).slice(2)}`,
+    service: "fleetObjectHandler",
+    method: "CreateFleet",
+    args: [],
+    kwargs: null,
+  };
+  try {
+    const outcome = await boundCall(held, req.webSessionID, bindSpec, "Init", [null, null], null);
+    held.boundHandles.delete(bindSpec.key);
+    res.json({ ok: true, applied: true, result: outcome.result ?? null, notifications: outcome.notifications });
+  } catch (error) {
+    held.boundHandles.delete(bindSpec.key);
+    if (error && error.code === "SESSION_NOT_FOUND") {
+      forgetBridgeSession(req.webSessionID);
+    }
+    next(error);
+  }
 });
 
 // fleetProxy fleet-finder WRITES ---------------------------------------------
@@ -9136,12 +9174,49 @@ app.post("/api/bridge/fleet/mass-invite", requireAuth, async (req, res, next) =>
 });
 
 // AcceptInvite(shipTypeID) — accept a pending fleet invite for the session char.
+// ⚠ ACCEPTING NEEDS THE FLEET'S OWN ID, AND THE INVITEE DOES NOT HAVE ONE YET.
+//
+// `acceptInvite` (fleetRuntime.js) refuses unless the fleetID it is called with
+// MATCHES the pending invite's. The handler resolves that id from the caller's
+// bound object, falling back to `session.fleetid` — which for someone not yet in
+// a fleet is nothing. So the default bind (no args = "my own fleet") always
+// refused with FleetNotFound, verified live.
+//
+// So the caller may pass the `fleetID` from the invite it received, and the bind
+// is made against THAT fleet. It is not a new privilege: fleetObjectHandler's
+// MachoBindObject already takes a caller fleetID (the R72 note above), and the
+// accept still refuses unless a real invite for this character names that same
+// fleet — the invite, not the bind, is the authority.
 app.post("/api/bridge/fleet/invite/accept", requireAuth, async (req, res, next) => {
   if (!requireWriteConfirmation(req, res, "This accepts the fleet invitation. Confirm to continue.")) {
     return;
   }
   const body = req.body || {};
   const shipTypeID = body.shipTypeID === undefined ? null : Number(body.shipTypeID) || null;
+  const fleetID = Number(body.fleetID) || 0;
+  if (fleetID > 0) {
+    const held = requireHeldBridgeSession(req, res);
+    if (!held) {
+      return;
+    }
+    const spec = {
+      key: `fleet:${fleetID}`,
+      service: "fleetObjectHandler",
+      method: "MachoBindObject",
+      args: [[fleetID]],
+      kwargs: null,
+    };
+    try {
+      const outcome = await boundCall(held, req.webSessionID, spec, "AcceptInvite", [shipTypeID], null);
+      res.json({ ok: true, applied: true, result: outcome.result ?? null, notifications: outcome.notifications });
+    } catch (error) {
+      if (error && error.code === "SESSION_NOT_FOUND") {
+        forgetBridgeSession(req.webSessionID);
+      }
+      next(error);
+    }
+    return;
+  }
   await dispatchBoundFleetWrite(req, res, next, "AcceptInvite", [shipTypeID]);
 });
 
