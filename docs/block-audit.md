@@ -189,10 +189,34 @@ for directly. All live-verified in the app; full suite 2884/2884.
 | **set destination + autopilot** ✅ (operator ask) | `set-destination` points the shared autopilot at a station **or a whole system** and finishes once the trip is under way, rather than waiting for arrival. New `destination` Arg kind (entity station|system, closed set) and a `allowSystems` mode on StationPicker. |
 | **compress ore on grid** ✅ (operator ask) | `compress-ore` — the FLEET mechanic. A mining support ship on grid running an Industrial Core plus a compression module is a facility (`resolveCompressionFacilityTypelistsForEntity`), and `inSpaceCompressionMgr.CompressItemInSpace(itemID, facilityBallID)` swaps an ore stack in your own hull for its compressed type at the same quantity — ~100× less volume in this build (Veldspar 0.1 m³ → Compressed Veldspar 0.001 m³, checked in the SDE). The block finds the facility from a READING, closes to its range on the shared ladder, then works the hold one stack per tick. ⚠ **needs the server-side half** — see below. |
 
+### compress-ore: PROVEN LIVE (2026-07-25)
+
+With the gateway change deployed, compression works end to end. On a Porpoise
+running a Medium Industrial Core I plus a Medium Asteroid Ore Compressor I:
+
+- the ship's own snapshot row reported `compressionFacility {rangeMeters:
+  375000, typeListIDs: [334]}` — the projection working on real data;
+- the compress route turned **2000 Scordite into 2000 Compressed Scordite**
+  (typeID 1228 → 62520): 300 m³ down to 3 m³, `compressed: true` with the tuple.
+
+Two findings worth keeping:
+
+- **Module effects do not survive a session handover.** The core and compressor
+  switch off when the character is re-selected or handed to a server bot, so a
+  server-bot run cannot hold up its own facility. That is the intended shape
+  anyway — the facility is a fleet-mate's job — but it does mean the own-ship
+  case is a manual-play convenience, not a bot-drivable one.
+- **Ice products are not ore.** Heavy Water and friends have no compressed twin;
+  only raw ore/ice types do. The block asks once per stack and moves on, which is
+  the right behaviour for a hold holding both.
+
+⚠ The FLEET-MATE path — the intended workflow, where a miner compresses against
+somebody else's support ship — is still unproven, because forming a two-character
+fleet is broken; see below.
+
 ### ⚠ compress-ore depends on an EveOffline change (2026-07-25)
 
-The block is complete and tested here, but it cannot work against an unmodified
-server, and the live server says so in its own words:
+Before that gateway change the live server refused it outright:
 
 ```
 403 CALL_NOT_ALLOWED
@@ -214,9 +238,39 @@ off `origin/main` in the EveOffline repo, with 6 tests):
    on grid — and the handler answers "not a facility", "out of range" and "this
    ore has no compressed form" with the same null, so it could never say which.
 
-Until that lands, `compress-ore` blocks with a plain reason rather than firing
+Without it, `compress-ore` blocks with a plain reason rather than firing
 hopefully: the snapshot carries no facility reading, and an ABSENT reading is
 treated as "not a facility" everywhere (client type, decoder and block agree).
+
+### ⚠ The fleet blocks do not work — three bugs, two fixed (2026-07-25)
+
+Driving two live sessions against `create-fleet` / `invite-to-fleet` /
+`join-fleet` for the first time turned up three separate faults. They had been
+shipped as "fast-mode decoders, never fired live"; this is what that was hiding.
+
+1. **`CreateFleet` answers ok and leaves you in no fleet.** `createFleetRecord`
+   mints the record but adds no member row and no `characterToFleet` mapping —
+   `Init` on the returned bound object is what makes the creator the boss. FIXED:
+   the route binds THROUGH CreateFleet and calls Init. Verified: the fleet then
+   exists with the creator aboard, and `Invite` — which had refused with
+   FleetNotFound — succeeds. Needs the new `fleetObjectHandler.Init` allowlist
+   pair (EveOffline `feat/web-gateway-ore-compression`).
+2. **`AcceptInvite` needs the fleet's own id, which the invitee cannot have.**
+   The handler resolves it from the caller's bound object, falling back to
+   `session.fleetid` — nothing, before joining. FIXED: the route takes an
+   optional `fleetID` (from the invite) and binds against that fleet. The invite
+   remains the authority; the bind is not a new privilege.
+3. **The bound-fleet read reported a CACHED fleetID** — the BFF's held-session
+   snapshot, taken at select and never refreshed — so a fleet formed since read
+   as none. That is why `create-fleet`'s `inFleet` gate could never see its own
+   success. FIXED: `decodeBoundFleet` prefers `GetInitState.fleetID`.
+
+⚠ **STILL BROKEN:** accepting now finds the right fleet and invite but refuses
+with `FleetNoPositionFound` from `findPlacementForRole` / `placeMemberInFleet`.
+So a two-character fleet is not reachable from the web client, and `join-fleet`
+plus the fleet-mate half of `compress-ore` remain unverified. Next step is that
+placement path — the default wing/squad a fleet is created with, and what the
+invite record stores for it.
 
 ## 4. Remaining gaps, ranked (refreshed 2026-07-25)
 
