@@ -14844,6 +14844,73 @@ app.get("/api/bridge/mining/scan", requireAuth, async (req, res, next) => {
   }
 });
 
+// IN-SPACE ORE COMPRESSION — the fleet mechanic.
+//
+// `inSpaceCompressionMgr.CompressItemInSpace(itemID, facilityBallID)` swaps one
+// ore stack for its compressed type at the same quantity (~100x less volume in
+// this build), using a mining support ship on grid as the facility: a hull
+// running an Industrial Core plus a compression module, either your own or a
+// FLEET-MATE's, and you have to be inside its range.
+//
+// ⚠ EVERY GUARD IS THE SERVER'S, AND THAT IS THE POINT. This route sends the
+// caller's own itemIDs and the ball they named; `resolveInSpaceCompressionContext`
+// then checks in-space, same-scene, live compression typelists (i.e. the modules
+// really are running), own-ship-or-same-fleet, and range — and the handler
+// refuses any item the caller does not own or that is not in their own ship. So
+// there is nothing useful for this route to re-derive, and re-deriving it in a
+// second place is how the two copies drift apart.
+//
+// Confirm-gated like every other write here. One stack per request keeps the
+// failure honest: the handler answers a refusal and a not-compressible item with
+// the SAME null, so a batch could not say which stack was which. The caller
+// re-reads its hold and judges by the stack's type having changed.
+app.post("/api/bridge/mining/compress", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  if (!requireWriteConfirmation(req, res, "This compresses that ore stack using the support ship on grid. Confirm to continue.")) {
+    return;
+  }
+  const body = req.body || {};
+  const itemID = Number(body.itemID) || 0;
+  const facilityID = Number(body.facilityID) || 0;
+  if (itemID <= 0 || facilityID <= 0) {
+    res.status(400).json({
+      ok: false,
+      error: "INVALID_TARGET",
+      message: "An itemID and the facility ship's ID are both required.",
+    });
+    return;
+  }
+  try {
+    const before = await readHeldFlight(held, req.webSessionID);
+    if (!requireInSpace(res, before.flight)) {
+      return;
+    }
+    const outcome = await heldTopLevelCall(
+      held,
+      req.webSessionID,
+      "inSpaceCompressionMgr",
+      "CompressItemInSpace",
+      [itemID, facilityID],
+      null,
+    );
+    // The handler returns [sourceItemID, sourceTypeID, sourceQuantity,
+    // outputItemID, outputTypeID, outputQuantity] on success and NULL on any
+    // refusal. `compressed` says which happened without pretending to know why —
+    // the caller re-reads the hold for the truth.
+    res.json({
+      ok: true,
+      compressed: outcome.result !== null && outcome.result !== undefined,
+      result: outcome.result ?? null,
+      notifications: outcome.notifications,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // R3's bound-object machinery, reused: Moniker('reprocessingSvc', stationID).
 // Keyed by station so docking somewhere else binds that station's refinery
 // rather than reusing a stale OID.

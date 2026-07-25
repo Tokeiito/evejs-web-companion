@@ -6,7 +6,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { decodeScanWriteAck } from "./boundScanWrites.ts";
+import { decodeDirectionalScanHitIDs, decodeScanWriteAck } from "./boundScanWrites.ts";
 import type { JsonValue } from "./wire.ts";
 
 function ackKeyVal(fields: Record<string, JsonValue>): JsonValue {
@@ -45,4 +45,14 @@ test("R104 WB-SCAN — a refused (unconfirmed) DestroyProbe is not-applied, not 
   assert.equal(ack.ok, true);
   assert.equal(ack.applied, false);
   assert.equal(ack.result, null);
+});
+
+test("ConeScan hit decoder — KeyVal rows yield ids; junk rows skipped; non-array is null", () => {
+  const keyValRow = (id: unknown): JsonValue =>
+    ({ type: "object", name: "util.KeyVal", args: { type: "dict", entries: [["id", id], ["typeID", 587], ["groupID", 25]] } }) as JsonValue;
+  const hits = decodeDirectionalScanHitIDs([keyValRow(555000), keyValRow("bad"), { junk: true } as unknown as JsonValue, keyValRow(555001)]);
+  assert.deepEqual(hits, [555000, 555001]);
+  assert.equal(decodeDirectionalScanHitIDs(null), null);
+  assert.equal(decodeDirectionalScanHitIDs({ type: "dict", entries: [] } as unknown as JsonValue), null);
+  assert.deepEqual(decodeDirectionalScanHitIDs([]), []);
 });

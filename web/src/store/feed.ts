@@ -786,6 +786,8 @@ export type FeedEvent =
       readonly note?: string | null;
     }
   | { readonly type: "custom-bot/start-error"; readonly message: string | null }
+  /** An "alert me" watch fired: what it said, and when (epoch ms). */
+  | { readonly type: "custom-bot/alert"; readonly message: string; readonly atMs: number }
   | { readonly type: "custom-bot/cleared" }
   // Goal R7 — the Chat panel (Local + Corp). A channel read completed (roster +
   // recent backlog) — the panel polls while open (READ is a backlog poll).

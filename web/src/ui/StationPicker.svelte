@@ -19,12 +19,22 @@
     value,
     current,
     onPick,
+    allowSystems = false,
   }: {
     flow: AppFlow;
     value: WorldRef;
     /** The station the player is docked at, offered as a one-click choice. */
     current: { id: number; name: string } | null;
     onPick: (ref: WorldRef) => void;
+    /**
+     * Widen the picker to SOLAR SYSTEMS as well as stations — for a destination
+     * slot, where the autopilot can be pointed at a system and arrive in space.
+     * The picked ref keeps the entity the match REALLY was, so a system id is
+     * never stored as a station. With systems allowed the station-only runtime
+     * bindings (the starting station, the mission board slots) are not offered:
+     * they name stations by definition.
+     */
+    allowSystems?: boolean;
   } = $props();
 
   let query = $state("");
@@ -41,9 +51,9 @@
     searching = true;
     error = null;
     try {
-      results = await flow.searchDestinations(q, "station");
+      results = await flow.searchDestinations(q, allowSystems ? null : "station");
       if (results.length === 0) {
-        error = "No stations matched that name.";
+        error = allowSystems ? "No station or system matched that name." : "No stations matched that name.";
       }
     } catch {
       error = "Could not search just now — try again.";
@@ -54,7 +64,14 @@
   }
 
   function choose(match: DestinationMatch): void {
-    onPick({ entity: "station", id: match.id, name: match.name, systemName: match.solarSystemName });
+    // Keep the entity the match REALLY is: a system destination flies to the
+    // system (arrive in space), a station destination docks.
+    onPick({
+      entity: match.kind === "system" ? "system" : "station",
+      id: match.id,
+      name: match.name,
+      systemName: match.solarSystemName,
+    });
     results = [];
     query = "";
     error = null;
@@ -84,14 +101,17 @@
     <button class="tiny" onclick={clearChoice}>Change</button>
   {:else if value.id !== null}
     <span class="picked">
-      {value.name ?? "A station"}{#if value.systemName} · {value.systemName}{/if}
+      {value.name ?? (value.entity === "system" ? "A system" : "A station")}{#if value.systemName} · {value.systemName}{/if}
+      {#if value.entity === "system"}<span class="kindtag">system</span>{/if}
     </span>
     <button class="tiny" onclick={clearChoice}>Change</button>
   {:else}
-    <button class="tiny primary" onclick={chooseStarting}>Starting station</button>
+    {#if !allowSystems}
+      <button class="tiny primary" onclick={chooseStarting}>Starting station</button>
+    {/if}
     <input
       class="q"
-      placeholder="…or search a station by name"
+      placeholder={allowSystems ? "search a station or system by name" : "…or search a station by name"}
       bind:value={query}
       onkeydown={(e) => {
         if (e.key === "Enter") search();
@@ -102,10 +122,12 @@
       <button class="tiny" onclick={chooseCurrent}>Use current station</button>
     {/if}
     <!-- Runtime bindings: follow whatever an earlier block found, instead of a
-         station pinned now. -->
-    {#each BOARD_SLOTS as slot (slot)}
-      <button class="tiny" onclick={() => chooseSlot(slot)}>{boardSlotPhrase(slot)}</button>
-    {/each}
+         station pinned now. Station-only, so not offered on a destination slot. -->
+    {#if !allowSystems}
+      {#each BOARD_SLOTS as slot (slot)}
+        <button class="tiny" onclick={() => chooseSlot(slot)}>{boardSlotPhrase(slot)}</button>
+      {/each}
+    {/if}
     {#if error}<span class="prob">{error}</span>{/if}
     {#if results.length > 0}
       <ul class="results">
@@ -113,7 +135,8 @@
           <li>
             <button class="tiny result" onclick={() => choose(match)}>
               {match.name}{#if match.solarSystemName} · {match.solarSystemName}{/if}{#if match.jumps !== null}
-                ({match.jumps} jump{match.jumps === 1 ? "" : "s"}){/if}
+                ({match.jumps} jump{match.jumps === 1 ? "" : "s"}){/if}{#if allowSystems && match.kind === "system"}
+                <span class="kindtag">system</span>{/if}
             </button>
           </li>
         {/each}
@@ -131,6 +154,12 @@
   }
   .picked {
     color: var(--color-text-bright);
+  }
+  /* A system destination lands you in space, a station docks you — worth saying
+     so on the row, since the two read almost identically otherwise. */
+  .kindtag {
+    color: var(--color-text-dim);
+    font-size: 0.85em;
   }
   input.q {
     min-width: 12rem;

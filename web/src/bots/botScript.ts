@@ -197,6 +197,24 @@ export const MAX_ISK_ARG = 100_000_000_000;
 export const MIN_QTY_ARG = 1;
 export const MAX_QTY_ARG = 10_000_000;
 
+/**
+ * A short free-text argument a player writes (a chat message). One line, capped
+ * well under the document byte ceiling; the codec strips control characters the
+ * same way it does for names.
+ */
+export const MAX_TEXT_ARG_LEN = 200;
+
+/** The chat channels a block can talk in — a closed vocabulary, like ItemPlace. */
+export type ChatChannelArg = "local" | "corp";
+export const CHAT_CHANNEL_ARGS: readonly ChatChannelArg[] = Object.freeze<ChatChannelArg[]>([
+  "local",
+  "corp",
+]);
+
+/** The hunt block's editable defaults — shared by the editor and the runtime. */
+export const DEFAULT_HUNT_MAX_JUMPS = 3;
+export const DEFAULT_HUNT_RANGE_AU = 14;
+
 export type Arg =
   | { readonly kind: "belt"; readonly belt: BeltArg }
   | { readonly kind: "station"; readonly ref: WorldRef }
@@ -226,11 +244,37 @@ export type Arg =
   /** A market quantity — how many units a buy order is for. */
   | { readonly kind: "qty"; readonly value: number }
   /** A character to act on (invite to a fleet). null charID = an unbound slot to pick. */
-  | { readonly kind: "character"; readonly charID: number | null; readonly name: string | null };
+  | { readonly kind: "character"; readonly charID: number | null; readonly name: string | null }
+  /** A chat channel to talk in — a closed vocabulary, validated by the codec. */
+  | { readonly kind: "chatChannel"; readonly channel: ChatChannelArg }
+  /**
+   * WHERE TO GO: a station or a whole solar system. Distinct from the `station`
+   * kind because the autopilot can be pointed at a system (arrive in space, no
+   * dock), and because a system id and a station id are different things that
+   * must never be swapped by a hand-edited file.
+   */
+  | { readonly kind: "destination"; readonly ref: WorldRef }
+  /** Which rock a mining step reaches for first. */
+  | { readonly kind: "rockPick"; readonly pick: RockPick }
+  /** A short line of text the player writes (a chat message). Never empty at run
+   * time — the validator flags a blank one before the bot can start. */
+  | { readonly kind: "text"; readonly text: string };
 
 /** The move block's place vocabulary. */
 export type ItemPlace = "hangar" | "cargo" | "ore-hold";
 export const ITEM_PLACES: readonly ItemPlace[] = Object.freeze<ItemPlace[]>(["hangar", "cargo", "ore-hold"]);
+
+/**
+ * Which rock the mine block reaches for first.
+ *
+ *   • "nearest" — the shipped behaviour, and still the default: least flying.
+ *   • "biggest" — the most ore left first, from the amount the snapshot already
+ *     reports per rock (`remainingQuantity`). Fewer rock changes per hold, which
+ *     is what a strip miner wants. Rocks whose amount is UNKNOWN sort last rather
+ *     than being treated as empty — a null is not a zero.
+ */
+export type RockPick = "nearest" | "biggest";
+export const ROCK_PICKS: readonly RockPick[] = Object.freeze<RockPick[]>(["nearest", "biggest"]);
 
 // ─── Conditions ──────────────────────────────────────────────────────────────
 
@@ -256,7 +300,21 @@ export type Condition =
   /** Wallet thresholds carry an absolute ISK amount, not a 0..1 fraction. */
   | { readonly kind: "wallet-below"; readonly isk: number }
   | { readonly kind: "wallet-above"; readonly isk: number }
-  | { readonly kind: "hostile-on-grid" };
+  | { readonly kind: "hostile-on-grid" }
+  /**
+   * The ship's ordinary CARGO hold (not the ore hold `ore-hold-at-least` watches)
+   * — for a hauler, a looter, a salvager, anything whose hold is not ore.
+   */
+  | { readonly kind: "cargo-full"; readonly fraction: number }
+  /**
+   * How many OTHER pilots are in this solar system, from the local chat roster.
+   * `count` is the number it takes to fire: "more than 0" is "I am not alone".
+   */
+  | { readonly kind: "players-in-system-above"; readonly count: number }
+  /** A player's ship on this grid has THIS ship locked — you are being hunted. */
+  | { readonly kind: "targeted-by-player" }
+  /** One of your drones out in space has dropped below this health. */
+  | { readonly kind: "drone-health-below"; readonly fraction: number };
 
 export type ConditionKind = Condition["kind"];
 
@@ -272,6 +330,10 @@ export const CONDITION_KINDS: readonly ConditionKind[] = Object.freeze<Condition
   "wallet-below",
   "wallet-above",
   "hostile-on-grid",
+  "cargo-full",
+  "players-in-system-above",
+  "targeted-by-player",
+  "drone-health-below",
 ]);
 
 /** Where a condition may legally appear. */
@@ -283,7 +345,21 @@ export type ConditionSite = "until" | "interrupt";
  * is fine in both places. The codec refuses a condition used off-site.
  */
 export function conditionSites(kind: ConditionKind): readonly ConditionSite[] {
-  return kind === "hostile-on-grid" ? ["interrupt"] : ["until", "interrupt"];
+  // ⚠ EVERY GRID / SURROUNDINGS READ IS INTERRUPT-ONLY, for the reason spelled out
+  // above `Condition`: out in the world these are false-or-unknowable while the
+  // ship is still in warp, so as a step's `until` they read "true" at exactly the
+  // wrong moment (the belt-empty-on-tick-one trap). As an always-armed watch they
+  // fail safe by simply not firing.
+  //   • hostile-on-grid / targeted-by-player / drone-health-below — grid reads.
+  //   • players-in-system-above — an awareness watch on who else is here; it is a
+  //     roster read, not an own-ship fact, and "do this step until someone shows
+  //     up" is a watch in disguise.
+  return kind === "hostile-on-grid" ||
+    kind === "targeted-by-player" ||
+    kind === "drone-health-below" ||
+    kind === "players-in-system-above"
+    ? ["interrupt"]
+    : ["until", "interrupt"];
 }
 
 /** True when `kind` may be used at `site`. */
@@ -308,8 +384,23 @@ export function conditionAllowedAt(kind: ConditionKind, site: ConditionSite): bo
  *                        holds and the capacitor allows, and back OFF when it
  *                        clears — the "keep the ship repaired" watch. The step
  *                        keeps working; repairs ride the watching layer.
+ *   • "alert"          — TELL THE PLAYER and keep working: a notification, a
+ *                        sound, and a line in the bot's readout. It changes
+ *                        nothing about the ship, so it is the one response that
+ *                        is safe to put above a real one.
+ *
+ * ⚠ TWO PROPERTIES MAKE "alert" BEHAVE, and both live in the orchestrator
+ * (nav/scriptDecide), not here:
+ *   • IT FIRES ONCE PER EPISODE. A condition that stays met would otherwise
+ *     alert every tick — thirty notifications a minute, which is how an alert
+ *     trains a player to ignore it. The row is marked spent on the first alert
+ *     and un-spent only when its condition reads not-met again.
+ *   • A SPENT ALERT ROW IS TRANSPARENT. Interrupts are first-match-wins, so an
+ *     alert row sitting above a dock-and-pause row would silence it forever.
+ *     Once spent, the scan skips the row and carries on down the ladder — so
+ *     "tell me, AND dock" is two rows that both work.
  */
-export type InterruptResponse = "pause" | "dock-and-pause" | "launch-drones" | "repair";
+export type InterruptResponse = "pause" | "dock-and-pause" | "launch-drones" | "repair" | "alert";
 
 /** Every interrupt response — for exhaustive iteration in menus and tests. */
 export const INTERRUPT_RESPONSES: readonly InterruptResponse[] = Object.freeze<InterruptResponse[]>([
@@ -317,6 +408,7 @@ export const INTERRUPT_RESPONSES: readonly InterruptResponse[] = Object.freeze<I
   "dock-and-pause",
   "launch-drones",
   "repair",
+  "alert",
 ]);
 
 /**
@@ -377,7 +469,23 @@ export type MacroID =
   // ── The fleet-management set. Form up / invite / join (multibox alt-fleeting).
   | "create-fleet"
   | "invite-to-fleet"
-  | "join-fleet";
+  | "join-fleet"
+  // ── The PvP set. Camp a grid / roam and hunt another player's ship.
+  | "attack-player"
+  | "hunt-player"
+  // ── Social. Say something in a chat channel (pairs with a branch for
+  //    "announce when a check holds").
+  | "send-chat"
+  // ── Movement extras. Point the autopilot somewhere; run for the nearest dock.
+  | "set-destination"
+  | "dock-at-nearest"
+  // ── Fleet support extra: feed a mate's capacitor.
+  | "remote-cap"
+  // ── Cargo extras: dump a can into space; tidy the hangar.
+  | "jettison-cargo"
+  | "tidy-hangar"
+  // ── Mining extra: squeeze the ore down against a support ship on grid.
+  | "compress-ore";
 
 /** Every macro id — for exhaustive iteration in menus and tests. */
 export const MACRO_IDS: readonly MacroID[] = Object.freeze<MacroID[]>([
@@ -415,6 +523,15 @@ export const MACRO_IDS: readonly MacroID[] = Object.freeze<MacroID[]>([
   "create-fleet",
   "invite-to-fleet",
   "join-fleet",
+  "attack-player",
+  "hunt-player",
+  "send-chat",
+  "set-destination",
+  "dock-at-nearest",
+  "remote-cap",
+  "jettison-cargo",
+  "tidy-hangar",
+  "compress-ore",
 ]);
 
 /**

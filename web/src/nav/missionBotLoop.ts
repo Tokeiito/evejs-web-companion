@@ -163,6 +163,9 @@ export interface TravelReading {
   readonly status: AutopilotStatus;
   /** Where it was sent. Null when it was never started for us. */
   readonly destinationStationID: number | null;
+  /** The destination SYSTEM — the only destination a system-only route has.
+   * Optional so older fakes need not supply it; absent reads as unknown. */
+  readonly destinationSystemID?: number | null;
   readonly remainingJumps: number;
   readonly failureReason: string | null;
 }

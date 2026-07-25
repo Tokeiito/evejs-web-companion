@@ -533,6 +533,7 @@ const INITIAL_CUSTOM_BOT: CustomBotState = Object.freeze({
   pauseReason: null,
   note: null,
   startError: null,
+  lastAlert: null,
 });
 
 // R36 — the mission bot's readout. Every "unknown" is null, never 0 or "": an
@@ -1903,6 +1904,14 @@ export function createClientStore(): ClientStore {
           interruptID: event.interruptID,
           pauseReason: event.pauseReason,
           note: event.note ?? null,
+        });
+        break;
+      case "custom-bot/alert":
+        // Kept on the slice (not just shown once) so a player who was away still
+        // finds it, and so the server-bot host can fold it onto the bot's record.
+        customBot.set({
+          ...customBot.get(),
+          lastAlert: { message: event.message, atMs: event.atMs },
         });
         break;
       case "custom-bot/start-error":

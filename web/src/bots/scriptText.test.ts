@@ -35,8 +35,15 @@ function sampleCondition(kind: ConditionKind): Condition {
     case "wallet-below":
     case "wallet-above":
       return { kind, isk: 100_000_000 };
+    case "cargo-full":
+      return { kind, fraction: 0.9 };
+    case "drone-health-below":
+      return { kind, fraction: 0.4 };
+    case "players-in-system-above":
+      return { kind, count: 0 };
     case "hold-empty":
     case "hostile-on-grid":
+    case "targeted-by-player":
       return { kind };
   }
 }

@@ -62,9 +62,10 @@ test("undock needs nothing; mine-at-belt needs a belt, equipment, and an until",
   assert.equal(undock.untilRequired, false);
 
   const mine = macroEntry("mine-at-belt");
-  assert.deepEqual(mine.params.map((p) => p.key).sort(), ["belt", "equipment"]);
+  assert.deepEqual(mine.params.map((p) => p.key).sort(), ["belt", "equipment", "pick"]);
   assert.equal(mine.params.find((p) => p.key === "belt")?.required, true);
   assert.equal(mine.params.find((p) => p.key === "equipment")?.required, false, "equipment is optional (auto)");
+  assert.equal(mine.params.find((p) => p.key === "pick")?.required, false, "the rock order is optional (nearest)");
   assert.equal(mine.untilRequired, true);
 });
 

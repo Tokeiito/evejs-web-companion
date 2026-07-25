@@ -163,9 +163,99 @@ function everyArgKind(): BotScript {
         macro: "invite-to-fleet",
         args: { who: { kind: "character", charID: 90000001, name: "Alt Pilot" } },
       },
+      {
+        id: "a8",
+        kind: "macro",
+        macro: "hunt-player",
+        args: {
+          only: { kind: "character", charID: 90000002, name: "Prey Pilot" },
+          maxJumps: { kind: "count", value: 5 },
+          range: { kind: "count", value: 14 },
+        },
+      },
+      {
+        id: "a9",
+        kind: "macro",
+        macro: "send-chat",
+        args: {
+          channel: { kind: "chatChannel", channel: "corp" },
+          message: { kind: "text", text: "Shields are dropping — need a hand at the belt." },
+        },
+      },
+      {
+        id: "a10",
+        kind: "macro",
+        macro: "set-destination",
+        args: { destination: { kind: "destination", ref: { entity: "system", id: 30000142, name: "Jita", systemName: null } } },
+      },
+      {
+        id: "a11",
+        kind: "macro",
+        macro: "mine-at-belt",
+        args: {
+          belt: { kind: "belt", belt: { mode: "nearest" } },
+          pick: { kind: "rockPick", pick: "biggest" },
+        },
+        until: { kind: "ore-hold-at-least", fraction: 0.9 },
+      },
     ],
   };
 }
+
+test("a SYSTEM destination keeps its own entity; a belt in that slot is refused", () => {
+  const doc = everyArgKind();
+  const round = mustAccept(decodeScriptText(encodeScriptDoc(doc))).doc;
+  const dest = round.program.find((n) => n.kind === "macro" && n.macro === "set-destination");
+  assert.ok(dest !== undefined && dest.kind === "macro");
+  const arg = dest.args["destination"];
+  assert.ok(arg !== undefined && arg.kind === "destination");
+  assert.equal(arg.ref.entity, "system", "a system destination must not come back as a station");
+  assert.equal(arg.ref.id, 30000142);
+
+  // The slot takes a station or a system and nothing else.
+  const withBelt = JSON.parse(encodeScriptDoc(doc)) as Record<string, unknown>;
+  const program = structuredClone(withBelt["program"]) as Record<string, unknown>[];
+  const node = program.find((n) => n["macro"] === "set-destination") as Record<string, unknown>;
+  node["args"] = { destination: { kind: "destination", ref: { entity: "belt", id: 40001, name: "Belt", systemName: null } } };
+  withBelt["program"] = program;
+  const refused = decodeScriptValue(withBelt);
+  assert.equal(refused.ok, false, "a belt is not somewhere the autopilot can be sent");
+});
+
+test("the new watch kinds round-trip, and a pilot COUNT is not dropped", () => {
+  const doc: BotScript = {
+    format: SCRIPT_FORMAT,
+    version: SCRIPT_VERSION,
+    name: "Watches",
+    notes: "",
+    home: { entity: "station", id: null, name: null, systemName: null, starting: true },
+    interrupts: [
+      { id: "w1", builtIn: "safety-floor", when: { kind: "health-below", fraction: 0.5 }, respond: "dock-and-pause" },
+      { id: "w2", when: { kind: "players-in-system-above", count: 3 }, respond: "alert" },
+      { id: "w3", when: { kind: "targeted-by-player" }, respond: "alert" },
+      { id: "w4", when: { kind: "drone-health-below", fraction: 0.4 }, respond: "pause" },
+      { id: "w5", when: { kind: "cargo-full", fraction: 0.85 }, respond: "pause" },
+    ],
+    program: [{ id: "s1", kind: "macro", macro: "undock", args: {} }],
+  };
+  const round = mustAccept(decodeScriptText(encodeScriptDoc(doc))).doc;
+  assert.deepStrictEqual(round, doc);
+  const crowd = round.interrupts.find((r) => r.id === "w2");
+  assert.ok(crowd !== undefined && "count" in crowd.when && crowd.when.count === 3, "the count must survive the export");
+});
+
+test("an interrupt-only condition is refused as a step's stop-when", () => {
+  const bad = {
+    format: SCRIPT_FORMAT,
+    version: SCRIPT_VERSION,
+    name: "Bad",
+    notes: "",
+    home: { entity: "station", id: null, name: null, systemName: null, starting: true },
+    interrupts: [{ id: "w1", builtIn: "safety-floor", when: { kind: "health-below", fraction: 0.5 }, respond: "dock-and-pause" }],
+    program: [{ id: "s1", kind: "macro", macro: "undock", args: {}, until: { kind: "targeted-by-player" } }],
+  };
+  assert.equal(decodeScriptValue(bad).ok, false);
+});
 
 test("encode then decode round-trips EVERY arg kind losslessly", () => {
   const text = encodeScriptDoc(everyArgKind());

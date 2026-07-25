@@ -130,7 +130,30 @@ export function macroName(macro: MacroID): string {
       return "Invite a pilot to your fleet";
     case "join-fleet":
       return "Join a fleet";
+    case "attack-player":
+      return "Attack players here";
+    case "hunt-player":
+      return "Hunt a player down";
+    case "send-chat":
+      return "Say something in chat";
+    case "set-destination":
+      return "Set the destination and fly";
+    case "dock-at-nearest":
+      return "Dock at the nearest station";
+    case "remote-cap":
+      return "Feed a fleet-mate's capacitor";
+    case "jettison-cargo":
+      return "Jettison the cargo into space";
+    case "tidy-hangar":
+      return "Tidy the hangar";
+    case "compress-ore":
+      return "Compress the ore on grid";
   }
+}
+
+/** A chat channel, as a player reads it. */
+export function chatChannelPhrase(channel: string): string {
+  return channel === "corp" ? "corp chat" : "local chat";
 }
 
 /** A named board slot, as a player reads it — never a key, never an id. */
@@ -182,6 +205,16 @@ export function conditionSentence(condition: Condition): string {
       return `your wallet rises above ${isk(condition.isk)}`;
     case "hostile-on-grid":
       return "a pirate shows up";
+    case "cargo-full":
+      return `the cargo hold is ${pct(condition.fraction)} full`;
+    case "players-in-system-above":
+      return condition.count === 0
+        ? "another pilot comes into this system"
+        : `more than ${condition.count} other ${condition.count === 1 ? "pilot is" : "pilots are"} in this system`;
+    case "targeted-by-player":
+      return "another player locks onto your ship";
+    case "drone-health-below":
+      return `one of your drones drops below ${pct(condition.fraction)} health`;
   }
 }
 
@@ -218,7 +251,15 @@ export function responseSentence(response: InterruptResponse): string {
       return "send out drones and keep going";
     case "repair":
       return "run the repairers until it recovers";
+    case "alert":
+      return "let me know and keep going";
   }
+}
+
+/** The words an "alert me" watch shows when it fires — a whole sentence a player
+ * reads on a phone notification, so it names the check, not the row. */
+export function alertSentence(row: InterruptRow): string {
+  return `Your bot noticed: ${conditionSentence(row.when)}.`;
 }
 
 /** A whole "always watching" row: "If shields drop below 30%, dock at home and stop". */
@@ -242,7 +283,9 @@ function macroPhrase(step: MacroStep): string {
     case "mine-at-belt": {
       const belt = step.args["belt"];
       const where = belt !== undefined && belt.kind === "belt" ? beltPhrase(belt.belt) : "a belt you pick";
-      return `Mine at ${where}`;
+      const pick = step.args["pick"];
+      const order = pick !== undefined && pick.kind === "rockPick" && pick.pick === "biggest" ? ", biggest rocks first" : "";
+      return `Mine at ${where}${order}`;
     }
     case "travel-to-station": {
       const station = step.args["station"];
@@ -394,5 +437,60 @@ function macroPhrase(step: MacroStep): string {
     }
     case "join-fleet":
       return "Accept a fleet invitation when one arrives";
+    case "attack-player": {
+      const only = step.args["only"];
+      const name =
+        only !== undefined && only.kind === "character" && only.name !== null && only.name.length > 0
+          ? only.name
+          : null;
+      return name !== null ? `Attack ${name} if they appear here` : "Attack any player who appears here";
+    }
+    case "hunt-player": {
+      const only = step.args["only"];
+      const prey =
+        only !== undefined && only.kind === "character" && only.name !== null && only.name.length > 0
+          ? only.name
+          : "a player";
+      const jumps = step.args["maxJumps"];
+      const reach =
+        jumps !== undefined && jumps.kind === "count"
+          ? ` up to ${jumps.value} ${jumps.value === 1 ? "jump" : "jumps"} from home`
+          : "";
+      return `Roam and hunt ${prey}${reach}`;
+    }
+    case "set-destination": {
+      const dest = step.args["destination"];
+      const where =
+        dest !== undefined && dest.kind === "destination"
+          ? worldRefPhrase(dest.ref, dest.ref.entity === "system" ? "system" : "station")
+          : "a place you pick";
+      return `Set the destination to ${where} and start flying`;
+    }
+    case "dock-at-nearest":
+      return "Dock at the nearest station";
+    case "remote-cap":
+      return "Feed the emptiest fleet-mate's capacitor";
+    case "jettison-cargo": {
+      const item = step.args["item"];
+      const what =
+        item !== undefined && item.kind === "itemType" && item.name !== null && item.name.length > 0
+          ? `all your ${item.name}`
+          : "everything in the cargo hold";
+      return `Jettison ${what} into space`;
+    }
+    case "tidy-hangar":
+      return "Stack everything in the hangar into neat piles";
+    case "compress-ore":
+      return "Compress the ore in your hold at the support ship on grid";
+    case "send-chat": {
+      const message = step.args["message"];
+      const words =
+        message !== undefined && message.kind === "text" && message.text.length > 0
+          ? `"${message.text}"`
+          : "a message you write";
+      const channel = step.args["channel"];
+      const where = channel !== undefined && channel.kind === "chatChannel" ? channel.channel : "local";
+      return `Say ${words} in ${chatChannelPhrase(where)}`;
+    }
   }
 }

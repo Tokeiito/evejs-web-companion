@@ -38,6 +38,9 @@ const ARG_LABEL: Readonly<Record<string, string>> = {
   quantity: "how many to buy",
   price: "a price per unit",
   who: "a pilot to invite",
+  channel: "a channel to talk in",
+  message: "a message to send",
+  destination: "somewhere to go",
 };
 
 /** Every fixable problem in a draft, in reading order. Empty means ready to start. */
@@ -137,7 +140,21 @@ function validateStep(step: MacroStep, problems: ScriptProblem[]): void {
       problems.push({ path: step.id, sentence: "Pick the agent for this step, or remove the pick to use the one your bot finds." });
     }
     if (arg.kind === "character" && arg.charID === null) {
-      problems.push({ path: step.id, sentence: "Pick the pilot to invite." });
+      // The invite's pilot is mandatory; a PvP `only` filter left unfilled just
+      // needs the half-made pick resolved (pick someone, or clear it for "any").
+      problems.push({
+        path: step.id,
+        sentence:
+          argSpec.key === "only"
+            ? "Pick the pilot to hunt, or clear the pick to go after any player."
+            : "Pick the pilot to invite.",
+      });
+    }
+    if (arg.kind === "text" && arg.text.trim().length === 0) {
+      problems.push({ path: step.id, sentence: "Write the message this step says." });
+    }
+    if (arg.kind === "destination" && arg.ref.id === null) {
+      problems.push({ path: step.id, sentence: "Pick where this step sets the destination to." });
     }
   }
 

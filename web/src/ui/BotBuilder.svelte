@@ -25,6 +25,10 @@
     MAX_QTY_ARG,
     MIN_ISK_ARG,
     MIN_QTY_ARG,
+    MAX_TEXT_ARG_LEN,
+    MAX_INTERRUPTS,
+    DEFAULT_HUNT_MAX_JUMPS,
+    DEFAULT_HUNT_RANGE_AU,
     conditionAllowedAt,
     startingStation,
   } from "../bots/botScript.ts";
@@ -204,11 +208,23 @@
     "hull-below": "Hull",
     "health-below": "Ship health",
     "capacitor-below": "Capacitor",
+    "drone-health-below": "A drone's health",
   };
   const RESPONSE_OPTIONS: readonly { value: InterruptResponse; label: string }[] = [
     { value: "dock-and-pause", label: "Dock at home and stop" },
     { value: "pause", label: "Just stop and wait" },
     { value: "repair", label: "Run the repairers until it recovers" },
+    // "Let me know" changes nothing about the ship, so it is the one response a
+    // player can safely stack ABOVE a real one: it speaks once, then steps aside
+    // and lets the watch below it fire.
+    { value: "alert", label: "Let me know and keep going" },
+  ];
+  /** A pirate watch can also fight back, which the health watches cannot. */
+  const HOSTILE_RESPONSE_OPTIONS: readonly { value: InterruptResponse; label: string }[] = [
+    { value: "launch-drones", label: "Send out combat drones and keep going" },
+    { value: "dock-and-pause", label: "Dock at home and stop" },
+    { value: "pause", label: "Just stop and wait" },
+    { value: "alert", label: "Let me know and keep going" },
   ];
   const untilKinds = ["ore-hold-at-least", "hold-empty", "shield-below", "armor-below", "hull-below", "health-below", "capacitor-below"].filter(
     (k) => conditionAllowedAt(k as ConditionKind, "until"),
@@ -233,20 +249,55 @@
   function addWatch(kind: ConditionKind): void {
     if (hasWatch(kind)) return;
     const isWallet = kind === "wallet-below" || kind === "wallet-above";
+    const noFields = kind === "hostile-on-grid" || kind === "targeted-by-player";
     const when: Condition =
-      kind === "hostile-on-grid"
-        ? { kind }
+      noFields
+        ? ({ kind } as Condition)
         : isWallet
           ? ({ kind, isk: 10_000_000 } as Condition)
-          : ({ kind, fraction: 0.3 } as Condition);
-    // A wallet watch just stops (money is not a danger); a pirate launches drones;
-    // a health watch heads home.
+          : kind === "players-in-system-above"
+            ? // Zero = "anyone else at all", the setting a solo miner wants.
+              ({ kind, count: 0 } as Condition)
+            : kind === "cargo-full"
+              ? ({ kind, fraction: 0.9 } as Condition)
+              : ({ kind, fraction: 0.3 } as Condition);
+    // Sensible first responses: money and a full hold are not dangers, so they
+    // just stop; a pirate launches drones; being targeted or joined by players is
+    // news rather than damage, so it tells you; anything about health heads home.
     const respond: InterruptResponse =
-      kind === "hostile-on-grid" ? "launch-drones" : isWallet ? "pause" : "dock-and-pause";
+      kind === "hostile-on-grid"
+        ? "launch-drones"
+        : kind === "targeted-by-player" || kind === "players-in-system-above"
+          ? "alert"
+          : isWallet || kind === "cargo-full"
+            ? "pause"
+            : "dock-and-pause";
     watches = [...watches, { id: makeId(), when, respond }];
   }
   function removeWatch(id: string): void {
     watches = watches.filter((w) => w.id !== id);
+  }
+  /**
+   * Pair an existing watch with an "alert me" row for the SAME check — the
+   * "tell me, and also do the thing" combination.
+   *
+   * ⚠ THE NEW ROW GOES ABOVE THE ONE IT PAIRS WITH, and that is not cosmetic.
+   * Watches are first-match-wins: below, the dock row would fire first and the
+   * alert would never speak. Above, the alert speaks once, marks itself spent,
+   * and from then on the scan skips it and reaches the dock row underneath. The
+   * threshold is copied as-is so the pair means "both, on the same trigger"; the
+   * player can then edit the alert's own number to be warned earlier.
+   */
+  function addAlertFor(row: InterruptRow): void {
+    if (watches.length >= MAX_INTERRUPTS) return;
+    const alertRow: InterruptRow = { id: makeId(), when: row.when, respond: "alert" };
+    const at = watches.findIndex((w) => w.id === row.id);
+    if (at < 0) return;
+    watches = [...watches.slice(0, at), alertRow, ...watches.slice(at)];
+  }
+  /** True when this row already has an "alert me" twin (so we offer it once). */
+  function hasAlertTwin(row: InterruptRow): boolean {
+    return watches.some((w) => w.respond === "alert" && w.when.kind === row.when.kind);
   }
   function setWatchFraction(id: string, percent: number): void {
     watches = watches.map((w) =>
@@ -256,6 +307,11 @@
   function setWatchIsk(id: string, amount: number): void {
     const value = Math.min(MAX_ISK_ARG, Math.max(MIN_ISK_ARG, Math.trunc(amount) || MIN_ISK_ARG));
     watches = watches.map((w) => (w.id === id && "isk" in w.when ? { ...w, when: { ...w.when, isk: value } } : w));
+  }
+  /** The pilot-count watch. ZERO is legal and means "anyone else at all". */
+  function setWatchCount(id: string, raw: number): void {
+    const value = Math.min(50, Math.max(0, Math.trunc(raw) || 0));
+    watches = watches.map((w) => (w.id === id && "count" in w.when ? { ...w, when: { ...w.when, count: value } } : w));
   }
   function setWatchResponse(id: string, respond: InterruptResponse): void {
     watches = watches.map((w) => (w.id === id ? { ...w, respond } : w));
@@ -299,6 +355,37 @@
     }
     if (macro === "invite-to-fleet") {
       return { id, kind: "macro", macro, args: { who: { kind: "character", charID: null, name: null } } };
+    }
+    if (macro === "hunt-player") {
+      // `only` stays ABSENT (any player); the leash and scanner reach start on
+      // their shared defaults so the sentence reads honestly from the start.
+      return {
+        id,
+        kind: "macro",
+        macro,
+        args: {
+          maxJumps: { kind: "count", value: DEFAULT_HUNT_MAX_JUMPS },
+          range: { kind: "count", value: DEFAULT_HUNT_RANGE_AU },
+        },
+      };
+    }
+    if (macro === "send-chat") {
+      return {
+        id,
+        kind: "macro",
+        macro,
+        args: { channel: { kind: "chatChannel", channel: "local" }, message: { kind: "text", text: "" } },
+      };
+    }
+    if (macro === "set-destination") {
+      // Unbound on purpose: there is no sensible default place to fly to, and the
+      // validator asks for one before the bot can start.
+      return {
+        id,
+        kind: "macro",
+        macro,
+        args: { destination: { kind: "destination", ref: { entity: "station", id: null, name: null, systemName: null } } },
+      };
     }
     return { id, kind: "macro", macro, args: {} };
   }
@@ -417,6 +504,37 @@
   function setStepStationRef(i: number, ref: WorldRef, side: Side | null = null, j = -1): void {
     updateStep(i, (s) => ({ ...s, args: { ...s.args, station: { kind: "station", ref } } }), side, j);
   }
+  /** The destination slot: a station OR a system (the picker keeps which). */
+  function destinationRef(step: MacroStep): WorldRef {
+    const arg = step.args["destination"];
+    return arg !== undefined && arg.kind === "destination"
+      ? arg.ref
+      : { entity: "station", id: null, name: null, systemName: null };
+  }
+  function setStepDestination(i: number, ref: WorldRef, side: Side | null = null, j = -1): void {
+    updateStep(i, (s) => ({ ...s, args: { ...s.args, destination: { kind: "destination", ref } } }), side, j);
+  }
+  /** The mine block's rock order — absent means "nearest", the shipped default. */
+  function rockPickValue(step: MacroStep): string {
+    const arg = step.args["pick"];
+    return arg !== undefined && arg.kind === "rockPick" ? arg.pick : "nearest";
+  }
+  function setStepRockPick(i: number, raw: string, side: Side | null = null, j = -1): void {
+    updateStep(
+      i,
+      (s) => {
+        if (raw !== "biggest") {
+          // Back to the default: drop the arg entirely rather than storing the
+          // default explicitly, so an unchanged block exports exactly as before.
+          const { pick: _dropped, ...rest } = s.args;
+          return { ...s, args: rest };
+        }
+        return { ...s, args: { ...s.args, pick: { kind: "rockPick", pick: "biggest" } } };
+      },
+      side,
+      j,
+    );
+  }
   function setStepUntilKind(i: number, kind: ConditionKind, side: Side | null = null, j = -1): void {
     updateStep(
       i,
@@ -498,6 +616,51 @@
       side,
       j,
     );
+  }
+  // The PvP blocks' OPTIONAL pilot filter: a picked pilot narrows the hunt to
+  // them; clearing the pick (the "any player" choice) removes the arg entirely.
+  function onlyArgID(step: MacroStep): number | null {
+    const arg = step.args["only"];
+    return arg !== undefined && arg.kind === "character" ? arg.charID : null;
+  }
+  function setStepOnly(i: number, raw: string, side: Side | null = null, j = -1): void {
+    if (raw === "") {
+      updateStep(
+        i,
+        (s) => {
+          const { only: _dropped, ...rest } = s.args;
+          return { ...s, args: rest };
+        },
+        side,
+        j,
+      );
+      return;
+    }
+    const match = knownPilots.find((p) => p.characterID === Number(raw));
+    if (match === undefined) return;
+    updateStep(
+      i,
+      (s) => ({ ...s, args: { ...s.args, only: { kind: "character", charID: match.characterID, name: match.characterName } } }),
+      side,
+      j,
+    );
+  }
+  // The send-chat block's channel + message.
+  function chatChannelValue(step: MacroStep): string {
+    const arg = step.args["channel"];
+    return arg !== undefined && arg.kind === "chatChannel" ? arg.channel : "local";
+  }
+  function setStepChatChannel(i: number, raw: string, side: Side | null = null, j = -1): void {
+    const channel = raw === "corp" ? "corp" : "local";
+    updateStep(i, (s) => ({ ...s, args: { ...s.args, channel: { kind: "chatChannel", channel } } }), side, j);
+  }
+  function textArgValue(step: MacroStep, key: string): string {
+    const arg = step.args[key];
+    return arg !== undefined && arg.kind === "text" ? arg.text : "";
+  }
+  function setStepTextArg(i: number, key: string, raw: string, side: Side | null = null, j = -1): void {
+    const text = raw.slice(0, MAX_TEXT_ARG_LEN);
+    updateStep(i, (s) => ({ ...s, args: { ...s.args, [key]: { kind: "text", text } } }), side, j);
   }
   function setStepFitting(i: number, fittingID: number, side: Side | null = null, j = -1): void {
     const match = savedFittings.find((f) => f.fittingID === fittingID);
@@ -789,6 +952,10 @@
     <button onclick={() => addWatch("hostile-on-grid")} disabled={hasWatch("hostile-on-grid")}>Watch for Rats</button>
     <button onclick={() => addWatch("wallet-below")} disabled={hasWatch("wallet-below")}>Watch Wallet (low)</button>
     <button onclick={() => addWatch("wallet-above")} disabled={hasWatch("wallet-above")}>Watch Wallet (high)</button>
+    <button onclick={() => addWatch("cargo-full")} disabled={hasWatch("cargo-full")}>Watch Cargo Hold</button>
+    <button onclick={() => addWatch("players-in-system-above")} disabled={hasWatch("players-in-system-above")}>Watch for Players</button>
+    <button onclick={() => addWatch("targeted-by-player")} disabled={hasWatch("targeted-by-player")}>Watch for Being Targeted</button>
+    <button onclick={() => addWatch("drone-health-below")} disabled={hasWatch("drone-health-below")}>Watch Drones</button>
   </div>
   <ul class="rows">
     {#each watches as row (row.id)}
@@ -796,11 +963,44 @@
         <span class="mark">◆</span>
         <div class="body">
           {#if row.when.kind === "hostile-on-grid"}
-            <span class="sentence">If a pirate shows up, send out combat drones to fight it off.</span>
+            <span class="sentence">If a pirate shows up</span>
+            <span class="inline-edit">
+              →
+              <select value={row.respond} onchange={(e) => setWatchResponse(row.id, e.currentTarget.value as InterruptResponse)}>
+                {#each HOSTILE_RESPONSE_OPTIONS as opt}<option value={opt.value}>{opt.label}</option>{/each}
+              </select>
+            </span>
           {:else if "isk" in row.when}
             <span class="sentence">If your wallet {row.when.kind === "wallet-below" ? "drops below" : "rises above"}</span>
             <span class="inline-edit">
               <input class="isk-in" type="number" min={MIN_ISK_ARG} max={MAX_ISK_ARG} step="1000000" value={row.when.isk} oninput={(e) => setWatchIsk(row.id, Number(e.currentTarget.value))} /> ISK
+              →
+              <select value={row.respond} onchange={(e) => setWatchResponse(row.id, e.currentTarget.value as InterruptResponse)}>
+                {#each RESPONSE_OPTIONS as opt}<option value={opt.value}>{opt.label}</option>{/each}
+              </select>
+            </span>
+          {:else if row.when.kind === "targeted-by-player"}
+            <span class="sentence">If another player locks onto your ship</span>
+            <span class="inline-edit">
+              →
+              <select value={row.respond} onchange={(e) => setWatchResponse(row.id, e.currentTarget.value as InterruptResponse)}>
+                {#each HOSTILE_RESPONSE_OPTIONS as opt}<option value={opt.value}>{opt.label}</option>{/each}
+              </select>
+            </span>
+          {:else if "count" in row.when}
+            <span class="sentence">If more than</span>
+            <span class="inline-edit">
+              <input class="pct" type="number" min="0" max="50" value={row.when.count} oninput={(e) => setWatchCount(row.id, Number(e.currentTarget.value))} />
+              other pilots are in this system
+              →
+              <select value={row.respond} onchange={(e) => setWatchResponse(row.id, e.currentTarget.value as InterruptResponse)}>
+                {#each HOSTILE_RESPONSE_OPTIONS as opt}<option value={opt.value}>{opt.label}</option>{/each}
+              </select>
+            </span>
+          {:else if row.when.kind === "cargo-full"}
+            <span class="sentence">If the cargo hold reaches</span>
+            <span class="inline-edit">
+              <input class="pct" type="number" min="5" max="90" value={pct(row.when.fraction)} oninput={(e) => setWatchFraction(row.id, Number(e.currentTarget.value))} />% full
               →
               <select value={row.respond} onchange={(e) => setWatchResponse(row.id, e.currentTarget.value as InterruptResponse)}>
                 {#each RESPONSE_OPTIONS as opt}<option value={opt.value}>{opt.label}</option>{/each}
@@ -817,6 +1017,9 @@
             </span>
           {/if}
         </div>
+        {#if row.respond !== "alert" && !hasAlertTwin(row) && watches.length < MAX_INTERRUPTS}
+          <button class="tiny" title="Also let me know when this happens" onclick={() => addAlertFor(row)}>+ Alert me too</button>
+        {/if}
         <button class="tiny danger" onclick={() => removeWatch(row.id)} aria-label="Remove this watch">✕</button>
       </li>
     {/each}
@@ -985,6 +1188,64 @@
                   {#each knownPilots as p (p.characterID)}<option value={p.characterID}>{p.characterName}</option>{/each}
                 </select>
               {/if}
+            </span>
+          {/if}
+          {#if step.macro === "attack-player" || step.macro === "hunt-player"}
+            <span class="inline-edit">
+              target
+              <select value={onlyArgID(step) ?? ""} onchange={(e) => setStepOnly(i, e.currentTarget.value, side, j)}>
+                <option value="">any player</option>
+                {#each knownPilots as p (p.characterID)}<option value={p.characterID}>{p.characterName}</option>{/each}
+              </select>
+            </span>
+          {/if}
+          {#if step.macro === "hunt-player"}
+            <span class="inline-edit">
+              up to
+              <input class="pct" type="number" min="1" max="30" placeholder={String(DEFAULT_HUNT_MAX_JUMPS)} value={countArgValue(step, "maxJumps") ?? ""} oninput={(e) => setStepCountArg(i, "maxJumps", e.currentTarget.value, 1, 30, side, j)} />
+              jumps from home, scanning
+              <input class="pct" type="number" min="1" max="100" placeholder={String(DEFAULT_HUNT_RANGE_AU)} value={countArgValue(step, "range") ?? ""} oninput={(e) => setStepCountArg(i, "range", e.currentTarget.value, 1, 100, side, j)} />
+              AU
+            </span>
+          {/if}
+          {#if step.macro === "set-destination"}
+            <span class="inline-edit">
+              to
+              <StationPicker
+                {flow}
+                value={destinationRef(step)}
+                current={currentStation}
+                allowSystems={true}
+                onPick={(ref) => setStepDestination(i, ref, side, j)}
+              />
+            </span>
+          {/if}
+          {#if step.macro === "mine-at-belt"}
+            <span class="inline-edit">
+              working the
+              <select value={rockPickValue(step)} onchange={(e) => setStepRockPick(i, e.currentTarget.value, side, j)}>
+                <option value="nearest">nearest rock first</option>
+                <option value="biggest">biggest rock first</option>
+              </select>
+            </span>
+          {/if}
+          {#if step.macro === "jettison-cargo"}
+            <span class="inline-edit">
+              <select value={moveArg(step, "item")} onchange={(e) => setMoveItem(i, e.currentTarget.value, side, j)}>
+                <option value="">everything in the hold</option>
+                {#each knownItems as it (it.typeID)}<option value={it.typeID}>{it.name}</option>{/each}
+              </select>
+            </span>
+          {/if}
+          {#if step.macro === "send-chat"}
+            <span class="inline-edit">
+              say
+              <input class="chat-in" type="text" maxlength={MAX_TEXT_ARG_LEN} placeholder="write the message…" value={textArgValue(step, "message")} oninput={(e) => setStepTextArg(i, "message", e.currentTarget.value, side, j)} />
+              in
+              <select value={chatChannelValue(step)} onchange={(e) => setStepChatChannel(i, e.currentTarget.value, side, j)}>
+                <option value="local">local chat</option>
+                <option value="corp">corp chat</option>
+              </select>
             </span>
           {/if}
   {/snippet}
@@ -1261,6 +1522,9 @@
   }
   input.isk-in {
     width: 8rem;
+  }
+  input.chat-in {
+    width: 14rem;
   }
   /* A branch reads as one block with two indented sides. */
   .row.is-branch {

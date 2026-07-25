@@ -55,6 +55,22 @@ export interface ScriptObservation {
   readonly holdEmpty: boolean | null;
   readonly hostileOnGrid: boolean | null;
   /**
+   * The ordinary CARGO hold's fill level, 0..1 — NOT the ore hold above. Optional
+   * and read only when something watches it, so a mining bot never pays for the
+   * inventory read a hauler needs.
+   */
+  readonly cargoFraction?: number | null;
+  /**
+   * How many OTHER pilots share this solar system (self excluded). Read from the
+   * local chat roster, only when a watch or a hunt step needs it. null =
+   * unreadable, which never fires a watch.
+   */
+  readonly otherPilotsInSystem?: number | null;
+  /** True when a PLAYER's ship on this grid has locked this ship. */
+  readonly targetedByPlayer?: boolean | null;
+  /** The lowest health, 0..1, among YOUR drones out in space; null with none out. */
+  readonly lowestDroneHealth?: number | null;
+  /**
    * True when this ship's own drones are out. Not a player condition — the
    * orchestrator reads it so a "launch drones on a pirate" interrupt is
    * idempotent: with drones already out the response is satisfied and the step
@@ -82,12 +98,22 @@ export interface ScriptObservation {
   readonly remoteShieldRepairerIDs?: readonly number[];
   readonly remoteArmorRepairerIDs?: readonly number[];
   readonly remoteHullRepairerIDs?: readonly number[];
+  /** Fitted REMOTE CAPACITOR TRANSMITTERS (SDE group 67) — the cap-chain block. */
+  readonly remoteCapModuleIDs?: readonly number[];
   /** Whether the character is in a fleet — read for the fleet-management blocks. true/false/null=unreadable. */
   readonly inFleet?: boolean | null;
   /** Fitted hardeners + damage controls, resolved once at start (the hardeners-on block). */
   readonly hardenerModuleIDs?: readonly number[];
   /** Fitted WEAPONS (turrets/launchers), resolved once at start (the fight block runs these). */
   readonly weaponModuleIDs?: readonly number[];
+  /**
+   * Fitted TACKLE, resolved once at start — the PvP blocks switch these on before
+   * the guns so the target cannot simply warp off. `tackleModuleIDs` is the point
+   * (SDE group 52 holds both Warp Disruptors and Warp Scramblers);
+   * `webModuleIDs` is the webifiers (group 65), which slow the target down.
+   */
+  readonly tackleModuleIDs?: readonly number[];
+  readonly webModuleIDs?: readonly number[];
   /** Who "you" are — the loot block only ever touches YOUR wrecks (no can flipping). */
   readonly myCharacterID?: number | null;
   readonly myCorporationID?: number | null;
@@ -141,6 +167,31 @@ export interface ScriptObservation {
   readonly activeShipID?: number | null;
   /** Item ids the repair shop quotes as DAMAGED (read when a repair step is active). */
   readonly damagedItemIDs?: readonly number[] | null;
+  // ── Hunt reads (the hunt-player block). Read ONLY when a hunt step is active,
+  //    so no other bot pays for a chat-roster read or a directional scan.
+  /**
+   * The OTHER pilots in this solar system, from the local chat roster (self
+   * already removed). Empty = genuinely alone; null = the roster was unreadable.
+   */
+  readonly localPlayers?: readonly { readonly characterID: number; readonly name: string | null }[] | null;
+  /**
+   * This tick's directional-scan hits (entity ids within the block's range).
+   * The scan sees everything — celestials included — so the block subtracts what
+   * is already on grid before chasing a hit. null = the scan was unreadable.
+   */
+  readonly dscanHitIDs?: readonly number[] | null;
+  /**
+   * Where the roam may go next: the current system's distance from the hunt's
+   * home system, and each neighbouring system with its own distance. null when
+   * the map could not be read this tick.
+   */
+  readonly huntRoam?: {
+    readonly jumpsFromAnchor: number | null;
+    readonly neighbors: readonly {
+      readonly systemID: number;
+      readonly jumpsFromAnchor: number | null;
+    }[];
+  } | null;
   /**
    * The character's PI colonies, projected to what the restart block needs:
    * each colony's extractor pins with their last program + expiry. Read only
@@ -212,6 +263,16 @@ export function evaluateCondition(condition: Condition, obs: ScriptObservation):
       return above(obs.walletBalance ?? null, condition.isk);
     case "hostile-on-grid":
       return fromBool(obs.hostileOnGrid);
+    case "cargo-full":
+      return atLeast(obs.cargoFraction ?? null, condition.fraction);
+    case "players-in-system-above":
+      return above(obs.otherPilotsInSystem ?? null, condition.count);
+    case "targeted-by-player":
+      return fromBool(obs.targetedByPlayer ?? null);
+    case "drone-health-below":
+      // No drones out reads as null (nothing to judge), NOT as "healthy" — the
+      // same rule as everywhere: a missing reading is never a verdict.
+      return below(obs.lowestDroneHealth ?? null, condition.fraction);
   }
 }
 
@@ -255,11 +316,21 @@ export type InterruptResolution =
 export function resolveInterrupt(
   interrupts: readonly InterruptRow[],
   obs: ScriptObservation,
+  spentAlerts: readonly string[] = [],
 ): InterruptResolution {
   let safetyBlind = false;
   for (const row of interrupts) {
     const verdict = evaluateCondition(row.when, obs);
     if (verdict === "met") {
+      // ⚠ A SPENT ALERT ROW IS TRANSPARENT. It has already said its piece for this
+      // episode, and first-match-wins would otherwise park on it forever — so an
+      // "alert me" row above a dock-and-pause row would silence the dock. Skipping
+      // it lets the rest of the ladder work, which is what makes "tell me AND
+      // dock" two rows that both fire. Only "alert" is ever skipped: every other
+      // response DOES something to the ship and must keep winning while it holds.
+      if (row.respond === "alert" && spentAlerts.includes(row.id)) {
+        continue;
+      }
       return { kind: "fire", row };
     }
     if (verdict === "cannot-tell" && row.builtIn === "safety-floor") {
@@ -273,6 +344,31 @@ export function resolveInterrupt(
 }
 
 // ─── The cannot-tell streak ──────────────────────────────────────────────────
+
+/**
+ * Which alert rows are still spent, given what the world reads THIS tick: a row
+ * whose condition has gone not-met is released (its episode is over, so the next
+ * time it holds it alerts again). A cannot-tell keeps a row spent — an unreadable
+ * check is not evidence the trouble passed, and re-alerting on a blind read is
+ * exactly the crying-wolf behaviour the once-per-episode rule exists to stop.
+ */
+export function releaseSpentAlerts(
+  interrupts: readonly InterruptRow[],
+  obs: ScriptObservation,
+  spentAlerts: readonly string[],
+): readonly string[] {
+  if (spentAlerts.length === 0) {
+    return spentAlerts;
+  }
+  const kept = spentAlerts.filter((id) => {
+    const row = interrupts.find((r) => r.id === id);
+    if (row === undefined) {
+      return false; // the row was edited away — forget it
+    }
+    return evaluateCondition(row.when, obs) !== "not-met";
+  });
+  return kept.length === spentAlerts.length ? spentAlerts : kept;
+}
 
 /** Advance a streak: one longer when blind this tick, back to zero otherwise. */
 export function bumpCannotTellStreak(streak: number, blindThisTick: boolean): number {

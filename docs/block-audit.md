@@ -24,19 +24,27 @@ planets · fleet · flow`).
 
 ---
 
-## 1. Shipped today (27 blocks)
+## 1. Shipped today (44 blocks)
 
 | Category | Blocks |
 |---|---|
-| movement | undock · travel-to-station · warp-to-bookmark |
-| mining | mine-at-belt |
-| combat | defend-with-drones · hardeners-on · fight-the-rats · warp-to-anomaly |
-| hauling | deliver-ore · unload-cargo · salvage-wrecks · loot-wrecks · move-items |
+| movement | undock · travel-to-station · warp-to-bookmark · **set-destination** · **dock-at-nearest** |
+| mining | mine-at-belt (+ nearest / biggest rock order) · **compress-ore** |
+| combat | defend-with-drones · hardeners-on · fight-the-rats · warp-to-anomaly · **attack-player** · **hunt-player** |
+| hauling | deliver-ore · unload-cargo · salvage-wrecks · loot-wrecks · move-items · **jettison-cargo** · **tidy-hangar** |
 | industry | refine-ore |
+| market | buy-item · sell-item |
 | missions | find-distribution-agent · request-mission · accept-mission · load-mission-cargo · travel-to-dropoff · turn-in-mission · return-to-agent · find-combat-agent · fly-to-mission-site |
 | ship | refit-ship · repair-ship |
 | planets | restart-extractors |
-| flow | wait |
+| fleet | remote-rep · orbit-and-boost · **remote-cap** · create-fleet · invite-to-fleet · join-fleet |
+| social | **send-chat** |
+| flow | wait (+ branch / sub-bot / board-slot program nodes) |
+
+**Watches (interrupts):** shield / armor / hull / health / capacitor-below ·
+hostile-on-grid · wallet-below/above · **cargo-full** · **players-in-system-above**
+· **targeted-by-player** · **drone-health-below**.
+**Responses:** pause · dock-and-pause · launch-drones · repair · **alert**.
 
 Plus the **watches** (interrupts): shield/armor/hull/health/capacitor-below,
 hostile-on-grid, with responses pause / dock-and-pause / launch-drones / repair.
@@ -81,6 +89,33 @@ without a roster read.
 | fleet **broadcast / kick / make-leader** | `boundFleetWrites` | 🔌 | *Educated-guess, never fired live*; low bot value — deprioritised. |
 
 ⚠ create/invite/join WRITES are fast-mode decoders never fired live — the `bound-fleet` READ that gates/confirms them IS verified live (FleetNotFound → a real "not in a fleet"). Owed one live QA pass, which the multibox alts make testable.
+
+### pvp — hunting other players — ✅ SHIPPED 2026-07-24
+Both ride the verified ratting calls (`lock`/`activate`/`engageDrones`/`warp`) —
+only the target pick (a player's hull) and the SEARCH are new. Key findings that
+made hunt buildable:
+- `ConeScan` (the R104 bound scan write, `/api/bridge/scan/cone-scan`) returns
+  `{id, typeID, groupID}` for every entity in range SYSTEM-WIDE — real itemIDs.
+- the server's `warpToEntity` only requires the target to exist in the system
+  scene, NOT on the caller's grid — so a d-scanned ship id is directly warpable
+  (dungeon-scoped targets refuse, which the chase bound absorbs).
+- `startRoute` already accepts a SYSTEM id (`resolveDestination` kind "system",
+  plan with no final dock) — the roam rides the shared autopilot unchanged.
+| Block | Backing | Status | Notes |
+|---|---|---|---|
+| **attack-player** (camp the grid, engage matching players) | snapshot filter + engage core | ✅ | Optional `only` pilot filter; sustained like orbit-and-boost. |
+| **hunt-player** (roam ≤N jumps from home, local-chat watch, d-scan sweep, warp down hits, engage) | local roster read + ConeScan + graph + engage core | ✅ | Home = start system (board); ConeScan fired per-tick while hunting — first LIVE use of an R104 scan write, owed a QA pass. |
+| richer target filters (corp/alliance/standings, ignore-list) | snapshot fields exist | 🛠️ | The snapshot already carries corp/alliance per ship; needs Arg shapes + pickers. |
+| probe-scan localization (combat probes, real scan-down) | R104 probe writes (never fired live) | ❓ | The d-scan+warp loop makes it unnecessary here; probes would only add docked/deep-safe coverage. |
+| tackle awareness (point/scram the target before guns) | `activate` on a fitted disruptor | 🟢 | Module-group regex on "warp disruptor/scrambler", activate first in the engage order. |
+
+### social — talking — send-chat ✅ SHIPPED 2026-07-24
+| Block | Backing | Status | Notes |
+|---|---|---|---|
+| **send-chat** (say one line in local/corp) | verified R7 `/chat/:channel/send` | ✅ | One-shot by design (no readable echo to confirm). Inside a branch = "announce when a check holds". |
+| chat as a WATCH RESPONSE ("if shields drop, call for help in corp") | same send | 🛠️ | Needs an `InterruptResponse` variant carrying text — the branch composition covers most of it today. |
+| private/named channels, EVE-mail | LSC joined-channel writes ❓ | ❓ | Only local/corp are plumbed on the BFF chat route. |
+| **alert the player** response (browser notification / sound) | client-only | 🛠️ | Still the best "get a human" primitive — pairs with server-bot vitals. |
 
 ### combat — module & targeting primitives
 | Block | Backing | Tag | Notes |
@@ -137,7 +172,79 @@ without a roster read.
 
 ---
 
-## 3. Recommended build order
+## 3. The 2026-07-25 pass — what landed
+
+Everything from items 1–7 of the previous ranking, plus a block the operator asked
+for directly. All live-verified in the app; full suite 2884/2884.
+
+| Item | What shipped |
+|---|---|
+| **alert-the-player watch response** ✅ | A new `InterruptResponse` **"alert"**: browser notification + two short WebAudio beeps + a held `lastAlert` on the readout, and (the case that matters) folded onto the SERVER-bot record so `/api/bots` and the Server Bots panel carry it when no tab exists. Two properties make it behave, both in the orchestrator: it fires **once per episode** (re-arms only when its condition reads not-met — a cannot-tell keeps it spent, so a blind read never cries wolf), and a spent row is **transparent**, so an alert row above a dock-and-pause row no longer silences it. The editor's `+ Alert me too` inserts the twin ABOVE its partner, which is the order that makes "tell me AND dock" work. LIVE: fired once, kept the program running, and delivered through the readout with notification permission DENIED. |
+| **tackle before guns** ✅ | The PvP engage core now runs point → web → drones → guns. Tackle is SDE-grounded: group **52 "Warp Scrambler"** holds every Warp Disruptor *and* Scrambler (63 types), group **65 "Stasis Web"** the webifiers; both regexes anchored so "Warp Core Stabilizer" and "Structure Warp Scrambler" cannot match. ⚠ Bounded at `MAX_TACKLE_ATTEMPTS` per target — a point out of range is refused silently, and "activate the idle point, else shoot" would then pick the point every tick and never fire the guns. |
+| **new conditions** ✅ | `cargo-full` (the ordinary hold, gated inventory read), `players-in-system-above` (local-chat roster; **0 means "anyone at all"**), `targeted-by-player` (a player ship whose own lock points at this hull — no new read), `drone-health-below` (own drones on grid — no new read). The three surroundings reads are **interrupt-only** by `conditionSites`, same guard as `hostile-on-grid`. Read gating generalised from one `walletWatched` boolean to `scriptWatchedConditionKinds(doc)`. |
+| **dock-at-nearest** ✅ | The panic override's nearest-dockable pick as a block, riding `decideCloseIn`; recalls drones before warping off. |
+| **remote cap transfer** ✅ | `remote-cap`, SDE group **67 "Remote Capacitor Transmitter"** (anchored so the five self-only "Capacitor …" groups cannot match); feeds the emptiest mate from the snapshot's own `capacitorRatio`. |
+| **jettison + tidy hangar** ✅ | `jettison-cargo` (whole hold or one item type; confirm-gated `ship/Jettison`, confirmed by the hold emptying) and `tidy-hangar` (`inventory/stack` StackAll, one shot). |
+| **biggest rocks first** ✅ | An OPTIONAL `pick` arg on mine-at-belt using the snapshot's existing `remainingQuantity` — no survey read needed, and the default stays `nearest` so proven behaviour is untouched. Unknown amounts sort last (a null is not a zero). |
+| **set destination + autopilot** ✅ (operator ask) | `set-destination` points the shared autopilot at a station **or a whole system** and finishes once the trip is under way, rather than waiting for arrival. New `destination` Arg kind (entity station|system, closed set) and a `allowSystems` mode on StationPicker. |
+| **compress ore on grid** ✅ (operator ask) | `compress-ore` — the FLEET mechanic. A mining support ship on grid running an Industrial Core plus a compression module is a facility (`resolveCompressionFacilityTypelistsForEntity`), and `inSpaceCompressionMgr.CompressItemInSpace(itemID, facilityBallID)` swaps an ore stack in your own hull for its compressed type at the same quantity — ~100× less volume in this build (Veldspar 0.1 m³ → Compressed Veldspar 0.001 m³, checked in the SDE). The block finds the facility from a READING, closes to its range on the shared ladder, then works the hold one stack per tick. ⚠ **needs the server-side half** — see below. |
+
+### ⚠ compress-ore depends on an EveOffline change (2026-07-25)
+
+The block is complete and tested here, but it cannot work against an unmodified
+server, and the live server says so in its own words:
+
+```
+403 CALL_NOT_ALLOWED
+inSpaceCompressionMgr.CompressItemInSpace is not on the web-call allowlist.
+```
+
+Two additions are needed in the emulator (branch `feat/web-gateway-ore-compression`
+off `origin/main` in the EveOffline repo, with 6 tests):
+
+1. the `inSpaceCompressionMgr.CompressItemInSpace` allowlist pair — the callMethod
+   bridge is deny-by-default, so the call is refused before dispatch. Every guard
+   worth having is already server-side (in space, same scene, live typelists,
+   own-ship-or-same-fleet, in range, and the item must be the caller's and in the
+   caller's own hull), so nothing is re-derived on the web side.
+2. a `compressionFacility {rangeMeters, typeListIDs}` projection on ship rows in
+   the web snapshot. This is PARITY, not invention: the retail client is already
+   told, via `compression_facility_typelists` on the ship's slim item. Without it
+   a web client could only find a facility by trying the call against every ship
+   on grid — and the handler answers "not a facility", "out of range" and "this
+   ore has no compressed form" with the same null, so it could never say which.
+
+Until that lands, `compress-ore` blocks with a plain reason rather than firing
+hopefully: the snapshot carries no facility reading, and an ABSENT reading is
+treated as "not a facility" everywhere (client type, decoder and block agree).
+
+## 4. Remaining gaps, ranked (refreshed 2026-07-25)
+
+1. **industry jobs** (install / deliver, 🔌) — the last untouched play loop, and
+   the biggest remaining piece of work: needs the job writes exercised once live.
+2. **insure the ship** (🔌 + ❓) — deliberately NOT built. The route exists
+   (`insurance/insure-ship`, confirm-gated) but it SPENDS ISK, has never been
+   fired live, and `InsureShip(itemID, quotedPremium, …)` needs a quote read that
+   is not plumbed. Not worth shipping a financial write that cannot be verified.
+3. **chat as a watch RESPONSE** ("call for help in corp when shields drop", 🛠️) —
+   needs `InterruptRow` to carry text, which no response does today. The
+   send-chat block inside a branch covers most of it.
+4. **richer PvP target filters** (corp / alliance / an ignore list, 🛠️) — the
+   snapshot already carries `corporationID`/`allianceID` per ship; this is Arg
+   shapes and pickers, not new reads. The one-pilot `only` filter exists.
+5. **close the distance in the PvP blocks** (🟢) — neither camp nor hunt burns
+   toward a target that is on grid but out of range; the tackle bound keeps that
+   safe, but an approach would make both far more effective.
+6. **missions-completed ≥ N condition** (🛠️) — needs the journal read gated in.
+7. **mine across belts / the constellation** (🛠️) — belt rotation across systems.
+8. **ice / gas harvester variants** (🔌) — mostly the equipment picker widening.
+9. **jetcan mining loop** (🛠️) — compose jettison + a hauler alt now that both
+   halves exist.
+
+Still **not buildable without new BFF work**: PI collect-and-haul, overheat,
+charge reload/swap, fleet-warp, named/private chat channels, EVE-mail.
+
+## 4. Recommended build order (historic, pre-2026-07-24 — kept for context)
 
 1. **market: buy-item + restock + wallet watches** — the greenlit transaction
    loop; the one general market write (`BuyMultipleItems`) plus two new condition

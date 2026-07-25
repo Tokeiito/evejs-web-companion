@@ -30,6 +30,8 @@ export const MACRO_SPECS: Readonly<Record<MacroID, MacroSpec>> = {
       // Optional: left unset, the bot runs every mining module fitted, so the
       // player never has to pick equipment (belt auto-resolves to nearest too).
       { key: "equipment", kind: "equipment", required: false },
+      // Optional: absent = "nearest", the shipped behaviour.
+      { key: "pick", kind: "rockPick", required: false },
     ],
     untilRequired: true,
   },
@@ -157,4 +159,55 @@ export const MACRO_SPECS: Readonly<Record<MacroID, MacroSpec>> = {
     untilRequired: false,
   },
   "join-fleet": { args: [], untilRequired: false },
+  // ── The PvP set (in space). `only` is OPTIONAL by design: left unset, any
+  // player ship is a target; set, the block hunts that one pilot alone.
+  "attack-player": {
+    args: [{ key: "only", kind: "character", required: false }],
+    untilRequired: false,
+  },
+  // hunt-player roams from where it starts: `maxJumps` bounds how far from that
+  // starting system it may wander (default 3), `range` is the directional
+  // scanner's reach in AU (default 14, the scanner's own full reach).
+  "hunt-player": {
+    args: [
+      { key: "only", kind: "character", required: false },
+      { key: "maxJumps", kind: "count", required: false },
+      { key: "range", kind: "count", required: false },
+    ],
+    untilRequired: false,
+  },
+  // ── Social. Both args REQUIRED: a message with no words or no channel is
+  // meaningless, so the block will not start until they are set.
+  "send-chat": {
+    args: [
+      { key: "channel", kind: "chatChannel", required: true },
+      { key: "message", kind: "text", required: true },
+    ],
+    untilRequired: false,
+  },
+  // ── Movement extras.
+  // set-destination points the autopilot at a station OR a whole system and is
+  // done once the trip is under way — it does not wait for the arrival, so a
+  // player can follow it with their own checks. The destination is required:
+  // there is nothing to set without one.
+  "set-destination": {
+    args: [{ key: "destination", kind: "destination", required: true }],
+    untilRequired: false,
+  },
+  // Argless: "nearest" is computed from the grid at run time, which is the whole
+  // point (a station picked now would not be the nearest one later).
+  "dock-at-nearest": { args: [], untilRequired: false },
+  // ── Fleet support: same shape as remote-rep, argless for the same reason.
+  "remote-cap": { args: [], untilRequired: false },
+  // ── Cargo extras. Jettison takes an OPTIONAL item filter: absent = the whole
+  // cargo hold goes into the can, set = only that item type.
+  "jettison-cargo": {
+    args: [{ key: "item", kind: "itemType", required: false }],
+    untilRequired: false,
+  },
+  "tidy-hangar": { args: [], untilRequired: false },
+  // ── Mining extra. Argless: the facility is whatever support ship is on grid
+  // (its range is the server's check, and "which one" can only be answered at run
+  // time), and the ore is whatever is in the hold.
+  "compress-ore": { args: [], untilRequired: false },
 };

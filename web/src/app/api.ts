@@ -2410,6 +2410,11 @@ export interface ServerBot {
   readonly endedAt: string | null;
   /** Set when the server restarted this bot after coming back up. */
   readonly resumedAt: string | null;
+  /**
+   * The last thing an "alert me" watch said on this bot, and when. A server bot has
+   * no browser to notify, so this readout IS the alert's delivery.
+   */
+  readonly lastAlert: { readonly message: string; readonly atMs: number } | null;
 }
 
 function asServerBot(value: JsonValue): ServerBot {
@@ -2429,7 +2434,21 @@ function asServerBot(value: JsonValue): ServerBot {
     startedAt: typeof row.startedAt === "string" ? row.startedAt : "",
     endedAt: typeof row.endedAt === "string" ? row.endedAt : null,
     resumedAt: typeof row.resumedAt === "string" ? row.resumedAt : null,
+    lastAlert: asLastAlert(row.lastAlert),
   };
+}
+
+/** Decode a bot's last alert; a malformed or absent one reads as no alert. */
+function asLastAlert(value: JsonValue | undefined): { message: string; atMs: number } | null {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const row = value as Record<string, JsonValue>;
+  const message = typeof row.message === "string" ? row.message : null;
+  if (message === null || message.length === 0) {
+    return null;
+  }
+  return { message, atMs: asNumberOrNull(row.atMs) ?? 0 };
 }
 
 export async function listServerBots(options: ApiOptions = {}): Promise<ServerBot[]> {
@@ -2799,6 +2818,78 @@ export async function loadScanFullState(options: ApiOptions = {}): Promise<JsonV
   const reads = (data.reads ?? {}) as Record<string, JsonValue>;
   const slot = (reads.GetFullState ?? {}) as Record<string, JsonValue>;
   return slot.result ?? null;
+}
+
+/**
+ * ⚠ JETTISON — dumps these cargo items into space as a container ANYONE can take.
+ * The BFF route is confirm-gated (ship/Jettison); this is the only path.
+ */
+export async function jettisonItems(
+  itemIDs: readonly number[],
+  options: ApiOptions = {},
+): Promise<void> {
+  await postJson("/api/bridge/ship/jettison", { itemIDs: [...itemIDs], confirm: true }, options);
+}
+
+/** What one in-space compression attempt answered. */
+export interface CompressionAttempt {
+  /**
+   * True when the server really swapped the stack. False means it refused — and
+   * it refuses a missing facility, an out-of-range one, a foreign item and an
+   * ore that has no compressed form all with the same silence, so the caller
+   * re-reads its hold rather than guessing which.
+   */
+  readonly compressed: boolean;
+  /** The raw tuple on success: [srcItem, srcType, srcQty, outItem, outType, outQty]. */
+  readonly result: JsonValue | null;
+}
+
+/**
+ * Compress ONE ore stack in the ship's hold, using a mining support ship on grid
+ * as the facility (its own hull, or a fleet-mate's, running an Industrial Core
+ * plus a compression module). Confirm-gated at the BFF.
+ */
+export async function compressOreInSpace(
+  itemID: number,
+  facilityID: number,
+  options: ApiOptions = {},
+): Promise<CompressionAttempt> {
+  const data = await postJson(
+    "/api/bridge/mining/compress",
+    { itemID, facilityID, confirm: true },
+    options,
+  );
+  return {
+    compressed: data.compressed === true,
+    result: data.result ?? null,
+  };
+}
+
+/** A full-sweep directional scan covers the whole sky. */
+export const DSCAN_FULL_SWEEP_RADIANS = Math.PI * 2;
+
+/** One astronomical unit, in metres — the unit a scanner range is set in. */
+export const AU_METERS = 149_597_870_700;
+
+/**
+ * Run a directional (D-scan) sweep from the session's own ship: the R104
+ * ConeScan bound write (confirm-gated on the BFF like every scan-control
+ * write). Returns the raw hit list — util.KeyVal rows of {id, typeID, groupID}
+ * — decoded by bridge/boundScanWrites.decodeDirectionalScanHitIDs. The server
+ * clamps the range to the ship's own scanner reach, so an oversized ask is
+ * safe. A full sweep needs SOME direction vector; +x is arbitrary and ignored.
+ */
+export async function coneScan(
+  angleRadians: number,
+  rangeMeters: number,
+  options: ApiOptions = {},
+): Promise<JsonValue> {
+  const data = await postJson(
+    "/api/bridge/scan/cone-scan",
+    { angle: angleRadians, range: rangeMeters, dx: 1, dy: 0, dz: 0, confirm: true },
+    options,
+  );
+  return data.result ?? null;
 }
 
 /** The character's active bookmarks, raw (decoded by bridge/bookmarks.ts). */

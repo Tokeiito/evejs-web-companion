@@ -55,3 +55,24 @@ export function decodeScanWriteAck(response: JsonValue): ScanWriteAck {
     result: result === undefined ? null : (result as JsonValue),
   };
 }
+
+/**
+ * Decode a ConeScan result into the hit entity ids. The handler returns an
+ * ARRAY of util.KeyVal rows `{id, typeID, groupID}` (buildDirectionalScanResult
+ * — plain numbers, already normalized server-side). Bridge-decoder rules: a
+ * malformed row is skipped, never a throw; a non-array result reads as null
+ * (unreadable), never as an empty sky.
+ */
+export function decodeDirectionalScanHitIDs(result: JsonValue | null): readonly number[] | null {
+  if (!Array.isArray(result)) {
+    return null;
+  }
+  const ids: number[] = [];
+  for (const row of result) {
+    const id = readKeyVal(row, "id");
+    if (typeof id === "number" && Number.isSafeInteger(id) && id > 0) {
+      ids.push(id);
+    }
+  }
+  return ids;
+}

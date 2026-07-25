@@ -41,12 +41,17 @@ import {
   MIN_QTY_ARG,
   MIN_REPEAT_TIMES,
   ITEM_PLACES,
+  CHAT_CHANNEL_ARGS,
+  ROCK_PICKS,
+  MAX_TEXT_ARG_LEN,
   SCRIPT_FORMAT,
   SCRIPT_VERSION,
   conditionAllowedAt,
   BOARD_SLOTS,
   countProgramNode,
   type Arg,
+  type ChatChannelArg,
+  type RockPick,
   type BoardSlot,
   type BeltArg,
   type BotScript,
@@ -520,6 +525,32 @@ function readArg(raw: unknown, expected: Arg["kind"], label: string, ctx: Ctx): 
     }
     return { kind: "place", place: place as ItemPlace };
   }
+  if (expected === "destination") {
+    // A station OR a system — and which one it is decides how the autopilot flies
+    // it, so the entity is validated against exactly those two (never "belt").
+    const ref = readWorldRef(obj["ref"], "station", ctx, SAY.badArg(label), ["station", "system"]);
+    return { kind: "destination", ref };
+  }
+  if (expected === "rockPick") {
+    const pick = obj["pick"];
+    if (typeof pick !== "string" || !ROCK_PICKS.includes(pick as RockPick)) {
+      refuse(SAY.badArg(label));
+    }
+    return { kind: "rockPick", pick: pick as RockPick };
+  }
+  if (expected === "chatChannel") {
+    const channel = obj["channel"];
+    if (typeof channel !== "string" || !CHAT_CHANNEL_ARGS.includes(channel as ChatChannelArg)) {
+      refuse(SAY.badArg(label));
+    }
+    return { kind: "chatChannel", channel: channel as ChatChannelArg };
+  }
+  if (expected === "text") {
+    // A blank message is a fixable draft problem (the validator lists it), not a
+    // refusal — min 0 keeps an in-progress save loadable.
+    const text = readText(obj["text"], { min: 0, max: MAX_TEXT_ARG_LEN, allowNewline: false }, ctx, SAY.badArg(label));
+    return { kind: "text", text };
+  }
   if (expected === "bookmark") {
     const id = obj["bookmarkID"];
     if (id !== null && id !== undefined && (typeof id !== "number" || !Number.isSafeInteger(id) || id <= 0)) {
@@ -667,6 +698,35 @@ function buildCondition(obj: Readonly<Record<string, unknown>>, kind: unknown, c
     case "wallet-below":
     case "wallet-above":
       return { kind, isk: readIskThreshold(obj["isk"], ctx) };
+    case "cargo-full":
+      return {
+        kind,
+        // Same ceiling as the ore hold, for the same reason: a bot must not be
+        // asked to fill a mixed hold to the last cubic metre.
+        fraction: readFraction(obj["fraction"], MIN_CONDITION_FRACTION, MAX_ORE_HOLD_FRACTION, "The cargo-hold level", ctx),
+      };
+    case "drone-health-below":
+      return {
+        kind,
+        fraction: readFraction(obj["fraction"], MIN_CONDITION_FRACTION, MAX_CONDITION_FRACTION, "The drone-health threshold", ctx),
+      };
+    case "targeted-by-player":
+      return { kind: "targeted-by-player" };
+    case "players-in-system-above": {
+      const raw = obj["count"];
+      if (typeof raw !== "number" || !Number.isFinite(raw)) {
+        refuse(SAY.badNumber);
+      }
+      // ZERO IS LEGAL AND MEANINGFUL here (unlike a count ARG, which starts at 1):
+      // "more than 0 other pilots" is "I am not alone any more", the most useful
+      // setting of all. Clamped to 0..MAX_COUNT_ARG with the usual warning.
+      const n = Math.trunc(raw);
+      const clamped = Math.min(MAX_COUNT_ARG, Math.max(0, n));
+      if (clamped !== n) {
+        ctx.warn(WARN.clampCount("The pilot count", clamped));
+      }
+      return { kind: "players-in-system-above", count: clamped };
+    }
     default:
       return refuse(SAY.unknownCondition);
   }
@@ -704,11 +764,43 @@ function thresholdLabel(
 
 // ─── World references ────────────────────────────────────────────────────────
 
-function readWorldRef(raw: unknown, expected: WorldEntity, ctx: Ctx, refuseSentence: string): WorldRef {
+/**
+ * Read a world reference. `expected` is the entity a plain ref must be, and the
+ * one an unbound ref is stamped with. `alsoAllowed` widens that to a small SET for
+ * a slot that legitimately takes more than one kind of place (the destination arg:
+ * a station or a system) — still a closed list, so a file can never smuggle in a
+ * belt id where a station is meant.
+ */
+function readWorldRef(
+  raw: unknown,
+  expected: WorldEntity,
+  ctx: Ctx,
+  refuseSentence: string,
+  alsoAllowed: readonly WorldEntity[] | null = null,
+): WorldRef {
   const obj = asObject(raw, refuseSentence);
   const entity = obj["entity"];
-  if (typeof entity !== "string" || !WORLD_ENTITIES.has(entity as WorldEntity) || entity !== expected) {
+  const permitted = alsoAllowed ?? [expected];
+  if (
+    typeof entity !== "string" ||
+    !WORLD_ENTITIES.has(entity as WorldEntity) ||
+    !permitted.includes(entity as WorldEntity)
+  ) {
     refuse(refuseSentence);
+  }
+  // With a widened set, the ref keeps its OWN entity (a system stays a system);
+  // the branches below that are station-only still test `expected`.
+  if (alsoAllowed !== null && entity !== expected) {
+    const otherID = obj["id"];
+    const otherName = readNullableText(obj["name"], MAX_WORLD_NAME_LEN, ctx);
+    const otherSystemName = readNullableText(obj["systemName"], MAX_WORLD_NAME_LEN, ctx);
+    let resolvedID: number | null = null;
+    if (typeof otherID === "number" && Number.isSafeInteger(otherID) && otherID > 0) {
+      resolvedID = otherID;
+    } else if (otherID !== null && otherID !== undefined) {
+      ctx.warn(WARN.forgotWorldId);
+    }
+    return { entity: entity as WorldEntity, id: resolvedID, name: otherName, systemName: otherSystemName };
   }
 
   let id: number | null = null;
@@ -954,6 +1046,12 @@ function orderCondition(condition: Condition): unknown {
   if ("isk" in condition) {
     return { kind: condition.kind, isk: condition.isk };
   }
+  // ⚠ `count` must be written too, or a "more than 3 pilots" watch would export as
+  // "more than 0" — a silently DIFFERENT watch, which is the same class of bug as
+  // the arg kinds the writer used to drop.
+  if ("count" in condition) {
+    return { kind: condition.kind, count: condition.count };
+  }
   return { kind: condition.kind };
 }
 
@@ -999,6 +1097,14 @@ function orderArg(arg: Arg): unknown {
       return { kind: "qty", value: arg.value };
     case "character":
       return { kind: "character", charID: arg.charID, name: arg.name };
+    case "chatChannel":
+      return { kind: "chatChannel", channel: arg.channel };
+    case "text":
+      return { kind: "text", text: arg.text };
+    case "destination":
+      return { kind: "destination", ref: orderRef(arg.ref) };
+    case "rockPick":
+      return { kind: "rockPick", pick: arg.pick };
     default: {
       // ⚠ EXHAUSTIVE ON PURPOSE. Every Arg kind MUST serialise here, or an export
       // silently drops it (the reader accepts an arg the writer forgets). A new
