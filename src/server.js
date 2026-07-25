@@ -14,6 +14,7 @@ const webAuth = require("./webAuth");
 const staticDataModule = require("./staticData");
 const config = require("./config");
 const botScriptStoreModule = require("./botScriptStore");
+const botHostModule = require("./botHost");
 
 // Map a bot-script store error (it carries a .code) to an HTTP status + envelope.
 const BOTSCRIPT_STATUS = {
@@ -47,6 +48,28 @@ const botScripts =
 // never sees the handle; it just gets its character/station state back.
 const bridgeSessions = options.bridgeSessionStore || new Map();
 const errorLogger = options.errorLogger || ((error) => console.error(error));
+// Server-side bot host (see src/botHost.js): runs the browser bot stack in
+// THIS process, driving the routes below over loopback as just another
+// session, so a bot outlives the tab (or phone) that started it.
+const botHost =
+  options.botHost ||
+  botHostModule.createBotHost({
+    webAuth: auth,
+    baseUrl: options.botHostBaseUrl || `http://127.0.0.1:${config.port}`,
+    // ONE HULL, ONE DRIVER, direction 1: a bot may not take a character any
+    // live web session is flying. (Direction 2 — a tab may not take a bot's
+    // character — is the guard in /api/bridge/select.)
+    isCharacterHeld: (characterID) => {
+      for (const held of bridgeSessions.values()) {
+        if (Number(held.characterID) === Number(characterID)) {
+          return true;
+        }
+      }
+      return false;
+    },
+    errorLogger,
+  });
+app.locals.botHost = botHost;
 app.locals.bridgeSessions = bridgeSessions;
 fs.mkdirSync(config.iconCacheDir, { recursive: true });
 
@@ -581,6 +604,20 @@ app.post("/api/bridge/select", requireAuth, async (req, res, next) => {
     );
     if (!character) {
       res.status(404).json({ ok: false, error: "CHARACTER_NOT_FOUND" });
+      return;
+    }
+    // ONE HULL, ONE DRIVER, direction 2: while a server bot claims this
+    // character, a tab selecting it would put two drivers on one ship — the
+    // takeover would kick the bot mid-script. Refused with a plain remedy;
+    // the bot's OWN select passes because its fetch names it. Tab-vs-tab
+    // takeover (desktop to phone) is untouched.
+    const claimingBotID = botHost.claimedBy(characterID);
+    if (claimingBotID !== null && req.get(botHostModule.BOT_HEADER) !== claimingBotID) {
+      res.status(409).json({
+        ok: false,
+        error: "CHARACTER_IN_USE_BY_BOT",
+        message: "A server bot is flying this character. Stop the bot first (Bots tab).",
+      });
       return;
     }
     // One client session per web login: switching characters releases the
@@ -16609,6 +16646,81 @@ app.post("/api/botscripts/:scriptID/delete", requireAuth, (req, res, next) => {
   try {
     const removed = botScripts.remove(req.account.accountID, req.params.scriptID);
     res.json({ ok: true, removed });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ── Server-side bots (src/botHost.js) ───────────────────────────────────────
+// A bot the SERVER flies: it keeps running when the tab that started it goes
+// away. Start names a saved Bot Builder script; the host runs it on a session
+// of its own. Everything is account-scoped through requireAuth, same as the
+// script library above.
+const BOT_START_STATUS = {
+  BOTSCRIPT_INVALID: 400,
+  BOT_ALREADY_RUNNING: 409,
+  CHARACTER_IN_USE: 409,
+  BOT_STACK_UNAVAILABLE: 500,
+  BOT_START_FAILED: 502,
+};
+
+app.get("/api/bots", requireAuth, (req, res, next) => {
+  try {
+    res.json({ ok: true, bots: botHost.list(req.account.accountID) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/bots/start", requireAuth, async (req, res, next) => {
+  try {
+    const body = req.body || {};
+    const characterID = Number(body.characterID || 0);
+    const scriptID = String(body.scriptID || "");
+    if (!Number.isSafeInteger(characterID) || characterID <= 0) {
+      res.status(400).json({ ok: false, error: "INVALID_CHARACTER", message: "A positive characterID is required." });
+      return;
+    }
+    // The character must be the caller's — the same ownership read select does.
+    const character = await store.getCharacterForAccount(req.account.accountID, characterID);
+    if (!character) {
+      res.status(404).json({ ok: false, error: "CHARACTER_NOT_FOUND" });
+      return;
+    }
+    const record = botScripts.get(req.account.accountID, scriptID);
+    if (!record) {
+      res.status(404).json({ ok: false, error: "BOTSCRIPT_NOT_FOUND", message: "That bot could not be found." });
+      return;
+    }
+    const outcome = await botHost.start({
+      account: req.account,
+      characterID,
+      scriptID: record.scriptID,
+      scriptName: record.name,
+      doc: record.doc,
+    });
+    if (!outcome.ok) {
+      res.status(BOT_START_STATUS[outcome.code] || 500).json({
+        ok: false,
+        error: outcome.code,
+        message: outcome.message,
+      });
+      return;
+    }
+    res.json({ ok: true, bot: outcome.bot });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/bots/:botID/stop", requireAuth, async (req, res, next) => {
+  try {
+    const outcome = await botHost.stop(req.params.botID, req.account.accountID);
+    if (!outcome.ok) {
+      res.status(404).json({ ok: false, error: "BOT_NOT_FOUND", message: "No such bot." });
+      return;
+    }
+    res.json({ ok: true, bot: outcome.bot });
   } catch (error) {
     next(error);
   }

@@ -235,6 +235,22 @@ export interface AppFlowOptions {
    * single-session path (main.ts, every existing test) byte-for-byte unchanged.
    */
   readonly perSessionToken?: boolean;
+  /**
+   * Server bot host — a session token this flow starts out holding, so a
+   * headless flow whose owner ALREADY authenticated (the bot-start route runs
+   * under requireAuth) can skip `login()` entirely instead of round-tripping a
+   * password the server would have to accept. Only read in per-session mode:
+   * a shared-global flow has no per-flow token to seed.
+   */
+  readonly initialSessionToken?: string | null;
+  /**
+   * Multibox — whether this flow may hold a live push (SSE) connection.
+   * Default true keeps the single-session path unchanged; roster sessions
+   * start false and the App enables exactly one (the active pilot), because
+   * each open EventSource occupies one of the browser's ~6 per-origin
+   * connections for its whole life. See AppFlow.setLivePush.
+   */
+  readonly livePush?: boolean;
 }
 
 /**
@@ -765,6 +781,18 @@ export interface AppFlow {
    * lands).
    */
   requestNames(refs: readonly NameRef[]): void;
+  /**
+   * Multibox — open or close this pilot's live push channel (SSE). Browsers
+   * allow only ~6 concurrent HTTP/1.1 connections per origin, and every open
+   * EventSource holds one for its whole life, so a tab full of pilots each
+   * holding a stream starves the pool and the NEXT pilot's login/select hangs
+   * forever in the browser's request queue. The roster owner (App.svelte)
+   * keeps push on for the ACTIVE pilot only. A pilot without push still works:
+   * every bridge response carries its notification drain and the panels poll;
+   * only live chat/notification push waits until the pilot is active again.
+   * Enabling while the character is online (re-)opens the stream immediately.
+   */
+  setLivePush(enabled: boolean): void;
   /** Release the persistent session (character offline), back to the select list. */
   releaseSession(): Promise<void>;
   logout(): Promise<void>;
@@ -861,7 +889,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     ...(options.baseUrl !== undefined ? { baseUrl: options.baseUrl } : {}),
     ...(options.fetch !== undefined ? { fetch: options.fetch } : {}),
     ...(options.eventSource !== undefined ? { eventSource: options.eventSource } : {}),
-    ...(options.perSessionToken ? { token: null } : {}),
+    ...(options.perSessionToken ? { token: options.initialSessionToken ?? null } : {}),
   };
 
   // R6b — the docked station the station-scoped panels are currently synced to,
@@ -1108,8 +1136,16 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
   }
 
+  // Multibox — gate on the live push channel (see AppFlow.setLivePush): while
+  // false this flow opens NO EventSource, so a background pilot never holds one
+  // of the browser's ~6 per-origin connections.
+  let livePushEnabled = options.livePush ?? true;
+
   function startLiveStream(): void {
     stopLiveStream();
+    if (!livePushEnabled) {
+      return; // status stays idle; reads still carry their notification drains
+    }
     store.apply({ type: "live/status", status: "connecting" });
     liveStream = api.subscribeBridgeEvents(
       {
@@ -6106,6 +6142,23 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     },
 
     requestNames,
+
+    setLivePush(enabled) {
+      if (enabled === livePushEnabled) {
+        return;
+      }
+      livePushEnabled = enabled;
+      if (!enabled) {
+        stopLiveStream();
+        return;
+      }
+      // Becoming the active pilot with a character online: attach now. The
+      // server replays from its cursor when it can; the flow's own
+      // snapshot/resync handling covers the gap when it cannot.
+      if (store.station.get().online !== null) {
+        startLiveStream();
+      }
+    },
 
     async releaseSession() {
       // R10: stop consuming the push channel first — the session it belongs to

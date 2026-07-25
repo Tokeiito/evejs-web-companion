@@ -2388,6 +2388,66 @@ export async function deleteBotScript(scriptID: string, options: ApiOptions = {}
   await postJson(`/api/botscripts/${encodeURIComponent(scriptID)}/delete`, {}, options);
 }
 
+// ─── Server-side bots (src/botHost.js) ───────────────────────────────────────
+// A bot the SERVER flies on a session of its own, so it keeps running when
+// this tab goes away. These calls are the remote control: start a saved
+// script on a character, watch its readout, stop it. Account-scoped like the
+// script library above.
+
+export interface ServerBot {
+  readonly botID: string;
+  readonly characterID: number;
+  readonly characterName: string | null;
+  readonly scriptID: string;
+  readonly scriptName: string;
+  readonly status: string;
+  readonly phase: string | null;
+  readonly why: string | null;
+  readonly stepPath: string | null;
+  readonly pauseReason: string | null;
+  readonly note: string | null;
+  readonly startedAt: string;
+  readonly endedAt: string | null;
+}
+
+function asServerBot(value: JsonValue): ServerBot {
+  const row = (value ?? {}) as Record<string, JsonValue>;
+  return {
+    botID: typeof row.botID === "string" ? row.botID : "",
+    characterID: asNumberOrNull(row.characterID) ?? 0,
+    characterName: typeof row.characterName === "string" ? row.characterName : null,
+    scriptID: typeof row.scriptID === "string" ? row.scriptID : "",
+    scriptName: typeof row.scriptName === "string" ? row.scriptName : "Untitled bot",
+    status: typeof row.status === "string" ? row.status : "unknown",
+    phase: typeof row.phase === "string" ? row.phase : null,
+    why: typeof row.why === "string" ? row.why : null,
+    stepPath: typeof row.stepPath === "string" ? row.stepPath : null,
+    pauseReason: typeof row.pauseReason === "string" ? row.pauseReason : null,
+    note: typeof row.note === "string" ? row.note : null,
+    startedAt: typeof row.startedAt === "string" ? row.startedAt : "",
+    endedAt: typeof row.endedAt === "string" ? row.endedAt : null,
+  };
+}
+
+export async function listServerBots(options: ApiOptions = {}): Promise<ServerBot[]> {
+  const data = await getJson("/api/bots", options);
+  return Array.isArray(data.bots) ? data.bots.map(asServerBot) : [];
+}
+
+export async function startServerBot(
+  characterID: number,
+  scriptID: string,
+  options: ApiOptions = {},
+): Promise<ServerBot> {
+  const data = await postJson("/api/bots/start", { characterID, scriptID }, options);
+  return asServerBot(data.bot ?? null);
+}
+
+export async function stopServerBot(botID: string, options: ApiOptions = {}): Promise<ServerBot> {
+  const data = await postJson(`/api/bots/${encodeURIComponent(botID)}/stop`, {}, options);
+  return asServerBot(data.bot ?? null);
+}
+
 // --- R7c Batch name resolution (names everywhere) --------------------------
 // Turn raw IDs into names across every tab in ONE round-trip. POST /api/names
 // takes { items: [{kind, id}] } and returns { names: { "kind:id": name|null } }

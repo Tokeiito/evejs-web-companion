@@ -4,6 +4,7 @@
   // flow.login). Clicking a character dispatches the retail
   // SelectCharacterID tuple onto a persistent browser-backed session.
   import { BridgeCallError } from "../bridge/callMethod.ts";
+  import ServerBots from "./ServerBots.svelte";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
 
@@ -87,3 +88,11 @@
   {/if}
   <p><button type="button" class="minor" onclick={logout}>Log out</button></p>
 </section>
+
+<!--
+  The server-bot readout lives HERE as well as on the Bots panel: handing a
+  hull to a server bot drops this tab to this screen, and the player must
+  still be able to see — and stop — the bot without bringing a character
+  online first.
+-->
+<ServerBots />
