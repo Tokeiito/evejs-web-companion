@@ -293,6 +293,16 @@ export interface AppFlow {
   stackContainer(target: "hangar" | "cargo"): Promise<void>;
   /** Board a hangar ship (it becomes active), then refresh. */
   boardShip(shipID: number): Promise<void>;
+  /**
+   * Board the corvette while docked (the station-services "Board my Corvette"):
+   * the server spawns/repairs/starter-fits one as needed, then refresh.
+   */
+  boardCorvette(): Promise<void>;
+  /**
+   * Leave the active ship while docked — the character ends up in their
+   * capsule, the ship stays in the hangar — then refresh.
+   */
+  leaveShip(): Promise<void>;
   // --- R14 inventory depth ---
   /** Tick or untick a row for a bulk move / trash. */
   toggleSelection(itemID: number): void;
@@ -5657,6 +5667,19 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
     async boardShip(shipID) {
       await runMutation(() => api.boardShip(shipID, callOptions));
+    },
+
+    async boardCorvette() {
+      await runMutation(() => api.boardCorvette(callOptions));
+    },
+
+    async leaveShip() {
+      // The server resolves the docked swap from the session and ignores the
+      // shipID beyond logging, so a not-yet-loaded inventory (null → 0) is
+      // fine; when the panel has loaded we pass the real active hull, as the
+      // retail client does.
+      const activeShipID = store.get().inventory.activeShipID ?? 0;
+      await runMutation(() => api.leaveShip(activeShipID, callOptions));
     },
 
     // --- R14 inventory depth ---

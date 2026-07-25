@@ -5002,6 +5002,41 @@ async function dispatchBridgeWrite(req, res, next, service, method, args) {
   }
 }
 
+/**
+ * Dispatch a write that SWAPS the session's ACTIVE SHIP (LeaveShip /
+ * CreateNewbieShip). Their handlers return no ship id a route could adopt
+ * uniformly (LeaveShip returns the capsule id on the docked path only;
+ * CreateNewbieShip returns null), so after a successful dispatch re-read the
+ * flight status — its shipID is the session's live hull — and refresh
+ * held.activeShipID exactly as the hangar board route does. Without this the
+ * cargo/fitting binds keep following the hull the character just left until
+ * the next select.
+ */
+async function dispatchShipSwapWrite(req, res, next, service, method, args) {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  try {
+    const outcome = await heldTopLevelCall(held, req.webSessionID, service, method, args, null);
+    let activeShipID = held.activeShipID || null;
+    try {
+      const flightOutcome = await readHeldFlight(held, req.webSessionID);
+      const liveShipID = Number(flightOutcome && flightOutcome.flight && flightOutcome.flight.shipID) || 0;
+      if (liveShipID > 0) {
+        held.activeShipID = liveShipID;
+        activeShipID = liveShipID;
+      }
+    } catch {
+      // The swap itself applied; a failed follow-up read only delays the id
+      // refresh (the next select/board corrects it). Never fail the write for it.
+    }
+    res.json({ ok: true, applied: true, result: outcome.result ?? null, activeShipID, notifications: outcome.notifications });
+  } catch (error) {
+    next(error);
+  }
+}
+
 // --- notificationMgr WRITES -------------------------------------------------
 // Mark* clear the "unprocessed" flag (reversible-ish); Delete* purge rows
 // (destructive). MarkGroupAsProcessed/DeleteGroupNotifications take a groupID;
@@ -5994,13 +6029,27 @@ app.post("/api/bridge/ship/eject", requireAuth, async (req, res, next) => {
   await dispatchBridgeWrite(req, res, next, "ship", "Eject", []);
 });
 
-// LeaveShip(shipID) — docked: swaps the active ship; in space: ejects.
+// LeaveShip(shipID) — docked: swaps the active ship to the capsule; in space:
+// ejects. An active-ship swap, so the session's hull id is re-adopted after.
 app.post("/api/bridge/ship/leave", requireAuth, async (req, res, next) => {
   if (!requireWriteConfirmation(req, res, "This leaves your current ship. Confirm to continue.")) {
     return;
   }
   const shipID = Number((req.body || {}).shipID) || 0;
-  await dispatchBridgeWrite(req, res, next, "ship", "LeaveShip", [shipID]);
+  await dispatchShipSwapWrite(req, res, next, "ship", "LeaveShip", [shipID]);
+});
+
+// CreateNewbieShip() — docked-only: spawns (or reuses) the character's race
+// corvette in the station hangar, applies its starter fit, repairs it if
+// reused, and boards it. The retail station-services "Board my Corvette"
+// action. dogmaIM resolves ship/station from the session (its two optional
+// args are logging-only), so no args cross; the server refuses when not
+// docked (MustBeDocked) or already in a corvette (AlreadyInNewbieShip).
+app.post("/api/bridge/ship/board-corvette", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This boards your corvette, creating one in the hangar if needed. Confirm to continue.")) {
+    return;
+  }
+  await dispatchShipSwapWrite(req, res, next, "dogmaIM", "CreateNewbieShip", []);
 });
 
 // BoardStoredShip(structureID, shipID) — board a ship stored in a maintenance bay.

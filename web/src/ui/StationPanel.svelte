@@ -18,6 +18,10 @@
   const station = store.station;
   // svelte-ignore state_referenced_locally
   const names = store.names;
+  // The ship actions run through the inventory mutation path (runMutation), so
+  // their refusals land in inventory.actionError — surfaced next to the buttons.
+  // svelte-ignore state_referenced_locally
+  const inventory = store.inventory;
 
   let busy = $state(false);
   let error = $state("");
@@ -111,6 +115,21 @@
       </dl>
     {:else}
       <p class="note">Loading station services…</p>
+    {/if}
+    <!-- Ship actions the retail station-services strip offers while docked.
+         Both are reversible (the previous hull stays in the hangar), so a
+         single busy-guarded press acts; refusals (already in your corvette,
+         …) surface below in the handler's own words. -->
+    <p class="controls">
+      <button type="button" class="minor" disabled={busy} onclick={() => run(() => flow.boardCorvette())}>
+        Board your corvette
+      </button>
+      <button type="button" class="minor" disabled={busy} onclick={() => run(() => flow.leaveShip())}>
+        Leave ship — board your capsule
+      </button>
+    </p>
+    {#if $inventory.actionError}
+      <p class="error">{$inventory.actionError}</p>
     {/if}
     {#if $station.readError}
       <p class="error">Some station details could not be loaded: {$station.readError}</p>

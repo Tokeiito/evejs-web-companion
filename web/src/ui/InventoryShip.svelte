@@ -7,7 +7,7 @@
   // TrashItems call lives on the BFF (which holds the bound-object handles) and
   // in app/flow.ts.
   //
-  // R60 SORTS THE SAME CONTENT INTO FOUR TABS, the way EVE's docked inventory
+  // R60 SORTS THE SAME CONTENT INTO TABS, the way EVE's docked inventory
   // does, so the panel can live in the right-hand dock window without becoming a
   // long scroll:
   //
@@ -21,8 +21,13 @@
   //                    grid of pictures captioned with the name and the amount,
   //                    plus any open container.
   //   CORPORATE HANGAR the corporation's divisions at this station.
+  //   STATION SERVICES (docked only) the station's owner/type/security, the
+  //                    docked ship actions (Board your corvette / Leave ship),
+  //                    and the guest list — folded in here so the station never
+  //                    duplicates itself into a separate panel (the dock frame
+  //                    and workspace header already carry its name/system).
   //
-  // The four panels are ALL rendered and the inactive ones carry `hidden`, so a
+  // The panels are ALL rendered and the inactive ones carry `hidden`, so a
   // selection made in one is never lost by switching tabs and nothing remounts.
   //
   // A BAY IS AN INVENTORY FLAG, the same mechanism R12's fitting window uses for
@@ -56,7 +61,8 @@
     InventoryPlace,
     ShipBay,
   } from "../store/types.ts";
-  import { resolvedName, nameKey, type NameRef } from "../store/names.ts";
+  import { resolvedName, nameKey, type NameKind, type NameRef } from "../store/names.ts";
+  import { deriveDocked } from "./tabs.ts";
 
   let {
     store,
@@ -77,6 +83,12 @@
   const inventory = store.inventory;
   // svelte-ignore state_referenced_locally
   const names = store.names;
+  // The Station Services tab reads the station slice (services bits + guests);
+  // the flight slice tells us whether we are docked at all.
+  // svelte-ignore state_referenced_locally
+  const station = store.station;
+  // svelte-ignore state_referenced_locally
+  const flight = store.flight;
 
   let busy = $state(false);
   let error = $state("");
@@ -92,14 +104,25 @@
 
   // --- R60 the tabs ---------------------------------------------------------
 
-  type InvTab = "shipInventory" | "shipHangar" | "itemHangar" | "corp";
+  type InvTab = "shipInventory" | "shipHangar" | "itemHangar" | "corp" | "station";
   let activeTab = $state<InvTab>("shipInventory");
   const TABS: readonly { readonly id: InvTab; readonly label: string }[] = [
     { id: "shipInventory", label: "Ship Inventory" },
     { id: "shipHangar", label: "Ship Hangar" },
     { id: "itemHangar", label: "Item Hangar" },
     { id: "corp", label: "Corporate Hangar" },
+    { id: "station", label: "Station Services" },
   ];
+
+  // Station Services only means something while docked; in space the tab is
+  // dropped from the strip (and an active selection of it falls back).
+  const isDockedNow = $derived(deriveDocked($flight.status, $station.online));
+  const visibleTabs = $derived(isDockedNow ? TABS : TABS.filter((tab) => tab.id !== "station"));
+  $effect(() => {
+    if (!isDockedNow && activeTab === "station") {
+      activeTab = "shipInventory";
+    }
+  });
 
   /**
    * The order the Ship Inventory tab lists a hull's bays in — the ones a player
@@ -165,6 +188,43 @@
       flow.requestNames(refs);
     }
   });
+
+  // R7c for the Station Services tab — the station owner (corp/faction), the
+  // services-row station type, and each guest's character/corp/alliance.
+  // Batched + cached by the flow; fire-and-forget like the row names above.
+  $effect(() => {
+    if (!isDockedNow) {
+      return;
+    }
+    const refs: NameRef[] = [];
+    const bits = $station.bits;
+    if (bits) {
+      if (bits.ownerID) {
+        refs.push({ kind: "owner", id: bits.ownerID });
+      }
+      if (bits.stationTypeID) {
+        refs.push({ kind: "type", id: bits.stationTypeID });
+      }
+    }
+    for (const guest of $station.guests) {
+      refs.push({ kind: "character", id: guest.characterID });
+      if (guest.corporationID) {
+        refs.push({ kind: "corporation", id: guest.corporationID });
+      }
+      if (guest.allianceID) {
+        refs.push({ kind: "alliance", id: guest.allianceID });
+      }
+    }
+    if (refs.length > 0) {
+      flow.requestNames(refs);
+    }
+  });
+
+  // A name-only cell (R7d): the resolved name, or "—" while it resolves / when
+  // it has no static name. The raw ID is never rendered.
+  function nameOnly(id: number | null, kind: NameKind): string {
+    return resolvedName($names.resolved, kind, id, "—");
+  }
 
   // The active ship's typeID (it sits in the hangar/cargo rows as the row whose
   // itemID is the active ship), so its header can show the SHIP TYPE name.
@@ -805,7 +865,7 @@
 
   <!-- The tab bar. Real buttons, so the whole panel is keyboard-reachable. -->
   <div class="inv-tabs" role="tablist" aria-label="Inventory sections">
-    {#each TABS as tab (tab.id)}
+    {#each visibleTabs as tab (tab.id)}
       <button
         type="button"
         role="tab"
@@ -1007,6 +1067,89 @@
             "toHangar",
           )}
         {/if}
+      {/if}
+    {/if}
+  </section>
+
+  <!-- ==================================================== STATION SERVICES -->
+  <!-- Docked only. The station's name/system live in the dock frame title and
+       the workspace header, so this tab carries only what is shown NOWHERE
+       else: owner, type, security, the docked ship actions, and the guests. -->
+  <section
+    class="inv-tabpanel"
+    role="tabpanel"
+    id="inv-panel-station"
+    aria-labelledby="inv-tab-station"
+    hidden={activeTab !== "station"}
+  >
+    <h3>Station services</h3>
+    {#if !isDockedNow}
+      <p class="note">Dock at a station to use its services.</p>
+    {:else}
+      {#if $station.bits}
+        <dl class="kv">
+          <dt>Owner</dt>
+          <dd>{nameOnly($station.bits.ownerID, "owner")}</dd>
+          <dt>Station type</dt>
+          <dd>{nameOnly($station.bits.stationTypeID, "type")}</dd>
+          <dt>Security</dt>
+          <dd>{$station.station?.security?.toFixed(2) ?? "—"}</dd>
+        </dl>
+      {:else}
+        <p class="note">Loading station services…</p>
+      {/if}
+      <!-- Ship actions the retail station-services strip offers while docked.
+           Both are reversible (the previous hull stays in the hangar), so a
+           single busy-guarded press acts; refusals surface in the shared
+           "Last action failed" line above the tabs, in the handler's words. -->
+      <p class="controls">
+        <button type="button" class="minor" disabled={busy} onclick={() => run(() => flow.boardCorvette())}>
+          Board your corvette
+        </button>
+        <button type="button" class="minor" disabled={busy} onclick={() => run(() => flow.leaveShip())}>
+          Leave ship — board your capsule
+        </button>
+        <button type="button" class="minor" disabled={busy} onclick={() => run(() => flow.refreshStationPanel())}>
+          Refresh guests
+        </button>
+      </p>
+      <!-- The session controls moved here with the rest of the old Station
+           panel — this tab is the only docked home they had. -->
+      <p class="controls">
+        <button type="button" class="minor" disabled={busy} onclick={() => run(() => flow.releaseSession())}>
+          Go offline
+        </button>
+        <button type="button" class="minor" disabled={busy} onclick={() => run(() => flow.logout())}>
+          Log out
+        </button>
+      </p>
+      {#if $station.readError}
+        <p class="error">Some station details could not be loaded: {$station.readError}</p>
+      {/if}
+      <h3>Guests</h3>
+      {#if $station.guests.length === 0}
+        <p class="empty">No guests reported yet.</p>
+      {:else}
+        <div class="table-wrap overflow-x-auto">
+          <table class="guests reflow">
+            <thead>
+              <tr><th>Character</th><th>Corporation</th><th>Alliance</th></tr>
+            </thead>
+            <tbody>
+              {#each $station.guests as guest (guest.characterID)}
+                <tr class={guest.characterID === $station.online?.characterID ? "self" : ""}>
+                  <td data-label="Character">
+                    {guest.characterID === $station.online?.characterID
+                      ? `${$station.online?.characterName} (you)`
+                      : nameOnly(guest.characterID, "character")}
+                  </td>
+                  <td data-label="Corporation">{nameOnly(guest.corporationID, "corporation")}</td>
+                  <td data-label="Alliance">{nameOnly(guest.allianceID, "alliance")}</td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
       {/if}
     {/if}
   </section>

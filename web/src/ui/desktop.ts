@@ -29,7 +29,10 @@ const CASCADE_STEP = 28;
 const CASCADE_ORIGIN = 16;
 
 // Panels that are fixed chrome (the top-right dock), never floating windows.
-const CHROME_TABS = new Set<TabID>(["station", "overview"]);
+// Only the in-space Overview remains: while docked the dock panel hosts the
+// Inventory & Ship tabs, and the station services/guests are a TAB inside it
+// (there is no separate station window to float).
+const CHROME_TABS = new Set<TabID>(["overview"]);
 
 /** True when this tab opens as a floating window (i.e. is not fixed chrome). */
 export function isWindowTab(id: TabID): boolean {

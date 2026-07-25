@@ -12,7 +12,6 @@
 import type { FlightStatus, OnlineCharacterState } from "../store/types.ts";
 
 export type TabID =
-  | "station"
   | "fitting"
   | "flight"
   | "overview"
@@ -50,9 +49,10 @@ export interface TabDef {
 // ⚠ THE TAB TABLE — the one place tab visibility is decided. Render order is the
 // order of this list (state-specific tabs first, then the shared ones).
 export const TABS: readonly TabDef[] = [
-  // Docked only — station services + fitting need a station; route planning and
-  // the automation bots are set up while docked (moved here from in-space).
-  { id: "station", label: "Station", where: "docked" },
+  // Docked only — fitting needs a station; route planning is set up while
+  // docked. (Station services + guests are NOT a Neocom tab: they live as a
+  // tab INSIDE the docked Inventory & Ship dock panel, next to the hangars,
+  // so the station never duplicates itself into a separate window.)
   { id: "fitting", label: "Fitting", where: "docked" },
   { id: "travel", label: "Travel", where: "docked" },
   // Bots run IN SPACE (mining/mission loops), so their commands must stay
@@ -87,7 +87,7 @@ export const TABS: readonly TabDef[] = [
 ];
 
 /** The default landing tab for each state (item 4). */
-export const DOCKED_DEFAULT: TabID = "station";
+export const DOCKED_DEFAULT: TabID = "inventory";
 export const IN_SPACE_DEFAULT: TabID = "overview";
 
 /**

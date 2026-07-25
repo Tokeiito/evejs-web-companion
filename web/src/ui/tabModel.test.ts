@@ -1,4 +1,4 @@
-// The nav tab model (goal R50 items 1 + 4): visibility driven by docked/in-space
+﻿// The nav tab model (goal R50 items 1 + 4): visibility driven by docked/in-space
 // as data, and the selected tab derived from the same authoritative flag. These
 // are the rules the login-default bug violated (page was hardcoded "station").
 
@@ -51,16 +51,17 @@ test("the IN-SPACE default is NOT station (the login-default bug)", () => {
   assert.equal(defaultTabFor(false), "overview");
 });
 
-test("the DOCKED default is station", () => {
-  assert.equal(defaultTabFor(true), "station");
+test("the DOCKED default is the inventory dock content (station services live inside it)", () => {
+  assert.equal(defaultTabFor(true), "inventory");
 });
 
 // --- the visible set matches the state (item 1) ------------------------------
 
-test("docked shows station + fitting + travel + bots and hides the in-space-only tabs", () => {
+test("docked shows fitting + travel + bots and hides the in-space-only tabs", () => {
   const docked = idsOf(true);
-  // station, fitting, and now travel + bots are docked-only.
-  for (const shown of ["station", "fitting", "travel", "bots"] as const) {
+  // fitting and now travel + bots are docked-only. (Station services are not a
+  // Neocom tab at all — they are a tab inside the Inventory & Ship dock panel.)
+  for (const shown of ["fitting", "travel", "bots"] as const) {
     assert.ok(docked.includes(shown), `${shown} must be visible while docked`);
   }
   for (const hidden of ["flight", "overview", "mining"] as const) {
@@ -68,12 +69,12 @@ test("docked shows station + fitting + travel + bots and hides the in-space-only
   }
 });
 
-test("in space shows the flight tabs and hides station + fitting + travel", () => {
+test("in space shows the flight tabs and hides fitting + travel", () => {
   const space = idsOf(false);
   for (const shown of ["flight", "overview", "mining"] as const) {
     assert.ok(space.includes(shown), `${shown} must be visible in space`);
   }
-  for (const hidden of ["station", "fitting", "travel"] as const) {
+  for (const hidden of ["fitting", "travel"] as const) {
     assert.equal(space.includes(hidden), false, `${hidden} must be hidden in space`);
   }
   // Bots and the Bot Builder are "both" tabs: a running bot has to stay
@@ -94,10 +95,10 @@ test("the 'both' tabs (incl. the two new wallets) show in either state", () => {
 // --- selection falls back when its tab is hidden by a state change (item 4) ---
 
 test("a now-hidden selected tab falls back to the state default", () => {
-  // Was on Flight (in-space only), then docked -> falls back to station.
-  assert.equal(resolvePage("flight", true), "station");
-  // Was on Station (docked only), then undocked -> falls back to overview.
-  assert.equal(resolvePage("station", false), "overview");
+  // Was on Flight (in-space only), then docked -> falls back to the dock default.
+  assert.equal(resolvePage("flight", true), "inventory");
+  // Was on Fitting (docked only), then undocked -> falls back to overview.
+  assert.equal(resolvePage("fitting", false), "overview");
 });
 
 test("a still-visible selection is kept across a state change", () => {
@@ -107,7 +108,7 @@ test("a still-visible selection is kept across a state change", () => {
 });
 
 test("no explicit selection follows the state default", () => {
-  assert.equal(resolvePage(null, true), "station");
+  assert.equal(resolvePage(null, true), "inventory");
   assert.equal(resolvePage(null, false), "overview");
 });
 
@@ -143,14 +144,14 @@ test("every tab id is unique and every 'where' is valid", () => {
 
 // COMPANION MATCHER PROOF. The sweep above would pass over an EMPTY table or one
 // where the filter matched nothing. These pin that TABS is non-empty and that
-// each `where` bucket actually has members the filter selects — so the sweep is
+// each `where` bucket actually has members the filter selects â€” so the sweep is
 // asserting against real data, not vacuously.
 test("the sweep is not vacuous: each where-bucket has members the filter selects", () => {
   assert.ok(TABS.length >= 20, "the table has all the tabs");
   const dockedOnly = TABS.filter((t) => t.where === "docked");
   const spaceOnly = TABS.filter((t) => t.where === "in-space");
   const both = TABS.filter((t) => t.where === "both");
-  assert.ok(dockedOnly.length > 0 && dockedOnly.some((t) => t.id === "station"));
+  assert.ok(dockedOnly.length > 0 && dockedOnly.some((t) => t.id === "fitting"));
   assert.ok(spaceOnly.length > 0 && spaceOnly.some((t) => t.id === "flight"));
   assert.ok(both.length > 0 && both.some((t) => t.id === "wallet"));
   // And the derived visible sets differ by exactly the state-specific tabs.

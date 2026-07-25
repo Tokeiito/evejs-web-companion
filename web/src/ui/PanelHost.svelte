@@ -4,7 +4,6 @@
   // mapping lives, so App and both shells stay thin routers. Every panel here is
   // a pre-existing, working component; only the two state SHELLS themselves are
   // still placeholder chrome.
-  import StationPanel from "./StationPanel.svelte";
   import InventoryShip from "./InventoryShip.svelte";
   import Fitting from "./Fitting.svelte";
   import Industry from "./Industry.svelte";
@@ -47,9 +46,7 @@
   } = $props();
 </script>
 
-{#if tab === "station"}
-  <StationPanel {store} {flow} />
-{:else if tab === "inventory"}
+{#if tab === "inventory"}
   <InventoryShip {store} {flow} />
 {:else if tab === "fitting"}
   <Fitting {store} {flow} showInventory={() => onOpen?.("inventory")} />
