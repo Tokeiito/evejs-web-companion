@@ -481,3 +481,606 @@ test("join-fleet: not in a fleet -> keep accepting; in a fleet -> done", () => {
   assert.equal(joinF(joinStep, obs({ inFleet: false }), {}, {}).action.kind, "acceptFleetInvite");
   assert.equal(joinF(joinStep, obs({ inFleet: true }), {}, {}).outcome.kind, "done");
 });
+
+// ── The PvP set ──────────────────────────────────────────────────────────────
+
+const attack = SCRIPT_MACROS["attack-player"]!;
+const hunt = SCRIPT_MACROS["hunt-player"]!;
+const say = SCRIPT_MACROS["send-chat"]!;
+const attackStep: MacroStep = { id: "ap", kind: "macro", macro: "attack-player", args: {} };
+const attackOnlyStep: MacroStep = {
+  id: "ap2", kind: "macro", macro: "attack-player",
+  args: { only: { kind: "character", charID: 90002, name: "Prey" } },
+};
+const huntStep: MacroStep = {
+  id: "hp", kind: "macro", macro: "hunt-player",
+  args: { maxJumps: { kind: "count", value: 3 }, range: { kind: "count", value: 14 } },
+};
+const sayStep: MacroStep = {
+  id: "sc", kind: "macro", macro: "send-chat",
+  args: { channel: { kind: "chatChannel", channel: "local" }, message: { kind: "text", text: "o7" } },
+};
+
+/** A player's ship on grid: a non-NPC hull with a pilot that is not you. */
+function playerShip(itemID: number, characterID: number, x = 20000): SpaceEntity {
+  return entity({ itemID, kind: "ship", characterID, isNpc: false, position: { x, y: 0, z: 0 } });
+}
+
+test("attack-player: an NPC on grid is NOT prey; an empty grid just watches", () => {
+  const rat = entity({ itemID: 600, kind: "ship", isNpc: true, npcEntityType: "npc" });
+  const t = attack(attackStep, obs({ snapshot: snapshot([rat]), weaponModuleIDs: [700] }), {}, {});
+  assert.equal(t.action.kind, "wait");
+  assert.match(t.why, /Watching/);
+});
+
+test("attack-player: a player lands on grid -> lock them (nearest first)", () => {
+  const near = playerShip(801, 90001, 10000);
+  const far = playerShip(802, 90002, 900000);
+  const t = attack(attackStep, obs({ snapshot: snapshot([near, far]), weaponModuleIDs: [700] }), {}, {});
+  assert.ok(t.action.kind === "lock" && t.action.targetID === 801);
+});
+
+test("attack-player: the only-filter spares everyone but the picked pilot", () => {
+  const other = playerShip(801, 90001);
+  const prey = playerShip(802, 90002);
+  const spared = attack(attackOnlyStep, obs({ snapshot: snapshot([other]), weaponModuleIDs: [700] }), {}, {});
+  assert.equal(spared.action.kind, "wait");
+  const hit = attack(attackOnlyStep, obs({ snapshot: snapshot([other, prey]), weaponModuleIDs: [700] }), {}, {});
+  assert.ok(hit.action.kind === "lock" && hit.action.targetID === 802);
+});
+
+test("attack-player: locked -> guns onto them; no guns and no drones -> blocked", () => {
+  const prey = playerShip(801, 90001);
+  const t = attack(
+    attackStep,
+    obs({ snapshot: snapshot([prey]), lockedTargetIDs: [801], weaponModuleIDs: [700] }),
+    { targetID: 801, lockIssued: true, waited: 0, dronesOn: null },
+    {},
+  );
+  assert.ok(t.action.kind === "activate" && t.action.moduleID === 700 && t.action.targetID === 801);
+  const unarmed = attack(attackStep, obs({ snapshot: snapshot([prey]), weaponModuleIDs: [], droneBayItemIDs: [] }), {}, {});
+  assert.equal(unarmed.outcome.kind, "blocked");
+});
+
+test("attack-player: docked -> blocked with an undock hint", () => {
+  const t = attack(attackStep, obs({ flightStatus: flight({ docked: true, inSpace: false }) }), {}, {});
+  assert.equal(t.outcome.kind, "blocked");
+});
+
+test("hunt-player: first tick marks the starting system as home on the board", () => {
+  const t = hunt(huntStep, obs({ snapshot: snapshot([]), weaponModuleIDs: [700] }), {}, {});
+  assert.equal(t.action.kind, "wait");
+  assert.equal(t.boardPatch?.["huntAnchorSystemID"], 30000142);
+  assert.equal(t.boardPatch?.["huntRangeAU"], 14);
+});
+
+const HUNT_BOARD = { huntAnchorSystemID: 30000142, huntRangeAU: 14 };
+
+test("hunt-player: prey on grid beats searching -> lock them", () => {
+  const prey = playerShip(801, 90001);
+  const t = hunt(
+    huntStep,
+    obs({ snapshot: snapshot([prey]), weaponModuleIDs: [700], localPlayers: [{ characterID: 90001, name: "Prey" }] }),
+    {},
+    HUNT_BOARD,
+  );
+  assert.ok(t.action.kind === "lock" && t.action.targetID === 801);
+});
+
+test("hunt-player: someone in local + an off-grid scanner hit -> warp down the hit", () => {
+  const gate = entity({ itemID: 701, kind: "stargate", name: "Gate" });
+  const t = hunt(
+    huntStep,
+    obs({
+      snapshot: snapshot([gate]),
+      weaponModuleIDs: [700],
+      localPlayers: [{ characterID: 90001, name: "Prey" }],
+      dscanHitIDs: [701, 555000],
+    }),
+    {},
+    HUNT_BOARD,
+  );
+  assert.ok(t.action.kind === "warp" && t.action.targetID === 555000, `expected a warp to the off-grid hit, got ${t.action.kind}`);
+  assert.equal(t.nextMem["chaseID"], 555000);
+});
+
+test("hunt-player: a chased hit that came up empty is not chased twice", () => {
+  const gate = entity({ itemID: 701, kind: "stargate", name: "Gate" });
+  const t = hunt(
+    huntStep,
+    obs({
+      snapshot: snapshot([gate]),
+      weaponModuleIDs: [700],
+      localPlayers: [{ characterID: 90001, name: "Prey" }],
+      dscanHitIDs: [555000],
+    }),
+    { chaseID: 555000, chaseIssued: true, chaseSawWarp: true },
+    HUNT_BOARD,
+  );
+  // The only hit is now visited: the hunt moves to a fresh vantage point instead.
+  assert.ok(t.action.kind === "warp" && t.action.targetID === 701);
+});
+
+test("hunt-player: local empty -> roam one system over, inside the leash", () => {
+  const t = hunt(
+    huntStep,
+    obs({
+      snapshot: snapshot([]),
+      weaponModuleIDs: [700],
+      localPlayers: [],
+      huntRoam: {
+        jumpsFromAnchor: 0,
+        neighbors: [
+          { systemID: 30000144, jumpsFromAnchor: 1 },
+          { systemID: 30000200, jumpsFromAnchor: 9 },
+        ],
+      },
+    }),
+    {},
+    HUNT_BOARD,
+  );
+  assert.ok(t.action.kind === "startSystemRoute" && t.action.systemID === 30000144, "must pick the in-leash neighbor");
+  assert.equal(t.nextMem["roamSystemID"], 30000144);
+});
+
+test("hunt-player: boxed in past the leash -> head back toward home, never sit", () => {
+  const t = hunt(
+    huntStep,
+    obs({
+      snapshot: snapshot([]),
+      weaponModuleIDs: [700],
+      localPlayers: [],
+      huntRoam: {
+        jumpsFromAnchor: 4,
+        neighbors: [
+          { systemID: 30000300, jumpsFromAnchor: 5 },
+          { systemID: 30000301, jumpsFromAnchor: 4 },
+        ],
+      },
+    }),
+    {},
+    HUNT_BOARD,
+  );
+  assert.ok(t.action.kind === "startSystemRoute" && t.action.systemID === 30000301);
+});
+
+test("hunt-player: riding the autopilot to the roam target -> wait, do not re-issue", () => {
+  const t = hunt(
+    huntStep,
+    obs({
+      snapshot: snapshot([]),
+      weaponModuleIDs: [700],
+      localPlayers: [],
+      travel: { status: "running", destinationStationID: null, destinationSystemID: 30000144, remainingJumps: 1, failureReason: null },
+    }),
+    { roamSystemID: 30000144 },
+    HUNT_BOARD,
+  );
+  assert.equal(t.action.kind, "wait");
+  assert.match(t.why, /Riding/);
+});
+
+test("send-chat: says it once, then done; a blank message is blocked", () => {
+  const first = say(sayStep, obs({}), {}, {});
+  assert.ok(first.action.kind === "sendChat" && first.action.channel === "local" && first.action.message === "o7");
+  assert.equal(say(sayStep, obs({}), first.nextMem, {}).outcome.kind, "done");
+  const blank: MacroStep = {
+    id: "sc2", kind: "macro", macro: "send-chat",
+    args: { channel: { kind: "chatChannel", channel: "corp" }, message: { kind: "text", text: "  " } },
+  };
+  assert.equal(say(blank, obs({}), {}, {}).outcome.kind, "blocked");
+});
+
+// ── Tackle before guns ───────────────────────────────────────────────────────
+
+test("attack-player: locked -> the POINT goes on before the guns", () => {
+  const prey = playerShip(801, 90001);
+  const t = attack(
+    attackStep,
+    obs({ snapshot: snapshot([prey]), lockedTargetIDs: [801], weaponModuleIDs: [700], tackleModuleIDs: [650], webModuleIDs: [660] }),
+    { targetID: 801, lockIssued: true, waited: 0, dronesOn: null },
+    {},
+  );
+  assert.ok(t.action.kind === "activate" && t.action.moduleID === 650, "the point must be first, not the gun");
+  assert.match(t.why, /warp off/);
+});
+
+test("attack-player: point running -> the WEB is next, then the guns", () => {
+  const prey = playerShip(801, 90001);
+  const base = { targetID: 801, lockIssued: true, waited: 0, dronesOn: null };
+  const withPoint = obs({
+    snapshot: snapshot([prey], { activeModuleIDs: [650] }),
+    lockedTargetIDs: [801], weaponModuleIDs: [700], tackleModuleIDs: [650], webModuleIDs: [660],
+  });
+  const web = attack(attackStep, withPoint, base, {});
+  assert.ok(web.action.kind === "activate" && web.action.moduleID === 660);
+
+  const withBoth = obs({
+    snapshot: snapshot([prey], { activeModuleIDs: [650, 660] }),
+    lockedTargetIDs: [801], weaponModuleIDs: [700], tackleModuleIDs: [650], webModuleIDs: [660],
+  });
+  const gun = attack(attackStep, withBoth, base, {});
+  assert.ok(gun.action.kind === "activate" && gun.action.moduleID === 700, "with tackle up, the guns fire");
+});
+
+test("attack-player: a point that never comes on cannot starve the guns (the bound)", () => {
+  // The out-of-range case: the server refuses the activate, so the point never
+  // appears in activeModuleIDs. Drive the loop and prove it reaches the gun.
+  const prey = playerShip(801, 90001);
+  const world = obs({
+    snapshot: snapshot([prey], { activeModuleIDs: [] }),
+    lockedTargetIDs: [801], weaponModuleIDs: [700], tackleModuleIDs: [650],
+  });
+  let mem: MacroMemory = { targetID: 801, lockIssued: true, waited: 0, dronesOn: null };
+  const picked: number[] = [];
+  for (let i = 0; i < 6; i++) {
+    const t = attack(attackStep, world, mem, {});
+    if (t.action.kind === "activate") picked.push(t.action.moduleID);
+    mem = t.nextMem;
+  }
+  assert.ok(picked.includes(700), `the guns must eventually fire; picked ${picked.join(",")}`);
+  assert.equal(picked.filter((m) => m === 650).length, 3, "the point is tried exactly MAX_TACKLE_ATTEMPTS times");
+});
+
+test("attack-player: no tackle fitted -> straight to the guns, no wasted tick", () => {
+  const prey = playerShip(801, 90001);
+  const t = attack(
+    attackStep,
+    obs({ snapshot: snapshot([prey]), lockedTargetIDs: [801], weaponModuleIDs: [700] }),
+    { targetID: 801, lockIssued: true, waited: 0, dronesOn: null },
+    {},
+  );
+  assert.ok(t.action.kind === "activate" && t.action.moduleID === 700);
+});
+
+test("attack-player: a NEW target gets a fresh tackle try (the bound resets)", () => {
+  const first = playerShip(801, 90001);
+  const second = playerShip(802, 90002);
+  const world = obs({ snapshot: snapshot([second]), lockedTargetIDs: [802], weaponModuleIDs: [700], tackleModuleIDs: [650] });
+  // Memory is from a spent fight with 801, which has left the grid.
+  const t = attack(attackStep, world, { targetID: 801, lockIssued: true, waited: 0, dronesOn: null, tackleTries: 3 }, {});
+  assert.ok(t.action.kind === "lock" && t.action.targetID === 802);
+  assert.equal(t.nextMem["tackleTries"], undefined, "a re-pick clears the spent tackle counter");
+  assert.ok(first.itemID === 801);
+});
+
+test("hunt-player: the tackle counter survives ticks mid-fight", () => {
+  const prey = playerShip(801, 90001);
+  const world = obs({
+    snapshot: snapshot([prey], { activeModuleIDs: [] }),
+    lockedTargetIDs: [801], weaponModuleIDs: [700], tackleModuleIDs: [650],
+    localPlayers: [{ characterID: 90001, name: "Prey" }],
+  });
+  let mem: MacroMemory = { targetID: 801, lockIssued: true, waited: 0, dronesOn: null, visitedHits: "999" };
+  const picked: number[] = [];
+  for (let i = 0; i < 5; i++) {
+    const t = hunt(huntStep, world, mem, HUNT_BOARD);
+    if (t.action.kind === "activate") picked.push(t.action.moduleID);
+    mem = t.nextMem;
+  }
+  assert.equal(picked.filter((m) => m === 650).length, 3, "the bound counts across ticks inside the hunt too");
+  assert.ok(picked.includes(700));
+});
+
+// ── Movement extras, cargo extras, cap chain ─────────────────────────────────
+
+const setDest = SCRIPT_MACROS["set-destination"]!;
+const dockNearest = SCRIPT_MACROS["dock-at-nearest"]!;
+const remoteCapBlock = SCRIPT_MACROS["remote-cap"]!;
+const jettison = SCRIPT_MACROS["jettison-cargo"]!;
+const tidy = SCRIPT_MACROS["tidy-hangar"]!;
+
+const toStationStep: MacroStep = {
+  id: "sd", kind: "macro", macro: "set-destination",
+  args: { destination: { kind: "destination", ref: { entity: "station", id: 60008143, name: "Home", systemName: null } } },
+};
+const toSystemStep: MacroStep = {
+  id: "sd2", kind: "macro", macro: "set-destination",
+  args: { destination: { kind: "destination", ref: { entity: "system", id: 30005239, name: "Aring", systemName: null } } },
+};
+
+test("set-destination: a STATION destination starts a station route; a SYSTEM one a system route", () => {
+  const st = setDest(toStationStep, obs({}), {}, {});
+  assert.ok(st.action.kind === "startRoute" && st.action.stationID === 60008143);
+  const sys = setDest(toSystemStep, obs({}), {}, {});
+  assert.ok(sys.action.kind === "startSystemRoute" && sys.action.systemID === 30005239);
+});
+
+test("set-destination: done once the trip is under way, NOT on arrival", () => {
+  const t = setDest(
+    toStationStep,
+    obs({ travel: { status: "running", destinationStationID: 60008143, destinationSystemID: null, remainingJumps: 4, failureReason: null } }),
+    { issued: true },
+    {},
+  );
+  assert.equal(t.outcome.kind, "done", "the block finishes with the ship still flying");
+});
+
+test("set-destination: a failure on THIS destination blocks; an unset destination blocks", () => {
+  const failed = setDest(
+    toStationStep,
+    obs({ travel: { status: "paused", destinationStationID: 60008143, destinationSystemID: null, remainingJumps: 0, failureReason: "No gate route." } }),
+    {},
+    {},
+  );
+  assert.equal(failed.outcome.kind, "blocked");
+  const unset: MacroStep = {
+    id: "sd3", kind: "macro", macro: "set-destination",
+    args: { destination: { kind: "destination", ref: { entity: "station", id: null, name: null, systemName: null } } },
+  };
+  assert.equal(setDest(unset, obs({}), {}, {}).outcome.kind, "blocked");
+});
+
+const dockNearStep: MacroStep = { id: "dn", kind: "macro", macro: "dock-at-nearest", args: {} };
+
+test("dock-at-nearest: picks the CLOSEST dockable and docks when in range", () => {
+  const near = entity({ itemID: 60001, kind: "station", name: "Near", radius: 1000, position: { x: 1500, y: 0, z: 0 } });
+  const far = entity({ itemID: 60002, kind: "station", name: "Far", radius: 1000, position: { x: 9_000_000, y: 0, z: 0 } });
+  const t = dockNearest(dockNearStep, obs({ snapshot: snapshot([near, far]) }), {}, {});
+  assert.ok(t.action.kind === "dock" && t.action.stationID === 60001);
+});
+
+test("dock-at-nearest: far away warps; docked is done; nothing in view is blocked", () => {
+  const far = entity({ itemID: 60002, kind: "station", name: "Far", radius: 1000, position: { x: 900_000_000, y: 0, z: 0 } });
+  const warp = dockNearest(dockNearStep, obs({ snapshot: snapshot([far]) }), {}, {});
+  assert.ok(warp.action.kind === "warp" && warp.action.targetID === 60002);
+
+  const done = dockNearest(
+    dockNearStep,
+    obs({ flightStatus: flight({ docked: true, inSpace: false, stationID: 60002 }) }),
+    {},
+    {},
+  );
+  assert.equal(done.outcome.kind, "done");
+
+  const empty = dockNearest(dockNearStep, obs({ snapshot: snapshot([]) }), {}, {});
+  assert.equal(empty.outcome.kind, "blocked");
+});
+
+test("dock-at-nearest: drones out means call them home before warping off", () => {
+  const station = entity({ itemID: 60002, kind: "station", radius: 1000, position: { x: 900_000_000, y: 0, z: 0 } });
+  const drone = entity({ itemID: 111, kind: "drone", controllerID: 9001, position: { x: 200, y: 0, z: 0 } });
+  const t = dockNearest(dockNearStep, obs({ snapshot: snapshot([station, drone]), dronesOut: true }), {}, {});
+  assert.ok(t.action.kind === "recallDrones" && t.action.droneIDs.includes(111));
+});
+
+test("remote-cap: feeds the EMPTIEST mate; all healthy is done; none fitted is blocked", () => {
+  const capStep: MacroStep = { id: "rc", kind: "macro", macro: "remote-cap", args: {} };
+  const thirsty = entity({ itemID: 801, kind: "ship", characterID: 90001, isNpc: false, capacitorRatio: 0.2, position: { x: 1000, y: 0, z: 0 } });
+  const fine = entity({ itemID: 802, kind: "ship", characterID: 90002, isNpc: false, capacitorRatio: 0.99, position: { x: 900, y: 0, z: 0 } });
+
+  const lock = remoteCapBlock(capStep, obs({ snapshot: snapshot([thirsty, fine]), remoteCapModuleIDs: [640] }), {}, {});
+  assert.ok(lock.action.kind === "lock" && lock.action.targetID === 801, "the emptiest one, not the nearest");
+
+  const run = remoteCapBlock(
+    capStep,
+    obs({ snapshot: snapshot([thirsty], { activeModuleIDs: [] }), lockedTargetIDs: [801], remoteCapModuleIDs: [640] }),
+    { capLockOn: 801 },
+    {},
+  );
+  assert.ok(run.action.kind === "activate" && run.action.moduleID === 640 && run.action.targetID === 801);
+
+  const allFine = remoteCapBlock(capStep, obs({ snapshot: snapshot([fine]), remoteCapModuleIDs: [640] }), {}, {});
+  assert.equal(allFine.outcome.kind, "done");
+
+  const noModule = remoteCapBlock(capStep, obs({ snapshot: snapshot([thirsty]), remoteCapModuleIDs: [] }), {}, {});
+  assert.equal(noModule.outcome.kind, "blocked");
+});
+
+const jettisonStep: MacroStep = { id: "jc", kind: "macro", macro: "jettison-cargo", args: {} };
+
+test("jettison-cargo: dumps the whole hold, or only the picked item; empty is done", () => {
+  const rows = [
+    { itemID: 11, typeID: 34, quantity: 100, singleton: false },
+    { itemID: 12, typeID: 1230, quantity: 50, singleton: false },
+  ];
+  const cargo = { rows, capacity: null } as unknown as ScriptObservation["cargo"];
+  const all = jettison(jettisonStep, obs({ cargo }), {}, {});
+  assert.ok(all.action.kind === "jettison" && all.action.itemIDs.length === 2);
+
+  const onlyOre: MacroStep = {
+    id: "jc2", kind: "macro", macro: "jettison-cargo",
+    args: { item: { kind: "itemType", typeID: 1230, name: "Veldspar" } },
+  };
+  const one = jettison(onlyOre, obs({ cargo }), {}, {});
+  assert.ok(one.action.kind === "jettison" && one.action.itemIDs.length === 1 && one.action.itemIDs[0] === 12);
+
+  const emptied = jettison(
+    jettisonStep,
+    obs({ cargo: { rows: [], capacity: null } as unknown as ScriptObservation["cargo"] }),
+    {},
+    {},
+  );
+  assert.equal(emptied.outcome.kind, "done", "the hold emptying IS the confirmation");
+});
+
+test("jettison-cargo: docked is blocked, since a can needs space to float in", () => {
+  const t = jettison(
+    jettisonStep,
+    obs({ inSpace: false, flightStatus: flight({ docked: true, inSpace: false }) }),
+    {},
+    {},
+  );
+  assert.equal(t.outcome.kind, "blocked");
+});
+
+test("tidy-hangar: stacks once then done; undocked is blocked", () => {
+  const step: MacroStep = { id: "th", kind: "macro", macro: "tidy-hangar", args: {} };
+  const docked = obs({ flightStatus: flight({ docked: true, inSpace: false, stationID: 60008143 }) });
+  const first = tidy(step, docked, {}, {});
+  assert.equal(first.action.kind, "stackHangar");
+  assert.equal(tidy(step, docked, first.nextMem, {}).outcome.kind, "done");
+  assert.equal(tidy(step, obs({}), {}, {}).outcome.kind, "blocked");
+});
+
+test("mine: the biggest-rock order prefers the most ore left; the default stays nearest", () => {
+  const small = entity({ itemID: 50001, name: "Veldspar", miningYieldTypeID: 1230, remainingQuantity: 100, position: { x: 3000, y: 0, z: 0 } });
+  const big = entity({ itemID: 50002, name: "Veldspar", miningYieldTypeID: 1230, remainingQuantity: 9000, position: { x: 9000, y: 0, z: 0 } });
+  const unknown = entity({ itemID: 50003, name: "Veldspar", miningYieldTypeID: 1230, remainingQuantity: null, position: { x: 1000, y: 0, z: 0 } });
+  const biggestStep: MacroStep = {
+    ...mineStep, id: "mb",
+    args: { ...mineStep.args, pick: { kind: "rockPick", pick: "biggest" } },
+  };
+  const t = mine(biggestStep, obs({ snapshot: snapshot([small, big, unknown]) }), NM, {});
+  assert.ok(t.action.kind === "orbit" && t.action.targetID === 50002, "the big one, though it is furthest");
+
+  const near = mine(mineStep, obs({ snapshot: snapshot([small, big, unknown]) }), NM, {});
+  assert.ok(near.action.kind === "orbit" && near.action.targetID === 50003, "default still picks the nearest");
+});
+
+// ── compress-ore (the fleet mechanic) ────────────────────────────────────────
+
+const compress = SCRIPT_MACROS["compress-ore"]!;
+const compressStep: MacroStep = { id: "co", kind: "macro", macro: "compress-ore", args: {} };
+
+/** A hold with these stacks in it. */
+function oreHold(items: { itemID: number; typeID: number; quantity: number }[]): MiningHold[] {
+  return [{ key: "ore", label: "Ore Hold", items, capacity: null, present: true, error: null }];
+}
+
+/** A support ship that IS running its compression gear. */
+function facilityShip(itemID: number, characterID: number, x: number, rangeMeters = 60_000): SpaceEntity {
+  return entity({
+    itemID, kind: "ship", characterID, isNpc: false, radius: 3000,
+    position: { x, y: 0, z: 0 },
+    compressionFacility: { rangeMeters, typeListIDs: [1] },
+  });
+}
+
+test("compress-ore: an in-range support ship on grid -> compress the first stack", () => {
+  const orca = facilityShip(7001, 90002, 20_000);
+  const t = compress(compressStep, obs({ snapshot: snapshot([orca]), holds: oreHold([{ itemID: 11, typeID: 1230, quantity: 5000 }]) }), {}, {});
+  assert.ok(t.action.kind === "compressOre" && t.action.itemID === 11 && t.action.facilityID === 7001);
+});
+
+test("compress-ore: no support ship running its gear -> blocked, and says so", () => {
+  // An ordinary ship on grid is NOT a facility, and neither is one whose modules
+  // are off (compressionFacility null).
+  const plain = entity({ itemID: 7002, kind: "ship", characterID: 90003, isNpc: false, position: { x: 1000, y: 0, z: 0 } });
+  const off = entity({ itemID: 7003, kind: "ship", characterID: 90004, isNpc: false, compressionFacility: null, position: { x: 1200, y: 0, z: 0 } });
+  const t = compress(compressStep, obs({ snapshot: snapshot([plain, off]), holds: oreHold([{ itemID: 11, typeID: 1230, quantity: 5000 }]) }), {}, {});
+  assert.equal(t.outcome.kind, "blocked");
+  assert.match(t.outcome.kind === "blocked" ? t.outcome.reason : "", /compression gear/i);
+});
+
+test("compress-ore: an ABSENT facility reading is not a facility (no hopeful firing)", () => {
+  // An older server, or a row the gateway did not project: the field is missing
+  // entirely. That must read as "not a facility", not as an unknown worth trying.
+  const unknown = entity({ itemID: 7004, kind: "ship", characterID: 90005, isNpc: false, position: { x: 900, y: 0, z: 0 } });
+  delete (unknown as { compressionFacility?: unknown }).compressionFacility;
+  const t = compress(compressStep, obs({ snapshot: snapshot([unknown]), holds: oreHold([{ itemID: 11, typeID: 1230, quantity: 5000 }]) }), {}, {});
+  assert.equal(t.outcome.kind, "blocked");
+});
+
+test("compress-ore: an NPC hull is never a facility", () => {
+  const rat = entity({
+    itemID: 7005, kind: "ship", isNpc: true, npcEntityType: "npc",
+    position: { x: 500, y: 0, z: 0 },
+    compressionFacility: { rangeMeters: 60_000, typeListIDs: [1] },
+  });
+  const t = compress(compressStep, obs({ snapshot: snapshot([rat]), holds: oreHold([{ itemID: 11, typeID: 1230, quantity: 1 }]) }), {}, {});
+  assert.equal(t.outcome.kind, "blocked");
+});
+
+test("compress-ore: out of the facility's range -> close in first, then compress", () => {
+  // 200 km away with a 60 km reach: too far for the server to accept.
+  const far = facilityShip(7001, 90002, 200_000, 60_000);
+  const holds = oreHold([{ itemID: 11, typeID: 1230, quantity: 5000 }]);
+  const closing = compress(compressStep, obs({ snapshot: snapshot([far]), holds }), {}, {});
+  assert.ok(
+    closing.action.kind === "approach" || closing.action.kind === "warp",
+    `expected to close the gap, got ${closing.action.kind}`,
+  );
+
+  // Inside its reach, it compresses.
+  const near = facilityShip(7001, 90002, 30_000, 60_000);
+  const inRange = compress(compressStep, obs({ snapshot: snapshot([near]), holds }), {}, {});
+  assert.equal(inRange.action.kind, "compressOre");
+});
+
+test("compress-ore: OWN ship as the facility needs no closing in", () => {
+  // The ego ship itself is running the gear (a Rorqual compressing its own ore).
+  const self = entity({
+    itemID: 9001, kind: "ship", isSelf: true, isNpc: false, characterID: 90001,
+    position: { x: 0, y: 0, z: 0 },
+    compressionFacility: { rangeMeters: 1, typeListIDs: [1] },
+  });
+  const t = compress(compressStep, obs({ snapshot: snapshot([self]), holds: oreHold([{ itemID: 11, typeID: 1230, quantity: 5000 }]) }), {}, {});
+  assert.ok(t.action.kind === "compressOre" && t.action.facilityID === 9001);
+});
+
+test("compress-ore: own ship is preferred over a fleet-mate's facility", () => {
+  const self = entity({
+    itemID: 9001, kind: "ship", isSelf: true, isNpc: false, characterID: 90001,
+    position: { x: 0, y: 0, z: 0 },
+    compressionFacility: { rangeMeters: 1, typeListIDs: [1] },
+  });
+  const mate = facilityShip(7001, 90002, 5000);
+  const t = compress(compressStep, obs({ snapshot: snapshot([self, mate]), holds: oreHold([{ itemID: 11, typeID: 1230, quantity: 1 }]) }), {}, {});
+  assert.ok(t.action.kind === "compressOre" && t.action.facilityID === 9001);
+});
+
+test("compress-ore: each stack gets ONE attempt, then the block finishes", () => {
+  const orca = facilityShip(7001, 90002, 20_000);
+  const holds = oreHold([
+    { itemID: 11, typeID: 1230, quantity: 5000 },
+    { itemID: 12, typeID: 1228, quantity: 3000 },
+  ]);
+  let mem: MacroMemory = {};
+  const attempted: number[] = [];
+  let finishedOnTick = -1;
+  for (let i = 0; i < 5; i++) {
+    const t = compress(compressStep, obs({ snapshot: snapshot([orca]), holds }), mem, {});
+    if (t.action.kind === "compressOre") attempted.push(t.action.itemID);
+    mem = t.nextMem;
+    if (t.outcome.kind === "done") {
+      finishedOnTick = i;
+      break;
+    }
+  }
+  assert.deepEqual(attempted, [11, 12], "each stack once, in order — an ore with no compressed form is not retried forever");
+  assert.equal(finishedOnTick, 2, "it finishes the tick after the last stack, never looping on a stubborn one");
+  // ⚠ The memory it finishes with is CLEARED, on purpose: the runner resets
+  // per-step memory at a step boundary anyway, and inside a Repeat loop the next
+  // lap must reconsider ore mined since rather than remember an empty hold.
+  assert.equal(mem["triedItemIDs"], undefined);
+});
+
+test("compress-ore: an EMPTY hold is done; an UNREADABLE hold waits", () => {
+  const orca = facilityShip(7001, 90002, 20_000);
+  const empty = compress(compressStep, obs({ snapshot: snapshot([orca]), holds: oreHold([]) }), {}, {});
+  assert.equal(empty.outcome.kind, "done");
+
+  // items:null is "we could not look", NOT "it is empty" — it must not finish.
+  const blind: MiningHold[] = [{ key: "ore", label: "Ore Hold", items: null, capacity: null, present: true, error: "read failed" }];
+  const waiting = compress(compressStep, obs({ snapshot: snapshot([orca]), holds: blind }), {}, {});
+  assert.equal(waiting.action.kind, "wait");
+  assert.notEqual(waiting.outcome.kind, "done", "a failed read must never look like an empty hold");
+});
+
+test("compress-ore: docked -> blocked; mid-warp -> waits", () => {
+  const docked = compress(compressStep, obs({ inSpace: false, flightStatus: flight({ docked: true, inSpace: false }) }), {}, {});
+  assert.equal(docked.outcome.kind, "blocked");
+  const warping = compress(compressStep, obs({ inWarp: true, snapshot: snapshot([]) }), {}, {});
+  assert.equal(warping.action.kind, "wait");
+  assert.equal(warping.outcome.kind, "acting");
+});
+
+test("compress-ore / jettison: an UNREADABLE location waits, it does not say 'undock first'", () => {
+  // The whole flight status is missing (a first tick, or a failed read). Docked is
+  // a verdict; unreadable is not — telling a player to undock a ship whose place
+  // has not been read yet is exactly the mistake the tri-state rule prevents.
+  const blind = obs({ inSpace: null, flightStatus: null, snapshot: null, holds: null, cargo: null });
+  const c = compress(compressStep, blind, {}, {});
+  assert.equal(c.action.kind, "wait");
+  assert.equal(c.outcome.kind, "acting", "an unread location must not be a blocked verdict");
+
+  const j = jettison(jettisonStep, blind, {}, {});
+  assert.equal(j.action.kind, "wait");
+  assert.equal(j.outcome.kind, "acting");
+
+  // And a genuinely docked ship still blocks, with the plain hint.
+  const parked = obs({ inSpace: false, flightStatus: flight({ docked: true, inSpace: false }) });
+  assert.equal(compress(compressStep, parked, {}, {}).outcome.kind, "blocked");
+  assert.equal(jettison(jettisonStep, parked, {}, {}).outcome.kind, "blocked");
+});

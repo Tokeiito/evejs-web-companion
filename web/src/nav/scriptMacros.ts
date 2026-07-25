@@ -10,7 +10,7 @@
 
 import type { HomeTravelDecider, MacroDecider, MacroMemory, MacroTick, ScriptBoard } from "./scriptDecide.ts";
 import type { ScriptObservation } from "./scriptConditions.ts";
-import { BOARD_SLOT_KEY } from "../bots/botScript.ts";
+import { BOARD_SLOT_KEY, DEFAULT_HUNT_MAX_JUMPS, DEFAULT_HUNT_RANGE_AU } from "../bots/botScript.ts";
 import type { MacroStep } from "../bots/botScript.ts";
 import type { SpaceEntity, SpaceSnapshot } from "../store/types.ts";
 import { BELT_ARRIVAL_RADIUS_M, holdItemIDs, isMineableRock } from "./miningBotLoop.ts";
@@ -23,7 +23,7 @@ import {
   missionAccepted,
   packageAboard,
 } from "./missionBotLoop.ts";
-import { measureSpace, type SpaceMeasurement } from "./autopilotLoop.ts";
+import { decideCloseIn, measureSpace, type SpaceMeasurement } from "./autopilotLoop.ts";
 import { canMyShipOrderDrone, hostileRows } from "../space/overview.ts";
 import { AGENT_BUTTON } from "../bridge/agents.ts";
 
@@ -158,6 +158,38 @@ function rockLabel(rock: SpaceEntity): string {
   return rock.name ?? "a rock";
 }
 
+/**
+ * Which rock to work next. Default (and the shipped behaviour) is the NEAREST;
+ * "biggest" reaches for the most ore left instead, which means fewer rock changes
+ * per hold for a strip miner.
+ *
+ * ⚠ `remainingQuantity` IS NULL FOR UNKNOWN, NEVER ZERO (the snapshot is explicit
+ * about this because a zero reads as a mined-out rock and would send a miner past
+ * a full belt). So an unknown-amount rock is not treated as empty: it sorts after
+ * every known one, and if NOTHING is known the pick falls back to nearest rather
+ * than picking arbitrarily.
+ */
+function pickRock(
+  step: MacroStep,
+  rocks: readonly SpaceEntity[],
+  measurement: SpaceMeasurement | null,
+): SpaceEntity | null {
+  const arg = step.args["pick"];
+  if (arg === undefined || arg.kind !== "rockPick" || arg.pick !== "biggest") {
+    return nearest(rocks, measurement);
+  }
+  let best: SpaceEntity | null = null;
+  let bestLeft = -1;
+  for (const rock of rocks) {
+    const left = rock.remainingQuantity;
+    if (left !== null && left > bestLeft) {
+      best = rock;
+      bestLeft = left;
+    }
+  }
+  return best ?? nearest(rocks, measurement);
+}
+
 // ── undock ───────────────────────────────────────────────────────────────────
 const undock: MacroDecider = (_step, obs) => {
   const docked = obs.flightStatus?.docked ?? null;
@@ -215,7 +247,7 @@ const mineAtBelt: MacroDecider = (_step, obs, mem) => {
   }
 
   if (rockID === null) {
-    const pick = nearest(rocks, measurement);
+    const pick = pickRock(_step, rocks, measurement);
     if (pick === null) {
       return tick(WAIT, "Nothing pickable to mine.", "Picking a rock", ACTING, true, {});
     }
@@ -1887,6 +1919,777 @@ const joinFleet: MacroDecider = (_step, obs, mem) => {
   return tick({ kind: "acceptFleetInvite" }, "Waiting for a fleet invite to accept.", "Joining a fleet", ACTING, false, { ...mem, waited });
 };
 
+// ═══ The PvP set ═════════════════════════════════════════════════════════════
+// Attack players on grid / roam and hunt one down. Both ride the SAME verified
+// calls the ratting loop fires (lock / activate / engageDrones / warp); only the
+// TARGET PICK is new — a player's hull instead of an NPC's. `friendliesOnGrid`
+// already names exactly that set (a non-NPC ship with a pilot that is not you);
+// these blocks simply treat it as prey rather than patients. The optional `only`
+// filter narrows the hunt to one pilot; without it any player ship matches.
+
+/** The `only` filter's pilot, or null for "any player". */
+function onlyPilotID(step: MacroStep): number | null {
+  const arg = step.args["only"];
+  return arg !== undefined && arg.kind === "character" ? arg.charID : null;
+}
+
+/** A bounded small-number arg (`maxJumps`, `range`), or the caller's default. */
+function countArgOr(step: MacroStep, key: string, fallback: number): number {
+  const arg = step.args[key];
+  return arg !== undefined && arg.kind === "count" ? arg.value : fallback;
+}
+
+/** Player ships on grid that the filter allows — the block's prey. */
+function preyOnGrid(snapshot: SpaceSnapshot | null, only: number | null): readonly SpaceEntity[] {
+  const players = friendliesOnGrid(snapshot, snapshot?.ship?.itemID ?? null);
+  return only === null ? players : players.filter((e) => e.characterID === only);
+}
+
+/** True when the ship can fight at all: a gun fitted, or drones out or aboard. */
+function canFight(obs: ScriptObservation): boolean {
+  return (
+    (obs.weaponModuleIDs ?? []).length > 0 ||
+    (obs.droneBayItemIDs ?? []).length > 0 ||
+    myDroneIDs(obs.snapshot ?? null).length > 0
+  );
+}
+
+/**
+ * How many ticks the engage spends trying to get TACKLE running on one target
+ * before it gives up on tackle and just shoots.
+ *
+ * ⚠ THIS BOUND IS THE WHOLE REASON TACKLE IS SAFE TO PUT BEFORE THE GUNS. A point
+ * has a range (~24 km; a scram ~9 km) and the engage does not measure it, so
+ * activating one on a target 100 km away is refused. A refusal is swallowed by
+ * the runner (the next tick re-reads and re-decides), and the module never shows
+ * up in `activeModuleIDs` — so "activate the idle point, else shoot" would pick
+ * the point every single tick and the guns would NEVER fire. That is the
+ * silently-refused-forever failure mode this codebase keeps tripping over
+ * (`MAX_WARP_ATTEMPTS`, `MAX_SILENT_DOCK_ATTEMPTS`), wearing PvP clothes.
+ * Counted per target and reset with the rest of the combat memory when the
+ * primary changes, so a fresh target gets a fresh try.
+ */
+const MAX_TACKLE_ATTEMPTS = 3;
+
+/**
+ * The shared PvP engage: nearest allowed player first — lock it (bounded), tackle
+ * it (bounded), drones onto it, every idle gun onto it — concentrating fire
+ * exactly like the ratting loop. Only called with at least one candidate on grid.
+ *
+ * Tackle goes on BEFORE the guns, in EVE's own order: the point first (it stops
+ * the warp-off, which is the whole fight), then the web (it stops the burn-away
+ * and helps the guns hit), then damage. All three are the same verified
+ * `activate`-on-a-locked-target call the ratting loop already fires.
+ */
+function engagePrey(
+  obs: ScriptObservation,
+  mem: MacroMemory,
+  phase: string,
+  prey: readonly SpaceEntity[],
+): MacroTick {
+  const snapshot = obs.snapshot ?? null;
+  const myDrones = myDroneIDs(snapshot);
+  const bay = obs.droneBayItemIDs ?? [];
+
+  // Drones out first — they defend and add damage the moment they undock.
+  if (obs.dronesOut !== true && bay.length > 0) {
+    return tick({ kind: "launchDrones", droneItemIDs: bay }, "Launching the drones.", phase, ACTING, true, mem);
+  }
+
+  // The primary: nearest allowed player, remembered so fire is CONCENTRATED.
+  let targetID = num(mem, "targetID");
+  if (targetID !== null && !prey.some((p) => p.itemID === targetID)) {
+    targetID = null; // it died or left the grid — next
+  }
+  if (targetID === null) {
+    const primary = nearest(prey, measureSpace(snapshot)) ?? prey[0]!;
+    return tick(
+      { kind: "lock", targetID: primary.itemID },
+      "Locking the player's ship.",
+      phase,
+      ACTING,
+      true,
+      { targetID: primary.itemID, lockIssued: true, waited: 0, dronesOn: null },
+    );
+  }
+  const locked = (obs.lockedTargetIDs ?? []).includes(targetID);
+  if (!locked) {
+    if (!flag(mem, "lockIssued")) {
+      return tick({ kind: "lock", targetID }, "Locking the player's ship.", phase, ACTING, true, { ...mem, lockIssued: true, waited: 0 });
+    }
+    const waited = (num(mem, "waited") ?? 0) + 1;
+    if (waited > MAX_LOCK_WAIT_TICKS) {
+      return tick(WAIT, "That ship would not lock — picking again.", phase, ACTING, true, {});
+    }
+    return tick(WAIT, "Waiting for the lock.", phase, ACTING, true, { ...mem, waited });
+  }
+  const active = new Set(snapshot?.ship?.activeModuleIDs ?? []);
+
+  // TACKLE FIRST — hold them still before anything else. Bounded: after
+  // MAX_TACKLE_ATTEMPTS ticks of a point that will not come on (out of range, or
+  // refused for any reason the server does not say out loud) the engage stops
+  // asking and shoots, so a stubborn point can never cost the whole fight.
+  const tackleTries = num(mem, "tackleTries") ?? 0;
+  if (tackleTries < MAX_TACKLE_ATTEMPTS) {
+    const idlePoint = (obs.tackleModuleIDs ?? []).find((id) => !active.has(id));
+    if (idlePoint !== undefined) {
+      return tick(
+        { kind: "activate", moduleID: idlePoint, targetID },
+        "Holding them in place so they cannot warp off.",
+        phase,
+        ACTING,
+        true,
+        { ...mem, tackleTries: tackleTries + 1 },
+      );
+    }
+    const idleWeb = (obs.webModuleIDs ?? []).find((id) => !active.has(id));
+    if (idleWeb !== undefined) {
+      return tick(
+        { kind: "activate", moduleID: idleWeb, targetID },
+        "Slowing them down.",
+        phase,
+        ACTING,
+        true,
+        { ...mem, tackleTries: tackleTries + 1 },
+      );
+    }
+  }
+
+  if (myDrones.length > 0 && num(mem, "dronesOn") !== targetID) {
+    return tick(
+      { kind: "engageDrones", droneIDs: myDrones, targetID },
+      "Setting the drones on them.",
+      phase,
+      ACTING,
+      true,
+      { ...mem, dronesOn: targetID },
+    );
+  }
+  const idleGun = (obs.weaponModuleIDs ?? []).find((id) => !active.has(id));
+  if (idleGun !== undefined) {
+    return tick({ kind: "activate", moduleID: idleGun, targetID }, "Guns on them.", phase, ACTING, true, mem);
+  }
+  return tick(WAIT, "Fighting them.", phase, ACTING, true, mem);
+}
+
+// ── attack-player ────────────────────────────────────────────────────────────
+// The CAMP block: park it somewhere (compose movement blocks before it) and it
+// attacks any player ship that lands on the grid — or one pilot alone. Sustained
+// like orbit-and-boost: it never ends on its own; an `until`, a watch, or the
+// player stops it. Drones stay out between fights so the camp stays ready.
+const attackPlayer: MacroDecider = (step, obs, mem) => {
+  if (obs.flightStatus?.docked === true) {
+    return tick(WAIT, "Docked — camping happens out in space.", "Camping", {
+      kind: "blocked",
+      reason: "Undock first — put a Leave-the-station block before this one.",
+    });
+  }
+  if (obs.inWarp === true) {
+    return tick(WAIT, "In warp — nothing decided mid-warp.", "Camping", ACTING, false, mem);
+  }
+  if (obs.inSpace !== true || obs.snapshot == null) {
+    return tick(WAIT, "Waiting for the ship to be out in space.", "Camping", ACTING, false, mem);
+  }
+  if (!canFight(obs)) {
+    return tick(WAIT, "No way to fight.", "Camping", {
+      kind: "blocked",
+      reason: "This ship has no guns fitted and no combat drones in the bay.",
+    });
+  }
+  const prey = preyOnGrid(obs.snapshot, onlyPilotID(step));
+  if (prey.length === 0) {
+    // Fresh memory here drops a stale primary, so the next arrival re-picks.
+    return tick(WAIT, "Watching for players.", "Camping", ACTING, true, {});
+  }
+  return engagePrey(obs, mem, "Attacking", prey);
+};
+
+// ── hunt-player ──────────────────────────────────────────────────────────────
+// The ROAM block. Home is the system the hunt starts in (published on the board
+// once, so it survives step re-entry inside a loop). Each tick, in order:
+//   • prey on grid → engage it (the same shared PvP core);
+//   • another pilot in LOCAL → sweep the directional scanner, warp down each
+//     hit that is not already on grid, and move to a fresh vantage point (a
+//     belt or a gate) to re-sweep when the hits run out;
+//   • local empty → roam: ride the shared autopilot one system over, picked at
+//     random from the gates, never more than `maxJumps` from home.
+// Sustained like the camp: a watch, an `until`, or the player ends the hunt.
+const HUNT_CHASE_WARP_WAIT_TICKS = 10; // ~20s for a chase warp to actually begin
+
+function parseVisited(mem: MacroMemory): readonly string[] {
+  const raw = mem["visitedHits"];
+  return typeof raw === "string" && raw.length > 0 ? raw.split(",") : [];
+}
+
+const huntPlayer: MacroDecider = (step, obs, mem, board) => {
+  if (obs.flightStatus?.docked === true) {
+    return tick(WAIT, "Docked — hunting happens out in space.", "Hunting", {
+      kind: "blocked",
+      reason: "Undock first — put a Leave-the-station block before this one.",
+    });
+  }
+  const maxJumps = countArgOr(step, "maxJumps", DEFAULT_HUNT_MAX_JUMPS);
+  const rangeAU = countArgOr(step, "range", DEFAULT_HUNT_RANGE_AU);
+  const only = onlyPilotID(step);
+
+  // Mark home ONCE, on the board — the flow reads it for the map and the
+  // scanner, and a loop re-entering this step keeps the same home.
+  if (boardNum(board, "huntAnchorSystemID") === null) {
+    const sys = obs.flightStatus?.solarSystemID ?? null;
+    if (sys === null) {
+      return tick(WAIT, "Waiting to learn what system this is.", "Hunting", ACTING, false, mem);
+    }
+    return {
+      ...tick(WAIT, "Marking this system as home for the hunt.", "Hunting", ACTING, false, mem),
+      boardPatch: { huntAnchorSystemID: sys, huntRangeAU: rangeAU },
+    };
+  }
+
+  if (obs.inWarp === true) {
+    // Remember that a chase warp really started, so landing means "arrived".
+    return tick(
+      WAIT,
+      "In warp.",
+      "Hunting",
+      ACTING,
+      false,
+      flag(mem, "chaseIssued") ? { ...mem, chaseSawWarp: true } : mem,
+    );
+  }
+  if (obs.inSpace !== true || obs.snapshot == null) {
+    return tick(WAIT, "Waiting for the ship to be out in space.", "Hunting", ACTING, false, mem);
+  }
+  if (!canFight(obs)) {
+    return tick(WAIT, "No way to fight.", "Hunting", {
+      kind: "blocked",
+      reason: "This ship has no guns fitted and no combat drones in the bay.",
+    });
+  }
+  const snapshot = obs.snapshot;
+
+  // Prey on this grid beats everything — engage with fresh combat memory.
+  const prey = preyOnGrid(snapshot, only);
+  if (prey.length > 0) {
+    // Carry ONLY the combat keys into the engage (the search keys would confuse
+    // it), and carry ALL of them — `tackleTries` included, or the point's attempt
+    // bound would reset every tick and never let the guns through.
+    const combatKeys = {
+      targetID: mem["targetID"],
+      lockIssued: mem["lockIssued"],
+      waited: mem["waited"],
+      dronesOn: mem["dronesOn"],
+      tackleTries: mem["tackleTries"],
+    };
+    return engagePrey(obs, combatKeys, "Attacking", prey);
+  }
+
+  // A chase that landed (or never started) resolves here: mark the hit visited.
+  let visited = parseVisited(mem);
+  let carried: MacroMemory = mem;
+  if (flag(mem, "chaseIssued")) {
+    const chaseID = num(mem, "chaseID");
+    if (flag(mem, "chaseSawWarp")) {
+      visited = chaseID !== null ? [...visited, String(chaseID)] : visited;
+      carried = { visitedHits: visited.join(","), vantageID: mem["vantageID"] };
+    } else {
+      const waited = (num(mem, "chaseWaited") ?? 0) + 1;
+      if (waited > HUNT_CHASE_WARP_WAIT_TICKS) {
+        // The warp never began (a refused or unreachable hit) — skip that hit.
+        visited = chaseID !== null ? [...visited, String(chaseID)] : visited;
+        carried = { visitedHits: visited.join(","), vantageID: mem["vantageID"] };
+      } else {
+        return tick(WAIT, "Waiting for the warp to start.", "Hunting", ACTING, false, { ...mem, chaseWaited: waited });
+      }
+    }
+  }
+
+  const players = obs.localPlayers ?? null;
+  if (players === null) {
+    return tick(WAIT, "Listening to local chat.", "Hunting", ACTING, false, carried);
+  }
+  const candidates = only === null ? players : players.filter((p) => p.characterID === only);
+
+  if (candidates.length > 0) {
+    // Someone is HERE. Sweep the scanner and chase hits that are not on grid.
+    const quarry = candidates[0]!;
+    const who = quarry.name !== null && quarry.name.length > 0 ? quarry.name : "a player";
+    const hits = obs.dscanHitIDs ?? null;
+    if (hits === null) {
+      return tick(WAIT, `${who} is in this system — sweeping the scanner.`, "Hunting", ACTING, false, carried);
+    }
+    const onGrid = new Set(snapshot.entities.map((e) => e.itemID));
+    const next = hits.find((h) => !onGrid.has(h) && !visited.includes(String(h)));
+    if (next !== undefined) {
+      return tick(
+        { kind: "warp", targetID: next },
+        `Warping down a scanner hit — ${who} is in this system.`,
+        "Hunting",
+        ACTING,
+        false,
+        { ...carried, chaseID: next, chaseIssued: true, chaseSawWarp: false, chaseWaited: 0 },
+      );
+    }
+    // Every hit chased from here: move to a fresh vantage point and re-sweep.
+    const spots = snapshot.entities.filter(
+      (e) => e.kind === "stargate" || /belt/i.test(e.name ?? ""),
+    );
+    const lastVantage = num(mem, "vantageID");
+    const fresh = spots.filter((s) => s.itemID !== lastVantage);
+    const pick = fresh.length > 0 ? fresh[Math.floor(Math.random() * fresh.length)]! : null;
+    if (pick === null) {
+      return tick(WAIT, `${who} is here somewhere, but the scanner shows nothing to chase.`, "Hunting", ACTING, true, carried);
+    }
+    // Fresh visited list — a new vantage sees the system from somewhere new.
+    return tick(
+      { kind: "warp", targetID: pick.itemID },
+      "Moving to another spot to scan from.",
+      "Hunting",
+      ACTING,
+      false,
+      { vantageID: pick.itemID },
+    );
+  }
+
+  // Local is empty — ROAM. One system over at random, never past the leash.
+  const travel = obs.travel ?? null;
+  const roamTarget = num(mem, "roamSystemID");
+  if (roamTarget !== null) {
+    if (travel !== null && travel.failureReason !== null && (travel.destinationSystemID ?? null) === roamTarget) {
+      return tick(WAIT, travel.failureReason, "Hunting", {
+        kind: "blocked",
+        reason: `The roam could not continue: ${travel.failureReason}`,
+      });
+    }
+    if (travel !== null && travel.status === "running" && (travel.destinationSystemID ?? null) === roamTarget) {
+      return tick(WAIT, "Riding to the next system.", "Hunting", ACTING, false, carried);
+    }
+    if (obs.flightStatus?.solarSystemID === roamTarget) {
+      carried = { ...carried, roamSystemID: null };
+    }
+  }
+  const roam = obs.huntRoam ?? null;
+  if (roam === null) {
+    return tick(WAIT, "Reading the map.", "Hunting", ACTING, false, carried);
+  }
+  const inRange = roam.neighbors.filter((n) => n.jumpsFromAnchor !== null && n.jumpsFromAnchor <= maxJumps);
+  const cameFrom = num(mem, "cameFromSystemID");
+  const preferred = inRange.filter((n) => n.systemID !== cameFrom);
+  const pool = preferred.length > 0 ? preferred : inRange;
+  let choice = pool.length > 0 ? pool[Math.floor(Math.random() * pool.length)]! : null;
+  if (choice === null) {
+    // Boxed in past the leash: head back toward home rather than sit.
+    const back = [...roam.neighbors]
+      .filter((n) => n.jumpsFromAnchor !== null)
+      .sort((a, b) => (a.jumpsFromAnchor as number) - (b.jumpsFromAnchor as number))[0];
+    if (back === undefined) {
+      return tick(WAIT, "No gate out of this system.", "Hunting", {
+        kind: "blocked",
+        reason: "There is no gate to roam through from here.",
+      });
+    }
+    choice = back;
+  }
+  return tick(
+    { kind: "startSystemRoute", systemID: choice.systemID },
+    "Nobody around — roaming to the next system.",
+    "Hunting",
+    ACTING,
+    true,
+    { ...carried, roamSystemID: choice.systemID, cameFromSystemID: obs.flightStatus?.solarSystemID ?? null },
+  );
+};
+
+// ── send-chat ────────────────────────────────────────────────────────────────
+// Say ONE line in local or corp chat, then move on. Chat sends have no readable
+// echo to confirm against, so this is deliberately one-shot: issue once, done —
+// a refusal costs one unsent line, never a stuck bot or a spammed channel. Put
+// it inside an If to announce something only when a check holds.
+const sendChatBlock: MacroDecider = (step, _obs, mem) => {
+  const channel = step.args["channel"];
+  const message = step.args["message"];
+  if (
+    channel === undefined || channel.kind !== "chatChannel" ||
+    message === undefined || message.kind !== "text" || message.text.trim().length === 0
+  ) {
+    return tick(WAIT, "This step is not fully set up.", "Talking", {
+      kind: "blocked",
+      reason: "Pick the channel and write the message this step says.",
+    });
+  }
+  if (flag(mem, "sent")) {
+    return tick(WAIT, "Said it.", "Talking", { kind: "done" });
+  }
+  return tick(
+    { kind: "sendChat", channel: channel.channel, message: message.text },
+    channel.channel === "corp" ? "Saying it in corp chat." : "Saying it in local chat.",
+    "Talking",
+    ACTING,
+    false,
+    { ...mem, sent: true },
+  );
+};
+
+// ═══ Movement extras ════════════════════════════════════════════════════════
+
+// ── set-destination ──────────────────────────────────────────────────────────
+// Point the SHARED autopilot at a station or a whole system and hand the ship
+// over. Unlike travel-to-station this does NOT wait for the arrival: it is done
+// once the trip is under way, so a player can put their own checks after it.
+// A system destination lands in space (no dock) — the autopilot's own
+// system-only plan, which the roam already rides.
+const setDestination: MacroDecider = (step, obs, mem) => {
+  const arg = step.args["destination"];
+  if (arg === undefined || arg.kind !== "destination" || arg.ref.id === null) {
+    return tick(WAIT, "No destination picked.", "Setting a course", {
+      kind: "blocked",
+      reason: "Pick where this step should send you.",
+    });
+  }
+  const id = arg.ref.id;
+  const toSystem = arg.ref.entity === "system";
+  const travel = obs.travel ?? null;
+  const targetKey = toSystem ? (travel?.destinationSystemID ?? null) : (travel?.destinationStationID ?? null);
+  if (travel !== null && travel.failureReason !== null && targetKey === id) {
+    return tick(WAIT, travel.failureReason, "Setting a course", {
+      kind: "blocked",
+      reason: `The course could not be set: ${travel.failureReason}`,
+    });
+  }
+  // Under way (or already arrived) on THIS destination — the block's job is done.
+  if (targetKey === id && travel !== null && travel.status !== "idle") {
+    return tick(WAIT, "The autopilot has the ship.", "On course", { kind: "done" });
+  }
+  if (flag(mem, "issued")) {
+    // Give the route a tick or two to appear in the travel reading before we
+    // decide it never took (starting a route does a couple of reads first).
+    const waited = (num(mem, "waited") ?? 0) + 1;
+    if (waited > WARP_START_WAIT_TICKS) {
+      return tick(WAIT, "The autopilot never started.", "Setting a course", {
+        kind: "blocked",
+        reason: "The trip would not start, so the bot stopped.",
+      });
+    }
+    return tick(WAIT, "Setting the course.", "Setting a course", ACTING, false, { ...mem, waited });
+  }
+  return tick(
+    toSystem ? { kind: "startSystemRoute", systemID: id } : { kind: "startRoute", stationID: id },
+    "Setting the destination and starting the autopilot.",
+    "Setting a course",
+    ACTING,
+    false,
+    { issued: true, waited: 0 },
+  );
+};
+
+// ── dock-at-nearest ──────────────────────────────────────────────────────────
+// The get-inside-now block: the closest station or structure ON THE GRID, right
+// now. The same "nearest dockable" pick the panic override makes, promoted to a
+// block — and deliberately grid-local, because a station chosen when the script
+// was written would not be the nearest one later. Drones come home first (a warp
+// with drones out abandons them), then the shared close-in ladder docks it.
+const DOCKABLE = new Set(["station", "structure"]);
+
+const dockAtNearest: MacroDecider = (_step, obs, mem) => {
+  if (obs.flightStatus?.docked === true) {
+    return tick(WAIT, "Docked.", "Docking", { kind: "done" });
+  }
+  if (obs.inWarp === true) {
+    return tick(WAIT, "In warp — nothing decided mid-warp.", "Docking", ACTING, false, mem);
+  }
+  const snapshot = obs.snapshot ?? null;
+  if (obs.inSpace !== true || snapshot === null) {
+    return tick(WAIT, "Waiting for the ship to be out in space.", "Docking", ACTING, false, mem);
+  }
+  const measurement = measureSpace(snapshot);
+  const docks = snapshot.entities.filter((e) => DOCKABLE.has(e.kind ?? ""));
+  const target = nearest(docks, measurement);
+  if (target === null) {
+    return tick(WAIT, "No station in view.", "Docking", {
+      kind: "blocked",
+      reason: "There is no station in view here to dock at.",
+    });
+  }
+  const recall = recallBeforeLeaving(obs, mem, "Docking", target.itemID);
+  if (recall !== null) {
+    return recall;
+  }
+  const step = decideCloseIn(target.itemID, DOCK_RANGE_M, measurement, num(mem, "closingOn"));
+  if (step === null || step.kind === "arrive") {
+    return tick({ kind: "dock", stationID: target.itemID }, "Docking at the nearest station.", "Docking", ACTING, false, mem);
+  }
+  if (step.kind === "closing") {
+    return tick(WAIT, "Closing on the station.", "Docking", ACTING, false, mem);
+  }
+  if (step.kind === "approach") {
+    return tick(
+      { kind: "approach", targetID: target.itemID },
+      "Closing on the station.",
+      "Docking",
+      ACTING,
+      false,
+      { ...mem, closingOn: target.itemID },
+    );
+  }
+  return tick({ kind: "warp", targetID: target.itemID }, "Warping to the nearest station.", "Docking", ACTING, false, mem);
+};
+
+// ── remote-cap ───────────────────────────────────────────────────────────────
+// The cap-chain twin of remote-rep: find the fleet-mate whose capacitor is
+// emptiest, lock them, and run the fitted remote capacitor transmitters into
+// them. Same shape, same verified calls, a different module family and a
+// different reading (the snapshot already carries every ship's capacitorRatio).
+const CAP_HUNGRY = 0.9; // below this is worth a cycle
+
+const remoteCap: MacroDecider = (_step, obs, mem) => {
+  if (obs.inWarp === true) {
+    return tick(WAIT, "In warp — nothing decided mid-warp.", "Feeding cap", ACTING, false, mem);
+  }
+  const snapshot = obs.snapshot ?? null;
+  if (obs.inSpace !== true || snapshot === null) {
+    return tick(WAIT, "Waiting for the ship to be out in space.", "Feeding cap", ACTING, false, mem);
+  }
+  const transmitters = obs.remoteCapModuleIDs ?? [];
+  if (transmitters.length === 0) {
+    return tick(WAIT, "No remote capacitor transmitter fitted.", "Feeding cap", {
+      kind: "blocked",
+      reason: "This ship has no remote capacitor transmitter fitted.",
+    });
+  }
+  const friendlies = friendliesOnGrid(snapshot, snapshot.ship?.itemID ?? null);
+  let target: SpaceEntity | null = null;
+  let worst = CAP_HUNGRY;
+  for (const mate of friendlies) {
+    const cap = mate.capacitorRatio;
+    if (cap !== null && cap < worst) {
+      target = mate;
+      worst = cap;
+    }
+  }
+  if (target === null) {
+    return tick(WAIT, "Everyone on grid has capacitor to spare.", "Feeding cap", { kind: "done" });
+  }
+  const locked = (obs.lockedTargetIDs ?? []).includes(target.itemID);
+  if (!locked) {
+    if (num(mem, "capLockOn") !== target.itemID) {
+      return tick({ kind: "lock", targetID: target.itemID }, "Locking the fleet-mate who needs cap.", "Feeding cap", ACTING, true, { ...mem, capLockOn: target.itemID, capWaited: 0 });
+    }
+    const waited = (num(mem, "capWaited") ?? 0) + 1;
+    if (waited > MAX_LOCK_WAIT_TICKS) {
+      return tick(WAIT, "That fleet-mate would not lock — watching for another.", "Feeding cap", ACTING, true, { ...mem, capLockOn: null });
+    }
+    return tick(WAIT, "Waiting for the lock.", "Feeding cap", ACTING, true, { ...mem, capWaited: waited });
+  }
+  const active = new Set(snapshot.ship?.activeModuleIDs ?? []);
+  const idle = transmitters.find((id) => !active.has(id));
+  if (idle !== undefined) {
+    return tick({ kind: "activate", moduleID: idle, targetID: target.itemID }, "Feeding them capacitor.", "Feeding cap", ACTING, true, mem);
+  }
+  return tick(WAIT, "Feeding the fleet-mate cap.", "Feeding cap", ACTING, true, mem);
+};
+
+// ═══ Cargo extras ═══════════════════════════════════════════════════════════
+
+// ── jettison-cargo ───────────────────────────────────────────────────────────
+// Dump the cargo hold into space as a can — the jetcan a miner fills instead of
+// flying home. One item type if the player picked one, otherwise the whole hold.
+// Confirmed by re-reading the hold: what was jettisoned has LEFT it, so the
+// block is done when nothing matching is aboard. That means a silently refused
+// jettison retries within its bound rather than being believed.
+const jettisonCargo: MacroDecider = (step, obs, mem) => {
+  // Docked is a verdict; unreadable is not (see compress-ore's note).
+  if (obs.flightStatus?.docked === true || obs.inSpace === false) {
+    return tick(WAIT, "Not in space — a can has to go somewhere.", "Jettisoning", {
+      kind: "blocked",
+      reason: "Undock first — jettisoning drops a container into space.",
+    });
+  }
+  if (obs.inSpace !== true) {
+    return tick(WAIT, "Waiting for the ship to say where it is.", "Jettisoning", ACTING, false, mem);
+  }
+  const cargo = obs.cargo ?? null;
+  if (cargo === null) {
+    return tick(WAIT, "Reading the cargo hold.", "Jettisoning", ACTING, false, mem);
+  }
+  const item = step.args["item"];
+  const wanted =
+    item !== undefined && item.kind === "itemType" && item.typeID !== null ? item.typeID : null;
+  const rows = cargo.rows.filter((row) => wanted === null || row.typeID === wanted);
+  if (rows.length === 0) {
+    return tick(WAIT, "Nothing left in the hold to jettison.", "Jettisoning", { kind: "done" });
+  }
+  const tries = (num(mem, "tries") ?? 0) + 1;
+  if (tries > MAX_BLOCK_ATTEMPTS) {
+    return tick(WAIT, "The cargo would not go out.", "Jettisoning", {
+      kind: "blocked",
+      reason: "The cargo would not jettison after several tries, so the bot stopped.",
+    });
+  }
+  return tick(
+    { kind: "jettison", itemIDs: rows.map((row) => row.itemID) },
+    "Jettisoning the cargo into space.",
+    "Jettisoning",
+    ACTING,
+    false,
+    { ...mem, tries },
+  );
+};
+
+// ── tidy-hangar ──────────────────────────────────────────────────────────────
+// Stack everything loose in the station hangar. One shot: the server merges what
+// it can, and a second pass would find nothing to do — so this issues once and is
+// done, rather than trying to prove a stack count went down (which a concurrent
+// change would make a lie).
+const tidyHangar: MacroDecider = (_step, obs, mem) => {
+  if (obs.flightStatus?.docked !== true) {
+    return tick(WAIT, "Not docked — the hangar is at a station.", "Tidying", {
+      kind: "blocked",
+      reason: "Dock at a station first — this block tidies its hangar.",
+    });
+  }
+  if (flag(mem, "stacked")) {
+    return tick(WAIT, "The hangar is stacked.", "Tidying", { kind: "done" });
+  }
+  return tick({ kind: "stackHangar" }, "Stacking the hangar.", "Tidying", ACTING, false, { ...mem, stacked: true });
+};
+
+// ── compress-ore ─────────────────────────────────────────────────────────────
+// The fleet mechanic: a mining support ship on grid — your own hull or a
+// fleet-mate's — running an industrial core plus compression gear is a FACILITY,
+// and ore in your own hold can be squeezed to a fraction of its volume while you
+// sit inside its range.
+//
+// ⚠ THE FACILITY IS FOUND FROM A READING, NOT GUESSED. `compressionFacility` is
+// projected onto a ship row only while the modules really are running, so the
+// block can say "there is no support ship compressing here" instead of firing
+// hopefully into the dark — which matters because the server answers "not a
+// facility", "out of range" and "this ore has no compressed form" with the SAME
+// silence. A ship whose facility reading is absent is simply not a candidate.
+//
+// ⚠ AND EACH STACK IS JUDGED BY THE HOLD, NOT BY THE ANSWER. A compressed stack
+// becomes a different TYPE at the same quantity, so the next hold read shows it
+// gone from the ore's type. `triedItemIDs` remembers which stacks have had their
+// one attempt, so an ore with no compressed form is skipped after one try rather
+// than retried forever — that is what keeps this bounded without pretending the
+// refusal told us why.
+const COMPRESS_MAX_TRIES_PER_STACK = 1;
+
+/** Ships on grid that are live compression facilities: own hull first, then mates. */
+function compressionFacilities(snapshot: SpaceSnapshot | null): readonly SpaceEntity[] {
+  if (snapshot === null) {
+    return [];
+  }
+  const selfID = snapshot.ship?.itemID ?? null;
+  const facilities = snapshot.entities.filter(
+    // `?? null` is load-bearing: an ABSENT reading (an older server, a row the
+    // gateway did not project) must read as "not a facility", never as an
+    // unknown worth firing at.
+    (e) => e.kind === "ship" && (e.compressionFacility ?? null) !== null && e.isNpc === false,
+  );
+  // Own ship first: no range problem to solve, and no fleet check to fail.
+  return [...facilities].sort((left, right) => {
+    const leftSelf = left.itemID === selfID ? 0 : 1;
+    const rightSelf = right.itemID === selfID ? 0 : 1;
+    return leftSelf - rightSelf;
+  });
+}
+
+function parseTried(mem: MacroMemory): readonly string[] {
+  const raw = mem["triedItemIDs"];
+  return typeof raw === "string" && raw.length > 0 ? raw.split(",") : [];
+}
+
+const compressOre: MacroDecider = (_step, obs, mem) => {
+  // ⚠ DOCKED is a verdict; UNREADABLE is not. `inSpace !== true` would lump the
+  // two together and tell a player to undock a ship whose location simply had not
+  // been read yet — the "null is never a verdict" rule, in the one place it is
+  // easiest to get wrong.
+  if (obs.flightStatus?.docked === true || obs.inSpace === false) {
+    return tick(WAIT, "Not in space — compression happens at a ship on grid.", "Compressing", {
+      kind: "blocked",
+      reason: "Undock first — this block uses a support ship out on the grid.",
+    });
+  }
+  if (obs.inSpace !== true) {
+    return tick(WAIT, "Waiting for the ship to say where it is.", "Compressing", ACTING, false, mem);
+  }
+  if (obs.inWarp === true) {
+    return tick(WAIT, "In warp — nothing decided mid-warp.", "Compressing", ACTING, false, mem);
+  }
+  const snapshot = obs.snapshot ?? null;
+  const holds = obs.holds ?? null;
+  if (snapshot === null || holds === null) {
+    return tick(WAIT, "Reading the hold.", "Compressing", ACTING, false, mem);
+  }
+
+  const tried = parseTried(mem);
+  // ⚠ A hold whose read FAILED carries items:null, which is "we could not look",
+  // not "it is empty" — so a failed read must not finish the block. Wait for a
+  // hold we can actually see rather than declaring the job done.
+  if (holds.some((hold) => hold.present && hold.items === null)) {
+    return tick(WAIT, "Could not read a hold just now.", "Compressing", ACTING, false, mem);
+  }
+  // Ore still worth trying: in a hold, and not already given its one attempt.
+  const pending = holds
+    .flatMap((hold) => hold.items ?? [])
+    .filter((item) => !tried.includes(String(item.itemID)));
+  if (pending.length === 0) {
+    return tick(WAIT, "Nothing left in the hold to compress.", "Compressing", { kind: "done" });
+  }
+
+  const facility = compressionFacilities(snapshot)[0] ?? null;
+  if (facility === null) {
+    return tick(WAIT, "No support ship is compressing here.", "Compressing", {
+      kind: "blocked",
+      reason:
+        "No mining support ship on this grid is running its compression gear — bring one, or switch it on, and try again.",
+    });
+  }
+
+  // In range? The facility's own reach, which is the number the server checks.
+  const measurement = measureSpace(snapshot);
+  const isOwnShip = facility.itemID === (snapshot.ship?.itemID ?? null);
+  if (!isOwnShip) {
+    const distance = measurement?.distances.get(facility.itemID) ?? null;
+    const reach = facility.compressionFacility?.rangeMeters ?? 0;
+    if (distance !== null && distance > reach) {
+      // Close in on it — the same shared ladder every other block uses. Its own
+      // range is the arrival radius, so we stop when the server would accept us.
+      const step = decideCloseIn(facility.itemID, reach, measurement, num(mem, "closingOn"));
+      if (step !== null && step.kind === "closing") {
+        return tick(WAIT, "Closing on the support ship.", "Compressing", ACTING, false, mem);
+      }
+      if (step !== null && step.kind === "warp") {
+        return tick({ kind: "warp", targetID: facility.itemID }, "Warping to the support ship.", "Compressing", ACTING, false, mem);
+      }
+      return tick(
+        { kind: "approach", targetID: facility.itemID },
+        "Closing on the support ship.",
+        "Compressing",
+        ACTING,
+        false,
+        { ...mem, closingOn: facility.itemID },
+      );
+    }
+  }
+
+  const target = pending[0]!;
+  return tick(
+    { kind: "compressOre", itemID: target.itemID, facilityID: facility.itemID },
+    "Compressing a stack of ore.",
+    "Compressing",
+    ACTING,
+    false,
+    {
+      ...mem,
+      closingOn: null,
+      triedItemIDs: [...tried, String(target.itemID)].slice(-MAX_TRIED_STACKS).join(","),
+    },
+  );
+};
+
+/** How many attempted stacks to remember — a hold cannot hold more than this. */
+const MAX_TRIED_STACKS = 200;
+
 /** The registry the runner dispatches on, keyed by MacroID. */
 export const SCRIPT_MACROS: Readonly<Record<string, MacroDecider>> = {
   undock,
@@ -1923,6 +2726,15 @@ export const SCRIPT_MACROS: Readonly<Record<string, MacroDecider>> = {
   "create-fleet": createFleet,
   "invite-to-fleet": inviteToFleet,
   "join-fleet": joinFleet,
+  "attack-player": attackPlayer,
+  "hunt-player": huntPlayer,
+  "send-chat": sendChatBlock,
+  "set-destination": setDestination,
+  "dock-at-nearest": dockAtNearest,
+  "remote-cap": remoteCap,
+  "jettison-cargo": jettisonCargo,
+  "tidy-hangar": tidyHangar,
+  "compress-ore": compressOre,
 };
 
 /**

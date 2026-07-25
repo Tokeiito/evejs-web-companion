@@ -5,12 +5,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import type { Condition, InterruptRow } from "../bots/botScript.ts";
+import { conditionAllowedAt, type Condition, type InterruptRow } from "../bots/botScript.ts";
 import {
   MAX_CANNOT_TELL_STREAK,
   bumpCannotTellStreak,
   cannotTellStreakExhausted,
   evaluateCondition,
+  releaseSpentAlerts,
   resolveInterrupt,
   type ScriptObservation,
 } from "./scriptConditions.ts";
@@ -148,4 +149,79 @@ test("the cannot-tell streak counts up while blind and resets when it reads agai
   streak = bumpCannotTellStreak(streak, false);
   assert.equal(streak, 0);
   assert.equal(cannotTellStreakExhausted(streak), false);
+});
+
+// ── The four awareness conditions (2026-07-25) ───────────────────────────────
+
+test("cargo-full: the ORDINARY hold, tri-state, and unreadable never fires", () => {
+  const full = { kind: "cargo-full", fraction: 0.9 } as const;
+  assert.equal(evaluateCondition(full, obs({ cargoFraction: 0.95 })), "met");
+  assert.equal(evaluateCondition(full, obs({ cargoFraction: 0.5 })), "not-met");
+  assert.equal(evaluateCondition(full, obs({ cargoFraction: null })), "cannot-tell");
+  // It is NOT the ore hold: a full ore hold says nothing about the cargo hold.
+  assert.equal(evaluateCondition(full, obs({ oreHoldFraction: 1, cargoFraction: 0 })), "not-met");
+});
+
+test("players-in-system-above: zero means anyone at all; alone is not-met; unread cannot tell", () => {
+  const anyone = { kind: "players-in-system-above", count: 0 } as const;
+  assert.equal(evaluateCondition(anyone, obs({ otherPilotsInSystem: 1 })), "met");
+  assert.equal(evaluateCondition(anyone, obs({ otherPilotsInSystem: 0 })), "not-met");
+  assert.equal(evaluateCondition(anyone, obs({ otherPilotsInSystem: null })), "cannot-tell");
+  const crowd = { kind: "players-in-system-above", count: 3 } as const;
+  assert.equal(evaluateCondition(crowd, obs({ otherPilotsInSystem: 3 })), "not-met", "more THAN three");
+  assert.equal(evaluateCondition(crowd, obs({ otherPilotsInSystem: 4 })), "met");
+});
+
+test("targeted-by-player: tri-state over the lock reading", () => {
+  const locked = { kind: "targeted-by-player" } as const;
+  assert.equal(evaluateCondition(locked, obs({ targetedByPlayer: true })), "met");
+  assert.equal(evaluateCondition(locked, obs({ targetedByPlayer: false })), "not-met");
+  assert.equal(evaluateCondition(locked, obs({ targetedByPlayer: null })), "cannot-tell");
+});
+
+test("drone-health-below: no drones out reads cannot-tell, never healthy", () => {
+  const hurt = { kind: "drone-health-below", fraction: 0.5 } as const;
+  assert.equal(evaluateCondition(hurt, obs({ lowestDroneHealth: 0.2 })), "met");
+  assert.equal(evaluateCondition(hurt, obs({ lowestDroneHealth: 0.9 })), "not-met");
+  assert.equal(
+    evaluateCondition(hurt, obs({ lowestDroneHealth: null })),
+    "cannot-tell",
+    "nothing to judge is not a verdict",
+  );
+});
+
+test("the new grid/awareness conditions are interrupt-only (the belt-empty guard)", () => {
+  for (const kind of ["targeted-by-player", "drone-health-below", "players-in-system-above"] as const) {
+    assert.equal(conditionAllowedAt(kind, "until"), false, `${kind} must not be a stop-when`);
+    assert.equal(conditionAllowedAt(kind, "interrupt"), true, `${kind} must be usable as a watch`);
+  }
+  // cargo-full is an OWN-SHIP reading, so it is legal in both places.
+  assert.equal(conditionAllowedAt("cargo-full", "until"), true);
+  assert.equal(conditionAllowedAt("cargo-full", "interrupt"), true);
+});
+
+// ── The alert ladder's two helpers (spent rows) ──────────────────────────────
+
+test("resolveInterrupt: a SPENT alert row is skipped so the row under it can fire", () => {
+  const alertRow: InterruptRow = { id: "a", when: { kind: "shield-below", fraction: 0.6 }, respond: "alert" };
+  const dockRow: InterruptRow = { id: "d", when: { kind: "shield-below", fraction: 0.6 }, respond: "dock-and-pause" };
+  const hurt = obs({ shieldRatio: 0.3 });
+  const fresh = resolveInterrupt([alertRow, dockRow], hurt, []);
+  assert.equal(fresh.kind === "fire" && fresh.row.id, "a");
+  const spent = resolveInterrupt([alertRow, dockRow], hurt, ["a"]);
+  assert.equal(spent.kind === "fire" && spent.row.id, "d", "the spent alert must step aside");
+});
+
+test("resolveInterrupt: only ALERT rows are ever skipped — a real response keeps winning", () => {
+  const dockRow: InterruptRow = { id: "d", when: { kind: "shield-below", fraction: 0.6 }, respond: "dock-and-pause" };
+  const res = resolveInterrupt([dockRow], obs({ shieldRatio: 0.3 }), ["d"]);
+  assert.equal(res.kind === "fire" && res.row.id, "d");
+});
+
+test("releaseSpentAlerts: released when the check passes, kept while it holds or is blind", () => {
+  const alertRow: InterruptRow = { id: "a", when: { kind: "shield-below", fraction: 0.6 }, respond: "alert" };
+  assert.deepEqual(releaseSpentAlerts([alertRow], obs({ shieldRatio: 1 }), ["a"]), [], "recovered - re-arm");
+  assert.deepEqual(releaseSpentAlerts([alertRow], obs({ shieldRatio: 0.3 }), ["a"]), ["a"], "still hurt - stay spent");
+  assert.deepEqual(releaseSpentAlerts([alertRow], obs({ shieldRatio: null }), ["a"]), ["a"], "blind - stay spent");
+  assert.deepEqual(releaseSpentAlerts([], obs({}), ["gone"]), [], "a deleted row is forgotten");
 });

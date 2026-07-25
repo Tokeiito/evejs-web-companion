@@ -58,6 +58,24 @@
     return bot.status === "starting" || bot.status === "running" || bot.status === "paused";
   }
 
+  /**
+   * How long ago an alert fired, in words. Relative, because "4 minutes ago" is
+   * what a player actually wants to know when they pick their phone back up — and
+   * because a clock time would need a timezone the readout does not have.
+   */
+  function alertWhen(atMs: number): string {
+    const seconds = Math.max(0, Math.round((Date.now() - atMs) / 1000));
+    if (seconds < 60) {
+      return "just now";
+    }
+    const minutes = Math.round(seconds / 60);
+    if (minutes < 60) {
+      return `${minutes} ${minutes === 1 ? "minute" : "minutes"} ago`;
+    }
+    const hours = Math.round(minutes / 60);
+    return `${hours} ${hours === 1 ? "hour" : "hours"} ago`;
+  }
+
   /** What the badge says. Plain language, never the raw state word (R9a). */
   function statusWords(bot: ServerBot): string {
     if (bot.status === "starting") {
@@ -115,6 +133,11 @@
             <!-- Honest about what a restart means: the script started over. -->
             <p class="note why">Restarted with the server — the script began again from its first step.</p>
           {/if}
+          {#if bot.lastAlert}
+            <!-- A server bot has no browser to notify, so this line IS the alert.
+                 Above `why` and marked, because it is the thing worth reading. -->
+            <p class="alert">⚠ {bot.lastAlert.message} <span class="when">{alertWhen(bot.lastAlert.atMs)}</span></p>
+          {/if}
           {#if bot.why}
             <p class="note why">{bot.why}</p>
           {/if}
@@ -159,6 +182,18 @@
   }
   .why {
     margin: 0.3rem 0 0;
+  }
+  /* The alert is the one line here worth interrupting the eye for — accent, not
+     the muted note colour the rest of the card uses. */
+  .alert {
+    margin: 0.3rem 0 0;
+    color: var(--color-accent);
+    border-left: 2px solid var(--color-accent);
+    padding-left: 0.4rem;
+  }
+  .alert .when {
+    color: var(--color-text-dim);
+    white-space: nowrap;
   }
   /* R8 — a comfortable target on a phone. */
   .server-bot button {

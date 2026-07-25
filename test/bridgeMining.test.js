@@ -121,6 +121,10 @@ function fakeGateway(overrides = {}) {
     ],
     // The retail GetQuotes triple's first element.
     taxRate: 0.05,
+    // What CompressItemInSpace answers: the 6-tuple on success, NULL on every
+    // refusal (a missing facility, one out of range, a foreign item and an ore
+    // with no compressed form are all the same silence).
+    compression: [ORE_STACK_ID, 1230, 5000, ORE_STACK_ID, 62516, 5000],
     refuse: new Map(),
     inert: new Set(),
   };
@@ -195,6 +199,9 @@ function fakeGateway(overrides = {}) {
       }
       if (service === "miningScanMgr" && method === "perform_scan") {
         return { service, method, result: state.scan, notifications: [] };
+      }
+      if (service === "inSpaceCompressionMgr" && method === "CompressItemInSpace") {
+        return { service, method, result: state.compression, notifications: [] };
       }
       return { service, method, result: null, notifications: [] };
     },
@@ -667,4 +674,87 @@ test("every mining route requires the web login session", async () => {
     });
     assert.equal(response.status, 401, path);
   }
+});
+
+// --- In-space ore compression -----------------------------------------------
+//
+// The fleet mechanic: a support ship on grid running an industrial core plus
+// compression gear is a facility, and ore in your own hull can be squeezed down
+// while you sit inside its range. Every guard is the SERVER's — this route sends
+// the caller's own itemID and the ball they named and gets out of the way — so
+// what there is to pin here is the shape: confirm-gated, in space, one stack per
+// request, and a refusal reported as a refusal rather than dressed up as success.
+
+test("compression is confirm-gated, in space, and passes (itemID, facilityID) through", async () => {
+  const { gateway, baseUrl } = await docked();
+  gateway.state.docked = false;
+
+  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/mining/compress", {
+    method: "POST",
+    body: { itemID: ORE_STACK_ID, facilityID: 7001, confirm: true },
+  });
+  assert.equal(response.status, 200, JSON.stringify(payload));
+  assert.equal(payload.compressed, true);
+  assert.deepEqual(payload.result, [ORE_STACK_ID, 1230, 5000, ORE_STACK_ID, 62516, 5000]);
+
+  const calls = gateway.calls.call.filter((c) => c.service === "inSpaceCompressionMgr");
+  assert.equal(calls.length, 1, "one stack per request");
+  assert.equal(calls[0].method, "CompressItemInSpace");
+  assert.deepEqual(calls[0].args, [ORE_STACK_ID, 7001]);
+});
+
+test("compression without confirm changes nothing", async () => {
+  const { gateway, baseUrl } = await docked();
+  gateway.state.docked = false;
+
+  const { response } = await apiRequest(baseUrl, "/api/bridge/mining/compress", {
+    method: "POST",
+    body: { itemID: ORE_STACK_ID, facilityID: 7001 },
+  });
+  assert.notEqual(response.status, 200);
+  assert.equal(
+    gateway.calls.call.filter((c) => c.service === "inSpaceCompressionMgr").length,
+    0,
+    "an unconfirmed write must never reach the server",
+  );
+});
+
+test("compression refuses while docked, and refuses a missing item or facility", async () => {
+  const { gateway, baseUrl } = await docked();
+
+  const whileDocked = await apiRequest(baseUrl, "/api/bridge/mining/compress", {
+    method: "POST",
+    body: { itemID: ORE_STACK_ID, facilityID: 7001, confirm: true },
+  });
+  assert.equal(whileDocked.response.status, 409);
+  assert.equal(whileDocked.payload.error, "NOT_IN_SPACE");
+
+  gateway.state.docked = false;
+  for (const body of [
+    { facilityID: 7001, confirm: true },
+    { itemID: ORE_STACK_ID, confirm: true },
+    { itemID: 0, facilityID: 0, confirm: true },
+  ]) {
+    const { response, payload } = await apiRequest(baseUrl, "/api/bridge/mining/compress", {
+      method: "POST",
+      body,
+    });
+    assert.equal(response.status, 400, JSON.stringify(payload));
+    assert.equal(payload.error, "INVALID_TARGET");
+  }
+});
+
+test("a server REFUSAL is reported as compressed:false, never as a success", async () => {
+  const { gateway, baseUrl } = await docked();
+  gateway.state.docked = false;
+  // The handler's silence: not a facility / out of range / not compressible.
+  gateway.state.compression = null;
+
+  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/mining/compress", {
+    method: "POST",
+    body: { itemID: ORE_STACK_ID, facilityID: 7001, confirm: true },
+  });
+  assert.equal(response.status, 200, "a refusal is an answer, not a transport failure");
+  assert.equal(payload.compressed, false);
+  assert.equal(payload.result, null);
 });

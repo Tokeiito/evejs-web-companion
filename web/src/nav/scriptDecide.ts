@@ -28,12 +28,13 @@
 
 import { countSteps } from "../bots/botScript.ts";
 import type { BotScript, BranchBlock, Condition, LoopBlock, MacroStep } from "../bots/botScript.ts";
-import { conditionSentence } from "../bots/scriptText.ts";
+import { alertSentence, conditionSentence } from "../bots/scriptText.ts";
 import {
   SENTENCE as COND_SENTENCE,
   bumpCannotTellStreak,
   cannotTellStreakExhausted,
   evaluateCondition,
+  releaseSpentAlerts,
   resolveInterrupt,
   type ScriptObservation,
 } from "./scriptConditions.ts";
@@ -104,8 +105,38 @@ export type ScriptAction =
   /** Invite a character into the session's own fleet (server confirm-gated). */
   | { readonly kind: "inviteToFleet"; readonly charID: number }
   /** Accept a pending fleet invite (server confirm-gated). */
-  | { readonly kind: "acceptFleetInvite" };
+  | { readonly kind: "acceptFleetInvite" }
+  /** Hand the SHARED autopilot a system-only route (arrives in space, no dock). */
+  | { readonly kind: "startSystemRoute"; readonly systemID: number }
+  /**
+   * TELL THE PLAYER — a notification, a sound, a line in the readout. The one
+   * action that touches nothing in the world; it is carried as an action anyway so
+   * it rides the single "one thing per tick" path every other effect rides, and so
+   * the flow (in a tab) and the server bot host (headless) can each deliver it the
+   * way their surface allows.
+   */
+  | { readonly kind: "alert"; readonly message: string }
+  /** Say one line in a chat channel (the verified R7 chat send). */
+  | { readonly kind: "sendChat"; readonly channel: "local" | "corp"; readonly message: string }
+  /** ⚠ Dump these cargo items into space as a container anyone can take. */
+  | { readonly kind: "jettison"; readonly itemIDs: readonly number[] }
+  /** Stack everything loose in the docked station's hangar. */
+  | { readonly kind: "stackHangar" }
+  /**
+   * Compress ONE ore stack against a support ship on grid. One stack per action:
+   * the server answers every refusal with the same silence, so a batch could not
+   * report which stack failed — the block re-reads its hold instead.
+   */
+  | { readonly kind: "compressOre"; readonly itemID: number; readonly facilityID: number };
 
+/**
+ * Does this action need to be PERFORMED (handed to `issue`)? Everything but a
+ * wait. An `alert` is included even though it changes nothing in space: the
+ * runner's job here is "is there something to do", and the alert has to be
+ * delivered. It is not counted as world progress anywhere — the livelock proof
+ * lives in the forward scan, and an alert is decided in the interrupt path above
+ * it, so a program cannot satisfy the scan by alerting.
+ */
 export function isWorldCall(action: ScriptAction): boolean {
   return action.kind !== "wait";
 }
@@ -207,6 +238,12 @@ export interface ScriptMemory {
   readonly macroMem: Readonly<Record<string, MacroMemory>>;
   /** The run-scoped board — survives step transitions; dies with the run. */
   readonly board: ScriptBoard;
+  /**
+   * The ids of "alert me" rows that have already spoken for the episode their
+   * condition is currently in. Optional so an older memory (or a test's) reads as
+   * "nothing spent yet", which is the safe default: it alerts.
+   */
+  readonly spentAlerts?: readonly string[];
 }
 
 /** The memory a fresh run starts from — positioned at the first node. */
@@ -219,6 +256,7 @@ export function initialMemory(script: BotScript): ScriptMemory {
     latched: null,
     macroMem: {},
     board: {},
+    spentAlerts: [],
   };
 }
 
@@ -304,13 +342,16 @@ export function decideScriptAction(
     return continueHeadingHome(obs, mem, travelHome);
   }
 
-  // 2. Interrupts.
-  const res = resolveInterrupt(script.interrupts, obs);
+  // 2. Interrupts. First release any "alert me" row whose condition has passed,
+  // so a fresh episode can speak again; then scan, skipping rows still spent.
+  const spentAlerts = releaseSpentAlerts(script.interrupts, obs, mem.spentAlerts ?? []);
+  const scanMem = spentAlerts === (mem.spentAlerts ?? []) ? mem : { ...mem, spentAlerts };
+  const res = resolveInterrupt(script.interrupts, obs, spentAlerts);
   if (res.kind === "safety-override") {
-    return paused(res.reason, mem, safetyFloorID(script));
+    return paused(res.reason, scanMem, safetyFloorID(script));
   }
   if (res.kind === "fire") {
-    return fireInterrupt(script, res.row.id, obs, mem, travelHome, registry, false);
+    return fireInterrupt(script, res.row.id, obs, scanMem, travelHome, registry, false);
   }
 
   // 2.5 The repair thermostat's OFF half: a repair watch whose condition has
@@ -327,12 +368,12 @@ export function decideScriptAction(
       interruptID: shutdown.rowID,
       status: "running",
       pauseReason: null,
-      memory: mem,
+      memory: scanMem,
     };
   }
 
   // 3. The program, with the forward scan. `res.safetyBlind` seeds the streak.
-  return runProgram(script, obs, mem, registry, res.safetyBlind);
+  return runProgram(script, obs, scanMem, registry, res.safetyBlind);
 }
 
 /** A running repairer whose repair watch has recovered, or null. */
@@ -435,6 +476,24 @@ function fireInterrupt(
         status: "running",
         pauseReason: null,
         memory: mem,
+      };
+    }
+    case "alert": {
+      // Say it ONCE, mark the row spent (so it neither repeats nor blocks the
+      // rows under it), and keep the program running — an alert changes nothing
+      // about the ship. The next tick's scan skips this row and reaches whatever
+      // sits below it, which is what makes "tell me AND dock" work as two rows.
+      const spent = [...(mem.spentAlerts ?? []), row.id];
+      const message = alertSentence(row);
+      return {
+        action: { kind: "alert", message },
+        why: message,
+        phase: "Letting you know",
+        stepPath: row.id,
+        interruptID: row.id,
+        status: "running",
+        pauseReason: null,
+        memory: { ...mem, spentAlerts: spent },
       };
     }
   }
@@ -567,7 +626,10 @@ function runProgram(
           interruptID: null,
           status: "running",
           pauseReason: null,
-          memory: { position, loopPass, stepTicks, cannotTellStreak: streak, latched: null, macroMem, board },
+          // ⚠ SPREAD `mem` FIRST. This used to build the memory field by field, which
+          // silently dropped anything the scan does not itself manage — `spentAlerts`
+          // was reset every tick, so an "alert me" watch re-alerted forever.
+          memory: { ...mem, position, loopPass, stepTicks, cannotTellStreak: streak, latched: null, macroMem, board },
         };
       }
       const side = verdict === "met" ? "then" : "else";
@@ -671,6 +733,10 @@ function runProgram(
       status: "running",
       pauseReason: null,
       memory: {
+        // ⚠ `...mem` first, for the same reason as the branch-wait return above:
+        // field-by-field construction drops whatever the scan does not manage, and
+        // `spentAlerts` lives outside the scan (it belongs to the interrupt ladder).
+        ...mem,
         position,
         loopPass,
         stepTicks,

@@ -33,6 +33,7 @@ export type BlockCategory =
   | "ship"
   | "planets"
   | "fleet"
+  | "social"
   | "flow";
 
 /** The chip label for each category (R9a — play language, never a slug). */
@@ -47,6 +48,7 @@ export const CATEGORY_LABEL: Readonly<Record<BlockCategory, string>> = {
   ship: "Ship & Fitting",
   planets: "Planets",
   fleet: "Fleet",
+  social: "Chat & Social",
   flow: "Flow & Timing",
 };
 
@@ -62,6 +64,7 @@ export const CATEGORY_ORDER: readonly BlockCategory[] = [
   "ship",
   "planets",
   "fleet",
+  "social",
   "flow",
 ];
 
@@ -104,6 +107,12 @@ const PARAM_LABEL: Readonly<Record<string, string>> = {
   quantity: "How many",
   price: "Price each (ISK)",
   who: "Pilot",
+  only: "Only this pilot",
+  range: "Scanner reach (AU)",
+  channel: "Channel",
+  message: "Message",
+  destination: "Destination",
+  pick: "Which rock first",
 };
 
 function paramView(arg: MacroArgSpec): MacroParamView {
@@ -331,6 +340,60 @@ const ENTRIES: Readonly<Record<MacroID, MacroCatalogEntry>> = {
     "fleet",
     "Waits for a fleet invitation and accepts it, so your other pilots can pull this one into their fleet. Finishes once you are in a fleet. The server asks before it goes through.",
     null,
+  ),
+  "attack-player": entry(
+    "attack-player",
+    "combat",
+    "Camps the spot you parked it at and attacks any player ship that shows up — or one pilot alone, if you pick one. Locks them, holds them still with a warp disruptor or scrambler if you have one fitted, webs them, then sets the drones on them and runs the guns. Keeps watching for as long as it is left on; a watch or your own hand stops it.",
+    "Being in space, with guns fitted or combat drones in the bay",
+  ),
+  "hunt-player": entry(
+    "hunt-player",
+    "combat",
+    "Roams from system to system looking for a player, staying within your jump limit of where it started. Watches local chat for company, sweeps the directional scanner, warps down the hits, and attacks the ship it finds — holding it in place first if you have a warp disruptor or scrambler fitted.",
+    "Being in space, with guns fitted or combat drones in the bay",
+  ),
+  "send-chat": entry(
+    "send-chat",
+    "social",
+    "Says a line you wrote in local or corp chat, once, then moves on. Put it inside an If to announce something only when a check holds — like calling for help when shields drop.",
+    "A message to send",
+  ),
+  "set-destination": entry(
+    "set-destination",
+    "movement",
+    "Sets your destination — a station, or a whole solar system — and starts the autopilot flying there, gate by gate. Finishes as soon as the trip is under way rather than waiting for the arrival, so you can follow it with your own checks. Use Fly to a station and dock instead when you just want to arrive and dock.",
+    "Somewhere to go",
+  ),
+  "dock-at-nearest": entry(
+    "dock-at-nearest",
+    "movement",
+    "Finds the closest station in view and docks there — the get-inside-now block. Works out which one is nearest when it runs, so it is right wherever the ship happens to be.",
+    "Being in space with a station in view",
+  ),
+  "remote-cap": entry(
+    "remote-cap",
+    "fleet",
+    "Finds the fleet-mate on your grid with the emptiest capacitor, locks them, and runs your remote capacitor transmitters into them — the other half of keeping a fleet alive. Finishes when everyone on grid has a healthy capacitor.",
+    "Being in space, with a remote capacitor transmitter fitted",
+  ),
+  "jettison-cargo": entry(
+    "jettison-cargo",
+    "hauling",
+    "Dumps your cargo hold into space as a floating container — the jetcan a miner fills instead of flying home. Pick one item to dump just that, or leave it and the whole hold goes. Anything you jettison is out in the open where another pilot could take it.",
+    "Being in space with something in the cargo hold",
+  ),
+  "tidy-hangar": entry(
+    "tidy-hangar",
+    "hauling",
+    "Stacks everything loose in the station hangar into neat piles, so a long run does not leave you with fifty little heaps of the same thing.",
+    "Being docked",
+  ),
+  "compress-ore": entry(
+    "compress-ore",
+    "mining",
+    "Squeezes the ore in your hold down to a fraction of the room it took, using a mining support ship on your grid — your own, or a fleet-mate's, running its industrial core and compression gear. Flies into range first if it has to, then works through your hold one stack at a time. A hold that fits one trip's ore fits a whole session's once it is compressed.",
+    "Being in space, with ore aboard and a support ship on grid running its compression gear",
   ),
 };
 

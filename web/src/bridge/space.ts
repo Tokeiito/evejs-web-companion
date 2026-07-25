@@ -13,6 +13,7 @@
 
 import { unwrapLong, type JsonValue } from "./wire.ts";
 import type {
+  CompressionFacility,
   SpaceEntity,
   SpaceShipStatus,
   SpaceSnapshot,
@@ -118,6 +119,36 @@ function decodeEntity(value: JsonValue): SpaceEntity | null {
     controllerID: idOrNull(raw.controllerID),
     droneActivity: stringOrNull(raw.droneActivity),
     targetEntityID: idOrNull(raw.targetEntityID),
+    // IS THIS SHIP AN ORE-COMPRESSION FACILITY RIGHT NOW? Ship rows only, and
+    // only while the hull really is running an Industrial Core plus a compression
+    // module — the gateway projects it from the same state the retail client gets
+    // in the slim item. An ABSENT field decodes to null ("not a facility"), which
+    // is the safe direction: a bot must not treat a reading it did not get as an
+    // invitation to try compressing.
+    compressionFacility: decodeCompressionFacility(raw.compressionFacility),
+  };
+}
+
+/**
+ * A ship's live compression-facility state, or null when it is not one. The RANGE
+ * is what a caller needs (the server refuses past it), so a facility whose range
+ * cannot be read decodes to null rather than to a facility at 0 metres — an
+ * unusable reading must not look like a usable one.
+ */
+function decodeCompressionFacility(value: JsonValue | undefined): CompressionFacility | null {
+  if (value === null || value === undefined || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const raw = value as Record<string, JsonValue>;
+  const rangeMeters = floatOrNull(raw.rangeMeters);
+  if (rangeMeters === null || !(rangeMeters > 0)) {
+    return null;
+  }
+  return {
+    rangeMeters,
+    typeListIDs: Array.isArray(raw.typeListIDs)
+      ? raw.typeListIDs.map((entry) => idOrNull(entry)).filter((id): id is number => id !== null)
+      : [],
   };
 }
 

@@ -114,6 +114,7 @@ import {
   decodeChatChannelName,
   decodeMessageEntry,
 } from "../bridge/chat.ts";
+import { decodeDirectionalScanHitIDs } from "../bridge/boundScanWrites.ts";
 import { nameKey, type NameRef } from "../store/names.ts";
 import {
   buildSystemGraph,
@@ -4452,6 +4453,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     readonly hull: readonly number[];
     readonly hardeners: readonly number[];
     readonly weapons: readonly number[];
+    readonly tackle: readonly number[];
+    readonly webs: readonly number[];
   } {
     const fit = store.fitting.get();
     const shield: number[] = [];
@@ -4459,6 +4462,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const hull: number[] = [];
     const hardeners: number[] = [];
     const weapons: number[] = [];
+    const tackle: number[] = [];
+    const webs: number[] = [];
     if (fit.slotsError === null) {
       const resolved = store.names.get().resolved;
       for (const slot of fit.slots) {
@@ -4477,6 +4482,22 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           hull.push(slot.module.itemID);
         } else if (/hardener|damage control|resistance/i.test(group)) {
           hardeners.push(slot.module.itemID);
+        } else if (/^warp scrambler$/i.test(group)) {
+          // ⚠ ANCHORED ON PURPOSE, and verified against the SDE
+          // (`_local/sde/.../groups.jsonl`): group 52 is named "Warp Scrambler"
+          // and holds EVERY Warp Disruptor **and** Warp Scrambler (63 types), so
+          // one group covers both point and scram. The anchors matter — a loose
+          // /warp/i would also catch "Warp Core Stabilizer" (a low-slot module
+          // that stops nobody) and "Structure Warp Scrambler", and the
+          // Remote-Shield-Booster-read-as-a-local-rep bug two branches up is
+          // exactly what an unanchored group regex costs.
+          tackle.push(slot.module.itemID);
+        } else if (/^stasis web$/i.test(group)) {
+          // Group 65 "Stasis Web" — the webifiers (22 types). Deliberately NOT
+          // group 899 "Warp Disrupt Field Generator": that is an AREA bubble, not
+          // a module you activate on one target, so it does not belong in a
+          // lock-then-activate ladder.
+          webs.push(slot.module.itemID);
         } else if (slot.family === "high" && /weapon|launcher|turret/i.test(group)) {
           // "Projectile Weapon", "Hybrid Weapon", "Energy Weapon", "Missile
           // Launcher …" — the game's own turret/launcher groups, high slots only.
@@ -4484,7 +4505,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         }
       }
     }
-    return { shield, armor, hull, hardeners, weapons };
+    return { shield, armor, hull, hardeners, weapons, tackle, webs };
   }
 
   /**
@@ -4498,6 +4519,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const shield: number[] = [];
     const armor: number[] = [];
     const hull: number[] = [];
+    const cap: number[] = [];
     if (fit.slotsError === null) {
       const resolved = store.names.get().resolved;
       for (const slot of fit.slots) {
@@ -4514,10 +4536,16 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           armor.push(slot.module.itemID);
         } else if (/remote (hull|structure)/i.test(group)) {
           hull.push(slot.module.itemID);
+        } else if (/^remote capacitor transmitter$/i.test(group)) {
+          // SDE group 67, verified in `_local/sde/.../groups.jsonl`. Anchored so it
+          // cannot catch the other five "Capacitor …" module groups (Recharger,
+          // Battery, Booster, Power Relay, Flux Coil) — every one of those is a
+          // SELF module, and running one on a fleet-mate is not a thing.
+          cap.push(slot.module.itemID);
         }
       }
     }
-    return { shield, armor, hull };
+    return { shield, armor, hull, cap };
   }
 
   function resolveSalvageModuleIDs(): readonly number[] {
@@ -4553,7 +4581,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     "fly-to-mission-site",
   ]);
   const CONVO_MACROS = new Set(["request-mission", "accept-mission", "turn-in-mission"]);
-  const CARGO_MACROS = new Set(["accept-mission", "load-mission-cargo", "turn-in-mission", "unload-cargo", "refine-ore", "refit-ship", "move-items", "repair-ship", "sell-item"]);
+  const CARGO_MACROS = new Set(["accept-mission", "load-mission-cargo", "turn-in-mission", "unload-cargo", "refine-ore", "refit-ship", "move-items", "repair-ship", "sell-item", "jettison-cargo"]);
 
   interface DefenseModuleIDs {
     readonly shield: readonly number[];
@@ -4561,28 +4589,106 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     readonly hull: readonly number[];
     readonly hardeners: readonly number[];
     readonly weapons: readonly number[];
+    /** Warp disruptors + scramblers (SDE group 52) — the PvP blocks' point. */
+    readonly tackle: readonly number[];
+    /** Stasis webifiers (SDE group 65). */
+    readonly webs: readonly number[];
   }
-  const NO_DEFENSE: DefenseModuleIDs = { shield: [], armor: [], hull: [], hardeners: [], weapons: [] };
+  const NO_DEFENSE: DefenseModuleIDs = { shield: [], armor: [], hull: [], hardeners: [], weapons: [], tackle: [], webs: [] };
   interface RemoteRepModuleIDs {
     readonly shield: readonly number[];
     readonly armor: readonly number[];
     readonly hull: readonly number[];
+    /** Remote CAPACITOR transmitters (SDE group 67) — the cap-chain block. */
+    readonly cap: readonly number[];
   }
-  const NO_REMOTE_REPS: RemoteRepModuleIDs = { shield: [], armor: [], hull: [] };
+  const NO_REMOTE_REPS: RemoteRepModuleIDs = { shield: [], armor: [], hull: [], cap: [] };
   // Market orders a bot places rest the retail maximum, so a resting order does
   // not quietly expire under a long-running bot.
   const BOT_ORDER_DURATION_DAYS = 90;
+
+  /**
+   * Deliver an "alert me" watch: the store ALWAYS, then a browser notification and
+   * a short beep where the surface allows one.
+   *
+   * ⚠ THE STORE PUSH IS THE LOAD-BEARING HALF and it goes first, unconditionally.
+   * This same code runs headless inside the server-bot host (src/botHost.js), where
+   * `window`, `Notification` and `AudioContext` do not exist — and where the alert
+   * matters MOST, because nobody is looking at a tab. The host folds this slice onto
+   * the bot's record, so the alert survives to `/api/bots` and the Server Bots
+   * readout. The two browser flourishes are wrapped individually: a browser that
+   * denied notification permission must still get the beep, and neither may ever
+   * throw into the runner's issue path.
+   */
+  function deliverAlert(message: string): void {
+    store.apply({ type: "custom-bot/alert", message, atMs: Date.now() });
+    // A notification needs permission. Ask ONCE, lazily, and only in reply to a
+    // real alert — never on load, which is how a site gets its prompt dismissed
+    // forever. A denied or pending permission is not an error; it just means the
+    // readout is the channel.
+    try {
+      const N = (globalThis as { Notification?: typeof Notification }).Notification;
+      if (typeof N === "function") {
+        if (N.permission === "granted") {
+          new N("Your EveJS bot", { body: message, tag: "evejs-bot-alert" });
+        } else if (N.permission === "default") {
+          void N.requestPermission()
+            .then((granted) => {
+              if (granted === "granted") {
+                new N("Your EveJS bot", { body: message, tag: "evejs-bot-alert" });
+              }
+            })
+            .catch(() => {});
+        }
+      }
+    } catch {
+      // A notification is a nicety; never let it break the run.
+    }
+    // The sound: two short WebAudio beeps. No asset to ship, no file to 404, and
+    // it works from a page the player has already interacted with (a bot they
+    // started by clicking). A suspended audio context just makes no noise.
+    try {
+      const Ctx = (globalThis as { AudioContext?: typeof AudioContext }).AudioContext;
+      if (typeof Ctx === "function") {
+        const ctx = new Ctx();
+        const beep = (atSecond: number): void => {
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.frequency.value = 880;
+          gain.gain.value = 0.08;
+          osc.connect(gain);
+          gain.connect(ctx.destination);
+          osc.start(ctx.currentTime + atSecond);
+          osc.stop(ctx.currentTime + atSecond + 0.12);
+        };
+        beep(0);
+        beep(0.2);
+        // Let the beeps finish, then release the context (a leaked one per alert
+        // would eventually hit the browser's context limit and go silent).
+        setTimeout(() => void ctx.close().catch(() => {}), 800);
+      }
+    } catch {
+      // Same rule: no sound is not a failure.
+    }
+  }
 
   function makeScriptRunnerDeps(
     miningModuleIDs: readonly number[],
     startingStationID: number | null,
     salvageModuleIDs: readonly number[] = [],
     defense: DefenseModuleIDs = NO_DEFENSE,
-    walletWatched = false,
+    watchedKinds: ReadonlySet<string> = new Set<string>(),
     remoteReps: RemoteRepModuleIDs = NO_REMOTE_REPS,
   ): ScriptRunnerDeps {
+    const walletWatched = watchedKinds.has("wallet-below") || watchedKinds.has("wallet-above");
+    const cargoWatched = watchedKinds.has("cargo-full");
+    const rosterWatched = watchedKinds.has("players-in-system-above");
     // One finder result per run: the found agent does not change under the bot.
     let foundAgentCache: NonNullable<ScriptObservation["foundAgent"]> | null = null;
+    // The hunt's jump-distance table, computed once per home system (a full
+    // breadth-first sweep over the gate graph is too much to redo every tick).
+    let huntDistanceAnchor: number | null = null;
+    let huntDistances: Map<number, number> | null = null;
     return {
       observe: async (hint) => {
         const [flightStep, spaceResult, targetsResult, holdsResult, dronesResult] = await Promise.all([
@@ -4721,12 +4827,119 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             anomalies = null;
           }
         }
+        // ── Grid awareness, computed from the snapshot already in hand — no extra
+        // call, so these are always available. `targetedByPlayer` reads every
+        // PLAYER ship's own lock target: one pointing at this hull means trouble.
+        // `lowestDroneHealth` is null with no drones out (nothing to judge).
+        const myShipID = snapshot?.ship?.itemID ?? null;
+        const targetedByPlayer =
+          snapshot === null
+            ? null
+            : snapshot.entities.some(
+                (e) =>
+                  e.kind === "ship" &&
+                  e.isNpc === false &&
+                  e.isSelf === false &&
+                  e.characterID !== null &&
+                  myShipID !== null &&
+                  e.targetEntityID === myShipID,
+              );
+        let lowestDroneHealth: number | null = null;
+        if (snapshot !== null) {
+          for (const entity of snapshot.entities) {
+            if (canMyShipOrderDrone(entity, myShipID) !== true) {
+              continue;
+            }
+            const ratios = [entity.shieldRatio, entity.armorRatio, entity.hullRatio].filter(
+              (r): r is number => r !== null,
+            );
+            if (ratios.length === 0) {
+              continue;
+            }
+            const worst = Math.min(...ratios);
+            lowestDroneHealth = lowestDroneHealth === null ? worst : Math.min(lowestDroneHealth, worst);
+          }
+        }
+        // The ordinary CARGO hold's fill level — a gateway read, so gated on a
+        // cargo-full watch actually being set (a mining bot watches its ore hold,
+        // which rides the mining-holds read every tick already).
+        let cargoFraction: ScriptObservation["cargoFraction"] = null;
+        if (cargoWatched) {
+          try {
+            const panel = await api.loadInventory(callOptions);
+            const cap = decodeCapacity(panel.cargo.capacity);
+            cargoFraction =
+              cap !== null && typeof cap.used === "number" && typeof cap.capacity === "number" && cap.capacity > 0
+                ? cap.used / cap.capacity
+                : null;
+          } catch {
+            cargoFraction = null;
+          }
+        }
+        // ── Hunt reads (hunt-player only) — the local roster, a directional
+        // sweep, and the roam map. Each best-effort: a failure lands as null
+        // (unreadable, never an empty sky or an empty system).
+        let localPlayers: ScriptObservation["localPlayers"] = null;
+        let dscanHitIDs: ScriptObservation["dscanHitIDs"] = null;
+        let huntRoam: ScriptObservation["huntRoam"] = null;
+        // The roster is read for the hunt block AND for a players-in-system watch.
+        if (macro === "hunt-player" || rosterWatched) {
+          const selfID = store.station.get().online?.characterID ?? null;
+          try {
+            const roster = decodeChatChannel(await api.readChat("local", callOptions)).roster;
+            localPlayers = roster
+              .filter((m) => selfID === null || m.characterID !== selfID)
+              .map((m) => ({ characterID: m.characterID, name: m.name }));
+          } catch {
+            localPlayers = null;
+          }
+        }
+        if (macro === "hunt-player") {
+          // The sweep is a bound scan write (confirm-gated on the BFF); only
+          // meaningful with the ship in space. The server clamps the range to
+          // the ship's own scanner reach.
+          if (status.inSpace === true) {
+            try {
+              const rangeAU =
+                typeof hint.board["huntRangeAU"] === "number" ? (hint.board["huntRangeAU"] as number) : 14;
+              const raw = await api.coneScan(api.DSCAN_FULL_SWEEP_RADIANS, rangeAU * api.AU_METERS, callOptions);
+              dscanHitIDs = decodeDirectionalScanHitIDs(raw);
+            } catch {
+              dscanHitIDs = null;
+            }
+          }
+          try {
+            const current = status.solarSystemID;
+            if (current !== null) {
+              const anchor =
+                typeof hint.board["huntAnchorSystemID"] === "number"
+                  ? (hint.board["huntAnchorSystemID"] as number)
+                  : current;
+              const graph = await loadRouteGraph();
+              if (huntDistances === null || huntDistanceAnchor !== anchor) {
+                huntDistances = distancesFrom(graph, anchor);
+                huntDistanceAnchor = anchor;
+              }
+              const table = huntDistances;
+              huntRoam = {
+                jumpsFromAnchor: table.get(current) ?? null,
+                neighbors: graph.neighbors(current).map((edge) => ({
+                  systemID: edge.toSystemID,
+                  jumpsFromAnchor: table.get(edge.toSystemID) ?? null,
+                })),
+              };
+            }
+          } catch {
+            huntRoam = null;
+          }
+        }
         // The travel reading is a synchronous look at the shared autopilot — no
         // gateway call — so EVERY tick carries it (travel-to-station rides it too).
         const travel: ScriptObservation["travel"] = autopilot
           ? {
               status: autopilot.snapshot().status,
               destinationStationID: store.travel.get().destinationStationID,
+              destinationSystemID: store.travel.get().destinationSystemID,
               remainingJumps: autopilot.snapshot().remainingJumps,
               failureReason: autopilot.snapshot().failureReason,
             }
@@ -4878,6 +5091,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           foundAgent,
           jumpsToDropoff,
           anomalies,
+          localPlayers,
+          dscanHitIDs,
+          huntRoam,
+          otherPilotsInSystem: localPlayers === null ? null : localPlayers.length,
+          targetedByPlayer,
+          lowestDroneHealth,
+          cargoFraction,
           savedFittings,
           activeShipID,
           bookmarks,
@@ -4907,9 +5127,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           remoteShieldRepairerIDs: remoteReps.shield,
           remoteArmorRepairerIDs: remoteReps.armor,
           remoteHullRepairerIDs: remoteReps.hull,
+          remoteCapModuleIDs: remoteReps.cap,
           inFleet,
           hardenerModuleIDs: defense.hardeners,
           weaponModuleIDs: defense.weapons,
+          tackleModuleIDs: defense.tackle,
+          webModuleIDs: defense.webs,
           capacitorRatio: ship?.capacitorRatio ?? null,
           walletBalance,
           startingStationID,
@@ -5141,6 +5364,37 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             // inFleet reads true or its wait bound trips.
             await api.acceptFleetInvite(callOptions);
             return;
+          case "startSystemRoute":
+            // The SHARED autopilot again — resolveDestination answers a system id
+            // with kind "system", so the plan carries no final dock and the ride
+            // ends in space at the destination system.
+            await startRoute(action.systemID);
+            return;
+          case "sendChat":
+            // The verified R7 chat send. No readable echo to confirm against —
+            // the block is one-shot by design, so a refusal costs one line.
+            await api.sendChat(action.channel, action.message, callOptions);
+            return;
+          case "alert":
+            deliverAlert(action.message);
+            return;
+          case "jettison":
+            // ⚠ The items leave the ship into a container in space. The BFF route
+            // is confirm-gated; the block confirms by re-reading the hold, so a
+            // refused jettison retries within its bound instead of being believed.
+            if (action.itemIDs.length > 0) {
+              await api.jettisonItems(action.itemIDs, callOptions);
+            }
+            return;
+          case "stackHangar":
+            await api.stackItems("hangar", callOptions);
+            return;
+          case "compressOre":
+            // Confirm-gated on the BFF. The answer is deliberately not trusted:
+            // the block's next hold read is what tells it whether the stack
+            // really changed type, so a refusal costs one attempt on one stack.
+            await api.compressOreInSpace(action.itemID, action.facilityID, callOptions);
+            return;
         }
       },
       sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
@@ -5196,11 +5450,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const remoteReps = resolveRemoteRepModuleIDs();
     const startStatus = store.flight.get().status;
     const startingStationID = startStatus !== null && startStatus.docked ? startStatus.stationID : null;
-    // Whether ANY watch or stop-when reads the wallet — decided once, so observe
-    // only pays for the per-tick wallet read when a bot actually needs it.
-    const walletWatched = scriptWatchesWallet(doc);
+    // Which conditions this doc actually tests — decided ONCE, so observe pays only
+    // for the per-tick reads a bot really needs (the wallet, the local roster, the
+    // cargo hold). See scriptWatchedConditionKinds.
+    const watchedKinds = scriptWatchedConditionKinds(doc);
     scriptRunner = createScriptRunner(
-      makeScriptRunnerDeps(miningModuleIDs, startingStationID, salvageModuleIDs, defense, walletWatched, remoteReps),
+      makeScriptRunnerDeps(miningModuleIDs, startingStationID, salvageModuleIDs, defense, watchedKinds, remoteReps),
     );
     scriptRunner.start(doc);
     void scriptRunner.run();
@@ -5254,45 +5509,52 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     return result.doc;
   }
 
-  /** True when any interrupt or any step/loop `until` in the doc reads the wallet. */
-  function scriptWatchesWallet(doc: BotScript): boolean {
-    const isWallet = (kind: string): boolean => kind === "wallet-below" || kind === "wallet-above";
-    if (doc.interrupts.some((row) => isWallet(row.when.kind))) {
-      return true;
+  /**
+   * EVERY condition kind the document tests anywhere — interrupts, step and loop
+   * `until`s, and branch forks (including branches inside a loop).
+   *
+   * This is the READ GATE. Several conditions cost a gateway call per tick that no
+   * other bot should pay for: the wallet, the local-chat roster, the inventory. So
+   * the whole doc is walked ONCE at start (it cannot change under a run) and the
+   * observe function reads only what something actually watches. A kind missing
+   * from this set means its reading stays null — and null never fires a watch, which
+   * is the safe direction to be wrong in.
+   */
+  function scriptWatchedConditionKinds(doc: BotScript): ReadonlySet<string> {
+    const kinds = new Set<string>();
+    for (const row of doc.interrupts) {
+      kinds.add(row.when.kind);
     }
+    const addUntil = (step: { readonly until?: { readonly kind: string } }): void => {
+      if (step.until !== undefined) {
+        kinds.add(step.until.kind);
+      }
+    };
     for (const node of doc.program) {
       if (node.kind === "loop") {
-        if (node.until !== undefined && isWallet(node.until.kind)) {
-          return true;
-        }
-        // A loop body holds steps AND branches — check each element's own test.
+        addUntil(node);
         for (const element of node.body) {
           if (element.kind === "branch") {
-            if (isWallet(element.when.kind)) {
-              return true;
+            kinds.add(element.when.kind);
+            for (const step of [...element.then, ...element.else]) {
+              addUntil(step);
             }
-            if ([...element.then, ...element.else].some((s) => s.until !== undefined && isWallet(s.until.kind))) {
-              return true;
-            }
-          } else if (element.until !== undefined && isWallet(element.until.kind)) {
-            return true;
+          } else {
+            addUntil(element);
           }
         }
       } else if (node.kind === "branch") {
-        // A branch that FORKS on the wallet needs the read, as do its bodies' stops.
-        if (isWallet(node.when.kind)) {
-          return true;
+        kinds.add(node.when.kind);
+        for (const step of [...node.then, ...node.else]) {
+          addUntil(step);
         }
-        if ([...node.then, ...node.else].some((s) => s.until !== undefined && isWallet(s.until.kind))) {
-          return true;
-        }
-      } else if (node.kind === "macro" && node.until !== undefined && isWallet(node.until.kind)) {
-        return true;
+      } else if (node.kind === "macro") {
+        addUntil(node);
       }
       // A sub-bot node is already expanded by the time this runs, so it has no
       // test of its own to check here.
     }
-    return false;
+    return kinds;
   }
 
   /**

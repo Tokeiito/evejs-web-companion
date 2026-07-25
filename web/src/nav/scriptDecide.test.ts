@@ -356,3 +356,81 @@ test("a blocked macro pauses with the macro's own reason", () => {
   assert.equal(r.status, "paused");
   assert.match(r.pauseReason ?? "", /no rocks left/i);
 });
+
+// ─── The "alert me" response ─────────────────────────────────────────────────
+//
+// Three properties, and each one is a bug if it breaks: it speaks, it speaks
+// ONCE per episode, and while spent it lets the rest of the ladder work.
+
+const alertShields: InterruptRow = {
+  id: "tellme", when: { kind: "shield-below", fraction: 0.6 }, respond: "alert",
+};
+
+test("alert: fires once, keeps the program running, and does not repeat while it holds", () => {
+  const s = script([macroStep("m", "mine-at-belt", { kind: "ore-hold-at-least", fraction: 0.9 })], [alertShields, floor]);
+  const hurt = obs({ shieldRatio: 0.4 });
+  const { results, mem } = run(s, [hurt, hurt, hurt]);
+
+  assert.equal(results[0]?.action.kind, "alert", "the first tick alerts");
+  assert.ok(results[0]?.action.kind === "alert" && /shields drop below 60%/.test(results[0].action.message));
+  assert.equal(results[0]?.interruptID, "tellme");
+  assert.equal(results[0]?.status, "running", "an alert never stops the bot");
+  // Ticks 2 and 3: the row is spent, so the program is what runs.
+  assert.equal(results[1]?.action.kind, "activate", "the bot goes back to work");
+  assert.equal(results[2]?.action.kind, "activate");
+  assert.deepEqual(mem.spentAlerts, ["tellme"]);
+});
+
+test("alert: a spent row is TRANSPARENT — the watch under it still fires", () => {
+  // The pattern the design exists for: tell me, AND dock. Same threshold, alert
+  // above. Tick 1 alerts; tick 2 must reach the dock-and-pause row below it.
+  const dockRow: InterruptRow = { id: "dock", when: { kind: "shield-below", fraction: 0.6 }, respond: "dock-and-pause" };
+  const s = script([macroStep("m", "mine-at-belt", { kind: "ore-hold-at-least", fraction: 0.9 })], [alertShields, dockRow, floor]);
+  const hurt = obs({ shieldRatio: 0.4 });
+  const { results } = run(s, [hurt, hurt, obs({ shieldRatio: 0.4, docked: true })]);
+
+  assert.equal(results[0]?.action.kind, "alert");
+  assert.equal(results[1]?.interruptID, "dock", "the dock watch under the spent alert must fire");
+  assert.equal(results[1]?.action.kind, "warp", "and it flies home");
+  assert.equal(results[2]?.status, "paused", "then stops, docked");
+});
+
+test("alert: re-arms once the condition clears, so a second episode speaks again", () => {
+  const s = script([macroStep("m", "mine-at-belt", { kind: "ore-hold-at-least", fraction: 0.9 })], [alertShields, floor]);
+  let mem = initialMemory(s);
+  const step = (o: ScriptObservation): ReturnType<typeof decideScriptAction> => {
+    const r = decideScriptAction(s, o, mem, registry, home);
+    mem = r.memory;
+    return r;
+  };
+  assert.equal(step(obs({ shieldRatio: 0.4 })).action.kind, "alert", "episode one");
+  assert.equal(step(obs({ shieldRatio: 0.4 })).action.kind, "activate", "spent");
+  assert.equal(step(obs({ shieldRatio: 1 })).action.kind, "activate", "recovered — released");
+  assert.deepEqual(mem.spentAlerts, [], "the row is armed again");
+  assert.equal(step(obs({ shieldRatio: 0.4 })).action.kind, "alert", "episode two speaks");
+});
+
+test("alert: an UNREADABLE check does not re-arm the row (no crying wolf on a blind read)", () => {
+  const s = script([macroStep("m", "mine-at-belt", { kind: "ore-hold-at-least", fraction: 0.9 })], [alertShields, floor]);
+  let mem = initialMemory(s);
+  const step = (o: ScriptObservation): ReturnType<typeof decideScriptAction> => {
+    const r = decideScriptAction(s, o, mem, registry, home);
+    mem = r.memory;
+    return r;
+  };
+  assert.equal(step(obs({ shieldRatio: 0.4 })).action.kind, "alert");
+  step(obs({ shieldRatio: null, health: 1 })); // cannot tell — not evidence it passed
+  assert.deepEqual(mem.spentAlerts, ["tellme"], "still spent");
+  assert.equal(step(obs({ shieldRatio: 0.4 })).action.kind, "activate", "so it does not alert again");
+});
+
+test("alert: the safety floor still fires with a spent alert row sitting above it", () => {
+  // The floor is the row that must never be silenceable. Alert on health above it.
+  const alertHealth: InterruptRow = { id: "tellhealth", when: { kind: "health-below", fraction: 0.5 }, respond: "alert" };
+  const s = script([macroStep("m", "mine-at-belt", { kind: "ore-hold-at-least", fraction: 0.9 })], [alertHealth, floor]);
+  const dying = obs({ health: 0.2 });
+  const { results } = run(s, [dying, dying, obs({ health: 0.2, docked: true })]);
+  assert.equal(results[0]?.action.kind, "alert");
+  assert.equal(results[1]?.interruptID, "floor", "the safety floor is reached");
+  assert.equal(results[2]?.status, "paused");
+});

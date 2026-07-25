@@ -1363,6 +1363,27 @@ export interface SpaceEntity {
   readonly controllerID: number | null;
   readonly droneActivity: string | null;
   readonly targetEntityID: number | null;
+  /**
+   * SHIP rows only — this hull is an ORE-COMPRESSION FACILITY right now: a mining
+   * support ship running an Industrial Core plus a compression module. Null on
+   * every other row and on a support ship whose modules are off, so it doubles as
+   * the "can I compress against this ship?" test. Being your own ship or a
+   * FLEET-MATE's, and being inside `rangeMeters`, are still the server's checks —
+   * this only says the facility is live.
+   *
+   * ⚠ OPTIONAL so a server that does not project it yet still decodes, and
+   * ABSENT MUST READ AS "NOT A FACILITY" — never as an unknown worth trying.
+   * Read it as `entity.compressionFacility ?? null`.
+   */
+  readonly compressionFacility?: CompressionFacility | null;
+}
+
+/** A live ore-compression facility's reach, and which ore families it handles. */
+export interface CompressionFacility {
+  /** The widest live range in metres — the one the server's own check applies. */
+  readonly rangeMeters: number;
+  /** The facility's type-list ids (empty when the gateway sent none). */
+  readonly typeListIDs: readonly number[];
 }
 
 /**
@@ -1865,6 +1886,13 @@ export interface CustomBotState {
   /** The run board as one line ("Working with <agent>"), or null. */
   readonly note: string | null;
   readonly startError: string | null;
+  /**
+   * The last thing an "alert me" watch said, and when. HELD rather than fired and
+   * forgotten, because the whole point of the alert is to reach a player who was
+   * not watching — a phone with the tab asleep, or a server bot with no tab at
+   * all. Null until one fires.
+   */
+  readonly lastAlert: { readonly message: string; readonly atMs: number } | null;
 }
 
 export interface MiningBotState {

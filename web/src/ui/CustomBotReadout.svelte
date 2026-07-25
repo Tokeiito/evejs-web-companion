@@ -57,6 +57,11 @@
     {#if $customBot.note}<p class="why">{$customBot.note}</p>{/if}
     {#if $customBot.why}<p class="why">Why: {$customBot.why}</p>{/if}
     {#if $customBot.pauseReason}<p class="pause">{$customBot.pauseReason}</p>{/if}
+    {#if $customBot.lastAlert}
+      <!-- The last "alert me" watch. Stays on screen after the notification has
+           gone, so a player who missed the pop-up still sees what happened. -->
+      <p class="alert">⚠ {$customBot.lastAlert.message}</p>
+    {/if}
   </section>
 {/if}
 
@@ -73,6 +78,12 @@
   }
   .custombot .pause {
     color: var(--color-warn);
+    margin: 0.3rem 0 0;
+  }
+  .custombot .alert {
+    color: var(--color-accent);
+    border-left: 2px solid var(--color-accent);
+    padding-left: 0.4rem;
     margin: 0.3rem 0 0;
   }
   .custombot button {

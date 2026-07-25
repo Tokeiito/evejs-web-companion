@@ -329,3 +329,49 @@ test("a bot whose script vanished leaves a visible error record, not silence", a
   // The failure is dropped from the roster file — it must not retry forever.
   assert.equal(readRosterFile(rosterPath).length, 0);
 });
+
+// A server bot has no browser to notify, so the "alert me" watch reaches the
+// player ONLY through the record -> /api/bots -> the Server Bots readout. These
+// pin that path, including that a later progress tick cannot erase an alert the
+// player has not seen yet.
+
+test("an alert on the store slice lands on the bot record and on the public row", async () => {
+  const log = [];
+  const host = makeHost({ log });
+  await host.start(START);
+  const store = lastStore(log);
+  assert.equal(host.list(7)[0].lastAlert, null, "no alert before one fires");
+
+  store._set({
+    customBot: {
+      ...IDLE_SLICE,
+      status: "running",
+      phase: "Working",
+      lastAlert: { message: "Your bot noticed: another player locks onto your ship.", atMs: 1_700_000_000_000 },
+    },
+  });
+  await settle();
+
+  const row = host.list(7)[0];
+  assert.deepEqual(row.lastAlert, {
+    message: "Your bot noticed: another player locks onto your ship.",
+    atMs: 1_700_000_000_000,
+  });
+});
+
+test("a later progress tick with no alert does NOT clear one already recorded", async () => {
+  const log = [];
+  const host = makeHost({ log });
+  await host.start(START);
+  const store = lastStore(log);
+  store._set({
+    customBot: { ...IDLE_SLICE, status: "running", lastAlert: { message: "Trouble.", atMs: 5 } },
+  });
+  await settle();
+  // The next ordinary tick carries no alert at all (the slice is rebuilt).
+  store._set({ customBot: { ...IDLE_SLICE, status: "running", phase: "Mining" } });
+  await settle();
+  const row = host.list(7)[0];
+  assert.equal(row.lastAlert && row.lastAlert.message, "Trouble.", "an unseen alert must not be erased");
+  assert.equal(row.phase, "Mining", "while the rest of the readout still updates");
+});

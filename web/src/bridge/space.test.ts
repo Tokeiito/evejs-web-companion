@@ -226,3 +226,85 @@ test("R23: the locked-target list decodes long-aware, and empties safely", () =>
   // Junk entries are dropped rather than decoded to zero.
   assert.deepEqual(decodeTargetIDs([0, "x", 42] as unknown as JsonValue), [42]);
 });
+
+// ── The compression-facility field ───────────────────────────────────────────
+//
+// A ship row says whether that hull is a live ore-compression facility. The
+// decoding rule that matters: anything unusable reads as NOT a facility, because
+// a bot uses this field to decide whether compressing against that ship is even
+// worth asking for.
+
+test("a live facility decodes its range and typelists", () => {
+  const snapshot = decodeSpaceSnapshot({
+    inSpace: true,
+    solarSystemID: 30000142,
+    shipID: 9001,
+    entities: [
+      {
+        kind: "ship",
+        itemID: 7001,
+        radius: 3000,
+        position: { x: 1, y: 0, z: 0 },
+        velocity: { x: 0, y: 0, z: 0 },
+        compressionFacility: { rangeMeters: 60000, typeListIDs: [1, 2] },
+      },
+    ],
+  } as unknown as JsonValue);
+  const row = snapshot?.entities[0];
+  assert.ok(row);
+  assert.equal(row.compressionFacility?.rangeMeters, 60000);
+  assert.deepEqual(row.compressionFacility?.typeListIDs, [1, 2]);
+});
+
+test("an absent, null, malformed or zero-range facility all decode as NOT a facility", () => {
+  const rowFor = (facility: unknown): JsonValue => ({
+    kind: "ship",
+    itemID: 7001,
+    radius: 3000,
+    position: { x: 1, y: 0, z: 0 },
+    velocity: { x: 0, y: 0, z: 0 },
+    ...(facility === undefined ? {} : { compressionFacility: facility }),
+  }) as unknown as JsonValue;
+
+  for (const [label, facility] of [
+    ["absent", undefined],
+    ["null", null],
+    ["not an object", 42],
+    ["an array", []],
+    ["no range", { typeListIDs: [1] }],
+    ["zero range", { rangeMeters: 0, typeListIDs: [1] }],
+    ["negative range", { rangeMeters: -5, typeListIDs: [1] }],
+    ["unreadable range", { rangeMeters: "lots", typeListIDs: [1] }],
+  ] as const) {
+    const snapshot = decodeSpaceSnapshot({
+      inSpace: true,
+      solarSystemID: 30000142,
+      shipID: 9001,
+      entities: [rowFor(facility)],
+    } as unknown as JsonValue);
+    assert.equal(
+      snapshot?.entities[0]?.compressionFacility ?? null,
+      null,
+      `${label} must not read as a usable facility`,
+    );
+  }
+});
+
+test("a facility with junk in its typelists keeps only the real ids", () => {
+  const snapshot = decodeSpaceSnapshot({
+    inSpace: true,
+    solarSystemID: 30000142,
+    shipID: 9001,
+    entities: [
+      {
+        kind: "ship",
+        itemID: 7001,
+        radius: 3000,
+        position: { x: 1, y: 0, z: 0 },
+        velocity: { x: 0, y: 0, z: 0 },
+        compressionFacility: { rangeMeters: 25000, typeListIDs: [1, 0, "two", null, 3] },
+      },
+    ],
+  } as unknown as JsonValue);
+  assert.deepEqual(snapshot?.entities[0]?.compressionFacility?.typeListIDs, [1, 3]);
+});

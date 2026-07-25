@@ -176,6 +176,7 @@ function createBotHost(options) {
       stepPath: record.stepPath,
       pauseReason: record.pauseReason,
       note: record.note,
+      lastAlert: record.lastAlert,
       startError: record.startError,
       startedAt: record.startedAt,
       endedAt: record.endedAt,
@@ -184,6 +185,12 @@ function createBotHost(options) {
 
   // Fold the store's customBot slice into the record — same words the in-tab
   // readout shows, so the phone and a tab never tell different stories.
+  //
+  // ⚠ `lastAlert` is the reason an "alert me" watch is worth anything on a server
+  // bot: the bot runs in THIS process with no browser to notify, so the alert's
+  // only route to the player is the record → /api/bots → the Server Bots readout.
+  // It is never cleared here — an alert a player has not seen yet must not be
+  // erased by the next progress tick.
   function applySnapshot(record, snapshot) {
     record.status = snapshot.status;
     record.phase = snapshot.phase;
@@ -192,6 +199,9 @@ function createBotHost(options) {
     record.pauseReason = snapshot.pauseReason;
     record.note = snapshot.note;
     record.startError = snapshot.startError ?? null;
+    if (snapshot.lastAlert) {
+      record.lastAlert = { message: String(snapshot.lastAlert.message), atMs: Number(snapshot.lastAlert.atMs) };
+    }
   }
 
   // End of a run, from EITHER side (script finished/errored, or stop()):
@@ -275,6 +285,7 @@ function createBotHost(options) {
       stepPath: null,
       pauseReason: null,
       note: null,
+      lastAlert: null,
       startError: null,
       startedAt: new Date().toISOString(),
       endedAt: null,
