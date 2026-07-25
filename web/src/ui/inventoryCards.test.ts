@@ -589,15 +589,16 @@ test("R60: the panel sorts its content into four named tabs", () => {
 });
 
 test("R60: inactive tabs are HIDDEN but still in the DOM, so a selection survives a switch", () => {
-  // All four panels render; the three that are not the default active one carry
-  // `hidden`. This is the whole reason a tick made in one tab is not lost when
-  // the player moves to another — nothing remounts.
+  // All five panels render (the four inventory tabs + Station Services); the
+  // ones that are not the default active one carry `hidden`. This is the whole
+  // reason a tick made in one tab is not lost when the player moves to another
+  // — nothing remounts.
   const body = scene();
-  assert.equal((body.match(/role="tabpanel"/g) ?? []).length, 4, "all four panels render");
+  assert.equal((body.match(/role="tabpanel"/g) ?? []).length, 5, "all five panels render");
   assert.equal(
     (body.match(/role="tabpanel"[^>]*hidden/g) ?? []).length,
-    3,
-    "three of them are hidden, one is shown",
+    4,
+    "four of them are hidden, one is shown",
   );
   // The content of a hidden tab is genuinely present, not conditionally unmounted.
   assert.match(body, /Hangar inventory/, "the Item Hangar tab's grid is in the DOM");
