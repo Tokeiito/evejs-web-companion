@@ -72,10 +72,9 @@
     {/if}
   </div>
 
-  {#if $station.online}
-    <span class="ws-head-pilot">{$station.online.characterName}</span>
-  {/if}
-
+  <!-- No pilot name here: the character bar's chip is the one authoritative
+       "who am I flying" indicator (it stays right in multibox, where this
+       single-slot copy could not). -->
   <div class="ws-head-actions">
     {#if error}<span class="ws-head-error" role="alert">{error}</span>{/if}
     {#if isDocked}

@@ -30,9 +30,11 @@
 </script>
 
 <nav class="neocom" aria-label="Panels">
+  <!-- Brand only: the docked/in-space state already lives in the workspace
+       header's badge and each character chip — a third copy said nothing. The
+       rail's tab list is state-filtered regardless. -->
   <div class="neocom-brand">
     <span class="neocom-brand-name">EVEJS</span>
-    <span class="state-badge {isDocked ? 'docked' : 'in-space'}">{isDocked ? "Docked" : "In Space"}</span>
   </div>
 
   <ul class="neocom-list">

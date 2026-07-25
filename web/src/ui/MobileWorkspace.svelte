@@ -27,8 +27,13 @@
   });
 
   // The openable panels for the current state (chrome tabs excluded); "home" is
-  // the null selection.
-  const tabs = $derived(visibleTabsFor(isDocked).filter((tab) => isWindowTab(tab.id)));
+  // the null selection. While docked, "Inventory & Ship" is dropped from the
+  // bar — the docked home IS that content, so the tab would be a duplicate.
+  const tabs = $derived(
+    visibleTabsFor(isDocked).filter(
+      (tab) => isWindowTab(tab.id) && !(isDocked && tab.id === "inventory"),
+    ),
+  );
   let selected = $state<TabID | null>(null);
   // Drop a selection the current state no longer offers (docked-only after undock).
   const effective = $derived(selected !== null && tabs.some((t) => t.id === selected) ? selected : null);
