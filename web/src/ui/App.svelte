@@ -174,6 +174,19 @@
     savePersistedSessions({ pilots, activeCharacterID });
   });
 
+  // One live push (SSE) connection per TAB, held by the active pilot. Roster
+  // sessions are created with livePush OFF (see app/sessions.ts): an open
+  // EventSource occupies one of the browser's ~6 per-origin connections for
+  // its whole life, so letting every pilot keep one starved the pool and hung
+  // the 7th pilot's login/select in the browser queue. Background pilots keep
+  // refreshing themselves over ordinary reads (every bridge response carries
+  // its notification drain); the switched-to pilot re-attaches here.
+  $effect(() => {
+    for (const s of sessions) {
+      s.flow.setLivePush(s.id === activeId);
+    }
+  });
+
   // R107 — mirror the ACTIVE pilot's token into the per-tab global. A few panels
   // still call the API WITHOUT per-session options — the Bot Builder's
   // create/update/list/deleteBotScript and iconCache's admin routes — and those
