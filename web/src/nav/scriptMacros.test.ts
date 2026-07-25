@@ -1065,3 +1065,22 @@ test("compress-ore: docked -> blocked; mid-warp -> waits", () => {
   assert.equal(warping.action.kind, "wait");
   assert.equal(warping.outcome.kind, "acting");
 });
+
+test("compress-ore / jettison: an UNREADABLE location waits, it does not say 'undock first'", () => {
+  // The whole flight status is missing (a first tick, or a failed read). Docked is
+  // a verdict; unreadable is not — telling a player to undock a ship whose place
+  // has not been read yet is exactly the mistake the tri-state rule prevents.
+  const blind = obs({ inSpace: null, flightStatus: null, snapshot: null, holds: null, cargo: null });
+  const c = compress(compressStep, blind, {}, {});
+  assert.equal(c.action.kind, "wait");
+  assert.equal(c.outcome.kind, "acting", "an unread location must not be a blocked verdict");
+
+  const j = jettison(jettisonStep, blind, {}, {});
+  assert.equal(j.action.kind, "wait");
+  assert.equal(j.outcome.kind, "acting");
+
+  // And a genuinely docked ship still blocks, with the plain hint.
+  const parked = obs({ inSpace: false, flightStatus: flight({ docked: true, inSpace: false }) });
+  assert.equal(compress(compressStep, parked, {}, {}).outcome.kind, "blocked");
+  assert.equal(jettison(jettisonStep, parked, {}, {}).outcome.kind, "blocked");
+});

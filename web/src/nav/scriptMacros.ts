@@ -2496,11 +2496,15 @@ const remoteCap: MacroDecider = (_step, obs, mem) => {
 // block is done when nothing matching is aboard. That means a silently refused
 // jettison retries within its bound rather than being believed.
 const jettisonCargo: MacroDecider = (step, obs, mem) => {
-  if (obs.inSpace !== true) {
+  // Docked is a verdict; unreadable is not (see compress-ore's note).
+  if (obs.flightStatus?.docked === true || obs.inSpace === false) {
     return tick(WAIT, "Not in space — a can has to go somewhere.", "Jettisoning", {
       kind: "blocked",
       reason: "Undock first — jettisoning drops a container into space.",
     });
+  }
+  if (obs.inSpace !== true) {
+    return tick(WAIT, "Waiting for the ship to say where it is.", "Jettisoning", ACTING, false, mem);
   }
   const cargo = obs.cargo ?? null;
   if (cargo === null) {
@@ -2595,11 +2599,18 @@ function parseTried(mem: MacroMemory): readonly string[] {
 }
 
 const compressOre: MacroDecider = (_step, obs, mem) => {
-  if (obs.inSpace !== true) {
+  // ⚠ DOCKED is a verdict; UNREADABLE is not. `inSpace !== true` would lump the
+  // two together and tell a player to undock a ship whose location simply had not
+  // been read yet — the "null is never a verdict" rule, in the one place it is
+  // easiest to get wrong.
+  if (obs.flightStatus?.docked === true || obs.inSpace === false) {
     return tick(WAIT, "Not in space — compression happens at a ship on grid.", "Compressing", {
       kind: "blocked",
       reason: "Undock first — this block uses a support ship out on the grid.",
     });
+  }
+  if (obs.inSpace !== true) {
+    return tick(WAIT, "Waiting for the ship to say where it is.", "Compressing", ACTING, false, mem);
   }
   if (obs.inWarp === true) {
     return tick(WAIT, "In warp — nothing decided mid-warp.", "Compressing", ACTING, false, mem);
