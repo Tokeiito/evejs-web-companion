@@ -68,7 +68,14 @@ function fakeStore() {
 }
 
 function fakeStaticData() {
-  return { getStation() { return null; }, getTypeName(id) { return `Type ${id}`; } };
+  return {
+    getStation() { return null; },
+    getTypeName(id) { return `Type ${id}`; },
+    // The inventory route reads per-type VOLUME off the static tables to build
+    // its `volumes` map (no bridge call). Tritanium's real 0.01 m³ stands in for
+    // every type here; a double without this method 500s the whole route.
+    getType(id) { return { typeID: id, volume: 0.01 }; },
+  };
 }
 
 function packedRow(fields) {

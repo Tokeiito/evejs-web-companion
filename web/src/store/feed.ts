@@ -82,8 +82,8 @@ import type {
   CharacterIdentity,
   CloneSummary,
 } from "./types.ts";
-import type { ShipStats } from "../bridge/shipStats.ts";
 import type { BoundDogmaAllInfo } from "../bridge/boundDogma.ts";
+import type { ShipStats } from "../bridge/shipStats.ts";
 import type { MiningRungID, MiningStepID } from "../nav/miningLadder.ts";
 
 export type FeedStatus = "idle" | "connecting" | "connected" | "disconnected";
@@ -205,6 +205,16 @@ export type FeedEvent =
       readonly stats: ShipStats;
       readonly slotsError: string | null;
       readonly resourcesError: string | null;
+    }
+  // R21 slice B — the bound-dogma snapshot that accompanies the fit: the active
+  // ship and every fitted module with the SERVER's post-dogma attributes. Its
+  // own event because it rides a SEPARATE read that is a companion to the fit,
+  // never a gate on it: a failure carries `allInfo: null` plus its reason and
+  // leaves the slots and resource bars exactly as they were.
+  | {
+      readonly type: "dogma/loaded";
+      readonly allInfo: BoundDogmaAllInfo | null;
+      readonly error: string | null;
     }
   // A fitting action (fit/unfit/online/offline/destroy) failed or was declined;
   // null clears the error after a clean action.
