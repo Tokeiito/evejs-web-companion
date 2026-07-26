@@ -508,3 +508,50 @@ would be severe:
 | ISK precision | the decoder keeps bigint-safe strings for display; the watch compares a `number`, imprecise only above 2^53 ISK — no practical effect on a threshold |
 | R7d (no raw ids in player text) | every arg render falls back to a phrase ("a pilot you pick") when the name is missing |
 | BFF write routes answering `ok` unverified | four found; all four are covered either by a server-side throw or by the block re-observing next tick, which is the architecture's own answer |
+
+## 7. The mission chain, fired live (2026-07-26)
+
+The last untouched play loop. Run as the shipped **Delivery runs** preset against
+a real agent, one delivery, judged by state deltas.
+
+**The setup matters for anyone repeating this.** Test Pilot's own station has two
+level-4 *Security* agents (division 24) — combat, useless for a courier test. The
+nearest *Distribution* agent (division 22) is one jump out in Chej. A BFS over
+`mapStargates.jsonl` finds it in a second and is worth doing before driving
+anything; `find-distribution-agent` independently picked the same agent, which is
+the first result of the run.
+
+| block | verdict |
+| --- | --- |
+| `find-distribution-agent` | ✅ picked Mebhiyen Ranaka, the nearest level-1 courier agent, matching an independent BFS |
+| the travel leg | ✅ set destination, undocked, warped, **jumped a gate**, warped in, docked — the autopilot end to end |
+| `request-mission` | ✅ a real courier offer on the table |
+| `accept-mission` gates | ✅ correct: turned down 4 × 60 m³ against a 120 m³ hold, and 10 jumps against a 6-jump ceiling — then **stopped with a player-readable reason** after `MAX_BLOCK_ATTEMPTS`, exactly as designed |
+| `load-mission-cargo` | ✅ package aboard — 3 units, 1,800 m³ of a 4,875 m³ hold, read back from the hold |
+
+### ⚠ The bug: a missing reading DECLINED a job
+
+The first accept tick after docking gated on a cargo hold that had not been read
+yet, and the bot turned down a perfectly good mission:
+
+> Your ship did not report how much room its cargo hold has, so the bot left the
+> offer alone.
+
+**Declining is irreversible** — it burns the offer and starts a decline timer
+against the agent — so it must never be the answer to "I could not see". This is
+the cannot-tell rule, and this is the one place in the codebase where breaking it
+cost a real action rather than a wrong readout.
+
+`gateOffer` returns one string for both "fails the gate" and "cannot be judged",
+which is right for a readout and wrong for a decision. The three blind cases (no
+stated volume, no cargo reading, no route when a ceiling is set) are now answered
+with a WAIT, bounded so a reading that never arrives ends blocked with its own
+reason. A second, smaller one went with it: with **no** ceiling set, `gateOffer`
+still declined when it had no jump count — over a number nobody had asked about.
+
+### Not a bug, but worth knowing
+
+Saving a script under the name of an existing one creates a SECOND script rather
+than overwriting, and the Bots list shows both by name with no way to tell them
+apart. That is how a run was started against a stale copy with the old jump limit
+— an operator trap, not a code fault.
