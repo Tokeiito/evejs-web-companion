@@ -332,12 +332,7 @@ gap 5 below: this is no longer a hunch.
 4. **richer PvP target filters** (corp / alliance / an ignore list, 🛠️) — the
    snapshot already carries `corporationID`/`allianceID` per ship; this is Arg
    shapes and pickers, not new reads. The one-pilot `only` filter exists.
-5. **close the distance in the PvP blocks** (🟢) — ⬆ PROMOTED: this is now
-   measured, not suspected. Neither camp nor hunt burns toward a target that is
-   on grid but out of range, and at 17.9 km the live run got the point on and
-   `TargetNotWithinRangeGeneric` from both the web and the remote cap. The
-   tackle bound keeps that safe (it gives up and shoots), but the engage ladder
-   only really works inside ~10 km, so `flight/approach` belongs in it.
+5. ~~close the distance in the PvP blocks~~ ✅ **DONE** — see §5.
 6. **missions-completed ≥ N condition** (🛠️) — needs the journal read gated in.
 7. **mine across belts / the constellation** (🛠️) — belt rotation across systems.
 8. **ice / gas harvester variants** (🔌) — mostly the equipment picker widening.
@@ -365,3 +360,47 @@ charge reload/swap, fleet-warp, named/private chat channels, EVE-mail.
 **Do not build without new BFF work:** general sell-orders / update-orders for
 arbitrary items (only PLEX is plumbed), overheat, charge reload, PI collect-haul,
 fleet-warp.
+
+## 5. Closing the distance (2026-07-26)
+
+The engage ladder now BURNS toward its target before it works the modules, and
+that took two passes — the second one only because the bot was watched doing it.
+
+**The gap.** A lock lands from much further out than the guns and the web reach,
+so "locked" never meant "in reach". It only looked that way because the point,
+the longest-ranged of the three, usually worked. Measured live at 17.9 km: the
+point came on, the web and the remote cap both refused
+`TargetNotWithinRangeGeneric`.
+
+**The first fix** put an `approach` in the ladder after the lock, once per
+target (a standing follow order on the server, not a nudge to repeat), and made
+the web wait for its own 10 km reach.
+
+**⚠ It made things worse, and only a live run showed it.** The bot undocked,
+closed on its target, reported "Guns on them" — and the target was neither
+pointed nor webbed, and warped off unhindered. The point had been fired three
+times during the burn; `MAX_TACKLE_ATTEMPTS` went entirely on refusals nobody
+could have expected to land; and by the time the ship arrived, tackle was off
+for that target for good. **The longer the approach, the more certain the budget
+was gone before arrival** — so adding the approach turned a brief bug into a
+reliable one.
+
+**The second fix** is the rule that was missing: the budget exists to catch a
+module refusing for a reason we *cannot see*, and an out-of-range refusal is not
+that — the range is right there in the snapshot. Both halves now wait for their
+own reach (point 24 km, the generous end of group 52 so a disruptor is not held
+back on the chance it is a scram; web 10 km), and **a shot skipped for range is
+not an attempt**.
+
+**Verified live, by the bot itself**, running `Leave the station` →
+`Attack Gaston Vernier if they appear here`:
+
+| the bot's own words | what the target saw |
+| --- | --- |
+| Locking the player's ship. | — |
+| Closing in — too far out for the web and the guns. | 33.9 → 30.4 → 26.8 → 23.2 → 19.7 → 16.1 → 12.5 km |
+| Holding them in place so they cannot warp off. | `You cannot warp because you are warp scrambled` |
+| Guns on them. | max velocity **200 → 100** the moment it crossed 8.96 km |
+
+The web came on at 8.96 km — inside its 10 km reach, on a budget that had
+survived a 25 km burn. That is the whole fix in one number.
