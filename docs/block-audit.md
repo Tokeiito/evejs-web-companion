@@ -81,7 +81,7 @@ without a roster read.
 |---|---|---|---|
 | **remote-rep** (rep the most-hurt friendly) | snapshot filter + `lock` + `activate` | ✅ | Reactive; done when everyone on grid is full. Reps resolved by group name (`/remote shield|armor/i`). |
 | **orbit-and-boost** (stay on a mate, keep repping) | `orbit` + remote-rep core | ✅ | Sustained logistics loop; a watch or the player stops it. |
-| **remote cap transfer** | `lock` + `activate` | 🟢 | Same pattern with a cap transmitter — a quick follow-up. |
+| **remote cap transfer** | `lock` + `activate` | ✅ | Same pattern with a cap transmitter. Fired live 2026-07-25 — see §3. |
 | **create-fleet** (form up, become boss) | `fleet/create` + `bound-fleet` read | ✅ | Argless; done once `inFleet` reads true. |
 | **invite-to-fleet** (invite a known pilot) | `fleet/invite` (inviteeCharID) | ✅ | Picks from the local known-pilots roster; requires being in a fleet. |
 | **join-fleet** (accept a pending invite) | `fleet/invite/accept` + `bound-fleet` read | ✅ | Reactive — keeps accepting until `inFleet` true (bounded). The multibox alt-fleeting loop: char 1 create+invite, alts join. |
@@ -107,12 +107,12 @@ made hunt buildable:
 | **hunt-player** (roam ≤N jumps from home, local-chat watch, d-scan sweep, warp down hits, engage) | local roster read + ConeScan + graph + engage core | ✅ | Home = start system (board); ConeScan fired per-tick while hunting — first LIVE use of an R104 scan write, owed a QA pass. |
 | richer target filters (corp/alliance/standings, ignore-list) | snapshot fields exist | 🛠️ | The snapshot already carries corp/alliance per ship; needs Arg shapes + pickers. |
 | probe-scan localization (combat probes, real scan-down) | R104 probe writes (never fired live) | ❓ | The d-scan+warp loop makes it unnecessary here; probes would only add docked/deep-safe coverage. |
-| tackle awareness (point/scram the target before guns) | `activate` on a fitted disruptor | 🟢 | Module-group regex on "warp disruptor/scrambler", activate first in the engage order. |
+| tackle awareness (point/scram the target before guns) | `activate` on a fitted disruptor | ✅ | Module-group regex on "warp disruptor/scrambler", activate first in the engage order. Point AND web fired live 2026-07-25 — see §3. |
 
 ### social — talking — send-chat ✅ SHIPPED 2026-07-24
 | Block | Backing | Status | Notes |
 |---|---|---|---|
-| **send-chat** (say one line in local/corp) | verified R7 `/chat/:channel/send` | ✅ | One-shot by design (no readable echo to confirm). Inside a branch = "announce when a check holds". |
+| **send-chat** (say one line in local/corp) | verified R7 `/chat/:channel/send` | ✅ | Fired live 2026-07-25: read back out of the local backlog with the right sender. Inside a branch = "announce when a check holds". |
 | chat as a WATCH RESPONSE ("if shields drop, call for help in corp") | same send | 🛠️ | Needs an `InterruptResponse` variant carrying text — the branch composition covers most of it today. |
 | private/named channels, EVE-mail | LSC joined-channel writes ❓ | ❓ | Only local/corp are plumbed on the BFF chat route. |
 | **alert the player** response (browser notification / sound) | client-only | 🛠️ | Still the best "get a human" primitive — pairs with server-bot vitals. |
@@ -283,6 +283,41 @@ the intended workflow — miner mines, support ship sits in fleet running its co
 and compressor, miner compresses — so `join-fleet` and the fleet-mate half of
 `compress-ore` are both proven.
 
+### The last three unfired calls, fired (2026-07-25)
+
+Everything below was shipped as "plumbed, unit-tested, never fired live". All
+three are now proven against the running server, and — as with the fleet blocks
+— each was judged by a STATE DELTA, never by a 200.
+
+**send-chat.** A line into local came back out of the `local_30005239` backlog
+with the right sender. Worth recording what the same pass showed: the gateway's
+`/chat/send` calls `broadcastLocalMessage` DIRECTLY, so it never reaches
+`executeChatCommand`. A slash command typed by a bot is published as chat text
+and never dispatched. That is the right call — a bot must not be able to run GM
+commands — but it means the send-chat block cannot be used to drive them.
+
+**tidy-hangar (StackAll).** Split 250 Scordite off a stack to make a second row,
+then stacked: 73,416 + 250 → one row of 73,666.
+
+**tackle + remote cap.** Test Pilot in an Astero — Warp Disruptor I (group 52),
+Stasis Webifier I (group 65), Small Remote Capacitor Transmitter I (group 67),
+all three ONLINE and picked up by `resolveDefenseModuleIDs` /
+`resolveRemoteRepModuleIDs` — against Gaston in a Hulk, in Aring (0.267, so
+lowsec: the emulator's CONCORD response is gated at 0.5 and never fires).
+
+| what | evidence |
+| --- | --- |
+| **point** | cycles in `activeModuleIDs`, and the target's own warp attempt came back `You cannot warp because you are warp scrambled` |
+| **web** | cycles, and the target's speed fell 200 → 101 m/s under it (Stasis Webifier I is −50%), recovering to 151 once it was switched off |
+| **remote cap** | cycles, and the SENDER's capacitor paid for it: 0.876 → 0.610 over ~21 s of transfer |
+
+⚠ **The range gap is real, and this is what it looks like.** At 17.9 km the point
+came on but the web and the transmitter both refused
+`TargetNotWithinRangeGeneric` — correct, they are 10 km and ~6 km modules. Only
+after closing to ~2 km did the whole ladder run. A bot that locks whatever is on
+grid and fires will land its point and get a refusal from everything else. See
+gap 5 below: this is no longer a hunch.
+
 ## 4. Remaining gaps, ranked (refreshed 2026-07-25)
 
 1. **industry jobs** (install / deliver, 🔌) — the last untouched play loop, and
@@ -297,9 +332,12 @@ and compressor, miner compresses — so `join-fleet` and the fleet-mate half of
 4. **richer PvP target filters** (corp / alliance / an ignore list, 🛠️) — the
    snapshot already carries `corporationID`/`allianceID` per ship; this is Arg
    shapes and pickers, not new reads. The one-pilot `only` filter exists.
-5. **close the distance in the PvP blocks** (🟢) — neither camp nor hunt burns
-   toward a target that is on grid but out of range; the tackle bound keeps that
-   safe, but an approach would make both far more effective.
+5. **close the distance in the PvP blocks** (🟢) — ⬆ PROMOTED: this is now
+   measured, not suspected. Neither camp nor hunt burns toward a target that is
+   on grid but out of range, and at 17.9 km the live run got the point on and
+   `TargetNotWithinRangeGeneric` from both the web and the remote cap. The
+   tackle bound keeps that safe (it gives up and shoots), but the engage ladder
+   only really works inside ~10 km, so `flight/approach` belongs in it.
 6. **missions-completed ≥ N condition** (🛠️) — needs the journal read gated in.
 7. **mine across belts / the constellation** (🛠️) — belt rotation across systems.
 8. **ice / gas harvester variants** (🔌) — mostly the equipment picker widening.
