@@ -432,3 +432,60 @@ reading it. Both counters and the latch are carried now, and a test pins it.
 **Clean run afterwards**, from 25 km: point on at **19.85 km** (first attempt,
 inside its own optimal), web on by **5.4 km** with the target's max velocity
 halved, guns after. Every stage is in the screenshots.
+
+## 6. Bug sweep across the other blocks (2026-07-26)
+
+Having found three faults in the PvP ladder by watching it run, I swept the rest
+of the deciders for the same shapes rather than reading them line by line. Two of
+the four classes turned up real bugs.
+
+### ⚠ The remote blocks could fire into nothing, forever
+
+`remote-rep`, `orbit-and-boost` and `remote-cap` each issued their activate and
+returned `mem` **unchanged**. A module that would not come on was found idle
+again next tick and re-fired — no counter, no progress, no reason surfaced. And
+neither block can finish while it is failing: remote-rep reports `done` only when
+everyone on grid is full, remote-cap when everyone has cap to spare. **A
+fleet-mate parked out of reach was an infinite loop.**
+
+Neither had a range check either, though a lock reaches far further than remote
+assistance does (measured: a Small Remote Capacitor Transmitter I refused at
+17.9 km, ran at 2.2 km). Both now close on a mate out of reach, once per target,
+and do not spend an attempt on a module they can see cannot reach.
+
+The bound counts **consecutive** failures only — a module observed cycling refills
+the budget. Without that the fix would itself be a bug: a bot that stops repping
+mid-fight after three cycles.
+
+`salvage-wrecks` was already doing this correctly (`dist > SALVAGE_RANGE_M` →
+wait), which is what the fix was modelled on.
+
+### ⚠ A roaming hunt went progressively blind
+
+`visitedHits` — the itemIDs of scanner hits already chased — rode along on every
+jump. A hunt that returned to a system it had swept before still counted those
+hits as visited and would not chase them, though the ship in question is a live
+target now. The longer the roam ran, the less of its hunting ground it would look
+at. The list also grew with no cap, unlike `triedItemIDs`.
+
+Leaving a system now drops everything scoped to it. The vantage-point branch
+already reset the list for a weaker reason, so the precedent was there.
+
+### Swept and clean
+
+- **Side-effecting ticks returning memory unchanged** — mechanical sweep of every
+  `return tick(...)` carrying an `activate`/`lock`/`warp`/… action found exactly
+  two sites beyond the ones fixed: the salvager (range-guarded, above) and
+  `fight-the-rats`' guns.
+- **Watch responses** — `repair` re-fires each tick by design, and local
+  repairers have no target and no range, so there is nothing to bound.
+
+### Deliberately NOT changed: the guns
+
+`fight-the-rats` and the engage ladder re-fire idle guns with memory unchanged,
+the same shape as the bug above. Here the re-fire is **correct**: a gun drops out
+of `activeModuleIDs` between cycles and has to be switched on again, so bounding
+it would stop the bot shooting. The right guard is a range check — and gun ranges
+run from 2 km blasters to 250 km artillery, so picking one number would repeat the
+`POINT_RANGE_M` mistake exactly. It needs the fitted weapon's own optimal, which
+the client does not currently carry. Left alone on purpose.
