@@ -826,7 +826,7 @@ test("attack-player: the tackle budget SURVIVES a long burn — the live failure
     mem = t.nextMem;
   }
   assert.ok(!burn.some((k) => k === "activate:650"), `the point must not be fired at 60 km; got ${burn.join(",")}`);
-  assert.ok((mem["tackleTries"] ?? 0) === 0, "and nothing may be charged to the budget for it");
+  assert.ok((mem["pointTries"] ?? 0) === 0, "and nothing may be charged to the point's budget for it");
 
   // Now it has arrived. Tackle must still be available.
   const arrived = attack(attackStep, world(near), mem, {});
@@ -876,7 +876,7 @@ test("attack-player: out of web range the POINT still fires and the web does not
   });
   const next = attack(attackStep, withPoint, point.nextMem, {});
   assert.ok(next.action.kind === "activate" && next.action.moduleID === 700, "the web is skipped for range, so the guns get the tick");
-  assert.equal(next.nextMem["tackleTries"], point.nextMem["tackleTries"], "and the skip costs nothing from the tackle budget");
+  assert.equal(next.nextMem["webTries"], point.nextMem["webTries"], "and the skip costs nothing from the web's budget");
 });
 
 test("attack-player: once inside web range the web goes on", () => {
@@ -893,14 +893,57 @@ test("attack-player: once inside web range the web goes on", () => {
   assert.ok(t.action.kind === "activate" && t.action.moduleID === 660);
 });
 
+test("attack-player: a struggling POINT must not disarm the web — the second live failure", () => {
+  // ⚠ WATCHED HAPPEN, 2026-07-26, with the range checks already in. The point and
+  // the web shared ONE counter, so the point spending it — coming on late, after
+  // refusals in the band just past its optimal — left the web permanently idle.
+  // Observed: point cycling, web still off, at a range of 230 METRES.
+  const prey = playerShip(801, 90001, IN_RANGE);
+  const t = attack(
+    attackStep,
+    obs({
+      // The point is up; only the web is idle.
+      snapshot: snapshot([prey], { activeModuleIDs: [650] }),
+      lockedTargetIDs: [801], weaponModuleIDs: [700], tackleModuleIDs: [650], webModuleIDs: [660],
+    }),
+    // Memory from a fight where the point used every one of ITS attempts.
+    { targetID: 801, lockIssued: true, waited: 0, dronesOn: null, approached: 801, pointTries: 3 },
+    {},
+  );
+  assert.ok(
+    t.action.kind === "activate" && t.action.moduleID === 660,
+    "the web has its own budget and must still fire",
+  );
+});
+
+test("attack-player: each half of the tackle is bounded on its own", () => {
+  // Neither counter may leak into the other, in either direction.
+  const prey = playerShip(801, 90001, IN_RANGE);
+  const world = obs({
+    snapshot: snapshot([prey], { activeModuleIDs: [] }),
+    lockedTargetIDs: [801], weaponModuleIDs: [700], tackleModuleIDs: [650], webModuleIDs: [660],
+  });
+  let mem: MacroMemory = { targetID: 801, lockIssued: true, waited: 0, dronesOn: null, approached: 801 };
+  const picked: number[] = [];
+  for (let i = 0; i < 10; i++) {
+    const t = attack(attackStep, world, mem, {});
+    if (t.action.kind === "activate") picked.push(t.action.moduleID);
+    mem = t.nextMem;
+  }
+  assert.equal(picked.filter((m) => m === 650).length, 3, "the point gets its three");
+  assert.equal(picked.filter((m) => m === 660).length, 3, "and the web gets three of its own");
+  assert.ok(picked.includes(700), "then the guns get the tick");
+});
+
 test("attack-player: a NEW target gets a fresh tackle try (the bound resets)", () => {
   const first = playerShip(801, 90001);
   const second = playerShip(802, 90002);
   const world = obs({ snapshot: snapshot([second]), lockedTargetIDs: [802], weaponModuleIDs: [700], tackleModuleIDs: [650] });
   // Memory is from a spent fight with 801, which has left the grid.
-  const t = attack(attackStep, world, { targetID: 801, lockIssued: true, waited: 0, dronesOn: null, tackleTries: 3 }, {});
+  const t = attack(attackStep, world, { targetID: 801, lockIssued: true, waited: 0, dronesOn: null, pointTries: 3, webTries: 3 }, {});
   assert.ok(t.action.kind === "lock" && t.action.targetID === 802);
-  assert.equal(t.nextMem["tackleTries"], undefined, "a re-pick clears the spent tackle counter");
+  assert.equal(t.nextMem["pointTries"], undefined, "a re-pick clears the spent tackle counters");
+  assert.equal(t.nextMem["webTries"], undefined);
   assert.ok(first.itemID === 801);
 });
 
@@ -920,6 +963,32 @@ test("hunt-player: the tackle counter survives ticks mid-fight", () => {
   }
   assert.equal(picked.filter((m) => m === 650).length, 3, "the bound counts across ticks inside the hunt too");
   assert.ok(picked.includes(700));
+});
+
+test("hunt-player: the BURN is remembered across ticks too, not re-issued forever", () => {
+  // ⚠ The hunt block hand-copies the combat keys into the engage, so anything
+  // engagePrey remembers has to be listed there or it resets every tick. When
+  // `approached` was missed, the hunt re-issued the approach on every single tick
+  // — and since only one action fires per tick, that starves the whole ladder:
+  // the bot would burn toward its target and never shoot it.
+  const prey = playerShip(801, 90001, 30000);
+  const world = obs({
+    snapshot: snapshot([prey], { activeModuleIDs: [] }),
+    lockedTargetIDs: [801], weaponModuleIDs: [700], tackleModuleIDs: [650],
+    localPlayers: [{ characterID: 90001, name: "Prey" }],
+  });
+  let mem: MacroMemory = { targetID: 801, lockIssued: true, waited: 0, dronesOn: null, visitedHits: "999" };
+  const kinds: string[] = [];
+  for (let i = 0; i < 5; i++) {
+    const t = hunt(huntStep, world, mem, HUNT_BOARD);
+    kinds.push(t.action.kind);
+    mem = t.nextMem;
+  }
+  assert.equal(
+    kinds.filter((k) => k === "approach").length,
+    1,
+    `the burn is issued once inside the hunt as well; got ${kinds.join(",")}`,
+  );
 });
 
 // ── Movement extras, cargo extras, cap chain ─────────────────────────────────

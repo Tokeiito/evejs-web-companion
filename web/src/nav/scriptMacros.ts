@@ -1989,9 +1989,13 @@ const ENGAGE_CLOSE_ABOVE_M = 9_000;
 const WEB_RANGE_M = 10_000;
 
 /**
- * How far a point reaches. Group 52 holds both Warp Disruptors (~20 km) and Warp
- * Scramblers (~9 km), so this is the GENEROUS end: a disruptor must not be held
- * back on the chance that the fitted module is a scram.
+ * How far a point reaches: a Warp Disruptor I's own optimal. Group 52 also holds
+ * the Warp Scramblers (~9 km), and this deliberately does NOT stretch to cover
+ * both — a disruptor must not be held back on the chance the fitted module is a
+ * scram, but nor should the limit sit ABOVE what a disruptor can do. Measured:
+ * set to 24 km, the engage kept firing into the 20-24 km band and the refusals
+ * were charged to the budget, which is the very thing the range check exists to
+ * prevent.
  *
  * ⚠ THIS IS WHAT KEEPS THE TACKLE BUDGET HONEST, and the live run that earned it
  * is worth the paragraph. The bot undocked, closed on its target, said "Guns on
@@ -2006,7 +2010,7 @@ const WEB_RANGE_M = 10_000;
  * a shot we can see is out of reach is not taken and not counted, and the budget
  * survives the approach intact.
  */
-const POINT_RANGE_M = 24_000;
+const POINT_RANGE_M = 20_000;
 
 /**
  * The shared PvP engage: nearest allowed player first — lock it (bounded), tackle
@@ -2093,19 +2097,23 @@ function engagePrey(
   }
 
   // TACKLE FIRST — hold them still before anything else. Bounded: after
-  // MAX_TACKLE_ATTEMPTS ticks of a module that will not come on — refused for
-  // any reason the server does not say out loud — the engage stops asking and
-  // shoots, so a stubborn point can never cost the whole fight.
+  // MAX_TACKLE_ATTEMPTS ticks of a module that will not come on — refused for a
+  // reason the server does not say out loud — the engage stops asking and
+  // shoots, so a stubborn module can never cost the whole fight.
   //
-  // Both halves wait for their own reach, and a shot skipped for range is NOT an
-  // attempt. That is what keeps the budget for real mysteries instead of
-  // spending it on refusals we could see coming (see POINT_RANGE_M).
+  // ⚠ THE POINT AND THE WEB EACH GET THEIR OWN BUDGET, and that separation is
+  // load-bearing. They shared one counter, and the sharing quietly meant "if the
+  // point struggles, the web never fires at all": watched live, the point spent
+  // the last of a shared budget coming on at ~20 km, and the web was still idle
+  // at 230 METRES. One module's bad luck must not disarm the other.
+  //
+  // Both also wait for their own reach, and a shot skipped for range is NOT an
+  // attempt — that keeps each budget for real mysteries instead of spending it on
+  // refusals we could see coming (see POINT_RANGE_M).
   const inReach = (limit: number): boolean => rangeToTarget === null || rangeToTarget <= limit;
-  const tackleTries = num(mem, "tackleTries") ?? 0;
-  if (tackleTries < MAX_TACKLE_ATTEMPTS) {
-    const idlePoint = inReach(POINT_RANGE_M)
-      ? (obs.tackleModuleIDs ?? []).find((id) => !active.has(id))
-      : undefined;
+  const pointTries = num(mem, "pointTries") ?? 0;
+  if (pointTries < MAX_TACKLE_ATTEMPTS && inReach(POINT_RANGE_M)) {
+    const idlePoint = (obs.tackleModuleIDs ?? []).find((id) => !active.has(id));
     if (idlePoint !== undefined) {
       return tick(
         { kind: "activate", moduleID: idlePoint, targetID },
@@ -2113,14 +2121,13 @@ function engagePrey(
         phase,
         ACTING,
         true,
-        { ...mem, tackleTries: tackleTries + 1 },
+        { ...mem, pointTries: pointTries + 1 },
       );
     }
-    // The web reaches half as far as the point, so it waits longer — but it is
-    // the same rule, and the same reason the budget is still intact when it does.
-    const idleWeb = inReach(WEB_RANGE_M)
-      ? (obs.webModuleIDs ?? []).find((id) => !active.has(id))
-      : undefined;
+  }
+  const webTries = num(mem, "webTries") ?? 0;
+  if (webTries < MAX_TACKLE_ATTEMPTS && inReach(WEB_RANGE_M)) {
+    const idleWeb = (obs.webModuleIDs ?? []).find((id) => !active.has(id));
     if (idleWeb !== undefined) {
       return tick(
         { kind: "activate", moduleID: idleWeb, targetID },
@@ -2128,7 +2135,7 @@ function engagePrey(
         phase,
         ACTING,
         true,
-        { ...mem, tackleTries: tackleTries + 1 },
+        { ...mem, webTries: webTries + 1 },
       );
     }
   }
@@ -2249,14 +2256,19 @@ const huntPlayer: MacroDecider = (step, obs, mem, board) => {
   const prey = preyOnGrid(snapshot, only);
   if (prey.length > 0) {
     // Carry ONLY the combat keys into the engage (the search keys would confuse
-    // it), and carry ALL of them — `tackleTries` included, or the point's attempt
-    // bound would reset every tick and never let the guns through.
+    // it), and carry ALL of them — every bound and every latch included, or they
+    // reset each tick and stop bounding anything. `pointTries`/`webTries` would
+    // let the modules be re-tried forever and never let the guns through;
+    // `approached` would re-issue the burn every tick, which starves the ladder
+    // the same way. ⚠ ANY new key engagePrey remembers has to be added here too.
     const combatKeys = {
       targetID: mem["targetID"],
       lockIssued: mem["lockIssued"],
       waited: mem["waited"],
       dronesOn: mem["dronesOn"],
-      tackleTries: mem["tackleTries"],
+      pointTries: mem["pointTries"],
+      webTries: mem["webTries"],
+      approached: mem["approached"],
     };
     return engagePrey(obs, combatKeys, "Attacking", prey);
   }
