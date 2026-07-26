@@ -1707,6 +1707,36 @@ const sellItem: MacroDecider = (step, obs, mem) => {
 const REMOTE_REP_HURT = 0.95; // anyone not essentially full is worth a rep
 const ORBIT_BOOST_RANGE_M = 2000; // stay close so remote reps reach
 
+/**
+ * How far remote assistance reaches — remote reps and cap transmitters alike.
+ *
+ * ⚠ DELIBERATELY THE SMALL END, with margin, in the style of `SALVAGE_RANGE_M`.
+ * The small modules sit around 5-6 km and the larger ones reach further, so a
+ * ship fitted with a big one closes a little more than it strictly had to; that
+ * costs seconds. Being generous costs correctness, which is the mistake
+ * `POINT_RANGE_M` records: a limit set ABOVE what the module can do turns the
+ * range check into a machine for spending the attempt budget on refusals.
+ *
+ * Measured live: a Small Remote Capacitor Transmitter I refused
+ * `TargetNotWithinRangeGeneric` at 17.9 km and ran fine at 2.2 km.
+ * `ORBIT_BOOST_RANGE_M` (2 km) sits comfortably inside this, so orbit-and-boost's
+ * hold always satisfies it.
+ */
+const REMOTE_ASSIST_RANGE_M = 5000;
+
+/**
+ * How many times one target may be offered a remote module that will not come on.
+ *
+ * ⚠ THIS BOUND WAS MISSING ENTIRELY. Both remote blocks used to return `mem`
+ * UNCHANGED after issuing an activate, so a refused module was re-found idle on
+ * the next tick and re-fired — forever, with no counter, no progress and no
+ * reason surfaced. remote-rep only reports `done` when everyone on grid is full
+ * and remote-cap when everyone has cap to spare, so neither could ever finish
+ * either: a mate parked out of reach was an infinite loop, which is the exact
+ * failure mode the house rule about bounding every branch exists to prevent.
+ */
+const MAX_REMOTE_ASSIST_ATTEMPTS = 3;
+
 /** Friendly ships on grid: another player's hull, never an NPC, never your own. */
 function friendliesOnGrid(snapshot: SpaceSnapshot | null, selfID: number | null): readonly SpaceEntity[] {
   if (snapshot === null) {
@@ -1746,11 +1776,21 @@ function remoteRepIDs(obs: ScriptObservation): readonly number[] {
 }
 
 /**
- * The shared logistics action: lock the hurt fleet-mate (bounded), then switch on
- * any idle remote rep onto it. Returns the tick to emit, or null when there is
- * nobody to rep right now — the caller decides what "nothing to rep" means.
+ * The shared logistics action: lock the hurt fleet-mate (bounded), close on them
+ * if the reps cannot reach (bounded), then switch on any idle remote rep onto it.
+ * Returns the tick to emit, or null when there is nobody to rep right now — the
+ * caller decides what "nothing to rep" means.
+ *
+ * `mayApproach` is false for orbit-and-boost: that block is ALREADY closing, by
+ * orbiting the anchor at `ORBIT_BOOST_RANGE_M`. Issuing an approach from in here
+ * as well would fight its own orbit command every tick.
  */
-function repHurtMate(obs: ScriptObservation, mem: MacroMemory, phase: string): MacroTick | null {
+function repHurtMate(
+  obs: ScriptObservation,
+  mem: MacroMemory,
+  phase: string,
+  mayApproach = true,
+): MacroTick | null {
   const snapshot = obs.snapshot ?? null;
   if (snapshot === null) {
     return null;
@@ -1762,7 +1802,16 @@ function repHurtMate(obs: ScriptObservation, mem: MacroMemory, phase: string): M
   const locked = (obs.lockedTargetIDs ?? []).includes(target.itemID);
   if (!locked) {
     if (num(mem, "repLockOn") !== target.itemID) {
-      return tick({ kind: "lock", targetID: target.itemID }, "Locking the hurt fleet-mate.", phase, ACTING, true, { ...mem, repLockOn: target.itemID, repWaited: 0 });
+      // A NEW mate resets everything counted per-target, or the last one's spent
+      // budget silently disarms the reps for this one (the bug the PvP ladder
+      // had, where a shared counter outlived the target it was counting for).
+      return tick({ kind: "lock", targetID: target.itemID }, "Locking the hurt fleet-mate.", phase, ACTING, true, {
+        ...mem,
+        repLockOn: target.itemID,
+        repWaited: 0,
+        repTries: 0,
+        repApproached: null,
+      });
     }
     const waited = (num(mem, "repWaited") ?? 0) + 1;
     if (waited > MAX_LOCK_WAIT_TICKS) {
@@ -1770,10 +1819,40 @@ function repHurtMate(obs: ScriptObservation, mem: MacroMemory, phase: string): M
     }
     return tick(WAIT, "Waiting for the lock.", phase, ACTING, true, { ...mem, repWaited: waited });
   }
+  // Reps have a range, and a lock reaches much further than they do. Close first
+  // (once per target — `approach` is a standing follow order, not a nudge), and
+  // do not spend an attempt on a module we can see cannot reach.
+  const rangeToMate = measureSpace(snapshot)?.distances.get(target.itemID) ?? null;
+  const outOfReach = rangeToMate !== null && rangeToMate > REMOTE_ASSIST_RANGE_M;
+  if (outOfReach && mayApproach && num(mem, "repApproached") !== target.itemID) {
+    return tick(
+      { kind: "approach", targetID: target.itemID },
+      "Closing in — too far out for the reps to reach.",
+      phase,
+      ACTING,
+      true,
+      { ...mem, repApproached: target.itemID },
+    );
+  }
   const active = new Set(snapshot.ship?.activeModuleIDs ?? []);
-  const idle = remoteRepIDs(obs).find((id) => !active.has(id));
-  if (idle !== undefined) {
-    return tick({ kind: "activate", moduleID: idle, targetID: target.itemID }, "Running the remote reps on the fleet-mate.", phase, ACTING, true, mem);
+  // ⚠ CONSECUTIVE failures only. A rep that HAS come on refills the budget, so
+  // the bound can only ever stop a module that is not landing — never one that is
+  // cycling normally and simply needs switching on again. Get this wrong and the
+  // "fix" becomes a bot that stops repping mid-fight after three cycles.
+  const landed = remoteRepIDs(obs).some((id) => active.has(id));
+  const repTries = landed ? 0 : num(mem, "repTries") ?? 0;
+  if (!outOfReach && repTries < MAX_REMOTE_ASSIST_ATTEMPTS) {
+    const idle = remoteRepIDs(obs).find((id) => !active.has(id));
+    if (idle !== undefined) {
+      return tick(
+        { kind: "activate", moduleID: idle, targetID: target.itemID },
+        "Running the remote reps on the fleet-mate.",
+        phase,
+        ACTING,
+        true,
+        { ...mem, repTries: repTries + 1 },
+      );
+    }
   }
   return tick(WAIT, "Repping the fleet-mate.", phase, ACTING, true, mem);
 }
@@ -1833,7 +1912,8 @@ const orbitAndBoost: MacroDecider = (_step, obs, mem) => {
       { ...mem, orbiting: anchor.itemID },
     );
   }
-  const rep = repHurtMate(obs, mem, "Boosting");
+  // No approach from in here — the orbit above is this block's way of closing.
+  const rep = repHurtMate(obs, mem, "Boosting", false);
   if (rep !== null) {
     return rep;
   }
@@ -2561,7 +2641,14 @@ const remoteCap: MacroDecider = (_step, obs, mem) => {
   const locked = (obs.lockedTargetIDs ?? []).includes(target.itemID);
   if (!locked) {
     if (num(mem, "capLockOn") !== target.itemID) {
-      return tick({ kind: "lock", targetID: target.itemID }, "Locking the fleet-mate who needs cap.", "Feeding cap", ACTING, true, { ...mem, capLockOn: target.itemID, capWaited: 0 });
+      // A new mate resets what is counted per-target (see repHurtMate).
+      return tick({ kind: "lock", targetID: target.itemID }, "Locking the fleet-mate who needs cap.", "Feeding cap", ACTING, true, {
+        ...mem,
+        capLockOn: target.itemID,
+        capWaited: 0,
+        capTries: 0,
+        capApproached: null,
+      });
     }
     const waited = (num(mem, "capWaited") ?? 0) + 1;
     if (waited > MAX_LOCK_WAIT_TICKS) {
@@ -2569,10 +2656,35 @@ const remoteCap: MacroDecider = (_step, obs, mem) => {
     }
     return tick(WAIT, "Waiting for the lock.", "Feeding cap", ACTING, true, { ...mem, capWaited: waited });
   }
+  // Same two rules as repHurtMate: a transmitter has a range the lock does not,
+  // and an activation that will not land has to be bounded.
+  const rangeToMate = measureSpace(snapshot)?.distances.get(target.itemID) ?? null;
+  const outOfReach = rangeToMate !== null && rangeToMate > REMOTE_ASSIST_RANGE_M;
+  if (outOfReach && num(mem, "capApproached") !== target.itemID) {
+    return tick(
+      { kind: "approach", targetID: target.itemID },
+      "Closing in — too far out to pass them cap.",
+      "Feeding cap",
+      ACTING,
+      true,
+      { ...mem, capApproached: target.itemID },
+    );
+  }
   const active = new Set(snapshot.ship?.activeModuleIDs ?? []);
-  const idle = transmitters.find((id) => !active.has(id));
-  if (idle !== undefined) {
-    return tick({ kind: "activate", moduleID: idle, targetID: target.itemID }, "Feeding them capacitor.", "Feeding cap", ACTING, true, mem);
+  // Consecutive failures only — see the note in repHurtMate.
+  const capTries = transmitters.some((id) => active.has(id)) ? 0 : num(mem, "capTries") ?? 0;
+  if (!outOfReach && capTries < MAX_REMOTE_ASSIST_ATTEMPTS) {
+    const idle = transmitters.find((id) => !active.has(id));
+    if (idle !== undefined) {
+      return tick(
+        { kind: "activate", moduleID: idle, targetID: target.itemID },
+        "Feeding them capacitor.",
+        "Feeding cap",
+        ACTING,
+        true,
+        { ...mem, capTries: capTries + 1 },
+      );
+    }
   }
   return tick(WAIT, "Feeding the fleet-mate cap.", "Feeding cap", ACTING, true, mem);
 };

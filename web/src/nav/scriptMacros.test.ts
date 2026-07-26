@@ -438,6 +438,90 @@ test("remote-rep: hurt friendly -> lock then rep it; everyone full -> done", () 
   assert.equal(remoteRep(repStep, obs({ snapshot: snapshot([full]), remoteShieldRepairerIDs: [600] }), {}, {}).outcome.kind, "done");
 });
 
+// ── Remote assistance has a range, and a bound ───────────────────────────────
+//
+// ⚠ BOTH REMOTE BLOCKS USED TO RETURN `mem` UNCHANGED after issuing an activate.
+// A module that would not come on was found idle again next tick and re-fired,
+// forever: no counter, no progress, no reason surfaced. And because remote-rep
+// only reports `done` when everyone on grid is full (remote-cap likewise), a mate
+// parked out of reach was an infinite loop — the bot would sit there locking and
+// firing into nothing for as long as it was left running.
+
+test("remote-rep: a mate out of rep range is CLOSED ON, not repped hopefully", () => {
+  const far = entity({ itemID: 7001, kind: "ship", characterID: 5001, shieldRatio: 0.4, armorRatio: 1, hullRatio: 1, position: { x: 40000, y: 0, z: 0 } });
+  const world = obs({ snapshot: snapshot([far]), remoteShieldRepairerIDs: [600], lockedTargetIDs: [7001] });
+  const t = remoteRep(repStep, world, { repLockOn: 7001, repWaited: 0 }, {});
+  assert.ok(t.action.kind === "approach" && t.action.targetID === 7001, "it must close before it fires");
+  assert.match(t.why, /Closing in/);
+  // Issued once, then it stops asking and lets the rest of the tick happen.
+  const next = remoteRep(repStep, world, t.nextMem, {});
+  assert.notEqual(next.action.kind, "approach");
+  assert.equal(next.nextMem["repTries"] ?? 0, 0, "and an out-of-reach tick spends no budget");
+});
+
+test("remote-rep: reps that never come on are BOUNDED (this was an infinite loop)", () => {
+  const hurt = entity({ itemID: 7001, kind: "ship", characterID: 5001, shieldRatio: 0.4, armorRatio: 1, hullRatio: 1 });
+  const world = obs({
+    // The rep never appears in activeModuleIDs — the shape of a silent refusal.
+    snapshot: snapshot([hurt], { activeModuleIDs: [] }),
+    remoteShieldRepairerIDs: [600], lockedTargetIDs: [7001],
+  });
+  let mem: MacroMemory = { repLockOn: 7001, repWaited: 0 };
+  let fired = 0;
+  for (let i = 0; i < 8; i++) {
+    const t = remoteRep(repStep, world, mem, {});
+    if (t.action.kind === "activate") fired += 1;
+    mem = t.nextMem;
+  }
+  assert.equal(fired, 3, `the rep is offered exactly MAX_REMOTE_ASSIST_ATTEMPTS times; got ${fired}`);
+});
+
+test("remote-rep: a rep that IS cycling refills the budget — no mid-fight stall", () => {
+  // The bound must only ever catch a module that is not landing. A ship with two
+  // reps where one is already running has to be able to switch the other on, and
+  // keep doing so, however long the fight lasts.
+  const hurt = entity({ itemID: 7001, kind: "ship", characterID: 5001, shieldRatio: 0.4, armorRatio: 1, hullRatio: 1 });
+  const world = obs({
+    snapshot: snapshot([hurt], { activeModuleIDs: [600] }), // 600 landed, 601 idle
+    remoteShieldRepairerIDs: [600, 601], lockedTargetIDs: [7001],
+  });
+  // Arrive with the budget already spent from an earlier dry spell.
+  let mem: MacroMemory = { repLockOn: 7001, repWaited: 0, repTries: 3 };
+  let fired = 0;
+  for (let i = 0; i < 6; i++) {
+    const t = remoteRep(repStep, world, mem, {});
+    if (t.action.kind === "activate") fired += 1;
+    mem = t.nextMem;
+  }
+  assert.equal(fired, 6, "a landed rep means the budget is not spent — keep working the second one");
+});
+
+test("remote-rep: a NEW mate gets a fresh budget", () => {
+  const first = entity({ itemID: 7001, kind: "ship", characterID: 5001, shieldRatio: 0.4, armorRatio: 1, hullRatio: 1 });
+  const second = entity({ itemID: 7009, kind: "ship", characterID: 5009, shieldRatio: 0.3, armorRatio: 1, hullRatio: 1 });
+  // Memory from a spent attempt on 7001, which has since left the grid.
+  const t = remoteRep(
+    repStep,
+    obs({ snapshot: snapshot([second]), remoteShieldRepairerIDs: [600] }),
+    { repLockOn: 7001, repWaited: 0, repTries: 3, repApproached: 7001 },
+    {},
+  );
+  assert.ok(t.action.kind === "lock" && t.action.targetID === 7009);
+  assert.equal(t.nextMem["repTries"], 0, "the last mate's spent budget must not disarm the reps for this one");
+  assert.equal(t.nextMem["repApproached"], null);
+  assert.ok(first.itemID === 7001);
+});
+
+test("orbit-and-boost: closes by ORBITING — it must not also issue an approach", () => {
+  // Its orbit at ORBIT_BOOST_RANGE_M is how this block gets in range. An approach
+  // from the shared helper would fight that orbit command every tick.
+  const far = entity({ itemID: 7003, kind: "ship", characterID: 5002, shieldRatio: 0.4, armorRatio: 1, hullRatio: 1, position: { x: 40000, y: 0, z: 0 } });
+  const world = obs({ snapshot: snapshot([far]), remoteShieldRepairerIDs: [600], lockedTargetIDs: [7003] });
+  // `orbiting` already set, so the orbit is not re-issued and we reach the reps.
+  const t = orbitBoost(boostStep, world, { orbiting: 7003, repLockOn: 7003, repWaited: 0 }, {});
+  assert.notEqual(t.action.kind, "approach");
+});
+
 test("remote-rep: an NPC or your own hull is never a rep target", () => {
   const npc = entity({ itemID: 7002, kind: "ship", isNpc: true, shieldRatio: 0.2 });
   // No FRIENDLY is hurt (the NPC is skipped), so the block is done — never reps a rat.
@@ -1094,6 +1178,29 @@ test("remote-cap: feeds the EMPTIEST mate; all healthy is done; none fitted is b
 
   const noModule = remoteCapBlock(capStep, obs({ snapshot: snapshot([thirsty]), remoteCapModuleIDs: [] }), {}, {});
   assert.equal(noModule.outcome.kind, "blocked");
+});
+
+test("remote-cap: a mate out of reach is closed on, and the transfer is bounded", () => {
+  // The same two faults remote-rep had. Measured live: a Small Remote Capacitor
+  // Transmitter I refused TargetNotWithinRangeGeneric at 17.9 km.
+  const capStep: MacroStep = { id: "rc", kind: "macro", macro: "remote-cap", args: {} };
+  const far = entity({ itemID: 801, kind: "ship", characterID: 90001, isNpc: false, capacitorRatio: 0.2, position: { x: 30000, y: 0, z: 0 } });
+  const world = obs({ snapshot: snapshot([far]), lockedTargetIDs: [801], remoteCapModuleIDs: [640] });
+  const close = remoteCapBlock(capStep, world, { capLockOn: 801, capWaited: 0 }, {});
+  assert.ok(close.action.kind === "approach" && close.action.targetID === 801);
+  assert.match(close.why, /Closing in/);
+  assert.equal(close.nextMem["capTries"] ?? 0, 0, "out of reach spends no budget");
+
+  const near = entity({ itemID: 801, kind: "ship", characterID: 90001, isNpc: false, capacitorRatio: 0.2, position: { x: 1000, y: 0, z: 0 } });
+  const inRange = obs({ snapshot: snapshot([near], { activeModuleIDs: [] }), lockedTargetIDs: [801], remoteCapModuleIDs: [640] });
+  let mem: MacroMemory = { capLockOn: 801, capWaited: 0 };
+  let fired = 0;
+  for (let i = 0; i < 8; i++) {
+    const t = remoteCapBlock(capStep, inRange, mem, {});
+    if (t.action.kind === "activate") fired += 1;
+    mem = t.nextMem;
+  }
+  assert.equal(fired, 3, `the transmitter is offered exactly MAX_REMOTE_ASSIST_ATTEMPTS times; got ${fired}`);
 });
 
 const jettisonStep: MacroStep = { id: "jc", kind: "macro", macro: "jettison-cargo", args: {} };
