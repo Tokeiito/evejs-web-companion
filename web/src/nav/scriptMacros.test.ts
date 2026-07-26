@@ -1049,6 +1049,30 @@ test("hunt-player: the tackle counter survives ticks mid-fight", () => {
   assert.ok(picked.includes(700));
 });
 
+test("hunt-player: roaming to a new system forgets the old system's scanner hits", () => {
+  // ⚠ `visitedHits` used to ride along on every jump. A hunt that came back to a
+  // system it had already swept still counted those hits as visited and refused
+  // to chase them — so the longer it roamed, the more of its own hunting ground
+  // it was blind to. It also grew with no cap, unlike `triedItemIDs`.
+  const t = hunt(
+    huntStep,
+    obs({
+      snapshot: snapshot([]),
+      weaponModuleIDs: [700],
+      localPlayers: [],
+      huntRoam: { jumpsFromAnchor: 0, neighbors: [{ systemID: 30000144, jumpsFromAnchor: 1 }] },
+    }),
+    // Arrive carrying a long visited list and a half-finished chase.
+    { visitedHits: "111,222,333", vantageID: 555, chaseID: 333, chaseIssued: true, chaseSawWarp: true, chaseWaited: 4 },
+    HUNT_BOARD,
+  );
+  assert.ok(t.action.kind === "startSystemRoute" && t.action.systemID === 30000144);
+  assert.equal(t.nextMem["visitedHits"], undefined, "the old system's hits must not follow it");
+  assert.equal(t.nextMem["vantageID"], undefined, "nor the vantage point it was scanning from");
+  assert.equal(t.nextMem["chaseIssued"], undefined, "nor a chase that cannot be resolved over there");
+  assert.equal(t.nextMem["roamSystemID"], 30000144, "and the roam's own state is set");
+});
+
 test("hunt-player: the BURN is remembered across ticks too, not re-issued forever", () => {
   // ⚠ The hunt block hand-copies the combat keys into the engage, so anything
   // engagePrey remembers has to be listed there or it resets every tick. When

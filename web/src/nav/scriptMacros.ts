@@ -2459,13 +2459,25 @@ const huntPlayer: MacroDecider = (step, obs, mem, board) => {
     }
     choice = back;
   }
+  // ⚠ LEAVING THE SYSTEM DROPS EVERYTHING SCOPED TO IT, and `visitedHits` is the
+  // one that matters. It holds the itemIDs of scanner hits already chased, and it
+  // used to ride along on every jump — so a hunt that came back to a system it had
+  // swept before still counted those hits as visited and refused to chase them,
+  // even though the ship in question is a live target now. The longer the roam
+  // ran, the more of its own hunting ground it went blind to. (It also grew
+  // without a cap, unlike `triedItemIDs`, which has MAX_TRIED_STACKS.)
+  //
+  // The vantage-point branch above already resets the list for a much weaker
+  // reason — "a new vantage sees the system from somewhere new" — so a whole new
+  // system certainly qualifies. The chase keys go too: a chase in the system we
+  // are leaving cannot be resolved in the one we are arriving at.
   return tick(
     { kind: "startSystemRoute", systemID: choice.systemID },
     "Nobody around — roaming to the next system.",
     "Hunting",
     ACTING,
     true,
-    { ...carried, roamSystemID: choice.systemID, cameFromSystemID: obs.flightStatus?.solarSystemID ?? null },
+    { roamSystemID: choice.systemID, cameFromSystemID: obs.flightStatus?.solarSystemID ?? null },
   );
 };
 
