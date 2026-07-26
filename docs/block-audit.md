@@ -528,6 +528,9 @@ the first result of the run.
 | `request-mission` | ✅ a real courier offer on the table |
 | `accept-mission` gates | ✅ correct: turned down 4 × 60 m³ against a 120 m³ hold, and 10 jumps against a 6-jump ceiling — then **stopped with a player-readable reason** after `MAX_BLOCK_ATTEMPTS`, exactly as designed |
 | `load-mission-cargo` | ✅ package aboard — 3 units, 1,800 m³ of a 4,875 m³ hold, read back from the hold |
+| `travel-to-dropoff` | ✅ flew the **10 jumps** and docked at 60008332, the exact drop-off from the briefing |
+| `turn-in-mission` | ✅ hold emptied, then the journal went **empty** and the wallet moved **1,004,389,000 → 1,004,564,313 ISK (+175,313)** — completion proven by game state, not by a button press |
+| `return-to-agent` | ✅ set the destination straight back to the agent's station and rode the autopilot home |
 
 ### ⚠ The bug: a missing reading DECLINED a job
 
