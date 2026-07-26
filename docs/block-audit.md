@@ -404,3 +404,31 @@ not an attempt**.
 
 The web came on at 8.96 km — inside its 10 km reach, on a budget that had
 survived a 25 km burn. That is the whole fix in one number.
+
+### Two more, found the same way (2026-07-26, later)
+
+Watching a second and third run turned up two more faults that the range checks
+had *hidden* rather than fixed.
+
+**One shared budget meant "if the point struggles, the web never fires".**
+`POINT_RANGE_M` was set to 24 km to cover both halves of SDE group 52 (Warp
+Disruptors ~20 km, Warp Scramblers ~9 km). That put the limit ABOVE what a
+disruptor can actually do, so the engage kept firing into the 20–24 km band, the
+refusals were charged to the budget — and because the point and the web *shared*
+one counter, the point spending it left the web permanently disarmed. Observed
+live: point cycling, web idle, at a range of **230 metres**.
+
+Fixed twice over: the limit is now a disruptor's own 20 km optimal, and each half
+carries its own attempt count. One module's bad luck can no longer disarm the
+other.
+
+**`hunt-player` re-issued the burn every tick.** The hunt block hand-copies the
+combat keys into `engagePrey`, and `approached` was not on the list — so the
+latch reset every tick. With one action per tick, that starves the entire ladder:
+burn toward the target forever, never shoot it. The comment above that object
+warned about exactly this for the attempt counter; a key was added without
+reading it. Both counters and the latch are carried now, and a test pins it.
+
+**Clean run afterwards**, from 25 km: point on at **19.85 km** (first attempt,
+inside its own optimal), web on by **5.4 km** with the target's max velocity
+halved, guns after. Every stage is in the screenshots.
