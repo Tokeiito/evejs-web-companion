@@ -16,6 +16,7 @@ import type { SpaceEntity, SpaceSnapshot } from "../store/types.ts";
 import { BELT_ARRIVAL_RADIUS_M, holdItemIDs, isMineableRock } from "./miningBotLoop.ts";
 import {
   agentActionID,
+  cargoRoom,
   completeActionID,
   completed,
   findPackageStack,
@@ -553,6 +554,38 @@ const requestMission: MacroDecider = (step, obs, mem, board) => {
 // ── accept-mission ───────────────────────────────────────────────────────────
 // Gate the offer (cargo fits, trip length), then Accept — or Decline and ask
 // again, bounded. Done once the journal says the mission is accepted.
+/**
+ * Why this offer cannot be JUDGED yet, or null when every reading it needs is in.
+ *
+ * Only the blind cases live here. "The cargo will not fit" and "that is further
+ * than your limit" are real verdicts and stay in `gateOffer`; these are the ones
+ * where the bot has simply not been told yet, and the honest answer is to wait a
+ * tick rather than throw the job away.
+ */
+function unreadableOffer(
+  briefing: ScriptObservation["briefing"] | null,
+  obs: ScriptObservation,
+  maxJumps: number | null,
+): string | null {
+  if (briefing === null || briefing === undefined) {
+    return null; // no offer on the table at all — the caller asks for one
+  }
+  const isCourier = briefing.cargoTypeID !== null;
+  if (isCourier) {
+    if (briefing.cargoVolume === null) {
+      return "Waiting for the offer to say how big the cargo is.";
+    }
+    if (cargoRoom(obs.cargo ?? null) === null) {
+      return "Waiting for the ship to report its cargo hold.";
+    }
+  }
+  // The jump gate is only owed a reading when the player actually set a ceiling.
+  if (maxJumps !== null && briefing.destinationSystemID !== null && (obs.jumpsToDropoff ?? null) === null) {
+    return "Waiting for a route to the delivery point.";
+  }
+  return null;
+}
+
 const acceptMission: MacroDecider = (step, obs, mem, board) => {
   const agentID = stepAgentID(step, board);
   if (agentID === null) {
@@ -586,21 +619,49 @@ const acceptMission: MacroDecider = (step, obs, mem, board) => {
     });
   }
   const maxJumps = countArg(step, "maxJumps");
+  // ⚠ A READING WE DO NOT HAVE IS NOT A REASON TO TURN A JOB DOWN. Declining is
+  // an irreversible act against the agent — it burns the offer and starts a
+  // decline timer — so it must never be the answer to "I could not see".
+  //
+  // Watched live 2026-07-26: the first tick after docking gated on a cargo hold
+  // that had not been read yet and the bot DECLINED a perfectly good courier
+  // job, reason "Your ship did not report how much room its cargo hold has".
+  // `gateOffer` folds cannot-tell and fails-the-gate into one string, which is
+  // fine for a readout and wrong for a decision, so the unreadable cases are
+  // pulled out here and answered with a WAIT instead.
+  //
+  // Bounded like everything else: the wait spends a round, so a reading that
+  // never arrives ends as a blocked step with its own reason rather than a
+  // silent forever-wait.
+  const blind = unreadableOffer(briefing, obs, maxJumps);
+  if (blind !== null) {
+    if (rounds >= MAX_BLOCK_ATTEMPTS) {
+      return tick(WAIT, blind, "Accepting", {
+        kind: "blocked",
+        reason: `The bot could not read enough to judge the offer: ${blind}`,
+      });
+    }
+    return tick(WAIT, blind, "Accepting", ACTING, false, { ...mem, rounds: rounds + 1 });
+  }
   if (briefing !== null) {
     // A COURIER offer names cargo and gets the full volume + jumps gate; an
     // ENCOUNTER offer names none, so only the player's jump ceiling applies.
     const hasCargo = briefing.cargoTypeID !== null && briefing.cargoVolume !== null;
+    // ⚠ NO CEILING MEANS THE ROUTE DOES NOT MATTER. `gateOffer` turns a job down
+    // when it has no jump count at all — right when a limit is in play, wrong
+    // when there is none, because then the number was never going to be used.
+    // A stand-in 0 against an unbounded ceiling keeps that gate out of the way
+    // instead of declining a job over a number nobody asked about.
+    const jumpsForGate = maxJumps === null ? 0 : (obs.jumpsToDropoff ?? null);
     const reason = hasCargo
-      ? (maxJumps === null && obs.jumpsToDropoff === undefined
-          ? gateOffer(briefing, obs.cargo ?? null, 0, { agentID, agentName: null, agentStationID: 0, agentStationName: null, maxJumps: Number.MAX_SAFE_INTEGER, maxMissions: 0 })
-          : gateOffer(briefing, obs.cargo ?? null, obs.jumpsToDropoff ?? null, {
-              agentID,
-              agentName: null,
-              agentStationID: 0,
-              agentStationName: null,
-              maxJumps: maxJumps ?? Number.MAX_SAFE_INTEGER,
-              maxMissions: 0,
-            }))
+      ? gateOffer(briefing, obs.cargo ?? null, jumpsForGate, {
+          agentID,
+          agentName: null,
+          agentStationID: 0,
+          agentStationName: null,
+          maxJumps: maxJumps ?? Number.MAX_SAFE_INTEGER,
+          maxMissions: 0,
+        })
       : (maxJumps !== null && obs.jumpsToDropoff !== undefined && obs.jumpsToDropoff !== null && obs.jumpsToDropoff > maxJumps
           ? `The job is ${obs.jumpsToDropoff} jumps away and you set a limit of ${maxJumps}, so the bot turned it down.`
           : null);
