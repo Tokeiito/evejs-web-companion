@@ -242,10 +242,10 @@ Without it, `compress-ore` blocks with a plain reason rather than firing
 hopefully: the snapshot carries no facility reading, and an ABSENT reading is
 treated as "not a facility" everywhere (client type, decoder and block agree).
 
-### ⚠ The fleet blocks do not work — three bugs, two fixed (2026-07-25)
+### The fleet blocks never worked — four bugs, all fixed (2026-07-25)
 
 Driving two live sessions against `create-fleet` / `invite-to-fleet` /
-`join-fleet` for the first time turned up three separate faults. They had been
+`join-fleet` for the first time turned up four separate faults. They had been
 shipped as "fast-mode decoders, never fired live"; this is what that was hiding.
 
 1. **`CreateFleet` answers ok and leaves you in no fleet.** `createFleetRecord`
@@ -265,12 +265,23 @@ shipped as "fast-mode decoders, never fired live"; this is what that was hiding.
    as none. That is why `create-fleet`'s `inFleet` gate could never see its own
    success. FIXED: `decodeBoundFleet` prefers `GetInitState.fleetID`.
 
-⚠ **STILL BROKEN:** accepting now finds the right fleet and invite but refuses
-with `FleetNoPositionFound` from `findPlacementForRole` / `placeMemberInFleet`.
-So a two-character fleet is not reachable from the web client, and `join-fleet`
-plus the fleet-mate half of `compress-ore` remain unverified. Next step is that
-placement path — the default wing/squad a fleet is created with, and what the
-invite record stores for it.
+4. **`FleetNoPositionFound` on accept — a wing/squad of 0 was taken literally.**
+   The BFF sent `Number(body.wingID) || 0` for "no preference", and
+   `inviteCharacter` overwrote the placement it had just resolved because
+   `0 != null`. Wing ids are allocated from 1, so the invite was stored pointing
+   at a wing nobody can be in — and it failed nowhere near the caller, on ACCEPT,
+   with an error that reads like the fleet is full. FIXED on both sides: the BFF
+   only sends a POSITIVE id, and the runtime only lets a positive id override
+   (EveOffline `fix/fleet-join-no-position`, PR #33, with
+   `server/tests/fleetJoinPlacement.test.js`).
+
+✅ **Verified live, end to end:** create → invite → accept put both pilots in one
+fleet; the miner's snapshot then carried the fleet-mate's
+`compressionFacility {rangeMeters: 375000, typeListIDs: [334]}`, and 1000
+Scordite compressed to 1000 Compressed Scordite in the miner's own hold. That is
+the intended workflow — miner mines, support ship sits in fleet running its core
+and compressor, miner compresses — so `join-fleet` and the fleet-mate half of
+`compress-ore` are both proven.
 
 ## 4. Remaining gaps, ranked (refreshed 2026-07-25)
 
