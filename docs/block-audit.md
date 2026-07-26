@@ -489,3 +489,22 @@ it would stop the bot shooting. The right guard is a range check — and gun ran
 run from 2 km blasters to 250 km artillery, so picking one number would repeat the
 `POINT_RANGE_M` mistake exactly. It needs the fitted weapon's own optimal, which
 the client does not currently carry. Left alone on purpose.
+
+### Second sweep — classes checked, nothing found (2026-07-26)
+
+Recorded so a later pass does not spend the time again. Each of these was checked
+because it has produced a bug in this codebase before, or because getting it wrong
+would be severe:
+
+| class | verdict |
+| --- | --- |
+| memory rebuilt field-by-field in `runProgram` | all four returns spread `...mem` first — the `spentAlerts` bug is fixed and stayed fixed |
+| threshold units (a `%` box vs a 0-1 ratio) | correct both ways: `pct(f) = f * 100` out, `clampFraction(p / 100)` back |
+| the four newer conditions | all route a missing reading to `cannot-tell`, never to a verdict |
+| the alert latch (`releaseSpentAlerts`) | releases only on `not-met`, so a blind tick cannot re-alert |
+| `done` reachability + premature completion | every `done` is behind a real reading; `hardeners-on` is the model — bounded, then **blocked with a reason** |
+| `pickRock` "biggest first" | a null `remainingQuantity` is skipped, not read as zero, and falls back to nearest |
+| interrupt ↔ block memory | every interrupt path passes `mem` through, so a firing watch cannot reset a bounded ladder (watches run every tick, so this one mattered) |
+| ISK precision | the decoder keeps bigint-safe strings for display; the watch compares a `number`, imprecise only above 2^53 ISK — no practical effect on a threshold |
+| R7d (no raw ids in player text) | every arg render falls back to a phrase ("a pilot you pick") when the name is missing |
+| BFF write routes answering `ok` unverified | four found; all four are covered either by a server-side throw or by the block re-observing next tick, which is the architecture's own answer |
