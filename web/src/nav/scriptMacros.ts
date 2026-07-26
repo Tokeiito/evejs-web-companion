@@ -1989,6 +1989,26 @@ const ENGAGE_CLOSE_ABOVE_M = 9_000;
 const WEB_RANGE_M = 10_000;
 
 /**
+ * How far a point reaches. Group 52 holds both Warp Disruptors (~20 km) and Warp
+ * Scramblers (~9 km), so this is the GENEROUS end: a disruptor must not be held
+ * back on the chance that the fitted module is a scram.
+ *
+ * ⚠ THIS IS WHAT KEEPS THE TACKLE BUDGET HONEST, and the live run that earned it
+ * is worth the paragraph. The bot undocked, closed on its target, said "Guns on
+ * them" — and the target was neither pointed nor webbed, and warped away
+ * unhindered. What happened: the point was tried three times while still way out
+ * of reach, MAX_TACKLE_ATTEMPTS was spent on refusals nobody could have expected
+ * to land, and by the time the ship had closed to 9 km tackle was switched off
+ * for that target for good.
+ *
+ * The budget exists to catch a module refusing for a reason we CANNOT see. An
+ * out-of-range refusal is not that: the range is right there in the snapshot. So
+ * a shot we can see is out of reach is not taken and not counted, and the budget
+ * survives the approach intact.
+ */
+const POINT_RANGE_M = 24_000;
+
+/**
  * The shared PvP engage: nearest allowed player first — lock it (bounded), tackle
  * it (bounded), drones onto it, every idle gun onto it — concentrating fire
  * exactly like the ratting loop. Only called with at least one candidate on grid.
@@ -2073,12 +2093,19 @@ function engagePrey(
   }
 
   // TACKLE FIRST — hold them still before anything else. Bounded: after
-  // MAX_TACKLE_ATTEMPTS ticks of a point that will not come on (out of range, or
-  // refused for any reason the server does not say out loud) the engage stops
-  // asking and shoots, so a stubborn point can never cost the whole fight.
+  // MAX_TACKLE_ATTEMPTS ticks of a module that will not come on — refused for
+  // any reason the server does not say out loud — the engage stops asking and
+  // shoots, so a stubborn point can never cost the whole fight.
+  //
+  // Both halves wait for their own reach, and a shot skipped for range is NOT an
+  // attempt. That is what keeps the budget for real mysteries instead of
+  // spending it on refusals we could see coming (see POINT_RANGE_M).
+  const inReach = (limit: number): boolean => rangeToTarget === null || rangeToTarget <= limit;
   const tackleTries = num(mem, "tackleTries") ?? 0;
   if (tackleTries < MAX_TACKLE_ATTEMPTS) {
-    const idlePoint = (obs.tackleModuleIDs ?? []).find((id) => !active.has(id));
+    const idlePoint = inReach(POINT_RANGE_M)
+      ? (obs.tackleModuleIDs ?? []).find((id) => !active.has(id))
+      : undefined;
     if (idlePoint !== undefined) {
       return tick(
         { kind: "activate", moduleID: idlePoint, targetID },
@@ -2089,15 +2116,11 @@ function engagePrey(
         { ...mem, tackleTries: tackleTries + 1 },
       );
     }
-    // The web waits until it can actually reach. The point does NOT: it outranges
-    // the web two to one and it is the module that stops the fight from ending,
-    // so it is worth spending an attempt on even while the ship is still closing.
-    // Skipping the web here costs nothing — the skip is not an attempt, so the
-    // budget survives the burn and the web still goes on once the range is there.
-    const idleWeb =
-      rangeToTarget === null || rangeToTarget <= WEB_RANGE_M
-        ? (obs.webModuleIDs ?? []).find((id) => !active.has(id))
-        : undefined;
+    // The web reaches half as far as the point, so it waits longer — but it is
+    // the same rule, and the same reason the budget is still intact when it does.
+    const idleWeb = inReach(WEB_RANGE_M)
+      ? (obs.webModuleIDs ?? []).find((id) => !active.has(id))
+      : undefined;
     if (idleWeb !== undefined) {
       return tick(
         { kind: "activate", moduleID: idleWeb, targetID },

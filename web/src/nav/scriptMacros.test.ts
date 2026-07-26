@@ -805,6 +805,58 @@ test("attack-player: a grid it cannot measure is fought where it stands", () => 
   assert.ok(t.action.kind === "activate" && t.action.moduleID === 650, "the ladder runs exactly as it did before");
 });
 
+test("attack-player: the tackle budget SURVIVES a long burn — the live failure", () => {
+  // ⚠ WATCHED HAPPEN, 2026-07-25. The bot undocked, closed on its target, said
+  // "Guns on them" — and the target was neither pointed nor webbed and warped
+  // off unhindered. The point had been tried three times while far out of reach,
+  // MAX_TACKLE_ATTEMPTS went on refusals nobody could have expected to land, and
+  // by the time the ship arrived tackle was switched off for that target for good.
+  const far = playerShip(801, 90001, 60000);   // 60 km: nothing reaches
+  const near = playerShip(801, 90001, IN_RANGE);
+  const world = (prey: SpaceEntity, active: number[] = []) => obs({
+    snapshot: snapshot([prey], { activeModuleIDs: active }),
+    lockedTargetIDs: [801], weaponModuleIDs: [700], tackleModuleIDs: [650], webModuleIDs: [660],
+  });
+
+  let mem: MacroMemory = { targetID: 801, lockIssued: true, waited: 0, dronesOn: null };
+  const burn: string[] = [];
+  for (let i = 0; i < 6; i++) {           // the long burn, well past the budget
+    const t = attack(attackStep, world(far), mem, {});
+    burn.push(t.action.kind === "activate" ? `activate:${t.action.moduleID}` : t.action.kind);
+    mem = t.nextMem;
+  }
+  assert.ok(!burn.some((k) => k === "activate:650"), `the point must not be fired at 60 km; got ${burn.join(",")}`);
+  assert.ok((mem["tackleTries"] ?? 0) === 0, "and nothing may be charged to the budget for it");
+
+  // Now it has arrived. Tackle must still be available.
+  const arrived = attack(attackStep, world(near), mem, {});
+  assert.ok(
+    arrived.action.kind === "activate" && arrived.action.moduleID === 650,
+    "the point must go on once the ship is finally in range",
+  );
+  const webbed = attack(attackStep, world(near, [650]), arrived.nextMem, {});
+  assert.ok(webbed.action.kind === "activate" && webbed.action.moduleID === 660, "and the web after it");
+});
+
+test("attack-player: a point that will not come on IN range still spends the budget", () => {
+  // The bound is for refusals we cannot see coming. In range and still refusing
+  // is exactly that, so it must still give up and let the guns have the tick.
+  const prey = playerShip(801, 90001, IN_RANGE);
+  const world = obs({
+    snapshot: snapshot([prey], { activeModuleIDs: [] }),
+    lockedTargetIDs: [801], weaponModuleIDs: [700], tackleModuleIDs: [650],
+  });
+  let mem: MacroMemory = { targetID: 801, lockIssued: true, waited: 0, dronesOn: null, approached: 801 };
+  const picked: number[] = [];
+  for (let i = 0; i < 6; i++) {
+    const t = attack(attackStep, world, mem, {});
+    if (t.action.kind === "activate") picked.push(t.action.moduleID);
+    mem = t.nextMem;
+  }
+  assert.equal(picked.filter((m) => m === 650).length, 3, "exactly MAX_TACKLE_ATTEMPTS");
+  assert.ok(picked.includes(700), "then the guns");
+});
+
 test("attack-player: out of web range the POINT still fires and the web does not burn a try", () => {
   // 15 km: past the web (10 km), well inside the point (~20 km). This is the
   // live shape — the point lands, the web would only ever be refused.
