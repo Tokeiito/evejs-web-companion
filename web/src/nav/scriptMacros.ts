@@ -1972,6 +1972,23 @@ function canFight(obs: ScriptObservation): boolean {
 const MAX_TACKLE_ATTEMPTS = 3;
 
 /**
+ * How far out the engage will start burning toward its target, and how far a web
+ * actually reaches.
+ *
+ * ⚠ BOTH NUMBERS ARE MEASURED, NOT GUESSED. Live, 2026-07-25: at 17.9 km the
+ * Warp Disruptor I came on happily and BOTH the Stasis Webifier I and the Small
+ * Remote Capacitor Transmitter I refused `TargetNotWithinRangeGeneric`. Only
+ * after closing to ~2 km did the whole ladder run. Locking reaches far further
+ * than the guns do, so "locked" never meant "in reach" — it just looked like it,
+ * because the point (the longest-ranged of the three) always worked.
+ *
+ * CLOSE_ABOVE sits just under the web's optimal so the burn starts BEFORE the
+ * web starts refusing, rather than after.
+ */
+const ENGAGE_CLOSE_ABOVE_M = 9_000;
+const WEB_RANGE_M = 10_000;
+
+/**
  * The shared PvP engage: nearest allowed player first — lock it (bounded), tackle
  * it (bounded), drones onto it, every idle gun onto it — concentrating fire
  * exactly like the ratting loop. Only called with at least one candidate on grid.
@@ -2024,6 +2041,36 @@ function engagePrey(
     return tick(WAIT, "Waiting for the lock.", phase, ACTING, true, { ...mem, waited });
   }
   const active = new Set(snapshot?.ship?.activeModuleIDs ?? []);
+  const rangeToTarget = measureSpace(snapshot)?.distances.get(targetID) ?? null;
+
+  // CLOSE THE DISTANCE, once per target. The lock lands from much further out
+  // than the guns and the web reach, so a target can be locked and still be out
+  // of reach of everything except the point.
+  //
+  // ⚠ ONCE PER TARGET IS THE WHOLE BOUND, and it is enough: `approach` is a
+  // standing follow order on the server (CmdSetSpeedFraction + CmdFollowBall),
+  // not a nudge that has to be repeated. Re-issuing it every tick while the ship
+  // is already burning would be a no-op at best, and — since only one action
+  // fires per tick — would starve the guns for the whole approach. `approached`
+  // is dropped with the rest of the combat memory when the primary changes, so a
+  // fresh target gets a fresh burn.
+  //
+  // A snapshot that cannot place the target gives no distance, and no distance
+  // means no approach: the ladder then runs exactly as it did before.
+  if (
+    rangeToTarget !== null &&
+    rangeToTarget > ENGAGE_CLOSE_ABOVE_M &&
+    num(mem, "approached") !== targetID
+  ) {
+    return tick(
+      { kind: "approach", targetID },
+      "Closing in — too far out for the web and the guns.",
+      phase,
+      ACTING,
+      true,
+      { ...mem, approached: targetID },
+    );
+  }
 
   // TACKLE FIRST — hold them still before anything else. Bounded: after
   // MAX_TACKLE_ATTEMPTS ticks of a point that will not come on (out of range, or
@@ -2042,7 +2089,15 @@ function engagePrey(
         { ...mem, tackleTries: tackleTries + 1 },
       );
     }
-    const idleWeb = (obs.webModuleIDs ?? []).find((id) => !active.has(id));
+    // The web waits until it can actually reach. The point does NOT: it outranges
+    // the web two to one and it is the module that stops the fight from ending,
+    // so it is worth spending an attempt on even while the ship is still closing.
+    // Skipping the web here costs nothing — the skip is not an attempt, so the
+    // budget survives the burn and the web still goes on once the range is there.
+    const idleWeb =
+      rangeToTarget === null || rangeToTarget <= WEB_RANGE_M
+        ? (obs.webModuleIDs ?? []).find((id) => !active.has(id))
+        : undefined;
     if (idleWeb !== undefined) {
       return tick(
         { kind: "activate", moduleID: idleWeb, targetID },
