@@ -1,0 +1,26 @@
+# Deny everything, then allow exactly the trees the image needs. Keeps host
+# caches, the icon cache, logs and the scraped gameStore out of the build
+# context sent to the Linux builder.
+**
+
+!package.json
+!package-lock.json
+!tsconfig.json
+!vite.config.ts
+!src/
+!src/**
+!scripts/
+!scripts/**
+!web/
+!web/**
+!public/
+!public/**
+
+# ...minus the parts of those trees that must never be baked in.
+**/node_modules
+**/node_modules/**
+public/dist
+public/dist/**
+src/**/*.test.js
+**/.env
+**/.env.*

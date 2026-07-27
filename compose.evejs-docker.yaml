@@ -1,0 +1,52 @@
+# Overlay for: BFF in Docker AND EveJS in Docker.
+#
+#   docker compose -f compose.yaml -f compose.evejs-docker.yaml up --build --detach
+#
+# Bring eve.js/compose.yaml up FIRST. It owns both the evejs-net bridge and the
+# evejs-data volume, and both are declared external here so this project never
+# creates, relabels or deletes them. That ordering is not a limitation worth
+# working around: without EveJS running there is nothing for the BFF to talk to.
+#
+# Three things change versus the base file. The gateway target becomes a
+# container-to-container DNS name, so the request never leaves the bridge and no
+# published host port is involved. The BFF joins evejs-net so that name
+# resolves. And the static gameStore tables come from EveJS's own volume — the
+# authoritative copy the running server was built from — instead of whatever a
+# host checkout's _local/ happens to contain.
+
+services:
+  bff:
+    environment:
+      # `evejs-server` is the network alias eve.js/compose.yaml puts on its
+      # `server` service. 26002 is that container's own listener, not a
+      # published port.
+      EVEJS_GATEWAY_URL: http://evejs-server:26002/_evejs-web/v1
+      EVEJS_GAMESTORE_DATA_DIR: /var/lib/evejs/gameStore/data
+      EVEJS_SDE_DIR: /var/lib/evejs/sde/eve-online-static-data-3396210-jsonl
+    networks:
+      # Merged with the base file's implicit `default`, which is what keeps the
+      # published 127.0.0.1:26500 reachable from the host.
+      - default
+      - evejs-net
+    volumes:
+      # Compose merges `volumes` by CONTAINER path, so the base file's
+      # /srv/evejs bind mount survives into this configuration and
+      # ${EVEJS_ROOT:-../eve.js} must still resolve to a real directory. The
+      # gameStore paths above point past it at the volume below; the bind mount
+      # is then unused, and pointing EVEJS_ROOT at any existing folder is enough
+      # to satisfy it when there is no EveJS checkout on this machine at all.
+      - evejs-data:/var/lib/evejs:ro
+
+networks:
+  evejs-net:
+    name: evejs-net
+    # Owned by eve.js/compose.yaml. External so this project neither relabels it
+    # (which breaks the other project's next `up`) nor removes it on `down`.
+    external: true
+
+volumes:
+  # Also owned by eve.js/compose.yaml. External so that `docker compose down
+  # --volumes` in THIS project can never delete the game database.
+  evejs-data:
+    name: evejs-data
+    external: true

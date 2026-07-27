@@ -1,0 +1,75 @@
+name: evejs-web-poc
+
+# Running the BFF in a container is OPTIONAL — `npm start` on the host is still
+# fully supported and needs nothing in this file.
+#
+# THIS FILE ALONE covers: BFF in Docker, EveJS running NATIVELY on the host.
+#
+#   docker compose up --build --detach
+#
+# For BFF in Docker AND EveJS in Docker, add the overlay, which swaps the
+# gateway target for the shared-network DNS name and reads the real gameStore
+# out of EveJS's own volume:
+#
+#   docker compose -f compose.yaml -f compose.evejs-docker.yaml up --build --detach
+#
+# The overlay is a separate file rather than an env switch because the two
+# combinations differ in their MOUNTS, not just a URL, and because binding
+# EveJS's evejs-data volume here must never happen when EveJS is not the one
+# that created it.
+#
+# ⚠ EVEJS_WEB_GATEWAY_TOKEN is REQUIRED to be set by both files, though only the
+# overlay strictly needs it. The gateway grants token-less access solely to
+# peers whose socket address is 127.0.0.1/::1. A container-to-container request
+# arrives from a bridge address and is refused; a container-to-HOST request via
+# host.docker.internal is forwarded by Docker Desktop and does present as
+# loopback, so THIS file happens to work without one. Requiring it in both keeps
+# the setting out of the "which combination am I in" question, and EveJS ignores
+# a token it has not configured itself.
+
+services:
+  bff:
+    image: evejs-web-poc-local
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      # EveJS is on the host, reachable through the published loopback port.
+      EVEJS_GATEWAY_URL: http://host.docker.internal:26002/_evejs-web/v1
+      EVEJS_WEB_GATEWAY_TOKEN: ${EVEJS_WEB_GATEWAY_TOKEN:?set the same value in .env here and in eve.js/.env; the gateway refuses non-loopback peers without one}
+      # Static gameStore tables and SDE JSONL, read out of the bind-mounted
+      # host checkout below.
+      EVEJS_GAMESTORE_DATA_DIR: /srv/evejs/_local/gameStore/data
+      EVEJS_SDE_DIR: /srv/evejs/_local/sde/eve-online-static-data-3396210-jsonl
+    extra_hosts:
+      # Docker Desktop already provides this name; the line is what makes the
+      # file work on native Linux Docker as well.
+      #
+      # ⚠ On native Linux, host-gateway resolves to the docker0 bridge address,
+      # which cannot reach a host service bound to 127.0.0.1. There, run EveJS
+      # in Docker too and use the overlay.
+      - "host.docker.internal:host-gateway"
+    volumes:
+      # Sessions, the web-user store, the bot script store and the icon cache.
+      # Named, so rebuilding the image does not sign everyone out.
+      - evejs-web-poc-data:/app/data
+      # The native EveJS checkout, for static names only. Read-only: this POC
+      # never writes into the gameStore.
+      - ${EVEJS_ROOT:-../eve.js}:/srv/evejs:ro
+    ports:
+      # Loopback-only, matching EveJS's own publishing rule. This POC is no more
+      # hardened for a LAN than the emulator behind it.
+      - "127.0.0.1:${EVEJS_WEB_POC_PORT:-26500}:26500"
+    restart: unless-stopped
+
+# No shared network here on purpose. This file reaches EveJS through
+# host.docker.internal, so it needs nothing but its own project network — and
+# two compose projects CANNOT both non-externally own one named network. The
+# second one to start fails with "found but has incorrect label", because the
+# first stamped the bridge with its own project name. evejs-net is owned by
+# eve.js/compose.yaml and joined, as external, only by the overlay that
+# actually needs it.
+
+volumes:
+  evejs-web-poc-data:
+    name: evejs-web-poc-data
