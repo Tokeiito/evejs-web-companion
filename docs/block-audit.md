@@ -81,7 +81,7 @@ without a roster read.
 |---|---|---|---|
 | **remote-rep** (rep the most-hurt friendly) | snapshot filter + `lock` + `activate` | ✅ | Reactive; done when everyone on grid is full. Reps resolved by group name (`/remote shield|armor/i`). |
 | **orbit-and-boost** (stay on a mate, keep repping) | `orbit` + remote-rep core | ✅ | Sustained logistics loop; a watch or the player stops it. |
-| **remote cap transfer** | `lock` + `activate` | 🟢 | Same pattern with a cap transmitter — a quick follow-up. |
+| **remote cap transfer** | `lock` + `activate` | ✅ | Same pattern with a cap transmitter. Fired live 2026-07-25 — see §3. |
 | **create-fleet** (form up, become boss) | `fleet/create` + `bound-fleet` read | ✅ | Argless; done once `inFleet` reads true. |
 | **invite-to-fleet** (invite a known pilot) | `fleet/invite` (inviteeCharID) | ✅ | Picks from the local known-pilots roster; requires being in a fleet. |
 | **join-fleet** (accept a pending invite) | `fleet/invite/accept` + `bound-fleet` read | ✅ | Reactive — keeps accepting until `inFleet` true (bounded). The multibox alt-fleeting loop: char 1 create+invite, alts join. |
@@ -107,12 +107,12 @@ made hunt buildable:
 | **hunt-player** (roam ≤N jumps from home, local-chat watch, d-scan sweep, warp down hits, engage) | local roster read + ConeScan + graph + engage core | ✅ | Home = start system (board); ConeScan fired per-tick while hunting — first LIVE use of an R104 scan write, owed a QA pass. |
 | richer target filters (corp/alliance/standings, ignore-list) | snapshot fields exist | 🛠️ | The snapshot already carries corp/alliance per ship; needs Arg shapes + pickers. |
 | probe-scan localization (combat probes, real scan-down) | R104 probe writes (never fired live) | ❓ | The d-scan+warp loop makes it unnecessary here; probes would only add docked/deep-safe coverage. |
-| tackle awareness (point/scram the target before guns) | `activate` on a fitted disruptor | 🟢 | Module-group regex on "warp disruptor/scrambler", activate first in the engage order. |
+| tackle awareness (point/scram the target before guns) | `activate` on a fitted disruptor | ✅ | Module-group regex on "warp disruptor/scrambler", activate first in the engage order. Point AND web fired live 2026-07-25 — see §3. |
 
 ### social — talking — send-chat ✅ SHIPPED 2026-07-24
 | Block | Backing | Status | Notes |
 |---|---|---|---|
-| **send-chat** (say one line in local/corp) | verified R7 `/chat/:channel/send` | ✅ | One-shot by design (no readable echo to confirm). Inside a branch = "announce when a check holds". |
+| **send-chat** (say one line in local/corp) | verified R7 `/chat/:channel/send` | ✅ | Fired live 2026-07-25: read back out of the local backlog with the right sender. Inside a branch = "announce when a check holds". |
 | chat as a WATCH RESPONSE ("if shields drop, call for help in corp") | same send | 🛠️ | Needs an `InterruptResponse` variant carrying text — the branch composition covers most of it today. |
 | private/named channels, EVE-mail | LSC joined-channel writes ❓ | ❓ | Only local/corp are plumbed on the BFF chat route. |
 | **alert the player** response (browser notification / sound) | client-only | 🛠️ | Still the best "get a human" primitive — pairs with server-bot vitals. |
@@ -242,10 +242,10 @@ Without it, `compress-ore` blocks with a plain reason rather than firing
 hopefully: the snapshot carries no facility reading, and an ABSENT reading is
 treated as "not a facility" everywhere (client type, decoder and block agree).
 
-### ⚠ The fleet blocks do not work — three bugs, two fixed (2026-07-25)
+### The fleet blocks never worked — four bugs, all fixed (2026-07-25)
 
 Driving two live sessions against `create-fleet` / `invite-to-fleet` /
-`join-fleet` for the first time turned up three separate faults. They had been
+`join-fleet` for the first time turned up four separate faults. They had been
 shipped as "fast-mode decoders, never fired live"; this is what that was hiding.
 
 1. **`CreateFleet` answers ok and leaves you in no fleet.** `createFleetRecord`
@@ -265,12 +265,58 @@ shipped as "fast-mode decoders, never fired live"; this is what that was hiding.
    as none. That is why `create-fleet`'s `inFleet` gate could never see its own
    success. FIXED: `decodeBoundFleet` prefers `GetInitState.fleetID`.
 
-⚠ **STILL BROKEN:** accepting now finds the right fleet and invite but refuses
-with `FleetNoPositionFound` from `findPlacementForRole` / `placeMemberInFleet`.
-So a two-character fleet is not reachable from the web client, and `join-fleet`
-plus the fleet-mate half of `compress-ore` remain unverified. Next step is that
-placement path — the default wing/squad a fleet is created with, and what the
-invite record stores for it.
+4. **`FleetNoPositionFound` on accept — a wing/squad of 0 was taken literally.**
+   The BFF sent `Number(body.wingID) || 0` for "no preference", and
+   `inviteCharacter` overwrote the placement it had just resolved because
+   `0 != null`. Wing ids are allocated from 1, so the invite was stored pointing
+   at a wing nobody can be in — and it failed nowhere near the caller, on ACCEPT,
+   with an error that reads like the fleet is full. FIXED on both sides: the BFF
+   only sends a POSITIVE id, and the runtime only lets a positive id override
+   (EveOffline `fix/fleet-join-no-position`, PR #33, with
+   `server/tests/fleetJoinPlacement.test.js`).
+
+✅ **Verified live, end to end:** create → invite → accept put both pilots in one
+fleet; the miner's snapshot then carried the fleet-mate's
+`compressionFacility {rangeMeters: 375000, typeListIDs: [334]}`, and 1000
+Scordite compressed to 1000 Compressed Scordite in the miner's own hold. That is
+the intended workflow — miner mines, support ship sits in fleet running its core
+and compressor, miner compresses — so `join-fleet` and the fleet-mate half of
+`compress-ore` are both proven.
+
+### The last three unfired calls, fired (2026-07-25)
+
+Everything below was shipped as "plumbed, unit-tested, never fired live". All
+three are now proven against the running server, and — as with the fleet blocks
+— each was judged by a STATE DELTA, never by a 200.
+
+**send-chat.** A line into local came back out of the `local_30005239` backlog
+with the right sender. Worth recording what the same pass showed: the gateway's
+`/chat/send` calls `broadcastLocalMessage` DIRECTLY, so it never reaches
+`executeChatCommand`. A slash command typed by a bot is published as chat text
+and never dispatched. That is the right call — a bot must not be able to run GM
+commands — but it means the send-chat block cannot be used to drive them.
+
+**tidy-hangar (StackAll).** Split 250 Scordite off a stack to make a second row,
+then stacked: 73,416 + 250 → one row of 73,666.
+
+**tackle + remote cap.** Test Pilot in an Astero — Warp Disruptor I (group 52),
+Stasis Webifier I (group 65), Small Remote Capacitor Transmitter I (group 67),
+all three ONLINE and picked up by `resolveDefenseModuleIDs` /
+`resolveRemoteRepModuleIDs` — against Gaston in a Hulk, in Aring (0.267, so
+lowsec: the emulator's CONCORD response is gated at 0.5 and never fires).
+
+| what | evidence |
+| --- | --- |
+| **point** | cycles in `activeModuleIDs`, and the target's own warp attempt came back `You cannot warp because you are warp scrambled` |
+| **web** | cycles, and the target's speed fell 200 → 101 m/s under it (Stasis Webifier I is −50%), recovering to 151 once it was switched off |
+| **remote cap** | cycles, and the SENDER's capacitor paid for it: 0.876 → 0.610 over ~21 s of transfer |
+
+⚠ **The range gap is real, and this is what it looks like.** At 17.9 km the point
+came on but the web and the transmitter both refused
+`TargetNotWithinRangeGeneric` — correct, they are 10 km and ~6 km modules. Only
+after closing to ~2 km did the whole ladder run. A bot that locks whatever is on
+grid and fires will land its point and get a refusal from everything else. See
+gap 5 below: this is no longer a hunch.
 
 ## 4. Remaining gaps, ranked (refreshed 2026-07-25)
 
@@ -286,9 +332,7 @@ invite record stores for it.
 4. **richer PvP target filters** (corp / alliance / an ignore list, 🛠️) — the
    snapshot already carries `corporationID`/`allianceID` per ship; this is Arg
    shapes and pickers, not new reads. The one-pilot `only` filter exists.
-5. **close the distance in the PvP blocks** (🟢) — neither camp nor hunt burns
-   toward a target that is on grid but out of range; the tackle bound keeps that
-   safe, but an approach would make both far more effective.
+5. ~~close the distance in the PvP blocks~~ ✅ **DONE** — see §5.
 6. **missions-completed ≥ N condition** (🛠️) — needs the journal read gated in.
 7. **mine across belts / the constellation** (🛠️) — belt rotation across systems.
 8. **ice / gas harvester variants** (🔌) — mostly the equipment picker widening.
@@ -316,3 +360,201 @@ charge reload/swap, fleet-warp, named/private chat channels, EVE-mail.
 **Do not build without new BFF work:** general sell-orders / update-orders for
 arbitrary items (only PLEX is plumbed), overheat, charge reload, PI collect-haul,
 fleet-warp.
+
+## 5. Closing the distance (2026-07-26)
+
+The engage ladder now BURNS toward its target before it works the modules, and
+that took two passes — the second one only because the bot was watched doing it.
+
+**The gap.** A lock lands from much further out than the guns and the web reach,
+so "locked" never meant "in reach". It only looked that way because the point,
+the longest-ranged of the three, usually worked. Measured live at 17.9 km: the
+point came on, the web and the remote cap both refused
+`TargetNotWithinRangeGeneric`.
+
+**The first fix** put an `approach` in the ladder after the lock, once per
+target (a standing follow order on the server, not a nudge to repeat), and made
+the web wait for its own 10 km reach.
+
+**⚠ It made things worse, and only a live run showed it.** The bot undocked,
+closed on its target, reported "Guns on them" — and the target was neither
+pointed nor webbed, and warped off unhindered. The point had been fired three
+times during the burn; `MAX_TACKLE_ATTEMPTS` went entirely on refusals nobody
+could have expected to land; and by the time the ship arrived, tackle was off
+for that target for good. **The longer the approach, the more certain the budget
+was gone before arrival** — so adding the approach turned a brief bug into a
+reliable one.
+
+**The second fix** is the rule that was missing: the budget exists to catch a
+module refusing for a reason we *cannot see*, and an out-of-range refusal is not
+that — the range is right there in the snapshot. Both halves now wait for their
+own reach (point 24 km, the generous end of group 52 so a disruptor is not held
+back on the chance it is a scram; web 10 km), and **a shot skipped for range is
+not an attempt**.
+
+**Verified live, by the bot itself**, running `Leave the station` →
+`Attack Gaston Vernier if they appear here`:
+
+| the bot's own words | what the target saw |
+| --- | --- |
+| Locking the player's ship. | — |
+| Closing in — too far out for the web and the guns. | 33.9 → 30.4 → 26.8 → 23.2 → 19.7 → 16.1 → 12.5 km |
+| Holding them in place so they cannot warp off. | `You cannot warp because you are warp scrambled` |
+| Guns on them. | max velocity **200 → 100** the moment it crossed 8.96 km |
+
+The web came on at 8.96 km — inside its 10 km reach, on a budget that had
+survived a 25 km burn. That is the whole fix in one number.
+
+### Two more, found the same way (2026-07-26, later)
+
+Watching a second and third run turned up two more faults that the range checks
+had *hidden* rather than fixed.
+
+**One shared budget meant "if the point struggles, the web never fires".**
+`POINT_RANGE_M` was set to 24 km to cover both halves of SDE group 52 (Warp
+Disruptors ~20 km, Warp Scramblers ~9 km). That put the limit ABOVE what a
+disruptor can actually do, so the engage kept firing into the 20–24 km band, the
+refusals were charged to the budget — and because the point and the web *shared*
+one counter, the point spending it left the web permanently disarmed. Observed
+live: point cycling, web idle, at a range of **230 metres**.
+
+Fixed twice over: the limit is now a disruptor's own 20 km optimal, and each half
+carries its own attempt count. One module's bad luck can no longer disarm the
+other.
+
+**`hunt-player` re-issued the burn every tick.** The hunt block hand-copies the
+combat keys into `engagePrey`, and `approached` was not on the list — so the
+latch reset every tick. With one action per tick, that starves the entire ladder:
+burn toward the target forever, never shoot it. The comment above that object
+warned about exactly this for the attempt counter; a key was added without
+reading it. Both counters and the latch are carried now, and a test pins it.
+
+**Clean run afterwards**, from 25 km: point on at **19.85 km** (first attempt,
+inside its own optimal), web on by **5.4 km** with the target's max velocity
+halved, guns after. Every stage is in the screenshots.
+
+## 6. Bug sweep across the other blocks (2026-07-26)
+
+Having found three faults in the PvP ladder by watching it run, I swept the rest
+of the deciders for the same shapes rather than reading them line by line. Two of
+the four classes turned up real bugs.
+
+### ⚠ The remote blocks could fire into nothing, forever
+
+`remote-rep`, `orbit-and-boost` and `remote-cap` each issued their activate and
+returned `mem` **unchanged**. A module that would not come on was found idle
+again next tick and re-fired — no counter, no progress, no reason surfaced. And
+neither block can finish while it is failing: remote-rep reports `done` only when
+everyone on grid is full, remote-cap when everyone has cap to spare. **A
+fleet-mate parked out of reach was an infinite loop.**
+
+Neither had a range check either, though a lock reaches far further than remote
+assistance does (measured: a Small Remote Capacitor Transmitter I refused at
+17.9 km, ran at 2.2 km). Both now close on a mate out of reach, once per target,
+and do not spend an attempt on a module they can see cannot reach.
+
+The bound counts **consecutive** failures only — a module observed cycling refills
+the budget. Without that the fix would itself be a bug: a bot that stops repping
+mid-fight after three cycles.
+
+`salvage-wrecks` was already doing this correctly (`dist > SALVAGE_RANGE_M` →
+wait), which is what the fix was modelled on.
+
+### ⚠ A roaming hunt went progressively blind
+
+`visitedHits` — the itemIDs of scanner hits already chased — rode along on every
+jump. A hunt that returned to a system it had swept before still counted those
+hits as visited and would not chase them, though the ship in question is a live
+target now. The longer the roam ran, the less of its hunting ground it would look
+at. The list also grew with no cap, unlike `triedItemIDs`.
+
+Leaving a system now drops everything scoped to it. The vantage-point branch
+already reset the list for a weaker reason, so the precedent was there.
+
+### Swept and clean
+
+- **Side-effecting ticks returning memory unchanged** — mechanical sweep of every
+  `return tick(...)` carrying an `activate`/`lock`/`warp`/… action found exactly
+  two sites beyond the ones fixed: the salvager (range-guarded, above) and
+  `fight-the-rats`' guns.
+- **Watch responses** — `repair` re-fires each tick by design, and local
+  repairers have no target and no range, so there is nothing to bound.
+
+### Deliberately NOT changed: the guns
+
+`fight-the-rats` and the engage ladder re-fire idle guns with memory unchanged,
+the same shape as the bug above. Here the re-fire is **correct**: a gun drops out
+of `activeModuleIDs` between cycles and has to be switched on again, so bounding
+it would stop the bot shooting. The right guard is a range check — and gun ranges
+run from 2 km blasters to 250 km artillery, so picking one number would repeat the
+`POINT_RANGE_M` mistake exactly. It needs the fitted weapon's own optimal, which
+the client does not currently carry. Left alone on purpose.
+
+### Second sweep — classes checked, nothing found (2026-07-26)
+
+Recorded so a later pass does not spend the time again. Each of these was checked
+because it has produced a bug in this codebase before, or because getting it wrong
+would be severe:
+
+| class | verdict |
+| --- | --- |
+| memory rebuilt field-by-field in `runProgram` | all four returns spread `...mem` first — the `spentAlerts` bug is fixed and stayed fixed |
+| threshold units (a `%` box vs a 0-1 ratio) | correct both ways: `pct(f) = f * 100` out, `clampFraction(p / 100)` back |
+| the four newer conditions | all route a missing reading to `cannot-tell`, never to a verdict |
+| the alert latch (`releaseSpentAlerts`) | releases only on `not-met`, so a blind tick cannot re-alert |
+| `done` reachability + premature completion | every `done` is behind a real reading; `hardeners-on` is the model — bounded, then **blocked with a reason** |
+| `pickRock` "biggest first" | a null `remainingQuantity` is skipped, not read as zero, and falls back to nearest |
+| interrupt ↔ block memory | every interrupt path passes `mem` through, so a firing watch cannot reset a bounded ladder (watches run every tick, so this one mattered) |
+| ISK precision | the decoder keeps bigint-safe strings for display; the watch compares a `number`, imprecise only above 2^53 ISK — no practical effect on a threshold |
+| R7d (no raw ids in player text) | every arg render falls back to a phrase ("a pilot you pick") when the name is missing |
+| BFF write routes answering `ok` unverified | four found; all four are covered either by a server-side throw or by the block re-observing next tick, which is the architecture's own answer |
+
+## 7. The mission chain, fired live (2026-07-26)
+
+The last untouched play loop. Run as the shipped **Delivery runs** preset against
+a real agent, one delivery, judged by state deltas.
+
+**The setup matters for anyone repeating this.** Test Pilot's own station has two
+level-4 *Security* agents (division 24) — combat, useless for a courier test. The
+nearest *Distribution* agent (division 22) is one jump out in Chej. A BFS over
+`mapStargates.jsonl` finds it in a second and is worth doing before driving
+anything; `find-distribution-agent` independently picked the same agent, which is
+the first result of the run.
+
+| block | verdict |
+| --- | --- |
+| `find-distribution-agent` | ✅ picked Mebhiyen Ranaka, the nearest level-1 courier agent, matching an independent BFS |
+| the travel leg | ✅ set destination, undocked, warped, **jumped a gate**, warped in, docked — the autopilot end to end |
+| `request-mission` | ✅ a real courier offer on the table |
+| `accept-mission` gates | ✅ correct: turned down 4 × 60 m³ against a 120 m³ hold, and 10 jumps against a 6-jump ceiling — then **stopped with a player-readable reason** after `MAX_BLOCK_ATTEMPTS`, exactly as designed |
+| `load-mission-cargo` | ✅ package aboard — 3 units, 1,800 m³ of a 4,875 m³ hold, read back from the hold |
+| `travel-to-dropoff` | ✅ flew the **10 jumps** and docked at 60008332, the exact drop-off from the briefing |
+| `turn-in-mission` | ✅ hold emptied, then the journal went **empty** and the wallet moved **1,004,389,000 → 1,004,564,313 ISK (+175,313)** — completion proven by game state, not by a button press |
+| `return-to-agent` | ✅ set the destination straight back to the agent's station and rode the autopilot home |
+
+### ⚠ The bug: a missing reading DECLINED a job
+
+The first accept tick after docking gated on a cargo hold that had not been read
+yet, and the bot turned down a perfectly good mission:
+
+> Your ship did not report how much room its cargo hold has, so the bot left the
+> offer alone.
+
+**Declining is irreversible** — it burns the offer and starts a decline timer
+against the agent — so it must never be the answer to "I could not see". This is
+the cannot-tell rule, and this is the one place in the codebase where breaking it
+cost a real action rather than a wrong readout.
+
+`gateOffer` returns one string for both "fails the gate" and "cannot be judged",
+which is right for a readout and wrong for a decision. The three blind cases (no
+stated volume, no cargo reading, no route when a ceiling is set) are now answered
+with a WAIT, bounded so a reading that never arrives ends blocked with its own
+reason. A second, smaller one went with it: with **no** ceiling set, `gateOffer`
+still declined when it had no jump count — over a number nobody had asked about.
+
+### Not a bug, but worth knowing
+
+Saving a script under the name of an existing one creates a SECOND script rather
+than overwriting, and the Bots list shows both by name with no way to tell them
+apart. That is how a run was started against a stale copy with the old jump limit
+— an operator trap, not a code fault.

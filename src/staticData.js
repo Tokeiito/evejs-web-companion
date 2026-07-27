@@ -14,10 +14,29 @@ const SDE_DIR = path.join(
 const caches = new Map();
 const VALID_ICON_SIZES = new Set([32, 64, 128, 256, 512, 1024]);
 
+/**
+ * One static table off the EveJS gameStore, or an EMPTY table when it is not
+ * there to read.
+ *
+ * ⚠ A MISSING STATIC TABLE MUST NOT BE FATAL. This used to read unguarded, so a
+ * `data/stations/data.json` that was absent — a fresh clone with no EVEJS_ROOT
+ * set, a partially-populated gameStore, a root pointed at the wrong folder —
+ * threw ENOENT out of `getStation`, up through `buildStationStatic`, and out of
+ * `POST /api/bridge/select` as a 500. That is the one call every session has to
+ * make: the failure did not cost a station's NAME, it cost the ability to bring
+ * a character online at all.
+ *
+ * Every caller already copes with a missing row — `getStation` answers null,
+ * `buildStationStatic` falls back to `Station <id>` — so an empty table lands in
+ * paths that are already written for it. `readJsonlTable` directly below has
+ * always guarded exactly this way; this is the same rule applied to its twin.
+ */
 function readStaticTable(tableName) {
   const filePath = path.join(DATA_DIR, tableName, "data.json");
-  const raw = fs.readFileSync(filePath, "utf8");
-  return JSON.parse(raw);
+  if (!fs.existsSync(filePath)) {
+    return {};
+  }
+  return JSON.parse(fs.readFileSync(filePath, "utf8"));
 }
 
 function readJsonlTable(fileName) {

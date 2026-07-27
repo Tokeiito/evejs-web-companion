@@ -438,6 +438,90 @@ test("remote-rep: hurt friendly -> lock then rep it; everyone full -> done", () 
   assert.equal(remoteRep(repStep, obs({ snapshot: snapshot([full]), remoteShieldRepairerIDs: [600] }), {}, {}).outcome.kind, "done");
 });
 
+// ── Remote assistance has a range, and a bound ───────────────────────────────
+//
+// ⚠ BOTH REMOTE BLOCKS USED TO RETURN `mem` UNCHANGED after issuing an activate.
+// A module that would not come on was found idle again next tick and re-fired,
+// forever: no counter, no progress, no reason surfaced. And because remote-rep
+// only reports `done` when everyone on grid is full (remote-cap likewise), a mate
+// parked out of reach was an infinite loop — the bot would sit there locking and
+// firing into nothing for as long as it was left running.
+
+test("remote-rep: a mate out of rep range is CLOSED ON, not repped hopefully", () => {
+  const far = entity({ itemID: 7001, kind: "ship", characterID: 5001, shieldRatio: 0.4, armorRatio: 1, hullRatio: 1, position: { x: 40000, y: 0, z: 0 } });
+  const world = obs({ snapshot: snapshot([far]), remoteShieldRepairerIDs: [600], lockedTargetIDs: [7001] });
+  const t = remoteRep(repStep, world, { repLockOn: 7001, repWaited: 0 }, {});
+  assert.ok(t.action.kind === "approach" && t.action.targetID === 7001, "it must close before it fires");
+  assert.match(t.why, /Closing in/);
+  // Issued once, then it stops asking and lets the rest of the tick happen.
+  const next = remoteRep(repStep, world, t.nextMem, {});
+  assert.notEqual(next.action.kind, "approach");
+  assert.equal(next.nextMem["repTries"] ?? 0, 0, "and an out-of-reach tick spends no budget");
+});
+
+test("remote-rep: reps that never come on are BOUNDED (this was an infinite loop)", () => {
+  const hurt = entity({ itemID: 7001, kind: "ship", characterID: 5001, shieldRatio: 0.4, armorRatio: 1, hullRatio: 1 });
+  const world = obs({
+    // The rep never appears in activeModuleIDs — the shape of a silent refusal.
+    snapshot: snapshot([hurt], { activeModuleIDs: [] }),
+    remoteShieldRepairerIDs: [600], lockedTargetIDs: [7001],
+  });
+  let mem: MacroMemory = { repLockOn: 7001, repWaited: 0 };
+  let fired = 0;
+  for (let i = 0; i < 8; i++) {
+    const t = remoteRep(repStep, world, mem, {});
+    if (t.action.kind === "activate") fired += 1;
+    mem = t.nextMem;
+  }
+  assert.equal(fired, 3, `the rep is offered exactly MAX_REMOTE_ASSIST_ATTEMPTS times; got ${fired}`);
+});
+
+test("remote-rep: a rep that IS cycling refills the budget — no mid-fight stall", () => {
+  // The bound must only ever catch a module that is not landing. A ship with two
+  // reps where one is already running has to be able to switch the other on, and
+  // keep doing so, however long the fight lasts.
+  const hurt = entity({ itemID: 7001, kind: "ship", characterID: 5001, shieldRatio: 0.4, armorRatio: 1, hullRatio: 1 });
+  const world = obs({
+    snapshot: snapshot([hurt], { activeModuleIDs: [600] }), // 600 landed, 601 idle
+    remoteShieldRepairerIDs: [600, 601], lockedTargetIDs: [7001],
+  });
+  // Arrive with the budget already spent from an earlier dry spell.
+  let mem: MacroMemory = { repLockOn: 7001, repWaited: 0, repTries: 3 };
+  let fired = 0;
+  for (let i = 0; i < 6; i++) {
+    const t = remoteRep(repStep, world, mem, {});
+    if (t.action.kind === "activate") fired += 1;
+    mem = t.nextMem;
+  }
+  assert.equal(fired, 6, "a landed rep means the budget is not spent — keep working the second one");
+});
+
+test("remote-rep: a NEW mate gets a fresh budget", () => {
+  const first = entity({ itemID: 7001, kind: "ship", characterID: 5001, shieldRatio: 0.4, armorRatio: 1, hullRatio: 1 });
+  const second = entity({ itemID: 7009, kind: "ship", characterID: 5009, shieldRatio: 0.3, armorRatio: 1, hullRatio: 1 });
+  // Memory from a spent attempt on 7001, which has since left the grid.
+  const t = remoteRep(
+    repStep,
+    obs({ snapshot: snapshot([second]), remoteShieldRepairerIDs: [600] }),
+    { repLockOn: 7001, repWaited: 0, repTries: 3, repApproached: 7001 },
+    {},
+  );
+  assert.ok(t.action.kind === "lock" && t.action.targetID === 7009);
+  assert.equal(t.nextMem["repTries"], 0, "the last mate's spent budget must not disarm the reps for this one");
+  assert.equal(t.nextMem["repApproached"], null);
+  assert.ok(first.itemID === 7001);
+});
+
+test("orbit-and-boost: closes by ORBITING — it must not also issue an approach", () => {
+  // Its orbit at ORBIT_BOOST_RANGE_M is how this block gets in range. An approach
+  // from the shared helper would fight that orbit command every tick.
+  const far = entity({ itemID: 7003, kind: "ship", characterID: 5002, shieldRatio: 0.4, armorRatio: 1, hullRatio: 1, position: { x: 40000, y: 0, z: 0 } });
+  const world = obs({ snapshot: snapshot([far]), remoteShieldRepairerIDs: [600], lockedTargetIDs: [7003] });
+  // `orbiting` already set, so the orbit is not re-issued and we reach the reps.
+  const t = orbitBoost(boostStep, world, { orbiting: 7003, repLockOn: 7003, repWaited: 0 }, {});
+  assert.notEqual(t.action.kind, "approach");
+});
+
 test("remote-rep: an NPC or your own hull is never a rep target", () => {
   const npc = entity({ itemID: 7002, kind: "ship", isNpc: true, shieldRatio: 0.2 });
   // No FRIENDLY is hurt (the NPC is skipped), so the block is done — never reps a rat.
@@ -506,6 +590,15 @@ function playerShip(itemID: number, characterID: number, x = 20000): SpaceEntity
   return entity({ itemID, kind: "ship", characterID, isNpc: false, position: { x, y: 0, z: 0 } });
 }
 
+/**
+ * Inside every module's reach. The default 20 km above is a realistic distance
+ * for something that has just landed on grid — and at 20 km the engage now
+ * CLOSES first, so a test that means to exercise the module ladder has to put
+ * the target where the modules actually reach, or it silently becomes a test
+ * about approaching.
+ */
+const IN_RANGE = 3_000;
+
 test("attack-player: an NPC on grid is NOT prey; an empty grid just watches", () => {
   const rat = entity({ itemID: 600, kind: "ship", isNpc: true, npcEntityType: "npc" });
   const t = attack(attackStep, obs({ snapshot: snapshot([rat]), weaponModuleIDs: [700] }), {}, {});
@@ -530,7 +623,7 @@ test("attack-player: the only-filter spares everyone but the picked pilot", () =
 });
 
 test("attack-player: locked -> guns onto them; no guns and no drones -> blocked", () => {
-  const prey = playerShip(801, 90001);
+  const prey = playerShip(801, 90001, IN_RANGE);
   const t = attack(
     attackStep,
     obs({ snapshot: snapshot([prey]), lockedTargetIDs: [801], weaponModuleIDs: [700] }),
@@ -674,7 +767,7 @@ test("send-chat: says it once, then done; a blank message is blocked", () => {
 // ── Tackle before guns ───────────────────────────────────────────────────────
 
 test("attack-player: locked -> the POINT goes on before the guns", () => {
-  const prey = playerShip(801, 90001);
+  const prey = playerShip(801, 90001, IN_RANGE);
   const t = attack(
     attackStep,
     obs({ snapshot: snapshot([prey]), lockedTargetIDs: [801], weaponModuleIDs: [700], tackleModuleIDs: [650], webModuleIDs: [660] }),
@@ -686,7 +779,7 @@ test("attack-player: locked -> the POINT goes on before the guns", () => {
 });
 
 test("attack-player: point running -> the WEB is next, then the guns", () => {
-  const prey = playerShip(801, 90001);
+  const prey = playerShip(801, 90001, IN_RANGE);
   const base = { targetID: 801, lockIssued: true, waited: 0, dronesOn: null };
   const withPoint = obs({
     snapshot: snapshot([prey], { activeModuleIDs: [650] }),
@@ -706,7 +799,7 @@ test("attack-player: point running -> the WEB is next, then the guns", () => {
 test("attack-player: a point that never comes on cannot starve the guns (the bound)", () => {
   // The out-of-range case: the server refuses the activate, so the point never
   // appears in activeModuleIDs. Drive the loop and prove it reaches the gun.
-  const prey = playerShip(801, 90001);
+  const prey = playerShip(801, 90001, IN_RANGE);
   const world = obs({
     snapshot: snapshot([prey], { activeModuleIDs: [] }),
     lockedTargetIDs: [801], weaponModuleIDs: [700], tackleModuleIDs: [650],
@@ -723,7 +816,7 @@ test("attack-player: a point that never comes on cannot starve the guns (the bou
 });
 
 test("attack-player: no tackle fitted -> straight to the guns, no wasted tick", () => {
-  const prey = playerShip(801, 90001);
+  const prey = playerShip(801, 90001, IN_RANGE);
   const t = attack(
     attackStep,
     obs({ snapshot: snapshot([prey]), lockedTargetIDs: [801], weaponModuleIDs: [700] }),
@@ -733,19 +826,213 @@ test("attack-player: no tackle fitted -> straight to the guns, no wasted tick", 
   assert.ok(t.action.kind === "activate" && t.action.moduleID === 700);
 });
 
+// ── Closing the distance ─────────────────────────────────────────────────────
+//
+// Measured live 2026-07-25: at 17.9 km the Warp Disruptor I came on and BOTH the
+// Stasis Webifier I and the remote cap transmitter refused
+// `TargetNotWithinRangeGeneric`. Locking reaches much further than the modules
+// do, so "locked" never meant "in reach".
+
+test("attack-player: a target out at 20 km is CLOSED ON before anything is fired", () => {
+  const prey = playerShip(801, 90001, 20000);
+  const t = attack(
+    attackStep,
+    obs({ snapshot: snapshot([prey]), lockedTargetIDs: [801], weaponModuleIDs: [700], tackleModuleIDs: [650], webModuleIDs: [660] }),
+    { targetID: 801, lockIssued: true, waited: 0, dronesOn: null },
+    {},
+  );
+  assert.ok(t.action.kind === "approach" && t.action.targetID === 801, "it must burn toward the target first");
+  assert.equal(t.nextMem["approached"], 801, "and remember it has, so it does not re-issue");
+});
+
+test("attack-player: the approach is issued ONCE — the next tick fights, it does not re-approach", () => {
+  const prey = playerShip(801, 90001, 20000);
+  const world = obs({
+    snapshot: snapshot([prey]),
+    lockedTargetIDs: [801], weaponModuleIDs: [700], tackleModuleIDs: [650], webModuleIDs: [660],
+  });
+  let mem: MacroMemory = { targetID: 801, lockIssued: true, waited: 0, dronesOn: null };
+  const kinds: string[] = [];
+  for (let i = 0; i < 4; i++) {
+    const t = attack(attackStep, world, mem, {});
+    kinds.push(t.action.kind);
+    mem = t.nextMem;
+  }
+  assert.equal(kinds.filter((k) => k === "approach").length, 1, `approach must be issued once; got ${kinds.join(",")}`);
+  assert.equal(kinds[0], "approach");
+  assert.equal(kinds[1], "activate", "and the very next tick is already fighting — the burn does not starve the guns");
+});
+
+test("attack-player: a new primary gets a fresh burn", () => {
+  const second = playerShip(802, 90002, 20000);
+  const world = obs({ snapshot: snapshot([second]), lockedTargetIDs: [802], weaponModuleIDs: [700] });
+  // Memory says we already closed on 801 — which has since left the grid.
+  const relock = attack(attackStep, world, { targetID: 801, lockIssued: true, waited: 0, dronesOn: null, approached: 801 }, {});
+  assert.ok(relock.action.kind === "lock" && relock.action.targetID === 802);
+  assert.equal(relock.nextMem["approached"], undefined, "the re-pick drops the old burn");
+  const t = attack(attackStep, world, relock.nextMem, {});
+  assert.ok(t.action.kind === "approach" && t.action.targetID === 802);
+});
+
+test("attack-player: a grid it cannot measure is fought where it stands", () => {
+  // A snapshot with no ship block has no ORIGIN, so measureSpace answers null
+  // and there is no distance to anything. No distance, no approach: cannot-tell
+  // never acts, and the ladder runs exactly as it did before ranges existed.
+  const prey = playerShip(801, 90001, 20000);
+  const unplaceable = { ...snapshot([prey]), ship: null };
+  const t = attack(
+    attackStep,
+    obs({ snapshot: unplaceable, lockedTargetIDs: [801], weaponModuleIDs: [700], tackleModuleIDs: [650] }),
+    { targetID: 801, lockIssued: true, waited: 0, dronesOn: null },
+    {},
+  );
+  assert.ok(t.action.kind === "activate" && t.action.moduleID === 650, "the ladder runs exactly as it did before");
+});
+
+test("attack-player: the tackle budget SURVIVES a long burn — the live failure", () => {
+  // ⚠ WATCHED HAPPEN, 2026-07-25. The bot undocked, closed on its target, said
+  // "Guns on them" — and the target was neither pointed nor webbed and warped
+  // off unhindered. The point had been tried three times while far out of reach,
+  // MAX_TACKLE_ATTEMPTS went on refusals nobody could have expected to land, and
+  // by the time the ship arrived tackle was switched off for that target for good.
+  const far = playerShip(801, 90001, 60000);   // 60 km: nothing reaches
+  const near = playerShip(801, 90001, IN_RANGE);
+  const world = (prey: SpaceEntity, active: number[] = []) => obs({
+    snapshot: snapshot([prey], { activeModuleIDs: active }),
+    lockedTargetIDs: [801], weaponModuleIDs: [700], tackleModuleIDs: [650], webModuleIDs: [660],
+  });
+
+  let mem: MacroMemory = { targetID: 801, lockIssued: true, waited: 0, dronesOn: null };
+  const burn: string[] = [];
+  for (let i = 0; i < 6; i++) {           // the long burn, well past the budget
+    const t = attack(attackStep, world(far), mem, {});
+    burn.push(t.action.kind === "activate" ? `activate:${t.action.moduleID}` : t.action.kind);
+    mem = t.nextMem;
+  }
+  assert.ok(!burn.some((k) => k === "activate:650"), `the point must not be fired at 60 km; got ${burn.join(",")}`);
+  assert.ok((mem["pointTries"] ?? 0) === 0, "and nothing may be charged to the point's budget for it");
+
+  // Now it has arrived. Tackle must still be available.
+  const arrived = attack(attackStep, world(near), mem, {});
+  assert.ok(
+    arrived.action.kind === "activate" && arrived.action.moduleID === 650,
+    "the point must go on once the ship is finally in range",
+  );
+  const webbed = attack(attackStep, world(near, [650]), arrived.nextMem, {});
+  assert.ok(webbed.action.kind === "activate" && webbed.action.moduleID === 660, "and the web after it");
+});
+
+test("attack-player: a point that will not come on IN range still spends the budget", () => {
+  // The bound is for refusals we cannot see coming. In range and still refusing
+  // is exactly that, so it must still give up and let the guns have the tick.
+  const prey = playerShip(801, 90001, IN_RANGE);
+  const world = obs({
+    snapshot: snapshot([prey], { activeModuleIDs: [] }),
+    lockedTargetIDs: [801], weaponModuleIDs: [700], tackleModuleIDs: [650],
+  });
+  let mem: MacroMemory = { targetID: 801, lockIssued: true, waited: 0, dronesOn: null, approached: 801 };
+  const picked: number[] = [];
+  for (let i = 0; i < 6; i++) {
+    const t = attack(attackStep, world, mem, {});
+    if (t.action.kind === "activate") picked.push(t.action.moduleID);
+    mem = t.nextMem;
+  }
+  assert.equal(picked.filter((m) => m === 650).length, 3, "exactly MAX_TACKLE_ATTEMPTS");
+  assert.ok(picked.includes(700), "then the guns");
+});
+
+test("attack-player: out of web range the POINT still fires and the web does not burn a try", () => {
+  // 15 km: past the web (10 km), well inside the point (~20 km). This is the
+  // live shape — the point lands, the web would only ever be refused.
+  const prey = playerShip(801, 90001, 15000);
+  const base: MacroMemory = { targetID: 801, lockIssued: true, waited: 0, dronesOn: null, approached: 801 };
+  const point = attack(
+    attackStep,
+    obs({ snapshot: snapshot([prey]), lockedTargetIDs: [801], weaponModuleIDs: [700], tackleModuleIDs: [650], webModuleIDs: [660] }),
+    base,
+    {},
+  );
+  assert.ok(point.action.kind === "activate" && point.action.moduleID === 650, "the point outranges the web — it still goes on");
+
+  const withPoint = obs({
+    snapshot: snapshot([prey], { activeModuleIDs: [650] }),
+    lockedTargetIDs: [801], weaponModuleIDs: [700], tackleModuleIDs: [650], webModuleIDs: [660],
+  });
+  const next = attack(attackStep, withPoint, point.nextMem, {});
+  assert.ok(next.action.kind === "activate" && next.action.moduleID === 700, "the web is skipped for range, so the guns get the tick");
+  assert.equal(next.nextMem["webTries"], point.nextMem["webTries"], "and the skip costs nothing from the web's budget");
+});
+
+test("attack-player: once inside web range the web goes on", () => {
+  const prey = playerShip(801, 90001, IN_RANGE);
+  const t = attack(
+    attackStep,
+    obs({
+      snapshot: snapshot([prey], { activeModuleIDs: [650] }),
+      lockedTargetIDs: [801], weaponModuleIDs: [700], tackleModuleIDs: [650], webModuleIDs: [660],
+    }),
+    { targetID: 801, lockIssued: true, waited: 0, dronesOn: null, approached: 801 },
+    {},
+  );
+  assert.ok(t.action.kind === "activate" && t.action.moduleID === 660);
+});
+
+test("attack-player: a struggling POINT must not disarm the web — the second live failure", () => {
+  // ⚠ WATCHED HAPPEN, 2026-07-26, with the range checks already in. The point and
+  // the web shared ONE counter, so the point spending it — coming on late, after
+  // refusals in the band just past its optimal — left the web permanently idle.
+  // Observed: point cycling, web still off, at a range of 230 METRES.
+  const prey = playerShip(801, 90001, IN_RANGE);
+  const t = attack(
+    attackStep,
+    obs({
+      // The point is up; only the web is idle.
+      snapshot: snapshot([prey], { activeModuleIDs: [650] }),
+      lockedTargetIDs: [801], weaponModuleIDs: [700], tackleModuleIDs: [650], webModuleIDs: [660],
+    }),
+    // Memory from a fight where the point used every one of ITS attempts.
+    { targetID: 801, lockIssued: true, waited: 0, dronesOn: null, approached: 801, pointTries: 3 },
+    {},
+  );
+  assert.ok(
+    t.action.kind === "activate" && t.action.moduleID === 660,
+    "the web has its own budget and must still fire",
+  );
+});
+
+test("attack-player: each half of the tackle is bounded on its own", () => {
+  // Neither counter may leak into the other, in either direction.
+  const prey = playerShip(801, 90001, IN_RANGE);
+  const world = obs({
+    snapshot: snapshot([prey], { activeModuleIDs: [] }),
+    lockedTargetIDs: [801], weaponModuleIDs: [700], tackleModuleIDs: [650], webModuleIDs: [660],
+  });
+  let mem: MacroMemory = { targetID: 801, lockIssued: true, waited: 0, dronesOn: null, approached: 801 };
+  const picked: number[] = [];
+  for (let i = 0; i < 10; i++) {
+    const t = attack(attackStep, world, mem, {});
+    if (t.action.kind === "activate") picked.push(t.action.moduleID);
+    mem = t.nextMem;
+  }
+  assert.equal(picked.filter((m) => m === 650).length, 3, "the point gets its three");
+  assert.equal(picked.filter((m) => m === 660).length, 3, "and the web gets three of its own");
+  assert.ok(picked.includes(700), "then the guns get the tick");
+});
+
 test("attack-player: a NEW target gets a fresh tackle try (the bound resets)", () => {
   const first = playerShip(801, 90001);
   const second = playerShip(802, 90002);
   const world = obs({ snapshot: snapshot([second]), lockedTargetIDs: [802], weaponModuleIDs: [700], tackleModuleIDs: [650] });
   // Memory is from a spent fight with 801, which has left the grid.
-  const t = attack(attackStep, world, { targetID: 801, lockIssued: true, waited: 0, dronesOn: null, tackleTries: 3 }, {});
+  const t = attack(attackStep, world, { targetID: 801, lockIssued: true, waited: 0, dronesOn: null, pointTries: 3, webTries: 3 }, {});
   assert.ok(t.action.kind === "lock" && t.action.targetID === 802);
-  assert.equal(t.nextMem["tackleTries"], undefined, "a re-pick clears the spent tackle counter");
+  assert.equal(t.nextMem["pointTries"], undefined, "a re-pick clears the spent tackle counters");
+  assert.equal(t.nextMem["webTries"], undefined);
   assert.ok(first.itemID === 801);
 });
 
 test("hunt-player: the tackle counter survives ticks mid-fight", () => {
-  const prey = playerShip(801, 90001);
+  const prey = playerShip(801, 90001, IN_RANGE);
   const world = obs({
     snapshot: snapshot([prey], { activeModuleIDs: [] }),
     lockedTargetIDs: [801], weaponModuleIDs: [700], tackleModuleIDs: [650],
@@ -760,6 +1047,56 @@ test("hunt-player: the tackle counter survives ticks mid-fight", () => {
   }
   assert.equal(picked.filter((m) => m === 650).length, 3, "the bound counts across ticks inside the hunt too");
   assert.ok(picked.includes(700));
+});
+
+test("hunt-player: roaming to a new system forgets the old system's scanner hits", () => {
+  // ⚠ `visitedHits` used to ride along on every jump. A hunt that came back to a
+  // system it had already swept still counted those hits as visited and refused
+  // to chase them — so the longer it roamed, the more of its own hunting ground
+  // it was blind to. It also grew with no cap, unlike `triedItemIDs`.
+  const t = hunt(
+    huntStep,
+    obs({
+      snapshot: snapshot([]),
+      weaponModuleIDs: [700],
+      localPlayers: [],
+      huntRoam: { jumpsFromAnchor: 0, neighbors: [{ systemID: 30000144, jumpsFromAnchor: 1 }] },
+    }),
+    // Arrive carrying a long visited list and a half-finished chase.
+    { visitedHits: "111,222,333", vantageID: 555, chaseID: 333, chaseIssued: true, chaseSawWarp: true, chaseWaited: 4 },
+    HUNT_BOARD,
+  );
+  assert.ok(t.action.kind === "startSystemRoute" && t.action.systemID === 30000144);
+  assert.equal(t.nextMem["visitedHits"], undefined, "the old system's hits must not follow it");
+  assert.equal(t.nextMem["vantageID"], undefined, "nor the vantage point it was scanning from");
+  assert.equal(t.nextMem["chaseIssued"], undefined, "nor a chase that cannot be resolved over there");
+  assert.equal(t.nextMem["roamSystemID"], 30000144, "and the roam's own state is set");
+});
+
+test("hunt-player: the BURN is remembered across ticks too, not re-issued forever", () => {
+  // ⚠ The hunt block hand-copies the combat keys into the engage, so anything
+  // engagePrey remembers has to be listed there or it resets every tick. When
+  // `approached` was missed, the hunt re-issued the approach on every single tick
+  // — and since only one action fires per tick, that starves the whole ladder:
+  // the bot would burn toward its target and never shoot it.
+  const prey = playerShip(801, 90001, 30000);
+  const world = obs({
+    snapshot: snapshot([prey], { activeModuleIDs: [] }),
+    lockedTargetIDs: [801], weaponModuleIDs: [700], tackleModuleIDs: [650],
+    localPlayers: [{ characterID: 90001, name: "Prey" }],
+  });
+  let mem: MacroMemory = { targetID: 801, lockIssued: true, waited: 0, dronesOn: null, visitedHits: "999" };
+  const kinds: string[] = [];
+  for (let i = 0; i < 5; i++) {
+    const t = hunt(huntStep, world, mem, HUNT_BOARD);
+    kinds.push(t.action.kind);
+    mem = t.nextMem;
+  }
+  assert.equal(
+    kinds.filter((k) => k === "approach").length,
+    1,
+    `the burn is issued once inside the hunt as well; got ${kinds.join(",")}`,
+  );
 });
 
 // ── Movement extras, cargo extras, cap chain ─────────────────────────────────
@@ -865,6 +1202,29 @@ test("remote-cap: feeds the EMPTIEST mate; all healthy is done; none fitted is b
 
   const noModule = remoteCapBlock(capStep, obs({ snapshot: snapshot([thirsty]), remoteCapModuleIDs: [] }), {}, {});
   assert.equal(noModule.outcome.kind, "blocked");
+});
+
+test("remote-cap: a mate out of reach is closed on, and the transfer is bounded", () => {
+  // The same two faults remote-rep had. Measured live: a Small Remote Capacitor
+  // Transmitter I refused TargetNotWithinRangeGeneric at 17.9 km.
+  const capStep: MacroStep = { id: "rc", kind: "macro", macro: "remote-cap", args: {} };
+  const far = entity({ itemID: 801, kind: "ship", characterID: 90001, isNpc: false, capacitorRatio: 0.2, position: { x: 30000, y: 0, z: 0 } });
+  const world = obs({ snapshot: snapshot([far]), lockedTargetIDs: [801], remoteCapModuleIDs: [640] });
+  const close = remoteCapBlock(capStep, world, { capLockOn: 801, capWaited: 0 }, {});
+  assert.ok(close.action.kind === "approach" && close.action.targetID === 801);
+  assert.match(close.why, /Closing in/);
+  assert.equal(close.nextMem["capTries"] ?? 0, 0, "out of reach spends no budget");
+
+  const near = entity({ itemID: 801, kind: "ship", characterID: 90001, isNpc: false, capacitorRatio: 0.2, position: { x: 1000, y: 0, z: 0 } });
+  const inRange = obs({ snapshot: snapshot([near], { activeModuleIDs: [] }), lockedTargetIDs: [801], remoteCapModuleIDs: [640] });
+  let mem: MacroMemory = { capLockOn: 801, capWaited: 0 };
+  let fired = 0;
+  for (let i = 0; i < 8; i++) {
+    const t = remoteCapBlock(capStep, inRange, mem, {});
+    if (t.action.kind === "activate") fired += 1;
+    mem = t.nextMem;
+  }
+  assert.equal(fired, 3, `the transmitter is offered exactly MAX_REMOTE_ASSIST_ATTEMPTS times; got ${fired}`);
 });
 
 const jettisonStep: MacroStep = { id: "jc", kind: "macro", macro: "jettison-cargo", args: {} };

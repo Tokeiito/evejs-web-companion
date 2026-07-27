@@ -9202,8 +9202,16 @@ app.post("/api/bridge/fleet/invite", requireAuth, async (req, res, next) => {
   }
   const body = req.body || {};
   const inviteeCharID = Number(body.inviteeCharID) || 0;
-  const wingID = Number(body.wingID) || 0;
-  const squadID = Number(body.squadID) || 0;
+  // ⚠ NULL, NOT 0, WHEN NO WING OR SQUAD IS NAMED. `Number(undefined) || 0` reads
+  // as "put them in wing 0", and wing ids are allocated from 1 — so wing 0 is a
+  // position nobody can hold. The server stored such an invite happily and then
+  // refused the ACCEPT with FleetNoPositionFound, an error that points at the
+  // fleet rather than at the caller who asked for a wing that never existed.
+  // (The server now ignores a non-positive id as well — EveOffline
+  // fix/fleet-join-no-position — but sending nonsense and trusting the far end to
+  // disregard it is not a contract.)
+  const wingID = Number(body.wingID) > 0 ? Number(body.wingID) : null;
+  const squadID = Number(body.squadID) > 0 ? Number(body.squadID) : null;
   const role = body.role === undefined ? null : body.role;
   await dispatchBoundFleetWrite(req, res, next, "Invite", [inviteeCharID, wingID, squadID, role]);
 });

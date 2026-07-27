@@ -172,6 +172,81 @@ test("accept: over the player's jump limit -> Decline", () => {
   assert.ok(t.action.kind === "agentButton" && t.action.actionID === 819);
 });
 
+// ── A reading we do not have is not a reason to turn a job down ──────────────
+//
+// ⚠ WATCHED HAPPEN, 2026-07-26. The first accept tick after docking gated on a
+// cargo hold that had not been read yet, and the bot DECLINED a perfectly good
+// courier job with "Your ship did not report how much room its cargo hold has".
+// Declining is irreversible — it burns the offer and starts a decline timer —
+// so it must never be the answer to "I could not see". `gateOffer` folds
+// cannot-tell and fails-the-gate into one string, which is fine for a readout
+// and wrong for a decision.
+
+test("accept: an UNREAD cargo hold waits, it does not decline the job", () => {
+  const t = accept(
+    step("accept-mission"),
+    obs({
+      briefing: briefing(),
+      conversation: convo([{ actionID: 816, buttonType: 3 }, { actionID: 819, buttonType: 9 }]),
+      cargo: null, // the hold has not been read yet
+      jumpsToDropoff: 3,
+    }),
+    {},
+    ONBOARD,
+  );
+  assert.equal(t.action.kind, "wait", "it must not press anything on a blind tick");
+  assert.match(t.why, /Waiting for the ship to report its cargo hold/);
+  assert.equal(t.outcome.kind, "acting");
+});
+
+test("accept: an offer with no stated volume waits too", () => {
+  const t = accept(
+    step("accept-mission"),
+    obs({
+      briefing: briefing({ cargoVolume: null }),
+      conversation: convo([{ actionID: 816, buttonType: 3 }, { actionID: 819, buttonType: 9 }]),
+      cargo: { rows: [], capacity: { capacity: 450, used: 0 } },
+      jumpsToDropoff: 3,
+    }),
+    {},
+    ONBOARD,
+  );
+  assert.equal(t.action.kind, "wait");
+  assert.match(t.why, /how big the cargo is/);
+});
+
+test("accept: a missing ROUTE waits only when the player set a jump limit", () => {
+  const world = (jumps: number | null) => obs({
+    briefing: briefing(),
+    conversation: convo([{ actionID: 816, buttonType: 3 }, { actionID: 819, buttonType: 9 }]),
+    cargo: { rows: [], capacity: { capacity: 450, used: 0 } },
+    jumpsToDropoff: jumps,
+  });
+  const limited = accept(step("accept-mission", { maxJumps: { kind: "count", value: 5 } }), world(null), {}, ONBOARD);
+  assert.equal(limited.action.kind, "wait");
+  assert.match(limited.why, /route to the delivery point/);
+  // No ceiling set means the route is not needed to judge the offer.
+  const unlimited = accept(step("accept-mission"), world(null), {}, ONBOARD);
+  assert.ok(unlimited.action.kind === "agentButton" && unlimited.action.actionID === 816);
+});
+
+test("accept: a reading that never arrives ends BLOCKED, not waiting forever", () => {
+  const world = obs({
+    briefing: briefing(),
+    conversation: convo([{ actionID: 816, buttonType: 3 }, { actionID: 819, buttonType: 9 }]),
+    cargo: null,
+    jumpsToDropoff: 3,
+  });
+  let mem: Record<string, unknown> = {};
+  let last = accept(step("accept-mission"), world, mem, ONBOARD);
+  for (let i = 0; i < 10 && last.outcome.kind === "acting"; i++) {
+    mem = last.nextMem;
+    last = accept(step("accept-mission"), world, mem, ONBOARD);
+  }
+  assert.equal(last.outcome.kind, "blocked", "the blind wait has to be bounded like every other branch");
+  assert.match(String((last.outcome as { reason?: string }).reason ?? ""), /could not read enough/);
+});
+
 test("accept: journal says accepted -> done, mission facts on the board", () => {
   const t = accept(step("accept-mission"), obs({ journal: acceptedJournal(), briefing: briefing() }), {}, ONBOARD);
   assert.equal(t.outcome.kind, "done");

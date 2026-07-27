@@ -16,6 +16,7 @@ import type { SpaceEntity, SpaceSnapshot } from "../store/types.ts";
 import { BELT_ARRIVAL_RADIUS_M, holdItemIDs, isMineableRock } from "./miningBotLoop.ts";
 import {
   agentActionID,
+  cargoRoom,
   completeActionID,
   completed,
   findPackageStack,
@@ -553,6 +554,38 @@ const requestMission: MacroDecider = (step, obs, mem, board) => {
 // ── accept-mission ───────────────────────────────────────────────────────────
 // Gate the offer (cargo fits, trip length), then Accept — or Decline and ask
 // again, bounded. Done once the journal says the mission is accepted.
+/**
+ * Why this offer cannot be JUDGED yet, or null when every reading it needs is in.
+ *
+ * Only the blind cases live here. "The cargo will not fit" and "that is further
+ * than your limit" are real verdicts and stay in `gateOffer`; these are the ones
+ * where the bot has simply not been told yet, and the honest answer is to wait a
+ * tick rather than throw the job away.
+ */
+function unreadableOffer(
+  briefing: ScriptObservation["briefing"] | null,
+  obs: ScriptObservation,
+  maxJumps: number | null,
+): string | null {
+  if (briefing === null || briefing === undefined) {
+    return null; // no offer on the table at all — the caller asks for one
+  }
+  const isCourier = briefing.cargoTypeID !== null;
+  if (isCourier) {
+    if (briefing.cargoVolume === null) {
+      return "Waiting for the offer to say how big the cargo is.";
+    }
+    if (cargoRoom(obs.cargo ?? null) === null) {
+      return "Waiting for the ship to report its cargo hold.";
+    }
+  }
+  // The jump gate is only owed a reading when the player actually set a ceiling.
+  if (maxJumps !== null && briefing.destinationSystemID !== null && (obs.jumpsToDropoff ?? null) === null) {
+    return "Waiting for a route to the delivery point.";
+  }
+  return null;
+}
+
 const acceptMission: MacroDecider = (step, obs, mem, board) => {
   const agentID = stepAgentID(step, board);
   if (agentID === null) {
@@ -586,21 +619,49 @@ const acceptMission: MacroDecider = (step, obs, mem, board) => {
     });
   }
   const maxJumps = countArg(step, "maxJumps");
+  // ⚠ A READING WE DO NOT HAVE IS NOT A REASON TO TURN A JOB DOWN. Declining is
+  // an irreversible act against the agent — it burns the offer and starts a
+  // decline timer — so it must never be the answer to "I could not see".
+  //
+  // Watched live 2026-07-26: the first tick after docking gated on a cargo hold
+  // that had not been read yet and the bot DECLINED a perfectly good courier
+  // job, reason "Your ship did not report how much room its cargo hold has".
+  // `gateOffer` folds cannot-tell and fails-the-gate into one string, which is
+  // fine for a readout and wrong for a decision, so the unreadable cases are
+  // pulled out here and answered with a WAIT instead.
+  //
+  // Bounded like everything else: the wait spends a round, so a reading that
+  // never arrives ends as a blocked step with its own reason rather than a
+  // silent forever-wait.
+  const blind = unreadableOffer(briefing, obs, maxJumps);
+  if (blind !== null) {
+    if (rounds >= MAX_BLOCK_ATTEMPTS) {
+      return tick(WAIT, blind, "Accepting", {
+        kind: "blocked",
+        reason: `The bot could not read enough to judge the offer: ${blind}`,
+      });
+    }
+    return tick(WAIT, blind, "Accepting", ACTING, false, { ...mem, rounds: rounds + 1 });
+  }
   if (briefing !== null) {
     // A COURIER offer names cargo and gets the full volume + jumps gate; an
     // ENCOUNTER offer names none, so only the player's jump ceiling applies.
     const hasCargo = briefing.cargoTypeID !== null && briefing.cargoVolume !== null;
+    // ⚠ NO CEILING MEANS THE ROUTE DOES NOT MATTER. `gateOffer` turns a job down
+    // when it has no jump count at all — right when a limit is in play, wrong
+    // when there is none, because then the number was never going to be used.
+    // A stand-in 0 against an unbounded ceiling keeps that gate out of the way
+    // instead of declining a job over a number nobody asked about.
+    const jumpsForGate = maxJumps === null ? 0 : (obs.jumpsToDropoff ?? null);
     const reason = hasCargo
-      ? (maxJumps === null && obs.jumpsToDropoff === undefined
-          ? gateOffer(briefing, obs.cargo ?? null, 0, { agentID, agentName: null, agentStationID: 0, agentStationName: null, maxJumps: Number.MAX_SAFE_INTEGER, maxMissions: 0 })
-          : gateOffer(briefing, obs.cargo ?? null, obs.jumpsToDropoff ?? null, {
-              agentID,
-              agentName: null,
-              agentStationID: 0,
-              agentStationName: null,
-              maxJumps: maxJumps ?? Number.MAX_SAFE_INTEGER,
-              maxMissions: 0,
-            }))
+      ? gateOffer(briefing, obs.cargo ?? null, jumpsForGate, {
+          agentID,
+          agentName: null,
+          agentStationID: 0,
+          agentStationName: null,
+          maxJumps: maxJumps ?? Number.MAX_SAFE_INTEGER,
+          maxMissions: 0,
+        })
       : (maxJumps !== null && obs.jumpsToDropoff !== undefined && obs.jumpsToDropoff !== null && obs.jumpsToDropoff > maxJumps
           ? `The job is ${obs.jumpsToDropoff} jumps away and you set a limit of ${maxJumps}, so the bot turned it down.`
           : null);
@@ -1707,6 +1768,36 @@ const sellItem: MacroDecider = (step, obs, mem) => {
 const REMOTE_REP_HURT = 0.95; // anyone not essentially full is worth a rep
 const ORBIT_BOOST_RANGE_M = 2000; // stay close so remote reps reach
 
+/**
+ * How far remote assistance reaches — remote reps and cap transmitters alike.
+ *
+ * ⚠ DELIBERATELY THE SMALL END, with margin, in the style of `SALVAGE_RANGE_M`.
+ * The small modules sit around 5-6 km and the larger ones reach further, so a
+ * ship fitted with a big one closes a little more than it strictly had to; that
+ * costs seconds. Being generous costs correctness, which is the mistake
+ * `POINT_RANGE_M` records: a limit set ABOVE what the module can do turns the
+ * range check into a machine for spending the attempt budget on refusals.
+ *
+ * Measured live: a Small Remote Capacitor Transmitter I refused
+ * `TargetNotWithinRangeGeneric` at 17.9 km and ran fine at 2.2 km.
+ * `ORBIT_BOOST_RANGE_M` (2 km) sits comfortably inside this, so orbit-and-boost's
+ * hold always satisfies it.
+ */
+const REMOTE_ASSIST_RANGE_M = 5000;
+
+/**
+ * How many times one target may be offered a remote module that will not come on.
+ *
+ * ⚠ THIS BOUND WAS MISSING ENTIRELY. Both remote blocks used to return `mem`
+ * UNCHANGED after issuing an activate, so a refused module was re-found idle on
+ * the next tick and re-fired — forever, with no counter, no progress and no
+ * reason surfaced. remote-rep only reports `done` when everyone on grid is full
+ * and remote-cap when everyone has cap to spare, so neither could ever finish
+ * either: a mate parked out of reach was an infinite loop, which is the exact
+ * failure mode the house rule about bounding every branch exists to prevent.
+ */
+const MAX_REMOTE_ASSIST_ATTEMPTS = 3;
+
 /** Friendly ships on grid: another player's hull, never an NPC, never your own. */
 function friendliesOnGrid(snapshot: SpaceSnapshot | null, selfID: number | null): readonly SpaceEntity[] {
   if (snapshot === null) {
@@ -1746,11 +1837,21 @@ function remoteRepIDs(obs: ScriptObservation): readonly number[] {
 }
 
 /**
- * The shared logistics action: lock the hurt fleet-mate (bounded), then switch on
- * any idle remote rep onto it. Returns the tick to emit, or null when there is
- * nobody to rep right now — the caller decides what "nothing to rep" means.
+ * The shared logistics action: lock the hurt fleet-mate (bounded), close on them
+ * if the reps cannot reach (bounded), then switch on any idle remote rep onto it.
+ * Returns the tick to emit, or null when there is nobody to rep right now — the
+ * caller decides what "nothing to rep" means.
+ *
+ * `mayApproach` is false for orbit-and-boost: that block is ALREADY closing, by
+ * orbiting the anchor at `ORBIT_BOOST_RANGE_M`. Issuing an approach from in here
+ * as well would fight its own orbit command every tick.
  */
-function repHurtMate(obs: ScriptObservation, mem: MacroMemory, phase: string): MacroTick | null {
+function repHurtMate(
+  obs: ScriptObservation,
+  mem: MacroMemory,
+  phase: string,
+  mayApproach = true,
+): MacroTick | null {
   const snapshot = obs.snapshot ?? null;
   if (snapshot === null) {
     return null;
@@ -1762,7 +1863,16 @@ function repHurtMate(obs: ScriptObservation, mem: MacroMemory, phase: string): M
   const locked = (obs.lockedTargetIDs ?? []).includes(target.itemID);
   if (!locked) {
     if (num(mem, "repLockOn") !== target.itemID) {
-      return tick({ kind: "lock", targetID: target.itemID }, "Locking the hurt fleet-mate.", phase, ACTING, true, { ...mem, repLockOn: target.itemID, repWaited: 0 });
+      // A NEW mate resets everything counted per-target, or the last one's spent
+      // budget silently disarms the reps for this one (the bug the PvP ladder
+      // had, where a shared counter outlived the target it was counting for).
+      return tick({ kind: "lock", targetID: target.itemID }, "Locking the hurt fleet-mate.", phase, ACTING, true, {
+        ...mem,
+        repLockOn: target.itemID,
+        repWaited: 0,
+        repTries: 0,
+        repApproached: null,
+      });
     }
     const waited = (num(mem, "repWaited") ?? 0) + 1;
     if (waited > MAX_LOCK_WAIT_TICKS) {
@@ -1770,10 +1880,40 @@ function repHurtMate(obs: ScriptObservation, mem: MacroMemory, phase: string): M
     }
     return tick(WAIT, "Waiting for the lock.", phase, ACTING, true, { ...mem, repWaited: waited });
   }
+  // Reps have a range, and a lock reaches much further than they do. Close first
+  // (once per target — `approach` is a standing follow order, not a nudge), and
+  // do not spend an attempt on a module we can see cannot reach.
+  const rangeToMate = measureSpace(snapshot)?.distances.get(target.itemID) ?? null;
+  const outOfReach = rangeToMate !== null && rangeToMate > REMOTE_ASSIST_RANGE_M;
+  if (outOfReach && mayApproach && num(mem, "repApproached") !== target.itemID) {
+    return tick(
+      { kind: "approach", targetID: target.itemID },
+      "Closing in — too far out for the reps to reach.",
+      phase,
+      ACTING,
+      true,
+      { ...mem, repApproached: target.itemID },
+    );
+  }
   const active = new Set(snapshot.ship?.activeModuleIDs ?? []);
-  const idle = remoteRepIDs(obs).find((id) => !active.has(id));
-  if (idle !== undefined) {
-    return tick({ kind: "activate", moduleID: idle, targetID: target.itemID }, "Running the remote reps on the fleet-mate.", phase, ACTING, true, mem);
+  // ⚠ CONSECUTIVE failures only. A rep that HAS come on refills the budget, so
+  // the bound can only ever stop a module that is not landing — never one that is
+  // cycling normally and simply needs switching on again. Get this wrong and the
+  // "fix" becomes a bot that stops repping mid-fight after three cycles.
+  const landed = remoteRepIDs(obs).some((id) => active.has(id));
+  const repTries = landed ? 0 : num(mem, "repTries") ?? 0;
+  if (!outOfReach && repTries < MAX_REMOTE_ASSIST_ATTEMPTS) {
+    const idle = remoteRepIDs(obs).find((id) => !active.has(id));
+    if (idle !== undefined) {
+      return tick(
+        { kind: "activate", moduleID: idle, targetID: target.itemID },
+        "Running the remote reps on the fleet-mate.",
+        phase,
+        ACTING,
+        true,
+        { ...mem, repTries: repTries + 1 },
+      );
+    }
   }
   return tick(WAIT, "Repping the fleet-mate.", phase, ACTING, true, mem);
 }
@@ -1833,7 +1973,8 @@ const orbitAndBoost: MacroDecider = (_step, obs, mem) => {
       { ...mem, orbiting: anchor.itemID },
     );
   }
-  const rep = repHurtMate(obs, mem, "Boosting");
+  // No approach from in here — the orbit above is this block's way of closing.
+  const rep = repHurtMate(obs, mem, "Boosting", false);
   if (rep !== null) {
     return rep;
   }
@@ -1972,6 +2113,47 @@ function canFight(obs: ScriptObservation): boolean {
 const MAX_TACKLE_ATTEMPTS = 3;
 
 /**
+ * How far out the engage will start burning toward its target, and how far a web
+ * actually reaches.
+ *
+ * ⚠ BOTH NUMBERS ARE MEASURED, NOT GUESSED. Live, 2026-07-25: at 17.9 km the
+ * Warp Disruptor I came on happily and BOTH the Stasis Webifier I and the Small
+ * Remote Capacitor Transmitter I refused `TargetNotWithinRangeGeneric`. Only
+ * after closing to ~2 km did the whole ladder run. Locking reaches far further
+ * than the guns do, so "locked" never meant "in reach" — it just looked like it,
+ * because the point (the longest-ranged of the three) always worked.
+ *
+ * CLOSE_ABOVE sits just under the web's optimal so the burn starts BEFORE the
+ * web starts refusing, rather than after.
+ */
+const ENGAGE_CLOSE_ABOVE_M = 9_000;
+const WEB_RANGE_M = 10_000;
+
+/**
+ * How far a point reaches: a Warp Disruptor I's own optimal. Group 52 also holds
+ * the Warp Scramblers (~9 km), and this deliberately does NOT stretch to cover
+ * both — a disruptor must not be held back on the chance the fitted module is a
+ * scram, but nor should the limit sit ABOVE what a disruptor can do. Measured:
+ * set to 24 km, the engage kept firing into the 20-24 km band and the refusals
+ * were charged to the budget, which is the very thing the range check exists to
+ * prevent.
+ *
+ * ⚠ THIS IS WHAT KEEPS THE TACKLE BUDGET HONEST, and the live run that earned it
+ * is worth the paragraph. The bot undocked, closed on its target, said "Guns on
+ * them" — and the target was neither pointed nor webbed, and warped away
+ * unhindered. What happened: the point was tried three times while still way out
+ * of reach, MAX_TACKLE_ATTEMPTS was spent on refusals nobody could have expected
+ * to land, and by the time the ship had closed to 9 km tackle was switched off
+ * for that target for good.
+ *
+ * The budget exists to catch a module refusing for a reason we CANNOT see. An
+ * out-of-range refusal is not that: the range is right there in the snapshot. So
+ * a shot we can see is out of reach is not taken and not counted, and the budget
+ * survives the approach intact.
+ */
+const POINT_RANGE_M = 20_000;
+
+/**
  * The shared PvP engage: nearest allowed player first — lock it (bounded), tackle
  * it (bounded), drones onto it, every idle gun onto it — concentrating fire
  * exactly like the ratting loop. Only called with at least one candidate on grid.
@@ -2024,13 +2206,54 @@ function engagePrey(
     return tick(WAIT, "Waiting for the lock.", phase, ACTING, true, { ...mem, waited });
   }
   const active = new Set(snapshot?.ship?.activeModuleIDs ?? []);
+  const rangeToTarget = measureSpace(snapshot)?.distances.get(targetID) ?? null;
+
+  // CLOSE THE DISTANCE, once per target. The lock lands from much further out
+  // than the guns and the web reach, so a target can be locked and still be out
+  // of reach of everything except the point.
+  //
+  // ⚠ ONCE PER TARGET IS THE WHOLE BOUND, and it is enough: `approach` is a
+  // standing follow order on the server (CmdSetSpeedFraction + CmdFollowBall),
+  // not a nudge that has to be repeated. Re-issuing it every tick while the ship
+  // is already burning would be a no-op at best, and — since only one action
+  // fires per tick — would starve the guns for the whole approach. `approached`
+  // is dropped with the rest of the combat memory when the primary changes, so a
+  // fresh target gets a fresh burn.
+  //
+  // A snapshot that cannot place the target gives no distance, and no distance
+  // means no approach: the ladder then runs exactly as it did before.
+  if (
+    rangeToTarget !== null &&
+    rangeToTarget > ENGAGE_CLOSE_ABOVE_M &&
+    num(mem, "approached") !== targetID
+  ) {
+    return tick(
+      { kind: "approach", targetID },
+      "Closing in — too far out for the web and the guns.",
+      phase,
+      ACTING,
+      true,
+      { ...mem, approached: targetID },
+    );
+  }
 
   // TACKLE FIRST — hold them still before anything else. Bounded: after
-  // MAX_TACKLE_ATTEMPTS ticks of a point that will not come on (out of range, or
-  // refused for any reason the server does not say out loud) the engage stops
-  // asking and shoots, so a stubborn point can never cost the whole fight.
-  const tackleTries = num(mem, "tackleTries") ?? 0;
-  if (tackleTries < MAX_TACKLE_ATTEMPTS) {
+  // MAX_TACKLE_ATTEMPTS ticks of a module that will not come on — refused for a
+  // reason the server does not say out loud — the engage stops asking and
+  // shoots, so a stubborn module can never cost the whole fight.
+  //
+  // ⚠ THE POINT AND THE WEB EACH GET THEIR OWN BUDGET, and that separation is
+  // load-bearing. They shared one counter, and the sharing quietly meant "if the
+  // point struggles, the web never fires at all": watched live, the point spent
+  // the last of a shared budget coming on at ~20 km, and the web was still idle
+  // at 230 METRES. One module's bad luck must not disarm the other.
+  //
+  // Both also wait for their own reach, and a shot skipped for range is NOT an
+  // attempt — that keeps each budget for real mysteries instead of spending it on
+  // refusals we could see coming (see POINT_RANGE_M).
+  const inReach = (limit: number): boolean => rangeToTarget === null || rangeToTarget <= limit;
+  const pointTries = num(mem, "pointTries") ?? 0;
+  if (pointTries < MAX_TACKLE_ATTEMPTS && inReach(POINT_RANGE_M)) {
     const idlePoint = (obs.tackleModuleIDs ?? []).find((id) => !active.has(id));
     if (idlePoint !== undefined) {
       return tick(
@@ -2039,9 +2262,12 @@ function engagePrey(
         phase,
         ACTING,
         true,
-        { ...mem, tackleTries: tackleTries + 1 },
+        { ...mem, pointTries: pointTries + 1 },
       );
     }
+  }
+  const webTries = num(mem, "webTries") ?? 0;
+  if (webTries < MAX_TACKLE_ATTEMPTS && inReach(WEB_RANGE_M)) {
     const idleWeb = (obs.webModuleIDs ?? []).find((id) => !active.has(id));
     if (idleWeb !== undefined) {
       return tick(
@@ -2050,7 +2276,7 @@ function engagePrey(
         phase,
         ACTING,
         true,
-        { ...mem, tackleTries: tackleTries + 1 },
+        { ...mem, webTries: webTries + 1 },
       );
     }
   }
@@ -2171,14 +2397,19 @@ const huntPlayer: MacroDecider = (step, obs, mem, board) => {
   const prey = preyOnGrid(snapshot, only);
   if (prey.length > 0) {
     // Carry ONLY the combat keys into the engage (the search keys would confuse
-    // it), and carry ALL of them — `tackleTries` included, or the point's attempt
-    // bound would reset every tick and never let the guns through.
+    // it), and carry ALL of them — every bound and every latch included, or they
+    // reset each tick and stop bounding anything. `pointTries`/`webTries` would
+    // let the modules be re-tried forever and never let the guns through;
+    // `approached` would re-issue the burn every tick, which starves the ladder
+    // the same way. ⚠ ANY new key engagePrey remembers has to be added here too.
     const combatKeys = {
       targetID: mem["targetID"],
       lockIssued: mem["lockIssued"],
       waited: mem["waited"],
       dronesOn: mem["dronesOn"],
-      tackleTries: mem["tackleTries"],
+      pointTries: mem["pointTries"],
+      webTries: mem["webTries"],
+      approached: mem["approached"],
     };
     return engagePrey(obs, combatKeys, "Attacking", prey);
   }
@@ -2289,13 +2520,25 @@ const huntPlayer: MacroDecider = (step, obs, mem, board) => {
     }
     choice = back;
   }
+  // ⚠ LEAVING THE SYSTEM DROPS EVERYTHING SCOPED TO IT, and `visitedHits` is the
+  // one that matters. It holds the itemIDs of scanner hits already chased, and it
+  // used to ride along on every jump — so a hunt that came back to a system it had
+  // swept before still counted those hits as visited and refused to chase them,
+  // even though the ship in question is a live target now. The longer the roam
+  // ran, the more of its own hunting ground it went blind to. (It also grew
+  // without a cap, unlike `triedItemIDs`, which has MAX_TRIED_STACKS.)
+  //
+  // The vantage-point branch above already resets the list for a much weaker
+  // reason — "a new vantage sees the system from somewhere new" — so a whole new
+  // system certainly qualifies. The chase keys go too: a chase in the system we
+  // are leaving cannot be resolved in the one we are arriving at.
   return tick(
     { kind: "startSystemRoute", systemID: choice.systemID },
     "Nobody around — roaming to the next system.",
     "Hunting",
     ACTING,
     true,
-    { ...carried, roamSystemID: choice.systemID, cameFromSystemID: obs.flightStatus?.solarSystemID ?? null },
+    { roamSystemID: choice.systemID, cameFromSystemID: obs.flightStatus?.solarSystemID ?? null },
   );
 };
 
@@ -2471,7 +2714,14 @@ const remoteCap: MacroDecider = (_step, obs, mem) => {
   const locked = (obs.lockedTargetIDs ?? []).includes(target.itemID);
   if (!locked) {
     if (num(mem, "capLockOn") !== target.itemID) {
-      return tick({ kind: "lock", targetID: target.itemID }, "Locking the fleet-mate who needs cap.", "Feeding cap", ACTING, true, { ...mem, capLockOn: target.itemID, capWaited: 0 });
+      // A new mate resets what is counted per-target (see repHurtMate).
+      return tick({ kind: "lock", targetID: target.itemID }, "Locking the fleet-mate who needs cap.", "Feeding cap", ACTING, true, {
+        ...mem,
+        capLockOn: target.itemID,
+        capWaited: 0,
+        capTries: 0,
+        capApproached: null,
+      });
     }
     const waited = (num(mem, "capWaited") ?? 0) + 1;
     if (waited > MAX_LOCK_WAIT_TICKS) {
@@ -2479,10 +2729,35 @@ const remoteCap: MacroDecider = (_step, obs, mem) => {
     }
     return tick(WAIT, "Waiting for the lock.", "Feeding cap", ACTING, true, { ...mem, capWaited: waited });
   }
+  // Same two rules as repHurtMate: a transmitter has a range the lock does not,
+  // and an activation that will not land has to be bounded.
+  const rangeToMate = measureSpace(snapshot)?.distances.get(target.itemID) ?? null;
+  const outOfReach = rangeToMate !== null && rangeToMate > REMOTE_ASSIST_RANGE_M;
+  if (outOfReach && num(mem, "capApproached") !== target.itemID) {
+    return tick(
+      { kind: "approach", targetID: target.itemID },
+      "Closing in — too far out to pass them cap.",
+      "Feeding cap",
+      ACTING,
+      true,
+      { ...mem, capApproached: target.itemID },
+    );
+  }
   const active = new Set(snapshot.ship?.activeModuleIDs ?? []);
-  const idle = transmitters.find((id) => !active.has(id));
-  if (idle !== undefined) {
-    return tick({ kind: "activate", moduleID: idle, targetID: target.itemID }, "Feeding them capacitor.", "Feeding cap", ACTING, true, mem);
+  // Consecutive failures only — see the note in repHurtMate.
+  const capTries = transmitters.some((id) => active.has(id)) ? 0 : num(mem, "capTries") ?? 0;
+  if (!outOfReach && capTries < MAX_REMOTE_ASSIST_ATTEMPTS) {
+    const idle = transmitters.find((id) => !active.has(id));
+    if (idle !== undefined) {
+      return tick(
+        { kind: "activate", moduleID: idle, targetID: target.itemID },
+        "Feeding them capacitor.",
+        "Feeding cap",
+        ACTING,
+        true,
+        { ...mem, capTries: capTries + 1 },
+      );
+    }
   }
   return tick(WAIT, "Feeding the fleet-mate cap.", "Feeding cap", ACTING, true, mem);
 };
