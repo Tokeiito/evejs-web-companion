@@ -22,7 +22,9 @@
 //
 //   3. TIME ON SCREEN COMES FROM THE SERVER. The countdown is the program's own
 //      expiry against the server's clock, and a finished extractor says so
-//      rather than showing a negative number.
+//      rather than showing a negative number. The browser clock these tests
+//      render against is FROZEN, and frozen five hours wrong on purpose, so a
+//      panel that read it directly would be caught rather than merely lucky.
 //
 //   4. THE ICONS ARE REAL PICTURES OR DELIBERATE TILES (R27). Every image on
 //      the page comes from the local cache; TypeIcon's lettered fallback is the
@@ -63,6 +65,36 @@ const PIN_ID_STORAGE = 6;
 const NOW = Date.UTC(2026, 6, 21, 12, 0, 0);
 const HOUR = 3_600_000;
 
+// ⚠ THE BROWSER CLOCK IS FROZEN, NOT SAMPLED. The panel's reference "now" is
+// `Date.now() + clockOffsetMs`, and it samples Date.now() during render — a tick
+// AFTER the scene was assembled. Deriving the offset from the real clock
+// (`clockOffsetMs: NOW - Date.now()`) therefore left the countdown one or two
+// milliseconds short of NOW, and since formatDuration FLOORS, a "21h 30m" that
+// sits exactly on a minute boundary rendered as "21h 29m" whenever those two
+// samples landed in different milliseconds. That was a real intermittent red,
+// three runs in twenty, and no amount of "slack" in the fixture fixes it: the
+// boundary is crossed by the first millisecond of drift, not by the first
+// minute. Pinning Date.now() removes the sampling instead of padding it.
+//
+// Frozen FIVE HOURS BEHIND the server on purpose. `clockOffsetMs` has to carry
+// those five hours for any of the time words to come out right, so a panel that
+// ticked off the raw browser clock could not pass by accident — see the
+// companion test below, which throws the offset away and watches the words
+// change.
+const BROWSER_NOW = NOW - 5 * HOUR;
+const CLOCK_OFFSET = NOW - BROWSER_NOW;
+
+/** Runs `body` with Date.now() pinned to the (deliberately wrong) browser clock. */
+function atFrozenBrowserClock<T>(body: () => T): T {
+  const realNow = Date.now;
+  Date.now = () => BROWSER_NOW;
+  try {
+    return body();
+  } finally {
+    Date.now = realNow;
+  }
+}
+
 function fakeFlow(): unknown {
   return new Proxy({}, { get: () => async () => {} });
 }
@@ -82,6 +114,8 @@ interface SceneOptions {
   readonly coloniesReadable?: boolean;
   readonly empty?: boolean;
   readonly open?: boolean;
+  /** Only the companion test sets this, to prove the offset is load-bearing. */
+  readonly clockOffsetMs?: number;
 }
 
 function colonyState(): unknown {
@@ -108,10 +142,10 @@ function colonyState(): unknown {
           cycleTimeSeconds: 3600,
           quantityPerCycle: 2841,
           installedAtMs: NOW - 3 * HOUR,
-          // Half an hour off the hour boundary ON PURPOSE: the panel reads its
-          // own Date.now() a tick after `scene` pinned the offset, and an exact
-          // 21h would flip to "20h 59m" on any ms of drift (a real intermittent
-          // red). Thirty minutes of slack makes the words drift-proof.
+          // Half an hour off the hour boundary ON PURPOSE, but not for drift:
+          // formatDuration collapses a zero remainder to a bare "21 hours", so
+          // the spare 30m is what exercises the "21h 30m" shape at all. Landing
+          // exactly on the boundary is safe because the clock is frozen.
           expiresAtMs: NOW + 21 * HOUR + HOUR / 2,
           headCount: 3,
         },
@@ -164,26 +198,29 @@ function colonyState(): unknown {
 }
 
 function scene(options: SceneOptions = {}) {
-  const store = createClientStore();
-  if (options.loaded !== false) {
-    store.apply({
-      type: "planets/loaded",
-      colonies: (options.empty ? [] : [colonyState()]) as never,
-      coloniesReadable: options.coloniesReadable ?? true,
-      // The panel ticks off Date.now(); pin the offset so "now" is exactly NOW.
-      clockOffsetMs: NOW - Date.now(),
-    });
-    if (options.error) {
-      store.apply({ type: "planets/error", message: options.error });
+  return atFrozenBrowserClock(() => {
+    const store = createClientStore();
+    if (options.loaded !== false) {
+      store.apply({
+        type: "planets/loaded",
+        colonies: (options.empty ? [] : [colonyState()]) as never,
+        coloniesReadable: options.coloniesReadable ?? true,
+        // The panel's "now" is Date.now() + this. Date.now() is pinned to a
+        // browser five hours behind, so this offset is what puts "now" on NOW.
+        clockOffsetMs: options.clockOffsetMs ?? CLOCK_OFFSET,
+      });
+      if (options.error) {
+        store.apply({ type: "planets/error", message: options.error });
+      }
+      if (options.open) {
+        store.apply({ type: "planets/selected", planetID: PLANET_ID });
+      }
     }
-    if (options.open) {
-      store.apply({ type: "planets/selected", planetID: PLANET_ID });
-    }
-  }
-  const output = render(Planets as never, {
-    props: { store, flow: fakeFlow() },
-  } as never);
-  return { body: output.body, text: visibleText(output.body) };
+    const output = render(Planets as never, {
+      props: { store, flow: fakeFlow() },
+    } as never);
+    return { body: output.body, text: visibleText(output.body) };
+  });
 }
 
 // --- 1. Four outcomes, four sentences ---------------------------------------
@@ -251,6 +288,21 @@ test("a running program counts down, and a finished one says finished", () => {
   assert.match(text, /3 heads/);
 });
 
+test("COMPANION: that countdown is the SERVER's clock, not the frozen browser's", () => {
+  // ⚠ THE MINUTE-EXACT ASSERTION ABOVE IS ONLY MEANINGFUL IF THE OFFSET IS
+  // CARRYING THE FIVE HOURS. Throw it away and the same fixture must read
+  // differently: the running program is five hours further out, and the
+  // extractor that finished two hours ago has not finished yet. Without this,
+  // a future "simplification" to clockOffsetMs: 0 — or a panel that started
+  // ticking off Date.now() directly — could pass for the wrong reason.
+  assert.equal(BROWSER_NOW + CLOCK_OFFSET, NOW);
+  assert.notEqual(CLOCK_OFFSET, 0);
+
+  const { text } = scene({ open: true, clockOffsetMs: 0 });
+  assert.doesNotMatch(text, /Running — 21h 30m left/);
+  assert.doesNotMatch(text, /Finished — this extractor has stopped/);
+});
+
 test("commodities pool into one \"everything stored here\" list", () => {
   const { text } = scene({ open: true });
   assert.match(text, /Everything stored here/i);
@@ -316,17 +368,19 @@ test("no planetID, pinID, systemID or typeID is ever visible to the player", () 
 });
 
 test("an unnamed planet still reads as a place, not as a number", () => {
-  const store = createClientStore();
-  const unnamed = { ...(colonyState() as Record<string, unknown>), planetName: null };
-  store.apply({
-    type: "planets/loaded",
-    colonies: [unnamed] as never,
-    coloniesReadable: true,
-    clockOffsetMs: NOW - Date.now(),
+  const text = atFrozenBrowserClock(() => {
+    const store = createClientStore();
+    const unnamed = { ...(colonyState() as Record<string, unknown>), planetName: null };
+    store.apply({
+      type: "planets/loaded",
+      colonies: [unnamed] as never,
+      coloniesReadable: true,
+      clockOffsetMs: CLOCK_OFFSET,
+    });
+    return visibleText(
+      render(Planets as never, { props: { store, flow: fakeFlow() } } as never).body,
+    );
   });
-  const text = visibleText(
-    render(Planets as never, { props: { store, flow: fakeFlow() } } as never).body,
-  );
   assert.match(text, /a planet in Tanoo/);
   assert.doesNotMatch(text, new RegExp(`\\b${PLANET_ID}\\b`));
 });

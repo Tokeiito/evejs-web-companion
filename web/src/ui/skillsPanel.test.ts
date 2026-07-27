@@ -64,6 +64,32 @@ function visibleText(body: string): string {
 const NOW = 1_784_617_000_000;
 const HOUR = 3_600_000;
 
+// ⚠ THE BROWSER CLOCK IS FROZEN, NOT SAMPLED — the same fix planetsPanel.test.ts
+// carries, for the same defect. The panel's reference "now" is
+// `Date.now() + clockOffsetMs`, sampled during render, a tick AFTER the scene
+// pinned the offset. Deriving the offset from the real clock therefore left the
+// countdown a millisecond or two short, and because the readouts FLOOR, a
+// boundary-exact "30m 0s" rendered as "29m 59s" whenever the two samples fell in
+// different milliseconds. One run in twenty went red on that. Pinning Date.now()
+// removes the sampling rather than padding the fixture.
+//
+// Frozen five hours BEHIND the server on purpose: `clockOffsetMs` has to carry
+// those five hours for the time words to come out right at all, so a panel
+// ticking off the raw browser clock cannot pass by accident.
+const BROWSER_NOW = NOW - 5 * HOUR;
+const CLOCK_OFFSET = NOW - BROWSER_NOW;
+
+/** Runs `body` with Date.now() pinned to the (deliberately wrong) browser clock. */
+function atFrozenBrowserClock<T>(body: () => T): T {
+  const realNow = Date.now;
+  Date.now = () => BROWSER_NOW;
+  try {
+    return body();
+  } finally {
+    Date.now = realNow;
+  }
+}
+
 interface SceneOptions {
   readonly queueEntries?: {
     typeID: number;
@@ -78,7 +104,8 @@ interface SceneOptions {
   readonly loaded?: boolean;
 }
 
-function scene(options: SceneOptions = {}) {
+/** The sheet the panel reads, with every instant expressed against NOW. */
+function sceneStore(options: SceneOptions) {
   const store = createClientStore();
   const entries = options.queueEntries ?? [];
   if (options.loaded !== false) {
@@ -139,14 +166,22 @@ function scene(options: SceneOptions = {}) {
                 skillPointsPerMinute: entry.rate,
               })),
             },
-      // The panel ticks off Date.now(); pin the offset so "now" is exactly NOW.
-      clockOffsetMs: NOW - Date.now(),
+      // The panel's "now" is Date.now() + this. Date.now() is pinned to a
+      // browser five hours behind, so this offset is what puts "now" on NOW.
+      clockOffsetMs: CLOCK_OFFSET,
     });
   }
-  const output = render(Skills as never, {
-    props: { store, flow: fakeFlow() },
-  } as never);
-  return { body: output.body, text: visibleText(output.body) };
+  return store;
+}
+
+function scene(options: SceneOptions = {}) {
+  // Frozen across the render, because that is where the panel samples the clock.
+  return atFrozenBrowserClock(() => {
+    const output = render(Skills as never, {
+      props: { store: sceneStore(options), flow: fakeFlow() },
+    } as never);
+    return { body: output.body, text: visibleText(output.body) };
+  });
 }
 
 // --- The icons R27 cached finally have somewhere to appear -------------------
