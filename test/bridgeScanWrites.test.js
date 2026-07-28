@@ -33,6 +33,31 @@ const CHARACTER_ID = 7;
 const CORPORATION_ID = 98000000;
 const SHIP_ID = 9001;
 const PROBE_ID = 70000001;
+const LAUNCHER_ID = 80000001;
+const AUTHORITATIVE_SCANNER = {
+  inSpace: true,
+  solarSystemID: SOLAR_SYSTEM_ID,
+  shipID: SHIP_ID,
+  maxActiveProbes: 8,
+  launcher: {
+    moduleID: LAUNCHER_ID,
+    typeID: 17938,
+    online: true,
+    chargeTypeID: 30013,
+    loadedCount: 8,
+    launchCount: 7,
+  },
+  probes: [{
+    probeID: PROBE_ID,
+    typeID: 30013,
+    pos: [1, 2, 3],
+    destination: [4, 5, 6],
+    scanRange: 149597870700,
+    rangeStep: 4,
+    state: 1,
+    expiry: "133999999999999999",
+  }],
+};
 
 const ORIGINAL_FETCH = global.fetch;
 const activeServers = new Set();
@@ -117,6 +142,9 @@ function fakeGateway() {
         flight: { docked: true, inSpace: false, stationID: STATION_ID, solarSystemID: SOLAR_SYSTEM_ID, shipID: SHIP_ID },
         notifications: [],
       };
+    },
+    async readScannerState() {
+      return { scanner: structuredClone(AUTHORITATIVE_SCANNER), notifications: [] };
     },
     async callMethod(service, method) {
       throw new Error(`R104 scan writes are BOUND — unexpected top-level ${service}.${method}`);
@@ -312,4 +340,81 @@ test("R104 scan write routes refuse without a held bridge session", async () => 
     assert.notEqual(response.status, 200, `${path} must refuse without a held session`);
   }
   assert.equal(gateway.calls.boundCall.length, 0, "no dispatch without a held session");
+});
+
+// --- Product scanner surface: no browser-supplied authority -----------------
+
+const PRODUCT_SCANNER_WRITES = [
+  "/api/bridge/scanner/launch",
+  "/api/bridge/scanner/analyze",
+  "/api/bridge/scanner/recover",
+  "/api/bridge/scanner/reconnect",
+];
+
+test("product scanner state exposes EveJS's held-session authority", async () => {
+  const gateway = fakeGateway();
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/scanner/state");
+  assert.equal(response.status, 200);
+  assert.deepEqual(payload.scanner, AUTHORITATIVE_SCANNER);
+});
+
+test("every product scanner write is confirm-gated", async () => {
+  const gateway = fakeGateway();
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+  for (const path of PRODUCT_SCANNER_WRITES) {
+    const { response, payload } = await apiRequest(baseUrl, path, {
+      method: "POST",
+      body: {},
+    });
+    assert.equal(response.status, 400, path);
+    assert.equal(payload.error, "CONFIRMATION_REQUIRED", path);
+  }
+  assert.equal(gateway.calls.boundCall.length, 0);
+});
+
+test("product launch ignores spoofed module/count and dispatches EveJS authority", async () => {
+  const gateway = fakeGateway();
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+  const { response } = await apiRequest(baseUrl, "/api/bridge/scanner/launch", {
+    method: "POST",
+    body: { confirm: true, moduleID: 666, count: 99 },
+  });
+  assert.equal(response.status, 200);
+  const call = gateway.calls.boundCall.find((entry) => entry.method === "LaunchProbes");
+  assert.ok(call);
+  assert.deepEqual(call.args, [LAUNCHER_ID, 7]);
+});
+
+test("product analyze and recover use exact authoritative probe data, never spoofed input", async () => {
+  const gateway = fakeGateway();
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+  await apiRequest(baseUrl, "/api/bridge/scanner/analyze", {
+    method: "POST",
+    body: { confirm: true, probeMap: { 666: { pos: [99, 99, 99] } } },
+  });
+  await apiRequest(baseUrl, "/api/bridge/scanner/recover", {
+    method: "POST",
+    body: { confirm: true, probeIDs: [666] },
+  });
+  const analyze = gateway.calls.boundCall.find((entry) => entry.method === "RequestScans");
+  assert.ok(analyze);
+  assert.deepEqual(analyze.args, [{
+    [PROBE_ID]: {
+      typeID: 30013,
+      pos: [1, 2, 3],
+      destination: [4, 5, 6],
+      scanRange: 149597870700,
+      rangeStep: 4,
+      state: 1,
+      expiry: "133999999999999999",
+    },
+  }]);
+  const recover = gateway.calls.boundCall.find((entry) => entry.method === "RecoverProbes");
+  assert.ok(recover);
+  assert.deepEqual(recover.args, [[PROBE_ID]]);
 });

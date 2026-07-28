@@ -11,7 +11,10 @@ import type {
 import type { ShipStats } from "../bridge/shipStats.ts";
 import type { ScanFullState } from "../bridge/boundSmallServices.ts";
 import type { FormationsResult } from "../bridge/formations.ts";
-import type { ScannerDataState } from "../scanner/scannerCenter.ts";
+import type {
+  ScannerDataState,
+  ScannerOperationsSnapshot,
+} from "../scanner/scannerCenter.ts";
 import type { GateLink } from "../space/gateLinks.ts";
 import type { BotID, ShipControllerID } from "../nav/botRegistry.ts";
 import type { MiningRungID, MiningStepID } from "../nav/miningLadder.ts";
@@ -800,8 +803,8 @@ export interface FleetCenterState {
 /**
  * Current-system scanner state. Each source keeps loading/unavailable/ready
  * separate so a failed bound read can never masquerade as an empty system.
- * Active probe IDs and geometry are intentionally absent until a live source
- * reports them; the panel will not manufacture action prerequisites.
+ * Probe operations come from EveJS's held-session authority. The panel never
+ * manufactures action prerequisites from scan results.
  */
 export interface ScannerCenterState {
   readonly loaded: boolean;
@@ -810,6 +813,7 @@ export interface ScannerCenterState {
   readonly solarSystemID: number | null;
   readonly scan: ScannerDataState<ScanFullState>;
   readonly formations: ScannerDataState<FormationsResult>;
+  readonly operations: ScannerDataState<ScannerOperationsSnapshot>;
   readonly refreshedAtMs: number | null;
 }
 

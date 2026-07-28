@@ -2731,6 +2731,15 @@ app.post("/api/bridge/ship/board", requireAuth, async (req, res, next) => {
   } catch (error) {
     if (held.transition && held.transition.phase === "requested") {
       cancelHeldTransition(held);
+    } else if (kind === "reconnect") {
+      outcome = await boundCall(
+        held,
+        req.webSessionID,
+        systemScanBindSpec(),
+        "ReconnectToLostProbes",
+        [],
+        null,
+      );
     } else {
       markTransitionFailed(held, error && error.message);
     }
@@ -9526,6 +9535,152 @@ app.post("/api/bridge/scan/probe/set-activity", requireAuth, async (req, res, ne
   await dispatchBoundScanWrite(req, res, next, "SetActivityState", [probeIDs, active]);
 });
 
+// --- Product scanner actions ------------------------------------------------
+//
+// The routes above deliberately preserve the complete retail call plumbing.
+// These four routes are the narrower product surface used by Scanner Center and
+// Bot Builder. EveJS supplies the authoritative launcher, probe IDs, and probe
+// geometry for the held session; request-body values cannot redirect an action
+// to another module/probe or alter the scan geometry.
+
+function scannerConflict(res, error, message, scanner) {
+  res.status(409).json({ ok: false, error, message, scanner: scanner || null });
+}
+
+async function runAuthoritativeScannerWrite(req, res, next, kind) {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  try {
+    const before = await readHeldScanner(held, req.webSessionID);
+    const scanner = before.scanner || {};
+    if (scanner.inSpace !== true) {
+      scannerConflict(res, "SCANNER_NOT_IN_SPACE", "Scanner actions require a ship in space.", scanner);
+      return;
+    }
+
+    let outcome;
+    if (kind === "launch") {
+      const moduleID = strictPositiveID(scanner.launcher && scanner.launcher.moduleID);
+      const launchCount = Math.max(0, Math.trunc(Number(scanner.launcher && scanner.launcher.launchCount) || 0));
+      if (moduleID === null) {
+        scannerConflict(res, "NO_PROBE_LAUNCHER", "No online scan-probe launcher is fitted.", scanner);
+        return;
+      }
+      if (launchCount <= 0) {
+        scannerConflict(res, "NO_LAUNCHABLE_PROBES", "No loaded probe can be launched into an available slot.", scanner);
+        return;
+      }
+      outcome = await boundCall(
+        held,
+        req.webSessionID,
+        dogmaBindSpec(),
+        "LaunchProbes",
+        [moduleID, launchCount],
+        null,
+      );
+    } else {
+      const probes = Array.isArray(scanner.probes) ? scanner.probes : [];
+      const probeIDs = probes.map((probe) => strictPositiveID(probe && probe.probeID));
+      if (probeIDs.length <= 0 || probeIDs.some((probeID) => probeID === null)) {
+        scannerConflict(res, "NO_ACTIVE_PROBES", "No active probes are available for this action.", scanner);
+        return;
+      }
+      if (kind === "recover") {
+        outcome = await boundCall(
+          held,
+          req.webSessionID,
+          systemScanBindSpec(),
+          "RecoverProbes",
+          [probeIDs],
+          null,
+        );
+      } else if (kind === "analyze") {
+        const probeMap = Object.fromEntries(
+          probes.map((probe) => [String(probe.probeID), {
+            typeID: Number(probe.typeID) || 0,
+            pos: Array.isArray(probe.pos) ? probe.pos.slice(0, 3).map(Number) : [0, 0, 0],
+            destination: Array.isArray(probe.destination)
+              ? probe.destination.slice(0, 3).map(Number)
+              : [0, 0, 0],
+            scanRange: Number(probe.scanRange) || 0,
+            rangeStep: Number(probe.rangeStep) || 0,
+            state: Number(probe.state) || 0,
+            expiry: String(probe.expiry || "0"),
+          }]),
+        );
+        outcome = await boundCall(
+          held,
+          req.webSessionID,
+          systemScanBindSpec(),
+          "RequestScans",
+          [probeMap],
+          null,
+        );
+      }
+    }
+
+    const after = await readHeldScanner(held, req.webSessionID);
+    res.json({
+      ok: true,
+      applied: true,
+      result: outcome.result ?? null,
+      scanner: after.scanner,
+      notifications: [
+        ...(Array.isArray(outcome.notifications) ? outcome.notifications : []),
+        ...(Array.isArray(after.notifications) ? after.notifications : []),
+      ],
+    });
+  } catch (error) {
+    if (error && error.code === "SESSION_NOT_FOUND") {
+      forgetBridgeSession(req.webSessionID);
+    }
+    next(error);
+  }
+}
+
+app.get("/api/bridge/scanner/state", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  try {
+    const outcome = await readHeldScanner(held, req.webSessionID);
+    res.json({ ok: true, scanner: outcome.scanner, notifications: outcome.notifications });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/bridge/scanner/launch", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This launches probes from your current ship. Confirm to continue.")) {
+    return;
+  }
+  await runAuthoritativeScannerWrite(req, res, next, "launch");
+});
+
+app.post("/api/bridge/scanner/recover", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This recovers all active probes to your current ship. Confirm to continue.")) {
+    return;
+  }
+  await runAuthoritativeScannerWrite(req, res, next, "recover");
+});
+
+app.post("/api/bridge/scanner/analyze", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This analyzes signatures using your current probe formation. Confirm to continue.")) {
+    return;
+  }
+  await runAuthoritativeScannerWrite(req, res, next, "analyze");
+});
+
+app.post("/api/bridge/scanner/reconnect", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This reconnects to probes belonging to your current session. Confirm to continue.")) {
+    return;
+  }
+  await runAuthoritativeScannerWrite(req, res, next, "reconnect");
+});
+
 // --- R105 Phase-4 BOUND fleet WRITES — WB-FLEET (16) ------------------------
 //
 // The 16 fleet composition / membership / broadcast writes off the R72
@@ -14044,6 +14199,25 @@ async function readHeldFlight(held, webSessionID) {
         ...flight,
         transition: publicTransition(held),
       },
+    };
+  } catch (error) {
+    if (error && error.code === "SESSION_NOT_FOUND") {
+      forgetBridgeSession(webSessionID);
+    }
+    throw error;
+  }
+}
+
+async function readHeldScanner(held, webSessionID) {
+  try {
+    const outcome = await gateway.readScannerState(held.bridgeSessionID, {
+      userid: held.accountID,
+    });
+    return {
+      ...outcome,
+      scanner: outcome && outcome.scanner && typeof outcome.scanner === "object"
+        ? outcome.scanner
+        : {},
     };
   } catch (error) {
     if (error && error.code === "SESSION_NOT_FOUND") {

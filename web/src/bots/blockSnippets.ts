@@ -16,6 +16,7 @@ export const BLOCK_SNIPPET_IDS = [
   "clear-loot-salvage",
   "fleet-logistics",
   "dock-refit-repair",
+  "probe-signature-sweep",
 ] as const;
 
 export type BlockSnippetID = (typeof BLOCK_SNIPPET_IDS)[number];
@@ -134,6 +135,17 @@ export const BLOCK_SNIPPETS: Readonly<Record<BlockSnippetID, BlockSnippet>> = {
       }),
       step("turnaround-repair", "repair-ship"),
       step("turnaround-tidy", "tidy-hangar"),
+    ],
+  },
+  "probe-signature-sweep": {
+    id: "probe-signature-sweep",
+    label: "Probe signature sweep",
+    adds: "Launch the current ship's scan probes, analyze signatures once with their authoritative formation, then recover every probe.",
+    setup: null,
+    steps: [
+      step("probe-sweep-launch", "launch-scan-probes"),
+      step("probe-sweep-analyze", "analyze-signatures"),
+      step("probe-sweep-recover", "recover-scan-probes"),
     ],
   },
 };

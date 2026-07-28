@@ -485,7 +485,11 @@ export type MacroID =
   | "jettison-cargo"
   | "tidy-hangar"
   // ── Mining extra: squeeze the ore down against a support ship on grid.
-  | "compress-ore";
+  | "compress-ore"
+  // ── Exploration: a safe probe sweep driven by EveJS's current authority.
+  | "launch-scan-probes"
+  | "analyze-signatures"
+  | "recover-scan-probes";
 
 /** Every macro id — for exhaustive iteration in menus and tests. */
 export const MACRO_IDS: readonly MacroID[] = Object.freeze<MacroID[]>([
@@ -532,6 +536,9 @@ export const MACRO_IDS: readonly MacroID[] = Object.freeze<MacroID[]>([
   "jettison-cargo",
   "tidy-hangar",
   "compress-ore",
+  "launch-scan-probes",
+  "analyze-signatures",
+  "recover-scan-probes",
 ]);
 
 /**

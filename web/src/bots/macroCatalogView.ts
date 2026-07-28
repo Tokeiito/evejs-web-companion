@@ -32,6 +32,7 @@ export type BlockCategory =
   | "missions"
   | "ship"
   | "planets"
+  | "exploration"
   | "fleet"
   | "social"
   | "flow";
@@ -47,6 +48,7 @@ export const CATEGORY_LABEL: Readonly<Record<BlockCategory, string>> = {
   missions: "Missions",
   ship: "Ship & Fitting",
   planets: "Planets",
+  exploration: "Exploration",
   fleet: "Fleet",
   social: "Chat & Social",
   flow: "Flow & Timing",
@@ -63,6 +65,7 @@ export const CATEGORY_ORDER: readonly BlockCategory[] = [
   "industry",
   "ship",
   "planets",
+  "exploration",
   "fleet",
   "social",
   "flow",
@@ -394,6 +397,24 @@ const ENTRIES: Readonly<Record<MacroID, MacroCatalogEntry>> = {
     "mining",
     "Squeezes the ore in your hold down to a fraction of the room it took, using a mining support ship on your grid — your own, or a fleet-mate's, running its industrial core and compression gear. Flies into range first if it has to, then works through your hold one stack at a time. A hold that fits one trip's ore fits a whole session's once it is compressed.",
     "Being in space, with ore aboard and a support ship on grid running its compression gear",
+  ),
+  "launch-scan-probes": entry(
+    "launch-scan-probes",
+    "exploration",
+    "Launches the probes EveJS reports as loaded and safe for your current ship, stopping when probes are active.",
+    "Being in space, with an online probe launcher loaded",
+  ),
+  "analyze-signatures": entry(
+    "analyze-signatures",
+    "exploration",
+    "Runs one signature analysis using the exact current probe positions and ranges reported by EveJS.",
+    "Active scan probes in a formation",
+  ),
+  "recover-scan-probes": entry(
+    "recover-scan-probes",
+    "exploration",
+    "Recovers every active probe belonging to this session back to the ship.",
+    "Active scan probes in space",
   ),
 };
 

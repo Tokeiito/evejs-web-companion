@@ -210,4 +210,7 @@ export const MACRO_SPECS: Readonly<Record<MacroID, MacroSpec>> = {
   // (its range is the server's check, and "which one" can only be answered at run
   // time), and the ore is whatever is in the hold.
   "compress-ore": { args: [], untilRequired: false },
+  "launch-scan-probes": { args: [], untilRequired: false },
+  "analyze-signatures": { args: [], untilRequired: false },
+  "recover-scan-probes": { args: [], untilRequired: false },
 };

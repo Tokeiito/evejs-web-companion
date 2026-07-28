@@ -148,6 +148,12 @@ export function macroName(macro: MacroID): string {
       return "Tidy the hangar";
     case "compress-ore":
       return "Compress the ore on grid";
+    case "launch-scan-probes":
+      return "Launch scan probes";
+    case "analyze-signatures":
+      return "Analyze signatures";
+    case "recover-scan-probes":
+      return "Recover scan probes";
   }
 }
 
@@ -482,6 +488,12 @@ function macroPhrase(step: MacroStep): string {
       return "Stack everything in the hangar into neat piles";
     case "compress-ore":
       return "Compress the ore in your hold at the support ship on grid";
+    case "launch-scan-probes":
+      return "Launch the scan probes from your current ship";
+    case "analyze-signatures":
+      return "Analyze signatures with the current probe formation";
+    case "recover-scan-probes":
+      return "Recover every active scan probe to the ship";
     case "send-chat": {
       const message = step.args["message"];
       const words =
