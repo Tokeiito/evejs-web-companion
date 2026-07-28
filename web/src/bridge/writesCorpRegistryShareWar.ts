@@ -40,7 +40,7 @@
 // ⚠ These are WRITES: never call a decoder to DRIVE a mutation — the confirm-gated
 // BFF route is the only path, and it refuses without `confirm: true`.
 
-import { readKeyVal, type JsonValue } from "./wire.ts";
+import { readPlainJsonField, type JsonValue } from "./wire.ts";
 
 function truthy(value: JsonValue | undefined): boolean {
   return value === true;
@@ -64,10 +64,10 @@ export interface CorpRegistryShareWarWriteAck {
 export function decodeCorpRegistryShareWarWriteAck(
   response: JsonValue,
 ): CorpRegistryShareWarWriteAck {
-  const result = readKeyVal(response, "result");
+  const result = readPlainJsonField(response, "result");
   return {
-    ok: truthy(readKeyVal(response, "ok")),
-    applied: truthy(readKeyVal(response, "applied")),
+    ok: truthy(readPlainJsonField(response, "ok")),
+    applied: truthy(readPlainJsonField(response, "applied")),
     result: result === undefined ? null : (result as JsonValue),
   };
 }
@@ -89,11 +89,11 @@ export interface CorpRegistryIdWriteAck {
  * a null id — the confirm-gated route never fired live, so this is educated-guess.
  */
 export function decodeCorpRegistryIdWriteAck(response: JsonValue): CorpRegistryIdWriteAck {
-  const raw = readKeyVal(response, "result");
+  const raw = readPlainJsonField(response, "result");
   const id = typeof raw === "number" && Number.isFinite(raw) ? raw : null;
   return {
-    ok: truthy(readKeyVal(response, "ok")),
-    applied: truthy(readKeyVal(response, "applied")),
+    ok: truthy(readPlainJsonField(response, "ok")),
+    applied: truthy(readPlainJsonField(response, "applied")),
     id,
   };
 }
@@ -109,7 +109,7 @@ export interface CorpRegistryKickManyWriteAck {
 }
 
 function readIdList(container: JsonValue | undefined, key: string): number[] {
-  const raw = container === undefined ? undefined : readKeyVal(container, key);
+  const raw = container === undefined ? undefined : readPlainJsonField(container, key);
   if (!Array.isArray(raw)) {
     return [];
   }
@@ -130,10 +130,10 @@ function readIdList(container: JsonValue | undefined, key: string): number[] {
 export function decodeCorpRegistryKickManyWriteAck(
   response: JsonValue,
 ): CorpRegistryKickManyWriteAck {
-  const result = readKeyVal(response, "result");
+  const result = readPlainJsonField(response, "result");
   return {
-    ok: truthy(readKeyVal(response, "ok")),
-    applied: truthy(readKeyVal(response, "applied")),
+    ok: truthy(readPlainJsonField(response, "ok")),
+    applied: truthy(readPlainJsonField(response, "applied")),
     kicked: readIdList(result, "kicked"),
     notKicked: readIdList(result, "notKicked"),
   };

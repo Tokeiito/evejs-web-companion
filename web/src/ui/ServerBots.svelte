@@ -11,6 +11,7 @@
   // able to see and stop it from there.
   import { onMount } from "svelte";
   import { listServerBots, stopServerBot, type ServerBot } from "../app/api.ts";
+  import { BOT_RISK_LABELS } from "../bots/runPolicy.ts";
 
   const POLL_MS = 3000;
 
@@ -92,13 +93,21 @@
     }
     return "Finished";
   }
+
+  function riskWords(bot: ServerBot): string {
+    return bot.riskClasses.length === 0
+      ? "No consequential permissions"
+      : bot.riskClasses.map((risk) => BOT_RISK_LABELS[risk]).join("; ");
+  }
 </script>
 
 <section>
   <h2>On the server</h2>
   <p class="note">
     These bots run on the server itself — closing this tab does not stop them,
-    and they come back if the server restarts (starting their script over).
+    but each run has a time limit. After a restart, only the exact same script
+    can start over, and only when every step is safe to re-check; other runs stop
+    and ask you to review them again.
     A character a server bot is flying cannot be selected until the bot stops.
   </p>
   {#if error}<p class="note error">{error}</p>{/if}
@@ -129,9 +138,11 @@
               </button>
             {/if}
           </div>
+          <p class="note why">
+            Revision {bot.scriptRev} · {riskWords(bot)} · limit {bot.maxRuntimeMinutes < 60 ? `${bot.maxRuntimeMinutes} min` : `${bot.maxRuntimeMinutes / 60} hr`}
+          </p>
           {#if bot.resumedAt}
-            <!-- Honest about what a restart means: the script started over. -->
-            <p class="note why">Restarted with the server — the script began again from its first step.</p>
+            <p class="note why">Restarted with the server after its saved revision and safe steps were checked.</p>
           {/if}
           {#if bot.lastAlert}
             <!-- A server bot has no browser to notify, so this line IS the alert.

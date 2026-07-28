@@ -15,13 +15,9 @@ import assert from "node:assert/strict";
 import { decodeNotificationWriteAck, decodeNotifications } from "./notifications.ts";
 import type { JsonValue } from "./wire.ts";
 
-/** A util.KeyVal wrapper around plain fields (the BFF write-ack shape the decoder reads). */
-function ackKeyVal(fields: Record<string, JsonValue>): JsonValue {
-  return {
-    type: "object",
-    name: "util.KeyVal",
-    args: { type: "dict", entries: Object.entries(fields) },
-  };
+/** The ordinary JSON object emitted by the BFF's Express response. */
+function plainAck(fields: Record<string, JsonValue>): JsonValue {
+  return { ...fields };
 }
 
 // VERBATIM live capture: a typeID-35 "item delivered" notification.
@@ -166,12 +162,12 @@ test("the notification senderID extractor actually reads the decoded content", (
 // --- R87 write acks (Phase-3 notificationMgr WRITES) -------------------------
 
 test("R87 — a notification write ack decodes to {ok, applied}", () => {
-  const ack = decodeNotificationWriteAck(ackKeyVal({ ok: true, applied: true, result: null }));
+  const ack = decodeNotificationWriteAck(plainAck({ ok: true, applied: true, result: null }));
   assert.deepEqual(ack, { ok: true, applied: true });
 });
 
 test("R87 — a declined notification write is read as not-applied, not a throw", () => {
-  const ack = decodeNotificationWriteAck(ackKeyVal({ ok: true, applied: false }));
+  const ack = decodeNotificationWriteAck(plainAck({ ok: true, applied: false }));
   assert.equal(ack.ok, true);
   assert.equal(ack.applied, false);
 });

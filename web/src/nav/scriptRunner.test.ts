@@ -1,13 +1,19 @@
 // B2 — the runner controller, driven with fake deps so the lifecycle is tested
-// without a live ship: settle ticks, pause/stop staleness, session-loss unwind,
-// the read-failure give-up, and a clean finish.
+// without a live ship: selective settle ticks, pause/stop staleness,
+// session-loss unwind, the read-failure give-up, and a clean finish.
 
 import test from "node:test";
 import assert from "node:assert/strict";
 
 import type { BotScript, MacroStep, ProgramNode } from "../bots/botScript.ts";
 import type { ScriptObservation } from "./scriptConditions.ts";
-import type { HomeTravelDecider, MacroDecider, MacroTick, ScriptAction } from "./scriptDecide.ts";
+import type {
+  HomeTravelDecider,
+  MacroDecider,
+  MacroRegistry,
+  MacroTick,
+  ScriptAction,
+} from "./scriptDecide.ts";
 import {
   MAX_READ_FAILURES,
   SETTLE_TICKS,
@@ -53,6 +59,7 @@ function script(program: readonly ProgramNode[]): BotScript {
 
 interface Harness {
   observeThrows?: () => never;
+  registry?: MacroRegistry;
 }
 
 function harness(opts: Harness = {}) {
@@ -72,19 +79,19 @@ function harness(opts: Harness = {}) {
     sleep: async () => {},
     onProgress: (s) => progress.push(s),
     isSessionLost: (e) => e instanceof SessionLost,
-    registry,
+    registry: opts.registry ?? registry,
     travelHome: home,
   });
   return { runner, issued, progress, setObs: (o: ScriptObservation) => { obs = o; } };
 }
 
-test("issues the first action, then settles before deciding again", async () => {
+test("ordinary writes still settle before deciding again", async () => {
   const h = harness();
-  h.setObs(calm({ inSpace: false, holdEmpty: false }));
-  h.runner.start(script([macroStep("a", "undock"), macroStep("b", "deliver-ore")]));
+  h.setObs(calm({ holdEmpty: false }));
+  h.runner.start(script([macroStep("a", "deliver-ore")]));
 
-  await h.runner.tick(); // undock
-  assert.deepEqual(h.issued.map((a) => a.kind), ["undock"]);
+  await h.runner.tick();
+  assert.deepEqual(h.issued.map((a) => a.kind), ["unloadOre"]);
 
   // The next SETTLE_TICKS ticks issue nothing.
   for (let i = 0; i < SETTLE_TICKS; i += 1) {
@@ -92,11 +99,53 @@ test("issues the first action, then settles before deciding again", async () => 
   }
   assert.equal(h.issued.length, 1, "no world call during the settle window");
 
-  // Undock has now landed; the next decision advances to deliver.
-  h.setObs(calm({ inSpace: true, holdEmpty: false }));
+  // The write has now landed; the next decision can observe completion.
+  h.setObs(calm({ holdEmpty: true }));
   await h.runner.tick();
-  assert.deepEqual(h.issued.map((a) => a.kind), ["undock", "unloadOre"]);
+  assert.deepEqual(h.issued.map((a) => a.kind), ["unloadOre"]);
+  assert.equal(h.runner.getStatus(), "stopped");
 });
+
+const READY_RETURNING_SESSION_ACTIONS: readonly ScriptAction[] = [
+  { kind: "undock" },
+  { kind: "dock", stationID: 60003760 },
+  { kind: "jump", fromGateID: 50000802, toGateID: 50001248 },
+  { kind: "boardShip", shipID: 9001 },
+];
+
+for (const sessionAction of READY_RETURNING_SESSION_ACTIONS) {
+  test(`ready-returning ${sessionAction.kind} immediately advances without duplicating the call`, async () => {
+    const sessionChange: MacroDecider = (_step, observation) =>
+      observation.inSpace
+        ? mt({ kind: "wait" }, { kind: "done" })
+        : mt(sessionAction, { kind: "acting" });
+    const h = harness({
+      registry: { undock: sessionChange, "deliver-ore": deliver },
+    });
+    h.setObs(calm({ inSpace: false, holdEmpty: false }));
+    h.runner.start(script([
+      macroStep("session", "undock"),
+      macroStep("next", "deliver-ore"),
+    ]));
+
+    await h.runner.tick();
+    assert.deepEqual(h.issued.map((action) => action.kind), [sessionAction.kind]);
+
+    // The BFF promise has returned with authoritative ready state. The next
+    // tick advances straight to the following decision—no fixed settle ticks.
+    h.setObs(calm({ inSpace: true, holdEmpty: false }));
+    await h.runner.tick();
+    assert.deepEqual(
+      h.issued.map((action) => action.kind),
+      [sessionAction.kind, "unloadOre"],
+    );
+    assert.equal(
+      h.issued.filter((action) => action.kind === sessionAction.kind).length,
+      1,
+      "the completed session change is not re-issued",
+    );
+  });
+}
 
 test("pause stops the loop and blocks further ticks", async () => {
   const h = harness();

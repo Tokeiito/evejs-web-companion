@@ -332,7 +332,7 @@ function readProgramNode(raw: unknown, ctx: Ctx): ProgramNode {
   return refuse(SAY.unknownNode);
 }
 
-/** "Run one of my saved bots here" — matched by NAME when it is expanded. */
+/** "Run one of my saved bots here" — exact id first, unique-name fallback only. */
 function readSubBotNode(obj: Readonly<Record<string, unknown>>, ctx: Ctx): SubBotNode {
   const id = readRawId(obj["id"]);
   const rawScriptID = obj["scriptID"];

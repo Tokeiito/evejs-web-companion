@@ -308,6 +308,16 @@ test("R43 — it is a launcher, not an editor: nothing here authors a bot", () =
   }
 });
 
+test("saved-bot launcher calls carry the active flow's complete request options", () => {
+  assert.match(CODE, /listBotScripts\s*\(\s*botOpts\(\)\s*\)/);
+  assert.match(CODE, /getBotScript\s*\(\s*scriptID\s*,\s*botOpts\(\)\s*\)/);
+  assert.match(
+    CODE,
+    /startServerBot\s*\(\s*current\.characterID\s*,\s*scriptID\s*,\s*grant\s*,\s*botOpts\(\)\s*\)/,
+  );
+  assert.match(CODE, /flow\.startCustomBot\s*\(\s*decoded\.doc\s*,\s*record\.scriptID\s*\)/);
+});
+
 // --- 5. the standing invariants ---------------------------------------------
 
 test("R7d — the launcher never renders a numeric game id", () => {

@@ -25,6 +25,7 @@ const STATION_ID = 60003760;
 const SOLAR_SYSTEM_ID = 30000142;
 const CHARACTER_ID = 7;
 const ACTIVE_SHIP_ID = 9001;
+const CAPSULE_SHIP_ID = 9002;
 
 const ORIGINAL_FETCH = global.fetch;
 const activeServers = new Set();
@@ -77,8 +78,15 @@ function fakeStaticData() {
 
 function fakeGateway() {
   const calls = { topLevel: [] };
+  const state = {
+    stationID: STATION_ID,
+    solarSystemID: SOLAR_SYSTEM_ID,
+    shipID: ACTIVE_SHIP_ID,
+    shipIsCapsule: true,
+  };
   return {
     calls,
+    state,
     async selectCharacter() {
       return {
         bridgeSessionID: BRIDGE_SESSION_ID,
@@ -103,12 +111,25 @@ function fakeGateway() {
     },
     async readFlightStatus() {
       return {
-        flight: { docked: true, inSpace: false, stationID: STATION_ID, solarSystemID: SOLAR_SYSTEM_ID, shipID: ACTIVE_SHIP_ID },
+        flight: {
+          docked: true,
+          inSpace: false,
+          stationID: state.stationID,
+          solarSystemID: state.solarSystemID,
+          shipID: state.shipID,
+          shipIsCapsule: state.shipIsCapsule,
+        },
         notifications: [],
       };
     },
     async callMethod(service, method, args, kwargs, sessionFields, bridgeSessionID) {
       calls.topLevel.push({ service, method, args, kwargs, bridgeSessionID });
+      if (method === "LeaveShip") {
+        state.shipID = CAPSULE_SHIP_ID;
+        state.shipIsCapsule = true;
+      } else if (method === "CloneJump") {
+        state.stationID = Number(args[0]) || state.stationID;
+      }
       return { service, method, result: null, notifications: [] };
     },
     async bindObject() {
@@ -127,6 +148,10 @@ async function startTestServer(options = {}) {
     webAuth: fakeAuth(),
     staticData: options.staticData || fakeStaticData(),
     errorLogger() {},
+    transitionReadyTimeoutMs: options.transitionReadyTimeoutMs,
+    transitionPollMs: options.transitionPollMs,
+    transitionSleep: options.transitionSleep,
+    transitionNow: options.transitionNow,
   });
   const server = app.listen(0, "127.0.0.1");
   activeServers.add(server);
@@ -243,6 +268,100 @@ test("R95 clone/name write forwards [cloneID, name] on jumpCloneSvc", async () =
   assert.ok(call, "SetJumpCloneName must reach the gateway once confirmed");
   assert.equal(call.service, "jumpCloneSvc");
   assert.deepEqual(call.args, [555, "Home"]);
+});
+
+test("R95 clone jump waits for the destination session and dispatches exactly once", async () => {
+  const gateway = fakeGateway();
+  const destinationLocationID = 60011866;
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/clones/jump", {
+    method: "POST",
+    body: {
+      destinationLocationID,
+      cloneID: 720000001,
+      cost: 0,
+      confirmed: true,
+      confirm: true,
+    },
+  });
+  assert.equal(response.status, 200, JSON.stringify(payload));
+  assert.equal(payload.flight.stationID, destinationLocationID);
+  assert.equal(payload.transition.kind, "clone");
+  assert.equal(payload.transition.phase, "ready");
+  assert.equal(gateway.calls.topLevel.filter((call) => call.method === "CloneJump").length, 1);
+});
+
+test("R95 clone jump leaves a normal hull, waits the session timer, then jumps exactly once", async () => {
+  const gateway = fakeGateway();
+  gateway.state.shipIsCapsule = false;
+  const destinationLocationID = 60011866;
+  let clockMs = 0;
+  const sleeps = [];
+  const { baseUrl } = await startTestServer({
+    gateway,
+    transitionNow: () => clockMs,
+    transitionSleep: async (ms) => {
+      sleeps.push(ms);
+      clockMs += ms;
+    },
+  });
+  await selectOnServer(baseUrl);
+
+  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/clones/jump", {
+    method: "POST",
+    body: {
+      destinationLocationID,
+      cloneID: 720000001,
+      cost: 0,
+      confirmed: true,
+      confirm: true,
+    },
+  });
+
+  assert.equal(response.status, 200, JSON.stringify(payload));
+  assert.deepEqual(
+    gateway.calls.topLevel
+      .filter((call) => call.method === "LeaveShip" || call.method === "CloneJump")
+      .map((call) => ({ service: call.service, method: call.method, args: call.args })),
+    [
+      { service: "ship", method: "LeaveShip", args: [ACTIVE_SHIP_ID] },
+      {
+        service: "jumpCloneSvc",
+        method: "CloneJump",
+        args: [destinationLocationID, 720000001, 0, true],
+      },
+    ],
+  );
+  assert.equal(gateway.state.shipID, CAPSULE_SHIP_ID);
+  assert.ok(sleeps.some((ms) => ms >= 10_000), `expected retail cooldown wait, got ${sleeps}`);
+  assert.equal(payload.transition.kind, "clone");
+  assert.equal(payload.transition.phase, "ready");
+});
+
+test("R95 clone jump fails closed when the authoritative active-ship type is unavailable", async () => {
+  const gateway = fakeGateway();
+  gateway.state.shipIsCapsule = null;
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+
+  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/clones/jump", {
+    method: "POST",
+    body: {
+      destinationLocationID: 60011866,
+      cloneID: 720000001,
+      cost: 0,
+      confirmed: true,
+      confirm: true,
+    },
+  });
+
+  assert.equal(response.status, 409);
+  assert.equal(payload.error, "ACTIVE_SHIP_TYPE_UNAVAILABLE");
+  assert.equal(
+    gateway.calls.topLevel.some((call) => call.method === "LeaveShip" || call.method === "CloneJump"),
+    false,
+  );
 });
 
 test("R95 write routes refuse without a held bridge session", async () => {

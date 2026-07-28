@@ -61,9 +61,9 @@ function refusal(message: string, code = "CALL_REFUSED"): Error {
 }
 
 /**
- * A fake in-space server. `getStatus` advances warp/jump timers on each read
- * (warp completes after one poll; a jump hands off to the new system after one
- * poll), so the loop observes real transitions. Docking refuses `DockingApproach`
+ * A fake in-space server. `getStatus` advances warp on each read. Session
+ * changes model the BFF contract: undock, jump, and dock return only after the
+ * authoritative location is ready to read. Docking refuses `DockingApproach`
  * `dockRefusals` times (entering a FOLLOW approach) before it docks.
  */
 function makeMock(
@@ -81,8 +81,6 @@ function makeMock(
     stationID: ORIGIN_STATION as number | null,
     shipMode: null as string | null,
     warpTicks: 0,
-    jumpTicks: 0,
-    jumpTarget: null as number | null,
     dockRefusalsRemaining: opts.dockRefusals ?? 1,
     // The ship lands near the gate but out of jump range: jump refuses
     // NotWithinMaxJumpDist until this many approaches close the distance.
@@ -98,13 +96,6 @@ function makeMock(
       state.warpTicks -= 1;
       if (state.warpTicks === 0) {
         state.shipMode = "STOP";
-      }
-    }
-    if (state.jumpTicks > 0) {
-      state.jumpTicks -= 1;
-      if (state.jumpTicks === 0 && state.jumpTarget !== null) {
-        state.system = state.jumpTarget;
-        state.jumpTarget = null;
       }
     }
     return {
@@ -157,8 +148,9 @@ function makeMock(
         state.shipMode = "FOLLOW";
         throw refusal("CmdStargateJump refused: 101,UI/Menusvc/MenuHints/NotWithingMaxJumpDist");
       }
-      state.jumpTicks = 1;
-      state.jumpTarget = DEST_SYSTEM;
+      // Ready-returning BFF: the destination location/scene/ship is already
+      // authoritative when the promise resolves.
+      state.system = DEST_SYSTEM;
       state.shipMode = "STOP";
     },
     dock: async (station: number): Promise<void> => {
@@ -234,6 +226,36 @@ test("the loop sequences undock -> warp gate -> jump -> warp station -> dock (wi
   assert.equal(snap.status, "arrived");
   assert.equal(snap.remainingJumps, 0);
   assert.equal(snap.totalJumps, 1);
+});
+
+test("ready-returning undock, jump, and dock allow the next decision immediately without duplicate calls", async () => {
+  const mock = makeMock({ dockRefusals: 0 });
+  const { deps } = makeDeps(mock);
+  const controller = createAutopilot(deps);
+  controller.start(PLAN);
+
+  assert.equal((await controller.tick()).kind, "undock");
+  const afterUndock = await controller.tick();
+  assert.equal(afterUndock.kind, "warp", "ready undock skips the old settle window");
+  assert.equal(mock.calls.filter((call) => call.m === "undock").length, 1);
+
+  // Warp remains asynchronous and deliberately keeps its two settle ticks.
+  assert.equal((await controller.tick()).kind, "wait");
+  assert.equal((await controller.tick()).kind, "wait");
+  assert.equal((await controller.tick()).kind, "jump");
+
+  const afterJump = await controller.tick();
+  assert.equal(afterJump.kind, "warp", "ready jump can route in the destination next tick");
+  assert.equal(mock.calls.filter((call) => call.m === "jump").length, 1);
+
+  // The destination warp still settles before the dock decision.
+  assert.equal((await controller.tick()).kind, "wait");
+  assert.equal((await controller.tick()).kind, "wait");
+  assert.equal((await controller.tick()).kind, "dock");
+
+  const afterDock = await controller.tick();
+  assert.equal(afterDock.kind, "arrived", "ready dock is observed without fixed delay");
+  assert.equal(mock.calls.filter((call) => call.m === "dock").length, 1);
 });
 
 test("approach-then-redock: dock is re-issued repeatedly until in range", async () => {

@@ -76,3 +76,32 @@ test("tolerates a malformed/empty snapshot", () => {
   assert.equal(status.shipID, null);
   assert.equal(status.shipMode, null);
 });
+
+test("decodes readiness separately from the next session-change cooldown", () => {
+  const status = decodeFlightStatus({
+    inSpace: true,
+    shipID: 9001,
+    transition: {
+      epoch: 4,
+      kind: "stargate",
+      phase: "session-changing",
+      cooldownUntilMs: 123_456,
+      fromSolarSystemID: 30000142,
+      toSolarSystemID: null,
+      stationID: null,
+      shipID: 9001,
+      sessionStable: false,
+      locationReady: true,
+      sceneReady: false,
+      egoReady: false,
+      shipReady: true,
+      boundContextReady: false,
+      failure: null,
+    },
+  });
+  assert.equal(status.transition?.epoch, 4);
+  assert.equal(status.transition?.cooldownUntilMs, 123_456);
+  assert.equal(status.transition?.locationReady, true);
+  assert.equal(status.transition?.sceneReady, false);
+  assert.equal(status.transition?.sessionStable, false);
+});

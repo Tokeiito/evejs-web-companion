@@ -110,22 +110,18 @@ test("decodeSentMessage reads the echoed send entry", () => {
 
 // --- R88 write ack (Phase-3 LSC.SendMessage WRITE) ---------------------------
 
-/** A util.KeyVal wrapper around plain fields (the BFF write-ack shape the decoder reads). */
-function chatAckKeyVal(fields: Record<string, JsonValue>): JsonValue {
-  return {
-    type: "object",
-    name: "util.KeyVal",
-    args: { type: "dict", entries: Object.entries(fields) },
-  };
+/** The ordinary JSON object emitted by the BFF's Express response. */
+function plainAck(fields: Record<string, JsonValue>): JsonValue {
+  return { ...fields };
 }
 
 test("R88 — a chat send ack decodes to {ok, applied}", () => {
-  const ack = decodeChatSendAck(chatAckKeyVal({ ok: true, applied: true, result: null }));
+  const ack = decodeChatSendAck(plainAck({ ok: true, applied: true, result: null }));
   assert.deepEqual(ack, { ok: true, applied: true });
 });
 
 test("R88 — a declined chat send is read as not-applied, not a throw", () => {
-  const ack = decodeChatSendAck(chatAckKeyVal({ ok: true, applied: false }));
+  const ack = decodeChatSendAck(plainAck({ ok: true, applied: false }));
   assert.equal(ack.ok, true);
   assert.equal(ack.applied, false);
 });

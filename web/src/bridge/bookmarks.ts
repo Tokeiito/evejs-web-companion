@@ -16,7 +16,13 @@
 // R7d: folderID / bookmarkID / itemID / typeID / locationID / creatorID / group
 // ids stay numeric fields for a future UI to resolve; the decoder renders nothing.
 
-import { readKeyVal, readRowField, unwrapLong, type JsonValue } from "./wire.ts";
+import {
+  readKeyVal,
+  readPlainJsonField,
+  readRowField,
+  unwrapLong,
+  type JsonValue,
+} from "./wire.ts";
 
 export interface BookmarkFolder {
   readonly folderID: number;
@@ -269,8 +275,8 @@ function bookmarkAckTruthy(value: JsonValue | undefined): boolean {
 /** Decode a plain bookmark write ack (DeleteFolder / UpdateBookmark / DeleteBookmarks / Move / …). */
 export function decodeBookmarkWriteAck(response: JsonValue): BookmarkWriteAck {
   return {
-    ok: bookmarkAckTruthy(readKeyVal(response, "ok")),
-    applied: bookmarkAckTruthy(readKeyVal(response, "applied")),
+    ok: bookmarkAckTruthy(readPlainJsonField(response, "ok")),
+    applied: bookmarkAckTruthy(readPlainJsonField(response, "applied")),
   };
 }
 
@@ -281,8 +287,8 @@ export interface BookmarkFolderUpdatedAck extends BookmarkWriteAck {
 
 export function decodeBookmarkFolderUpdatedAck(response: JsonValue): BookmarkFolderUpdatedAck {
   return {
-    ok: bookmarkAckTruthy(readKeyVal(response, "ok")),
-    applied: bookmarkAckTruthy(readKeyVal(response, "applied")),
-    accessLevel: toNumber(readKeyVal(response, "accessLevel")),
+    ok: bookmarkAckTruthy(readPlainJsonField(response, "ok")),
+    applied: bookmarkAckTruthy(readPlainJsonField(response, "applied")),
+    accessLevel: toNumber(readPlainJsonField(response, "accessLevel")),
   };
 }

@@ -29,6 +29,9 @@ export type TabID =
   | "finder"
   | "skills"
   | "planets"
+  | "activity"
+  | "fleet"
+  | "scanner"
   | "mail"
   | "chat"
   | "wallet"
@@ -66,6 +69,7 @@ export const TABS: readonly TabDef[] = [
   { id: "flight", label: "Flight", where: "in-space" },
   { id: "overview", label: "Around Your Ship", where: "in-space" },
   { id: "mining", label: "Mining", where: "in-space" },
+  { id: "scanner", label: "Scanner", where: "in-space" },
   // Both — reachable docked or undocked.
   { id: "inventory", label: "Inventory & Ship", where: "both" },
   { id: "market", label: "Market", where: "both" },
@@ -76,6 +80,8 @@ export const TABS: readonly TabDef[] = [
   { id: "finder", label: "Agent Finder", where: "both" },
   { id: "skills", label: "Skills", where: "both" },
   { id: "planets", label: "Planets", where: "both" },
+  { id: "activity", label: "Activity", where: "both" },
+  { id: "fleet", label: "Fleet", where: "both" },
   { id: "mail", label: "Mail", where: "both" },
   { id: "chat", label: "Chat", where: "both" },
   { id: "wallet", label: "Wallet", where: "both" },

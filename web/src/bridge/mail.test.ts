@@ -284,33 +284,33 @@ test("⚠ an UNMAPPED refusal is passed through verbatim, never reworded", () =>
 
 test("R86 — a plain mail write ack decodes to {ok, applied}", () => {
   const ack = decodeMailWriteAck(
-    keyVal({ ok: true, applied: true, result: null }),
+    { ok: true, applied: true, result: null },
   );
   assert.deepEqual(ack, { ok: true, applied: true });
 });
 
 test("R86 — a declined write (applied false) is read as not-applied, not a throw", () => {
-  const ack = decodeMailWriteAck(keyVal({ ok: true, applied: false }));
+  const ack = decodeMailWriteAck({ ok: true, applied: false });
   assert.equal(ack.ok, true);
   assert.equal(ack.applied, false);
 });
 
 test("R86 — a label-creation ack carries the new labelID", () => {
   const ack = decodeMailLabelCreatedAck(
-    keyVal({ ok: true, applied: true, labelID: 8 }),
+    { ok: true, applied: true, labelID: 8 },
   );
   assert.deepEqual(ack, { ok: true, applied: true, labelID: 8 });
 });
 
 test("R86 — a label-creation the server declined has a null labelID and applied false", () => {
-  const ack = decodeMailLabelCreatedAck(keyVal({ ok: true, applied: false, labelID: null }));
+  const ack = decodeMailLabelCreatedAck({ ok: true, applied: false, labelID: null });
   assert.equal(ack.applied, false);
   assert.equal(ack.labelID, null);
 });
 
 test("R86 — a mailing-list-creation ack carries the new listID", () => {
   const ack = decodeMailingListCreatedAck(
-    keyVal({ ok: true, applied: true, listID: 105 }),
+    { ok: true, applied: true, listID: 105 },
   );
   assert.deepEqual(ack, { ok: true, applied: true, listID: 105 });
 });

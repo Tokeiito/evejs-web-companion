@@ -16,11 +16,16 @@ export type CallArgs = readonly JsonValue[];
 export type CallKwargs = Readonly<Record<string, JsonValue>> | null;
 
 /**
- * Extra session scalars forwarded to the gateway-materialized browser-backed
- * session. Scalars only; the BFF pins `userid` to the logged-in account, so a
- * browser-supplied userid is ignored.
+ * Non-authoritative presentation preferences accepted by the BFF. Identity,
+ * authority, character, corporation, role, ship and location state is held or
+ * created server-side; browser-supplied fields outside this list are ignored.
  */
-export type SessionFields = Readonly<Record<string, JsonScalar>>;
+export interface SessionFields {
+  readonly languageID?: string;
+  readonly languageId?: string;
+  readonly languageid?: string;
+  readonly language?: string;
+}
 
 export interface BridgeCallRequestBody {
   readonly service: string;
@@ -62,6 +67,7 @@ export interface BridgeErrorBody {
 export type BridgeErrorCode =
   | "CALL_INVALID"
   | "CALL_NOT_ALLOWED"
+  | "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE"
   | "CALL_SERVICE_UNAVAILABLE"
   | "CALL_FAILED"
   | "UNAUTHORIZED"
@@ -167,6 +173,22 @@ export function readKeyVal(row: unknown, key: string): JsonValue | undefined {
     (candidate) => Array.isArray(candidate) && candidate[0] === key,
   );
   return entry ? entry[1] : undefined;
+}
+
+/**
+ * Read one own property from a plain JSON object.
+ *
+ * BFF HTTP envelopes are ordinary objects produced by Express `res.json`; they
+ * are not retail `util.KeyVal` values. This reader deliberately does not descend
+ * into marshaled wrappers and rejects arrays/null. Keep `readKeyVal` for nested
+ * gateway results that are explicitly encoded as `util.KeyVal`.
+ */
+export function readPlainJsonField(value: unknown, key: string): JsonValue | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return undefined;
+  }
+  const record = value as Readonly<Record<string, JsonValue>>;
+  return Object.prototype.hasOwnProperty.call(record, key) ? record[key] : undefined;
 }
 
 export function isPackedRowValue(value: unknown): value is PackedRowValue {

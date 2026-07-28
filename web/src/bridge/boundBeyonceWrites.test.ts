@@ -9,34 +9,29 @@ import assert from "node:assert/strict";
 import { decodeBeyonceWriteAck } from "./boundBeyonceWrites.ts";
 import type { JsonValue } from "./wire.ts";
 
-function ackKeyVal(fields: Record<string, JsonValue>): JsonValue {
-  return {
-    type: "object",
-    name: "util.KeyVal",
-    args: { type: "dict", entries: Object.entries(fields) },
-  };
+function plainAck(fields: Record<string, JsonValue>): JsonValue {
+  return { ...fields };
 }
 
 test("R103 WB-BEYONCE — a null-returning nav verb carries the post-write flight snapshot", () => {
   const flight: JsonValue = {
-    type: "object",
-    name: "util.KeyVal",
-    args: { type: "dict", entries: [["inSpace", true], ["solarSystemID", 30000142]] },
+    inSpace: true,
+    solarSystemID: 30000142,
   };
-  const ack = decodeBeyonceWriteAck(ackKeyVal({ ok: true, applied: true, result: null, flight }));
+  const ack = decodeBeyonceWriteAck(plainAck({ ok: true, applied: true, result: null, flight }));
   assert.equal(ack.applied, true);
   assert.equal(ack.result, null);
   assert.deepEqual(ack.flight, flight);
 });
 
 test("R103 WB-BEYONCE — a bookmark id (BookmarkLocation) is carried through untouched", () => {
-  const ack = decodeBeyonceWriteAck(ackKeyVal({ ok: true, applied: true, result: 1000000012345 }));
+  const ack = decodeBeyonceWriteAck(plainAck({ ok: true, applied: true, result: 1000000012345 }));
   assert.equal(ack.result, 1000000012345);
   assert.equal(ack.flight, null);
 });
 
 test("R103 WB-BEYONCE — a refused (unconfirmed) nav write is not-applied, not a throw", () => {
-  const ack = decodeBeyonceWriteAck(ackKeyVal({ ok: true, applied: false }));
+  const ack = decodeBeyonceWriteAck(plainAck({ ok: true, applied: false }));
   assert.equal(ack.ok, true);
   assert.equal(ack.applied, false);
   assert.equal(ack.result, null);

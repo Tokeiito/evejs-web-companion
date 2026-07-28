@@ -21,8 +21,13 @@ import {
 import type { FeedAdapter, FeedEvent, FeedSink, FeedStatus, HealthStatus } from "./feed.ts";
 // R43 — the bot registry owns the BotID union and what "holding the ship"
 // means, so the store and flow.ts can never disagree about either.
-import { BOT_IDS, holdsTheShip, type BotID } from "../nav/botRegistry.ts";
+import {
+  SHIP_CONTROLLER_IDS,
+  holdsTheShip,
+  type ShipControllerID,
+} from "../nav/botRegistry.ts";
 import type {
+  ActivityState,
   AgentFinderState,
   BotsState,
   AgentsState,
@@ -30,6 +35,8 @@ import type {
   ChatState,
   CharacterSummary,
   FlightState,
+  FleetCenterState,
+  ScannerCenterState,
   FittingResources,
   FittingSlot,
   FittingState,
@@ -143,6 +150,9 @@ export interface ClientState {
   readonly industry: IndustryState;
   readonly market: MarketState;
   readonly mail: MailState;
+  readonly activity: ActivityState;
+  readonly fleet: FleetCenterState;
+  readonly scanner: ScannerCenterState;
   readonly contracts: ContractsState;
   readonly assets: PersonalAssetsState;
   readonly agents: AgentsState;
@@ -305,6 +315,54 @@ const INITIAL_MAIL: MailState = Object.freeze({
   inboxError: null,
   actionError: null,
   lastOutcome: null as MailActionOutcome | null,
+});
+
+const INITIAL_ACTIVITY: ActivityState = Object.freeze({
+  loaded: false,
+  loading: false,
+  notifications: Object.freeze({
+    status: "unavailable",
+    value: null,
+    error: null,
+  }) as ActivityState["notifications"],
+  unprocessedCount: Object.freeze({
+    status: "unavailable",
+    value: null,
+    error: null,
+  }) as ActivityState["unprocessedCount"],
+  calendarEvents: Object.freeze({
+    status: "unavailable",
+    value: null,
+    error: null,
+  }) as ActivityState["calendarEvents"],
+  calendarResponses: Object.freeze({
+    status: "unavailable",
+    value: null,
+    error: null,
+  }) as ActivityState["calendarResponses"],
+  mailError: null,
+  refreshedAtMs: null,
+});
+
+const INITIAL_FLEET: FleetCenterState = Object.freeze({
+  loaded: false,
+  loading: false,
+  availability: "unknown",
+  fleet: null,
+  pendingInvite: null,
+  activeAction: null,
+  readError: null,
+  actionError: null,
+  refreshedAtMs: null,
+});
+
+const INITIAL_SCANNER: ScannerCenterState = Object.freeze({
+  loaded: false,
+  loading: false,
+  solarSystemID: null,
+  scan: Object.freeze({ status: "loading" }),
+  formations: Object.freeze({ status: "loading" }),
+  refreshedAtMs: null,
 });
 
 // R17 contracts. READS ONLY — every mutator is refused at the gateway, so
@@ -564,7 +622,7 @@ const INITIAL_MISSION_BOT: MissionBotState = Object.freeze({
  * `syncBotClaim`), which is what makes it incapable of disagreeing with them.
  */
 const INITIAL_BOTS: BotsState = Object.freeze({
-  runningBotID: null as BotID | null,
+  runningBotID: null as ShipControllerID | null,
 });
 
 // R28 skills. Every "unknown" is null and never an empty list: a failed read
@@ -676,6 +734,9 @@ export interface ClientStore {
   readonly industry: ReadableSignal<IndustryState>;
   readonly market: ReadableSignal<MarketState>;
   readonly mail: ReadableSignal<MailState>;
+  readonly activity: ReadableSignal<ActivityState>;
+  readonly fleet: ReadableSignal<FleetCenterState>;
+  readonly scanner: ReadableSignal<ScannerCenterState>;
   readonly contracts: ReadableSignal<ContractsState>;
   readonly assets: ReadableSignal<PersonalAssetsState>;
   readonly agents: ReadableSignal<AgentsState>;
@@ -732,6 +793,9 @@ export function createClientStore(): ClientStore {
   const industry = createSignal<IndustryState>(INITIAL_INDUSTRY);
   const market = createSignal<MarketState>(INITIAL_MARKET);
   const mail = createSignal<MailState>(INITIAL_MAIL);
+  const activity = createSignal<ActivityState>(INITIAL_ACTIVITY);
+  const fleet = createSignal<FleetCenterState>(INITIAL_FLEET);
+  const scanner = createSignal<ScannerCenterState>(INITIAL_SCANNER);
   const contracts = createSignal<ContractsState>(INITIAL_CONTRACTS);
   const assets = createSignal<PersonalAssetsState>(INITIAL_ASSETS);
   const agents = createSignal<AgentsState>(INITIAL_AGENTS);
@@ -775,6 +839,9 @@ export function createClientStore(): ClientStore {
     industry: industry.get(),
     market: market.get(),
     mail: mail.get(),
+    activity: activity.get(),
+    fleet: fleet.get(),
+    scanner: scanner.get(),
     contracts: contracts.get(),
     assets: assets.get(),
     agents: agents.get(),
@@ -825,6 +892,9 @@ export function createClientStore(): ClientStore {
         industry.set(INITIAL_INDUSTRY);
         market.set(INITIAL_MARKET);
         mail.set(INITIAL_MAIL);
+        activity.set(INITIAL_ACTIVITY);
+        fleet.set(INITIAL_FLEET);
+        scanner.set(INITIAL_SCANNER);
         contracts.set(INITIAL_CONTRACTS);
     assets.set(INITIAL_ASSETS);
         agents.set(INITIAL_AGENTS);
@@ -884,6 +954,9 @@ export function createClientStore(): ClientStore {
         industry.set(INITIAL_INDUSTRY);
         market.set(INITIAL_MARKET);
         mail.set(INITIAL_MAIL);
+        activity.set(INITIAL_ACTIVITY);
+        fleet.set(INITIAL_FLEET);
+        scanner.set(INITIAL_SCANNER);
         contracts.set(INITIAL_CONTRACTS);
     assets.set(INITIAL_ASSETS);
         agents.set(INITIAL_AGENTS);
@@ -915,6 +988,9 @@ export function createClientStore(): ClientStore {
         industry.set(INITIAL_INDUSTRY);
         market.set(INITIAL_MARKET);
         mail.set(INITIAL_MAIL);
+        activity.set(INITIAL_ACTIVITY);
+        fleet.set(INITIAL_FLEET);
+        scanner.set(INITIAL_SCANNER);
         contracts.set(INITIAL_CONTRACTS);
     assets.set(INITIAL_ASSETS);
         agents.set(INITIAL_AGENTS);
@@ -1186,6 +1262,91 @@ export function createClientStore(): ClientStore {
       case "market/cleared":
         market.set(INITIAL_MARKET);
         break;
+      case "activity/loading":
+        // Keep the last good rows visible while a manual refresh is running.
+        activity.set({ ...activity.get(), loading: true, mailError: null });
+        break;
+      case "activity/loaded":
+        activity.set({
+          loaded: true,
+          loading: false,
+          notifications:
+            event.notifications.status === "ready"
+              ? { ...event.notifications, value: [...event.notifications.value] }
+              : event.notifications,
+          unprocessedCount: event.unprocessedCount,
+          calendarEvents:
+            event.calendarEvents.status === "ready"
+              ? { ...event.calendarEvents, value: [...event.calendarEvents.value] }
+              : event.calendarEvents,
+          calendarResponses:
+            event.calendarResponses.status === "ready"
+              ? { ...event.calendarResponses, value: [...event.calendarResponses.value] }
+              : event.calendarResponses,
+          mailError: event.mailError,
+          refreshedAtMs: event.refreshedAtMs,
+        });
+        break;
+      case "activity/cleared":
+        activity.set(INITIAL_ACTIVITY);
+        break;
+      case "fleet/loading":
+        // Keep the last authoritative roster visible during a refresh.
+        fleet.set({ ...fleet.get(), loading: true, readError: null });
+        break;
+      case "fleet/loaded": {
+        const current = fleet.get();
+        fleet.set({
+          ...current,
+          loaded: true,
+          loading: false,
+          availability: event.availability,
+          fleet: event.fleet,
+          // Joining consumes the invite. Keeping it after a later leave would
+          // falsely resurrect an already-used popup.
+          pendingInvite: event.availability === "ready" ? null : current.pendingInvite,
+          readError: event.readError,
+          refreshedAtMs: event.refreshedAtMs,
+        });
+        break;
+      }
+      case "fleet/action-started":
+        fleet.set({
+          ...fleet.get(),
+          activeAction: event.action,
+          actionError: null,
+        });
+        break;
+      case "fleet/action-finished":
+        fleet.set({
+          ...fleet.get(),
+          activeAction: null,
+          actionError: event.error,
+        });
+        break;
+      case "fleet/pending-invite":
+        fleet.set({ ...fleet.get(), pendingInvite: event.invite });
+        break;
+      case "fleet/cleared":
+        fleet.set(INITIAL_FLEET);
+        break;
+      case "scanner/loading":
+        // Keep the last known sites visible while a manual refresh runs.
+        scanner.set({ ...scanner.get(), loading: true });
+        break;
+      case "scanner/loaded":
+        scanner.set({
+          loaded: true,
+          loading: false,
+          solarSystemID: event.solarSystemID,
+          scan: event.scan,
+          formations: event.formations,
+          refreshedAtMs: event.refreshedAtMs,
+        });
+        break;
+      case "scanner/cleared":
+        scanner.set(INITIAL_SCANNER);
+        break;
       // R17 mail. A cold delta sync IS the whole mailbox, so the message list
       // is REPLACED rather than merged — an old row surviving a reload would be
       // a message the server no longer says the player has.
@@ -1450,6 +1611,17 @@ export function createClientStore(): ClientStore {
           structureName:
             prevStatus && prevStatus.structureID === next.structureID ? prev.structureName : null,
         });
+        // Scanner rows are scoped to one solar system. Drop them synchronously
+        // on a confirmed system change so a slow refresh can never present the
+        // previous system as the current one.
+        const scannerState = scanner.get();
+        if (
+          scannerState.solarSystemID !== null &&
+          next.solarSystemID !== null &&
+          scannerState.solarSystemID !== next.solarSystemID
+        ) {
+          scanner.set(INITIAL_SCANNER);
+        }
         break;
       }
       case "flight/location": {
@@ -2059,16 +2231,17 @@ export function createClientStore(): ClientStore {
    * fourth bot cannot be added to the union without the compiler demanding its
    * status reader here — the running-bot readout picks it up on the day it
    * lands, rather than silently reporting "nothing is running" while it flies
-   * the ship. `BOT_IDS` gives the order, so a tie (which the ship claim makes
-   * impossible) still resolves the same way every time.
+   * the ship. `SHIP_CONTROLLER_IDS` gives the order, so a tie (which the ship
+   * claim makes impossible) still resolves the same way every time.
    */
-  const botStatus: Readonly<Record<BotID, () => string>> = {
+  const botStatus: Readonly<Record<ShipControllerID, () => string>> = {
     mining: () => bot.get().status,
     mission: () => missionBot.get().status,
+    custom: () => customBot.get().status,
   };
 
   const syncBotClaim = (): void => {
-    const holder = BOT_IDS.find((id) => holdsTheShip(botStatus[id]())) ?? null;
+    const holder = SHIP_CONTROLLER_IDS.find((id) => holdsTheShip(botStatus[id]())) ?? null;
     if (bots.get().runningBotID !== holder) {
       bots.set({ runningBotID: holder });
     }
@@ -2138,6 +2311,9 @@ export function createClientStore(): ClientStore {
     industry: readonlySignal(industry),
     market: readonlySignal(market),
     mail: readonlySignal(mail),
+    activity: readonlySignal(activity),
+    fleet: readonlySignal(fleet),
+    scanner: readonlySignal(scanner),
     contracts: readonlySignal(contracts),
     assets: readonlySignal(assets),
     agents: readonlySignal(agents),

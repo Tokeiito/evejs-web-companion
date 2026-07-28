@@ -19,7 +19,7 @@
 // ⚠ These are WRITES: never call a decoder to DRIVE a mutation — the confirm-gated
 // BFF route is the only path, and it refuses without `confirm: true`.
 
-import { readKeyVal, type JsonValue } from "./wire.ts";
+import { readPlainJsonField, type JsonValue } from "./wire.ts";
 
 function truthy(value: JsonValue | undefined): boolean {
   return value === true;
@@ -51,10 +51,10 @@ export interface SkillCloneWriteAck {
  * panel re-reads to confirm. `result` carries any raw scalar/object through.
  */
 export function decodeSkillCloneWriteAck(response: JsonValue): SkillCloneWriteAck {
-  const result = readKeyVal(response, "result");
+  const result = readPlainJsonField(response, "result");
   return {
-    ok: truthy(readKeyVal(response, "ok")),
-    applied: truthy(readKeyVal(response, "applied")),
+    ok: truthy(readPlainJsonField(response, "ok")),
+    applied: truthy(readPlainJsonField(response, "applied")),
     result: result === undefined ? null : (result as JsonValue),
   };
 }
@@ -70,8 +70,8 @@ export interface SafetyLevelWriteAck {
 /** Decode the crimewatch.SetSafetyLevel ack — the server echoes the new level. */
 export function decodeSafetyLevelWriteAck(response: JsonValue): SafetyLevelWriteAck {
   return {
-    ok: truthy(readKeyVal(response, "ok")),
-    applied: truthy(readKeyVal(response, "applied")),
-    safetyLevel: intOrNull(readKeyVal(response, "result")),
+    ok: truthy(readPlainJsonField(response, "ok")),
+    applied: truthy(readPlainJsonField(response, "applied")),
+    safetyLevel: intOrNull(readPlainJsonField(response, "result")),
   };
 }

@@ -28,7 +28,7 @@
 
 import type { MailHeaderRow, MailStatusRow } from "../store/types.ts";
 import type { JsonValue } from "./wire.ts";
-import { isListValue, readKeyVal, unwrapLong } from "./wire.ts";
+import { isListValue, readKeyVal, readPlainJsonField, unwrapLong } from "./wire.ts";
 
 /** The read bit inside a status row's statusMask. */
 export const MAIL_STATUS_READ = 1;
@@ -286,8 +286,8 @@ function truthy(value: JsonValue | undefined): boolean {
 /** Decode the plain status/trash ack (MarkAsRead, MoveToTrash, DeleteMail, …). */
 export function decodeMailWriteAck(response: JsonValue): MailWriteAck {
   return {
-    ok: truthy(readKeyVal(response, "ok")),
-    applied: truthy(readKeyVal(response, "applied")),
+    ok: truthy(readPlainJsonField(response, "ok")),
+    applied: truthy(readPlainJsonField(response, "applied")),
   };
 }
 
@@ -297,10 +297,10 @@ export interface MailLabelCreatedAck extends MailWriteAck {
 }
 
 export function decodeMailLabelCreatedAck(response: JsonValue): MailLabelCreatedAck {
-  const labelID = toNumber(readKeyVal(response, "labelID"));
+  const labelID = toNumber(readPlainJsonField(response, "labelID"));
   return {
-    ok: truthy(readKeyVal(response, "ok")),
-    applied: truthy(readKeyVal(response, "applied")),
+    ok: truthy(readPlainJsonField(response, "ok")),
+    applied: truthy(readPlainJsonField(response, "applied")),
     labelID: labelID > 0 ? labelID : null,
   };
 }
@@ -311,10 +311,10 @@ export interface MailingListCreatedAck extends MailWriteAck {
 }
 
 export function decodeMailingListCreatedAck(response: JsonValue): MailingListCreatedAck {
-  const listID = toNumber(readKeyVal(response, "listID"));
+  const listID = toNumber(readPlainJsonField(response, "listID"));
   return {
-    ok: truthy(readKeyVal(response, "ok")),
-    applied: truthy(readKeyVal(response, "applied")),
+    ok: truthy(readPlainJsonField(response, "ok")),
+    applied: truthy(readPlainJsonField(response, "applied")),
     listID: listID > 0 ? listID : null,
   };
 }

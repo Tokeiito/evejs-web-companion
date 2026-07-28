@@ -8,6 +8,9 @@
   import Fitting from "./Fitting.svelte";
   import Industry from "./Industry.svelte";
   import Market from "./Market.svelte";
+  import Activity from "./Activity.svelte";
+  import FleetCenter from "./FleetCenter.svelte";
+  import Scanner from "./Scanner.svelte";
   import Mail from "./Mail.svelte";
   import Contracts from "./Contracts.svelte";
   import PersonalAssets from "./PersonalAssets.svelte";
@@ -59,6 +62,12 @@
   <Industry {store} {flow} />
 {:else if tab === "market"}
   <Market {store} {flow} />
+{:else if tab === "activity"}
+  <Activity {store} {flow} showMail={() => onOpen?.("mail")} />
+{:else if tab === "fleet"}
+  <FleetCenter {store} {flow} />
+{:else if tab === "scanner"}
+  <Scanner {store} {flow} />
 {:else if tab === "mail"}
   <Mail {store} {flow} />
 {:else if tab === "contracts"}

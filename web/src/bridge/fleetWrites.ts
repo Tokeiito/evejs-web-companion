@@ -1,4 +1,4 @@
-// Fleet top-level WRITE acks (goal R94, Phase-3 WRITES — PLUMBING ONLY).
+// Fleet top-level WRITE acknowledgements (goal R94, now used by Fleet Center and bots).
 //
 // The LAST Phase-3 top-level writes batch. FAST-MODE educated-guess decoders for
 // the 11 confirm-gated fleet writes across three TOP-LEVEL services whose seams
@@ -29,7 +29,7 @@
 // LOCAL coercions only — this module deliberately does NOT import from market*.ts
 // (a separate session owns those files).
 
-import { readKeyVal, type JsonValue } from "./wire.ts";
+import { readPlainJsonField, type JsonValue } from "./wire.ts";
 import { type FleetAdvert } from "./fleetAds.ts";
 
 /** The uniform ack every confirm-gated fleet write returns. */
@@ -44,7 +44,7 @@ function ackTruthy(value: JsonValue | undefined): boolean {
 
 /** Read the `result` field off a BFF write-ack envelope (null when absent). */
 function ackResult(response: JsonValue): JsonValue | null {
-  const result = readKeyVal(response, "result");
+  const result = readPlainJsonField(response, "result");
   return result === undefined ? null : result;
 }
 
@@ -55,8 +55,8 @@ function ackResult(response: JsonValue): JsonValue | null {
  */
 export function decodeFleetWriteAck(response: JsonValue): FleetWriteAck {
   return {
-    ok: ackTruthy(readKeyVal(response, "ok")),
-    applied: ackTruthy(readKeyVal(response, "applied")),
+    ok: ackTruthy(readPlainJsonField(response, "ok")),
+    applied: ackTruthy(readPlainJsonField(response, "applied")),
   };
 }
 

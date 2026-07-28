@@ -80,11 +80,11 @@ const DELIVERY_RUNS: BotScript = {
   ],
 };
 
-/** The ratting loop: den to den, guns + drones, sweep and loot the field. */
+/** The ratting loop: den to den, guns + drones, loot then salvage the field. */
 const RATTING_NIGHT: BotScript = {
   ...FORMAT,
   name: "Ratting night",
-  notes: "Anomaly to anomaly: clear it, salvage it, loot it, next.",
+  notes: "Anomaly to anomaly: clear it, loot it, salvage it, next.",
   home: startingStation(),
   interrupts: [
     { id: "w-shield", when: { kind: "shield-below", fraction: 0.6 }, respond: "repair" },
@@ -102,8 +102,9 @@ const RATTING_NIGHT: BotScript = {
         { id: "s2", kind: "macro", macro: "hardeners-on", args: {} },
         { id: "s3", kind: "macro", macro: "warp-to-anomaly", args: {} },
         { id: "s4", kind: "macro", macro: "fight-the-rats", args: {} },
-        { id: "s5", kind: "macro", macro: "salvage-wrecks", args: {} },
-        { id: "s6", kind: "macro", macro: "loot-wrecks", args: {} },
+        // Loot BEFORE salvaging: a salvaged wreck is gone and cannot be opened.
+        { id: "s5", kind: "macro", macro: "loot-wrecks", args: {} },
+        { id: "s6", kind: "macro", macro: "salvage-wrecks", args: {} },
       ],
     },
   ],
@@ -166,10 +167,105 @@ const SMART_MINER: BotScript = {
   ],
 };
 
+/** A logistics pilot that joins the fleet, then keeps cycling reps and cap. */
+const FLEET_MEDIC: BotScript = {
+  ...FORMAT,
+  name: "Fleet medic",
+  notes: "Waits for a fleet invite, undocks, and keeps fleet-mates repaired and supplied with capacitor.",
+  home: startingStation(),
+  interrupts: [
+    { id: "w-armor", when: { kind: "armor-below", fraction: 0.5 }, respond: "dock-and-pause" },
+    { id: "w-cap", when: { kind: "capacitor-below", fraction: 0.2 }, respond: "pause" },
+  ],
+  program: [
+    {
+      id: "loop",
+      kind: "loop",
+      repeat: { kind: "forever" },
+      body: [
+        { id: "s1", kind: "macro", macro: "join-fleet", args: {} },
+        { id: "s2", kind: "macro", macro: "undock", args: {} },
+        { id: "s3", kind: "macro", macro: "hardeners-on", args: {} },
+        { id: "s4", kind: "macro", macro: "remote-rep", args: {} },
+        { id: "s5", kind: "macro", macro: "remote-cap", args: {} },
+        { id: "s6", kind: "macro", macro: "wait", args: { seconds: { kind: "count", value: 4 } } },
+      ],
+    },
+  ],
+};
+
+/** A close-orbit logistics anchor: sustained support until a watch or player stops it. */
+const FLEET_ANCHOR: BotScript = {
+  ...FORMAT,
+  name: "Fleet anchor",
+  notes: "Joins the fleet, hardens up, then stays close to a fleet-mate and keeps remote repairs running.",
+  home: startingStation(),
+  interrupts: [
+    { id: "w-shield", when: { kind: "shield-below", fraction: 0.5 }, respond: "repair" },
+    { id: "w-hull", when: { kind: "hull-below", fraction: 0.5 }, respond: "dock-and-pause" },
+  ],
+  program: [
+    { id: "s1", kind: "macro", macro: "join-fleet", args: {} },
+    { id: "s2", kind: "macro", macro: "undock", args: {} },
+    { id: "s3", kind: "macro", macro: "hardeners-on", args: {} },
+    { id: "s4", kind: "macro", macro: "orbit-and-boost", args: {} },
+  ],
+};
+
+/** Explore a system's anomalies, with loot/salvage and a docked turnaround each lap. */
+const ANOMALY_EXPEDITION: BotScript = {
+  ...FORMAT,
+  name: "Anomaly expedition",
+  notes: "Clears up to six combat anomalies, brings the loot in, repairs, and heads back out.",
+  home: startingStation(),
+  interrupts: [
+    { id: "w-armor", when: { kind: "armor-below", fraction: 0.5 }, respond: "dock-and-pause" },
+    { id: "w-rats", when: { kind: "hostile-on-grid" }, respond: "alert" },
+  ],
+  program: [
+    {
+      id: "loop",
+      kind: "loop",
+      repeat: { kind: "times", count: 6 },
+      body: [
+        { id: "s1", kind: "macro", macro: "undock", args: {} },
+        { id: "s2", kind: "macro", macro: "hardeners-on", args: {} },
+        { id: "s3", kind: "macro", macro: "warp-to-anomaly", args: {} },
+        { id: "s4", kind: "macro", macro: "fight-the-rats", args: {} },
+        { id: "s5", kind: "macro", macro: "loot-wrecks", args: {} },
+        { id: "s6", kind: "macro", macro: "salvage-wrecks", args: {} },
+        { id: "s7", kind: "macro", macro: "dock-at-nearest", args: {} },
+        { id: "s8", kind: "macro", macro: "unload-cargo", args: {} },
+        { id: "s9", kind: "macro", macro: "repair-ship", args: {} },
+      ],
+    },
+  ],
+};
+
+/** A one-shot housekeeping run for the end of a session. */
+const OPERATIONS_CLOSEOUT: BotScript = {
+  ...FORMAT,
+  name: "Operations closeout",
+  notes: "Docks, unloads, repairs, tidies the hangar, and checks every colony for expired extractors.",
+  home: startingStation(),
+  interrupts: [],
+  program: [
+    { id: "s1", kind: "macro", macro: "dock-at-nearest", args: {} },
+    { id: "s2", kind: "macro", macro: "unload-cargo", args: {} },
+    { id: "s3", kind: "macro", macro: "repair-ship", args: {} },
+    { id: "s4", kind: "macro", macro: "tidy-hangar", args: {} },
+    { id: "s5", kind: "macro", macro: "restart-extractors", args: {} },
+  ],
+};
+
 export const EXAMPLE_BOTS: readonly ExampleBot[] = Object.freeze([
   { key: "mining", label: "Mining day", blurb: "Mine, haul home, refine — forever.", doc: MINING_DAY },
   { key: "delivery", label: "Delivery runs", blurb: "Find an agent, run 20 deliveries.", doc: DELIVERY_RUNS },
-  { key: "ratting", label: "Ratting night", blurb: "Den to den: fight, salvage, loot.", doc: RATTING_NIGHT },
+  { key: "ratting", label: "Ratting night", blurb: "Den to den: fight, loot, salvage.", doc: RATTING_NIGHT },
   { key: "planets", label: "Planet keeper", blurb: "Keep the extractors running.", doc: PLANET_KEEPER },
   { key: "smart", label: "Smart miner", blurb: "Mine, haul, then repair or refine.", doc: SMART_MINER },
+  { key: "fleet-medic", label: "Fleet medic", blurb: "Cycle remote repairs and capacitor support.", doc: FLEET_MEDIC },
+  { key: "fleet-anchor", label: "Fleet anchor", blurb: "Stay close and keep fleet-mates repaired.", doc: FLEET_ANCHOR },
+  { key: "anomaly-expedition", label: "Anomaly expedition", blurb: "Explore, clear, loot, salvage, turn around.", doc: ANOMALY_EXPEDITION },
+  { key: "operations-closeout", label: "Operations closeout", blurb: "Dock, unload, repair, tidy, check colonies.", doc: OPERATIONS_CLOSEOUT },
 ]);

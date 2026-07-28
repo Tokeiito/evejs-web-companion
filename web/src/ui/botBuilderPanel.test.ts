@@ -11,6 +11,7 @@ register("./svelteSsrHook.ts", import.meta.url);
 
 const { render } = await import("svelte/server");
 const { createClientStore } = await import("../store/clientStore.ts");
+const { BLOCK_SNIPPET_LIST } = await import("../bots/blockSnippets.ts");
 const BotBuilder = (await import("./BotBuilder.svelte")).default;
 
 function fakeFlow(): unknown {
@@ -80,6 +81,27 @@ test("has a Save button and a saved-bots section", () => {
   assert.match(text, /Your saved bots/);
   // onMount does not run under SSR, so the list starts empty.
   assert.match(text, /No saved bots yet/);
+});
+
+test("renders every ready-made block group and explains what adding it does", () => {
+  const text = visibleText(renderPanel());
+  assert.match(text, /Add a ready-made group/);
+  assert.match(text, /end of the blocks you already have/i, "groups explicitly append instead of replacing");
+  for (const group of BLOCK_SNIPPET_LIST) {
+    assert.ok(text.includes(group.label), `${group.label} is missing`);
+    assert.ok(text.includes(group.adds), `${group.label} does not explain its inserted sequence`);
+    if (group.setup !== null) {
+      assert.ok(text.includes(group.setup), `${group.label} hides its required follow-up choice`);
+    }
+  }
+  assert.ok((text.match(/Add group/g) ?? []).length >= BLOCK_SNIPPET_LIST.length);
+});
+
+test("offers the new fleet, exploration, and operations examples", () => {
+  const text = visibleText(renderPanel());
+  for (const label of ["Fleet medic", "Fleet anchor", "Anomaly expedition", "Operations closeout"]) {
+    assert.ok(text.includes(label), `${label} example is missing`);
+  }
 });
 
 test("renders against an empty store without throwing (R18)", () => {

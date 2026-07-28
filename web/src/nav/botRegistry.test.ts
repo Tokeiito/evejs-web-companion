@@ -341,14 +341,19 @@ test("createShipClaim stops every OTHER bot and never the one claiming", () => {
   const claim = createShipClaim({
     mining: () => stopped.push("mining"),
     mission: () => stopped.push("mission"),
+    custom: () => stopped.push("custom"),
   });
 
   claim("mining");
-  assert.deepEqual(stopped, ["mission"], "claiming for mining stops the mission bot only");
+  assert.deepEqual(stopped, ["mission", "custom"], "claiming for mining stops every other controller");
 
   stopped.length = 0;
   claim("mission");
-  assert.deepEqual(stopped, ["mining"], "and the reverse — the property is symmetric by construction");
+  assert.deepEqual(stopped, ["mining", "custom"], "and the reverse — the property is symmetric by construction");
+
+  stopped.length = 0;
+  claim("custom");
+  assert.deepEqual(stopped, ["mining", "mission"], "a player-authored bot owns the same exclusive ship claim");
 });
 
 test("the claim walks the REGISTRY, so a bot added to it is stopped without touching the claim", () => {

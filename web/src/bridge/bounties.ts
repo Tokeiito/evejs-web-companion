@@ -22,7 +22,14 @@
 // never forced into a label here. bounty / amount are ISK amounts kept as bigint-
 // safe decimal strings (never zeroed by a `typeof === "number"` test).
 
-import { isListValue, readKeyVal, readRowField, unwrapLong, type JsonValue } from "./wire.ts";
+import {
+  isListValue,
+  readKeyVal,
+  readPlainJsonField,
+  readRowField,
+  unwrapLong,
+  type JsonValue,
+} from "./wire.ts";
 import { toAmountString } from "./rewards.ts";
 import { decodeKillRights, type KillRight } from "./killRights.ts";
 
@@ -219,7 +226,7 @@ function bountyAckTruthy(value: JsonValue | undefined): boolean {
 /** Decode a plain bountyProxy write ack (add-bounty / sell-kill-right / cancel-sell). */
 export function decodeBountyWriteAck(response: JsonValue): BountyWriteAck {
   return {
-    ok: bountyAckTruthy(readKeyVal(response, "ok")),
-    applied: bountyAckTruthy(readKeyVal(response, "applied")),
+    ok: bountyAckTruthy(readPlainJsonField(response, "ok")),
+    applied: bountyAckTruthy(readPlainJsonField(response, "applied")),
   };
 }

@@ -27,7 +27,7 @@ export interface BridgeCallOutcome<TResult = JsonValue> {
 }
 
 export interface CallMethodOptions {
-  /** Extra scalar session fields for the browser-backed session (userid is BFF-pinned). */
+  /** Safe language preferences only; identity and gameplay state are server-held. */
   readonly session?: SessionFields;
   /** Base URL prefix; default "" (same-origin against the BFF). */
   readonly baseUrl?: string;

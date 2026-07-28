@@ -4,7 +4,7 @@
 // the typed ChatChannelState the store holds, tolerating malformed rows (a bad
 // row is skipped, never a throw) and decoding every numeric long-aware.
 
-import { readKeyVal, unwrapLong, type JsonValue } from "./wire.ts";
+import { readPlainJsonField, unwrapLong, type JsonValue } from "./wire.ts";
 import type {
   ChatChannel,
   ChatChannelState,
@@ -132,7 +132,7 @@ export interface ChatSendAck {
 /** Decode the LSC.SendMessage write ack. */
 export function decodeChatSendAck(response: JsonValue): ChatSendAck {
   return {
-    ok: readKeyVal(response, "ok") === true,
-    applied: readKeyVal(response, "applied") === true,
+    ok: readPlainJsonField(response, "ok") === true,
+    applied: readPlainJsonField(response, "applied") === true,
   };
 }

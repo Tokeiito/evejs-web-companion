@@ -26,7 +26,8 @@ import assert from "node:assert/strict";
 
 import { createAppFlow } from "./flow.ts";
 import { createClientStore } from "../store/clientStore.ts";
-import { BOT_IDS } from "../nav/botRegistry.ts";
+import { BOT_IDS, SHIP_CONTROLLER_IDS } from "../nav/botRegistry.ts";
+import type { BotScript } from "../bots/botScript.ts";
 import {
   STRIP_MINER_ITEM_IDS,
   fittingBody,
@@ -57,6 +58,23 @@ const MISSION_REQUEST = {
   agentStationName: "Jita IV - Moon 4",
   maxJumps: 10,
   maxMissions: 0,
+};
+
+const CUSTOM_DOC: BotScript = {
+  format: "evejs-bot-script",
+  version: 1,
+  name: "Patient custom bot",
+  notes: "",
+  home: { entity: "station", id: STATION, name: "Jita IV - Moon 4", systemName: "Jita" },
+  interrupts: [],
+  program: [
+    {
+      id: "wait",
+      kind: "macro",
+      macro: "wait",
+      args: { seconds: { kind: "count", value: 500 } },
+    },
+  ],
 };
 
 /**
@@ -106,6 +124,9 @@ function holders(store: ReturnType<typeof createClientStore>): string[] {
   if (state.missionBot.status === "running" || state.missionBot.status === "paused") {
     held.push("mission");
   }
+  if (state.customBot.status === "running" || state.customBot.status === "paused") {
+    held.push("custom");
+  }
   return held;
 }
 
@@ -151,6 +172,7 @@ test("R43 — starting each bot while each other runs leaves AT MOST ONE running
   const starts: Record<string, (flow: ReturnType<typeof harness>["flow"]) => Promise<void>> = {
     mining: (flow) => flow.startMiningBot(MINING_REQUEST),
     mission: (flow) => flow.startMissionBot(MISSION_REQUEST),
+    custom: (flow) => flow.startCustomBot(CUSTOM_DOC),
   };
   const names = Object.keys(starts);
 
@@ -167,6 +189,7 @@ test("R43 — starting each bot while each other runs leaves AT MOST ONE running
         );
         flow.stopMiningBot();
         flow.stopMissionBot();
+        flow.stopCustomBot();
         assert.deepEqual(holders(store), [], "and stopping both leaves nothing running");
       }
     }
@@ -212,6 +235,11 @@ test("R43 — the store carries ONE runningBotID and it never disagrees with the
 
   flow.stopMissionBot();
   assert.equal(store.get().bots.runningBotID, null);
+
+  await flow.startCustomBot(CUSTOM_DOC);
+  assert.equal(store.get().bots.runningBotID, "custom", "player-authored bots participate in the same view");
+  flow.stopCustomBot();
+  assert.equal(store.get().bots.runningBotID, null);
 });
 
 test("R43 — every registered bot is reachable by the exclusion machinery", () => {
@@ -221,4 +249,9 @@ test("R43 — every registered bot is reachable by the exclusion machinery", () 
   // registered twice and stop itself.
   assert.ok(BOT_IDS.length >= 2, "both live-proven bots are registered");
   assert.equal(new Set(BOT_IDS).size, BOT_IDS.length, "no bot is registered twice");
+  assert.deepEqual(
+    [...SHIP_CONTROLLER_IDS].sort(),
+    ["custom", "mining", "mission"],
+    "the ownership registry includes the player-authored controller",
+  );
 });

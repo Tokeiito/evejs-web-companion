@@ -29,6 +29,30 @@ function makeFakeStack(log) {
       doc && doc.valid === true
         ? { ok: true, doc, warnings: [] }
         : { ok: false, refusal: "That bot could not be read." },
+    analyzeBotRunPolicy: (doc) => ({
+      riskClasses: Array.isArray(doc.riskClasses) ? doc.riskClasses : [],
+      restartSafe: doc.restartSafe !== false,
+    }),
+    validateBotLaunchGrant: (grant, scriptRev, policy) => {
+      if (!grant || Number(grant.scriptRev) !== scriptRev) {
+        return { ok: false, code: "BOT_GRANT_REQUIRED", message: "Review this run." };
+      }
+      if (
+        !Array.isArray(grant.riskClasses) ||
+        grant.riskClasses.length !== policy.riskClasses.length ||
+        policy.riskClasses.some((risk) => !grant.riskClasses.includes(risk))
+      ) {
+        return { ok: false, code: "BOT_GRANT_STALE", message: "Permissions changed." };
+      }
+      return {
+        ok: true,
+        grant: {
+          scriptRev,
+          riskClasses: [...policy.riskClasses],
+          maxRuntimeMinutes: Number(grant.maxRuntimeMinutes),
+        },
+      };
+    },
     createClientStore: () => {
       const listeners = new Set();
       const state = {
@@ -106,6 +130,7 @@ function makeHost({ log = [], isCharacterHeld = () => false, ...extras } = {}) {
     isCharacterHeld,
     errorLogger: () => {},
     loadStack: makeFakeStack(log),
+    createClaimSecret: () => "private-claim-capability",
     ...extras,
   });
 }
@@ -116,7 +141,9 @@ const START = {
   characterID: 140000001,
   scriptID: "s1",
   scriptName: "Miner",
+  scriptRev: 1,
   doc: { valid: true },
+  grant: { scriptRev: 1, riskClasses: [], maxRuntimeMinutes: 720 },
 };
 
 function settle() {
@@ -141,12 +168,54 @@ test("start flies the character on its own session and lists it", async () => {
   assert.deepEqual(flowCall.slice(2), [true, "bot-token"]);
 });
 
+test("the approved runtime deadline stops, logs out, and releases the character claim", async () => {
+  const log = [];
+  let deadline = null;
+  const host = makeHost({
+    log,
+    now: () => 1_000,
+    setDeadlineTimeout(callback, delayMs) {
+      deadline = { callback, delayMs, unref() {} };
+      return deadline;
+    },
+    clearDeadlineTimeout() {},
+  });
+
+  const started = await host.start({
+    ...START,
+    grant: { ...START.grant, maxRuntimeMinutes: 30 },
+  });
+  assert.equal(started.ok, true);
+  assert.ok(deadline);
+  assert.equal(deadline.delayMs, 30 * 60_000);
+
+  deadline.callback();
+  await settle();
+
+  const [row] = host.list(ACCOUNT.accountID);
+  assert.equal(row.status, "stopped");
+  assert.match(row.why, /approved run time ended/i);
+  assert.equal(host.claimedBy(START.characterID), null);
+  assert.ok(log.some(([name]) => name === "stopCustomBot"));
+  assert.ok(log.some(([name]) => name === "logout"));
+});
+
 test("a second bot may not take a claimed character", async () => {
   const host = makeHost();
   assert.equal((await host.start(START)).ok, true);
   const second = await host.start(START);
   assert.equal(second.ok, false);
   assert.equal(second.code, "BOT_ALREADY_RUNNING");
+});
+
+test("only the private per-run capability authorizes a claimed character", async () => {
+  const host = makeHost();
+  const started = await host.start(START);
+  assert.equal(started.ok, true);
+  assert.equal(host.authorizesClaim(140000001, "private-claim-capability"), true);
+  assert.equal(host.authorizesClaim(140000001, started.bot.botID), false, "the public bot ID is not authority");
+  assert.equal(host.authorizesClaim(140000001, "bogus"), false);
+  assert.equal(host.authorizesClaim(140000002, "private-claim-capability"), false);
 });
 
 test("a character a web session holds is refused", async () => {
@@ -164,6 +233,26 @@ test("an undecodable doc is refused before any session exists", async () => {
   assert.equal(outcome.ok, false);
   assert.equal(outcome.code, "BOTSCRIPT_INVALID");
   assert.equal(log.some((row) => row[0] === "selectCharacter"), false);
+});
+
+test("a server run requires an exact revision-and-risk grant", async () => {
+  const host = makeHost();
+  assert.equal((await host.start({ ...START, grant: null })).code, "BOT_GRANT_REQUIRED");
+  assert.equal(
+    (await host.start({ ...START, grant: { ...START.grant, scriptRev: 2 } })).code,
+    "BOT_GRANT_REQUIRED",
+  );
+  const risky = { ...START, doc: { valid: true, riskClasses: ["financial"] } };
+  assert.equal((await host.start(risky)).code, "BOT_GRANT_STALE");
+  assert.equal(
+    (
+      await host.start({
+        ...risky,
+        grant: { scriptRev: 1, riskClasses: ["financial"], maxRuntimeMinutes: 30 },
+      })
+    ).ok,
+    true,
+  );
 });
 
 test("stop releases the claim and the character", async () => {
@@ -258,8 +347,15 @@ test("the running roster is mirrored to disk and cleared when the bot ends", asy
     characterID: 140000001,
     scriptID: "s1",
     scriptName: "Miner",
+    scriptRev: 1,
+    scriptHash: started.bot.scriptHash,
+    restartSafe: true,
+    riskClasses: [],
+    maxRuntimeMinutes: 720,
+    expiresAt: started.bot.expiresAt,
     startedAt: started.bot.startedAt,
   });
+  assert.match(persisted[0].scriptHash, /^[a-f0-9]{64}$/);
   await host.stop(started.bot.botID, 7);
   assert.equal(readRosterFile(rosterPath).length, 0);
 });
@@ -274,7 +370,7 @@ test("resume restarts a persisted bot on a fresh host (the restart path)", async
     loadAccount: async (username) => (username === "test" ? { ...ACCOUNT } : null),
     loadScript: (accountID, scriptID) =>
       accountID === 7 && scriptID === "s1"
-        ? { scriptID: "s1", name: "Miner", doc: { valid: true } }
+        ? { scriptID: "s1", name: "Miner", rev: 1, doc: { valid: true } }
         : null,
   });
   await after.resume();
@@ -287,6 +383,80 @@ test("resume restarts a persisted bot on a fresh host (the restart path)", async
   const persisted = readRosterFile(rosterPath);
   assert.equal(persisted.length, 1);
   assert.equal(persisted[0].startedAt, listed[0].startedAt);
+});
+
+test("resume refuses a script whose saved revision changed after launch", async () => {
+  const rosterPath = tempRosterPath();
+  const before = makeHost({ persistPath: rosterPath });
+  await before.start(START);
+  const after = makeHost({
+    persistPath: rosterPath,
+    loadAccount: async () => ({ ...ACCOUNT }),
+    loadScript: () => ({ scriptID: "s1", name: "Miner", rev: 2, doc: { valid: true, edited: true } }),
+  });
+  await after.resume();
+  const [row] = after.list(7);
+  assert.equal(row.status, "error");
+  assert.match(String(row.why), /changed after this run was authorized/i);
+  assert.equal(after.claimedBy(140000001), null);
+  assert.equal(readRosterFile(rosterPath).length, 0);
+});
+
+test("resume never replays a consequential script without a fresh start", async () => {
+  const rosterPath = tempRosterPath();
+  const before = makeHost({ persistPath: rosterPath });
+  await before.start({
+    ...START,
+    doc: { valid: true, restartSafe: false, riskClasses: ["financial"] },
+    grant: { ...START.grant, riskClasses: ["financial"] },
+  });
+  const after = makeHost({
+    persistPath: rosterPath,
+    loadAccount: async () => ({ ...ACCOUNT }),
+    loadScript: () => ({
+      scriptID: "s1",
+      name: "Miner",
+      rev: 1,
+      doc: { valid: true, restartSafe: false, riskClasses: ["financial"] },
+    }),
+  });
+  await after.resume();
+  const [row] = after.list(7);
+  assert.equal(row.status, "error");
+  assert.match(String(row.why), /consequential action/i);
+  assert.equal(after.claimedBy(140000001), null);
+  assert.equal(readRosterFile(rosterPath).length, 0);
+});
+
+test("legacy unpinned roster rows require a manual start", async () => {
+  const rosterPath = tempRosterPath();
+  fs.writeFileSync(
+    rosterPath,
+    JSON.stringify({
+      version: 1,
+      bots: [
+        {
+          accountID: 7,
+          username: "test",
+          characterID: 140000001,
+          scriptID: "s1",
+          scriptName: "Miner",
+          startedAt: new Date().toISOString(),
+        },
+      ],
+    }),
+    "utf8",
+  );
+  const host = makeHost({
+    persistPath: rosterPath,
+    loadAccount: async () => ({ ...ACCOUNT }),
+    loadScript: () => ({ scriptID: "s1", name: "Miner", rev: 1, doc: { valid: true } }),
+  });
+  await host.resume();
+  const [row] = host.list(7);
+  assert.equal(row.status, "error");
+  assert.match(String(row.why), /no pinned script revision/i);
+  assert.equal(host.claimedBy(140000001), null);
 });
 
 test("vitals sampling projects ship health, hold fill and the bot's words", async () => {

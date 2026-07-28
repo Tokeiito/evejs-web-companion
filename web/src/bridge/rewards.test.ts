@@ -111,21 +111,17 @@ test("the decoders tolerate malformed input without throwing", () => {
 
 // --- R89 LPSvc financial write acks (Phase-3 WRITES) ------------------------
 
-function lpAckKeyVal(fields: Record<string, JsonValue>): JsonValue {
-  return {
-    type: "object",
-    name: "util.KeyVal",
-    args: { type: "dict", entries: Object.entries(fields) },
-  };
+function plainAck(fields: Record<string, JsonValue>): JsonValue {
+  return { ...fields };
 }
 
 test("R89 — an LPSvc transfer ack decodes to {ok, applied}", () => {
-  const ack = decodeLpWriteAck(lpAckKeyVal({ ok: true, applied: true, result: null }));
+  const ack = decodeLpWriteAck(plainAck({ ok: true, applied: true, result: null }));
   assert.deepEqual(ack, { ok: true, applied: true });
 });
 
 test("R89 — a declined LP transfer is read as not-applied, not a throw", () => {
-  const ack = decodeLpWriteAck(lpAckKeyVal({ ok: true, applied: false }));
+  const ack = decodeLpWriteAck(plainAck({ ok: true, applied: false }));
   assert.equal(ack.ok, true);
   assert.equal(ack.applied, false);
 });

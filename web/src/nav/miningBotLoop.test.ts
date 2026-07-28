@@ -811,6 +811,64 @@ async function drive(bot: MiningBotController, ticks: number): Promise<MiningBot
   return actions;
 }
 
+test("ready-returning undock and dock advance on the next tick without duplicate calls", async () => {
+  let outboundDocked = true;
+  const outbound = makeDeps({
+    status: () => outboundDocked
+      ? status({ docked: true, inSpace: false, stationID: STATION })
+      : status(),
+    snapshot: () => outboundDocked
+      ? null
+      : snapshot([
+        entity({ itemID: BELT, kind: "celestial", position: { x: 4e9, y: 0, z: 0 } }),
+      ]),
+    holds: () => [oreHold(0)],
+    onCall: (name) => {
+      if (name === "undock") {
+        outboundDocked = false;
+      }
+    },
+  });
+  const outboundBot = createMiningBot(outbound.deps);
+  outboundBot.start(PLAN);
+
+  assert.equal((await outboundBot.tick()).kind, "undock");
+  assert.equal(
+    (await outboundBot.tick()).kind,
+    "warp",
+    "authoritative undock readiness removes the old settle window",
+  );
+  assert.deepEqual(outbound.rec.calls, ["undock", "warp"]);
+
+  let inboundDocked = false;
+  const inbound = makeDeps({
+    status: () => inboundDocked
+      ? status({ docked: true, inSpace: false, stationID: STATION })
+      : status(),
+    snapshot: () => inboundDocked
+      ? null
+      : snapshot([
+        entity({ itemID: STATION, kind: "station", position: { x: 800, y: 0, z: 0 } }),
+      ]),
+    holds: () => [oreHold(5_000, 5_000, [5_000])],
+    onCall: (name) => {
+      if (name === "dock") {
+        inboundDocked = true;
+      }
+    },
+  });
+  const inboundBot = createMiningBot(inbound.deps);
+  inboundBot.start(PLAN);
+
+  assert.equal((await inboundBot.tick()).kind, "dock");
+  assert.equal(
+    (await inboundBot.tick()).kind,
+    "unload",
+    "authoritative dock readiness allows the immediate docked decision",
+  );
+  assert.deepEqual(inbound.rec.calls, ["dock", "unload"]);
+});
+
 test("BOUND: a lock that never lands gives up on that ROCK, then on the belt — it never spins", async () => {
   // Every lock call answers 200 and GetTargets never lists anything: the exact
   // silent-decline shape this server has six confirmed cases of.
@@ -971,6 +1029,7 @@ test("BOUND: lasers running for minutes with the hold not growing stops claiming
 
 test("BOUND: a persistent flight-status failure stops, but a transient one does not", async () => {
   let failures = 3;
+  let transientDocked = true;
   const { deps } = makeDeps({ status: () => status(), snapshot: () => snapshot([]) });
   const transient = createMiningBot({
     ...deps,
@@ -979,7 +1038,13 @@ test("BOUND: a persistent flight-status failure stops, but a transient one does 
         failures -= 1;
         throw refusal("EveJS gateway timed out.", "EVE_GATEWAY_TIMEOUT");
       }
-      return status({ docked: true, inSpace: false, stationID: STATION });
+      return transientDocked
+        ? status({ docked: true, inSpace: false, stationID: STATION })
+        : status();
+    },
+    undock: async () => {
+      await deps.undock();
+      transientDocked = false; // ready-returning BFF exposes authoritative state
     },
   });
   transient.start(PLAN);

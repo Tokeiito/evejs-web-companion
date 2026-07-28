@@ -49,6 +49,28 @@ test("a blank name and unbound home are each flagged", () => {
   assert.deepEqual(paths(validateScript(draft)).sort(), ["home", "name"]);
 });
 
+test("a board-slot home is a runtime binding, not an unbound home", () => {
+  const draft: BotScript = {
+    ...ready(),
+    home: {
+      entity: "station",
+      id: null,
+      name: null,
+      systemName: null,
+      slot: "dropoff-station",
+    },
+  };
+  assert.equal(validateScript(draft).some((problem) => problem.path === "home"), false);
+});
+
+test("an exact sub-bot scriptID is sufficient even if its display hint is absent", () => {
+  const draft: BotScript = {
+    ...ready(),
+    program: [{ id: "include", kind: "sub-bot", scriptID: "script-123", name: null }],
+  };
+  assert.equal(validateScript(draft).some((problem) => problem.path === "include"), false);
+});
+
 test("an empty program is flagged", () => {
   const draft = { ...ready(), program: [] };
   assert.ok(validateScript(draft).some((p) => p.path === "program"));

@@ -27,7 +27,14 @@
 // a bound.
 
 import { countSteps } from "../bots/botScript.ts";
-import type { BotScript, BranchBlock, Condition, LoopBlock, MacroStep } from "../bots/botScript.ts";
+import type {
+  BotScript,
+  BranchBlock,
+  Condition,
+  LoopBlock,
+  MacroID,
+  MacroStep,
+} from "../bots/botScript.ts";
 import { alertSentence, conditionSentence } from "../bots/scriptText.ts";
 import {
   SENTENCE as COND_SENTENCE,
@@ -190,8 +197,11 @@ export type MacroDecider = (
   board: ScriptBoard,
 ) => MacroTick;
 
-/** Keyed by MacroID. A4c supplies the real four; tests supply fakes. */
-export type MacroRegistry = Readonly<Record<string, MacroDecider>>;
+/** A partial lookup is useful to focused pure tests (an omitted macro pauses plainly). */
+export type MacroRegistry = Readonly<Partial<Record<MacroID, MacroDecider>>>;
+
+/** The production registry must implement EVERY format-level MacroID. */
+export type CompleteMacroRegistry = Readonly<Record<MacroID, MacroDecider>>;
 
 /** Flies the ship to `home` for a latched dock-and-pause. `done` == docked home. */
 export type HomeTravelDecider = (obs: ScriptObservation, mem: MacroMemory) => MacroTick;

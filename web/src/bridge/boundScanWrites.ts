@@ -1,8 +1,8 @@
 // R104 Phase-4 BOUND WRITE acks — WB-SCAN: the 9 probe / scan-control writes
 // (SignalTrackerRegister / SetProbeDestination / SetProbeRangeStep / ConeScan /
 // RequestScans / ReconnectToLostProbes / DestroyProbe / RecoverProbes /
-// SetActivityState) that hang off the R72 scanMgr.GetSystemScanMgr bind.
-// PLUMBING ONLY — no UI.
+// SetActivityState) that hang off the R72 scanMgr.GetSystemScanMgr bind. Scanner
+// Center uses the safe reconnect path; bot macros use ConeScan.
 //
 // Each write dispatches as a BOUND method off systemScanBindSpec() (the BFF holds
 // the OID handle; the browser never sees it), NOT the top-level /call seam. Unlike a
@@ -28,7 +28,7 @@
 // ⚠ These are WRITES: never call a decoder to DRIVE a mutation — the confirm-gated
 // BFF route is the only path, and it refuses without `confirm: true`.
 
-import { readKeyVal, type JsonValue } from "./wire.ts";
+import { readKeyVal, readPlainJsonField, type JsonValue } from "./wire.ts";
 
 function truthy(value: JsonValue | undefined): boolean {
   return value === true;
@@ -44,14 +44,14 @@ export interface ScanWriteAck {
 
 /**
  * Decode an R104 bound probe/scan-control write ack. `applied` is the confirm-gate's
- * did-not-throw signal; `result` passes the handler return through. FAST-MODE:
- * never fired live, so this is an educated guess from the scanMgr handler code.
+ * did-not-throw signal; `result` passes the handler return through. The outer
+ * envelope is plain Express JSON; the nested result remains intentionally raw.
  */
 export function decodeScanWriteAck(response: JsonValue): ScanWriteAck {
-  const result = readKeyVal(response, "result");
+  const result = readPlainJsonField(response, "result");
   return {
-    ok: truthy(readKeyVal(response, "ok")),
-    applied: truthy(readKeyVal(response, "applied")),
+    ok: truthy(readPlainJsonField(response, "ok")),
+    applied: truthy(readPlainJsonField(response, "applied")),
     result: result === undefined ? null : (result as JsonValue),
   };
 }

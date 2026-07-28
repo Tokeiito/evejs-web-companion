@@ -7,7 +7,13 @@ import assert from "node:assert/strict";
 
 import type { BotScript, ProgramNode } from "./botScript.ts";
 import { countSteps } from "./botScript.ts";
-import { expandSubBots, hasSubBots, subBotNames } from "./subBots.ts";
+import {
+  expandSubBots,
+  hasSubBots,
+  subBotNames,
+  subBotReferences,
+  type ResolveBot,
+} from "./subBots.ts";
 
 const FORMAT = { format: "evejs-bot-script", version: 1 } as const;
 
@@ -29,11 +35,38 @@ const step = (id: string, macro: "undock" | "refine-ore" | "unload-cargo" = "und
   args: {},
 });
 
-const call = (id: string, name: string | null): ProgramNode => ({ id, kind: "sub-bot", scriptID: null, name });
+const call = (id: string, name: string | null, scriptID: string | null = null): ProgramNode => ({
+  id,
+  kind: "sub-bot",
+  scriptID,
+  name,
+});
 
-function library(...bots: BotScript[]): (name: string) => BotScript | null {
-  const map = new Map(bots.map((b) => [b.name.toLowerCase(), b]));
-  return (name) => map.get(name.trim().toLowerCase()) ?? null;
+type Saved = BotScript | { readonly scriptID: string; readonly doc: BotScript };
+
+function library(...saved: Saved[]): ResolveBot {
+  const rows = saved.map((entry) =>
+    "scriptID" in entry ? entry : { scriptID: null, doc: entry },
+  );
+  return (reference) => {
+    if (reference.scriptID !== null) {
+      const exact = rows.find((row) => row.scriptID === reference.scriptID);
+      return exact === undefined
+        ? { kind: "missing" }
+        : { kind: "found", identity: `id:${reference.scriptID}`, doc: exact.doc };
+    }
+    const key = reference.name?.trim().toLowerCase() ?? "";
+    const matches = rows.filter((row) => row.doc.name.trim().toLowerCase() === key);
+    if (matches.length > 1) return { kind: "ambiguous" };
+    const match = matches[0];
+    return match === undefined
+      ? { kind: "missing" }
+      : {
+          kind: "found",
+          identity: match.scriptID === null ? `name:${key}` : `id:${match.scriptID}`,
+          doc: match.doc,
+        };
+  };
 }
 
 test("a sub-bot's steps are spliced in where it sat, in order", () => {
@@ -100,6 +133,42 @@ test("an unknown or unpicked bot is skipped with a plain reason, not a crash", (
   assert.ok(problems.some((p) => /none was picked/i.test(p)));
 });
 
+test("scriptID is authoritative even when duplicate saved bots share a name", () => {
+  const first = bot("Daily", [step("first")]);
+  const second = bot("Daily", [step("second", "refine-ore")]);
+  const outer = bot("Outer", [call("pick", "Daily", "second-id")]);
+  const result = expandSubBots(
+    outer,
+    library(
+      { scriptID: "first-id", doc: first },
+      { scriptID: "second-id", doc: second },
+    ),
+  );
+  assert.deepEqual(result.problems, []);
+  assert.match(result.doc.program[0]?.id ?? "", /second/);
+});
+
+test("a stale scriptID never falls back to a coincidentally matching name", () => {
+  const inner = bot("Daily", [step("danger")]);
+  const outer = bot("Outer", [step("keep"), call("pick", "Daily", "deleted-id")]);
+  const result = expandSubBots(outer, library({ scriptID: "new-id", doc: inner }));
+  assert.equal(result.doc.program.length, 1);
+  assert.ok(result.problems.some((problem) => /no saved bot|no longer exists/i.test(problem)));
+});
+
+test("a name-only portable reference rejects duplicate names instead of taking the first", () => {
+  const outer = bot("Outer", [step("keep"), call("pick", "Daily")]);
+  const result = expandSubBots(
+    outer,
+    library(
+      { scriptID: "one", doc: bot("Daily", [step("one")]) },
+      { scriptID: "two", doc: bot("Daily", [step("two")]) },
+    ),
+  );
+  assert.equal(result.doc.program.length, 1);
+  assert.ok(result.problems.some((problem) => /more than one saved bot/i.test(problem)));
+});
+
 test("a bot with no sub-bots is returned untouched", () => {
   const plain = bot("Plain", [step("a"), step("b")]);
   const { doc, expanded, problems } = expandSubBots(plain, library());
@@ -139,5 +208,9 @@ test("hasSubBots / subBotNames report what a doc asks for", () => {
   const outer = bot("Day", [step("a"), call("c1", "Belt loop"), call("c2", "belt LOOP"), call("c3", "Other")]);
   assert.equal(hasSubBots(outer), true);
   assert.deepEqual(subBotNames(outer), ["Belt loop", "Other"], "de-duplicated, case-insensitively");
+  assert.deepEqual(subBotReferences(outer), [
+    { scriptID: null, name: "Belt loop" },
+    { scriptID: null, name: "Other" },
+  ]);
   assert.equal(hasSubBots(bot("Plain", [step("a")])), false);
 });

@@ -11,8 +11,10 @@
 //     that was mid-await when the player pressed pause stops driving.
 //   • STATUS IS RE-CHECKED AFTER EVERY await — pause/stop can fire during a read
 //     or an issue, and nothing may be issued afterwards.
-//   • SETTLE TICKS after a world call — a few ticks of not-deciding so the world
-//     reflects what was just done before it is judged (a 200 is not proof).
+//   • SETTLE TICKS after ordinary world calls — a few ticks of not-deciding so
+//     asynchronous movement/writes can become observable (a 200 is not proof).
+//     Ready-returning session changes skip this: their BFF promise resolves only
+//     after authoritative location + ship/scene readiness can be re-read.
 //   • Session loss is the one error allowed to end the run; any other failed read
 //     becomes a wait, never a confident empty.
 
@@ -44,6 +46,14 @@ export interface ObserveHint {
 export const SCRIPT_CADENCE_MS = 2000;
 export const SETTLE_TICKS = 2;
 export const MAX_READ_FAILURES = 5;
+
+/** Session-changing BFF calls whose successful return includes ready state. */
+function returnsAuthoritativeSessionReadiness(action: ScriptAction): boolean {
+  return action.kind === "undock"
+    || action.kind === "dock"
+    || action.kind === "jump"
+    || action.kind === "boardShip";
+}
 
 export type ScriptRunnerStatus = "idle" | "running" | "paused" | "stopped" | "error";
 
@@ -182,8 +192,10 @@ export function createScriptRunner(deps: ScriptRunnerDeps): ScriptRunnerControll
     }
 
     if (isWorldCall(result.action)) {
+      let issuedSuccessfully = false;
       try {
         await deps.issue(result.action);
+        issuedSuccessfully = true;
       } catch (error) {
         if (deps.isSessionLost(error)) {
           setError(SESSION_LOST);
@@ -194,7 +206,12 @@ export function createScriptRunner(deps: ScriptRunnerDeps): ScriptRunnerControll
       if (token !== runToken || status !== "running") {
         return;
       }
-      settle = SETTLE_TICKS;
+      // Successful session-changing routes return only after observation is
+      // authoritative, so the very next tick should consume that truth. Keep
+      // the existing debounce for ordinary calls and for refusals/timeouts.
+      settle = issuedSuccessfully && returnsAuthoritativeSessionReadiness(result.action)
+        ? 0
+        : SETTLE_TICKS;
     }
 
     emit(toSnapshot(result, "running"));

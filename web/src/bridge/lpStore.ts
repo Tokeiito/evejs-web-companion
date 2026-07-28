@@ -22,7 +22,13 @@
 // resolve to a corporation name; loyaltyPoints is kept as a bigint-safe decimal
 // string (never zeroed by a `typeof === "number"` test).
 
-import { isListValue, readKeyVal, unwrapLong, type JsonValue } from "./wire.ts";
+import {
+  isListValue,
+  readKeyVal,
+  readPlainJsonField,
+  unwrapLong,
+  type JsonValue,
+} from "./wire.ts";
 import { toAmountString } from "./rewards.ts";
 
 /** One issuer's LP balance for this character. */
@@ -117,8 +123,8 @@ function takeOfferAckTruthy(value: JsonValue | undefined): boolean {
 
 export function decodeTakeOfferAck(response: JsonValue): TakeOfferAck {
   return {
-    ok: takeOfferAckTruthy(readKeyVal(response, "ok")),
-    applied: takeOfferAckTruthy(readKeyVal(response, "applied")),
-    taken: takeOfferAckTruthy(readKeyVal(response, "result")),
+    ok: takeOfferAckTruthy(readPlainJsonField(response, "ok")),
+    applied: takeOfferAckTruthy(readPlainJsonField(response, "applied")),
+    taken: takeOfferAckTruthy(readPlainJsonField(response, "result")),
   };
 }

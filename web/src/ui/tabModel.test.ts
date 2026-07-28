@@ -64,14 +64,14 @@ test("docked shows fitting + travel + bots and hides the in-space-only tabs", ()
   for (const shown of ["fitting", "travel", "bots"] as const) {
     assert.ok(docked.includes(shown), `${shown} must be visible while docked`);
   }
-  for (const hidden of ["flight", "overview", "mining"] as const) {
+  for (const hidden of ["flight", "overview", "mining", "scanner"] as const) {
     assert.equal(docked.includes(hidden), false, `${hidden} must be hidden while docked`);
   }
 });
 
 test("in space shows the flight tabs and hides fitting + travel", () => {
   const space = idsOf(false);
-  for (const shown of ["flight", "overview", "mining"] as const) {
+  for (const shown of ["flight", "overview", "mining", "scanner"] as const) {
     assert.ok(space.includes(shown), `${shown} must be visible in space`);
   }
   for (const hidden of ["fitting", "travel"] as const) {
@@ -84,8 +84,8 @@ test("in space shows the flight tabs and hides fitting + travel", () => {
   }
 });
 
-test("the 'both' tabs (incl. the two new wallets) show in either state", () => {
-  const both = ["inventory", "market", "wallet", "corpWallet", "chat"] as const;
+test("the 'both' tabs (including Activity, Fleet and both wallets) show in either state", () => {
+  const both = ["inventory", "market", "activity", "fleet", "wallet", "corpWallet", "chat"] as const;
   for (const id of both) {
     assert.ok(idsOf(true).includes(id), `${id} visible docked`);
     assert.ok(idsOf(false).includes(id), `${id} visible in space`);

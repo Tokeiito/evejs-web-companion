@@ -33,6 +33,11 @@ import {
 } from "../bridge/market.ts";
 import { decodeMailbox, mailRefusalMessage } from "../bridge/mail.ts";
 import {
+  activityReadError,
+  decodeActivityCalendar,
+  decodeActivityNotifications,
+} from "../bridge/activity.ts";
+import {
   contractRefusalMessage,
   decodeContractDetail,
   decodeContractList,
@@ -98,12 +103,16 @@ import { readDictEntry, type JsonValue } from "../bridge/wire.ts";
 import * as api from "./api.ts";
 import type { ClientStore } from "../store/clientStore.ts";
 import type {
+  ActivityCalendarEventRow,
+  ActivityCalendarResponseRow,
+  ActivityNotificationRow,
   AgentAction,
   ChatChannel,
   DestinationMatch,
   DroneInSpace,
   DroneOrderReport,
   FittingSlot,
+  FleetAction,
   FlightStatus,
   InventoryPlace,
   SlotFamily,
@@ -169,15 +178,25 @@ import {
   type ScriptRunnerController,
   type ScriptRunnerDeps,
 } from "../nav/scriptRunner.ts";
-import { SCRIPT_MACROS, scriptTravelHome } from "../nav/scriptMacros.ts";
+import {
+  createCapabilityCache,
+  type CapabilityScope,
+} from "../nav/scriptCapabilities.ts";
+import { SCRIPT_MACROS, resolveStationRef, scriptTravelHome } from "../nav/scriptMacros.ts";
 import type { ScriptObservation } from "../nav/scriptConditions.ts";
-import { decodeFullState } from "../bridge/boundSmallServices.ts";
+import { decodeBoundSmallServices, decodeFullState } from "../bridge/boundSmallServices.ts";
+import { decodeFormations } from "../bridge/formations.ts";
+import { scannerStateFromBoundRead } from "../scanner/scannerCenter.ts";
 import { decodeFittings } from "../bridge/fittings.ts";
 import { decodeActiveBookmarks } from "../bridge/bookmarks.ts";
-import { decodeBoundFleet } from "../bridge/boundFleet.ts";
-import type { BotScript } from "../bots/botScript.ts";
+import {
+  authoritativeFleetMemberCharacterIDs,
+  decodeFleetCenter,
+  decodeFleetInviteNotification,
+} from "../bridge/fleetCenter.ts";
+import type { BotScript, WorldRef } from "../bots/botScript.ts";
 import { decodeScriptValue } from "../bots/scriptCodec.ts";
-import { expandSubBots, hasSubBots, subBotNames } from "../bots/subBots.ts";
+import { expandSubBots, hasSubBots, type BotResolution, type SubBotReference } from "../bots/subBots.ts";
 
 /**
  * What the player asked the mission bot to do (goal R36).
@@ -282,6 +301,12 @@ export interface AppFlow {
    * per-tab global, not here).
    */
   sessionToken(): string | null;
+  /**
+   * The request options owned by THIS flow (base URL, injected fetch and its
+   * per-session token). Components that call api.ts directly must use this
+   * instead of reconstructing only the token and silently dropping the rest.
+   */
+  requestOptions(): api.ApiOptions;
   /** Select a character onto the persistent session, then run the docked reads. */
   selectCharacter(characterID: number): Promise<void>;
   /** Refresh the docked station-panel reads on the live session. */
@@ -406,6 +431,25 @@ export interface AppFlow {
   cancelMarketOrder(orderID: string): Promise<void>;
   /** CHANGE an order's price. Charges a fee and moves a buy order's escrow. */
   modifyMarketOrder(orderID: string, price: number): Promise<void>;
+  /**
+   * Refresh the read-only Activity Center: recent notificationMgr reads,
+   * current-month calendar data and the existing mailbox unread count.
+   */
+  loadActivity(): Promise<void>;
+  /** Refresh current-system scan sites and the independent formation reference. */
+  loadScanner(): Promise<void>;
+  /** Reconnect the session character's lost probes, then refresh scanner state. */
+  reconnectScannerProbes(): Promise<void>;
+  /** Refresh authoritative membership, hierarchy, MOTD and join-request reads. */
+  loadFleet(): Promise<void>;
+  /** Form a fleet, then re-read membership before settling. */
+  formFleet(): Promise<void>;
+  /** Invite one character by ID, then re-read the authoritative fleet. */
+  inviteFleetMember(characterID: number): Promise<void>;
+  /** Accept the pending OnFleetInvite observed for this live session. */
+  acceptFleetInvite(): Promise<void>;
+  /** Leave the current fleet, then re-read membership before settling. */
+  leaveFleet(): Promise<void>;
   /**
    * Load the Mail panel: the whole inbox, plus the NAME of everyone who sent or
    * received a message. ⚠ The inbox is a DELTA SYNC the BFF cold-starts, so
@@ -749,7 +793,7 @@ export interface AppFlow {
   stopMissionBot(): void;
   // --- Player Bot Builder runner (the fourth decide-loop) ----------------
   /** Start a player-built script; the live readout is pushed to `store.customBot`. */
-  startCustomBot(doc: BotScript): Promise<void>;
+  startCustomBot(doc: BotScript, sourceScriptID?: string | null): Promise<void>;
   /** Pause it (it stops issuing; the ship finishes its last move). */
   pauseCustomBot(): void;
   /** Resume a paused script from where it stopped. */
@@ -971,6 +1015,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       const notification = (event.notification ?? {}) as Record<string, JsonValue>;
       const method = typeof notification.method === "string" ? notification.method : null;
       const args = Array.isArray(notification.args) ? (notification.args as unknown[]) : [];
+      const receivedAtMs = Date.now();
       store.apply({
         type: "live/notification",
         epoch,
@@ -979,11 +1024,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           kind: typeof notification.kind === "string" ? notification.kind : "unknown",
           service: typeof notification.service === "string" ? notification.service : null,
           method,
-          receivedAtMs: Date.now(),
+          receivedAtMs,
           args,
         },
       });
-      applyPushedNotification(method, args);
+      applyPushedNotification(method, args, receivedAtMs);
     }
   }
 
@@ -1011,7 +1056,43 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // page's arithmetic and the ship's contents drifting apart the first time a
   // frame is missed — and this channel is explicitly allowed to drop and
   // resynchronise. The authority on what is in the hold is the hold.
-  function applyPushedNotification(method: string | null, args: readonly unknown[]): void {
+  const fleetSnapshotNotifications = new Set([
+    "OnFleetJoin",
+    "OnFleetLeave",
+    "OnFleetDisbanded",
+    "OnFleetMemberChanged",
+    "OnFleetMove",
+    "OnFleetWingAdded",
+    "OnFleetWingDeleted",
+    "OnFleetWingNameChanged",
+    "OnFleetSquadAdded",
+    "OnFleetSquadDeleted",
+    "OnFleetSquadNameChanged",
+    "OnFleetMotdChanged",
+    "OnFleetOptionsChanged",
+    "OnFleetJoinRequest",
+    "OnFleetJoinRejected",
+  ]);
+
+  function applyPushedNotification(
+    method: string | null,
+    args: readonly unknown[],
+    receivedAtMs: number,
+  ): void {
+    const fleetInvite = decodeFleetInviteNotification(method, args, receivedAtMs);
+    if (fleetInvite !== null) {
+      store.apply({ type: "fleet/pending-invite", invite: fleetInvite });
+      if (fleetInvite.inviterID !== null) {
+        requestNames([{ kind: "character", id: fleetInvite.inviterID }]);
+      }
+      return;
+    }
+    if (method !== null && fleetSnapshotNotifications.has(method)) {
+      // The notification is an invalidation, never the roster authority. A
+      // coalesced, single-flight bound read below replaces the full snapshot.
+      scheduleFleetRefresh();
+      return;
+    }
     if (method === "OnGodmaShipEffect") {
       applyCycleNotification(args);
       return;
@@ -1891,6 +1972,371 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     });
   }
 
+  // --- Activity Center -----------------------------------------------------
+
+  async function loadActivity(): Promise<void> {
+    store.apply({ type: "activity/loading" });
+
+    const now = new Date();
+    const [notificationResult, calendarResult, mailResult] = await Promise.allSettled([
+      api.loadActivityNotifications(callOptions),
+      api.loadActivityCalendar(now.getUTCMonth() + 1, now.getUTCFullYear(), callOptions),
+      // Reuse the existing mail flow so its own authoritative slice and name
+      // resolution stay the one source of truth for unread mail.
+      loadMail(),
+    ] as const);
+
+    // A lost live session invalidates every result, even if another arm won
+    // the race and answered first. Unwind exactly like all other panel reads.
+    for (const result of [notificationResult, calendarResult, mailResult]) {
+      if (result.status === "rejected" && isSessionLost(result.reason)) {
+        stopLiveStream();
+        store.apply({ type: "character/offline" });
+        throw result.reason;
+      }
+    }
+
+    const notificationReads: ReturnType<typeof decodeActivityNotifications> =
+      notificationResult.status === "fulfilled"
+        ? decodeActivityNotifications(notificationResult.value)
+        : {
+            notifications: activityReadError<readonly ActivityNotificationRow[]>(
+              `Recent notifications could not be refreshed. ${errorWords(notificationResult.reason)}`,
+            ),
+            unprocessedCount: activityReadError<number>(
+              `Unread notifications could not be refreshed. ${errorWords(notificationResult.reason)}`,
+            ),
+          };
+
+    const calendarReads: ReturnType<typeof decodeActivityCalendar> =
+      calendarResult.status === "fulfilled"
+        ? decodeActivityCalendar(calendarResult.value, now.getTime())
+        : {
+            calendarEvents: activityReadError<readonly ActivityCalendarEventRow[]>(
+              `Calendar events could not be refreshed. ${errorWords(calendarResult.reason)}`,
+            ),
+            calendarResponses: activityReadError<readonly ActivityCalendarResponseRow[]>(
+              `Calendar responses could not be refreshed. ${errorWords(calendarResult.reason)}`,
+            ),
+          };
+
+    store.apply({
+      type: "activity/loaded",
+      ...notificationReads,
+      ...calendarReads,
+      mailError:
+        mailResult.status === "rejected"
+          ? `Mail could not be refreshed. ${errorWords(mailResult.reason)}`
+          : null,
+      refreshedAtMs: Date.now(),
+    });
+
+    // Resolve every entity the panel can show. Unknown owners still render a
+    // safe role word — never their raw game ID.
+    const refs: NameRef[] = [];
+    if (notificationReads.notifications.status === "ready") {
+      for (const notification of notificationReads.notifications.value) {
+        if (notification.senderID > 0) refs.push({ kind: "owner", id: notification.senderID });
+      }
+    }
+    if (calendarReads.calendarEvents.status === "ready") {
+      for (const event of calendarReads.calendarEvents.value) {
+        if (event.ownerID > 0) refs.push({ kind: "owner", id: event.ownerID });
+      }
+    }
+    requestNames(refs);
+  }
+
+  // --- Scanner / Exploration Center ---------------------------------------
+
+  // A flight transition can finish while an older scanner read is still in
+  // flight. Only the newest generation may publish, and a scanner that had
+  // already been opened is refreshed automatically after a system change.
+  let scannerLoadGeneration = 0;
+
+  async function loadScanner(): Promise<void> {
+    const generation = ++scannerLoadGeneration;
+    store.apply({ type: "scanner/loading" });
+    const [scanResult, formationsResult] = await Promise.allSettled([
+      api.loadBoundSmallServices(callOptions),
+      api.loadScannerFormations(callOptions),
+    ] as const);
+
+    for (const result of [scanResult, formationsResult]) {
+      if (result.status === "rejected" && isSessionLost(result.reason)) {
+        stopLiveStream();
+        store.apply({ type: "character/offline" });
+        throw result.reason;
+      }
+    }
+
+    const scan = scanResult.status === "fulfilled"
+      ? scannerStateFromBoundRead(decodeBoundSmallServices(scanResult.value).fullState)
+      : {
+          status: "unavailable" as const,
+          reason: "Scanner data could not be read from the live session.",
+        };
+    const formations = formationsResult.status === "fulfilled"
+      ? { status: "ready" as const, value: decodeFormations(formationsResult.value) }
+      : {
+          status: "unavailable" as const,
+          reason: "Formation reference data could not be read from the live session.",
+        };
+
+    // A newer refresh (normally the one scheduled by a completed jump) owns
+    // the slice. Let this older response fall away instead of repainting the
+    // previous system after the new request has begun.
+    if (generation !== scannerLoadGeneration) {
+      return;
+    }
+    const rawSolarSystemID = scanResult.status === "fulfilled"
+      ? scanResult.value.solarSystemID
+      : null;
+    const solarSystemID =
+      typeof rawSolarSystemID === "number" &&
+      Number.isSafeInteger(rawSolarSystemID) &&
+      rawSolarSystemID > 0
+        ? rawSolarSystemID
+        : null;
+
+    store.apply({
+      type: "scanner/loaded",
+      solarSystemID,
+      scan,
+      formations,
+      refreshedAtMs: Date.now(),
+    });
+
+    if (scan.status === "ready") {
+      const refs: NameRef[] = [];
+      const seen = new Set<number>();
+      for (const site of [
+        ...scan.value.anomalies,
+        ...scan.value.signatures,
+        ...scan.value.staticSites,
+        ...scan.value.structures,
+      ]) {
+        for (const field of [site.fields.typeID, site.fields.entryObjectTypeID]) {
+          if (typeof field === "number" && Number.isSafeInteger(field) && field > 0 && !seen.has(field)) {
+            seen.add(field);
+            refs.push({ kind: "type", id: field });
+          }
+        }
+      }
+      requestNames(refs);
+    }
+  }
+
+  async function reconnectScannerProbes(): Promise<void> {
+    let mutationError: unknown = null;
+    try {
+      await api.reconnectScannerProbes(callOptions);
+    } catch (error) {
+      mutationError = error;
+    }
+    // A write acknowledgement is not scanner state, and a transport error can
+    // be an uncertain outcome. Re-read in both cases before reporting back.
+    await loadScanner();
+    if (mutationError !== null) {
+      throw mutationError;
+    }
+  }
+
+  // --- Fleet Center -------------------------------------------------------
+
+  const fleetNameID = (value: number | string | null): number | null =>
+    typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : null;
+
+  // Fleet mutations commonly emit several frames for one change. Bound fleet
+  // reads deliberately rebind, so they must not overlap: a dirty bit asks the
+  // active read to run one more time, while a microtask coalesces a same-turn
+  // notification burst into one initial read.
+  let fleetRefreshPromise: Promise<void> | null = null;
+  let fleetRefreshDirty = false;
+  let fleetRefreshScheduled = false;
+
+  function scheduleFleetRefresh(): void {
+    if (fleetRefreshPromise !== null) {
+      fleetRefreshDirty = true;
+      return;
+    }
+    if (fleetRefreshScheduled) {
+      return;
+    }
+    fleetRefreshScheduled = true;
+    queueMicrotask(() => {
+      fleetRefreshScheduled = false;
+      void loadFleet().catch(() => undefined);
+    });
+  }
+
+  async function loadFleetSnapshotOnce(): Promise<void> {
+    store.apply({ type: "fleet/loading" });
+    let snapshot: ReturnType<typeof decodeFleetCenter>;
+    let readError: string | null = null;
+    try {
+      snapshot = decodeFleetCenter(await api.loadBoundFleet(callOptions));
+      if (
+        snapshot.availability === "ready" &&
+        [
+          snapshot.fleet.wings,
+          snapshot.fleet.motd,
+          snapshot.fleet.joinRequests,
+          snapshot.fleet.composition,
+        ].some((read) => read.error !== null)
+      ) {
+        readError = "Some fleet details could not be refreshed, but the roster is available.";
+      } else if (snapshot.availability === "unavailable") {
+        readError = "Fleet membership could not be read just now.";
+      }
+    } catch (error) {
+      if (isSessionLost(error)) {
+        stopLiveStream();
+        store.apply({ type: "character/offline" });
+        throw error;
+      }
+      snapshot = decodeFleetCenter(null);
+      readError = `Fleet membership could not be read just now. ${errorWords(error)}`;
+    }
+
+    store.apply({
+      type: "fleet/loaded",
+      ...snapshot,
+      readError,
+      refreshedAtMs: Date.now(),
+    });
+
+    const refs: NameRef[] = [];
+    for (const member of snapshot.fleet.initState.value.members) {
+      const characterID = fleetNameID(member.charID);
+      const stationID = fleetNameID(member.stationID);
+      const systemID = fleetNameID(member.solarSystemID);
+      const shipTypeID = fleetNameID(member.shipTypeID);
+      if (characterID !== null) refs.push({ kind: "character", id: characterID });
+      if (stationID !== null) refs.push({ kind: "station", id: stationID });
+      if (systemID !== null) refs.push({ kind: "system", id: systemID });
+      if (shipTypeID !== null) refs.push({ kind: "type", id: shipTypeID });
+    }
+    for (const request of snapshot.fleet.joinRequests.value) {
+      const characterID = fleetNameID(request.charID);
+      const corporationID = fleetNameID(request.corpID);
+      const allianceID = fleetNameID(request.allianceID);
+      const factionID = fleetNameID(request.warFactionID);
+      if (characterID !== null) refs.push({ kind: "character", id: characterID });
+      if (corporationID !== null) refs.push({ kind: "corporation", id: corporationID });
+      if (allianceID !== null) refs.push({ kind: "alliance", id: allianceID });
+      if (factionID !== null) refs.push({ kind: "faction", id: factionID });
+    }
+    requestNames(refs);
+  }
+
+  async function drainFleetRefreshes(): Promise<void> {
+    try {
+      while (fleetRefreshDirty) {
+        fleetRefreshDirty = false;
+        await loadFleetSnapshotOnce();
+      }
+    } finally {
+      // No callback can interleave between the loop condition and this reset,
+      // so a later notification either dirtied the loop or starts a new worker.
+      fleetRefreshPromise = null;
+    }
+  }
+
+  function loadFleet(): Promise<void> {
+    if (fleetRefreshPromise !== null) {
+      return fleetRefreshPromise;
+    }
+    fleetRefreshDirty = true;
+    fleetRefreshPromise = drainFleetRefreshes();
+    return fleetRefreshPromise;
+  }
+
+  function fleetActionFailure(action: FleetAction): string {
+    switch (action) {
+      case "form":
+        return "The new fleet could not be confirmed by the follow-up roster read.";
+      case "accept":
+        return "Joining the fleet could not be confirmed by the follow-up roster read.";
+      case "leave":
+        return "Leaving the fleet could not be confirmed by the follow-up membership read.";
+      case "invite":
+        return "The fleet could not be re-read after the invitation was sent.";
+    }
+  }
+
+  async function runFleetAction(
+    action: FleetAction,
+    mutate: () => Promise<void>,
+    expected: "ready" | "not-in-fleet",
+  ): Promise<void> {
+    store.apply({ type: "fleet/action-started", action });
+    let failure: string | null = null;
+    try {
+      await mutate();
+    } catch (error) {
+      if (isSessionLost(error)) {
+        stopLiveStream();
+        store.apply({ type: "character/offline" });
+        store.apply({ type: "fleet/action-finished", error: null });
+        throw error;
+      }
+      failure = `The fleet action was refused. ${errorWords(error)}`;
+    }
+
+    try {
+      // The write acknowledgement is not treated as world state. Always read
+      // the session's own bound fleet again, even after a refusal.
+      await loadFleet();
+      if (failure === null && store.fleet.get().availability !== expected) {
+        failure = fleetActionFailure(action);
+      }
+    } finally {
+      store.apply({ type: "fleet/action-finished", error: failure });
+    }
+  }
+
+  async function formFleet(): Promise<void> {
+    await runFleetAction("form", () => api.createFleet(callOptions), "ready");
+  }
+
+  async function inviteFleetMember(characterID: number): Promise<void> {
+    if (!Number.isSafeInteger(characterID) || characterID <= 0) {
+      store.apply({ type: "fleet/action-started", action: "invite" });
+      store.apply({
+        type: "fleet/action-finished",
+        error: "Enter a valid character ID before sending an invitation.",
+      });
+      return;
+    }
+    await runFleetAction(
+      "invite",
+      () => api.inviteToFleet(characterID, callOptions),
+      "ready",
+    );
+  }
+
+  async function acceptFleetInvite(): Promise<void> {
+    const invite = store.fleet.get().pendingInvite;
+    if (invite === null) {
+      store.apply({ type: "fleet/action-started", action: "accept" });
+      store.apply({
+        type: "fleet/action-finished",
+        error: "No pending fleet invitation has arrived for this session.",
+      });
+      return;
+    }
+    await runFleetAction(
+      "accept",
+      () => api.acceptFleetInvite(invite.fleetID, callOptions),
+      "ready",
+    );
+  }
+
+  async function leaveFleet(): Promise<void> {
+    await runFleetAction("leave", () => api.leaveFleet(callOptions), "not-in-fleet");
+  }
+
   // --- R17 Mail -------------------------------------------------------------
 
   async function loadMail(): Promise<void> {
@@ -2662,7 +3108,27 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // manual step can await the refresh; the autopilot tick voids it (the loop must
   // not block on a panel refresh). Name resolution is always fire-and-forget.
   function observeFlightStatus(status: FlightStatus): Promise<void> {
+    const previousSystemID = store.flight.get().status?.solarSystemID ?? null;
+    const scannerBefore = store.scanner.get();
+    const flightSystemChanged =
+      previousSystemID !== null &&
+      status.solarSystemID !== null &&
+      previousSystemID !== status.solarSystemID;
+    const scannerSystemChanged =
+      scannerBefore.solarSystemID !== null &&
+      status.solarSystemID !== null &&
+      scannerBefore.solarSystemID !== status.solarSystemID;
+    const refreshScanner =
+      (flightSystemChanged || scannerSystemChanged) &&
+      (scannerBefore.loaded || scannerBefore.loading);
+    if (flightSystemChanged || scannerSystemChanged) {
+      // Supersede any old-system request before the reducer clears its rows.
+      scannerLoadGeneration += 1;
+    }
     store.apply({ type: "flight/status", status });
+    if (refreshScanner) {
+      void loadScanner().catch(() => undefined);
+    }
     // R30 slice B — the ship is back in space, so a viewer that kept its claim
     // through the dock gets its feed back. This is the single funnel EVERY
     // flight status flows through (manual undock, autopilot tick, panel read),
@@ -4180,9 +4646,28 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // exclusion from all three existing ones for free. This replaces the two
   // asymmetric hand-written lines that let the mining bot start on top of a
   // running mission bot.
+  function stopMiningController(): void {
+    miningBot?.stop();
+  }
+
+  function stopMissionController(): void {
+    missionBot?.stop();
+    // Mission travel rides the shared autopilot. Stopping only its outer loop
+    // leaves that inner controller flying after another bot takes the ship.
+    autopilot?.abort();
+  }
+
+  function stopCustomController(): void {
+    customBotGeneration += 1;
+    scriptRunner?.stop();
+    // Custom travel blocks use the same shared autopilot as missions.
+    autopilot?.abort();
+  }
+
   const claimShip = createShipClaim({
-    mining: () => miningBot?.stop(),
-    mission: () => missionBot?.stop(),
+    mining: stopMiningController,
+    mission: stopMissionController,
+    custom: stopCustomController,
   });
 
   /**
@@ -4313,6 +4798,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // start, the other must not be left flying the ship out from under a
     // decision that has already been made. A refusal that leaves the previous
     // bot running would be the old two-loops bug wearing an error message.
+    autopilot?.abort();
     claimShip("mission");
 
     const preflight = evaluateRequirements(MISSION_BOT_REQUIREMENTS, await missionBotReads(request));
@@ -4347,6 +4833,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   async function startMiningBot(request: MiningBotRequest): Promise<void> {
     store.apply({ type: "bot/start-error", message: null });
 
+    // Taking the ship is the first semantic act of every start, even one whose
+    // own preflight later refuses. Otherwise an invalid mining click can leave a
+    // custom/mission controller flying after the player chose to replace it.
+    autopilot?.abort();
+    claimShip("mining");
+
     if (request.miningModuleIDs.length === 0) {
       store.apply({
         type: "bot/start-error",
@@ -4359,12 +4851,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // autopilot off for the same reason; so does this. The travel autopilot is
     // NOT a peer bot — the mission bot drives it rather than competing with it
     // — so it is aborted here and does not go through the ship claim.
-    autopilot?.abort();
     // ⚠ AND THIS IS THE LINE THAT WAS MISSING. `startMiningBot` aborted the
     // autopilot and stopped nothing else, so a running mission bot kept
     // ticking. It is now the same declarative claim the mission bot takes,
     // before the preflight, for the same reason.
-    claimShip("mining");
 
     const preflight = evaluateRequirements(MINING_BOT_REQUIREMENTS, await miningBotReads(request));
     if (!preflight.canStart) {
@@ -4408,9 +4898,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   let customBotGeneration = 0;
 
   /**
-   * The ship's fitted mining-module item ids, resolved ONCE at start (the same
-   * high-slot + resolved-group rule the mining bot's preflight uses). The mine
-   * block runs exactly these; empty when the fit could not be read.
+   * The ship's fitted mining-module item ids, resolved at start and whenever the
+   * active hull / fit changes (the same high-slot + resolved-group rule the
+   * mining bot's preflight uses). Empty when the fit could not be read.
    */
   async function resolveMiningModuleIDs(): Promise<readonly number[]> {
     try {
@@ -4582,6 +5072,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   ]);
   const CONVO_MACROS = new Set(["request-mission", "accept-mission", "turn-in-mission"]);
   const CARGO_MACROS = new Set(["accept-mission", "load-mission-cargo", "turn-in-mission", "unload-cargo", "refine-ore", "refit-ship", "move-items", "repair-ship", "sell-item", "jettison-cargo"]);
+  const FLEET_MANAGEMENT_MACROS = new Set(["create-fleet", "invite-to-fleet", "join-fleet"]);
+  const FLEET_SUPPORT_MACROS = new Set(["remote-rep", "orbit-and-boost", "remote-cap"]);
 
   interface DefenseModuleIDs {
     readonly shield: readonly number[];
@@ -4594,7 +5086,6 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     /** Stasis webifiers (SDE group 65). */
     readonly webs: readonly number[];
   }
-  const NO_DEFENSE: DefenseModuleIDs = { shield: [], armor: [], hull: [], hardeners: [], weapons: [], tackle: [], webs: [] };
   interface RemoteRepModuleIDs {
     readonly shield: readonly number[];
     readonly armor: readonly number[];
@@ -4602,7 +5093,49 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     /** Remote CAPACITOR transmitters (SDE group 67) — the cap-chain block. */
     readonly cap: readonly number[];
   }
-  const NO_REMOTE_REPS: RemoteRepModuleIDs = { shield: [], armor: [], hull: [], cap: [] };
+  interface ScriptModuleCapabilities {
+    readonly shipID: number | null;
+    readonly mining: readonly number[];
+    readonly salvage: readonly number[];
+    readonly defense: DefenseModuleIDs;
+    readonly remoteReps: RemoteRepModuleIDs;
+  }
+
+  /** A stable fit identity: active hull + every module fact used by classifiers. */
+  function fittingCapabilitySignature(): string {
+    const fit = store.fitting.get();
+    return [
+      String(fit.activeShipID ?? "none"),
+      ...fit.slots.map((slot) =>
+        slot.module === null
+          ? `${slot.family}:${slot.index}:empty`
+          : [
+              slot.family,
+              slot.index,
+              slot.module.itemID,
+              slot.module.typeID,
+              slot.module.online ? 1 : 0,
+            ].join(":"),
+      ),
+    ].join("|");
+  }
+
+  function capabilityScope(shipID: number | null): CapabilityScope {
+    return { shipID, fittingSignature: fittingCapabilitySignature() };
+  }
+
+  /** Re-read the fit, wait for its group names, then classify every bot module. */
+  async function resolveScriptModuleCapabilities(): Promise<ScriptModuleCapabilities> {
+    const mining = await resolveMiningModuleIDs();
+    const fit = store.fitting.get();
+    return {
+      shipID: fit.activeShipID,
+      mining,
+      salvage: resolveSalvageModuleIDs(),
+      defense: resolveDefenseModuleIDs(),
+      remoteReps: resolveRemoteRepModuleIDs(),
+    };
+  }
   // Market orders a bot places rest the retail maximum, so a resting order does
   // not quietly expire under a long-running bot.
   const BOT_ORDER_DURATION_DAYS = 90;
@@ -4672,13 +5205,15 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
   }
 
+  function unhandledScriptAction(action: never): never {
+    throw new Error(`The custom-bot action dispatcher is missing an action: ${String(action)}`);
+  }
+
   function makeScriptRunnerDeps(
-    miningModuleIDs: readonly number[],
+    initialCapabilities: ScriptModuleCapabilities,
     startingStationID: number | null,
-    salvageModuleIDs: readonly number[] = [],
-    defense: DefenseModuleIDs = NO_DEFENSE,
+    home: WorldRef,
     watchedKinds: ReadonlySet<string> = new Set<string>(),
-    remoteReps: RemoteRepModuleIDs = NO_REMOTE_REPS,
   ): ScriptRunnerDeps {
     const walletWatched = watchedKinds.has("wallet-below") || watchedKinds.has("wallet-above");
     const cargoWatched = watchedKinds.has("cargo-full");
@@ -4689,6 +5224,16 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // breadth-first sweep over the gate graph is too much to redo every tick).
     let huntDistanceAnchor: number | null = null;
     let huntDistances: Map<number, number> | null = null;
+    const capabilityCache = createCapabilityCache(
+      {
+        value: initialCapabilities,
+        scope: capabilityScope(initialCapabilities.shipID),
+      },
+      async () => {
+        const value = await resolveScriptModuleCapabilities();
+        return { value, scope: capabilityScope(value.shipID) };
+      },
+    );
     return {
       observe: async (hint) => {
         const [flightStep, spaceResult, targetsResult, holdsResult, dronesResult] = await Promise.all([
@@ -4702,6 +5247,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         void observeFlightStatus(status);
         const snapshot = decodeSpaceSnapshot(spaceResult.space);
         store.apply({ type: "space/snapshot", snapshot, gateLinks: gateLinksForSnapshot(snapshot) });
+        const observedShipID = snapshot?.ship?.itemID ?? status.shipID ?? null;
+        const capabilities = await capabilityCache.read(capabilityScope(observedShipID));
         const lockedTargetIDs = decodeTargetIDs(targetsResult.targetIDs);
         store.apply({ type: "targeting/targets", targetIDs: lockedTargetIDs });
         const holds = decodeMiningHolds(holdsResult.holds);
@@ -4956,15 +5503,30 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             walletBalance = null;
           }
         }
-        // Fleet membership — read only for the fleet-management blocks. A char with
-        // no fleet reads a real "not in a fleet" (fleetID null), so false is
-        // authoritative; only a failed read is null (unreadable).
+        // Fleet membership and support authority. Remote reps/cap/orbit may target
+        // ONLY character IDs from this fresh bound-fleet roster. A clean
+        // FleetNotFound is an authoritative empty roster; partial/failed reads stay
+        // null so those blocks wait instead of treating every player hull as a mate.
         let inFleet: ScriptObservation["inFleet"] = null;
-        if (macro === "create-fleet" || macro === "invite-to-fleet" || macro === "join-fleet") {
+        let fleetMemberCharacterIDs: ScriptObservation["fleetMemberCharacterIDs"] = null;
+        if (
+          macro !== null &&
+          (FLEET_MANAGEMENT_MACROS.has(macro) || FLEET_SUPPORT_MACROS.has(macro))
+        ) {
           try {
-            inFleet = decodeBoundFleet(await api.loadBoundFleet(callOptions)).fleetID !== null;
+            const fleetSnapshot = decodeFleetCenter(await api.loadBoundFleet(callOptions));
+            inFleet =
+              fleetSnapshot.availability === "ready"
+                ? true
+                : fleetSnapshot.availability === "not-in-fleet"
+                  ? false
+                  : null;
+            if (FLEET_SUPPORT_MACROS.has(macro)) {
+              fleetMemberCharacterIDs = authoritativeFleetMemberCharacterIDs(fleetSnapshot);
+            }
           } catch {
             inFleet = null;
+            fleetMemberCharacterIDs = null;
           }
         }
         if (macro !== null && (MISSION_MACROS.has(macro) || CARGO_MACROS.has(macro))) {
@@ -5119,23 +5681,25 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           lockedTargetIDs,
           holds,
           droneBayItemIDs,
-          miningModuleIDs,
-          salvageModuleIDs,
-          shieldRepairerIDs: defense.shield,
-          armorRepairerIDs: defense.armor,
-          hullRepairerIDs: defense.hull,
-          remoteShieldRepairerIDs: remoteReps.shield,
-          remoteArmorRepairerIDs: remoteReps.armor,
-          remoteHullRepairerIDs: remoteReps.hull,
-          remoteCapModuleIDs: remoteReps.cap,
+          miningModuleIDs: capabilities.mining,
+          salvageModuleIDs: capabilities.salvage,
+          shieldRepairerIDs: capabilities.defense.shield,
+          armorRepairerIDs: capabilities.defense.armor,
+          hullRepairerIDs: capabilities.defense.hull,
+          remoteShieldRepairerIDs: capabilities.remoteReps.shield,
+          remoteArmorRepairerIDs: capabilities.remoteReps.armor,
+          remoteHullRepairerIDs: capabilities.remoteReps.hull,
+          remoteCapModuleIDs: capabilities.remoteReps.cap,
           inFleet,
-          hardenerModuleIDs: defense.hardeners,
-          weaponModuleIDs: defense.weapons,
-          tackleModuleIDs: defense.tackle,
-          webModuleIDs: defense.webs,
+          fleetMemberCharacterIDs,
+          hardenerModuleIDs: capabilities.defense.hardeners,
+          weaponModuleIDs: capabilities.defense.weapons,
+          tackleModuleIDs: capabilities.defense.tackle,
+          webModuleIDs: capabilities.defense.webs,
           capacitorRatio: ship?.capacitorRatio ?? null,
           walletBalance,
           startingStationID,
+          homeStationID: resolveStationRef(home, startingStationID, hint.board),
           myCharacterID: store.station.get().online?.characterID ?? null,
           myCorporationID: store.station.get().online?.corporationID ?? null,
         };
@@ -5272,6 +5836,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             return;
           case "boardShip":
             await api.boardShip(action.shipID, callOptions);
+            capabilityCache.invalidate();
             return;
           case "moveItems": {
             const asPlace = (place: string): InventoryPlace =>
@@ -5306,6 +5871,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
                 }
               }
               await api.applySavedFitting(shipID, stationID, modulesByFlag, callOptions);
+              capabilityCache.invalidate();
               await loadInventory().catch(() => {});
             }
             return;
@@ -5360,9 +5926,18 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             await api.inviteToFleet(action.charID, callOptions);
             return;
           case "acceptFleetInvite":
-            // Errors when no invite is pending — swallowed; the block re-tries until
-            // inFleet reads true or its wait bound trips.
-            await api.acceptFleetInvite(callOptions);
+            // A missing invite is treated as a refused attempt; the runner re-reads
+            // and retries until inFleet becomes true or the block's wait bound trips.
+            // An invitee is not in the fleet yet, so AcceptInvite must bind the
+            // fleetID carried by the live OnFleetInvite notification; the Fleet
+            // Center slice retains it even when that panel is closed.
+            {
+              const fleetID = store.fleet.get().pendingInvite?.fleetID;
+              if (fleetID === undefined) {
+                throw new Error("No pending fleet invitation is available.");
+              }
+              await api.acceptFleetInvite(fleetID, callOptions);
+            }
             return;
           case "startSystemRoute":
             // The SHARED autopilot again — resolveDestination answers a system id
@@ -5396,6 +5971,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             await api.compressOreInSpace(action.itemID, action.facilityID, callOptions);
             return;
         }
+        return unhandledScriptAction(action);
       },
       sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
       // The readout goes to the STORE, not a component callback, so it survives
@@ -5422,40 +5998,49 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     };
   }
 
-  async function startCustomBot(input: BotScript): Promise<void> {
-    // One hull, one driver. Until the custom bot joins the structural ship claim,
-    // the others are stopped by hand here.
+  async function startCustomBot(input: BotScript, sourceScriptID: string | null = null): Promise<void> {
+    // Restarting the SAME controller is the one case createShipClaim deliberately
+    // does not stop. Cancel it here, then take the structural claim so mining and
+    // mission are stopped exhaustively from the shared registry.
     const gen = (customBotGeneration += 1);
-    autopilot?.abort();
-    miningBot?.stop();
-    missionBot?.stop();
     scriptRunner?.stop();
+    autopilot?.abort();
+    claimShip("custom");
     // COMPOSITION, resolved once here: a bot that includes other saved bots is
     // expanded into one flat program BEFORE the runner ever sees it, so the whole
     // engine keeps reasoning about a single program. A bot that cannot be
     // included is skipped with a plain reason rather than failing the run.
-    const doc = await expandSavedSubBots(input);
+    const doc = await expandSavedSubBots(input, sourceScriptID);
     if (gen !== customBotGeneration) {
       return; // superseded while the included bots were read
     }
     store.apply({ type: "custom-bot/started", name: doc.name });
-    // Resolve, ONCE at start, the two runtime facts the blocks need: which fitted
-    // modules are miners, and where "the starting station" is (where we are now).
-    const miningModuleIDs = await resolveMiningModuleIDs();
+    // Seed the fitted-module cache. The runner refreshes it after a refit or
+    // active-hull change; this first read only keeps tick one honest.
+    const initialCapabilities = await resolveScriptModuleCapabilities();
     if (gen !== customBotGeneration) {
       return; // a newer start / a stop / a panic superseded us during the read
     }
-    const salvageModuleIDs = resolveSalvageModuleIDs();
-    const defense = resolveDefenseModuleIDs();
-    const remoteReps = resolveRemoteRepModuleIDs();
-    const startStatus = store.flight.get().status;
+    // Resolve "starting station" from a FRESH flight read. If the bot starts in
+    // space there is no station to bind, and emergency travel will pause with an
+    // honest refusal instead of claiming the exposed ship is safely docked.
+    let startStatus = store.flight.get().status;
+    try {
+      startStatus = decodeFlightStatus((await api.getFlightStatus(callOptions)).flight);
+      void observeFlightStatus(startStatus);
+    } catch {
+      // Keep the last authoritative status if one exists; null stays unknown.
+    }
+    if (gen !== customBotGeneration) {
+      return;
+    }
     const startingStationID = startStatus !== null && startStatus.docked ? startStatus.stationID : null;
     // Which conditions this doc actually tests — decided ONCE, so observe pays only
     // for the per-tick reads a bot really needs (the wallet, the local roster, the
     // cargo hold). See scriptWatchedConditionKinds.
     const watchedKinds = scriptWatchedConditionKinds(doc);
     scriptRunner = createScriptRunner(
-      makeScriptRunnerDeps(miningModuleIDs, startingStationID, salvageModuleIDs, defense, watchedKinds, remoteReps),
+      makeScriptRunnerDeps(initialCapabilities, startingStationID, doc.home, watchedKinds),
     );
     scriptRunner.start(doc);
     void scriptRunner.run();
@@ -5468,32 +6053,69 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    * is untrusted bytes like any other), and anything that cannot be included is
    * reported on the readout rather than stopping the run.
    */
-  async function expandSavedSubBots(doc: BotScript): Promise<BotScript> {
+  async function expandSavedSubBots(
+    doc: BotScript,
+    sourceScriptID: string | null = null,
+  ): Promise<BotScript> {
     if (!hasSubBots(doc)) {
       return doc;
     }
-    const wanted = subBotNames(doc);
-    const byName = new Map<string, BotScript>();
+    const byID = new Map<string, BotScript>();
+    const idsByName = new Map<string, string[]>();
     try {
       const summaries = await api.listBotScripts(callOptions);
-      for (const name of wanted) {
-        const match = summaries.find((s) => s.name.trim().toLowerCase() === name.toLowerCase());
-        if (match === undefined) {
-          continue;
-        }
-        const record = await api.getBotScript(match.scriptID, callOptions);
-        if (record === null) {
-          continue;
-        }
-        const decoded = decodeScriptValue(record.doc);
-        if (decoded.ok) {
-          byName.set(name.toLowerCase(), decoded.doc);
-        }
+      for (const summary of summaries) {
+        const key = summary.name.trim().toLowerCase();
+        const ids = idsByName.get(key) ?? [];
+        idsByName.set(key, [...ids, summary.scriptID]);
       }
+      await Promise.all(
+        summaries.map(async (summary) => {
+          try {
+            const record = await api.getBotScript(summary.scriptID, callOptions);
+            if (record === null) {
+              return;
+            }
+            const decoded = decodeScriptValue(record.doc);
+            if (decoded.ok) {
+              byID.set(summary.scriptID, decoded.doc);
+            }
+          } catch {
+            // One broken/deleted record does not make another exact id ambiguous.
+          }
+        }),
+      );
     } catch {
-      // Could not read the library — expansion below reports each miss plainly.
+      // Could not read the library — the resolver reports every reference missing.
     }
-    const result = expandSubBots(doc, (name) => byName.get(name.trim().toLowerCase()) ?? null);
+
+    const resolve = (reference: SubBotReference): BotResolution => {
+      if (reference.scriptID !== null) {
+        const exact = byID.get(reference.scriptID);
+        return exact === undefined
+          ? { kind: "missing" }
+          : { kind: "found", identity: `id:${reference.scriptID}`, doc: exact };
+      }
+      const key = reference.name?.trim().toLowerCase() ?? "";
+      const ids = idsByName.get(key) ?? [];
+      if (ids.length > 1) {
+        return { kind: "ambiguous" };
+      }
+      const scriptID = ids[0];
+      if (scriptID === undefined) {
+        return { kind: "missing" };
+      }
+      const matched = byID.get(scriptID);
+      return matched === undefined
+        ? { kind: "missing" }
+        : { kind: "found", identity: `id:${scriptID}`, doc: matched };
+    };
+
+    const result = expandSubBots(
+      doc,
+      resolve,
+      sourceScriptID === null ? null : `id:${sourceScriptID}`,
+    );
     if (result.problems.length > 0) {
       store.apply({
         type: "custom-bot/progress",
@@ -5876,6 +6498,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       return callOptions.token ?? null;
     },
 
+    requestOptions() {
+      return callOptions;
+    },
+
     async login(username, password) {
       const result = await api.login(username, password, callOptions);
       // R107 — in per-session mode capture the token onto our own call options
@@ -6092,6 +6718,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     async modifyMarketOrder(orderID, price) {
       await runMarketAction("modify", () => api.modifyMarketOrder(orderID, price, callOptions));
     },
+    loadActivity,
+    loadScanner,
+    reconnectScannerProbes,
+    loadFleet,
+    formFleet,
+    inviteFleetMember,
+    acceptFleetInvite,
+    leaveFleet,
     loadMail,
     openMail,
     closeMail,
@@ -6352,7 +6986,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     },
 
     stopMiningBot() {
-      miningBot?.stop();
+      stopMiningController();
     },
 
     startMissionBot,
@@ -6369,7 +7003,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     },
 
     stopMissionBot() {
-      missionBot?.stop();
+      stopMissionController();
     },
 
     startCustomBot,
@@ -6386,8 +7020,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     },
 
     stopCustomBot() {
-      customBotGeneration += 1;
-      scriptRunner?.stop();
+      stopCustomController();
     },
 
     panicRecallAndDock,

@@ -28,6 +28,7 @@ const CHARACTERS = [
   { characterID: 7001, accountID: 4001, characterName: "Ore Farmer" },
   { characterID: 7002, accountID: 4001, characterName: "Second Pilot" },
 ];
+const GRANT = { scriptRev: 1, riskClasses: [], maxRuntimeMinutes: 720 };
 
 const activeServers = new Set();
 
@@ -86,6 +87,7 @@ function fakeBotHost(log) {
     },
     list: () => [],
     claimedBy: () => null,
+    authorizesClaim: () => false,
     activeCharacterIDs: () => [7001],
     activeBots: () => [
       { characterID: 7001, status: "running", phase: "Mining", why: null, note: null, vitals: null },
@@ -96,16 +98,16 @@ function fakeBotHost(log) {
   };
 }
 
-async function startTestServer(log) {
+async function startTestServer(log, suppliedBotHost = null) {
   const app = createApp({
     eveStore: fakeStore(),
     eveGatewayClient: fakeGateway(log),
     webAuth,
-    botHost: fakeBotHost(log),
+    botHost: suppliedBotHost || fakeBotHost(log),
     botScriptStore: {
       get: (accountID, scriptID) =>
         Number(accountID) === FARMER.accountID && scriptID === "s1"
-          ? { scriptID: "s1", name: "Miner", doc: { format: "evejs-bot-script" } }
+          ? { scriptID: "s1", name: "Miner", rev: 1, doc: { format: "evejs-bot-script" } }
           : null,
       list: () => [],
     },
@@ -123,8 +125,8 @@ test.after(() => {
   }
 });
 
-async function request(baseUrl, routePath, { method = "GET", token, body } = {}) {
-  const headers = { "content-type": "application/json" };
+async function request(baseUrl, routePath, { method = "GET", token, body, headers: suppliedHeaders = {} } = {}) {
+  const headers = { "content-type": "application/json", ...suppliedHeaders };
   if (token) {
     headers.authorization = `Bearer ${token}`;
   }
@@ -155,7 +157,7 @@ test("run-on-server releases the CALLER's held hull before the bot starts", asyn
   const { response, payload } = await request(baseUrl, "/api/bots/start", {
     method: "POST",
     token,
-    body: { characterID: 7001, scriptID: "s1" },
+    body: { characterID: 7001, scriptID: "s1", grant: GRANT },
   });
   assert.equal(response.status, 200);
   assert.equal(payload.bot.characterID, 7001);
@@ -175,7 +177,7 @@ test("a caller flying a DIFFERENT character keeps their hull", async () => {
   const { response } = await request(baseUrl, "/api/bots/start", {
     method: "POST",
     token,
-    body: { characterID: 7002, scriptID: "s1" },
+    body: { characterID: 7002, scriptID: "s1", grant: GRANT },
   });
   assert.equal(response.status, 200);
   // No release happened; the caller still flies 7001.
@@ -195,4 +197,36 @@ test("/api/bots/active answers WITHOUT auth: ids + game-state rows, nothing cont
   assert.equal("botID" in payload.bots[0], false);
   assert.equal("scriptID" in payload.bots[0], false);
   assert.equal("accountID" in payload.bots[0], false);
+});
+
+test("a public bot ID cannot bypass the claimed-character select guard", async () => {
+  const log = [];
+  const host = {
+    ...fakeBotHost(log),
+    claimedBy: (characterID) => (Number(characterID) === 7001 ? "public-bot-id" : null),
+    authorizesClaim: (characterID, secret) => Number(characterID) === 7001 && secret === "private-capability",
+  };
+  const { baseUrl } = await startTestServer(log, host);
+  const login = await request(baseUrl, "/api/login", {
+    method: "POST",
+    body: { username: FARMER.username, password: "x" },
+  });
+  const token = login.payload.sessionToken;
+
+  const refused = await request(baseUrl, "/api/bridge/select", {
+    method: "POST",
+    token,
+    headers: { "x-evejs-bot-claim": "public-bot-id" },
+    body: { characterID: 7001 },
+  });
+  assert.equal(refused.response.status, 409);
+  assert.equal(refused.payload.error, "CHARACTER_IN_USE_BY_BOT");
+
+  const authorized = await request(baseUrl, "/api/bridge/select", {
+    method: "POST",
+    token,
+    headers: { "x-evejs-bot-claim": "private-capability" },
+    body: { characterID: 7001 },
+  });
+  assert.equal(authorized.response.status, 200);
 });

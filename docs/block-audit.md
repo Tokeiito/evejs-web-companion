@@ -255,11 +255,17 @@ shipped as "fast-mode decoders, never fired live"; this is what that was hiding.
    exists with the creator aboard, and `Invite` — which had refused with
    FleetNotFound — succeeds. Needs the new `fleetObjectHandler.Init` allowlist
    pair (EveOffline `feat/web-gateway-ore-compression`).
-2. **`AcceptInvite` needs the fleet's own id, which the invitee cannot have.**
+2. **`AcceptInvite` needs the fleet's own id, which the invitee cannot derive
+   from membership because they have not joined yet.**
    The handler resolves it from the caller's bound object, falling back to
    `session.fleetid` — nothing, before joining. FIXED: the route takes an
-   optional `fleetID` (from the invite) and binds against that fleet. The invite
-   remains the authority; the bind is not a new privilege.
+   explicitly required positive `fleetID` from the live pending
+   `OnFleetInvite` and binds against that fleet. `RejectInvite` follows the same
+   rule. `Reconnect` is different: it requires the positive saved fleet ID from
+   the session's reconnect state. In all three cases the runtime state remains
+   the authority, and the BFF uses a targeted uncached handle so an old
+   session-owned bind cannot select the wrong fleet. These IDs identify the
+   already-authorized pending/saved relationship; they grant no new privilege.
 3. **The bound-fleet read reported a CACHED fleetID** — the BFF's held-session
    snapshot, taken at select and never refreshed — so a fleet formed since read
    as none. That is why `create-fleet`'s `inFleet` gate could never see its own

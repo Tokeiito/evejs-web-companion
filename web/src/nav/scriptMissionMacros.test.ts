@@ -613,19 +613,48 @@ test("describeBoard: names only, never ids; silent when there is nothing to say"
   );
 });
 
-test("travel-home (safety fly-home): rides the autopilot from ANY system; docked anywhere = safe", async () => {
+test("travel-home resolves fixed, starting and board-slot homes", async () => {
+  const { resolveStationRef } = await import("./scriptMacros.ts");
+  assert.equal(
+    resolveStationRef({ entity: "station", id: 60000001, name: "Fixed", systemName: null }, null, {}),
+    60000001,
+  );
+  assert.equal(
+    resolveStationRef(
+      { entity: "station", id: null, name: null, systemName: null, starting: true },
+      AGENT_STATION,
+      {},
+    ),
+    AGENT_STATION,
+  );
+  assert.equal(
+    resolveStationRef(
+      { entity: "station", id: null, name: null, systemName: null, slot: "dropoff-station" },
+      null,
+      { dropoffStationID: 60000077 },
+    ),
+    60000077,
+  );
+});
+
+test("travel-home (safety fly-home): rides to resolved home; unknown space-start pauses honestly", async () => {
   const { scriptTravelHome } = await import("./scriptMacros.ts");
   // In space, home off-grid (another system entirely) -> hand it to the autopilot.
-  const going = scriptTravelHome(obs({ flightStatus: flight({ docked: false, inSpace: true, stationID: null }), startingStationID: AGENT_STATION, snapshot: null }), {});
+  const going = scriptTravelHome(obs({ flightStatus: flight({ docked: false, inSpace: true, stationID: null }), homeStationID: AGENT_STATION, snapshot: null }), {});
   assert.ok(going.action.kind === "startRoute" && going.action.stationID === AGENT_STATION);
 
   // Docked — anywhere — is safe; the latch can fire its pause.
-  const safe = scriptTravelHome(obs({ flightStatus: flight({ docked: true, stationID: 60000099 }), startingStationID: AGENT_STATION }), {});
+  const safe = scriptTravelHome(obs({ flightStatus: flight({ docked: true, stationID: 60000099 }), homeStationID: AGENT_STATION }), {});
   assert.equal(safe.outcome.kind, "done");
 
-  // No home known -> stop where we are rather than fly to a guess.
-  const noHome = scriptTravelHome(obs({ startingStationID: null }), {});
-  assert.equal(noHome.outcome.kind, "done");
+  // Starting in space cannot turn "starting station" into a station. It pauses
+  // instead of falsely reporting that an exposed ship is safely home.
+  const noHome = scriptTravelHome(
+    obs({ flightStatus: flight({ docked: false, inSpace: true, stationID: null }), homeStationID: null }),
+    {},
+  );
+  assert.equal(noHome.outcome.kind, "blocked");
+  assert.match(noHome.outcome.kind === "blocked" ? noHome.outcome.reason : "", /does not know which station/i);
 });
 
 test("return: rides home to the agent's station and is done when docked there", () => {

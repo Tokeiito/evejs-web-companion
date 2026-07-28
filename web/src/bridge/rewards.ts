@@ -9,7 +9,7 @@
 // ISK and LP are kept as bigint-safe decimal strings; standings are small
 // floats kept as numbers.
 
-import { readKeyVal, unwrapLong, type JsonValue } from "./wire.ts";
+import { readKeyVal, readPlainJsonField, unwrapLong, type JsonValue } from "./wire.ts";
 import type { CharStanding, WalletLPBalance } from "../store/types.ts";
 
 /**
@@ -168,7 +168,7 @@ function lpAckTruthy(value: JsonValue | undefined): boolean {
 /** Decode a plain LPSvc write ack (concord exchange / wallet transfer / corp transfer). */
 export function decodeLpWriteAck(response: JsonValue): LpWriteAck {
   return {
-    ok: lpAckTruthy(readKeyVal(response, "ok")),
-    applied: lpAckTruthy(readKeyVal(response, "applied")),
+    ok: lpAckTruthy(readPlainJsonField(response, "ok")),
+    applied: lpAckTruthy(readPlainJsonField(response, "applied")),
   };
 }

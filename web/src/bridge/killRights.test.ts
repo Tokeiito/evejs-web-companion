@@ -116,21 +116,17 @@ test("the kill-right id-field extractor actually reads the decoded content", () 
 
 // --- R89 killRightMgr financial write acks (Phase-3 WRITES) -----------------
 
-function killRightAckKeyVal(fields: Record<string, JsonValue>): JsonValue {
-  return {
-    type: "object",
-    name: "util.KeyVal",
-    args: { type: "dict", entries: Object.entries(fields) },
-  };
+function plainAck(fields: Record<string, JsonValue>): JsonValue {
+  return { ...fields };
 }
 
 test("R89 — a killRightMgr write ack decodes to {ok, applied}", () => {
-  const ack = decodeKillRightWriteAck(killRightAckKeyVal({ ok: true, applied: true, result: null }));
+  const ack = decodeKillRightWriteAck(plainAck({ ok: true, applied: true, result: null }));
   assert.deepEqual(ack, { ok: true, applied: true });
 });
 
 test("R89 — a declined kill-right write is read as not-applied, not a throw", () => {
-  const ack = decodeKillRightWriteAck(killRightAckKeyVal({ ok: true, applied: false }));
+  const ack = decodeKillRightWriteAck(plainAck({ ok: true, applied: false }));
   assert.equal(ack.ok, true);
   assert.equal(ack.applied, false);
 });
