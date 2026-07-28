@@ -117,9 +117,22 @@ It sources from the ship's cargo hold when `ammoLocationID` is the ship and from
 the station hangar otherwise; both were exercised live. `UnloadAmmo` is listed
 **with** it deliberately — a rack that can only ever fill a module would strand
 the charge, leaving unfitting the weapon as the player's only way back.
-`dogmaIM.LoadAmmoToBank` is deliberately **not** listed: it is the whole-bank
-sibling, and the rack loads one module at a time so a stray click can cost at
-most one module's charge. A test names it as refused.
+`LoadAmmo` may expand a weapon-bank master to its linked modules server-side;
+the older “one module at a time” blast-radius claim was incorrect. The dedicated
+BFF route is therefore explicitly confirmed and names that consequence.
+`dogmaIM.LoadAmmoToBank` remains refused because the supported `LoadAmmo` path
+already owns the linked-bank behavior.
+
+The browser never sends the raw ship or inventory-location arguments:
+
+- `POST /api/bridge/dogma/ammo/load`
+  `{ moduleIDs, chargeItemIDs, source: "cargo" | "hangar", confirm: true }`
+- `POST /api/bridge/dogma/ammo/unload`
+  `{ moduleIDs, destination: "cargo" | "hangar", quantity?, confirm: true }`
+
+Both routes pin the active ship from held + live session state and derive the
+concrete cargo/station/structure location server-side. Invalid IDs, a stale hull,
+or a hangar request while undocked fail before dispatch.
 
 R12 adds **no** fit/unfit pair: fitting and unfitting are `invbroker.Add` with a
 slot flag, already listed for R3. `dogmaIM.GetAllInfo` is deliberately **not**
@@ -1061,8 +1074,9 @@ simulates or predicts position; each move's truth comes from the next
 
   The close-range rule is per target **kind** — a gate is never docked at and a
   station is never jumped to. Thresholds are strict `<`, so 2500 m exactly
-  approaches. A settle window after each warp/jump still lets the transition
-  begin before re-deciding (retail's `ignoreTimerCycles`).
+  approaches. Warp/approach retain their short debounce. A successful
+  undock/jump/dock already returns authoritative post-transition state, so the
+  next normal decision tick consumes that truth without another guessed delay.
 - **Measurement is primary; refusals are the backstop.** When the snapshot
   cannot be read, or cannot see the target (off grid, a scene mid-load), the tick
   falls back to the original R5b path — ship **mode** plus the server's own
@@ -1988,7 +2002,7 @@ notifications into a bounded `live` slice — which is where the drained
 
 `POST /api/bridge/call` — requires the signed web login session (else 401 `AUTH_REQUIRED`).
 
-Request body: `{ "service", "method", "args"?, "kwargs"?, "session"? }` — same shapes as the gateway route, except identity: **the BFF pins `session.userid` to the logged-in account's `accountID`**; a `userid` supplied by the browser is ignored. Other scalar session fields pass through. **R2:** when this web session holds a persistent bridge session, the BFF attaches its server-held `bridgeSessionID` automatically (one web login is one client session, like retail); a browser-supplied `bridgeSessionID` is ignored. A `SESSION_NOT_FOUND` from the gateway drops the held handle (the page should return to character select) and passes through as 404.
+Request body: `{ "service", "method", "args"?, "kwargs"?, "session"? }` — same tuple shapes as the gateway route, but this generic seam is **read-only**. Every classified write returns 403 `BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE`, even if the body supplies `confirm: true`; writes must use their operation-specific confirmation route. Identity is server-pinned: **`session.userid` always comes from the logged-in account's `accountID`**. Browser session input is projected onto the explicit presentation-only allowlist `languageID`, `languageId`, `languageid`, and `language`; supplied identity, character, corporation, role, ship, and location fields are ignored. **R2:** when this web session holds a persistent bridge session, the BFF attaches its server-held `bridgeSessionID` automatically (one web login is one client session, like retail); a browser-supplied `bridgeSessionID` is ignored. A `SESSION_NOT_FOUND` from the gateway drops the held handle (the page should return to character select) and passes through as 404.
 
 Success response: `{ "ok": true, "service", "method", "result", "notifications" }` (the gateway envelope minus `source`/`apiVersion`). Gateway errors pass through with their status and `error` code (`CALL_NOT_ALLOWED` → 403, `CALL_REFUSED` → 409, etc.); transport failures surface as `EVE_GATEWAY_UNREACHABLE`/`EVE_GATEWAY_TIMEOUT` (502).
 
@@ -2047,11 +2061,32 @@ warp/jump/dock go through the beyonce remote-park bound-object two-step — the
 BFF holds the bound park handle server-side, cached under `park:<solarSystemID>`
 so a jump (which changes the system) rebinds the park for the new system. Each
 movement route reads the current flight status first (to resolve the live
-system + ship and guard `NOT_IN_SPACE`), and returns the refreshed snapshot.
+system + ship and guard `NOT_IN_SPACE`). Session-changing routes issue their
+command **once**, then wait for authoritative location plus scene/ego/ship
+postconditions before answering. Their response includes `transition` metadata
+(`epoch`, `kind`, `phase`, readiness flags and `cooldownUntilMs`). A 504
+`TRANSITION_TIMEOUT` is an uncertain outcome and remains latched: no retry can
+repeat the write until the character is reselected.
+
+While a transition is requested/accepted/session-changing (or has failed with
+an uncertain outcome), the BFF refuses every other bridge POST action with
+`SESSION_CHANGE_IN_PROGRESS`. GET reads, the policy-read-only generic call,
+release, and character reselection remain available. This is a conservative
+route-wide guard, including ordinary warp/module/inventory endpoints that do
+not themselves create a session change.
+
+Retail's advertised **10-second session timer is not readiness**. It is the
+next legal session-mutation window. Ordinary movement and reads may continue as
+soon as the observed postconditions are ready; if another dock/undock/jump/
+board/clone request arrives before the timer ends, the BFF reserves it and
+waits only the remaining cooldown before dispatching. Concurrent session writes
+are refused with `SESSION_CHANGE_IN_PROGRESS`.
 
 - `GET /api/bridge/flight/status` → `{ ok, flight, notifications }`. The
-  read-only flight snapshot for the status readout + "Refresh flight status".
-- `POST /api/bridge/flight/undock` `{}` → `{ ok, flight, notifications }`.
+  read-only flight snapshot includes the current transition/cooldown state plus
+  authoritative `shipTypeID` and `shipIsCapsule` fields (unknown is `null`).
+- `POST /api/bridge/flight/undock` `{}` → `{ ok, flight, transition,
+  notifications }`.
   Dispatches `ship.Undock(shipID, false, onlineModules=[])`; refuses
   `ALREADY_IN_SPACE` if not docked.
 - `POST /api/bridge/flight/warp` `{ destinationID, minRange? }` → `{ ok, result,
@@ -2065,10 +2100,24 @@ system + ship and guard `NOT_IN_SPACE`), and returns the refreshed snapshot.
   menu is **0**, not 10 km.
 - `POST /api/bridge/flight/jump` `{ fromGateID, toGateID }` →
   `beyonce.CmdStargateJump([fromGateID, toGateID, shipID])`. The system
-  transition completes after a handoff delay; poll flight status to see it.
+  response waits until the destination system, scene and ego are ready.
+- `POST /api/bridge/flight/jump-through-structure`
+  `{ structureID, confirm: true }` first resolves
+  `structureJumpBridgeMgr.GetJbStructureDestination([structureID])` on the held
+  session, then issues `CmdJumpThroughStructureStargate([structureID])` exactly
+  once. The browser cannot supply the destination readiness postcondition; the
+  route waits for the server-resolved system, scene, ego, and ship. EveJS remains
+  authoritative for link/access/range/fuel/toll checks.
 - `POST /api/bridge/flight/dock` `{ stationID }` →
   `beyonce.CmdDock([stationID, shipID])`. Out-of-range docking refuses with a
-  docking-approach reason; poll flight status to confirm the docked state.
+  docking-approach reason; success waits for the requested docked location.
+- `POST /api/bridge/clones/jump` is docked-only and mirrors retail's two-stage
+  sequence. When the active hull is not a capsule, it issues
+  `ship.LeaveShip([shipID])` once, waits for the authoritative capsule ship, then
+  waits out the remaining session-change cooldown before issuing
+  `jumpCloneSvc.CloneJump` once. EveJS independently refuses direct CloneJump
+  calls unless the active ship is a capsule, so a malformed client cannot move a
+  normal hull with the clone.
 
 #### Flight verbs (R13)
 
@@ -2544,6 +2593,10 @@ mutations refuse while docked with 409):
 - `POST /api/bridge/drones/engage` `{ droneIDs, targetID }`
 - `POST /api/bridge/drones/mine` `{ droneIDs, targetID }`
 - `POST /api/bridge/drones/recall` `{ droneIDs }` (no target)
+- `POST /api/bridge/drones/scoop` `{ droneIDs, confirm: true }` manually scoops
+  reachable abandoned/uncontrolled drones. The acting hull is pinned from the
+  held live session and EveJS validates that each target is a local,
+  uncontrolled drone within scoop range.
 
 all three orders → `{ ok, droneIDs, targetID, inSpace, notifications }`.
 

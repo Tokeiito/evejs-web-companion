@@ -26,6 +26,7 @@ import type {
   StationStatic,
 } from "../store/types.ts";
 import type { NameRef } from "../store/names.ts";
+import type { BotLaunchGrant, BotRiskClass } from "../bots/runPolicy.ts";
 
 export interface LoginResult {
   readonly accountID: number;
@@ -1030,9 +1031,47 @@ export async function inviteToFleet(inviteeCharID: number, options: ApiOptions =
   await postJson("/api/bridge/fleet/invite", { inviteeCharID, confirm: true }, options);
 }
 
-/** ACCEPT a pending fleet invite for the session character (in the current ship). */
-export async function acceptFleetInvite(options: ApiOptions = {}): Promise<void> {
-  await postJson("/api/bridge/fleet/invite/accept", { confirm: true }, options);
+/**
+ * ACCEPT a pending fleet invite for the session character (in the current ship).
+ * An invitee is not in the fleet yet, so the route needs the fleetID carried by
+ * OnFleetInvite in order to bind the invited fleet before accepting.
+ */
+export async function acceptFleetInvite(
+  fleetID: number,
+  options: ApiOptions = {},
+): Promise<void> {
+  await postJson(
+    "/api/bridge/fleet/invite/accept",
+    { fleetID, confirm: true },
+    options,
+  );
+}
+
+/** LEAVE the session character's current fleet. Confirm-gated. */
+export async function leaveFleet(options: ApiOptions = {}): Promise<void> {
+  await postJson("/api/bridge/fleet/leave", { confirm: true }, options);
+}
+
+// --- Activity Center reads -------------------------------------------------
+// These are thin wrappers over existing aggregate BFF routes. Activity is
+// deliberately read-only: notification/calendar mutators live elsewhere and
+// are never exposed by its flow or panel.
+
+/** Raw settled notificationMgr reads; bridge/activity.ts preserves each arm. */
+export async function loadActivityNotifications(
+  options: ApiOptions = {},
+): Promise<Record<string, JsonValue>> {
+  return getJson("/api/bridge/notifications", options);
+}
+
+/** Raw current-month calendar reads; bridge/activity.ts preserves each arm. */
+export async function loadActivityCalendar(
+  month: number,
+  year: number,
+  options: ApiOptions = {},
+): Promise<Record<string, JsonValue>> {
+  const query = `?month=${encodeURIComponent(String(month))}&year=${encodeURIComponent(String(year))}`;
+  return getJson(`/api/bridge/calendar${query}`, options);
 }
 
 // --- R17 Mail ---------------------------------------------------------------
@@ -2422,6 +2461,12 @@ export interface ServerBot {
   readonly characterName: string | null;
   readonly scriptID: string;
   readonly scriptName: string;
+  readonly scriptRev: number;
+  readonly scriptHash: string;
+  readonly restartSafe: boolean;
+  readonly riskClasses: readonly BotRiskClass[];
+  readonly maxRuntimeMinutes: number;
+  readonly expiresAt: string | null;
   readonly status: string;
   readonly phase: string | null;
   readonly why: string | null;
@@ -2447,6 +2492,14 @@ function asServerBot(value: JsonValue): ServerBot {
     characterName: typeof row.characterName === "string" ? row.characterName : null,
     scriptID: typeof row.scriptID === "string" ? row.scriptID : "",
     scriptName: typeof row.scriptName === "string" ? row.scriptName : "Untitled bot",
+    scriptRev: asNumberOrNull(row.scriptRev) ?? 0,
+    scriptHash: typeof row.scriptHash === "string" ? row.scriptHash : "",
+    restartSafe: row.restartSafe === true,
+    riskClasses: Array.isArray(row.riskClasses)
+      ? row.riskClasses.filter((risk): risk is BotRiskClass => typeof risk === "string") as BotRiskClass[]
+      : [],
+    maxRuntimeMinutes: asNumberOrNull(row.maxRuntimeMinutes) ?? 0,
+    expiresAt: typeof row.expiresAt === "string" ? row.expiresAt : null,
     status: typeof row.status === "string" ? row.status : "unknown",
     phase: typeof row.phase === "string" ? row.phase : null,
     why: typeof row.why === "string" ? row.why : null,
@@ -2553,9 +2606,14 @@ export async function listActiveServerBots(options: ApiOptions = {}): Promise<Ac
 export async function startServerBot(
   characterID: number,
   scriptID: string,
+  grant: BotLaunchGrant,
   options: ApiOptions = {},
 ): Promise<ServerBot> {
-  const data = await postJson("/api/bots/start", { characterID, scriptID }, options);
+  const data = await postJson(
+    "/api/bots/start",
+    { characterID, scriptID, grant: grant as unknown as JsonValue },
+    options,
+  );
   return asServerBot(data.bot ?? null);
 }
 
@@ -2836,10 +2894,67 @@ export async function applySavedFitting(
  * bridge/boundSmallServices.decodeFullState). Rides the small-services route.
  */
 export async function loadScanFullState(options: ApiOptions = {}): Promise<JsonValue> {
-  const data = await getJson("/api/bridge/bound-small-services", options);
+  const data = await loadBoundSmallServices(options);
   const reads = (data.reads ?? {}) as Record<string, JsonValue>;
   const slot = (reads.GetFullState ?? {}) as Record<string, JsonValue>;
+  if (typeof slot.error === "string" && slot.error.length > 0) {
+    // A failed arm is UNKNOWN, never a successfully empty system. Existing bot
+    // callers catch this and keep their observation null rather than acting on
+    // an invented empty scan.
+    throw new Error("The current system scanner state is unavailable.");
+  }
   return slot.result ?? null;
+}
+
+/** Whole independently-failing small-services envelope (keeps scan errors). */
+export async function loadBoundSmallServices(
+  options: ApiOptions = {},
+): Promise<Record<string, JsonValue>> {
+  return getJson("/api/bridge/bound-small-services", options);
+}
+
+/** Static formation reference result (often an honest proxy-cache reference). */
+export async function loadScannerFormations(options: ApiOptions = {}): Promise<JsonValue> {
+  const data = await getJson("/api/bridge/formations", options);
+  return data.formations ?? null;
+}
+
+/** Launch probes from a known fitted launcher. The panel supplies no guessed ID. */
+export async function launchScannerProbes(
+  moduleID: number,
+  count: number,
+  options: ApiOptions = {},
+): Promise<void> {
+  await postJson("/api/bridge/dogma/probes/launch", { moduleID, count, confirm: true }, options);
+}
+
+/** Recover an exact set of the session character's launched probes. */
+export async function recoverScannerProbes(
+  probeIDs: readonly number[],
+  options: ApiOptions = {},
+): Promise<void> {
+  await postJson(
+    "/api/bridge/scan/probe/recover",
+    { probeIDs: [...probeIDs], confirm: true },
+    options,
+  );
+}
+
+/** Analyze with exact caller-observed probe geometry; never synthesize a map. */
+export async function requestScannerAnalysis(
+  probeMap: Readonly<Record<string, JsonValue>>,
+  options: ApiOptions = {},
+): Promise<void> {
+  await postJson(
+    "/api/bridge/scan/request-scans",
+    { probeMap: probeMap as JsonValue, confirm: true },
+    options,
+  );
+}
+
+/** Ask the current-system manager to reconnect the session character's probes. */
+export async function reconnectScannerProbes(options: ApiOptions = {}): Promise<void> {
+  await postJson("/api/bridge/scan/probe/reconnect", { confirm: true }, options);
 }
 
 /**

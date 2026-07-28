@@ -20,7 +20,7 @@
 // ⚠ STAY-OFF-market.ts: this is a NEW file so the sweep never edits the market
 // session's web/src/bridge/market.ts. It imports only the shared wire helpers.
 
-import { readKeyVal, type JsonValue } from "./wire.ts";
+import { readPlainJsonField, type JsonValue } from "./wire.ts";
 
 /** The uniform ack every confirm-gated marketProxy write returns. */
 export interface MarketWriteAck {
@@ -40,7 +40,7 @@ function ackTruthy(value: JsonValue | undefined): boolean {
  */
 export function decodeMarketWriteAck(response: JsonValue): MarketWriteAck {
   return {
-    ok: ackTruthy(readKeyVal(response, "ok")),
-    applied: ackTruthy(readKeyVal(response, "applied")),
+    ok: ackTruthy(readPlainJsonField(response, "ok")),
+    applied: ackTruthy(readPlainJsonField(response, "applied")),
   };
 }

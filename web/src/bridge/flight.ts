@@ -11,7 +11,29 @@
 // `number`.
 
 import { unwrapLong, type JsonValue } from "./wire.ts";
-import type { FlightStatus } from "../store/types.ts";
+import type {
+  FlightStatus,
+  FlightTransition,
+  FlightTransitionKind,
+  FlightTransitionPhase,
+} from "../store/types.ts";
+
+const TRANSITION_KINDS = new Set<FlightTransitionKind>([
+  "idle",
+  "undock",
+  "dock",
+  "stargate",
+  "board",
+  "clone",
+  "other-session",
+]);
+const TRANSITION_PHASES = new Set<FlightTransitionPhase>([
+  "requested",
+  "accepted",
+  "session-changing",
+  "ready",
+  "failed",
+]);
 
 /** A location/ship ID as a plain number (long-aware), or null. */
 function idOrNull(value: JsonValue | undefined): number | null {
@@ -25,6 +47,37 @@ function idOrNull(value: JsonValue | undefined): number | null {
 /** A finite float (e.g. a speed fraction), or null. */
 function floatOrNull(value: JsonValue | undefined): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function transitionOrUndefined(value: JsonValue | undefined): FlightTransition | undefined {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const row = value as Record<string, JsonValue>;
+  const kind = typeof row.kind === "string" && TRANSITION_KINDS.has(row.kind as FlightTransitionKind)
+    ? (row.kind as FlightTransitionKind)
+    : "idle";
+  const phase = typeof row.phase === "string" && TRANSITION_PHASES.has(row.phase as FlightTransitionPhase)
+    ? (row.phase as FlightTransitionPhase)
+    : "ready";
+  return {
+    epoch: Math.max(0, Number(row.epoch) || 0),
+    kind,
+    phase,
+    startedAtMs: floatOrNull(row.startedAtMs),
+    cooldownUntilMs: floatOrNull(row.cooldownUntilMs),
+    fromSolarSystemID: idOrNull(row.fromSolarSystemID),
+    toSolarSystemID: idOrNull(row.toSolarSystemID),
+    stationID: idOrNull(row.stationID),
+    shipID: idOrNull(row.shipID),
+    sessionStable: row.sessionStable === true,
+    locationReady: row.locationReady === true,
+    sceneReady: row.sceneReady === true,
+    egoReady: row.egoReady === true,
+    shipReady: row.shipReady === true,
+    boundContextReady: row.boundContextReady === true,
+    failure: typeof row.failure === "string" ? row.failure : null,
+  };
 }
 
 export function decodeFlightStatus(raw: JsonValue | undefined): FlightStatus {
@@ -49,5 +102,6 @@ export function decodeFlightStatus(raw: JsonValue | undefined): FlightStatus {
     shipID: idOrNull(flight.shipID),
     shipMode: typeof flight.shipMode === "string" ? flight.shipMode : null,
     shipSpeedFraction: floatOrNull(flight.shipSpeedFraction),
+    transition: transitionOrUndefined(flight.transition),
   };
 }

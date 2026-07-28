@@ -599,10 +599,11 @@ export interface BranchBlock {
  * ⚠ IT IS EXPANDED (INLINED) BEFORE THE RUN STARTS, never resolved mid-run: the
  * runner only ever sees a plain program, so every safety property (the forward
  * scan, the livelock proof, the step caps) holds unchanged and needs no new
- * reasoning. The NAME is what is matched at expansion time (the id is a
- * same-world hint), so a shared script still finds "Belt loop" on another
- * character. Cycles and runaway nesting are refused at expansion (a bot can
- * never include itself, directly or through a chain).
+ * reasoning. A present scriptID is authoritative in the account that saved the
+ * document. A portable/imported node without one may fall back to its name only
+ * when that name identifies exactly one saved bot; duplicate names are refused,
+ * never resolved by array order. Cycles and runaway nesting are refused at
+ * expansion (a bot can never include itself, directly or through a chain).
  *
  * TOP-LEVEL ONLY: a sub-bot may carry loops of its own, and inlining one inside
  * a loop body would make a loop-in-a-loop, so the codec refuses it there.
@@ -612,7 +613,7 @@ export interface BranchBlock {
 export interface SubBotNode {
   readonly id: string;
   readonly kind: "sub-bot";
-  /** Same-world hint only; `name` is what expansion matches on. */
+  /** Exact per-account identity when known; never fall back if this id is stale. */
   readonly scriptID: string | null;
   readonly name: string | null;
 }

@@ -3,9 +3,17 @@
 // (util.KeyVal rows, {type:"long"} wrappers, ...) live in ../bridge/wire.ts.
 
 import type { BoundDogmaAllInfo } from "../bridge/boundDogma.ts";
+import type { BoundFleet } from "../bridge/boundFleet.ts";
+import type {
+  FleetAvailability,
+  FleetPendingInvite,
+} from "../bridge/fleetCenter.ts";
 import type { ShipStats } from "../bridge/shipStats.ts";
+import type { ScanFullState } from "../bridge/boundSmallServices.ts";
+import type { FormationsResult } from "../bridge/formations.ts";
+import type { ScannerDataState } from "../scanner/scannerCenter.ts";
 import type { GateLink } from "../space/gateLinks.ts";
-import type { BotID } from "../nav/botRegistry.ts";
+import type { BotID, ShipControllerID } from "../nav/botRegistry.ts";
 import type { MiningRungID, MiningStepID } from "../nav/miningLadder.ts";
 
 export type { GateLink };
@@ -706,6 +714,105 @@ export interface MailState {
   readonly lastOutcome: MailActionOutcome | null;
 }
 
+// --- Activity Center -------------------------------------------------------
+
+/**
+ * One independent Activity Center read. A successful empty answer is `ready`
+ * with an empty value; it is never collapsed into an unavailable or failed
+ * read. That distinction matters for notificationMgr/calendar, whose BFF
+ * envelope deliberately returns null plus a per-arm error when one call fails.
+ */
+export type ActivityRead<T> =
+  | { readonly status: "ready"; readonly value: T; readonly error: null }
+  | { readonly status: "unavailable"; readonly value: null; readonly error: null }
+  | { readonly status: "error"; readonly value: null; readonly error: string };
+
+/** A recent notification, reduced to the fields the read-only panel presents. */
+export interface ActivityNotificationRow {
+  /** Store/key data only; the panel never renders game IDs. */
+  readonly notificationID: number;
+  /** Resolved through the shared owner-name cache before it reaches the player. */
+  readonly senderID: number;
+  readonly processed: boolean;
+  readonly created: bigint | null;
+  /** Player-facing notification category; never a raw typeID. */
+  readonly title: string;
+}
+
+/** One upcoming calendar event from the requested UTC month. */
+export interface ActivityCalendarEventRow {
+  /** Store/key data only; the panel never renders game IDs. */
+  readonly eventID: number;
+  readonly ownerID: number;
+  readonly eventDateTime: bigint | null;
+  readonly eventDuration: number | null;
+  readonly title: string;
+  readonly importance: number;
+}
+
+/** This character's response to a calendar event. */
+export interface ActivityCalendarResponseRow {
+  /** Used only to join to an event; never rendered. */
+  readonly eventID: number;
+  readonly status: number;
+}
+
+/**
+ * Read-only Activity Center state. Mail and the live tail remain authoritative
+ * in their existing slices; this state records the two additional bridge reads
+ * and whether the mail refresh performed alongside them failed.
+ */
+export interface ActivityState {
+  readonly loaded: boolean;
+  readonly loading: boolean;
+  readonly notifications: ActivityRead<readonly ActivityNotificationRow[]>;
+  readonly unprocessedCount: ActivityRead<number>;
+  readonly calendarEvents: ActivityRead<readonly ActivityCalendarEventRow[]>;
+  readonly calendarResponses: ActivityRead<readonly ActivityCalendarResponseRow[]>;
+  readonly mailError: string | null;
+  readonly refreshedAtMs: number | null;
+}
+
+// --- Fleet Center ----------------------------------------------------------
+
+export type FleetAction = "form" | "invite" | "accept" | "leave";
+
+/**
+ * Player-facing fleet state. `fleet` is the last authoritative bound read;
+ * `availability` keeps a real FleetNotFound distinct from a failed read. The
+ * pending invite comes from the existing OnFleetInvite live payload because an
+ * invitee cannot discover the fleetID through the own-fleet read before joining.
+ */
+export interface FleetCenterState {
+  readonly loaded: boolean;
+  readonly loading: boolean;
+  readonly availability: FleetAvailability | "unknown";
+  readonly fleet: BoundFleet | null;
+  readonly pendingInvite: FleetPendingInvite | null;
+  readonly activeAction: FleetAction | null;
+  readonly readError: string | null;
+  readonly actionError: string | null;
+  readonly refreshedAtMs: number | null;
+}
+
+// --- Scanner / Exploration Center -----------------------------------------
+
+/**
+ * Current-system scanner state. Each source keeps loading/unavailable/ready
+ * separate so a failed bound read can never masquerade as an empty system.
+ * Active probe IDs and geometry are intentionally absent until a live source
+ * reports them; the panel will not manufacture action prerequisites.
+ */
+export interface ScannerCenterState {
+  readonly loaded: boolean;
+  readonly loading: boolean;
+  /** System whose authoritative scan produced `scan`; null before a successful read. */
+  readonly solarSystemID: number | null;
+  readonly scan: ScannerDataState<ScanFullState>;
+  readonly formations: ScannerDataState<FormationsResult>;
+  readonly refreshedAtMs: number | null;
+}
+
 /** The verdict on a completed send, assembled from a RE-READ. */
 export interface MailActionOutcome {
   readonly kind: "send";
@@ -1238,6 +1345,34 @@ export interface AgentFinderState {
  * `shipMode` is the scene entity's movement mode (e.g. WARP / STOP), null when
  * docked or unavailable.
  */
+export type FlightTransitionKind = "idle" | "undock" | "dock" | "stargate" | "board" | "clone" | "other-session";
+export type FlightTransitionPhase =
+  | "requested"
+  | "accepted"
+  | "session-changing"
+  | "ready"
+  | "failed";
+
+/** Readiness is separate from the ten-second next-mutation cooldown. */
+export interface FlightTransition {
+  readonly epoch: number;
+  readonly kind: FlightTransitionKind;
+  readonly phase: FlightTransitionPhase;
+  readonly startedAtMs: number | null;
+  readonly cooldownUntilMs: number | null;
+  readonly fromSolarSystemID: number | null;
+  readonly toSolarSystemID: number | null;
+  readonly stationID: number | null;
+  readonly shipID: number | null;
+  readonly sessionStable: boolean;
+  readonly locationReady: boolean;
+  readonly sceneReady: boolean;
+  readonly egoReady: boolean;
+  readonly shipReady: boolean;
+  readonly boundContextReady: boolean;
+  readonly failure: string | null;
+}
+
 export interface FlightStatus {
   readonly inSpace: boolean;
   readonly docked: boolean;
@@ -1247,6 +1382,8 @@ export interface FlightStatus {
   readonly shipID: number | null;
   readonly shipMode: string | null;
   readonly shipSpeedFraction: number | null;
+  /** Present on current BFFs; absent only when talking to an older one. */
+  readonly transition?: FlightTransition;
 }
 
 /**
@@ -2001,7 +2138,7 @@ export interface MissionBotState {
  * no loop holds the ship; a paused bot still holds it (see `holdsTheShip`).
  */
 export interface BotsState {
-  readonly runningBotID: BotID | null;
+  readonly runningBotID: ShipControllerID | null;
 }
 
 /**

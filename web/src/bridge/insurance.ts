@@ -19,7 +19,14 @@
 // DO exceed 2^53, arrive as {type:"long", value:"<decimal>"} and are decoded to
 // bigint. R7d: contractID / shipID / typeID / ownerID stay numeric fields.
 
-import { readKeyVal, readRowField, readDictPairs, unwrapLong, type JsonValue } from "./wire.ts";
+import {
+  readKeyVal,
+  readPlainJsonField,
+  readRowField,
+  readDictPairs,
+  unwrapLong,
+  type JsonValue,
+} from "./wire.ts";
 
 /** One ship-insurance policy (buildClientContract). */
 export interface InsuranceContract {
@@ -175,7 +182,7 @@ function insuranceAckTruthy(value: JsonValue | undefined): boolean {
 /** Decode a plain insurance write ack (insure / uninsure a ship). */
 export function decodeInsuranceWriteAck(response: JsonValue): InsuranceWriteAck {
   return {
-    ok: insuranceAckTruthy(readKeyVal(response, "ok")),
-    applied: insuranceAckTruthy(readKeyVal(response, "applied")),
+    ok: insuranceAckTruthy(readPlainJsonField(response, "ok")),
+    applied: insuranceAckTruthy(readPlainJsonField(response, "applied")),
   };
 }

@@ -14,6 +14,10 @@
 // R2+ work and implement this same interface.
 
 import type {
+  ActivityCalendarEventRow,
+  ActivityCalendarResponseRow,
+  ActivityNotificationRow,
+  ActivityRead,
   AgentConversation,
   AgentFinderRow,
   AgentFinderTarget,
@@ -38,6 +42,8 @@ import type {
   SurveyResult,
   FittingResources,
   FittingSlot,
+  FleetAction,
+  ScannerCenterState,
   IndustryBlueprintRow,
   IndustryDefinition,
   IndustryFacilityRow,
@@ -83,6 +89,8 @@ import type {
   CloneSummary,
 } from "./types.ts";
 import type { BoundDogmaAllInfo } from "../bridge/boundDogma.ts";
+import type { BoundFleet } from "../bridge/boundFleet.ts";
+import type { FleetAvailability, FleetPendingInvite } from "../bridge/fleetCenter.ts";
 import type { ShipStats } from "../bridge/shipStats.ts";
 import type { MiningRungID, MiningStepID } from "../nav/miningLadder.ts";
 
@@ -288,6 +296,45 @@ export type FeedEvent =
   | { readonly type: "market/outcome"; readonly outcome: MarketActionOutcome | null }
   // Drop the market state (character offline / logged out).
   | { readonly type: "market/cleared" }
+  // Read-only Activity Center. Each bridge arm keeps its own ready / empty /
+  // unavailable / error state, so a partial aggregate response stays useful.
+  | { readonly type: "activity/loading" }
+  | {
+      readonly type: "activity/loaded";
+      readonly notifications: ActivityRead<readonly ActivityNotificationRow[]>;
+      readonly unprocessedCount: ActivityRead<number>;
+      readonly calendarEvents: ActivityRead<readonly ActivityCalendarEventRow[]>;
+      readonly calendarResponses: ActivityRead<readonly ActivityCalendarResponseRow[]>;
+      readonly mailError: string | null;
+      readonly refreshedAtMs: number;
+    }
+  | { readonly type: "activity/cleared" }
+  // Fleet Center. The read uses the dedicated session-scoped bound-fleet BFF
+  // route; every consequential write is confirmed in the panel and followed by
+  // another authoritative read before the action settles.
+  | { readonly type: "fleet/loading" }
+  | {
+      readonly type: "fleet/loaded";
+      readonly availability: FleetAvailability;
+      readonly fleet: BoundFleet;
+      readonly readError: string | null;
+      readonly refreshedAtMs: number;
+    }
+  | { readonly type: "fleet/action-started"; readonly action: FleetAction }
+  | { readonly type: "fleet/action-finished"; readonly error: string | null }
+  | { readonly type: "fleet/pending-invite"; readonly invite: FleetPendingInvite }
+  | { readonly type: "fleet/cleared" }
+  // Scanner / Exploration Center. Both reads are independent; a failed scan is
+  // unknown, never a successful empty current system.
+  | { readonly type: "scanner/loading" }
+  | {
+      readonly type: "scanner/loaded";
+      readonly solarSystemID: number | null;
+      readonly scan: ScannerCenterState["scan"];
+      readonly formations: ScannerCenterState["formations"];
+      readonly refreshedAtMs: number;
+    }
+  | { readonly type: "scanner/cleared" }
   // Goal R17 (Slice A) — the Mail page. The inbox is a DELTA SYNC cold-started
   // by the BFF, so `messages` is always the WHOLE mailbox rather than a page of
   // it: the browser caches nothing across a page load and therefore holds no

@@ -28,7 +28,7 @@
 // ⚠ These are WRITES: never call a decoder to DRIVE a mutation — the confirm-gated
 // BFF route is the only path, and it refuses without `confirm: true`.
 
-import { readKeyVal, type JsonValue } from "./wire.ts";
+import { readPlainJsonField, type JsonValue } from "./wire.ts";
 
 function truthy(value: JsonValue | undefined): boolean {
   return value === true;
@@ -51,11 +51,11 @@ export interface BeyonceWriteAck {
  * educated guess from the beyonce handler code.
  */
 export function decodeBeyonceWriteAck(response: JsonValue): BeyonceWriteAck {
-  const result = readKeyVal(response, "result");
-  const flight = readKeyVal(response, "flight");
+  const result = readPlainJsonField(response, "result");
+  const flight = readPlainJsonField(response, "flight");
   return {
-    ok: truthy(readKeyVal(response, "ok")),
-    applied: truthy(readKeyVal(response, "applied")),
+    ok: truthy(readPlainJsonField(response, "ok")),
+    applied: truthy(readPlainJsonField(response, "applied")),
     result: result === undefined ? null : (result as JsonValue),
     flight: flight === undefined ? null : (flight as JsonValue),
   };

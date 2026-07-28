@@ -33,6 +33,7 @@ import {
   isKeyValValue,
   isListValue,
   readKeyVal,
+  readPlainJsonField,
   unwrapLong,
   type JsonValue,
 } from "./wire.ts";
@@ -223,8 +224,8 @@ function ackTruthy(value: JsonValue | undefined): boolean {
 /** Decode a plain calendar write ack (Edit / Delete / Respond / UpdateParticipants). */
 export function decodeCalendarWriteAck(response: JsonValue): CalendarWriteAck {
   return {
-    ok: ackTruthy(readKeyVal(response, "ok")),
-    applied: ackTruthy(readKeyVal(response, "applied")),
+    ok: ackTruthy(readPlainJsonField(response, "ok")),
+    applied: ackTruthy(readPlainJsonField(response, "applied")),
   };
 }
 
@@ -234,10 +235,10 @@ export interface CalendarEventCreatedAck extends CalendarWriteAck {
 }
 
 export function decodeCalendarEventCreatedAck(response: JsonValue): CalendarEventCreatedAck {
-  const eventID = toNumber(readKeyVal(response, "eventID"));
+  const eventID = toNumber(readPlainJsonField(response, "eventID"));
   return {
-    ok: ackTruthy(readKeyVal(response, "ok")),
-    applied: ackTruthy(readKeyVal(response, "applied")),
+    ok: ackTruthy(readPlainJsonField(response, "ok")),
+    applied: ackTruthy(readPlainJsonField(response, "applied")),
     eventID: eventID > 0 ? eventID : null,
   };
 }

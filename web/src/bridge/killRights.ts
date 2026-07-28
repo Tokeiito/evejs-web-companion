@@ -23,7 +23,14 @@
 // decimal string (never zeroed by a `typeof === "number"` test). `expiryTime` is a
 // FILETIME bigint.
 
-import { isListValue, readKeyVal, readRowField, unwrapLong, type JsonValue } from "./wire.ts";
+import {
+  isListValue,
+  readKeyVal,
+  readPlainJsonField,
+  readRowField,
+  unwrapLong,
+  type JsonValue,
+} from "./wire.ts";
 import { toAmountString } from "./rewards.ts";
 
 /** One kill right the character holds. */
@@ -121,7 +128,7 @@ function killRightAckTruthy(value: JsonValue | undefined): boolean {
 /** Decode a plain killRightMgr write ack (activate / buy a kill right). */
 export function decodeKillRightWriteAck(response: JsonValue): KillRightWriteAck {
   return {
-    ok: killRightAckTruthy(readKeyVal(response, "ok")),
-    applied: killRightAckTruthy(readKeyVal(response, "applied")),
+    ok: killRightAckTruthy(readPlainJsonField(response, "ok")),
+    applied: killRightAckTruthy(readPlainJsonField(response, "applied")),
   };
 }

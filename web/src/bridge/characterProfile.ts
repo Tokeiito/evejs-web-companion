@@ -31,6 +31,7 @@ import {
   isKeyValValue,
   isListValue,
   readKeyVal,
+  readPlainJsonField,
   unwrapLong,
   type JsonValue,
 } from "./wire.ts";
@@ -337,8 +338,8 @@ function charAckTruthy(value: JsonValue | undefined): boolean {
 /** Decode a plain charMgr write ack (description / status / contacts / notes). */
 export function decodeCharWriteAck(response: JsonValue): CharWriteAck {
   return {
-    ok: charAckTruthy(readKeyVal(response, "ok")),
-    applied: charAckTruthy(readKeyVal(response, "applied")),
+    ok: charAckTruthy(readPlainJsonField(response, "ok")),
+    applied: charAckTruthy(readPlainJsonField(response, "applied")),
   };
 }
 
@@ -348,10 +349,10 @@ export interface OwnerNoteCreatedAck extends CharWriteAck {
 }
 
 export function decodeOwnerNoteCreatedAck(response: JsonValue): OwnerNoteCreatedAck {
-  const noteID = toInt(readKeyVal(response, "result"));
+  const noteID = toInt(readPlainJsonField(response, "result"));
   return {
-    ok: charAckTruthy(readKeyVal(response, "ok")),
-    applied: charAckTruthy(readKeyVal(response, "applied")),
+    ok: charAckTruthy(readPlainJsonField(response, "ok")),
+    applied: charAckTruthy(readPlainJsonField(response, "applied")),
     noteID: noteID > 0 ? noteID : null,
   };
 }

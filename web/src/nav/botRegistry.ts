@@ -75,6 +75,23 @@ export type BotID = "mining" | "mission";
 export const BOT_IDS: readonly BotID[] = Object.freeze<BotID[]>(["mining", "mission"]);
 
 /**
+ * Every browser-side decide loop that can issue orders to one ship.
+ *
+ * `BotID` remains the catalogue of the two built-in launchers. Player-authored
+ * bots have no single catalogue row (there can be many saved scripts), but they
+ * still participate in the SAME ownership claim. Keeping this as a closed union
+ * makes the stopper table and the store's status table exhaustive without
+ * pretending that "custom" is one built-in bot.
+ */
+export type ShipControllerID = BotID | "custom";
+
+export const SHIP_CONTROLLER_IDS: readonly ShipControllerID[] = Object.freeze<ShipControllerID[]>([
+  "mining",
+  "mission",
+  "custom",
+]);
+
+/**
  * The run states in which a bot is HOLDING THE SHIP.
  *
  * Paused counts. A paused loop has not let go — it is one press from issuing
@@ -93,10 +110,10 @@ export function holdsTheShip(status: string): boolean {
  * added, and the new bot is stopped by every existing one on the day it lands.
  */
 export function createShipClaim(
-  stop: Readonly<Record<BotID, () => void>>,
-): (botID: BotID) => void {
-  return (botID: BotID): void => {
-    for (const other of BOT_IDS) {
+  stop: Readonly<Record<ShipControllerID, () => void>>,
+): (botID: ShipControllerID) => void {
+  return (botID: ShipControllerID): void => {
+    for (const other of SHIP_CONTROLLER_IDS) {
       if (other !== botID) {
         stop[other]();
       }

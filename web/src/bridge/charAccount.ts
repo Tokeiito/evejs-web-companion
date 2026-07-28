@@ -36,6 +36,7 @@ import {
   isKeyValValue,
   isListValue,
   readKeyVal,
+  readPlainJsonField,
   unwrapLong,
   type JsonValue,
 } from "./wire.ts";
@@ -269,8 +270,8 @@ function charUnboundAckTruthy(value: JsonValue | undefined): boolean {
 /** Decode a plain charUnboundMgr write ack (cancel-delete / update gender / bloodline / toggle). */
 export function decodeCharUnboundWriteAck(response: JsonValue): CharUnboundWriteAck {
   return {
-    ok: charUnboundAckTruthy(readKeyVal(response, "ok")),
-    applied: charUnboundAckTruthy(readKeyVal(response, "applied")),
+    ok: charUnboundAckTruthy(readPlainJsonField(response, "ok")),
+    applied: charUnboundAckTruthy(readPlainJsonField(response, "applied")),
   };
 }
 
@@ -280,10 +281,10 @@ export interface CharacterCreatedAck extends CharUnboundWriteAck {
 }
 
 export function decodeCharacterCreatedAck(response: JsonValue): CharacterCreatedAck {
-  const characterID = toNumber(readKeyVal(response, "result"));
+  const characterID = toNumber(readPlainJsonField(response, "result"));
   return {
-    ok: charUnboundAckTruthy(readKeyVal(response, "ok")),
-    applied: charUnboundAckTruthy(readKeyVal(response, "applied")),
+    ok: charUnboundAckTruthy(readPlainJsonField(response, "ok")),
+    applied: charUnboundAckTruthy(readPlainJsonField(response, "applied")),
     characterID: characterID > 0 ? characterID : null,
   };
 }

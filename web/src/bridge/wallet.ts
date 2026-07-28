@@ -15,6 +15,7 @@ import {
   isListValue,
   readDictEntry,
   readKeyVal,
+  readPlainJsonField,
   readRowField,
   unwrapLong,
   type JsonValue,
@@ -252,8 +253,8 @@ function accountAckTruthy(value: JsonValue | undefined): boolean {
 /** Decode a plain account write ack (set-contact-cost / give-cash to a char / corp transfer). */
 export function decodeAccountWriteAck(response: JsonValue): AccountWriteAck {
   return {
-    ok: accountAckTruthy(readKeyVal(response, "ok")),
-    applied: accountAckTruthy(readKeyVal(response, "applied")),
+    ok: accountAckTruthy(readPlainJsonField(response, "ok")),
+    applied: accountAckTruthy(readPlainJsonField(response, "applied")),
   };
 }
 
@@ -264,15 +265,15 @@ export interface GiveCashBalancesAck extends AccountWriteAck {
 }
 
 export function decodeGiveCashAck(response: JsonValue): GiveCashBalancesAck {
-  const result = readKeyVal(response, "result");
+  const result = readPlainJsonField(response, "result");
   const pair = isListValue(result) ? result.items : Array.isArray(result) ? result : [];
   const toBalanceNumber = (value: JsonValue | undefined): number | null => {
     const n = Number(value);
     return Number.isFinite(n) ? n : null;
   };
   return {
-    ok: accountAckTruthy(readKeyVal(response, "ok")),
-    applied: accountAckTruthy(readKeyVal(response, "applied")),
+    ok: accountAckTruthy(readPlainJsonField(response, "ok")),
+    applied: accountAckTruthy(readPlainJsonField(response, "applied")),
     fromBalance: pair.length > 0 ? toBalanceNumber(pair[0] as JsonValue) : null,
     toBalance: pair.length > 1 ? toBalanceNumber(pair[1] as JsonValue) : null,
   };

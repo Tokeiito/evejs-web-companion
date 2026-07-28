@@ -9,15 +9,15 @@
 // Two things make the splice safe:
 //
 //   • NO CYCLES. A bot may never include itself, directly or through a chain
-//     (A → B → A). The walk carries the set of names already on the stack and
-//     refuses a repeat, so expansion always terminates. `MAX_SUBBOT_DEPTH` is
-//     the second, blunter bound.
+//     (A → B → A). The walk carries stable resolved identities on the stack
+//     and refuses a repeat, so expansion always terminates. `MAX_SUBBOT_DEPTH`
+//     is the second, blunter bound.
 //   • NO ID COLLISIONS. Two copies of the same bot would carry the same step
 //     ids, and ids are how per-step memory and the readout are keyed — so every
 //     inlined node is re-idded under the including node's id.
 //
-// It is PURE: the caller resolves saved bots by name and hands them in, so this
-// module is testable with a plain map and does no I/O.
+// It is PURE: the caller resolves exact ids / unique names and hands documents
+// in, so this module is testable with a plain map and does no I/O.
 
 import {
   MAX_SUBBOT_DEPTH,
@@ -27,10 +27,19 @@ import {
   type LoopBodyNode,
   type MacroStep,
   type ProgramNode,
+  type SubBotNode,
 } from "./botScript.ts";
 
-/** Look up a saved bot by NAME (case-insensitively is the caller's choice). */
-export type ResolveBot = (name: string) => BotScript | null;
+export type SubBotReference = Pick<SubBotNode, "scriptID" | "name">;
+
+/** A resolver never guesses: an ambiguous portable name is its own refusal. */
+export type BotResolution =
+  | { readonly kind: "found"; readonly identity: string; readonly doc: BotScript }
+  | { readonly kind: "missing" }
+  | { readonly kind: "ambiguous" };
+
+/** Resolve by exact scriptID when present; only a unique name may be a fallback. */
+export type ResolveBot = (reference: SubBotReference) => BotResolution;
 
 export interface ExpandResult {
   /** The program with every sub-bot replaced by the steps it stands for. */
@@ -45,6 +54,9 @@ const SAY = {
   noPick: "A step said to run one of your saved bots but none was picked, so it was skipped.",
   missing: (name: string): string =>
     `There is no saved bot called "${name}", so that step was skipped.`,
+  missingID: "That saved bot no longer exists, so that step was skipped.",
+  ambiguous: (name: string): string =>
+    `More than one saved bot is called "${name}". Pick that step again so it has one exact bot, and it was skipped for now.`,
   cycle: (name: string): string =>
     `"${name}" ends up including itself, so that step was skipped.`,
   tooDeep: (name: string): string =>
@@ -60,7 +72,11 @@ const SAY = {
  * still put the result through the codec, which enforces the size caps on the
  * expanded program.)
  */
-export function expandSubBots(doc: BotScript, resolve: ResolveBot): ExpandResult {
+export function expandSubBots(
+  doc: BotScript,
+  resolve: ResolveBot,
+  rootIdentity: string | null = null,
+): ExpandResult {
   const problems: string[] = [];
   let expanded = false;
 
@@ -72,36 +88,48 @@ export function expandSubBots(doc: BotScript, resolve: ResolveBot): ExpandResult
         continue;
       }
       expanded = true;
-      const name = node.name;
-      if (name === null || name.trim().length === 0) {
+      const name = node.name?.trim() ?? "";
+      const scriptID = node.scriptID?.trim() ?? "";
+      if (scriptID.length === 0 && name.length === 0) {
         problems.push(SAY.noPick);
         continue;
       }
-      const key = name.trim().toLowerCase();
-      if (stack.includes(key)) {
-        problems.push(SAY.cycle(name));
-        continue;
-      }
       if (depth >= MAX_SUBBOT_DEPTH) {
-        problems.push(SAY.tooDeep(name));
+        problems.push(SAY.tooDeep(name || "That saved bot"));
         continue;
       }
-      const sub = resolve(name);
-      if (sub === null) {
-        problems.push(SAY.missing(name));
+      const resolved = resolve({ scriptID: scriptID || null, name: name || null });
+      if (resolved.kind === "missing") {
+        problems.push(scriptID.length > 0 ? SAY.missingID : SAY.missing(name));
+        continue;
+      }
+      if (resolved.kind === "ambiguous") {
+        problems.push(SAY.ambiguous(name || "that name"));
+        continue;
+      }
+      if (stack.includes(resolved.identity)) {
+        problems.push(SAY.cycle(name || resolved.doc.name));
         continue;
       }
       // Splice the included bot's program in, one level deeper, under this
       // node's id so its step ids can never collide with anyone else's.
-      out.push(...walk(sub.program, depth + 1, [...stack, key], `${prefix}${node.id}~`));
+      out.push(
+        ...walk(
+          resolved.doc.program,
+          depth + 1,
+          [...stack, resolved.identity],
+          `${prefix}${node.id}~`,
+        ),
+      );
     }
     return out;
   }
 
-  // ⚠ The stack is SEEDED with the root bot's own name, so a bot that includes
-  // ITSELF is caught on the first hop rather than after one free expansion.
+  // ⚠ Seed with the saved root's exact id when the caller knows it; a portable
+  // unsaved document falls back to its normalized name identity.
   const rootKey = doc.name.trim().toLowerCase();
-  const program = walk(doc.program, 0, rootKey.length > 0 ? [rootKey] : [], "");
+  const seeded = rootIdentity ?? (rootKey.length > 0 ? `name:${rootKey}` : null);
+  const program = walk(doc.program, 0, seeded === null ? [] : [seeded], "");
   return { doc: { ...doc, program }, problems, expanded };
 }
 
@@ -125,6 +153,28 @@ export function subBotNames(doc: BotScript): readonly string[] {
     }
   }
   return names;
+}
+
+/** Every direct saved-bot reference, de-duplicated by id first, then by name. */
+export function subBotReferences(doc: BotScript): readonly SubBotReference[] {
+  const seen = new Set<string>();
+  const references: SubBotReference[] = [];
+  for (const node of doc.program) {
+    if (node.kind !== "sub-bot") {
+      continue;
+    }
+    const scriptID = node.scriptID?.trim() || null;
+    const name = node.name?.trim() || null;
+    if (scriptID === null && name === null) {
+      continue;
+    }
+    const key = scriptID !== null ? `id:${scriptID}` : `name:${name!.toLowerCase()}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      references.push({ scriptID, name });
+    }
+  }
+  return references;
 }
 
 // ─── Re-idding ───────────────────────────────────────────────────────────────

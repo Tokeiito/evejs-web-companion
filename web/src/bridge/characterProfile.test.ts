@@ -24,13 +24,9 @@ import {
 } from "./characterProfile.ts";
 import type { JsonValue } from "./wire.ts";
 
-/** A util.KeyVal wrapper around plain fields (the BFF write-ack shape the decoder reads). */
-function profileAckKeyVal(fields: Record<string, JsonValue>): JsonValue {
-  return {
-    type: "object",
-    name: "util.KeyVal",
-    args: { type: "dict", entries: Object.entries(fields) },
-  };
+/** The ordinary JSON object emitted by the BFF's Express response. */
+function plainAck(fields: Record<string, JsonValue>): JsonValue {
+  return { ...fields };
 }
 
 // GetPublicInfo — the live bare util.KeyVal.
@@ -237,23 +233,23 @@ test("R7d: corporationID (corpChange) and stationID (publicInfo) survive as numb
 // --- R88 write acks (Phase-3 charMgr WRITES) ---------------------------------
 
 test("R88 — a charMgr write ack decodes to {ok, applied}", () => {
-  const ack = decodeCharWriteAck(profileAckKeyVal({ ok: true, applied: true, result: null }));
+  const ack = decodeCharWriteAck(plainAck({ ok: true, applied: true, result: null }));
   assert.deepEqual(ack, { ok: true, applied: true });
 });
 
 test("R88 — a declined charMgr write is read as not-applied, not a throw", () => {
-  const ack = decodeCharWriteAck(profileAckKeyVal({ ok: true, applied: false }));
+  const ack = decodeCharWriteAck(plainAck({ ok: true, applied: false }));
   assert.equal(ack.ok, true);
   assert.equal(ack.applied, false);
 });
 
 test("R88 — an AddOwnerNote ack surfaces the new noteID from result", () => {
-  const ack = decodeOwnerNoteCreatedAck(profileAckKeyVal({ ok: true, applied: true, result: 4200001 }));
+  const ack = decodeOwnerNoteCreatedAck(plainAck({ ok: true, applied: true, result: 4200001 }));
   assert.equal(ack.applied, true);
   assert.equal(ack.noteID, 4200001);
 });
 
 test("R88 — an AddOwnerNote ack with no id reads noteID null", () => {
-  const ack = decodeOwnerNoteCreatedAck(profileAckKeyVal({ ok: true, applied: true, result: null }));
+  const ack = decodeOwnerNoteCreatedAck(plainAck({ ok: true, applied: true, result: null }));
   assert.equal(ack.noteID, null);
 });

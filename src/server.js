@@ -15,6 +15,18 @@ const staticDataModule = require("./staticData");
 const config = require("./config");
 const botScriptStoreModule = require("./botScriptStore");
 const botHostModule = require("./botHost");
+const {
+  isBridgeWritePair,
+  pickSafeBrowserSessionFields,
+} = require("./bridgeCallPolicy");
+const {
+  beginHeldTransition,
+  cancelHeldTransition,
+  markTransitionAccepted,
+  markTransitionFailed,
+  publicTransition,
+  waitForTransitionReady,
+} = require("./transitionBarrier");
 
 // Map a bot-script store error (it carries a .code) to an HTTP status + envelope.
 const BOTSCRIPT_STATUS = {
@@ -322,19 +334,62 @@ app.post("/api/logout", async (req, res) => {
   res.json({ ok: true });
 });
 
+// A session-changing command is issued once, then its HTTP handler waits for
+// authoritative location/scene/ship readiness. While that observation is
+// pending, no second bridge POST action may slip through another route. GET
+// reads, the policy-read-only generic call, release, and character reselection
+// remain available so the UI can observe or recover the session. Once phase is
+// `ready`, ordinary commands are legal even
+// while retail's separate next-session-mutation cooldown is still running.
+const TRANSITION_GATE_EXEMPT_POST_PATHS = new Set([
+  "/api/bridge/call", // generic seam is read-only by policy
+  "/api/bridge/select",
+  "/api/bridge/release",
+]);
+app.use((req, res, next) => {
+  if (
+    req.method !== "POST" ||
+    !req.path.startsWith("/api/bridge/") ||
+    TRANSITION_GATE_EXEMPT_POST_PATHS.has(req.path)
+  ) {
+    next();
+    return;
+  }
+  const payload = auth.verifySessionToken(readSessionToken(req));
+  const held = payload && payload.sessionID
+    ? bridgeSessions.get(payload.sessionID) || null
+    : null;
+  if (!held || !held.transition || held.transition.phase === "ready") {
+    next();
+    return;
+  }
+  res.status(409).json({
+    ok: false,
+    error: "SESSION_CHANGE_IN_PROGRESS",
+    message: `The ${held.transition.kind} transition is not ready for another command.`,
+    transition: publicTransition(held),
+  });
+});
+
 // Thin bridge proxy for the whitelisted EveJS callMethod path (goal R1).
 // Forwards the retail call tuple (service, method, args, kwargs) to the
 // gateway's POST /_evejs-web/v1/call; the gateway enforces the deny-by-default
-// (service, method) allowlist and materializes the browser-backed session.
-// The BFF pins the session identity: `userid` always comes from the signed
-// login session, never from the browser payload. Wire contract:
-// docs/bridge-wire-contract.md.
+// (service, method) allowlist and materializes the browser-backed session. This
+// generic seam is READ-ONLY: every known mutator must use its purpose-built,
+// confirmation-gated BFF route. The BFF also projects browser session fields
+// onto an explicit presentation-only allowlist; `userid` always comes from the
+// signed login session. Wire contract: docs/bridge-wire-contract.md.
 app.post("/api/bridge/call", requireAuth, async (req, res, next) => {
   const body = req.body || {};
-  const clientSessionFields =
-    body.session && typeof body.session === "object" && !Array.isArray(body.session)
-      ? body.session
-      : {};
+  if (isBridgeWritePair(body.service, body.method)) {
+    res.status(403).json({
+      ok: false,
+      error: "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE",
+      message: `${body.service}.${body.method} is a write and must use its dedicated confirmation route.`,
+    });
+    return;
+  }
+  const clientSessionFields = pickSafeBrowserSessionFields(body.session);
   // When this web session holds a persistent bridge session (goal R2), every
   // bridge call runs on that live session — one web login is one client
   // session, like retail. A browser-supplied bridgeSessionID is ignored; only
@@ -617,7 +672,7 @@ app.post("/api/bridge/select", requireAuth, async (req, res, next) => {
     // the bot's OWN select passes because its fetch names it. Tab-vs-tab
     // takeover (desktop to phone) is untouched.
     const claimingBotID = botHost.claimedBy(characterID);
-    if (claimingBotID !== null && req.get(botHostModule.BOT_HEADER) !== claimingBotID) {
+    if (claimingBotID !== null && !botHost.authorizesClaim(characterID, req.get(botHostModule.BOT_HEADER))) {
       res.status(409).json({
         ok: false,
         error: "CHARACTER_IN_USE_BY_BOT",
@@ -653,6 +708,14 @@ app.post("/api/bridge/select", requireAuth, async (req, res, next) => {
       solarSystemID: Number(outcome.session.solarSystemID) || null,
       activeShipID: Number(outcome.session.shipID) || null,
       boundHandles: new Map(),
+      // Retail separates the next legal session-mutation cooldown from actual
+      // transition readiness. Epochs invalidate every bound context; the
+      // observed-state barrier below advances phase only after location/scene/
+      // ego/ship postconditions hold.
+      transitionEpoch: 0,
+      transition: null,
+      transitionReservation: null,
+      cooldownUntilMs: 0,
       // R10 live event channel: the single gateway push WebSocket for this
       // session (opened lazily when a browser attaches), the SSE responses it
       // fans out to, and the last cursor seen so a reconnect resumes there.
@@ -798,6 +861,34 @@ function systemScanBindSpec() {
 // which must add a hard ownership check. Wired because it is the retail prereq.
 function fleetBindSpec() {
   return { key: "fleet", service: "fleetObjectHandler", method: "MachoBindObject", args: [], kwargs: null };
+}
+
+// Invite acceptance/rejection and reconnect happen before `session.fleetid`
+// points at the target fleet. Retail binds the fleet id carried by
+// OnFleetInvite (or the saved reconnect record); the bound method then verifies
+// the pending invite/member row.
+function fleetIDBindSpec(fleetID) {
+  return {
+    key: `fleet:${fleetID}`,
+    service: "fleetObjectHandler",
+    method: "MachoBindObject",
+    args: [[fleetID]],
+    kwargs: null,
+  };
+}
+
+// Fleet handles capture a fleet id at bind time. Membership can change without the
+// gateway session changing (create / accept / leave / disband), so treating `fleet`
+// like an ordinary session-lifetime cache can either keep showing FleetNotFound after
+// a join or, worse, keep reading the roster of a fleet the character has left. Drop
+// every fleet-flavoured handle at membership boundaries and before an own-fleet read;
+// the five reads in one batch still share the single in-flight replacement bind.
+function invalidateFleetBoundHandles(held) {
+  for (const key of held.boundHandles.keys()) {
+    if (key === "fleet" || key.startsWith("fleet:") || key.startsWith("fleet-create:")) {
+      held.boundHandles.delete(key);
+    }
+  }
 }
 
 // R77 PLUMBING — the RB-PI planet bind. Retail addresses the planetary-industry
@@ -1740,6 +1831,9 @@ app.get("/api/bridge/bound-fleet", requireAuth, async (req, res, next) => {
   if (!held) {
     return;
   }
+  // Re-resolve the session's current membership on every panel refresh. A fleet OID
+  // is membership-scoped, not valid for the full lifetime of the selected character.
+  invalidateFleetBoundHandles(held);
   const spec = fleetBindSpec();
   const FLEET_READS = [
     // GetInitState() — the full fleet KeyVal {motd, options, fleetID, members(dict),
@@ -2606,6 +2700,9 @@ app.post("/api/bridge/ship/board", requireAuth, async (req, res, next) => {
     res.status(400).json({ ok: false, error: "INVALID_SHIP", message: "A positive shipID is required." });
     return;
   }
+  if (!await acquireRouteTransition(res, held, "board", { shipID })) {
+    return;
+  }
   try {
     const outcome = await boundCall(
       held,
@@ -2615,11 +2712,28 @@ app.post("/api/bridge/ship/board", requireAuth, async (req, res, next) => {
       [shipID, held.activeShipID || null],
       null,
     );
-    // The boarded ship is now active; cargo reads bind against it, and its
-    // old cargo handle is stale.
-    held.activeShipID = shipID;
-    res.json({ ok: true, activeShipID: shipID, notifications: outcome.notifications });
+    markTransitionAccepted(held);
+    const ready = await awaitRouteTransition(held, req.webSessionID, "board", { shipID });
+    if (!ready.ok) {
+      sendTransitionTimeout(res, ready, outcome.notifications);
+      return;
+    }
+    // Only an authoritative postcondition changes the active hull. The epoch
+    // already evicted all ship/dogma/inventory bindings.
+    held.activeShipID = Number(ready.flight.shipID) || null;
+    res.json({
+      ok: true,
+      activeShipID: held.activeShipID,
+      flight: { ...ready.flight, transition: ready.transition },
+      transition: ready.transition,
+      notifications: [...outcome.notifications, ...ready.notifications],
+    });
   } catch (error) {
+    if (held.transition && held.transition.phase === "requested") {
+      cancelHeldTransition(held);
+    } else {
+      markTransitionFailed(held, error && error.message);
+    }
     next(error);
   }
 });
@@ -5003,36 +5117,50 @@ async function dispatchBridgeWrite(req, res, next, service, method, args) {
 }
 
 /**
- * Dispatch a write that SWAPS the session's ACTIVE SHIP (LeaveShip /
- * CreateNewbieShip). Their handlers return no ship id a route could adopt
- * uniformly (LeaveShip returns the capsule id on the docked path only;
- * CreateNewbieShip returns null), so after a successful dispatch re-read the
- * flight status — its shipID is the session's live hull — and refresh
- * held.activeShipID exactly as the hangar board route does. Without this the
- * cargo/fitting binds keep following the hull the character just left until
- * the next select.
+ * Dispatch a write that SWAPS the session's ACTIVE SHIP. A known target hull
+ * is pinned when the route has one; otherwise readiness requires the live
+ * flight ship to differ from the pre-write hull. In space, the scene ego must
+ * match it too. The write is issued once and an uncertain timeout stays
+ * latched, exactly like dock/undock/gate transitions.
  */
-async function dispatchShipSwapWrite(req, res, next, service, method, args) {
+async function dispatchShipSwapWrite(req, res, next, service, method, args, targetShipID = null) {
   const held = requireHeldBridgeSession(req, res);
   if (!held) {
     return;
   }
   try {
-    const outcome = await heldTopLevelCall(held, req.webSessionID, service, method, args, null);
-    let activeShipID = held.activeShipID || null;
-    try {
-      const flightOutcome = await readHeldFlight(held, req.webSessionID);
-      const liveShipID = Number(flightOutcome && flightOutcome.flight && flightOutcome.flight.shipID) || 0;
-      if (liveShipID > 0) {
-        held.activeShipID = liveShipID;
-        activeShipID = liveShipID;
-      }
-    } catch {
-      // The swap itself applied; a failed follow-up read only delays the id
-      // refresh (the next select/board corrects it). Never fail the write for it.
+    const before = await readHeldFlight(held, req.webSessionID);
+    const expected = {
+      shipID: Number(targetShipID) || null,
+      fromShipID: Number(before.flight && before.flight.shipID) || Number(held.activeShipID) || null,
+    };
+    if (!await acquireRouteTransition(res, held, "board", expected)) {
+      return;
     }
-    res.json({ ok: true, applied: true, result: outcome.result ?? null, activeShipID, notifications: outcome.notifications });
+    const outcome = await heldTopLevelCall(held, req.webSessionID, service, method, args, null);
+    markTransitionAccepted(held);
+    const after = await awaitRouteTransition(held, req.webSessionID, "board", expected);
+    if (!after.ok) {
+      sendTransitionTimeout(res, after, outcome.notifications);
+      return;
+    }
+    res.json({
+      ok: true,
+      applied: true,
+      result: outcome.result ?? null,
+      activeShipID: held.activeShipID || null,
+      flight: { ...after.flight, transition: after.transition },
+      transition: after.transition,
+      notifications: [...outcome.notifications, ...after.notifications],
+    });
   } catch (error) {
+    if (held.transition && held.transition.kind === "board") {
+      if (held.transition.phase === "requested") {
+        cancelHeldTransition(held);
+      } else if (held.transition.phase !== "failed") {
+        markTransitionFailed(held, error && error.message);
+      }
+    }
     next(error);
   }
 }
@@ -6026,7 +6154,7 @@ app.post("/api/bridge/ship/eject", requireAuth, async (req, res, next) => {
   if (!requireWriteConfirmation(req, res, "This EJECTS you from your ship, leaving it in space as an abandoned hull. This must be confirmed explicitly.")) {
     return;
   }
-  await dispatchBridgeWrite(req, res, next, "ship", "Eject", []);
+  await dispatchShipSwapWrite(req, res, next, "ship", "Eject", []);
 });
 
 // LeaveShip(shipID) — docked: swaps the active ship to the capsule; in space:
@@ -6060,7 +6188,7 @@ app.post("/api/bridge/ship/board-stored", requireAuth, async (req, res, next) =>
   const body = req.body || {};
   const structureID = Number(body.structureID) || 0;
   const shipID = Number(body.shipID) || 0;
-  await dispatchBridgeWrite(req, res, next, "ship", "BoardStoredShip", [structureID, shipID]);
+  await dispatchShipSwapWrite(req, res, next, "ship", "BoardStoredShip", [structureID, shipID], shipID);
 });
 
 // StoreVessel(sourceLocationID) — stow the active ship into a maintenance bay.
@@ -6069,7 +6197,7 @@ app.post("/api/bridge/ship/store-vessel", requireAuth, async (req, res, next) =>
     return;
   }
   const sourceLocationID = Number((req.body || {}).sourceLocationID) || 0;
-  await dispatchBridgeWrite(req, res, next, "ship", "StoreVessel", [sourceLocationID]);
+  await dispatchShipSwapWrite(req, res, next, "ship", "StoreVessel", [sourceLocationID]);
 });
 
 // AssembleShip(shipIDs, name?, subSystems?) — unpackage packaged ships (docked).
@@ -6175,7 +6303,31 @@ app.post("/api/bridge/ship/safe-logoff", requireAuth, async (req, res, next) => 
   if (!requireWriteConfirmation(req, res, "This initiates a SAFE LOGOFF, taking your character offline. This must be confirmed explicitly.")) {
     return;
   }
-  await dispatchBridgeWrite(req, res, next, "ship", "SafeLogoff", []);
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  try {
+    const outcome = await heldTopLevelCall(held, req.webSessionID, "ship", "SafeLogoff", [], null);
+    const failedConditions = Array.isArray(outcome.result) ? outcome.result : null;
+    const loggedOff = failedConditions !== null && failedConditions.length === 0;
+    if (loggedOff) {
+      // EveJS disconnects the character after serializing this successful
+      // response. Drop the BFF's capability immediately so the browser cannot
+      // keep acting through a stale held-session record.
+      forgetBridgeSession(req.webSessionID);
+    }
+    res.json({
+      ok: true,
+      applied: loggedOff,
+      loggedOff,
+      failedConditions: failedConditions || [],
+      result: outcome.result ?? null,
+      notifications: outcome.notifications,
+    });
+  } catch (error) {
+    next(error);
+  }
 });
 
 // --- fighterMgr WRITES (9) --------------------------------------------------
@@ -6995,10 +7147,10 @@ app.post("/api/bridge/fleet/create", requireAuth, async (req, res, next) => {
   };
   try {
     const outcome = await boundCall(held, req.webSessionID, bindSpec, "Init", [null, null], null);
-    held.boundHandles.delete(bindSpec.key);
+    invalidateFleetBoundHandles(held);
     res.json({ ok: true, applied: true, result: outcome.result ?? null, notifications: outcome.notifications });
   } catch (error) {
-    held.boundHandles.delete(bindSpec.key);
+    invalidateFleetBoundHandles(held);
     if (error && error.code === "SESSION_NOT_FOUND") {
       forgetBridgeSession(req.webSessionID);
     }
@@ -7060,7 +7212,20 @@ app.post("/api/bridge/fleet/leave", requireAuth, async (req, res, next) => {
   if (!requireWriteConfirmation(req, res, "This removes you from your current fleet. Confirm to continue.")) {
     return;
   }
-  await dispatchBridgeWrite(req, res, next, "fleetMgr", "ForceLeaveFleet", []);
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  try {
+    const outcome = await heldTopLevelCall(held, req.webSessionID, "fleetMgr", "ForceLeaveFleet", [], null);
+    invalidateFleetBoundHandles(held);
+    res.json({ ok: true, applied: true, result: outcome.result ?? null, notifications: outcome.notifications });
+  } catch (error) {
+    // The remote write may have committed before transport failure; never retain a
+    // membership-scoped handle across an uncertain outcome.
+    invalidateFleetBoundHandles(held);
+    next(error);
+  }
 });
 
 // AddToWatchlist(charIDs, favorites) — tune the session fleet watchlist.
@@ -7277,12 +7442,132 @@ app.post("/api/bridge/clones/jump", requireAuth, async (req, res, next) => {
     return;
   }
   const body = req.body || {};
-  await dispatchBridgeWrite(req, res, next, "jumpCloneSvc", "CloneJump", [
-    Number(body.destinationLocationID) || 0,
-    Number(body.cloneID) || 0,
-    body.cost ?? null,
-    body.confirmed === true,
-  ]);
+  const destinationLocationID = Number(body.destinationLocationID) || 0;
+  if (destinationLocationID <= 0) {
+    res.status(400).json({ ok: false, error: "INVALID_CLONE_DESTINATION", message: "A positive clone destination is required." });
+    return;
+  }
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const expected = { destinationLocationID };
+  const commandNotifications = [];
+  let issuedTransitionKind = null;
+  try {
+    const before = await readHeldFlight(held, req.webSessionID);
+    if (before.flight.docked !== true) {
+      res.status(409).json({
+        ok: false,
+        error: "CLONE_JUMP_REQUIRES_DOCKED",
+        message: "Jump clones can only be activated while docked in a station or structure.",
+      });
+      return;
+    }
+    if (typeof before.flight.shipIsCapsule !== "boolean") {
+      res.status(409).json({
+        ok: false,
+        error: "ACTIVE_SHIP_TYPE_UNAVAILABLE",
+        message: "The active ship type could not be verified; reselect the character before jumping clones.",
+      });
+      return;
+    }
+
+    // Retail's CloneJump flow leaves a normal hull first, waits for the capsule
+    // session to become usable, then waits out the next-session-change timer
+    // before issuing CloneJump. Keep the two transitions distinct so neither
+    // command can be duplicated on an uncertain response.
+    if (before.flight.shipIsCapsule === false) {
+      const fromShipID = Number(before.flight.shipID) || 0;
+      if (fromShipID <= 0) {
+        res.status(409).json({
+          ok: false,
+          error: "NO_ACTIVE_SHIP",
+          message: "No active ship is available to leave before the clone jump.",
+        });
+        return;
+      }
+      const boardExpected = { fromShipID };
+      if (!await acquireRouteTransition(res, held, "board", boardExpected)) {
+        return;
+      }
+      issuedTransitionKind = "board";
+      const leaveOutcome = await heldTopLevelCall(
+        held,
+        req.webSessionID,
+        "ship",
+        "LeaveShip",
+        [fromShipID],
+        null,
+      );
+      commandNotifications.push(...(leaveOutcome.notifications || []));
+      markTransitionAccepted(held);
+      const boarded = await awaitRouteTransition(
+        held,
+        req.webSessionID,
+        "board",
+        boardExpected,
+      );
+      if (!boarded.ok) {
+        sendTransitionTimeout(res, boarded, commandNotifications);
+        return;
+      }
+      commandNotifications.push(...(boarded.notifications || []));
+      issuedTransitionKind = null;
+      if (boarded.flight.shipIsCapsule !== true) {
+        markTransitionFailed(held, "The active capsule could not be verified after leaving the ship.");
+        res.status(409).json({
+          ok: false,
+          error: "SESSION_CHANGE_UNVERIFIED",
+          message: "The active capsule could not be verified; reselect the character before retrying.",
+          transition: publicTransition(held),
+          notifications: commandNotifications,
+        });
+        return;
+      }
+    }
+
+    if (!await acquireRouteTransition(res, held, "clone", expected)) {
+      return;
+    }
+    issuedTransitionKind = "clone";
+    const outcome = await heldTopLevelCall(
+      held,
+      req.webSessionID,
+      "jumpCloneSvc",
+      "CloneJump",
+      [destinationLocationID, Number(body.cloneID) || 0, body.cost ?? null, body.confirmed === true],
+      null,
+    );
+    markTransitionAccepted(held);
+    const after = await awaitRouteTransition(held, req.webSessionID, "clone", expected);
+    if (!after.ok) {
+      sendTransitionTimeout(res, after, [...commandNotifications, ...outcome.notifications]);
+      return;
+    }
+    issuedTransitionKind = null;
+    res.json({
+      ok: true,
+      applied: true,
+      result: outcome.result ?? null,
+      flight: { ...after.flight, transition: after.transition },
+      transition: after.transition,
+      notifications: [...commandNotifications, ...outcome.notifications, ...after.notifications],
+    });
+  } catch (error) {
+    if (
+      issuedTransitionKind &&
+      held.transition &&
+      held.transition.kind === issuedTransitionKind
+    ) {
+      if (held.transition.phase === "requested") {
+        cancelHeldTransition(held);
+      } else if (held.transition.phase !== "failed") {
+        markTransitionFailed(held, error && error.message);
+      }
+    }
+    next(error);
+  }
 });
 
 // ⚠ DESTRUCTIVE — DestroyInstalledClone(cloneID) removes one of your own jump
@@ -8336,6 +8621,216 @@ async function dispatchBoundDogmaWrite(req, res, next, method, args) {
   }
 }
 
+// --- Dedicated ammo writes -------------------------------------------------
+//
+// The raw dogma calls accept a ship id and arbitrary inventory location ids:
+//   LoadAmmo(shipID, moduleIDs, chargeItemIDs, ammoLocationID)
+//   UnloadAmmo(shipID, moduleIDs, destination, quantity?)
+// Those arguments are too broad for a browser route. These dedicated routes
+// therefore accept only the semantic places the current client can actually
+// operate on: this session's ACTIVE ship cargo or its CURRENT docked station /
+// structure hangar. The concrete ids and inventory flags are pinned here after
+// a live flight read; caller-supplied ship/location ids are never forwarded.
+
+function strictPositiveID(value) {
+  if (
+    (typeof value !== "number" && typeof value !== "string")
+    || (typeof value === "string" && value.trim() === "")
+  ) {
+    return null;
+  }
+  const numeric = Number(value);
+  return Number.isSafeInteger(numeric) && numeric > 0 ? numeric : null;
+}
+
+/** A non-empty id list where every member is a positive safe integer. */
+function strictPositiveIDList(value) {
+  if (!Array.isArray(value) || value.length === 0) {
+    return null;
+  }
+  const ids = value.map(strictPositiveID);
+  if (ids.some((id) => id === null)) {
+    return null;
+  }
+  return [...new Set(ids)];
+}
+
+function sendDedicatedWriteInputError(res, error, message) {
+  res.status(400).json({ ok: false, error, message });
+}
+
+/**
+ * Read and pin the active ship before an argument-injectable write.
+ *
+ * held.activeShipID is updated only by the authoritative board/leave flow. The
+ * live flight read must agree with it; a mismatch is a transition/stale-tab
+ * condition, not permission to silently switch the route to another hull.
+ */
+async function readPinnedActiveShip(held, webSessionID, res) {
+  const current = await readHeldFlight(held, webSessionID);
+  const pinnedShipID = strictPositiveID(held.activeShipID);
+  const liveShipID = strictPositiveID(current && current.flight && current.flight.shipID);
+  if (pinnedShipID === null || liveShipID === null) {
+    res.status(409).json({
+      ok: false,
+      error: "NO_ACTIVE_SHIP",
+      message: "No active ship is available for this action.",
+    });
+    return null;
+  }
+  if (liveShipID !== pinnedShipID) {
+    res.status(409).json({
+      ok: false,
+      error: "ACTIVE_SHIP_CHANGED",
+      message: "The active ship changed. Refresh before trying this action again.",
+    });
+    return null;
+  }
+  return {
+    shipID: pinnedShipID,
+    characterID: strictPositiveID(held.characterID),
+    flight: current.flight,
+  };
+}
+
+/** Resolve cargo or the current dock/structure hangar without accepting an id. */
+function resolvePinnedAmmoPlace(res, context, place) {
+  if (place === "cargo") {
+    return {
+      locationID: context.shipID,
+      destination: [context.shipID, context.characterID, ITEM_FLAG_CARGO_HOLD],
+    };
+  }
+  if (place !== "hangar") {
+    sendDedicatedWriteInputError(
+      res,
+      "INVALID_AMMO_LOCATION",
+      "location must be 'cargo' or 'hangar'.",
+    );
+    return null;
+  }
+  const flight = context.flight || {};
+  const dockedLocationID =
+    strictPositiveID(flight.structureID) ?? strictPositiveID(flight.stationID);
+  if (flight.docked !== true || flight.inSpace === true || dockedLocationID === null) {
+    res.status(409).json({
+      ok: false,
+      error: "NOT_DOCKED",
+      message: "The current station or structure hangar is available only while docked.",
+    });
+    return null;
+  }
+  return {
+    locationID: dockedLocationID,
+    destination: [dockedLocationID, context.characterID, ITEM_FLAG_HANGAR],
+  };
+}
+
+// LoadAmmo on the session's pinned active ship. `source` is deliberately a
+// two-value word, never a location id. A bank master may expand server-side to
+// every linked module, which is why this remains confirm-gated.
+app.post("/api/bridge/dogma/ammo/load", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This reloads the selected module or linked weapon bank and moves ammunition from the chosen inventory. Confirm to continue.")) {
+    return;
+  }
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const body = req.body || {};
+  const moduleIDs = strictPositiveIDList(body.moduleIDs);
+  const chargeItemIDs = strictPositiveIDList(body.chargeItemIDs);
+  const source = typeof body.source === "string" ? body.source : "";
+  if (moduleIDs === null) {
+    sendDedicatedWriteInputError(res, "INVALID_MODULE_IDS", "moduleIDs must be a non-empty list of positive integers.");
+    return;
+  }
+  if (chargeItemIDs === null) {
+    sendDedicatedWriteInputError(res, "INVALID_CHARGE_IDS", "chargeItemIDs must be a non-empty list of positive integers.");
+    return;
+  }
+  if (source !== "cargo" && source !== "hangar") {
+    sendDedicatedWriteInputError(res, "INVALID_AMMO_LOCATION", "source must be 'cargo' or 'hangar'.");
+    return;
+  }
+  try {
+    const context = await readPinnedActiveShip(held, req.webSessionID, res);
+    if (!context) {
+      return;
+    }
+    const sourcePlace = resolvePinnedAmmoPlace(res, context, source);
+    if (!sourcePlace) {
+      return;
+    }
+    const outcome = await heldTopLevelCall(
+      held,
+      req.webSessionID,
+      "dogmaIM",
+      "LoadAmmo",
+      [context.shipID, moduleIDs, chargeItemIDs, sourcePlace.locationID],
+      null,
+    );
+    res.json({ ok: true, applied: true, result: outcome.result ?? null, notifications: outcome.notifications });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// UnloadAmmo from the session's pinned active ship. An omitted quantity unloads
+// the selected module(s) completely; a supplied quantity must be a positive
+// safe integer. The destination tuple's location and flag are both server-owned.
+app.post("/api/bridge/dogma/ammo/unload", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This unloads ammunition from the selected module or linked weapon bank into the chosen inventory. Confirm to continue.")) {
+    return;
+  }
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const body = req.body || {};
+  const moduleIDs = strictPositiveIDList(body.moduleIDs);
+  const destination = typeof body.destination === "string" ? body.destination : "";
+  const hasQuantity = body.quantity !== undefined && body.quantity !== null;
+  const quantity = hasQuantity ? strictPositiveID(body.quantity) : null;
+  if (moduleIDs === null) {
+    sendDedicatedWriteInputError(res, "INVALID_MODULE_IDS", "moduleIDs must be a non-empty list of positive integers.");
+    return;
+  }
+  if (destination !== "cargo" && destination !== "hangar") {
+    sendDedicatedWriteInputError(res, "INVALID_AMMO_LOCATION", "destination must be 'cargo' or 'hangar'.");
+    return;
+  }
+  if (hasQuantity && quantity === null) {
+    sendDedicatedWriteInputError(res, "INVALID_QUANTITY", "quantity must be a positive integer when supplied.");
+    return;
+  }
+  try {
+    const context = await readPinnedActiveShip(held, req.webSessionID, res);
+    if (!context) {
+      return;
+    }
+    const destinationPlace = resolvePinnedAmmoPlace(res, context, destination);
+    if (!destinationPlace) {
+      return;
+    }
+    const args = [context.shipID, moduleIDs, destinationPlace.destination];
+    if (hasQuantity) {
+      args.push(quantity);
+    }
+    const outcome = await heldTopLevelCall(
+      held,
+      req.webSessionID,
+      "dogmaIM",
+      "UnloadAmmo",
+      args,
+      null,
+    );
+    res.json({ ok: true, applied: true, result: outcome.result ?? null, notifications: outcome.notifications });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // RemoveTargets([targetIDs]) — drop a set of locks in one call. Session-scoped.
 app.post("/api/bridge/dogma/targets/remove", requireAuth, async (req, res, next) => {
   if (!requireWriteConfirmation(req, res, "This drops those target locks. Confirm to continue.")) {
@@ -9035,19 +9530,18 @@ app.post("/api/bridge/scan/probe/set-activity", requireAuth, async (req, res, ne
 //
 // The 16 fleet composition / membership / broadcast writes off the R72
 // fleetObjectHandler.MachoBindObject bind (the same bind the R85 bound reads on
-// /api/bridge/bound-fleet ride). CLOSES WB-FLEET (21/21 with the R94/R95 top-level
-// fleet writes) → writes 298/301. PLUMBING ONLY — no UI.
+// /api/bridge/bound-fleet ride). They back the Fleet Center and bot fleet blocks.
+// The separate Latest parity review records the intentionally deferred fleet methods.
 //
 // Each write dispatches as a BOUND method off fleetBindSpec() (dispatchBoundFleetWrite
 // below), mirroring dispatchBoundScanWrite / dispatchBoundInventoryWrite. The BFF holds
 // the OID handle; the browser never sees it.
 //
-// ⚠ OWNERSHIP: fleetObjectHandler.MachoBindObject ACCEPTS a caller fleetID (no membership
-// check — the R72 binds-arbitrary-OID gateway), but fleetBindSpec() passes args:[], so the
-// server binds the SESSION's OWN fleet (session.fleetid; documented ~fleetObjectHandler-
-// Service line 1644 as "never leaks"). These dedicated routes NEVER pass a caller fleetID —
-// the caller-fleetID leak lives only on the generic /api/bridge/call seam (#26-#30 bind-
-// gateway, flagged separately in docs/arg-injection-leak-handoff.md), not here. AND every
+// ⚠ OWNERSHIP: most routes bind the SESSION's OWN fleet through fleetBindSpec().
+// AcceptInvite / RejectInvite instead bind the fleetID carried by OnFleetInvite, and
+// Reconnect binds the saved pre-disconnect fleetID, because the current session has no
+// fleetID yet. Those targeted binds are not authority: the runtime requires a matching
+// pending invite or an existing member row before changing session state. Every other
 // roster mutator is role-gated server-side by the session char's fleet job/role before it
 // touches the roster (KickMember/MoveMember/CreateSquad → ensureCommanderOrBoss;
 // DisbandFleet/MakeLeader/CreateWing/SetOptions → ensureFleetBoss; the rest →
@@ -9069,8 +9563,42 @@ async function dispatchBoundFleetWrite(req, res, next, method, args, kwargs = nu
   }
   try {
     const outcome = await boundCall(held, req.webSessionID, fleetBindSpec(), method, args, kwargs);
+    invalidateFleetBoundHandles(held);
     res.json({ ok: true, applied: true, result: outcome.result ?? null, notifications: outcome.notifications });
   } catch (error) {
+    // A rejected response is not proof that the server made no state change.
+    invalidateFleetBoundHandles(held);
+    if (error && error.code === "SESSION_NOT_FOUND") {
+      forgetBridgeSession(req.webSessionID);
+    }
+    next(error);
+  }
+}
+
+/**
+ * Dispatch an invite/reconnect write against an explicitly named fleet. The
+ * pending-invite/member check in the runtime is the authority; the bind only
+ * selects the record on which that check runs. Never retain this handle across
+ * a membership boundary, including an uncertain failed response.
+ */
+async function dispatchFleetIDBoundWrite(req, res, next, fleetID, method, args, kwargs = null) {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  try {
+    const outcome = await boundCall(
+      held,
+      req.webSessionID,
+      fleetIDBindSpec(fleetID),
+      method,
+      args,
+      kwargs,
+    );
+    invalidateFleetBoundHandles(held);
+    res.json({ ok: true, applied: true, result: outcome.result ?? null, notifications: outcome.notifications });
+  } catch (error) {
+    invalidateFleetBoundHandles(held);
     if (error && error.code === "SESSION_NOT_FOUND") {
       forgetBridgeSession(req.webSessionID);
     }
@@ -9249,49 +9777,62 @@ app.post("/api/bridge/fleet/invite/accept", requireAuth, async (req, res, next) 
     return;
   }
   const body = req.body || {};
-  const shipTypeID = body.shipTypeID === undefined ? null : Number(body.shipTypeID) || null;
-  const fleetID = Number(body.fleetID) || 0;
-  if (fleetID > 0) {
-    const held = requireHeldBridgeSession(req, res);
-    if (!held) {
-      return;
-    }
-    const spec = {
-      key: `fleet:${fleetID}`,
-      service: "fleetObjectHandler",
-      method: "MachoBindObject",
-      args: [[fleetID]],
-      kwargs: null,
-    };
-    try {
-      const outcome = await boundCall(held, req.webSessionID, spec, "AcceptInvite", [shipTypeID], null);
-      res.json({ ok: true, applied: true, result: outcome.result ?? null, notifications: outcome.notifications });
-    } catch (error) {
-      if (error && error.code === "SESSION_NOT_FOUND") {
-        forgetBridgeSession(req.webSessionID);
-      }
-      next(error);
-    }
+  const fleetID = strictPositiveID(body.fleetID);
+  if (fleetID === null) {
+    sendDedicatedWriteInputError(res, "INVALID_FLEET_ID", "A positive fleetID is required.");
     return;
   }
-  await dispatchBoundFleetWrite(req, res, next, "AcceptInvite", [shipTypeID]);
+  // The runtime safely derives the current hull type when this argument is
+  // null. Never let a browser poison its roster row with a spoofed type ID.
+  await dispatchFleetIDBoundWrite(req, res, next, fleetID, "AcceptInvite", [null]);
 });
 
-// RejectInvite(alreadyInFleet) — decline a pending fleet invite for the session char.
+// RejectInvite(alreadyInFleet?) — decline a pending invite on the INVITING
+// fleet's bound object. The invitee has no session fleetID yet (or may already
+// be in a different fleet), so fleetID comes from OnFleetInvite. The pending
+// invite record remains the authority server-side.
 app.post("/api/bridge/fleet/invite/reject", requireAuth, async (req, res, next) => {
   if (!requireWriteConfirmation(req, res, "This declines the fleet invitation. Confirm to continue.")) {
     return;
   }
-  const alreadyInFleet = (req.body || {}).alreadyInFleet === true;
-  await dispatchBoundFleetWrite(req, res, next, "RejectInvite", [alreadyInFleet]);
+  const body = req.body || {};
+  const fleetID = strictPositiveID(body.fleetID);
+  if (fleetID === null) {
+    sendDedicatedWriteInputError(res, "INVALID_FLEET_ID", "A positive fleetID is required.");
+    return;
+  }
+  const hasAlreadyInFleet = Object.prototype.hasOwnProperty.call(body, "alreadyInFleet");
+  if (hasAlreadyInFleet && typeof body.alreadyInFleet !== "boolean") {
+    sendDedicatedWriteInputError(
+      res,
+      "INVALID_ALREADY_IN_FLEET",
+      "alreadyInFleet must be a boolean when supplied.",
+    );
+    return;
+  }
+  await dispatchFleetIDBoundWrite(
+    req,
+    res,
+    next,
+    fleetID,
+    "RejectInvite",
+    hasAlreadyInFleet ? [body.alreadyInFleet] : [],
+  );
 });
 
-// Reconnect() — re-sync the session char into its own fleet after a reconnect. No args.
+// Reconnect() — restore the session char into the SAVED pre-disconnect fleet.
+// The current session has no fleetID yet, so bind the saved fleetID explicitly;
+// the runtime still requires this character's member row. No method args.
 app.post("/api/bridge/fleet/reconnect", requireAuth, async (req, res, next) => {
   if (!requireWriteConfirmation(req, res, "This reconnects you to your fleet. Confirm to continue.")) {
     return;
   }
-  await dispatchBoundFleetWrite(req, res, next, "Reconnect", []);
+  const fleetID = strictPositiveID((req.body || {}).fleetID);
+  if (fleetID === null) {
+    sendDedicatedWriteInputError(res, "INVALID_FLEET_ID", "A positive fleetID is required.");
+    return;
+  }
+  await dispatchFleetIDBoundWrite(req, res, next, fleetID, "Reconnect", []);
 });
 
 // --- R17 Contracts (contractProxy bridge) -----------------------------------
@@ -13497,13 +14038,129 @@ async function readHeldFlight(held, webSessionID) {
     if (Number(flight.solarSystemID) > 0) {
       held.solarSystemID = Number(flight.solarSystemID);
     }
-    return outcome;
+    return {
+      ...outcome,
+      flight: {
+        ...flight,
+        transition: publicTransition(held),
+      },
+    };
   } catch (error) {
     if (error && error.code === "SESSION_NOT_FOUND") {
       forgetBridgeSession(webSessionID);
     }
     throw error;
   }
+}
+
+function routeTransitionNow() {
+  return typeof options.transitionNow === "function" ? Number(options.transitionNow()) : Date.now();
+}
+
+function beginRouteTransition(res, held, kind, expected) {
+  const begun = beginHeldTransition(held, kind, expected, routeTransitionNow());
+  if (begun.ok) {
+    return true;
+  }
+  res.status(409).json({
+    ok: false,
+    error: begun.code,
+    message: begun.message,
+    transition: begun.transition || publicTransition(held),
+  });
+  return false;
+}
+
+/**
+ * Reserve the next session-changing command and wait out retail's advertised
+ * next-mutation timer. Readiness and cooldown are intentionally separate: a
+ * ship can already be usable while another dock/jump/board is not legal yet.
+ * Only the latter waits here; ordinary warp/module/inventory calls continue
+ * once the prior transition's authoritative readiness phase is `ready`.
+ */
+async function acquireRouteTransition(res, held, kind, expected) {
+  if (held.transition && held.transition.phase !== "ready") {
+    return beginRouteTransition(res, held, kind, expected);
+  }
+  if (held.transitionReservation) {
+    res.status(409).json({
+      ok: false,
+      error: "SESSION_CHANGE_IN_PROGRESS",
+      message: `Another ${held.transitionReservation.kind} request is waiting for the session-change timer.`,
+      transition: publicTransition(held),
+    });
+    return false;
+  }
+
+  const waitMs = Math.max(0, Number(held.cooldownUntilMs || 0) - routeTransitionNow());
+  if (waitMs > 0) {
+    const reservation = { kind, token: Symbol(kind) };
+    held.transitionReservation = reservation;
+    try {
+      const sleep = typeof options.transitionSleep === "function"
+        ? options.transitionSleep
+        : (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+      await sleep(waitMs);
+    } finally {
+      if (held.transitionReservation === reservation) {
+        held.transitionReservation = null;
+      }
+    }
+  }
+  return beginRouteTransition(res, held, kind, expected);
+}
+
+/**
+ * Wait for an issued session mutation to become USABLE, not for a guessed
+ * delay. Space transitions require the destination snapshot's own ship (scene
+ * + ego); dock/board require their authoritative location/ship postcondition.
+ * A timeout is deliberately uncertain and remains latched, so no route can
+ * repeat the write until the player reselects the character.
+ */
+async function awaitRouteTransition(held, webSessionID, kind, expected) {
+  let lastFlight = {};
+  return waitForTransitionReady({
+    held,
+    kind,
+    expected,
+    timeoutMs: Number(options.transitionReadyTimeoutMs) || undefined,
+    pollMs: Number(options.transitionPollMs) || undefined,
+    sleep: options.transitionSleep,
+    now: options.transitionNow,
+    readFlight: async () => {
+      const outcome = await readHeldFlight(held, webSessionID);
+      lastFlight = outcome.flight || {};
+      return outcome;
+    },
+    readSpace: async () => {
+      if (typeof gateway.readSpaceSnapshot === "function") {
+        return gateway.readSpaceSnapshot(held.bridgeSessionID, { userid: held.accountID });
+      }
+      // Test/minimal gateway compatibility only. Production always has the
+      // stronger snapshot route; an older gateway can at least require the
+      // authoritative flight location + ship rather than a fixed timer.
+      return {
+        space: {
+          inSpace: lastFlight.inSpace === true,
+          ship: lastFlight.inSpace === true && Number(lastFlight.shipID) > 0
+            ? { itemID: Number(lastFlight.shipID) }
+            : null,
+        },
+        notifications: [],
+      };
+    },
+  });
+}
+
+function sendTransitionTimeout(res, outcome, commandNotifications = []) {
+  res.status(504).json({
+    ok: false,
+    error: outcome.code || "TRANSITION_TIMEOUT",
+    message: outcome.message || "The session change did not become ready in time. No command was repeated.",
+    flight: outcome.flight || null,
+    transition: outcome.transition || null,
+    notifications: [...commandNotifications, ...(outcome.notifications || [])],
+  });
 }
 
 // --- R13 flight-verb ranges -------------------------------------------------
@@ -13591,6 +14248,13 @@ app.post("/api/bridge/flight/undock", requireAuth, async (req, res, next) => {
       return;
     }
     const shipID = Number(before.flight.shipID) || Number(held.activeShipID) || 0;
+    const expected = {
+      shipID,
+      toSolarSystemID: Number(before.flight.solarSystemID) || null,
+    };
+    if (!await acquireRouteTransition(res, held, "undock", expected)) {
+      return;
+    }
     const outcome = await heldTopLevelCall(
       held,
       req.webSessionID,
@@ -13599,13 +14263,26 @@ app.post("/api/bridge/flight/undock", requireAuth, async (req, res, next) => {
       [shipID, false],
       { onlineModules: [] },
     );
-    const after = await readHeldFlight(held, req.webSessionID);
+    markTransitionAccepted(held);
+    const after = await awaitRouteTransition(held, req.webSessionID, "undock", expected);
+    if (!after.ok) {
+      sendTransitionTimeout(res, after, outcome.notifications);
+      return;
+    }
     res.json({
       ok: true,
-      flight: after.flight,
+      flight: { ...after.flight, transition: after.transition },
+      transition: after.transition,
       notifications: [...outcome.notifications, ...after.notifications],
     });
   } catch (error) {
+    if (held.transition && held.transition.kind === "undock") {
+      if (held.transition.phase === "requested") {
+        cancelHeldTransition(held);
+      } else if (held.transition.phase !== "failed") {
+        markTransitionFailed(held, error && error.message);
+      }
+    }
     next(error);
   }
 });
@@ -13826,6 +14503,13 @@ app.post("/api/bridge/flight/jump", requireAuth, async (req, res, next) => {
       return;
     }
     const shipID = Number(before.flight.shipID) || 0;
+    const expected = {
+      fromSolarSystemID: Number(before.flight.solarSystemID) || null,
+      shipID,
+    };
+    if (!await acquireRouteTransition(res, held, "stargate", expected)) {
+      return;
+    }
     const outcome = await boundCall(
       held,
       req.webSessionID,
@@ -13834,14 +14518,125 @@ app.post("/api/bridge/flight/jump", requireAuth, async (req, res, next) => {
       [fromGateID, toGateID, shipID],
       null,
     );
-    const after = await readHeldFlight(held, req.webSessionID);
+    markTransitionAccepted(held);
+    const after = await awaitRouteTransition(held, req.webSessionID, "stargate", expected);
+    if (!after.ok) {
+      sendTransitionTimeout(res, after, outcome.notifications);
+      return;
+    }
     res.json({
       ok: true,
       result: outcome.result,
-      flight: after.flight,
+      flight: { ...after.flight, transition: after.transition },
+      transition: after.transition,
       notifications: [...outcome.notifications, ...after.notifications],
     });
   } catch (error) {
+    if (held.transition && held.transition.kind === "stargate") {
+      if (held.transition.phase === "requested") {
+        cancelHeldTransition(held);
+      } else if (held.transition.phase !== "failed") {
+        markTransitionFailed(held, error && error.message);
+      }
+    }
+    next(error);
+  }
+});
+
+// Jump through an Ansiblex / Upwell structure gate. The browser names only the
+// nearby source structure; the BFF resolves its destination through the held
+// session before issuing the consumptive command. That prevents a caller-sent
+// destination from weakening the readiness postcondition, while EveJS remains
+// authoritative for proximity, access, reciprocal link, fuel, and toll checks.
+app.post("/api/bridge/flight/jump-through-structure", requireAuth, async (req, res, next) => {
+  if (
+    !requireWriteConfirmation(
+      req,
+      res,
+      "This activates that structure jump gate, consuming its fuel and possibly charging an ISK toll. Confirm to continue.",
+    )
+  ) {
+    return;
+  }
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const structureID = Number(req.body && req.body.structureID) || 0;
+  if (structureID <= 0) {
+    res.status(400).json({
+      ok: false,
+      error: "INVALID_STRUCTURE_GATE",
+      message: "A positive structureID is required.",
+    });
+    return;
+  }
+  try {
+    const before = await readHeldFlight(held, req.webSessionID);
+    if (!requireInSpace(res, before.flight)) {
+      return;
+    }
+    const destination = await heldTopLevelCall(
+      held,
+      req.webSessionID,
+      "structureJumpBridgeMgr",
+      "GetJbStructureDestination",
+      [structureID],
+      null,
+    );
+    const destinationSolarSystemID = Number(destination.result) || 0;
+    const fromSolarSystemID = Number(before.flight.solarSystemID) || 0;
+    if (destinationSolarSystemID <= 0 || destinationSolarSystemID === fromSolarSystemID) {
+      res.status(409).json({
+        ok: false,
+        error: "STRUCTURE_JUMP_DESTINATION_UNAVAILABLE",
+        message: "That structure gate does not currently expose a valid destination.",
+        notifications: destination.notifications,
+      });
+      return;
+    }
+    const expected = {
+      fromSolarSystemID,
+      toSolarSystemID: destinationSolarSystemID,
+      shipID: Number(before.flight.shipID) || Number(held.activeShipID) || null,
+    };
+    if (!await acquireRouteTransition(res, held, "stargate", expected)) {
+      return;
+    }
+    const outcome = await heldTopLevelCall(
+      held,
+      req.webSessionID,
+      "structureJumpBridgeMgr",
+      "CmdJumpThroughStructureStargate",
+      [structureID],
+      null,
+    );
+    markTransitionAccepted(held);
+    const after = await awaitRouteTransition(held, req.webSessionID, "stargate", expected);
+    if (!after.ok) {
+      sendTransitionTimeout(res, after, [...destination.notifications, ...outcome.notifications]);
+      return;
+    }
+    res.json({
+      ok: true,
+      applied: true,
+      result: outcome.result ?? null,
+      destinationSolarSystemID,
+      flight: { ...after.flight, transition: after.transition },
+      transition: after.transition,
+      notifications: [...destination.notifications, ...outcome.notifications, ...after.notifications],
+    });
+  } catch (error) {
+    if (held.transition && held.transition.kind === "stargate") {
+      if (held.transition.phase === "requested") {
+        cancelHeldTransition(held);
+      } else if (held.transition.phase !== "failed") {
+        markTransitionFailed(held, error && error.message);
+      }
+    }
+    if (error && error.code === "SESSION_NOT_FOUND") {
+      forgetBridgeSession(req.webSessionID);
+    }
     next(error);
   }
 });
@@ -13866,6 +14661,10 @@ app.post("/api/bridge/flight/dock", requireAuth, async (req, res, next) => {
       return;
     }
     const shipID = Number(before.flight.shipID) || 0;
+    const expected = { stationID, shipID };
+    if (!await acquireRouteTransition(res, held, "dock", expected)) {
+      return;
+    }
     const outcome = await boundCall(
       held,
       req.webSessionID,
@@ -13874,14 +14673,27 @@ app.post("/api/bridge/flight/dock", requireAuth, async (req, res, next) => {
       [stationID, shipID],
       null,
     );
-    const after = await readHeldFlight(held, req.webSessionID);
+    markTransitionAccepted(held);
+    const after = await awaitRouteTransition(held, req.webSessionID, "dock", expected);
+    if (!after.ok) {
+      sendTransitionTimeout(res, after, outcome.notifications);
+      return;
+    }
     res.json({
       ok: true,
       result: outcome.result,
-      flight: after.flight,
+      flight: { ...after.flight, transition: after.transition },
+      transition: after.transition,
       notifications: [...outcome.notifications, ...after.notifications],
     });
   } catch (error) {
+    if (held.transition && held.transition.kind === "dock") {
+      if (held.transition.phase === "requested") {
+        cancelHeldTransition(held);
+      } else if (held.transition.phase !== "failed") {
+        markTransitionFailed(held, error && error.message);
+      }
+    }
     next(error);
   }
 });
@@ -14127,7 +14939,7 @@ app.post("/api/bridge/flight/stop", requireAuth, async (req, res, next) => {
  * session's live flight to bind the CURRENT solar system and require in-space;
  * a lost session drops the held session (page returns to character select).
  */
-async function dispatchBoundBeyonceWrite(req, res, next, method, args, kwargs = null) {
+async function dispatchBoundBeyonceWrite(req, res, next, method, args, kwargs = null, transition = null) {
   const held = requireHeldBridgeSession(req, res);
   if (!held) {
     return;
@@ -14135,6 +14947,16 @@ async function dispatchBoundBeyonceWrite(req, res, next, method, args, kwargs = 
   try {
     const before = await readHeldFlight(held, req.webSessionID);
     if (!requireInSpace(res, before.flight)) {
+      return;
+    }
+    const expected = transition
+      ? {
+          ...transition.expected,
+          fromSolarSystemID: Number(before.flight.solarSystemID) || null,
+          shipID: Number(before.flight.shipID) || Number(held.activeShipID) || null,
+        }
+      : null;
+    if (transition && !await acquireRouteTransition(res, held, transition.kind, expected)) {
       return;
     }
     const outcome = await boundCall(
@@ -14145,15 +14967,32 @@ async function dispatchBoundBeyonceWrite(req, res, next, method, args, kwargs = 
       args,
       kwargs,
     );
-    const after = await readHeldFlight(held, req.webSessionID);
+    if (transition) {
+      markTransitionAccepted(held);
+    }
+    const after = transition
+      ? await awaitRouteTransition(held, req.webSessionID, transition.kind, expected)
+      : await readHeldFlight(held, req.webSessionID);
+    if (transition && !after.ok) {
+      sendTransitionTimeout(res, after, outcome.notifications);
+      return;
+    }
     res.json({
       ok: true,
       applied: true,
       result: outcome.result ?? null,
-      flight: after.flight,
+      flight: transition ? { ...after.flight, transition: after.transition } : after.flight,
+      ...(transition ? { transition: after.transition } : {}),
       notifications: [...outcome.notifications, ...after.notifications],
     });
   } catch (error) {
+    if (transition && held.transition && held.transition.kind === transition.kind) {
+      if (held.transition.phase === "requested") {
+        cancelHeldTransition(held);
+      } else if (held.transition.phase !== "failed") {
+        markTransitionFailed(held, error && error.message);
+      }
+    }
     if (error && error.code === "SESSION_NOT_FOUND") {
       forgetBridgeSession(req.webSessionID);
     }
@@ -14216,7 +15055,15 @@ app.post("/api/bridge/flight/jump-through-fleet", requireAuth, async (req, res, 
   const otherShipID = Number(body.otherShipID) || 0;
   const beaconID = Number(body.beaconID) || 0;
   const solarSystemID = Number(body.solarSystemID) || 0;
-  await dispatchBoundBeyonceWrite(req, res, next, "CmdJumpThroughFleet", [otherCharID, otherShipID, beaconID, solarSystemID]);
+  await dispatchBoundBeyonceWrite(
+    req,
+    res,
+    next,
+    "CmdJumpThroughFleet",
+    [otherCharID, otherShipID, beaconID, solarSystemID],
+    null,
+    { kind: "stargate", expected: { toSolarSystemID: solarSystemID } },
+  );
 });
 
 // BookmarkLocation(itemID, folderID, name, comment, expiryMode, subfolderID?) —
@@ -15464,6 +16311,44 @@ async function answerWithDronesInSpace(res, held, extra, notifications) {
     notifications: [...notifications, ...after.notifications],
   });
 }
+
+// Manual fallback for an abandoned/uncontrolled drone already within scoop
+// range. Normal recall remains entity.CmdReturnBay, which flies owned drones
+// home and scoops automatically. ScoopDrone is confirm-gated because a
+// successful call moves and may re-owner an inventory item. The raw RPC takes
+// only a drone-id list; the acting ship is session-scoped, and this route still
+// pins the held active ship against the live flight before dispatch.
+app.post("/api/bridge/drones/scoop", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This scoops the selected abandoned drones into the active ship's drone bay. Confirm to continue.")) {
+    return;
+  }
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const droneIDs = strictPositiveIDList((req.body || {}).droneIDs);
+  if (droneIDs === null) {
+    sendDedicatedWriteInputError(res, "INVALID_DRONE_IDS", "droneIDs must be a non-empty list of positive integers.");
+    return;
+  }
+  try {
+    const context = await readPinnedActiveShip(held, req.webSessionID, res);
+    if (!context || !requireInSpace(res, context.flight)) {
+      return;
+    }
+    const outcome = await heldTopLevelCall(
+      held,
+      req.webSessionID,
+      "ship",
+      "ScoopDrone",
+      [droneIDs],
+      null,
+    );
+    res.json({ ok: true, applied: true, result: outcome.result ?? null, notifications: outcome.notifications });
+  } catch (error) {
+    next(error);
+  }
+});
 
 // Launch from the bay: ship.LaunchDrones([[itemID, qty], …], whoseBehalfID,
 // ignoreWarning).
@@ -16862,6 +17747,14 @@ app.post("/api/botscripts/:scriptID/delete", requireAuth, (req, res, next) => {
 // script library above.
 const BOT_START_STATUS = {
   BOTSCRIPT_INVALID: 400,
+  BOTSCRIPT_REVISION_REQUIRED: 400,
+  BOT_GRANT_REQUIRED: 400,
+  BOT_GRANT_INVALID: 400,
+  BOT_GRANT_STALE: 409,
+  BOT_GRANT_EXPIRED: 409,
+  BOT_SCRIPT_CHANGED: 409,
+  BOT_RESTART_REQUIRES_CONFIRMATION: 409,
+  BOT_SUBBOT_GRANT_UNAVAILABLE: 409,
   BOT_ALREADY_RUNNING: 409,
   CHARACTER_IN_USE: 409,
   BOT_STACK_UNAVAILABLE: 500,
@@ -16928,7 +17821,9 @@ app.post("/api/bots/start", requireAuth, async (req, res, next) => {
       characterID,
       scriptID: record.scriptID,
       scriptName: record.name,
+      scriptRev: record.rev,
       doc: record.doc,
+      grant: body.grant,
     });
     if (!outcome.ok) {
       res.status(BOT_START_STATUS[outcome.code] || 500).json({

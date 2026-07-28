@@ -36,8 +36,12 @@
 //     DSTBALL_FOLLOW on that same target);
 //   - pause rather than guess on an unexpected refusal.
 //
-// Retail's `ignoreTimerCycles` (settle a few ticks after a warp/jump so the
-// transition starts before we re-decide) is mirrored by `settleTicks`.
+// Retail's `ignoreTimerCycles` is mirrored by `settleTicks` for movement calls
+// whose effects begin asynchronously (warp / approach) and for recoverable
+// refusals. Session-changing BFF calls are different: undock, stargate jump,
+// and dock do not resolve until the authoritative location and ship/scene
+// readiness are visible, so adding fixed settle ticks after a successful return
+// only hides state that is already safe to re-read.
 
 import { refusalWords } from "../bridge/refusals.ts";
 import { surfaceDistanceMeters } from "../space/overview.ts";
@@ -303,11 +307,9 @@ export interface AutopilotController {
 }
 
 export const AUTOPILOT_CADENCE_MS = 2000;
-const SETTLE_UNDOCK = 2;
 const SETTLE_WARP = 2;
 const SETTLE_APPROACH = 2;
-const SETTLE_JUMP = 5;
-const SETTLE_DOCK = 2;
+const SETTLE_DOCK_REFUSAL = 2;
 const MAX_DOCK_ATTEMPTS = 30;
 const MAX_JUMP_ATTEMPTS = 6;
 // R24 slice A — BOUND THE WARP BRANCH. The jump branch has had a counter since
@@ -785,7 +787,9 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotController {
       switch (action.kind) {
         case "undock":
           await deps.undock();
-          memory.settleTicks = SETTLE_UNDOCK;
+          // The BFF resolves only after the undocked location/scene/ego is
+          // authoritative. The next tick can decide from that ready state.
+          memory.settleTicks = 0;
           return;
         case "warp":
           await deps.warp(action.destinationID);
@@ -814,12 +818,14 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotController {
           memory.approachingTargetID = null;
           memory.approachCycles = 0;
           memory.approachWaitCycles = 0;
-          memory.settleTicks = SETTLE_JUMP;
+          // The BFF has already observed the destination system and ready ship.
+          memory.settleTicks = 0;
           return;
         case "dock":
           await deps.dock(action.stationID);
           memory.approachingTargetID = null;
-          memory.settleTicks = SETTLE_DOCK;
+          // A successful return includes authoritative docked location state.
+          memory.settleTicks = 0;
           return;
         default:
           return;
@@ -852,7 +858,7 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotController {
 
     if (action.kind === "undock" && /already in space|already_in_space/i.test(reason)) {
       // Benign: we wanted to be in space and we are. Continue.
-      memory.settleTicks = SETTLE_UNDOCK;
+      memory.settleTicks = 0;
       return;
     }
 
@@ -899,7 +905,7 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotController {
           return;
         }
         // Approach-then-redock: the ship is now approaching; re-issue dock.
-        memory.settleTicks = SETTLE_DOCK;
+        memory.settleTicks = SETTLE_DOCK_REFUSAL;
         return;
       }
       setPause(`Dock refused: ${words}`);
@@ -986,9 +992,10 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotController {
 
     reconcile(status);
 
-    // Settle window after a warp/jump/dock: let the transition begin before we
-    // re-decide (retail's ignoreTimerCycles). Still polls status for the
-    // readout, just suppresses a new decision.
+    // Settle window after asynchronous movement or a recoverable refusal: let
+    // it begin before re-deciding (retail's ignoreTimerCycles). Successful
+    // BFF session changes never enter this branch because their return already
+    // includes authoritative ready state. Status is still polled for readout.
     if (memory.settleTicks > 0) {
       memory.settleTicks -= 1;
       memory.phase = "Settling";

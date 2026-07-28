@@ -90,9 +90,11 @@ function keyVal(entries) {
 // with handler-shaped fixtures. Each bind returns a handle derived from its
 // (service, method, args) so the test can assert which handle a bound call used.
 function fakeGateway(overrides = {}) {
-  const calls = { select: [], release: [], bind: [], boundCall: [] };
+  const calls = { select: [], release: [], call: [], bind: [], boundCall: [] };
+  const state = { activeShipID: ACTIVE_SHIP_ID };
   const gateway = {
     calls,
+    state,
     async selectCharacter(args, kwargs, sessionFields) {
       calls.select.push({ args, kwargs, sessionFields });
       return {
@@ -118,10 +120,21 @@ function fakeGateway(overrides = {}) {
           inSpace: false,
           stationID: STATION_ID,
           solarSystemID: 30000142,
-          shipID: ACTIVE_SHIP_ID,
+          shipID: state.activeShipID,
         },
         notifications: [],
       };
+    },
+    async callMethod(service, method, args, kwargs, sessionFields, bridgeSessionID) {
+      calls.call.push({ service, method, args, kwargs, sessionFields, bridgeSessionID });
+      if (method === "LeaveShip" || method === "Eject" || method === "StoreVessel") {
+        state.activeShipID = 9900;
+      } else if (method === "CreateNewbieShip") {
+        state.activeShipID = 9901;
+      } else if (method === "BoardStoredShip") {
+        state.activeShipID = Number(args[1]) || state.activeShipID;
+      }
+      return { service, method, result: method === "SafeLogoff" ? [] : null, notifications: [] };
     },
     async bindObject(service, method, args, kwargs, sessionFields, bridgeSessionID) {
       calls.bind.push({ service, method, args, kwargs, sessionFields, bridgeSessionID });
@@ -134,6 +147,9 @@ function fakeGateway(overrides = {}) {
     },
     async callBoundMethod(service, method, args, kwargs, sessionFields, bridgeSessionID, boundHandle) {
       calls.boundCall.push({ service, method, args, kwargs, sessionFields, bridgeSessionID, boundHandle });
+      if (method === "Board") {
+        state.activeShipID = Number(args[0]) || state.activeShipID;
+      }
       let result = null;
       if (method === "List") {
         result = {
@@ -157,6 +173,10 @@ async function startTestServer(options = {}) {
     webAuth: fakeAuth(),
     staticData: fakeStaticData(),
     errorLogger() {},
+    transitionReadyTimeoutMs: options.transitionReadyTimeoutMs,
+    transitionPollMs: options.transitionPollMs,
+    transitionSleep: options.transitionSleep,
+    transitionNow: options.transitionNow,
   });
   const server = app.listen(0, "127.0.0.1");
   activeServers.add(server);
@@ -337,6 +357,55 @@ test("board binds ship, boards, and makes the boarded ship the new active ship f
   // A later cargo read binds against the newly boarded ship.
   await apiRequest(baseUrl, "/api/bridge/inventory");
   assert.ok(gateway.calls.bind.some((b) => b.method === "GetInventoryFromId" && b.args[0] === 200));
+});
+
+test("alternate hull-swap writes wait for the authoritative active ship before answering", async () => {
+  const gateway = fakeGateway();
+  let clockMs = 0;
+  const { baseUrl } = await startTestServer({
+    gateway,
+    transitionNow: () => clockMs,
+    transitionSleep: async (ms) => { clockMs += ms; },
+  });
+  await selectOnServer(baseUrl);
+
+  const left = await apiRequest(baseUrl, "/api/bridge/ship/leave", {
+    method: "POST",
+    body: { shipID: ACTIVE_SHIP_ID, confirm: true },
+  });
+  assert.equal(left.response.status, 200);
+  assert.equal(left.payload.activeShipID, 9900);
+  assert.equal(left.payload.transition.phase, "ready");
+  assert.equal(gateway.calls.call.filter((call) => call.method === "LeaveShip").length, 1);
+
+  const stored = await apiRequest(baseUrl, "/api/bridge/ship/board-stored", {
+    method: "POST",
+    body: { structureID: 1_000_000_001, shipID: 2200, confirm: true },
+  });
+  assert.equal(stored.response.status, 200);
+  assert.equal(stored.payload.activeShipID, 2200);
+  assert.equal(stored.payload.transition.shipID, 2200);
+  assert.equal(gateway.calls.call.filter((call) => call.method === "BoardStoredShip").length, 1);
+  assert.equal(clockMs, 10_000, "the next hull swap waits out the retail session timer");
+});
+
+test("a successful safe logoff drops the BFF's held session immediately", async () => {
+  const gateway = fakeGateway();
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+
+  const loggedOut = await apiRequest(baseUrl, "/api/bridge/ship/safe-logoff", {
+    method: "POST",
+    body: { confirm: true },
+  });
+  assert.equal(loggedOut.response.status, 200);
+  assert.equal(loggedOut.payload.applied, true);
+  assert.equal(loggedOut.payload.loggedOff, true);
+  assert.equal(gateway.calls.call.filter((call) => call.method === "SafeLogoff").length, 1);
+
+  const status = await apiRequest(baseUrl, "/api/bridge/flight/status");
+  assert.equal(status.response.status, 409);
+  assert.equal(status.payload.error, "NO_LIVE_SESSION");
 });
 
 test("inventory routes require a live session and pass gateway refusals through", async () => {

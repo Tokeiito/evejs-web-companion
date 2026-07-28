@@ -195,3 +195,24 @@ test("two per-session flows in one realm reach the BFF as two DIFFERENT identiti
   assert.equal(farmerCall?.headers.authorization, "Bearer token-farmer");
   assert.equal(secondCall?.headers.authorization, "Bearer token-second");
 });
+
+test("a flow exposes the complete request options owned by that session", async () => {
+  const pilot = stubFetch(bffResponses("token-pilot"));
+  const flow = createAppFlow(createClientStore(), {
+    baseUrl: "https://pilot.example",
+    perSessionToken: true,
+    fetch: pilot.fetch,
+  });
+
+  assert.equal(flow.requestOptions().baseUrl, "https://pilot.example");
+  assert.equal(flow.requestOptions().fetch, pilot.fetch);
+  assert.equal(flow.requestOptions().token, null, "the per-flow token starts explicitly empty");
+
+  await flow.login("pilot", "x");
+
+  assert.equal(
+    flow.requestOptions().token,
+    "token-pilot",
+    "component-owned API calls see the same token captured by the flow",
+  );
+});

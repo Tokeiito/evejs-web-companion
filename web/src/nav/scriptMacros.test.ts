@@ -430,12 +430,58 @@ test("remote-rep: no remote reps fitted -> blocked", () => {
 
 test("remote-rep: hurt friendly -> lock then rep it; everyone full -> done", () => {
   const hurt = entity({ itemID: 7001, kind: "ship", characterID: 5001, shieldRatio: 0.4, armorRatio: 1, hullRatio: 1 });
-  const lock = remoteRep(repStep, obs({ snapshot: snapshot([hurt]), remoteShieldRepairerIDs: [600] }), {}, {});
+  const lock = remoteRep(repStep, obs({ snapshot: snapshot([hurt]), remoteShieldRepairerIDs: [600], fleetMemberCharacterIDs: [5001] }), {}, {});
   assert.ok(lock.action.kind === "lock" && lock.action.targetID === 7001);
-  const rep = remoteRep(repStep, obs({ snapshot: snapshot([hurt]), remoteShieldRepairerIDs: [600], lockedTargetIDs: [7001] }), lock.nextMem, {});
+  const rep = remoteRep(repStep, obs({ snapshot: snapshot([hurt]), remoteShieldRepairerIDs: [600], lockedTargetIDs: [7001], fleetMemberCharacterIDs: [5001] }), lock.nextMem, {});
   assert.ok(rep.action.kind === "activate" && rep.action.moduleID === 600 && rep.action.targetID === 7001);
   const full = entity({ itemID: 7001, kind: "ship", characterID: 5001, shieldRatio: 1, armorRatio: 1, hullRatio: 1 });
-  assert.equal(remoteRep(repStep, obs({ snapshot: snapshot([full]), remoteShieldRepairerIDs: [600] }), {}, {}).outcome.kind, "done");
+  assert.equal(remoteRep(repStep, obs({ snapshot: snapshot([full]), remoteShieldRepairerIDs: [600], fleetMemberCharacterIDs: [5001] }), {}, {}).outcome.kind, "done");
+});
+
+test("fleet support waits for an authoritative roster and never targets a non-member", () => {
+  const stranger = entity({ itemID: 7001, kind: "ship", characterID: 5001, shieldRatio: 0.2, armorRatio: 1, hullRatio: 1, position: { x: 500, y: 0, z: 0 } });
+  const member = entity({ itemID: 7002, kind: "ship", characterID: 5002, shieldRatio: 1, armorRatio: 1, hullRatio: 1, position: { x: 5000, y: 0, z: 0 } });
+
+  const unavailable = remoteRep(repStep, obs({
+    snapshot: snapshot([stranger]),
+    remoteShieldRepairerIDs: [600],
+    fleetMemberCharacterIDs: null,
+  }), {}, {});
+  assert.equal(unavailable.action.kind, "wait");
+  assert.match(unavailable.why, /fleet roster/i);
+
+  const filtered = remoteRep(repStep, obs({
+    snapshot: snapshot([stranger, member]),
+    remoteShieldRepairerIDs: [600],
+    fleetMemberCharacterIDs: [5002],
+  }), {}, {});
+  assert.equal(filtered.outcome.kind, "done", "a hurt non-member must not be locked or repped");
+
+  const anchor = orbitBoost(boostStep, obs({
+    snapshot: snapshot([stranger, member]),
+    remoteShieldRepairerIDs: [600],
+    fleetMemberCharacterIDs: [5002],
+  }), {}, {});
+  assert.ok(anchor.action.kind === "orbit" && anchor.action.targetID === 7002);
+});
+
+test("a ship that leaves the authoritative roster stops receiving assistance immediately", () => {
+  const formerMate = entity({ itemID: 7001, kind: "ship", characterID: 5001, shieldRatio: 0.3, armorRatio: 1, hullRatio: 1 });
+  const first = remoteRep(repStep, obs({
+    snapshot: snapshot([formerMate]),
+    remoteShieldRepairerIDs: [600],
+    fleetMemberCharacterIDs: [5001],
+  }), {}, {});
+  assert.equal(first.action.kind, "lock");
+
+  const afterLeave = remoteRep(repStep, obs({
+    snapshot: snapshot([formerMate]),
+    remoteShieldRepairerIDs: [600],
+    lockedTargetIDs: [7001],
+    fleetMemberCharacterIDs: [],
+  }), first.nextMem, {});
+  assert.equal(afterLeave.outcome.kind, "done");
+  assert.notEqual(afterLeave.action.kind, "activate");
 });
 
 // ── Remote assistance has a range, and a bound ───────────────────────────────
@@ -449,7 +495,7 @@ test("remote-rep: hurt friendly -> lock then rep it; everyone full -> done", () 
 
 test("remote-rep: a mate out of rep range is CLOSED ON, not repped hopefully", () => {
   const far = entity({ itemID: 7001, kind: "ship", characterID: 5001, shieldRatio: 0.4, armorRatio: 1, hullRatio: 1, position: { x: 40000, y: 0, z: 0 } });
-  const world = obs({ snapshot: snapshot([far]), remoteShieldRepairerIDs: [600], lockedTargetIDs: [7001] });
+  const world = obs({ snapshot: snapshot([far]), remoteShieldRepairerIDs: [600], lockedTargetIDs: [7001], fleetMemberCharacterIDs: [5001] });
   const t = remoteRep(repStep, world, { repLockOn: 7001, repWaited: 0 }, {});
   assert.ok(t.action.kind === "approach" && t.action.targetID === 7001, "it must close before it fires");
   assert.match(t.why, /Closing in/);
@@ -465,6 +511,7 @@ test("remote-rep: reps that never come on are BOUNDED (this was an infinite loop
     // The rep never appears in activeModuleIDs — the shape of a silent refusal.
     snapshot: snapshot([hurt], { activeModuleIDs: [] }),
     remoteShieldRepairerIDs: [600], lockedTargetIDs: [7001],
+    fleetMemberCharacterIDs: [5001],
   });
   let mem: MacroMemory = { repLockOn: 7001, repWaited: 0 };
   let fired = 0;
@@ -484,6 +531,7 @@ test("remote-rep: a rep that IS cycling refills the budget — no mid-fight stal
   const world = obs({
     snapshot: snapshot([hurt], { activeModuleIDs: [600] }), // 600 landed, 601 idle
     remoteShieldRepairerIDs: [600, 601], lockedTargetIDs: [7001],
+    fleetMemberCharacterIDs: [5001],
   });
   // Arrive with the budget already spent from an earlier dry spell.
   let mem: MacroMemory = { repLockOn: 7001, repWaited: 0, repTries: 3 };
@@ -502,7 +550,7 @@ test("remote-rep: a NEW mate gets a fresh budget", () => {
   // Memory from a spent attempt on 7001, which has since left the grid.
   const t = remoteRep(
     repStep,
-    obs({ snapshot: snapshot([second]), remoteShieldRepairerIDs: [600] }),
+    obs({ snapshot: snapshot([second]), remoteShieldRepairerIDs: [600], fleetMemberCharacterIDs: [5009] }),
     { repLockOn: 7001, repWaited: 0, repTries: 3, repApproached: 7001 },
     {},
   );
@@ -516,7 +564,7 @@ test("orbit-and-boost: closes by ORBITING — it must not also issue an approach
   // Its orbit at ORBIT_BOOST_RANGE_M is how this block gets in range. An approach
   // from the shared helper would fight that orbit command every tick.
   const far = entity({ itemID: 7003, kind: "ship", characterID: 5002, shieldRatio: 0.4, armorRatio: 1, hullRatio: 1, position: { x: 40000, y: 0, z: 0 } });
-  const world = obs({ snapshot: snapshot([far]), remoteShieldRepairerIDs: [600], lockedTargetIDs: [7003] });
+  const world = obs({ snapshot: snapshot([far]), remoteShieldRepairerIDs: [600], lockedTargetIDs: [7003], fleetMemberCharacterIDs: [5002] });
   // `orbiting` already set, so the orbit is not re-issued and we reach the reps.
   const t = orbitBoost(boostStep, world, { orbiting: 7003, repLockOn: 7003, repWaited: 0 }, {});
   assert.notEqual(t.action.kind, "approach");
@@ -525,15 +573,15 @@ test("orbit-and-boost: closes by ORBITING — it must not also issue an approach
 test("remote-rep: an NPC or your own hull is never a rep target", () => {
   const npc = entity({ itemID: 7002, kind: "ship", isNpc: true, shieldRatio: 0.2 });
   // No FRIENDLY is hurt (the NPC is skipped), so the block is done — never reps a rat.
-  assert.equal(remoteRep(repStep, obs({ snapshot: snapshot([npc]), remoteShieldRepairerIDs: [600] }), {}, {}).outcome.kind, "done");
+  assert.equal(remoteRep(repStep, obs({ snapshot: snapshot([npc]), remoteShieldRepairerIDs: [600], fleetMemberCharacterIDs: [] }), {}, {}).outcome.kind, "done");
 });
 
 test("orbit-and-boost: no mate -> waits (never done); a mate present -> orbit it", () => {
-  const none = orbitBoost(boostStep, obs({ snapshot: snapshot([]), remoteShieldRepairerIDs: [600] }), {}, {});
+  const none = orbitBoost(boostStep, obs({ snapshot: snapshot([]), remoteShieldRepairerIDs: [600], fleetMemberCharacterIDs: [] }), {}, {});
   assert.equal(none.outcome.kind, "acting");
   assert.equal(none.action.kind, "wait");
   const mate = entity({ itemID: 7003, kind: "ship", characterID: 5002, shieldRatio: 1, armorRatio: 1, hullRatio: 1, position: { x: 5000, y: 0, z: 0 } });
-  const orb = orbitBoost(boostStep, obs({ snapshot: snapshot([mate]), remoteShieldRepairerIDs: [600] }), {}, {});
+  const orb = orbitBoost(boostStep, obs({ snapshot: snapshot([mate]), remoteShieldRepairerIDs: [600], fleetMemberCharacterIDs: [5002] }), {}, {});
   assert.ok(orb.action.kind === "orbit" && orb.action.targetID === 7003);
 });
 
@@ -1186,22 +1234,37 @@ test("remote-cap: feeds the EMPTIEST mate; all healthy is done; none fitted is b
   const thirsty = entity({ itemID: 801, kind: "ship", characterID: 90001, isNpc: false, capacitorRatio: 0.2, position: { x: 1000, y: 0, z: 0 } });
   const fine = entity({ itemID: 802, kind: "ship", characterID: 90002, isNpc: false, capacitorRatio: 0.99, position: { x: 900, y: 0, z: 0 } });
 
-  const lock = remoteCapBlock(capStep, obs({ snapshot: snapshot([thirsty, fine]), remoteCapModuleIDs: [640] }), {}, {});
+  const lock = remoteCapBlock(capStep, obs({ snapshot: snapshot([thirsty, fine]), remoteCapModuleIDs: [640], fleetMemberCharacterIDs: [90001, 90002] }), {}, {});
   assert.ok(lock.action.kind === "lock" && lock.action.targetID === 801, "the emptiest one, not the nearest");
 
   const run = remoteCapBlock(
     capStep,
-    obs({ snapshot: snapshot([thirsty], { activeModuleIDs: [] }), lockedTargetIDs: [801], remoteCapModuleIDs: [640] }),
+    obs({ snapshot: snapshot([thirsty], { activeModuleIDs: [] }), lockedTargetIDs: [801], remoteCapModuleIDs: [640], fleetMemberCharacterIDs: [90001] }),
     { capLockOn: 801 },
     {},
   );
   assert.ok(run.action.kind === "activate" && run.action.moduleID === 640 && run.action.targetID === 801);
 
-  const allFine = remoteCapBlock(capStep, obs({ snapshot: snapshot([fine]), remoteCapModuleIDs: [640] }), {}, {});
+  const allFine = remoteCapBlock(capStep, obs({ snapshot: snapshot([fine]), remoteCapModuleIDs: [640], fleetMemberCharacterIDs: [90002] }), {}, {});
   assert.equal(allFine.outcome.kind, "done");
 
   const noModule = remoteCapBlock(capStep, obs({ snapshot: snapshot([thirsty]), remoteCapModuleIDs: [] }), {}, {});
   assert.equal(noModule.outcome.kind, "blocked");
+
+  const unavailable = remoteCapBlock(capStep, obs({
+    snapshot: snapshot([thirsty]),
+    remoteCapModuleIDs: [640],
+    fleetMemberCharacterIDs: null,
+  }), {}, {});
+  assert.equal(unavailable.action.kind, "wait");
+  assert.match(unavailable.why, /fleet roster/i);
+
+  const stranger = remoteCapBlock(capStep, obs({
+    snapshot: snapshot([thirsty, fine]),
+    remoteCapModuleIDs: [640],
+    fleetMemberCharacterIDs: [90002],
+  }), {}, {});
+  assert.equal(stranger.outcome.kind, "done", "a cap-starved non-member must not receive a transmitter");
 });
 
 test("remote-cap: a mate out of reach is closed on, and the transfer is bounded", () => {
@@ -1209,14 +1272,14 @@ test("remote-cap: a mate out of reach is closed on, and the transfer is bounded"
   // Transmitter I refused TargetNotWithinRangeGeneric at 17.9 km.
   const capStep: MacroStep = { id: "rc", kind: "macro", macro: "remote-cap", args: {} };
   const far = entity({ itemID: 801, kind: "ship", characterID: 90001, isNpc: false, capacitorRatio: 0.2, position: { x: 30000, y: 0, z: 0 } });
-  const world = obs({ snapshot: snapshot([far]), lockedTargetIDs: [801], remoteCapModuleIDs: [640] });
+  const world = obs({ snapshot: snapshot([far]), lockedTargetIDs: [801], remoteCapModuleIDs: [640], fleetMemberCharacterIDs: [90001] });
   const close = remoteCapBlock(capStep, world, { capLockOn: 801, capWaited: 0 }, {});
   assert.ok(close.action.kind === "approach" && close.action.targetID === 801);
   assert.match(close.why, /Closing in/);
   assert.equal(close.nextMem["capTries"] ?? 0, 0, "out of reach spends no budget");
 
   const near = entity({ itemID: 801, kind: "ship", characterID: 90001, isNpc: false, capacitorRatio: 0.2, position: { x: 1000, y: 0, z: 0 } });
-  const inRange = obs({ snapshot: snapshot([near], { activeModuleIDs: [] }), lockedTargetIDs: [801], remoteCapModuleIDs: [640] });
+  const inRange = obs({ snapshot: snapshot([near], { activeModuleIDs: [] }), lockedTargetIDs: [801], remoteCapModuleIDs: [640], fleetMemberCharacterIDs: [90001] });
   let mem: MacroMemory = { capLockOn: 801, capWaited: 0 };
   let fired = 0;
   for (let i = 0; i < 8; i++) {

@@ -29,6 +29,13 @@
   } from "../app/api.ts";
   import { decodeScriptValue } from "../bots/scriptCodec.ts";
   import {
+    analyzeBotRunPolicy,
+    BOT_RISK_LABELS,
+    createBotLaunchGrant,
+    DEFAULT_SERVER_BOT_RUNTIME_MINUTES,
+    type BotRunPolicy,
+  } from "../bots/runPolicy.ts";
+  import {
     BOTS,
     MINING_BOT_REQUIREMENTS,
     MISSION_BOT_REQUIREMENTS,
@@ -59,6 +66,11 @@
   const mining = store.mining;
   // svelte-ignore state_referenced_locally
   const names = store.names;
+  // svelte-ignore state_referenced_locally
+  const customBot = store.customBot;
+
+  /** Direct api.ts calls must ride THIS pilot's full flow options. */
+  const botOpts = () => flow.requestOptions();
 
   /** Which bot's controls are open. Local view state, never the store's. */
   let opened = $state<BotID | null>(null);
@@ -68,7 +80,7 @@
   let savedError = $state<string | null>(null);
   async function refreshSavedBots(): Promise<void> {
     try {
-      savedBots = await listBotScripts();
+      savedBots = await listBotScripts(botOpts());
       savedError = null;
     } catch {
       savedBots = [];
@@ -77,7 +89,7 @@
   }
   async function startSaved(scriptID: string): Promise<void> {
     try {
-      const record = await getBotScript(scriptID);
+      const record = await getBotScript(scriptID, botOpts());
       if (record === null) {
         savedError = "That bot could not be found.";
         return;
@@ -87,7 +99,11 @@
         savedError = decoded.refusal;
         return;
       }
-      await flow.startCustomBot(decoded.doc);
+      const policy = analyzeBotRunPolicy(decoded.doc);
+      if (!approveRun(decoded.doc.name, policy, null)) {
+        return;
+      }
+      await flow.startCustomBot(decoded.doc, record.scriptID);
     } catch {
       savedError = "Could not start that bot.";
     }
@@ -95,6 +111,22 @@
 
   /** Which saved bot a server start is in flight for (disables its buttons). */
   let serverStartBusy = $state<string | null>(null);
+  let serverRunMinutes = $state(DEFAULT_SERVER_BOT_RUNTIME_MINUTES);
+
+  function approveRun(name: string, policy: BotRunPolicy, runtimeMinutes: number | null): boolean {
+    const permissions =
+      policy.riskClasses.length === 0
+        ? "No spending, destructive, social, fleet, mission, colony, inventory, or combat permission was found."
+        : `This run may ${policy.riskClasses.map((risk) => BOT_RISK_LABELS[risk]).join("; ")}.`;
+    const included = policy.containsSubBots
+      ? "\n\nIt includes other saved bots, whose current contents will be loaded when it starts."
+      : "";
+    const limit =
+      runtimeMinutes === null
+        ? ""
+        : `\n\nThe server will stop it after ${runtimeMinutes < 60 ? `${runtimeMinutes} minutes` : `${runtimeMinutes / 60} hours`}.`;
+    return window.confirm(`Run “${name}”?\n\n${permissions}${included}${limit}`);
+  }
 
   /**
    * Run a saved bot ON THE SERVER, flying THIS TAB's current character.
@@ -120,7 +152,25 @@
     serverStartBusy = scriptID;
     savedError = null;
     try {
-      await startServerBot(current.characterID, scriptID);
+      const record = await getBotScript(scriptID, botOpts());
+      if (record === null) {
+        savedError = "That bot could not be found.";
+        serverStartBusy = null;
+        return;
+      }
+      const decoded = decodeScriptValue(record.doc);
+      if (!decoded.ok) {
+        savedError = decoded.refusal;
+        serverStartBusy = null;
+        return;
+      }
+      const policy = analyzeBotRunPolicy(decoded.doc);
+      if (!approveRun(decoded.doc.name, policy, serverRunMinutes)) {
+        serverStartBusy = null;
+        return;
+      }
+      const grant = createBotLaunchGrant(record.rev, policy, serverRunMinutes);
+      await startServerBot(current.characterID, scriptID, grant, botOpts());
     } catch (cause) {
       savedError = cause instanceof Error ? cause.message : "Could not start that bot on the server.";
       serverStartBusy = null;
@@ -242,7 +292,11 @@
   }
 
   const running = $derived($bots.runningBotID);
-  const runningName = $derived(BOTS.find((row) => row.id === running)?.name ?? null);
+  const runningName = $derived(
+    running === "custom"
+      ? ($customBot.name ?? "Your bot")
+      : (BOTS.find((row) => row.id === running)?.name ?? null),
+  );
 
   /**
    * Open whatever is running, so a player who started a bot and wandered off
@@ -250,7 +304,7 @@
    * only while the player has not chosen otherwise.
    */
   $effect(() => {
-    if (running !== null && opened === null) {
+    if (running !== null && running !== "custom" && opened === null) {
       opened = running;
     }
   });
@@ -305,6 +359,15 @@
 
 <section>
   <h2>Your bots</h2>
+  <label class="run-limit">
+    Server run limit
+    <select bind:value={serverRunMinutes} disabled={serverStartBusy !== null}>
+      <option value={60}>1 hour</option>
+      <option value={240}>4 hours</option>
+      <option value={720}>12 hours</option>
+      <option value={1440}>24 hours</option>
+    </select>
+  </label>
   {#if savedError}<p class="note error">{savedError}</p>{/if}
   {#if savedBots.length === 0}
     <p class="note">No saved bots yet. Build one in the Bot Builder tab, then Save it.</p>
@@ -470,6 +533,16 @@
     flex-direction: column;
     gap: 0.4rem;
   }
+  .run-limit {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+    margin: 0.4rem 0 0.7rem;
+  }
+  .run-limit select {
+    min-height: 40px;
+  }
   .saved-bot {
     display: flex;
     align-items: center;
@@ -485,6 +558,7 @@
   }
   .saved-actions {
     display: flex;
+    flex-wrap: wrap;
     gap: 0.4rem;
   }
   .saved-bot button {

@@ -313,9 +313,16 @@ test("the bridge route forwards the call tuple and pins userid to the signed ses
       method: "GetCharacterSelectionData",
       args: [],
       kwargs: null,
-      // A spoofed identity must not survive: the BFF pins userid from the
-      // signed login session.
-      session: { userid: 999999, stationid: 60003760 },
+      // Only presentation preferences survive. Identity, authority and
+      // gameplay-location fields are either pinned or held server-side.
+      session: {
+        userid: 999999,
+        userName: "spoofed-admin",
+        charid: 123,
+        stationid: 60003760,
+        roles: Number.MAX_SAFE_INTEGER,
+        languageID: "EN",
+      },
     },
   });
 
@@ -330,8 +337,31 @@ test("the bridge route forwards the call tuple and pins userid to the signed ses
     method: "GetCharacterSelectionData",
     args: [],
     kwargs: null,
-    sessionFields: { userid: ACCOUNT.accountID, stationid: 60003760 },
+    sessionFields: { languageID: "EN", userid: ACCOUNT.accountID },
   }]);
+});
+
+test("the generic bridge route refuses write pairs even when the browser supplies confirm", async () => {
+  const gateway = {
+    async callMethod() {
+      assert.fail("write-classified calls must be refused before gateway dispatch");
+    },
+  };
+  const { baseUrl } = await startTestServer({ gateway });
+  const writes = [
+    ["marketProxy", "PlaceBuyOrder"],
+    ["mailMgr", "DeleteMail"],
+    ["repairSvc", "RepairItems"],
+  ];
+
+  for (const [service, method] of writes) {
+    const { response, payload } = await apiRequest(baseUrl, "/api/bridge/call", {
+      method: "POST",
+      body: { service, method, args: [], kwargs: null, confirm: true },
+    });
+    assert.equal(response.status, 403, `${service}.${method}`);
+    assert.equal(payload.error, "BRIDGE_WRITE_REQUIRES_DEDICATED_ROUTE");
+  }
 });
 
 test("the bridge route requires an authenticated web session", async () => {

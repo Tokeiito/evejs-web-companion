@@ -1,0 +1,208 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+
+import type {
+  BoundReadResult,
+  ScanFieldValue,
+  ScanFullState,
+  ScanSite,
+} from "../bridge/boundSmallServices.ts";
+import type { FormationsResult } from "../bridge/formations.ts";
+import {
+  SCANNER_ACTION_IDS,
+  buildScannerFormationView,
+  buildScannerSitesView,
+  scannerActionAvailability,
+  scannerStateFromBoundRead,
+  type ScannerActionBindings,
+} from "./scannerCenter.ts";
+
+function scanSite(
+  siteID: number | string,
+  targetID: string | null,
+  fields: Readonly<Record<string, ScanFieldValue>>,
+): ScanSite {
+  return { siteID, targetID, position: null, fields };
+}
+
+function fullState(overrides: Partial<ScanFullState> = {}): ScanFullState {
+  return {
+    anomalies: [],
+    signatures: [],
+    staticSites: [],
+    structures: [],
+    ...overrides,
+  };
+}
+
+test("successful empty scanner state is distinct from loading and unavailable", () => {
+  assert.equal(buildScannerSitesView({ status: "loading" }).status, "loading");
+
+  const unavailable = buildScannerSitesView({
+    status: "unavailable",
+    reason: "The live scan read failed.",
+  });
+  assert.equal(unavailable.status, "unavailable");
+  assert.equal(unavailable.status === "unavailable" ? unavailable.message : "", "The live scan read failed.");
+
+  const empty = buildScannerSitesView({ status: "ready", value: fullState() });
+  assert.equal(empty.status, "empty");
+  assert.equal(empty.totalSites, 0);
+  assert.equal(empty.groups.length, 4, "a successful read knows that all four slots are empty");
+});
+
+test("bound-read failures become unavailable, while a successful empty tuple stays ready", () => {
+  const failed: BoundReadResult<ScanFullState> = {
+    value: fullState(),
+    error: "EVE_GATEWAY_TIMEOUT",
+    message: "technical gateway text",
+  };
+  assert.deepEqual(scannerStateFromBoundRead(failed), {
+    status: "unavailable",
+    reason: "Scanner data could not be read from the live session.",
+  });
+
+  const succeeded: BoundReadResult<ScanFullState> = {
+    value: fullState(),
+    error: null,
+    message: null,
+  };
+  assert.equal(scannerStateFromBoundRead(succeeded).status, "ready");
+});
+
+test("site rows use supplied dungeon/type names and never promote numeric ids to labels", () => {
+  const view = buildScannerSitesView(
+    {
+      status: "ready",
+      value: fullState({
+        anomalies: [
+          scanSite(5380000140001, "FTW-038", {
+            dungeonNameID: 110922,
+            entryObjectTypeID: 28356,
+            difficulty: 2,
+          }),
+        ],
+        signatures: [
+          scanSite("9223372036854775001", "ABC-123", {
+            difficulty: 4,
+            deviation: 1500,
+          }),
+        ],
+        structures: [
+          scanSite(1030000000001, "QEE-288", {
+            typeID: 35832,
+            groupID: 1657,
+            categoryID: 65,
+          }),
+        ],
+      }),
+    },
+    {
+      dungeonNames: { 110922: "Guristas Hideaway" },
+      typeNames: {
+        28356: "Cosmic acceleration gate",
+        35832: "Astrahus",
+      },
+    },
+  );
+  assert.equal(view.status, "ready");
+  if (view.status !== "ready") {
+    return;
+  }
+
+  const anomaly = view.groups.find((group) => group.kind === "anomaly")?.sites[0];
+  const signature = view.groups.find((group) => group.kind === "signature")?.sites[0];
+  const structure = view.groups.find((group) => group.kind === "structure")?.sites[0];
+  assert.equal(anomaly?.name, "Guristas Hideaway");
+  assert.equal(anomaly?.typeName, "Cosmic acceleration gate");
+  assert.equal(signature?.name, "Unidentified cosmic signature");
+  assert.equal(signature?.signalLabel, "ABC-123");
+  assert.equal(signature?.deviationMeters, 1500);
+  assert.equal(structure?.name, "Astrahus");
+
+  for (const row of [anomaly, signature, structure]) {
+    assert.ok(row);
+    assert.doesNotMatch(row!.name, /110922|28356|35832|9223372036854775001/);
+  }
+});
+
+test("only the supported high-value probe action set is exposed", () => {
+  assert.deepEqual(SCANNER_ACTION_IDS, ["launch", "recover", "analyze", "reconnect"]);
+  for (const forbidden of ["destroy", "set-destination", "set-range", "set-activity", "cone-scan"]) {
+    assert.equal((SCANNER_ACTION_IDS as readonly string[]).includes(forbidden), false);
+  }
+});
+
+test("action policy refuses missing prerequisites instead of fabricating probe state", () => {
+  const missing = {
+    launch: scannerActionAvailability("launch"),
+    recover: scannerActionAvailability("recover"),
+    analyze: scannerActionAvailability("analyze"),
+    reconnect: scannerActionAvailability("reconnect"),
+  };
+  assert.equal(missing.launch.enabled, false);
+  assert.equal(missing.recover.enabled, false);
+  assert.equal(missing.analyze.enabled, false);
+  assert.equal(missing.reconnect.enabled, false);
+  assert.match(missing.recover.detail, /probe IDs are not available/i);
+  assert.match(missing.analyze.detail, /will not invent a scan map/i);
+
+  const empty: ScannerActionBindings = {
+    launch: { moduleID: 0, count: 8, run: () => {} },
+    recover: { probeIDs: [], run: () => {} },
+    analyze: { probeMap: {}, run: () => {} },
+  };
+  assert.equal(scannerActionAvailability("launch", empty).enabled, false);
+  assert.equal(scannerActionAvailability("recover", empty).enabled, false);
+  assert.equal(scannerActionAvailability("analyze", empty).enabled, false);
+});
+
+test("valid bindings enable actions and only launch carries consumptive confirmation", () => {
+  const actions: ScannerActionBindings = {
+    launch: {
+      moduleID: 7400000030,
+      count: 8,
+      launcherName: "Sisters Core Probe Launcher",
+      run: () => {},
+    },
+    recover: { probeIDs: [70000001, 70000001, 70000002], run: () => {} },
+    analyze: { probeMap: { "70000001": { rangeStep: 2 } }, run: () => {} },
+    reconnect: { run: () => {} },
+  };
+  for (const id of SCANNER_ACTION_IDS) {
+    assert.equal(scannerActionAvailability(id, actions).enabled, true, `${id} should be enabled`);
+  }
+  const launch = scannerActionAvailability("launch", actions);
+  assert.match(launch.confirmation?.message ?? "", /moves probe charges out of the ship/i);
+  assert.equal(scannerActionAvailability("recover", actions).confirmation, null);
+  assert.equal(scannerActionAvailability("analyze", actions).confirmation, null);
+  assert.equal(scannerActionAvailability("reconnect", actions).confirmation, null);
+});
+
+test("formation view reports the live cache-fetch gap and never implies an apply action", () => {
+  const unresolved: FormationsResult = {
+    formations: [],
+    cacheReference: { objectId: null, nodeId: 65450, version: 1n },
+  };
+  const gap = buildScannerFormationView({ status: "ready", value: unresolved });
+  assert.equal(gap.status, "unavailable");
+  assert.match(gap.message, /no cache-fetch route/i);
+
+  const inline: FormationsResult = {
+    formations: [
+      { name: "Diamond", points: [] },
+      { name: "Arrow", points: [] },
+    ],
+    cacheReference: null,
+  };
+  const ready = buildScannerFormationView({ status: "ready", value: inline });
+  assert.equal(ready.status, "ready");
+  assert.deepEqual(ready.names, ["Diamond", "Arrow"]);
+  assert.match(ready.message, /no supported route applies them/i);
+
+  const empty = buildScannerFormationView({
+    status: "ready",
+    value: { formations: [], cacheReference: null },
+  });
+  assert.equal(empty.status, "empty");
+});

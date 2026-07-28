@@ -8,10 +8,17 @@
 // player's `until` and the "always watching" interrupts handle them in the
 // orchestrator. A block just does its task and reports done / blocked.
 
-import type { HomeTravelDecider, MacroDecider, MacroMemory, MacroTick, ScriptBoard } from "./scriptDecide.ts";
+import type {
+  CompleteMacroRegistry,
+  HomeTravelDecider,
+  MacroDecider,
+  MacroMemory,
+  MacroTick,
+  ScriptBoard,
+} from "./scriptDecide.ts";
 import type { ScriptObservation } from "./scriptConditions.ts";
 import { BOARD_SLOT_KEY, DEFAULT_HUNT_MAX_JUMPS, DEFAULT_HUNT_RANGE_AU } from "../bots/botScript.ts";
-import type { MacroStep } from "../bots/botScript.ts";
+import type { MacroStep, WorldRef } from "../bots/botScript.ts";
 import type { SpaceEntity, SpaceSnapshot } from "../store/types.ts";
 import { BELT_ARRIVAL_RADIUS_M, holdItemIDs, isMineableRock } from "./miningBotLoop.ts";
 import {
@@ -141,18 +148,26 @@ function recallBeforeLeaving(
  * a bot follows whatever agent/mission it actually picked up; an unfilled slot
  * reads null, which the callers treat as "not set yet" rather than guessing.
  */
+export function resolveStationRef(
+  ref: WorldRef,
+  startingStationID: number | null,
+  board: ScriptBoard = {},
+): number | null {
+  if (ref.slot !== undefined) {
+    return boardNum(board, BOARD_SLOT_KEY[ref.slot]);
+  }
+  if (ref.starting === true) {
+    return startingStationID;
+  }
+  return ref.id;
+}
+
 function stationTarget(step: MacroStep, obs: ScriptObservation, board: ScriptBoard = {}): number | null {
   const arg = step.args["station"];
   if (arg === undefined || arg.kind !== "station") {
     return null;
   }
-  if (arg.ref.slot !== undefined) {
-    return boardNum(board, BOARD_SLOT_KEY[arg.ref.slot]);
-  }
-  if (arg.ref.starting === true) {
-    return obs.startingStationID ?? null;
-  }
-  return arg.ref.id;
+  return resolveStationRef(arg.ref, obs.startingStationID ?? null, board);
 }
 
 function rockLabel(rock: SpaceEntity): string {
@@ -1798,13 +1813,47 @@ const REMOTE_ASSIST_RANGE_M = 5000;
  */
 const MAX_REMOTE_ASSIST_ATTEMPTS = 3;
 
-/** Friendly ships on grid: another player's hull, never an NPC, never your own. */
-function friendliesOnGrid(snapshot: SpaceSnapshot | null, selfID: number | null): readonly SpaceEntity[] {
+/**
+ * Authoritative fleet-mates on grid. Presence, corporation, and alliance are
+ * not membership: if the bound-fleet roster is unreadable, callers wait.
+ */
+function fleetMatesOnGrid(obs: ScriptObservation): readonly SpaceEntity[] | null {
+  const snapshot = obs.snapshot ?? null;
+  const roster = obs.fleetMemberCharacterIDs ?? null;
+  if (snapshot === null || roster === null) {
+    return null;
+  }
+  const memberIDs = new Set(roster);
+  const selfID = snapshot.ship?.itemID ?? null;
+  if (memberIDs.size === 0) {
+    return [];
+  }
+  return snapshot.entities.filter(
+    (e) =>
+      e.kind === "ship" &&
+      e.isNpc === false &&
+      e.isSelf === false &&
+      e.itemID !== selfID &&
+      e.characterID !== null &&
+      memberIDs.has(e.characterID),
+  );
+}
+
+/** Other player ships on grid, used only by the explicitly hostile PvP blocks. */
+function otherPlayerShipsOnGrid(
+  snapshot: SpaceSnapshot | null,
+  selfID: number | null,
+): readonly SpaceEntity[] {
   if (snapshot === null) {
     return [];
   }
   return snapshot.entities.filter(
-    (e) => e.kind === "ship" && e.isNpc === false && e.isSelf === false && e.itemID !== selfID && e.characterID !== null,
+    (e) =>
+      e.kind === "ship" &&
+      e.isNpc === false &&
+      e.isSelf === false &&
+      e.itemID !== selfID &&
+      e.characterID !== null,
   );
 }
 
@@ -1856,7 +1905,11 @@ function repHurtMate(
   if (snapshot === null) {
     return null;
   }
-  const target = mostHurtFriendly(friendliesOnGrid(snapshot, snapshot.ship?.itemID ?? null));
+  const friendlies = fleetMatesOnGrid(obs);
+  if (friendlies === null) {
+    return null;
+  }
+  const target = mostHurtFriendly(friendlies);
   if (target === null) {
     return null;
   }
@@ -1933,6 +1986,9 @@ const remoteRep: MacroDecider = (_step, obs, mem) => {
       reason: "This ship has no remote shield or armor repairer fitted.",
     });
   }
+  if ((obs.fleetMemberCharacterIDs ?? null) === null) {
+    return tick(WAIT, "Reading the authoritative fleet roster.", "Supporting", ACTING, false, mem);
+  }
   const rep = repHurtMate(obs, mem, "Supporting");
   if (rep === null) {
     return tick(WAIT, "Everyone on grid is at full health.", "Supporting", { kind: "done" });
@@ -1957,8 +2013,11 @@ const orbitAndBoost: MacroDecider = (_step, obs, mem) => {
       reason: "This ship has no remote shield or armor repairer fitted.",
     });
   }
+  if ((obs.fleetMemberCharacterIDs ?? null) === null) {
+    return tick(WAIT, "Reading the authoritative fleet roster.", "Boosting", ACTING, false, mem);
+  }
   const snapshot = obs.snapshot;
-  const friendlies = friendliesOnGrid(snapshot, snapshot.ship?.itemID ?? null);
+  const friendlies = fleetMatesOnGrid(obs) ?? [];
   if (friendlies.length === 0) {
     return tick(WAIT, "No fleet-mate on grid to support yet.", "Boosting", ACTING, false, mem);
   }
@@ -2063,7 +2122,7 @@ const joinFleet: MacroDecider = (_step, obs, mem) => {
 // ═══ The PvP set ═════════════════════════════════════════════════════════════
 // Attack players on grid / roam and hunt one down. Both ride the SAME verified
 // calls the ratting loop fires (lock / activate / engageDrones / warp); only the
-// TARGET PICK is new — a player's hull instead of an NPC's. `friendliesOnGrid`
+// TARGET PICK is new — a player's hull instead of an NPC's. `otherPlayerShipsOnGrid`
 // already names exactly that set (a non-NPC ship with a pilot that is not you);
 // these blocks simply treat it as prey rather than patients. The optional `only`
 // filter narrows the hunt to one pilot; without it any player ship matches.
@@ -2082,7 +2141,7 @@ function countArgOr(step: MacroStep, key: string, fallback: number): number {
 
 /** Player ships on grid that the filter allows — the block's prey. */
 function preyOnGrid(snapshot: SpaceSnapshot | null, only: number | null): readonly SpaceEntity[] {
-  const players = friendliesOnGrid(snapshot, snapshot?.ship?.itemID ?? null);
+  const players = otherPlayerShipsOnGrid(snapshot, snapshot?.ship?.itemID ?? null);
   return only === null ? players : players.filter((e) => e.characterID === only);
 }
 
@@ -2698,7 +2757,10 @@ const remoteCap: MacroDecider = (_step, obs, mem) => {
       reason: "This ship has no remote capacitor transmitter fitted.",
     });
   }
-  const friendlies = friendliesOnGrid(snapshot, snapshot.ship?.itemID ?? null);
+  if ((obs.fleetMemberCharacterIDs ?? null) === null) {
+    return tick(WAIT, "Reading the authoritative fleet roster.", "Feeding cap", ACTING, false, mem);
+  }
+  const friendlies = fleetMatesOnGrid(obs) ?? [];
   let target: SpaceEntity | null = null;
   let worst = CAP_HUNGRY;
   for (const mate of friendlies) {
@@ -2966,7 +3028,7 @@ const compressOre: MacroDecider = (_step, obs, mem) => {
 const MAX_TRIED_STACKS = 200;
 
 /** The registry the runner dispatches on, keyed by MacroID. */
-export const SCRIPT_MACROS: Readonly<Record<string, MacroDecider>> = {
+export const SCRIPT_MACROS: CompleteMacroRegistry = {
   undock,
   "mine-at-belt": mineAtBelt,
   "deliver-ore": deliverOre,
@@ -3013,22 +3075,28 @@ export const SCRIPT_MACROS: Readonly<Record<string, MacroDecider>> = {
 };
 
 /**
- * Home-travel for a latched "dock and stop" response — flies to the starting
- * station and docks, riding the SHARED autopilot so home is reachable from ANY
- * system a watch happens to fire in, not just the one next door. (Home defaults
- * to the starting station; a chosen home is a later refinement, since this
- * decider does not see the script.)
+ * Home-travel for a latched "dock and stop" response. `flow.ts` resolves the
+ * document's configured home every tick — fixed id, starting station, or a
+ * station published onto the run board — and puts the result on the observation.
+ * The shared autopilot makes that station reachable from any system.
  */
 export const scriptTravelHome: HomeTravelDecider = (obs, mem) => {
-  const target = obs.startingStationID ?? null;
-  if (target === null) {
-    // Nowhere to go — stop where we are rather than fly to a guess.
-    return tick(WAIT, "Stopped.", "Heading home", { kind: "done" });
-  }
   if (obs.flightStatus?.docked === true) {
     // Docked ANYWHERE is safe — the point of a fired watch is to be in a
     // station, not to commute. Stop here.
     return tick(WAIT, "Stopped.", "Heading home", { kind: "done" });
+  }
+  const target = obs.homeStationID ?? null;
+  if (target === null) {
+    // Starting in space cannot resolve "where I started" to a station, and a
+    // board-slot home may not have been published when an early watch fires.
+    // Pausing IN SPACE is not the desired safety outcome, but it is honest and
+    // bounded; reporting `done` here used to claim the ship was safe while it
+    // was still exposed. Never invent a destination.
+    return tick(WAIT, "Home is not known, so the ship stopped instead of guessing.", "Heading home", {
+      kind: "blocked",
+      reason: "This bot does not know which station is home, so it stopped instead of flying to a guess.",
+    });
   }
   const onGrid = (obs.snapshot?.entities ?? []).some((e) => e.itemID === target);
   const recall = recallBeforeLeaving(obs, mem, "Heading home", onGrid ? target : null);

@@ -2,15 +2,15 @@
 // broadcast writes (CreateWing / CreateSquad / MoveMember / KickMember / MakeLeader /
 // LeaveFleet / DisbandFleet / SetOptions / SetMotdEx / UpdateMemberInfo / SendBroadcast /
 // Invite / MassInvite / AcceptInvite / RejectInvite / Reconnect) that hang off the R72
-// fleetObjectHandler.MachoBindObject bind. CLOSES WB-FLEET (21/21 with the R94/R95
-// top-level fleet writes) → writes 298/301. PLUMBING ONLY — no UI.
+// fleetObjectHandler.MachoBindObject bind. These acknowledgements now back Fleet Center
+// and bot fleet actions; the Latest parity review tracks the deferred fleet methods.
 //
 // Each write dispatches as a BOUND method off fleetBindSpec() (dispatchBoundFleetWrite in
 // server.js), NOT the top-level /call seam. The BFF holds the OID handle; the browser never
-// sees it. Unlike the scanMgr bind, MachoBindObject accepts a caller fleetID — but the BFF
-// passes args:[] so the server binds the SESSION's OWN fleet (never a caller fleetID; the
-// caller-fleetID leak lives only on the generic /api/bridge/call seam). AND every roster
-// mutator is role-gated server-side (boss / commander / membership) before it mutates.
+// sees it. Most routes bind the SESSION's OWN fleet. AcceptInvite / RejectInvite bind the
+// fleet ID from the live invitation; Reconnect binds the saved fleet ID. The runtime still
+// verifies the pending invite/member row, and every roster mutator is role-gated server-side
+// (boss / commander / membership) before it mutates.
 // Every BFF route is confirm-gated (refuses without `confirm:true`); ⚠ DisbandFleet
 // (destroys the fleet) and KickMember (removes another char) carry extra-explicit confirm
 // messages, and fold the server return into the uniform ack `{ok, applied, result,
@@ -20,13 +20,14 @@
 // restart), so this decoder was written from the fleetObjectHandlerService handler shapes,
 // not captured bytes. Most verbs return true / null; `result` carries each through
 // UNTOUCHED for a future fleet UI to decode. `applied` is the confirm-gate's did-not-throw
-// signal; a panel re-reads the fleet bound state (/api/bridge/bound-fleet) to prove the
-// mutation.
+// signal; Fleet Center re-reads the bound state (/api/bridge/bound-fleet) to prove the
+// mutation. The outer acknowledgement is plain Express JSON; only its nested result can
+// contain marshaled wire data.
 //
 // ⚠ These are WRITES: never call a decoder to DRIVE a mutation — the confirm-gated BFF
 // route is the only path, and it refuses without `confirm: true`.
 
-import { readKeyVal, type JsonValue } from "./wire.ts";
+import { readPlainJsonField, type JsonValue } from "./wire.ts";
 
 function truthy(value: JsonValue | undefined): boolean {
   return value === true;
@@ -43,13 +44,13 @@ export interface FleetBoundWriteAck {
 /**
  * Decode an R105 bound fleet composition/membership/broadcast write ack. `applied` is the
  * confirm-gate's did-not-throw signal; `result` passes the handler return through.
- * FAST-MODE: never fired live, so this is an educated guess from the fleet handler code.
+ * The outer envelope is plain Express JSON; the nested result remains intentionally raw.
  */
 export function decodeFleetBoundWriteAck(response: JsonValue): FleetBoundWriteAck {
-  const result = readKeyVal(response, "result");
+  const result = readPlainJsonField(response, "result");
   return {
-    ok: truthy(readKeyVal(response, "ok")),
-    applied: truthy(readKeyVal(response, "applied")),
+    ok: truthy(readPlainJsonField(response, "ok")),
+    applied: truthy(readPlainJsonField(response, "applied")),
     result: result === undefined ? null : (result as JsonValue),
   };
 }

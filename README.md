@@ -56,14 +56,14 @@ disposable.** Closing a tab closes that client — the server never keeps drivin
   login-gated read-only static routes (`/api/map/*`, `/api/names`, `/api/agents/find`)
   that serve EveJS's static reference export the way retail resolves names from its local
   static DB. The web process **never** touches gameplay SQLite.
-- **Deny-by-default, but everything is pre-plumbed.** The gateway carries an allowlist of
-  `{service, method}` pairs; a call not on it is refused. The **entire retail call surface
-  is already plumbed** — all 588 pairs (287 reads + 301 writes), each with a BFF route, a
-  browser-side decoder, and tests, so a new feature almost never needs new plumbing: it
-  composes calls that already exist. **YMMV on testing, though** — reads are solid, but the
-  writes were plumbed rapidly with educated-guess decoders/args and confirm-gated rather
-  than fired live, so expect to test them and find bugs as you wire real features onto
-  them. See the roadmap for the QA state.
+- **Deny-by-default, with a large pre-wired surface.** The gateway carries an allowlist of
+  `{service, method}` pairs; a call not on it is refused. The checked cross-repo manifest
+  currently pins **716 allowlisted pairs**, including **351 writes** that the generic call
+  seam refuses and purpose-built BFF routes must own. The older “588/588” sweep was
+  complete against its curated inventory, **not against all of ClientCodeGrabber/Latest**:
+  a 2026-07-27 re-audit found 15 `fleetObjectHandler` methods and two `fleetProxy` methods
+  used by Latest but absent from that inventory. Treat plumbing as broad coverage, not a
+  full-parity guarantee; re-audit the relevant Latest call sites when adding a feature.
 - **The client is a pure reader of one store.** State lives in a framework-agnostic
   reactive store (`web/src/store/clientStore.ts`); all fetch/decode is in
   `web/src/app/flow.ts`; the Svelte components never write state, they read it.
@@ -185,10 +185,10 @@ docs/                the scope/roadmap, wire contract, and session log
 
 ## Status
 
-- **Bridge:** complete — **all 588/588 retail read + write calls are pre-plumbed**, so
-  most new work is composition, not plumbing. YMMV on testing: reads are solid; the write
-  decoders/args are educated guesses awaiting live QA, so expect to find bugs as you use
-  them.
+- **Bridge:** broad, deny-by-default coverage — 716 pairs are contract-pinned across the
+  two repositories and generic browser calls cannot execute any of the 351 classified
+  writes. This is **not full Latest parity**; the known fleet delta is 17 methods, and
+  feature work should verify its own Latest call sequence before assuming coverage.
 - **UI:** two-shell docked/in-space client with live panels, Neocom, and a health-gated,
   centered login.
 - **Bots:** the block Bot Builder (shape / validate / share) plus live in-browser

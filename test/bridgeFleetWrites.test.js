@@ -4,18 +4,20 @@
 // write routes — WB-FLEET (16 fleetObjectHandler writes: CreateWing / CreateSquad /
 // MoveMember / KickMember / MakeLeader / LeaveFleet / DisbandFleet / SetOptions /
 // SetMotdEx / UpdateMemberInfo / SendBroadcast / Invite / MassInvite / AcceptInvite /
-// RejectInvite / Reconnect). CLOSES WB-FLEET. PLUMBING ONLY — no UI.
+// RejectInvite / Reconnect). These routes now back Fleet Center and bot actions.
 //
 // WB-FLEET rides the fleetObjectHandler.MachoBindObject bind (fleetBindSpec — the SAME
 // handle the R85 bound fleet READS use). ⚠ UNLIKE the scanMgr bind, MachoBindObject
-// ACCEPTS a caller fleetID — but fleetBindSpec() passes args:[], so the server binds the
-// SESSION's OWN fleet, and these dedicated routes NEVER pass a caller fleetID. Each write
-// dispatches as a BOUND method (boundCall → callBoundMethod), NOT the top-level /call
+// ACCEPTS a caller fleetID. Most routes pass args:[] and bind the SESSION's OWN fleet;
+// invite accept/reject + reconnect bind the invite/saved fleetID because the current
+// session has none yet, and the runtime verifies the pending invite/member row. Each write dispatches
+// as a BOUND method (boundCall → callBoundMethod), NOT the top-level /call
 // seam. Every route is CONFIRM-GATED: without `confirm: true` it answers 400
 // CONFIRMATION_REQUIRED and NOTHING dispatches (no bind, no bound call). This suite proves
 // the gate (all 16 refuse without confirm), that each write forwards its args as a bound
-// call ONCE confirmed against a FAKE recording gateway with the bind carrying NO caller
-// fleetID, and that no route dispatches without a held bridge session. NO write was ever
+// call ONCE confirmed against a FAKE recording gateway with either the session-owned bind
+// or the explicit invite/saved fleetID, and that no route dispatches without a held bridge
+// session. NO write was ever
 // fired against the live world (operator owns EveJS; no server restart).
 
 const test = require("node:test");
@@ -34,6 +36,7 @@ const CHARACTER_ID = 7;
 const CORPORATION_ID = 98000000;
 const SHIP_ID = 9001;
 const MEMBER_ID = 140000009;
+const TARGET_FLEET_ID = 123456;
 
 const ORIGINAL_FETCH = global.fetch;
 const activeServers = new Set();
@@ -84,11 +87,10 @@ function fakeStaticData() {
   };
 }
 
-// The fleet writes bind the session's OWN fleet server-side (fleetBindSpec passes NO
-// fleetID), so no inSpace toggle is needed — every bind is
-// fleetObjectHandler.MachoBindObject with NO args.
+// Most fleet writes bind the session's own fleet server-side. AcceptInvite, RejectInvite,
+// and Reconnect explicitly bind their invite/saved fleetID; no inSpace toggle is needed.
 function fakeGateway() {
-  const calls = { bind: [], boundCall: [] };
+  const calls = { call: [], bind: [], boundCall: [] };
   return {
     calls,
     async selectCharacter() {
@@ -119,7 +121,11 @@ function fakeGateway() {
         notifications: [],
       };
     },
-    async callMethod(service, method) {
+    async callMethod(service, method, args, kwargs, sessionFields, bridgeSessionID) {
+      calls.call.push({ service, method, args, kwargs, sessionFields, bridgeSessionID });
+      if (service === "fleetMgr" && method === "ForceLeaveFleet") {
+        return { service, method, result: true, notifications: [] };
+      }
       throw new Error(`R105 fleet writes are BOUND — unexpected top-level ${service}.${method}`);
     },
     async bindObject(service, method, args, kwargs, sessionFields, bridgeSessionID) {
@@ -209,9 +215,29 @@ const R105_WRITE_ROUTES = [
     "MassInvite",
     [[MEMBER_ID, 140000010], 100, 200, 0],
   ],
-  ["/api/bridge/fleet/invite/accept", { shipTypeID: 587 }, "AcceptInvite", [587]],
-  ["/api/bridge/fleet/invite/reject", { alreadyInFleet: false }, "RejectInvite", [false]],
-  ["/api/bridge/fleet/reconnect", {}, "Reconnect", []],
+  [
+    "/api/bridge/fleet/invite/accept",
+    // shipTypeID is deliberately hostile input: the route must ignore it and
+    // let EveJS derive the current hull from the held session.
+    { fleetID: TARGET_FLEET_ID, shipTypeID: 587 },
+    "AcceptInvite",
+    [null],
+    [[TARGET_FLEET_ID]],
+  ],
+  [
+    "/api/bridge/fleet/invite/reject",
+    { fleetID: TARGET_FLEET_ID, alreadyInFleet: false },
+    "RejectInvite",
+    [false],
+    [[TARGET_FLEET_ID]],
+  ],
+  [
+    "/api/bridge/fleet/reconnect",
+    { fleetID: TARGET_FLEET_ID },
+    "Reconnect",
+    [],
+    [[TARGET_FLEET_ID]],
+  ],
 ];
 
 test("⚠ every R105 fleet write REFUSES without confirm — no bind, no dispatch (nothing fired)", async () => {
@@ -228,8 +254,8 @@ test("⚠ every R105 fleet write REFUSES without confirm — no bind, no dispatc
   assert.equal(gateway.calls.bind.length, 0, "a refused write must not even bind the fleet object");
 });
 
-test("R105 every fleet write binds MachoBindObject (NO caller fleetID) and forwards its args once confirmed", async () => {
-  for (const [path, body, method, expectedArgs] of R105_WRITE_ROUTES) {
+test("R105 every fleet write binds the correct fleet object and forwards its args once confirmed", async () => {
+  for (const [path, body, method, expectedArgs, expectedBindArgs = []] of R105_WRITE_ROUTES) {
     const gateway = fakeGateway();
     const { baseUrl } = await startTestServer({ gateway });
     await selectOnServer(baseUrl);
@@ -240,17 +266,120 @@ test("R105 every fleet write binds MachoBindObject (NO caller fleetID) and forwa
     assert.equal(response.status, 200, `${path} must succeed once confirmed`);
     assert.equal(payload.ok, true, `${path} ok`);
     assert.equal(payload.applied, true, `${path} applied`);
-    // Bound, not top-level: the fleet object is bound via MachoBindObject with NO caller
-    // fleetID (session's OWN fleet) and the call rides callBoundMethod.
+    // Bound, not top-level. Most routes bind the session fleet with [], while
+    // reject/reconnect bind the invite/saved fleet explicitly as [[fleetID]].
     const bind = gateway.calls.bind.find((c) => c.service === "fleetObjectHandler");
     assert.ok(bind, `${path} binds the fleet object`);
     assert.equal(bind.method, "MachoBindObject", `${path} bind method`);
-    assert.deepEqual(bind.args, [], `${path} bind takes NO caller fleetID — session's own fleet`);
+    assert.deepEqual(bind.args, expectedBindArgs, `${path} binds the intended fleet`);
     const call = gateway.calls.boundCall.find((c) => c.method === method);
     assert.ok(call, `${method} must reach the gateway as a bound call once confirmed`);
     assert.equal(call.service, "fleetObjectHandler", `${method} service`);
     assert.deepEqual(call.args, expectedArgs, `${method} forwards its educated-guess args`);
   }
+});
+
+test("RejectInvite binds the invited fleet and preserves omitted versus explicit boolean args", async () => {
+  const gateway = fakeGateway();
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+
+  const variants = [
+    [{ fleetID: TARGET_FLEET_ID }, []],
+    [{ fleetID: TARGET_FLEET_ID, alreadyInFleet: false }, [false]],
+    [{ fleetID: TARGET_FLEET_ID, alreadyInFleet: true }, [true]],
+  ];
+  for (const [body, expectedArgs] of variants) {
+    const { response, payload } = await apiRequest(baseUrl, "/api/bridge/fleet/invite/reject", {
+      method: "POST",
+      body: { ...body, confirm: true },
+    });
+    assert.equal(response.status, 200);
+    assert.equal(payload.applied, true);
+    assert.deepEqual(gateway.calls.boundCall.at(-1).args, expectedArgs);
+  }
+
+  const binds = gateway.calls.bind.filter(
+    (call) => call.service === "fleetObjectHandler" && call.method === "MachoBindObject",
+  );
+  assert.equal(binds.length, 3, "success invalidates the targeted handle after each reject");
+  assert.deepEqual(binds.map((call) => call.args), [
+    [[TARGET_FLEET_ID]],
+    [[TARGET_FLEET_ID]],
+    [[TARGET_FLEET_ID]],
+  ]);
+});
+
+test("AcceptInvite, RejectInvite, and Reconnect require a positive fleetID before binding", async () => {
+  const gateway = fakeGateway();
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+
+  for (const [path, body] of [
+    ["/api/bridge/fleet/invite/accept", {}],
+    ["/api/bridge/fleet/invite/accept", { fleetID: Number.MAX_SAFE_INTEGER + 1 }],
+    ["/api/bridge/fleet/invite/reject", { fleetID: 0 }],
+    ["/api/bridge/fleet/invite/reject", { fleetID: -1 }],
+    ["/api/bridge/fleet/reconnect", {}],
+    ["/api/bridge/fleet/reconnect", { fleetID: Number.MAX_SAFE_INTEGER + 1 }],
+  ]) {
+    const { response, payload } = await apiRequest(baseUrl, path, {
+      method: "POST",
+      body: { ...body, confirm: true },
+    });
+    assert.equal(response.status, 400, `${path} rejects an invalid fleetID`);
+    assert.equal(payload.error, "INVALID_FLEET_ID");
+  }
+  const invalidBoolean = await apiRequest(baseUrl, "/api/bridge/fleet/invite/reject", {
+    method: "POST",
+    body: { fleetID: TARGET_FLEET_ID, alreadyInFleet: "false", confirm: true },
+  });
+  assert.equal(invalidBoolean.response.status, 400);
+  assert.equal(invalidBoolean.payload.error, "INVALID_ALREADY_IN_FLEET");
+  assert.equal(gateway.calls.bind.length, 0);
+  assert.equal(gateway.calls.boundCall.length, 0);
+});
+
+test("an uncertain targeted-fleet failure invalidates the handle before retry", async () => {
+  const gateway = fakeGateway();
+  let attempts = 0;
+  gateway.callBoundMethod = async (
+    service,
+    method,
+    args,
+    kwargs,
+    sessionFields,
+    bridgeSessionID,
+    boundHandle,
+  ) => {
+    gateway.calls.boundCall.push({ service, method, args, kwargs, bridgeSessionID, boundHandle });
+    attempts += 1;
+    if (attempts === 1) {
+      const error = new Error("uncertain reject outcome");
+      error.code = "CALL_FAILED";
+      throw error;
+    }
+    return { service, method, result: true, notifications: [] };
+  };
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+
+  const body = { fleetID: TARGET_FLEET_ID, confirm: true };
+  const first = await apiRequest(baseUrl, "/api/bridge/fleet/invite/reject", {
+    method: "POST",
+    body,
+  });
+  assert.notEqual(first.response.status, 200);
+  const second = await apiRequest(baseUrl, "/api/bridge/fleet/invite/reject", {
+    method: "POST",
+    body,
+  });
+  assert.equal(second.response.status, 200);
+  assert.equal(
+    gateway.calls.bind.filter((call) => call.method === "MachoBindObject").length,
+    2,
+    "the retry cannot reuse the handle from an uncertain failure",
+  );
 });
 
 test("⚠ R105 DisbandFleet (DESTRUCTIVE) binds the session's own fleet, no caller fleetID, once confirmed", async () => {
@@ -294,4 +423,110 @@ test("R105 fleet write routes refuse without a held bridge session", async () =>
     assert.notEqual(response.status, 200, `${path} must refuse without a held session`);
   }
   assert.equal(gateway.calls.boundCall.length, 0, "no dispatch without a held session");
+});
+
+test("own-fleet reads rebind current membership on every refresh while sharing one handle within a batch", async () => {
+  const gateway = fakeGateway();
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+
+  for (let index = 0; index < 2; index += 1) {
+    const { response, payload } = await apiRequest(baseUrl, "/api/bridge/bound-fleet");
+    assert.equal(response.status, 200);
+    assert.equal(payload.ok, true);
+  }
+
+  const ownFleetBinds = gateway.calls.bind.filter(
+    (call) => call.service === "fleetObjectHandler" && call.method === "MachoBindObject",
+  );
+  assert.equal(ownFleetBinds.length, 2, "each refresh resolves membership again");
+  assert.deepEqual(ownFleetBinds.map((call) => call.args), [[], []]);
+  assert.equal(
+    gateway.calls.boundCall.filter((call) => [
+      "GetInitState",
+      "GetWings",
+      "GetMotd",
+      "GetJoinRequests",
+      "GetFleetComposition",
+    ].includes(call.method)).length,
+    10,
+    "the five reads still share one bind per refresh",
+  );
+});
+
+test("creating a fleet invalidates a previously fleetless handle before the next bound write", async () => {
+  const gateway = fakeGateway();
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+
+  await apiRequest(baseUrl, "/api/bridge/bound-fleet");
+  const created = await apiRequest(baseUrl, "/api/bridge/fleet/create", {
+    method: "POST",
+    body: { confirm: true },
+  });
+  assert.equal(created.response.status, 200);
+  const motd = await apiRequest(baseUrl, "/api/bridge/fleet/motd", {
+    method: "POST",
+    body: { motd: "New fleet", confirm: true },
+  });
+  assert.equal(motd.response.status, 200);
+
+  assert.equal(
+    gateway.calls.bind.filter(
+      (call) => call.service === "fleetObjectHandler" && call.method === "MachoBindObject",
+    ).length,
+    2,
+    "the post-create write cannot reuse the pre-create membership handle",
+  );
+  assert.equal(
+    gateway.calls.bind.filter((call) => call.method === "CreateFleet").length,
+    1,
+    "fleet creation uses its own one-shot bind",
+  );
+});
+
+test("top-level and bound leave paths invalidate the old roster handle", async () => {
+  for (const leavePath of ["/api/bridge/fleet/leave", "/api/bridge/fleet/member/leave"]) {
+    const gateway = fakeGateway();
+    const { baseUrl } = await startTestServer({ gateway });
+    await selectOnServer(baseUrl);
+    await apiRequest(baseUrl, "/api/bridge/bound-fleet");
+
+    const left = await apiRequest(baseUrl, leavePath, {
+      method: "POST",
+      body: { confirm: true },
+    });
+    assert.equal(left.response.status, 200, `${leavePath} succeeds`);
+    const nextWrite = await apiRequest(baseUrl, "/api/bridge/fleet/motd", {
+      method: "POST",
+      body: { motd: "must rebind", confirm: true },
+    });
+    assert.equal(nextWrite.response.status, 200);
+    assert.equal(
+      gateway.calls.bind.filter(
+        (call) => call.service === "fleetObjectHandler" && call.method === "MachoBindObject",
+      ).length,
+      2,
+      `${leavePath} drops the old membership-scoped handle`,
+    );
+  }
+});
+
+test("accepting through an invitation-scoped fleet handle never caches that foreign-target bind", async () => {
+  const gateway = fakeGateway();
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+
+  for (let index = 0; index < 2; index += 1) {
+    const accepted = await apiRequest(baseUrl, "/api/bridge/fleet/invite/accept", {
+      method: "POST",
+      body: { fleetID: 123456, shipTypeID: 587, confirm: true },
+    });
+    assert.equal(accepted.response.status, 200);
+  }
+  const inviteBinds = gateway.calls.bind.filter(
+    (call) => call.service === "fleetObjectHandler" && call.method === "MachoBindObject",
+  );
+  assert.equal(inviteBinds.length, 2);
+  assert.deepEqual(inviteBinds.map((call) => call.args), [[[123456]], [[123456]]]);
 });

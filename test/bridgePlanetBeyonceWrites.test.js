@@ -87,10 +87,11 @@ function fakeStaticData() {
 // ship in space (dispatchBoundBeyonceWrite calls requireInSpace); the planet writes
 // never read flight (colony ops are docked-safe).
 function fakeGateway(options = {}) {
-  const inSpace = options.inSpace === true;
+  const state = { inSpace: options.inSpace === true, solarSystemID: SOLAR_SYSTEM_ID };
   const calls = { bind: [], boundCall: [] };
   return {
     calls,
+    state,
     async selectCharacter() {
       return {
         bridgeSessionID: BRIDGE_SESSION_ID,
@@ -116,10 +117,10 @@ function fakeGateway(options = {}) {
     async readFlightStatus() {
       return {
         flight: {
-          docked: !inSpace,
-          inSpace,
-          stationID: inSpace ? 0 : STATION_ID,
-          solarSystemID: SOLAR_SYSTEM_ID,
+          docked: !state.inSpace,
+          inSpace: state.inSpace,
+          stationID: state.inSpace ? 0 : STATION_ID,
+          solarSystemID: state.solarSystemID,
           shipID: SHIP_ID,
         },
         notifications: [],
@@ -134,6 +135,9 @@ function fakeGateway(options = {}) {
     },
     async callBoundMethod(service, method, args, kwargs, sessionFields, bridgeSessionID, boundHandle) {
       calls.boundCall.push({ service, method, args, kwargs, bridgeSessionID, boundHandle });
+      if (method === "CmdJumpThroughFleet") {
+        state.solarSystemID = Number(args[3]) || state.solarSystemID;
+      }
       return { service, method, result: null, notifications: [] };
     },
   };
@@ -319,6 +323,32 @@ test("R103 CmdAbandonLoot forwards [[itemIDs]] as a bound beyonce call once conf
   assert.ok(call, "CmdAbandonLoot must reach the gateway once confirmed");
   assert.equal(call.service, "beyonce");
   assert.deepEqual(call.args, [[5000000009, 5000000010]]);
+});
+
+test("R103 fleet-bridge jump waits for the destination scene and dispatches once", async () => {
+  const gateway = fakeGateway({ inSpace: true });
+  const destinationSystemID = 30000144;
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/flight/jump-through-fleet", {
+    method: "POST",
+    body: {
+      otherCharID: 140000002,
+      otherShipID: 9002,
+      beaconID: 6001,
+      solarSystemID: destinationSystemID,
+      confirm: true,
+    },
+  });
+  assert.equal(response.status, 200, JSON.stringify(payload));
+  assert.equal(payload.flight.solarSystemID, destinationSystemID);
+  assert.equal(payload.transition.phase, "ready");
+  assert.equal(payload.transition.sceneReady, true);
+  assert.equal(
+    gateway.calls.boundCall.filter((call) => call.method === "CmdJumpThroughFleet").length,
+    1,
+    "the bridge jump must never be replayed while the session handoff settles",
+  );
 });
 
 test("R103 BookmarkLocation forwards positional args + optional subfolder kwarg once confirmed", async () => {

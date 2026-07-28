@@ -27,7 +27,7 @@
 // ⚠ These are WRITES: never call a decoder to DRIVE a mutation — the confirm-gated
 // BFF route is the only path, and it refuses without `confirm: true`.
 
-import { readKeyVal, type JsonValue } from "./wire.ts";
+import { readPlainJsonField, type JsonValue } from "./wire.ts";
 
 function truthy(value: JsonValue | undefined): boolean {
   return value === true;
@@ -60,10 +60,10 @@ export interface CorpRegistryWriteAck {
  * and the panel re-reads to confirm. `result` carries any raw value through.
  */
 export function decodeCorpRegistryWriteAck(response: JsonValue): CorpRegistryWriteAck {
-  const result = readKeyVal(response, "result");
+  const result = readPlainJsonField(response, "result");
   return {
-    ok: truthy(readKeyVal(response, "ok")),
-    applied: truthy(readKeyVal(response, "applied")),
+    ok: truthy(readPlainJsonField(response, "ok")),
+    applied: truthy(readPlainJsonField(response, "applied")),
     result: result === undefined ? null : (result as JsonValue),
   };
 }
@@ -84,8 +84,8 @@ export interface CorpRegistryIdWriteAck {
  */
 export function decodeCorpRegistryIdWriteAck(response: JsonValue): CorpRegistryIdWriteAck {
   return {
-    ok: truthy(readKeyVal(response, "ok")),
-    applied: truthy(readKeyVal(response, "applied")),
-    id: intOrNull(readKeyVal(response, "result")),
+    ok: truthy(readPlainJsonField(response, "ok")),
+    applied: truthy(readPlainJsonField(response, "applied")),
+    id: intOrNull(readPlainJsonField(response, "result")),
   };
 }

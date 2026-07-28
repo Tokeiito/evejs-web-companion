@@ -74,9 +74,8 @@ export const MINING_BOT_CADENCE_MS = 2000;
  */
 export const BELT_ARRIVAL_RADIUS_M = 20_000;
 
-/** Settle windows — retail's `ignoreTimerCycles`, per action kind. */
-const SETTLE_UNDOCK = 2;
-const SETTLE_DOCK = 2;
+/** Settle windows for asynchronous movement/writes and recoverable refusals. */
+const SETTLE_DOCK_REFUSAL = 2;
 const SETTLE_WARP = 2;
 const SETTLE_APPROACH = 2;
 const SETTLE_LOCK = 2;
@@ -1430,7 +1429,8 @@ export function createMiningBot(deps: MiningBotDeps): MiningBotController {
       switch (action.kind) {
         case "undock":
           await deps.undock();
-          memory.settleTicks = SETTLE_UNDOCK;
+          // Ready-returning BFF: authoritative undocked scene/ship is visible.
+          memory.settleTicks = 0;
           return;
         case "warp":
           await deps.warp(action.destinationID);
@@ -1446,7 +1446,8 @@ export function createMiningBot(deps: MiningBotDeps): MiningBotController {
         case "dock":
           await deps.dock(action.stationID);
           memory.approachingTargetID = null;
-          memory.settleTicks = SETTLE_DOCK;
+          // Ready-returning BFF: authoritative docked location is visible.
+          memory.settleTicks = 0;
           return;
         case "unload":
           await deps.unloadHolds(action.itemIDs);
@@ -1495,7 +1496,7 @@ export function createMiningBot(deps: MiningBotDeps): MiningBotController {
 
     if (action.kind === "undock" && /already in space|already_in_space/i.test(reason)) {
       // Benign: we wanted to be in space and we are.
-      memory.settleTicks = SETTLE_UNDOCK;
+      memory.settleTicks = 0;
       return;
     }
 
@@ -1520,7 +1521,7 @@ export function createMiningBot(deps: MiningBotDeps): MiningBotController {
       // case; it is R24's DockingApproach and the loop re-issues.
       if (isRangeRefusal(reason) || /dockingapproach|docking approach|approach/i.test(reason)) {
         memory.silentDockAttempts = 0;
-        memory.settleTicks = SETTLE_DOCK;
+        memory.settleTicks = SETTLE_DOCK_REFUSAL;
         return;
       }
       setPause(`The station refused to take the ship: ${words}`);
@@ -1595,7 +1596,8 @@ export function createMiningBot(deps: MiningBotDeps): MiningBotController {
       return { kind: memory.status === "stopped" ? "stopped" : "wait", reason: "stopped" };
     }
 
-    // Settle window: let the last move begin before re-deciding.
+    // Settle asynchronous movement/writes and recoverable refusals. Successful
+    // BFF undock/dock returns are already authoritative and skip this window.
     if (memory.settleTicks > 0) {
       memory.settleTicks -= 1;
       memory.phase = "Working";

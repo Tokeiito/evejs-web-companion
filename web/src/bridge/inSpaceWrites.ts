@@ -23,7 +23,7 @@
 // LOCAL coercions only — this module deliberately does NOT import from market*.ts
 // (a separate session owns those files).
 
-import { isListValue, readKeyVal, type JsonValue } from "./wire.ts";
+import { isListValue, readPlainJsonField, type JsonValue } from "./wire.ts";
 
 /** The uniform ack every confirm-gated in-space write returns. */
 export interface InSpaceWriteAck {
@@ -37,7 +37,7 @@ function ackTruthy(value: JsonValue | undefined): boolean {
 
 /** Read the `result` field off a BFF write-ack envelope (null when absent). */
 function ackResult(response: JsonValue): JsonValue | null {
-  const result = readKeyVal(response, "result");
+  const result = readPlainJsonField(response, "result");
   return result === undefined ? null : result;
 }
 
@@ -60,8 +60,8 @@ function idList(value: JsonValue | null): number[] {
  */
 export function decodeInSpaceWriteAck(response: JsonValue): InSpaceWriteAck {
   return {
-    ok: ackTruthy(readKeyVal(response, "ok")),
-    applied: ackTruthy(readKeyVal(response, "applied")),
+    ok: ackTruthy(readPlainJsonField(response, "ok")),
+    applied: ackTruthy(readPlainJsonField(response, "applied")),
   };
 }
 

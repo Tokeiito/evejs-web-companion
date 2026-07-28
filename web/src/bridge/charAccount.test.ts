@@ -184,33 +184,29 @@ test("the character-info id-field extractor actually reads the decoded content",
 
 // --- R88 write acks (Phase-3 charUnboundMgr WRITES) --------------------------
 
-/** A util.KeyVal wrapper around plain fields (the BFF write-ack shape the decoder reads). */
-function accountAckKeyVal(fields: Record<string, JsonValue>): JsonValue {
-  return {
-    type: "object",
-    name: "util.KeyVal",
-    args: { type: "dict", entries: Object.entries(fields) },
-  };
+/** The ordinary JSON object emitted by the BFF's Express response. */
+function plainAck(fields: Record<string, JsonValue>): JsonValue {
+  return { ...fields };
 }
 
 test("R88 — a charUnboundMgr write ack decodes to {ok, applied}", () => {
-  const ack = decodeCharUnboundWriteAck(accountAckKeyVal({ ok: true, applied: true, result: null }));
+  const ack = decodeCharUnboundWriteAck(plainAck({ ok: true, applied: true, result: null }));
   assert.deepEqual(ack, { ok: true, applied: true });
 });
 
 test("R88 — a declined charUnboundMgr write is read as not-applied, not a throw", () => {
-  const ack = decodeCharUnboundWriteAck(accountAckKeyVal({ ok: true, applied: false }));
+  const ack = decodeCharUnboundWriteAck(plainAck({ ok: true, applied: false }));
   assert.equal(ack.ok, true);
   assert.equal(ack.applied, false);
 });
 
 test("R88 — a CreateCharacterWithDoll ack surfaces the new characterID from result", () => {
-  const ack = decodeCharacterCreatedAck(accountAckKeyVal({ ok: true, applied: true, result: 140000042 }));
+  const ack = decodeCharacterCreatedAck(plainAck({ ok: true, applied: true, result: 140000042 }));
   assert.equal(ack.applied, true);
   assert.equal(ack.characterID, 140000042);
 });
 
 test("R88 — a CreateCharacterWithDoll ack with no id reads characterID null", () => {
-  const ack = decodeCharacterCreatedAck(accountAckKeyVal({ ok: true, applied: false, result: null }));
+  const ack = decodeCharacterCreatedAck(plainAck({ ok: true, applied: false, result: null }));
   assert.equal(ack.characterID, null);
 });

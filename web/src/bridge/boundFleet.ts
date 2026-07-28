@@ -377,6 +377,8 @@ export interface BoundFleetResult<T> {
   readonly value: T;
   /** The failure code when the read did not succeed, else null. */
   readonly error: string | null;
+  /** The handler's failure detail (for example FleetNotFound), else null. */
+  readonly message: string | null;
 }
 
 export interface BoundFleet {
@@ -392,10 +394,12 @@ export interface BoundFleet {
 function pick(
   reads: Record<string, JsonValue>,
   key: string,
-): { result: JsonValue | undefined; error: string | null } {
+): { result: JsonValue | undefined; error: string | null; message: string | null } {
   const cell = asObject(reads[key]);
   const error = typeof cell.error === "string" && cell.error.length > 0 ? cell.error : null;
-  return { result: cell.result, error };
+  const message =
+    typeof cell.message === "string" && cell.message.length > 0 ? cell.message : null;
+  return { result: cell.result, error, message };
 }
 
 function numberOrNull(value: JsonValue | undefined): number | null {
@@ -408,8 +412,8 @@ export function decodeBoundFleet(raw: JsonValue | null | undefined): BoundFleet 
   const root = asObject(raw);
   const reads = asObject(root.reads);
   const map = <T>(key: string, decode: (r: JsonValue | undefined) => T): BoundFleetResult<T> => {
-    const { result, error } = pick(reads, key);
-    return { value: decode(result), error };
+    const { result, error, message } = pick(reads, key);
+    return { value: decode(result), error, message };
   };
   const initState = map("GetInitState", decodeFleetInitState);
   return {

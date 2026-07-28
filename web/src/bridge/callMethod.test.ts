@@ -63,7 +63,7 @@ test("callMethod POSTs the retail call tuple to /api/bridge/call with same-origi
   });
 });
 
-test("args default to [] and kwargs to null; extra scalar session fields ride along", async () => {
+test("args default to [] and kwargs to null; safe language preferences ride along", async () => {
   const { fetch, requests } = stubFetch(() =>
     jsonResponse({
       ok: true,
@@ -76,7 +76,7 @@ test("args default to [] and kwargs to null; extra scalar session fields ride al
 
   await callMethod("charUnboundMgr", "GetCharacterSelectionData", undefined, undefined, {
     fetch,
-    session: { stationid: 60000004 },
+    session: { languageID: "EN" },
   });
 
   assert.deepEqual(requests[0]?.body, {
@@ -84,7 +84,7 @@ test("args default to [] and kwargs to null; extra scalar session fields ride al
     method: "GetCharacterSelectionData",
     args: [],
     kwargs: null,
-    session: { stationid: 60000004 },
+    session: { languageID: "EN" },
   });
 });
 

@@ -86,15 +86,15 @@ export interface ScriptObservation {
   readonly lockedTargetIDs?: readonly number[] | null;
   readonly holds?: readonly MiningHold[] | null;
   readonly droneBayItemIDs?: readonly number[] | null;
-  /** The ship's fitted mining-module ids, resolved once at start (the mine block runs these). */
+  /** Fitted mining-module ids, refreshed when the active hull or fit changes. */
   readonly miningModuleIDs?: readonly number[];
-  /** The ship's fitted salvager ids, resolved once at start (the salvage block runs these). */
+  /** Fitted salvager ids, refreshed when the active hull or fit changes. */
   readonly salvageModuleIDs?: readonly number[];
-  /** Fitted repairers by the layer they repair, resolved once at start (the "repair" watch runs these). */
+  /** Fitted repairers by layer, refreshed when the active hull or fit changes. */
   readonly shieldRepairerIDs?: readonly number[];
   readonly armorRepairerIDs?: readonly number[];
   readonly hullRepairerIDs?: readonly number[];
-  /** Fitted REMOTE repairers (repair another ship), resolved once at start (the fleet-support blocks run these). */
+  /** Fitted REMOTE repairers, refreshed when the active hull or fit changes. */
   readonly remoteShieldRepairerIDs?: readonly number[];
   readonly remoteArmorRepairerIDs?: readonly number[];
   readonly remoteHullRepairerIDs?: readonly number[];
@@ -102,7 +102,14 @@ export interface ScriptObservation {
   readonly remoteCapModuleIDs?: readonly number[];
   /** Whether the character is in a fleet — read for the fleet-management blocks. true/false/null=unreadable. */
   readonly inFleet?: boolean | null;
-  /** Fitted hardeners + damage controls, resolved once at start (the hardeners-on block). */
+  /**
+   * Character IDs from a fresh, authoritative bound-fleet roster. `null` means
+   * the roster was unavailable; `[]` means the service authoritatively says the
+   * pilot is fleetless. Remote assistance must never infer membership from the
+   * presence of another player ship on grid.
+   */
+  readonly fleetMemberCharacterIDs?: readonly number[] | null;
+  /** Fitted hardeners + damage controls, refreshed when the active hull or fit changes. */
   readonly hardenerModuleIDs?: readonly number[];
   /** Fitted WEAPONS (turrets/launchers), resolved once at start (the fight block runs these). */
   readonly weaponModuleIDs?: readonly number[];
@@ -119,6 +126,8 @@ export interface ScriptObservation {
   readonly myCorporationID?: number | null;
   /** The station the bot started docked at — resolves a "starting station" ref at run time. */
   readonly startingStationID?: number | null;
+  /** The bot document's emergency home, resolved for THIS tick (fixed/start/board slot). */
+  readonly homeStationID?: number | null;
   // ── Mission reads (the distribution blocks). Read ONLY when the active step is
   //    a mission block (the runner passes an observe hint), so a mining bot never
   //    pays for an agent-conversation read. Same null rule: null = unreadable.

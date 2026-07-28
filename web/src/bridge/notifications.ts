@@ -27,7 +27,13 @@
 // number, never forced into a label. An empty array is a REAL "no notifications"
 // answer (Farmer's own GetByGroupID/GetUnprocessed can legitimately be empty).
 
-import { isKeyValValue, readKeyVal, unwrapLong, type JsonValue } from "./wire.ts";
+import {
+  isKeyValValue,
+  readKeyVal,
+  readPlainJsonField,
+  unwrapLong,
+  type JsonValue,
+} from "./wire.ts";
 
 /** One notification, envelope decoded; its per-type `data` carried raw. */
 export interface Notification {
@@ -119,7 +125,7 @@ function truthy(value: JsonValue | undefined): boolean {
 /** Decode a notification write ack (Mark / Delete / LogNotificationInteraction). */
 export function decodeNotificationWriteAck(response: JsonValue): NotificationWriteAck {
   return {
-    ok: truthy(readKeyVal(response, "ok")),
-    applied: truthy(readKeyVal(response, "applied")),
+    ok: truthy(readPlainJsonField(response, "ok")),
+    applied: truthy(readPlainJsonField(response, "applied")),
   };
 }

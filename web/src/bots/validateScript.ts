@@ -51,7 +51,12 @@ export function validateScript(script: BotScript): readonly ScriptProblem[] {
     problems.push({ path: "name", sentence: "Give your bot a name." });
   }
   const someWatchDocks = script.interrupts.some((row) => row.respond === "dock-and-pause");
-  if (someWatchDocks && script.home.id === null && script.home.starting !== true) {
+  if (
+    someWatchDocks &&
+    script.home.id === null &&
+    script.home.starting !== true &&
+    script.home.slot === undefined
+  ) {
     problems.push({ path: "home", sentence: "Pick where the bot docks when a watch tells it to." });
   }
   if (script.program.length === 0) {
@@ -64,7 +69,10 @@ export function validateScript(script: BotScript): readonly ScriptProblem[] {
     } else if (node.kind === "branch") {
       validateBranch(node, problems);
     } else if (node.kind === "sub-bot") {
-      if (node.name === null || node.name.trim().length === 0) {
+      if (
+        (node.scriptID === null || node.scriptID.trim().length === 0) &&
+        (node.name === null || node.name.trim().length === 0)
+      ) {
         problems.push({ path: node.id, sentence: "Pick which saved bot this step runs." });
       }
     } else {

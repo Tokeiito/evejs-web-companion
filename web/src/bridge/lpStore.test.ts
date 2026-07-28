@@ -83,21 +83,17 @@ test("R7d: a decoded LP balance preserves issuerCorpID as a numeric field", () =
 
 // --- R89 LPStoreMgr financial write acks (Phase-3 WRITES) -------------------
 
-function takeOfferAckKeyVal(fields: Record<string, JsonValue>): JsonValue {
-  return {
-    type: "object",
-    name: "util.KeyVal",
-    args: { type: "dict", entries: Object.entries(fields) },
-  };
+function plainAck(fields: Record<string, JsonValue>): JsonValue {
+  return { ...fields };
 }
 
 test("R89 — a TakeOfferForCharacter ack surfaces taken:true from result", () => {
-  const ack = decodeTakeOfferAck(takeOfferAckKeyVal({ ok: true, applied: true, result: true }));
+  const ack = decodeTakeOfferAck(plainAck({ ok: true, applied: true, result: true }));
   assert.deepEqual(ack, { ok: true, applied: true, taken: true });
 });
 
 test("R89 — a stub/declined TakeOffer (null result) reads taken:false, not a throw", () => {
-  const ack = decodeTakeOfferAck(takeOfferAckKeyVal({ ok: true, applied: true, result: null }));
+  const ack = decodeTakeOfferAck(plainAck({ ok: true, applied: true, result: null }));
   assert.equal(ack.applied, true);
   assert.equal(ack.taken, false);
 });

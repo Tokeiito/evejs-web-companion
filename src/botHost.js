@@ -34,21 +34,22 @@
 // until the next bot starts on that character.
 //
 // DURABLE ACROSS RESTARTS. The RUNNING roster (who/what, never a token) is
-// mirrored to `persistPath` on every start and end, and `resume()` — called
-// once the server is listening, since bots drive it over loopback — starts
-// each persisted bot afresh: new session, new botID, the SCRIPT FROM ITS
-// FIRST STEP (per-step memory and the run board live in-process and are
-// deliberately not persisted — replaying half-finished intent against a world
-// that moved on is how ships get lost). A bot that cannot come back (account
-// or script gone, character now held) leaves a visible error record rather
-// than vanishing.
+// mirrored to `persistPath` on every start and end. The immutable script
+// revision/hash and its restart policy are pinned with that row. `resume()` may
+// start at step one ONLY when the exact saved revision still exists and every
+// block is observed-state/restart-safe. A costly, destructive, social, or
+// otherwise non-idempotent script stops visibly and waits for a fresh player
+// start instead of replaying intent after a crash.
 
 const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 const { pathToFileURL } = require("url");
 
-const BOT_HEADER = "x-evejs-bot-id";
+// An unguessable per-run claim capability. The public botID is deliberately NOT
+// accepted by the select guard: account-scoped bot listings expose bot IDs, so
+// using one as authority would let an ordinary browser impersonate the host.
+const BOT_HEADER = "x-evejs-bot-claim";
 
 // Terminal customBot-slice statuses: the runner has let go of the ship.
 const ENDED_STATUSES = new Set(["stopped", "error", "idle"]);
@@ -67,11 +68,12 @@ function defaultLoadStack() {
     const webSrc = path.resolve(__dirname, "..", "web", "src");
     const webUrl = (rel) => pathToFileURL(path.join(webSrc, rel)).href;
     stackPromise = (async () => {
-      const [sessionToken, clientStore, flow, codec] = await Promise.all([
+      const [sessionToken, clientStore, flow, codec, runPolicy] = await Promise.all([
         import(webUrl("app/sessionToken.ts")),
         import(webUrl("store/clientStore.ts")),
         import(webUrl("app/flow.ts")),
         import(webUrl("bots/scriptCodec.ts")),
+        import(webUrl("bots/runPolicy.ts")),
       ]);
       // The server has no sessionStorage; force the in-memory fallback. Bots
       // never use the global token anyway (perSessionToken), but the module
@@ -81,6 +83,8 @@ function defaultLoadStack() {
         createClientStore: clientStore.createClientStore,
         createAppFlow: flow.createAppFlow,
         decodeScriptValue: codec.decodeScriptValue,
+        analyzeBotRunPolicy: runPolicy.analyzeBotRunPolicy,
+        validateBotLaunchGrant: runPolicy.validateBotLaunchGrant,
       };
     })();
     stackPromise.catch(() => {
@@ -88,6 +92,32 @@ function defaultLoadStack() {
     });
   }
   return stackPromise;
+}
+
+function stableJson(value) {
+  if (Array.isArray(value)) {
+    return `[${value.map(stableJson).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function hashScript(doc) {
+  return crypto.createHash("sha256").update(stableJson(doc), "utf8").digest("hex");
+}
+
+function sameSecret(left, right) {
+  if (typeof left !== "string" || typeof right !== "string" || left.length === 0 || right.length === 0) {
+    return false;
+  }
+  const a = Buffer.from(left, "utf8");
+  const b = Buffer.from(right, "utf8");
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
 // The flow opens a live-event channel after select; a headless bot does not
@@ -104,6 +134,11 @@ function createBotHost(options) {
   const isCharacterHeld = options.isCharacterHeld || (() => false);
   const logError = options.errorLogger || (() => {});
   const loadStack = options.loadStack || defaultLoadStack;
+  const createClaimSecret = options.createClaimSecret || (() => crypto.randomBytes(32).toString("base64url"));
+  const now = typeof options.now === "function" ? options.now : () => Date.now();
+  const setDeadlineTimeout = options.setDeadlineTimeout || ((callback, delayMs) => setTimeout(callback, delayMs));
+  const clearDeadlineTimeout = options.clearDeadlineTimeout || ((timer) => clearTimeout(timer));
+  const nowISO = () => new Date(now()).toISOString();
   // Durability: where the running roster is mirrored (absent = memory-only),
   // and the reads resume() needs to rebuild a bot from its persisted row.
   const persistPath = options.persistPath || null;
@@ -116,8 +151,8 @@ function createBotHost(options) {
   const claims = new Map();
 
   // Mirror the RUNNING roster to disk (atomic tmp+rename, like webAuth's
-  // stores). No token and no doc — resume re-reads both, so a stale file can
-  // never replay stale credentials or a since-edited script.
+  // stores). No token, claim capability, or doc is persisted. The revision and
+  // canonical hash bind a restart to the exact document the player launched.
   function persistRoster() {
     if (persistPath === null) {
       return;
@@ -132,13 +167,19 @@ function createBotHost(options) {
             characterID: record.characterID,
             scriptID: record.scriptID,
             scriptName: record.scriptName,
+            scriptRev: record.scriptRev,
+            scriptHash: record.scriptHash,
+            restartSafe: record.restartSafe,
+            riskClasses: record.riskClasses,
+            maxRuntimeMinutes: record.maxRuntimeMinutes,
+            expiresAt: record.expiresAt,
             startedAt: record.startedAt,
           });
         }
       }
       fs.mkdirSync(path.dirname(persistPath), { recursive: true });
       const tempPath = `${persistPath}.${process.pid}.tmp`;
-      fs.writeFileSync(tempPath, JSON.stringify({ version: 1, bots }, null, 2), "utf8");
+      fs.writeFileSync(tempPath, JSON.stringify({ version: 2, bots }, null, 2), "utf8");
       fs.renameSync(tempPath, persistPath);
     } catch (error) {
       logError(error);
@@ -170,6 +211,12 @@ function createBotHost(options) {
       vitals: record.vitals,
       scriptID: record.scriptID,
       scriptName: record.scriptName,
+      scriptRev: record.scriptRev,
+      scriptHash: record.scriptHash,
+      restartSafe: record.restartSafe,
+      riskClasses: record.riskClasses,
+      maxRuntimeMinutes: record.maxRuntimeMinutes,
+      expiresAt: record.expiresAt,
       status: record.status,
       phase: record.phase,
       why: record.why,
@@ -212,7 +259,11 @@ function createBotHost(options) {
       return;
     }
     record.finalized = true;
-    record.endedAt = new Date().toISOString();
+    record.endedAt = nowISO();
+    if (record.deadlineTimer) {
+      clearDeadlineTimeout(record.deadlineTimer);
+      record.deadlineTimer = null;
+    }
     if (record.unsubscribe) {
       try {
         record.unsubscribe();
@@ -242,7 +293,19 @@ function createBotHost(options) {
     }
   }
 
-  async function start({ account, characterID, scriptID, scriptName, doc, resumed = false }) {
+  async function start({
+    account,
+    characterID,
+    scriptID,
+    scriptName,
+    scriptRev,
+    doc,
+    grant,
+    resumed = false,
+    expectedScriptRev = null,
+    expectedScriptHash = null,
+    expectedExpiresAt = null,
+  }) {
     let stack;
     try {
       stack = await loadStack();
@@ -255,6 +318,52 @@ function createBotHost(options) {
     const decoded = stack.decodeScriptValue(doc);
     if (!decoded.ok) {
       return { ok: false, code: "BOTSCRIPT_INVALID", message: decoded.refusal };
+    }
+    const normalizedRev = Number(scriptRev);
+    if (!Number.isSafeInteger(normalizedRev) || normalizedRev <= 0) {
+      return { ok: false, code: "BOTSCRIPT_REVISION_REQUIRED", message: "The saved bot revision is missing." };
+    }
+    const normalizedHash = hashScript(decoded.doc);
+    if (
+      expectedScriptRev !== null &&
+      (normalizedRev !== Number(expectedScriptRev) || normalizedHash !== String(expectedScriptHash || ""))
+    ) {
+      return {
+        ok: false,
+        code: "BOT_SCRIPT_CHANGED",
+        message: "The saved bot changed after this run was authorized. Start it again to review the new version.",
+      };
+    }
+    const runPolicy = stack.analyzeBotRunPolicy(decoded.doc);
+    if (runPolicy.containsSubBots) {
+      return {
+        ok: false,
+        code: "BOT_SUBBOT_GRANT_UNAVAILABLE",
+        message: "A server bot cannot yet grant permissions to included saved bots. Inline them before starting this run.",
+      };
+    }
+    const grantVerdict = stack.validateBotLaunchGrant(grant, normalizedRev, runPolicy);
+    if (!grantVerdict.ok) {
+      return { ok: false, code: grantVerdict.code, message: grantVerdict.message };
+    }
+    if (resumed && !runPolicy.restartSafe) {
+      return {
+        ok: false,
+        code: "BOT_RESTART_REQUIRES_CONFIRMATION",
+        message: "This bot can repeat a consequential action, so it was not restarted automatically. Review and start it again.",
+      };
+    }
+    const expiresAt =
+      expectedExpiresAt === null
+        ? new Date(now() + grantVerdict.grant.maxRuntimeMinutes * 60_000).toISOString()
+        : String(expectedExpiresAt);
+    const deadlineMs = Date.parse(expiresAt);
+    if (!Number.isFinite(deadlineMs) || deadlineMs <= now()) {
+      return {
+        ok: false,
+        code: "BOT_GRANT_EXPIRED",
+        message: "This bot's approved run time has ended. Review and start it again.",
+      };
     }
 
     if (claims.has(characterID)) {
@@ -277,7 +386,13 @@ function createBotHost(options) {
       characterName: null,
       scriptID,
       scriptName,
-      resumedAt: resumed ? new Date().toISOString() : null,
+      scriptRev: normalizedRev,
+      scriptHash: normalizedHash,
+      restartSafe: runPolicy.restartSafe === true,
+      riskClasses: [...runPolicy.riskClasses],
+      maxRuntimeMinutes: grantVerdict.grant.maxRuntimeMinutes,
+      expiresAt,
+      resumedAt: resumed ? nowISO() : null,
       vitals: null,
       status: "starting",
       phase: null,
@@ -287,12 +402,14 @@ function createBotHost(options) {
       note: null,
       lastAlert: null,
       startError: null,
-      startedAt: new Date().toISOString(),
+      startedAt: nowISO(),
       endedAt: null,
       finalized: false,
       flow: null,
       store: null,
       unsubscribe: null,
+      claimSecret: createClaimSecret(),
+      deadlineTimer: null,
     };
     // Claim BEFORE the first await — two concurrent starts must not both win,
     // and the select guard must already know this bot when its select arrives.
@@ -312,7 +429,7 @@ function createBotHost(options) {
       // request so the select guard can tell the bot's own select from a tab's.
       const botFetch = (input, init) => {
         const headers = new Headers(init && init.headers);
-        headers.set(BOT_HEADER, botID);
+        headers.set(BOT_HEADER, record.claimSecret);
         return globalThis.fetch(input, { ...init, headers });
       };
       const flow = stack.createAppFlow(store, {
@@ -348,6 +465,18 @@ function createBotHost(options) {
       if (record.startError !== null) {
         await finalize(record);
         return { ok: false, code: "BOT_START_FAILED", message: record.startError };
+      }
+      const remainingMs = Math.max(1, Date.parse(record.expiresAt) - now());
+      record.deadlineTimer = setDeadlineTimeout(() => {
+        if (record.finalized) {
+          return;
+        }
+        record.status = "stopped";
+        record.why = "The approved run time ended, so the server stopped this bot.";
+        void finalize(record);
+      }, remainingMs);
+      if (typeof record.deadlineTimer.unref === "function") {
+        record.deadlineTimer.unref();
       }
       persistRoster();
       // First vitals sample right away (fire-and-forget), so the landing
@@ -394,6 +523,13 @@ function createBotHost(options) {
   /** The RUNNING bot claiming this character, or null — the select guard. */
   function claimedBy(characterID) {
     return claims.get(characterID) || null;
+  }
+
+  /** True only for the private capability carried by this run's loopback fetch. */
+  function authorizesClaim(characterID, secret) {
+    const botID = claims.get(Number(characterID));
+    const record = botID ? records.get(botID) : null;
+    return Boolean(record && !record.finalized && sameSecret(record.claimSecret, secret));
   }
 
   /**
@@ -452,7 +588,7 @@ function createBotHost(options) {
       const ship = snapshot ? snapshot.ship : null;
       const holds = store.mining.get().holds || [];
       record.vitals = {
-        sampledAt: new Date().toISOString(),
+        sampledAt: nowISO(),
         docked,
         shield: ship ? ship.shieldRatio : null,
         armor: ship ? ship.armorRatio : null,
@@ -502,6 +638,12 @@ function createBotHost(options) {
       characterName: null,
       scriptID: String(row.scriptID || ""),
       scriptName: String(row.scriptName || "Untitled bot"),
+      scriptRev: Number(row.scriptRev || 0),
+      scriptHash: String(row.scriptHash || ""),
+      restartSafe: false,
+      riskClasses: Array.isArray(row.riskClasses) ? row.riskClasses.map(String) : [],
+      maxRuntimeMinutes: Number(row.maxRuntimeMinutes || 0),
+      expiresAt: typeof row.expiresAt === "string" ? row.expiresAt : null,
       resumedAt: null,
       vitals: null,
       status: "error",
@@ -511,12 +653,14 @@ function createBotHost(options) {
       pauseReason: null,
       note: null,
       startError: null,
-      startedAt: String(row.startedAt || new Date().toISOString()),
-      endedAt: new Date().toISOString(),
+      startedAt: String(row.startedAt || nowISO()),
+      endedAt: nowISO(),
       finalized: true,
       flow: null,
       store: null,
       unsubscribe: null,
+      claimSecret: null,
+      deadlineTimer: null,
     });
   }
 
@@ -541,13 +685,34 @@ function createBotHost(options) {
           recordResumeFailure(row, "the saved bot no longer exists.");
           continue;
         }
+        if (!Number.isSafeInteger(Number(row.scriptRev)) || !/^[a-f0-9]{64}$/.test(String(row.scriptHash || ""))) {
+          recordResumeFailure(row, "its older restart record has no pinned script revision. Start it again manually.");
+          continue;
+        }
+        if (row.restartSafe !== true) {
+          recordResumeFailure(row, "it can repeat a consequential action. Review and start it again manually.");
+          continue;
+        }
+        if (!Number.isFinite(Date.parse(String(row.expiresAt || ""))) || Date.parse(String(row.expiresAt)) <= now()) {
+          recordResumeFailure(row, "its approved run time has ended. Start it again manually.");
+          continue;
+        }
         const outcome = await start({
           account,
           characterID,
           scriptID: script.scriptID,
           scriptName: script.name,
+          scriptRev: script.rev,
           doc: script.doc,
+          grant: {
+            scriptRev: row.scriptRev,
+            riskClasses: Array.isArray(row.riskClasses) ? row.riskClasses : [],
+            maxRuntimeMinutes: row.maxRuntimeMinutes,
+          },
           resumed: true,
+          expectedScriptRev: row.scriptRev,
+          expectedScriptHash: row.scriptHash,
+          expectedExpiresAt: row.expiresAt,
         });
         if (!outcome.ok) {
           recordResumeFailure(row, outcome.message || outcome.code);
@@ -572,6 +737,7 @@ function createBotHost(options) {
     stop,
     list,
     claimedBy,
+    authorizesClaim,
     activeCharacterIDs,
     activeBots,
     sampleAllVitals,
