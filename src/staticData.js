@@ -4,13 +4,11 @@ const fs = require("fs");
 const path = require("path");
 const config = require("./config");
 
-const DATA_DIR = path.join(config.eveRoot, "_local", "gameStore", "data");
-const SDE_DIR = path.join(
-  config.eveRoot,
-  "_local",
-  "sde",
-  "eve-online-static-data-3396210-jsonl",
-);
+// Resolved in config.js, which defaults both to the native
+// <eveRoot>/_local/... layout and lets EVEJS_GAMESTORE_DATA_DIR /
+// EVEJS_SDE_DIR point them at the docker evejs-data volume layout instead.
+const DATA_DIR = config.gamestoreDataDir;
+const SDE_DIR = config.sdeDir;
 const caches = new Map();
 const VALID_ICON_SIZES = new Set([32, 64, 128, 256, 512, 1024]);
 

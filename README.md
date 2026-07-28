@@ -124,6 +124,98 @@ npm run dev:web     # Vite on :5173, proxies /api to the BFF; run `npm start` al
 npm test            # node --test over the JS + web/**/*.test.ts suites
 ```
 
+## Setup — the easy way
+
+If you just want to play, you do not need any of the section below. Start your EveJS
+server however you normally do, then double-click:
+
+```text
+SetupWebClient.bat
+```
+
+It finds your EveJS folder, works out whether the server is running natively or in
+Docker, asks the one question it cannot answer for you (run the client directly or in
+Docker), sets up the connection between them, starts it, and tells you the address to
+open. Run it again any time — it only changes what actually needs changing.
+
+After that, day to day:
+
+```text
+StartWebClient.bat          start it
+StartWebClient.bat stop     stop it
+StartWebClient.bat check    say exactly what is wrong if it will not connect
+```
+
+The rest of this section is what those scripts are doing, and how to do it by hand.
+
+## Docker (optional)
+
+Running this BFF in a container is optional — `npm start` above stays fully supported.
+EveJS itself may be native or in Docker independently, so there are four combinations,
+and **all four work**. Which one you are in decides exactly two settings.
+
+| EveJS | This BFF | Command | `EVEJS_WEB_GATEWAY_TOKEN` |
+| --- | --- | --- | --- |
+| native | native | `npm start` | not needed |
+| **Docker** | native | `npm start` | **required** |
+| native | **Docker** | `docker compose up --build -d` | not needed (set it anyway) |
+| **Docker** | **Docker** | `docker compose -f compose.yaml -f compose.evejs-docker.yaml up --build -d` | **required** |
+
+Whatever the combination, `npm run doctor` names the broken link and what to change:
+
+```bash
+npm run doctor
+```
+
+### Why a token, and why the symptom is confusing
+
+EveJS's gateway authorizes a token-less caller **only when the peer's socket address is
+`127.0.0.1`/`::1`** (`authorizeGatewayRequest` in `server/src/_secondary/express/evejsWebGateway.js`).
+That is not a property of the URL you dialled — it is the address EveJS observes on the
+other end of the socket, and Docker rewrites it:
+
+| Direction | Address EveJS sees | Token-less? |
+| --- | --- | --- |
+| host → host | `127.0.0.1` | yes |
+| host → published port of a container | `172.x.0.1` (bridge gateway) | **no** |
+| container → container | `172.x.0.3` (peer container) | **no** |
+| container → host via `host.docker.internal` | `127.0.0.1` (Docker Desktop) | yes |
+
+So moving *EveJS* into Docker breaks a BFF that was working a minute ago, on the same
+`http://127.0.0.1:26002/...` URL, with the port open and the process healthy. Every probe
+you would reach for says "fine" and the gateway answers `401`.
+
+The fix is one shared secret. Put the **same** value in `.env` here and in `eve.js/.env`,
+then restart both:
+
+```bash
+powershell -Command "[Convert]::ToBase64String((1..32|%{Get-Random -Max 256}))"
+```
+
+Setting it unconditionally is the recommendation. EveJS ignores an incoming token when its
+own `EVEJS_WEB_GATEWAY_TOKEN` is unset and falls back to the loopback rule, so a token that
+is not needed costs nothing — and you stop having to think about which combination you are
+in. Note the push channel (live notifications and chat) enforces this too, on a *narrower*
+rule than the request routes; without a token the UI silently degrades to polling.
+
+### The other two Docker gotchas
+
+- **`127.0.0.1` inside a container is the container.** `compose.yaml` therefore targets
+  `host.docker.internal`, and the overlay targets `evejs-server` — the network alias
+  `eve.js/compose.yaml` puts on its `server` service. Do not hand-edit these back to
+  loopback. (On *native Linux* Docker, `host.docker.internal` maps to the docker0 bridge
+  and cannot reach a host listener bound to `127.0.0.1` at all — there, run EveJS in Docker
+  too and use the overlay.)
+- **Static names come off disk, not the gateway.** Type/station/system names are read from
+  the gameStore tables and the SDE. `compose.yaml` bind-mounts `EVEJS_ROOT` read-only at
+  `/srv/evejs`; the overlay instead mounts EveJS's own `evejs-data` volume, which is the
+  authoritative copy the running server was built from. Missing data is not fatal — reads
+  degrade to empty tables and the UI shows raw ids.
+
+Both compose files publish `127.0.0.1:26500` only, matching EveJS's own loopback-only
+publishing rule. `docker compose down` stops the BFF; the `evejs-web-poc-data` volume keeps
+sessions, the web-user store, the bot scripts and the icon cache across rebuilds.
+
 ## Multibox
 
 Each browser tab holds its own per-tab session token, so **N tabs = N independent
