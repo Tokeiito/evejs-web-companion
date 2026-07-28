@@ -3027,6 +3027,76 @@ const compressOre: MacroDecider = (_step, obs, mem) => {
 /** How many attempted stacks to remember — a hold cannot hold more than this. */
 const MAX_TRIED_STACKS = 200;
 
+const launchScanProbes: MacroDecider = (_step, obs) => {
+  const scanner = obs.scannerOperations;
+  if (scanner === null || scanner === undefined) {
+    return tick(WAIT, "Could not read the probe launcher just now.", "Launching probes", ACTING, false);
+  }
+  if (!scanner.inSpace) {
+    return tick(WAIT, "The ship must be in space to launch probes.", "Launching probes", {
+      kind: "blocked",
+      reason: "Launch scan probes needs the ship to be in space.",
+    });
+  }
+  if (scanner.probes.length > 0) {
+    return tick(WAIT, "The scan probes are out.", "Launching probes", { kind: "done" });
+  }
+  if (scanner.launcher === null || scanner.launcher.launchCount <= 0) {
+    return tick(WAIT, "No probes are ready in an online launcher.", "Launching probes", {
+      kind: "blocked",
+      reason: "Fit an online probe launcher with scanner probes and leave room for active probes.",
+    });
+  }
+  return tick(
+    { kind: "scannerLaunch" },
+    `Launching ${scanner.launcher.launchCount} scan probe${scanner.launcher.launchCount === 1 ? "" : "s"}.`,
+    "Launching probes",
+    ACTING,
+    false,
+  );
+};
+
+const analyzeSignatures: MacroDecider = (_step, obs, mem) => {
+  const scanner = obs.scannerOperations;
+  if (scanner === null || scanner === undefined) {
+    return tick(WAIT, "Could not read the probe formation just now.", "Analyzing signatures", ACTING, false, mem);
+  }
+  if (scanner.probes.length === 0) {
+    return tick(WAIT, "No active probes can analyze signatures.", "Analyzing signatures", {
+      kind: "blocked",
+      reason: "Launch scan probes before analyzing signatures.",
+    });
+  }
+  if (flag(mem, "issued")) {
+    return tick(WAIT, "The signature analysis was requested.", "Analyzing signatures", { kind: "done" });
+  }
+  return tick(
+    { kind: "scannerAnalyze" },
+    "Analyzing signatures with the current probe formation.",
+    "Analyzing signatures",
+    ACTING,
+    false,
+    { ...mem, issued: true },
+  );
+};
+
+const recoverScanProbes: MacroDecider = (_step, obs) => {
+  const scanner = obs.scannerOperations;
+  if (scanner === null || scanner === undefined) {
+    return tick(WAIT, "Could not read the active probes just now.", "Recovering probes", ACTING, false);
+  }
+  if (scanner.probes.length === 0) {
+    return tick(WAIT, "All scan probes are aboard.", "Recovering probes", { kind: "done" });
+  }
+  return tick(
+    { kind: "scannerRecover" },
+    `Recovering ${scanner.probes.length} scan probe${scanner.probes.length === 1 ? "" : "s"}.`,
+    "Recovering probes",
+    ACTING,
+    false,
+  );
+};
+
 /** The registry the runner dispatches on, keyed by MacroID. */
 export const SCRIPT_MACROS: CompleteMacroRegistry = {
   undock,
@@ -3072,6 +3142,9 @@ export const SCRIPT_MACROS: CompleteMacroRegistry = {
   "jettison-cargo": jettisonCargo,
   "tidy-hangar": tidyHangar,
   "compress-ore": compressOre,
+  "launch-scan-probes": launchScanProbes,
+  "analyze-signatures": analyzeSignatures,
+  "recover-scan-probes": recoverScanProbes,
 };
 
 /**

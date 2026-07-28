@@ -133,6 +133,12 @@ export const MACRO_RUN_POLICY: Readonly<Record<MacroID, MacroRunPolicy>> = Objec
   "jettison-cargo": policy(["inventory", "destructive"], false),
   "tidy-hangar": policy(["inventory"]),
   "compress-ore": policy(["inventory", "fleet"]),
+  // Launch/recover move probe charges between ship and space. Analyze itself is
+  // harmless, but keeping the three-step sweep under one explicit authority is
+  // easier for players to understand and review.
+  "launch-scan-probes": policy(["inventory"]),
+  "analyze-signatures": SAFE,
+  "recover-scan-probes": policy(["inventory"]),
 });
 
 /**

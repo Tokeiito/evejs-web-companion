@@ -11,6 +11,10 @@ const emptyScan = {
 } as const;
 const SYSTEM_A = 30000142;
 const SYSTEM_B = 30000144;
+const unavailableOperations = {
+  status: "unavailable" as const,
+  reason: "not needed by this reducer test",
+};
 
 test("Scanner starts unloaded without claiming the current system is empty", () => {
   const scanner = createClientStore().get().scanner;
@@ -31,6 +35,7 @@ test("scanner/loading preserves the last authoritative result", () => {
       status: "ready",
       value: { formations: [], cacheReference: null },
     },
+    operations: unavailableOperations,
     refreshedAtMs: 100,
   });
   store.apply({ type: "scanner/loading" });
@@ -53,6 +58,7 @@ test("Scanner stores partial availability without collapsing failure into empty"
       status: "ready",
       value: { formations: [], cacheReference: null },
     },
+    operations: unavailableOperations,
     refreshedAtMs: 200,
   });
   const scanner = store.get().scanner;
@@ -75,6 +81,7 @@ test("offline, logout and explicit clear discard character-specific Scanner stat
         status: "ready",
         value: { formations: [], cacheReference: null },
       },
+      operations: unavailableOperations,
       refreshedAtMs: 300,
     });
     store.apply(event);
@@ -91,6 +98,7 @@ test("a confirmed solar-system change clears old scanner rows synchronously", ()
     solarSystemID: SYSTEM_A,
     scan: { status: "ready", value: emptyScan },
     formations: { status: "ready", value: { formations: [], cacheReference: null } },
+    operations: unavailableOperations,
     refreshedAtMs: 400,
   });
   store.apply({

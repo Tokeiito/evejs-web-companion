@@ -134,7 +134,11 @@ export type ScriptAction =
    * the server answers every refusal with the same silence, so a batch could not
    * report which stack failed — the block re-reads its hold instead.
    */
-  | { readonly kind: "compressOre"; readonly itemID: number; readonly facilityID: number };
+  | { readonly kind: "compressOre"; readonly itemID: number; readonly facilityID: number }
+  /** Product scanner actions carry no IDs; the BFF resolves authority afresh. */
+  | { readonly kind: "scannerLaunch" }
+  | { readonly kind: "scannerAnalyze" }
+  | { readonly kind: "scannerRecover" };
 
 /**
  * Does this action need to be PERFORMED (handed to `issue`)? Everything but a

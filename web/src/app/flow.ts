@@ -438,6 +438,12 @@ export interface AppFlow {
   loadActivity(): Promise<void>;
   /** Refresh current-system scan sites and the independent formation reference. */
   loadScanner(): Promise<void>;
+  /** Launch every probe EveJS currently says is safe to launch. */
+  launchScannerProbes(): Promise<void>;
+  /** Analyze using EveJS's current authoritative probe geometry. */
+  analyzeScannerSignatures(): Promise<void>;
+  /** Recover the current held session's active probes. */
+  recoverScannerProbes(): Promise<void>;
   /** Reconnect the session character's lost probes, then refresh scanner state. */
   reconnectScannerProbes(): Promise<void>;
   /** Refresh authoritative membership, hierarchy, MOTD and join-request reads. */
@@ -1073,6 +1079,20 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     "OnFleetJoinRequest",
     "OnFleetJoinRejected",
   ]);
+  const scannerSnapshotNotifications = new Set([
+    "OnNewProbe",
+    "OnRemoveProbe",
+    "OnProbesIdle",
+    "OnProbeStateChanged",
+    "OnProbeStateUpdated",
+    "OnProbeRangeUpdated",
+    "OnProbePositionsUpdated",
+    "OnReconnectToProbesAvailable",
+    "OnScannerDisconnected",
+    "OnSystemScanStarted",
+    "OnSystemScanStopped",
+    "OnSystemScanDone",
+  ]);
 
   function applyPushedNotification(
     method: string | null,
@@ -1091,6 +1111,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // The notification is an invalidation, never the roster authority. A
       // coalesced, single-flight bound read below replaces the full snapshot.
       scheduleFleetRefresh();
+      return;
+    }
+    if (method !== null && scannerSnapshotNotifications.has(method)) {
+      scheduleScannerRefresh();
       return;
     }
     if (method === "OnGodmaShipEffect") {
@@ -2053,16 +2077,43 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // flight. Only the newest generation may publish, and a scanner that had
   // already been opened is refreshed automatically after a system change.
   let scannerLoadGeneration = 0;
+  let scannerRefreshPromise: Promise<void> | null = null;
+  let scannerRefreshDirty = false;
+  let scannerRefreshScheduled = false;
+
+  function scheduleScannerRefresh(): void {
+    if (scannerRefreshPromise !== null) {
+      scannerRefreshDirty = true;
+      return;
+    }
+    if (scannerRefreshScheduled) {
+      return;
+    }
+    scannerRefreshScheduled = true;
+    queueMicrotask(() => {
+      scannerRefreshScheduled = false;
+      scannerRefreshPromise = (async () => {
+        do {
+          scannerRefreshDirty = false;
+          await loadScanner();
+        } while (scannerRefreshDirty);
+      })().finally(() => {
+        scannerRefreshPromise = null;
+      });
+      void scannerRefreshPromise.catch(() => undefined);
+    });
+  }
 
   async function loadScanner(): Promise<void> {
     const generation = ++scannerLoadGeneration;
     store.apply({ type: "scanner/loading" });
-    const [scanResult, formationsResult] = await Promise.allSettled([
+    const [scanResult, formationsResult, operationsResult] = await Promise.allSettled([
       api.loadBoundSmallServices(callOptions),
       api.loadScannerFormations(callOptions),
+      api.loadScannerOperations(callOptions),
     ] as const);
 
-    for (const result of [scanResult, formationsResult]) {
+    for (const result of [scanResult, formationsResult, operationsResult]) {
       if (result.status === "rejected" && isSessionLost(result.reason)) {
         stopLiveStream();
         store.apply({ type: "character/offline" });
@@ -2070,7 +2121,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       }
     }
 
-    const scan = scanResult.status === "fulfilled"
+    let scan = scanResult.status === "fulfilled"
       ? scannerStateFromBoundRead(decodeBoundSmallServices(scanResult.value).fullState)
       : {
           status: "unavailable" as const,
@@ -2082,6 +2133,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           status: "unavailable" as const,
           reason: "Formation reference data could not be read from the live session.",
         };
+    const operations = operationsResult.status === "fulfilled"
+      ? { status: "ready" as const, value: operationsResult.value }
+      : {
+          status: "unavailable" as const,
+          reason: "Probe action state could not be read from the live session.",
+        };
 
     // A newer refresh (normally the one scheduled by a completed jump) owns
     // the slice. Let this older response fall away instead of repainting the
@@ -2092,18 +2149,33 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const rawSolarSystemID = scanResult.status === "fulfilled"
       ? scanResult.value.solarSystemID
       : null;
-    const solarSystemID =
+    const scanSolarSystemID =
       typeof rawSolarSystemID === "number" &&
       Number.isSafeInteger(rawSolarSystemID) &&
       rawSolarSystemID > 0
         ? rawSolarSystemID
         : null;
+    const operationsSolarSystemID = operations.status === "ready"
+      ? operations.value.solarSystemID
+      : null;
+    if (
+      scanSolarSystemID !== null
+      && operationsSolarSystemID !== null
+      && scanSolarSystemID !== operationsSolarSystemID
+    ) {
+      scan = {
+        status: "unavailable",
+        reason: "The ship changed systems while scanner data was refreshing.",
+      };
+    }
+    const solarSystemID = operationsSolarSystemID ?? scanSolarSystemID;
 
     store.apply({
       type: "scanner/loaded",
       solarSystemID,
       scan,
       formations,
+      operations,
       refreshedAtMs: Date.now(),
     });
 
@@ -2125,12 +2197,22 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       }
       requestNames(refs);
     }
+    if (operations.status === "ready") {
+      const refs: NameRef[] = [];
+      if (operations.value.launcher?.typeID) {
+        refs.push({ kind: "type", id: operations.value.launcher.typeID });
+      }
+      for (const probe of operations.value.probes) {
+        refs.push({ kind: "type", id: probe.typeID });
+      }
+      requestNames(refs);
+    }
   }
 
-  async function reconnectScannerProbes(): Promise<void> {
+  async function runScannerAction(action: () => Promise<void>): Promise<void> {
     let mutationError: unknown = null;
     try {
-      await api.reconnectScannerProbes(callOptions);
+      await action();
     } catch (error) {
       mutationError = error;
     }
@@ -2140,6 +2222,22 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     if (mutationError !== null) {
       throw mutationError;
     }
+  }
+
+  function launchScannerProbes(): Promise<void> {
+    return runScannerAction(() => api.launchScannerProbes(callOptions));
+  }
+
+  function analyzeScannerSignatures(): Promise<void> {
+    return runScannerAction(() => api.requestScannerAnalysis(callOptions));
+  }
+
+  function recoverScannerProbes(): Promise<void> {
+    return runScannerAction(() => api.recoverScannerProbes(callOptions));
+  }
+
+  function reconnectScannerProbes(): Promise<void> {
+    return runScannerAction(() => api.reconnectScannerProbes(callOptions));
   }
 
   // --- Fleet Center -------------------------------------------------------
@@ -5074,6 +5172,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   const CARGO_MACROS = new Set(["accept-mission", "load-mission-cargo", "turn-in-mission", "unload-cargo", "refine-ore", "refit-ship", "move-items", "repair-ship", "sell-item", "jettison-cargo"]);
   const FLEET_MANAGEMENT_MACROS = new Set(["create-fleet", "invite-to-fleet", "join-fleet"]);
   const FLEET_SUPPORT_MACROS = new Set(["remote-rep", "orbit-and-boost", "remote-cap"]);
+  const SCANNER_MACROS = new Set([
+    "launch-scan-probes",
+    "analyze-signatures",
+    "recover-scan-probes",
+  ]);
 
   interface DefenseModuleIDs {
     readonly shield: readonly number[];
@@ -5287,6 +5390,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         let savedFittings: ScriptObservation["savedFittings"] = null;
         let colonies: ScriptObservation["colonies"] = null;
         let damagedItemIDs: ScriptObservation["damagedItemIDs"] = null;
+        let scannerOperations: ScriptObservation["scannerOperations"] = null;
+        if (macro !== null && SCANNER_MACROS.has(macro)) {
+          try {
+            scannerOperations = await api.loadScannerOperations(callOptions);
+          } catch {
+            scannerOperations = null;
+          }
+        }
         if (macro === "repair-ship" && status.docked) {
           try {
             // Quote the ACTIVE SHIP and everything fitted to it; the ids with a
@@ -5653,6 +5764,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           foundAgent,
           jumpsToDropoff,
           anomalies,
+          scannerOperations,
           localPlayers,
           dscanHitIDs,
           huntRoam,
@@ -5969,6 +6081,15 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             // the block's next hold read is what tells it whether the stack
             // really changed type, so a refusal costs one attempt on one stack.
             await api.compressOreInSpace(action.itemID, action.facilityID, callOptions);
+            return;
+          case "scannerLaunch":
+            await api.launchScannerProbes(callOptions);
+            return;
+          case "scannerAnalyze":
+            await api.requestScannerAnalysis(callOptions);
+            return;
+          case "scannerRecover":
+            await api.recoverScannerProbes(callOptions);
             return;
         }
         return unhandledScriptAction(action);
@@ -6720,6 +6841,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     },
     loadActivity,
     loadScanner,
+    launchScannerProbes,
+    analyzeScannerSignatures,
+    recoverScannerProbes,
     reconnectScannerProbes,
     loadFleet,
     formFleet,

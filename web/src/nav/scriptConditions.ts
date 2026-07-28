@@ -29,6 +29,7 @@ import type {
 } from "../store/types.ts";
 import type { CargoReading, TravelReading } from "./missionBotLoop.ts";
 import type { SavedFitting } from "../bridge/fittings.ts";
+import type { ScannerOperationsSnapshot } from "../scanner/scannerCenter.ts";
 
 // ─── The observation ─────────────────────────────────────────────────────────
 
@@ -160,6 +161,8 @@ export interface ScriptObservation {
    * read only when a warp-to-anomaly step is active. null = unreadable.
    */
   readonly anomalies?: readonly string[] | null;
+  /** Held-session probe authority, read only for exploration macros. */
+  readonly scannerOperations?: ScannerOperationsSnapshot | null;
   /** The character's saved-fitting library (read when a refit step is active). */
   readonly savedFittings?: readonly SavedFitting[] | null;
   /** Saved bookmarks (label + id + system), read when a bookmark-flying step is active. */

@@ -61,6 +61,22 @@ const undock = SCRIPT_MACROS["undock"]!;
 const defend = SCRIPT_MACROS["defend-with-drones"]!;
 const NM: MacroMemory = {};
 
+const scannerOperations: NonNullable<ScriptObservation["scannerOperations"]> = {
+  inSpace: true,
+  solarSystemID: 30000142,
+  shipID: 9001,
+  maxActiveProbes: 8,
+  launcher: {
+    moduleID: 8001,
+    typeID: 17938,
+    online: true,
+    chargeTypeID: 30013,
+    loadedCount: 8,
+    launchCount: 8,
+  },
+  probes: [],
+};
+
 test("undock: docked -> undock, in space -> done", () => {
   assert.equal(undock({ id: "u", kind: "macro", macro: "undock", args: {} }, obs({ flightStatus: flight({ docked: true, inSpace: false }) }), NM, {}).action.kind, "undock");
   assert.equal(undock({ id: "u", kind: "macro", macro: "undock", args: {} }, obs({ flightStatus: flight({ docked: false }) }), NM, {}).outcome.kind, "done");
@@ -436,6 +452,52 @@ test("remote-rep: hurt friendly -> lock then rep it; everyone full -> done", () 
   assert.ok(rep.action.kind === "activate" && rep.action.moduleID === 600 && rep.action.targetID === 7001);
   const full = entity({ itemID: 7001, kind: "ship", characterID: 5001, shieldRatio: 1, armorRatio: 1, hullRatio: 1 });
   assert.equal(remoteRep(repStep, obs({ snapshot: snapshot([full]), remoteShieldRepairerIDs: [600], fleetMemberCharacterIDs: [5001] }), {}, {}).outcome.kind, "done");
+});
+
+test("probe sweep blocks launch, analyze once, and recover against observed state", () => {
+  const launchStep: MacroStep = { id: "pl", kind: "macro", macro: "launch-scan-probes", args: {} };
+  const analyzeStep: MacroStep = { id: "pa", kind: "macro", macro: "analyze-signatures", args: {} };
+  const recoverStep: MacroStep = { id: "pr", kind: "macro", macro: "recover-scan-probes", args: {} };
+  const launch = SCRIPT_MACROS["launch-scan-probes"];
+  const analyze = SCRIPT_MACROS["analyze-signatures"];
+  const recover = SCRIPT_MACROS["recover-scan-probes"];
+  const probe = {
+    probeID: 7001,
+    typeID: 30013,
+    pos: [1, 2, 3] as const,
+    destination: [4, 5, 6] as const,
+    scanRange: 1,
+    rangeStep: 1,
+    state: 1,
+    expiry: "1",
+  };
+
+  assert.equal(launch(launchStep, obs({ scannerOperations }), NM, {}).action.kind, "scannerLaunch");
+  assert.equal(
+    launch(launchStep, obs({ scannerOperations: { ...scannerOperations, probes: [probe] } }), NM, {}).outcome.kind,
+    "done",
+  );
+  const firstAnalysis = analyze(
+    analyzeStep,
+    obs({ scannerOperations: { ...scannerOperations, probes: [probe] } }),
+    NM,
+    {},
+  );
+  assert.equal(firstAnalysis.action.kind, "scannerAnalyze");
+  assert.equal(
+    analyze(
+      analyzeStep,
+      obs({ scannerOperations: { ...scannerOperations, probes: [probe] } }),
+      firstAnalysis.nextMem,
+      {},
+    ).outcome.kind,
+    "done",
+  );
+  assert.equal(
+    recover(recoverStep, obs({ scannerOperations: { ...scannerOperations, probes: [probe] } }), NM, {}).action.kind,
+    "scannerRecover",
+  );
+  assert.equal(recover(recoverStep, obs({ scannerOperations }), NM, {}).outcome.kind, "done");
 });
 
 test("fleet support waits for an authoritative roster and never targets a non-member", () => {

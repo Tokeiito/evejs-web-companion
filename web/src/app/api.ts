@@ -27,6 +27,10 @@ import type {
 } from "../store/types.ts";
 import type { NameRef } from "../store/names.ts";
 import type { BotLaunchGrant, BotRiskClass } from "../bots/runPolicy.ts";
+import type {
+  ScannerOperationsSnapshot,
+  ScannerProbeOperation,
+} from "../scanner/scannerCenter.ts";
 
 export interface LoginResult {
   readonly accountID: number;
@@ -2919,42 +2923,78 @@ export async function loadScannerFormations(options: ApiOptions = {}): Promise<J
   return data.formations ?? null;
 }
 
-/** Launch probes from a known fitted launcher. The panel supplies no guessed ID. */
-export async function launchScannerProbes(
-  moduleID: number,
-  count: number,
-  options: ApiOptions = {},
-): Promise<void> {
-  await postJson("/api/bridge/dogma/probes/launch", { moduleID, count, confirm: true }, options);
+function scannerVector(value: JsonValue | undefined): readonly [number, number, number] {
+  if (!Array.isArray(value)) {
+    return [0, 0, 0];
+  }
+  return [0, 1, 2].map((index) => asNumberOrNull(value[index]) ?? 0) as unknown as readonly [number, number, number];
 }
 
-/** Recover an exact set of the session character's launched probes. */
-export async function recoverScannerProbes(
-  probeIDs: readonly number[],
+/** Decode EveJS's current held-session scanner authority. */
+export async function loadScannerOperations(
   options: ApiOptions = {},
-): Promise<void> {
-  await postJson(
-    "/api/bridge/scan/probe/recover",
-    { probeIDs: [...probeIDs], confirm: true },
-    options,
-  );
+): Promise<ScannerOperationsSnapshot> {
+  const data = await getJson("/api/bridge/scanner/state", options);
+  const scanner = data.scanner && typeof data.scanner === "object" && !Array.isArray(data.scanner)
+    ? data.scanner as Record<string, JsonValue>
+    : {};
+  const launcherRow = scanner.launcher && typeof scanner.launcher === "object" && !Array.isArray(scanner.launcher)
+    ? scanner.launcher as Record<string, JsonValue>
+    : null;
+  const probes: ScannerProbeOperation[] = Array.isArray(scanner.probes)
+    ? scanner.probes.flatMap((value) => {
+        if (value === null || typeof value !== "object" || Array.isArray(value)) return [];
+        const row = value as Record<string, JsonValue>;
+        const probeID = asNumberOrNull(row.probeID);
+        const typeID = asNumberOrNull(row.typeID);
+        if (probeID === null || probeID <= 0 || typeID === null || typeID <= 0) return [];
+        return [{
+          probeID,
+          typeID,
+          pos: scannerVector(row.pos),
+          destination: scannerVector(row.destination),
+          scanRange: asNumberOrNull(row.scanRange) ?? 0,
+          rangeStep: asNumberOrNull(row.rangeStep) ?? 0,
+          state: asNumberOrNull(row.state) ?? 0,
+          expiry: typeof row.expiry === "string" ? row.expiry : "0",
+        }];
+      })
+    : [];
+  return {
+    inSpace: scanner.inSpace === true,
+    solarSystemID: asNumberOrNull(scanner.solarSystemID),
+    shipID: asNumberOrNull(scanner.shipID),
+    maxActiveProbes: Math.max(0, asNumberOrNull(scanner.maxActiveProbes) ?? 0),
+    launcher: launcherRow === null || (asNumberOrNull(launcherRow.moduleID) ?? 0) <= 0
+      ? null
+      : {
+          moduleID: asNumberOrNull(launcherRow.moduleID)!,
+          typeID: asNumberOrNull(launcherRow.typeID),
+          online: launcherRow.online === true,
+          chargeTypeID: asNumberOrNull(launcherRow.chargeTypeID),
+          loadedCount: Math.max(0, asNumberOrNull(launcherRow.loadedCount) ?? 0),
+          launchCount: Math.max(0, asNumberOrNull(launcherRow.launchCount) ?? 0),
+        },
+    probes,
+  };
 }
 
-/** Analyze with exact caller-observed probe geometry; never synthesize a map. */
-export async function requestScannerAnalysis(
-  probeMap: Readonly<Record<string, JsonValue>>,
-  options: ApiOptions = {},
-): Promise<void> {
-  await postJson(
-    "/api/bridge/scan/request-scans",
-    { probeMap: probeMap as JsonValue, confirm: true },
-    options,
-  );
+/** Safe product actions accept no authority-bearing browser arguments. */
+export async function launchScannerProbes(options: ApiOptions = {}): Promise<void> {
+  await postJson("/api/bridge/scanner/launch", { confirm: true }, options);
+}
+
+export async function recoverScannerProbes(options: ApiOptions = {}): Promise<void> {
+  await postJson("/api/bridge/scanner/recover", { confirm: true }, options);
+}
+
+export async function requestScannerAnalysis(options: ApiOptions = {}): Promise<void> {
+  await postJson("/api/bridge/scanner/analyze", { confirm: true }, options);
 }
 
 /** Ask the current-system manager to reconnect the session character's probes. */
 export async function reconnectScannerProbes(options: ApiOptions = {}): Promise<void> {
-  await postJson("/api/bridge/scan/probe/reconnect", { confirm: true }, options);
+  await postJson("/api/bridge/scanner/reconnect", { confirm: true }, options);
 }
 
 /**

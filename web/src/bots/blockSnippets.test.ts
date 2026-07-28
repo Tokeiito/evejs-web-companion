@@ -45,7 +45,7 @@ test("the typed snippet catalogue is exhaustive, ordered, and plain-language", (
   }
 });
 
-test("the five promised groups contain their complete supported sequences", () => {
+test("the promised groups contain their complete supported sequences", () => {
   const expected: Readonly<Record<(typeof BLOCK_SNIPPET_IDS)[number], readonly MacroID[]>> = {
     "safe-return-home": ["travel-to-station", "unload-cargo", "repair-ship"],
     "mine-haul-cycle": ["undock", "mine-at-belt", "deliver-ore"],
@@ -71,6 +71,11 @@ test("the five promised groups contain their complete supported sequences", () =
       "refit-ship",
       "repair-ship",
       "tidy-hangar",
+    ],
+    "probe-signature-sweep": [
+      "launch-scan-probes",
+      "analyze-signatures",
+      "recover-scan-probes",
     ],
   };
   for (const id of BLOCK_SNIPPET_IDS) {

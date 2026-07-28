@@ -403,6 +403,25 @@ async function readFlightStatus(bridgeSessionID, sessionFields = {}) {
 }
 
 /**
+ * Authoritative scanner state for product-level browser actions. EveJS chooses
+ * the current ship launcher and current-system probe geometry; neither is
+ * accepted from browser input on the safe companion routes.
+ */
+async function readScannerState(bridgeSessionID, sessionFields = {}) {
+  const body = { bridgeSessionID: String(bridgeSessionID || "") };
+  if (sessionFields && typeof sessionFields === "object" && !Array.isArray(sessionFields)) {
+    body.session = sessionFields;
+  }
+  const data = await postJson("/session/scanner-state", body, {
+    timeoutMs: BRIDGE_CALL_TIMEOUT_MS,
+  });
+  return {
+    scanner: data.scanner && typeof data.scanner === "object" ? data.scanner : {},
+    notifications: Array.isArray(data.notifications) ? data.notifications : [],
+  };
+}
+
+/**
  * Space snapshot (goal R11) — a read-only projection of what the held session
  * can see in space right now: the visible entities (identity + position +
  * velocity + health fractions) and the active ship's shield/armor/hull/
@@ -680,6 +699,7 @@ module.exports = {
   selectCharacter,
   releaseBridgeSession,
   readFlightStatus,
+  readScannerState,
   readSpaceSnapshot,
   readChat,
   sendChat,

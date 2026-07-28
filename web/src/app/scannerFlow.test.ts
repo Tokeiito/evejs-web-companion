@@ -19,6 +19,20 @@ function scanEnvelope(cell: unknown, solarSystemID = SYSTEM_A) {
   return { ok: true, solarSystemID, reads: { GetFullState: cell } };
 }
 
+function operationsEnvelope(solarSystemID = SYSTEM_A) {
+  return {
+    ok: true,
+    scanner: {
+      inSpace: true,
+      solarSystemID,
+      shipID: 9001,
+      maxActiveProbes: 8,
+      launcher: null,
+      probes: [],
+    },
+  };
+}
+
 test("loadScanner keeps a successful empty current-system scan distinct from unavailable", async () => {
   const calls: string[] = [];
   const fetch: typeof globalThis.fetch = async (input) => {
@@ -30,6 +44,7 @@ test("loadScanner keeps a successful empty current-system scan distinct from una
     if (url === "/api/bridge/formations") {
       return json({ ok: true, formations: null });
     }
+    if (url === "/api/bridge/scanner/state") return json(operationsEnvelope());
     throw new Error(`unexpected fetch: ${url}`);
   };
 
@@ -39,6 +54,7 @@ test("loadScanner keeps a successful empty current-system scan distinct from una
   assert.deepEqual(calls.sort(), [
     "/api/bridge/bound-small-services",
     "/api/bridge/formations",
+    "/api/bridge/scanner/state",
   ]);
   const scanner = store.get().scanner;
   assert.equal(scanner.loaded, true);
@@ -61,6 +77,7 @@ test("a failed GetFullState arm stays unavailable while formation data remains u
     if (url === "/api/bridge/formations") {
       return json({ ok: true, formations: [["Diamond", [[0, 1, 2]]]] });
     }
+    if (url === "/api/bridge/scanner/state") return json(operationsEnvelope());
     throw new Error(`unexpected fetch: ${url}`);
   };
 
@@ -84,7 +101,7 @@ test("probe reconnect confirms the write and always follows it with authoritativ
       method: String(init.method ?? "GET"),
       body: typeof init.body === "string" ? JSON.parse(init.body) : null,
     });
-    if (url === "/api/bridge/scan/probe/reconnect") {
+    if (url === "/api/bridge/scanner/reconnect") {
       return json({ ok: true, applied: true, result: null, notifications: [] });
     }
     if (url === "/api/bridge/bound-small-services") {
@@ -93,6 +110,7 @@ test("probe reconnect confirms the write and always follows it with authoritativ
     if (url === "/api/bridge/formations") {
       return json({ ok: true, formations: null });
     }
+    if (url === "/api/bridge/scanner/state") return json(operationsEnvelope());
     throw new Error(`unexpected fetch: ${url}`);
   };
 
@@ -100,15 +118,53 @@ test("probe reconnect confirms the write and always follows it with authoritativ
   await createAppFlow(store, { fetch }).reconnectScannerProbes();
 
   assert.deepEqual(calls[0], {
-    url: "/api/bridge/scan/probe/reconnect",
+    url: "/api/bridge/scanner/reconnect",
     method: "POST",
     body: { confirm: true },
   });
   assert.deepEqual(
     calls.slice(1).map((call) => call.url).sort(),
-    ["/api/bridge/bound-small-services", "/api/bridge/formations"],
+    [
+      "/api/bridge/bound-small-services",
+      "/api/bridge/formations",
+      "/api/bridge/scanner/state",
+    ],
   );
   assert.equal(store.get().scanner.scan.status, "ready");
+});
+
+test("launch, analyze, and recover use no-input product routes and re-read afterward", async () => {
+  const actions = [
+    ["launchScannerProbes", "/api/bridge/scanner/launch"],
+    ["analyzeScannerSignatures", "/api/bridge/scanner/analyze"],
+    ["recoverScannerProbes", "/api/bridge/scanner/recover"],
+  ] as const;
+  for (const [method, expectedPath] of actions) {
+    const calls: Array<{ url: string; method: string; body: unknown }> = [];
+    const fetch: typeof globalThis.fetch = async (input, init = {}) => {
+      const url = String(input);
+      calls.push({
+        url,
+        method: String(init.method ?? "GET"),
+        body: typeof init.body === "string" ? JSON.parse(init.body) : null,
+      });
+      if (url === expectedPath) return json({ ok: true, applied: true });
+      if (url === "/api/bridge/bound-small-services") {
+        return json(scanEnvelope({ result: [emptyDict, emptyDict, emptyDict, emptyDict] }));
+      }
+      if (url === "/api/bridge/formations") return json({ ok: true, formations: null });
+      if (url === "/api/bridge/scanner/state") return json(operationsEnvelope());
+      throw new Error(`unexpected fetch: ${url}`);
+    };
+    const flow = createAppFlow(createClientStore(), { fetch });
+    await flow[method]();
+    assert.deepEqual(calls[0], {
+      url: expectedPath,
+      method: "POST",
+      body: { confirm: true },
+    });
+    assert.equal(calls.length, 4, "one write plus all three scanner reads");
+  }
 });
 
 test("loadScanFullState rejects a failed per-arm read instead of inventing no anomalies", async () => {
@@ -131,6 +187,7 @@ test("a system change clears the old scan and automatically reads the new system
       return json(scanEnvelope({ result: [emptyDict, emptyDict, emptyDict, emptyDict] }, solarSystemID));
     }
     if (url === "/api/bridge/formations") return json({ ok: true, formations: null });
+    if (url === "/api/bridge/scanner/state") return json(operationsEnvelope(solarSystemID));
     if (url === "/api/bridge/flight/status") {
       return json({
         ok: true,

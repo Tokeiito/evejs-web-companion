@@ -1,11 +1,10 @@
 // Scanner / Exploration Center domain model.
 //
 // This file deliberately owns no store, HTTP, or Svelte state. The companion
-// already has a decoded scanMgr.GetFullState read, but it does not yet retain
-// active-probe inventory/geometry in the store and has no app-level wrappers for
-// the existing probe write routes. A future integration can therefore pass the
-// read and whichever action prerequisites it can actually prove, while this
-// model keeps unavailable data distinct from a successful empty scan.
+// The site read and active-probe authority are independent: either can fail
+// without pretending the other is empty. Product writes re-resolve all IDs and
+// geometry server-side; this model carries only the prerequisites the view may
+// honestly display and keeps unavailable distinct from successful-empty.
 
 import type {
   BoundReadResult,
@@ -20,6 +19,40 @@ export type ScannerDataState<T> =
   | { readonly status: "loading" }
   | { readonly status: "unavailable"; readonly reason: string }
   | { readonly status: "ready"; readonly value: T };
+
+/** Server-authoritative probe geometry used by the safe product actions. */
+export interface ScannerProbeOperation {
+  readonly probeID: number;
+  readonly typeID: number;
+  readonly pos: readonly [number, number, number];
+  readonly destination: readonly [number, number, number];
+  readonly scanRange: number;
+  readonly rangeStep: number;
+  readonly state: number;
+  readonly expiry: string;
+}
+
+export interface ScannerLauncherOperation {
+  readonly moduleID: number;
+  readonly typeID: number | null;
+  readonly online: boolean;
+  readonly chargeTypeID: number | null;
+  readonly loadedCount: number;
+  readonly launchCount: number;
+}
+
+/**
+ * Current held-session action authority. IDs remain internal prerequisites;
+ * product POSTs accept no IDs and re-read this source server-side before use.
+ */
+export interface ScannerOperationsSnapshot {
+  readonly inSpace: boolean;
+  readonly solarSystemID: number | null;
+  readonly shipID: number | null;
+  readonly maxActiveProbes: number;
+  readonly launcher: ScannerLauncherOperation | null;
+  readonly probes: readonly ScannerProbeOperation[];
+}
 
 export interface ScannerNameCatalog {
   /** Type names already resolved by the caller; numeric ids never become labels. */
