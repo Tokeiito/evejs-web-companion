@@ -69,6 +69,15 @@
     !creating && trimmedName.length > 0 && raceID > 0 && nameProblem === null,
   );
 
+  /**
+   * "an Ibis", not "a Ibis". A plain vowel rule, which is right for all four
+   * corvettes this world has (Ibis, Impairor, Reaper, Velator) — ship names are
+   * data, so a hull whose spelling fights the rule would need a better one.
+   */
+  function article(word: string): string {
+    return /^[aeiou]/i.test(word) ? "an" : "a";
+  }
+
   /** A random ancestry of this race — the "everything else can be random" default. */
   function rollAncestryFor(nextRaceID: number): number {
     if (!tables) {
@@ -230,7 +239,7 @@
                 <TypeIcon typeID={row.shipTypeID} name={row.shipName} size="sm" />
                 <span class="race-text">
                   <span class="name">{row.raceName}</span>
-                  <span class="detail">Starts in a {row.shipName}</span>
+                  <span class="detail">Starts in {article(row.shipName)} {row.shipName}</span>
                 </span>
               </button>
             </li>
@@ -332,8 +341,8 @@
 
     {#if race}
       <p class="detail create-summary">
-        {race.raceName}{bloodline ? ` · ${bloodline.bloodlineName}` : ""} · starts in a
-        {race.shipName}.
+        {race.raceName}{bloodline ? ` · ${bloodline.bloodlineName}` : ""} · starts in
+        {article(race.shipName)} {race.shipName}.
       </p>
     {/if}
     {#if error}
