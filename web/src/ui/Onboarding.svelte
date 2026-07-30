@@ -10,6 +10,7 @@
   // above the login form.
   import LoginForm from "./LoginForm.svelte";
   import CharacterSelect from "./CharacterSelect.svelte";
+  import CharacterCreate from "./CharacterCreate.svelte";
   import KnownCharacterPicker from "./KnownCharacterPicker.svelte";
   import { BridgeCallError } from "../bridge/callMethod.ts";
   import {
@@ -64,6 +65,12 @@
       rememberCharacters(username, characters);
     }
   });
+
+  // Whether this session is on the create-character screen instead of the
+  // character list. Signed-in-but-not-online is the only state it can be
+  // reached from — creation happens before selection, and the moment a pilot
+  // comes online App unmounts this whole component.
+  let creating = $state(false);
 
   // The roster shown before login (a snapshot at mount; reloaded after a forget).
   let known = $state<KnownCharacter[]>(loadKnownCharacters());
@@ -189,5 +196,16 @@
     <LoginForm {store} {flow} />
   </div>
 {:else if $station.online === null}
-  <CharacterSelect {store} {flow} {botFlownIDs} />
+  {#if creating}
+    <!-- flow.createCharacter has already re-read the roster by the time this
+         fires, so returning to the list shows the new pilot. Selecting is left
+         to the player: bringing a character online is its own decision. -->
+    <CharacterCreate
+      {flow}
+      onCancel={() => (creating = false)}
+      onCreated={() => (creating = false)}
+    />
+  {:else}
+    <CharacterSelect {store} {flow} {botFlownIDs} onCreate={() => (creating = true)} />
+  {/if}
 {/if}

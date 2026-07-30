@@ -8,11 +8,17 @@
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
 
-  let { store, flow, botFlownIDs = new Set<number>() }: {
+  let { store, flow, botFlownIDs = new Set<number>(), onCreate = null }: {
     store: ClientStore;
     flow: AppFlow;
     /** Pilots a SERVER BOT is flying right now — marked so a click isn't a surprise refusal. */
     botFlownIDs?: Set<number>;
+    /**
+     * Go to the create-character screen. Null hides the affordance entirely —
+     * an embedding that has nowhere to send the player must not offer it. When
+     * this account has NO characters, this is the only way off this screen.
+     */
+    onCreate?: (() => void) | null;
   } = $props();
 
   // Stable store identity; slice signals are Svelte-store-contract objects.
@@ -63,7 +69,12 @@
     bring it online — a character already in use elsewhere cannot be selected.
   </p>
   {#if $character.characters.length === 0}
-    <p class="empty">This account has no characters.</p>
+    <!-- Before creation existed this was a dead end: an account with no pilots
+         had nothing to click but "Log out". -->
+    <p class="empty">
+      This account has no characters yet.
+      {#if onCreate}Create one to start flying.{/if}
+    </p>
   {:else}
     <ul class="character-list">
       {#each $character.characters as row (row.characterID)}
@@ -100,7 +111,17 @@
   {#if error}
     <p class="error">{error}</p>
   {/if}
-  <p><button type="button" class="minor" onclick={logout}>Log out</button></p>
+  <p class="select-actions">
+    {#if onCreate}
+      <button
+        type="button"
+        class={$character.characters.length === 0 ? "primary" : "minor"}
+        disabled={busyCharacterID !== null}
+        onclick={onCreate}
+      >Create character</button>
+    {/if}
+    <button type="button" class="minor" onclick={logout}>Log out</button>
+  </p>
 </section>
 
 <!--

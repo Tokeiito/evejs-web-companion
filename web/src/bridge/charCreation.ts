@@ -220,6 +220,41 @@ export function bloodlineChoicesForRace(
   }));
 }
 
+/**
+ * A ValidateNameEx code as something a player can act on.
+ *
+ * The codes are charService's VALIDATION_CODE (characterNameRuntime.js:5) and
+ * the rules behind them are the server's, restated here only as prose: 3–37
+ * characters, letters/digits/apostrophe/hyphen/space, at most two spaces and
+ * never two in a row, no ccp-/gm-/isd- prefix, and not already taken.
+ *
+ * ⚠ null is NOT a verdict. It means the read did not answer (offline, refused,
+ * in flight), and a screen that showed it as a rejection would be inventing one.
+ * Callers get null back so they can stay quiet instead.
+ */
+export function nameValidationMessage(code: number | null): string | null {
+  switch (code) {
+    case 1:
+      return null;
+    case -1:
+      return "That name is too short — three characters at least.";
+    case -2:
+      return "That name is too long — thirty-seven characters at most.";
+    case -5:
+      return "Letters, digits, apostrophes and hyphens only.";
+    case -6:
+      return "Two spaces at most — a first, middle and last name.";
+    case -7:
+      return "Two spaces in a row is not allowed.";
+    case -101:
+      return "That name is already taken.";
+    case -102:
+      return "That name is reserved.";
+    default:
+      return code === null ? null : "The server would not accept that name.";
+  }
+}
+
 /** The bloodline an ancestry belongs to, or null when it names none of them. */
 export function bloodlineForAncestry(
   tables: CharCreationTables,

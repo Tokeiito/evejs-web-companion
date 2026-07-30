@@ -20,6 +20,7 @@ import {
   bloodlineForAncestry,
   bloodlinesForRace,
   decodeCharCreationTables,
+  nameValidationMessage,
 } from "./charCreation.ts";
 import type { JsonValue } from "./wire.ts";
 
@@ -204,6 +205,23 @@ test("an empty world decodes to empty tables, not a throw", () => {
 
   assert.deepEqual(empty, { races: [], bloodlines: [], ancestries: [] });
   assert.deepEqual(bloodlineChoicesForRace(empty, 1), []);
+});
+
+test("a name-validation code becomes something the player can act on", () => {
+  assert.equal(nameValidationMessage(1), null, "VALID says nothing");
+  assert.match(nameValidationMessage(-1) ?? "", /too short/);
+  assert.match(nameValidationMessage(-2) ?? "", /too long/);
+  assert.match(nameValidationMessage(-5) ?? "", /Letters/);
+  assert.match(nameValidationMessage(-6) ?? "", /Two spaces at most/);
+  assert.match(nameValidationMessage(-7) ?? "", /in a row/);
+  assert.match(nameValidationMessage(-101) ?? "", /already taken/);
+  assert.match(nameValidationMessage(-102) ?? "", /reserved/);
+  // An unknown negative is still a refusal — say so rather than staying silent.
+  assert.match(nameValidationMessage(-9999) ?? "", /would not accept/);
+});
+
+test("⚠ a null code is NOT a rejection — the read simply did not answer", () => {
+  assert.equal(nameValidationMessage(null), null);
 });
 
 test("a malformed envelope decodes to empty rather than half-formed rows", () => {
