@@ -234,6 +234,66 @@ function getFactionName(factionID) {
   return entry ? getLocalizedName(entry, `Faction ${numericFactionID}`) : `Faction ${numericFactionID}`;
 }
 
+/**
+ * The character-creation ancestries, off the SDE.
+ *
+ * ⚠ THE ONLY SOURCE FOR THESE. Unlike races, bloodlines and schools — which
+ * EveJS keeps in its own gameStore and serves through the retail read
+ * charUnboundMgr.GetCharCreationInfo — the world has NO ancestry table at all.
+ * CreateCharacterWithDoll takes an ancestryID, stores it verbatim on the
+ * character record, and never validates it against anything; the reads that
+ * echo it back (GetCharacterInfo, the paperdoll rows) just replay the stored
+ * number. So the ancestry a player picks is pure flavor as far as the server
+ * is concerned, and the SDE is where the names and descriptions live.
+ *
+ * That also means the attribute bonuses below are NOT applied: creation writes
+ * all five attributes at a flat 20. They ship anyway so the picker can show
+ * what an ancestry means in retail, but no caller should read them as this
+ * character's actual stats.
+ *
+ * Rows are keyed by `_key` (the ancestryID) and carry a bloodlineID. The SDE
+ * covers bloodlines this world does not have (Jove and Drifter); filtering to
+ * the bloodlines EveJS actually names is the CALLER's job, because only the
+ * retail read knows which those are.
+ */
+function listAncestries() {
+  const cacheKey = "ancestries:list";
+  if (caches.has(cacheKey)) {
+    return caches.get(cacheKey);
+  }
+
+  const rows = readJsonlTable("ancestries.jsonl")
+    .map((entry) => {
+      const ancestryID = Number(entry && entry._key) || 0;
+      const bloodlineID = Number(entry && entry.bloodlineID) || 0;
+      if (ancestryID <= 0 || bloodlineID <= 0) {
+        return null;
+      }
+      return {
+        ancestryID,
+        bloodlineID,
+        name: getLocalizedValue(entry.name) || `Ancestry ${ancestryID}`,
+        shortDescription:
+          typeof entry.shortDescription === "string" ? entry.shortDescription : "",
+        description: getLocalizedValue(entry.description) || "",
+        iconID: Number(entry.iconID) || null,
+        // Retail's attribute bonuses. Not applied by this world — see above.
+        attributes: {
+          charisma: Number(entry.charisma) || 0,
+          intelligence: Number(entry.intelligence) || 0,
+          memory: Number(entry.memory) || 0,
+          perception: Number(entry.perception) || 0,
+          willpower: Number(entry.willpower) || 0,
+        },
+      };
+    })
+    .filter(Boolean)
+    .sort((left, right) => left.ancestryID - right.ancestryID);
+
+  caches.set(cacheKey, rows);
+  return rows;
+}
+
 // The characters table is keyed by characterID at the top level (no `records`
 // bucket, and the entries carry `characterName` but not `characterID`), so the
 // index takes the object key as the ID.
@@ -1098,5 +1158,6 @@ module.exports = {
   getTypeIconCachePath,
   getTypeIconUrl,
   getTypeName,
+  listAncestries,
   normalizeIconRequest,
 };
