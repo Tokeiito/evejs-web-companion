@@ -5126,6 +5126,45 @@ async function dispatchBridgeWrite(req, res, next, service, method, args) {
 }
 
 /**
+ * One ACCOUNT-LEVEL call: a call whose subject is the signed-in ACCOUNT, not a
+ * character it has brought online.
+ *
+ * Every other bridge call in this file goes through `requireHeldBridgeSession`,
+ * which is right for anything a pilot does — there is a pilot. Character
+ * SELECTION and CREATION are the two things that necessarily happen before one
+ * exists, and on a brand-new account there is no character to select at all, so
+ * a held-session gate there is not a safety rail, it is a locked door with the
+ * key inside. `POST /api/bridge/select` already lives outside the gate for
+ * exactly this reason, and `/api/bridge/call` already falls back to a
+ * userid-only session when the map has no entry (the path the pre-select
+ * GetCharacterSelectionData read takes).
+ *
+ * So: run on the held session when there IS one (a second tab creating an alt
+ * while a pilot flies), and on an ephemeral userid-only session when there is
+ * not. The account identity is the BFF's own `req.account.accountID` either
+ * way — never anything the browser sent — which is what keeps the write landing
+ * on the caller's account and no other.
+ */
+async function accountLevelCall(req, service, method, args, kwargs = null) {
+  const held = bridgeSessions.get(req.webSessionID) || null;
+  try {
+    return await gateway.callMethod(
+      service,
+      method,
+      args,
+      kwargs,
+      { userid: Number(req.account.accountID) },
+      held ? held.bridgeSessionID : undefined,
+    );
+  } catch (error) {
+    if (held && error && error.code === "SESSION_NOT_FOUND") {
+      forgetBridgeSession(req.webSessionID);
+    }
+    throw error;
+  }
+}
+
+/**
  * Dispatch a write that SWAPS the session's ACTIVE SHIP. A known target hull
  * is pinned when the route has one; otherwise readiness requires the live
  * flight ship to differ from the pre-write hull. In space, the scene ego must
@@ -5709,16 +5748,226 @@ app.post("/api/bridge/character/toggle-validation", requireAuth, async (req, res
   await dispatchBridgeWrite(req, res, next, "charUnboundMgr", "ToggleValidation", []);
 });
 
-// ⚠ EXTRA-CARE (creates a whole character) — reachable + gated, NEVER fired live.
-// CreateCharacterWithDoll(name, ...creation args); FAST-MODE forwards a raw args
-// list from the body and surfaces the new characterID via result.
+/**
+ * The world's own character-creation tables, off the retail read
+ * charUnboundMgr.GetCharCreationInfo.
+ *
+ * ⚠ THE AUTHORITY ON WHAT IS CREATABLE. CreateCharacterWithDoll derives race,
+ * character typeID, starter corporation, starting station and rookie ship from
+ * the BLOODLINE (resolveCharacterCreationBloodlineProfile / the school lookup
+ * beside it), so a bloodline this read does not name is one the writer cannot
+ * honor. The create route validates against these rows for that reason, rather
+ * than trusting the ids the browser sends.
+ *
+ * Wire shape: {type:"dict"} of "races" -> {type:"list"} of util.KeyVal, and
+ * "bloodlines" -> the same. Decoded to plain rows here because the write path
+ * needs to reason about them; the READ route ships the raw dict on to the
+ * browser untouched, like every other bridge read.
+ */
+function decodeCharCreationTables(result) {
+  const dictEntries =
+    result && result.type === "dict" && Array.isArray(result.entries) ? result.entries : [];
+  const listOf = (key) => {
+    const entry = dictEntries.find((pair) => Array.isArray(pair) && pair[0] === key);
+    const value = entry ? entry[1] : null;
+    return value && Array.isArray(value.items) ? value.items : [];
+  };
+  const readField = (row, field) => {
+    const entries =
+      row && row.args && Array.isArray(row.args.entries) ? row.args.entries : [];
+    const entry = entries.find((pair) => Array.isArray(pair) && pair[0] === field);
+    return entry ? entry[1] : undefined;
+  };
+  const asInt = (value) => {
+    const numeric = Number(value && typeof value === "object" ? value.value : value);
+    return Number.isFinite(numeric) ? Math.trunc(numeric) : 0;
+  };
+  const asText = (value) => (typeof value === "string" ? value : "");
+
+  return {
+    races: listOf("races")
+      .map((row) => ({
+        raceID: asInt(readField(row, "raceID")),
+        raceName: asText(readField(row, "raceName")),
+        shipTypeID: asInt(readField(row, "shipTypeID")),
+        shipName: asText(readField(row, "shipName")),
+      }))
+      .filter((race) => race.raceID > 0),
+    bloodlines: listOf("bloodlines")
+      .map((row) => ({
+        bloodlineID: asInt(readField(row, "bloodlineID")),
+        bloodlineName: asText(readField(row, "bloodlineName")),
+        raceID: asInt(readField(row, "raceID")),
+        corporationID: asInt(readField(row, "corporationID")),
+      }))
+      .filter((bloodline) => bloodline.bloodlineID > 0),
+  };
+}
+
+// GET /api/bridge/char-creation-info — everything the create-character screen
+// needs to offer a choice, from the TWO sources that actually have it.
+//
+// ACCOUNT-LEVEL, not character-level: this is the screen a player reaches with
+// no character online (and, on a fresh account, with no character at all), so it
+// must not sit behind a held session. See accountLevelCall.
+//
+// races + bloodlines come from the retail read (the world's own tables — the
+// authority on what CreateCharacterWithDoll will accept) and ship out raw, like
+// every other bridge read. ancestries come from the SDE, because this world has
+// no ancestry table at all: the writer stores ancestryID verbatim and never
+// validates it. Filtering the SDE's ancestries down to the bloodlines this world
+// actually has is the browser's job — it has both lists.
+app.get("/api/bridge/char-creation-info", requireAuth, async (req, res, next) => {
+  try {
+    const outcome = await accountLevelCall(req, "charUnboundMgr", "GetCharCreationInfo", []);
+    res.json({
+      ok: true,
+      creationInfo: outcome.result ?? null,
+      ancestries: staticData.listAncestries(),
+      notifications: outcome.notifications,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/** A positive int off a JSON body field; 0 when absent or unparseable. */
+function creationBodyID(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric > 0 ? Math.trunc(numeric) : 0;
+}
+
+// ⚠ EXTRA-CARE (creates a whole character) — confirm-gated.
+// POST /api/bridge/character/create-with-doll
+//   { name, raceID, genderID, bloodlineID?, ancestryID?, confirm: true }
+//
+// ACCOUNT-LEVEL (see accountLevelCall): creation necessarily precedes selection,
+// and on a new account there is nothing to select, so this cannot sit behind a
+// held session. The account it creates on is the BFF's own req.account.accountID
+// — the browser never names an account, and the handler itself reads
+// session.userid, so a body cannot aim this at someone else's account.
+//
+// TYPED BODY, NOT RAW ARGS. This used to forward `body.args` verbatim, which was
+// fine for a plumbing probe that never fired, but it means the browser composes
+// the retail tuple — including the doll payloads. The tuple is built here now,
+// from named fields, against the world's own tables:
+//
+//   • bloodlineID must belong to raceID. An unknown or mismatched one is
+//     REFUSED rather than silently corrected, because bloodline is what the
+//     writer derives race / corp / station / rookie ship from — quietly
+//     creating a different character than the one asked for is worse than
+//     saying no. Absent, it is rolled at random within the race.
+//   • ancestryID must belong to the resolved bloodline (checked against the SDE
+//     rows, since the world has no ancestry table). Absent, rolled at random.
+//   • schoolID is sent as 0 so the server picks a school for the race itself
+//     (resolveCharacterCreationSchoolIDForRace). School only chooses the starter
+//     CORPORATION here — every new character starts at the same station
+//     regardless (NEW_CHARACTER_START_OVERRIDE).
+//   • The two paperdoll payloads are hard nulls. This client renders no doll,
+//     and a null pair is what makes the handler record paperDollState 2 ("no
+//     doll") rather than claim an empty one exists.
+//
+// The 7-arg LEGACY signature is deliberate: resolveCreateCharacterSignature only
+// reads args[7] as a raceID for the 8-arg container shapes, and those require
+// both doll payloads to be present. With nulls there, a would-be 8th element is
+// never read — so passing raceID would be passing a number the handler ignores.
+// Race reaches the server through the bloodline, which is where it genuinely
+// lives.
+//
+// The NAME is not pre-validated here. validateCharacterName runs server-side on
+// every create and rejects with CharNameInvalid; the screen calls ValidateNameEx
+// as the player types so the refusal is not a surprise, and this route lets the
+// server have the last word.
 app.post("/api/bridge/character/create-with-doll", requireAuth, async (req, res, next) => {
   if (!requireWriteConfirmation(req, res, "This creates a NEW character. This must be confirmed explicitly.")) {
     return;
   }
   const body = req.body || {};
-  const args = Array.isArray(body.args) ? body.args : [];
-  await dispatchBridgeWrite(req, res, next, "charUnboundMgr", "CreateCharacterWithDoll", args);
+  const name = String(body.name || "").trim().replace(/\s+/g, " ");
+  const raceID = creationBodyID(body.raceID);
+  const requestedBloodlineID = creationBodyID(body.bloodlineID);
+  const requestedAncestryID = creationBodyID(body.ancestryID);
+  // 0 (female) is a legal gender, so an absent field defaults to 1 (male) the
+  // way the handler's own normalizeCreationGender does rather than to 0.
+  const genderID = body.genderID === 0 || body.genderID === "0" ? 0 : 1;
+
+  if (!name) {
+    res.status(400).json({ ok: false, error: "NAME_REQUIRED", message: "A character name is required." });
+    return;
+  }
+  if (raceID <= 0) {
+    res.status(400).json({ ok: false, error: "RACE_REQUIRED", message: "A race is required." });
+    return;
+  }
+
+  try {
+    const tables = decodeCharCreationTables(
+      (await accountLevelCall(req, "charUnboundMgr", "GetCharCreationInfo", [])).result,
+    );
+    if (!tables.races.some((race) => race.raceID === raceID)) {
+      res.status(400).json({ ok: false, error: "RACE_UNKNOWN", message: "That race does not exist on this server." });
+      return;
+    }
+
+    const raceBloodlines = tables.bloodlines.filter((bloodline) => bloodline.raceID === raceID);
+    if (raceBloodlines.length === 0) {
+      res.status(409).json({
+        ok: false,
+        error: "NO_BLOODLINE_FOR_RACE",
+        message: "This server has no bloodline for that race.",
+      });
+      return;
+    }
+    let bloodline = null;
+    if (requestedBloodlineID > 0) {
+      bloodline = raceBloodlines.find((row) => row.bloodlineID === requestedBloodlineID) || null;
+      if (!bloodline) {
+        res.status(400).json({
+          ok: false,
+          error: "BLOODLINE_INVALID",
+          message: "That bloodline does not belong to that race.",
+        });
+        return;
+      }
+    } else {
+      bloodline = raceBloodlines[Math.floor(Math.random() * raceBloodlines.length)];
+    }
+
+    const bloodlineAncestries = staticData
+      .listAncestries()
+      .filter((ancestry) => ancestry.bloodlineID === bloodline.bloodlineID);
+    let ancestryID = 0;
+    if (requestedAncestryID > 0) {
+      if (!bloodlineAncestries.some((ancestry) => ancestry.ancestryID === requestedAncestryID)) {
+        res.status(400).json({
+          ok: false,
+          error: "ANCESTRY_INVALID",
+          message: "That ancestry does not belong to that bloodline.",
+        });
+        return;
+      }
+      ancestryID = requestedAncestryID;
+    } else if (bloodlineAncestries.length > 0) {
+      ancestryID =
+        bloodlineAncestries[Math.floor(Math.random() * bloodlineAncestries.length)].ancestryID;
+    }
+
+    const args = [name, bloodline.bloodlineID, genderID, ancestryID, null, null, 0];
+    const outcome = await accountLevelCall(req, "charUnboundMgr", "CreateCharacterWithDoll", args);
+    const characterID = Number(outcome.result) || 0;
+    res.json({
+      ok: true,
+      applied: characterID > 0,
+      result: outcome.result ?? null,
+      characterID: characterID > 0 ? characterID : null,
+      // What the rolls landed on, so the screen can say what it made.
+      bloodlineID: bloodline.bloodlineID,
+      ancestryID: ancestryID || null,
+      notifications: outcome.notifications,
+    });
+  } catch (error) {
+    next(error);
+  }
 });
 
 // ⚠ WRITE-SIDE ARG-INJECTION (flagged) — UpdateCharacterGender(charId, genderID)
