@@ -6,8 +6,13 @@
 // The opaque bridgeSessionID never appears here: the BFF holds it server-side
 // in its cookie-session store and attaches it to bridge calls itself.
 
-import { BridgeCallError } from "../bridge/callMethod.ts";
+import { BridgeCallError, callMethod } from "../bridge/callMethod.ts";
 import { decodeBoundDogma, type BoundDogma } from "../bridge/boundDogma.ts";
+import { decodeNameValidation, decodeValidRandomName } from "../bridge/charAccount.ts";
+import {
+  decodeCharCreationTables,
+  type CharCreationTables,
+} from "../bridge/charCreation.ts";
 import {
   clearSessionToken,
   sessionAuthHeaders,
@@ -229,6 +234,109 @@ export async function selectCharacter(
         : null,
     notifications: Array.isArray(data.notifications) ? data.notifications : [],
   };
+}
+
+// --- character creation -------------------------------------------------------
+//
+// All four of these run with NO CHARACTER ONLINE, which is the whole point: this
+// is the screen a fresh account lands on. The two bridge reads go through the
+// generic /api/bridge/call route, which falls back to a userid-only session when
+// the BFF holds none; the picker read and the create write have their own
+// account-level BFF routes (see accountLevelCall in src/server.js).
+
+/** What the create screen asks for. Everything not named here the server rolls. */
+export interface CreateCharacterRequest {
+  readonly name: string;
+  readonly raceID: number;
+  /** 0 = female, 1 = male (carbon's genderFemale/genderMale). */
+  readonly genderID: number;
+  /** Omit to have the server roll one within the race. */
+  readonly bloodlineID?: number;
+  /** Omit to have the server roll one within the bloodline. */
+  readonly ancestryID?: number;
+}
+
+export interface CreateCharacterResult {
+  readonly characterID: number | null;
+  /** What the rolls landed on, so the screen can say what it made. */
+  readonly bloodlineID: number | null;
+  readonly ancestryID: number | null;
+}
+
+/**
+ * The create screen's picker tables: the world's own races and bloodlines
+ * (retail, authoritative) joined with the SDE's ancestries.
+ */
+export async function loadCharCreationInfo(
+  options: ApiOptions = {},
+): Promise<CharCreationTables> {
+  const data = await getJson("/api/bridge/char-creation-info", options);
+  return decodeCharCreationTables(data as JsonValue);
+}
+
+/**
+ * Create a character. CONFIRM-GATED at the BFF — `confirm: true` is not
+ * ceremony, it is the difference between this route being reachable and being
+ * fired, and the BFF refuses without it.
+ *
+ * The retail tuple is composed server-side from these named fields; a bloodline
+ * that does not belong to the race, or an ancestry that does not belong to the
+ * bloodline, is REFUSED there rather than corrected.
+ */
+export async function createCharacter(
+  request: CreateCharacterRequest,
+  options: ApiOptions = {},
+): Promise<CreateCharacterResult> {
+  const data = await postJson(
+    "/api/bridge/character/create-with-doll",
+    {
+      name: request.name,
+      raceID: request.raceID,
+      genderID: request.genderID,
+      ...(request.bloodlineID ? { bloodlineID: request.bloodlineID } : {}),
+      ...(request.ancestryID ? { ancestryID: request.ancestryID } : {}),
+      confirm: true,
+    },
+    options,
+  );
+  return {
+    characterID: asNumberOrNull(data.characterID),
+    bloodlineID: asNumberOrNull(data.bloodlineID),
+    ancestryID: asNumberOrNull(data.ancestryID),
+  };
+}
+
+/**
+ * Ask the server whether a name is acceptable (charUnboundMgr.ValidateNameEx).
+ *
+ * ⚠ THE SERVER HAS THE LAST WORD ANYWAY — CreateCharacterWithDoll runs the same
+ * validateCharacterName and rejects with CharNameInvalid. This read exists so a
+ * refusal arrives while the player is typing rather than after they commit, and
+ * so uniqueness (which no client-side rule can know) is checked against the real
+ * roster. A null code means the read itself did not answer; that is not a
+ * verdict, and the screen must not treat it as one.
+ */
+export async function validateCharacterName(
+  name: string,
+  options: ApiOptions = {},
+): Promise<number | null> {
+  const outcome = await callMethod("charUnboundMgr", "ValidateNameEx", [name], null, options);
+  return decodeNameValidation(outcome.result);
+}
+
+/** A random valid name for a race (charUnboundMgr.GetValidRandomName). */
+export async function rollRandomCharacterName(
+  raceID: number,
+  options: ApiOptions = {},
+): Promise<string | null> {
+  const outcome = await callMethod(
+    "charUnboundMgr",
+    "GetValidRandomName",
+    [raceID],
+    null,
+    options,
+  );
+  return decodeValidRandomName(outcome.result);
 }
 
 /**

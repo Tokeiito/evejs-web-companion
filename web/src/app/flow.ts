@@ -307,6 +307,12 @@ export interface AppFlow {
    * instead of reconstructing only the token and silently dropping the rest.
    */
   requestOptions(): api.ApiOptions;
+  /**
+   * Create a character on the signed-in account, then re-read the roster so the
+   * select screen shows it. Runs with NO character online — that is the state
+   * this exists for.
+   */
+  createCharacter(request: api.CreateCharacterRequest): Promise<api.CreateCharacterResult>;
   /** Select a character onto the persistent session, then run the docked reads. */
   selectCharacter(characterID: number): Promise<void>;
   /** Refresh the docked station-panel reads on the live session. */
@@ -6642,6 +6648,18 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // bespoke projection (charUnboundMgr.GetCharacterSelectionData).
       const selection = await getCharacterSelectionData(callOptions);
       store.apply({ type: "character/list", characters: selection.characters });
+    },
+
+    async createCharacter(request) {
+      const created = await api.createCharacter(request, callOptions);
+      // Re-read the roster through the SAME reference call login uses rather
+      // than splicing a row in locally: the new pilot's name, ship, corp and SP
+      // then come from the server's own view of what it just made, and a create
+      // that somehow produced nothing shows an unchanged list instead of a
+      // phantom character the select would refuse.
+      const selection = await getCharacterSelectionData(callOptions);
+      store.apply({ type: "character/list", characters: selection.characters });
+      return created;
     },
 
     async selectCharacter(characterID) {
