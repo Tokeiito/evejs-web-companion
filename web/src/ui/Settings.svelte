@@ -15,8 +15,50 @@
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
 
-  // store/flow are accepted for the uniform panel signature (PanelHost passes them).
-  let {}: { store?: ClientStore; flow?: AppFlow } = $props();
+  let { flow }: { store?: ClientStore; flow?: AppFlow } = $props();
+
+  // --- The GM console --------------------------------------------------------
+  //
+  // ⚠⚠ DEV-ONLY, AND IT REACHES EVERYTHING. This runs the world's own chat
+  // commands: ~150 of them, including destructive ones. It lives here rather
+  // than on a game panel because it is not a game action — it is the operator
+  // reaching past the game to stage state, and it exists because the web client
+  // otherwise cannot give a pilot so much as a round of ammunition to test with.
+  //
+  // ⚠ A 200 IS NOT SUCCESS. eve.js catches a bad command and RETURNS
+  // "Command failed: …" instead of throwing, so the reply is rendered as the
+  // server's own words either way and the panel never says "done".
+  const GM_EXAMPLES: readonly { readonly command: string; readonly what: string }[] = [
+    { command: "/gmships", what: "a set of ships in your hangar" },
+    { command: "/gmweapons", what: "a set of weapons and ammunition" },
+    { command: "/giveitem 150mm Light AutoCannon I 2", what: "any item, by name, in any amount" },
+    { command: "/giveitem Phased Plasma S 5000", what: "ammunition to load" },
+    { command: "/allskills", what: "every skill, trained" },
+    { command: "/help", what: "the world's own list of every command" },
+  ];
+
+  let gmCommand = $state("");
+  let gmReply = $state("");
+  let gmError = $state("");
+  let gmBusy = $state(false);
+
+  async function runGm(): Promise<void> {
+    const command = gmCommand.trim();
+    if (!flow || gmBusy || !command) {
+      return;
+    }
+    gmBusy = true;
+    gmError = "";
+    gmReply = "";
+    try {
+      // The reply is the server's, verbatim — including its refusals.
+      gmReply = (await flow.runGmCommand(command)) || "The command ran and said nothing.";
+    } catch (cause) {
+      gmError = cause instanceof Error ? cause.message : String(cause);
+    } finally {
+      gmBusy = false;
+    }
+  }
 
   let status = $state<IconCacheStatus | null>(null);
   let error = $state("");
@@ -151,4 +193,67 @@
       </select>
     </div>
   </section>
+
+  {#if flow}
+    <section class="settings-group gm-console">
+      <h3>GM console</h3>
+      <p class="muted">
+        Runs this server's own commands as the character you have online — the
+        same ones the game client's chat accepts. This is how you give yourself a
+        ship, modules or ammunition to try something with.
+      </p>
+      <p class="gm-warning" role="note">
+        These change the live world and some cannot be undone. There is no
+        confirmation beyond this button.
+      </p>
+      <form
+        onsubmit={(event) => {
+          event.preventDefault();
+          void runGm();
+        }}
+      >
+        <div class="settings-field">
+          <label for="gm-command">Command</label>
+          <input
+            id="gm-command"
+            type="text"
+            bind:value={gmCommand}
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="/giveitem Phased Plasma S 5000"
+            disabled={gmBusy}
+          />
+        </div>
+        <button type="submit" class="primary" disabled={gmBusy || !gmCommand.trim()}>
+          {gmBusy ? "Running…" : "Run command"}
+        </button>
+      </form>
+
+      {#if gmError}
+        <p class="error" role="alert">{gmError}</p>
+      {:else if gmReply}
+        <!--
+          The SERVER's words, verbatim. eve.js returns "Command failed: …" for a
+          bad command rather than throwing, so this is the only place a refusal
+          shows up — the panel must never replace it with "done".
+        -->
+        <p class="gm-reply" aria-live="polite">{gmReply}</p>
+      {/if}
+
+      <h4 class="gm-examples-head">Some useful ones</h4>
+      <ul class="gm-examples">
+        {#each GM_EXAMPLES as example (example.command)}
+          <li>
+            <button
+              type="button"
+              class="minor"
+              disabled={gmBusy}
+              onclick={() => (gmCommand = example.command)}
+            >{example.command}</button>
+            <span class="muted">{example.what}</span>
+          </li>
+        {/each}
+      </ul>
+    </section>
+  {/if}
 </section>

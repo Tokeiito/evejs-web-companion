@@ -2385,6 +2385,47 @@
 
   .select-actions { display: flex; flex-wrap: wrap; gap: 0.4rem; }
 
+  /* ====================================================== GM console --
+   * Deliberately marked out from the rest of Settings: everything else on that
+   * panel is a local preference, and this one reaches the live world. */
+  .gm-console { border-color: var(--color-danger); }
+  .gm-warning {
+    margin: 0 0 0.6rem;
+    padding: 0.4rem 0.6rem;
+    border-left: 2px solid var(--color-danger);
+    color: var(--color-danger);
+    font-size: 0.8rem;
+  }
+  .gm-console input[type="text"] { font-family: var(--font-mono, monospace); }
+  /* The server's own sentence, shown as the server wrote it. */
+  .gm-reply {
+    margin: 0.6rem 0 0;
+    padding: 0.4rem 0.6rem;
+    background: var(--color-panel-3);
+    border-left: 2px solid var(--color-accent);
+    color: var(--color-text-bright);
+    font-size: 0.85rem;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  .gm-examples-head {
+    margin: 0.9rem 0 0.3rem;
+    font-size: 0.75rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--color-muted);
+  }
+  .gm-examples { list-style: none; margin: 0; padding: 0; }
+  .gm-examples li {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.5rem;
+    margin-bottom: 0.3rem;
+  }
+  .gm-examples button { font-family: var(--font-mono, monospace); font-size: 0.78rem; }
+  .gm-examples .muted { font-size: 0.78rem; }
+
   /* R107 — the "Your pilots" quick-pick above the login form: remembered pilots
    * as one-click rows (name over a muted detail line) plus a forget ×. Echoes
    * the character-select list; square corners like the rest of the UI. */

@@ -47,8 +47,8 @@ test("the generic-call write policy covers the complete canonical plumbing inven
 
 test("the write policy adds every pre-sweep and post-sweep write without duplicates", () => {
   assert.equal(EARLIER_WRITE_PAIR_KEYS.length, 49);
-  assert.deepEqual(FEATURE_WRITE_PAIR_KEYS, ["repairSvc.RepairItems"]);
-  assert.equal(BRIDGE_WRITE_PAIR_KEYS.length, 351);
+  assert.deepEqual(FEATURE_WRITE_PAIR_KEYS, ["repairSvc.RepairItems", "slash.SlashCmd"]);
+  assert.equal(BRIDGE_WRITE_PAIR_KEYS.length, 352);
   assert.equal(new Set(BRIDGE_WRITE_PAIR_KEYS).size, BRIDGE_WRITE_PAIR_KEYS.length);
 
   assert.equal(isBridgeWritePair("charUnboundMgr", "SelectCharacterID"), true);
@@ -56,6 +56,10 @@ test("the write policy adds every pre-sweep and post-sweep write without duplica
   assert.equal(isBridgeWritePair("repairSvc", "RepairItems"), true);
   assert.equal(isBridgeWritePair("repairSvc", "GetRepairQuotes"), false);
   assert.equal(isBridgeWritePair("map", "GetStationInfo"), false);
+  // ⚠⚠ The GM console. Listed as a write for one reason: so the generic
+  // /api/bridge/call route cannot become a second, UNCONFIRMED way to run
+  // /giveitem, /npc or /suicide against the live world.
+  assert.equal(isBridgeWritePair("slash", "SlashCmd"), true);
 });
 
 test("browser session projection retains only explicit language preferences", () => {

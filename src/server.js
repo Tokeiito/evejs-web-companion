@@ -5999,6 +5999,50 @@ app.post("/api/bridge/character/update-bloodline", requireAuth, async (req, res,
   await dispatchBridgeWrite(req, res, next, "charUnboundMgr", "UpdateCharacterBloodline", [charID, Number(body.bloodlineID) || 1]);
 });
 
+// --- The GM console ---------------------------------------------------------
+//
+// ⚠⚠ DEV-ONLY, AND THE WIDEST SURFACE IN THIS FILE. slash.SlashCmd runs this
+// world's own chat commands (eve.js services/chat/chatCommands.js) — ~150 of
+// them, including destructive ones (/suicide), world-spawning ones (/npc) and
+// the item-granting ones this route exists for (/giveitem, /gmships,
+// /gmweapons, /giveskill). eve.js applies NO role gate to any of them.
+//
+// It is here because the web client could not otherwise stage its own test
+// state: no way to give a pilot a ship, a module or a round of ammunition, so
+// features whose subject the test pilot simply does not own could not be
+// exercised at all. That is not a hypothetical — the ammo work is blocked on
+// exactly this, because the only live pilot flies a mining barge whose modules
+// take no charges.
+//
+// The command is forwarded VERBATIM and deliberately so: this is an operator's
+// console, and a BFF that curated the command list would be a worse, staler
+// copy of the server's own. What the route does add is the confirmation gate,
+// and the refusal to let the generic /call seam reach the same pair.
+//
+// The reply is the server's own message string (or its "Command failed: …"),
+// surfaced untouched — the console shows what the world said, never a guess.
+app.post("/api/bridge/gm/slash", requireAuth, async (req, res, next) => {
+  if (!requireWriteConfirmation(req, res, "This runs a GM command against the live world. Confirm to continue.")) {
+    return;
+  }
+  const command = String((req.body || {}).command || "").trim();
+  if (!command) {
+    res.status(400).json({ ok: false, error: "COMMAND_REQUIRED", message: "A command is required." });
+    return;
+  }
+  if (!command.startsWith("/") && !command.startsWith(".")) {
+    // The server answers a bare word with its whole command list, which reads as
+    // a wall of noise. Say the one thing that is actually wrong instead.
+    res.status(400).json({
+      ok: false,
+      error: "COMMAND_INVALID",
+      message: "A GM command starts with / (or . for the container commands).",
+    });
+    return;
+  }
+  await dispatchBridgeWrite(req, res, next, "slash", "SlashCmd", [command]);
+});
+
 // --- LSC WRITES (1) ---------------------------------------------------------
 
 // ⚠ EXTRA-CARE (OUTWARD — sends a live chat message) — reachable + gated, NEVER

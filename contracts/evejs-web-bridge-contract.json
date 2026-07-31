@@ -5,8 +5,8 @@
     "bffWritePolicy": "evejs-web-poc/src/bridgeCallPolicy.js#BRIDGE_WRITE_PAIR_KEYS"
   },
   "gatewayAllowlist": {
-    "count": 716,
-    "sha256": "9dfa499c9a62d23ebf6ecbc5d8b0f93957aa3e0555b138a6c1595a18b0152683",
+    "count": 719,
+    "sha256": "7d95e332238765859e2114d4891a464ad2578a6a66552f06d88a81f61d53db67",
     "pairs": [
       "LPStoreMgr.GetAvailableOffersFromCorp",
       "LPStoreMgr.TakeOfferForCharacter",
@@ -174,6 +174,7 @@
       "charMgr.UnblockOwners",
       "charUnboundMgr.CancelCharacterDeletePrepare",
       "charUnboundMgr.CreateCharacterWithDoll",
+      "charUnboundMgr.GetCharCreationInfo",
       "charUnboundMgr.GetCharacterInfo",
       "charUnboundMgr.GetCharacterLockType",
       "charUnboundMgr.GetCharacterSelectionData",
@@ -642,6 +643,7 @@
       "ship.SafeLogoff",
       "ship.Scoop",
       "ship.ScoopDrone",
+      "ship.ScoopToFleetHangar",
       "ship.ScoopToMobileDepotHold",
       "ship.StoreVessel",
       "ship.Undock",
@@ -668,6 +670,7 @@
       "skillHandler.SplitSkillInjector",
       "skillMgr.SaveNewQueue",
       "skillMgr2.GetMySkillHandler",
+      "slash.SlashCmd",
       "sovMgr.AcquireSkyhooks",
       "sovMgr.DestroySkyhooks",
       "sovMgr.GetInfrastructureHubInfo",
@@ -727,8 +730,8 @@
     ]
   },
   "bffWritePolicy": {
-    "count": 351,
-    "sha256": "e10097a743857a04f772e608c8a17299096512141de881d8195f5135ee82d23a",
+    "count": 352,
+    "sha256": "e3c0fe838d587aa159e2ebcf683ce43fd356f1a94c2b201f6da7d05dceba888a",
     "pairs": [
       "LPStoreMgr.TakeOfferForCharacter",
       "LPStoreMgr.TakeOfferForCorporation",
@@ -1064,6 +1067,7 @@
       "skillHandler.InjectSkillpoints",
       "skillHandler.SplitSkillInjector",
       "skillMgr.SaveNewQueue",
+      "slash.SlashCmd",
       "sovMgr.AcquireSkyhooks",
       "sovMgr.DestroySkyhooks",
       "sovMgr.SetSovHubFuelAccessGroup",

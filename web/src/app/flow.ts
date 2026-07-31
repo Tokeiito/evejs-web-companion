@@ -689,6 +689,15 @@ export interface AppFlow {
   reconnectDrones(droneIDs: readonly number[]): Promise<void>;
   /** Scoop drones straight into the bay; needs no control, only range. */
   scoopDrones(droneIDs: readonly number[]): Promise<void>;
+  /**
+   * ⚠⚠ DEV-ONLY. Run one of this world's chat commands and return the server's
+   * own reply. Reaches ~150 commands including destructive ones; the reply
+   * carries "Command failed: …" for a refusal rather than throwing.
+   *
+   * Afterwards the panels that could have changed are re-read, because a GM
+   * command mutates the world behind every open panel at once.
+   */
+  runGmCommand(command: string): Promise<string>;
   // --- R28: skills ---------------------------------------------------------
   //
   // ⚠ A queue save answers with the RE-READ sheet, never with its own return
@@ -4013,6 +4022,27 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     );
   }
 
+  /**
+   * ⚠⚠ DEV-ONLY. Run a GM chat command, then re-read what it could have changed.
+   *
+   * A GM command does not belong to one panel: /giveitem lands in the hangar,
+   * /gmships fits a hull, /giveskill rewrites the sheet. So rather than guess
+   * which panel to refresh, the ones that are cheap and already loaded are all
+   * re-read, and every one of them is allowed to fail quietly — a refresh that
+   * did not work must not swallow the server's reply, which is the whole point
+   * of the call.
+   */
+  async function runGmCommand(command: string): Promise<string> {
+    const reply = await api.runGmCommand(command, callOptions);
+    await Promise.allSettled([
+      loadInventory().catch(() => {}),
+      loadFitting().catch(() => {}),
+      loadDrones().catch(() => {}),
+      loadSpaceSnapshot().catch(() => {}),
+    ]);
+    return reply;
+  }
+
   async function unloadMiningHolds(itemIDs: readonly number[]): Promise<void> {
     await runMiningAction(
       "Unload",
@@ -7170,6 +7200,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     recallDrones,
     reconnectDrones,
     scoopDrones,
+    runGmCommand,
     runSurveyScan,
     loadReprocessingQuote,
     unloadMiningHolds,
