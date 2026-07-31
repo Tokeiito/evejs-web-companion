@@ -201,7 +201,33 @@ function decodeShip(value: JsonValue | undefined): SpaceShipStatus | null {
     // the difference between a rack that shows a cool ship and one that hides a
     // module quietly burning itself out.
     overloadedModuleIDs: decodeIDList(raw.overloadedModuleIDs),
+    moduleDamage: decodeModuleDamage(raw.moduleDamage),
   };
+}
+
+/**
+ * `{itemID: 0..1}` damage per module — only the damaged ones appear.
+ *
+ * `null` when the field is absent or unreadable, and that distinction is the
+ * point: `{}` means every module is intact, `null` means we could not look. A
+ * page that showed "all fine" for a reading it never got would hide exactly the
+ * damage overloading causes.
+ */
+function decodeModuleDamage(
+  value: JsonValue | undefined,
+): Readonly<Record<number, number>> | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return null;
+  }
+  const damage: Record<number, number> = {};
+  for (const [key, raw] of Object.entries(value)) {
+    const itemID = Number(key);
+    const ratio = typeof raw === "number" && Number.isFinite(raw) ? raw : null;
+    if (Number.isSafeInteger(itemID) && itemID > 0 && ratio !== null && ratio > 0) {
+      damage[itemID] = Math.max(0, Math.min(1, ratio));
+    }
+  }
+  return damage;
 }
 
 /** A list of game IDs (long-aware) — or null when the field is absent. */

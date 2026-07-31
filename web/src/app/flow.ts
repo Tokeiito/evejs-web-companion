@@ -658,6 +658,11 @@ export interface AppFlow {
    * without Thermodynamics, in its own words.
    */
   setModuleOverload(itemID: number, overloaded: boolean): Promise<void>;
+  /**
+   * Repair a damaged module with nanite paste — the complement to overloading,
+   * without which a burnt-out module could never be brought back.
+   */
+  repairModule(itemID: number): Promise<void>;
   // --- R23 slice B: the mining loop --------------------------------------
   // Built ON TOP of the generic layer above, not into it. There is no "start
   // mining" method: mining a rock is lockTarget + activateModule with a mining
@@ -4199,6 +4204,34 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     );
   }
 
+  /**
+   * Start repairing a damaged module with nanite paste.
+   *
+   * ⚠ VERIFIED AGAINST THE DAMAGE READING, not the 200 — this server has a
+   * documented habit of answering success for writes that did nothing. Repair
+   * takes TIME, though, so the test is that damage went DOWN, not that it
+   * reached zero: a repair in progress is a success, and saying otherwise would
+   * repeat the cycle-end mistake.
+   */
+  async function repairModule(itemID: number): Promise<void> {
+    const before = store.space.get().snapshot?.ship?.moduleDamage?.[itemID] ?? null;
+    await runTargetingAction(
+      "Repair",
+      () => api.repairModule(itemID, callOptions),
+      () => loadSpaceSnapshot().catch(() => {}),
+      () => {
+        const after = store.space.get().snapshot?.ship?.moduleDamage?.[itemID] ?? null;
+        // Unknown either side is not a decline; a repair that has started but
+        // not yet ticked is not one either, so only a HIGHER reading fails.
+        if (before === null || after === null) {
+          return true;
+        }
+        return after <= before;
+      },
+      "The server accepted that and the module is no better, and gave no reason.",
+    );
+  }
+
   async function deactivateModule(itemID: number, opts: { effect?: string; typeID?: number } = {}): Promise<void> {
     await runTargetingAction(
       "Switch off",
@@ -7370,6 +7403,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     activateModule,
     deactivateModule,
     setModuleOverload,
+    repairModule,
     loadMiningHolds,
     loadDrones,
     launchDrones,

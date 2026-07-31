@@ -3321,6 +3321,39 @@
     line-height: 1;
     pointer-events: none;
   }
+  /* Burnt out: the server will not run it at all until it is repaired. */
+  .module-slot:has(.module-burnt) { position: relative; opacity: 0.55; }
+  .module-burnt {
+    position: absolute;
+    left: -1px;
+    bottom: -2px;
+    font-size: 9px;
+    line-height: 1;
+    color: var(--color-danger);
+    pointer-events: none;
+  }
+
+  /* The repair list under the rack. Repairing consumes nanite paste, so it is a
+   * deliberate control rather than another modifier on a tile. */
+  .rack-damage { margin-top: 0.5rem; border-top: 1px solid var(--color-line); padding-top: 0.4rem; }
+  .rack-damage-head {
+    display: block;
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--color-muted);
+    margin-bottom: 0.2rem;
+  }
+  .rack-damage-list { list-style: none; margin: 0; padding: 0; }
+  .rack-damage-list li {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.4rem;
+    margin-bottom: 0.2rem;
+  }
+  .rack-damage-name { font-size: 0.78rem; color: var(--color-cell); }
+  .rack-damage-name.burnt { color: var(--color-danger); font-weight: 600; }
   .module-slot.empty { background: var(--color-field); cursor: default; }
   /* A click in flight: presentation only — the glow itself waits for the poll. */
   .module-slot.pending { animation: rack-pending 0.8s ease-in-out infinite alternate; }

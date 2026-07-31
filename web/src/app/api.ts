@@ -3047,6 +3047,29 @@ export async function stopOverloadModule(
   await postJson("/api/bridge/dogma/module/stop-overload", { moduleID, confirm: true }, options);
 }
 
+/**
+ * Start a nanite repair on one module (dogmaIM.InitiateModuleRepair).
+ *
+ * ⚠ THE COMPLEMENT TO OVERLOADING, and the reason it is not optional: heat
+ * damages modules, and without this the client can burn a module out with no
+ * way to bring it back. It CONSUMES Nanite Repair Paste from the ship, and the
+ * server refuses when there is none — in its own words.
+ */
+export async function repairModule(
+  moduleID: number,
+  options: ApiOptions = {},
+): Promise<void> {
+  await postJson("/api/bridge/dogma/module/repair/start", { moduleID, confirm: true }, options);
+}
+
+/** Stop an in-progress module repair (dogmaIM.StopModuleRepair). */
+export async function stopRepairModule(
+  moduleID: number,
+  options: ApiOptions = {},
+): Promise<void> {
+  await postJson("/api/bridge/dogma/module/repair/stop", { moduleID, confirm: true }, options);
+}
+
 // --- Ammunition ---------------------------------------------------------------
 //
 // Where the charges come from and go to is a WORD — "cargo" or "hangar" — never

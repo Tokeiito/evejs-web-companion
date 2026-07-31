@@ -18,7 +18,14 @@
   // proves the server agrees. The pending shimmer between click and proof is
   // presentation, never a claim.
   import TypeIcon from "./TypeIcon.svelte";
-  import { buildModuleRack, rackClickAction, rackIsEmpty, rackSlotTitle } from "./moduleRack.ts";
+  import {
+    buildModuleRack,
+    rackClickAction,
+    rackDamageText,
+    rackIsEmpty,
+    rackModuleBurntOut,
+    rackSlotTitle,
+  } from "./moduleRack.ts";
   import { abbreviate } from "./fittingIcons.ts";
   import { resolvedName } from "../store/names.ts";
   import type { RackModule } from "./moduleRack.ts";
@@ -48,7 +55,23 @@
       $fitting.slots,
       $space.snapshot?.ship?.activeModuleIDs ?? null,
       $space.snapshot?.ship?.overloadedModuleIDs ?? null,
+      $space.snapshot?.ship?.moduleDamage ?? null,
     ),
+  );
+  /**
+   * Damaged modules, worst first — the repair list.
+   *
+   * It sits under the rack rather than on the tiles because repairing is a
+   * deliberate act that consumes paste, and because a burnt-out module is
+   * something a player needs told, not something they should have to hover
+   * every tile to discover.
+   */
+  const damagedModules = $derived(
+    rows
+      .flatMap((row) => row.slots)
+      .map((slot) => slot.module)
+      .filter((module): module is RackModule => module !== null && (module.damage ?? 0) > 0)
+      .sort((left, right) => (right.damage ?? 0) - (left.damage ?? 0)),
   );
   const unknown = $derived(!$fitting.loaded || rackIsEmpty(rows));
   /** The auto target: first LOCKED (not still-acquiring) target, else none. */
@@ -89,6 +112,26 @@
     windingDown = "";
     try {
       await flow.setModuleOverload(module.itemID, !module.overloaded);
+      const refusal = $targeting.actionError ?? $targeting.silentDecline;
+      if (refusal) {
+        error = `${moduleName(module.typeID)}: ${refusal}`;
+      }
+    } catch (cause) {
+      error = `${moduleName(module.typeID)}: ${String(cause)}`;
+    } finally {
+      pendingItemID = null;
+    }
+  }
+
+  async function repair(module: RackModule): Promise<void> {
+    if (!flow || pendingItemID !== null) {
+      return;
+    }
+    pendingItemID = module.itemID;
+    error = "";
+    windingDown = "";
+    try {
+      await flow.repairModule(module.itemID);
       const refusal = $targeting.actionError ?? $targeting.silentDecline;
       if (refusal) {
         error = `${moduleName(module.typeID)}: ${refusal}`;
@@ -172,6 +215,9 @@
                   <!-- Words carry the state (the title); this is the glance. -->
                   <span class="module-heat" aria-hidden="true">🔥</span>
                 {/if}
+                {#if rackModuleBurntOut(slot.module)}
+                  <span class="module-burnt" aria-hidden="true">✖</span>
+                {/if}
               </button>
             {:else}
               <span class="module-slot empty" title={rackSlotTitle("", null)}></span>
@@ -183,6 +229,36 @@
   {/each}
   {#if unknown}
     <p class="rack-hint muted">Modules appear once your ship's fitting has loaded.</p>
+  {/if}
+  {#if damagedModules.length > 0}
+    <!--
+      Repairing consumes nanite paste, so it is a deliberate act with its own
+      control rather than another modifier on the tile. A BURNT OUT module is
+      called out in words: it will not run at all until it is repaired, and a
+      player who does not know that will keep clicking a dead tile.
+    -->
+    <div class="rack-damage">
+      <span class="rack-damage-head">Damaged</span>
+      <ul class="rack-damage-list">
+        {#each damagedModules as module (module.itemID)}
+          {@const nm = moduleName(module.typeID)}
+          <li>
+            <span class="rack-damage-name" class:burnt={rackModuleBurntOut(module)}>
+              {nm} — {rackModuleBurntOut(module) ? "burnt out" : `${rackDamageText(module)} damaged`}
+            </span>
+            {#if flow}
+              <button
+                type="button"
+                class="minor"
+                disabled={pendingItemID !== null}
+                title={`Repair ${nm} with nanite paste`}
+                onclick={() => repair(module)}
+              >Repair</button>
+            {/if}
+          </li>
+        {/each}
+      </ul>
+    </div>
   {/if}
   {#if error}
     <p class="rack-error" role="alert">{error}</p>

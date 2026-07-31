@@ -1590,6 +1590,16 @@ export interface SpaceShipStatus {
    * Empty means nothing is overloaded; null means the read could not answer.
    */
   readonly overloadedModuleIDs: readonly number[] | null;
+  /**
+   * How damaged each module is, keyed by itemID — 0 exclusive to 1, where 1 is
+   * burnt out. Only DAMAGED modules appear.
+   *
+   * ⚠ `{}` AND `null` ARE DIFFERENT. `{}` is "every module is intact"; `null` is
+   * "we could not read the fit". Overloading is what causes this damage, so a
+   * page that treated the second as the first would hide the cost of the very
+   * feature that produces it.
+   */
+  readonly moduleDamage: Readonly<Record<number, number>> | null;
 }
 
 /** One decoded space snapshot: everything visible plus the active ship. */

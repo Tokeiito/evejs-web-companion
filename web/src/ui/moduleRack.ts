@@ -35,6 +35,11 @@ export interface RackModule {
    * than as a cool module.
    */
   readonly overloaded: boolean | null;
+  /**
+   * How damaged it is, 0..1 — 1 being burnt out and unusable. `null` is "we
+   * could not read the fit", NOT "undamaged"; 0 is the real "intact".
+   */
+  readonly damage: number | null;
 }
 
 export interface RackSlotVM {
@@ -56,11 +61,14 @@ export function buildModuleRack(
   slots: readonly FittingSlot[],
   activeModuleIDs: readonly number[] | null | undefined,
   overloadedModuleIDs: readonly number[] | null | undefined = null,
+  moduleDamage: Readonly<Record<number, number>> | null | undefined = null,
 ): readonly RackRow[] {
   const active = new Set(activeModuleIDs ?? []);
   // null/absent stays UNKNOWN rather than collapsing to "nothing is hot".
   const overloadKnown = Array.isArray(overloadedModuleIDs);
   const overloaded = new Set(overloadedModuleIDs ?? []);
+  // Same rule for damage: a missing map is unknown, not "everything is intact".
+  const damageKnown = typeof moduleDamage === "object" && moduleDamage !== null;
   return RACK_FAMILIES.map((family) => ({
     family,
     label: RACK_LABELS[family],
@@ -75,6 +83,9 @@ export function buildModuleRack(
               ? { typeID: slot.module.charge.typeID, quantity: slot.module.charge.quantity }
               : null,
             overloaded: overloadKnown ? overloaded.has(slot.module.itemID) : null,
+            // Absent from the map means intact (0), because only damaged
+            // modules are listed; an absent MAP means unknown (null).
+            damage: damageKnown ? moduleDamage[slot.module.itemID] ?? 0 : null,
           }
         : null,
     })),
@@ -98,6 +109,25 @@ export function rackClickAction(module: RackModule | null): RackClickAction {
 }
 
 /**
+ * Whether a module is BURNT OUT — damaged to the point the server will not run
+ * it (runtime.js isModuleIncapacitated: damage >= 1).
+ *
+ * Only a definite 1 counts. `null` damage is unknown and must not be reported
+ * as a burnt-out module, which would be a scarier lie than saying nothing.
+ */
+export function rackModuleBurntOut(module: RackModule | null): boolean {
+  return module !== null && module.damage !== null && module.damage >= 1;
+}
+
+/** A damage ratio as a whole-percent string, or null when there is none to show. */
+export function rackDamageText(module: RackModule | null): string | null {
+  if (!module || module.damage === null || module.damage <= 0) {
+    return null;
+  }
+  return `${Math.round(module.damage * 100)}%`;
+}
+
+/**
  * The hover/readout line for a rack slot — also the accessible label. Always
  * the module's NAME plus what a click would do (or why it would do nothing),
  * never a bare state word: the rack tiles are pictures, so this line is the
@@ -118,8 +148,15 @@ export function rackSlotTitle(
     module.charge && chargeName
       ? ` Loaded: ${(module.charge.quantity > 0 ? module.charge.quantity : 1).toLocaleString()} ${chargeName}.`
       : "";
+  // Damage first when it is total: a burnt-out module cannot be switched on at
+  // all, so leading with "click to switch on" would be an invitation to fail.
+  const damageText = rackDamageText(module);
+  if (rackModuleBurntOut(module)) {
+    return `${name} — BURNT OUT. Repair it with nanite paste before it will run again.${loaded}`;
+  }
+  const wear = damageText ? ` Damaged: ${damageText}.` : "";
   if (!module.online) {
-    return `${name} — offline (bring it online from the Fitting window)${loaded}`;
+    return `${name} — offline (bring it online from the Fitting window)${loaded}${wear}`;
   }
   // Overloading is destructive, so the tile SAYS it is running hot rather than
   // relying on a colour, and names the modifier that toggles it.
@@ -130,8 +167,8 @@ export function rackSlotTitle(
         ? " Shift-click to overload."
         : "";
   return module.active
-    ? `${name} — active. Click to switch off.${loaded}${heat}`
-    : `${name} — click to switch on.${loaded}${heat}`;
+    ? `${name} — active. Click to switch off.${loaded}${wear}${heat}`
+    : `${name} — click to switch on.${loaded}${wear}${heat}`;
 }
 
 /** True when there are no slots at all — the fit is not known yet. */

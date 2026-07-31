@@ -120,6 +120,7 @@ function loadedStore(options: {
         activeModuleIDs:
           options.activeModuleIDs === undefined ? [MODULE_ID] : options.activeModuleIDs,
         overloadedModuleIDs: [],
+        moduleDamage: {},
       },
     },
   });
@@ -783,6 +784,7 @@ function renderWithEntity(kind: string, itemID: number): string {
         hullCapacity: 300,
         activeModuleIDs: [],
         overloadedModuleIDs: [],
+        moduleDamage: {},
       },
     },
   });

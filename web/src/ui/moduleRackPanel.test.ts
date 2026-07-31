@@ -64,6 +64,7 @@ function loadedStore(options: { activeModuleIDs?: number[] } = {}) {
         hullCapacity: 300,
         activeModuleIDs: options.activeModuleIDs ?? [MINER_ID],
         overloadedModuleIDs: [],
+        moduleDamage: {},
       },
     },
   });

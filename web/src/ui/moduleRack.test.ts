@@ -8,7 +8,9 @@ import assert from "node:assert/strict";
 import {
   buildModuleRack,
   rackClickAction,
+  rackDamageText,
   rackIsEmpty,
+  rackModuleBurntOut,
   rackSlotTitle,
 } from "./moduleRack.ts";
 import type { RackModule } from "./moduleRack.ts";
@@ -72,7 +74,7 @@ test("the rack carries each module's itemID — what activation addresses", () =
 // --- the click decision -------------------------------------------------------
 
 function rackModule(overrides: Partial<RackModule> = {}): RackModule {
-  return { itemID: 42, typeID: 3634, online: true, active: false, charge: null, overloaded: false, ...overrides };
+  return { itemID: 42, typeID: 3634, online: true, active: false, charge: null, overloaded: false, damage: 0, ...overrides };
 }
 
 test("a click on an idle online module ACTIVATES it", () => {
@@ -197,4 +199,59 @@ test("an UNKNOWN overload state says nothing about heat either way", () => {
   const title = rackSlotTitle("150mm Light AutoCannon I", rackModule({ overloaded: null }));
   assert.doesNotMatch(title, /overload/i);
   assert.doesNotMatch(title, /hot/i);
+});
+
+// --- Module damage and repair -------------------------------------------------
+//
+// ⚠ THE COMPLEMENT TO OVERLOADING. Heat damages modules, so shipping overload
+// without any way to see or undo the damage left a one-way door: burn a module
+// out and it is dead for the session. Damage is 0..1 with 1 meaning burnt out
+// (runtime.js isModuleIncapacitated).
+
+test("the rack carries per-module damage, and absent-from-the-map means intact", () => {
+  const slots: FittingSlot[] = [
+    slot("high", 0, { itemID: 1, typeID: 485 }),
+    slot("high", 1, { itemID: 2, typeID: 485 }),
+  ];
+  const rows = buildModuleRack(slots, [], [], { 1: 0.4 });
+  assert.equal(rows[0]!.slots[0]!.module?.damage, 0.4);
+  assert.equal(rows[0]!.slots[1]!.module?.damage, 0, "listed nowhere = undamaged");
+});
+
+test("⚠ an ABSENT damage map is unknown, NOT 'everything is intact'", () => {
+  const slots: FittingSlot[] = [slot("high", 0, { itemID: 1, typeID: 485 })];
+  assert.equal(buildModuleRack(slots, [], [], null)[0]!.slots[0]!.module?.damage, null);
+  assert.equal(buildModuleRack(slots, [], [])[0]!.slots[0]!.module?.damage, null);
+  // An EMPTY map is a real answer.
+  assert.equal(buildModuleRack(slots, [], [], {})[0]!.slots[0]!.module?.damage, 0);
+});
+
+test("burnt out is a definite 1 — unknown damage is never reported as burnt out", () => {
+  assert.equal(rackModuleBurntOut(rackModule({ damage: 1 })), true);
+  assert.equal(rackModuleBurntOut(rackModule({ damage: 0.99 })), false);
+  assert.equal(rackModuleBurntOut(rackModule({ damage: 0 })), false);
+  assert.equal(rackModuleBurntOut(rackModule({ damage: null })), false, "unknown is not burnt out");
+  assert.equal(rackModuleBurntOut(null), false);
+});
+
+test("damage renders as whole percent, and says nothing when there is none", () => {
+  assert.equal(rackDamageText(rackModule({ damage: 0.4 })), "40%");
+  assert.equal(rackDamageText(rackModule({ damage: 0.055 })), "6%");
+  assert.equal(rackDamageText(rackModule({ damage: 0 })), null);
+  assert.equal(rackDamageText(rackModule({ damage: null })), null);
+});
+
+test("⚠ a burnt-out module's title leads with WHY it will not run", () => {
+  // "click to switch on" on a module the server refuses outright is an
+  // invitation to fail, so the damage comes first and names the remedy.
+  const title = rackSlotTitle("150mm Light AutoCannon I", rackModule({ damage: 1 }));
+  assert.match(title, /^150mm Light AutoCannon I — BURNT OUT\./);
+  assert.match(title, /nanite paste/i);
+  assert.doesNotMatch(title, /click to switch on/i);
+});
+
+test("a partly damaged module still works, and says how worn it is", () => {
+  const title = rackSlotTitle("150mm Light AutoCannon I", rackModule({ damage: 0.25 }));
+  assert.match(title, /click to switch on\./);
+  assert.match(title, /Damaged: 25%\./);
 });
