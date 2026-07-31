@@ -18,7 +18,7 @@ function slot(family: FittingSlot["family"], index: number, mod: { itemID: numbe
   return {
     family,
     index,
-    module: mod ? { itemID: mod.itemID, typeID: mod.typeID, groupID: null, online: mod.online ?? true } : null,
+    module: mod ? { itemID: mod.itemID, typeID: mod.typeID, groupID: null, online: mod.online ?? true, charge: null } : null,
   };
 }
 
@@ -72,7 +72,7 @@ test("the rack carries each module's itemID — what activation addresses", () =
 // --- the click decision -------------------------------------------------------
 
 function rackModule(overrides: Partial<RackModule> = {}): RackModule {
-  return { itemID: 42, typeID: 3634, online: true, active: false, ...overrides };
+  return { itemID: 42, typeID: 3634, online: true, active: false, charge: null, ...overrides };
 }
 
 test("a click on an idle online module ACTIVATES it", () => {
@@ -110,4 +110,53 @@ test("the slot title names the module and what a click would do", () => {
     "Small Shield Booster I — offline (bring it online from the Fitting window)",
   );
   assert.equal(rackSlotTitle("", null), "Empty slot");
+});
+
+// --- What is loaded ----------------------------------------------------------
+//
+// The rack tile is a PICTURE of the module, so a gun that is out of ammunition
+// looks exactly like a loaded one. The title is the only place that can say.
+
+test("the rack carries the loaded charge through from the fit", () => {
+  const slots: FittingSlot[] = [
+    {
+      family: "high",
+      index: 0,
+      module: {
+        itemID: 42,
+        typeID: 485,
+        groupID: 55,
+        online: true,
+        charge: { itemID: 99, typeID: 184, quantity: 160 },
+      },
+    },
+  ];
+  assert.deepEqual(buildModuleRack(slots, [])[0]!.slots[0]!.module?.charge, {
+    typeID: 184,
+    quantity: 160,
+  });
+});
+
+test("the slot title says what is loaded, by NAME and count", () => {
+  const loaded = rackModule({ charge: { typeID: 184, quantity: 160 } });
+  assert.equal(
+    rackSlotTitle("150mm Light AutoCannon I", loaded, "Phased Plasma S"),
+    "150mm Light AutoCannon I — click to switch on. Loaded: 160 Phased Plasma S.",
+  );
+  // Cycling, and offline, keep their own wording and gain the same suffix.
+  assert.match(
+    rackSlotTitle("150mm Light AutoCannon I", rackModule({ charge: { typeID: 184, quantity: 160 }, active: true }), "Phased Plasma S"),
+    /Click to switch off\. Loaded: 160 Phased Plasma S\.$/,
+  );
+});
+
+test("a charge whose name has not resolved yet is left unsaid, never numbered", () => {
+  // R7d — the id must not stand in for the name while it is in flight.
+  const loaded = rackModule({ charge: { typeID: 184, quantity: 160 } });
+  const title = rackSlotTitle("150mm Light AutoCannon I", loaded, null);
+  assert.doesNotMatch(title, /184|Loaded/);
+});
+
+test("a module with no charge says nothing about ammunition", () => {
+  assert.doesNotMatch(rackSlotTitle("Miner I", rackModule(), "Phased Plasma S"), /Loaded/);
 });

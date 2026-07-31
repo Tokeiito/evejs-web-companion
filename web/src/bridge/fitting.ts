@@ -125,8 +125,32 @@ interface RawFittedRow {
   readonly typeID: number;
   readonly groupID: number | null;
   readonly flagID: number;
+  /** 7 = Module, 8 = Charge. null when the row did not carry one. */
+  readonly categoryID: number | null;
+  /** How many, for a charge stack. -1 for a singleton module. */
+  readonly quantity: number;
 }
 
+/**
+ * inventory categoryID 8 — Charge. A loaded round shares its MODULE'S slot flag,
+ * so the category is the only thing that separates the gun from what is in it.
+ */
+const CATEGORY_CHARGE = 8;
+
+/**
+ * Split the ListByFlags rows into the MODULES and the CHARGES loaded in them.
+ *
+ * ⚠ A LOADED CHARGE SHARES ITS MODULE'S SLOT FLAG. This was previously believed
+ * to arrive as a tuple itemID that `toNumber` would zero away, so charges were
+ * assumed to be dropped and the rows were indexed by flag alone. They are not:
+ * a charge is an ordinary row with a plain itemID, the module's flagID, and a
+ * stack quantity. Indexing by flag therefore let the CHARGE OVERWRITE THE
+ * MODULE, and the panel drew the ammunition where the gun should be — measured
+ * live on a Rifter whose 150mm Light AutoCannon I decoded as Phased Plasma S,
+ * which also meant the module rack offered to "activate" the ammo.
+ *
+ * categoryID is what tells them apart: 7 is Module, 8 is Charge.
+ */
 function decodeFittedRows(result: JsonValue): RawFittedRow[] {
   const listValue = unwrapRowList(result);
   if (!isListValue(listValue)) {
@@ -146,15 +170,16 @@ function decodeFittedRows(result: JsonValue): RawFittedRow[] {
         : (item as Record<string, JsonValue>);
     const itemID = toNumber(fields.itemID);
     const flagID = toNumber(fields.flagID);
-    // A charge loaded into a module arrives as a TUPLE itemID, not a number;
-    // toNumber yields 0 for those, which drops them here. The panel shows
-    // modules per slot, and a charge is not a module.
     if (itemID > 0 && flagID > 0) {
       rows.push({
         itemID,
         typeID: toNumber(fields.typeID),
         groupID: toNumberOrNull(fields.groupID),
         flagID,
+        // categoryID rides only as far as buildSlots, which uses it to tell a
+        // module from the charge sharing its flag; it never reaches the panel.
+        categoryID: toNumberOrNull(fields.categoryID),
+        quantity: toNumber(fields.quantity),
       });
     }
   }
@@ -281,9 +306,16 @@ export function buildSlots(
   const rows = decodeFittedRows(slotsResult);
   const attributes = decodeShipAttributes(shipInfoResult);
   const online = decodeOnlineModuleIDs(onlineResult);
+  // Two maps, not one: a charge shares its module's flag, so a single map would
+  // let whichever row arrived last win — and the charge arrives last.
   const byFlag = new Map<number, RawFittedRow>();
+  const chargeByFlag = new Map<number, RawFittedRow>();
   for (const row of rows) {
-    byFlag.set(row.flagID, row);
+    if (row.categoryID === CATEGORY_CHARGE) {
+      chargeByFlag.set(row.flagID, row);
+    } else {
+      byFlag.set(row.flagID, row);
+    }
   }
 
   const slots: FittingSlot[] = [];
@@ -305,12 +337,20 @@ export function buildSlots(
     const count = Math.max(declared, occupied);
     for (let index = 0; index < count; index += 1) {
       const row = byFlag.get(flags[index]!) ?? null;
+      const charge = chargeByFlag.get(flags[index]!) ?? null;
       const module: FittedModule | null = row
         ? {
             itemID: row.itemID,
             typeID: row.typeID,
             groupID: row.groupID,
             online: online.has(row.itemID),
+            // What is loaded in it, or null for a module that holds nothing.
+            // A charge with no module in its slot is dropped rather than shown
+            // as a phantom: the server would not have put it there, and drawing
+            // ammunition as a fitted item is the very bug this separates out.
+            charge: charge
+              ? { itemID: charge.itemID, typeID: charge.typeID, quantity: charge.quantity }
+              : null,
           }
         : null;
       slots.push({ family, index, module });

@@ -139,7 +139,7 @@ function loadedStore(options: {
       {
         family: "high",
         index: 0,
-        module: { itemID: MODULE_ID, typeID: LASER_TYPE_ID, groupID: 54, online: true },
+        module: { itemID: MODULE_ID, typeID: LASER_TYPE_ID, groupID: 54, online: true, charge: null },
       },
     ],
     resources: {
@@ -551,7 +551,7 @@ test("R30 slice E: offline equipment is LISTED, with the one click that used to 
       {
         family: "high",
         index: 0,
-        module: { itemID: MODULE_ID, typeID: LASER_TYPE_ID, groupID: 54, online: false },
+        module: { itemID: MODULE_ID, typeID: LASER_TYPE_ID, groupID: 54, online: false, charge: null },
       },
     ],
     resources: {

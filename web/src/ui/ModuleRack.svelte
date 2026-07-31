@@ -66,6 +66,11 @@
     return resolvedName($names.resolved, "type", typeID);
   }
 
+  /** The loaded charge's NAME, or null when there is none to name. */
+  function chargeName(module: RackModule): string | null {
+    return module.charge ? moduleName(module.charge.typeID) : null;
+  }
+
   async function clickModule(module: RackModule): Promise<void> {
     const action = rackClickAction(module);
     if (!flow || !action || pendingItemID !== null) {
@@ -126,8 +131,8 @@
                 class:pending={pendingItemID === slot.module.itemID}
                 disabled={!clickable || pendingItemID !== null}
                 aria-pressed={slot.module.active}
-                title={rackSlotTitle(nm, slot.module)}
-                aria-label={rackSlotTitle(nm, slot.module)}
+                title={rackSlotTitle(nm, slot.module, chargeName(slot.module))}
+                aria-label={rackSlotTitle(nm, slot.module, chargeName(slot.module))}
                 onclick={() => slot.module && clickModule(slot.module)}
               >
                 <TypeIcon typeID={slot.module.typeID} name={nm} size="sm" fallbackText={abbreviate(nm)} />

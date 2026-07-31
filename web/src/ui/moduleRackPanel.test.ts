@@ -73,12 +73,12 @@ function loadedStore(options: { activeModuleIDs?: number[] } = {}) {
       {
         family: "high",
         index: 0,
-        module: { itemID: MINER_ID, typeID: MINER_TYPE, groupID: 54, online: true },
+        module: { itemID: MINER_ID, typeID: MINER_TYPE, groupID: 54, online: true, charge: null },
       },
       {
         family: "mid",
         index: 0,
-        module: { itemID: BOOSTER_ID, typeID: BOOSTER_TYPE, groupID: 40, online: true },
+        module: { itemID: BOOSTER_ID, typeID: BOOSTER_TYPE, groupID: 40, online: true, charge: null },
       },
       {
         family: "mid",
@@ -88,7 +88,7 @@ function loadedStore(options: { activeModuleIDs?: number[] } = {}) {
       {
         family: "low",
         index: 0,
-        module: { itemID: HARDENER_ID, typeID: HARDENER_TYPE, groupID: 328, online: false },
+        module: { itemID: HARDENER_ID, typeID: HARDENER_TYPE, groupID: 328, online: false, charge: null },
       },
     ],
     resources: {

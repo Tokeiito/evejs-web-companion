@@ -1105,6 +1105,12 @@
         // R47 — the module's GROUP too, so "Mine this" can ask the game whether
         // it is a mining laser instead of guessing from the display name.
         refs.push({ kind: "typeGroup", id: slot.module.typeID });
+        // What is LOADED in it, so the HUD rack can name the ammunition in its
+        // tile title rather than falling back to a number (R7d). The rack has
+        // no name-request effect of its own; it reads this shared cache.
+        if (slot.module.charge) {
+          refs.push({ kind: "type", id: slot.module.charge.typeID });
+        }
       }
     }
     for (const shot of $targeting.damageLog) {

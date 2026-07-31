@@ -205,9 +205,15 @@ test("a module fitted beyond the reported slot count is still shown", () => {
   assert.equal(high[5]!.module?.itemID, 5010);
 });
 
-test("a charge's tuple itemID is not mistaken for a module", () => {
-  // A loaded charge arrives with an ARRAY itemID (ship, flag, type), not a
-  // number. Those rows are dropped: the panel shows modules per slot.
+test("a row whose itemID is an ARRAY cannot fill a slot", () => {
+  // ⚠ THIS IS NOT THE CHARGE CASE, though it was once written as one. The
+  // belief was that a loaded charge arrives with an array itemID and is
+  // therefore dropped by the number coercion; it is not — a charge is an
+  // ordinary row sharing its module's flag, and the tests at the end of this
+  // file cover it against real captured bytes.
+  //
+  // What this still pins is the coercion itself: a row with a non-numeric
+  // itemID is not a fitted item, whatever produced it.
   const slots = buildSlots(
     slotList([
       packedRow({ itemID: [9001, 27, 200] as unknown as JsonValue, typeID: 200, flagID: 27 }),
@@ -217,7 +223,7 @@ test("a charge's tuple itemID is not mistaken for a module", () => {
     null as unknown as JsonValue,
   );
   const high = slotsOfFamily(slots, "high");
-  assert.equal(high[0]!.module, null, "the charge did not fill the slot");
+  assert.equal(high[0]!.module, null, "an unusable itemID did not fill the slot");
   assert.equal(high[1]!.module?.itemID, 5001);
 });
 
@@ -240,4 +246,101 @@ test("only modules and subsystems are offered as fittable", () => {
   assert.equal(isFittableRow(6), false, "a ship");
   assert.equal(isFittableRow(18), false, "a drone");
   assert.equal(isFittableRow(null), false);
+});
+
+// --- Loaded charges ----------------------------------------------------------
+//
+// ⚠ THE BUG THIS PINS, and it was live. A loaded charge is an ORDINARY row that
+// shares its MODULE'S slot flag — not, as was previously believed and written in
+// a comment here, a tuple itemID that the number coercion would drop. Indexing
+// the rows by flag alone therefore let the charge OVERWRITE the module, and
+// every panel drew the ammunition where the gun should be: the Fitting window,
+// the Overview equipment list, and the module rack, which offered to "activate"
+// a round of Phased Plasma.
+//
+// The rows below are the exact bytes captured from a Rifter at Perimeter VI on
+// 2026-07-31 after fitting a 150mm Light AutoCannon I (485) and loading Phased
+// Plasma S (184) into it — module first, charge second, both on flagID 27.
+const RIFTER_ATTRIBUTES: Record<number, number> = {
+  14: 4, // hiSlots
+  13: 3, // medSlots
+  12: 3, // lowSlots
+  1137: 3, // rigSlots
+};
+
+function loadedTurretRows(): JsonValue {
+  return slotList([
+    packedRow({ itemID: 9988400094759, typeID: 485, groupID: 55, categoryID: 7, flagID: 27, quantity: -1 }),
+    packedRow({ itemID: 9988400094760, typeID: 184, groupID: 83, categoryID: 8, flagID: 27, quantity: 160 }),
+  ]);
+}
+
+test("⚠ a loaded charge does NOT displace the module it sits in", () => {
+  const slots = buildSlots(
+    loadedTurretRows(),
+    shipInfo(RIFTER_ATTRIBUTES),
+    { type: "list", items: [9988400094759] } as unknown as JsonValue,
+  );
+  const high = slotsOfFamily(slots, "high");
+
+  // The GUN, not the ammunition.
+  assert.equal(high[0]!.module?.typeID, 485);
+  assert.equal(high[0]!.module?.itemID, 9988400094759);
+  assert.equal(high[0]!.module?.groupID, 55);
+  // And it is still recognised as online, which is keyed off the MODULE's id.
+  assert.equal(high[0]!.module?.online, true);
+});
+
+test("the charge belongs to the module, with what is loaded and how much", () => {
+  const slots = buildSlots(
+    loadedTurretRows(),
+    shipInfo(RIFTER_ATTRIBUTES),
+    { type: "list", items: [] } as unknown as JsonValue,
+  );
+
+  assert.deepEqual(slotsOfFamily(slots, "high")[0]!.module?.charge, {
+    itemID: 9988400094760,
+    typeID: 184,
+    quantity: 160,
+  });
+});
+
+test("a charge never becomes a slot of its own", () => {
+  const slots = buildSlots(
+    loadedTurretRows(),
+    shipInfo(RIFTER_ATTRIBUTES),
+    { type: "list", items: [] } as unknown as JsonValue,
+  );
+  const occupied = slots.filter((slot) => slot.module !== null);
+
+  assert.equal(occupied.length, 1, "one turret, one occupied slot");
+  assert.equal(
+    slots.some((slot) => slot.module?.typeID === 184),
+    false,
+    "the ammunition must never appear as a fitted item",
+  );
+});
+
+test("an empty module reads charge null — not an absent field", () => {
+  const slots = buildSlots(
+    slotList([packedRow({ itemID: 5001, typeID: 3634, groupID: 53, categoryID: 7, flagID: 27 })]),
+    shipInfo(RIFTER_ATTRIBUTES),
+    { type: "list", items: [] } as unknown as JsonValue,
+  );
+
+  assert.equal(slotsOfFamily(slots, "high")[0]!.module?.charge, null);
+});
+
+test("a charge whose module is not there is dropped, not drawn as a phantom", () => {
+  // The server would not produce this, but a partial read might: a lone charge
+  // row must not become a fitted item.
+  const slots = buildSlots(
+    slotList([
+      packedRow({ itemID: 9988400094760, typeID: 184, groupID: 83, categoryID: 8, flagID: 27, quantity: 160 }),
+    ]),
+    shipInfo(RIFTER_ATTRIBUTES),
+    { type: "list", items: [] } as unknown as JsonValue,
+  );
+
+  assert.equal(slots.every((slot) => slot.module === null), true);
 });

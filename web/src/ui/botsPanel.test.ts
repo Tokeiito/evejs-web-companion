@@ -91,6 +91,7 @@ function procurerStore(options: { readonly minersOffline?: boolean } = {}) {
         typeID: row.typeID,
         groupID: row.groupID,
         online: options.minersOffline ? !STRIP_MINER_ITEM_IDS.includes(row.itemID) : true,
+        charge: null,
       },
     })),
     resources: {

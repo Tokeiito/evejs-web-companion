@@ -27,6 +27,8 @@ export interface RackModule {
   readonly online: boolean;
   /** The live snapshot reports it currently cycling. */
   readonly active: boolean;
+  /** The charge loaded in it, or null. A weapon with none cannot fire. */
+  readonly charge: { readonly typeID: number; readonly quantity: number } | null;
 }
 
 export interface RackSlotVM {
@@ -59,6 +61,9 @@ export function buildModuleRack(
             typeID: slot.module.typeID,
             online: slot.module.online,
             active: active.has(slot.module.itemID),
+            charge: slot.module.charge
+              ? { typeID: slot.module.charge.typeID, quantity: slot.module.charge.quantity }
+              : null,
           }
         : null,
     })),
@@ -87,14 +92,27 @@ export function rackClickAction(module: RackModule | null): RackClickAction {
  * never a bare state word: the rack tiles are pictures, so this line is the
  * only place the module says what it is.
  */
-export function rackSlotTitle(name: string, module: RackModule | null): string {
+export function rackSlotTitle(
+  name: string,
+  module: RackModule | null,
+  /** The loaded charge's NAME, when the module has one. Never an id (R7d). */
+  chargeName: string | null = null,
+): string {
   if (!module) {
     return "Empty slot";
   }
+  // What is loaded, appended to whatever the module's own state is: a gun that
+  // is out of ammunition looks identical to a loaded one on a picture tile.
+  const loaded =
+    module.charge && chargeName
+      ? ` Loaded: ${(module.charge.quantity > 0 ? module.charge.quantity : 1).toLocaleString()} ${chargeName}.`
+      : "";
   if (!module.online) {
-    return `${name} — offline (bring it online from the Fitting window)`;
+    return `${name} — offline (bring it online from the Fitting window)${loaded}`;
   }
-  return module.active ? `${name} — active. Click to switch off.` : `${name} — click to switch on.`;
+  return module.active
+    ? `${name} — active. Click to switch off.${loaded}`
+    : `${name} — click to switch on.${loaded}`;
 }
 
 /** True when there are no slots at all — the fit is not known yet. */

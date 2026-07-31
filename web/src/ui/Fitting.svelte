@@ -179,7 +179,18 @@
     if (slot.family === "rig" || slot.family === "subsystem") {
       return `${slotName(slot)}, ${name}`;
     }
-    return `${slotName(slot)}, ${name}, ${slot.module.online ? "online" : "offline"}`;
+    // What is loaded belongs in the socket's own description: the tile is a
+    // picture of the MODULE, so this is the only place a player learns the gun
+    // has ammunition in it without opening something else.
+    const loaded = slot.module.charge
+      ? `, loaded with ${chargeCount(slot.module.charge.quantity)} ${moduleName(slot.module.charge.typeID)}`
+      : "";
+    return `${slotName(slot)}, ${name}, ${slot.module.online ? "online" : "offline"}${loaded}`;
+  }
+
+  /** "160" — a stack count, grouped. A singleton charge reports -1; call it 1. */
+  function chargeCount(quantity: number): string {
+    return (quantity > 0 ? quantity : 1).toLocaleString();
   }
 
   // R7c — resolve the ACTIVE SHIP's typeID, every fitted module's typeID and
@@ -194,6 +205,11 @@
     for (const slot of $fitting.slots) {
       if (slot.module) {
         refs.push({ kind: "type", id: slot.module.typeID });
+        // The loaded charge needs a name too, or the socket description would
+        // have to fall back to a number (R7d).
+        if (slot.module.charge) {
+          refs.push({ kind: "type", id: slot.module.charge.typeID });
+        }
       }
     }
     for (const row of fittableRows()) {

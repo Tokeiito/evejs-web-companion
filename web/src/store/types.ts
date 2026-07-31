@@ -272,12 +272,28 @@ export interface MutationOutcome {
 export type SlotFamily = "high" | "mid" | "low" | "rig" | "subsystem";
 
 /** A module sitting in a slot. Named in the UI by typeID via the name cache. */
+/** What is loaded in a module right now — a round of ammunition, a crystal. */
+export interface LoadedCharge {
+  readonly itemID: number;
+  readonly typeID: number;
+  /** How many are loaded. */
+  readonly quantity: number;
+}
+
 export interface FittedModule {
   readonly itemID: number;
   readonly typeID: number;
   readonly groupID: number | null;
   /** True when the server reports this module as currently online. */
   readonly online: boolean;
+  /**
+   * The charge loaded in this module, or null when it holds none.
+   *
+   * ⚠ A CHARGE SHARES ITS MODULE'S SLOT FLAG on the wire, which is what once
+   * made the panel draw the ammunition INSTEAD of the gun. It belongs to the
+   * module, never beside it — see bridge/fitting.ts.
+   */
+  readonly charge: LoadedCharge | null;
 }
 
 /**
