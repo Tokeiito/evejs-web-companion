@@ -120,7 +120,7 @@
       <div class="panel-head">
         <h3 id="hud-modules-h">Modules</h3>
       </div>
-      <ModuleRack {store} />
+      <ModuleRack {store} {flow} />
     </section>
 
     <nav class="hud-cluster hud-nav" aria-label="Flight panels">

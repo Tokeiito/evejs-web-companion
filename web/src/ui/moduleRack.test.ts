@@ -1,10 +1,17 @@
 // The module-rack model (moduleRack.ts): grouping into high/mid/low, the
-// activation overlay from the snapshot, and the empty-fit signal.
+// activation overlay from the snapshot, the empty-fit signal — and the click
+// decision that makes the rack an F-row rather than a picture.
 
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildModuleRack, rackIsEmpty } from "./moduleRack.ts";
+import {
+  buildModuleRack,
+  rackClickAction,
+  rackIsEmpty,
+  rackSlotTitle,
+} from "./moduleRack.ts";
+import type { RackModule } from "./moduleRack.ts";
 import type { FittingSlot } from "../store/types.ts";
 
 function slot(family: FittingSlot["family"], index: number, mod: { itemID: number; typeID: number; online?: boolean } | null): FittingSlot {
@@ -55,4 +62,52 @@ test("an offline module carries its offline flag through", () => {
 test("rackIsEmpty is true only when no slots exist at all", () => {
   assert.equal(rackIsEmpty(buildModuleRack([], null)), true);
   assert.equal(rackIsEmpty(buildModuleRack([slot("high", 0, null)], null)), false);
+});
+
+test("the rack carries each module's itemID — what activation addresses", () => {
+  const rows = buildModuleRack([slot("high", 0, { itemID: 42, typeID: 3634 })], []);
+  assert.equal(rows[0]!.slots[0]!.module?.itemID, 42);
+});
+
+// --- the click decision -------------------------------------------------------
+
+function rackModule(overrides: Partial<RackModule> = {}): RackModule {
+  return { itemID: 42, typeID: 3634, online: true, active: false, ...overrides };
+}
+
+test("a click on an idle online module ACTIVATES it", () => {
+  assert.equal(rackClickAction(rackModule()), "activate");
+});
+
+test("a click on a cycling module DEACTIVATES it", () => {
+  assert.equal(rackClickAction(rackModule({ active: true })), "deactivate");
+});
+
+test("⚠ an OFFLINE module is inert — onlining is a Fitting decision, not a rack misclick", () => {
+  assert.equal(rackClickAction(rackModule({ online: false })), null);
+  // Even an offline module the snapshot somehow calls active stays inert: the
+  // fit's offline flag wins, because activating an offline module cannot work.
+  assert.equal(rackClickAction(rackModule({ online: false, active: true })), null);
+});
+
+test("an empty slot has no click", () => {
+  assert.equal(rackClickAction(null), null);
+});
+
+// --- the readout line ---------------------------------------------------------
+
+test("the slot title names the module and what a click would do", () => {
+  assert.equal(
+    rackSlotTitle("Small Shield Booster I", rackModule()),
+    "Small Shield Booster I — click to switch on.",
+  );
+  assert.equal(
+    rackSlotTitle("Small Shield Booster I", rackModule({ active: true })),
+    "Small Shield Booster I — active. Click to switch off.",
+  );
+  assert.equal(
+    rackSlotTitle("Small Shield Booster I", rackModule({ online: false })),
+    "Small Shield Booster I — offline (bring it online from the Fitting window)",
+  );
+  assert.equal(rackSlotTitle("", null), "Empty slot");
 });

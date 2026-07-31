@@ -3230,16 +3230,37 @@
     color: var(--color-muted);
     font-size: 11px;
     font-weight: 700;
+    /* Filled slots are now real buttons (the retail F-row): strip the global
+     * button chrome so a tile still reads as a tile, and keep the same box for
+     * the button and the empty <span> so the rack never reflows. */
+    padding: 0;
+    margin: 0;
+    line-height: 1;
+    cursor: pointer;
   }
+  button.module-slot:hover:not(:disabled) { border-color: var(--color-accent-dim); }
+  button.module-slot:disabled { cursor: default; }
   /* A cycling module glows in the accent; an offline one is dimmed. */
   .module-slot.active {
     border-color: var(--color-accent);
     box-shadow: inset 0 0 0 1px var(--color-accent);
   }
   .module-slot.offline { opacity: 0.45; }
-  .module-slot.empty { background: var(--color-field); }
+  .module-slot.empty { background: var(--color-field); cursor: default; }
+  /* A click in flight: presentation only — the glow itself waits for the poll. */
+  .module-slot.pending { animation: rack-pending 0.8s ease-in-out infinite alternate; }
+  @keyframes rack-pending {
+    from { border-color: var(--color-line); }
+    to { border-color: var(--color-accent); }
+  }
   .rack-empty { padding: 0 0.3rem; }
   .rack-hint { font-size: 0.8rem; margin: 0.3rem 0 0; }
+  /* The server's refusal for the last rack click — one line, plain words. */
+  .rack-error {
+    font-size: 0.78rem;
+    color: var(--color-danger);
+    margin: 0.3rem 0 0;
+  }
 
   /* Placeholder affordance — dashed panel + a pill, so a stub never reads as a
    * finished panel that happens to be empty. */

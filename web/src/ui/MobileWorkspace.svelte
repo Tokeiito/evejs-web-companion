@@ -59,7 +59,7 @@
       <ErrorBoundary name="Ship HUD">
         <section class="mobile-hud">
           <ShipHud {store} />
-          <ModuleRack {store} />
+          <ModuleRack {store} {flow} />
         </section>
         <TargetBracket {store} />
       </ErrorBoundary>

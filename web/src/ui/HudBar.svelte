@@ -82,7 +82,7 @@
 
   <section class="hud-cluster module-rack" aria-labelledby="hud-modules-h">
     <div class="panel-head"><h3 id="hud-modules-h">Modules</h3></div>
-    <ModuleRack {store} />
+    <ModuleRack {store} {flow} />
   </section>
 
   <section class="hud-cluster hud-shots" aria-labelledby="hud-shots-h">
