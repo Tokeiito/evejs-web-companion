@@ -141,6 +141,10 @@ export function decodeDronesInSpace(raw: JsonValue | undefined): readonly DroneI
       shieldRatio: ratioOrNull(row.shieldRatio),
       armorRatio: ratioOrNull(row.armorRatio),
       hullRatio: ratioOrNull(row.hullRatio),
+      // Absent reads as NOT controlled, which is the safe way round: it offers
+      // recovery on a drone that may not need it, rather than offering Recall
+      // on one that cannot hear the order.
+      controlled: row.controlled === true,
     });
   }
   return drones;

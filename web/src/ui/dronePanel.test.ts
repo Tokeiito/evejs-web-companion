@@ -228,7 +228,11 @@ const A_SPACE_DRONE = {
   shieldRatio: 1,
   armorRatio: 1,
   hullRatio: 1,
+  controlled: true,
 };
+
+/** The same drone, orphaned: owned by this character, flown by no hull of theirs. */
+const AN_ORPHANED_DRONE = { ...A_SPACE_DRONE, controlled: false };
 
 // --- The Drones section ------------------------------------------------------
 
@@ -795,4 +799,51 @@ test("R34: the report type itself carries no id (R7d, at the source)", () => {
   const declaration = types.slice(start, types.indexOf("}", start));
   assert.notEqual(start, -1);
   assert.doesNotMatch(declaration, /ID\b|Id\b|\bid\b/, "an id field appeared on a rendered report");
+});
+
+// --- Recovery: the way back for a drone this hull cannot fly ------------------
+//
+// An orphaned drone — owned by this character, controlled by no hull of theirs
+// after a lost session, a ship swap, or a pod and reboard — used to be a dead
+// end. The panel listed it, refused Bring home (correctly: the server obeys
+// only the controlling hull), and offered nothing else. That is ISK sitting in
+// space with no way to reach it.
+
+test("an orphaned drone offers Reconnect and Scoop; a flown one does not", () => {
+  const orphaned = visibleText(scene({ inSpace: [AN_ORPHANED_DRONE] }));
+  assert.match(orphaned, /Reconnect/);
+  assert.match(orphaned, /Scoop/);
+
+  const flown = visibleText(scene({ inSpace: [A_SPACE_DRONE] }));
+  assert.doesNotMatch(flown, /Reconnect/, "a drone you already fly needs no recovery");
+  assert.doesNotMatch(flown, /Scoop/);
+});
+
+test("⚠ the orphaned drone still refuses Bring home, and now says why AND what to do", () => {
+  const body = scene({ inSpace: [AN_ORPHANED_DRONE] });
+  const text = visibleText(body);
+  // The existing R33 guarantee: the reason IS the label, never a tooltip. The
+  // BFF's `controlled:false` is now enough on its own to earn it — before, this
+  // needed a snapshot row carrying a foreign controllerID, and a drone the
+  // snapshot did not carry showed a live button that would have failed.
+  assert.match(text, /Your ship is not flying this drone/i);
+  // And the two new controls are LIVE — the whole point is that they work when
+  // the order button cannot.
+  const reconnect = body.slice(0, body.indexOf("Reconnect"));
+  const openingTag = reconnect.slice(reconnect.lastIndexOf("<button"));
+  assert.doesNotMatch(
+    openingTag,
+    /disabled/,
+    "Reconnect must not be disabled on the drone it exists for",
+  );
+});
+
+test("recovery controls are real buttons (R8), and carry no ids (R7d)", () => {
+  const body = scene({ inSpace: [AN_ORPHANED_DRONE] });
+  assert.match(body, /<button[^>]*>\s*Reconnect\s*<\/button>/);
+  assert.match(body, /<button[^>]*>\s*Scoop\s*<\/button>/);
+  const text = visibleText(body);
+  for (const id of [SPACE_DRONE_ID, SHIP_ID, DRONE_TYPE_ID]) {
+    assert.doesNotMatch(text, new RegExp(`\b${id}\b`), `id ${id} reached the screen`);
+  }
 });

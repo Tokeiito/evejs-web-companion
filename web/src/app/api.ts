@@ -2957,6 +2957,48 @@ export async function recallDrones(
   );
 }
 
+/**
+ * Take control of drones this ship is not flying (entity.CmdReconnectToDrones).
+ *
+ * The recovery path for an ORPHANED drone — one this character owns that the
+ * current hull does not control, after a lost session, a ship swap, or a pod
+ * and reboard. Until this existed a web-client player had no way to get such a
+ * drone back at all: Recall and Engage both need control the ship does not have.
+ */
+export async function reconnectDrones(
+  droneIDs: readonly number[],
+  options: ApiOptions = {},
+): Promise<DroneActionResult> {
+  return readDroneAction(
+    await postJson(
+      "/api/bridge/entity/drones/reconnect",
+      { droneIDs: [...droneIDs], confirm: true },
+      options,
+    ),
+  );
+}
+
+/**
+ * Scoop drones straight into the bay (ship.ScoopDrone).
+ *
+ * The other half of recovery, and the one that needs no control at all: a drone
+ * close enough to scoop comes home whether or not this ship can fly it. In
+ * space only, and the server owns the range check — the page never pre-refuses
+ * on distance it would have to guess.
+ */
+export async function scoopDrones(
+  droneIDs: readonly number[],
+  options: ApiOptions = {},
+): Promise<DroneActionResult> {
+  return readDroneAction(
+    await postJson(
+      "/api/bridge/drones/scoop",
+      { droneIDs: [...droneIDs], confirm: true },
+      options,
+    ),
+  );
+}
+
 /** The repair shop's quote for these items: which of them it lists as damaged. */
 export async function getRepairQuotes(
   itemIDs: readonly number[],

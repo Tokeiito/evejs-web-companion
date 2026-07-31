@@ -102,6 +102,26 @@ test("health ratios clamp to 0-1 and an absent layer stays null", () => {
   assert.equal(drones?.[1]?.shieldRatio, null);
 });
 
+// ⚠ OWNED IS NOT FLOWN. The read keeps a drone this CHARACTER owns even when
+// this hull does not control it, so an orphaned drone stays visible instead of
+// quietly becoming someone else's salvage. Recall and Engage only work on the
+// controlled ones, so the panel has to be able to tell them apart.
+test("a drone carries whether THIS ship controls it", () => {
+  const drones = decodeDronesInSpace([
+    { itemID: 9500001, controlled: true },
+    { itemID: 9500002, controlled: false },
+  ] as unknown as JsonValue);
+  assert.equal(drones?.[0]?.controlled, true);
+  assert.equal(drones?.[1]?.controlled, false);
+});
+
+test("an absent control flag reads as NOT controlled — the safe way round", () => {
+  // Offering recovery on a drone that may not need it is harmless; offering
+  // Recall on one that cannot hear the order is the silent decline again.
+  const drones = decodeDronesInSpace([{ itemID: 9500001 }] as unknown as JsonValue);
+  assert.equal(drones?.[0]?.controlled, false);
+});
+
 // --- The limits -------------------------------------------------------------
 
 test("the launch limits come out of the ship's ORDINARY attribute map", () => {

@@ -16636,6 +16636,17 @@ async function readDronesInSpace(held) {
       typeID: Number(row.typeID) || null,
       // A NAME. The panel never renders the itemID it keys rows by (R7d).
       name: typeof row.name === "string" && row.name.length > 0 ? row.name : null,
+      // ⚠ OWNED IS NOT FLOWN. The filter above deliberately keeps a drone this
+      // CHARACTER owns even when this hull does not control it — that is how an
+      // orphaned drone (session lost, ship swapped, pod-and-reboard) stays
+      // visible instead of silently becoming someone else's salvage. But Recall
+      // and Engage only work on drones under THIS ship's control, so the page
+      // has to be able to tell the two apart: a controlled drone gets the order
+      // buttons, an uncontrolled one gets Reconnect and Scoop.
+      //
+      // A BOOLEAN, not the controllerID — the id itself must not reach the
+      // browser (R7d), and the only question the page has is this one.
+      controlled: shipID > 0 && (Number(row.controllerID) || 0) === shipID,
       // A WORD, or null for "we could not tell" — never a raw activity enum.
       activity: typeof row.droneActivity === "string" ? row.droneActivity : null,
       // What it is busy with, so the page can name the rock or the rat.

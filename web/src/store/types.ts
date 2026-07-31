@@ -1814,6 +1814,17 @@ export interface DroneInSpace {
   readonly shieldRatio: number | null;
   readonly armorRatio: number | null;
   readonly hullRatio: number | null;
+  /**
+   * Whether THIS ship currently controls the drone.
+   *
+   * ⚠ A LISTED DRONE IS NOT NECESSARILY A FLYABLE ONE. The read keeps drones
+   * this CHARACTER owns even when this hull does not fly them, so an orphaned
+   * drone (session lost, ship swapped, podded and reboarded) stays visible
+   * rather than quietly becoming someone else's salvage. Recall and Engage only
+   * work on controlled drones; an uncontrolled one has to be reconnected or
+   * scooped first. `false` is a real answer, not "unknown".
+   */
+  readonly controlled: boolean;
 }
 
 /**

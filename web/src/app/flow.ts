@@ -682,6 +682,13 @@ export interface AppFlow {
   mineWithDrones(droneIDs: readonly number[], targetID: number): Promise<void>;
   /** R25 — bring drones home (the runtime scoops them itself inside 2500 m). */
   recallDrones(droneIDs: readonly number[]): Promise<void>;
+  /**
+   * Take control of drones this ship owns but does not fly — the recovery path
+   * for an orphaned drone, which Recall and Engage cannot reach.
+   */
+  reconnectDrones(droneIDs: readonly number[]): Promise<void>;
+  /** Scoop drones straight into the bay; needs no control, only range. */
+  scoopDrones(droneIDs: readonly number[]): Promise<void>;
   // --- R28: skills ---------------------------------------------------------
   //
   // ⚠ A queue save answers with the RE-READ sheet, never with its own return
@@ -3835,6 +3842,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     verify: (
       inSpace: readonly DroneInSpace[] | null,
       launched: readonly DroneInSpace[] | null,
+      /**
+       * What the SERVER already said, per drone. A verifier that would end
+       * "and gave no reason" must check this first: the reports render
+       * alongside the decline, and claiming silence next to the server's own
+       * sentence is simply false.
+       */
+      reports: readonly { readonly label: string | null; readonly text: string }[],
     ) => string | null,
   ): Promise<void> {
     let result;
@@ -3859,11 +3873,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // It is applied AFTER `drones/action` (which clears the previous order's
     // reports) and independently of the verifier below, so a refusal the server
     // explained can never be displaced by our own guess about the same call.
-    store.apply({
-      type: "drones/order-reports",
-      reports: droneOrderReports(result.result, inSpace),
-    });
-    const complaint = verify(inSpace, decodeDronesInSpace(result.launched));
+    const reports = droneOrderReports(result.result, inSpace);
+    store.apply({ type: "drones/order-reports", reports });
+    const complaint = verify(inSpace, decodeDronesInSpace(result.launched), reports);
     if (complaint !== null) {
       store.apply({ type: "drones/silent-decline", message: complaint });
     }
@@ -3940,6 +3952,64 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             // runtime scoops it inside 2500 m. So there is nothing to complain
             // about either way: still-there is in progress, gone is done.
             null,
+    );
+  }
+
+  /**
+   * Take control of orphaned drones (entity.CmdReconnectToDrones).
+   *
+   * Success is the drone becoming CONTROLLED, which the re-read answers
+   * directly — not its presence in space, which was never in doubt.
+   */
+  async function reconnectDrones(droneIDs: readonly number[]): Promise<void> {
+    await runDroneAction(
+      "Reconnect",
+      () => api.reconnectDrones(droneIDs, callOptions),
+      (inSpace, _launched, reports) => {
+        if (inSpace === null) {
+          return "The reconnect was accepted, but space could not be re-read.";
+        }
+        const asked = new Set(droneIDs);
+        const stillLoose = inSpace.filter((drone) => asked.has(drone.itemID) && !drone.controlled);
+        if (stillLoose.length === 0 || reports.length > 0) {
+          // Either it worked, or the server already explained itself per drone
+          // and those sentences are on screen — adding "gave no reason" beside
+          // them would be a lie.
+          return null;
+        }
+        return stillLoose.length === droneIDs.length
+          ? "The server accepted that and none of them answered, and gave no reason."
+          : `${stillLoose.length} of ${droneIDs.length} did not answer, and the server gave no reason.`;
+      },
+    );
+  }
+
+  /**
+   * Scoop drones into the bay (ship.ScoopDrone).
+   *
+   * Success is the drone LEAVING space. A drone still out there was not
+   * scooped — unlike a recall, there is no in-flight middle state to allow for.
+   */
+  async function scoopDrones(droneIDs: readonly number[]): Promise<void> {
+    await runDroneAction(
+      "Scoop",
+      () => api.scoopDrones(droneIDs, callOptions),
+      (inSpace, _launched, reports) => {
+        if (inSpace === null) {
+          return "The scoop was accepted, but space could not be re-read.";
+        }
+        const stillOut = inSpace.filter((drone) => droneIDs.includes(drone.itemID)).length;
+        if (stillOut === 0 || reports.length > 0) {
+          // Measured live: a scoop the server declines answers with a per-drone
+          // CustomNotify ("That drone cannot currently be scooped into the drone
+          // bay"), which the reports already carry. Saying "gave no reason"
+          // underneath the server's own sentence is simply false.
+          return null;
+        }
+        return stillOut === droneIDs.length
+          ? "Nothing was scooped, and the server gave no reason."
+          : `${stillOut} of ${droneIDs.length} stayed in space, and the server gave no reason.`;
+      },
     );
   }
 
@@ -7098,6 +7168,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     engageDrones,
     mineWithDrones,
     recallDrones,
+    reconnectDrones,
+    scoopDrones,
     runSurveyScan,
     loadReprocessingQuote,
     unloadMiningHolds,

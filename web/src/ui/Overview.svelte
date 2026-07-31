@@ -1164,7 +1164,24 @@
           targetLabel: target === null ? "" : displayLabel(target),
           // The R30 shape: a reason, or null. Only a HARD false earns one —
           // a `null` orderable leaves the control live to get a real answer.
-          unavailable: orderable === false ? DRONE_NOT_UNDER_YOUR_CONTROL : null,
+          //
+          // TWO SOURCES, THE HARDER ONE FIRST. `controlled` is the BFF's own
+          // answer and is always present; `canMyShipOrderDrone` reads the
+          // SNAPSHOT, which may simply not carry the drone's row and then
+          // honestly answers "cannot tell". Preferring the flag also keeps the
+          // panel self-consistent: a drone offered Reconnect must never sit
+          // beside a live Bring home, which is what a null snapshot answer
+          // would have produced.
+          unavailable:
+            drone.controlled === false || orderable === false
+              ? DRONE_NOT_UNDER_YOUR_CONTROL
+              : null,
+          // ⚠ NOT ORDERABLE USED TO BE A DEAD END. A drone this character owns
+          // that this hull does not fly could be seen and nothing else — no
+          // recall, no engage, and no way back. Recovery is offered on the
+          // BFF's definite answer only: a drone we merely could not check is
+          // left alone, exactly as R33 left its order buttons alone.
+          recoverable: drone.controlled === false,
         };
       })
       .sort((left, right) => Number(right.busy) - Number(left.busy));
@@ -2454,6 +2471,32 @@
               >
                 {drone.unavailable ?? "Bring home"}
               </button>
+              {#if drone.recoverable}
+                <!--
+                  The way back for a drone this hull cannot fly. Two verbs
+                  because they fail for different reasons and one covers the
+                  other: Reconnect needs the drone to answer, Scoop needs only
+                  range. Both are live whenever the drone is out of control, and
+                  the SERVER decides which one works — the panel would have to
+                  guess at distance to pre-refuse either.
+                -->
+                <button
+                  type="button"
+                  disabled={busy}
+                  title="Take control of this drone again"
+                  onclick={() => run(() => flow.reconnectDrones([drone.itemID]))}
+                >
+                  Reconnect
+                </button>
+                <button
+                  type="button"
+                  disabled={busy}
+                  title="Pull this drone straight into your bay"
+                  onclick={() => run(() => flow.scoopDrones([drone.itemID]))}
+                >
+                  Scoop
+                </button>
+              {/if}
             </span>
           </li>
         {/each}
