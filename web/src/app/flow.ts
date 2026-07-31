@@ -389,6 +389,18 @@ export interface AppFlow {
   /** Bring a fitted module online, or take it offline. */
   setModuleOnline(itemID: number, online: boolean): Promise<void>;
   /**
+   * Load charges into modules, then re-read the fit so the panel shows what the
+   * SERVER put in them. Compatibility is the server's call — an incompatible
+   * charge comes back as its own refusal, not as a control the panel hid.
+   */
+  loadAmmo(
+    moduleIDs: readonly number[],
+    chargeItemIDs: readonly number[],
+    source: api.AmmoPlace,
+  ): Promise<void>;
+  /** Empty modules of their charges into cargo or the station hangar. */
+  unloadAmmo(moduleIDs: readonly number[], destination: api.AmmoPlace): Promise<void>;
+  /**
    * DESTROY a fitted rig. Rigs cannot be unfitted, so this is irreversible —
    * the panel confirms before calling it and the BFF confirms again.
    */
@@ -1727,6 +1739,63 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    *    re-reads the slots and reports `applied: false`; saying only that the
    *    server declined is honest, where naming a cause would be a guess.
    */
+  /**
+   * What the named modules are holding, as one comparable string.
+   *
+   * ⚠ THE ONLY WAY TO KNOW AN AMMO CALL DID ANYTHING. dogmaIM.LoadAmmo returns
+   * null whether it loaded or refused, and the BFF therefore answers a flat
+   * `applied: true` either way — measured live, loading an XL projectile round
+   * into a small autocannon came back 200/applied with an empty notification
+   * list and the module untouched. So the RE-READ is the authority, exactly as
+   * it is for locking, module activation and drone orders.
+   */
+  function ammoSignature(moduleIDs: readonly number[]): string {
+    const wanted = new Set(moduleIDs);
+    return store.fitting
+      .get()
+      .slots.filter((slot) => slot.module !== null && wanted.has(slot.module.itemID))
+      .map((slot) => {
+        const charge = slot.module!.charge;
+        return charge ? `${slot.module!.itemID}:${charge.typeID}x${charge.quantity}` : "";
+      })
+      .filter((entry) => entry !== "")
+      .sort()
+      .join("|");
+  }
+
+  /**
+   * Run an ammunition write, then prove it against the re-read.
+   *
+   * `declined` receives the signature before and after; returning true records
+   * the silent decline. A genuine refusal still throws and is reported as the
+   * server worded it, untouched.
+   */
+  async function runAmmoAction(
+    moduleIDs: readonly number[],
+    action: () => Promise<void>,
+    declined: (before: string, after: string) => boolean,
+    declineMessage: string,
+  ): Promise<void> {
+    const before = ammoSignature(moduleIDs);
+    try {
+      await action();
+    } catch (error) {
+      if (isSessionLost(error)) {
+        stopLiveStream();
+        store.apply({ type: "character/offline" });
+        throw error;
+      }
+      store.apply({ type: "fitting/action-error", message: errorWords(error) });
+      return;
+    }
+    await loadFitting();
+    // AFTER the reload: loadFitting clears the action error on success, so a
+    // decline recorded before it would be wiped by its own refresh.
+    if (declined(before, ammoSignature(moduleIDs))) {
+      store.apply({ type: "fitting/action-error", message: declineMessage });
+    }
+  }
+
   async function runFittingAction(
     action: () => Promise<{ readonly applied: boolean } | void>,
   ): Promise<void> {
@@ -6921,6 +6990,27 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
     async setModuleOnline(itemID, online) {
       await runFittingAction(() => api.setModuleOnline(itemID, online, callOptions));
+    },
+
+    async loadAmmo(moduleIDs, chargeItemIDs, source) {
+      await runAmmoAction(
+        moduleIDs,
+        () => api.loadAmmo(moduleIDs, chargeItemIDs, source, callOptions),
+        // Nothing about what the module holds changed, so nothing was loaded.
+        (before, after) => before === after,
+        "The server accepted that and loaded nothing, and gave no reason. " +
+          "A module only takes certain kinds of charge.",
+      );
+    },
+
+    async unloadAmmo(moduleIDs, destination) {
+      await runAmmoAction(
+        moduleIDs,
+        () => api.unloadAmmo(moduleIDs, destination, callOptions),
+        // An unload that worked leaves the modules empty.
+        (_before, after) => after !== "",
+        "The server accepted that and the ammunition is still loaded, and gave no reason.",
+      );
     },
 
     async destroyRig(itemID) {

@@ -11,6 +11,7 @@ import {
   SLOT_FAMILY_LABELS,
   SLOT_FAMILY_ORDER,
   buildSlots,
+  isChargeRow,
   decodeOnlineModuleIDs,
   decodeResources,
   decodeShipAttributes,
@@ -343,4 +344,22 @@ test("a charge whose module is not there is dropped, not drawn as a phantom", ()
   );
 
   assert.equal(slots.every((slot) => slot.module === null), true);
+});
+
+test("isChargeRow picks out ammunition, and nothing else in the hold", () => {
+  assert.equal(isChargeRow(8), true, "category 8 is Charge");
+  assert.equal(isChargeRow(7), false, "a module is not ammunition");
+  assert.equal(isChargeRow(18), false, "a drone is not ammunition");
+  assert.equal(isChargeRow(6), false, "a ship is not ammunition");
+  assert.equal(isChargeRow(null), false, "unknown is not a yes");
+});
+
+test("⚠ isChargeRow is a CATEGORY test, never a compatibility test", () => {
+  // Which charges a module accepts lives in dogma attributes the browser has no
+  // allowlisted read for. Narrowing the offered list by a guess would hide
+  // ammunition that would have loaded fine, so every charge is offered and the
+  // SERVER refuses the wrong ones in its own words. Two charges for completely
+  // different weapon systems both answer true, and that is correct.
+  assert.equal(isChargeRow(8), true); // Phased Plasma S — projectile
+  assert.equal(isChargeRow(8), true); // Multifrequency S — laser
 });

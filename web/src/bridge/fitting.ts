@@ -376,3 +376,17 @@ export function slotsOfFamily(
 export function isFittableRow(categoryID: number | null): boolean {
   return categoryID === 7 || categoryID === 32;
 }
+
+/**
+ * Whether an inventory row is a CHARGE — something that could be loaded into a
+ * module rather than fitted to the hull.
+ *
+ * ⚠ DELIBERATELY NOT A COMPATIBILITY TEST. Which charges a given module accepts
+ * lives in dogma attributes (chargeGroup1..4) the browser has no allowlisted
+ * read for. Narrowing the list by a guess would hide ammunition that would have
+ * loaded perfectly well, so the panel offers every charge in the chosen
+ * inventory and the SERVER refuses the wrong ones in its own words.
+ */
+export function isChargeRow(categoryID: number | null): boolean {
+  return categoryID === CATEGORY_CHARGE;
+}

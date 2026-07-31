@@ -22,6 +22,7 @@
   import {
     SLOT_FAMILY_LABELS,
     SLOT_FAMILY_ORDER,
+    isChargeRow,
     isFittableRow,
     slotsOfFamily,
   } from "../bridge/fitting.ts";
@@ -237,6 +238,41 @@
   }
 
   const fittable = $derived.by(() => fittableRows());
+
+  /**
+   * Every CHARGE stack in the hangar or the ship's cargo — what "Load" can act
+   * on. Not filtered by compatibility (see isChargeRow): the panel would have to
+   * guess, and a wrong guess hides ammunition that would have worked.
+   */
+  const chargeRows = $derived.by(() => {
+    const rows: { row: InventoryItemRow; source: "hangar" | "cargo" }[] = [];
+    for (const row of $inventory.hangar.rows) {
+      if (isChargeRow(row.categoryID)) {
+        rows.push({ row, source: "hangar" });
+      }
+    }
+    for (const row of $inventory.cargo.rows) {
+      if (isChargeRow(row.categoryID)) {
+        rows.push({ row, source: "cargo" });
+      }
+    }
+    return rows;
+  });
+
+  function loadInto(moduleItemID: number, chargeItemID: number, source: "hangar" | "cargo"): void {
+    void run(async () => {
+      await flow.loadAmmo([moduleItemID], [chargeItemID], source);
+      // The stack the charges came out of shrank, so the list has to re-read.
+      await flow.loadInventory();
+    });
+  }
+
+  function unloadFrom(moduleItemID: number, destination: "hangar" | "cargo"): void {
+    void run(async () => {
+      await flow.unloadAmmo([moduleItemID], destination);
+      await flow.loadInventory();
+    });
+  }
 
   function moduleName(typeID: number): string {
     return resolvedName($names.resolved, "type", typeID);
@@ -1052,6 +1088,66 @@
                 <p class="error">
                   Destroying a rig is permanent — it is not returned to your hangar.
                 </p>
+              {/if}
+              {#if selectedSlot.module && selectedSlot.family !== "rig" && selectedSlot.family !== "subsystem"}
+                <!--
+                  AMMUNITION. Every charge in the chosen inventory is offered,
+                  not a filtered "compatible" subset: which charges a module
+                  accepts lives in dogma attributes the browser has no
+                  allowlisted read for, so narrowing the list would mean hiding
+                  ammunition that would have loaded. The SERVER refuses the wrong
+                  ones, in its own words, and that refusal is what shows.
+                -->
+                <div class="fit-ammo">
+                  <h4 class="fit-ammo-head">Ammunition</h4>
+                  {#if selectedSlot.module.charge}
+                    {@const loaded = selectedSlot.module.charge}
+                    <p class="fit-ammo-loaded">
+                      Loaded: <strong>{chargeCount(loaded.quantity)} {moduleName(loaded.typeID)}</strong>
+                    </p>
+                    <div class="row-actions">
+                      <button
+                        type="button"
+                        class="minor"
+                        disabled={busy}
+                        onclick={() => unloadFrom(selectedSlot!.module!.itemID, "hangar")}
+                      >Unload to hangar</button>
+                      <button
+                        type="button"
+                        class="minor"
+                        disabled={busy}
+                        onclick={() => unloadFrom(selectedSlot!.module!.itemID, "cargo")}
+                      >Unload to cargo</button>
+                    </div>
+                  {:else}
+                    <p class="note">Nothing loaded.</p>
+                  {/if}
+
+                  {#if chargeRows.length === 0}
+                    <p class="note">
+                      No ammunition in your hangar or cargo to load.
+                    </p>
+                  {:else}
+                    <ul class="fit-ammo-list">
+                      {#each chargeRows as entry (`${entry.source}:${entry.row.itemID}`)}
+                        <li>
+                          <button
+                            type="button"
+                            class="minor"
+                            disabled={busy}
+                            onclick={() =>
+                              loadInto(selectedSlot!.module!.itemID, entry.row.itemID, entry.source)}
+                          >
+                            Load {moduleName(entry.row.typeID)}
+                          </button>
+                          <span class="muted">
+                            {chargeCount(entry.row.quantity)} in {entry.source === "cargo" ? "cargo" : "the hangar"}
+                          </span>
+                        </li>
+                      {/each}
+                    </ul>
+                  {/if}
+                </div>
               {/if}
               {#if selectedSlot.module}
                 {@render moduleStatsBlock(selectedSlot.module.itemID)}

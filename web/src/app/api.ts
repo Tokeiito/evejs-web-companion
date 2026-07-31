@@ -2999,6 +2999,56 @@ export async function scoopDrones(
   );
 }
 
+// --- Ammunition ---------------------------------------------------------------
+//
+// Where the charges come from and go to is a WORD — "cargo" or "hangar" — never
+// a location id: the BFF pins the concrete ids from the session's own active
+// ship and docked station, so a browser cannot aim a load at somewhere else.
+export type AmmoPlace = "cargo" | "hangar";
+
+/**
+ * Load charges into modules (dogmaIM.LoadAmmo).
+ *
+ * ⚠ COMPATIBILITY IS THE SERVER'S CALL. Which charges a module accepts lives in
+ * dogma attributes the browser has no allowlisted read for, so the panel offers
+ * what is in the chosen inventory and lets the server refuse the rest with its
+ * own words. Guessing here would mean hiding ammunition that would have worked.
+ *
+ * A bank master may expand server-side to every linked weapon, which is part of
+ * why the BFF confirms this.
+ */
+export async function loadAmmo(
+  moduleIDs: readonly number[],
+  chargeItemIDs: readonly number[],
+  source: AmmoPlace,
+  options: ApiOptions = {},
+): Promise<void> {
+  await postJson(
+    "/api/bridge/dogma/ammo/load",
+    { moduleIDs: [...moduleIDs], chargeItemIDs: [...chargeItemIDs], source, confirm: true },
+    options,
+  );
+}
+
+/**
+ * Unload charges from modules (dogmaIM.UnloadAmmo).
+ *
+ * An omitted quantity empties the module completely, which is what the panel
+ * asks for — a partial unload has no control, because there is no question it
+ * answers that "take it all out and load something else" does not.
+ */
+export async function unloadAmmo(
+  moduleIDs: readonly number[],
+  destination: AmmoPlace,
+  options: ApiOptions = {},
+): Promise<void> {
+  await postJson(
+    "/api/bridge/dogma/ammo/unload",
+    { moduleIDs: [...moduleIDs], destination, confirm: true },
+    options,
+  );
+}
+
 // --- The GM console -----------------------------------------------------------
 
 /**
