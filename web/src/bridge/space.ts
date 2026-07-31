@@ -202,7 +202,35 @@ function decodeShip(value: JsonValue | undefined): SpaceShipStatus | null {
     // module quietly burning itself out.
     overloadedModuleIDs: decodeIDList(raw.overloadedModuleIDs),
     moduleDamage: decodeModuleDamage(raw.moduleDamage),
+    weaponBanks: decodeWeaponBanks(raw.weaponBanks),
   };
+}
+
+/**
+ * `{masterID: [slaveID, …]}` — which weapons are banked to which master.
+ *
+ * `null` when absent, and the distinction matters: `{}` is "nothing is banked",
+ * `null` is "we could not read the banks". Activating a banked slave fires the
+ * whole group through its MASTER, so a rack that assumed "nothing is banked"
+ * would mis-report every banked fit.
+ */
+function decodeWeaponBanks(
+  value: JsonValue | undefined,
+): Readonly<Record<number, readonly number[]>> | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return null;
+  }
+  const banks: Record<number, readonly number[]> = {};
+  for (const [key, raw] of Object.entries(value)) {
+    const masterID = Number(key);
+    if (!Number.isSafeInteger(masterID) || masterID <= 0 || !Array.isArray(raw)) {
+      continue;
+    }
+    banks[masterID] = raw
+      .map((entry) => (typeof entry === "number" && Number.isSafeInteger(entry) ? entry : 0))
+      .filter((entry) => entry > 0);
+  }
+  return banks;
 }
 
 /**

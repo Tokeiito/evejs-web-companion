@@ -1600,6 +1600,15 @@ export interface SpaceShipStatus {
    * feature that produces it.
    */
   readonly moduleDamage: Readonly<Record<number, number>> | null;
+  /**
+   * Weapon banks as `{masterID: [slaveID, …]}`.
+   *
+   * ⚠ ACTIVATING A SLAVE FIRES THE WHOLE BANK, through its master — the server
+   * redirects it silently, and `activeModuleIDs` then names only the master. A
+   * rack that did not know this shows a slave tile that never lights however
+   * many times it is clicked. `{}` is "nothing banked"; `null` is "unknown".
+   */
+  readonly weaponBanks: Readonly<Record<number, readonly number[]>> | null;
 }
 
 /** One decoded space snapshot: everything visible plus the active ship. */

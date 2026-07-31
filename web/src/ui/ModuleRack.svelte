@@ -56,6 +56,7 @@
       $space.snapshot?.ship?.activeModuleIDs ?? null,
       $space.snapshot?.ship?.overloadedModuleIDs ?? null,
       $space.snapshot?.ship?.moduleDamage ?? null,
+      $space.snapshot?.ship?.weaponBanks ?? null,
     ),
   );
   /**
@@ -74,6 +75,34 @@
       .sort((left, right) => (right.damage ?? 0) - (left.damage ?? 0)),
   );
   const unknown = $derived(!$fitting.loaded || rackIsEmpty(rows));
+  /** Every high-slot module — banking only ever applies to weapons. */
+  const weaponsCount = $derived(
+    (rows.find((row) => row.family === "high")?.slots ?? []).filter((slot) => slot.module !== null)
+      .length,
+  );
+  /** How many modules are in a bank right now (masters and slaves alike). */
+  const bankedCount = $derived(
+    rows
+      .flatMap((row) => row.slots)
+      .filter((slot) => slot.module !== null && slot.module.bankSize > 1).length,
+  );
+
+  async function setBanks(linked: boolean): Promise<void> {
+    if (!flow || pendingItemID !== null) {
+      return;
+    }
+    error = "";
+    windingDown = "";
+    try {
+      await flow.setWeaponBanks(linked);
+      const refusal = $targeting.actionError ?? $targeting.silentDecline;
+      if (refusal) {
+        error = refusal;
+      }
+    } catch (cause) {
+      error = String(cause);
+    }
+  }
   /** The auto target: first LOCKED (not still-acquiring) target, else none. */
   const autoTargetID = $derived($targeting.lockedTargetIDs[0] ?? 0);
 
@@ -229,6 +258,28 @@
   {/each}
   {#if unknown}
     <p class="rack-hint muted">Modules appear once your ship's fitting has loaded.</p>
+  {/if}
+  {#if weaponsCount > 1}
+    <!--
+      Banking makes one click fire every gun in the group. The control says
+      which way it will go, because the whole point is that the racks look
+      identical either way — the difference is what a click does.
+    -->
+    <div class="rack-banks">
+      <span class="rack-banks-state">
+        {bankedCount > 0
+          ? `${bankedCount} weapon${bankedCount === 1 ? "" : "s"} banked`
+          : "Weapons fire one at a time"}
+      </span>
+      {#if flow}
+        <button
+          type="button"
+          class="minor"
+          disabled={pendingItemID !== null}
+          onclick={() => setBanks(bankedCount === 0)}
+        >{bankedCount > 0 ? "Unlink weapons" : "Link weapons"}</button>
+      {/if}
+    </div>
   {/if}
   {#if damagedModules.length > 0}
     <!--

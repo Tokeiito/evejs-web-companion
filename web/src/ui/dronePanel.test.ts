@@ -192,6 +192,7 @@ function scene(options: SceneOptions = {}): string {
         activeModuleIDs: [],
         overloadedModuleIDs: [],
         moduleDamage: {},
+        weaponBanks: {},
       },
     },
   } as never);

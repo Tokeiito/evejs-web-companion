@@ -663,6 +663,8 @@ export interface AppFlow {
    * without which a burnt-out module could never be brought back.
    */
   repairModule(itemID: number): Promise<void>;
+  /** Bank every weapon into groups, or break every bank. */
+  setWeaponBanks(linked: boolean): Promise<void>;
   // --- R23 slice B: the mining loop --------------------------------------
   // Built ON TOP of the generic layer above, not into it. There is no "start
   // mining" method: mining a rock is lockTarget + activateModule with a mining
@@ -4232,6 +4234,32 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     );
   }
 
+  /**
+   * Bank or unbank every weapon on the ship.
+   *
+   * ⚠ VERIFIED AGAINST THE SNAPSHOT'S OWN BANK MAP, not the 200 — the fourth
+   * write on this server checked that way. Banking is refused outright when the
+   * hull has nothing bankable (one gun, or none), and that refusal reaches the
+   * player in the server's words.
+   */
+  async function setWeaponBanks(linked: boolean): Promise<void> {
+    await runTargetingAction(
+      linked ? "Link weapons" : "Unlink weapons",
+      () => (linked ? api.linkAllWeapons(callOptions) : api.unlinkAllWeapons(callOptions)),
+      () => loadSpaceSnapshot().catch(() => {}),
+      () => {
+        const banks = store.space.get().snapshot?.ship?.weaponBanks ?? null;
+        if (banks === null) {
+          return true; // Unknown is not a decline.
+        }
+        return linked ? Object.keys(banks).length > 0 : Object.keys(banks).length === 0;
+      },
+      linked
+        ? "The server accepted that and banked nothing, and gave no reason."
+        : "The server accepted that and the banks are still there, and gave no reason.",
+    );
+  }
+
   async function deactivateModule(itemID: number, opts: { effect?: string; typeID?: number } = {}): Promise<void> {
     await runTargetingAction(
       "Switch off",
@@ -7404,6 +7432,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     deactivateModule,
     setModuleOverload,
     repairModule,
+    setWeaponBanks,
     loadMiningHolds,
     loadDrones,
     launchDrones,

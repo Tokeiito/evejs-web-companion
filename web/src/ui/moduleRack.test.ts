@@ -74,7 +74,7 @@ test("the rack carries each module's itemID — what activation addresses", () =
 // --- the click decision -------------------------------------------------------
 
 function rackModule(overrides: Partial<RackModule> = {}): RackModule {
-  return { itemID: 42, typeID: 3634, online: true, active: false, charge: null, overloaded: false, damage: 0, ...overrides };
+  return { itemID: 42, typeID: 3634, online: true, active: false, charge: null, overloaded: false, damage: 0, bankMasterID: null, bankMaster: false, bankSize: 1, ...overrides };
 }
 
 test("a click on an idle online module ACTIVATES it", () => {
@@ -254,4 +254,73 @@ test("a partly damaged module still works, and says how worn it is", () => {
   const title = rackSlotTitle("150mm Light AutoCannon I", rackModule({ damage: 0.25 }));
   assert.match(title, /click to switch on\./);
   assert.match(title, /Damaged: 25%\./);
+});
+
+// --- Weapon banking -----------------------------------------------------------
+//
+// ⚠ THE BUG THIS FIXES. dogmaService's Handle_Activate silently redirects a
+// banked weapon to its bank MASTER, and the snapshot's activeModuleIDs then
+// names only the master. A rack that read each slave's own id showed a tile that
+// stayed dark however many times it was clicked, while the whole group fired.
+
+test("⚠ a banked SLAVE reads active when its master is cycling", () => {
+  const slots: FittingSlot[] = [
+    slot("high", 0, { itemID: 100, typeID: 485 }), // master
+    slot("high", 1, { itemID: 101, typeID: 485 }), // slave
+  ];
+  // Only the MASTER is in the server's cycling list — that is the whole point.
+  const rows = buildModuleRack(slots, [100], [], {}, { 100: [101] });
+  assert.equal(rows[0]!.slots[0]!.module?.active, true, "the master lights");
+  assert.equal(rows[0]!.slots[1]!.module?.active, true, "and so does its slave");
+});
+
+test("an unbanked module is unaffected by other ships' banks", () => {
+  const slots: FittingSlot[] = [slot("high", 0, { itemID: 200, typeID: 485 })];
+  const rows = buildModuleRack(slots, [100], [], {}, { 100: [101] });
+  assert.equal(rows[0]!.slots[0]!.module?.active, false);
+  assert.equal(rows[0]!.slots[0]!.module?.bankSize, 1);
+  assert.equal(rows[0]!.slots[0]!.module?.bankMasterID, null);
+});
+
+test("bank membership is carried through, master and slave alike", () => {
+  const slots: FittingSlot[] = [
+    slot("high", 0, { itemID: 100, typeID: 485 }),
+    slot("high", 1, { itemID: 101, typeID: 485 }),
+    slot("high", 2, { itemID: 102, typeID: 485 }),
+  ];
+  const rows = buildModuleRack(slots, [], [], {}, { 100: [101, 102] });
+  const modules = rows[0]!.slots.map((s) => s.module!);
+  const master = modules[0]!;
+  const slaveA = modules[1]!;
+  const slaveB = modules[2]!;
+  assert.equal(master.bankMaster, true);
+  assert.equal(master.bankMasterID, null, "a master fires through itself");
+  assert.equal(master.bankSize, 3);
+  assert.equal(slaveA.bankMasterID, 100);
+  assert.equal(slaveA.bankSize, 3);
+  assert.equal(slaveB.bankMasterID, 100);
+});
+
+test("⚠ an ABSENT bank map means unbanked, and never invents a group", () => {
+  const slots: FittingSlot[] = [slot("high", 0, { itemID: 100, typeID: 485 })];
+  for (const banks of [null, undefined]) {
+    const module = buildModuleRack(slots, [], [], {}, banks)[0]!.slots[0]!.module!;
+    assert.equal(module.bankSize, 1);
+    assert.equal(module.bankMasterID, null);
+    assert.equal(module.bankMaster, false);
+  }
+});
+
+test("a banked gun's title says it fires with the others", () => {
+  assert.match(
+    rackSlotTitle("150mm Light AutoCannon I", rackModule({ bankSize: 3 })),
+    /Banked: fires with 2 others\./,
+  );
+  // Singular reads correctly for a pair.
+  assert.match(
+    rackSlotTitle("150mm Light AutoCannon I", rackModule({ bankSize: 2 })),
+    /Banked: fires with 1 other\./,
+  );
+  // And an unbanked gun says nothing about banks.
+  assert.doesNotMatch(rackSlotTitle("Miner I", rackModule()), /Banked/);
 });

@@ -3354,6 +3354,17 @@
   }
   .rack-damage-name { font-size: 0.78rem; color: var(--color-cell); }
   .rack-damage-name.burnt { color: var(--color-danger); font-weight: 600; }
+
+  /* Weapon banking: the racks look identical banked or not, so the state is
+   * said in words next to the control that changes it. */
+  .rack-banks {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.4rem;
+    margin-top: 0.5rem;
+  }
+  .rack-banks-state { font-size: 0.78rem; color: var(--color-muted); }
   .module-slot.empty { background: var(--color-field); cursor: default; }
   /* A click in flight: presentation only — the glow itself waits for the poll. */
   .module-slot.pending { animation: rack-pending 0.8s ease-in-out infinite alternate; }

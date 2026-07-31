@@ -200,6 +200,7 @@ function ship(overrides: Partial<SpaceShipStatus> = {}): SpaceShipStatus {
     activeModuleIDs: [],
     overloadedModuleIDs: [],
     moduleDamage: {},
+    weaponBanks: {},
     ...overrides,
   };
 }

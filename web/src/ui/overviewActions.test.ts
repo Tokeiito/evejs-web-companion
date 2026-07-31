@@ -121,6 +121,7 @@ function loadedStore(options: {
           options.activeModuleIDs === undefined ? [MODULE_ID] : options.activeModuleIDs,
         overloadedModuleIDs: [],
         moduleDamage: {},
+        weaponBanks: {},
       },
     },
   });
@@ -785,6 +786,7 @@ function renderWithEntity(kind: string, itemID: number): string {
         activeModuleIDs: [],
         overloadedModuleIDs: [],
         moduleDamage: {},
+        weaponBanks: {},
       },
     },
   });

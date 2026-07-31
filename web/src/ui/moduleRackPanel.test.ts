@@ -65,6 +65,7 @@ function loadedStore(options: { activeModuleIDs?: number[] } = {}) {
         activeModuleIDs: options.activeModuleIDs ?? [MINER_ID],
         overloadedModuleIDs: [],
         moduleDamage: {},
+        weaponBanks: {},
       },
     },
   });

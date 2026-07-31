@@ -40,6 +40,20 @@ export interface RackModule {
    * could not read the fit", NOT "undamaged"; 0 is the real "intact".
    */
   readonly damage: number | null;
+  /**
+   * The BANK MASTER this module fires through, or null when it is not banked.
+   *
+   * ⚠ A BANKED SLAVE NEVER LIGHTS ON ITS OWN. The server redirects a slave's
+   * activation to its master and then reports only the MASTER as cycling, so a
+   * rack that ignored banks would show a tile that stays dark however many
+   * times it is clicked. `active` below already accounts for this: a slave is
+   * shown as active when its master is.
+   */
+  readonly bankMasterID: number | null;
+  /** True when this module IS a master with at least one slave banked to it. */
+  readonly bankMaster: boolean;
+  /** How many weapons fire together when this one does (1 when unbanked). */
+  readonly bankSize: number;
 }
 
 export interface RackSlotVM {
@@ -62,6 +76,7 @@ export function buildModuleRack(
   activeModuleIDs: readonly number[] | null | undefined,
   overloadedModuleIDs: readonly number[] | null | undefined = null,
   moduleDamage: Readonly<Record<number, number>> | null | undefined = null,
+  weaponBanks: Readonly<Record<number, readonly number[]>> | null | undefined = null,
 ): readonly RackRow[] {
   const active = new Set(activeModuleIDs ?? []);
   // null/absent stays UNKNOWN rather than collapsing to "nothing is hot".
@@ -69,6 +84,19 @@ export function buildModuleRack(
   const overloaded = new Set(overloadedModuleIDs ?? []);
   // Same rule for damage: a missing map is unknown, not "everything is intact".
   const damageKnown = typeof moduleDamage === "object" && moduleDamage !== null;
+  // slaveID -> masterID, and masterID -> how many guns fire together.
+  const masterOf = new Map<number, number>();
+  const bankSizeOf = new Map<number, number>();
+  if (typeof weaponBanks === "object" && weaponBanks !== null) {
+    for (const [masterKey, slaves] of Object.entries(weaponBanks)) {
+      const masterID = Number(masterKey);
+      const members = Array.isArray(slaves) ? slaves : [];
+      bankSizeOf.set(masterID, members.length + 1);
+      for (const slaveID of members) {
+        masterOf.set(slaveID, masterID);
+      }
+    }
+  }
   return RACK_FAMILIES.map((family) => ({
     family,
     label: RACK_LABELS[family],
@@ -78,7 +106,13 @@ export function buildModuleRack(
             itemID: slot.module.itemID,
             typeID: slot.module.typeID,
             online: slot.module.online,
-            active: active.has(slot.module.itemID),
+            // A BANKED SLAVE IS ACTIVE WHEN ITS MASTER IS: the server fires
+            // the group through the master and reports only the master, so
+            // reading the slave's own id would leave the tile permanently dark.
+            active:
+              active.has(slot.module.itemID) ||
+              (masterOf.has(slot.module.itemID) &&
+                active.has(masterOf.get(slot.module.itemID)!)),
             charge: slot.module.charge
               ? { typeID: slot.module.charge.typeID, quantity: slot.module.charge.quantity }
               : null,
@@ -86,6 +120,13 @@ export function buildModuleRack(
             // Absent from the map means intact (0), because only damaged
             // modules are listed; an absent MAP means unknown (null).
             damage: damageKnown ? moduleDamage[slot.module.itemID] ?? 0 : null,
+            bankMasterID: masterOf.get(slot.module.itemID) ?? null,
+            bankMaster: bankSizeOf.has(slot.module.itemID),
+            bankSize:
+              bankSizeOf.get(slot.module.itemID) ??
+              (masterOf.has(slot.module.itemID)
+                ? bankSizeOf.get(masterOf.get(slot.module.itemID)!) ?? 1
+                : 1),
           }
         : null,
     })),
@@ -155,6 +196,12 @@ export function rackSlotTitle(
     return `${name} — BURNT OUT. Repair it with nanite paste before it will run again.${loaded}`;
   }
   const wear = damageText ? ` Damaged: ${damageText}.` : "";
+  // Banked guns fire together, so a click on ANY of them fires all of them —
+  // the tile has to say so or the group firing reads as a bug.
+  const banked =
+    module.bankSize > 1
+      ? ` Banked: fires with ${module.bankSize - 1} other${module.bankSize === 2 ? "" : "s"}.`
+      : "";
   if (!module.online) {
     return `${name} — offline (bring it online from the Fitting window)${loaded}${wear}`;
   }
@@ -167,8 +214,8 @@ export function rackSlotTitle(
         ? " Shift-click to overload."
         : "";
   return module.active
-    ? `${name} — active. Click to switch off.${loaded}${wear}${heat}`
-    : `${name} — click to switch on.${loaded}${wear}${heat}`;
+    ? `${name} — active. Click to switch off.${loaded}${banked}${wear}${heat}`
+    : `${name} — click to switch on.${loaded}${banked}${wear}${heat}`;
 }
 
 /** True when there are no slots at all — the fit is not known yet. */

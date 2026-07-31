@@ -9213,15 +9213,30 @@ app.post("/api/bridge/dogma/module/repair/stop", requireAuth, async (req, res, n
   await dispatchBoundDogmaWrite(req, res, next, "StopModuleRepair", [moduleID]);
 });
 
+/**
+ * The session's OWN active ship — what every weapon-bank write is pinned to.
+ *
+ * ⚠ THIS CLOSES A FLAGGED ARG-INJECTION. All seven bank writes take a shipID,
+ * and the BFF used to forward whatever the browser sent (see
+ * docs/arg-injection-leak-handoff.md). There is no legitimate reason for a
+ * browser to name a hull here: banking only ever applies to the ship you are
+ * flying, and the server resolves the modules against it. 0 when there is no
+ * held session, which the handler refuses on its own.
+ */
+function sessionActiveShipID(req) {
+  const held = bridgeSessions.get(req.webSessionID) || null;
+  return held ? Number(held.activeShipID) || 0 : 0;
+}
+
 // LinkWeapons(shipID, masterModuleID, slaveModuleID) — bank a slave weapon to a
-// master. ⚠ shipID is caller-supplied (arg-injection-flagged); the BFF forwards
-// the browser's shipID (a future UI sends the session's own active ship id).
+// master. shipID is the SESSION's active ship (sessionActiveShipID), never the
+// browser's — the arg-injection flag on these routes is closed.
 app.post("/api/bridge/dogma/weapons/link", requireAuth, async (req, res, next) => {
   if (!requireWriteConfirmation(req, res, "This links those weapons into one bank. Confirm to continue.")) {
     return;
   }
   const body = req.body || {};
-  const shipID = Number(body.shipID) || 0;
+  const shipID = sessionActiveShipID(req);
   const masterModuleID = Number(body.masterModuleID) || 0;
   const slaveModuleID = Number(body.slaveModuleID) || 0;
   await dispatchBoundDogmaWrite(req, res, next, "LinkWeapons", [shipID, masterModuleID, slaveModuleID]);
@@ -9234,7 +9249,7 @@ app.post("/api/bridge/dogma/weapons/merge-groups", requireAuth, async (req, res,
     return;
   }
   const body = req.body || {};
-  const shipID = Number(body.shipID) || 0;
+  const shipID = sessionActiveShipID(req);
   const targetMasterID = Number(body.targetMasterID) || 0;
   const sourceMasterID = Number(body.sourceMasterID) || 0;
   await dispatchBoundDogmaWrite(req, res, next, "MergeModuleGroups", [shipID, targetMasterID, sourceMasterID]);
@@ -9267,7 +9282,7 @@ app.post("/api/bridge/dogma/weapons/peel-and-link", requireAuth, async (req, res
     return;
   }
   const body = req.body || {};
-  const shipID = Number(body.shipID) || 0;
+  const shipID = sessionActiveShipID(req);
   const targetMasterID = Number(body.targetMasterID) || 0;
   const sourceMasterID = Number(body.sourceMasterID) || 0;
   await dispatchBoundDogmaWrite(req, res, next, "PeelAndLink", [shipID, targetMasterID, sourceMasterID]);
@@ -9280,7 +9295,7 @@ app.post("/api/bridge/dogma/weapons/unlink-module", requireAuth, async (req, res
     return;
   }
   const body = req.body || {};
-  const shipID = Number(body.shipID) || 0;
+  const shipID = sessionActiveShipID(req);
   const masterModuleID = Number(body.masterModuleID) || 0;
   await dispatchBoundDogmaWrite(req, res, next, "UnlinkModule", [shipID, masterModuleID]);
 });
@@ -9291,7 +9306,7 @@ app.post("/api/bridge/dogma/weapons/link-all", requireAuth, async (req, res, nex
   if (!requireWriteConfirmation(req, res, "This links all your weapons into banks. Confirm to continue.")) {
     return;
   }
-  const shipID = Number((req.body || {}).shipID) || 0;
+  const shipID = sessionActiveShipID(req);
   await dispatchBoundDogmaWrite(req, res, next, "LinkAllWeapons", [shipID]);
 });
 
@@ -9301,7 +9316,7 @@ app.post("/api/bridge/dogma/weapons/unlink-all", requireAuth, async (req, res, n
   if (!requireWriteConfirmation(req, res, "This breaks all your weapon banks. Confirm to continue.")) {
     return;
   }
-  const shipID = Number((req.body || {}).shipID) || 0;
+  const shipID = sessionActiveShipID(req);
   await dispatchBoundDogmaWrite(req, res, next, "UnlinkAllModules", [shipID]);
 });
 
@@ -9312,7 +9327,7 @@ app.post("/api/bridge/dogma/weapons/destroy-bank", requireAuth, async (req, res,
     return;
   }
   const body = req.body || {};
-  const shipID = Number(body.shipID) || 0;
+  const shipID = sessionActiveShipID(req);
   const masterModuleID = Number(body.masterModuleID) || 0;
   await dispatchBoundDogmaWrite(req, res, next, "DestroyWeaponBank", [shipID, masterModuleID]);
 });

@@ -3070,6 +3070,22 @@ export async function stopRepairModule(
   await postJson("/api/bridge/dogma/module/repair/stop", { moduleID, confirm: true }, options);
 }
 
+/**
+ * Bank every compatible weapon on the ship (dogmaIM.LinkAllWeapons), so one
+ * click fires the group.
+ *
+ * The ship is the SESSION's own active hull, pinned by the BFF — these routes
+ * used to take a browser-supplied shipID and no longer do.
+ */
+export async function linkAllWeapons(options: ApiOptions = {}): Promise<void> {
+  await postJson("/api/bridge/dogma/weapons/link-all", { confirm: true }, options);
+}
+
+/** Break every weapon bank on the ship (dogmaIM.UnlinkAllModules). */
+export async function unlinkAllWeapons(options: ApiOptions = {}): Promise<void> {
+  await postJson("/api/bridge/dogma/weapons/unlink-all", { confirm: true }, options);
+}
+
 // --- Ammunition ---------------------------------------------------------------
 //
 // Where the charges come from and go to is a WORD — "cargo" or "hangar" — never
