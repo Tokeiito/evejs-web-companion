@@ -15810,6 +15810,17 @@ app.post("/api/bridge/modules/activate", requireAuth, async (req, res, next) => 
 
 // Switch a module OFF: dogmaIM.Deactivate(moduleItemID, effectName). Same
 // generality, same re-read.
+//
+// ⚠ PROPULSION MODULES NEED THEIR EFFECT NAMED, and the browser cannot know it.
+// The eve.js handler routes an afterburner/MWD to deactivatePropulsionModule
+// ONLY when the effect argument says so; an empty effect takes the generic
+// path, which answers success while the prop mod keeps cycling (a marked
+// server-side asymmetry — ACTIVATE infers the module's default effect from its
+// type, DEACTIVATE does not; dogmaService.js Handle_Deactivate). So the caller
+// may send the module's typeID and the BFF resolves the prop effect from the
+// SDE's own typeDogma. Live case: Rada Hjoren's 1MN Civilian Afterburner —
+// Deactivate(itemID, "") returned 200, stopped:false, and the burner ran on;
+// with "moduleBonusAfterburner" it stops.
 app.post("/api/bridge/modules/deactivate", requireAuth, async (req, res, next) => {
   const held = requireHeldBridgeSession(req, res);
   if (!held) {
@@ -15821,7 +15832,11 @@ app.post("/api/bridge/modules/deactivate", requireAuth, async (req, res, next) =
     res.status(400).json({ ok: false, error: "INVALID_MODULE", message: "A module is required." });
     return;
   }
-  const effect = typeof body.effect === "string" ? body.effect : "";
+  const typeID = Number(body.typeID) || 0;
+  let effect = typeof body.effect === "string" ? body.effect : "";
+  if (!effect && typeID > 0) {
+    effect = staticData.getPropulsionEffectName(typeID) || "";
+  }
   try {
     const before = await readHeldFlight(held, req.webSessionID);
     if (!requireInSpace(res, before.flight)) {

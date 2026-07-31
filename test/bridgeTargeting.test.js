@@ -44,6 +44,7 @@ const SHIP_ID = 9001;
 const ROCK_ID = 50001248;
 const OTHER_ROCK_ID = 50001249;
 const MODULE_ID = 7700001;
+const AFTERBURNER_TYPE_ID = 439;
 
 const ORIGINAL_FETCH = global.fetch;
 const activeServers = new Set();
@@ -82,7 +83,15 @@ function fakeStore() {
 }
 
 function fakeStaticData() {
-  return { getStation() { return null; }, getTypeName(id) { return `Type ${id}`; } };
+  return {
+    getStation() { return null; },
+    getTypeName(id) { return `Type ${id}`; },
+    // The prop-mod effect resolver the deactivate route consults when the
+    // browser sends a typeID (the AB/MWD asymmetry — see that route).
+    getPropulsionEffectName(typeID) {
+      return Number(typeID) === AFTERBURNER_TYPE_ID ? "moduleBonusAfterburner" : null;
+    },
+  };
 }
 
 /**
@@ -525,6 +534,48 @@ test("deactivate is the same seam, and verifies the module actually stopped", as
     body: { itemID: MODULE_ID },
   });
   assert.equal(second.payload.stopped, false, "it is still running, so say so");
+});
+
+// The AB/MWD asymmetry: the eve.js handler only routes a prop mod to its
+// propulsion stop when the effect argument NAMES it — an empty effect takes the
+// generic path, which answers success while the burner keeps cycling (observed
+// live on a 1MN Civilian Afterburner). The browser sends the module's typeID
+// and the BFF resolves the effect name from the SDE.
+test("⚠ deactivating a PROP MOD by typeID names its propulsion effect", async () => {
+  const { gateway, baseUrl } = await inSpace();
+  gateway.state.active.add(MODULE_ID);
+
+  await apiRequest(baseUrl, "/api/bridge/modules/deactivate", {
+    method: "POST",
+    body: { itemID: MODULE_ID, typeID: AFTERBURNER_TYPE_ID },
+  });
+  assert.deepEqual(
+    dogmaCallsOf(gateway, "Deactivate")[0].args,
+    [MODULE_ID, "moduleBonusAfterburner"],
+    "the resolved propulsion effect must reach dogmaIM.Deactivate",
+  );
+});
+
+test("deactivating a NON-prop module by typeID keeps the empty effect", async () => {
+  const { gateway, baseUrl } = await inSpace();
+  gateway.state.active.add(MODULE_ID);
+
+  await apiRequest(baseUrl, "/api/bridge/modules/deactivate", {
+    method: "POST",
+    body: { itemID: MODULE_ID, typeID: 3634 },
+  });
+  assert.deepEqual(dogmaCallsOf(gateway, "Deactivate")[0].args, [MODULE_ID, ""]);
+});
+
+test("an explicit effect wins over the typeID resolution", async () => {
+  const { gateway, baseUrl } = await inSpace();
+  gateway.state.active.add(MODULE_ID);
+
+  await apiRequest(baseUrl, "/api/bridge/modules/deactivate", {
+    method: "POST",
+    body: { itemID: MODULE_ID, typeID: AFTERBURNER_TYPE_ID, effect: "online" },
+  });
+  assert.deepEqual(dogmaCallsOf(gateway, "Deactivate")[0].args, [MODULE_ID, "online"]);
 });
 
 // --- weapon banking (goal R29) ----------------------------------------------

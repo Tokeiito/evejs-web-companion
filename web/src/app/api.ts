@@ -2227,15 +2227,26 @@ export async function activateModule(
   return readModuleAction(itemID, await postJson("/api/bridge/modules/activate", body, options));
 }
 
-/** Switch a module off (dogmaIM.Deactivate). */
+/**
+ * Switch a module off (dogmaIM.Deactivate).
+ *
+ * Pass `typeID` whenever the caller knows it (every fitting slot carries it):
+ * an afterburner/MWD only actually STOPS when Deactivate names its propulsion
+ * effect, and the BFF resolves that name from the typeID — the server infers
+ * the default effect on activate but not on deactivate, and the generic path
+ * answers success while the prop mod keeps cycling.
+ */
 export async function deactivateModule(
   itemID: number,
-  opts: { effect?: string } = {},
+  opts: { effect?: string; typeID?: number } = {},
   options: ApiOptions = {},
 ): Promise<ModuleActionResult> {
   const body: Record<string, JsonValue> = { itemID };
   if (opts.effect) {
     body.effect = opts.effect;
+  }
+  if (opts.typeID) {
+    body.typeID = opts.typeID;
   }
   return readModuleAction(itemID, await postJson("/api/bridge/modules/deactivate", body, options));
 }

@@ -467,6 +467,35 @@ function getTypeDogma(typeID) {
   return buildTypeDogmaIndex().get(Number(typeID) || 0) || null;
 }
 
+// dogmaEffects: moduleBonusAfterburner / moduleBonusMicrowarpdrive. The two
+// PROPULSION effect ids, named because deactivation needs the NAME: the eve.js
+// Deactivate handler routes a prop mod to deactivatePropulsionModule only when
+// the caller says "moduleBonusAfterburner"/"moduleBonusMicrowarpdrive" — an
+// empty effect falls to the generic path, which reports success WITHOUT
+// stopping the prop mod (dogmaService.js Handle_Deactivate; activation infers
+// the default effect, deactivation does not — a marked server-side asymmetry).
+const PROPULSION_EFFECT_NAMES = Object.freeze({
+  6731: "moduleBonusAfterburner",
+  6730: "moduleBonusMicrowarpdrive",
+});
+
+/**
+ * The propulsion effect NAME a module type runs, or null for everything that
+ * is not an afterburner/MWD. What the deactivate bridge route passes to
+ * dogmaIM.Deactivate so a prop mod actually stops (see the constant above).
+ */
+function getPropulsionEffectName(typeID) {
+  const dogma = getTypeDogma(typeID);
+  const effects = dogma && Array.isArray(dogma.effects) ? dogma.effects : [];
+  for (const effectID of effects) {
+    const name = PROPULSION_EFFECT_NAMES[Number(effectID)];
+    if (name) {
+      return name;
+    }
+  }
+  return null;
+}
+
 function getTypeDogmaAttribute(typeID, attributeID, fallback = null) {
   const dogma = getTypeDogma(typeID);
   const attributes = dogma && dogma.attributes;
@@ -1133,6 +1162,7 @@ module.exports = {
   getMarketGroup,
   getMarketGroupName,
   getMarketGroupPath,
+  getPropulsionEffectName,
   findMarketTypes,
   getNpcIndustryFacility,
   getPlanetCelestial,

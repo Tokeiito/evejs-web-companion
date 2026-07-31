@@ -639,7 +639,7 @@ export interface AppFlow {
     opts?: { effect?: string; targetID?: number | null; repeat?: -1 | 0 },
   ): Promise<void>;
   /** R23 — switch a module off. */
-  deactivateModule(itemID: number, opts?: { effect?: string }): Promise<void>;
+  deactivateModule(itemID: number, opts?: { effect?: string; typeID?: number }): Promise<void>;
   // --- R23 slice B: the mining loop --------------------------------------
   // Built ON TOP of the generic layer above, not into it. There is no "start
   // mining" method: mining a rock is lockTarget + activateModule with a mining
@@ -3973,7 +3973,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     store.apply({ type: "mining/quotes", quotes: [], taxRate: null, quotesFor: [] });
   }
 
-  async function deactivateModule(itemID: number, opts: { effect?: string } = {}): Promise<void> {
+  async function deactivateModule(itemID: number, opts: { effect?: string; typeID?: number } = {}): Promise<void> {
     await runTargetingAction(
       "Switch off",
       () => api.deactivateModule(itemID, opts, callOptions),

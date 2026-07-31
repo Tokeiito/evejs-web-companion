@@ -746,6 +746,8 @@
    */
   interface ModuleRow {
     readonly itemID: number;
+    /** The module's type — Switch off threads it so a prop mod's effect resolves. */
+    readonly typeID: number;
     readonly label: string;
     /**
      * R47 — the game's GROUP name for the module, or null until it resolves.
@@ -780,6 +782,7 @@
       const online = slot.module.online;
       rows.push({
         itemID: slot.module.itemID,
+        typeID: slot.module.typeID,
         label: resolvedName($names.resolved, "type", slot.module.typeID, "Unknown module"),
         // Raw read, null-aware: an unresolved group must stay null so "Mine
         // this" reads it as "cannot tell" rather than a definitive "not a miner".
@@ -2266,7 +2269,8 @@
                       <button
                         type="button"
                         disabled={busy || module.running === false}
-                        onclick={() => run(() => flow.deactivateModule(module.itemID))}
+                        onclick={() =>
+                          run(() => flow.deactivateModule(module.itemID, { typeID: module.typeID }))}
                       >
                         Switch off
                       </button>
