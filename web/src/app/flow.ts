@@ -3973,13 +3973,39 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     store.apply({ type: "mining/quotes", quotes: [], taxRate: null, quotesFor: [] });
   }
 
+  /**
+   * Switch a module off.
+   *
+   * ⚠ STILL RUNNING IS NOT A REFUSAL. Retail stops a module at the END OF ITS
+   * CURRENT CYCLE, so `stopped:false` immediately after an ACCEPTED Deactivate
+   * is the normal case, not a silent decline — this used to report "The server
+   * did not stop that module, and gave no reason", which is alarming and wrong.
+   * Measured live on a 1MN Civilian Afterburner: Deactivate accepted with
+   * stopped:false and the module still in activeModuleIDs; ~12s later a repeat
+   * Deactivate refused with "is not active" — it had stopped on its own.
+   *
+   * The same reasoning `lockTarget` already applies to a lock the server is
+   * still acquiring: accepted-and-in-progress is a SUCCESS, and the panel says
+   * what is true right now ("finishing its cycle") rather than predicting.
+   * A genuine refusal still throws and lands in actionError, untouched.
+   */
   async function deactivateModule(itemID: number, opts: { effect?: string; typeID?: number } = {}): Promise<void> {
     await runTargetingAction(
       "Switch off",
       () => api.deactivateModule(itemID, opts, callOptions),
-      () => loadSpaceSnapshot().catch(() => {}),
-      (result) => result.stopped !== false,
-      "The server did not stop that module, and gave no reason.",
+      async (result) => {
+        await loadSpaceSnapshot().catch(() => {});
+        if (result.stopped === false) {
+          // Refine the label the action step just recorded, so whatever shows
+          // the last action says WHY the module is still lit.
+          store.apply({ type: "targeting/action", action: "Switch off — finishing its cycle" });
+        }
+      },
+      // Never a decline. The only two answers this can give — stopped, or still
+      // cycling — are both the server doing as it was told, so there is no
+      // "quietly did nothing" case left for this verb to report.
+      () => true,
+      "",
     );
   }
 

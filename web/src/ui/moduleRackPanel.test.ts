@@ -15,8 +15,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { register } from "node:module";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
 
 register("./svelteSsrHook.ts", import.meta.url);
+
+const UI_DIR = path.dirname(fileURLToPath(import.meta.url));
 
 const { render } = await import("svelte/server");
 const { createClientStore } = await import("../store/clientStore.ts");
@@ -166,6 +171,17 @@ test("a rack with no flow renders every module disabled (read-only mount)", () =
   for (const button of buttons) {
     assert.match(button, /disabled/, "a rack nothing can drive must not look pressable");
   }
+});
+
+// A module winding down must not wear the danger styling or role="alert": the
+// click worked, the cycle is simply finishing. The markup carries two distinct
+// elements so a note can never be mistaken for a failure.
+test("the rack has separate markup for a refusal and for a winding-down note", () => {
+  const source = readFileSync(path.join(UI_DIR, "ModuleRack.svelte"), "utf8");
+  assert.match(source, /class="rack-error" role="alert"/, "a refusal is an alert");
+  assert.match(source, /class="rack-note" aria-live="polite"/, "a note is not");
+  // And the note is the ELSE branch, so the two can never render together.
+  assert.match(source, /\{#if error\}[\s\S]*\{:else if windingDown\}/);
 });
 
 test("R7d — no raw ids reach the player's eyes", () => {

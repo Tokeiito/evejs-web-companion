@@ -370,12 +370,11 @@ test("a module refusal surfaces the server's own reason", async () => {
   assert.equal(store.targeting.get().silentDecline, null);
 });
 
-test("deactivateModule verifies the module actually stopped", async () => {
+test("deactivateModule reports a module that stopped outright", async () => {
   const store = createClientStore();
-  let stopped = true;
   const { fetch, requests } = makeFakeFetch((path) => {
     if (path === "/api/bridge/modules/deactivate") {
-      return { status: 200, body: { ok: true, stopped, activeModuleIDs: [], notifications: [] } };
+      return { status: 200, body: { ok: true, stopped: true, activeModuleIDs: [], notifications: [] } };
     }
     return { status: 200, body: snapshotBody([]) };
   });
@@ -387,10 +386,69 @@ test("deactivateModule verifies the module actually stopped", async () => {
     { itemID: MODULE_ID },
   );
   assert.equal(store.targeting.get().silentDecline, null);
+  assert.equal(store.targeting.get().lastAction, "Switch off");
+});
 
-  stopped = false;
+// ⚠ THE REGRESSION THIS PINS. A module told to stop that is STILL CYCLING is
+// retail behaviour — the stop lands at the end of the current cycle — not a
+// silent decline. Reporting "The server did not stop that module, and gave no
+// reason" was alarming and wrong; measured live on a 1MN Civilian Afterburner,
+// which reported stopped:false and then genuinely stopped ~12s later.
+test("⚠ a module finishing its cycle is NOT reported as a silent decline", async () => {
+  const store = createClientStore();
+  const { fetch } = makeFakeFetch((path) => {
+    if (path === "/api/bridge/modules/deactivate") {
+      return {
+        status: 200,
+        // Accepted, and the module is still in the server's own running list.
+        body: { ok: true, stopped: false, activeModuleIDs: [MODULE_ID], notifications: [] },
+      };
+    }
+    return { status: 200, body: snapshotBody([MODULE_ID]) };
+  });
+  const flow = createAppFlow(store, { fetch });
+
   await flow.deactivateModule(MODULE_ID);
-  assert.match(store.targeting.get().silentDecline ?? "", /did not stop/i);
+  const state = store.targeting.get();
+  assert.equal(state.silentDecline, null, "still cycling is not a decline");
+  assert.equal(state.actionError, null, "and it is certainly not a refusal");
+  // What IS said is true right now, and predicts nothing.
+  assert.match(state.lastAction ?? "", /finishing its cycle/i);
+});
+
+test("a genuine refusal to deactivate still surfaces the server's reason", async () => {
+  const store = createClientStore();
+  const { fetch } = makeFakeFetch((path) => {
+    if (path === "/api/bridge/modules/deactivate") {
+      return {
+        status: 409,
+        body: { ok: false, error: "CALL_REFUSED", message: "That module is not active." },
+      };
+    }
+    return { status: 200, body: snapshotBody([]) };
+  });
+  const flow = createAppFlow(store, { fetch });
+
+  await flow.deactivateModule(MODULE_ID);
+  assert.match(store.targeting.get().actionError ?? "", /not active/i);
+  assert.equal(store.targeting.get().silentDecline, null);
+});
+
+test("deactivateModule forwards typeID so the BFF can name a prop mod's effect", async () => {
+  const store = createClientStore();
+  const { fetch, requests } = makeFakeFetch((path) => {
+    if (path === "/api/bridge/modules/deactivate") {
+      return { status: 200, body: { ok: true, stopped: true, activeModuleIDs: [], notifications: [] } };
+    }
+    return { status: 200, body: snapshotBody([]) };
+  });
+  const flow = createAppFlow(store, { fetch });
+
+  await flow.deactivateModule(MODULE_ID, { typeID: 21857 });
+  assert.deepEqual(
+    requests.find((entry) => entry.path === "/api/bridge/modules/deactivate")?.body,
+    { itemID: MODULE_ID, typeID: 21857 },
+  );
 });
 
 // --- A successful action clears the previous failure -------------------------

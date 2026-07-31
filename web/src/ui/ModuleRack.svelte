@@ -54,6 +54,13 @@
   let pendingItemID = $state<number | null>(null);
   /** The server's refusal for the LAST rack click, read from the authority slots. */
   let error = $state("");
+  /**
+   * A module told to stop that is still cycling. NOT an error: retail stops a
+   * module at the end of its current cycle, so the tile stays lit for a few
+   * seconds and the player deserves to know why rather than wondering whether
+   * the click registered.
+   */
+  let windingDown = $state("");
 
   function moduleName(typeID: number): string {
     return resolvedName($names.resolved, "type", typeID);
@@ -66,6 +73,7 @@
     }
     pendingItemID = module.itemID;
     error = "";
+    windingDown = "";
     try {
       if (action === "deactivate") {
         // typeID rides along so the BFF can name a prop mod's effect — an
@@ -82,6 +90,13 @@
       const refusal = $targeting.actionError ?? $targeting.silentDecline;
       if (refusal) {
         error = `${moduleName(module.typeID)}: ${refusal}`;
+      } else if (
+        action === "deactivate" &&
+        ($space.snapshot?.ship?.activeModuleIDs ?? []).includes(module.itemID)
+      ) {
+        // Told to stop, still cycling — retail stops at the end of the current
+        // cycle. Say so, or the still-lit tile reads as a click that did nothing.
+        windingDown = `${moduleName(module.typeID)} stops when its current cycle ends.`;
       }
     } catch (cause) {
       error = `${moduleName(module.typeID)}: ${String(cause)}`;
@@ -130,5 +145,8 @@
   {/if}
   {#if error}
     <p class="rack-error" role="alert">{error}</p>
+  {:else if windingDown}
+    <!-- A NOTE, not an alert: the module is doing exactly as it was told. -->
+    <p class="rack-note" aria-live="polite">{windingDown}</p>
   {/if}
 </div>
