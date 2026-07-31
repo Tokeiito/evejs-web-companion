@@ -22,6 +22,7 @@ import {
   decodeSkillSheet,
   formatDuration,
   formatSkillPoints,
+  freeSkillPointsPlan,
   groupSkills,
   levelSquares,
   romanLevel,
@@ -468,4 +469,64 @@ test("an UNKNOWN refusal keeps the server's own words rather than inventing calm
     skillQueueRefusal("CALL_FAILED", "", "Gunnery"),
     /would not save that queue, and did not say why/,
   );
+});
+
+// --- Unallocated skill points -------------------------------------------------
+//
+// The sheet counted free SP and offered no way to spend them. What decides the
+// button is `freeSkillPointsPlan`, and every refusal it predicts is one the
+// SERVER enforces itself (skillQueueRuntime.applyFreeSkillPoints) — this never
+// invents a rule, it only avoids offering a click that could only be refused.
+
+function skillRow(over: Partial<SkillRow> = {}): SkillRow {
+  return {
+    typeID: 3300,
+    name: "Gunnery",
+    groupName: "Gunnery",
+    level: 2,
+    rank: 1,
+    skillPoints: 2000,
+    // The server's own curve for a rank-1 skill.
+    levelSkillPoints: [250, 1414, 8000, 45255, 256000],
+    inTraining: false,
+    ...over,
+  };
+}
+
+test("the plan spends up to what the NEXT level still needs", () => {
+  // 2000 SP held, 8000 needed for III -> 6000 missing, and plenty free.
+  assert.deepEqual(freeSkillPointsPlan(skillRow(), 50000), { points: 6000, reason: null });
+});
+
+test("the plan is capped by the free points actually held", () => {
+  assert.deepEqual(freeSkillPointsPlan(skillRow(), 1500), { points: 1500, reason: null });
+});
+
+test("⚠ a skill in training is refused — free points go into skills you are NOT learning", () => {
+  const plan = freeSkillPointsPlan(skillRow({ inTraining: true }), 50000);
+  assert.equal(plan.points, 0);
+  assert.match(plan.reason ?? "", /training/i);
+});
+
+test("a skill at V has nowhere to put them", () => {
+  const plan = freeSkillPointsPlan(skillRow({ level: 5, skillPoints: 256000 }), 50000);
+  assert.equal(plan.points, 0);
+  assert.match(plan.reason ?? "", /highest level/i);
+});
+
+test("holding no free points is its own reason, not a zero-point plan", () => {
+  const plan = freeSkillPointsPlan(skillRow(), 0);
+  assert.equal(plan.points, 0);
+  assert.match(plan.reason ?? "", /no unallocated/i);
+});
+
+test("⚠ points is ALWAYS 0 when there is a reason — a caller cannot send a doomed request", () => {
+  for (const plan of [
+    freeSkillPointsPlan(skillRow({ inTraining: true }), 50000),
+    freeSkillPointsPlan(skillRow({ level: 5, skillPoints: 256000 }), 50000),
+    freeSkillPointsPlan(skillRow(), 0),
+  ]) {
+    assert.equal(plan.reason === null, false);
+    assert.equal(plan.points, 0);
+  }
 });

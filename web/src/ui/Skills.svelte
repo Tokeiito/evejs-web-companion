@@ -27,6 +27,7 @@
   import {
     formatDuration,
     formatSkillPoints,
+    freeSkillPointsPlan,
     groupSkills,
     levelSquares,
     romanLevel,
@@ -151,6 +152,16 @@
         skill.name,
       ),
     );
+  }
+
+  /** Unallocated skill points the sheet says the character is holding. */
+  const freeSkillPoints = $derived(sheet.freeSkillPoints ?? 0);
+
+  async function applyFreePoints(skill: SkillRow, points: number): Promise<void> {
+    if (points <= 0) {
+      return;
+    }
+    await run(() => flow.applyFreeSkillPoints(skill.typeID, points));
   }
 
   async function removeAt(index: number): Promise<void> {
@@ -454,6 +465,25 @@
                         disabled={busy}
                         onclick={() => addNextLevel(skill)}
                       >Queue {romanLevel(nextLevelFor(skill) ?? 0)}</button>
+                    {/if}
+                    <!--
+                      Unallocated SP had no way to be spent at all: the sheet
+                      counted them and offered nothing. The button appears only
+                      on rows where the server would accept them, and says the
+                      AMOUNT — which is capped by what the level still needs and
+                      by what is actually held, whichever is smaller.
+                    -->
+                    {#if freeSkillPoints > 0}
+                      {@const plan = freeSkillPointsPlan(skill, freeSkillPoints)}
+                      {#if plan.points > 0}
+                        <button
+                          type="button"
+                          class="minor"
+                          disabled={busy}
+                          title={`Spend ${formatSkillPoints(plan.points)} of your unallocated skill points on ${skill.name}`}
+                          onclick={() => applyFreePoints(skill, plan.points)}
+                        >Apply {formatSkillPoints(plan.points)} SP</button>
+                      {/if}
                     {/if}
                   </td>
                 </tr>

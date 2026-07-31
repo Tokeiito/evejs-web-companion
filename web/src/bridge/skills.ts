@@ -193,6 +193,43 @@ export function groupSkills(skills: readonly SkillRow[]): readonly SkillGroup[] 
  * of V banked is not the same as one that has just finished IV — and it is read
  * straight off the server's thresholds rather than recomputed.
  */
+/**
+ * How much unallocated SP would go into this skill, and why it might be none.
+ *
+ * ⚠ THE SERVER OWNS EVERY RULE HERE; this only decides what the button says and
+ * whether it is live, and every refusal it predicts is one the server enforces
+ * itself (skillQueueRuntime.applyFreeSkillPoints):
+ *
+ *   • a skill CURRENTLY TRAINING is refused outright — CannotApplyFreePointsWhile
+ *     TrainingSkill. Free SP goes into skills you are not learning.
+ *   • a skill at V has nowhere to put them.
+ *   • the amount is capped by what is missing to the next level AND by the free
+ *     SP actually held, whichever is smaller.
+ *
+ * `points` is 0 whenever `reason` is non-null, so a caller cannot accidentally
+ * send a request the server would only refuse.
+ */
+export function freeSkillPointsPlan(
+  skill: SkillRow,
+  freeSkillPoints: number,
+): { readonly points: number; readonly reason: string | null } {
+  if (freeSkillPoints <= 0) {
+    return { points: 0, reason: "You have no unallocated skill points." };
+  }
+  if (skill.inTraining) {
+    return { points: 0, reason: "You cannot add points to a skill you are training." };
+  }
+  const progress = skillProgress(skill);
+  if (progress.nextLevel === null || progress.nextLevelSkillPoints === null) {
+    return { points: 0, reason: "This skill is already at its highest level." };
+  }
+  const missing = progress.nextLevelSkillPoints - skill.skillPoints;
+  if (missing <= 0) {
+    return { points: 0, reason: "This skill needs no more points for its next level." };
+  }
+  return { points: Math.min(missing, freeSkillPoints), reason: null };
+}
+
 export function skillProgress(skill: SkillRow): {
   readonly level: number;
   readonly nextLevel: number | null;

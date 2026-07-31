@@ -731,6 +731,11 @@ export interface AppFlow {
     label: string,
     context?: string,
   ): Promise<void>;
+  /**
+   * Spend unallocated skill points into one skill. What was actually spent is
+   * read from the server's new free-SP total, never from what was asked for.
+   */
+  applyFreeSkillPoints(skillTypeID: number, points: number): Promise<void>;
   // --- R41: planetary colonies ---------------------------------------------
   //
   // READ ONLY, and deliberately so. The write path the emulator exposes
@@ -4289,6 +4294,52 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     store.apply({ type: "skills/action", action: label });
   }
 
+  /**
+   * Spend unallocated skill points into one skill.
+   *
+   * ⚠ THE NEW FREE-SP TOTAL IS THE ONLY HONEST RECEIPT. The server caps the
+   * amount at what the skill is missing and at what is actually held, so what
+   * was asked for and what was spent need not match — the message reports the
+   * DIFFERENCE between the totals, never the request. A total that did not move
+   * means nothing was spent, and says so rather than claiming success.
+   */
+  async function applyFreeSkillPoints(skillTypeID: number, points: number): Promise<void> {
+    const before = store.skills.get().freeSkillPoints ?? 0;
+    let remaining: number | null;
+    try {
+      remaining = await api.applyFreeSkillPoints(skillTypeID, points, callOptions);
+    } catch (error) {
+      if (isSessionLost(error)) {
+        stopLiveStream();
+        store.apply({ type: "character/offline" });
+        throw error;
+      }
+      store.apply({
+        type: "skills/action-error",
+        message: error instanceof BridgeCallError
+          ? skillQueueRefusal(error.code, error.message, "that skill")
+          : `Those points could not be applied: ${errorWords(error)}`,
+      });
+      await loadSkills().catch(() => {});
+      return;
+    }
+    // Re-read first, so the message can never sit beside a stale sheet.
+    await loadSkills().catch(() => {});
+    const after = remaining ?? store.skills.get().freeSkillPoints ?? before;
+    const spent = before - after;
+    if (spent <= 0) {
+      store.apply({
+        type: "skills/action-error",
+        message: "The server accepted that and spent no points, and gave no reason.",
+      });
+      return;
+    }
+    store.apply({
+      type: "skills/action",
+      action: `Applied ${spent.toLocaleString()} skill points`,
+    });
+  }
+
   // --- R41: planetary colonies ---------------------------------------------
   //
   // One read, no write. The BFF answers it from the gateway's owner-scoped
@@ -7299,6 +7350,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     loadPlanets,
     selectColony,
     saveSkillQueue,
+    applyFreeSkillPoints,
 
     startSpacePolling,
 
