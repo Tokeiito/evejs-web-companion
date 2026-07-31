@@ -119,6 +119,7 @@ function loadedStore(options: {
         hullCapacity: 300,
         activeModuleIDs:
           options.activeModuleIDs === undefined ? [MODULE_ID] : options.activeModuleIDs,
+        overloadedModuleIDs: [],
       },
     },
   });
@@ -781,6 +782,7 @@ function renderWithEntity(kind: string, itemID: number): string {
         armorCapacity: 300,
         hullCapacity: 300,
         activeModuleIDs: [],
+        overloadedModuleIDs: [],
       },
     },
   });

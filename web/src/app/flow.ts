@@ -652,6 +652,12 @@ export interface AppFlow {
   ): Promise<void>;
   /** R23 — switch a module off. */
   deactivateModule(itemID: number, opts?: { effect?: string; typeID?: number }): Promise<void>;
+  /**
+   * Start or stop overloading a module. ⚠ Overloading damages it — the server
+   * refuses an offline, burnt-out or non-overloadable module, and a pilot
+   * without Thermodynamics, in its own words.
+   */
+  setModuleOverload(itemID: number, overloaded: boolean): Promise<void>;
   // --- R23 slice B: the mining loop --------------------------------------
   // Built ON TOP of the generic layer above, not into it. There is no "start
   // mining" method: mining a rock is lockTarget + activateModule with a mining
@@ -4163,6 +4169,36 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    * what is true right now ("finishing its cycle") rather than predicting.
    * A genuine refusal still throws and lands in actionError, untouched.
    */
+  /**
+   * Start or stop overloading a module.
+   *
+   * ⚠ VERIFIED AGAINST THE SNAPSHOT, not the 200. Overloading is a state the
+   * server owns and ends on its own, and this server has a habit of answering
+   * success for writes that did nothing (LoadAmmo, Deactivate, ApplyFreeSkill
+   * Points all do). So the snapshot's own overloaded list is the authority —
+   * and a `null` list is "we could not tell", which is NOT a decline.
+   */
+  async function setModuleOverload(itemID: number, overloaded: boolean): Promise<void> {
+    await runTargetingAction(
+      overloaded ? "Overload" : "Stop overloading",
+      () =>
+        overloaded
+          ? api.overloadModule(itemID, callOptions)
+          : api.stopOverloadModule(itemID, callOptions),
+      () => loadSpaceSnapshot().catch(() => {}),
+      () => {
+        const list = store.space.get().snapshot?.ship?.overloadedModuleIDs ?? null;
+        if (list === null) {
+          return true; // Unknown is not a decline.
+        }
+        return list.includes(itemID) === overloaded;
+      },
+      overloaded
+        ? "The server accepted that and the module is not overloaded, and gave no reason."
+        : "The server accepted that and the module is still overloaded, and gave no reason.",
+    );
+  }
+
   async function deactivateModule(itemID: number, opts: { effect?: string; typeID?: number } = {}): Promise<void> {
     await runTargetingAction(
       "Switch off",
@@ -7333,6 +7369,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     unlockTarget,
     activateModule,
     deactivateModule,
+    setModuleOverload,
     loadMiningHolds,
     loadDrones,
     launchDrones,

@@ -72,7 +72,7 @@ test("the rack carries each module's itemID — what activation addresses", () =
 // --- the click decision -------------------------------------------------------
 
 function rackModule(overrides: Partial<RackModule> = {}): RackModule {
-  return { itemID: 42, typeID: 3634, online: true, active: false, charge: null, ...overrides };
+  return { itemID: 42, typeID: 3634, online: true, active: false, charge: null, overloaded: false, ...overrides };
 }
 
 test("a click on an idle online module ACTIVATES it", () => {
@@ -99,11 +99,11 @@ test("an empty slot has no click", () => {
 test("the slot title names the module and what a click would do", () => {
   assert.equal(
     rackSlotTitle("Small Shield Booster I", rackModule()),
-    "Small Shield Booster I — click to switch on.",
+    "Small Shield Booster I — click to switch on. Shift-click to overload.",
   );
   assert.equal(
     rackSlotTitle("Small Shield Booster I", rackModule({ active: true })),
-    "Small Shield Booster I — active. Click to switch off.",
+    "Small Shield Booster I — active. Click to switch off. Shift-click to overload.",
   );
   assert.equal(
     rackSlotTitle("Small Shield Booster I", rackModule({ online: false })),
@@ -141,12 +141,12 @@ test("the slot title says what is loaded, by NAME and count", () => {
   const loaded = rackModule({ charge: { typeID: 184, quantity: 160 } });
   assert.equal(
     rackSlotTitle("150mm Light AutoCannon I", loaded, "Phased Plasma S"),
-    "150mm Light AutoCannon I — click to switch on. Loaded: 160 Phased Plasma S.",
+    "150mm Light AutoCannon I — click to switch on. Loaded: 160 Phased Plasma S. Shift-click to overload.",
   );
   // Cycling, and offline, keep their own wording and gain the same suffix.
   assert.match(
     rackSlotTitle("150mm Light AutoCannon I", rackModule({ charge: { typeID: 184, quantity: 160 }, active: true }), "Phased Plasma S"),
-    /Click to switch off\. Loaded: 160 Phased Plasma S\.$/,
+    /Click to switch off\. Loaded: 160 Phased Plasma S\. Shift-click to overload\.$/,
   );
 });
 
@@ -159,4 +159,42 @@ test("a charge whose name has not resolved yet is left unsaid, never numbered", 
 
 test("a module with no charge says nothing about ammunition", () => {
   assert.doesNotMatch(rackSlotTitle("Miner I", rackModule(), "Phased Plasma S"), /Loaded/);
+});
+
+// --- Overloading --------------------------------------------------------------
+//
+// ⚠ IT DAMAGES THE MODULE, which is why it lives behind a modifier rather than
+// sharing the plain click that fires the gun. The tile is a picture, so the
+// title is where the state and the modifier are both said in words.
+
+test("the rack carries the overloaded flag from the snapshot", () => {
+  const slots: FittingSlot[] = [
+    slot("high", 0, { itemID: 1, typeID: 485 }),
+    slot("high", 1, { itemID: 2, typeID: 485 }),
+  ];
+  const rows = buildModuleRack(slots, [], [1]);
+  assert.equal(rows[0]!.slots[0]!.module?.overloaded, true);
+  assert.equal(rows[0]!.slots[1]!.module?.overloaded, false);
+});
+
+test("⚠ an ABSENT overload list is unknown, NOT 'nothing is hot'", () => {
+  // A rack that reported "cool" for a reading it never got would hide a module
+  // burning itself out.
+  const slots: FittingSlot[] = [slot("high", 0, { itemID: 1, typeID: 485 })];
+  assert.equal(buildModuleRack(slots, [], null)[0]!.slots[0]!.module?.overloaded, null);
+  assert.equal(buildModuleRack(slots, [])[0]!.slots[0]!.module?.overloaded, null);
+  // An EMPTY list is a real answer: nothing is overloaded.
+  assert.equal(buildModuleRack(slots, [], [])[0]!.slots[0]!.module?.overloaded, false);
+});
+
+test("an overloaded module says so, and says how to stop", () => {
+  const title = rackSlotTitle("150mm Light AutoCannon I", rackModule({ overloaded: true }));
+  assert.match(title, /Overloaded — running hot and taking damage\./);
+  assert.match(title, /Shift-click to stop\.$/);
+});
+
+test("an UNKNOWN overload state says nothing about heat either way", () => {
+  const title = rackSlotTitle("150mm Light AutoCannon I", rackModule({ overloaded: null }));
+  assert.doesNotMatch(title, /overload/i);
+  assert.doesNotMatch(title, /hot/i);
 });

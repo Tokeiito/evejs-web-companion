@@ -1580,6 +1580,16 @@ export interface SpaceShipStatus {
    * answer and the page must say "unknown", not "off".
    */
   readonly activeModuleIDs: readonly number[] | null;
+  /**
+   * Which fitted modules are OVERLOADED, from the ship entity's own overload
+   * map — the same contract as `activeModuleIDs` above and for the same reason.
+   *
+   * ⚠ IT OUTLIVES THE CLICK. Overloading persists across calls and the SERVER
+   * ends it on its own when a module burns out, so a page that remembered what
+   * it clicked would keep showing heat on a module that stopped minutes ago.
+   * Empty means nothing is overloaded; null means the read could not answer.
+   */
+  readonly overloadedModuleIDs: readonly number[] | null;
 }
 
 /** One decoded space snapshot: everything visible plus the active ship. */

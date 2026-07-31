@@ -147,6 +147,7 @@ function ship(overrides: Partial<SpaceShipStatus> = {}): SpaceShipStatus {
     armorCapacity: 1_000,
     hullCapacity: 1_000,
     activeModuleIDs: [],
+    overloadedModuleIDs: [],
     ...overrides,
   };
 }

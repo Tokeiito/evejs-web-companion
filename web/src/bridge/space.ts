@@ -195,6 +195,12 @@ function decodeShip(value: JsonValue | undefined): SpaceShipStatus | null {
     // to null ("unknown"), not [] — a gateway that could not answer must never
     // be reported to the player as "nothing is running".
     activeModuleIDs: decodeIDList(raw.activeModuleIDs),
+    // Which modules the SERVER says are OVERLOADED. Same contract as the line
+    // above: an ABSENT field is null ("unknown"), never [] — and here that
+    // distinction earns its keep, because "no heat" and "we could not tell" are
+    // the difference between a rack that shows a cool ship and one that hides a
+    // module quietly burning itself out.
+    overloadedModuleIDs: decodeIDList(raw.overloadedModuleIDs),
   };
 }
 

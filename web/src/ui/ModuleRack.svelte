@@ -44,7 +44,11 @@
   const targeting = store.targeting;
 
   const rows = $derived(
-    buildModuleRack($fitting.slots, $space.snapshot?.ship?.activeModuleIDs ?? null),
+    buildModuleRack(
+      $fitting.slots,
+      $space.snapshot?.ship?.activeModuleIDs ?? null,
+      $space.snapshot?.ship?.overloadedModuleIDs ?? null,
+    ),
   );
   const unknown = $derived(!$fitting.loaded || rackIsEmpty(rows));
   /** The auto target: first LOCKED (not still-acquiring) target, else none. */
@@ -69,6 +73,31 @@
   /** The loaded charge's NAME, or null when there is none to name. */
   function chargeName(module: RackModule): string | null {
     return module.charge ? moduleName(module.charge.typeID) : null;
+  }
+
+  /**
+   * SHIFT-CLICK TOGGLES OVERLOAD — the retail modifier, and deliberately behind
+   * one: overloading damages the module, so it must not share the plain click
+   * that fires it. An offline module is inert here too.
+   */
+  async function shiftClickModule(module: RackModule): Promise<void> {
+    if (!flow || !module.online || module.overloaded === null || pendingItemID !== null) {
+      return;
+    }
+    pendingItemID = module.itemID;
+    error = "";
+    windingDown = "";
+    try {
+      await flow.setModuleOverload(module.itemID, !module.overloaded);
+      const refusal = $targeting.actionError ?? $targeting.silentDecline;
+      if (refusal) {
+        error = `${moduleName(module.typeID)}: ${refusal}`;
+      }
+    } catch (cause) {
+      error = `${moduleName(module.typeID)}: ${String(cause)}`;
+    } finally {
+      pendingItemID = null;
+    }
   }
 
   async function clickModule(module: RackModule): Promise<void> {
@@ -129,13 +158,20 @@
                 class:active={slot.module.active}
                 class:offline={!slot.module.online}
                 class:pending={pendingItemID === slot.module.itemID}
+                class:overloaded={slot.module.overloaded === true}
                 disabled={!clickable || pendingItemID !== null}
                 aria-pressed={slot.module.active}
                 title={rackSlotTitle(nm, slot.module, chargeName(slot.module))}
                 aria-label={rackSlotTitle(nm, slot.module, chargeName(slot.module))}
-                onclick={() => slot.module && clickModule(slot.module)}
+                onclick={(event) =>
+                  slot.module &&
+                  (event.shiftKey ? shiftClickModule(slot.module) : clickModule(slot.module))}
               >
                 <TypeIcon typeID={slot.module.typeID} name={nm} size="sm" fallbackText={abbreviate(nm)} />
+                {#if slot.module.overloaded === true}
+                  <!-- Words carry the state (the title); this is the glance. -->
+                  <span class="module-heat" aria-hidden="true">🔥</span>
+                {/if}
               </button>
             {:else}
               <span class="module-slot empty" title={rackSlotTitle("", null)}></span>

@@ -3021,6 +3021,32 @@ export async function applyFreeSkillPoints(
   return asNumberOrNull(data.result);
 }
 
+// --- Overloading --------------------------------------------------------------
+//
+// ⚠ OVERLOADING DAMAGES THE MODULE. It runs harder and takes heat; a module left
+// overloaded burns out and stops. The server owns every rule — it refuses a
+// module that is offline, incapacitated, not overloadable, or on a pilot without
+// Thermodynamics — and those refusals reach the player in the server's words.
+//
+// The effectID is omitted: the server resolves the module's own overload effect
+// from its type, exactly as activation resolves the default activation effect.
+
+/** Start overloading one module (dogmaIM.Overload). */
+export async function overloadModule(
+  moduleID: number,
+  options: ApiOptions = {},
+): Promise<void> {
+  await postJson("/api/bridge/dogma/module/overload", { moduleID, confirm: true }, options);
+}
+
+/** Stop overloading one module (dogmaIM.StopOverload). */
+export async function stopOverloadModule(
+  moduleID: number,
+  options: ApiOptions = {},
+): Promise<void> {
+  await postJson("/api/bridge/dogma/module/stop-overload", { moduleID, confirm: true }, options);
+}
+
 // --- Ammunition ---------------------------------------------------------------
 //
 // Where the charges come from and go to is a WORD — "cargo" or "hangar" — never

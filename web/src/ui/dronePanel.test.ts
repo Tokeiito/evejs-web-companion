@@ -190,6 +190,7 @@ function scene(options: SceneOptions = {}): string {
         armorCapacity: 3000,
         hullCapacity: 3000,
         activeModuleIDs: [],
+        overloadedModuleIDs: [],
       },
     },
   } as never);

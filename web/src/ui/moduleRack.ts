@@ -29,6 +29,12 @@ export interface RackModule {
   readonly active: boolean;
   /** The charge loaded in it, or null. A weapon with none cannot fire. */
   readonly charge: { readonly typeID: number; readonly quantity: number } | null;
+  /**
+   * The server reports it OVERLOADED — running hot, and taking damage for it.
+   * `null` is "we could not tell", which the rack shows as no marker rather
+   * than as a cool module.
+   */
+  readonly overloaded: boolean | null;
 }
 
 export interface RackSlotVM {
@@ -49,8 +55,12 @@ export interface RackRow {
 export function buildModuleRack(
   slots: readonly FittingSlot[],
   activeModuleIDs: readonly number[] | null | undefined,
+  overloadedModuleIDs: readonly number[] | null | undefined = null,
 ): readonly RackRow[] {
   const active = new Set(activeModuleIDs ?? []);
+  // null/absent stays UNKNOWN rather than collapsing to "nothing is hot".
+  const overloadKnown = Array.isArray(overloadedModuleIDs);
+  const overloaded = new Set(overloadedModuleIDs ?? []);
   return RACK_FAMILIES.map((family) => ({
     family,
     label: RACK_LABELS[family],
@@ -64,6 +74,7 @@ export function buildModuleRack(
             charge: slot.module.charge
               ? { typeID: slot.module.charge.typeID, quantity: slot.module.charge.quantity }
               : null,
+            overloaded: overloadKnown ? overloaded.has(slot.module.itemID) : null,
           }
         : null,
     })),
@@ -110,9 +121,17 @@ export function rackSlotTitle(
   if (!module.online) {
     return `${name} — offline (bring it online from the Fitting window)${loaded}`;
   }
+  // Overloading is destructive, so the tile SAYS it is running hot rather than
+  // relying on a colour, and names the modifier that toggles it.
+  const heat =
+    module.overloaded === true
+      ? " Overloaded — running hot and taking damage. Shift-click to stop."
+      : module.overloaded === false
+        ? " Shift-click to overload."
+        : "";
   return module.active
-    ? `${name} — active. Click to switch off.${loaded}`
-    : `${name} — click to switch on.${loaded}`;
+    ? `${name} — active. Click to switch off.${loaded}${heat}`
+    : `${name} — click to switch on.${loaded}${heat}`;
 }
 
 /** True when there are no slots at all — the fit is not known yet. */
