@@ -1814,6 +1814,15 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
   }
 
+  /**
+   * Whether one fitted module is online right now, or null when the fit does
+   * not carry it. Used to prove an online/offline toggle actually landed.
+   */
+  function moduleOnlineState(itemID: number): boolean | null {
+    const slot = store.fitting.get().slots.find((entry) => entry.module?.itemID === itemID);
+    return slot?.module ? slot.module.online : null;
+  }
+
   async function runFittingAction(
     action: () => Promise<{ readonly applied: boolean } | void>,
   ): Promise<void> {
@@ -7137,7 +7146,34 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     },
 
     async setModuleOnline(itemID, online) {
-      await runFittingAction(() => api.setModuleOnline(itemID, online, callOptions));
+      // ⚠ NOT runFittingAction. That helper decides "declined" from the api
+      // verb's `applied` flag, and setModuleOnline returns VOID — so its check
+      // was dead code and an online/offline toggle that quietly did nothing
+      // reported success. The online state IS in the re-read, so use it.
+      const wasOnline = moduleOnlineState(itemID);
+      try {
+        await api.setModuleOnline(itemID, online, callOptions);
+      } catch (error) {
+        if (isSessionLost(error)) {
+          stopLiveStream();
+          store.apply({ type: "character/offline" });
+          throw error;
+        }
+        store.apply({ type: "fitting/action-error", message: errorWords(error) });
+        return;
+      }
+      await loadFitting();
+      const nowOnline = moduleOnlineState(itemID);
+      // Unknown either side is not a decline — only a module we could read
+      // before AND after, that did not move, earns the message.
+      if (wasOnline !== null && nowOnline !== null && nowOnline !== online) {
+        store.apply({
+          type: "fitting/action-error",
+          message: online
+            ? "The server accepted that and the module is still offline, and gave no reason."
+            : "The server accepted that and the module is still online, and gave no reason.",
+        });
+      }
     },
 
     async loadAmmo(moduleIDs, chargeItemIDs, source) {
