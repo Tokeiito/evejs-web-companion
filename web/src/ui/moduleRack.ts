@@ -9,7 +9,7 @@
 // (they are passive), so they stay in the Fitting window, not the rack.
 
 import { slotsOfFamily } from "../bridge/fitting.ts";
-import type { FittingSlot } from "../store/types.ts";
+import type { FittingSlot, ModuleCycle } from "../store/types.ts";
 
 export type RackFamily = "high" | "mid" | "low";
 export const RACK_FAMILIES: readonly RackFamily[] = ["high", "mid", "low"];
@@ -221,4 +221,34 @@ export function rackSlotTitle(
 /** True when there are no slots at all — the fit is not known yet. */
 export function rackIsEmpty(rows: readonly RackRow[]): boolean {
   return rows.every((row) => row.slots.length === 0);
+}
+
+/**
+ * How far through its current cycle a module is, 0-100 — or null when we cannot
+ * honestly say.
+ *
+ * ⚠ NULL IS NOT ZERO. It covers both "no cycle event has ever told us when this
+ * started" and "the module is not running", and neither may render as an empty
+ * bar: an empty bar reads as "just started", which is a claim we do not have.
+ *
+ * A repeating module runs cycle after cycle off its one start event, which is
+ * what the retail client does with it too. The clock is the BROWSER's, matched
+ * to the start stamp the cycle carries — see ModuleCycle, which is deliberately
+ * local-clock for exactly this reason.
+ */
+export function cycleProgressPercent(
+  cycle: ModuleCycle | null | undefined,
+  nowMs: number,
+): number | null {
+  if (!cycle || cycle.startedAtMs === null || !(cycle.durationMs > 0)) {
+    return null;
+  }
+  const elapsed = nowMs - cycle.startedAtMs;
+  if (elapsed < 0) {
+    return null;
+  }
+  const within = cycle.repeating
+    ? elapsed % cycle.durationMs
+    : Math.min(elapsed, cycle.durationMs);
+  return Math.max(0, Math.min(100, Math.round((within / cycle.durationMs) * 100)));
 }

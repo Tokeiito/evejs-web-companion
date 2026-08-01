@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 
 import {
   buildModuleRack,
+  cycleProgressPercent,
   rackClickAction,
   rackDamageText,
   rackIsEmpty,
@@ -323,4 +324,45 @@ test("a banked gun's title says it fires with the others", () => {
   );
   // And an unbanked gun says nothing about banks.
   assert.doesNotMatch(rackSlotTitle("Miner I", rackModule()), /Banked/);
+});
+
+// --- The cycle sweep ----------------------------------------------------------
+//
+// ⚠ NULL IS NOT ZERO. A module with no cycle stamp draws NO bar; an empty bar
+// would read as "just started", which is a claim the client does not have. This
+// is the same helper the Overview's equipment list uses — one implementation.
+
+test("progress is measured from the SERVER's own cycle stamp", () => {
+  const cycle = { durationMs: 10000, source: "server" as const, startedAtMs: 1000, repeating: false };
+  assert.equal(cycleProgressPercent(cycle, 1000), 0, "the instant it started");
+  assert.equal(cycleProgressPercent(cycle, 6000), 50);
+  assert.equal(cycleProgressPercent(cycle, 11000), 100);
+  // A non-repeating cycle stops at full rather than wrapping.
+  assert.equal(cycleProgressPercent(cycle, 30000), 100);
+});
+
+test("a repeating module wraps, cycle after cycle, off its one start event", () => {
+  const cycle = { durationMs: 10000, source: "server" as const, startedAtMs: 0, repeating: true };
+  assert.equal(cycleProgressPercent(cycle, 5000), 50);
+  assert.equal(cycleProgressPercent(cycle, 15000), 50, "second cycle, same place");
+  assert.equal(cycleProgressPercent(cycle, 25000), 50, "third");
+});
+
+test("⚠ no stamp, no cycle and no duration all read as NULL — never 0", () => {
+  assert.equal(cycleProgressPercent(null, 5000), null);
+  assert.equal(cycleProgressPercent(undefined, 5000), null);
+  assert.equal(
+    cycleProgressPercent({ durationMs: 10000, source: "base", startedAtMs: null, repeating: false }, 5000),
+    null,
+    "a base duration with no start stamp cannot place us in the cycle",
+  );
+  assert.equal(
+    cycleProgressPercent({ durationMs: 0, source: "server", startedAtMs: 0, repeating: false }, 5000),
+    null,
+  );
+});
+
+test("a clock reading BEFORE the start stamp is null, not a negative bar", () => {
+  const cycle = { durationMs: 10000, source: "server" as const, startedAtMs: 9000, repeating: false };
+  assert.equal(cycleProgressPercent(cycle, 1000), null);
 });

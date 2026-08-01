@@ -21,6 +21,7 @@
   import {
     buildModuleRack,
     rackClickAction,
+    cycleProgressPercent,
     rackDamageText,
     rackIsEmpty,
     rackModuleBurntOut,
@@ -117,6 +118,21 @@
    * the click registered.
    */
   let windingDown = $state("");
+  /**
+   * Redraw tick for the cycle sweep. DISPLAY ONLY — every value it feeds comes
+   * from the SERVER's own cycle stamp, and nothing here advances past what the
+   * server said. A hidden tab simply redraws less; the numbers are unaffected.
+   */
+  let nowMs = $state(Date.now());
+  $effect(() => {
+    const handle = setInterval(() => { nowMs = Date.now(); }, 1000);
+    return () => clearInterval(handle);
+  });
+
+  /** How far through its cycle a module is, or null when we cannot say. */
+  function cycleOf(itemID: number): number | null {
+    return cycleProgressPercent($targeting.moduleCycles[itemID] ?? null, nowMs);
+  }
 
   function moduleName(typeID: number): string {
     return resolvedName($names.resolved, "type", typeID);
@@ -240,6 +256,18 @@
                   (event.shiftKey ? shiftClickModule(slot.module) : clickModule(slot.module))}
               >
                 <TypeIcon typeID={slot.module.typeID} name={nm} size="sm" fallbackText={abbreviate(nm)} />
+                {#if cycleOf(slot.module.itemID) !== null}
+                  <!--
+                    The cycle sweep. Only drawn when the SERVER's own cycle stamp
+                    says where we are — a module we have no stamp for shows no
+                    bar at all, because an empty bar reads as "just started".
+                  -->
+                  <span
+                    class="module-cycle"
+                    aria-hidden="true"
+                    style={`--sweep:${cycleOf(slot.module.itemID)}%`}
+                  ></span>
+                {/if}
                 {#if slot.module.overloaded === true}
                   <!-- Words carry the state (the title); this is the glance. -->
                   <span class="module-heat" aria-hidden="true">🔥</span>

@@ -3307,6 +3307,19 @@
     box-shadow: inset 0 0 0 1px var(--color-accent);
   }
   .module-slot.offline { opacity: 0.45; }
+  /* The cycle sweep: a thin fill along the bottom of the tile, driven by the
+   * SERVER's own cycle stamp. Absent entirely when there is no stamp — an empty
+   * bar would read as "just started", which is a claim we do not have. */
+  .module-slot:has(.module-cycle) { position: relative; }
+  .module-cycle {
+    position: absolute;
+    left: 0;
+    bottom: 0;
+    height: 2px;
+    width: var(--sweep, 0%);
+    background: var(--color-accent);
+    pointer-events: none;
+  }
   /* Overloaded: running hot and taking damage. The marker is a glance — the
    * button's own title carries the state in words. */
   .module-slot.overloaded {

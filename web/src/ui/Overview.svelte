@@ -51,6 +51,8 @@
   // now picked). This panel only READS them to fly what you have selected.
   import { flyingDistances, WARP_RANGES, HOLD_RANGES, rangeLabel } from "./flyingDistances.ts";
   import { resolvedName, nameKey, type NameRef } from "../store/names.ts";
+  // One cycle-progress implementation, shared with the HUD rack.
+  import { cycleProgressPercent as rackCycleProgress } from "./moduleRack.ts";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
   import type { DestinationMatch, ModuleCycle, SpaceEntity } from "../store/types.ts";
@@ -846,17 +848,8 @@
    * empty bar reads as "just started", which would be a claim we cannot make.
    */
   function cycleProgressPercent(cycle: ModuleCycle | null): number | null {
-    if (!cycle || cycle.startedAtMs === null || !(cycle.durationMs > 0)) {
-      return null;
-    }
-    const elapsed = clockMs - cycle.startedAtMs;
-    if (elapsed < 0) {
-      return null;
-    }
-    // A repeating module runs cycle after cycle off the one start event, which
-    // is exactly what the retail client does with it.
-    const within = cycle.repeating ? elapsed % cycle.durationMs : Math.min(elapsed, cycle.durationMs);
-    return Math.max(0, Math.min(100, Math.round((within / cycle.durationMs) * 100)));
+    // One implementation, shared with the HUD rack (ui/moduleRack.ts).
+    return rackCycleProgress(cycle, clockMs);
   }
 
   // --- R24 slice D: the live hold on the in-space screen --------------------
