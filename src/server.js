@@ -2859,6 +2859,12 @@ app.get("/api/bridge/fitting", requireAuth, async (req, res, next) => {
       slots: settledValue(slots),
       shipInfo: settledValue(shipInfo),
       online: settledValue(online),
+      // What each fitted module TYPE will take: its charge size and the charge
+      // groups it accepts, from the same static dogma the volume lookup uses —
+      // no bridge call, no allowlist pair. ⚠ ADVISORY: a picker uses it to put
+      // likely charges first and must never HIDE one, because the server is the
+      // authority on what actually loads.
+      chargeFits: readModuleChargeFits(settledValue(slots)),
       errors: {
         slots: settledCode(slots),
         shipInfo: settledCode(shipInfo),
@@ -10569,6 +10575,32 @@ app.get("/api/bridge/assets", requireAuth, async (req, res, next) => {
     });
   }
 });
+
+/**
+ * Per-TYPE charge fitment for every fitted module in a ListByFlags result:
+ * `{typeID: {size, groups}}`.
+ *
+ * Mirrors readTypeVolumes below — a property of the TYPE, read from static
+ * dogma, so it costs no bridge call. A module with no charge attributes is
+ * simply absent from the map, which reads as "we cannot say what it takes"
+ * rather than "it takes nothing".
+ */
+function readModuleChargeFits(result) {
+  const rows = result && Array.isArray(result.items) ? result.items : [];
+  const fits = {};
+  for (const row of rows) {
+    const fields = row && row.type === "packedrow" && row.fields ? row.fields : row;
+    const typeID = Number(fields && fields.typeID) || 0;
+    if (typeID <= 0 || Object.prototype.hasOwnProperty.call(fits, typeID)) {
+      continue;
+    }
+    const fitment = staticData.getModuleChargeFitment(typeID);
+    if (fitment.groups.length > 0) {
+      fits[typeID] = fitment;
+    }
+  }
+  return fits;
+}
 
 /**
  * Per-type volume (m³) for every type in a ListStationItems result.

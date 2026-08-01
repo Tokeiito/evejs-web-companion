@@ -11,6 +11,8 @@ import {
   SLOT_FAMILY_LABELS,
   SLOT_FAMILY_ORDER,
   buildSlots,
+  chargeLooksCompatible,
+  decodeChargeFits,
   isChargeRow,
   decodeOnlineModuleIDs,
   decodeResources,
@@ -362,4 +364,53 @@ test("⚠ isChargeRow is a CATEGORY test, never a compatibility test", () => {
   // different weapon systems both answer true, and that is correct.
   assert.equal(isChargeRow(8), true); // Phased Plasma S — projectile
   assert.equal(isChargeRow(8), true); // Multifrequency S — laser
+});
+
+// --- Charge fitment (advisory sorting only) -----------------------------------
+//
+// ⚠ THIS NEVER HIDES A CHARGE. The server decides what loads and refuses
+// silently, so the picker offers everything and only puts the likely ones first.
+// The attributes are 128 (charge size) and 604/605/606/609 (accepted groups),
+// both read from the same static dogma the volume lookup uses.
+
+test("a charge of the right group AND size looks compatible", () => {
+  const fits = decodeChargeFits({ 485: { size: 1, groups: [83] } } as unknown as JsonValue);
+  // Phased Plasma S: group 83, size 1, into a 150mm Light AutoCannon I.
+  assert.equal(chargeLooksCompatible(fits[485], 83, 1), true);
+});
+
+test("⚠ same family, wrong calibre — the case that failed live", () => {
+  const fits = decodeChargeFits({ 485: { size: 1, groups: [83] } } as unknown as JsonValue);
+  // Arch Angel Phased Plasma XL is group 83 too, and the server refused it.
+  assert.equal(chargeLooksCompatible(fits[485], 83, 4), false);
+});
+
+test("a charge from another weapon system does not look compatible", () => {
+  const fits = decodeChargeFits({ 485: { size: 1, groups: [83] } } as unknown as JsonValue);
+  assert.equal(chargeLooksCompatible(fits[485], 85, 1), false, "hybrid charge, projectile gun");
+});
+
+test("a module accepting several groups accepts any of them", () => {
+  // 800mm Repeating Cannon II: size 3, groups 83 and 372.
+  const fits = decodeChargeFits({ 2929: { size: 3, groups: [83, 372] } } as unknown as JsonValue);
+  assert.equal(chargeLooksCompatible(fits[2929], 83, 3), true);
+  assert.equal(chargeLooksCompatible(fits[2929], 372, 3), true);
+  assert.equal(chargeLooksCompatible(fits[2929], 86, 3), false);
+});
+
+test("⚠ 'cannot say' is NULL, and is never a no", () => {
+  const fits = decodeChargeFits({ 485: { size: 1, groups: [83] } } as unknown as JsonValue);
+  // No fitment for the module at all (an afterburner, say).
+  assert.equal(chargeLooksCompatible(fits[12058], 83, 1), null);
+  assert.equal(chargeLooksCompatible(undefined, 83, 1), null);
+  // A charge whose group we do not know.
+  assert.equal(chargeLooksCompatible(fits[485], null, 1), null);
+  // Right group, but a size we cannot read on one side.
+  assert.equal(chargeLooksCompatible(fits[485], 83, null), null);
+});
+
+test("a malformed or absent map decodes to {} — 'we cannot sort', not 'nothing fits'", () => {
+  assert.deepEqual(decodeChargeFits(undefined), {});
+  assert.deepEqual(decodeChargeFits(null as unknown as JsonValue), {});
+  assert.deepEqual(decodeChargeFits([] as unknown as JsonValue), {});
 });

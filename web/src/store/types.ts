@@ -330,6 +330,15 @@ export interface FittingResources {
  */
 export interface FittingState {
   readonly activeShipID: number | null;
+  /**
+   * Per-module-type charge fitment, keyed by module typeID — used ONLY to sort
+   * the ammo picker so likely charges come first.
+   *
+   * ⚠ ADVISORY, NEVER A FILTER. The server is the authority on what loads and
+   * it declines silently, so the picker offers everything; `{}` means "we cannot
+   * sort", which is the same as a module whose charges we cannot determine.
+   */
+  readonly chargeFits: Readonly<Record<number, import("../bridge/fitting.ts").ChargeFitment>>;
   readonly slots: readonly FittingSlot[];
   readonly resources: FittingResources;
   /**

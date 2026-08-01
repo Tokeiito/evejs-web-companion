@@ -496,6 +496,46 @@ function getPropulsionEffectName(typeID) {
   return null;
 }
 
+// dogma: 128 is the charge SIZE (1 small, 2 medium, 3 large, 4 x-large) and
+// 604/605/606/609 are the charge GROUP ids a module will accept. Both sides of
+// the match come from the same table, so this needs no bridge call and no
+// allowlist pair — exactly like the per-type volume lookup above it.
+const CHARGE_SIZE_ATTRIBUTE = 128;
+const CHARGE_GROUP_ATTRIBUTES = Object.freeze([604, 605, 606, 609]);
+
+/**
+ * What charges a MODULE will take: its size, and the charge groups it accepts.
+ *
+ * ⚠ ADVISORY ONLY. This is here so a picker can put the charges that will
+ * probably work first — it must never HIDE a charge, because the SERVER is the
+ * authority on what loads and this table cannot know about every special case.
+ * A module with no charge attributes returns empty, which reads as "we cannot
+ * say", not as "nothing fits".
+ */
+function getModuleChargeFitment(typeID) {
+  const attributes = (getTypeDogma(typeID) || {}).attributes || {};
+  const groups = [];
+  for (const attributeID of CHARGE_GROUP_ATTRIBUTES) {
+    const groupID = Number(attributes[String(attributeID)]);
+    if (Number.isFinite(groupID) && groupID > 0 && !groups.includes(groupID)) {
+      groups.push(groupID);
+    }
+  }
+  const size = Number(attributes[String(CHARGE_SIZE_ATTRIBUTE)]);
+  return {
+    size: Number.isFinite(size) && size > 0 ? size : null,
+    groups,
+  };
+}
+
+/** A CHARGE's own size (dogma 128), or null when the type has none. */
+function getChargeSize(typeID) {
+  const size = Number(
+    ((getTypeDogma(typeID) || {}).attributes || {})[String(CHARGE_SIZE_ATTRIBUTE)],
+  );
+  return Number.isFinite(size) && size > 0 ? size : null;
+}
+
 function getTypeDogmaAttribute(typeID, attributeID, fallback = null) {
   const dogma = getTypeDogma(typeID);
   const attributes = dogma && dogma.attributes;
@@ -1163,6 +1203,8 @@ module.exports = {
   getMarketGroupName,
   getMarketGroupPath,
   getPropulsionEffectName,
+  getModuleChargeFitment,
+  getChargeSize,
   findMarketTypes,
   getNpcIndustryFacility,
   getPlanetCelestial,

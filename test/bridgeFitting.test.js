@@ -82,7 +82,18 @@ function fakeStore() {
 }
 
 function fakeStaticData() {
-  return { getStation() { return null; }, getTypeName(id) { return `Type ${id}`; } };
+  return {
+    getStation() { return null; },
+    getTypeName(id) { return `Type ${id}`; },
+    // Charge fitment, read from static dogma by the fitting route. Only the
+    // turret in these fixtures takes charges; everything else reads as "we
+    // cannot say", which is what an empty group list means.
+    getModuleChargeFitment(typeID) {
+      return Number(typeID) === 485
+        ? { size: 1, groups: [83] }
+        : { size: null, groups: [] };
+    },
+  };
 }
 
 function packedRow(fields) {

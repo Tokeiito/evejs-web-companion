@@ -243,6 +243,8 @@ const EMPTY_RESOURCES: FittingResources = Object.freeze({
 
 const INITIAL_FITTING: FittingState = Object.freeze({
   activeShipID: null,
+  // Empty before any read: "we cannot sort the ammo picker", never "nothing fits".
+  chargeFits: Object.freeze({}),
   slots: Object.freeze([]) as readonly FittingSlot[],
   resources: EMPTY_RESOURCES,
   // Before any read, every statistic is honestly unavailable rather than zero
@@ -1151,6 +1153,8 @@ export function createClientStore(): ClientStore {
       case "fitting/loaded":
         fitting.set({
           activeShipID: event.activeShipID,
+          // Advisory sorting data for the ammo picker; {} is "cannot sort".
+          chargeFits: event.chargeFits ?? {},
           slots: [...event.slots],
           resources: event.resources,
           stats: event.stats,

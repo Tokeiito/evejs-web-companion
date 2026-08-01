@@ -22,6 +22,7 @@
   import {
     SLOT_FAMILY_LABELS,
     SLOT_FAMILY_ORDER,
+    chargeLooksCompatible,
     isChargeRow,
     isFittableRow,
     slotsOfFamily,
@@ -258,6 +259,42 @@
     }
     return rows;
   });
+
+  /**
+   * The charge list for the SELECTED module, likely-compatible first.
+   *
+   * ⚠ SORTED, NEVER FILTERED. The static tables cannot know every case and the
+   * server is the authority on what loads, so hiding a charge that would have
+   * worked is worse than showing one that will not. A charge we cannot judge
+   * sorts between the two — ahead of a known mismatch, behind a known fit.
+   */
+  const sortedChargeRows = $derived.by(() => {
+    const fitment = selectedSlot?.module
+      ? $fitting.chargeFits[selectedSlot.module.typeID]
+      : undefined;
+    const rank = (row: InventoryItemRow): number => {
+      const verdict = chargeLooksCompatible(fitment, row.groupID, chargeSizeOf(row));
+      return verdict === true ? 0 : verdict === null ? 1 : 2;
+    };
+    return [...chargeRows].sort((left, right) => rank(left.row) - rank(right.row));
+  });
+
+  /**
+   * A charge's own size. The inventory rows do not carry it, so this reads the
+   * fitment table's entry for the charge TYPE when the BFF happened to include
+   * one; otherwise null, which `chargeLooksCompatible` treats as "cannot say".
+   */
+  function chargeSizeOf(row: InventoryItemRow): number | null {
+    return $fitting.chargeFits[row.typeID]?.size ?? null;
+  }
+
+  /** Whether this charge looks like it fits the selected module. */
+  function chargeVerdict(row: InventoryItemRow): boolean | null {
+    const fitment = selectedSlot?.module
+      ? $fitting.chargeFits[selectedSlot.module.typeID]
+      : undefined;
+    return chargeLooksCompatible(fitment, row.groupID, chargeSizeOf(row));
+  }
 
   function loadInto(moduleItemID: number, chargeItemID: number, source: "hangar" | "cargo"): void {
     void run(async () => {
@@ -1129,7 +1166,7 @@
                     </p>
                   {:else}
                     <ul class="fit-ammo-list">
-                      {#each chargeRows as entry (`${entry.source}:${entry.row.itemID}`)}
+                      {#each sortedChargeRows as entry (`${entry.source}:${entry.row.itemID}`)}
                         <li>
                           <button
                             type="button"
@@ -1142,6 +1179,11 @@
                           </button>
                           <span class="muted">
                             {chargeCount(entry.row.quantity)} in {entry.source === "cargo" ? "cargo" : "the hangar"}
+                            {#if chargeVerdict(entry.row) === false}
+                              <!-- A HINT, not a block: the button stays live and
+                                   the server has the last word. -->
+                              — probably will not fit
+                            {/if}
                           </span>
                         </li>
                       {/each}

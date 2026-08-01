@@ -1,3 +1,4 @@
+import type { ChargeFitment } from "../bridge/fitting.ts";
 // Feed adapter seam (goal R1b, roadmap section 5).
 //
 // The client-state store is fed by whatever event transport exists at the
@@ -211,6 +212,11 @@ export type FeedEvent =
       readonly resources: FittingResources;
       /** R21 — the derived statistics, from the same attribute map. */
       readonly stats: ShipStats;
+      /**
+       * Per-module-type charge fitment, for SORTING the ammo picker. Advisory
+       * only — the server decides what actually loads, so this never filters.
+       */
+      readonly chargeFits?: Readonly<Record<number, ChargeFitment>>;
       readonly slotsError: string | null;
       readonly resourcesError: string | null;
     }

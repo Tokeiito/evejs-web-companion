@@ -390,3 +390,72 @@ export function isFittableRow(categoryID: number | null): boolean {
 export function isChargeRow(categoryID: number | null): boolean {
   return categoryID === CATEGORY_CHARGE;
 }
+
+/** What a module type will take: its charge size, and the groups it accepts. */
+export interface ChargeFitment {
+  readonly size: number | null;
+  readonly groups: readonly number[];
+}
+
+/**
+ * Decode the fitting read's `chargeFits` map — `{typeID: {size, groups}}`.
+ *
+ * Absent or unreadable gives `{}`, which is the honest "we cannot say what
+ * anything takes". That is deliberately the SAME outcome as a module with no
+ * charge attributes: both mean the picker simply cannot sort, never that
+ * nothing fits.
+ */
+export function decodeChargeFits(
+  value: JsonValue | undefined,
+): Readonly<Record<number, ChargeFitment>> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return {};
+  }
+  const fits: Record<number, ChargeFitment> = {};
+  for (const [key, raw] of Object.entries(value)) {
+    const typeID = Number(key);
+    if (!Number.isSafeInteger(typeID) || typeID <= 0 || typeof raw !== "object" || raw === null) {
+      continue;
+    }
+    const entry = raw as Record<string, JsonValue>;
+    const size = typeof entry.size === "number" && entry.size > 0 ? entry.size : null;
+    const groups = Array.isArray(entry.groups)
+      ? entry.groups
+          .map((groupID) => (typeof groupID === "number" ? groupID : 0))
+          .filter((groupID) => groupID > 0)
+      : [];
+    fits[typeID] = { size, groups };
+  }
+  return fits;
+}
+
+/**
+ * Whether a charge LOOKS compatible with a module — group and size both match.
+ *
+ * ⚠ ADVISORY, AND ONLY EVER USED TO SORT. The SERVER decides what loads, and it
+ * refuses silently, so the picker offers every charge and puts the likely ones
+ * first. Returning false must never remove a charge from the list: this table
+ * cannot know every special case, and hiding a charge that would have worked is
+ * a worse failure than showing one that will not.
+ *
+ * `null` means "cannot say" — no fitment for the module, or no size on either
+ * side — and callers must treat it as neutral rather than as a no.
+ */
+export function chargeLooksCompatible(
+  fitment: ChargeFitment | undefined,
+  chargeGroupID: number | null,
+  chargeSize: number | null,
+): boolean | null {
+  if (!fitment || fitment.groups.length === 0 || chargeGroupID === null) {
+    return null;
+  }
+  if (!fitment.groups.includes(chargeGroupID)) {
+    return false;
+  }
+  // Same family, wrong calibre — this is the case that failed live: an XL
+  // projectile round offered to a small autocannon, both group 83.
+  if (fitment.size === null || chargeSize === null) {
+    return null;
+  }
+  return fitment.size === chargeSize;
+}

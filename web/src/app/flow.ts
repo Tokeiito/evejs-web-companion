@@ -12,7 +12,7 @@ import {
 } from "../bridge/stationPanel.ts";
 import { decodeCapacity, decodeContainer, decodeInventoryRows } from "../bridge/inventoryShip.ts";
 import { decodeShipBays } from "../bridge/shipBays.ts";
-import { buildSlots, decodeResources, decodeShipAttributes } from "../bridge/fitting.ts";
+import { buildSlots, decodeChargeFits, decodeResources, decodeShipAttributes } from "../bridge/fitting.ts";
 import { deriveShipStats } from "../bridge/shipStats.ts";
 import {
   decodeBlueprints,
@@ -1665,6 +1665,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       type: "fitting/loaded",
       activeShipID: reads.activeShipID,
       slots: buildSlots(reads.slots, reads.shipInfo, reads.online),
+      chargeFits: decodeChargeFits(reads.chargeFits),
       resources: decodeResources(reads.shipInfo),
       // R21 — the derived statistics come off the SAME ShipGetInfo attribute
       // map as the resource bars. No extra read, and nothing re-simulated:

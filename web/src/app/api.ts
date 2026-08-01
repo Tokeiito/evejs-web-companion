@@ -676,6 +676,11 @@ export interface RawFittingReads {
     readonly shipInfo: string | null;
     readonly online: string | null;
   };
+  /**
+   * Per-module-type charge fitment, for SORTING the ammo picker only. Advisory:
+   * the server decides what actually loads.
+   */
+  readonly chargeFits: JsonValue;
 }
 
 /** Read the active ship's fitting: slots, resources, and online state. */
@@ -687,6 +692,7 @@ export async function loadFitting(options: ApiOptions = {}): Promise<RawFittingR
     slots: data.slots ?? null,
     shipInfo: data.shipInfo ?? null,
     online: data.online ?? null,
+    chargeFits: data.chargeFits ?? null,
     errors: {
       slots: typeof errors.slots === "string" ? errors.slots : null,
       shipInfo: typeof errors.shipInfo === "string" ? errors.shipInfo : null,
