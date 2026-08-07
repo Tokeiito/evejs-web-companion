@@ -43,7 +43,7 @@
 // readiness are visible, so adding fixed settle ticks after a successful return
 // only hides state that is already safe to re-read.
 
-import { refusalWords } from "../bridge/refusals.ts";
+import { isTransportTransient, refusalWords } from "../bridge/refusals.ts";
 import { surfaceDistanceMeters } from "../space/overview.ts";
 import type { FlightStatus, SpaceSnapshot } from "../store/types.ts";
 import type { RouteHop } from "./routeSolver.ts";
@@ -336,6 +336,15 @@ export const MAX_SILENT_DOCK_ATTEMPTS = 10;
 // system scene during a jump handoff — the ship is fine, so retry a few cycles
 // before pausing rather than giving up on the first slow read.
 const MAX_STATUS_READ_FAILURES = 5;
+// The SAME tolerance for issued ACTIONS. A gateway timeout on a warp/jump/dock
+// call says nothing about what the game decided — the command may have landed
+// an instant after the abort — so it is never read as a refusal. The loop
+// settles, re-reads authoritative state, and lets the decision re-issue if the
+// world says the move did not take; only a STREAK of unanswered actions pauses.
+// Reset the moment any action reaches the server and answers.
+export const MAX_ACTION_TRANSPORT_FAILURES = 3;
+// Give a busy gateway a breath before the re-read (same window as a move).
+const SETTLE_TRANSPORT = 2;
 // A gate approach from an autopilot-warp landing point can take many ticks to
 // close into jump range; bound it generously (separate from MAX_JUMP_ATTEMPTS,
 // which guards genuinely-fatal jump refusals).
@@ -376,6 +385,8 @@ interface LoopMemory {
   /** Consecutive dock decisions with nothing in between (the silent-decline bound). */
   silentDockAttempts: number;
   statusReadFailures: number;
+  /** Consecutive issued actions whose call never got an answer (transport). */
+  actionTransportFailures: number;
   settleTicks: number;
   action: string | null;
   phase: string | null;
@@ -400,6 +411,7 @@ function freshMemory(): LoopMemory {
     warpAttempts: 0,
     silentDockAttempts: 0,
     statusReadFailures: 0,
+    actionTransportFailures: 0,
     settleTicks: 0,
     action: null,
     phase: null,
@@ -790,7 +802,7 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotController {
           // The BFF resolves only after the undocked location/scene/ego is
           // authoritative. The next tick can decide from that ready state.
           memory.settleTicks = 0;
-          return;
+          break;
         case "warp":
           await deps.warp(action.destinationID);
           memory.warpedInSystem = sys;
@@ -799,7 +811,7 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotController {
           memory.approachCycles = 0;
           memory.approachWaitCycles = 0;
           memory.settleTicks = SETTLE_WARP;
-          return;
+          break;
         case "approach":
           await deps.approach(action.gateID);
           // Approached; clear the pending flag so the next decision retries the
@@ -810,7 +822,7 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotController {
           memory.approachingTargetID = action.gateID;
           memory.approachWaitCycles = 0;
           memory.settleTicks = SETTLE_APPROACH;
-          return;
+          break;
         case "jump":
           await deps.jump(action.fromGateID, action.toGateID);
           memory.jumpedFromSystem = sys;
@@ -820,16 +832,18 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotController {
           memory.approachWaitCycles = 0;
           // The BFF has already observed the destination system and ready ship.
           memory.settleTicks = 0;
-          return;
+          break;
         case "dock":
           await deps.dock(action.stationID);
           memory.approachingTargetID = null;
           // A successful return includes authoritative docked location state.
           memory.settleTicks = 0;
-          return;
+          break;
         default:
           return;
       }
+      // The call reached the server and answered: the transport streak is over.
+      memory.actionTransportFailures = 0;
     } catch (error) {
       handleActionError(action, error, sys);
     }
@@ -838,6 +852,31 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotController {
   function handleActionError(action: AutopilotAction, error: unknown, sys: number): void {
     if (deps.isSessionLost(error)) {
       setError("The live session ended (idle timeout or another client took over).");
+      return;
+    }
+    // A transport failure is NOT a refusal — the wire did not answer, and the
+    // command may have landed an instant after the abort. Reads already get
+    // this tolerance (MAX_STATUS_READ_FAILURES); an issued action gets the
+    // same: settle, re-read authoritative state, and only a STREAK of
+    // unanswered actions pauses the flight.
+    if (isTransportTransient(error)) {
+      memory.actionTransportFailures += 1;
+      if (memory.actionTransportFailures > MAX_ACTION_TRANSPORT_FAILURES) {
+        setPause(
+          `${labelFor(action)} got no answer from the server after ${memory.actionTransportFailures} tries: ${refusalWords(deps.refusalReason(error))}`,
+        );
+        return;
+      }
+      // The command never reached the game, so it must not count against the
+      // silent-decline bounds — those measure commands the server SAW and
+      // quietly ignored, and this one was seen by nobody. (The decision
+      // counters increment before issue().)
+      if (action.kind === "warp") {
+        memory.warpAttempts = Math.max(0, memory.warpAttempts - 1);
+      } else if (action.kind === "dock") {
+        memory.silentDockAttempts = Math.max(0, memory.silentDockAttempts - 1);
+      }
+      memory.settleTicks = SETTLE_TRANSPORT;
       return;
     }
     // ⚠ TWO STRINGS, AND THEY ARE NOT INTERCHANGEABLE (R31).

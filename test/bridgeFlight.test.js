@@ -489,6 +489,48 @@ test("an uncertain jump timeout stays latched and blocks a repeated write", asyn
   );
 });
 
+test("a warp that succeeded is not reported failed because the after-read timed out", async () => {
+  const gateway = fakeGateway();
+  gateway.state.inSpace = true;
+  gateway.state.shipMode = "STOP";
+  const readFlightStatus = gateway.readFlightStatus.bind(gateway);
+  let warped = false;
+  const callBoundMethod = gateway.callBoundMethod.bind(gateway);
+  gateway.callBoundMethod = async (...args) => {
+    const outcome = await callBoundMethod(...args);
+    if (args[1] === "CmdWarpToStuffAutopilot") {
+      warped = true;
+    }
+    return outcome;
+  };
+  gateway.readFlightStatus = async (...args) => {
+    if (warped) {
+      // The gateway is busiest right after a movement command: the follow-up
+      // snapshot aborts the way a 10 s AbortError surfaces.
+      const error = new Error("EveJS gateway timed out.");
+      error.code = "EVE_GATEWAY_TIMEOUT";
+      throw error;
+    }
+    return readFlightStatus(...args);
+  };
+
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+
+  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/flight/warp", {
+    method: "POST",
+    body: { destinationID: GATE_ID },
+  });
+  assert.equal(response.status, 200, JSON.stringify(payload));
+  assert.equal(payload.ok, true);
+  // The flight degrades to the before-snapshot rather than failing the command.
+  assert.equal(payload.flight.inSpace, true);
+  assert.equal(
+    gateway.calls.boundCall.filter((call) => call.method === "CmdWarpToStuffAutopilot").length,
+    1,
+  );
+});
+
 test("a latched transition heals on the next authoritative status read", async () => {
   const gateway = fakeGateway();
   gateway.state.inSpace = true;

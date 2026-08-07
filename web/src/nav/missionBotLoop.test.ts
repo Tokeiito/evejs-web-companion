@@ -1114,3 +1114,64 @@ test("the readout always carries a WHY while running", async () => {
     assert.ok(p.why, `every pushed readout must say why: ${JSON.stringify(p)}`);
   }
 });
+
+// --- Transient transport on PRESSES (the false "server took too long") -------
+//
+// A gateway timeout on an issued press says nothing about what the game
+// decided — every rung already confirms its press against the authority that
+// owns the fact, so the honest response is settle + re-observe + bounded
+// retry, never a terminal "was refused" on the first unanswered call.
+
+test("a transport timeout on a press is retried against the authority, not read as a refusal", async () => {
+  const h = harness({ conversation: NO_MISSION });
+  let failuresLeft = 2;
+  const doAgentAction = h.deps.doAgentAction;
+  const bot = createMissionBot({
+    ...h.deps,
+    doAgentAction: async (agentID, actionID) => {
+      if (failuresLeft > 0) {
+        failuresLeft -= 1;
+        const error = new Error("EveJS gateway timed out.") as Error & { code?: string };
+        error.code = "EVE_GATEWAY_TIMEOUT";
+        throw error;
+      }
+      return doAgentAction(agentID, actionID);
+    },
+  });
+  bot.start(PLAN);
+  await ticks(bot, 8);
+
+  assert.equal(bot.snapshot().status, "running", "two unanswered presses must not end the run");
+  assert.equal(
+    h.calls.filter((call) => call.startsWith("do:")).length,
+    1,
+    "the third press reached the agent",
+  );
+});
+
+test("BOUNDED: a wire that never answers pauses the run with the transport truth", async () => {
+  const h = harness({ conversation: NO_MISSION });
+  const bot = createMissionBot({
+    ...h.deps,
+    doAgentAction: async () => {
+      const error = new Error("EveJS gateway timed out.") as Error & { code?: string };
+      error.code = "EVE_GATEWAY_TIMEOUT";
+      throw error;
+    },
+  });
+  bot.start(PLAN);
+  await ticks(bot, 14);
+
+  const snap = bot.snapshot();
+  assert.equal(snap.status, "paused");
+  assert.match(
+    String(snap.failureReason),
+    /no answer from the server/i,
+    "the pause must say the wire did not answer — not that the game refused",
+  );
+  assert.doesNotMatch(
+    String(snap.failureReason),
+    /asked for work/i,
+    "presses that never arrived must not be charged to the request bound",
+  );
+});

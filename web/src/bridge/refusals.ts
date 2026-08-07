@@ -252,6 +252,35 @@ const BRIDGE_REFUSALS: Readonly<Record<string, string>> = Object.freeze({
   BRIDGE_BAD_RESPONSE: "The server's answer could not be read.",
 });
 
+// --- Transport-transient errors ----------------------------------------------
+//
+// These three codes mean the PIPE did not answer — they say nothing about what
+// the game decided, and the command may well have landed (a 10 s abort races a
+// call the gateway finishes an instant later). A decide-loop must therefore
+// never read one as a refusal: the honest response is to re-read authoritative
+// state next tick and let a BOUNDED retry settle it, exactly as both bot loops
+// already do for a failed status read. Kept here because this file is the one
+// place the vocabulary of arriving errors is pinned.
+const TRANSIENT_TRANSPORT_CODES: ReadonlySet<string> = new Set([
+  "EVE_GATEWAY_TIMEOUT",
+  "EVE_GATEWAY_UNREACHABLE",
+  "BRIDGE_NETWORK_ERROR",
+]);
+
+/**
+ * Is this thrown error a transport failure whose outcome is UNKNOWN (retry
+ * after re-observing), as opposed to the game refusing (classify) or the
+ * session being gone (stop)? Duck-typed on `.code` so the nav loops need no
+ * dependency on the app layer's error class.
+ */
+export function isTransportTransient(error: unknown): boolean {
+  const code =
+    error && typeof error === "object" && "code" in error
+      ? String((error as { code?: unknown }).code ?? "")
+      : "";
+  return TRANSIENT_TRANSPORT_CODES.has(code);
+}
+
 // --- R33: the refusals we can see coming ------------------------------------
 //
 // ⚠ THESE ARE NOT WIRE STRINGS, and they are deliberately NOT in

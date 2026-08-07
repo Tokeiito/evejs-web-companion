@@ -64,7 +64,7 @@
 //    The jump cap and the volume check are applied BEFORE Accept, never after —
 //    see `gateOffer`.
 
-import { refusalWords } from "../bridge/refusals.ts";
+import { isTransportTransient, refusalWords } from "../bridge/refusals.ts";
 import type { AutopilotStatus } from "./autopilotLoop.ts";
 import type {
   AgentConversation,
@@ -149,6 +149,16 @@ export const MAX_DECLINE_ATTEMPTS = 3;
 export const MAX_TRAVEL_RESTARTS = 3;
 /** Transient read failures tolerated before the loop stops trusting the read. */
 export const MAX_READ_FAILURES = 5;
+/**
+ * The SAME tolerance for issued ACTIONS. A gateway timeout on an agent press,
+ * a cargo move, or a travel start says nothing about what the game decided —
+ * the call may have landed an instant after the abort — so it is never read as
+ * a refusal. The loop settles, re-reads the authority that owns the fact (the
+ * whole design of this file), and only a STREAK of unanswered actions pauses.
+ */
+export const MAX_ACTION_TRANSPORT_FAILURES = 3;
+/** Give a busy gateway a breath before the re-read (same window as a move). */
+const SETTLE_TRANSPORT = 2;
 /**
  * Ticks spent waiting on a travel that reports itself running. At the 2 s
  * cadence this is an hour — far longer than any high-sec courier route — so
@@ -980,6 +990,8 @@ interface BotMemory {
   travelRestarts: number;
   travelWaitCycles: number;
   readFailures: number;
+  /** Consecutive issued actions whose call never got an answer (transport). */
+  actionTransportFailures: number;
 }
 
 function freshMemory(): BotMemory {
@@ -1012,6 +1024,7 @@ function freshMemory(): BotMemory {
     travelRestarts: 0,
     travelWaitCycles: 0,
     readFailures: 0,
+    actionTransportFailures: 0,
   };
 }
 
@@ -1359,7 +1372,7 @@ export function createMissionBot(deps: MissionBotDeps): MissionBotController {
         case "decline":
           await deps.doAgentAction(current.agentID, action.actionID);
           memory.settleTicks = SETTLE_AGENT;
-          return;
+          break;
         case "complete": {
           // ⚠ THE ONE TEST THAT MATTERS. `completed()` is `=== true`; a refusal
           // comes back 200 with an empty actions list and `null`, and reading
@@ -1379,32 +1392,84 @@ export function createMissionBot(deps: MissionBotDeps): MissionBotController {
             memory.why = "The job is handed in and paid.";
           }
           memory.settleTicks = SETTLE_AGENT;
-          return;
+          break;
         }
         case "loadPackage":
           await deps.loadPackage(action.typeID, action.quantity);
           memory.settleTicks = SETTLE_CARGO;
-          return;
+          break;
         case "unloadPackage":
           await deps.unloadPackage(action.itemIDs, action.quantity);
           memory.settleTicks = SETTLE_CARGO;
-          return;
+          break;
         case "travel":
           await deps.startTravel(action.stationID);
           memory.travellingTo = action.stationID;
           memory.settleTicks = SETTLE_TRAVEL;
-          return;
+          break;
         default:
           return;
       }
+      // The call reached the server and answered: the transport streak is over.
+      memory.actionTransportFailures = 0;
     } catch (error) {
       handleActionError(action, error);
+    }
+  }
+
+  /** Roll back the rung counter bound() charged for a press that never arrived. */
+  function uncountAttempt(action: MissionBotAction): void {
+    switch (action.kind) {
+      case "request":
+        memory.requestAttempts = Math.max(0, memory.requestAttempts - 1);
+        return;
+      case "accept":
+        memory.acceptAttempts = Math.max(0, memory.acceptAttempts - 1);
+        return;
+      case "decline":
+        memory.declineAttempts = Math.max(0, memory.declineAttempts - 1);
+        return;
+      case "loadPackage":
+        memory.loadAttempts = Math.max(0, memory.loadAttempts - 1);
+        return;
+      case "unloadPackage":
+        memory.unloadAttempts = Math.max(0, memory.unloadAttempts - 1);
+        return;
+      case "complete":
+        memory.completeAttempts = Math.max(0, memory.completeAttempts - 1);
+        return;
+      case "travel":
+        memory.travelRestarts = Math.max(0, memory.travelRestarts - 1);
+        return;
+      default:
+        return;
     }
   }
 
   function handleActionError(action: MissionBotAction, error: unknown): void {
     if (deps.isSessionLost(error)) {
       setError("The live session ended (idle timeout or another client took over).");
+      return;
+    }
+    // A transport failure is NOT a refusal — the wire did not answer, and the
+    // press may have landed an instant after the abort. Every rung already
+    // confirms its action against the authority that owns the fact, so the
+    // honest response is to settle, re-observe, and let the bounded rung
+    // counters govern a re-issue; only a STREAK of unanswered calls pauses.
+    if (isTransportTransient(error)) {
+      memory.actionTransportFailures += 1;
+      if (memory.actionTransportFailures > MAX_ACTION_TRANSPORT_FAILURES) {
+        setPause(
+          `${actionText(action)} got no answer from the server after ${memory.actionTransportFailures} tries: ${refusalWords(deps.refusalReason(error))}`,
+        );
+        return;
+      }
+      // The press never reached the game, so it must not count against the
+      // rung's own bound — those counters measure presses the authority saw
+      // and did not act on, and this one was seen by nobody. (bound() runs
+      // before issue(), so the increment has already happened.)
+      uncountAttempt(action);
+      memory.settleTicks = SETTLE_TRANSPORT;
       return;
     }
     // ⚠ TWO STRINGS, AND THEY ARE NOT INTERCHANGEABLE (R31). The raw server text

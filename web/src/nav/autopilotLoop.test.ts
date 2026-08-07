@@ -1019,6 +1019,60 @@ test("an unexpected refusal still PAUSES rather than guessing, even when measuri
   assert.match(String(controller.snapshot().failureReason), /standing/i);
 });
 
+// --- Transient transport on ACTIONS (the false "server took too long") -------
+//
+// A gateway timeout on an issued command says nothing about what the game
+// decided. Reads already had this tolerance (MAX_STATUS_READ_FAILURES); these
+// pin the same for actions: settle, re-observe, retry bounded — never a
+// terminal "refused" on the first unanswered call.
+
+test("a gateway timeout on an action is settled and retried, and the flight still arrives", async () => {
+  const mock = makeMock({ dockRefusals: 0 });
+  const { deps } = makeDeps(mock);
+  let failuresLeft = 2;
+  const controller = createAutopilot({
+    ...deps,
+    warp: async (dest: number) => {
+      if (failuresLeft > 0) {
+        failuresLeft -= 1;
+        throw refusal("EveJS gateway timed out.", "EVE_GATEWAY_TIMEOUT");
+      }
+      await mock.warp(dest);
+    },
+  });
+  controller.start(PLAN);
+  await drive(controller, 120);
+
+  assert.equal(
+    controller.snapshot().status,
+    "arrived",
+    "two unanswered warp calls must not end the flight",
+  );
+  assert.ok(mock.calls.some((c) => c.m === "jump"), "it still jumped");
+  assert.ok(mock.calls.some((c) => c.m === "dock"), "it still docked");
+});
+
+test("BOUNDED: a wire that never answers pauses with the transport truth, not a fake refusal", async () => {
+  const mock = makeMock({ dockRefusals: 0 });
+  const { deps } = makeDeps(mock);
+  const controller = createAutopilot({
+    ...deps,
+    warp: async () => {
+      throw refusal("EveJS gateway timed out.", "EVE_GATEWAY_TIMEOUT");
+    },
+  });
+  controller.start(PLAN);
+  await drive(controller, 60);
+
+  const snap = controller.snapshot();
+  assert.equal(snap.status, "paused");
+  assert.match(
+    String(snap.failureReason),
+    /no answer from the server/i,
+    "the pause must say the wire did not answer — not that the game refused",
+  );
+});
+
 // --- R24 slice B: the smart Dock command ------------------------------------
 
 test("Dock ladder: a zero-hop plan warps, approaches and docks, and only ARRIVES when flight status says docked", async () => {

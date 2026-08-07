@@ -14555,6 +14555,27 @@ async function readHeldFlight(held, webSessionID) {
   }
 }
 
+// A movement command that already SUCCEEDED must not be reported as a failure
+// because the follow-up snapshot read aborted — the gateway is busiest right
+// after a movement command, so the after-read is the piece most likely to time
+// out. The answer degrades to the before-snapshot (one command stale; every
+// client re-polls flight status within a couple of seconds) instead of a 502
+// for a command the sim is already executing. A lost session still propagates.
+async function readHeldFlightAfterCommand(held, webSessionID, before) {
+  try {
+    return await readHeldFlight(held, webSessionID);
+  } catch (error) {
+    if (error && error.code === "SESSION_NOT_FOUND") {
+      throw error;
+    }
+    return {
+      ...before,
+      flight: { ...before.flight, transition: publicTransition(held) },
+      notifications: [],
+    };
+  }
+}
+
 async function readHeldScanner(held, webSessionID) {
   try {
     const outcome = await gateway.readScannerState(held.bridgeSessionID, {
@@ -14868,7 +14889,7 @@ app.post("/api/bridge/flight/warp", requireAuth, async (req, res, next) => {
           [destinationID],
           null,
         );
-    const after = await readHeldFlight(held, req.webSessionID);
+    const after = await readHeldFlightAfterCommand(held, req.webSessionID, before);
     res.json({
       ok: true,
       result: outcome.result,
@@ -14911,7 +14932,7 @@ app.post("/api/bridge/flight/warp-scan", requireAuth, async (req, res, next) => 
       ["scan", target],
       minRange > 0 ? { minRange } : null,
     );
-    const after = await readHeldFlight(held, req.webSessionID);
+    const after = await readHeldFlightAfterCommand(held, req.webSessionID, before);
     res.json({
       ok: true,
       result: outcome.result,
@@ -15001,7 +15022,7 @@ app.post("/api/bridge/flight/warp-bookmark", requireAuth, async (req, res, next)
       ["bookmark", bookmarkID],
       minRange > 0 ? { minRange } : null,
     );
-    const after = await readHeldFlight(held, req.webSessionID);
+    const after = await readHeldFlightAfterCommand(held, req.webSessionID, before);
     res.json({
       ok: true,
       result: outcome.result,
@@ -15291,7 +15312,7 @@ app.post("/api/bridge/flight/approach", requireAuth, async (req, res, next) => {
     const spec = parkBindSpec(before.flight.solarSystemID);
     await boundCall(held, req.webSessionID, spec, "CmdSetSpeedFraction", [1.0], null);
     const outcome = await boundCall(held, req.webSessionID, spec, "CmdFollowBall", [destinationID, range], null);
-    const after = await readHeldFlight(held, req.webSessionID);
+    const after = await readHeldFlightAfterCommand(held, req.webSessionID, before);
     res.json({
       ok: true,
       result: outcome.result,
@@ -15338,7 +15359,7 @@ app.post("/api/bridge/flight/keep-at-range", requireAuth, async (req, res, next)
     const spec = parkBindSpec(before.flight.solarSystemID);
     await boundCall(held, req.webSessionID, spec, "CmdSetSpeedFraction", [1.0], null);
     const outcome = await boundCall(held, req.webSessionID, spec, "CmdFollowBall", [targetID, range], null);
-    const after = await readHeldFlight(held, req.webSessionID);
+    const after = await readHeldFlightAfterCommand(held, req.webSessionID, before);
     res.json({
       ok: true,
       result: outcome.result,
@@ -15382,7 +15403,7 @@ app.post("/api/bridge/flight/orbit", requireAuth, async (req, res, next) => {
     const spec = parkBindSpec(before.flight.solarSystemID);
     await boundCall(held, req.webSessionID, spec, "CmdSetSpeedFraction", [1.0], null);
     const outcome = await boundCall(held, req.webSessionID, spec, "CmdOrbit", [targetID, range], null);
-    const after = await readHeldFlight(held, req.webSessionID);
+    const after = await readHeldFlightAfterCommand(held, req.webSessionID, before);
     res.json({
       ok: true,
       result: outcome.result,
@@ -15421,7 +15442,7 @@ app.post("/api/bridge/flight/align", requireAuth, async (req, res, next) => {
       [],
       { dstID: targetID, bookmarkID: null },
     );
-    const after = await readHeldFlight(held, req.webSessionID);
+    const after = await readHeldFlightAfterCommand(held, req.webSessionID, before);
     res.json({
       ok: true,
       result: outcome.result,
@@ -15456,7 +15477,7 @@ app.post("/api/bridge/flight/stop", requireAuth, async (req, res, next) => {
       [],
       null,
     );
-    const after = await readHeldFlight(held, req.webSessionID);
+    const after = await readHeldFlightAfterCommand(held, req.webSessionID, before);
     res.json({
       ok: true,
       result: outcome.result,
