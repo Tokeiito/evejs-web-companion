@@ -81,6 +81,18 @@ export interface ApiOptions {
 //     `credentials: "same-origin"` as the migration fallback.
 // Attaching it here rather than at each call site is the point: there are well
 // over a hundred callers below and none of them should know about it.
+/**
+ * The browser-side deadline on every BFF request. The BFF's own longest legal
+ * wait is a session-change route: the ten-second next-mutation cooldown plus
+ * the forty-five-second readiness barrier — so this sits safely above that.
+ * Without ANY deadline, a half-dead socket (sleeping laptop, wedged proxy)
+ * froze a bot mid-tick forever with the panel saying "running": the await
+ * simply never settled, and no bound can count a tick that never ends. The
+ * abort surfaces as BRIDGE_NETWORK_ERROR, which the loops already treat as
+ * transport-transient (settle, re-observe, bounded retry).
+ */
+const REQUEST_DEADLINE_MS = 65_000;
+
 async function requestJson(
   path: string,
   init: RequestInit,
@@ -91,6 +103,7 @@ async function requestJson(
   try {
     response = await doFetch(`${options.baseUrl ?? ""}${path}`, {
       credentials: "same-origin",
+      signal: AbortSignal.timeout(REQUEST_DEADLINE_MS),
       ...init,
       headers: {
         ...("token" in options ? tokenAuthHeaders(options.token) : sessionAuthHeaders()),

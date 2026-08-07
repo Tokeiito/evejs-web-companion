@@ -63,3 +63,34 @@ test("readonlySignal exposes get/subscribe but no setter surface", () => {
   assert.equal((readable as { set?: unknown }).set, undefined);
   assert.equal((readable as { update?: unknown }).update, undefined);
 });
+
+test("a throwing subscriber cannot take down the producer, and the rest still hear", () => {
+  const signal = createSignal(0);
+  const seen: number[] = [];
+  const errors: unknown[] = [];
+  const consoleError = console.error;
+  console.error = (error: unknown) => {
+    errors.push(error);
+  };
+  try {
+    // Throws on DELIVERY (not on the synchronous subscribe echo, which runs on
+    // the subscriber's own stack and is theirs to handle).
+    signal.subscribe((value) => {
+      if (value > 0) {
+        throw new Error("bad subscriber");
+      }
+    });
+    signal.subscribe((value) => seen.push(value));
+
+    // The producer's set() must survive — the bot loops emit progress through
+    // here from inside their tick, and a view effect throwing back through
+    // that emit used to kill the loop while the panel said "running".
+    signal.set(1);
+
+    assert.deepEqual(seen, [0, 1], "the second listener still heard the change");
+    assert.equal(signal.get(), 1);
+    assert.equal(errors.length, 1, "the throw surfaced instead of vanishing");
+  } finally {
+    console.error = consoleError;
+  }
+});

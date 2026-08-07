@@ -172,6 +172,16 @@ const SETTLE_TRANSPORT = 2;
  */
 export const MAX_SESSION_CHANGE_WAITS = 12;
 /**
+ * THE WAIT WATCHDOG. Every named counter above bounds a specific press; this
+ * bounds the WAITS — a docked rung that keeps answering the same wait (an
+ * unreadable journal, an agent that never offers a Request button, a briefing
+ * that never carries cargo fields because the accepted mission is not a
+ * courier) is stuck, and five minutes of one unchanged reason is long past any
+ * read hiccup. Flying is excluded: it has its own hour-scale bound. This is a
+ * watchdog by construction — it also bounds wait rungs nobody has found yet.
+ */
+export const MAX_STUCK_WAIT_TICKS = 150;
+/**
  * Ticks spent waiting on a travel that reports itself running. At the 2 s
  * cadence this is an hour — far longer than any high-sec courier route — so
  * reaching it means the flight is not progressing and the bot must say so.
@@ -1006,6 +1016,11 @@ interface BotMemory {
   actionTransportFailures: number;
   /** Consecutive presses turned back while a session change was settling. */
   sessionChangeWaits: number;
+  /** The wait watchdog: the reason being waited on, and for how many ticks. */
+  stuckWaitReason: string | null;
+  stuckWaitTicks: number;
+  /** The last swallowed read failure, in player words — for the watchdog. */
+  lastReadFailure: string | null;
 }
 
 function freshMemory(): BotMemory {
@@ -1040,6 +1055,9 @@ function freshMemory(): BotMemory {
     readFailures: 0,
     actionTransportFailures: 0,
     sessionChangeWaits: 0,
+    stuckWaitReason: null,
+    stuckWaitTicks: 0,
+    lastReadFailure: null,
   };
 }
 
@@ -1163,6 +1181,10 @@ export function createMissionBot(deps: MissionBotDeps): MissionBotController {
       if (deps.isSessionLost(error)) {
         throw error;
       }
+      // Remembered, not shown: if the wait watchdog later fires because a rung
+      // kept waiting on a read that kept failing, the pause can say WHY the
+      // read failed instead of only what was being waited on.
+      memory.lastReadFailure = refusalWords(deps.refusalReason(error));
       return null;
     }
   }
@@ -1609,6 +1631,31 @@ export function createMissionBot(deps: MissionBotDeps): MissionBotController {
     memory.why = decision.why;
     memory.action = actionText(decision.action);
     memory.phase = phaseFor(decision.action);
+
+    // The wait watchdog — see MAX_STUCK_WAIT_TICKS. Same reason, tick after
+    // tick, means the rung's authority is never going to change on its own.
+    if (decision.action.kind === "wait" && decision.action.reason !== "flying") {
+      if (memory.stuckWaitReason === decision.action.reason) {
+        memory.stuckWaitTicks += 1;
+        if (memory.stuckWaitTicks > MAX_STUCK_WAIT_TICKS) {
+          setPause(
+            `Nothing changed for five minutes while the bot was waiting — ${decision.why}${
+              memory.lastReadFailure
+                ? ` The last read that failed said: ${memory.lastReadFailure}`
+                : ""
+            } The bot stopped so you can take a look.`,
+          );
+          emit();
+          return { kind: "wait", reason: "stuck" };
+        }
+      } else {
+        memory.stuckWaitReason = decision.action.reason;
+        memory.stuckWaitTicks = 1;
+      }
+    } else {
+      memory.stuckWaitReason = null;
+      memory.stuckWaitTicks = 0;
+    }
     // A caution is STICKY for the mission it was raised on: the player must be
     // able to see, at the point the job is handed in, that the load it was based
     // on could not be certain. It clears when the next job is taken on.
@@ -1647,7 +1694,26 @@ export function createMissionBot(deps: MissionBotDeps): MissionBotController {
   async function run(): Promise<void> {
     const token = runToken;
     while (token === runToken && memory.status === "running") {
-      await tick();
+      try {
+        await tick();
+      } catch (error) {
+        // The backstop: tick() handles its own read/decide/issue failures, so
+        // reaching here means something truly unexpected threw. The loop must
+        // never die silently with the panel still saying "running" — that was
+        // the observed failure shape when a store subscriber threw back
+        // through an emit. Stop visibly instead.
+        setError(
+          `The bot hit an unexpected error and stopped: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+        try {
+          emit();
+        } catch {
+          // The subscriber may be the very thing that is broken.
+        }
+        return;
+      }
       if (token !== runToken || memory.status !== "running") {
         break;
       }
@@ -1692,6 +1758,24 @@ export function createMissionBot(deps: MissionBotDeps): MissionBotController {
         memory.failureReason = null;
         memory.phase = "Resuming";
         memory.why = "Picking up where it left off.";
+        // A resume is CONSENT TO TRY AGAIN. Every bound counter is spent state
+        // from the run that paused — left in place, the first post-resume tick
+        // re-decides the same action, trips the same spent bound, and pauses
+        // with the identical message: resume that can never work. Mission
+        // progress (completions, earnings, the flight in hand) is kept.
+        memory.requestAttempts = 0;
+        memory.acceptAttempts = 0;
+        memory.declineAttempts = 0;
+        memory.loadAttempts = 0;
+        memory.unloadAttempts = 0;
+        memory.completeAttempts = 0;
+        memory.travelRestarts = 0;
+        memory.travelWaitCycles = 0;
+        memory.readFailures = 0;
+        memory.actionTransportFailures = 0;
+        memory.sessionChangeWaits = 0;
+        memory.stuckWaitReason = null;
+        memory.stuckWaitTicks = 0;
         runToken += 1;
         emit();
       }

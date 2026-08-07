@@ -117,7 +117,11 @@ export async function callMethod<TResult = JsonValue>(
       },
       credentials: "same-origin",
       body: JSON.stringify(body),
-      ...(options.signal ? { signal: options.signal } : {}),
+      // The same 65 s browser-side deadline as api.ts requestJson (see the
+      // note there): a half-dead socket must abort into BRIDGE_NETWORK_ERROR
+      // rather than freeze the awaiting loop forever. A caller's own signal
+      // still wins.
+      signal: options.signal ?? AbortSignal.timeout(65_000),
     });
   } catch (cause) {
     throw new BridgeCallError(

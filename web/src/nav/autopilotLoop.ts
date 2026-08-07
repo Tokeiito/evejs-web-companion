@@ -1289,7 +1289,25 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotController {
   async function run(): Promise<void> {
     const token = runToken;
     while (token === runToken && memory.status === "running") {
-      await tick();
+      try {
+        await tick();
+      } catch (error) {
+        // The backstop: tick() handles its own read/decide/issue failures, so
+        // reaching here means something truly unexpected threw. Never die
+        // silently with the panel still saying "running" — and never leave
+        // the mission bot riding a driver that no longer exists.
+        setError(
+          `The autopilot hit an unexpected error and stopped: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+        try {
+          emit();
+        } catch {
+          // The subscriber may be the very thing that is broken.
+        }
+        return;
+      }
       if (token !== runToken || memory.status !== "running") {
         break;
       }
@@ -1320,6 +1338,21 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotController {
         memory.status = "running";
         memory.failureReason = null;
         memory.phase = "Resuming";
+        // A resume is CONSENT TO TRY AGAIN: the spent bound that paused the
+        // flight must not re-trip on the first post-resume decision with the
+        // identical message. Route progress (hops completed) is kept.
+        memory.dockAttempts = 0;
+        memory.jumpAttempts = 0;
+        memory.warpTargetID = null;
+        memory.warpAttempts = 0;
+        memory.silentDockAttempts = 0;
+        memory.approachCycles = 0;
+        memory.approachWaitCycles = 0;
+        memory.approachIssueTargetID = null;
+        memory.approachIssueAttempts = 0;
+        memory.statusReadFailures = 0;
+        memory.actionTransportFailures = 0;
+        memory.sessionChangeWaits = 0;
         runToken += 1;
         emit();
       }

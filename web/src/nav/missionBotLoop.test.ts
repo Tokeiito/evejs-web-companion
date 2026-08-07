@@ -34,6 +34,7 @@ import {
   MAX_LOAD_ATTEMPTS,
   MAX_REQUEST_ATTEMPTS,
   MAX_DECLINE_ATTEMPTS,
+  MAX_STUCK_WAIT_TICKS,
   MAX_TRAVEL_RESTARTS,
   MAX_UNLOAD_ATTEMPTS,
   agentActionID,
@@ -1279,4 +1280,70 @@ test("a press turned back by a settling session change is waited out, not paused
     1,
     "the sixth press reached the agent",
   );
+});
+
+// --- The wait watchdog, resume, and the run() backstop -----------------------
+
+test("WATCHDOG: a wait that never changes pauses after five minutes with the reason on screen", async () => {
+  // A non-courier mission accepted from the same agent: the journal says
+  // accepted, the briefing never carries cargo fields, so the courier ladder
+  // waits on "reading the cargo" forever — no retry changes a combat
+  // briefing. The watchdog is what ends it, and it says what it was stuck on.
+  const h = harness({
+    journal: journalAccepted(),
+    briefing: { ...BRIEFING, cargoTypeID: null, cargoQuantity: null },
+    cargo: cargo([]),
+  });
+  const bot = createMissionBot(h.deps);
+  bot.start(PLAN);
+  await ticks(bot, MAX_STUCK_WAIT_TICKS + 5);
+
+  const snap = bot.snapshot();
+  assert.equal(snap.status, "paused", "an unchanging wait must not run forever");
+  assert.match(String(snap.failureReason), /five minutes/i);
+});
+
+test("RESUME WORKS: a bounded pause resumes into a fresh attempt, not an instant re-pause", async () => {
+  const h = harness({
+    status: status({ docked: false, inSpace: true }),
+    journal: journalEmpty(),
+    travel: {
+      status: "arrived",
+      destinationStationID: 60009999, // stale: the previous leg's station
+      remainingJumps: 0,
+      failureReason: null,
+    },
+  });
+  const bot = createMissionBot(h.deps);
+  bot.start(PLAN);
+  await ticks(bot, 20);
+  assert.equal(bot.snapshot().status, "paused", "the travel bound trips first");
+
+  bot.resume();
+  await ticks(bot, 3);
+  assert.equal(
+    bot.snapshot().status,
+    "running",
+    "a resume is consent to try again — the spent bound must not re-trip on the first tick",
+  );
+});
+
+test("BACKSTOP: a subscriber that throws through emit stops the bot VISIBLY, not silently", async () => {
+  const h = harness({ conversation: NO_MISSION });
+  let emitted = 0;
+  const bot = createMissionBot({
+    ...h.deps,
+    onProgress: () => {
+      emitted += 1;
+      if (emitted > 2) {
+        throw new Error("view effect exploded");
+      }
+    },
+  });
+  bot.start(PLAN);
+  await bot.run();
+
+  const snap = bot.snapshot();
+  assert.equal(snap.status, "error", "the loop must stop in a state the panel can render");
+  assert.match(String(snap.failureReason), /unexpected error/i);
 });

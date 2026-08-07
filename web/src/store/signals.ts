@@ -45,7 +45,23 @@ export function createSignal<T>(
     value = next;
     // Snapshot so a listener unsubscribing mid-notify cannot skip others.
     for (const listener of [...listeners]) {
-      listener(value);
+      try {
+        listener(value);
+      } catch (error) {
+        // A subscriber that throws must not take down the PRODUCER. The bot
+        // loops emit progress through here from inside their tick — a view
+        // effect throwing back through that emit used to kill the loop while
+        // the panel kept saying "running". Delivery to the remaining
+        // listeners continues, and the error still SURFACES: in the browser
+        // `reportError` fires the same window "error" event an uncaught throw
+        // would (the overlay banner appears); under Node the console carries
+        // it.
+        if (typeof reportError === "function") {
+          reportError(error);
+        } else {
+          console.error(error);
+        }
+      }
     }
   };
 
