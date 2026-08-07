@@ -1021,6 +1021,15 @@ interface BotMemory {
   stuckWaitTicks: number;
   /** The last swallowed read failure, in player words — for the watchdog. */
   lastReadFailure: string | null;
+  /**
+   * A Complete was PRESSED and its call never answered (transport/barrier
+   * timeout) — the outcome is unknown until the journal resolves it. Since the
+   * server made mission settlement asynchronous, a slow payout can outlive the
+   * call budget while still landing, and a bot that only counts completions
+   * out of the call's own answer miscounts exactly those: maxMissions
+   * overshoots (an unsanctioned extra run) and the ISK/LP readout reads 0.
+   */
+  completeOutcomeUnknown: boolean;
 }
 
 function freshMemory(): BotMemory {
@@ -1058,6 +1067,7 @@ function freshMemory(): BotMemory {
     stuckWaitReason: null,
     stuckWaitTicks: 0,
     lastReadFailure: null,
+    completeOutcomeUnknown: false,
   };
 }
 
@@ -1502,6 +1512,9 @@ export function createMissionBot(deps: MissionBotDeps): MissionBotController {
         return;
       }
       uncountAttempt(action);
+      if (action.kind === "complete") {
+        memory.completeOutcomeUnknown = true;
+      }
       memory.settleTicks = SETTLE_TRANSPORT;
       return;
     }
@@ -1525,6 +1538,12 @@ export function createMissionBot(deps: MissionBotDeps): MissionBotController {
       // and did not act on, and this one was seen by nobody. (bound() runs
       // before issue(), so the increment has already happened.)
       uncountAttempt(action);
+      // Except that an unanswered COMPLETE may well have landed — settlement
+      // is asynchronous server-side — so its outcome is remembered as unknown
+      // and the next journal read resolves it (see completeOutcomeUnknown).
+      if (action.kind === "complete") {
+        memory.completeOutcomeUnknown = true;
+      }
       memory.settleTicks = SETTLE_TRANSPORT;
       return;
     }
@@ -1618,6 +1637,26 @@ export function createMissionBot(deps: MissionBotDeps): MissionBotController {
       memory.travelTargetID = null;
       memory.travelRestarts = 0;
       memory.travelWaitCycles = 0;
+    }
+
+    // Resolve an unknown Complete against the journal. Absence normally proves
+    // nothing — quit, decline and expire delete the row identically — but HERE
+    // the only press between the row being seen and the row being gone was our
+    // own Complete, so a vanished row IS the completion landing after its slow
+    // answer. Count it and measure what it paid; a row still present means the
+    // press never took, and the ladder simply presses again, bounded as ever.
+    if (memory.completeOutcomeUnknown && observation.journal !== null) {
+      memory.completeOutcomeUnknown = false;
+      if (missionAccepted(observation.journal, current.agentID) === false) {
+        memory.missionsCompleted += 1;
+        memory.completeAttempts = 0;
+        const after = await safely(() => deps.getBalances());
+        if (after) {
+          memory.iskEarned = subtractAmounts(after.isk, memory.startISK);
+          memory.lpEarned = subtractAmounts(after.lp, memory.startLP);
+        }
+        memory.why = "The job was handed in — the server settled it after a slow answer.";
+      }
     }
 
     describeMission(observation);

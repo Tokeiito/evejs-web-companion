@@ -1347,3 +1347,74 @@ test("BACKSTOP: a subscriber that throws through emit stops the bot VISIBLY, not
   assert.equal(snap.status, "error", "the loop must stop in a state the panel can render");
   assert.match(String(snap.failureReason), /unexpected error/i);
 });
+
+// --- The asynchronous settlement: an unanswered Complete that landed ---------
+
+test("a Complete that timed out but LANDED is still counted, and the payout still measured", async () => {
+  // Settlement is asynchronous server-side: the call aborts at its budget, the
+  // payout lands moments later, and the journal row vanishes. Without the
+  // journal resolution the bot would fly off to the next job with
+  // missionsCompleted unchanged (maxMissions overshoots) and the ISK/LP
+  // readout stuck at 0.
+  const h = harness({
+    status: status({ stationID: DROPOFF, solarSystemID: DROPOFF_SYSTEM }),
+    journal: journalAccepted(),
+    briefing: BRIEFING,
+    cargo: cargo([]), // the package is already delivered to the hangar
+    hangar: [row({ itemID: PACKAGE_ITEM, quantity: 1 })],
+    conversation: AT_DROPOFF,
+  });
+  const bot = createMissionBot({
+    ...h.deps,
+    doAgentAction: async () => {
+      // The press reaches the server; the answer never arrives — and the
+      // settlement lands anyway.
+      h.world.journal = journalEmpty();
+      h.world.conversation = NO_MISSION;
+      h.world.isk = "1102000";
+      h.world.lp = "213";
+      const error = new Error("EveJS gateway timed out.") as Error & { code?: string };
+      error.code = "EVE_GATEWAY_TIMEOUT";
+      throw error;
+    },
+  });
+  bot.start(PLAN);
+  await ticks(bot, 8);
+
+  const snap = bot.snapshot();
+  assert.equal(snap.missionsCompleted, 1, "the landed completion must be counted");
+  assert.equal(snap.iskEarned, "102000", "and what it paid must be measured");
+  assert.equal(snap.lpEarned, "213");
+  assert.notEqual(snap.status, "error");
+});
+
+test("a Complete that timed out and did NOT land is pressed again, never counted", async () => {
+  const h = harness({
+    status: status({ stationID: DROPOFF, solarSystemID: DROPOFF_SYSTEM }),
+    journal: journalAccepted(),
+    briefing: BRIEFING,
+    cargo: cargo([]),
+    hangar: [row({ itemID: PACKAGE_ITEM, quantity: 1 })],
+    conversation: AT_DROPOFF,
+  });
+  let presses = 0;
+  const doAgentAction = h.deps.doAgentAction;
+  const bot = createMissionBot({
+    ...h.deps,
+    doAgentAction: async (agentID, actionID) => {
+      presses += 1;
+      if (presses === 1) {
+        // Unanswered, and the journal row stays: the press never took.
+        const error = new Error("EveJS gateway timed out.") as Error & { code?: string };
+        error.code = "EVE_GATEWAY_TIMEOUT";
+        throw error;
+      }
+      return doAgentAction(agentID, actionID);
+    },
+  });
+  bot.start(PLAN);
+  await ticks(bot, 8);
+
+  assert.equal(bot.snapshot().missionsCompleted, 0, "an un-landed press must not be counted");
+  assert.ok(presses >= 2, "the ladder pressed Complete again");
+});
