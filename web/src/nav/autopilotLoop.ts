@@ -43,7 +43,12 @@
 // readiness are visible, so adding fixed settle ticks after a successful return
 // only hides state that is already safe to re-read.
 
-import { isTransportTransient, refusalWords } from "../bridge/refusals.ts";
+import {
+  isSessionChangeSettling,
+  isTransitionTimeout,
+  isTransportTransient,
+  refusalWords,
+} from "../bridge/refusals.ts";
 import { surfaceDistanceMeters } from "../space/overview.ts";
 import type { FlightStatus, SpaceSnapshot } from "../store/types.ts";
 import type { RouteHop } from "./routeSolver.ts";
@@ -354,6 +359,12 @@ const MAX_STATUS_READ_FAILURES = 5;
 export const MAX_ACTION_TRANSPORT_FAILURES = 3;
 // Give a busy gateway a breath before the re-read (same window as a move).
 const SETTLE_TRANSPORT = 2;
+// Commands turned back with 409 SESSION_CHANGE_IN_PROGRESS while a previous
+// transition settles. Transient BY DESIGN and legitimately slow: the barrier
+// deadline plus the ten-second next-mutation cooldown is close to a minute, so
+// this bound is far more generous than the transport one — at the 2 s cadence
+// with the settle window, twelve strikes is roughly seventy seconds.
+export const MAX_SESSION_CHANGE_WAITS = 12;
 // A gate approach from an autopilot-warp landing point can take many ticks to
 // close into jump range; bound it generously (separate from MAX_JUMP_ATTEMPTS,
 // which guards genuinely-fatal jump refusals).
@@ -400,6 +411,8 @@ interface LoopMemory {
   statusReadFailures: number;
   /** Consecutive issued actions whose call never got an answer (transport). */
   actionTransportFailures: number;
+  /** Consecutive commands turned back while a session change was settling. */
+  sessionChangeWaits: number;
   settleTicks: number;
   action: string | null;
   phase: string | null;
@@ -427,6 +440,7 @@ function freshMemory(): LoopMemory {
     silentDockAttempts: 0,
     statusReadFailures: 0,
     actionTransportFailures: 0,
+    sessionChangeWaits: 0,
     settleTicks: 0,
     action: null,
     phase: null,
@@ -864,8 +878,10 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotController {
         default:
           return;
       }
-      // The call reached the server and answered: the transport streak is over.
+      // The call reached the server and answered: the transport and
+      // session-change streaks are over.
       memory.actionTransportFailures = 0;
+      memory.sessionChangeWaits = 0;
     } catch (error) {
       handleActionError(action, error, sys);
     }
@@ -876,12 +892,37 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotController {
       setError("The live session ended (idle timeout or another client took over).");
       return;
     }
+    // A command turned back while a previous session change settles is not a
+    // refusal either — the barrier either becomes ready or its latch heals on
+    // the status polls this loop already makes. Wait it out generously; the
+    // whole window (barrier + cooldown) is legitimately close to a minute.
+    if (isSessionChangeSettling(error)) {
+      memory.sessionChangeWaits += 1;
+      if (memory.sessionChangeWaits > MAX_SESSION_CHANGE_WAITS) {
+        setPause(
+          `${labelFor(action)} kept being turned back while a session change was finishing: ${refusalWords(deps.refusalReason(error))}`,
+        );
+        return;
+      }
+      if (action.kind === "warp") {
+        memory.warpAttempts = Math.max(0, memory.warpAttempts - 1);
+      } else if (action.kind === "dock") {
+        memory.silentDockAttempts = Math.max(0, memory.silentDockAttempts - 1);
+      } else if (action.kind === "approach") {
+        memory.approachIssueAttempts = Math.max(0, memory.approachIssueAttempts - 1);
+      }
+      memory.settleTicks = SETTLE_TRANSPORT;
+      return;
+    }
     // A transport failure is NOT a refusal — the wire did not answer, and the
     // command may have landed an instant after the abort. Reads already get
     // this tolerance (MAX_STATUS_READ_FAILURES); an issued action gets the
     // same: settle, re-read authoritative state, and only a STREAK of
-    // unanswered actions pauses the flight.
-    if (isTransportTransient(error)) {
+    // unanswered actions pauses the flight. A barrier that timed out
+    // (TRANSITION_TIMEOUT) carries the same "outcome unknown" semantics — the
+    // command was issued once and the next authoritative read settles what it
+    // did — so it rides the same bounded path.
+    if (isTransportTransient(error) || isTransitionTimeout(error)) {
       memory.actionTransportFailures += 1;
       if (memory.actionTransportFailures > MAX_ACTION_TRANSPORT_FAILURES) {
         setPause(

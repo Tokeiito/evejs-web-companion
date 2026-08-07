@@ -1250,3 +1250,33 @@ test("a STALE 'arrived' from the previous leg cannot reset the travel bound", as
   assert.equal(snap.status, "paused", "the restart bound must eventually trip");
   assert.match(String(snap.failureReason), /three times/i);
 });
+
+test("a press turned back by a settling session change is waited out, not paused on", async () => {
+  const h = harness({ conversation: NO_MISSION });
+  let turnbacks = 0;
+  const doAgentAction = h.deps.doAgentAction;
+  const bot = createMissionBot({
+    ...h.deps,
+    doAgentAction: async (agentID, actionID) => {
+      // The BFF's transition gate 409s agent presses while a dock settles.
+      if (turnbacks < 5) {
+        turnbacks += 1;
+        const error = new Error("The dock transition is not ready for another command.") as Error & {
+          code?: string;
+        };
+        error.code = "SESSION_CHANGE_IN_PROGRESS";
+        throw error;
+      }
+      return doAgentAction(agentID, actionID);
+    },
+  });
+  bot.start(PLAN);
+  await ticks(bot, 18);
+
+  assert.equal(bot.snapshot().status, "running", "five turn-backs are inside the settling bound");
+  assert.equal(
+    h.calls.filter((call) => call.startsWith("do:")).length,
+    1,
+    "the sixth press reached the agent",
+  );
+});

@@ -64,7 +64,12 @@
 //    The jump cap and the volume check are applied BEFORE Accept, never after —
 //    see `gateOffer`.
 
-import { isTransportTransient, refusalWords } from "../bridge/refusals.ts";
+import {
+  isSessionChangeSettling,
+  isTransitionTimeout,
+  isTransportTransient,
+  refusalWords,
+} from "../bridge/refusals.ts";
 import type { AutopilotStatus } from "./autopilotLoop.ts";
 import type {
   AgentConversation,
@@ -159,6 +164,13 @@ export const MAX_READ_FAILURES = 5;
 export const MAX_ACTION_TRANSPORT_FAILURES = 3;
 /** Give a busy gateway a breath before the re-read (same window as a move). */
 const SETTLE_TRANSPORT = 2;
+/**
+ * Presses turned back with 409 SESSION_CHANGE_IN_PROGRESS while a previous
+ * dock/jump/undock settles. Transient BY DESIGN and legitimately slow (the
+ * barrier plus the ten-second cooldown is close to a minute), so this bound is
+ * far more generous than the transport one.
+ */
+export const MAX_SESSION_CHANGE_WAITS = 12;
 /**
  * Ticks spent waiting on a travel that reports itself running. At the 2 s
  * cadence this is an hour — far longer than any high-sec courier route — so
@@ -992,6 +1004,8 @@ interface BotMemory {
   readFailures: number;
   /** Consecutive issued actions whose call never got an answer (transport). */
   actionTransportFailures: number;
+  /** Consecutive presses turned back while a session change was settling. */
+  sessionChangeWaits: number;
 }
 
 function freshMemory(): BotMemory {
@@ -1025,6 +1039,7 @@ function freshMemory(): BotMemory {
     travelWaitCycles: 0,
     readFailures: 0,
     actionTransportFailures: 0,
+    sessionChangeWaits: 0,
   };
 }
 
@@ -1410,8 +1425,10 @@ export function createMissionBot(deps: MissionBotDeps): MissionBotController {
         default:
           return;
       }
-      // The call reached the server and answered: the transport streak is over.
+      // The call reached the server and answered: the transport and
+      // session-change streaks are over.
       memory.actionTransportFailures = 0;
+      memory.sessionChangeWaits = 0;
     } catch (error) {
       handleActionError(action, error);
     }
@@ -1451,12 +1468,29 @@ export function createMissionBot(deps: MissionBotDeps): MissionBotController {
       setError("The live session ended (idle timeout or another client took over).");
       return;
     }
+    // A press turned back while a previous session change settles is not a
+    // refusal either — the barrier becomes ready, or its latch heals on the
+    // status polls this loop already makes. Wait it out generously.
+    if (isSessionChangeSettling(error)) {
+      memory.sessionChangeWaits += 1;
+      if (memory.sessionChangeWaits > MAX_SESSION_CHANGE_WAITS) {
+        setPause(
+          `${actionText(action)} kept being turned back while a session change was finishing: ${refusalWords(deps.refusalReason(error))}`,
+        );
+        return;
+      }
+      uncountAttempt(action);
+      memory.settleTicks = SETTLE_TRANSPORT;
+      return;
+    }
     // A transport failure is NOT a refusal — the wire did not answer, and the
     // press may have landed an instant after the abort. Every rung already
     // confirms its action against the authority that owns the fact, so the
     // honest response is to settle, re-observe, and let the bounded rung
     // counters govern a re-issue; only a STREAK of unanswered calls pauses.
-    if (isTransportTransient(error)) {
+    // A barrier that timed out (TRANSITION_TIMEOUT) carries the same "outcome
+    // unknown" semantics, so it rides the same bounded path.
+    if (isTransportTransient(error) || isTransitionTimeout(error)) {
       memory.actionTransportFailures += 1;
       if (memory.actionTransportFailures > MAX_ACTION_TRANSPORT_FAILURES) {
         setPause(

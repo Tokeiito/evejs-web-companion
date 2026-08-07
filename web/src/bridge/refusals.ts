@@ -231,6 +231,11 @@ const BRIDGE_REFUSALS: Readonly<Record<string, string>> = Object.freeze({
   NO_LIVE_SESSION: "No character is online. Pick a character first.",
   SESSION_NOT_FOUND: "The live session ended. Pick your character again.",
 
+  // --- BFF session-change barrier (src/transitionBarrier.js) ---
+  SESSION_CHANGE_IN_PROGRESS: "The last session change is still settling. Give it a moment.",
+  TRANSITION_TIMEOUT:
+    "The session change did not finish in time. Check where your ship ended up before trying again.",
+
   // --- BFF request checks on the flight-family routes ---
   ALREADY_IN_SPACE: "Your ship is already in space.",
   NOT_IN_SPACE: "Your ship is docked. Undock before doing that.",
@@ -274,11 +279,36 @@ const TRANSIENT_TRANSPORT_CODES: ReadonlySet<string> = new Set([
  * dependency on the app layer's error class.
  */
 export function isTransportTransient(error: unknown): boolean {
-  const code =
-    error && typeof error === "object" && "code" in error
-      ? String((error as { code?: unknown }).code ?? "")
-      : "";
-  return TRANSIENT_TRANSPORT_CODES.has(code);
+  return errorCode(error) !== "" && TRANSIENT_TRANSPORT_CODES.has(errorCode(error));
+}
+
+function errorCode(error: unknown): string {
+  return error && typeof error === "object" && "code" in error
+    ? String((error as { code?: unknown }).code ?? "")
+    : "";
+}
+
+/**
+ * The BFF turned the command back because a previous session change is still
+ * settling (409 SESSION_CHANGE_IN_PROGRESS). Transient BY DESIGN: the barrier
+ * either becomes ready within its own deadline or its latch heals on the next
+ * status poll — both of which the decide-loops perform every tick. A loop must
+ * wait this out generously (a dock barrier plus the next-mutation cooldown is
+ * legitimately close to a minute), never pause on the first one.
+ */
+export function isSessionChangeSettling(error: unknown): boolean {
+  return errorCode(error) === "SESSION_CHANGE_IN_PROGRESS";
+}
+
+/**
+ * The session-change barrier gave up waiting (504 TRANSITION_TIMEOUT): the
+ * command was issued once and its outcome is UNKNOWN — the same "re-read the
+ * authority before believing anything" semantics as a transport failure, which
+ * is exactly how the loops treat it. The BFF's latch self-heals on the next
+ * flight-status read, so retrying after re-observing is legal.
+ */
+export function isTransitionTimeout(error: unknown): boolean {
+  return errorCode(error) === "TRANSITION_TIMEOUT";
 }
 
 // --- R33: the refusals we can see coming ------------------------------------

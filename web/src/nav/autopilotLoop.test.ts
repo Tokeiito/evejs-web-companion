@@ -1297,3 +1297,72 @@ test("a follow that TAKES ends the silent-decline streak and the flight arrives"
   assert.equal(controller.snapshot().status, "arrived", "two silent declines then a real follow must not pause");
   assert.equal(approaches, 3);
 });
+
+// --- Session-change vocabulary (409 settling / 504 timeout) ------------------
+
+test("a command turned back by a settling session change is waited out, not paused on", async () => {
+  const mock = makeMock({ dockRefusals: 0 });
+  const { deps } = makeDeps(mock);
+  const undock = mock.undock;
+  let turnbacks = 0;
+  const controller = createAutopilot({
+    ...deps,
+    undock: async () => {
+      // The BFF's transition gate: five 409s while the previous session change
+      // settles (legitimately tens of seconds), then the command goes through.
+      if (turnbacks < 5) {
+        turnbacks += 1;
+        throw refusal("The dock transition is still finishing.", "SESSION_CHANGE_IN_PROGRESS");
+      }
+      await undock();
+    },
+  });
+  controller.start(PLAN);
+  await drive(controller, 120);
+
+  assert.equal(controller.snapshot().status, "arrived", "five turn-backs are inside the settling bound");
+  assert.equal(turnbacks, 5);
+});
+
+test("BOUNDED: a session change that never settles pauses with its own words", async () => {
+  const mock = makeMock({ dockRefusals: 0 });
+  const { deps } = makeDeps(mock);
+  const controller = createAutopilot({
+    ...deps,
+    undock: async () => {
+      throw refusal("The dock transition is still finishing.", "SESSION_CHANGE_IN_PROGRESS");
+    },
+  });
+  controller.start(PLAN);
+  await drive(controller, 120);
+
+  const snap = controller.snapshot();
+  assert.equal(snap.status, "paused");
+  assert.match(String(snap.failureReason), /session change was finishing/i);
+});
+
+test("TRANSITION_TIMEOUT on a jump that actually landed: re-observe, move on, never re-jump", async () => {
+  const mock = makeMock({ dockRefusals: 0 });
+  const { deps } = makeDeps(mock);
+  let jumps = 0;
+  const controller = createAutopilot({
+    ...deps,
+    jump: async (from: number, to: number) => {
+      // The barrier gave up waiting — but the sim completed the jump. The 504
+      // is an UNKNOWN outcome; the next authoritative read must settle it.
+      jumps += 1;
+      mock.state.system = DEST_SYSTEM;
+      mock.state.shipMode = "STOP";
+      mock.calls.push({ m: "jump", a: [from, to] });
+      throw refusal(
+        "The session change did not become ready in time. No command was repeated.",
+        "TRANSITION_TIMEOUT",
+      );
+    },
+  });
+  controller.start(PLAN);
+  await drive(controller, 120);
+
+  assert.equal(controller.snapshot().status, "arrived");
+  assert.equal(jumps, 1, "the landed jump must never be re-issued");
+});
