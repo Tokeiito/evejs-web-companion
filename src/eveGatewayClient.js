@@ -135,9 +135,12 @@ async function postJson(path, payload, options = {}) {
   return postSerializedJson(path, JSON.stringify(payload), options);
 }
 
-async function getJson(path, query = {}) {
+async function getJson(path, query = {}, options = {}) {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
+  const timeoutMs = Number(options.timeoutMs) > 0
+    ? Number(options.timeoutMs)
+    : DEFAULT_TIMEOUT_MS;
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
   const headers = {};
   const token = getGatewayToken();
   if (token) {
@@ -185,8 +188,17 @@ async function getJson(path, query = {}) {
   }
 }
 
+// The v1 GET reads ride the gateway runtime like everything else now (they are
+// IPC-forwarded owner calls since the edge split), so the old 1.5 s default is
+// routinely unattainable while any heavier call is in flight — a login racing
+// a mission Complete used to fail with "EveJS gateway timed out." on a healthy
+// server. Login/health reads get a middle budget; the two heavy ones
+// (snapshot computes per-character skill totals, skills resolves the whole
+// sheet) get the same generous budget as the bridge paths.
+const LEGACY_READ_TIMEOUT_MS = 5_000;
+
 async function getGatewayHealth() {
-  const health = await getJson("/health");
+  const health = await getJson("/health", {}, { timeoutMs: LEGACY_READ_TIMEOUT_MS });
   const hasStableShape =
     health.capabilities &&
     typeof health.capabilities === "object" &&
@@ -237,7 +249,7 @@ function normalizeGatewayHealth(health) {
 
 async function getStatus() {
   const [status, health] = await Promise.all([
-    getJson("/status"),
+    getJson("/status", {}, { timeoutMs: LEGACY_READ_TIMEOUT_MS }),
     getGatewayHealth(),
   ]);
   return {
@@ -249,14 +261,14 @@ async function getStatus() {
 async function getAccount(username) {
   const result = await getJson("/account", {
     username: String(username || "").trim(),
-  });
+  }, { timeoutMs: LEGACY_READ_TIMEOUT_MS });
   return result.account || null;
 }
 
 async function listCharacters(accountID) {
   const result = await getJson("/characters", {
     accountID: Number(accountID) || 0,
-  });
+  }, { timeoutMs: LEGACY_READ_TIMEOUT_MS });
   return Array.isArray(result.characters) ? result.characters : [];
 }
 
@@ -264,7 +276,7 @@ async function getSnapshot(accountID, characterID) {
   const result = await getJson("/snapshot", {
     accountID: Number(accountID) || 0,
     characterID: Number(characterID) || 0,
-  });
+  }, { timeoutMs: BRIDGE_CALL_TIMEOUT_MS });
   return result.snapshot || null;
 }
 
@@ -282,7 +294,7 @@ async function getSkills(accountID, characterID) {
   const result = await getJson("/skills", {
     accountID: Number(accountID) || 0,
     characterID: Number(characterID) || 0,
-  });
+  }, { timeoutMs: BRIDGE_CALL_TIMEOUT_MS });
   return result.skills || null;
 }
 
@@ -374,7 +386,11 @@ async function releaseBridgeSession(bridgeSessionID, sessionFields = undefined) 
   if (sessionFields && typeof sessionFields === "object" && !Array.isArray(sessionFields)) {
     body.session = sessionFields;
   }
-  const data = await postJson("/session/release", body);
+  // Release runs the full retail disconnect (character offline, space unload,
+  // guest broadcast) — real work, same generous budget as select. On the old
+  // 1.5 s default a logout under any concurrent traffic minted a false
+  // "EveJS gateway timed out." while leaving the character online until TTL.
+  const data = await postJson("/session/release", body, { timeoutMs: BRIDGE_CALL_TIMEOUT_MS });
   return {
     released: data.released === true,
     characterID: data.characterID === undefined ? null : data.characterID,

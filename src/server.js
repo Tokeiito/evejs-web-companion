@@ -450,6 +450,16 @@ function forgetBridgeSession(webSessionID) {
 // Best-effort release of the bridge session a web session holds. Returns true
 // when a held session existed. SESSION_NOT_FOUND from the gateway means the
 // TTL (or a takeover) already disconnected it — the handle is just dropped.
+// A TRANSPORT failure is best-effort too: the handle is already forgotten by
+// the time the gateway is asked, so rethrowing a timeout only shows the user a
+// failed logout for a release that probably landed — and when it truly did
+// not, the gateway's own session TTL retires the live session. Log it; never
+// fail the logout over it.
+const RELEASE_BEST_EFFORT_CODES = new Set([
+  "SESSION_NOT_FOUND",
+  "EVE_GATEWAY_TIMEOUT",
+  "EVE_GATEWAY_UNREACHABLE",
+]);
 async function releaseHeldBridgeSession(webSessionID) {
   const held = bridgeSessions.get(webSessionID);
   if (!held) {
@@ -461,8 +471,11 @@ async function releaseHeldBridgeSession(webSessionID) {
       userid: Number(held.accountID),
     });
   } catch (error) {
-    if (!(error && error.code === "SESSION_NOT_FOUND")) {
+    if (!(error && RELEASE_BEST_EFFORT_CODES.has(error.code))) {
       throw error;
+    }
+    if (error.code !== "SESSION_NOT_FOUND") {
+      errorLogger(error);
     }
   }
   return true;

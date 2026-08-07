@@ -425,6 +425,39 @@ test("SESSION_NOT_FOUND from the gateway drops the stale handle and surfaces the
   assert.deepEqual(releasePayload, { ok: true, released: false });
 });
 
+test("a release the gateway never answered still logs the user out cleanly", async () => {
+  // The handle is forgotten before the gateway is asked, so a timeout on the
+  // release call must be best-effort: the logout succeeds, the character's
+  // live session is the gateway TTL's to retire, and the user never sees
+  // "EveJS gateway timed out." for clicking sign out.
+  const gateway = fakeGateway({
+    async releaseBridgeSession() {
+      throw new gatewayClient.EveGatewayError("EveJS gateway timed out.", {
+        code: "EVE_GATEWAY_TIMEOUT",
+      });
+    },
+  });
+  const { baseUrl } = await startTestServer({ gateway });
+
+  await apiRequest(baseUrl, "/api/bridge/select", {
+    method: "POST",
+    body: { characterID: 7 },
+  });
+  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/release", {
+    method: "POST",
+    body: {},
+  });
+  assert.equal(response.status, 200, JSON.stringify(payload));
+  assert.deepEqual(payload, { ok: true, released: true });
+
+  // The handle really is gone: a second release reports nothing held.
+  const again = await apiRequest(baseUrl, "/api/bridge/release", {
+    method: "POST",
+    body: {},
+  });
+  assert.deepEqual(again.payload, { ok: true, released: false });
+});
+
 test("select refusals pass through with the handler's own message", async () => {
   const gateway = fakeGateway({
     async selectCharacter() {
