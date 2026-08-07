@@ -227,6 +227,10 @@ const BRIDGE_REFUSALS: Readonly<Record<string, string>> = Object.freeze({
   // --- BFF transport (src/server.js) ---
   EVE_GATEWAY_UNREACHABLE: "The game server could not be reached.",
   EVE_GATEWAY_TIMEOUT: "The game server did not answer in time.",
+
+  // --- eve.js gateway edge->owner verdicts (edgeProcessHost.js) ---
+  EDGE_OWNER_REQUEST_TIMEOUT: "The game server did not answer in time.",
+  EDGE_OWNER_OVERLOADED: "The game server is busy right now. Try again in a moment.",
   AUTH_REQUIRED: "You are signed out. Sign in again to carry on.",
   NO_LIVE_SESSION: "No character is online. Pick a character first.",
   SESSION_NOT_FOUND: "The live session ended. Pick your character again.",
@@ -270,6 +274,11 @@ const TRANSIENT_TRANSPORT_CODES: ReadonlySet<string> = new Set([
   "EVE_GATEWAY_TIMEOUT",
   "EVE_GATEWAY_UNREACHABLE",
   "BRIDGE_NETWORK_ERROR",
+  // The gateway edge's own verdicts: a request that queued past the owner
+  // deadline (outcome unknown — same semantics as a gateway timeout) and a
+  // full owner queue (definitely not executed — retry is safe).
+  "EDGE_OWNER_REQUEST_TIMEOUT",
+  "EDGE_OWNER_OVERLOADED",
 ]);
 
 /**
