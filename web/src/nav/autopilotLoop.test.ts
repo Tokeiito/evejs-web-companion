@@ -1238,3 +1238,62 @@ test("R31 — an autopilot pause never shows the player a resource key", async (
   assert.ok(!why.includes("101,"), `localization marker reached the player: ${why}`);
   assert.match(why, /gate is closed/i, "and it says what actually happened");
 });
+
+// --- The approach bound (slice: the third silent-decline hole) ---------------
+//
+// `followBall` declines silently exactly like warp and dock: the route answers
+// ok and the ship never enters FOLLOW. Warp got MAX_WARP_ATTEMPTS (slice A),
+// dock got MAX_SILENT_DOCK_ATTEMPTS (slice B); these pin the same bound for
+// approach — the reported "hangs waiting to approach".
+
+test("BOUNDED: an approach the server keeps silently declining pauses instead of re-issuing forever", async () => {
+  const mock = makeMock({ dockRefusals: 0 });
+  const { deps } = makeDeps(mock);
+  let approaches = 0;
+  const controller = createAutopilot({
+    ...deps,
+    approach: async () => {
+      // 200/ok with the ship untouched — the silent decline. Mode never
+      // becomes FOLLOW, so every measured tick re-decides "approach".
+      approaches += 1;
+    },
+    getSpaceSnapshot: async () =>
+      gridSnapshot(GATE_ORIGIN, 20_000, mock.state.system, mock.state.shipMode),
+  });
+  controller.start(PLAN);
+  await drive(controller, 80);
+
+  const snap = controller.snapshot();
+  assert.equal(snap.status, "paused", "an approach that never takes must stop the flight");
+  assert.match(String(snap.failureReason), /approach was sent/i);
+  assert.equal(approaches, 5, "exactly the bound's worth of issues, then the pause");
+});
+
+test("a follow that TAKES ends the silent-decline streak and the flight arrives", async () => {
+  const mock = makeMock({ dockRefusals: 0 });
+  const { deps } = makeDeps(mock);
+  let approaches = 0;
+  const controller = createAutopilot({
+    ...deps,
+    approach: async () => {
+      approaches += 1;
+      if (approaches >= 3) {
+        mock.state.shipMode = "FOLLOW"; // the third issue takes
+      }
+    },
+    getSpaceSnapshot: async () =>
+      mock.state.system === DEST_SYSTEM
+        ? gridSnapshot(DEST_STATION, 1_000, DEST_SYSTEM, mock.state.shipMode)
+        : gridSnapshot(
+            GATE_ORIGIN,
+            mock.state.shipMode === "FOLLOW" ? 1_000 : 20_000,
+            ORIGIN_SYSTEM,
+            mock.state.shipMode,
+          ),
+  });
+  controller.start(PLAN);
+  await drive(controller, 120);
+
+  assert.equal(controller.snapshot().status, "arrived", "two silent declines then a real follow must not pause");
+  assert.equal(approaches, 3);
+});

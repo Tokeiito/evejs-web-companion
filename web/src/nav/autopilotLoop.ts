@@ -332,6 +332,15 @@ export const MAX_WARP_ATTEMPTS = 3;
 // by any other move. Generous, because the honest case — dock, wait for the sim
 // to seat the ship — legitimately takes a few ticks.
 export const MAX_SILENT_DOCK_ATTEMPTS = 10;
+// The THIRD instance of the same hole, on approach. `followBall` declines
+// silently too (a pending pilot warp-landing handoff, a pending dock, mode
+// still WARP, a cloaked/moribund target, a different bubble): the route
+// answers ok, the ship never enters FOLLOW, the next tick measures the same
+// in-band distance and issues approach again — every ~6 s, forever. That is
+// the reported "hangs waiting to approach". Counted per target like the warp
+// bound; reset by an OBSERVED follow (the "Closing in" wait) or any other
+// move. Generous, because a warp-landing handoff legitimately declines a few.
+export const MAX_APPROACH_ISSUE_ATTEMPTS = 5;
 // A flight-status read can time out transiently while the server loads a
 // system scene during a jump handoff — the ship is fine, so retry a few cycles
 // before pausing rather than giving up on the first slow read.
@@ -375,6 +384,10 @@ interface LoopMemory {
   approachCycles: number;
   /** Consecutive ticks spent waiting on a measured, already-running approach. */
   approachWaitCycles: number;
+  /** The gate `approachIssueAttempts` counts against (null = none pending). */
+  approachIssueTargetID: number | null;
+  /** Consecutive ISSUED approaches on that target with FOLLOW never observed. */
+  approachIssueAttempts: number;
   completedHops: number;
   dockAttempts: number;
   jumpAttempts: number;
@@ -404,6 +417,8 @@ function freshMemory(): LoopMemory {
     approachingTargetID: null,
     approachCycles: 0,
     approachWaitCycles: 0,
+    approachIssueTargetID: null,
+    approachIssueAttempts: 0,
     completedHops: 0,
     dockAttempts: 0,
     jumpAttempts: 0,
@@ -775,6 +790,8 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotController {
       memory.approachingTargetID = null;
       memory.approachCycles = 0;
       memory.approachWaitCycles = 0;
+      memory.approachIssueTargetID = null;
+      memory.approachIssueAttempts = 0;
     }
     if (plan) {
       const hop =
@@ -818,9 +835,14 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotController {
           // jump (which will re-request an approach if still short of range).
           memory.pendingApproachGate = null;
           // Remember WHAT we are approaching, so a measured tick waits on the
-          // running approach instead of restarting it every cycle.
+          // running approach instead of restarting it every cycle. A RE-ISSUE
+          // to the same target keeps the closing-wait count — zeroing it on
+          // every re-issue would let a mode flicker (one re-approach every few
+          // minutes) reset the twenty-minute stall bound forever.
+          if (memory.approachingTargetID !== action.gateID) {
+            memory.approachWaitCycles = 0;
+          }
           memory.approachingTargetID = action.gateID;
-          memory.approachWaitCycles = 0;
           memory.settleTicks = SETTLE_APPROACH;
           break;
         case "jump":
@@ -875,6 +897,8 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotController {
         memory.warpAttempts = Math.max(0, memory.warpAttempts - 1);
       } else if (action.kind === "dock") {
         memory.silentDockAttempts = Math.max(0, memory.silentDockAttempts - 1);
+      } else if (action.kind === "approach") {
+        memory.approachIssueAttempts = Math.max(0, memory.approachIssueAttempts - 1);
       }
       memory.settleTicks = SETTLE_TRANSPORT;
       return;
@@ -1067,6 +1091,10 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotController {
     // Bound the wait so a ship that can never close still stops rather than
     // waiting forever.
     if (action.kind === "wait" && action.reason === "Closing in") {
+      // "Closing in" is only decided off an OBSERVED follow, so the issued
+      // approach demonstrably took: the silent-decline streak is over.
+      memory.approachIssueTargetID = null;
+      memory.approachIssueAttempts = 0;
       memory.approachWaitCycles += 1;
       if (memory.approachWaitCycles > MAX_APPROACH_WAIT_CYCLES) {
         setPause("The ship is not getting any closer. Autopilot stopped.");
@@ -1075,6 +1103,27 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotController {
       }
     } else if (action.kind !== "wait") {
       memory.approachWaitCycles = 0;
+    }
+
+    // The approach bound — the third silent-decline hole, closed the same way
+    // as warp (slice A) and dock (slice B). See MAX_APPROACH_ISSUE_ATTEMPTS.
+    if (action.kind === "approach") {
+      if (memory.approachIssueTargetID === action.gateID) {
+        memory.approachIssueAttempts += 1;
+      } else {
+        memory.approachIssueTargetID = action.gateID;
+        memory.approachIssueAttempts = 1;
+      }
+      if (memory.approachIssueAttempts > MAX_APPROACH_ISSUE_ATTEMPTS) {
+        setPause(
+          `The approach was sent ${MAX_APPROACH_ISSUE_ATTEMPTS} times and the ship never started moving toward it. Autopilot stopped.`,
+        );
+        emit();
+        return { kind: "pause", reason: memory.failureReason ?? "approach not starting" };
+      }
+    } else if (action.kind !== "wait") {
+      memory.approachIssueTargetID = null;
+      memory.approachIssueAttempts = 0;
     }
 
     // R24 slice A — BOUND THE WARP BRANCH. A warp the server silently declines
