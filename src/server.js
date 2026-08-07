@@ -25,6 +25,7 @@ const {
   markTransitionAccepted,
   markTransitionFailed,
   publicTransition,
+  resolveFailedTransition,
   waitForTransitionReady,
 } = require("./transitionBarrier");
 
@@ -14533,6 +14534,12 @@ async function readHeldFlight(held, webSessionID) {
     if (Number(flight.solarSystemID) > 0) {
       held.solarSystemID = Number(flight.solarSystemID);
     }
+    // A latched ("failed") transition is resolved by exactly this kind of
+    // fresh authoritative read — the write either landed (adopt it) or never
+    // took (release the latch). Every client polls flight status continuously,
+    // so a session recovers within a poll cycle of the world settling instead
+    // of demanding a character re-select.
+    resolveFailedTransition(held, flight);
     return {
       ...outcome,
       flight: {
@@ -14631,13 +14638,14 @@ async function acquireRouteTransition(res, held, kind, expected) {
  * A timeout is deliberately uncertain and remains latched, so no route can
  * repeat the write until the player reselects the character.
  */
-async function awaitRouteTransition(held, webSessionID, kind, expected) {
+async function awaitRouteTransition(held, webSessionID, kind, expected, overrides = {}) {
   let lastFlight = {};
   return waitForTransitionReady({
     held,
     kind,
     expected,
-    timeoutMs: Number(options.transitionReadyTimeoutMs) || undefined,
+    latchOnTimeout: overrides.latchOnTimeout !== false,
+    timeoutMs: Number(overrides.timeoutMs) || Number(options.transitionReadyTimeoutMs) || undefined,
     pollMs: Number(options.transitionPollMs) || undefined,
     sleep: options.transitionSleep,
     now: options.transitionNow,
@@ -14676,6 +14684,14 @@ function sendTransitionTimeout(res, outcome, commandNotifications = []) {
     notifications: [...commandNotifications, ...(outcome.notifications || [])],
   });
 }
+
+// A dock the sim ACCEPTED seats within a couple of seconds in this emulator;
+// this bounds how long the dock route watches for that before reading the
+// 200/null answer as retail's silent decline and handing the decision back to
+// the client's silent-dock ladder. Overridable via options.dockProbeTimeoutMs,
+// and never longer than an injected transitionReadyTimeoutMs (the tests run on
+// a virtual clock).
+const DOCK_SILENT_DECLINE_PROBE_MS = 6_000;
 
 // --- R13 flight-verb ranges -------------------------------------------------
 // Every one of these is a DISTANCE IN METRES, never an identifier. The retail
@@ -15188,9 +15204,34 @@ app.post("/api/bridge/flight/dock", requireAuth, async (req, res, next) => {
       null,
     );
     markTransitionAccepted(held);
-    const after = await awaitRouteTransition(held, req.webSessionID, "dock", expected);
+    // R24 measured Handle_CmdDock answering 200/null while DECLINING silently
+    // (warp landing pending, ship immobile, docking approach required…), and
+    // the autopilot's silent-dock ladder exists to re-issue a dock that did
+    // not take. That ladder only works if this route ANSWERS — so dock waits
+    // on a SHORT non-latching probe rather than the full readiness barrier. A
+    // dock the sim accepted seats within a couple of seconds; a probe that
+    // ends with the ship still fully in space is the silent decline it almost
+    // certainly is. The transition is cancelled (CmdDock is safe to re-issue —
+    // retail's own client re-docks through DockingApproach) and the in-space
+    // flight goes back so the ladder can decide. Dock therefore never burns
+    // the 45 s barrier and never latches the session.
+    const probeMs = Number(options.dockProbeTimeoutMs) ||
+      Math.min(DOCK_SILENT_DECLINE_PROBE_MS, Number(options.transitionReadyTimeoutMs) || DOCK_SILENT_DECLINE_PROBE_MS);
+    const after = await awaitRouteTransition(held, req.webSessionID, "dock", expected, {
+      timeoutMs: probeMs,
+      latchOnTimeout: false,
+    });
     if (!after.ok) {
-      sendTransitionTimeout(res, after, outcome.notifications);
+      if (after.code !== "TRANSITION_SUPERSEDED") {
+        cancelHeldTransition(held);
+      }
+      res.json({
+        ok: true,
+        result: outcome.result,
+        flight: { ...(after.flight || before.flight), transition: publicTransition(held) },
+        transition: publicTransition(held),
+        notifications: [...outcome.notifications, ...(after.notifications || [])],
+      });
       return;
     }
     res.json({
@@ -15202,11 +15243,9 @@ app.post("/api/bridge/flight/dock", requireAuth, async (req, res, next) => {
     });
   } catch (error) {
     if (held.transition && held.transition.kind === "dock") {
-      if (held.transition.phase === "requested") {
-        cancelHeldTransition(held);
-      } else if (held.transition.phase !== "failed") {
-        markTransitionFailed(held, error && error.message);
-      }
+      // Dock never latches: CmdDock is safe to re-issue, so an error mid-wait
+      // releases the barrier instead of locking the session behind it.
+      cancelHeldTransition(held);
     }
     next(error);
   }

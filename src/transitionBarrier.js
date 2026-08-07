@@ -210,6 +210,7 @@ async function waitForTransitionReady({
   now = () => Date.now(),
   timeoutMs = TRANSITION_READY_TIMEOUT_MS,
   pollMs = TRANSITION_POLL_MS,
+  latchOnTimeout = true,
 }) {
   const epoch = held && held.transition ? held.transition.epoch : null;
   const deadline = now() + timeoutMs;
@@ -219,14 +220,39 @@ async function waitForTransitionReady({
     if (!held.transition || held.transition.epoch !== epoch) {
       return { ok: false, code: "TRANSITION_SUPERSEDED", flight: lastFlight, notifications };
     }
-    const flightOutcome = await readFlight();
+    // A poll that cannot be read is a MISSED OBSERVATION, not an outcome. The
+    // gateway is busiest exactly while a destination scene loads, so these are
+    // the reads most likely to abort mid-transition — and failing the barrier
+    // on one of them is how a jump that landed fine used to come back
+    // "EveJS gateway timed out." and latch the session. Only a lost session
+    // ends the wait early; every other read failure keeps polling and lets the
+    // deadline settle it.
+    let flightOutcome;
+    try {
+      flightOutcome = await readFlight();
+    } catch (error) {
+      if (error && error.code === "SESSION_NOT_FOUND") {
+        throw error;
+      }
+      await sleep(pollMs);
+      continue;
+    }
     lastFlight = flightOutcome && flightOutcome.flight ? flightOutcome.flight : {};
     if (Array.isArray(flightOutcome && flightOutcome.notifications)) {
       notifications.push(...flightOutcome.notifications);
     }
     let space = null;
     if (kind === "undock" || kind === "stargate" || kind === "clone" || (kind === "board" && lastFlight.inSpace === true)) {
-      const spaceOutcome = await readSpace();
+      let spaceOutcome;
+      try {
+        spaceOutcome = await readSpace();
+      } catch (error) {
+        if (error && error.code === "SESSION_NOT_FOUND") {
+          throw error;
+        }
+        await sleep(pollMs);
+        continue;
+      }
       space = spaceOutcome && spaceOutcome.space ? spaceOutcome.space : null;
       if (Array.isArray(spaceOutcome && spaceOutcome.notifications)) {
         notifications.push(...spaceOutcome.notifications);
@@ -243,6 +269,12 @@ async function waitForTransitionReady({
     }
     await sleep(pollMs);
   }
+  // A short PROBE (dock's silent-decline check) reports its timeout without
+  // condemning the transition: the caller decides what a not-yet-ready probe
+  // means and clears or keeps the row itself.
+  if (!latchOnTimeout) {
+    return { ok: false, code: "TRANSITION_PROBE_TIMEOUT", flight: lastFlight, notifications };
+  }
   markTransitionFailed(held, "The session change did not become ready in time. No command was repeated.");
   return {
     ok: false,
@@ -252,6 +284,55 @@ async function waitForTransitionReady({
     notifications,
     transition: publicTransition(held),
   };
+}
+
+/**
+ * Resolve a latched (`phase: "failed"`) transition against a FRESH
+ * authoritative read.
+ *
+ * The latch exists because a timeout left the outcome UNKNOWN — the write may
+ * have landed after the last poll, so no route may repeat it. But the moment a
+ * later flight read arrives, the outcome is knowable again: either the
+ * transition's own postcondition now holds (the write landed — adopt it), or
+ * the ship reads stable somewhere else (the write never took — clear the row).
+ * Either way the session is usable again WITHOUT re-selecting the character,
+ * which used to be the only way out of a latch. Callers invoke this from the
+ * flight-status read path, which every client polls continuously, so recovery
+ * is automatic within a poll cycle of the world settling.
+ */
+function resolveFailedTransition(held, flight, space = null) {
+  const row = held && held.transition;
+  if (!row || row.phase !== "failed" || !flight || typeof flight !== "object") {
+    return null;
+  }
+  // The row itself carries the expected postcondition it was begun with.
+  const observedSpace = space || {
+    inSpace: flight.inSpace === true,
+    ship: flight.inSpace === true && numberOrNull(flight.shipID) !== null
+      ? { itemID: numberOrNull(flight.shipID) }
+      : null,
+  };
+  const readiness = evaluateReadiness(row.kind, row, flight, observedSpace);
+  if (readiness.ready) {
+    Object.assign(row, readiness, { phase: "ready", failure: null });
+    held.activeShipID = numberOrNull(flight.shipID) || held.activeShipID || null;
+    if (held.boundHandles && typeof held.boundHandles.clear === "function") {
+      held.boundHandles.clear();
+    }
+    return "landed";
+  }
+  // Not the postcondition — but a ship that reads DOCKED somewhere, or fully
+  // in space in a known system, is not mid-transition either: the write did
+  // not take. Clear the latch so the next command is legal. The cooldown the
+  // transition began with keeps running; only the readiness latch is released.
+  const stable =
+    flight.docked === true ||
+    (flight.inSpace === true && numberOrNull(flight.solarSystemID) !== null);
+  if (stable) {
+    held.transition = null;
+    return "reverted";
+  }
+  return null;
 }
 
 module.exports = {
@@ -264,5 +345,6 @@ module.exports = {
   markTransitionAccepted,
   markTransitionFailed,
   publicTransition,
+  resolveFailedTransition,
   waitForTransitionReady,
 };

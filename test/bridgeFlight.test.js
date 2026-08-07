@@ -489,6 +489,116 @@ test("an uncertain jump timeout stays latched and blocks a repeated write", asyn
   );
 });
 
+test("a latched transition heals on the next authoritative status read", async () => {
+  const gateway = fakeGateway();
+  gateway.state.inSpace = true;
+  gateway.state.shipMode = "STOP";
+  const callBoundMethod = gateway.callBoundMethod.bind(gateway);
+  let jumps = 0;
+  gateway.callBoundMethod = async (...args) => {
+    const outcome = await callBoundMethod(...args);
+    if (args[1] === "CmdStargateJump") {
+      jumps += 1;
+      if (jumps === 1) {
+        // The first jump never lands: the readiness wait must time out.
+        gateway.state.solarSystemID = ORIGIN_SYSTEM_ID;
+      }
+    }
+    return outcome;
+  };
+
+  let clockMs = 0;
+  const { baseUrl } = await startTestServer({
+    gateway,
+    transitionReadyTimeoutMs: 1_000,
+    transitionPollMs: 250,
+    transitionNow: () => clockMs,
+    transitionSleep: async (ms) => { clockMs += ms; },
+  });
+  await selectOnServer(baseUrl);
+
+  const first = await apiRequest(baseUrl, "/api/bridge/flight/jump", {
+    method: "POST",
+    body: { fromGateID: GATE_ID, toGateID: DEST_GATE_ID },
+  });
+  assert.equal(first.response.status, 504);
+  assert.equal(first.payload.transition.phase, "failed");
+
+  // The recovery is NOT a character re-select: the very next authoritative
+  // flight read shows the ship stable in the origin system — the write never
+  // took — and releases the latch.
+  const statusRead = await apiRequest(baseUrl, "/api/bridge/flight/status");
+  assert.equal(statusRead.response.status, 200);
+  assert.equal(statusRead.payload.flight.transition.phase, "ready");
+  assert.equal(statusRead.payload.flight.transition.sessionStable, true);
+
+  const second = await apiRequest(baseUrl, "/api/bridge/flight/jump", {
+    method: "POST",
+    body: { fromGateID: GATE_ID, toGateID: DEST_GATE_ID },
+  });
+  assert.equal(second.response.status, 200, JSON.stringify(second.payload));
+  assert.equal(second.payload.flight.solarSystemID, DEST_SYSTEM_ID);
+  assert.equal(second.payload.transition.phase, "ready");
+  assert.equal(
+    gateway.calls.boundCall.filter((call) => call.method === "CmdStargateJump").length,
+    2,
+    "the retry dispatches once the read resolved the uncertainty",
+  );
+});
+
+test("a silently declined dock answers in-space instead of burning the barrier, and the retry is legal", async () => {
+  const gateway = fakeGateway();
+  gateway.state.inSpace = true;
+  gateway.state.shipMode = "STOP";
+  const callBoundMethod = gateway.callBoundMethod.bind(gateway);
+  let docks = 0;
+  gateway.callBoundMethod = async (...args) => {
+    if (args[1] === "CmdDock") {
+      docks += 1;
+      if (docks === 1) {
+        // R24's measured silent decline: 200/null and the ship never seats.
+        gateway.calls.boundCall.push({ service: args[0], method: args[1], args: args[2] });
+        return { service: args[0], method: args[1], result: null, notifications: [] };
+      }
+    }
+    return callBoundMethod(...args);
+  };
+
+  let clockMs = 0;
+  const { baseUrl } = await startTestServer({
+    gateway,
+    transitionReadyTimeoutMs: 1_000,
+    transitionPollMs: 250,
+    transitionNow: () => clockMs,
+    transitionSleep: async (ms) => { clockMs += ms; },
+  });
+  await selectOnServer(baseUrl);
+
+  const first = await apiRequest(baseUrl, "/api/bridge/flight/dock", {
+    method: "POST",
+    body: { stationID: ORIGIN_STATION_ID },
+  });
+  // Not a 504, not a latch: the probe ends with the ship still in space and
+  // hands the decision back to the client's silent-dock ladder.
+  assert.equal(first.response.status, 200, JSON.stringify(first.payload));
+  assert.equal(first.payload.ok, true);
+  assert.equal(first.payload.flight.inSpace, true);
+  assert.equal(first.payload.transition.phase, "ready");
+
+  const second = await apiRequest(baseUrl, "/api/bridge/flight/dock", {
+    method: "POST",
+    body: { stationID: ORIGIN_STATION_ID },
+  });
+  assert.equal(second.response.status, 200, JSON.stringify(second.payload));
+  assert.equal(second.payload.flight.docked, true);
+  assert.equal(second.payload.transition.phase, "ready");
+  assert.equal(
+    gateway.calls.boundCall.filter((call) => call.method === "CmdDock").length,
+    2,
+    "the ladder's re-issued dock is not blocked by the declined one",
+  );
+});
+
 test("structure-gate jump resolves its destination server-side and waits for observed readiness", async () => {
   const gateway = fakeGateway();
   gateway.state.inSpace = true;
