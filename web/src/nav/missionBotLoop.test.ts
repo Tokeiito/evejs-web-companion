@@ -1175,3 +1175,78 @@ test("BOUNDED: a wire that never answers pauses the run with the transport truth
     "presses that never arrived must not be charged to the request bound",
   );
 });
+
+// --- The travel rung against a plan that never starts ------------------------
+//
+// startRoute reports plan failures through the travel slice for the Travel
+// panel; the bot's startTravel dep THROWS them (RouteStartOutcome) because a
+// flight the autopilot never received must not be booked as running.
+
+test("a travel that never started pauses with the plan's own reason, not 'Flying'", async () => {
+  const h = harness({ status: status({ docked: false, inSpace: true }), journal: journalEmpty() });
+  const bot = createMissionBot({
+    ...h.deps,
+    startTravel: async () => {
+      throw new Error("No gate route from Alpha to Omega.");
+    },
+  });
+  bot.start(PLAN);
+  await ticks(bot, 2);
+
+  const snap = bot.snapshot();
+  assert.equal(snap.status, "paused", "a plan failure must stop the run, not fake a flight");
+  assert.match(String(snap.failureReason), /no gate route/i);
+});
+
+test("a transient travel start is retried and then flies (never booked before it started)", async () => {
+  const h = harness({ status: status({ docked: false, inSpace: true }), journal: journalEmpty() });
+  let failuresLeft = 1;
+  const started: number[] = [];
+  const bot = createMissionBot({
+    ...h.deps,
+    startTravel: async (stationID) => {
+      if (failuresLeft > 0) {
+        failuresLeft -= 1;
+        const error = new Error("EveJS gateway timed out.") as Error & { code?: string };
+        error.code = "EVE_GATEWAY_TIMEOUT";
+        throw error;
+      }
+      started.push(stationID);
+      h.world.travel = {
+        status: "running",
+        destinationStationID: stationID,
+        remainingJumps: 2,
+        failureReason: null,
+      };
+    },
+  });
+  bot.start(PLAN);
+  await ticks(bot, 8);
+
+  const snap = bot.snapshot();
+  assert.equal(snap.status, "running");
+  assert.deepEqual(started, [PLAN.agentStationID], "the retry reached the autopilot once");
+});
+
+test("a STALE 'arrived' from the previous leg cannot reset the travel bound", async () => {
+  // Between legs the shared autopilot still says "arrived" — about the LAST
+  // flight. If that stale word clears the restart counter, a travel that keeps
+  // failing to start spins forever. The arrival must be OURS to clear anything.
+  const h = harness({
+    status: status({ docked: false, inSpace: true }),
+    journal: journalEmpty(),
+    travel: {
+      status: "arrived",
+      destinationStationID: 60009999, // the PREVIOUS leg's station, not ours
+      remainingJumps: 0,
+      failureReason: null,
+    },
+  });
+  const bot = createMissionBot(h.deps); // harness startTravel records but starts nothing
+  bot.start(PLAN);
+  await ticks(bot, 20);
+
+  const snap = bot.snapshot();
+  assert.equal(snap.status, "paused", "the restart bound must eventually trip");
+  assert.match(String(snap.failureReason), /three times/i);
+});

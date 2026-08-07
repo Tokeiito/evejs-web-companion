@@ -81,9 +81,10 @@ test("startRoute solves a multi-hop route and applies travel/planned", async () 
   const store = createClientStore();
   const flow = createAppFlow(store, { fetch: makeFakeFetch(defaultResponder) });
 
-  await flow.startRoute(60000003); // station in Charlie(3)
+  const outcome = await flow.startRoute(60000003); // station in Charlie(3)
   flow.abortRoute(); // stop the background loop
 
+  assert.equal(outcome.started, true, "a plan that reached the autopilot reports started");
   const travel = store.travel.get();
   assert.equal(travel.destinationSystemID, 3);
   assert.equal(travel.destinationStationID, 60000003);
@@ -123,22 +124,27 @@ test("startRoute surfaces an unreachable destination as a plan error", async () 
   };
   const flow = createAppFlow(store, { fetch: makeFakeFetch(responder) });
 
-  await flow.startRoute(50); // system not in the graph
+  const outcome = await flow.startRoute(50); // system not in the graph
 
   const travel = store.travel.get();
   assert.equal(travel.status, "idle");
   assert.match(travel.failureReason ?? "", /No gate route/i);
+  // The failure is ALSO the return value — that is what the mission bot's
+  // startTravel dep throws on, so a flight that never started is never booked.
+  assert.equal(outcome.started, false);
+  assert.match(outcome.started === false ? outcome.reason : "", /No gate route/i);
 });
 
 test("startRoute surfaces an unknown destination as a plan error", async () => {
   const store = createClientStore();
   const flow = createAppFlow(store, { fetch: makeFakeFetch(defaultResponder) });
 
-  await flow.startRoute(99999999);
+  const outcome = await flow.startRoute(99999999);
 
   const travel = store.travel.get();
   assert.equal(travel.status, "idle");
   assert.match(travel.failureReason ?? "", /Unknown destination/i);
+  assert.equal(outcome.started, false);
 });
 
 test("searchDestinations finds systems/stations by name, annotated with jumps (R7a)", async () => {

@@ -1546,7 +1546,17 @@ export function createMissionBot(deps: MissionBotDeps): MissionBotController {
     // A flight that is over is a flight the bot no longer owns. Clearing this
     // BEFORE the decision is what lets the ladder re-read where the ship
     // actually ended up rather than trusting the flight own word for it.
-    if (memory.travellingTo !== null && observation.travel?.status === "arrived") {
+    //
+    // ⚠ ONLY AN ARRIVAL AT *OUR* DESTINATION CLEARS THE COUNTERS. The travel
+    // snapshot is the SHARED autopilot's, and between legs it still says
+    // "arrived" — about the PREVIOUS leg. Clearing the restart bound on that
+    // stale word is what used to let a travel that kept failing to start spin
+    // forever: every re-decide reset the very counter meant to stop it.
+    if (
+      memory.travellingTo !== null &&
+      observation.travel?.status === "arrived" &&
+      observation.travel.destinationStationID === memory.travellingTo
+    ) {
       memory.travellingTo = null;
       memory.travellingToLabel = null;
       memory.travelTargetID = null;

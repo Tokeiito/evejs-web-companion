@@ -289,6 +289,20 @@ export interface MarketOrderRequest {
   readonly itemID?: number;
 }
 
+/**
+ * How a `startRoute` attempt ended. Every failure is ALSO written to the
+ * travel slice (`travel/plan-error`) for the Travel panel; the return value
+ * exists for callers that are not the Travel panel — the mission bot's
+ * `startTravel` dep throws on `started: false`, because a bot that believes a
+ * flight is running when the plan never reached the autopilot spins "Flying
+ * to…" forever with the real reason hidden in a panel nobody is watching.
+ * `cause` carries the underlying thrown error when there was one, so the
+ * loops' transport-transient classification reads the real code.
+ */
+export type RouteStartOutcome =
+  | { readonly started: true }
+  | { readonly started: false; readonly reason: string; readonly cause?: unknown };
+
 export interface AppFlow {
   /** Boot health ping — sets the health slice online/offline (gates the login). */
   checkHealth(): Promise<void>;
@@ -808,7 +822,7 @@ export interface AppFlow {
    * solve the route client-side, then run the decide-loop. Surfaces a plan
    * error (unreachable / unknown) through the travel slice rather than throwing.
    */
-  startRoute(destinationID: number): Promise<void>;
+  startRoute(destinationID: number): Promise<RouteStartOutcome>;
   /**
    * R7a — search the static map by name (systems + stations) so a player can set
    * a destination without knowing EVE IDs. Returns the matches annotated with
@@ -4588,8 +4602,15 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     };
   }
 
-  async function startRoute(destinationID: number): Promise<void> {
+  async function startRoute(destinationID: number): Promise<RouteStartOutcome> {
     store.apply({ type: "travel/plan-error", message: null });
+
+    // Every plan failure BOTH writes the travel slice (the Travel panel's
+    // surface) AND returns `started: false` — see RouteStartOutcome.
+    function planFailed(reason: string, cause?: unknown): RouteStartOutcome {
+      store.apply({ type: "travel/plan-error", message: reason });
+      return { started: false, reason, cause };
+    }
 
     // 1. The client-side route graph (retail's clientPathfinderService is local;
     //    this is read-only static reference data, not a gateway/route call).
@@ -4602,8 +4623,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         store.apply({ type: "character/offline" });
         throw error;
       }
-      store.apply({ type: "travel/plan-error", message: `Could not load the map graph: ${errorWords(error)}` });
-      return;
+      return planFailed(`Could not load the map graph: ${errorWords(error)}`, error);
     }
 
     // 2. The current location is the route origin (also validates the session).
@@ -4619,12 +4639,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         store.apply({ type: "character/offline" });
         throw error;
       }
-      store.apply({ type: "travel/plan-error", message: `Could not read your location: ${errorWords(error)}` });
-      return;
+      return planFailed(`Could not read your location: ${errorWords(error)}`, error);
     }
     if (originSystem === null) {
-      store.apply({ type: "travel/plan-error", message: "Your current solar system is unknown." });
-      return;
+      return planFailed("Your current solar system is unknown.");
     }
 
     // 3. Resolve the destination (a courier destination is a station; the solver
@@ -4638,22 +4656,18 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         store.apply({ type: "character/offline" });
         throw error;
       }
-      store.apply({ type: "travel/plan-error", message: `Could not resolve the destination: ${errorWords(error)}` });
-      return;
+      return planFailed(`Could not resolve the destination: ${errorWords(error)}`, error);
     }
     if (destination.kind === "unknown" || destination.solarSystemID === null) {
-      store.apply({ type: "travel/plan-error", message: `Unknown destination ${destinationID}.` });
-      return;
+      return planFailed(`Unknown destination ${destinationID}.`);
     }
 
     // 4. Solve the route (fewest jumps).
     const route = solveRoute(graph, originSystem, destination.solarSystemID);
     if (!route.reachable) {
-      store.apply({
-        type: "travel/plan-error",
-        message: `No gate route from ${graph.systemName(originSystem) ?? originSystem} to ${destination.systemName ?? destination.solarSystemID}.`,
-      });
-      return;
+      return planFailed(
+        `No gate route from ${graph.systemName(originSystem) ?? originSystem} to ${destination.systemName ?? destination.solarSystemID}.`,
+      );
     }
 
     const destinationStationID = destination.kind === "station" ? destination.stationID : null;
@@ -4688,6 +4702,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
     autopilot.start(plan);
     void autopilot.run();
+    return { started: true };
   }
 
   // --- R24 slice B: the smart Dock command ---------------------------------
@@ -5015,7 +5030,18 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // THE SHARED AUTOPILOT. Not a second flight ladder — the same controller,
       // the same route solver, the same R24 bounds.
       startTravel: async (stationID) => {
-        await startRoute(stationID);
+        const outcome = await startRoute(stationID);
+        if (!outcome.started) {
+          // The plan never reached the autopilot. A bot that books this as a
+          // running flight spins "Flying to…" forever against a stale
+          // snapshot, so the failure must THROW here — the underlying error
+          // when there is one (its code drives the loop's transport-transient
+          // retry), otherwise the plan reason in the player's words.
+          if (outcome.cause !== undefined) {
+            throw outcome.cause;
+          }
+          throw new Error(outcome.reason);
+        }
       },
       getTravel: () => {
         if (!autopilot) {
