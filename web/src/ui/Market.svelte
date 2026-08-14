@@ -37,6 +37,7 @@
   // R27 — the shared item icon: one cached picture per thing, falling back
   // to a name-derived tile whenever the icon cache has no entry (or no cache).
   import TypeIcon from "./TypeIcon.svelte";
+  import type { MarketGroupNode } from "../app/api.ts";
 
   let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
 
@@ -300,8 +301,67 @@
       : `That went through. You were actually charged ${formatIsk(magnitude)}.`;
   });
 
+  // --- R83: BROWSING, not just searching -------------------------------------
+  //
+  // The only way into this panel was to TYPE an item's name — fine when you know
+  // what you want, useless when you do not. "What ammunition fits this?" and
+  // "what is even on sale?" are the questions a market is for and neither can be
+  // typed. So the market tree is the way in, and the search box narrows it.
+  //
+  // The tree is STATIC reference data (see space of `/api/market/groups`), which
+  // is why it loads before — and independently of — anything the market daemon
+  // says. A player can find out what exists even when prices cannot be read.
+  interface Crumb {
+    readonly marketGroupID: number;
+    readonly name: string;
+  }
+  let crumbs = $state<Crumb[]>([]);
+  let groups = $state<readonly MarketGroupNode[]>([]);
+  let groupTypes = $state<readonly MarketTypeMatch[]>([]);
+  let groupTypesCapped = $state(false);
+  let browsing = $state(false);
+
+  /** Where in the tree we are — 0 is the root. */
+  const currentGroupID = $derived(crumbs.length === 0 ? 0 : crumbs[crumbs.length - 1]!.marketGroupID);
+
+  async function openGroupID(groupID: number): Promise<void> {
+    browsing = true;
+    try {
+      groups = await flow.loadMarketGroups(groupID);
+      if (groupID === 0) {
+        // The root holds no items of its own.
+        groupTypes = [];
+        groupTypesCapped = false;
+      } else {
+        const result = await flow.loadMarketGroupTypes(groupID);
+        groupTypes = result.types;
+        groupTypesCapped = result.capped;
+      }
+    } catch (cause) {
+      // Browsing is reference data; failing it must not blank the prices that
+      // are already on screen.
+      error = cause instanceof Error ? cause.message : String(cause);
+    } finally {
+      browsing = false;
+    }
+  }
+
+  function enterGroup(node: MarketGroupNode): void {
+    crumbs = [...crumbs, { marketGroupID: node.marketGroupID, name: node.name }];
+    void openGroupID(node.marketGroupID);
+  }
+
+  /** Jump to a crumb; -1 is "All items". */
+  function goToCrumb(index: number): void {
+    crumbs = index < 0 ? [] : crumbs.slice(0, index + 1);
+    void openGroupID(index < 0 ? 0 : crumbs[index]!.marketGroupID);
+  }
+
   onMount(() => {
     void run(() => flow.loadMarket(null));
+    // The tree, so the panel opens on something to look AT rather than an empty
+    // search box. Independent of the market read: it is static data.
+    void openGroupID(0);
     // The hangar, so a sell can name a real stack. Deliberately NOT part of the
     // market load: it is a different panel's read, and failing it must cost the
     // player only the ability to sell, not the whole market page.
@@ -337,34 +397,85 @@
   {#if outcomeText}
     <p class="note">{outcomeText}</p>
   {/if}
+  <!--
+    R83 — THE WAY IN IS A TREE, and the search box narrows it.
+
+    Before this the only route to an item was typing its name, which answers
+    "how much is Veldspar" and nothing else. The market's real questions —
+    what ammunition exists, what is worth hauling — are BROWSING questions.
+
+    Groups and items are both plain rows in one list: a group descends, an item
+    opens its order books. They are visibly different (a group carries a chevron
+    and its own icon; an item carries its picture) but they behave consistently,
+    which is what makes the list scannable in a narrow window.
+  -->
+  <nav class="market-crumbs" aria-label="Where you are in the market">
+    <button type="button" class="crumb" disabled={busy || browsing} onclick={() => goToCrumb(-1)}>
+      All items
+    </button>
+    {#each crumbs as crumb, index (crumb.marketGroupID)}
+      <span class="crumb-sep" aria-hidden="true">›</span>
+      <button
+        type="button"
+        class="crumb"
+        disabled={busy || browsing}
+        aria-current={index === crumbs.length - 1 ? "page" : undefined}
+        onclick={() => goToCrumb(index)}
+      >{crumb.name}</button>
+    {/each}
+  </nav>
+
   {#if matches.length > 0}
-    <div class="table-wrap overflow-x-auto">
-      <table class="guests reflow">
-        <thead>
-          <tr><th>Item</th><th>Kind</th><th>Action</th></tr>
-        </thead>
-        <tbody>
-          {#each matches as match (match.typeID)}
-            <tr>
-              <td data-label="Item">
-                <span class="cell-item">
-                  <TypeIcon typeID={match.typeID} name={match.name} />
-                  {match.name}
-                </span>
-              </td>
-              <td data-label="Kind">{match.groupName}</td>
-              <td data-label="Action">
-                <div class="row-actions">
-                  <button type="button" disabled={busy} onclick={() => chooseItem(match)}>
-                    Show the market
-                  </button>
-                </div>
-              </td>
-            </tr>
-          {/each}
-        </tbody>
-      </table>
-    </div>
+    <!-- A search is showing: its results replace the branch, and the breadcrumb
+         above is still the way back to browsing. -->
+    <h3>Search results</h3>
+    <ul class="market-picker">
+      {#each matches as match (match.typeID)}
+        <li>
+          <button type="button" class="pick-row" disabled={busy} onclick={() => chooseItem(match)}>
+            <TypeIcon typeID={match.typeID} name={match.name} />
+            <span class="pick-main">
+              <span class="pick-name">{match.name}</span>
+              <span class="pick-meta">{match.groupName}</span>
+            </span>
+          </button>
+        </li>
+      {/each}
+    </ul>
+  {:else if browsing}
+    <p class="note">Opening…</p>
+  {:else}
+    {#if groups.length === 0 && groupTypes.length === 0}
+      <p class="empty">This part of the market holds nothing.</p>
+    {/if}
+    <ul class="market-picker">
+      {#each groups as node (node.marketGroupID)}
+        <li>
+          <button type="button" class="pick-row pick-group" disabled={busy} onclick={() => enterGroup(node)}>
+            <span class="pick-main">
+              <span class="pick-name">{node.name}</span>
+            </span>
+            <span class="pick-chevron" aria-hidden="true">›</span>
+          </button>
+        </li>
+      {/each}
+      {#each groupTypes as item (item.typeID)}
+        <li>
+          <button type="button" class="pick-row" disabled={busy} onclick={() => chooseItem(item)}>
+            <TypeIcon typeID={item.typeID} name={item.name} />
+            <span class="pick-main">
+              <span class="pick-name">{item.name}</span>
+              <span class="pick-meta">{item.groupName}</span>
+            </span>
+          </button>
+        </li>
+      {/each}
+    </ul>
+    {#if groupTypesCapped}
+      <!-- Never a silent slice: the panel says it capped so a player can narrow
+           with the search box instead of believing they have seen everything. -->
+      <p class="note">Only the first {groupTypes.length} items here are listed — search to narrow it.</p>
+    {/if}
   {/if}
   {#if !$market.loaded}
     <p class="note">Loading the market…</p>

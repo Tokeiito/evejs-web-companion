@@ -454,6 +454,15 @@ export interface AppFlow {
    */
   findMarketTypes(q: string): Promise<readonly api.MarketTypeMatch[]>;
   /**
+   * R83 — BROWSE the market tree. Static reference data, so both of these work
+   * even when the market daemon itself is not answering: a player can find out
+   * what EXISTS before asking what it costs.
+   */
+  loadMarketGroups(parentGroupID: number): Promise<readonly api.MarketGroupNode[]>;
+  loadMarketGroupTypes(
+    marketGroupID: number,
+  ): Promise<{ readonly types: readonly api.MarketTypeMatch[]; readonly total: number; readonly capped: boolean }>;
+  /**
    * PLACE A BUY ORDER. Sets ISK aside immediately and charges a broker's fee,
    * so the panel confirms before calling it and the BFF confirms again. What
    * the server ACTUALLY charged lands in the store as `lastOutcome`.
@@ -7251,6 +7260,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     },
     loadMarket,
     findMarketTypes: (q: string) => api.findMarketTypes(q, callOptions),
+    loadMarketGroups: (parentGroupID: number) => api.loadMarketGroups(parentGroupID, callOptions),
+    loadMarketGroupTypes: (marketGroupID: number) =>
+      api.loadMarketGroupTypes(marketGroupID, callOptions),
     async placeMarketOrder(request) {
       // Buying names a TYPE; selling names a specific STACK. Two different
       // retail calls, and the panel chooses between them here rather than the
