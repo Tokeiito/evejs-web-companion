@@ -1326,6 +1326,48 @@ test("ore is counted from the HOLD growing, never from cycles or a yield sum", a
   assert.equal(bot.snapshot().oreUnitsMined, 750, "exactly what the hold gained, no more");
 });
 
+test("a PARTIAL hold read cannot mint phantom ore, and real growth still counts after it", async () => {
+  // Two holds answer the read. Mid-run the ore hold's items DROP for a tick
+  // while the cargo hold still reads — the total dips by the whole ore hold,
+  // and the old baseline adopted the dip, so the ore's return on the next full
+  // read counted as freshly mined. Nothing was mined here at all.
+  const cargoHold: MiningHold = {
+    key: "cargo",
+    label: "Cargo hold",
+    items: [{ itemID: 99_999, typeID: 34, quantity: 20 }],
+    capacity: { capacity: 500, used: 20 },
+    present: true,
+    error: null,
+  };
+  let units = 500;
+  let dropOreItems = false;
+  const { deps } = makeDeps({
+    status: () => status(),
+    snapshot: () =>
+      snapshot([rock(ROCK_A, 5_000, 50_000, "Veldspar")], { activeModuleIDs: [LASER_A, LASER_B] }),
+    locked: () => [ROCK_A],
+    holds: () => [
+      dropOreItems
+        ? { ...oreHold(units / 10, 5_000, [units]), items: null, error: "read failed" }
+        : oreHold(units / 10, 5_000, units > 0 ? [units] : []),
+      cargoHold,
+    ],
+  });
+  const bot = createMiningBot(deps);
+  bot.start(PLAN);
+
+  await drive(bot, 2); // the baseline: 500 ore + 20 cargo, all pre-existing
+  dropOreItems = true;
+  await drive(bot, 2); // the dip: only the cargo hold reads
+  dropOreItems = false;
+  await drive(bot, 2); // the full total comes back
+  assert.equal(bot.snapshot().oreUnitsMined, 0, "re-appearing ore is not mined ore");
+
+  units = 800; // now the lasers actually produce
+  await drive(bot, 2);
+  assert.equal(bot.snapshot().oreUnitsMined, 300, "growth past the kept baseline still counts");
+});
+
 test("a haul whose unload read-back RACED the settle still counts — once", async () => {
   // The unload lands, but the read the unload itself fires still shows the old
   // contents (the transfer is settling — the same lag SETTLE_UNLOAD exists

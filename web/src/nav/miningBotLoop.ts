@@ -1231,6 +1231,15 @@ export function createMiningBot(deps: MiningBotDeps): MiningBotController {
     memory.holdUsed = hold?.capacity?.used ?? null;
     memory.holdCapacity = hold?.capacity?.capacity ?? null;
 
+    // A PARTIAL read is not a total. When one hold's items failed while
+    // another's landed, the sum is missing a hold — and adopting that dip as
+    // the new baseline made the missing ore read as FRESHLY MINED when the
+    // next full read brought it back. A tick that could not read every
+    // present hold counts nothing and moves no baseline.
+    if (holds !== null && holds.some((entry) => entry.present && entry.items === null)) {
+      return;
+    }
+
     const units = holdUnits(holds);
     if (units === null) {
       return;
