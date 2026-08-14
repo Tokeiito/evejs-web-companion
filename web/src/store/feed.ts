@@ -110,7 +110,10 @@ export type HealthStatus = "unknown" | "online" | "offline";
 
 export type FeedEvent =
   | { readonly type: "health/status"; readonly status: HealthStatus }
-  | { readonly type: "session/logged-in"; readonly accountID: number; readonly username: string }
+  // `accountCreated` (R2): true when this login auto-created the account on
+  // the server, so the UI can say so. Optional — absent means an ordinary
+  // sign-in to an existing account.
+  | { readonly type: "session/logged-in"; readonly accountID: number; readonly username: string; readonly accountCreated?: boolean }
   | { readonly type: "session/logged-out" }
   | { readonly type: "character/list"; readonly characters: readonly CharacterSummary[] }
   | { readonly type: "character/selected"; readonly characterID: number | null }

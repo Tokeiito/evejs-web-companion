@@ -60,7 +60,13 @@
       <p class="login-status checking">Checking server…</p>
     {/if}
 
-    <p class="note">Sign in with your EveJS account name — any password works.</p>
+    <!-- R2: the login is also account creation — an unknown name is minted
+         server-side (emulator devAutoCreateAccounts parity), so say so here
+         rather than surprising the player on the next screen. -->
+    <p class="note">
+      Sign in with your EveJS account name — any password works. A new name
+      creates a new account.
+    </p>
     <form onsubmit={submit}>
       <label>
         Account

@@ -42,6 +42,7 @@ test("the initial state is logged out with no characters and an idle feed", () =
     phase: "logged-out",
     accountID: null,
     username: null,
+    accountCreated: false,
   });
   assert.deepEqual(store.get().character, {
     selectedCharacterID: null,
@@ -63,6 +64,8 @@ test("session and character events reduce into their typed slices", () => {
     phase: "logged-in",
     accountID: 4,
     username: "ceo",
+    // Absent on the event = an ordinary sign-in, never "created".
+    accountCreated: false,
   });
   assert.equal(store.character.get().characters.length, 2);
   assert.equal(store.character.get().selectedCharacterID, 92);

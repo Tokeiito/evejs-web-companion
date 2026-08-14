@@ -267,23 +267,61 @@ app.get("/api/health", async (req, res) => {
   }
 });
 
-// Who-cares web login (roadmap section 6, goal R1): an existing EveJS account
+// Who-cares web login (roadmap section 6, goals R1 + R2): an EveJS account
 // username signs in with ANY password, including an empty one — the password
-// is not checked at all. This deliberately mirrors the emulator's retail-path
-// devSkipPasswordValidation behavior. The scrypt web-password store is
-// BYPASSED, NOT DELETED: src/webAuth.js verifyWebPassword/upsertWebPassword,
-// data/web-users.json, and `npm run webpass` stay in place (data-preservation
-// rule) but are deprecated for login. Unknown usernames get a clear 401;
-// account auto-create is deferred to R2.
+// is not checked at all — and an UNKNOWN username is auto-created through the
+// gateway. Both halves deliberately mirror the emulator's retail-path
+// dev flags (devSkipPasswordValidation + devAutoCreateAccounts): the web login
+// behaves exactly like a retail client's first login against this dev server.
+// The gateway owns the auto-create policy — when devAutoCreateAccounts is off
+// it refuses with ACCOUNT_CREATE_DISABLED and unknown usernames keep their
+// clear 401. The scrypt web-password store is BYPASSED, NOT DELETED:
+// src/webAuth.js verifyWebPassword/upsertWebPassword, data/web-users.json, and
+// `npm run webpass` stay in place (data-preservation rule) but are deprecated
+// for login.
 app.post("/api/login", async (req, res, next) => {
   const username = String(req.body && req.body.username || "").trim();
   try {
+    // An empty username can never name or create an account; refuse it here
+    // instead of round-tripping the gateway.
+    if (!username) {
+      res.status(401).json({
+        ok: false,
+        error: "UNKNOWN_EVEJS_ACCOUNT",
+        message: "Unknown EveJS account.",
+      });
+      return;
+    }
     let account = null;
+    let accountCreated = false;
     try {
       account = await store.getAccount(username);
     } catch (error) {
       if (!(error && error.code === "ACCOUNT_NOT_FOUND")) {
         throw error;
+      }
+    }
+    if (!account) {
+      try {
+        const outcome = await store.createAccount(username);
+        account = outcome && outcome.account || null;
+        accountCreated = Boolean(outcome && outcome.created);
+      } catch (error) {
+        if (error && error.code === "ACCOUNT_CREATE_DISABLED") {
+          // Auto-create is off server-side: unknown usernames get the same
+          // 401 they always got (the `if (!account)` below).
+        } else if (error && error.code === "ACCOUNT_INVALID") {
+          // The username failed the gateway's charset/length rules — that is
+          // "fix your input", not "unknown account".
+          res.status(400).json({
+            ok: false,
+            error: "ACCOUNT_INVALID",
+            message: error.message || "Account username is invalid.",
+          });
+          return;
+        } else {
+          throw error;
+        }
       }
     }
     if (!account) {
@@ -309,6 +347,10 @@ app.post("/api/login", async (req, res, next) => {
       ok: true,
       sessionToken: token,
       account: publicAccount(account),
+      // R2: true exactly when THIS login minted the account, so the UI can say
+      // so (a fresh account also arrives with zero characters, which sends the
+      // client straight into the create-character flow).
+      accountCreated,
       characters: await store.listCharactersForAccount(account.accountID),
     });
   } catch (error) {

@@ -106,6 +106,8 @@ export interface SessionSlice {
   readonly phase: "logged-out" | "logged-in";
   readonly accountID: number | null;
   readonly username: string | null;
+  /** R2: true when THIS login auto-created the account on the server. */
+  readonly accountCreated: boolean;
 }
 
 /** Character context: the account's characters and the selected one. */
@@ -184,6 +186,7 @@ const INITIAL_SESSION: SessionSlice = Object.freeze({
   phase: "logged-out",
   accountID: null,
   username: null,
+  accountCreated: false,
 });
 
 const INITIAL_CHARACTER: CharacterSlice = Object.freeze({
@@ -882,6 +885,7 @@ export function createClientStore(): ClientStore {
           phase: "logged-in",
           accountID: event.accountID,
           username: event.username,
+          accountCreated: event.accountCreated === true,
         });
         break;
       case "session/logged-out":

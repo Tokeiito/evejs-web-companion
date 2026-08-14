@@ -11,6 +11,7 @@
 //
 // What survives is exactly what the auth + session surface needs:
 //   - getAccount(username)                     -> requireAuth + POST /api/login
+//   - createAccount(username)                  -> POST /api/login auto-create (R2)
 //   - listCharactersForAccount(accountID)      -> the login response payload
 //   - getCharacterForAccount(accountID, id)    -> ownership check in
 //                                                 POST /api/bridge/select
@@ -83,6 +84,20 @@ async function getAccount(username, options = {}) {
   return normalizeAccount(normalizedUsername, account);
 }
 
+// Account auto-create for the who-cares login (goal R2): unknown usernames are
+// created through the gateway, which owns the policy — it enforces the
+// emulator's devAutoCreateAccounts flag and answers an existing username's
+// account with `created: false`. Returns { account, created }.
+async function createAccount(username, options = {}) {
+  void options;
+  const normalizedUsername = String(username || "").trim();
+  const outcome = await eveGatewayClient.createAccount(normalizedUsername);
+  return {
+    account: normalizeAccount(normalizedUsername, outcome.account),
+    created: outcome.created === true,
+  };
+}
+
 async function listCharactersForAccount(accountID, options = {}) {
   void options;
   const numericAccountID = Number(accountID || 0);
@@ -125,6 +140,7 @@ async function getStatus(options = {}) {
 }
 
 module.exports = {
+  createAccount,
   getAccount,
   getCharacterForAccount,
   getStatus,

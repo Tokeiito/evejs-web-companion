@@ -94,7 +94,7 @@ Applied **page-by-page on the R2–R6 rail** — each page rewrite to retail cal
 This is an emulator run in a trusted development environment.
 
 - WAN hosting is expected: `0.0.0.0` binding is fine. EveJS already runs this way; **PlayerConnect** handles the WAN side and is out of scope for the web client.
-- Login is emulator-style "who cares": the retail path already accepts any password via `devSkipPasswordValidation` / `devAutoCreateAccounts`. The web client should match — take a username and any password, log the character in. No real credential storage, no EveJS-backed auth project.
+- Login is emulator-style "who cares": the retail path already accepts any password via `devSkipPasswordValidation` / `devAutoCreateAccounts`. The web client matches both — any password signs an existing account in, and an unknown username auto-creates the account through the gateway's `POST /account/create` (which enforces `devAutoCreateAccounts` server-side). No real credential storage, no EveJS-backed auth project.
 - Do not add auth hardening, token schemes, session-revocation work, or security-review gates, and do not block work on previously catalogued gaps (token-less loopback fallback, cookie flags, HMAC session lifetime). They are accepted by policy.
 
 ## 7. Milestone: courier mission in the browser

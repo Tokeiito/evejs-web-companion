@@ -7022,6 +7022,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         type: "session/logged-in",
         accountID: result.accountID,
         username: result.username,
+        // R2: carried so the character-select screen can welcome a brand-new
+        // account (which also arrives with zero characters).
+        accountCreated: result.accountCreated,
       });
       // The character list comes from the typed retail reference call, not a
       // bespoke projection (charUnboundMgr.GetCharacterSelectionData).

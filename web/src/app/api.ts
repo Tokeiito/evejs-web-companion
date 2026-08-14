@@ -40,6 +40,8 @@ import type {
 export interface LoginResult {
   readonly accountID: number;
   readonly username: string;
+  /** R2: true when this login auto-created the account on the server. */
+  readonly accountCreated: boolean;
   /**
    * R107 — the signed session token the BFF handed back, so a per-session flow
    * can capture it onto its own call options instead of the per-tab global.
@@ -197,6 +199,7 @@ export async function login(
   return {
     accountID: asNumberOrNull(account.accountID) ?? 0,
     username: typeof account.username === "string" ? account.username : username,
+    accountCreated: data.accountCreated === true,
     sessionToken,
   };
 }

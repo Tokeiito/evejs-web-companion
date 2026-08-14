@@ -265,6 +265,23 @@ async function getAccount(username) {
   return result.account || null;
 }
 
+/**
+ * Web account auto-create (goal R2): POST /_evejs-web/v1/account/create.
+ * The gateway is the authority — it enforces devAutoCreateAccounts (refusing
+ * with ACCOUNT_CREATE_DISABLED when the flag is off) and answers an existing
+ * username's account with `created: false`, so two racing logins cannot
+ * double-create.
+ */
+async function createAccount(username) {
+  const result = await postJson("/account/create", {
+    username: String(username || "").trim(),
+  }, { timeoutMs: LEGACY_READ_TIMEOUT_MS });
+  return {
+    account: result.account || null,
+    created: result.created === true,
+  };
+}
+
 async function listCharacters(accountID) {
   const result = await getJson("/characters", {
     accountID: Number(accountID) || 0,
@@ -724,6 +741,7 @@ module.exports = {
   // /api/bridge/select ownership check reads, and gateway status for
   // /api/health. Every other v1 read helper went with the legacy routes.
   getAccount,
+  createAccount,
   listCharacters,
   getSnapshot,
   getStatus,

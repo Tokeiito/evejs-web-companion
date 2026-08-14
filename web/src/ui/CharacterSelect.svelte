@@ -64,10 +64,20 @@
   <header class="panel-head">
     <h2>Select character</h2>
   </header>
-  <p class="note">
-    Signed in as <strong>{$session.username}</strong>. Select a character to
-    bring it online — a character already in use elsewhere cannot be selected.
-  </p>
+  {#if $session.accountCreated}
+    <!-- R2: this login minted the account (the server had never seen the
+         name). Words, not inference — a brand-new account also has zero
+         characters, and "no characters yet" alone reads like data loss to
+         someone who expected an existing account. -->
+    <p class="note" role="status">
+      New account <strong>{$session.username}</strong> created.
+    </p>
+  {:else}
+    <p class="note">
+      Signed in as <strong>{$session.username}</strong>. Select a character to
+      bring it online — a character already in use elsewhere cannot be selected.
+    </p>
+  {/if}
   {#if $character.characters.length === 0}
     <!-- Before creation existed this was a dead end: an account with no pilots
          had nothing to click but "Log out". -->

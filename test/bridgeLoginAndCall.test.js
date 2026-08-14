@@ -100,6 +100,15 @@ function fakeStore(overrides = {}) {
     async getAccount(username) {
       return username === ACCOUNT.username ? { ...ACCOUNT } : null;
     },
+    // Default: the gateway refuses auto-create (devAutoCreateAccounts off), so
+    // unknown usernames keep their clear 401. Tests that want the R2
+    // auto-create behavior override this with a creating store.
+    async createAccount() {
+      throw Object.assign(new gatewayClient.EveGatewayError(
+        "Account auto-create is disabled (devAutoCreateAccounts is off).",
+        { code: "ACCOUNT_CREATE_DISABLED", statusCode: 403 },
+      ));
+    },
     async listCharactersForAccount(accountID) {
       return Number(accountID) === ACCOUNT.accountID
         ? CHARACTERS.map((character) => ({ ...character }))
@@ -217,6 +226,50 @@ test("gateway callMethod surfaces bridge refusals as typed gateway errors", asyn
   );
 });
 
+test("gateway createAccount posts the username to /account/create", async () => {
+  process.env.EVEJS_GATEWAY_URL = "http://gateway.test/_evejs-web/v1";
+  process.env.EVEJS_WEB_GATEWAY_TOKEN = "server-secret";
+  const calls = [];
+  global.fetch = async (url, options) => {
+    calls.push({ url, options });
+    return jsonResponse(200, gatewayResponse({
+      account: { username: "fresh-capsuleer", accountID: 9, role: "0", banned: false },
+      created: true,
+    }));
+  };
+
+  const outcome = await gatewayClient.createAccount("  fresh-capsuleer  ");
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, "http://gateway.test/_evejs-web/v1/account/create");
+  assert.equal(calls[0].options.method, "POST");
+  assert.equal(calls[0].options.headers["x-evejs-web-token"], "server-secret");
+  assert.deepEqual(JSON.parse(calls[0].options.body), { username: "fresh-capsuleer" });
+  assert.equal(outcome.created, true);
+  assert.equal(outcome.account.accountID, 9);
+});
+
+test("gateway createAccount surfaces the disabled refusal as a typed error", async () => {
+  process.env.EVEJS_GATEWAY_URL = "http://gateway.test/_evejs-web/v1";
+  global.fetch = async () => jsonResponse(403, {
+    ok: false,
+    source: "evejs-web-gateway",
+    apiVersion: 1,
+    error: "ACCOUNT_CREATE_DISABLED",
+    message: "Account auto-create is disabled (devAutoCreateAccounts is off).",
+  });
+
+  await assert.rejects(
+    gatewayClient.createAccount("someone"),
+    (error) => {
+      assert.equal(error.name, "EveGatewayError");
+      assert.equal(error.code, "ACCOUNT_CREATE_DISABLED");
+      assert.equal(error.statusCode, 403);
+      return true;
+    },
+  );
+});
+
 test("login accepts an existing account with a wrong or empty password", async () => {
   const { baseUrl } = await startTestServer();
   for (const password of ["definitely-not-the-web-password", ""]) {
@@ -229,6 +282,8 @@ test("login accepts an existing account with a wrong or empty password", async (
     assert.equal(payload.ok, true);
     assert.equal(payload.account.username, "pilot");
     assert.equal(payload.account.accountID, 4);
+    // R2: an existing account's login never claims to have minted it.
+    assert.equal(payload.accountCreated, false);
     assert.equal(payload.characters.length, 1);
     assert.equal(payload.characters[0].characterName, "Test Pilot");
     const setCookie = response.headers.get("set-cookie") || "";
@@ -247,13 +302,16 @@ test("login without any password field still signs in", async () => {
   assert.equal(payload.ok, true);
 });
 
-test("unknown usernames get a clear 401, whether the store returns null or 404s", async () => {
+test("unknown usernames keep their 401 while the gateway refuses auto-create", async () => {
   const notFoundError = Object.assign(
     new gatewayClient.EveGatewayError("Account was not found.", {
       code: "ACCOUNT_NOT_FOUND",
       statusCode: 404,
     }),
   );
+  // Both miss shapes (null and a 404 throw), and in both cases the default
+  // fake store's createAccount refuses with ACCOUNT_CREATE_DISABLED — the
+  // pre-R2 unknown-account behavior survives when the server flag is off.
   const stores = [
     fakeStore(),
     fakeStore({
@@ -274,6 +332,98 @@ test("unknown usernames get a clear 401, whether the store returns null or 404s"
     assert.equal(payload.error, "UNKNOWN_EVEJS_ACCOUNT");
     assert.equal(payload.message, "Unknown EveJS account.");
   }
+});
+
+test("an unknown username auto-creates an account and signs straight in (R2)", async () => {
+  const created = {
+    username: "fresh-capsuleer",
+    accountID: 9,
+    role: "0",
+    banned: false,
+  };
+  const calls = [];
+  const store = fakeStore({
+    async createAccount(username) {
+      calls.push(username);
+      return { account: { ...created }, created: true };
+    },
+  });
+  const { baseUrl } = await startTestServer({ store });
+  const { response, payload } = await apiRequest(baseUrl, "/api/login", {
+    method: "POST",
+    authenticated: false,
+    body: { username: "fresh-capsuleer", password: "" },
+  });
+  assert.equal(response.status, 200);
+  assert.equal(payload.ok, true);
+  assert.equal(payload.accountCreated, true);
+  assert.equal(payload.account.username, "fresh-capsuleer");
+  assert.equal(payload.account.accountID, 9);
+  // A minted account has no characters yet — the client lands on the
+  // create-character flow.
+  assert.deepEqual(payload.characters, []);
+  assert.match(response.headers.get("set-cookie") || "", /evejs_web_poc=/);
+  assert.deepEqual(calls, ["fresh-capsuleer"]);
+});
+
+test("a login that loses the create race still signs in without claiming creation", async () => {
+  // The gateway answers an existing username with created:false; the login
+  // proceeds as an ordinary sign-in.
+  const store = fakeStore({
+    async getAccount() {
+      return null;
+    },
+    async createAccount() {
+      return { account: { ...ACCOUNT }, created: false };
+    },
+  });
+  const { baseUrl } = await startTestServer({ store });
+  const { response, payload } = await apiRequest(baseUrl, "/api/login", {
+    method: "POST",
+    authenticated: false,
+    body: { username: ACCOUNT.username, password: "" },
+  });
+  assert.equal(response.status, 200);
+  assert.equal(payload.accountCreated, false);
+  assert.equal(payload.account.accountID, ACCOUNT.accountID);
+});
+
+test("login surfaces gateway-invalid usernames as a 400, not an unknown-account 401", async () => {
+  const store = fakeStore({
+    async createAccount() {
+      throw Object.assign(new gatewayClient.EveGatewayError(
+        "Account username must be 1-64 characters of letters, digits, _ . @ or -.",
+        { code: "ACCOUNT_INVALID", statusCode: 400 },
+      ));
+    },
+  });
+  const { baseUrl } = await startTestServer({ store });
+  const { response, payload } = await apiRequest(baseUrl, "/api/login", {
+    method: "POST",
+    authenticated: false,
+    body: { username: "bad/name", password: "" },
+  });
+  assert.equal(response.status, 400);
+  assert.equal(payload.error, "ACCOUNT_INVALID");
+});
+
+test("an empty username is refused without consulting the store", async () => {
+  const store = fakeStore({
+    async getAccount() {
+      throw new Error("getAccount must not be called for an empty username");
+    },
+    async createAccount() {
+      throw new Error("createAccount must not be called for an empty username");
+    },
+  });
+  const { baseUrl } = await startTestServer({ store });
+  const { response, payload } = await apiRequest(baseUrl, "/api/login", {
+    method: "POST",
+    authenticated: false,
+    body: { username: "   ", password: "x" },
+  });
+  assert.equal(response.status, 401);
+  assert.equal(payload.error, "UNKNOWN_EVEJS_ACCOUNT");
 });
 
 test("banned accounts cannot use the who-cares login", async () => {

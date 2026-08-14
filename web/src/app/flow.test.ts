@@ -166,12 +166,58 @@ test("login signs in and fills the character list from the typed reference call"
 
   assert.equal(store.session.get().phase, "logged-in");
   assert.equal(store.session.get().accountID, 2);
+  // R2: signing in to an EXISTING account (no accountCreated in the response)
+  // must not claim the login minted it.
+  assert.equal(store.session.get().accountCreated, false);
   assert.equal(store.character.get().characters.length, 1);
   assert.equal(store.character.get().characters[0]?.characterName, "Test Three");
   assert.deepEqual(
     requests.map((request) => request.path),
     ["/api/login", "/api/bridge/call"],
   );
+});
+
+test("a login that auto-created the account carries the flag into the session slice (R2)", async () => {
+  const { fetch } = makeFakeFetch((path) => {
+    if (path === "/api/login") {
+      return {
+        status: 200,
+        body: {
+          ok: true,
+          account: { accountID: 9, username: "fresh-capsuleer" },
+          accountCreated: true,
+          characters: [],
+        },
+      };
+    }
+    if (path === "/api/bridge/call") {
+      // A brand-new account's selection read answers zero characters.
+      return {
+        status: 200,
+        body: {
+          ok: true,
+          service: "charUnboundMgr",
+          method: "GetCharacterSelectionData",
+          result: [
+            { type: "list", items: [] },
+            [null, null],
+            { type: "list", items: [] },
+            { type: "list", items: [] },
+          ],
+          notifications: [],
+        },
+      };
+    }
+    return { status: 500, body: { ok: false, error: "UNEXPECTED_REQUEST" } };
+  });
+  const store = createClientStore();
+  const flow = createAppFlow(store, { fetch });
+
+  await flow.login("fresh-capsuleer", "");
+
+  assert.equal(store.session.get().phase, "logged-in");
+  assert.equal(store.session.get().accountCreated, true);
+  assert.equal(store.character.get().characters.length, 0);
 });
 
 test("selectCharacter brings the character online and runs the three docked reads", async () => {
