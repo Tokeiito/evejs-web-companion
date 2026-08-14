@@ -212,7 +212,7 @@
     let cancelled = false;
     const ping = async (): Promise<void> => {
       try {
-        const { ready } = await getHealth({});
+        const { ready } = await getHealth({ priority: "poll" });
         if (!cancelled) serverStatus = ready ? "online" : "offline";
       } catch {
         if (!cancelled) serverStatus = "offline";

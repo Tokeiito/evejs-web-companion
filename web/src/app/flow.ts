@@ -3529,7 +3529,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   async function loadSpaceSnapshot(): Promise<void> {
     let result;
     try {
-      result = await api.getSpaceSnapshot(callOptions);
+      result = await api.getSpaceSnapshot({ ...callOptions, priority: "poll" });
     } catch (error) {
       if (isSessionLost(error)) {
         stopLiveStream();

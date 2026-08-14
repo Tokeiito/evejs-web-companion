@@ -8,6 +8,11 @@
 // identity to the logged-in account.
 
 import { sessionAuthHeaders, tokenAuthHeaders } from "../app/sessionToken.ts";
+import {
+  TransportQueueError,
+  bridgeLane,
+  type RequestPriority,
+} from "../app/transport.ts";
 import type {
   BridgeCallRequestBody,
   BridgeCallSuccessBody,
@@ -45,6 +50,8 @@ export interface CallMethodOptions {
    * whoever last wrote the shared cookie.
    */
   readonly token?: string | null;
+  /** R92 — lane priority; defaults to "read". See app/transport.ts. */
+  readonly priority?: RequestPriority;
 }
 
 /** Client-side (non-server) failure codes, alongside the wire's BridgeErrorCode set. */
@@ -104,7 +111,10 @@ export async function callMethod<TResult = JsonValue>(
 
   let response: Response;
   try {
-    response = await doFetch(`${options.baseUrl ?? ""}/api/bridge/call`, {
+    // R92 — the SECOND fetch site in the client shares the one request lane, or
+    // the cap would only bound half of what the tab does. See app/transport.ts.
+    response = await bridgeLane.run(options.priority ?? "read", "/api/bridge/call", () =>
+      doFetch(`${options.baseUrl ?? ""}/api/bridge/call`, {
       method: "POST",
       // R42/R107 — the session's own token, alongside the cookie. This route is
       // the second fetch site in the client (api.ts's requestJson is the other),
@@ -122,13 +132,16 @@ export async function callMethod<TResult = JsonValue>(
       // rather than freeze the awaiting loop forever. A caller's own signal
       // still wins.
       signal: options.signal ?? AbortSignal.timeout(65_000),
-    });
+      }),
+    );
   } catch (cause) {
     throw new BridgeCallError(
       "BRIDGE_NETWORK_ERROR",
-      `Bridge call ${service}.${method} could not reach the BFF: ${
-        cause instanceof Error ? cause.message : String(cause)
-      }`,
+      cause instanceof TransportQueueError
+        ? cause.message
+        : `Bridge call ${service}.${method} could not reach the BFF: ${
+            cause instanceof Error ? cause.message : String(cause)
+          } — ${bridgeLane.diagnose().verdict}`,
       0,
     );
   }

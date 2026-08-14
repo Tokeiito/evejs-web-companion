@@ -118,7 +118,7 @@
   let botPollAlive = true;
   async function refreshBotFlown(): Promise<void> {
     try {
-      const rows = await listActiveServerBots();
+      const rows = await listActiveServerBots({ priority: "poll" });
       if (botPollAlive) botStatuses = new Map(rows.map((row) => [row.characterID, row]));
     } catch {
       // Keep the last known rows; the next poll retries.

@@ -23,7 +23,7 @@
 
   async function refresh(): Promise<void> {
     try {
-      bots = await listServerBots();
+      bots = await listServerBots({ priority: "poll" });
       error = null;
     } catch {
       // Keep whatever was last known on screen; say the read is failing.

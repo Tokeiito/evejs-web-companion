@@ -21,6 +21,11 @@ import {
   withSessionTokenQuery,
   withTokenQuery,
 } from "./sessionToken.ts";
+import {
+  TransportQueueError,
+  bridgeLane,
+  type RequestPriority,
+} from "./transport.ts";
 import type { JsonValue } from "../bridge/wire.ts";
 import type {
   AgentRow,
@@ -71,6 +76,13 @@ export interface ApiOptions {
    * presence of the key — not its value — is what selects the mode.
    */
   readonly token?: string | null;
+  /**
+   * R92 — how this request competes for the client's request lanes. Defaults to
+   * "read". Background polling should pass "poll" and anything the player just
+   * clicked should pass "user"; see app/transport.ts for why a click must never
+   * queue behind a poll.
+   */
+  readonly priority?: RequestPriority;
 }
 
 // R42/R107 — THE one place every BFF request in this file picks up its session
@@ -95,6 +107,26 @@ export interface ApiOptions {
  */
 const REQUEST_DEADLINE_MS = 65_000;
 
+/**
+ * What actually went wrong with a request that never produced a response.
+ *
+ * ⚠ THE POINT IS THE STATE OF THE LANE, NOT THE REQUEST THAT FAILED. The field
+ * reports this was written for named a journal read, the space snapshot and a
+ * location read — three unrelated routes failing in the same moment, which is
+ * never three faults. It is one: the server stopped answering, everything piled
+ * up behind it, and the request the player happened to make was a bystander.
+ * Naming the bystander sends whoever reads the report to the wrong route, so the
+ * lane's own verdict is appended to every transport failure.
+ */
+export function transportFailureWords(path: string, cause: unknown): string {
+  if (cause instanceof TransportQueueError) {
+    // It never left the browser, so there is nothing to say about the server.
+    return cause.message;
+  }
+  const detail = cause instanceof Error ? cause.message : String(cause);
+  return `${path} could not reach the BFF: ${detail} — ${bridgeLane.diagnose().verdict}`;
+}
+
 async function requestJson(
   path: string,
   init: RequestInit,
@@ -103,21 +135,23 @@ async function requestJson(
   const doFetch = options.fetch ?? globalThis.fetch;
   let response: Response;
   try {
-    response = await doFetch(`${options.baseUrl ?? ""}${path}`, {
-      credentials: "same-origin",
-      signal: AbortSignal.timeout(REQUEST_DEADLINE_MS),
-      ...init,
-      headers: {
-        ...("token" in options ? tokenAuthHeaders(options.token) : sessionAuthHeaders()),
-        ...((init.headers as Record<string, string> | undefined) ?? {}),
-      },
-    });
-  } catch (cause) {
-    throw new BridgeCallError(
-      "BRIDGE_NETWORK_ERROR",
-      `${path} could not reach the BFF: ${cause instanceof Error ? cause.message : String(cause)}`,
-      0,
+    // ⚠ THE DEADLINE IS ARMED INSIDE THE LANE, NOT OUTSIDE IT. A request that
+    // waited for a free lane must arrive at the server with its full budget; if
+    // the clock started when the call was made, a queued request would time out
+    // against a server that answered promptly. See app/transport.ts.
+    response = await bridgeLane.run(options.priority ?? "read", path, () =>
+      doFetch(`${options.baseUrl ?? ""}${path}`, {
+        credentials: "same-origin",
+        signal: AbortSignal.timeout(REQUEST_DEADLINE_MS),
+        ...init,
+        headers: {
+          ...("token" in options ? tokenAuthHeaders(options.token) : sessionAuthHeaders()),
+          ...((init.headers as Record<string, string> | undefined) ?? {}),
+        },
+      }),
     );
+  } catch (cause) {
+    throw new BridgeCallError("BRIDGE_NETWORK_ERROR", transportFailureWords(path, cause), 0);
   }
   let data: unknown = null;
   try {
