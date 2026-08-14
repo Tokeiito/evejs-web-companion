@@ -804,10 +804,23 @@
   }
 
   /* Any table that must stay wider than the viewport scrolls inside its own
-   * box, so the page itself never scrolls sideways (R8). */
+   * box, so the page itself never scrolls sideways (R8).
+   *
+   * ⚠ IT IS ALSO THE REFLOW'S CONTAINER (R85). The card reflow used to be a
+   * MEDIA query — it asked how wide the VIEWPORT was, which is the wrong
+   * question in an app made of floating windows and a resizable dock column. A
+   * four-column table in a 320px panel on a 1440px screen kept the wide layout
+   * and crushed its cells to ~50px; the reflow only fired if the whole browser
+   * was phone-sized. Making the wrapper a container lets the query ask how wide
+   * THE PANEL is, which is what actually decides whether a row fits.
+   *
+   * Safe to contain: this is already `width: 100%`, so its inline size comes
+   * from its parent and never from its contents — which is exactly the
+   * condition `inline-size` containment requires. */
   .table-wrap {
     width: 100%;
     overflow-x: auto;
+    container-type: inline-size;
   }
   /* A long list (the space overview) scrolls inside its own box rather than
      growing the whole page — so the ship HUD and controls above it stay put. */
@@ -4401,20 +4414,27 @@
     padding: 0.05rem 0.35rem;
   }
 
-  /* Both shells collapse to one column when there isn't width for the rail /
-   * side HUD (tablet and down), before the phone table reflow below. */
-  @media (max-width: 900px) {
-  }
-
   /* ======================================================================
    * 4. REFLOW — the R8 responsive contract
    * ----------------------------------------------------------------------
-   * Record-table -> card reflow on phones (<=640px). Each row becomes a
-   * bordered card and each cell a labelled block (label from data-label).
-   * DO NOT REMOVE: this, plus `data-label` on every <td>, is what keeps the
-   * app usable at 360px with no horizontal page scroll.
+   * Record-table -> card reflow in any NARROW CONTAINER (<=640px). Each row
+   * becomes a bordered card and each cell a labelled block (label from
+   * data-label). DO NOT REMOVE: this, plus `data-label` on every <td>, is what
+   * keeps the app usable at 360px with no horizontal page scroll.
+   *
+   * ⚠ R85: `@container`, NOT `@media`. This asked how wide the VIEWPORT was for
+   * as long as the app was a single column, and that stopped being the right
+   * question once panels became floating windows and a resizable dock column: a
+   * table in a 320px panel on a 1440px screen kept its wide layout and squeezed
+   * every cell to about 50px, because the browser window was not phone-sized.
+   * The container is `.table-wrap`, which every reflow table already sits in
+   * (`overviewActions.test.ts` checks that), so the question is now "does this
+   * row fit HERE" — which is the one that was always meant.
+   *
+   * This SUBSUMES the old media query rather than sitting beside it: on a phone
+   * the wrapper is itself narrow, so the same rules fire for the same reason.
    * ====================================================================*/
-  @media (max-width: 640px) {
+  @container (max-width: 640px) {
     table.reflow thead {
       position: absolute;
       width: 1px;
