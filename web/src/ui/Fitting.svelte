@@ -29,6 +29,19 @@
   } from "../bridge/fitting.ts";
   import { OUTER_RADIUS_PERCENT, countByFamily, placeFamily } from "./fittingGeometry.ts";
   import { abbreviate } from "./fittingIcons.ts";
+  // R78 — drag and drop. The RULES (what may be dropped where, and why not) live
+  // in a pure module, because a target that decides inside `dragover` can only be
+  // checked by dragging onto it — and `dragover` is also what tells the cursor
+  // whether a drop is allowed, so a rule written there can promise a drop that
+  // the drop handler then refuses.
+  import {
+    DRAG_MIME,
+    carriesOurPayload,
+    decodeDrag,
+    dropOnSocketVerdict,
+    encodeDrag,
+    type DragPayload,
+  } from "./dragDrop.ts";
   import TypeIcon from "./TypeIcon.svelte";
   import { BridgeCallError } from "../bridge/callMethod.ts";
   import { isSessionLost } from "../app/flow.ts";
@@ -537,6 +550,73 @@
     await flow.loadFitting();
   }
 
+  // --- R78: dragging a module onto a socket ---------------------------------
+  //
+  // ⚠ AN ACCELERATOR, NOT A REPLACEMENT. Pick-then-Fit still works exactly as it
+  // did: every button below is untouched, and a player who cannot drag loses
+  // nothing. Dragging is simply what someone arriving from the retail client
+  // reaches for first.
+
+  /** The socket the pointer is over, so it can light up while dragging. */
+  let dropSlot = $state<string | null>(null);
+  /** Why the last attempted drop was refused, in the panel's own error line. */
+  function slotKey(slot: FittingSlot): string {
+    return `${slot.family}:${slot.index}`;
+  }
+
+  function startItemDrag(event: DragEvent, itemID: number, typeID: number, source: "hangar" | "cargo"): void {
+    const payload: DragPayload = {
+      kind: "inventoryItem",
+      itemID,
+      typeID,
+      from: source === "hangar" ? { kind: "hangar" } : { kind: "cargo" },
+    };
+    event.dataTransfer?.setData(DRAG_MIME, encodeDrag(payload));
+    // A plain-text copy so dragging into a text field or another app produces
+    // something legible rather than nothing.
+    event.dataTransfer?.setData("text/plain", moduleName(typeID));
+    if (event.dataTransfer) {
+      event.dataTransfer.effectAllowed = "move";
+    }
+  }
+
+  function overSocket(event: DragEvent, slot: FittingSlot): void {
+    if (!carriesOurPayload(event.dataTransfer?.types as string[] | undefined)) {
+      return;
+    }
+    // preventDefault is what MAKES an element a drop target; without it the
+    // browser refuses the drop and shows the "no entry" cursor.
+    event.preventDefault();
+    if (event.dataTransfer) {
+      event.dataTransfer.dropEffect = "move";
+    }
+    dropSlot = slotKey(slot);
+  }
+
+  function dropOnSocket(event: DragEvent, slot: FittingSlot): void {
+    dropSlot = null;
+    const payload = decodeDrag(event.dataTransfer?.getData(DRAG_MIME) ?? null);
+    const verdict = dropOnSocketVerdict(payload);
+    event.preventDefault();
+    if (verdict !== null) {
+      // Refused, and SAID — the panel's existing error line, so a rejected drop
+      // reads the same way a rejected click does.
+      error = verdict;
+      return;
+    }
+    // Narrowed by the verdict above: only an inventory item can reach here.
+    const item = payload as Extract<DragPayload, { kind: "inventoryItem" }>;
+    // ⚠ IT GOES THROUGH `fitInto`, NOT ITS OWN `flow.fitModule` CALL. A drop is
+    // the same act as picking an item and pressing Fit, so it makes the drop the
+    // current pick and then runs the existing handler. Writing the call again
+    // here would be a second path to the same server call — which is precisely
+    // what `fittingWindow.test.ts` counts call sites to prevent, and it caught
+    // this on the first run.
+    pickedItemID = item.itemID;
+    pickedSource = item.from.kind === "cargo" ? "cargo" : "hangar";
+    fitInto(slot);
+  }
+
   function fitInto(slot: FittingSlot): void {
     const itemID = pickedItemID;
     if (itemID === null) {
@@ -1022,6 +1102,10 @@
                   aria-pressed={isSelected(slot)}
                   disabled={busy}
                   onclick={() => clickSocket(slot)}
+                  ondragover={(event) => overSocket(event, slot)}
+                  ondragleave={() => (dropSlot = null)}
+                  ondrop={(event) => dropOnSocket(event, slot)}
+                  class:drop-target={dropSlot === slotKey(slot)}
                 >
                   {#if slot.module}
                     {@const moduleLabel = moduleName(slot.module.typeID)}
@@ -1360,7 +1444,14 @@
           </thead>
           <tbody>
             {#each fittable as entry (entry.row.itemID)}
-              <tr class={entry.row.itemID === pickedItemID ? "self" : ""}>
+              <!-- Draggable onto a socket. The Fit button in the last cell is
+                   unchanged and remains the keyboard path. -->
+              <tr
+                class={entry.row.itemID === pickedItemID ? "self" : ""}
+                draggable="true"
+                ondragstart={(event) =>
+                  startItemDrag(event, entry.row.itemID, entry.row.typeID, entry.source)}
+              >
                 <td data-label="Module">{moduleName(entry.row.typeID)}</td>
                 <td data-label="Where it is">
                   {entry.source === "hangar" ? "Station hangar" : "Cargo hold"}

@@ -61,6 +61,18 @@
     InventoryPlace,
     ShipBay,
   } from "../store/types.ts";
+  // R78 — drag and drop between containers. The RULES live in a pure module: a
+  // target that decides what it accepts inside `dragover` can only be checked by
+  // dragging onto it, and `dragover` is also what tells the cursor whether a drop
+  // is allowed — so a rule written there can promise a drop that is then refused.
+  import {
+    DRAG_MIME,
+    carriesOurPayload,
+    decodeDrag,
+    dropOnPlaceVerdict,
+    encodeDrag,
+    type DragPayload,
+  } from "./dragDrop.ts";
   import { resolvedName, nameKey, type NameKind, type NameRef } from "../store/names.ts";
   import { deriveDocked } from "./tabs.ts";
 
@@ -511,6 +523,82 @@
     return active.bays.find((bay) => bay.key === key) ?? null;
   }
 
+  // --- R78: dragging items between containers -------------------------------
+  //
+  // ⚠ AN ACCELERATOR, NOT A REPLACEMENT. Tick-then-"Move to" is untouched and
+  // remains the keyboard path; dragging is what a player from the retail client
+  // reaches for first.
+  //
+  // A drag reuses the SELECTION rather than carrying its own item list, so the
+  // drop goes through `moveSelectionTo` — which already works out how much of a
+  // stack fits a ship hold from its free space and the item's per-unit volume.
+  // A drag that moved items by its own path would quietly lose that.
+
+  /** The container the pointer is over, so it can light up mid-drag. */
+  let dropPlaceKey = $state<string | null>(null);
+  function placeKey(place: InventoryPlace): string {
+    switch (place.kind) {
+      case "shipBay":
+        return `shipBay:${place.bay}`;
+      case "container":
+        return `container:${place.itemID}`;
+      case "corp":
+        return `corp:${place.division}`;
+      default:
+        return place.kind;
+    }
+  }
+
+  function startTileDrag(event: DragEvent, row: InventoryItemRow, place: InventoryPlace): void {
+    // Dragging something that is not ticked makes it the selection, so what you
+    // drag is what moves. Dragging one of several ticked rows keeps them all —
+    // which is the behaviour a player expects from a multi-selection anywhere.
+    if (!isPicked(row, place)) {
+      flow.clearSelection();
+      selectionPlace = place;
+      flow.toggleSelection(row.itemID);
+      trashArmed = false;
+    }
+    const payload: DragPayload = {
+      kind: "inventoryItem",
+      itemID: row.itemID,
+      typeID: row.typeID,
+      from: place,
+    };
+    event.dataTransfer?.setData(DRAG_MIME, encodeDrag(payload));
+    event.dataTransfer?.setData("text/plain", resolvedName($names.resolved, "type", row.typeID));
+    if (event.dataTransfer) {
+      event.dataTransfer.effectAllowed = "move";
+    }
+  }
+
+  function overPlace(event: DragEvent, place: InventoryPlace): void {
+    if (!carriesOurPayload(event.dataTransfer?.types as string[] | undefined)) {
+      return;
+    }
+    // preventDefault is what MAKES an element a drop target; without it the
+    // browser refuses the drop and shows the "no entry" cursor.
+    event.preventDefault();
+    if (event.dataTransfer) {
+      event.dataTransfer.dropEffect = "move";
+    }
+    dropPlaceKey = placeKey(place);
+  }
+
+  function dropOnPlace(event: DragEvent, place: InventoryPlace): void {
+    dropPlaceKey = null;
+    event.preventDefault();
+    const payload = decodeDrag(event.dataTransfer?.getData(DRAG_MIME) ?? null);
+    const verdict = dropOnPlaceVerdict(payload, place);
+    if (verdict !== null) {
+      // Refused, and SAID — through the panel's own error line, so a rejected
+      // drop reads the same way a rejected click does.
+      error = verdict;
+      return;
+    }
+    void moveSelectionTo(place);
+  }
+
   async function moveSelectionTo(destination: InventoryPlace): Promise<void> {
     const from = selectionPlace;
     if (!from || selection.length === 0) {
@@ -690,9 +778,23 @@
   actions: "toCargo" | "toHangar" | "none",
   readOnly: boolean = false,
 )}
-  <ul class="item-grid">
+  <!-- The grid is the drop target for its own container: drag a tile from one
+       hangar onto another's grid to move it. `readOnly` grids (a container you
+       are only looking into) do not accept drops. -->
+  <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+  <ul
+    class="item-grid"
+    class:drop-target={dropPlaceKey === placeKey(place)}
+    ondragover={(event) => !readOnly && overPlace(event, place)}
+    ondragleave={() => (dropPlaceKey = null)}
+    ondrop={(event) => !readOnly && dropOnPlace(event, place)}
+  >
     {#each rows as row (row.itemID)}
-      <li class="item-tile {isPicked(row, place) ? 'picked' : ''}">
+      <li
+        class="item-tile {isPicked(row, place) ? 'picked' : ''}"
+        draggable={readOnly ? "false" : "true"}
+        ondragstart={(event) => startTileDrag(event, row, place)}
+      >
         <TypeIcon
           typeID={row.typeID}
           name={resolvedName($names.resolved, "type", row.typeID)}

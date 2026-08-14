@@ -3127,6 +3127,38 @@
     .hud-bar { grid-template-columns: 1fr; }
   }
 
+  /* ============================================== drag and drop (R78) --
+   * Dragging a module onto a fitting socket, or an item onto another container.
+   *
+   * ⚠ THE HIGHLIGHT IS THE PROMISE. A target only lights up when the drop rules
+   * in `ui/dragDrop.ts` have already accepted the payload, so it can never
+   * invite a drop that is then refused — which is the whole reason those rules
+   * are not written inline in the `dragover` handler.
+   *
+   * Both use the accent, because "you may drop here" is the same statement
+   * whichever surface says it. */
+  .fit-socket.drop-target,
+  .item-grid.drop-target {
+    border-color: var(--color-accent);
+    box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--color-accent) 55%, transparent);
+  }
+  /* The item grid has no border of its own, so it needs one to light up at all —
+   * a transparent one at rest, so nothing shifts by a pixel when a drag starts. */
+  .item-grid {
+    border: 1px solid transparent;
+  }
+  .item-grid.drop-target {
+    background: color-mix(in srgb, var(--color-accent) 7%, transparent);
+  }
+  /* A tile being dragged. `:active` rather than a class, so it needs no state:
+   * the browser already knows which one the pointer has hold of. */
+  .item-tile[draggable="true"] {
+    cursor: grab;
+  }
+  .item-tile[draggable="true"]:active {
+    cursor: grabbing;
+  }
+
   /* ================================================== the radial menu (R77) --
    * EVE's right-click ring: the verbs for a thing, arranged AROUND the pointer,
    * so every option is the same short flick away.
