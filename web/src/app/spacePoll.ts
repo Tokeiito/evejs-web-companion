@@ -2,8 +2,8 @@
 //
 // The retail client re-renders its overview every 0.5-1.0s off a locally
 // dead-reckoned ballpark. We now do BOTH halves of that: this poller re-reads the
-// authoritative snapshot five times a second while the ship is in space and the
-// panel is open, and the viewport predicts between those reads
+// authoritative snapshot about three times a second while the ship is in space
+// and the panel is open, and the viewport INTERPOLATES between those reads
 // (`space/deadReckoning.ts`) so motion is smooth rather than stepped. Polling
 // here is not a stand-in for push — it IS the cadence the real client runs at,
 // and the R10 push channel does not replace it (the channel carries events, not
@@ -20,18 +20,19 @@
 /**
  * The in-space cadence — how often the AUTHORITATIVE grid is re-read.
  *
- * ⚠ R89 RAISED THIS FROM 1_000, AND THE COST IS REAL: five times the snapshot
- * reads, five times the bytes. Two things keep it safe rather than merely
- * faster. A beat is SKIPPED whenever a read is still in flight (see below), so a
- * server that cannot answer in 200 ms is naturally throttled to whatever it can
- * actually do instead of accumulating a queue. And the poller stops entirely the
- * moment the ship is not in space, the panel closes, or the tab is hidden.
+ * ⚠ R89 RAISED THIS FROM 1_000; R90 SETTLED IT AT 333. The cost is real — three
+ * times the snapshot reads and three times the bytes of the original. Two things
+ * keep it safe rather than merely faster. A beat is SKIPPED whenever a read is
+ * still in flight (see below), so a server that cannot answer in time is
+ * naturally throttled to whatever it can actually do instead of accumulating a
+ * queue. And the poller stops entirely the moment the ship is not in space, the
+ * panel closes, or the tab is hidden.
  *
  * This is the rate at which the picture is TRUE. The viewport draws every
- * animation frame by predicting between these reads, so smoothness is no longer
- * bought by polling harder — which is why this is 200 ms and not 16.
+ * animation frame by interpolating between these reads, so smoothness is not
+ * bought by polling harder — which is why this is 333 ms and not 16.
  */
-export const SPACE_POLL_INTERVAL_MS = 200;
+export const SPACE_POLL_INTERVAL_MS = 333;
 
 export interface SpacePollerDeps {
   /** Perform one snapshot read. Rejections are swallowed by the poller. */

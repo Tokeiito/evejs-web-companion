@@ -159,3 +159,141 @@ export function anythingMoving(
   }
   return false;
 }
+
+// ---------------------------------------------------------------------------
+// R90 — INTERPOLATION, AND WHY IT REPLACED EXTRAPOLATION AS THE NORMAL PATH
+//
+// Extrapolating past the newest sample is what made the picture jitter. Every
+// snapshot describes where things were when the SERVER sampled them, and reads
+// do not take a constant time — so arrivals are irregular even though the timer
+// is not. Each new snapshot therefore disagreed with the position we had
+// predicted, and the bracket SNAPPED to the correction.
+//
+// Modelled at 300 m/s with reads varying 120-300 ms, the snap was ±27 to ±51 m
+// per poll — and IDENTICAL at 1 Hz, 3 Hz and 5 Hz, because its size comes from
+// the variance in read time, not from the interval. Polling slower only made the
+// corrections less frequent, never smaller. That is why the rate change alone
+// could not fix this.
+//
+// So the picture is drawn a little in the PAST — far enough back that the two
+// snapshots either side of the render time have both already arrived — and each
+// object is placed BETWEEN its two measured positions. Nothing is predicted:
+// every drawn position lies between two things the server actually said, which
+// is both smoother and more honest than extrapolation ever was.
+//
+// The cost is latency: the picture is one render delay behind live. For an
+// overview whose job is "what is around me and roughly where", that is a trade
+// worth making — and the alternative was a picture that twitched several times a
+// second.
+//
+// Extrapolation survives as the FALLBACK for when there is no older sample yet,
+// or when a poll is late enough that the render time has caught up with the
+// newest one. Freezing or stuttering during a hiccup would be worse than briefly
+// predicting, and the cap above still bounds how far a prediction can run.
+
+/** One snapshot, as this module needs to see it. */
+export interface Sample {
+  readonly entities: readonly SpaceEntity[];
+  readonly shipPosition: SpaceVector | null;
+  readonly shipVelocity: SpaceVector | null;
+  /** When it ARRIVED here, on the browser's clock. */
+  readonly atMs: number;
+}
+
+/** How the drawn grid was produced — for tests, and for an honest readout. */
+export type GridMode = "interpolated" | "extrapolated" | "measured";
+
+export interface RenderedGrid {
+  readonly entities: readonly SpaceEntity[];
+  readonly origin: SpaceVector;
+  readonly mode: GridMode;
+}
+
+const NO_ORIGIN: SpaceVector = { x: 0, y: 0, z: 0 };
+
+function lerp(from: number, to: number, alpha: number): number {
+  return from + (to - from) * alpha;
+}
+
+function lerpVector(from: SpaceVector, to: SpaceVector, alpha: number): SpaceVector {
+  return {
+    x: lerp(from.x, to.x, alpha),
+    y: lerp(from.y, to.y, alpha),
+    z: lerp(from.z, to.z, alpha),
+  };
+}
+
+/**
+ * The grid as it should be DRAWN at `renderAtMs`.
+ *
+ * `renderAtMs` is deliberately behind the current clock (see RENDER_DELAY_MS in
+ * the viewport), so it normally falls between the two samples and every position
+ * is an interpolation.
+ */
+export function gridAt(
+  older: Sample | null,
+  newer: Sample | null,
+  renderAtMs: number,
+): RenderedGrid | null {
+  if (newer === null) {
+    return null;
+  }
+  const newestOrigin = newer.shipPosition ?? NO_ORIGIN;
+
+  // Caught up with, or past, the newest sample: predict forward, capped.
+  if (older === null || renderAtMs >= newer.atMs) {
+    const elapsed = renderAtMs - newer.atMs;
+    if (elapsed <= 0) {
+      return { entities: newer.entities, origin: newestOrigin, mode: "measured" };
+    }
+    return {
+      entities: extrapolateEntities(newer.entities, elapsed),
+      origin: extrapolate(newestOrigin, newer.shipVelocity, elapsed),
+      mode: "extrapolated",
+    };
+  }
+
+  // Behind both samples (a very late frame): the older one is the truth we have.
+  if (renderAtMs <= older.atMs) {
+    return {
+      entities: older.entities,
+      origin: older.shipPosition ?? newestOrigin,
+      mode: "measured",
+    };
+  }
+
+  const span = newer.atMs - older.atMs;
+  // Two samples stamped identically cannot define a blend; take the newer.
+  if (!(span > 0)) {
+    return { entities: newer.entities, origin: newestOrigin, mode: "measured" };
+  }
+  const alpha = (renderAtMs - older.atMs) / span;
+
+  const before = new Map<number, SpaceEntity>();
+  for (const entity of older.entities) {
+    before.set(entity.itemID, entity);
+  }
+
+  /**
+   * ⚠ THE LIST COMES FROM THE NEWER SAMPLE, ALWAYS. It is the current truth
+   * about WHAT EXISTS; the older one only supplies a starting point. Driving the
+   * list from the older sample would keep drawing things that have since been
+   * destroyed or warped off, and would never show anything that just arrived.
+   */
+  const entities = newer.entities.map((entity) => {
+    const from = before.get(entity.itemID);
+    if (!from) {
+      // No history: it appeared between samples, so its measured position is
+      // the only thing we know about it.
+      return entity;
+    }
+    return { ...entity, position: lerpVector(from.position, entity.position, alpha) };
+  });
+
+  const origin =
+    older.shipPosition && newer.shipPosition
+      ? lerpVector(older.shipPosition, newer.shipPosition, alpha)
+      : newestOrigin;
+
+  return { entities, origin, mode: "interpolated" };
+}

@@ -13,6 +13,7 @@ import {
   elapsedSinceArrival,
   extrapolate,
   extrapolateEntities,
+  gridAt,
   isMoving,
   usableElapsedSeconds,
 } from "./deadReckoning.ts";
@@ -217,4 +218,117 @@ test("your OWN movement is enough to animate a still grid", () => {
 test("one mover anywhere on the grid is enough", () => {
   const grid = [entity({ itemID: 1 }), entity({ itemID: 2, velocity: { x: 300, y: 0, z: 0 } })];
   assert.equal(anythingMoving(grid, ORIGIN), true);
+});
+
+// --- R90: interpolation, the normal path -------------------------------------
+//
+// Extrapolating past the newest sample is what made the picture jitter: reads do
+// not take a constant time, so every snapshot disagreed with the prediction and
+// the bracket snapped. Drawing slightly in the past and blending between two
+// MEASURED samples removes the snap entirely — nothing is predicted, so there is
+// nothing to be corrected.
+
+function sample(
+  atMs: number,
+  entities: readonly SpaceEntity[],
+  shipPosition: SpaceVector | null = ORIGIN,
+  shipVelocity: SpaceVector | null = ORIGIN,
+) {
+  return { atMs, entities, shipPosition, shipVelocity };
+}
+
+const AT_0 = entity({ itemID: 1, position: { x: 0, y: 0, z: 0 } });
+const AT_100 = entity({ itemID: 1, position: { x: 100, y: 0, z: 0 } });
+
+test("a render time between two samples is INTERPOLATED", () => {
+  const grid = gridAt(sample(1_000, [AT_0]), sample(1_200, [AT_100]), 1_100);
+  assert.equal(grid?.mode, "interpolated");
+  assert.equal(grid?.entities[0]?.position.x, 50, "half way between two measured positions");
+});
+
+test("interpolation is proportional across the whole span", () => {
+  for (const [renderAt, expected] of [
+    [1_000, 0],
+    [1_050, 25],
+    [1_150, 75],
+    [1_200, 100],
+  ] as const) {
+    const grid = gridAt(sample(1_000, [AT_0]), sample(1_200, [AT_100]), renderAt);
+    assert.ok(
+      Math.abs((grid?.entities[0]?.position.x ?? -1) - expected) < 1e-9,
+      `at ${renderAt} expected ${expected}, got ${grid?.entities[0]?.position.x}`,
+    );
+  }
+});
+
+test("NOTHING is ever drawn beyond the two measured positions", () => {
+  // ⚠ The property that removes the jitter. Every drawn position lies between
+  // two things the server actually said, so a new sample can never contradict
+  // what was on screen a frame earlier.
+  for (let renderAt = 1_000; renderAt <= 1_200; renderAt += 7) {
+    const x = gridAt(sample(1_000, [AT_0]), sample(1_200, [AT_100]), renderAt)?.entities[0]
+      ?.position.x;
+    assert.ok(x !== undefined && x >= 0 && x <= 100, `drew ${x}, outside the measured pair`);
+  }
+});
+
+test("your own hull is interpolated too", () => {
+  const grid = gridAt(
+    sample(1_000, [], { x: 0, y: 0, z: 0 }),
+    sample(1_200, [], { x: 200, y: 0, z: 0 }),
+    1_100,
+  );
+  assert.equal(grid?.origin.x, 100);
+});
+
+test("with no older sample yet it EXTRAPOLATES rather than showing nothing", () => {
+  // The first snapshot of a session has no history to blend against; freezing
+  // until a second one lands would make the view look broken on arrival.
+  const grid = gridAt(null, sample(1_000, [entity({ itemID: 1, velocity: { x: 300, y: 0, z: 0 } })]), 1_100);
+  assert.equal(grid?.mode, "extrapolated");
+  assert.ok(Math.abs((grid?.entities[0]?.position.x ?? 0) - 30) < 1e-9);
+});
+
+test("a LATE poll extrapolates forward instead of freezing", () => {
+  // The render time has caught up with the newest sample. Stuttering through a
+  // hiccup would be worse than briefly predicting, and the cap still bounds it.
+  const grid = gridAt(
+    sample(1_000, [AT_0]),
+    sample(1_200, [entity({ itemID: 1, position: { x: 100, y: 0, z: 0 }, velocity: { x: 300, y: 0, z: 0 } })]),
+    1_300,
+  );
+  assert.equal(grid?.mode, "extrapolated");
+  assert.ok((grid?.entities[0]?.position.x ?? 0) > 100, "it must keep moving");
+});
+
+test("the entity LIST always comes from the newer sample", () => {
+  // ⚠ The older one only supplies a starting point. Driving the list from it
+  // would keep drawing things that have since been destroyed or warped off, and
+  // would never show anything that just arrived.
+  const older = sample(1_000, [entity({ itemID: 1 }), entity({ itemID: 2 })]);
+  const newer = sample(1_200, [entity({ itemID: 2 }), entity({ itemID: 3 })]);
+  const ids = gridAt(older, newer, 1_100)?.entities.map((e) => e.itemID);
+  assert.deepEqual(ids, [2, 3], "gone things must go, new things must appear");
+});
+
+test("something with no history is drawn where it was measured", () => {
+  const older = sample(1_000, []);
+  const newer = sample(1_200, [entity({ itemID: 9, position: { x: 500, y: 0, z: 0 } })]);
+  assert.equal(gridAt(older, newer, 1_100)?.entities[0]?.position.x, 500);
+});
+
+test("two samples stamped identically do not divide by zero", () => {
+  const grid = gridAt(sample(1_000, [AT_0]), sample(1_000, [AT_100]), 1_000);
+  assert.equal(grid?.mode, "measured");
+  assert.equal(grid?.entities[0]?.position.x, 100);
+});
+
+test("with no snapshot at all there is nothing to draw", () => {
+  assert.equal(gridAt(null, null, 1_000), null);
+});
+
+test("a render time before BOTH samples shows the older measured grid", () => {
+  const grid = gridAt(sample(1_000, [AT_0]), sample(1_200, [AT_100]), 900);
+  assert.equal(grid?.mode, "measured");
+  assert.equal(grid?.entities[0]?.position.x, 0);
 });

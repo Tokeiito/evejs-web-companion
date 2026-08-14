@@ -221,10 +221,11 @@ test("a refused move from a row is shown as a reason, not a silent no-op", async
 });
 
 test("the overview poll runs at the retail overview cadence", () => {
-  // ⚠ R89 raised this from 1_000. It is the rate at which the picture is TRUE;
-  // the viewport draws every animation frame and predicts between reads
-  // (space/deadReckoning.ts), so smoothness is not bought by polling harder.
-  assert.equal(SPACE_POLL_INTERVAL_MS, 200);
+  // ⚠ R89 raised this from 1_000; R90 settled it at 333. It is the rate at which
+  // the picture is TRUE; the viewport draws every animation frame and
+  // INTERPOLATES between reads (space/deadReckoning.ts), so smoothness is not
+  // bought by polling harder.
+  assert.equal(SPACE_POLL_INTERVAL_MS, 333);
 });
 
 test("a beat is SKIPPED while a read is still in flight", async () => {

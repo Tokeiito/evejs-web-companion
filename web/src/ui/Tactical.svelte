@@ -42,12 +42,7 @@
   import { spaceSelection } from "../space/selection.ts";
   import { showInfo } from "./showInfo.ts";
   import { overviewPreset } from "../space/overviewPreset.ts";
-  import {
-    anythingMoving,
-    elapsedSinceArrival,
-    extrapolate,
-    extrapolateEntities,
-  } from "../space/deadReckoning.ts";
+  import { anythingMoving, gridAt, type Sample } from "../space/deadReckoning.ts";
   import { applyPreset } from "../space/overviewPresets.ts";
   import { actionsForRow, type RowAction } from "../space/rowActions.ts";
   import { dispatchRowAction, isSingleCallAction } from "../space/rowActionRunner.ts";
@@ -89,20 +84,74 @@
   const presetSignal = overviewPreset.preset;
   const measuredEntities = $derived(applyPreset(snapshot?.entities ?? [], $presetSignal));
 
-  // --- R89: smooth motion between snapshots ---------------------------------
+  // --- R89/R90: smooth motion between snapshots -----------------------------
   //
   // The picture used to redraw exactly when a snapshot landed, so its motion WAS
   // the poll rate — objects teleported from one measured position to the next.
-  // It now draws every animation frame and advances each object along the
-  // velocity the SERVER reported, snapping back to truth on every snapshot.
+  //
+  // R89 drew every animation frame and PREDICTED forward from the newest
+  // snapshot. That was smooth between polls but visibly jittery AT them: reads
+  // do not take a constant time, so each new snapshot disagreed with the
+  // prediction and the bracket snapped to the correction. Modelled at 300 m/s
+  // with reads varying 120-300 ms, that snap was ±27 to ±51 m per poll and — the
+  // decisive measurement — IDENTICAL at 1 Hz, 3 Hz and 5 Hz, because its size
+  // comes from the variance in read time, not the interval. Polling slower only
+  // made the twitch less frequent.
+  //
+  // So the picture is drawn a little in the PAST, between the two snapshots
+  // either side of the render time. Nothing is predicted in the normal case:
+  // every drawn position lies between two things the server actually said, so a
+  // new sample can never contradict what was on screen a frame earlier.
   //
   // ⚠ THE FRAME LOOP ONLY RUNS WHEN SOMETHING IS ACTUALLY MOVING. A belt is two
   // hundred parked rocks and a stationary ship; redrawing that sixty times a
   // second to produce an identical picture is the kind of idle cost that never
   // shows up in a profile anyone runs. `anythingMoving` includes YOUR ship,
   // because closing on a rock at 300 m/s is your movement, not the rock's.
+
+  /**
+   * How far behind live the picture is drawn.
+   *
+   * Slightly more than one poll interval, so the two samples either side of the
+   * render time have normally both arrived and the frame can interpolate. Less
+   * than this and late reads push the render time past the newest sample, which
+   * falls back to predicting and brings the twitch back; much more than this and
+   * the view lags behind reality for no extra smoothness.
+   */
+  const RENDER_DELAY_MS = 420;
+
   const shipVelocity = $derived(ship?.velocity ?? null);
   const moving = $derived(anythingMoving(measuredEntities, shipVelocity));
+
+  /**
+   * The two most recent snapshots.
+   *
+   * ⚠ PLAIN `let`, NOT `$state`. This effect READS them to shift one into the
+   * other and WRITES them; making them reactive would make it re-run itself.
+   * `sampleTick` is the one reactive thing, bumped when a genuinely new sample
+   * lands, so the render below re-derives exactly once per snapshot.
+   */
+  let olderSample: Sample | null = null;
+  let newerSample: Sample | null = null;
+  let sampleTick = $state(0);
+  $effect(() => {
+    const snap = $space.snapshot;
+    const at = $space.receivedAtMs;
+    if (!snap || at === null || newerSample?.atMs === at) {
+      return;
+    }
+    olderSample = newerSample;
+    // ⚠ UNFILTERED. The preset is applied to the DRAWN grid below, not stored
+    // here — otherwise switching preset would change nothing until the next
+    // snapshot landed, and the two samples could disagree about what exists.
+    newerSample = {
+      entities: snap.entities,
+      shipPosition: snap.ship?.position ?? null,
+      shipVelocity: snap.ship?.velocity ?? null,
+      atMs: at,
+    };
+    sampleTick += 1;
+  });
 
   /** The browser clock, advanced per frame while anything is moving. */
   let frameNowMs = $state(Date.now());
@@ -119,27 +168,24 @@
     return () => cancelAnimationFrame(handle);
   });
 
-  /**
-   * How long since the current snapshot ARRIVED. Measured against the browser
-   * clock the snapshot was stamped with on arrival — never against the server's
-   * own sim clock, which is a different clock on a different machine.
-   *
-   * When nothing is moving this deliberately reads 0, so the whole prediction
-   * chain collapses to the measured grid and re-derives nothing.
-   */
-  const elapsedMs = $derived(
-    moving ? elapsedSinceArrival($space.receivedAtMs, frameNowMs) : 0,
-  );
+  const rendered = $derived.by(() => {
+    void sampleTick;
+    // Standing still: draw the measured grid and re-derive nothing per frame.
+    if (!moving) {
+      return null;
+    }
+    return gridAt(olderSample, newerSample, frameNowMs - RENDER_DELAY_MS);
+  });
 
-  const entities = $derived(extrapolateEntities(measuredEntities, elapsedMs));
+  const entities = $derived(
+    rendered ? applyPreset(rendered.entities, $presetSignal) : measuredEntities,
+  );
   /**
    * Your own hull moves too, and the origin is what every bracket is measured
    * FROM — so a plot that advanced the grid but not the observer would show a
    * belt sliding backwards past a ship that never moved.
    */
-  const origin = $derived(
-    ship ? extrapolate(ship.position, ship.velocity, elapsedMs) : { x: 0, y: 0, z: 0 },
-  );
+  const origin = $derived(rendered?.origin ?? ship?.position ?? { x: 0, y: 0, z: 0 });
 
   /**
    * ⚠ R86 — THE SCALE IS FIXED, NOT AUTO-RANGED. It used to stretch to whatever
