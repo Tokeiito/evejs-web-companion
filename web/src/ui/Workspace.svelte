@@ -18,6 +18,8 @@
   import HudBar from "./HudBar.svelte";
   import WorkspaceHeader from "./WorkspaceHeader.svelte";
   import MobileWorkspace from "./MobileWorkspace.svelte";
+  import DockWipe from "./DockWipe.svelte";
+  import { showInfoTarget } from "./showInfo.ts";
   import TargetsPanel from "./TargetsPanel.svelte";
   import CustomBotReadout from "./CustomBotReadout.svelte";
   import ErrorBoundary from "./ErrorBoundary.svelte";
@@ -141,6 +143,29 @@
     return () => clearTimeout(handle);
   });
 
+  // R76 — Show Info raises its window from ANYWHERE.
+  //
+  // The openers (an overview row, a tactical bracket, a fitting socket) live in
+  // different subtrees, some of them inside floating windows, so threading an
+  // `onShowInfo` callback to each would touch a dozen components to add one
+  // button. Instead they push a subject into the shared target and this raises
+  // the window — one place that knows about windows at all.
+  //
+  // ⚠ IT WATCHES THE REQUEST COUNTER, NOT THE SUBJECT. Asking for info on the
+  // thing already displayed must still bring the window back to the front, and
+  // it may well have been closed or buried since. Watching the subject alone
+  // would make the second Show Info on the same object do nothing at all.
+  let servedInfoRequests = 0;
+  const infoRequests = showInfoTarget.requests;
+  $effect(() => {
+    const count = $infoRequests;
+    if (count === servedInfoRequests) return;
+    servedInfoRequests = count;
+    // Skip the initial reading: a restored session must not pop an info window
+    // nobody asked for.
+    if (count > 0) open("showInfo");
+  });
+
   // Read flight status once online so the docked/in-space flag is authoritative
   // (character select does not read it). Subsequent flight steps keep it fresh.
   $effect(() => {
@@ -156,14 +181,18 @@
 {#if $station.online === null}
   <div class="workspace-shell-empty"></div>
 {:else if isMobile}
+  <!-- The same transition in both workspaces: the state change is identical, so
+       it would be strange for only one of them to acknowledge it. -->
+  <DockWipe {isDocked} />
   <MobileWorkspace {store} {flow} {isDocked} />
 {:else}
+  <DockWipe {isDocked} />
   <div class="workspace" class:in-space={!isDocked}>
     <!-- Every piece of always-on chrome gets its own boundary. These are mounted
          for the whole session and refresh on every poll, so before this an error
          in any one of them froze the entire tab (see ErrorBoundary.svelte). -->
     <ErrorBoundary name="Launcher rail">
-      <Neocom {store} {isDocked} openIds={neocomOpenIds} focusedId={focused} onSelect={openFromNeocom} />
+      <Neocom {store} {flow} {isDocked} openIds={neocomOpenIds} focusedId={focused} onSelect={openFromNeocom} />
     </ErrorBoundary>
     <div class="work">
       <ErrorBoundary name="Workspace header">

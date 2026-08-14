@@ -67,3 +67,32 @@ test("an id both acquiring and locked is not listed twice (locked wins)", () => 
   assert.equal(vms.length, 1);
   assert.equal(vms[0]!.acquiring, false);
 });
+
+// --- R71: how far away the thing you are shooting is -------------------------
+
+test("a card knows how far away its target is", () => {
+  const ents = [entity({ itemID: 5, position: { x: 3_000, y: 4_000, z: 0 } })];
+  const [vm] = buildTargets([5], [], ents, { x: 0, y: 0, z: 0 });
+  assert.equal(vm!.distance, 5_000);
+});
+
+test("distance is measured from the SHIP, not from the origin of space", () => {
+  const ents = [entity({ itemID: 5, position: { x: 1_000_000, y: 0, z: 0 } })];
+  const [vm] = buildTargets([5], [], ents, { x: 1_000_000, y: 0, z: 0 });
+  assert.equal(vm!.distance, 0);
+});
+
+test("with no ship position the distance is UNKNOWN, never zero", () => {
+  // ⚠ A fabricated 0 m says the thing you are shooting is on top of you, which
+  // is the one reading a pilot would act on straight away. The card renders a
+  // dash for null, so the two can never look alike.
+  const ents = [entity({ itemID: 5, position: { x: 3_000, y: 4_000, z: 0 } })];
+  assert.equal(buildTargets([5], [], ents)[0]!.distance, null);
+  assert.equal(buildTargets([5], [], ents, null)[0]!.distance, null);
+});
+
+test("a target that left the snapshot reports no distance rather than a stale one", () => {
+  const [vm] = buildTargets([9], [], [entity({ itemID: 1 })], { x: 0, y: 0, z: 0 });
+  assert.equal(vm!.inView, false);
+  assert.equal(vm!.distance, null);
+});

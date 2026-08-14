@@ -236,8 +236,18 @@ test("the target bracket names a locked target and shows its condition", () => {
 });
 
 function renderNeocom(isDocked: boolean): string {
+  // R74: the rail reads the pilot and the wallet, so `store` is now required —
+  // it used to be an unused forward-compat prop. `flow` stays null here: the
+  // rail's own wallet pull is an $effect, which never runs under SSR anyway.
   return render(Neocom as never, {
-    props: { isDocked, openIds: new Set(), focusedId: null, onSelect: () => {} },
+    props: {
+      store: createClientStore() as never,
+      flow: null,
+      isDocked,
+      openIds: new Set(),
+      focusedId: null,
+      onSelect: () => {},
+    },
   } as never).body;
 }
 

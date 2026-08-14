@@ -45,6 +45,10 @@ export default defineConfig({
     sourcemap: true,
   },
   server: {
+    // Vite does not read PORT on its own. Honouring it lets a second dev server
+    // run alongside one that already holds 5173 (two sessions iterating at once)
+    // without either having to be stopped. Unset, it is the usual 5173.
+    port: Number(process.env.PORT) || 5173,
     proxy: {
       "/api": bffTarget,
       "/icon-cache": bffTarget,

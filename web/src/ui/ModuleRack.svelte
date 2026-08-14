@@ -122,10 +122,23 @@
    * Redraw tick for the cycle sweep. DISPLAY ONLY — every value it feeds comes
    * from the SERVER's own cycle stamp, and nothing here advances past what the
    * server said. A hidden tab simply redraws less; the numbers are unaffected.
+   *
+   * ⚠ THE RATE IS CONDITIONAL, AND THAT IS THE WHOLE DESIGN. At one second a
+   * sweep over a typical cycle advances in visible jumps — it reads as a broken
+   * animation rather than a running module. `cycleProgressPercent` rounds to
+   * whole percent, so ~100 ms is the point past which extra ticks cannot change
+   * a single rendered frame; anything faster is work for nothing.
+   *
+   * But it only ticks that fast while something is ACTUALLY CYCLING. A docked
+   * ship, or one drifting with every module off, has nothing to animate, and a
+   * rack quietly re-rendering ten times a second forever to draw no change is
+   * exactly the kind of idle cost that never shows up in a profile anyone runs.
    */
+  const anyCycling = $derived(Object.keys($targeting.moduleCycles).length > 0);
   let nowMs = $state(Date.now());
   $effect(() => {
-    const handle = setInterval(() => { nowMs = Date.now(); }, 1000);
+    const period = anyCycling ? 100 : 1000;
+    const handle = setInterval(() => { nowMs = Date.now(); }, period);
     return () => clearInterval(handle);
   });
 
@@ -258,9 +271,14 @@
                 <TypeIcon typeID={slot.module.typeID} name={nm} size="sm" fallbackText={abbreviate(nm)} />
                 {#if cycleOf(slot.module.itemID) !== null}
                   <!--
-                    The cycle sweep. Only drawn when the SERVER's own cycle stamp
-                    says where we are — a module we have no stamp for shows no
-                    bar at all, because an empty bar reads as "just started".
+                    The cycle sweep — a radial wipe over the module's own icon,
+                    the way the retail client draws it. Only drawn when the
+                    SERVER's own cycle stamp says where we are: a module we have
+                    no stamp for shows nothing at all, because a sweep sitting at
+                    zero reads as "just started", which is a claim we do not have.
+
+                    `--sweep` is a percentage of a full turn, consumed by a
+                    conic-gradient in styles.css.
                   -->
                   <span
                     class="module-cycle"

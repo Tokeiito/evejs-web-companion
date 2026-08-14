@@ -31,6 +31,7 @@
   import Standings from "./Standings.svelte";
   import CharacterSheet from "./CharacterSheet.svelte";
   import Settings from "./Settings.svelte";
+import ShowInfo from "./ShowInfo.svelte";
   import ErrorBoundary from "./ErrorBoundary.svelte";
   import { tabLabel, type TabID } from "./tabs.ts";
   import type { ClientStore } from "../store/clientStore.ts";

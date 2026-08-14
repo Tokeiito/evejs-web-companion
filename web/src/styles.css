@@ -41,8 +41,42 @@
  * ==========================================================================*/
 @import "tailwindcss";
 
+/* ------------------------------------------------------- the display face --
+ * R73: a condensed technical face for the header/label scale.
+ *
+ * WHY. The whole "EVE" signal in this system is condensed, uppercase,
+ * letter-spaced headers — and until now they were rendered in Segoe UI, which is
+ * neither condensed nor technical. Setting a normal-width UI face in caps with
+ * 0.12em tracking is doing an impression of the thing rather than the thing.
+ *
+ * SELF-HOSTED, NOT A CDN. These `@import`s resolve through node_modules at BUILD
+ * time and Vite emits the woff2 into `public/dist` alongside everything else, so
+ * the running app fetches the font from its own origin. Nothing here reaches a
+ * third party at runtime — which matters because this client is normally served
+ * beside a game server on a LAN with no outbound path at all, and a webfont from
+ * fonts.gstatic.com would simply never arrive.
+ *
+ * ONLY THE WEIGHTS THAT ARE USED, and only latin. 500 for labels, 600 for the
+ * headers and badges. Adding a weight here adds a file to the bundle, so add one
+ * only when a rule actually asks for it.
+ *
+ * BODY COPY IS DELIBERATELY UNCHANGED. A condensed face is harder to read at
+ * length and this theme is not allowed to cost readability (see the invariants
+ * at the top of this file). The display face is for short, shouty, spaced-out
+ * strings; sentences stay in the system UI face. */
+@import "@fontsource/barlow-condensed/latin-500.css";
+@import "@fontsource/barlow-condensed/latin-600.css";
+
 /* ------------------------------------------------------------------ tokens */
 @theme {
+  /* The display face, with a condensed-first fallback chain so a build that
+   * somehow ships without the webfont still gets SOMETHING narrow rather than
+   * silently widening every header back to a normal-width UI face. The last two
+   * are stock on Windows and macOS respectively. */
+  --font-display:
+    "Barlow Condensed", "Segoe UI Semibold Condensed", "Arial Narrow",
+    "Avenir Next Condensed", ui-sans-serif, system-ui, sans-serif;
+
   /* --- surfaces: near-black, cool, layered ------------------------------
    * Four depths, darkest first. `bg` is the page, `panel` is a frame, `panel-2`
    * is a raised control (buttons), `panel-3` is an inset well (meter tracks,
@@ -152,8 +186,14 @@
    * Condensed, uppercase, letter-spaced headers are the single strongest
    * "EVE" signal in the whole system. Body copy stays comfortable and mixed
    * case — the theme is not allowed to cost readability. */
+  /* R73: the header scale is the display face's home ground. Sizes are nudged up
+   * ~7% against the previous Segoe UI values because a condensed face sets
+   * OPTICALLY SMALLER at the same nominal size — matching the numbers would have
+   * shrunk every header on screen. Tracking is unchanged: condensed + wide
+   * tracking is the look, and it is what the whole system was already built to. */
   h1 {
-    font-size: 1.05rem;
+    font-family: var(--font-display);
+    font-size: 1.12rem;
     font-weight: 600;
     letter-spacing: 0.14em;
     text-transform: uppercase;
@@ -161,7 +201,8 @@
     margin: 0 0 1rem;
   }
   h2 {
-    font-size: 0.8rem;
+    font-family: var(--font-display);
+    font-size: 0.86rem;
     font-weight: 600;
     letter-spacing: 0.12em;
     text-transform: uppercase;
@@ -169,7 +210,8 @@
     margin: 0 0 0.6rem;
   }
   h3 {
-    font-size: 0.75rem;
+    font-family: var(--font-display);
+    font-size: 0.8rem;
     font-weight: 600;
     letter-spacing: 0.08em;
     text-transform: uppercase;
@@ -327,6 +369,50 @@
   }
   /* ...but not when the h2 IS the panel header — that already has a divider. */
   .panel-head > h2::before { display: none; }
+
+  /* ------------------------------------------------- the display face (R73) --
+   * Every SHORT, UPPERCASE, LETTER-SPACED string in the system, in one place.
+   *
+   * The test for membership is not "is it a label" — it is "is it set in caps
+   * with tracking". Those are the strings a condensed face improves: they are
+   * read as shapes, not sentences, and the extra width of a UI face is wasted on
+   * them. Anything a player reads as PROSE stays in the body face, however small
+   * it is, which is why `.note`, `.empty`, table CELLS and every message are
+   * absent from this list. */
+  .badge,
+  .threat-badge,
+  .state-badge,
+  nav.tabs button,
+  .win-title,
+  .neocom-item-label,
+  .neocom-readout-label,
+  .neocom-portrait,
+  .hud-label,
+  .hud-readout dt,
+  .wheel-cap-label,
+  .rack-row-label,
+  .rack-damage-head,
+  .panel-head > h2,
+  table.guests thead th,
+  table.guests tbody th,
+  dl.kv dt,
+  .controls > label,
+  .agent-filter label,
+  .fit-hull .fit-hull-class,
+  .fit-detail .fit-detail-slot,
+  .tactical-empty,
+  .item-tile-pick {
+    font-family: var(--font-display);
+  }
+  /* Tabular figures are a body-face job: Barlow Condensed's digits are narrow
+   * enough that a column of them stops lining up against the letters beside it,
+   * and a number you read OFF the screen is data, not a label. */
+  .hud-value,
+  .hud-readout dd,
+  table.guests td.num,
+  dl.kv dd {
+    font-family: inherit;
+  }
 
   /* A horizontal divider between blocks inside one panel. */
   .divider {
@@ -1967,65 +2053,198 @@
   }
   .app-main { min-width: 0; }
 
+  /* ============================================== the Neocom icon rail (R74) --
+   * EVE's launcher strip: a narrow column of glyphs with the pilot's plate on
+   * top and the wallet / EVE-time readouts pinned at the bottom.
+   *
+   * ⚠ IT IS NARROW, NOT ICON-ONLY. The rail shows the panel NAME beside its glyph
+   * whenever the column is wide enough to hold one (the container query below);
+   * when it is not, the name is still the button's accessible name and tooltip.
+   * Nothing here is ever reachable only by recognising a picture. */
   .neocom {
     background: var(--color-panel);
     border: 1px solid var(--color-line);
-    padding: 0.5rem;
+    padding: 0.4rem 0.35rem;
     position: sticky;
     top: 0.5rem;
-  }
-  .neocom-home {
-    width: 100%;
     display: flex;
     flex-direction: column;
-    align-items: flex-start;
-    gap: 0.3rem;
-    min-height: 40px;
-    margin-bottom: 0.5rem;
-    background: var(--color-panel-2);
-    border: 1px solid var(--color-line);
-    color: var(--color-text);
+    gap: 0.4rem;
+    /* The rail sizes its own contents: what decides icon-only vs icon-and-name
+     * is how wide THE RAIL is, not how wide the viewport is. */
+    container-type: inline-size;
   }
-  .neocom-home-label { color: var(--color-text-bright); font-weight: 600; }
+
+  /* --- the pilot plate --- */
+  .neocom-pilot {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    padding: 0.25rem;
+    border: 1px solid var(--color-line);
+    background: var(--color-panel-3);
+    min-width: 0;
+  }
+  /* The initials plate. Nothing in this client, the BFF or the gateway serves a
+   * character portrait, so this is the ONLY state rather than a fallback for a
+   * missing picture — and it is styled as a deliberate plate for that reason,
+   * the same call R27's item-icon tile makes. */
+  .neocom-portrait {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.9rem;
+    height: 1.9rem;
+    background: var(--color-panel-2);
+    border: 1px solid var(--color-line-strong);
+    color: var(--color-accent-bright);
+    font-family: var(--font-display);
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+  }
+  .neocom-pilot-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 12px;
+    color: var(--color-text-bright);
+  }
+
+  /* --- the launcher list --- */
   .neocom-list {
     list-style: none;
     margin: 0;
     padding: 0;
     display: flex;
     flex-direction: column;
-    gap: 0.25rem;
+    gap: 0.15rem;
+    /* The LIST scrolls, not the whole rail — which is what keeps the pilot plate
+     * and the readouts pinned at the two ends however many panels there are. */
+    overflow-y: auto;
+    min-height: 0;
+    flex: 1 1 auto;
   }
   .neocom-item {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
     width: 100%;
-    text-align: left;
-    min-height: 40px;
-    white-space: nowrap;
+    /* R8: a full 40px target even as an icon-only strip. */
+    min-height: 2.5rem;
+    padding: 0.25rem 0.4rem;
     background: transparent;
     border: 1px solid transparent;
-    color: var(--color-text);
+    color: var(--color-muted);
+    text-align: left;
   }
-  .neocom-item:hover {
-    background: var(--color-panel-2);
+  .neocom-item:hover:not(:disabled) {
+    background: rgb(127 180 217 / 0.08);
     border-color: var(--color-line);
-  }
-  .neocom-item.active,
-  .neocom-home.active {
-    border-color: var(--color-accent);
     color: var(--color-text-bright);
   }
+  /* OPEN and ACTIVE are different facts and look different: an open panel gets a
+   * left tick and brighter ink, the front-most window is filled. Neither is
+   * colour alone — the button also carries aria-pressed. */
+  .neocom-item.open {
+    color: var(--color-text-bright);
+    border-left-color: var(--color-accent-dim);
+  }
+  .neocom-item.active {
+    background: color-mix(in srgb, var(--color-accent) 16%, transparent);
+    border-color: var(--color-accent-dim);
+    color: var(--color-accent-bright);
+  }
+  .neocom-glyph {
+    flex: 0 0 auto;
+    width: 1.35rem;
+    height: 1.35rem;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.6;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .neocom-item-label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: var(--font-display);
+    font-size: 0.78rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+  /* Below about 9rem a name cannot be read anyway, so the rail goes icon-only and
+   * the tooltip / accessible name carry it. */
+  @container (max-width: 9rem) {
+    .neocom-item { justify-content: center; gap: 0; }
+    .neocom-item-label { display: none; }
+    .neocom-pilot { justify-content: center; }
+    .neocom-pilot-name { display: none; }
+  }
+
+  /* --- the readouts --- */
+  .neocom-readouts {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    border-top: 1px solid var(--color-line);
+    padding-top: 0.35rem;
+  }
+  .neocom-readout {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.4rem;
+    width: 100%;
+    min-height: 0;
+    padding: 0.2rem 0.35rem;
+    background: transparent;
+    border: 1px solid transparent;
+    color: var(--color-muted);
+  }
+  button.neocom-readout { min-height: 2rem; }
+  button.neocom-readout:hover:not(:disabled) {
+    background: rgb(127 180 217 / 0.08);
+    border-color: var(--color-line);
+  }
+  .neocom-readout-value {
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+    color: var(--color-text-bright);
+    font-size: 0.82rem;
+  }
+  /* The rail's balance is ROUNDED, so it never claims to be exact: the label says
+   * ISK, the button's title and accessible name carry the full bigint-safe
+   * figure, and clicking opens the Wallet panel where the real number lives. */
+  .neocom-readout-label {
+    font-family: var(--font-display);
+    font-size: 9px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+  .neocom-clock .neocom-readout-value { color: var(--color-accent); }
 
   /* Phone / tablet: the rail becomes a horizontal scroller above the content. */
   @media (max-width: 900px) {
     .app-shell { grid-template-columns: 1fr; }
-    .neocom { position: static; }
-    .neocom-home { flex-direction: row; align-items: center; }
+    .neocom { position: static; container-type: normal; }
+    .neocom-pilot { flex-direction: row; align-items: center; }
     .neocom-list {
       flex-direction: row;
       flex-wrap: nowrap;
       overflow-x: auto;
       gap: 0.3rem;
     }
+    /* Laid out as a horizontal strip an item sizes to its own content, and the
+     * NAME comes back: a row of bare glyphs on a phone is a guessing game, and
+     * across the screen there is width to spare. */
     .neocom-item { width: auto; padding-inline: 0.7rem; }
+    .neocom-item-label { display: inline; }
+    .neocom-readouts { flex-direction: row; justify-content: flex-end; }
   }
 
   /* ================================================= workspace desktop --
@@ -2076,29 +2295,22 @@
     border: 0;
     border-right: 1px solid var(--color-line);
   }
-  .neocom-brand {
-    display: flex;
-    flex-direction: column;
-    gap: 0.35rem;
-    padding: 0.15rem 0.3rem 0.55rem;
-    margin-bottom: 0.4rem;
-    border-bottom: 1px solid var(--color-line);
-  }
-  .neocom-brand-name {
-    font-weight: 700;
-    letter-spacing: 0.22em;
-    font-size: 0.8rem;
-    color: var(--color-accent);
-  }
-  /* Open windows stay lit in the rail; the front-most one gets the accent spine. */
-  .neocom-item.open {
+  /* R74 removed the "EVEJS" brand block that used to sit at the top of the rail:
+   * the pilot's own plate is there now, which is both more useful and what the
+   * retail Neocom puts in that corner. The app is already named by the browser
+   * tab and the login screen. */
+
+  /* Open windows stay lit in the rail; the front-most one gets the accent spine.
+   * These sharpen the base rules above rather than restating them — the spine is
+   * the workspace's own signature and only makes sense where windows exist. */
+  .workspace .neocom-item.open {
     background: var(--color-panel-2);
     border-color: var(--color-line-strong);
     color: var(--color-text-bright);
   }
-  .neocom-item.active {
+  .workspace .neocom-item.active {
     border-color: var(--color-accent);
-    color: var(--color-text-bright);
+    color: var(--color-accent-bright);
     box-shadow: inset 2px 0 0 var(--color-accent);
   }
 
@@ -2527,19 +2739,156 @@
     color: var(--color-muted);
   }
 
-  /* A panel window. */
+  /* ================================================ the tactical view (R70) --
+   * The picture of space, filling the desktop as its BACKDROP while in space.
+   * Windows float over it: this is first in the DOM and every `.win` is
+   * positioned, so the painting order needs no z-index arms race.
+   *
+   * The desktop's blueprint grid is dropped while the view is up (`.has-view`) —
+   * a 40px CAD grid behind a starfield reads as two backgrounds fighting, and the
+   * range rings are the scale reference now.
+   */
+  .desktop.has-view {
+    background-image: none;
+    /* A cool vignette: brighter toward the middle where the ship sits, so the
+     * plot has a centre even before a single bracket is drawn. */
+    background:
+      radial-gradient(60% 60% at 50% 50%, #0a1420 0%, var(--color-bg) 78%)
+      no-repeat var(--color-bg);
+  }
+  .tactical {
+    position: absolute;
+    inset: 0;
+    /* Below every window (which are positioned and later in the DOM) but above
+     * the desktop's own background. */
+    z-index: 0;
+    overflow: hidden;
+  }
+  .tactical-canvas {
+    display: block;
+    /* The canvas is a click target for picking a bracket. `default` rather than
+     * `crosshair` for empty space: a crosshair everywhere would promise that
+     * every pixel does something, and most do not. */
+    cursor: default;
+  }
+  .tactical-canvas.hovering {
+    cursor: pointer;
+  }
+  .tactical-empty {
+    position: absolute;
+    inset: auto 0 0.6rem 0;
+    margin: 0;
+    text-align: center;
+    color: var(--color-muted);
+    font-size: 12px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    pointer-events: none;
+  }
+
+  /* ========================================= the window chrome (R72) --
+   * EVE's windows are DARK GLASS: you can see the grid moving behind a market
+   * window, which is most of why the client feels like one application looking
+   * out of a ship rather than a stack of dialogs. Now that the desktop has a
+   * tactical view behind it (R70), that translucency finally has something to
+   * show — before it, a blurred backdrop would have revealed a blank surface and
+   * cost readability for nothing.
+   *
+   * ⚠ THE BACKDROP IS BLURRED, NOT JUST FADED. A flat alpha over a busy starfield
+   * puts moving brackets directly behind body text and makes both unreadable.
+   * `backdrop-filter: blur()` keeps the COLOUR and MOTION of what is behind while
+   * destroying its detail, which is exactly the trade a HUD wants. The panel
+   * surface stays well above 4.5:1 for body text either way (both the panel token
+   * and what shows through it are near-black).
+   *
+   * ⚠ CLIP-PATH KILLS AN OUTER BOX-SHADOW. A chamfered corner has to be cut with
+   * `clip-path`, and clipping removes everything outside the shape — the drop
+   * shadow included. Depth therefore comes from `filter: drop-shadow()`, which
+   * follows the clipped silhouette instead of the border box. Inset shadows are
+   * unaffected (they are inside the box) and are what draw the focused rim. */
   .win {
     position: absolute;
     display: flex;
     flex-direction: column;
     min-width: 16rem;
-    background: var(--color-panel);
+    background: color-mix(in srgb, var(--color-panel) 76%, transparent);
+    -webkit-backdrop-filter: blur(14px) saturate(1.15);
+    backdrop-filter: blur(14px) saturate(1.15);
     border: 1px solid var(--color-line-strong);
-    box-shadow: 0 0.6rem 1.6rem rgba(0, 0, 0, 0.5);
+    /* The chamfer: top-right and bottom-left, the asymmetric cut EVE uses. Kept
+     * small — a big bevel reads as a sci-fi sticker, a 0.7rem one reads as a
+     * machined panel. */
+    clip-path: polygon(
+      0 0,
+      calc(100% - 0.7rem) 0,
+      100% 0.7rem,
+      100% 100%,
+      0.7rem 100%,
+      0 calc(100% - 0.7rem)
+    );
+    filter: drop-shadow(0 0.5rem 1.1rem rgba(0, 0, 0, 0.55));
   }
+  /* The focused window is MORE OPAQUE, not just differently outlined: the one you
+   * are working in should be the one that is easiest to read, and every other
+   * window recedes toward the view behind it. */
   .win.focused {
+    background: color-mix(in srgb, var(--color-panel) 90%, transparent);
     border-color: var(--color-accent-dim);
-    box-shadow: 0 0.9rem 2.2rem rgba(0, 0, 0, 0.62);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 22%, transparent);
+    filter: drop-shadow(0 0.8rem 1.6rem rgba(0, 0, 0, 0.66));
+  }
+  /* Corner brackets on the focused window — eight hairlines drawn as background
+   * gradients on one pseudo-element, because there are four corners and only two
+   * pseudo-elements. Purely a focus cue; the accessible focus ring is untouched.
+   *
+   * `.win` is a <section>, so it would otherwise inherit the global panel's
+   * ::before accent hairline; that is cancelled below rather than left to fight
+   * with this. */
+  .win::before { display: none; }
+  .win.focused::after {
+    content: "";
+    position: absolute;
+    inset: 3px;
+    pointer-events: none;
+    --bracket: var(--color-accent);
+    --arm: 0.6rem;
+    background:
+      linear-gradient(var(--bracket), var(--bracket)) 0 0 / var(--arm) 1px no-repeat,
+      linear-gradient(var(--bracket), var(--bracket)) 0 0 / 1px var(--arm) no-repeat,
+      linear-gradient(var(--bracket), var(--bracket)) 100% 0 / var(--arm) 1px no-repeat,
+      linear-gradient(var(--bracket), var(--bracket)) 100% 0 / 1px var(--arm) no-repeat,
+      linear-gradient(var(--bracket), var(--bracket)) 0 100% / var(--arm) 1px no-repeat,
+      linear-gradient(var(--bracket), var(--bracket)) 0 100% / 1px var(--arm) no-repeat,
+      linear-gradient(var(--bracket), var(--bracket)) 100% 100% / var(--arm) 1px no-repeat,
+      linear-gradient(var(--bracket), var(--bracket)) 100% 100% / 1px var(--arm) no-repeat;
+  }
+  /* THE PANEL INSIDE MUST NOT DRAW A SECOND FRAME. Every panel's root is its own
+   * <section>, which carries the global panel background, border and accent
+   * hairline — opaque, so it would sit on top of the glass and cancel it, inside
+   * a border the window already drew. Only the panel ROOT is flattened; nested
+   * sections keep their frame, because inside a panel they are real structure. */
+  .win-body > section,
+  .win-body > .panel {
+    background: none;
+    border: 0;
+    margin: 0;
+    padding: 0;
+  }
+  .win-body > section::before,
+  .win-body > .panel::before {
+    display: none;
+  }
+  /* Someone who has asked for less motion is not asking for less blur — but a
+   * backdrop filter is expensive on a large window over an animating canvas, and
+   * reduced-motion is the closest standard signal for "prefer the cheap path".
+   * The window stays legible: it simply goes opaque. */
+  @media (prefers-reduced-motion: reduce) {
+    .win {
+      -webkit-backdrop-filter: none;
+      backdrop-filter: none;
+      background: var(--color-panel);
+    }
+    .win.focused { background: var(--color-panel); }
   }
   .win-bar {
     display: flex;
@@ -2770,12 +3119,185 @@
       height: auto;
       border: 1px solid var(--color-line);
     }
-    .neocom-brand { flex-direction: row; align-items: center; justify-content: space-between; }
+    .neocom-pilot { flex-direction: row; align-items: center; justify-content: flex-start; }
     .work-main { flex-direction: column; }
     .desktop { min-height: 60vh; }
     .dock-panel { width: auto; max-width: none; }
     .dock-panel.collapsed { width: auto; }
     .hud-bar { grid-template-columns: 1fr; }
+  }
+
+  /* ================================================== the radial menu (R77) --
+   * EVE's right-click ring: the verbs for a thing, arranged AROUND the pointer,
+   * so every option is the same short flick away.
+   *
+   * Fixed-positioned in viewport coordinates because it is opened from a pointer
+   * event and must not be clipped by whatever box the row happens to live in —
+   * an overview row sits inside a scrolling table inside a floating window, and
+   * any one of those would have cut the ring in half.
+   *
+   * ⚠ These are real buttons in ring order, reachable by Tab and walked by the
+   * arrow keys. The transform positions them; it does not replace their being
+   * focusable controls. */
+  .radial-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 600;
+    /* Transparent, not dimmed: a radial is a quick flick, and dimming the
+     * workspace for it would read as a modal dialog. */
+    background: transparent;
+  }
+  .radial {
+    position: fixed;
+    z-index: 601;
+    width: 0;
+    height: 0;
+  }
+  /* The hub marks the point the menu was opened on, so the ring reads as
+   * belonging to the thing under the pointer. */
+  .radial-hub {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 0.5rem;
+    height: 0.5rem;
+    transform: translate(-50%, -50%);
+    background: var(--color-accent);
+    box-shadow: 0 0 0.5rem color-mix(in srgb, var(--color-accent) 60%, transparent);
+    pointer-events: none;
+  }
+  .radial-item {
+    position: absolute;
+    left: 0;
+    top: 0;
+    /* Wide enough for a real verb, capped so a long one wraps rather than
+     * stretching the ring lopsided. */
+    width: 6.2rem;
+    min-height: 2.2rem;
+    padding: 0.3rem 0.4rem;
+    font-family: var(--font-display);
+    font-size: 0.75rem;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    text-align: center;
+    line-height: 1.15;
+    background: color-mix(in srgb, var(--color-panel) 92%, transparent);
+    -webkit-backdrop-filter: blur(8px);
+    backdrop-filter: blur(8px);
+    border: 1px solid var(--color-line-strong);
+    color: var(--color-text-bright);
+    white-space: normal;
+  }
+  .radial-item:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--color-accent) 22%, var(--color-panel));
+    border-color: var(--color-accent);
+  }
+  .radial-item:focus-visible {
+    outline: 2px solid var(--color-accent-bright);
+    outline-offset: 2px;
+  }
+  /* An unusable verb is still DRAWN, wearing the sentence that says why (as its
+   * title and its accessible name) — the same contract the verb bar keeps. A
+   * player cannot tell a forgotten button from a deliberate one. */
+  .radial-item.unavailable {
+    opacity: 0.45;
+    border-style: dashed;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .radial-item { -webkit-backdrop-filter: none; backdrop-filter: none; background: var(--color-panel); }
+  }
+
+  /* ================================================ the Show Info window (R76) --
+   * What a thing IS, from everything the client already knows about it. Laid out
+   * as an identity header over a set of key/value blocks, reusing `dl.kv` and the
+   * shared item icon rather than inventing a second vocabulary for the same job. */
+  .show-info { min-width: 0; }
+  .info-head {
+    display: flex;
+    gap: 0.8rem;
+    align-items: flex-start;
+    margin-bottom: 0.7rem;
+    padding-bottom: 0.6rem;
+    border-bottom: 1px solid var(--color-line);
+  }
+  .info-identity {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+  }
+  .info-identity h2 {
+    margin: 0;
+    /* A long ship or structure name must wrap inside the window rather than
+     * widen it — this panel is hosted in a resizable box the player owns. */
+    overflow-wrap: anywhere;
+  }
+  .info-kind {
+    margin: 0;
+    font-family: var(--font-display);
+    font-size: 10px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--color-accent);
+  }
+  .info-type,
+  .info-class {
+    margin: 0;
+    font-size: 12px;
+    color: var(--color-muted);
+    overflow-wrap: anywhere;
+  }
+  .show-info h3 { margin-top: 0.8rem; }
+  .show-info .controls { margin-top: 0.7rem; }
+
+  /* ============================================ the dock / undock fade (R75) --
+   * A short fade-through-black when the ship goes in or out of a station, with
+   * the word for what is happening. Docking and undocking rearrange half the
+   * client, and before this they did it between two frames — which reads as the
+   * page being swapped rather than a ship moving through a door.
+   *
+   * ⚠ IT NEVER EATS A CLICK. `pointer-events: none` — a fade is atmosphere, and
+   * an overlay that swallowed input for 620 ms would occasionally lose a real
+   * action for no reason a player could see.
+   *
+   * Above everything, including the character bar (z-index 60) and the add-
+   * character overlay: a transition that something else painted over would look
+   * like a rendering fault rather than a transition. */
+  .dock-wipe {
+    position: fixed;
+    inset: 0;
+    z-index: 500;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #000;
+    pointer-events: none;
+    animation: dock-wipe 620ms ease-in-out both;
+  }
+  .dock-wipe-label {
+    font-family: var(--font-display);
+    font-size: 1.1rem;
+    font-weight: 600;
+    letter-spacing: 0.32em;
+    text-transform: uppercase;
+    color: var(--color-accent-bright);
+  }
+  /* Black out fast, hold for an instant, come back slower — the asymmetry is
+   * what makes it read as arriving somewhere rather than as a flicker. */
+  @keyframes dock-wipe {
+    0% { opacity: 0; }
+    28% { opacity: 1; }
+    58% { opacity: 1; }
+    100% { opacity: 0; }
+  }
+  /* Reduced motion: no fade at all. The element STAYS in the DOM, invisible,
+   * because it is also the aria-live announcement — dropping it would take the
+   * spoken "Docking" away from the people most likely to be relying on it. */
+  @media (prefers-reduced-motion: reduce) {
+    .dock-wipe {
+      animation: none;
+      opacity: 0;
+    }
   }
 
   /* ==================================================== mobile workspace --
@@ -3148,34 +3670,116 @@
   /* In space — the viewport (holds the target bracket + live overview) + dock. */
   .space-viewport { min-width: 0; }
 
-  /* The locked-targets bracket across the top of the view. */
+  /* ============================================ locked-target cards (R71) --
+   * EVE's target brackets: a round dial per locked target — the thing's picture
+   * in the middle, its shield / armor / hull as three concentric arcs around it,
+   * name / condition / range beneath. The SAME instrument as the ship HUD
+   * (`ui/shipHudArcs.ts` draws both), pointed at whatever you have locked, so a
+   * pilot who can read their own rings can read an enemy's for free.
+   *
+   * Each card is a button that selects its target across every surface, so it
+   * carries real hit area rather than being a readout you can only look at. */
   .target-bracket {
     display: flex;
     flex-wrap: wrap;
     gap: 0.5rem;
-    margin-bottom: 0.6rem;
   }
   .target-card {
-    min-width: 9rem;
-    max-width: 15rem;
-    padding: 0.4rem 0.6rem;
-    background: var(--color-panel);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.15rem;
+    /* Strip the global button chrome — a target card is an instrument, not a
+     * control surface — while keeping it a real, focusable button. */
+    background: var(--color-panel-3);
     border: 1px solid var(--color-line);
+    padding: 0.4rem 0.45rem 0.45rem;
+    min-height: 0;
+    width: 6.5rem;
+    min-width: 0;
   }
-  .target-card.acquiring { border-color: var(--color-accent); }
-  .target-card.lost { opacity: 0.5; }
-  .target-name {
+  .target-card:hover:not(:disabled) {
+    background: var(--color-panel-3);
+    border-color: var(--color-accent-dim);
+  }
+  /* The picked target, agreeing with the tactical viewport's own ring and the
+   * overview's highlighted row — one selection, shown three ways. */
+  .target-card.picked {
+    border-color: var(--color-accent-bright);
+    box-shadow: inset 0 0 0 1px var(--color-accent-bright);
+  }
+  /* Still acquiring: no rings are drawn at all, because there is nothing to
+   * report yet. The empty tracks show what is ABOUT to be filled in. */
+  .target-card.acquiring { border-style: dashed; }
+  /* The lock is lost. Kept in the strip rather than dropped — a bracket that
+   * silently vanishes reads as a client glitch instead of a target that left. */
+  .target-card.lost { opacity: 0.55; }
+
+  .target-dial {
+    position: relative;
     display: block;
-    margin-bottom: 0.3rem;
-    color: var(--color-text-bright);
-    font-weight: 600;
-    font-size: 0.85rem;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    width: 3.4rem;
+    height: 3.4rem;
   }
-  .target-locking { color: var(--color-accent); font-size: 0.8rem; }
-  .target-card .target-condition { min-width: 0; }
+  .target-dial svg {
+    display: block;
+    width: 100%;
+    height: 100%;
+    overflow: visible;
+  }
+  /* Stroked, never filled: a filled SVG arc paints the chord region and the dial
+   * becomes a stack of solid pie wedges. */
+  .target-dial path {
+    fill: none;
+    stroke-linecap: butt;
+  }
+  .dial-track { stroke: var(--color-field); stroke-width: 6; }
+  .dial-fill { stroke-width: 6; }
+  .dial-fill.shield { stroke: var(--color-shield); }
+  .dial-fill.armor { stroke: var(--color-armor); }
+  .dial-fill.hull { stroke: var(--color-hull); }
+  /* The picture sits in the middle of the rings it is being described by. */
+  .target-portrait {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+  }
+
+  .target-name {
+    font-size: 11px;
+    line-height: 1.2;
+    text-align: center;
+    color: var(--color-text-bright);
+    /* A long ship name must wrap inside the card rather than widen the strip. */
+    overflow-wrap: anywhere;
+    min-width: 0;
+  }
+  .target-locking {
+    color: var(--color-accent);
+    font-size: 0.78rem;
+  }
+  /* The exact numbers. Tabular so three cards side by side line their digits up,
+   * and each takes its own ring's colour — reinforced by position, never colour
+   * alone (the accessible name spells all three out in words). */
+  .target-figures {
+    display: flex;
+    gap: 0.3rem;
+    font-size: 10px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+  .target-figure.shield { color: var(--color-shield); }
+  .target-figure.armor { color: var(--color-armor); }
+  .target-figure.hull { color: var(--color-hull); }
+  .target-range {
+    font-size: 10px;
+    color: var(--color-muted);
+    font-variant-numeric: tabular-nums;
+  }
+
   .hud-dock {
     display: grid;
     grid-template-columns: 2fr 3fr 2fr;
@@ -3198,57 +3802,123 @@
     color: var(--color-text-bright);
   }
 
-  /* The ship readout — the capacitor wheel over the shield/armor/hull bars. */
+  /* ============================================ the circular ship HUD (R71) --
+   * EVE's own instrument: shield / armor / hull as three concentric arcs around
+   * a discrete capacitor ring, with the charge in the middle. The geometry is
+   * computed in `ui/shipHudArcs.ts`; this only paints it.
+   *
+   * The wheel is a square that scales with its container — every radius in the
+   * SVG is a percentage of a 100x100 viewBox, so there is no fixed pixel size
+   * anywhere and the same markup serves the desktop HUD bar and the mobile
+   * workspace. It has a MAX width rather than a fixed one, so a wide HUD cluster
+   * does not stretch it into the dominant object on screen.
+   *
+   * A11y: the rings are the fast read, never the only one. Every layer prints
+   * its name and percentage as text in `.hud-readout` beneath, and an unknown
+   * reading shows a dash there while drawing no arc at all — so "no reading" and
+   * "destroyed" cannot look alike. */
   .ship-hud {
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 0.6rem;
+    gap: 0.5rem;
   }
-  .cap-wheel {
+  .hud-wheel {
+    position: relative;
+    width: 100%;
+    max-width: 8.5rem;
+    aspect-ratio: 1;
+  }
+  .hud-wheel svg {
+    display: block;
+    width: 100%;
+    height: 100%;
+    overflow: visible;
+  }
+  /* Every ring is stroked, never filled — an SVG arc with a fill paints the
+   * chord region and the wheel becomes a set of solid pie wedges. */
+  .hud-wheel path {
+    fill: none;
+    stroke-linecap: butt;
+  }
+  .wheel-track {
+    stroke: var(--color-panel-3);
+    stroke-width: 5;
+  }
+  .wheel-fill {
+    stroke-width: 5;
+    /* The rings animate to their new length rather than jumping, so incoming
+     * damage reads as movement at the edge of vision — which is how a pilot
+     * notices it without looking directly at the HUD. */
+    transition: d 200ms linear;
+  }
+  .wheel-fill.shield { stroke: var(--color-shield); }
+  .wheel-fill.armor { stroke: var(--color-armor); }
+  .wheel-fill.hull { stroke: var(--color-hull); }
+  .wheel-cap {
+    stroke: var(--color-panel-3);
+    stroke-width: 6;
+  }
+  .wheel-cap.filled { stroke: var(--color-capacitor); }
+  /* The charge sits in the gap the arcs deliberately leave at the bottom... but
+   * centred in the wheel, which is where the eye goes. */
+  .wheel-centre {
+    position: absolute;
+    inset: 0;
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 0.3rem;
+    justify-content: center;
+    line-height: 1.05;
+    pointer-events: none;
   }
-  .cap-ring {
-    display: flex;
-    gap: 2px;
-  }
-  .cap-seg {
-    width: 0.5rem;
-    height: 0.9rem;
-    border: 1px solid var(--color-line);
-    background: var(--color-panel-3);
-  }
-  .cap-seg.filled {
-    background: var(--color-capacitor);
-    border-color: var(--color-capacitor);
-  }
-  .cap-readout {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    line-height: 1.1;
-  }
-  .cap-value {
-    font-size: 1.1rem;
+  .wheel-cap-value {
+    font-size: 1.15rem;
     font-weight: 700;
     color: var(--color-capacitor);
     font-variant-numeric: tabular-nums;
   }
-  .cap-label {
+  .wheel-cap-label {
     font-size: 10px;
     text-transform: uppercase;
     letter-spacing: 0.09em;
     color: var(--color-muted);
   }
-  .ship-resources {
-    width: 100%;
+  /* The exact numbers, under the wheel. Three tight columns so they read as one
+   * strip rather than three stacked rows competing with the instrument. */
+  .hud-readout {
+    display: flex;
+    gap: 0.1rem 0.7rem;
+    margin: 0;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+  .hud-readout-row {
     display: flex;
     flex-direction: column;
-    gap: 0.35rem;
+    align-items: center;
+    line-height: 1.15;
   }
+  .hud-readout dt {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: var(--color-muted);
+  }
+  .hud-readout dd {
+    margin: 0;
+    font-size: 12px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    color: var(--color-text-bright);
+  }
+  /* The label takes its ring's colour, so the pairing between a number and the
+   * arc it belongs to is learnable at a glance. Reinforced by the name itself —
+   * colour is never the only signal. */
+  .hud-readout-row.shield dt { color: var(--color-shield); }
+  .hud-readout-row.armor dt { color: var(--color-armor); }
+  .hud-readout-row.hull dt { color: var(--color-hull); }
+
   .hud-cluster {
     background: var(--color-panel);
     border: 1px solid var(--color-line);
@@ -3304,20 +3974,39 @@
   /* A cycling module glows in the accent; an offline one is dimmed. */
   .module-slot.active {
     border-color: var(--color-accent);
-    box-shadow: inset 0 0 0 1px var(--color-accent);
+    /* An inner rim AND an outer bloom. The rim is what makes a lit tile legible
+     * against its neighbours; the bloom is what makes a rack of them read as
+     * "the guns are up" from the corner of the eye, which is the only way a
+     * pilot looks at the rack while actually flying. */
+    box-shadow:
+      inset 0 0 0 1px var(--color-accent),
+      0 0 0.5rem color-mix(in srgb, var(--color-accent) 45%, transparent);
   }
   .module-slot.offline { opacity: 0.45; }
   /* The cycle sweep: a thin fill along the bottom of the tile, driven by the
    * SERVER's own cycle stamp. Absent entirely when there is no stamp — an empty
    * bar would read as "just started", which is a claim we do not have. */
   .module-slot:has(.module-cycle) { position: relative; }
+  /* THE CYCLE SWEEP — a radial wipe across the module's own icon, growing
+   * clockwise from twelve o'clock, exactly as the retail client draws it. It
+   * replaced a 2px bar along the bottom of the tile: the bar was readable but it
+   * read as a download progress indicator, and the radial wipe is the single
+   * strongest "this is EVE" signal the rack has.
+   *
+   * A conic-gradient with a HARD stop — the wedge is fully coloured up to
+   * `--sweep` and fully transparent after it, with no interpolation between, so
+   * the leading edge stays a crisp line rather than a smear. Translucent, so the
+   * icon underneath is never obscured by the thing describing it.
+   *
+   * Absent entirely when there is no server stamp (see ModuleRack.svelte): a
+   * sweep sitting at zero would read as "just started". */
   .module-cycle {
     position: absolute;
-    left: 0;
-    bottom: 0;
-    height: 2px;
-    width: var(--sweep, 0%);
-    background: var(--color-accent);
+    inset: 0;
+    background: conic-gradient(
+      color-mix(in srgb, var(--color-accent) 42%, transparent) var(--sweep, 0%),
+      transparent 0
+    );
     pointer-events: none;
   }
   /* Overloaded: running hot and taking damage. The marker is a glance — the
@@ -3325,6 +4014,14 @@
   .module-slot.overloaded {
     position: relative;
     border-color: var(--color-danger);
+  }
+  /* A cycling module that is ALSO overloaded sweeps in the danger colour, so the
+   * two states do not have to be told apart by a 9px flame alone. */
+  .module-slot.overloaded .module-cycle {
+    background: conic-gradient(
+      color-mix(in srgb, var(--color-danger) 42%, transparent) var(--sweep, 0%),
+      transparent 0
+    );
   }
   .module-heat {
     position: absolute;
@@ -3384,6 +4081,17 @@
   @keyframes rack-pending {
     from { border-color: var(--color-line); }
     to { border-color: var(--color-accent); }
+  }
+  /* The shimmer is decoration — it says "your click is in flight", which the
+   * disabled state already says. Someone who has asked for less motion gets the
+   * steady colour instead. The cycle SWEEP is deliberately not covered here: it
+   * carries information (how far through the cycle a module is) that nothing
+   * else on the tile reports. */
+  @media (prefers-reduced-motion: reduce) {
+    .module-slot.pending {
+      animation: none;
+      border-color: var(--color-accent-dim);
+    }
   }
   .rack-empty { padding: 0 0.3rem; }
   .rack-hint { font-size: 0.8rem; margin: 0.3rem 0 0; }

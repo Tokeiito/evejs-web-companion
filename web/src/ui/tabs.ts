@@ -38,6 +38,7 @@ export type TabID =
   | "corpWallet"
   | "standings"
   | "characterSheet"
+  | "showInfo"
   | "settings";
 
 /** Where a tab may appear: only DOCKED, only IN SPACE, or in BOTH. */
@@ -47,6 +48,17 @@ export interface TabDef {
   readonly id: TabID;
   readonly label: string;
   readonly where: Where;
+  /**
+   * False for a CONTEXTUAL panel — one that only ever opens because something
+   * was clicked, and so must not sit in the launcher rail waiting to be opened
+   * empty.
+   *
+   * ⚠ Absent means TRUE. Every tab that existed before this flag is launchable,
+   * so the default has to be the one that leaves them alone; only the exception
+   * writes it down. Read it with `isLaunchable`, never `tab.launchable` — an
+   * `undefined` is a yes here and a bare truthiness test gets that backwards.
+   */
+  readonly launchable?: boolean;
 }
 
 // ⚠ THE TAB TABLE — the one place tab visibility is decided. Render order is the
@@ -88,9 +100,28 @@ export const TABS: readonly TabDef[] = [
   { id: "corpWallet", label: "Corp Wallet", where: "both" },
   { id: "standings", label: "Standings", where: "both" },
   { id: "characterSheet", label: "Character Sheet", where: "both" },
+  // R76 — Show Info. A window like any other (draggable, resizable, remembered),
+  // but CONTEXTUAL: it opens on the thing you clicked, so it is not offered in
+  // the rail, where it could only ever open onto nothing.
+  { id: "showInfo", label: "Show Info", where: "both", launchable: false },
   // The local client's own settings (icon cache, …) — reachable anywhere.
   { id: "settings", label: "Settings", where: "both" },
 ];
+
+/**
+ * May this tab be opened from the launcher rail?
+ *
+ * ⚠ `tab.launchable !== false`, NOT `tab.launchable`. The flag is absent on every
+ * pre-existing tab and absent means yes; a truthiness test would empty the rail.
+ */
+export function isLaunchable(tab: TabDef): boolean {
+  return tab.launchable !== false;
+}
+
+/** The tabs the launcher rail offers in the current state. */
+export function launchableTabsFor(isDocked: boolean): readonly TabDef[] {
+  return visibleTabsFor(isDocked).filter(isLaunchable);
+}
 
 /** The default landing tab for each state (item 4). */
 export const DOCKED_DEFAULT: TabID = "inventory";

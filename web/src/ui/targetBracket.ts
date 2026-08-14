@@ -9,7 +9,8 @@
 // the list but flagged out-of-view rather than dropped — a lock that just left
 // grid should read as lost, not silently vanish.
 
-import type { SpaceEntity } from "../store/types.ts";
+import type { SpaceEntity, SpaceVector } from "../store/types.ts";
+import { distanceMeters } from "../space/overview.ts";
 
 export interface TargetVM {
   readonly itemID: number;
@@ -23,12 +24,23 @@ export interface TargetVM {
   readonly acquiring: boolean;
   /** The snapshot still carries this object. */
   readonly inView: boolean;
+  /**
+   * Metres from the ship, or null when we cannot say — no origin was supplied,
+   * or the target has left the snapshot.
+   *
+   * ⚠ NULL IS NOT ZERO, and on a target card the difference is the whole point:
+   * a fabricated 0 m says the thing you are shooting is on top of you, which is
+   * the one reading a pilot would act on immediately. R71 renders null as a dash.
+   */
+  readonly distance: number | null;
 }
 
 export function buildTargets(
   lockedIDs: readonly number[],
   acquiringIDs: readonly number[],
   entities: readonly SpaceEntity[] | null | undefined,
+  /** The ship's position, so a card can say how far away its target is. */
+  origin?: SpaceVector | null,
 ): readonly TargetVM[] {
   const byID = new Map<number, SpaceEntity>();
   for (const entity of entities ?? []) {
@@ -46,6 +58,10 @@ export function buildTargets(
       hull: entity?.hullRatio ?? null,
       acquiring: !lockedIDs.includes(itemID),
       inView: entity !== undefined,
+      distance:
+        entity !== undefined && origin != null
+          ? distanceMeters(origin, entity.position)
+          : null,
     };
   });
 }

@@ -1,0 +1,534 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Tactical view harness</title>
+    <!--
+      DEV-ONLY VISUAL HARNESS for the tactical viewport (goal R70).
+
+      WHY IT EXISTS. `space/tactical.ts` proves where a bracket GOES and its tests
+      pin every rule; nothing can prove the picture is DRAWN except drawing it —
+      and the only other way to see it is to bring up the BFF, bring up the
+      gateway, sign a pilot in and undock. That is far too much ceremony to pay
+      every time a line width changes, so in practice the renderer would simply
+      never be looked at.
+
+      This page feeds `ui/tacticalDraw.ts` fabricated entities covering every
+      bracket family, the height/drop-line case, a mover, a rim-clamped object
+      and a selection, then draws them. It imports the SAME modules the app does,
+      so it cannot drift from what ships.
+
+      It is NOT part of the build: `vite.config.ts` builds `web/index.html` only,
+      so nothing here reaches `public/dist`. Open it with `npm run dev:web` at
+      /tactical-harness.html.
+    -->
+    <style>
+      /* The design system's own tokens, so the harness paints the app's colours
+         rather than a second palette that could quietly disagree with it. */
+      :root {
+        --color-bg: #05080d;
+        --color-line: #1b2836;
+        --color-line-strong: #2f4a66;
+        --color-text-bright: #e6f0fa;
+        --color-muted: #8fa3b8;
+        --color-accent: #7fb4d9;
+        --color-accent-bright: #a9d3f0;
+        --color-danger: #e08a8a;
+        --color-warn: #d9a441;
+        --color-armor: #c8a24a;
+        --color-capacitor: #5ab98c;
+        --color-powergrid: #b58ad0;
+        --color-calibration: #9aa8bb;
+      }
+      body {
+        margin: 0;
+        background: var(--color-bg);
+        color: var(--color-muted);
+        font: 14px "Segoe UI", system-ui, sans-serif;
+      }
+      h1 {
+        font-size: 0.8rem;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: var(--color-accent);
+        margin: 0.75rem 1rem 0.5rem;
+      }
+      .stage {
+        position: relative;
+        width: 900px;
+        height: 560px;
+        margin: 0 1rem 1rem;
+        border: 1px solid var(--color-line);
+        background: radial-gradient(60% 60% at 50% 50%, #0a1420 0%, var(--color-bg) 78%) no-repeat
+          var(--color-bg);
+      }
+      canvas {
+        display: block;
+      }
+      .legend {
+        margin: 0 1rem 1.5rem;
+        font-size: 12px;
+        line-height: 1.7;
+      }
+      code {
+        color: var(--color-text-bright);
+      }
+      .glyph-grid {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+        margin: 0 1rem 1.5rem;
+      }
+      .glyph-cell {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 0.2rem;
+        width: 4.2rem;
+        padding: 0.35rem 0.2rem;
+        border: 1px solid var(--color-line);
+        font-size: 9px;
+        color: var(--color-muted);
+        text-align: center;
+      }
+      .glyph-cell svg {
+        width: 22px;
+        height: 22px;
+        fill: none;
+        stroke: var(--color-accent);
+        stroke-width: 1.6;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+      .glyph-cell.over {
+        border-color: var(--color-danger);
+        color: var(--color-danger);
+      }
+      .hud-stage {
+        display: flex;
+        align-items: center;
+        gap: 1.5rem;
+        margin: 0 1rem 1.5rem;
+      }
+      .hud-wheel {
+        position: relative;
+        width: 150px;
+        aspect-ratio: 1;
+        flex: 0 0 auto;
+      }
+      .hud-wheel svg {
+        display: block;
+        width: 100%;
+        height: 100%;
+      }
+      .hud-wheel path {
+        fill: none;
+        stroke-linecap: butt;
+      }
+      .wheel-track {
+        stroke: #0a1017;
+        stroke-width: 5;
+      }
+      .wheel-fill {
+        stroke-width: 5;
+      }
+      .wheel-fill.shield {
+        stroke: #4a9fd8;
+      }
+      .wheel-fill.armor {
+        stroke: var(--color-armor);
+      }
+      .wheel-fill.hull {
+        stroke: #c46a5a;
+      }
+      .wheel-cap {
+        stroke: #0a1017;
+        stroke-width: 6;
+      }
+      .wheel-cap.filled {
+        stroke: var(--color-capacitor);
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Tactical view — renderer harness</h1>
+    <div class="stage" id="stage"><canvas id="view"></canvas></div>
+
+    <h1>Radial menu — ring layout, clamping and keyboard</h1>
+    <p class="legend" style="margin: 0 1rem 0.5rem">
+      A live ring of eight verbs (one deliberately unavailable). Arrow keys walk it and wrap;
+      Escape closes. Positions come from <code>ui/radialMenu.ts</code>.
+    </p>
+    <div class="stage" id="radial-stage" style="height: 300px"></div>
+
+    <h1>Neocom glyphs — every icon, and whether it fits its box</h1>
+    <p class="legend" style="margin: 0 1rem 0.5rem">
+      Each glyph rendered at rail size. Exact bounds come from the browser's own
+      <code>getBBox()</code> (arcs included), which is why the unit tests deliberately do not try to
+      parse relative path data themselves.
+    </p>
+    <div id="glyph-stage" class="glyph-grid"></div>
+
+    <h1>Window chrome — glass, chamfer, focus brackets</h1>
+    <p class="legend" style="margin: 0 1rem 0.5rem">
+      Two mock windows over the tactical view above's backdrop. The focused one is more opaque and
+      wears corner brackets; both are chamfered top-right / bottom-left. Uses the real
+      <code>styles.css</code>, loaded below.
+    </p>
+    <div class="stage" id="chrome-stage" style="height: 260px">
+      <section class="win focused" style="left: 30px; top: 24px; width: 260px; height: 190px">
+        <header class="win-bar">
+          <span class="win-title">Market</span>
+          <span class="win-actions"><button class="win-btn">—</button><button class="win-btn win-close">✕</button></span>
+        </header>
+        <div class="win-body"><section><h2>Focused</h2><p class="note">More opaque, bracketed.</p></section></div>
+      </section>
+      <section class="win" style="left: 330px; top: 60px; width: 240px; height: 150px">
+        <header class="win-bar">
+          <span class="win-title">Wallet</span>
+          <span class="win-actions"><button class="win-btn">—</button><button class="win-btn win-close">✕</button></span>
+        </header>
+        <div class="win-body"><section><h2>Unfocused</h2><p class="note">Recedes toward the view.</p></section></div>
+      </section>
+    </div>
+
+    <h1>Ship HUD — ring geometry</h1>
+    <div class="hud-stage">
+      <div class="hud-wheel" id="hud-wheel"></div>
+      <p class="legend" style="margin: 0">
+        Shield 62%, armor 100%, hull 88%, capacitor 7/12. Outer to inner: shield, armor, hull. The
+        arcs must be concentric, start together at the bottom left, and leave the bottom gap for the
+        charge.
+      </p>
+    </div>
+    <p class="legend">
+      Fabricated grid, no server. Covers: a selected asteroid, hostiles (red), police (amber), a
+      drone, a station, a stargate, a planet clamped at the rim, an object well above the plane
+      (drop line + shadow) and one below it, and a mover with a velocity vector.
+      <br />Rendered by <code>ui/tacticalDraw.ts</code> through <code>space/tactical.ts</code> — the
+      same modules the app uses.
+    </p>
+
+    <script type="module">
+      // The REAL stylesheet, so the window-chrome section is checking what
+      // actually ships rather than a copy of it that could quietly drift.
+      import "/src/styles.css";
+      import {
+        autoRangeMeters,
+        entityDistances,
+        labelledBracketIDs,
+        projectBrackets,
+        tacticalRings,
+      } from "/src/space/tactical.ts";
+      import { drawTactical, readPalette } from "/src/ui/tacticalDraw.ts";
+
+      const ORIGIN = { x: 0, y: 0, z: 0 };
+      const AU = 149_597_870_700;
+
+      /** One entity, with every field the projection reads. */
+      function entity(over) {
+        return {
+          kind: "celestial",
+          typeID: 1,
+          groupID: 500,
+          categoryID: 2,
+          name: null,
+          ownerID: null,
+          radius: 100,
+          position: ORIGIN,
+          velocity: ORIGIN,
+          isSelf: false,
+          shieldRatio: null,
+          armorRatio: null,
+          hullRatio: null,
+          characterID: null,
+          corporationID: null,
+          allianceID: null,
+          securityStatus: null,
+          maxVelocity: null,
+          mode: null,
+          capacitorRatio: null,
+          remainingQuantity: null,
+          miningYieldTypeID: null,
+          beltID: null,
+          isNpc: false,
+          npcEntityType: null,
+          controllerID: null,
+          droneActivity: null,
+          targetEntityID: null,
+          ...over,
+        };
+      }
+
+      // A believable belt: a scatter of rocks, a couple of rats, some furniture.
+      const rocks = Array.from({ length: 14 }, (_, index) => {
+        const angle = (index / 14) * Math.PI * 2 + 0.4;
+        const range = 6_000 + ((index * 3_700) % 42_000);
+        return entity({
+          itemID: 1000 + index,
+          name: index % 3 === 0 ? "Dense Veldspar" : "Veldspar",
+          miningYieldTypeID: 1230,
+          position: {
+            x: Math.cos(angle) * range,
+            y: (index % 5) * 2_600 - 5_200,
+            z: Math.sin(angle) * range,
+          },
+        });
+      });
+
+      const entities = [
+        ...rocks,
+        entity({ itemID: 1, isSelf: true }),
+        entity({
+          itemID: 2001,
+          kind: "ship",
+          name: "Serpentis Scout",
+          isNpc: true,
+          npcEntityType: "npc",
+          position: { x: -18_000, y: 3_000, z: 22_000 },
+          velocity: { x: 120, y: 0, z: -90 },
+          shieldRatio: 0.6,
+        }),
+        entity({
+          itemID: 2002,
+          kind: "ship",
+          name: "Serpentis Watchman",
+          isNpc: true,
+          npcEntityType: "npc",
+          position: { x: -26_000, y: -14_000, z: 9_000 },
+        }),
+        entity({
+          itemID: 2003,
+          kind: "ship",
+          name: "CONCORD Patrol",
+          isNpc: true,
+          npcEntityType: "concord",
+          position: { x: 31_000, y: 12_000, z: -16_000 },
+        }),
+        entity({
+          itemID: 3001,
+          kind: "drone",
+          name: "Hobgoblin II",
+          position: { x: 4_200, y: -1_100, z: -3_800 },
+          velocity: { x: -40, y: 0, z: 60 },
+        }),
+        entity({
+          itemID: 4001,
+          kind: "structure",
+          name: "Perimeter II - Caldari Navy Assembly Plant",
+          position: { x: 120_000, y: -20_000, z: 140_000 },
+        }),
+        entity({
+          itemID: 5001,
+          kind: "celestial",
+          groupID: 10,
+          name: "Stargate (Urlen)",
+          position: { x: -210_000, y: 8_000, z: -90_000 },
+        }),
+        entity({
+          itemID: 6001,
+          kind: "celestial",
+          groupID: 7,
+          name: "Perimeter III",
+          position: { x: 2.4 * AU, y: 0.2 * AU, z: -1.1 * AU },
+        }),
+      ];
+
+      const stage = document.getElementById("stage");
+      const canvas = document.getElementById("view");
+      const width = stage.clientWidth;
+      const height = stage.clientHeight;
+      const ratio = window.devicePixelRatio || 1;
+      canvas.style.width = `${width}px`;
+      canvas.style.height = `${height}px`;
+      canvas.width = Math.round(width * ratio);
+      canvas.height = Math.round(height * ratio);
+      const ctx = canvas.getContext("2d");
+      ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+
+      const view = {
+        width,
+        height,
+        maxRangeMeters: autoRangeMeters(entityDistances(entities, ORIGIN)),
+      };
+      const brackets = projectBrackets(entities, ORIGIN, view);
+      // Pick a rock, so the selected treatment (bigger bracket + full ring) shows.
+      const selectedID = 1003;
+
+      drawTactical(ctx, {
+        view,
+        brackets,
+        rings: tacticalRings(view),
+        labelled: labelledBracketIDs(brackets, selectedID),
+        selectedID,
+        palette: readPalette(document.documentElement),
+        nameOf: (bracket) => bracket.name ?? "Unknown object",
+      });
+
+      // --- the radial menu ------------------------------------------------------
+      const { radialSlots, clampMenuCentre, moveRadialFocus } = await import("/src/ui/radialMenu.ts");
+      const RADIAL_R = 92;
+      const radialVerbs = [
+        { id: "showInfo", label: "Show info", disabledReason: null },
+        { id: "warp", label: "Warp to", disabledReason: null },
+        { id: "approach", label: "Approach", disabledReason: null },
+        { id: "orbit", label: "Orbit", disabledReason: null },
+        { id: "keepAtRange", label: "Keep at range", disabledReason: null },
+        { id: "align", label: "Align to", disabledReason: null },
+        { id: "lock", label: "Lock", disabledReason: null },
+        { id: "mine", label: "Mine this", disabledReason: "No mining equipment is switched on." },
+      ];
+      const radialStage = document.getElementById("radial-stage");
+      const radialRoot = document.createElement("div");
+      radialRoot.className = "radial";
+      radialRoot.setAttribute("role", "menu");
+      // Positioned inside the stage rather than the viewport, so the harness can
+      // show it without covering the page.
+      radialRoot.style.position = "absolute";
+      const stageBox = { width: radialStage.clientWidth, height: 300 };
+      const radialCentre = clampMenuCentre(20, 18, RADIAL_R, stageBox);
+      radialRoot.style.left = `${radialCentre.x}px`;
+      radialRoot.style.top = `${radialCentre.y}px`;
+      const hub = document.createElement("span");
+      hub.className = "radial-hub";
+      radialRoot.appendChild(hub);
+      const radialSlotList = radialSlots(radialVerbs.length, RADIAL_R);
+      radialVerbs.forEach((verb, index) => {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.setAttribute("role", "menuitem");
+        b.setAttribute("data-radial-item", "");
+        b.className = "radial-item" + (verb.disabledReason ? " unavailable" : "");
+        if (verb.disabledReason) b.disabled = true;
+        b.title = verb.disabledReason ?? verb.label;
+        b.setAttribute("aria-label", verb.disabledReason ? `${verb.label} — ${verb.disabledReason}` : verb.label);
+        const slot = radialSlotList[index];
+        b.style.transform = `translate(-50%, -50%) translate(${slot.dx}px, ${slot.dy}px)`;
+        b.textContent = verb.label;
+        radialRoot.appendChild(b);
+      });
+      radialStage.appendChild(radialRoot);
+
+      // --- the Neocom's glyphs, and whether each fits its 24x24 box -----------
+      const { NEOCOM_GLYPHS } = await import("/src/ui/neocomIcons.ts");
+      const SVG_NS = "http://www.w3.org/2000/svg";
+      const glyphStage = document.getElementById("glyph-stage");
+      const glyphBounds = {};
+      for (const [id, primitives] of Object.entries(NEOCOM_GLYPHS)) {
+        const cell = document.createElement("div");
+        cell.className = "glyph-cell";
+        const icon = document.createElementNS(SVG_NS, "svg");
+        icon.setAttribute("viewBox", "0 0 24 24");
+        for (const d of primitives) {
+          const node = document.createElementNS(SVG_NS, "path");
+          node.setAttribute("d", d);
+          icon.appendChild(node);
+        }
+        const caption = document.createElement("span");
+        caption.textContent = id;
+        cell.append(icon, caption);
+        glyphStage.appendChild(cell);
+        // getBBox is the browser's own exact path maths, arcs included — the
+        // reason the unit tests do not attempt this themselves.
+        const box = icon.getBBox();
+        const over = box.x < -0.5 || box.y < -0.5 || box.x + box.width > 24.5 || box.y + box.height > 24.5;
+        if (over) cell.classList.add("over");
+        glyphBounds[id] = {
+          x: +box.x.toFixed(2),
+          y: +box.y.toFixed(2),
+          r: +(box.x + box.width).toFixed(2),
+          b: +(box.y + box.height).toFixed(2),
+          over,
+        };
+      }
+
+      // --- the ship HUD's rings ------------------------------------------------
+      const { gaugeArc, gaugeTrack, capacitorSegments } = await import("/src/ui/shipHudArcs.ts");
+
+      const CX = 50;
+      const CY = 50;
+      const RADII = { shield: 45, armor: 38, hull: 31 };
+      const RATIOS = { shield: 0.62, armor: 1, hull: 0.88 };
+      const CAP_FILLED = 7;
+      const CAP_SEGMENTS = 12;
+
+      const ns = "http://www.w3.org/2000/svg";
+      const svg = document.createElementNS(ns, "svg");
+      svg.setAttribute("viewBox", "0 0 100 100");
+      const addPath = (d, className) => {
+        if (!d) return null;
+        const node = document.createElementNS(ns, "path");
+        node.setAttribute("d", d);
+        node.setAttribute("class", className);
+        svg.appendChild(node);
+        return node;
+      };
+      for (const key of ["shield", "armor", "hull"]) {
+        addPath(gaugeTrack(CX, CY, RADII[key]), "wheel-track");
+      }
+      const fills = {};
+      for (const key of ["shield", "armor", "hull"]) {
+        fills[key] = addPath(gaugeArc(RATIOS[key], CX, CY, RADII[key]), `wheel-fill ${key}`);
+      }
+      for (const segment of capacitorSegments(CAP_SEGMENTS, CX, CY, 22)) {
+        addPath(segment.path, `wheel-cap${segment.index < CAP_FILLED ? " filled" : ""}`);
+      }
+      document.getElementById("hud-wheel").appendChild(svg);
+
+      // A hook the verification step reads, so "did it paint?" is answerable
+      // without eyeballing a screenshot. `getBBox` is the useful part for the
+      // HUD: it only returns a real extent if the BROWSER parsed the `d`, so it
+      // catches a malformed path that a string comparison in a unit test cannot.
+      const bbox = (node) => {
+        const box = node.getBBox();
+        return {
+          x: +box.x.toFixed(2),
+          y: +box.y.toFixed(2),
+          w: +box.width.toFixed(2),
+          h: +box.height.toFixed(2),
+        };
+      };
+      window.__harness = {
+        brackets: brackets.length,
+        rings: tacticalRings(view).length,
+        maxRangeMeters: view.maxRangeMeters,
+        painted: true,
+        radial: (() => {
+          const items = [...radialRoot.querySelectorAll("button[data-radial-item]")];
+          const stageRect = radialStage.getBoundingClientRect();
+          const centres = items.map((b) => {
+            const r = b.getBoundingClientRect();
+            return { x: r.left - stageRect.left + r.width / 2, y: r.top - stageRect.top + r.height / 2 };
+          });
+          const radii = centres.map((c) => Math.hypot(c.x - radialCentre.x, c.y - radialCentre.y));
+          const outside = centres.filter((c) => c.x < 0 || c.y < 0 || c.x > stageBox.width || c.y > stageBox.height);
+          return {
+            items: items.length,
+            disabled: items.filter((b) => b.disabled).length,
+            focusable: items.filter((b) => !b.disabled).length,
+            radiusMin: +Math.min(...radii).toFixed(1),
+            radiusMax: +Math.max(...radii).toFixed(1),
+            outsideStage: outside.length,
+            wrapForward: moveRadialFocus(items.length - 1, items.length, "ArrowRight"),
+            wrapBack: moveRadialFocus(0, items.length, "ArrowLeft"),
+          };
+        })(),
+        glyphs: {
+          count: Object.keys(glyphBounds).length,
+          clipped: Object.entries(glyphBounds)
+            .filter(([, box]) => box.over)
+            .map(([id, box]) => `${id} ${JSON.stringify(box)}`),
+        },
+        hud: {
+          paths: svg.querySelectorAll("path").length,
+          capFilled: svg.querySelectorAll(".wheel-cap.filled").length,
+          capTotal: svg.querySelectorAll(".wheel-cap").length,
+          shield: bbox(fills.shield),
+          armor: bbox(fills.armor),
+          hull: bbox(fills.hull),
+        },
+      };
+    </script>
+  </body>
+</html>

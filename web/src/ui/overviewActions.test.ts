@@ -26,6 +26,10 @@ const { deriveShipStats } = await import("../bridge/shipStats.ts");
 // R30 slice D — where the panel's verb set now actually lives. The assertions
 // below that used to grep this file's markup read it here instead.
 const { actionsForRow, isDockableKind } = await import("../space/rowActions.ts");
+// R70 — the picked object, and the sentinel destination row, moved out of this
+// panel and into the shared selection the tactical viewport reads too. The
+// assertions below that used to grep this file's source read the real module.
+const { SOMEWHERE_ELSE, selectionHasVanished } = await import("../space/selection.ts");
 
 const UI_DIR = path.dirname(fileURLToPath(import.meta.url));
 const SOURCE = readFileSync(path.join(UI_DIR, "Overview.svelte"), "utf8");
@@ -456,12 +460,6 @@ test("the panel calls the generic flow methods, once each, with no parallel path
   // Every number here went DOWN or stayed the same. If one ever goes up, a
   // parallel path has grown.
   const callSites: Readonly<Record<string, number>> = {
-    // The threat block (lock the pirate that just arrived without hunting for
-    // it in a 200-row list) and the selection bar. The SAME flow method — which
-    // is the whole point of this test.
-    "flow.lockTarget(": 2,
-    // The threat block, the locked-target list, and the selection bar. Was 4.
-    "flow.unlockTarget(": 3,
     // R30 slice E added a second activate site: "Mine this", which runs the
     // fan-out over every powered-up mining module with repeat: -1. It is the
     // SAME generic flow method as the equipment table's Switch on — the two
@@ -473,25 +471,61 @@ test("the panel calls the generic flow methods, once each, with no parallel path
     // require the Fitting tab. One site, both directions.
     "flow.setModuleOnline(": 1,
     "flow.unloadMiningHolds(": 1,
-    // R30 slice D — the movement verbs, each dispatched from exactly one place.
-    // Before the slice these were one-per-verb too, but spread through markup;
-    // now they are five adjacent branches a reader can check at a glance.
-    "flow.warpTo(": 1,
-    "flow.approach(": 1,
-    "flow.orbit(": 1,
-    "flow.keepAtRange(": 1,
-    "flow.alignTo(": 1,
-    // R30 slice E added a second dockAt site: "Haul now" in space closes the
-    // distance to the station with the SAME ladder the Dock verb uses, rather
-    // than growing its own copy of warp-then-approach-then-dock.
-    "flow.dockAt(": 2,
-    "flow.jump(": 1,
+    // R77 — the MOVEMENT verbs are no longer dispatched from this panel at all.
+    // They moved to `space/rowActionRunner.ts` when the radial menu began
+    // dispatching the same verbs from a different component, and the counts
+    // below (all zero) are what keeps a copy from creeping back in here.
+    "flow.warpTo(": 0,
+    "flow.approach(": 0,
+    "flow.orbit(": 0,
+    "flow.keepAtRange(": 0,
+    "flow.alignTo(": 0,
+    "flow.jump(": 0,
+    // These are NOT the verb bar's, which is why they survived the move. They
+    // are the DIRECT controls that live on their own surfaces — the threat block
+    // (lock the pirate that just arrived without hunting for it in a 200-row
+    // list), the locked-targets table, and the "Haul now" ladder. Each is a
+    // deliberate site; none is a second copy of a bar verb.
+    "flow.dockAt(": 1,
+    "flow.lockTarget(": 1,
+    "flow.unlockTarget(": 2,
   };
   for (const [call, expected] of Object.entries(callSites)) {
     assert.equal(
       SOURCE.split(call).length - 1,
       expected,
       `${call} must have exactly ${expected} call site(s)`,
+    );
+  }
+});
+
+test("R77: the movement verbs have exactly ONE dispatch site, in the shared runner", () => {
+  // The other half of "no parallel path". The panel above proves it does not
+  // dispatch these any more; this proves the place they moved to holds exactly
+  // one of each.
+  //
+  // ⚠ Two copies of that switch would not fail loudly. They would differ in ONE
+  // branch — Orbit from the verb bar holding the configured range, Orbit from
+  // the radial holding the default — and nothing would look broken.
+  const RUNNER = readFileSync(
+    path.join(UI_DIR, "..", "space", "rowActionRunner.ts"),
+    "utf8",
+  );
+  for (const call of [
+    "flow.warpTo(",
+    "flow.approach(",
+    "flow.orbit(",
+    "flow.keepAtRange(",
+    "flow.alignTo(",
+    "flow.dockAt(",
+    "flow.jump(",
+    "flow.lockTarget(",
+    "flow.unlockTarget(",
+  ]) {
+    assert.equal(
+      RUNNER.split(call).length - 1,
+      1,
+      `${call} must have exactly one dispatch site in the runner`,
     );
   }
 });
@@ -688,13 +722,27 @@ test("R30 slice F: the destination sentinel cannot collide with a real thing in 
   // cannot be mistaken for a ball — and the "did my selection leave the
   // snapshot" check must SKIP it, or it would announce the destination row as
   // vanished on every single poll.
-  assert.match(SOURCE, /const SOMEWHERE_ELSE = -1;/);
-  // Deliberately no literal newline in the needle: this repo converts line
-  // endings on checkout, so a "\n" here would pass on one machine and fail on
-  // the next for a reason that has nothing to do with the claim.
-  const gone = section(SOURCE, "SOMEWHERE_ELSE is not a ball", "});");
-  assert.ok(gone.length > 100, "the lost-selection effect must be found");
-  assert.match(gone, /selectedID === SOMEWHERE_ELSE/, "the sentinel is skipped");
+  //
+  // ⚠ R70 moved both the sentinel and that check into `space/selection.ts`, so
+  // this now asserts the BEHAVIOUR rather than the presence of a line of source.
+  // The old version matched `/const SOMEWHERE_ELSE = -1;/` against this file's
+  // text, which would have gone on passing if the skip had been deleted and
+  // would have failed the moment the constant was merely renamed — the exact
+  // inversion of what it was there to protect.
+  assert.ok(SOMEWHERE_ELSE < 0, "the sentinel must not collide with a real itemID");
+  assert.equal(
+    selectionHasVanished(SOMEWHERE_ELSE, new Set()),
+    false,
+    "the destination row is not a ball in space and can never leave one",
+  );
+  assert.equal(
+    selectionHasVanished(SOMEWHERE_ELSE, new Set([1, 2, 3])),
+    false,
+    "…on a busy grid either",
+  );
+  // And the panel must genuinely delegate to it rather than keep a second copy
+  // of the rule that could drift from the one the viewport uses.
+  assert.match(SOURCE, /selectionHasVanished\(selectedID, present\)/);
 });
 
 test("R30 slice F: destination results are COMPONENT-LOCAL, never a store slice", () => {
@@ -837,17 +885,23 @@ test("R24: Dock is dispatched as the LADDER (dockAt), never the raw dock command
   // The real claim: dockAt is the ladder (warp, approach, then dock, narrating
   // each phase); flow.dock is the raw single command that fails unless the ship
   // is already in range. The bar must send the one that finishes the job.
-  const dispatch = section(SOURCE, "async function runRowAction", "const ship =");
-  assert.ok(dispatch.length > 200, "the selection-bar dispatch must be found");
-  const dockBranch = section(dispatch, 'case "dock"', "case \"jump\"");
+  //
+  // ⚠ RE-POINTED AGAIN IN R77. The dispatch switch moved out of this panel into
+  // `space/rowActionRunner.ts` when the radial menu began dispatching the same
+  // verbs from a different component, so the branch to inspect lives there now.
+  // The claim is unchanged; only its address is.
+  const RUNNER = readFileSync(path.join(UI_DIR, "..", "space", "rowActionRunner.ts"), "utf8");
+  const dockBranch = section(RUNNER, 'case "dock"', "case \"jump\"");
+  assert.ok(dockBranch.length > 20, "the dock branch must be found in the runner");
   assert.match(dockBranch, /flow\.dockAt\(/, "Dock goes through the ladder");
   assert.doesNotMatch(
     dockBranch,
     /flow\.dock\(/,
     "the raw single command must never be what the row offers",
   );
-  // And nowhere else in the panel either.
+  // And the raw command appears in neither file.
   assert.equal(/\bflow\.dock\(/.test(SOURCE), false, "flow.dock has no call site in this panel");
+  assert.equal(/\bflow\.dock\(/.test(RUNNER), false, "nor in the shared runner");
   assert.equal(/<a\s+href="#/.test(SOURCE), false, "actions are buttons, not fake links");
 });
 

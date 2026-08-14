@@ -4,8 +4,20 @@
   // list App owns), wrapping the real panel via PanelHost. Windows whose tab is
   // not openable in the current state (a docked-only panel after undocking) are
   // hidden here but KEPT in the model, so they reappear on the return trip.
+  //
+  // R70 — IN SPACE, THE DESKTOP HAS A VIEW OUT OF IT. The tactical viewport fills
+  // this surface as its backdrop and the windows float over it, which is the
+  // retail client's spatial arrangement and the reason the desktop stops reading
+  // as a blank grid with dialogs on it. It is a BACKDROP, not a window: it takes
+  // no space in the layout, cannot be closed or focused, and paints below
+  // everything because it is first in the DOM and every `.win` is positioned.
+  //
+  // Docked, it is not drawn at all — there is nothing outside to see, and a
+  // starfield behind a market window would be a lie about where you are.
   import DesktopWindow from "./DesktopWindow.svelte";
   import PanelHost from "./PanelHost.svelte";
+  import Tactical from "./Tactical.svelte";
+  import ErrorBoundary from "./ErrorBoundary.svelte";
   import { tabLabel, isTabVisible, type TabID } from "./tabs.ts";
   import { isWindowTab, type WinState } from "./desktop.ts";
   import type { ClientStore } from "../store/clientStore.ts";
@@ -41,8 +53,18 @@
   const shown = $derived(wins.filter((w) => isWindowTab(w.id) && isTabVisible(w.id, isDocked)));
 </script>
 
-<div class="desktop">
-  {#if shown.length === 0}
+<div class="desktop" class:has-view={!isDocked}>
+  {#if !isDocked}
+    <!-- Its own boundary: a drawing failure must cost the picture, never the
+         windows floating on top of it. -->
+    <ErrorBoundary name="Tactical view">
+      <Tactical {store} {flow} />
+    </ErrorBoundary>
+  {/if}
+  {#if shown.length === 0 && isDocked}
+    <!-- Only worth saying when the surface really is empty. In space it is a
+         view of the grid, and covering that with a tip about windows would hide
+         the most useful thing on screen to explain the least useful. -->
     <p class="desktop-empty">
       Open a panel from the left — it opens here as a window. They stay side by side, so you never
       lose sight of what you were doing.

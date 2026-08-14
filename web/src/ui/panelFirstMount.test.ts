@@ -219,13 +219,34 @@ test("Fitting renders the loaded ship after the raw BFF read is decoded", async 
 
 // --- 3. static sweep: a $derived is a VALUE, never a function ---------------
 
+/**
+ * Blank out comments, keeping every byte offset and line break intact.
+ *
+ * ⚠ THE SWEEP BELOW MUST NOT READ PROSE. It looks for `name(` anywhere in the
+ * file, and a comment is the easiest place in a codebase to write a word
+ * followed by a bracket — "the ship readout (goal R71)" tripped it against a
+ * `$derived` called `readout`, reporting a call that did not exist and could
+ * not. A false positive in a guard is worse than a gap: it teaches whoever hits
+ * it that the guard is noise, and the next real offence gets waved through with
+ * the same shrug.
+ *
+ * Replacing with spaces rather than deleting keeps `hit.index` pointing at the
+ * true source position, so the reported line numbers stay honest.
+ */
+function withoutComments(source: string): string {
+  return source
+    .replace(/\/\*[\s\S]*?\*\//g, (match) => match.replace(/[^\n]/g, " "))
+    .replace(/<!--[\s\S]*?-->/g, (match) => match.replace(/[^\n]/g, " "))
+    .replace(/(^|[^:])\/\/[^\n]*/g, (match, lead: string) => lead + " ".repeat(match.length - lead.length));
+}
+
 test("no component invokes a $derived binding as a function", () => {
   const offences: string[] = [];
   const files = readdirSync(UI_DIR).filter((name) => name.endsWith(".svelte"));
   assert.ok(files.length > 0, "expected .svelte components to sweep");
 
   for (const file of files) {
-    const source = readFileSync(path.join(UI_DIR, file), "utf8");
+    const source = withoutComments(readFileSync(path.join(UI_DIR, file), "utf8"));
     const declarations = source.matchAll(
       /(?:const|let)\s+([A-Za-z_$][\w$]*)\s*(?::[^=]*?)?=\s*\$derived\b/g,
     );

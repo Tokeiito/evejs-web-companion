@@ -44,6 +44,18 @@
     shipActions,
     type RowAction,
   } from "../space/rowActions.ts";
+  // R70 — the picked object is SHARED with the tactical viewport. Clicking a
+  // bracket in the picture and clicking Select in this list are the same act, so
+  // they are the same piece of state; see space/selection.ts.
+  import { spaceSelection, SOMEWHERE_ELSE, selectionHasVanished } from "../space/selection.ts";
+  // R76 — Show Info. The opener pushes a subject into a shared target and the
+  // workspace raises the window; this panel needs no window plumbing of its own.
+  import { showInfo } from "./showInfo.ts";
+  // R77 — the one place a single-call verb becomes a server call, shared with
+  // the radial menu so the two can never dispatch differently.
+  import { dispatchRowAction } from "../space/rowActionRunner.ts";
+  import RadialMenu from "./RadialMenu.svelte";
+  import type { RadialItem } from "./RadialMenu.svelte";
   // R27 — the shared item icon: one cached picture per thing, falling back
   // to a name-derived tile whenever the icon cache has no entry (or no cache).
   import TypeIcon from "./TypeIcon.svelte";
@@ -410,7 +422,15 @@
   // picked — which is both how the retail client works and the only version of
   // this that fits on a phone.
 
-  let selectedID = $state<number | null>(null);
+  // R70 — the picked id is no longer this panel's own `$state`. It lives in the
+  // shared selection so the tactical viewport highlights the same object, and
+  // `$`-reading the signal here is what makes a click on a bracket repaint this
+  // list. The signals satisfy the Svelte store contract, so no adapter is needed.
+  const selectedSignal = spaceSelection.selected;
+  const noticeSignal = spaceSelection.notice;
+  const selectedID = $derived($selectedSignal);
+  const selectionNotice = $derived($noticeSignal);
+
   /**
    * ⚠ SELECTION NEVER SILENTLY RETARGETS.
    *
@@ -424,12 +444,9 @@
   const selectedRow = $derived(
     selectedID === null ? null : (gateRows.find((row) => row.itemID === selectedID) ?? null),
   );
-  /** Said in words when the thing you picked leaves the snapshot. */
-  let selectionNotice = $state("");
 
   function selectRow(itemID: number): void {
-    selectedID = selectedID === itemID ? null : itemID;
-    selectionNotice = "";
+    spaceSelection.toggle(itemID);
     // A fresh pick starts with a clean slate: the refusal from the last thing
     // you acted on is not a fact about this one.
     concernErrors = {};
@@ -443,15 +460,15 @@
    * anything vanished. Announcing on either would cry wolf.
    */
   $effect(() => {
-    // SOMEWHERE_ELSE is not a ball in space, so it can never "leave the
-    // snapshot" — checking it would announce it as vanished on every poll.
-    if (selectedID === null || selectedID === SOMEWHERE_ELSE || !inSpace || !$space.loaded) {
+    if (!inSpace || !$space.loaded) {
       return;
     }
-    const stillThere = (snapshot?.entities ?? []).some((entity) => entity.itemID === selectedID);
-    if (!stillThere) {
-      selectionNotice = SELECTION_GONE;
-      selectedID = null;
+    // `selectionHasVanished` knows SOMEWHERE_ELSE is not a ball in space and so
+    // can never leave one — checking it would announce it as vanished on every
+    // single poll.
+    const present = new Set((snapshot?.entities ?? []).map((entity) => entity.itemID));
+    if (selectionHasVanished(selectedID, present)) {
+      spaceSelection.dropWithNotice(SELECTION_GONE);
     }
   });
 
@@ -468,15 +485,9 @@
   // bottom, it has no distance because it does not have one, and its verb is
   // Set destination.
 
-  /**
-   * The sentinel id for that row.
-   *
-   * Negative on purpose: every real itemID the server issues is positive, so
-   * this cannot collide with one, and the "did my selection leave the snapshot"
-   * check can recognise and skip it rather than announcing it as vanished every
-   * poll.
-   */
-  const SOMEWHERE_ELSE = -1;
+  // The sentinel id for that row now lives beside the selection it is a possible
+  // value of (space/selection.ts), so the viewport recognises it too and never
+  // tries to draw a bracket for a destination that is not on this grid.
   const somewhereElseSelected = $derived(selectedID === SOMEWHERE_ELSE);
 
   // ⚠ Search results live in COMPONENT-LOCAL $state, never the store. They are
@@ -563,43 +574,108 @@
       await haulNow();
       return;
     }
+    // R77 — the switch this used to hold now lives in `space/rowActionRunner.ts`,
+    // because the radial menu dispatches the same verbs from a different
+    // component. Two copies would not diverge loudly: they would diverge in ONE
+    // branch, so Orbit from the bar would hold the configured range and Orbit
+    // from the radial would hold the default, and nothing would look broken.
+    //
+    // This surface keeps what is its own: the per-concern busy gate, and landing
+    // each failure on the control that caused it.
     await runFor(action.concern, async () => {
-      switch (action.id) {
-        case "warp":
-          await flow.warpTo(row.itemID, Number($flyingDistances.warp));
-          return;
-        case "approach":
-          await flow.approach(row.itemID);
-          return;
-        case "orbit":
-          await flow.orbit(row.itemID, Number($flyingDistances.orbit));
-          return;
-        case "keepAtRange":
-          await flow.keepAtRange(row.itemID, Number($flyingDistances.hold));
-          return;
-        case "align":
-          await flow.alignTo(row.itemID);
-          return;
-        // R24 slice B — the LADDER (close the distance, then dock), never the
-        // raw single command, which fails unless the ship is already in range.
-        case "dock":
-          await flow.dockAt(row.itemID);
-          return;
-        case "jump": {
-          const link = row.gateLink;
-          if (link) {
-            await flow.jump(row.itemID, link.destinationGateID);
-          }
-          return;
-        }
-        case "lock":
-          await flow.lockTarget(row.itemID);
-          return;
-        case "unlock":
-          await flow.unlockTarget(row.itemID);
-          return;
-      }
+      await dispatchRowAction(
+        flow,
+        action.id,
+        { itemID: row.itemID, gateLink: row.gateLink ?? null },
+        {
+          warp: Number($flyingDistances.warp),
+          orbit: Number($flyingDistances.orbit),
+          hold: Number($flyingDistances.hold),
+        },
+      );
     });
+  }
+
+  // --- R77: the radial menu -------------------------------------------------
+  //
+  // Right-click (or press-and-hold on a touch screen) a row: it SELECTS that row
+  // and opens the ring of verbs around the pointer.
+  //
+  // ⚠ IT SELECTS FIRST, DELIBERATELY. The ring is built from `selectionActions`
+  // and picks dispatch through `runRowAction`, which both act on the selection —
+  // so the radial and the verb bar are guaranteed to offer the same verbs for the
+  // same thing and to run them identically. A radial that carried its own row
+  // would be a second source of truth about what you are acting on.
+  let radial = $state<{ readonly x: number; readonly y: number } | null>(null);
+
+  function openRadial(event: MouseEvent, itemID: number): void {
+    event.preventDefault();
+    if (selectedID !== itemID) {
+      selectRow(itemID);
+    }
+    radial = { x: event.clientX, y: event.clientY };
+  }
+
+  /**
+   * Press-and-hold, for touch. Only for touch/pen: a MOUSE already has
+   * right-click, and arming a long-press on it would make an ordinary slow click
+   * on a row pop a menu the player never asked for.
+   */
+  const LONG_PRESS_MS = 450;
+  let longPress: ReturnType<typeof setTimeout> | null = null;
+  function startLongPress(event: PointerEvent, itemID: number): void {
+    if (event.pointerType === "mouse") {
+      return;
+    }
+    cancelLongPress();
+    const { clientX, clientY } = event;
+    longPress = setTimeout(() => {
+      if (selectedID !== itemID) {
+        selectRow(itemID);
+      }
+      radial = { x: clientX, y: clientY };
+    }, LONG_PRESS_MS);
+  }
+  function cancelLongPress(): void {
+    if (longPress !== null) {
+      clearTimeout(longPress);
+      longPress = null;
+    }
+  }
+
+  /**
+   * The ring's contents: Show info first (it never touches the ship), then every
+   * verb the bar is offering. A verb that cannot be used keeps its honest reason
+   * and is drawn disabled, exactly as in the bar — dropping it would leave a
+   * player wondering where a button went.
+   */
+  const radialItems = $derived.by<readonly RadialItem[]>(() => {
+    if (!selectedRow) {
+      return [];
+    }
+    return [
+      { id: "showInfo", label: "Show info", disabledReason: null },
+      ...selectionActions.map((action) => ({
+        id: action.id,
+        label: action.label,
+        disabledReason: action.unavailable,
+      })),
+    ];
+  });
+
+  function pickRadial(id: string): void {
+    const row = selectedRow;
+    if (!row) {
+      return;
+    }
+    if (id === "showInfo") {
+      showInfo({ kind: "spaceObject", itemID: row.itemID, typeID: row.typeID });
+      return;
+    }
+    const action = selectionActions.find((candidate) => candidate.id === id);
+    if (action) {
+      void runRowAction(action);
+    }
   }
 
   const ship = $derived(snapshot?.ship ?? null);
@@ -1819,6 +1895,22 @@
         {typeName(selectedRow)} · {formatDistance(selectedRow.distance)}
       </p>
       <span class="row-actions">
+        <!-- R76 — Show Info, first in the bar because it is the one verb that
+             never does anything to the ship: it answers "what IS that" before
+             you commit to warping at it. It needs no server call and so is never
+             disabled. -->
+        <button
+          type="button"
+          class="minor"
+          title={`Show info on ${displayLabel(selectedRow)}`}
+          onclick={() =>
+            selectedRow &&
+            showInfo({
+              kind: "spaceObject",
+              itemID: selectedRow.itemID,
+              typeID: selectedRow.typeID,
+            })}
+        >Show info</button>
         {#each selectionActions as action (action.id + action.label)}
           <!--
             An action that cannot be used right now is still DRAWN, disabled,
@@ -1968,6 +2060,11 @@
                 class:hostile={rowIsHostile(row)}
                 class:selected={selectedID === row.itemID}
                 onclick={() => selectRow(row.itemID)}
+                oncontextmenu={(event) => openRadial(event, row.itemID)}
+                onpointerdown={(event) => startLongPress(event, row.itemID)}
+                onpointerup={cancelLongPress}
+                onpointercancel={cancelLongPress}
+                onpointerleave={cancelLongPress}
               >
                 <td data-label="Name">
                   {#if rowIsHostile(row)}<span class="threat-badge">{rowBadge(row)}</span>{/if}
@@ -2625,6 +2722,20 @@
       </div>
     {/if}
   </section>
+{/if}
+
+{#if radial && radialItems.length > 0}
+  <!-- R77 — the ring. Rendered last so it sits over the grid, and given the
+       selected thing's name so a screen reader is told WHAT the menu is for
+       rather than just "Actions". -->
+  <RadialMenu
+    items={radialItems}
+    x={radial.x}
+    y={radial.y}
+    label={selectedRow ? `Actions for ${displayLabel(selectedRow)}` : "Actions"}
+    onPick={pickRadial}
+    onClose={() => (radial = null)}
+  />
 {/if}
 
 
