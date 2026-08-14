@@ -1507,6 +1507,41 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
   }
 
+  /**
+   * Re-read everything scoped to WHICH HULL YOU ARE FLYING (goal R87).
+   *
+   * ⚠ THE BUG THIS FIXES. Boarding a ship went through `runMutation`, which
+   * reloads the hangar and the cargo — so `activeShipID` updated and the item
+   * lists were right. But two things are keyed to the hull itself and neither
+   * was touched:
+   *
+   *   • `openShip`, the bays the Ship Inventory tab draws. It is opened once, in
+   *     the panel's `onMount`, and the `inventory/loaded` reducer deliberately
+   *     preserves it across a reload — so after boarding it kept showing the
+   *     bays of the ship you had just STEPPED OUT OF, with its ore and its
+   *     capacities, indefinitely.
+   *   • The fitting slice — slots, resources, stats, dogma. An open Fitting
+   *     window kept the previous hull's modules.
+   *
+   * Both are stale in the worst way: they look live, they are labelled with the
+   * right panel, and nothing about them says they are describing a different
+   * ship.
+   *
+   * Called after every action that changes the active hull, so the fix cannot be
+   * half-applied to one of them.
+   */
+  async function refreshActiveShipViews(): Promise<void> {
+    // Read the hull AFTER the mutation's own reload, so this is the ship the
+    // server ended up putting us in — never the one we asked for. A refused
+    // board leaves it unchanged and this simply re-reads what is already there.
+    const activeShipID = store.get().inventory.activeShipID;
+    // `null` closes the bays card, which is right for leaving a ship entirely.
+    await openShipBays(activeShipID).catch(() => {});
+    // The fit belongs to the hull. Fire-and-forget: a fitting read that fails
+    // must cost the player their module list, never the board that succeeded.
+    await loadFitting().catch(() => {});
+  }
+
   // Run a mutation and report what the SERVER says actually happened. The BFF
   // re-reads after every call because invbroker declines silently, so `applied`
   // here is a real observation, not an echo of the request.
@@ -7085,10 +7120,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
     async boardShip(shipID) {
       await runMutation(() => api.boardShip(shipID, callOptions));
+      await refreshActiveShipViews();
     },
 
     async boardCorvette() {
       await runMutation(() => api.boardCorvette(callOptions));
+      await refreshActiveShipViews();
     },
 
     async leaveShip() {
@@ -7098,6 +7135,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // retail client does.
       const activeShipID = store.get().inventory.activeShipID ?? 0;
       await runMutation(() => api.leaveShip(activeShipID, callOptions));
+      await refreshActiveShipViews();
     },
 
     // --- R14 inventory depth ---
