@@ -1462,6 +1462,66 @@ export interface MarketTypeMatch {
   readonly groupName: string;
 }
 
+/** One branch of the market tree. */
+export interface MarketGroupNode {
+  readonly marketGroupID: number;
+  readonly name: string;
+  /**
+   * Whether it holds items DIRECTLY. A group can have both children and types,
+   * so this is not "is a leaf" — the panel shows items here as well as letting
+   * you descend.
+   */
+  readonly hasTypes: boolean;
+}
+
+/**
+ * Browse the market tree. `parentGroupID` of 0 (or absent) returns the roots.
+ *
+ * Static reference data, like `findMarketTypes` — so browsing works even when
+ * the market daemon is not answering, and a player can find out what EXISTS
+ * before asking what it costs.
+ */
+export async function loadMarketGroups(
+  parentGroupID: number,
+  options: ApiOptions = {},
+): Promise<readonly MarketGroupNode[]> {
+  const data = await getJson(`/api/market/groups?parent=${encodeURIComponent(String(parentGroupID))}`, options);
+  const rows = Array.isArray((data as { groups?: unknown }).groups)
+    ? ((data as { groups: unknown[] }).groups)
+    : [];
+  return rows.map((row) => {
+    const entry = row as Record<string, unknown>;
+    return {
+      marketGroupID: Number(entry.marketGroupID) || 0,
+      name: String(entry.name ?? ""),
+      hasTypes: entry.hasTypes === true,
+    };
+  });
+}
+
+/** The tradable items sitting directly in one market group. */
+export async function loadMarketGroupTypes(
+  marketGroupID: number,
+  options: ApiOptions = {},
+): Promise<{ readonly types: readonly MarketTypeMatch[]; readonly total: number; readonly capped: boolean }> {
+  const data = await getJson(`/api/market/group-types?group=${encodeURIComponent(String(marketGroupID))}`, options);
+  const rows = Array.isArray((data as { types?: unknown }).types)
+    ? ((data as { types: unknown[] }).types)
+    : [];
+  return {
+    types: rows.map((row) => {
+      const entry = row as Record<string, unknown>;
+      return {
+        typeID: Number(entry.typeID) || 0,
+        name: String(entry.name ?? ""),
+        groupName: String(entry.groupName ?? "Unknown"),
+      };
+    }),
+    total: Number((data as { total?: unknown }).total) || 0,
+    capped: (data as { capped?: unknown }).capped === true,
+  };
+}
+
 /**
  * Search tradable items by NAME. Static reference data, so it works before the
  * market itself answers — and it is the only way the panel ever obtains a

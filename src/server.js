@@ -17942,6 +17942,53 @@ app.get("/api/market/find", requireAuth, async (req, res, next) => {
 });
 
 /**
+ * R83 — BROWSING THE MARKET BY GROUP.
+ *
+ * The panel could only be reached by TYPING a name, which is fine when you know
+ * what you want and useless when you do not. Both of these are STATIC reference
+ * data (the same class as /api/market/find): no gateway call, so browsing works
+ * even when the market daemon itself is not answering, and a player can find out
+ * what exists before asking what it costs.
+ *
+ * `parent` absent or 0 returns the ROOTS. An unknown group returns an empty list
+ * rather than a 404 — "this group holds nothing" is a real answer the panel
+ * renders, and a 404 would make an ordinary empty branch look like a failure.
+ */
+app.get("/api/market/groups", requireAuth, async (req, res, next) => {
+  try {
+    const parent = req.query.parent !== undefined ? Number(req.query.parent) : 0;
+    const groups = staticData.getMarketGroupChildren(parent);
+    res.json({
+      ok: true,
+      source: "static-data",
+      parent: Number.isFinite(parent) ? parent : 0,
+      count: groups.length,
+      groups,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/market/group-types", requireAuth, async (req, res, next) => {
+  try {
+    const group = Number(req.query.group) || 0;
+    const result = staticData.getMarketGroupTypes(group);
+    res.json({
+      ok: true,
+      source: "static-data",
+      group,
+      total: result.total,
+      capped: result.capped,
+      count: result.types.length,
+      types: result.types,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
  * R38 — PLAYER-STRUCTURE NAMES. The one runtime name read, shared by every
  * name path in this BFF.
  *

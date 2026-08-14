@@ -1008,6 +1008,99 @@ function findMarketTypes(filters = {}) {
   return { matches, total, capped, q, limit };
 }
 
+// --- Browsing the market by group (goal R83) -------------------------------
+//
+// The market panel could only be reached by TYPING a name. That is fine when you
+// know what you want and useless when you do not — "what ammunition fits this?"
+// and "what is on sale here?" are the questions a market is for, and neither can
+// be typed. The retail client answers both with a group TREE, and the data for
+// one is already on disk: every marketGroups.jsonl row carries a parentGroupID
+// and a hasTypes flag.
+//
+// Two reads: the children of a group (or the roots), and the types inside a
+// group. Both are pure static reference data, like findMarketTypes above — no
+// gateway call, so they work before the market daemon has answered anything.
+
+const MARKET_GROUP_TYPES_MAX = 500;
+
+/** parentGroupID -> child rows, built once. Roots are keyed under 0. */
+function getMarketGroupChildIndex() {
+  const cacheKey = "marketGroupChildren";
+  if (caches.has(cacheKey)) {
+    return caches.get(cacheKey);
+  }
+  const index = new Map();
+  for (const entry of buildJsonlIndex("marketGroups.jsonl").values()) {
+    const id = Number(entry && entry._key) || 0;
+    if (id <= 0) {
+      continue;
+    }
+    const parentID = Number(entry.parentGroupID || 0) || 0;
+    if (!index.has(parentID)) {
+      index.set(parentID, []);
+    }
+    index.get(parentID).push({
+      marketGroupID: id,
+      name: getLocalizedName(entry, `Market Group ${id}`),
+      // Whether it holds items directly. A group can have BOTH children and
+      // types, so this is not "is a leaf" — the panel needs to know it can show
+      // items here as well as descend.
+      hasTypes: entry.hasTypes === true,
+    });
+  }
+  for (const children of index.values()) {
+    children.sort((a, b) => a.name.localeCompare(b.name) || a.marketGroupID - b.marketGroupID);
+  }
+  caches.set(cacheKey, index);
+  return index;
+}
+
+/**
+ * The children of a market group, or the ROOTS when `parentGroupID` is absent
+ * or zero. Always an array — an unknown group has no children rather than
+ * being an error, which is what lets the panel treat "empty" as a real answer.
+ */
+function getMarketGroupChildren(parentGroupID) {
+  const parentID = Number(parentGroupID) || 0;
+  return getMarketGroupChildIndex().get(parentID) || [];
+}
+
+/**
+ * The published, tradable types sitting directly in one market group.
+ *
+ * ⚠ SAME PUBLISHED/MARKET FILTER AS `findMarketTypes`. A type that is not
+ * published, or has no market group, cannot be traded — offering one would put
+ * an item in front of a player that the market will always refuse.
+ */
+function getMarketGroupTypes(marketGroupID) {
+  const groupID = Number(marketGroupID) || 0;
+  if (groupID <= 0) {
+    return { types: [], total: 0, capped: false };
+  }
+  const matches = [];
+  for (const entry of buildIndex("itemTypes", "types", "typeID").values()) {
+    if (!entry || entry.published !== true) {
+      continue;
+    }
+    if ((Number(entry.marketGroupID) || 0) !== groupID) {
+      continue;
+    }
+    matches.push({
+      typeID: Number(entry.typeID) || 0,
+      name: String(entry.name || ""),
+      groupName: String(entry.groupName || "Unknown"),
+    });
+  }
+  matches.sort((a, b) => a.name.localeCompare(b.name) || a.typeID - b.typeID);
+  const total = matches.length;
+  const capped = total > MARKET_GROUP_TYPES_MAX;
+  return {
+    types: capped ? matches.slice(0, MARKET_GROUP_TYPES_MAX) : matches,
+    total,
+    capped,
+  };
+}
+
 // --- Batch name resolution (goal R7c) --------------------------------------
 // The names-everywhere UI pass turns raw IDs into names across every tab. So an
 // inventory list of many typeIDs (or a guest list of corp IDs) resolves in ONE
@@ -1206,6 +1299,8 @@ module.exports = {
   getModuleChargeFitment,
   getChargeSize,
   findMarketTypes,
+  getMarketGroupChildren,
+  getMarketGroupTypes,
   getNpcIndustryFacility,
   getPlanetCelestial,
   getPlanetName,
