@@ -179,9 +179,33 @@ test("the AGENT's station is what reaches the plan, never the one we are standin
 
 test("R7d — no numeric id is ever rendered", () => {
   const text = visibleText(renderPanel(dockedStore({ withFinder: true })));
-  for (const id of [AGENT, AGENT_STATION, HERE_STATION, MINING_AGENT]) {
+  // 1000002 is the corporation behind the Corporation filter's option — its
+  // label must be a name (or a placeholder while it loads), never the corp id.
+  for (const id of [AGENT, AGENT_STATION, HERE_STATION, MINING_AGENT, 1000002]) {
     assert.doesNotMatch(text, new RegExp(String(id)), `id ${id} must not reach the player`);
   }
+});
+
+test("the picker carries its filters, and they narrow what Start can use", () => {
+  const text = visibleText(renderPanel(dockedStore({ withFinder: true })));
+  // The filter row renders alongside the picker (Agent Finder style).
+  assert.match(text, /Search \(name \/ station\)/);
+  assert.match(text, /Level/);
+  assert.match(text, /Corporation/);
+  // A render cannot type into the search box, so the wiring is asserted in the
+  // source: the options AND the chosen row must both come from the FILTERED
+  // list — filtering the options while `chosen` still read the full list would
+  // let Start fly to an agent the player had filtered out of sight.
+  assert.match(
+    SOURCE,
+    /#each filteredChoices as choice/,
+    "the picker's options are the filtered choices",
+  );
+  assert.match(
+    SOURCE,
+    /filteredChoices\.find\(\(row\) => row\.id === Number\(agentChoice\)\) \?\? filteredChoices\[0\]/,
+    "`chosen` — what Start uses — falls inside the same filtered list",
+  );
 });
 
 test("R9a — no jargon reaches the player", () => {
