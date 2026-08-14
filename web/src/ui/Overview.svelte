@@ -2091,118 +2091,101 @@
              silently hides rows. The plain "showing x of y" count is gone. -->
         <p class="note">Only the nearest {overview.rows.length} are listed — search or filter to see the rest.</p>
       {/if}
-      <div class="table-wrap overflow-x-auto overview-scroll">
-        <table class="guests overview reflow">
-          <thead>
-            <tr>
-              <th>Name</th>
-              <th>Type</th>
-              <th>Group</th>
-              <th class="num">Distance</th>
-              <!--
-                R23 slice B — only meaningful for a rock, and blank for
-                everything else. A dash means the amount is NOT KNOWN; a rock
-                that really is empty says "Mined out". Run a survey scan to fill
-                in what the ship could not see on its own.
-              -->
-              <th class="num">Ore left</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {#each gateRows as row (row.itemID)}
-              <!--
-                R25 slice B — a hostile row is visually distinct IN the list as
-                well as pulled out above it. The badge carries the word, so the
-                colour is never the only signal (a player who cannot tell red
-                from grey still reads "Pirate").
-              -->
-              <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_noninteractive_element_interactions -->
-              <tr
-                class="overview-row"
-                class:hostile={rowIsHostile(row)}
-                class:selected={selectedID === row.itemID}
-                onclick={() => selectRow(row.itemID)}
-                oncontextmenu={(event) => openRadial(event, row.itemID)}
-                onpointerdown={(event) => startLongPress(event, row.itemID)}
-                onpointerup={cancelLongPress}
-                onpointercancel={cancelLongPress}
-                onpointerleave={cancelLongPress}
-              >
-                <td data-label="Name">
+      <!--
+        R82 — THE GRID IS A LIST, NOT A TABLE.
+
+        It was a six-column record table (name, type, group, distance, ore left,
+        a Select button) and the place it is used most is the right-hand dock
+        column, which is nowhere near six columns wide — so reading it meant
+        scrolling sideways, in the one panel a pilot reads constantly.
+
+        A table was the wrong shape for this data. Every column but the name and
+        the distance is secondary, and the reflow contract that made a table
+        survive a phone (each cell restated with its own label, stacked) produced
+        a five-line block per object — which is worse again when there are two
+        hundred of them.
+
+        So each object is ONE ROW that cannot overflow: a picture, a name over a
+        muted line of everything else, and the distance pinned right. The middle
+        column truncates; nothing scrolls sideways at any width, and the desktop
+        and the phone get the same thing rather than two layouts to keep in step.
+
+        ⚠ THE ROW IS THE CONTROL NOW. It used to be a `<tr>` with an onclick and
+        a separate Select button in the last column — a click target that was not
+        a control, beside a control that did what clicking already did. It is a
+        real `<button>` carrying `aria-pressed`, so it is keyboard reachable and
+        announces its own selected state, and the column is gone.
+      -->
+      <ul class="overview-list overview-scroll">
+        {#each gateRows as row (row.itemID)}
+          <li>
+            <button
+              type="button"
+              class="ov-row"
+              class:hostile={rowIsHostile(row)}
+              class:selected={selectedID === row.itemID}
+              aria-pressed={selectedID === row.itemID}
+              onclick={() => selectRow(row.itemID)}
+              oncontextmenu={(event) => openRadial(event, row.itemID)}
+              onpointerdown={(event) => startLongPress(event, row.itemID)}
+              onpointerup={cancelLongPress}
+              onpointercancel={cancelLongPress}
+              onpointerleave={cancelLongPress}
+            >
+              <TypeIcon typeID={row.typeID} name={typeName(row)} />
+              <span class="ov-main">
+                <span class="ov-name">
+                  <!--
+                    R25 slice B — the badge carries the WORD, so the colour is
+                    never the only signal (a player who cannot tell red from grey
+                    still reads "Pirate").
+                  -->
                   {#if rowIsHostile(row)}<span class="threat-badge">{rowBadge(row)}</span>{/if}
                   {displayLabel(row)}
-                </td>
-                <td data-label="Type">
-                  <span class="cell-item">
-                    <TypeIcon typeID={row.typeID} name={typeName(row)} />
-                    {typeName(row)}
-                  </span>
-                </td>
-                <td data-label="Group">{groupName(row)}</td>
-                <td class="num" data-label="Distance">{formatDistance(row.distance)}</td>
-                <td class="num" data-label="Ore left">{remainingLabel(row)}</td>
-                <!--
-                  R30 slice D — the whole per-row `.row-actions` block that used
-                  to live here is GONE, and this single control replaces it.
-
-                  There were up to nine buttons on every one of up to 200 rows,
-                  re-rendered every poll. The names and distances a player is
-                  actually reading were squeezed into whatever the buttons left,
-                  and at the phone breakpoint each row became a stack of nine
-                  full-width buttons you had to scroll past to reach the next
-                  row. Picking a thing and acting on it is how the retail client
-                  works, and it is the only version of this that fits.
-                -->
-                <td data-label="">
-                  <span class="row-actions">
-                    <button
-                      type="button"
-                      class={selectedID === row.itemID ? "active" : ""}
-                      aria-pressed={selectedID === row.itemID}
-                      onclick={(e) => { e.stopPropagation(); selectRow(row.itemID); }}
-                    >
-                      {selectedID === row.itemID ? "Selected" : "Select"}
-                    </button>
-                  </span>
-                </td>
-              </tr>
-            {/each}
-            <!--
-              R30 slice F — the row that is not a thing in space.
-
-              The overview can only ever offer what is on this grid. A
-              destination that is neither on it nor through a gate you can see
-              had no expression here at all, so the answer was always the Travel
-              tab — and before slice B, going there actively froze this panel's
-              own data feed. This row is where "anywhere else" lives, and its
-              verb is Set destination.
-
-              It carries no distance and no type, because it does not have
-              either, and a dash is the honest way to say so.
-            -->
-            <tr class="synthetic-row">
-              <td data-label="Name">Somewhere else…</td>
-              <td data-label="Type">Anywhere not on this grid</td>
-              <td data-label="Group">—</td>
-              <td class="num" data-label="Distance">—</td>
-              <td class="num" data-label="Ore left"></td>
-              <td data-label="">
-                <span class="row-actions">
-                  <button
-                    type="button"
-                    class={somewhereElseSelected ? "active" : ""}
-                    aria-pressed={somewhereElseSelected}
-                    onclick={() => selectRow(SOMEWHERE_ELSE)}
-                  >
-                    {somewhereElseSelected ? "Selected" : "Select"}
-                  </button>
                 </span>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
+                <!--
+                  Everything that used to be its own column, on one muted line.
+                  Ore left is only meaningful for a rock and is simply absent
+                  otherwise — a dash there means the amount is NOT KNOWN, and a
+                  rock that really is empty says "Mined out".
+                -->
+                <span class="ov-meta">
+                  {typeName(row)}{groupName(row) ? ` · ${groupName(row)}` : ""}{remainingLabel(row)
+                    ? ` · ${remainingLabel(row)} left`
+                    : ""}
+                </span>
+              </span>
+              <span class="ov-range">{formatDistance(row.distance)}</span>
+            </button>
+          </li>
+        {/each}
+        <!--
+          R30 slice F — the row that is not a thing in space.
+
+          The overview can only ever offer what is on this grid. A destination
+          that is neither on it nor through a gate you can see had no expression
+          here at all, so the answer was always the Travel tab. This row is where
+          "anywhere else" lives, and its verb is Set destination.
+
+          It carries no distance, because it does not have one, and a dash is the
+          honest way to say so.
+        -->
+        <li>
+          <button
+            type="button"
+            class="ov-row synthetic-row"
+            class:selected={somewhereElseSelected}
+            aria-pressed={somewhereElseSelected}
+            onclick={() => selectRow(SOMEWHERE_ELSE)}
+          >
+            <span class="ov-main">
+              <span class="ov-name">Somewhere else…</span>
+              <span class="ov-meta">Anywhere not on this grid</span>
+            </span>
+            <span class="ov-range">—</span>
+          </button>
+        </li>
+      </ul>
       {#if $flight.actionError}
         <p class="error">{$flight.actionError}</p>
       {/if}

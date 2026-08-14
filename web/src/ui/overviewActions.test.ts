@@ -308,13 +308,35 @@ test("R9a: the new sections speak to a player, not to a developer", () => {
 
 // --- R8: the new tables reflow, and the controls are real buttons -------------
 
-test("R8: every new table is a reflow table inside a scroll wrapper", () => {
+test("R8: every remaining table is a reflow table inside a scroll wrapper", () => {
   const body = renderLoaded();
-  // Three record tables now: locked targets, equipment, and the overview grid.
+  // ⚠ TWO NOW, NOT THREE. R82 turned the overview grid itself into a LIST — it
+  // was the widest of the three and the one read in the narrowest column, and a
+  // six-column table there meant scrolling sideways to read it. The two record
+  // tables left are locked targets and equipment.
   const reflowTables = body.match(/<table class="guests[^"]*reflow"/g) ?? [];
-  assert.ok(reflowTables.length >= 3, `expected 3+ reflow tables, saw ${reflowTables.length}`);
+  assert.ok(reflowTables.length >= 2, `expected 2+ reflow tables, saw ${reflowTables.length}`);
   const wrappers = body.match(/table-wrap overflow-x-auto/g) ?? [];
-  assert.ok(wrappers.length >= 3, "each table scrolls inside its own wrapper");
+  assert.ok(wrappers.length >= 2, "each table scrolls inside its own wrapper");
+});
+
+test("R82: the overview grid is a list that cannot scroll sideways", () => {
+  const body = renderLoaded();
+  // The claim the rework exists for. A table would come back as
+  // `<table class="guests ... overview`; the list is rows of real buttons.
+  assert.match(body, /<ul class="overview-list/, "the grid must be a list");
+  assert.equal(
+    /<table[^>]*class="[^"]*overview/.test(body),
+    false,
+    "the overview grid must not be a table again",
+  );
+  // Every row is a real control, not a clickable <tr> beside a Select button.
+  const rows = body.match(/class="ov-row[^"]*"/g) ?? [];
+  assert.ok(rows.length > 0, "expected overview rows");
+  assert.match(body, /<button[^>]*class="ov-row/, "a row must be a button");
+  // ...and it announces its own selected state, which is what replaced the
+  // separate Select control that used to sit in the last column.
+  assert.match(body, /class="ov-row[^"]*"[^>]*aria-pressed=/, "a row must report its selection");
 });
 
 test("R8: every cell in the new tables carries a data-label for the narrow layout", () => {
@@ -702,19 +724,19 @@ test("R30 slice F: 'Somewhere else…' is the last row, and invents no distance"
   assert.match(body, /Somewhere else…/, "the destination row exists");
   // It is a row in the grid, after every real one — and it is marked as not
   // being a thing in space so it does not read as another ball on the grid.
+  //
+  // ⚠ RE-POINTED IN R82: the grid became a list, so this is an `.ov-row` inside a
+  // `<ul>` rather than a `<tr>` of labelled cells. The claim is unchanged.
   assert.ok(
-    body.indexOf('class="synthetic-row"') > body.indexOf("Veldspar"),
+    body.indexOf("synthetic-row") > body.indexOf("Veldspar"),
     "it sits below the real rows",
   );
-  // ⚠ It has no distance and no group, because it does not have either. A
-  // fabricated 0 m would put this row nearest in a distance sort.
-  const row = body.slice(body.indexOf('class="synthetic-row"'));
-  const cells = row.slice(0, row.indexOf("</tr>"));
-  assert.match(cells, /data-label="Distance">—/, "no distance is invented");
-  // R8 — it reflows like every other row.
-  for (const cell of cells.match(/<td\b[^>]*>/g) ?? []) {
-    assert.match(cell, /data-label="/, `every <td> needs data-label; saw ${cell}`);
-  }
+  // ⚠ It has no distance, because it does not have one. A fabricated 0 m would
+  // put this row nearest in a distance sort.
+  const row = body.slice(body.indexOf("synthetic-row"));
+  const rowMarkup = row.slice(0, row.indexOf("</li>"));
+  assert.match(rowMarkup, /class="ov-range">—</, "no distance is invented");
+  assert.match(rowMarkup, /Anywhere not on this grid/, "it says what it is instead");
 });
 
 test("R30 slice F: the destination sentinel cannot collide with a real thing in space", () => {
@@ -867,11 +889,16 @@ test("R24: a station offers Dock; a rock does not — decided from the ball's KI
   assert.equal(isDockableKind("asteroid"), false);
 
   // The panel still renders both kinds of row, each pickable.
+  //
+  // ⚠ RE-POINTED IN R82. This used to look for a button whose text was "Select",
+  // which lived in the grid's last column. The row IS that button now — the
+  // separate control was doing what clicking the row already did — so what makes
+  // a row pickable is that it is a `.ov-row` button reporting `aria-pressed`.
   for (const [kind, id] of [["station", STATION_ID], ["asteroid", ROCK_ID]] as const) {
     assert.match(
       renderWithEntity(kind, id),
-      /<button[^>]*>[\s\S]{0,120}Select/,
-      `a ${kind} row must be selectable`,
+      /<button[^>]*class="ov-row[^"]*"[^>]*aria-pressed=/,
+      `a ${kind} row must be a selectable control`,
     );
   }
 });

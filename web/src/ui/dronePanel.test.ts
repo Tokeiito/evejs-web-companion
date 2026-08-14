@@ -370,7 +370,13 @@ test("a hostile is marked in the ordinary overview list too", () => {
   });
   // The threat block is the loud version; the row marker is so the list a
   // player is already reading is legible as well.
-  assert.match(body, /<tr[^>]*class="[^"]*\bhostile\b/);
+  //
+  // ⚠ RE-POINTED IN R82: the grid became a list of `.ov-row` buttons, so the
+  // marked row is no longer a `<tr>`. The claim — a hostile is marked where the
+  // player is already looking, not only in the block above — is unchanged.
+  assert.match(body, /<button[^>]*class="ov-row[^"]*\bhostile\b/);
+  // And it still carries the WORD, so the colour is never the only signal.
+  assert.match(body, /class="threat-badge">Pirate</);
 });
 
 // --- Source-level guarantees -------------------------------------------------

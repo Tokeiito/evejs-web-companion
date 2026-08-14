@@ -1063,9 +1063,6 @@
     font-size: 0.9em;
   }
 
-  /* The one row in the overview that is not a thing in space. It is set apart
-   * so it does not read as another ball on the grid. */
-  tr.synthetic-row td { color: var(--color-muted, inherit); font-style: italic; }
 
   /* ================================ drones + hostile awareness (R25) --
    * Two components that answer two questions a miner has at the same moment:
@@ -1123,8 +1120,6 @@
     color: var(--color-muted);
     font-variant-numeric: tabular-nums;
   }
-  /* The same hostile, marked where it also appears in the ordinary list. */
-  table.overview tr.hostile td { background: color-mix(in srgb, var(--color-danger) 10%, transparent); }
 
   /* The drone lists: one line per drone, name + what it is doing + its buttons.
    * A list rather than a table because there are at most a handful of drones
@@ -1171,16 +1166,111 @@
     gap: 0.4rem;
   }
 
-  /* ========================================= the compact overview (R24) --
-   * The overview is the primary in-space instrument: it re-renders every
-   * second while things are happening, and it has to read at a glance. So its
-   * rows lose a third of their vertical padding and its type drops a notch —
-   * roughly half again as many objects on screen without touching the R8
-   * reflow rules, which still apply below the breakpoint, and without shrinking
-   * a single control (buttons keep their 40px target from the shared rule). */
-  table.overview { font-size: 0.92em; }
-  table.overview th,
-  table.overview td { padding-block: 0.3rem; }
+  /* ============================================ the overview list (R82) --
+   * What is around the ship, as a list of rows that CANNOT overflow sideways.
+   *
+   * It was a six-column record table, and the place it is read most is the
+   * right-hand dock column — nowhere near six columns wide — so reading it meant
+   * scrolling sideways in the panel a pilot looks at constantly. The R8 reflow
+   * that let a table survive a phone made it worse there: every cell restated
+   * with its own label, five stacked lines per object, two hundred objects.
+   *
+   * Three columns, and only the middle one is allowed to grow:
+   *   picture | name over a muted meta line | distance
+   * `minmax(0, 1fr)` on the middle column is what actually does the work — a
+   * grid track's automatic minimum is its content, so without the explicit 0 a
+   * long ship name pushes the row wider instead of truncating, and the sideways
+   * scroll comes straight back.
+   *
+   * The same layout serves the desktop and the phone: there is nothing to
+   * reflow, because nothing was ever in columns that could stack. */
+  .overview-list {
+    list-style: none;
+    margin: 0.2rem 0 0;
+    padding: 0;
+    /* The list scrolls VERTICALLY inside its own box, so the command bar and the
+     * flight strip above it stay put while two hundred rows scroll under them. */
+    max-height: 65vh;
+    overflow-y: auto;
+    overflow-x: hidden;
+  }
+  .ov-row {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) max-content;
+    align-items: center;
+    gap: 0.45rem;
+    width: 100%;
+    /* R8: a full 40px target. The row IS the control now — the Select button in
+     * the old last column is gone, because clicking the row already did what it
+     * did. */
+    min-height: 2.5rem;
+    padding: 0.25rem 0.4rem;
+    text-align: left;
+    background: transparent;
+    border: 1px solid transparent;
+    border-bottom-color: var(--color-row-line);
+    color: var(--color-cell);
+  }
+  .ov-row:hover:not(:disabled) {
+    background: rgb(127 180 217 / 0.07);
+    border-color: transparent;
+    border-bottom-color: var(--color-row-line);
+  }
+  .ov-row.selected {
+    background: color-mix(in srgb, var(--color-accent) 15%, transparent);
+    border-color: var(--color-accent-dim);
+  }
+  /* A hostile row is marked in the list as well as pulled out into the threat
+   * block above it. The badge inside carries the word; this is the accelerator. */
+  .ov-row.hostile {
+    background: color-mix(in srgb, var(--color-danger) 10%, transparent);
+  }
+  .ov-row.hostile.selected {
+    background: color-mix(in srgb, var(--color-danger) 20%, transparent);
+    border-color: var(--color-danger);
+  }
+  /* The one row that is not a thing in space, set apart so it does not read as
+   * another ball on the grid. */
+  .ov-row.synthetic-row .ov-name { font-style: italic; color: var(--color-muted); }
+
+  /* ⚠ `min-width: 0` HERE TOO. A grid ITEM's automatic minimum is also its
+   * content, so the track being `minmax(0, 1fr)` is not enough on its own —
+   * without this the name refuses to shrink and the row overflows anyway. */
+  .ov-main {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    line-height: 1.2;
+  }
+  .ov-name {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    min-width: 0;
+    color: var(--color-text-bright);
+    /* One line, truncated. A wrapped name would make rows different heights and
+     * destroy the scannability that is the whole point of an overview. */
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .ov-meta {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--color-muted);
+    font-size: 11px;
+  }
+  .ov-range {
+    /* Tabular so a column of distances lines up under itself, which is what
+     * makes "which of these is nearest" a glance rather than a read. */
+    font-variant-numeric: tabular-nums;
+    font-size: 12px;
+    color: var(--color-text-bright);
+    white-space: nowrap;
+  }
+  .ov-row.hostile .ov-range { color: var(--color-danger); }
 
   /* ==================================================== item icons (R27) --
    * The picture next to a thing's name, wherever a thing has a name: overview
@@ -3068,23 +3158,19 @@
   .targets-panel .target-bracket { flex-wrap: nowrap; margin: 0; }
 
   /* The compact overview (dock panel): hide what the bottom HUD already shows and
-   * the relocated targets table, and keep every row on ONE line (its own box
-   * scrolls sideways rather than wrapping to two lines). */
+   * the relocated targets table.
+   *
+   * ⚠ R82 REMOVED THE `white-space: nowrap` THAT USED TO LIVE HERE. It was the
+   * dock panel's own workaround for the grid being a six-column table — it kept
+   * each row on one line by letting the box scroll SIDEWAYS instead, which is
+   * exactly the thing that made this panel awkward to read. The list truncates
+   * now, so there is nothing to force and nothing to scroll. */
   .dock-overview .ov-ship-condition,
   .dock-overview .ov-locked-targets,
   .dock-overview .ov-equipment,
   .dock-overview .ov-shots { display: none; }
-  .dock-overview table.overview th,
-  .dock-overview table.overview td { white-space: nowrap; }
-  .dock-overview .cell-item { white-space: nowrap; }
-
-  /* A clickable overview row surfaces that item's command bar. */
-  tr.overview-row { cursor: pointer; }
-  tr.overview-row:hover > td { background: var(--color-panel-2); }
-  tr.overview-row.selected > td {
-    background: var(--color-panel-2);
-    box-shadow: inset 2px 0 0 var(--color-accent);
-  }
+  /* The dock column is short as well as narrow, so its list gets less of it. */
+  .dock-overview .overview-list { max-height: 42vh; }
 
   /* The bottom HUD bar (in space only). Clusters reuse .hud-cluster / .hud-nav. */
   .hud-bar {
