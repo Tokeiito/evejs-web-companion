@@ -54,6 +54,10 @@
   // R77 — the one place a single-call verb becomes a server call, shared with
   // the radial menu so the two can never dispatch differently.
   import { dispatchRowAction } from "../space/rowActionRunner.ts";
+  // R79 — the overview tabs. The preset is SHARED with the tactical viewport so
+  // the picture and the list always show the same slice of the grid.
+  import { overviewPreset } from "../space/overviewPreset.ts";
+  import { OVERVIEW_PRESETS, applyPreset } from "../space/overviewPresets.ts";
   import RadialMenu from "./RadialMenu.svelte";
   import type { RadialItem } from "./RadialMenu.svelte";
   // R27 — the shared item icon: one cached picture per thing, falling back
@@ -377,8 +381,29 @@
   });
 
   // The rendered list: filtered, distance-sorted and capped, all client-side.
+  const presetSignal = overviewPreset.preset;
+  const presetIDSignal = overviewPreset.id;
+  const activePreset = $derived($presetSignal);
+
+  /**
+   * The snapshot as the chosen tab sees it.
+   *
+   * ⚠ THE PRESET IS APPLIED BEFORE THE CAP, NOT AFTER. `buildOverviewRows` keeps
+   * the nearest `ROW_CAP` matches; filtering afterwards would let 200 gates crowd
+   * every rock off the Mining tab while the tab claimed to be showing rocks.
+   */
+  const presetSnapshot = $derived.by(() => {
+    if (!snapshot) {
+      return snapshot;
+    }
+    if (activePreset.roles === null) {
+      return snapshot;
+    }
+    return { ...snapshot, entities: applyPreset(snapshot.entities, activePreset) };
+  });
+
   const overview = $derived.by(() =>
-    buildOverviewRows(snapshot, origin, {
+    buildOverviewRows(presetSnapshot, origin, {
       sort,
       cap: ROW_CAP,
       filter: {
@@ -2018,10 +2043,32 @@
       </p>
     {/if}
 
+    <!-- R79 — the overview tabs, the retail client's own way of cutting a
+         two-hundred-object grid down to the slice you are working with. The
+         chosen tab is SHARED with the tactical viewport, so the picture shows
+         the same slice; and no tab can hide something that is shooting at you
+         (see space/overviewPresets.ts). -->
+    <nav class="tabs overview-presets" aria-label="Overview filter">
+      {#each OVERVIEW_PRESETS as preset (preset.id)}
+        <button
+          type="button"
+          class={$presetIDSignal === preset.id ? "active" : ""}
+          aria-pressed={$presetIDSignal === preset.id}
+          title={preset.hint}
+          onclick={() => overviewPreset.choose(preset.id)}
+        >{preset.label}</button>
+      {/each}
+    </nav>
     {#if !$space.loaded}
       <p class="note">Looking around…</p>
     {:else if overview.rows.length === 0}
-      <p class="empty">Nothing matches — clear the search or filters to see everything.</p>
+      <p class="empty">
+        {#if activePreset.roles !== null}
+          Nothing on this tab — try All, or clear the search and filters.
+        {:else}
+          Nothing matches — clear the search or filters to see everything.
+        {/if}
+      </p>
     {:else}
       {#if overview.matched > overview.rows.length}
         <!-- The only line kept: a truncation warning, so the 200-row cap never

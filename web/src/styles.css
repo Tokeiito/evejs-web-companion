@@ -3127,6 +3127,22 @@
     .hud-bar { grid-template-columns: 1fr; }
   }
 
+  /* ============================================ the overview tabs (R79) --
+   * The retail overview's preset row. An ordinary `nav.tabs` strip — it needs no
+   * vocabulary of its own — pulled tight against the table it filters and given
+   * a little air above, so it reads as belonging to the grid rather than to the
+   * command bar above it. */
+  .overview-presets {
+    margin-top: 0.4rem;
+    margin-bottom: 0.5rem;
+  }
+  .overview-presets button {
+    /* Slightly denser than a page-level tab: this strip sits inside a panel that
+     * is often docked into a narrow column. */
+    padding: 0.35rem 0.6rem;
+    font-size: 0.72rem;
+  }
+
   /* ============================================== drag and drop (R78) --
    * Dragging a module onto a fitting socket, or an item onto another container.
    *

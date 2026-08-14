@@ -43,6 +43,8 @@
   import { formatDistance } from "../space/overview.ts";
   import { spaceSelection } from "../space/selection.ts";
   import { showInfo } from "./showInfo.ts";
+  import { overviewPreset } from "../space/overviewPreset.ts";
+  import { applyPreset } from "../space/overviewPresets.ts";
   import { actionsForRow, type RowAction } from "../space/rowActions.ts";
   import { dispatchRowAction, isSingleCallAction } from "../space/rowActionRunner.ts";
   import { gateLinkFor } from "../space/gateLinks.ts";
@@ -72,7 +74,17 @@
   const snapshot = $derived($space.snapshot ?? null);
   const ship = $derived(snapshot?.ship ?? null);
   const origin = $derived(ship?.position ?? { x: 0, y: 0, z: 0 });
-  const entities = $derived(snapshot?.entities ?? []);
+  /**
+   * R79 — the grid as the chosen overview tab sees it. The picture and the list
+   * read the SAME shared preset, so switching to Mining cannot leave stargates
+   * drawn on a viewport whose list says it is showing rocks.
+   *
+   * The auto-range is computed from these too, which is the point: hiding the
+   * planet 4 AU out on the Mining tab pulls the rim in to the belt, and the
+   * rocks stop being a knot in the middle of the plot.
+   */
+  const presetSignal = overviewPreset.preset;
+  const entities = $derived(applyPreset(snapshot?.entities ?? [], $presetSignal));
 
   /**
    * The rim distance. Auto-ranged from what is actually on grid, so warping from
