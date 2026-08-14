@@ -56,6 +56,8 @@
   import { dispatchRowAction } from "../space/rowActionRunner.ts";
   // R79 — the overview tabs. The preset is SHARED with the tactical viewport so
   // the picture and the list always show the same slice of the grid.
+  // R80 — events worth telling the player about even when this panel is closed.
+  import { notify } from "./notices.ts";
   import { overviewPreset } from "../space/overviewPreset.ts";
   import { OVERVIEW_PRESETS, applyPreset } from "../space/overviewPresets.ts";
   import RadialMenu from "./RadialMenu.svelte";
@@ -1457,6 +1459,20 @@
         itemID: arrived[0].itemID,
         lastDistance: arrived[0].distance,
       };
+      // R80 — and tell the player wherever they are looking. The banner below
+      // only exists while this panel is on screen; a miner watching a bot run
+      // with the overview closed would otherwise never learn a rat had landed.
+      //
+      // Keyed by the hostile's own id, so the once-per-second poll that keeps
+      // re-observing it cannot re-announce it (see notices.ts).
+      for (const row of arrived) {
+        notify({
+          kind: "danger",
+          key: `hostile-arrived:${row.itemID}`,
+          title: `${hostileLabel(row) ?? "A hostile"} has arrived`,
+          detail: `${displayLabel(row)} · ${formatDistance(row.distance)}`,
+        });
+      }
     }
     // Forget the ones that are gone, so a rat that leaves and comes back warns
     // again. ⚠ WRITE ONLY WHEN THE ID SET ACTUALLY CHANGED: this effect READS

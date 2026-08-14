@@ -3127,6 +3127,128 @@
     .hud-bar { grid-template-columns: 1fr; }
   }
 
+  /* ============================================== notices: toasts + log (R80) --
+   * The transient half and the permanent half of one list. A toast is a recent
+   * notice that has not been dismissed; the log keeps every one.
+   *
+   * ⚠ THE STACK NEVER EATS A CLICK. `pointer-events: none` on the container and
+   * `auto` on the toasts themselves, so the gaps between them — and everything
+   * underneath — stay live. A pilot is usually mid-action when one of these
+   * fires, and a notification that swallowed the click they were making would be
+   * worse than no notification.
+   *
+   * Severity is a WORD on every toast and every log row; the colour repeats it
+   * and never carries it alone. */
+  .toasts {
+    position: fixed;
+    top: calc(var(--char-bar-h) + 0.6rem);
+    right: 0.7rem;
+    z-index: 450;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    width: min(22rem, calc(100vw - 1.4rem));
+    pointer-events: none;
+  }
+  .toast {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+    padding: 0.5rem 0.55rem;
+    background: color-mix(in srgb, var(--color-panel) 94%, transparent);
+    -webkit-backdrop-filter: blur(10px);
+    backdrop-filter: blur(10px);
+    border: 1px solid var(--color-line-strong);
+    border-left-width: 3px;
+    box-shadow: 0 0.4rem 1rem rgba(0, 0, 0, 0.45);
+    pointer-events: auto;
+  }
+  .toast.good { border-left-color: var(--color-good); }
+  .toast.warn { border-left-color: var(--color-warn); }
+  .toast.danger { border-left-color: var(--color-danger); }
+  .toast.info { border-left-color: var(--color-accent); }
+  .toast-body {
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+    min-width: 0;
+    flex: 1;
+  }
+  .toast-kind {
+    font-family: var(--font-display);
+    font-size: 9px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--color-muted);
+  }
+  .toast.danger .toast-kind { color: var(--color-danger); }
+  .toast.warn .toast-kind { color: var(--color-warn); }
+  .toast.good .toast-kind { color: var(--color-good); }
+  .toast-title {
+    color: var(--color-text-bright);
+    font-weight: 600;
+    line-height: 1.25;
+    overflow-wrap: anywhere;
+  }
+  .toast-detail {
+    color: var(--color-muted);
+    font-size: 12px;
+    overflow-wrap: anywhere;
+  }
+  .toast-close {
+    flex: 0 0 auto;
+    min-height: 1.6rem;
+    min-width: 1.6rem;
+    padding: 0 0.3rem;
+    line-height: 1;
+    background: transparent;
+    border: 1px solid transparent;
+    color: var(--color-muted);
+  }
+  .toast-close:hover { color: var(--color-text-bright); border-color: var(--color-line); }
+  @media (prefers-reduced-motion: reduce) {
+    .toast { -webkit-backdrop-filter: none; backdrop-filter: none; background: var(--color-panel); }
+  }
+
+  /* --- the log --- */
+  .notice-log { min-width: 0; }
+  .notice-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .notice {
+    display: grid;
+    /* Time and severity in fixed columns so a long list scans down its left
+     * edge rather than zig-zagging with each message's length. */
+    grid-template-columns: max-content max-content minmax(0, 1fr);
+    gap: 0.5rem;
+    align-items: baseline;
+    padding: 0.3rem 0;
+    border-bottom: 1px solid var(--color-row-line);
+  }
+  .notice:last-child { border-bottom: 0; }
+  .notice-time {
+    color: var(--color-muted);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+  }
+  .notice-kind {
+    font-family: var(--font-display);
+    font-size: 9px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--color-muted);
+  }
+  .notice.danger .notice-kind { color: var(--color-danger); }
+  .notice.warn .notice-kind { color: var(--color-warn); }
+  .notice.good .notice-kind { color: var(--color-good); }
+  .notice-text { min-width: 0; display: flex; flex-direction: column; }
+  .notice-title { color: var(--color-text); overflow-wrap: anywhere; }
+  .notice-detail { color: var(--color-muted); font-size: 12px; overflow-wrap: anywhere; }
+
   /* ============================================ the overview tabs (R79) --
    * The retail overview's preset row. An ordinary `nav.tabs` strip — it needs no
    * vocabulary of its own — pulled tight against the table it filters and given

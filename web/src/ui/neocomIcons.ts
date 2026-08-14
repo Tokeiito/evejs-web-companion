@@ -83,6 +83,7 @@ export const NEOCOM_GLYPHS: Readonly<Record<TabID, NeocomGlyph>> = {
   // error here instead of an empty box. It is also drawn on the window's own
   // title row and by the openers that raise it.
   showInfo: ["M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18", "M12 8h.01", "M12 11v6"],
+  log: ["M5 4h14v16H5z", "M8 9h8M8 13h8M8 17h5"],
 };
 
 /** The glyph for a tab. */

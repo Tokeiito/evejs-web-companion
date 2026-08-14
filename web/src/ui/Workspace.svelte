@@ -19,6 +19,7 @@
   import WorkspaceHeader from "./WorkspaceHeader.svelte";
   import MobileWorkspace from "./MobileWorkspace.svelte";
   import DockWipe from "./DockWipe.svelte";
+  import Toasts from "./Toasts.svelte";
   import { showInfoTarget } from "./showInfo.ts";
   import TargetsPanel from "./TargetsPanel.svelte";
   import CustomBotReadout from "./CustomBotReadout.svelte";
@@ -184,9 +185,13 @@
   <!-- The same transition in both workspaces: the state change is identical, so
        it would be strange for only one of them to acknowledge it. -->
   <DockWipe {isDocked} />
+  <Toasts />
   <MobileWorkspace {store} {flow} {isDocked} />
 {:else}
   <DockWipe {isDocked} />
+  <!-- Mounted once for the whole workspace: a notice raised inside a panel the
+       player has CLOSED still has somewhere to appear. -->
+  <Toasts />
   <div class="workspace" class:in-space={!isDocked}>
     <!-- Every piece of always-on chrome gets its own boundary. These are mounted
          for the whole session and refresh on every poll, so before this an error
