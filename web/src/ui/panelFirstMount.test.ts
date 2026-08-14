@@ -267,17 +267,20 @@ test("no component invokes a $derived binding as a function", () => {
   assert.deepEqual(offences, []);
 });
 
-// --- 4. The workspace's first paint renders the SHELL that matches WHERE the
-// character is.
+// --- 4. The workspace's first paint matches WHERE the character is.
 //
-// The whole UI follows the docked/in-space flag: docked paints the station
-// interior (StationShell), in space paints the flight HUD (SpaceShell) — not a
-// filtered tab bar. (This subsumes the old R50 login-default bug, where a
-// character in space wrongly landed on the Station tab: now an in-space
-// character must not get the station shell at all.) R107 moved this out of App
-// (now the multibox roster) into Workspace, so render Workspace against an
-// online store whose flight flag says docked / in space and check which shell
-// landed; the shells' own contents are covered in depth by shellRender.test.ts.
+// The whole UI follows the docked/in-space flag — not a filtered tab bar. (This
+// subsumes the old R50 login-default bug, where a character in space wrongly
+// landed on the Station tab.) R107 moved this out of App (now the multibox
+// roster) into Workspace, so render Workspace against an online store whose
+// flight flag says docked / in space and check what landed.
+//
+// ⚠ THIS USED TO SAY "renders the SHELL": docked paints `StationShell`, in space
+// paints `SpaceShell`. Both components were deleted — they were reachable only
+// from their own test, having been superseded by the windowing workspace. The
+// state split is now which CHROME appears (the HUD bar and the targets panel are
+// in-space only) and which tabs the rail offers. The live chrome's own contents
+// are covered by `chromeRender.test.ts`.
 
 function onlineStore(over: Partial<Record<string, unknown>>): unknown {
   const store = createClientStore();

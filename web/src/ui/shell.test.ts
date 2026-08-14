@@ -1,65 +1,44 @@
-// The shell decision + model (shell.ts). Pure, no DOM: the docked flag maps to
-// exactly one shell, and the slot tables are well-formed (unique ids, and every
-// `wires` target is a real TabID so the next-pass wiring can't reference a panel
-// that doesn't exist).
+// The in-space HUD's panel list (shell.ts). Pure, no DOM.
+//
+// This file used to test the two-shell model as well — `shellFor`, the station
+// service groups, the slot-id uniqueness across both shells. Those went with
+// `StationShell`/`SpaceShell` when the shells were deleted for being reachable
+// only from their own test. What is left is the claim that still has a live
+// consumer: the HUD bar's buttons cannot point at a panel that does not exist.
 
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import {
-  shellFor,
-  shellSlotIDs,
-  STATION_SERVICES,
-  STATION_SERVICE_GROUPS,
-  SPACE_PANELS,
-  type ShellSlot,
-} from "./shell.ts";
+import { SPACE_PANELS } from "./shell.ts";
 import { TABS, type TabID } from "./tabs.ts";
 
 const TAB_IDS: ReadonlySet<TabID> = new Set(TABS.map((t) => t.id));
 
-test("docked flag selects the shell", () => {
-  assert.equal(shellFor(true), "station");
-  assert.equal(shellFor(false), "space");
+test("slot ids are unique", () => {
+  const ids = SPACE_PANELS.map((slot) => slot.id);
+  assert.equal(new Set(ids).size, ids.length, "duplicate slot id");
 });
 
-test("slot ids are unique within each shell", () => {
-  for (const kind of ["station", "space"] as const) {
-    const ids = shellSlotIDs(kind);
-    assert.equal(new Set(ids).size, ids.length, `${kind} shell has a duplicate slot id`);
-  }
-});
-
-test("every wired slot targets a real tab", () => {
-  const all: readonly ShellSlot[] = [...STATION_SERVICES, ...SPACE_PANELS];
-  for (const slot of all) {
+test("every wired slot targets a REAL tab", () => {
+  // The HUD bar turns each of these into a button that calls `onOpen(wires)`.
+  // A typo here is a button that opens nothing, silently.
+  for (const slot of SPACE_PANELS) {
     if (slot.wires !== null) {
       assert.ok(TAB_IDS.has(slot.wires), `slot ${slot.id} wires to unknown tab ${slot.wires}`);
     }
   }
 });
 
-test("the docked services host the docked-only tabs (fitting, travel, bots)", () => {
-  const wired = STATION_SERVICES.filter((s) => s.wires !== null).map((s) => s.wires);
-  for (const tab of ["fitting", "travel", "bots"] as const) {
-    assert.ok(wired.includes(tab), `the docked services do not open ${tab}`);
+test("the HUD lists the overview slot", () => {
+  // It is not drawn as a HUD button — it is the fixed dock panel — but it is
+  // listed so `HudBar` can filter it out by id rather than this table pretending
+  // the overview does not exist.
+  assert.ok(SPACE_PANELS.some((slot) => slot.wires === "overview"), "no slot hosts the overview");
+});
+
+test("every slot carries words for a player", () => {
+  for (const slot of SPACE_PANELS) {
+    assert.ok(slot.label.length > 0, `slot ${slot.id} has no label`);
+    assert.ok(slot.hint.length > 0, `slot ${slot.id} has no tooltip`);
   }
-});
-
-test("the HUD hosts the overview slot", () => {
-  assert.ok(SPACE_PANELS.some((s) => s.wires === "overview"), "no HUD slot hosts the overview");
-});
-
-test("the service groups partition STATION_SERVICES: wired panels vs not-yet-built", () => {
-  const grouped = STATION_SERVICE_GROUPS.flatMap((g) => g.slots);
-  // Every service appears in exactly one group, none lost or duplicated.
-  assert.equal(grouped.length, STATION_SERVICES.length);
-  assert.deepEqual(
-    new Set(grouped.map((s) => s.id)),
-    new Set(STATION_SERVICES.map((s) => s.id)),
-  );
-  const panels = STATION_SERVICE_GROUPS.find((g) => g.label === "Panels")!;
-  const services = STATION_SERVICE_GROUPS.find((g) => g.label === "Station Services")!;
-  assert.ok(panels.slots.every((s) => s.wires !== null), "a Panels entry opens no panel");
-  assert.ok(services.slots.every((s) => s.wires === null), "a Station Services entry is unexpectedly wired");
 });

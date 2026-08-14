@@ -1,85 +1,40 @@
-// The two top-level UI SHELLS (docked vs undocked as the WHOLE UI, not a tab
-// filter). Until now docked/in-space only swapped which tabs a single shared
-// workspace showed (see tabs.ts). This promotes the distinction to two
-// genuinely different spatial layouts, mirroring the retail client: a station
-// interior with a services rail when docked, a HUD over a space viewport when
-// in space.
+// The in-space HUD's panel slots.
 //
-// This module is the DATA + pure decision, kept out of the .svelte files so the
-// rules are unit-testable without a DOM and so the panels that will fill each
-// slot are declared in one place. This first pass renders PLACEHOLDER panels in
-// these slots; each slot names the existing tab/panel that will be wired into it
-// next (the `wires` field), so the follow-up is a mechanical swap, not a
-// redesign.
+// ⚠ WHAT THIS FILE USED TO BE. It was the model behind two top-level spatial
+// shells — `StationShell` (docked) and `SpaceShell` (in space) — switched by
+// `deriveDocked`, each with a rail of slots naming the panel it would host.
+// Those shells were superseded by the windowing workspace (`Workspace.svelte`:
+// a Neocom rail, a desktop of floating windows, a fixed dock panel and a bottom
+// HUD bar) and were deleted once they turned out to be reachable only from their
+// own test.
+//
+// What survived is the one part the live UI still uses: the list of flight
+// panels the in-space HUD bar offers as buttons. `STATION_SERVICES`,
+// `STATION_SERVICE_GROUPS`, `shellFor` and `shellSlotIDs` went with the shells —
+// the docked side of the app is the dock panel and the Neocom now, and it does
+// not read a slot table.
 
 import type { TabID } from "./tabs.ts";
 
-/** Which shell the whole UI is in. */
-export type ShellKind = "station" | "space";
-
 /**
- * The shell for the current state, from the same authoritative docked flag that
- * drives tabs.ts (deriveDocked). Docked → the station interior; in space → the
- * flight HUD. One function, so the App renderer stays thin.
- */
-export function shellFor(isDocked: boolean): ShellKind {
-  return isDocked ? "station" : "space";
-}
-
-/**
- * One spatial slot in a shell — a region that shows a placeholder now and will
- * host a real panel later. `wires` names the existing tab/panel destined for the
- * slot (null = a station service or HUD element with no panel built yet), which
- * both documents the next pass and keeps this file honest about what exists.
+ * One panel the HUD offers. `wires` names the tab it opens; it is nullable
+ * because the slot model once described station services with no panel behind
+ * them, and the field is still read defensively by the HUD bar's filter.
  */
 export interface ShellSlot {
   readonly id: string;
   readonly label: string;
   readonly wires: TabID | null;
-  /** One line describing what belongs here — shown in the placeholder. */
+  /** One line describing what it is for — shown as the button's tooltip. */
   readonly hint: string;
 }
 
-// ── Docked: the station-services rail (left), mirroring EVE's station panel ──
-// The retail station column mixes true station services (reprocess/repair/
-// insurance) with the panels a docked pilot reaches most (fitting, market,
-// industry) plus our docked tools (travel, bots). A slot with a `wires` opens
-// that real panel; a null `wires` is a station service with no panel built yet.
-export const STATION_SERVICES: readonly ShellSlot[] = [
-  { id: "svc-fitting", label: "Fitting", wires: "fitting", hint: "Fit the active ship." },
-  { id: "svc-market", label: "Market", wires: "market", hint: "Regional market — buy and sell." },
-  { id: "svc-industry", label: "Industry", wires: "industry", hint: "Jobs, blueprints, and facilities." },
-  { id: "svc-travel", label: "Travel", wires: "travel", hint: "Plan and set your autopilot route." },
-  { id: "svc-bots", label: "Bots", wires: "bots", hint: "Mining and mission automation." },
-  { id: "svc-bot-builder", label: "Bot Builder", wires: "botBuilder", hint: "Build your own bot from ready-made steps." },
-  { id: "svc-repair", label: "Repair Shop", wires: null, hint: "Repair modules and hull. (Service — not yet built.)" },
-  { id: "svc-reprocess", label: "Reprocessing", wires: null, hint: "Reprocess items to minerals. (Service — not yet built.)" },
-  { id: "svc-insurance", label: "Insurance", wires: null, hint: "Insure the active ship. (Service — not yet built.)" },
-];
-
-/** A labelled group of services in the rail — like EVE's station panel sections. */
-export interface ServiceGroup {
-  readonly label: string;
-  readonly slots: readonly ShellSlot[];
-}
-
-// The rail splits into what opens a real panel and the true station services not
-// yet built — small headings, EVE's station-panel sections. Derived from the one
-// STATION_SERVICES list so a slot is only ever declared once.
-export const STATION_SERVICE_GROUPS: readonly ServiceGroup[] = [
-  { label: "Panels", slots: STATION_SERVICES.filter((s) => s.wires !== null) },
-  { label: "Station Services", slots: STATION_SERVICES.filter((s) => s.wires === null) },
-];
-
-// ── In space: the HUD panels reachable from the viewport chrome ──
+// The panels reachable from the in-space HUD bar. The overview is deliberately
+// here even though it is not a HUD button: it is the fixed top-right dock panel,
+// and `HudBar` filters it out by id rather than this list pretending it does not
+// exist.
 export const SPACE_PANELS: readonly ShellSlot[] = [
   { id: "hud-overview", label: "Overview", wires: "overview", hint: "Everything around your ship." },
   { id: "hud-nav", label: "Navigation & Flight", wires: "flight", hint: "Where you are, where you're headed, and manual flight." },
   { id: "hud-mining", label: "Mining", wires: "mining", hint: "Mining lasers, targets, and yield." },
 ];
-
-/** Sanity for the model — every slot id across a shell is unique. */
-export function shellSlotIDs(kind: ShellKind): readonly string[] {
-  const slots = kind === "station" ? STATION_SERVICES : SPACE_PANELS;
-  return slots.map((s) => s.id);
-}

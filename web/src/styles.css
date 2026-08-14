@@ -3588,68 +3588,16 @@
   }
   @keyframes spin { to { transform: rotate(360deg); } }
 
-  /* ================================================= docked/space shells --
-   * The two top-level layouts (StationShell / SpaceShell). Docked is a station
-   * interior: a header, a services rail down the left, and the live station
-   * panel as the main content. In space is a HUD: the overview as the main view
-   * with the ship gauges + module rack + nav controls docked along the bottom.
-   * Both collapse to a single column on narrow screens (the shared @media
-   * below). The station panel + overview are live; the module rack is still a
-   * placeholder (a "placeholder" pill says so). */
-  .station-shell {
-    display: grid;
-    grid-template-columns: minmax(12rem, 15rem) 1fr;
-    grid-template-rows: auto 1fr;
-    grid-template-areas: "head head" "rail main";
-    gap: 0.9rem;
-    min-height: 60vh;
-  }
-  .station-shell > .shell-head { grid-area: head; }
-  .station-shell > .services-rail { grid-area: rail; }
-  .station-shell > .shell-main { grid-area: main; }
-
-  .space-shell {
-    display: grid;
-    grid-template-columns: 1fr;
-    grid-template-rows: auto 1fr auto;
-    grid-template-areas: "head" "viewport" "dock";
-    gap: 0.9rem;
-    min-height: 60vh;
-  }
-  .space-shell > .shell-head { grid-area: head; }
-  .space-shell > .space-viewport { grid-area: viewport; }
-  .space-shell > .hud-dock { grid-area: dock; }
-
-  /* The context bar shared by both shells. */
-  .shell-head {
-    display: flex;
-    align-items: center;
-    gap: 0.8rem;
-    flex-wrap: wrap;
-    padding: 0.6rem 0.9rem;
-    background: var(--color-panel);
-    border: 1px solid var(--color-line);
-  }
-  .shell-head-where {
-    display: flex;
-    flex-direction: column;
-    line-height: 1.2;
-  }
-  .shell-head-where strong { color: var(--color-text-bright); }
-  .shell-head-where .muted { color: var(--color-muted); font-size: 0.85rem; }
-  .shell-head-pilot { margin-left: auto; color: var(--color-text); }
-  .shell-head-actions { margin-left: auto; display: flex; gap: 0.4rem; }
+  /* The shared docked/in-space chrome.
+   *
+   * ⚠ WHAT WAS HERE. Two top-level grid layouts, `.station-shell` and
+   * `.space-shell`, for the components of the same name — deleted once they
+   * turned out to be reachable only from their own test. The windowing
+   * workspace (`.workspace`, above) is the layout now. What survives below is
+   * what the LIVE chrome still uses: the context header's parts, the state
+   * badge, and the HUD bar's clusters. */
   .undock-btn,
   .dock-btn { min-height: 40px; }
-  /* A shell-level action failure (undock/dock refused) — the server's reason. */
-  .shell-error {
-    margin: 0;
-    padding: 0.4rem 0.6rem;
-    color: var(--color-danger);
-    border: 1px solid var(--color-danger);
-    background: var(--color-panel);
-  }
-
   /* The centred login screen + its server-status banner. */
   .login-screen {
     display: flex;
@@ -3756,89 +3704,6 @@
   }
   .state-badge.docked { color: var(--color-accent); border-color: var(--color-accent); }
   .state-badge.in-space { color: var(--color-good); border-color: var(--color-good); }
-
-  /* Docked — the services rail. */
-  .services-rail {
-    background: var(--color-panel);
-    border: 1px solid var(--color-line);
-    padding: 0.5rem;
-  }
-  .rail-title {
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 0.09em;
-    color: var(--color-muted);
-    margin: 0.2rem 0.3rem 0.5rem;
-  }
-  /* A second service group's heading gets air above it. */
-  .services-rail ul + .rail-title { margin-top: 0.85rem; }
-  .services-rail ul {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 0.3rem;
-  }
-  .rail-item {
-    width: 100%;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 0.5rem;
-    text-align: left;
-    min-height: 40px;
-    background: var(--color-panel-2);
-    border: 1px solid var(--color-line);
-    color: var(--color-text);
-  }
-  .rail-item.unbuilt .rail-item-label { color: var(--color-muted); }
-  .rail-item-tag {
-    font-size: 10px;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    color: var(--color-muted);
-    border: 1px solid var(--color-line);
-    padding: 0.05rem 0.3rem;
-  }
-  .shell-main {
-    display: flex;
-    flex-direction: column;
-    gap: 0.9rem;
-    min-width: 0;
-  }
-  /* Docked — the ship-hangar summary above the live station panel. */
-  .ship-hangar .hull-list {
-    list-style: none;
-    margin: 0.4rem 0 0;
-    padding: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 0.3rem;
-  }
-  .hull-row {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-  }
-  .hull-row.active {
-    padding: 0.3rem 0.4rem;
-    border: 1px solid var(--color-accent);
-    background: var(--color-panel-2);
-  }
-  .hull-name { color: var(--color-text-bright); }
-  .hull-tag {
-    margin-left: auto;
-    font-size: 10px;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--color-accent);
-    border: 1px solid var(--color-accent);
-    padding: 0.05rem 0.35rem;
-  }
-
-  /* In space — the viewport (holds the target bracket + live overview) + dock. */
-  .space-viewport { min-width: 0; }
 
   /* ============================================ locked-target cards (R71) --
    * EVE's target brackets: a round dial per locked target — the thing's picture
@@ -3950,11 +3815,6 @@
     font-variant-numeric: tabular-nums;
   }
 
-  .hud-dock {
-    display: grid;
-    grid-template-columns: 2fr 3fr 2fr;
-    gap: 0.9rem;
-  }
   .hud-nav {
     display: flex;
     flex-direction: column;
@@ -4281,7 +4141,6 @@
 
   /* Placeholder affordance — dashed panel + a pill, so a stub never reads as a
    * finished panel that happens to be empty. */
-  .placeholder-panel { border-style: dashed; }
   .placeholder-hint { color: var(--color-muted); margin: 0.4rem 0 0; }
   .soon-pill {
     font-size: 10px;
@@ -4295,11 +4154,6 @@
   /* Both shells collapse to one column when there isn't width for the rail /
    * side HUD (tablet and down), before the phone table reflow below. */
   @media (max-width: 900px) {
-    .station-shell {
-      grid-template-columns: 1fr;
-      grid-template-areas: "head" "rail" "main";
-    }
-    .hud-dock { grid-template-columns: 1fr; }
   }
 
   /* ======================================================================
