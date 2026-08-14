@@ -11,6 +11,7 @@
   // atmosphere, and an overlay that swallowed a click during those 620 ms would
   // occasionally eat a real action for no reason a player could see.
   import { DOCK_WIPE_MS, dockWipeLabel, shouldPlayDockWipe, type DockedReading } from "./dockTransition.ts";
+  import { playCue } from "./sound.ts";
 
   let { isDocked }: { isDocked: boolean } = $props();
 
@@ -40,6 +41,9 @@
     observed = next;
     token += 1;
     wipe = { label: dockWipeLabel(next), token };
+    // R81 — the same "first reading is not a change" guard above protects the
+    // cue, so a login cannot thud at you. A no-op unless sound is switched on.
+    playCue("dock");
     const handle = setTimeout(() => {
       wipe = null;
     }, DOCK_WIPE_MS);

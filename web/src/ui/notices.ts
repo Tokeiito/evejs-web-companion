@@ -27,6 +27,7 @@
 //   • Unbounded. The log is capped, because a mining session runs for hours.
 
 import { createSignal, readonlySignal, type ReadableSignal } from "../store/signals.ts";
+import { playCue } from "./sound.ts";
 
 /** How loud a notice is. Always paired with words — never the only signal. */
 export type NoticeKind = "info" | "good" | "warn" | "danger";
@@ -162,9 +163,24 @@ export function createNoticeBoard(): NoticeBoard {
 /** The app's one notice board. */
 export const noticeBoard: NoticeBoard = createNoticeBoard();
 
-/** Raise a notice on the shared board. */
+/**
+ * Raise a notice on the shared board, and sound it.
+ *
+ * ⚠ THE CUE HANGS OFF `notify`, NOT OFF EACH CALLER. Every source that wants to
+ * be heard already has to raise a notice to be SEEN, so tying the two together
+ * means a new source gets both for free and the two can never disagree about
+ * what was worth reporting. It also means the dedupe protects the audio: a
+ * polling loop that re-observes a standing condition cannot machine-gun a tone.
+ *
+ * `playCue` is a no-op unless the player has switched sound on (R81), so this
+ * costs nothing for everyone else.
+ */
 export function notify(input: NoticeInput): Notice | null {
-  return noticeBoard.post(input);
+  const posted = noticeBoard.post(input);
+  if (posted !== null) {
+    playCue(posted.kind === "danger" ? "alert" : "notice");
+  }
+  return posted;
 }
 
 /**

@@ -12,6 +12,9 @@
     type IconCacheStatus,
   } from "../app/iconCache.ts";
   import { flyingDistances, WARP_RANGES, HOLD_RANGES, setDistance } from "./flyingDistances.ts";
+  // R81 — sound cues. Off by default; see ui/sound.ts for why the audio device
+  // is not opened until someone asks for one.
+  import { CUE_NAMES, closeSound, playCue, soundSettings, type CueName } from "./sound.ts";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
 
@@ -191,6 +194,57 @@
           <option value={String(choice.metres)}>{choice.label}</option>
         {/each}
       </select>
+    </div>
+  </section>
+
+  <section class="settings-group">
+    <h3>Sound</h3>
+    <p class="muted">
+      Short tones for the moments worth noticing without looking: a target lock, a
+      warp, docking, and anything the client raises an alert about. Off unless you
+      turn it on.
+    </p>
+    <div class="settings-field">
+      <label for="sound-on">Play sound cues</label>
+      <input
+        id="sound-on"
+        type="checkbox"
+        checked={$soundSettings.enabled}
+        onchange={(e) => {
+          const enabled = e.currentTarget.checked;
+          soundSettings.set({ ...$soundSettings, enabled });
+          // Switching off hands the audio device back rather than leaving one
+          // open for a player who has said they do not want it.
+          if (!enabled) closeSound();
+        }}
+      />
+    </div>
+    <div class="settings-field">
+      <label for="sound-volume">Volume</label>
+      <input
+        id="sound-volume"
+        type="range"
+        min="0"
+        max="100"
+        step="5"
+        disabled={!$soundSettings.enabled}
+        value={Math.round($soundSettings.volume * 100)}
+        oninput={(e) =>
+          soundSettings.set({ ...$soundSettings, volume: Number(e.currentTarget.value) / 100 })}
+      />
+    </div>
+    <!-- Previews. The only honest way to choose a volume is to hear it, and
+         these double as the user gesture the browser requires before any audio
+         will play at all. -->
+    <div class="controls">
+      {#each CUE_NAMES as cue (cue)}
+        <button
+          type="button"
+          class="minor"
+          disabled={!$soundSettings.enabled}
+          onclick={() => playCue(cue as CueName)}
+        >{cue}</button>
+      {/each}
     </div>
   </section>
 
