@@ -95,7 +95,7 @@ import {
 } from "../bridge/drones.ts";
 import { decodeSkillSheet, skillQueueRefusal } from "../bridge/skills.ts";
 import { decodeColonyReport } from "../bridge/planets.ts";
-import { createSpacePoller, type SpacePoller } from "./spacePoll.ts";
+import { createSpacePoller, targetsReadIsDue, type SpacePoller } from "./spacePoll.ts";
 import type { FlightStepResult } from "./api.ts";
 import { BridgeCallError } from "../bridge/callMethod.ts";
 import { refusalWords as sayRefusalWords } from "../bridge/refusals.ts";
@@ -3587,6 +3587,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // every poll — so absence means visible.
   const pageIsVisible = (): boolean =>
     typeof document === "undefined" || document.visibilityState === "visible";
+  /** When the locked-target list was last read. See targetsReadIsDue. */
+  let lastTargetsReadAtMs: number | null = null;
   const spacePoller: SpacePoller = createSpacePoller({
     // R23: the locked-target list rides the SAME ~1s beat as the snapshot.
     // Locking is asynchronous — the server acquires a lock over a duration — so
@@ -3600,7 +3602,17 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // out. The overview's lock list stays fresh from the bot's push. (The poller
       // stays armed either way, so it resumes reading targets the moment the bot
       // stops — no re-arm needed.)
-      if (store.space.get().snapshot?.inSpace === true && store.customBot.get().status !== "running") {
+      // ⚠ AND IT KEEPS ITS OWN CADENCE (R92). This read used to ride the
+      // snapshot beat, so raising the overview's refresh rate tripled it too —
+      // six owner calls a second per pilot where there had been two, against a
+      // gateway that serialises them. Locks change on human timescales; the
+      // grid's smoothness is not a reason to ask about them more often.
+      if (
+        store.space.get().snapshot?.inSpace === true &&
+        store.customBot.get().status !== "running" &&
+        targetsReadIsDue(lastTargetsReadAtMs, Date.now())
+      ) {
+        lastTargetsReadAtMs = Date.now();
         await loadTargets().catch(() => {});
       }
     },

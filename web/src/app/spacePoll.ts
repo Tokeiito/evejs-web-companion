@@ -34,6 +34,38 @@
  */
 export const SPACE_POLL_INTERVAL_MS = 333;
 
+/**
+ * How often the LOCKED-TARGET list is re-read, in milliseconds.
+ *
+ * ⚠ DELIBERATELY NOT THE SNAPSHOT'S RATE. The targets read rode the snapshot
+ * beat, so raising the overview's refresh from 1 Hz to 3 Hz silently tripled a
+ * second, unrelated owner call as well — six gateway calls a second per pilot
+ * where there had been two, against an owner that serialises them. The comment
+ * on that read already recorded gateway contention timing it out once before.
+ *
+ * Locking happens on human timescales: the server acquires a lock over a second
+ * or more, and the list changes when a player clicks something. A second is
+ * plenty, and it stays a second however smooth the grid is made.
+ */
+export const TARGETS_POLL_INTERVAL_MS = 1_000;
+
+/**
+ * Is a targets read due? `lastReadAtMs` is null before the first one.
+ *
+ * Kept here, next to the cadence it enforces, so the rule is one testable
+ * decision rather than a comparison buried in the poll's callback.
+ */
+export function targetsReadIsDue(lastReadAtMs: number | null, nowMs: number): boolean {
+  if (lastReadAtMs === null || !Number.isFinite(lastReadAtMs)) {
+    return true;
+  }
+  // A clock that has jumped backwards must not freeze the read for ever.
+  if (nowMs < lastReadAtMs) {
+    return true;
+  }
+  return nowMs - lastReadAtMs >= TARGETS_POLL_INTERVAL_MS;
+}
+
 export interface SpacePollerDeps {
   /** Perform one snapshot read. Rejections are swallowed by the poller. */
   readonly refresh: () => Promise<void> | void;

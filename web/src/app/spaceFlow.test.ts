@@ -8,7 +8,12 @@ import assert from "node:assert/strict";
 
 import { createAppFlow } from "./flow.ts";
 import { createClientStore } from "../store/clientStore.ts";
-import { createSpacePoller, SPACE_POLL_INTERVAL_MS } from "./spacePoll.ts";
+import {
+  createSpacePoller,
+  SPACE_POLL_INTERVAL_MS,
+  TARGETS_POLL_INTERVAL_MS,
+  targetsReadIsDue,
+} from "./spacePoll.ts";
 
 interface Recorded {
   readonly path: string;
@@ -526,4 +531,43 @@ test("a star map that cannot be read says so, once, instead of silently offering
   // Said ONCE. A standing condition re-reported every second would bury every
   // other error on the panel, and would re-request a map that is not coming.
   assert.equal(graphReads, 1, "a failed map read is not retried every beat");
+});
+
+// --- R92: the targets read keeps its own cadence -----------------------------
+//
+// ⚠ THE REGRESSION THIS PINS. The locked-target read rode the snapshot's beat,
+// so raising the overview's refresh from 1 Hz to 3 Hz tripled a second,
+// unrelated owner call at the same time — six gateway calls a second per pilot
+// where there had been two, against a gateway that serialises them. Nothing in
+// the poll said so; the coupling was simply that both lived in one callback.
+
+test("a targets read is due when there has never been one", () => {
+  assert.equal(targetsReadIsDue(null, 1_000), true);
+});
+
+test("the targets read does NOT ride the snapshot's beat", () => {
+  // Three snapshot beats inside one second must produce ONE targets read.
+  const firstAt = 10_000;
+  assert.equal(targetsReadIsDue(firstAt, firstAt + 333), false);
+  assert.equal(targetsReadIsDue(firstAt, firstAt + 666), false);
+  assert.equal(targetsReadIsDue(firstAt, firstAt + 999), false);
+  assert.equal(targetsReadIsDue(firstAt, firstAt + 1_000), true);
+});
+
+test("its cadence does not move when the snapshot's does", () => {
+  // ⚠ The property, stated directly: making the grid smoother must never make
+  // this read more often. If SPACE_POLL_INTERVAL_MS is ever raised again, this
+  // is what stops the owner load going up with it.
+  assert.equal(TARGETS_POLL_INTERVAL_MS, 1_000);
+  assert.ok(
+    TARGETS_POLL_INTERVAL_MS > SPACE_POLL_INTERVAL_MS,
+    "a targets cadence at or below the snapshot's is not a cadence at all",
+  );
+});
+
+test("a clock that jumps BACKWARDS does not freeze the read for ever", () => {
+  // Date.now() is wall-clock: an NTP correction or a laptop waking up can move
+  // it backwards. Waiting for it to catch up would silently stop showing locks.
+  assert.equal(targetsReadIsDue(50_000, 10_000), true);
+  assert.equal(targetsReadIsDue(Number.NaN, 10_000), true);
 });
