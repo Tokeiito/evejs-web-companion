@@ -15,6 +15,7 @@
   import type { AppFlow } from "../app/flow.ts";
   import type { ChatChannel } from "../store/types.ts";
   import { resolvedName, type NameRef } from "../store/names.ts";
+  import { panelErrorWords } from "../bridge/refusals.ts";
 
   let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
 
@@ -80,7 +81,7 @@
         error = "The live session ended (idle timeout or another client took over).";
       } else {
         error =
-          cause instanceof BridgeCallError ? `${cause.code}: ${cause.message}` : String(cause);
+          panelErrorWords(cause);
       }
     } finally {
       busy = false;

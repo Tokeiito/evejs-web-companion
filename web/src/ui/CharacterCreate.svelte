@@ -34,6 +34,7 @@
   } from "../bridge/charCreation.ts";
   import TypeIcon from "./TypeIcon.svelte";
   import type { AppFlow } from "../app/flow.ts";
+  import { panelErrorWords } from "../bridge/refusals.ts";
 
   let { flow, onCancel, onCreated }: {
     flow: AppFlow;
@@ -111,7 +112,7 @@
       }
     } catch (cause) {
       loadError =
-        cause instanceof BridgeCallError ? `${cause.code}: ${cause.message}` : String(cause);
+        panelErrorWords(cause);
     }
   }
 
@@ -164,7 +165,7 @@
         name = rolled;
       }
     } catch (cause) {
-      error = cause instanceof BridgeCallError ? `${cause.code}: ${cause.message}` : String(cause);
+      error = panelErrorWords(cause);
     } finally {
       rollingName = false;
     }
@@ -194,7 +195,7 @@
         cause instanceof BridgeCallError
           ? cause.code === "CharNameInvalid"
             ? "The server refused that name."
-            : `${cause.code}: ${cause.message}`
+            : panelErrorWords(cause)
           : String(cause);
     } finally {
       creating = false;

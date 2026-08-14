@@ -651,3 +651,49 @@ export function refusalWords(raw: string): string {
   }
   return refusal.text;
 }
+
+/**
+ * How a PANEL should word a caught error (goal R92).
+ *
+ * ---------------------------------------------------------------------------
+ * ⚠ THE PATTERN THIS REPLACES SHIPPED THE ROUTE NAME TO THE PLAYER.
+ *
+ * Twenty-three panels caught a failure and rendered `${cause.code}: ${cause.message}`,
+ * which is how a player came to report, verbatim:
+ *
+ *   BRIDGE_NETWORK_ERROR: /api/bridge/journal could not reach the BFF: signal timed out
+ *
+ * Three things are wrong with that sentence and only one of them is cosmetic.
+ * It is jargon in a player's face (R9a). It names an internal route, which is
+ * not a thing a player can act on or should have to read. And — the expensive
+ * one — it points at the WRONG SUBJECT: that read was a bystander to a stalled
+ * connection, so everyone who saw the report went and looked at the journal
+ * route, where there was never anything to find.
+ *
+ * So: the plain sentence for the code, then the lane's own verdict when the
+ * failure was transport. The verdict is written to be read by whoever files the
+ * next report — it is the half that says whether the server ignored the request
+ * or the request never got a connection to be sent on, and the second of those
+ * leaves nothing in any server log.
+ *
+ * The technical string stays on `error.message` for the console. It is not lost;
+ * it is just no longer the thing a player is shown.
+ */
+export function panelErrorWords(cause: unknown): string {
+  if (cause === null || cause === undefined) {
+    return SILENT_REFUSAL_TEXT;
+  }
+  const code = errorCode(cause);
+  const diagnosis =
+    typeof (cause as { diagnosis?: unknown }).diagnosis === "string"
+      ? String((cause as { diagnosis?: unknown }).diagnosis)
+      : "";
+  if (code !== "") {
+    const words = describeRefusal(code).text;
+    return diagnosis === "" ? words : `${words} ${diagnosis}`;
+  }
+  // Not one of ours — a decode blowing up, say. Its own message is all there is,
+  // and saying nothing would be worse than saying something technical.
+  const message = cause instanceof Error ? cause.message : String(cause);
+  return message.trim() === "" ? SILENT_REFUSAL_TEXT : message;
+}

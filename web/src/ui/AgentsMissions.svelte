@@ -17,6 +17,7 @@
   import { resolvedName, type NameRef } from "../store/names.ts";
   // R36 — the mission bot sits with the agents it works for.
   import MissionBot from "./MissionBot.svelte";
+  import { panelErrorWords } from "../bridge/refusals.ts";
 
   let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
 
@@ -128,7 +129,7 @@
         error = "The live session ended (idle timeout or another client took over).";
       } else {
         error =
-          cause instanceof BridgeCallError ? `${cause.code}: ${cause.message}` : String(cause);
+          panelErrorWords(cause);
       }
     } finally {
       busy = false;

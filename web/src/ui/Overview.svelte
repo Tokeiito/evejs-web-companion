@@ -30,6 +30,7 @@
   import {
     DRONE_NOT_UNDER_YOUR_CONTROL,
     NO_DRONE_UNDER_YOUR_CONTROL,
+    panelErrorWords,
   } from "../bridge/refusals.ts";
   import { droneActivityLabel, droneIsBusy } from "../bridge/drones.ts";
   // R30 slice A — what a stargate row could never say: which system is through
@@ -296,7 +297,7 @@
       if (isSessionLost(cause)) {
         return "The live session ended (idle timeout or another client took over).";
       }
-      return cause instanceof BridgeCallError ? `${cause.code}: ${cause.message}` : String(cause);
+      return panelErrorWords(cause);
     }
   }
 
@@ -1580,7 +1581,7 @@
         error = "The live session ended (idle timeout or another client took over).";
       } else {
         error =
-          cause instanceof BridgeCallError ? `${cause.code}: ${cause.message}` : String(cause);
+          panelErrorWords(cause);
       }
     } finally {
       busy = false;

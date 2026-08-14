@@ -34,6 +34,7 @@
   // R27 — the shared item icon: one cached picture per thing, falling back
   // to a name-derived tile whenever the icon cache has no entry (or no cache).
   import TypeIcon from "./TypeIcon.svelte";
+  import { panelErrorWords } from "../bridge/refusals.ts";
 
   let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
 
@@ -147,7 +148,7 @@
         error = "The live session ended (idle timeout or another client took over).";
       } else {
         error =
-          cause instanceof BridgeCallError ? `${cause.code}: ${cause.message}` : String(cause);
+          panelErrorWords(cause);
       }
     } finally {
       busy = false;

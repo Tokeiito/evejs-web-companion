@@ -19,6 +19,7 @@
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
   import type { LedgerEntry } from "../store/types.ts";
+  import { panelErrorWords } from "../bridge/refusals.ts";
 
   let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
 
@@ -38,7 +39,7 @@
         return;
       }
       error =
-        cause instanceof BridgeCallError ? `${cause.code}: ${cause.message}` : String(cause);
+        panelErrorWords(cause);
     } finally {
       busy = false;
     }

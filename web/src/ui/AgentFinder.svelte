@@ -21,6 +21,7 @@
   import type { AgentFinderRow } from "../store/types.ts";
   import { resolvedName } from "../store/names.ts";
   import { filterFinderRows, parseJumpsLimit } from "./agentFinderFilter.ts";
+  import { panelErrorWords } from "../bridge/refusals.ts";
 
   let {
     store,
@@ -69,7 +70,7 @@
       if (isSessionLost(cause)) {
         error = "The live session ended (idle timeout or another client took over).";
       } else {
-        error = cause instanceof BridgeCallError ? `${cause.code}: ${cause.message}` : String(cause);
+        error = panelErrorWords(cause);
       }
     } finally {
       busy = false;

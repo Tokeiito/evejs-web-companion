@@ -30,6 +30,7 @@
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
   import { skipWhileBusy } from "../app/skipWhileBusy.ts";
+  import { panelErrorWords } from "../bridge/refusals.ts";
 
   let { store, flow, onOnline, onlineIDs = new Set<number>() }: {
     store: ClientStore;
@@ -95,7 +96,7 @@
             ? `Account "${pick.accountName}" no longer exists.`
             : cause.code === "CALL_REFUSED"
               ? cause.message
-              : `${cause.code}: ${cause.message}`
+              : panelErrorWords(cause)
           : String(cause);
     } finally {
       busyID = null;
@@ -173,7 +174,7 @@
         cause instanceof BridgeCallError
           ? cause.code === "UNKNOWN_EVEJS_ACCOUNT"
             ? `Account "${pick.accountName}" no longer exists.`
-            : `${cause.code}: ${cause.message}`
+            : panelErrorWords(cause)
           : String(cause);
     } finally {
       stoppingID = null;

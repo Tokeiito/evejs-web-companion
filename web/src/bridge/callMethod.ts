@@ -62,15 +62,28 @@ export class BridgeCallError extends Error {
   readonly code: BridgeErrorCode | BridgeClientErrorCode;
   /** HTTP status of the response; 0 when the request never completed. */
   readonly status: number;
+  /**
+   * R92 — for a TRANSPORT failure, what the client's request lane looked like
+   * when it happened, in plain language (app/transport.ts).
+   *
+   * ⚠ SEPARATE FROM `message` BECAUSE THE AUDIENCES ARE DIFFERENT. The message
+   * names the route and the underlying abort, which belongs in a console and
+   * not in a player's face; this sentence is written to be read by whoever is
+   * filing the report, and it is the half that says whether the server ignored
+   * the request or the request never got a connection to be sent on.
+   */
+  readonly diagnosis: string | null;
 
   constructor(
     code: BridgeErrorCode | BridgeClientErrorCode,
     message: string,
     status: number,
+    diagnosis: string | null = null,
   ) {
     super(message);
     this.code = code;
     this.status = status;
+    this.diagnosis = diagnosis;
   }
 }
 
@@ -135,14 +148,17 @@ export async function callMethod<TResult = JsonValue>(
       }),
     );
   } catch (cause) {
+    const diagnosis =
+      cause instanceof TransportQueueError ? cause.diagnosis.verdict : bridgeLane.diagnose().verdict;
     throw new BridgeCallError(
       "BRIDGE_NETWORK_ERROR",
       cause instanceof TransportQueueError
         ? cause.message
         : `Bridge call ${service}.${method} could not reach the BFF: ${
             cause instanceof Error ? cause.message : String(cause)
-          } — ${bridgeLane.diagnose().verdict}`,
+          } — ${diagnosis}`,
       0,
+      diagnosis,
     );
   }
 

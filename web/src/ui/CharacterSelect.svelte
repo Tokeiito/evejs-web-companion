@@ -7,6 +7,7 @@
   import ServerBots from "./ServerBots.svelte";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
+  import { panelErrorWords } from "../bridge/refusals.ts";
 
   let { store, flow, botFlownIDs = new Set<number>(), onCreate = null }: {
     store: ClientStore;
@@ -43,7 +44,7 @@
         cause instanceof BridgeCallError
           ? cause.code === "CALL_REFUSED"
             ? cause.message
-            : `${cause.code}: ${cause.message}`
+            : panelErrorWords(cause)
           : String(cause);
     } finally {
       busyCharacterID = null;

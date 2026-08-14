@@ -10,6 +10,7 @@
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
   import { resolvedName, type NameKind, type NameRef } from "../store/names.ts";
+  import { panelErrorWords } from "../bridge/refusals.ts";
 
   let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
 
@@ -74,7 +75,7 @@
       } else {
         error =
           cause instanceof BridgeCallError
-            ? `${cause.code}: ${cause.message}`
+            ? panelErrorWords(cause)
             : String(cause);
       }
     } finally {

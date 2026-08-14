@@ -56,6 +56,7 @@
   import { resolvedName, nameKey, type NameRef } from "../store/names.ts";
   import { LAYERS, type LayerName, type Stat, unavailable } from "../bridge/shipStats.ts";
   import { moduleEffectiveStats, type ModuleStat } from "../bridge/moduleAttributes.ts";
+  import { panelErrorWords } from "../bridge/refusals.ts";
 
   let {
     store,
@@ -535,7 +536,7 @@
         error = "The live session ended (idle timeout or another client took over).";
       } else {
         error =
-          cause instanceof BridgeCallError ? `${cause.code}: ${cause.message}` : String(cause);
+          panelErrorWords(cause);
       }
     } finally {
       busy = false;

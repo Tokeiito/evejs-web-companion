@@ -151,7 +151,14 @@ async function requestJson(
       }),
     );
   } catch (cause) {
-    throw new BridgeCallError("BRIDGE_NETWORK_ERROR", transportFailureWords(path, cause), 0);
+    throw new BridgeCallError(
+      "BRIDGE_NETWORK_ERROR",
+      transportFailureWords(path, cause),
+      0,
+      cause instanceof TransportQueueError
+        ? cause.diagnosis.verdict
+        : bridgeLane.diagnose().verdict,
+    );
   }
   let data: unknown = null;
   try {

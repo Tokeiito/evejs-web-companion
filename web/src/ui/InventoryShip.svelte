@@ -75,6 +75,7 @@
   } from "./dragDrop.ts";
   import { resolvedName, nameKey, type NameKind, type NameRef } from "../store/names.ts";
   import { deriveDocked } from "./tabs.ts";
+  import { panelErrorWords } from "../bridge/refusals.ts";
 
   let {
     store,
@@ -286,7 +287,7 @@
         error = "The live session ended (idle timeout or another client took over).";
       } else {
         error =
-          cause instanceof BridgeCallError ? `${cause.code}: ${cause.message}` : String(cause);
+          panelErrorWords(cause);
       }
     } finally {
       busy = false;

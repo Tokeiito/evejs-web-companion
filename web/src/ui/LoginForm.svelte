@@ -9,6 +9,7 @@
   import { BridgeCallError } from "../bridge/callMethod.ts";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
+  import { panelErrorWords } from "../bridge/refusals.ts";
 
   let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
 
@@ -38,7 +39,7 @@
         cause instanceof BridgeCallError
           ? cause.code === "UNKNOWN_EVEJS_ACCOUNT"
             ? "Unknown EveJS account."
-            : `${cause.code}: ${cause.message}`
+            : panelErrorWords(cause)
           : String(cause);
     } finally {
       busy = false;
