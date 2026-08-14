@@ -90,6 +90,43 @@ function show(message: string): void {
   }
 }
 
+/**
+ * The one class of `window.onerror` message this overlay deliberately swallows.
+ *
+ * ⚠ NARROW ON PURPOSE — IT MATCHES EXACTLY ONE KNOWN STRING. Filtering an error
+ * surface is how an error surface becomes useless, so this is not a pattern to
+ * extend without the same justification.
+ *
+ * "ResizeObserver loop completed with undelivered notifications" is not a script
+ * error and nothing has failed. It is the browser SAYING SO: it detected that
+ * delivering the remaining resize observations would re-dirty layout in the same
+ * frame, so it deferred them to the next one. The page keeps working and the
+ * observations arrive; the spec requires the notice purely so a developer can
+ * find a genuine feedback loop.
+ *
+ * The reason to swallow it is that the overlay's headline reads "the page may
+ * have stopped updating" — which, for this message, is FALSE and alarming, and
+ * an operator who learns the banner cries wolf will dismiss the one that matters.
+ * A real loop still shows up: it pegs a core and the picture visibly stutters.
+ *
+ * (The instance that prompted this was ours — the tactical viewport wrote canvas
+ * size from inside its own observer callback. That cause is fixed in
+ * `ui/Tactical.svelte`; this keeps the surface honest for any future one.)
+ */
+export function isBenignBrowserNotice(message: string): boolean {
+  if (typeof message !== "string") {
+    return false;
+  }
+  // Both wordings of the same condition: "…completed with undelivered
+  // notifications" (current) and "…limit exceeded" (older Chrome). Both require
+  // the "ResizeObserver loop" prefix, so neither can swallow an unrelated error
+  // that happens to contain one of the tails.
+  return (
+    message.includes("ResizeObserver loop") &&
+    (message.includes("undelivered notifications") || message.includes("limit exceeded"))
+  );
+}
+
 function stackTail(value: unknown): string {
   if (value !== null && typeof value === "object" && "stack" in value) {
     const stack = (value as { stack?: unknown }).stack;
@@ -125,6 +162,9 @@ export function installErrorOverlay(): void {
   w.__eveErrorOverlay = true;
 
   window.addEventListener("error", (event: ErrorEvent) => {
+    if (isBenignBrowserNotice(event.message)) {
+      return;
+    }
     const where = event.filename ? ` @ ${event.filename}:${event.lineno}:${event.colno}` : "";
     show(`${event.message}${where}${stackTail(event.error)}`);
   });

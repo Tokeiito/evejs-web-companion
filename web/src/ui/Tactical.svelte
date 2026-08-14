@@ -232,31 +232,98 @@
    * pixel ratio. Without the ratio the whole picture is soft on every laptop
    * screen sold in the last decade; without the observer it is the wrong size
    * the moment a window is dragged.
+   *
+   * ---------------------------------------------------------------------------
+   * ⚠ THIS IS WHERE "ResizeObserver loop completed with undelivered
+   * notifications" CAME FROM, AND WHY IT IS WRITTEN THIS WAY.
+   *
+   * The first version did all of the work synchronously inside the observer
+   * callback: it wrote `width`/`height` (reactive state, so Svelte re-rendered
+   * and changed the canvas's inline style) and set `canvas.width/height`
+   * directly. Both are layout-affecting writes to a child of the element being
+   * observed, made while the browser was still delivering that element's
+   * observations. The browser cannot settle that in one pass, so it drops the
+   * remaining notifications and fires a global error — which flooded the error
+   * overlay every time the dock panel was dragged.
+   *
+   * Three things fix it, and all three are load-bearing:
+   *
+   *   1. NOTHING IS WRITTEN FROM THE CALLBACK. The observation is stashed and
+   *      applied in a `requestAnimationFrame`, i.e. after delivery is finished.
+   *   2. A NO-OP RESIZE DOES NOTHING AT ALL. A drag fires this continuously with
+   *      sub-pixel changes that round to the same integers; re-assigning
+   *      `canvas.width` is never free (it clears the bitmap) and re-assigning
+   *      the same reactive value would still schedule a frame.
+   *   3. THE CANVAS NO LONGER SIZES ITSELF FROM STATE. It is stretched by CSS
+   *      (`position: absolute; inset: 0`), so its display size is decided by the
+   *      box rather than by a value this effect writes — which removes the
+   *      feedback edge entirely instead of merely damping it.
    */
   $effect(() => {
     const element = box;
     if (!element || typeof ResizeObserver === "undefined") {
       return;
     }
-    const apply = (): void => {
+    /** The pending deferred apply: a rAF handle, or a timer handle. */
+    let pending: number = 0;
+    let pendingIsFrame = false;
+    const applyNow = (): void => {
+      pending = 0;
       const rect = element.getBoundingClientRect();
-      width = Math.max(0, Math.round(rect.width));
-      height = Math.max(0, Math.round(rect.height));
+      const nextWidth = Math.max(0, Math.round(rect.width));
+      const nextHeight = Math.max(0, Math.round(rect.height));
+      const ratio = window.devicePixelRatio || 1;
       const target = canvas;
+      // Guard 2: an observation that changes nothing must cost nothing.
+      if (nextWidth === width && nextHeight === height && target) {
+        if (target.width === Math.round(nextWidth * ratio)) {
+          return;
+        }
+      }
+      width = nextWidth;
+      height = nextHeight;
       if (target) {
-        const ratio = window.devicePixelRatio || 1;
-        target.width = Math.round(width * ratio);
-        target.height = Math.round(height * ratio);
+        target.width = Math.round(nextWidth * ratio);
+        target.height = Math.round(nextHeight * ratio);
         const ctx = target.getContext("2d");
         // Draw in CSS pixels; the transform absorbs the ratio, so every
         // coordinate the projection produces is used as-is.
         ctx?.setTransform(ratio, 0, 0, ratio, 0, 0);
       }
     };
-    apply();
-    const observer = new ResizeObserver(apply);
+    const schedule = (): void => {
+      // Guard 1: never write during delivery. Coalesced, so a drag that fires
+      // this fifty times in a frame applies once.
+      if (pending !== 0) {
+        return;
+      }
+      // ⚠ rAF IS SUSPENDED IN A HIDDEN TAB — it fires zero times, not late. This
+      // client is routinely driven in a hidden pane, and this project has
+      // already been bitten by visibility-gated code silently never running. A
+      // resize that arrived while hidden must still be applied, so a hidden
+      // document falls back to a timer. Both defer out of the observer's own
+      // delivery, which is the only property this guard needs.
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+        pendingIsFrame = false;
+        pending = setTimeout(applyNow, 0) as unknown as number;
+        return;
+      }
+      pendingIsFrame = true;
+      pending = requestAnimationFrame(applyNow);
+    };
+    applyNow();
+    const observer = new ResizeObserver(schedule);
     observer.observe(element);
-    return () => observer.disconnect();
+    return () => {
+      observer.disconnect();
+      if (pending !== 0) {
+        if (pendingIsFrame) {
+          cancelAnimationFrame(pending);
+        } else {
+          clearTimeout(pending);
+        }
+      }
+    };
   });
 
   /**
@@ -409,7 +476,6 @@
     bind:this={canvas}
     class="tactical-canvas"
     class:hovering
-    style={`width:${width}px;height:${height}px`}
     role="img"
     aria-label={summary}
     onclick={onClick}

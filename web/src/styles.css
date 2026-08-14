@@ -2766,6 +2766,17 @@
   }
   .tactical-canvas {
     display: block;
+    /* ⚠ SIZED BY CSS, NOT BY THE COMPONENT. The canvas used to carry an inline
+     * width/height written from the same state the ResizeObserver set, which put
+     * a layout write for a CHILD of the observed box inside that box's own
+     * resize delivery — the "ResizeObserver loop completed with undelivered
+     * notifications" flood. Stretching it to the box removes the feedback edge
+     * rather than damping it; the component still owns the BACKING STORE size
+     * (canvas.width/height), which has no effect on layout. */
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
     /* The canvas is a click target for picking a bracket. `default` rather than
      * `crosshair` for empty space: a crosshair everywhere would promise that
      * every pixel does something, and most do not. */
