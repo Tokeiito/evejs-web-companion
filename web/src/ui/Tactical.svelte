@@ -102,7 +102,7 @@
   // standing pile of machinery, and the operator's call was that an overview
   // answering "what is around me and roughly where" is not worth either.
   //
-  // So brackets step three times a second, and every one of them is where the
+  // So brackets step twice a second, and every one of them is where the
   // server last said it was. If smoothness is wanted again, read the two
   // paragraphs above first: the prediction approach in particular LOOKS like the
   // obvious fix and is the one that produced the jitter.

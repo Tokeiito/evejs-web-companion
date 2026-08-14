@@ -1,8 +1,8 @@
 // Overview refresh cadence (goal R11).
 //
 // The retail client re-renders its overview every 0.5-1.0s off a locally
-// dead-reckoned ballpark. We re-read the authoritative snapshot about three
-// times a second while the ship is in space and the panel is open, and draw
+// dead-reckoned ballpark. We re-read the authoritative snapshot twice a second
+// while the ship is in space and the panel is open — the same cadence — and draw
 // exactly what it says — see the note in `ui/Tactical.svelte` for the two
 // attempts at smoothing between reads and why neither survived. Polling here is
 // not a stand-in for push — it IS the cadence the real client runs at,
@@ -20,19 +20,23 @@
 /**
  * The in-space cadence — how often the AUTHORITATIVE grid is re-read.
  *
- * ⚠ THIS IS ALSO THE FRAME RATE OF SPACE. Nothing is drawn between reads, so
- * brackets step at exactly this cadence — raising it makes the picture smoother
- * AND costlier in the same breath, which is why it is worth being deliberate
- * about. R89 raised it from 1_000 to 200 and R91 settled it at 333: three times
- * the snapshot reads and three times the bytes of the original.
+ * ⚠ THIS IS ALSO THE FRAME RATE OF SPACE, AND EVERY BEAT IS AN OWNER CALL.
+ * Nothing is drawn between reads, so brackets step at exactly this cadence —
+ * raising it makes the picture smoother and costlier in the same breath, on a
+ * gateway that serialises owner calls. That is not theoretical: R89 took this to
+ * 200 ms, and the connection failures that followed were the load.
  *
- * Two things keep that safe rather than merely faster. A beat is SKIPPED
- * whenever a read is still in flight (see below), so a server that cannot answer
- * in time is naturally throttled to whatever it can actually do instead of
- * accumulating a queue. And the poller stops entirely the moment the ship is not
- * in space, the panel closes, or the tab is hidden.
+ * 500 ms is retail's own overview cadence (0.5-1.0s), which is the argument for
+ * it. Twice the original cost, half of what 3 Hz asked for, and the step from
+ * three frames a second to two is far less visible than the difference in load.
+ *
+ * Two things keep it safe rather than merely faster. A beat is SKIPPED whenever
+ * a read is still in flight (see below), so a server that cannot answer in time
+ * is naturally throttled to whatever it can actually do instead of accumulating
+ * a queue. And the poller stops entirely the moment the ship is not in space,
+ * the panel closes, or the tab is hidden.
  */
-export const SPACE_POLL_INTERVAL_MS = 333;
+export const SPACE_POLL_INTERVAL_MS = 500;
 
 /**
  * How often the LOCKED-TARGET list is re-read, in milliseconds.

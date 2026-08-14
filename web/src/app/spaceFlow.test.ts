@@ -226,10 +226,11 @@ test("a refused move from a row is shown as a reason, not a silent no-op", async
 });
 
 test("the overview poll runs at the retail overview cadence", () => {
-  // ⚠ R89 raised this from 1_000; R91 settled it at 333. Nothing is drawn
-  // between reads, so this is also the frame rate of space — see the note in
-  // ui/Tactical.svelte for the two smoothing attempts that did not survive.
-  assert.equal(SPACE_POLL_INTERVAL_MS, 333);
+  // ⚠ R89 raised this from 1_000 to 200 and the connection failures that
+  // followed were the load; R92 settled it at retail's own overview cadence.
+  // Nothing is drawn between reads, so this is also the frame rate of space —
+  // see ui/Tactical.svelte for the two smoothing attempts that did not survive.
+  assert.equal(SPACE_POLL_INTERVAL_MS, 500);
 });
 
 test("a beat is SKIPPED while a read is still in flight", async () => {
