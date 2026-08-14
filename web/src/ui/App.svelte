@@ -22,6 +22,7 @@
   } from "../app/persistedSessions.ts";
   import { setSessionToken, clearSessionToken } from "../app/sessionToken.ts";
   import { getHealth } from "../app/api.ts";
+  import { skipWhileBusy } from "../app/skipWhileBusy.ts";
 
   // Read the roster retained across a refresh ONCE, before any write effect can
   // clobber it, so a reload can bring the same pilots back online.
@@ -217,8 +218,14 @@
         if (!cancelled) serverStatus = "offline";
       }
     };
-    void ping();
-    const handle = setInterval(() => void ping(), 10_000);
+    // ⚠ GUARDED. This one is mounted for the WHOLE session, so an unguarded
+    // beat every ten seconds is the fastest way this client has of filling the
+    // browser's connection pool with stalled requests when the server slows —
+    // and it is the requests it steals sockets from that visibly fail. See
+    // app/skipWhileBusy.ts.
+    const beat = skipWhileBusy(ping);
+    void beat();
+    const handle = setInterval(() => void beat(), 10_000);
     return () => {
       cancelled = true;
       clearInterval(handle);

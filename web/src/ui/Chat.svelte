@@ -9,6 +9,7 @@
   import { onDestroy, onMount } from "svelte";
   import { BridgeCallError } from "../bridge/callMethod.ts";
   import { createChatPoller } from "../app/chatPoll.ts";
+  import { skipWhileBusy } from "../app/skipWhileBusy.ts";
   import { isSessionLost } from "../app/flow.ts";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
@@ -44,9 +45,14 @@
   // drops to a slow safety net while the channel is delivering and snaps back
   // to the old fast cadence whenever it is not. The poll still covers roster
   // changes (which the channel does not carry) and keeps the held session warm.
+  // ⚠ GUARDED. `createChatPoller` arms a plain interval, so without this a slow
+  // chat read stacks up beat on beat and the requests it displaces from the
+  // browser's connection pool are the ones that visibly fail. See
+  // app/skipWhileBusy.ts.
+  const chatBeat = skipWhileBusy(refresh);
   const poller = createChatPoller({
     status: () => store.get().live.status,
-    refresh: () => void refresh(),
+    refresh: () => void chatBeat(),
   });
   let busy = $state(false);
   let error = $state("");

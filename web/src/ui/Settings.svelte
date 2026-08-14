@@ -17,6 +17,7 @@
   import { CUE_NAMES, closeSound, playCue, soundSettings, type CueName } from "./sound.ts";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
+  import { skipWhileBusy } from "../app/skipWhileBusy.ts";
 
   let { flow }: { store?: ClientStore; flow?: AppFlow } = $props();
 
@@ -76,11 +77,14 @@
     }
   }
 
-  // One read on open; keep polling only while a bulk pull is running.
+  // One read on open; keep polling only while a bulk pull is running. Guarded,
+  // because 1.5 s is the tightest beat in the client and a bulk icon pull is
+  // exactly when the server has least to spare — see app/skipWhileBusy.ts.
+  const beat = skipWhileBusy(refresh);
   $effect(() => {
-    void refresh();
+    void beat();
     const handle = setInterval(() => {
-      if (status?.running) void refresh();
+      if (status?.running) void beat();
     }, 1500);
     return () => clearInterval(handle);
   });

@@ -12,6 +12,7 @@
   import { onMount } from "svelte";
   import { listServerBots, stopServerBot, type ServerBot } from "../app/api.ts";
   import { BOT_RISK_LABELS } from "../bots/runPolicy.ts";
+  import { skipWhileBusy } from "../app/skipWhileBusy.ts";
 
   const POLL_MS = 3000;
 
@@ -49,8 +50,10 @@
   }
 
   onMount(() => {
-    void refresh();
-    const timer = setInterval(() => void refresh(), POLL_MS);
+    // Guarded, like every other periodic read — see app/skipWhileBusy.ts.
+    const beat = skipWhileBusy(refresh);
+    void beat();
+    const timer = setInterval(() => void beat(), POLL_MS);
     return () => clearInterval(timer);
   });
 

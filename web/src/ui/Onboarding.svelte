@@ -29,6 +29,7 @@
   } from "../app/knownCharacters.ts";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
+  import { skipWhileBusy } from "../app/skipWhileBusy.ts";
 
   let { store, flow, onOnline, onlineIDs = new Set<number>() }: {
     store: ClientStore;
@@ -124,8 +125,11 @@
     }
   }
   $effect(() => {
-    void refreshBotFlown();
-    const handle = setInterval(() => void refreshBotFlown(), 5000);
+    // Guarded: five seconds is quick enough that a slow server would otherwise
+    // stack these up and starve the pool. See app/skipWhileBusy.ts.
+    const beat = skipWhileBusy(refreshBotFlown);
+    void beat();
+    const handle = setInterval(() => void beat(), 5000);
     return () => {
       botPollAlive = false;
       clearInterval(handle);
