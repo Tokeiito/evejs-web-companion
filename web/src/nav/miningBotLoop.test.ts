@@ -1326,6 +1326,71 @@ test("ore is counted from the HOLD growing, never from cycles or a yield sum", a
   assert.equal(bot.snapshot().oreUnitsMined, 750, "exactly what the hold gained, no more");
 });
 
+test("a haul whose unload read-back RACED the settle still counts — once", async () => {
+  // The unload lands, but the read the unload itself fires still shows the old
+  // contents (the transfer is settling — the same lag SETTLE_UNLOAD exists
+  // for). Counting ONLY on that immediate read silently lost exactly these
+  // hauls: the next docked tick read empty, decided undock, and nothing ever
+  // counted the load.
+  let unloaded = false;
+  let readsAfterUnload = 0;
+  const { deps } = makeDeps({
+    status: () => status({ docked: true, inSpace: false, stationID: STATION }),
+    snapshot: () => null,
+    holds: () => {
+      if (!unloaded) {
+        return [oreHold(4_000, 5_000, [40_000])];
+      }
+      readsAfterUnload += 1;
+      return readsAfterUnload === 1 ? [oreHold(4_000, 5_000, [40_000])] : [oreHold(0)];
+    },
+    onCall: (name) => {
+      if (name === "unload") {
+        unloaded = true;
+      }
+    },
+  });
+  const bot = createMiningBot(deps);
+  bot.start(PLAN);
+  await drive(bot, 6);
+
+  assert.equal(
+    bot.snapshot().cyclesCompleted,
+    1,
+    "the docked tick that CONFIRMS the empty hold counts the haul — exactly once, never twice",
+  );
+});
+
+test("a haul whose unload read-back DROPPED still counts — once", async () => {
+  // Same shape, different miss: the confirming read after the unload throws.
+  // The haul is pending until a read actually says the ore left; the next
+  // docked observation is that read.
+  let unloaded = false;
+  let failNextHoldRead = false;
+  const { deps } = makeDeps({
+    status: () => status({ docked: true, inSpace: false, stationID: STATION }),
+    snapshot: () => null,
+    holds: () => {
+      if (failNextHoldRead) {
+        failNextHoldRead = false;
+        throw new Error("the hold read dropped");
+      }
+      return unloaded ? [oreHold(0)] : [oreHold(4_000, 5_000, [40_000])];
+    },
+    onCall: (name) => {
+      if (name === "unload") {
+        unloaded = true;
+        failNextHoldRead = true;
+      }
+    },
+  });
+  const bot = createMiningBot(deps);
+  bot.start(PLAN);
+  await drive(bot, 6);
+
+  assert.equal(bot.snapshot().cyclesCompleted, 1, "the lost read-back no longer loses the haul");
+});
+
 test("the readout always says WHY, and never shows a numeric id (R7d / R9a)", async () => {
   const { deps, rec } = makeDeps({
     status: () => status(),

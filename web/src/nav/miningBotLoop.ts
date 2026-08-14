@@ -1024,6 +1024,13 @@ interface BotMemory {
   closeInCycles: number;
   statusReadFailures: number;
   cyclesCompleted: number;
+  /**
+   * An unload was issued and the hold has not yet CONFIRMED empty. The haul is
+   * counted when it does — on the unload's own read-back when that lands, or
+   * on any later docked tick's observation when it raced the transfer settling
+   * or dropped. Immediate-read-only counting silently lost those hauls.
+   */
+  haulPending: boolean;
   oreUnitsMined: number;
   lastHoldUnits: number | null;
   holdUsed: number | null;
@@ -1061,6 +1068,7 @@ function freshMemory(): BotMemory {
     closeInCycles: 0,
     statusReadFailures: 0,
     cyclesCompleted: 0,
+    haulPending: false,
     oreUnitsMined: 0,
     lastHoldUnits: null,
     holdUsed: null,
@@ -1195,6 +1203,22 @@ export function createMiningBot(deps: MiningBotDeps): MiningBotController {
     memory.activateModuleID = null;
     memory.activateAttempts = 0;
     memory.noYieldCycles = 0;
+  }
+
+  /**
+   * The hold confirmed the ore left after an unload: the haul is real. One
+   * counting path, whichever read confirmed it first — the unload's own
+   * read-back or a later docked tick's observation.
+   */
+  function completeHaul(): void {
+    memory.cyclesCompleted += 1;
+    memory.haulPending = false;
+    memory.lastHoldUnits = 0;
+    // A completed haul is real progress, so rocks that would not lock get a
+    // fresh chance on the next trip — the belt may have changed, and this
+    // blacklist keys on a refusal, not a permanent fact about the rock.
+    memory.lockRefusedRockIDs.clear();
+    memory.consecutiveLockFailures = 0;
   }
 
   /**
@@ -1630,6 +1654,19 @@ export function createMiningBot(deps: MiningBotDeps): MiningBotController {
     // "is it actually producing" clock are both looking at this tick's truth.
     countOre(observation.holds);
 
+    // The haul count's SLOW PATH: the unload's own read-back raced the
+    // transfer settling (or dropped), and this tick's docked observation is
+    // the authority that finally says the ore left. Without it, exactly those
+    // hauls vanished from the readout — counted nowhere, ever.
+    if (
+      memory.haulPending &&
+      observation.status.docked &&
+      observation.holds !== null &&
+      holdItemIDs(observation.holds).length === 0
+    ) {
+      completeHaul();
+    }
+
     const decision = decideMiningAction(observation, current, {
       currentRockID: memory.currentRockID,
       lockRefusedRockIDs: memory.lockRefusedRockIDs,
@@ -1710,20 +1747,15 @@ export function createMiningBot(deps: MiningBotDeps): MiningBotController {
 
     emit();
     await issue(decision.action);
-    // Docking is the only thing that completes a haul, and it is only complete
-    // once the HOLD says the ore left — which the docked branch confirms next
-    // tick. Count the haul when an unload is issued against a hold that then
-    // reads empty; see the docked branch and MAX_UNLOAD_ATTEMPTS.
+    // A haul is only complete once the HOLD says the ore left. The read right
+    // here is the FAST PATH and it races the transfer settling — so the
+    // pending flag stays up until some read confirms empty, and the docked
+    // slow path above counts the haul on a later tick when this one missed.
     if (decision.action.kind === "unload") {
+      memory.haulPending = true;
       const after = await safely(() => deps.getHolds()).catch(() => null);
       if (after !== null && holdItemIDs(after).length === 0) {
-        memory.cyclesCompleted += 1;
-        memory.lastHoldUnits = 0;
-        // A completed haul is real progress, so rocks that would not lock get a
-        // fresh chance on the next trip — the belt may have changed, and this
-        // blacklist keys on a refusal, not a permanent fact about the rock.
-        memory.lockRefusedRockIDs.clear();
-        memory.consecutiveLockFailures = 0;
+        completeHaul();
       }
     }
     emit();
