@@ -504,7 +504,6 @@ const INITIAL_FLIGHT: FlightState = Object.freeze({
 
 const INITIAL_SPACE: SpaceState = Object.freeze({
   snapshot: null,
-  receivedAtMs: null,
   loaded: false,
   error: null,
   gateLinks: Object.freeze([]) as readonly GateLink[],
@@ -1731,9 +1730,6 @@ export function createClientStore(): ClientStore {
         const previous = space.get();
         space.set({
           snapshot: event.snapshot,
-          // R89 — stamped by the producer, on the browser's clock. Absent means
-          // "do not predict from this one", which is the safe reading.
-          receivedAtMs: event.receivedAtMs ?? null,
           loaded: true,
           error: null,
           gateLinks: event.gateLinks ?? previous.gateLinks,

@@ -3547,7 +3547,6 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       type: "space/snapshot",
       snapshot,
       gateLinks: gateLinksForSnapshot(snapshot),
-      receivedAtMs: Date.now(),
     });
     // Keep the flight readout honest too: a snapshot that says the ship is no
     // longer in space means the poll is about to stop, and the panel should not
@@ -4597,7 +4596,6 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       type: "space/snapshot",
       snapshot,
       gateLinks: gateLinksForSnapshot(snapshot),
-      receivedAtMs: Date.now(),
     });
           return snapshot;
         } catch (error) {
@@ -4896,7 +4894,6 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       type: "space/snapshot",
       snapshot,
       gateLinks: gateLinksForSnapshot(snapshot),
-      receivedAtMs: Date.now(),
     });
         return snapshot;
       },
@@ -5802,7 +5799,6 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       type: "space/snapshot",
       snapshot,
       gateLinks: gateLinksForSnapshot(snapshot),
-      receivedAtMs: Date.now(),
     });
         const observedShipID = snapshot?.ship?.itemID ?? status.shipID ?? null;
         const capabilities = await capabilityCache.read(capabilityScope(observedShipID));

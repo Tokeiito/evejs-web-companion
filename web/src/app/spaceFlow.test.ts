@@ -221,10 +221,9 @@ test("a refused move from a row is shown as a reason, not a silent no-op", async
 });
 
 test("the overview poll runs at the retail overview cadence", () => {
-  // ⚠ R89 raised this from 1_000; R90 settled it at 333. It is the rate at which
-  // the picture is TRUE; the viewport draws every animation frame and
-  // INTERPOLATES between reads (space/deadReckoning.ts), so smoothness is not
-  // bought by polling harder.
+  // ⚠ R89 raised this from 1_000; R91 settled it at 333. Nothing is drawn
+  // between reads, so this is also the frame rate of space — see the note in
+  // ui/Tactical.svelte for the two smoothing attempts that did not survive.
   assert.equal(SPACE_POLL_INTERVAL_MS, 333);
 });
 

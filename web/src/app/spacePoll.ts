@@ -1,11 +1,11 @@
 // Overview refresh cadence (goal R11).
 //
 // The retail client re-renders its overview every 0.5-1.0s off a locally
-// dead-reckoned ballpark. We now do BOTH halves of that: this poller re-reads the
-// authoritative snapshot about three times a second while the ship is in space
-// and the panel is open, and the viewport INTERPOLATES between those reads
-// (`space/deadReckoning.ts`) so motion is smooth rather than stepped. Polling
-// here is not a stand-in for push — it IS the cadence the real client runs at,
+// dead-reckoned ballpark. We re-read the authoritative snapshot about three
+// times a second while the ship is in space and the panel is open, and draw
+// exactly what it says — see the note in `ui/Tactical.svelte` for the two
+// attempts at smoothing between reads and why neither survived. Polling here is
+// not a stand-in for push — it IS the cadence the real client runs at,
 // and the R10 push channel does not replace it (the channel carries events, not
 // continuous positions).
 //
@@ -20,17 +20,17 @@
 /**
  * The in-space cadence — how often the AUTHORITATIVE grid is re-read.
  *
- * ⚠ R89 RAISED THIS FROM 1_000; R90 SETTLED IT AT 333. The cost is real — three
- * times the snapshot reads and three times the bytes of the original. Two things
- * keep it safe rather than merely faster. A beat is SKIPPED whenever a read is
- * still in flight (see below), so a server that cannot answer in time is
- * naturally throttled to whatever it can actually do instead of accumulating a
- * queue. And the poller stops entirely the moment the ship is not in space, the
- * panel closes, or the tab is hidden.
+ * ⚠ THIS IS ALSO THE FRAME RATE OF SPACE. Nothing is drawn between reads, so
+ * brackets step at exactly this cadence — raising it makes the picture smoother
+ * AND costlier in the same breath, which is why it is worth being deliberate
+ * about. R89 raised it from 1_000 to 200 and R91 settled it at 333: three times
+ * the snapshot reads and three times the bytes of the original.
  *
- * This is the rate at which the picture is TRUE. The viewport draws every
- * animation frame by interpolating between these reads, so smoothness is not
- * bought by polling harder — which is why this is 333 ms and not 16.
+ * Two things keep that safe rather than merely faster. A beat is SKIPPED
+ * whenever a read is still in flight (see below), so a server that cannot answer
+ * in time is naturally throttled to whatever it can actually do instead of
+ * accumulating a queue. And the poller stops entirely the moment the ship is not
+ * in space, the panel closes, or the tab is hidden.
  */
 export const SPACE_POLL_INTERVAL_MS = 333;
 
