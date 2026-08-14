@@ -188,17 +188,28 @@ async function getJson(path, query = {}, options = {}) {
   }
 }
 
-// The v1 GET reads ride the gateway runtime like everything else now (they are
-// IPC-forwarded owner calls since the edge split), so the old 1.5 s default is
-// routinely unattainable while any heavier call is in flight — a login racing
-// a mission Complete used to fail with "EveJS gateway timed out." on a healthy
-// server. Login/health reads get a middle budget; the two heavy ones
-// (snapshot computes per-character skill totals, skills resolves the whole
-// sheet) get the same generous budget as the bridge paths.
-const LEGACY_READ_TIMEOUT_MS = 5_000;
+// Every v1 route except /health is an IPC-forwarded owner call since the edge
+// split, and eve.js puts its OWN deadline on those: 15 s
+// (server/src/edge/gateway/gatewayEdgeRuntime.js, requestTimeoutMs). Our budget
+// must sit ABOVE that deadline, or we abort first and the only thing the caller
+// ever sees is "EveJS gateway timed out." — an AbortError with no response
+// body, so the server's real verdict (EDGE_OWNER_REQUEST_TIMEOUT, naming the
+// call that stalled) is thrown away. Losing that race is what made owner stalls
+// undiagnosable; the earlier 1.5 s -> 5 s bump treated the symptom and stayed
+// under the deadline. Keep this greater than the server's requestTimeoutMs, and
+// change the two together.
+const OWNER_CALL_TIMEOUT_MS = 18_000;
+
+// /health is answered on the edge itself (buildGatewayHealth reads the runtime
+// context synchronously — no owner hop), so it keeps the short budget on
+// purpose. That is what makes it a useful probe: when health answers fast and
+// owner calls are timing out, the gateway is up and the OWNER is the stalled
+// part. Left at the budget it already had — tightening it further would only
+// add a way for a busy edge process to fail a probe that used to pass.
+const HEALTH_TIMEOUT_MS = 5_000;
 
 async function getGatewayHealth() {
-  const health = await getJson("/health", {}, { timeoutMs: LEGACY_READ_TIMEOUT_MS });
+  const health = await getJson("/health", {}, { timeoutMs: HEALTH_TIMEOUT_MS });
   const hasStableShape =
     health.capabilities &&
     typeof health.capabilities === "object" &&
@@ -249,7 +260,7 @@ function normalizeGatewayHealth(health) {
 
 async function getStatus() {
   const [status, health] = await Promise.all([
-    getJson("/status", {}, { timeoutMs: LEGACY_READ_TIMEOUT_MS }),
+    getJson("/status", {}, { timeoutMs: OWNER_CALL_TIMEOUT_MS }),
     getGatewayHealth(),
   ]);
   return {
@@ -261,7 +272,7 @@ async function getStatus() {
 async function getAccount(username) {
   const result = await getJson("/account", {
     username: String(username || "").trim(),
-  }, { timeoutMs: LEGACY_READ_TIMEOUT_MS });
+  }, { timeoutMs: OWNER_CALL_TIMEOUT_MS });
   return result.account || null;
 }
 
@@ -275,7 +286,7 @@ async function getAccount(username) {
 async function createAccount(username) {
   const result = await postJson("/account/create", {
     username: String(username || "").trim(),
-  }, { timeoutMs: LEGACY_READ_TIMEOUT_MS });
+  }, { timeoutMs: OWNER_CALL_TIMEOUT_MS });
   return {
     account: result.account || null,
     created: result.created === true,
@@ -285,7 +296,7 @@ async function createAccount(username) {
 async function listCharacters(accountID) {
   const result = await getJson("/characters", {
     accountID: Number(accountID) || 0,
-  }, { timeoutMs: LEGACY_READ_TIMEOUT_MS });
+  }, { timeoutMs: OWNER_CALL_TIMEOUT_MS });
   return Array.isArray(result.characters) ? result.characters : [];
 }
 
@@ -293,7 +304,7 @@ async function getSnapshot(accountID, characterID) {
   const result = await getJson("/snapshot", {
     accountID: Number(accountID) || 0,
     characterID: Number(characterID) || 0,
-  }, { timeoutMs: BRIDGE_CALL_TIMEOUT_MS });
+  }, { timeoutMs: OWNER_CALL_TIMEOUT_MS });
   return result.snapshot || null;
 }
 
@@ -311,18 +322,15 @@ async function getSkills(accountID, characterID) {
   const result = await getJson("/skills", {
     accountID: Number(accountID) || 0,
     characterID: Number(characterID) || 0,
-  }, { timeoutMs: BRIDGE_CALL_TIMEOUT_MS });
+  }, { timeoutMs: OWNER_CALL_TIMEOUT_MS });
   return result.skills || null;
 }
 
 // Bridge reads can be heavy on a cold gateway: map.GetStationInfo marshals the
 // whole station table and lazily loads a multi-MB world store on first touch,
-// and GetCharacterSelectionData computes per-character skill totals. The 1.5s
-// default read timeout can trip on the first call after a fresh start, so the
-// bridge `/call` path gets the same generous budget as select (dev emulator;
-// a correct slow answer beats a spurious timeout). Legacy paths keep the
-// default.
-const BRIDGE_CALL_TIMEOUT_MS = 10_000;
+// and GetCharacterSelectionData computes per-character skill totals. They ride
+// the same owner hop as the plain reads, so they share OWNER_CALL_TIMEOUT_MS —
+// on a dev emulator a correct slow answer beats a spurious timeout.
 
 /**
  * Invoke a whitelisted EveJS service method through the bridge route
@@ -349,7 +357,7 @@ async function callMethod(service, method, args = [], kwargs = null, sessionFiel
   if (typeof bridgeSessionID === "string" && bridgeSessionID) {
     body.bridgeSessionID = bridgeSessionID;
   }
-  const data = await postJson("/call", body, { timeoutMs: BRIDGE_CALL_TIMEOUT_MS });
+  const data = await postJson("/call", body, { timeoutMs: OWNER_CALL_TIMEOUT_MS });
   return {
     service: data.service,
     method: data.method,
@@ -358,10 +366,9 @@ async function callMethod(service, method, args = [], kwargs = null, sessionFiel
   };
 }
 
-// Persistent-session select-timeout: SelectCharacterID does real work (apply
-// character, guest broadcast, possible space restore), so it gets more room
-// than the default read timeout.
-const SELECT_TIMEOUT_MS = 10_000;
+// SelectCharacterID does real work (apply character, guest broadcast, possible
+// space restore) — the slowest owner call we make, and the one most likely to
+// be the thing a stalled login is queued behind.
 
 /**
  * Mint a persistent browser-backed session on the gateway and bring a
@@ -380,7 +387,7 @@ async function selectCharacter(args = [], kwargs = null, sessionFields = {}) {
     session: sessionFields && typeof sessionFields === "object" && !Array.isArray(sessionFields)
       ? sessionFields
       : {},
-  }, { timeoutMs: SELECT_TIMEOUT_MS });
+  }, { timeoutMs: OWNER_CALL_TIMEOUT_MS });
   return {
     bridgeSessionID: String(data.bridgeSessionID || ""),
     service: data.service,
@@ -407,7 +414,7 @@ async function releaseBridgeSession(bridgeSessionID, sessionFields = undefined) 
   // guest broadcast) — real work, same generous budget as select. On the old
   // 1.5 s default a logout under any concurrent traffic minted a false
   // "EveJS gateway timed out." while leaving the character online until TTL.
-  const data = await postJson("/session/release", body, { timeoutMs: BRIDGE_CALL_TIMEOUT_MS });
+  const data = await postJson("/session/release", body, { timeoutMs: OWNER_CALL_TIMEOUT_MS });
   return {
     released: data.released === true,
     characterID: data.characterID === undefined ? null : data.characterID,
@@ -427,7 +434,7 @@ async function readFlightStatus(bridgeSessionID, sessionFields = {}) {
     body.session = sessionFields;
   }
   const data = await postJson("/session/flight-status", body, {
-    timeoutMs: BRIDGE_CALL_TIMEOUT_MS,
+    timeoutMs: OWNER_CALL_TIMEOUT_MS,
   });
   return {
     flight: data.flight && typeof data.flight === "object" ? data.flight : {},
@@ -446,7 +453,7 @@ async function readScannerState(bridgeSessionID, sessionFields = {}) {
     body.session = sessionFields;
   }
   const data = await postJson("/session/scanner-state", body, {
-    timeoutMs: BRIDGE_CALL_TIMEOUT_MS,
+    timeoutMs: OWNER_CALL_TIMEOUT_MS,
   });
   return {
     scanner: data.scanner && typeof data.scanner === "object" ? data.scanner : {},
@@ -469,7 +476,7 @@ async function readSpaceSnapshot(bridgeSessionID, sessionFields = {}) {
     body.session = sessionFields;
   }
   const data = await postJson("/space/snapshot", body, {
-    timeoutMs: BRIDGE_CALL_TIMEOUT_MS,
+    timeoutMs: OWNER_CALL_TIMEOUT_MS,
   });
   return {
     space: data.space && typeof data.space === "object" ? data.space : {},
@@ -500,7 +507,7 @@ async function bindObject(service, method, args = [], kwargs = null, sessionFiel
   if (typeof bridgeSessionID === "string" && bridgeSessionID) {
     body.bridgeSessionID = bridgeSessionID;
   }
-  const data = await postJson("/bound/bind", body, { timeoutMs: BRIDGE_CALL_TIMEOUT_MS });
+  const data = await postJson("/bound/bind", body, { timeoutMs: OWNER_CALL_TIMEOUT_MS });
   return {
     boundHandle: String(data.boundHandle || ""),
     service: data.service,
@@ -530,7 +537,7 @@ async function callBoundMethod(service, method, args = [], kwargs = null, sessio
   if (typeof bridgeSessionID === "string" && bridgeSessionID) {
     body.bridgeSessionID = bridgeSessionID;
   }
-  const data = await postJson("/bound/call", body, { timeoutMs: BRIDGE_CALL_TIMEOUT_MS });
+  const data = await postJson("/bound/call", body, { timeoutMs: OWNER_CALL_TIMEOUT_MS });
   return {
     service: data.service,
     method: data.method,
@@ -553,7 +560,7 @@ async function readChat(bridgeSessionID, channel, sessionFields = {}, options = 
   if (Number.isFinite(Number(options.limit)) && Number(options.limit) > 0) {
     body.limit = Number(options.limit);
   }
-  const data = await postJson("/chat/read", body, { timeoutMs: BRIDGE_CALL_TIMEOUT_MS });
+  const data = await postJson("/chat/read", body, { timeoutMs: OWNER_CALL_TIMEOUT_MS });
   return {
     chat: data.chat && typeof data.chat === "object" ? data.chat : {},
     notifications: Array.isArray(data.notifications) ? data.notifications : [],
@@ -576,7 +583,7 @@ async function sendChat(bridgeSessionID, channel, message, sessionFields = {}) {
   if (sessionFields && typeof sessionFields === "object" && !Array.isArray(sessionFields)) {
     body.session = sessionFields;
   }
-  const data = await postJson("/chat/send", body, { timeoutMs: BRIDGE_CALL_TIMEOUT_MS });
+  const data = await postJson("/chat/send", body, { timeoutMs: OWNER_CALL_TIMEOUT_MS });
   return {
     chat: data.chat && typeof data.chat === "object" ? data.chat : {},
     notifications: Array.isArray(data.notifications) ? data.notifications : [],
