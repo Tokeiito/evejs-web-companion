@@ -319,3 +319,37 @@ test("earnings render as bigint-safe amounts, and unknown reads as unknown", () 
   const lpCell = body.match(/<td[^>]*data-label="LP earned"[^>]*>([\s\S]*?)<\/td>/)?.[1] ?? "";
   assert.equal(lpCell.trim(), "—", "an unmeasured payout reads as unknown, never as 0");
 });
+
+test("a FRACTIONAL payout formats with its grouping and its fraction intact", () => {
+  // Wallets are not whole numbers (one insurance payout is "129271601.6"), so
+  // the formatter must group the whole part without Number OR BigInt choking on
+  // the point — the old amount() threw on the fraction and fell back to the raw
+  // ungrouped string.
+  const store = dockedStore({ withFinder: true });
+  store.apply({
+    type: "mission-bot/started",
+    agentName: "Antaken Kamola",
+    stationName: null,
+    startedAt: Date.now(),
+  });
+  store.apply({
+    type: "mission-bot/progress",
+    status: "running",
+    phase: "Working",
+    action: "Working",
+    why: "Working.",
+    agentName: "Antaken Kamola",
+    missionName: null,
+    cargoText: null,
+    destinationName: null,
+    jumpsRemaining: null,
+    missionsCompleted: 1,
+    iskEarned: "129271601.6",
+    lpEarned: null,
+    caution: null,
+    failureReason: null,
+  });
+  const body = renderPanel(store);
+  const iskCell = body.match(/<td[^>]*data-label="ISK earned"[^>]*>([\s\S]*?)<\/td>/)?.[1] ?? "";
+  assert.equal(iskCell.trim(), "129,271,601.6");
+});

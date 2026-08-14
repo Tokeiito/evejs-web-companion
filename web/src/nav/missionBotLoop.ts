@@ -1117,16 +1117,51 @@ function actionText(action: MissionBotAction): string {
  * Subtract two bigint-safe decimal strings. ISK and LP can exceed 2^53, so this
  * never goes through Number — the decoder rule (docs/bridge-wire-contract.md)
  * that keeps them as strings would be pointless if the arithmetic re-lost it.
+ *
+ * ⚠ WALLETS ARE NOT WHOLE NUMBERS. One insurance payout leaves a balance like
+ * "115789534766.84", and `BigInt("….84")` THROWS — which is how "ISK earned"
+ * sat on "—" for an entire run on any character whose wallet had ever gone
+ * fractional. The amounts are fixed-point: scale both sides to the wider
+ * fraction, subtract as bigints, and put the point back.
  */
 export function subtractAmounts(after: string | null, before: string | null): string | null {
   if (after === null || before === null) {
     return null;
   }
-  try {
-    return (BigInt(after) - BigInt(before)).toString();
-  } catch {
+  const a = parseFixed(after);
+  const b = parseFixed(before);
+  if (a === null || b === null) {
     return null;
   }
+  const scale = Math.max(a.scale, b.scale);
+  const difference = rescale(a, scale) - rescale(b, scale);
+  return formatFixed(difference, scale);
+}
+
+/** A decimal string as (unscaled bigint, digits after the point). Null: not an amount. */
+function parseFixed(text: string): { readonly units: bigint; readonly scale: number } | null {
+  const match = /^(-?)(\d+)(?:\.(\d+))?$/.exec(text);
+  if (match === null) {
+    return null;
+  }
+  const [, sign, whole, fraction = ""] = match;
+  return { units: BigInt(sign + whole + fraction), scale: fraction.length };
+}
+
+function rescale(amount: { readonly units: bigint; readonly scale: number }, scale: number): bigint {
+  return amount.units * 10n ** BigInt(scale - amount.scale);
+}
+
+/** Back to a decimal string, with the trailing zeros an even difference leaves trimmed. */
+function formatFixed(units: bigint, scale: number): string {
+  if (scale === 0) {
+    return units.toString();
+  }
+  const negative = units < 0n;
+  const digits = (negative ? -units : units).toString().padStart(scale + 1, "0");
+  const whole = digits.slice(0, -scale);
+  const fraction = digits.slice(-scale).replace(/0+$/, "");
+  return `${negative ? "-" : ""}${whole}${fraction.length > 0 ? `.${fraction}` : ""}`;
 }
 
 export function createMissionBot(deps: MissionBotDeps): MissionBotController {

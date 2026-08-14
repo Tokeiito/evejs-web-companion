@@ -688,6 +688,20 @@ test("earnings are bigint-safe (ISK exceeds 2^53)", () => {
   assert.equal(subtractAmounts("nonsense", "1"), null);
 });
 
+test("earnings survive a FRACTIONAL wallet — the balance one insurance payout leaves", () => {
+  // The live shape: Farmer's wallet reads "115789534766.84". BigInt() throws on
+  // it, and the old code turned that throw into null — "ISK earned: —" for the
+  // whole run, on every character whose balance was not a whole number.
+  assert.equal(subtractAmounts("115789534766.84", "115789432766.84"), "102000");
+  assert.equal(subtractAmounts("1000.5", "900"), "100.5");
+  assert.equal(subtractAmounts("1000", "900.25"), "99.75");
+  // Mixed scales, and a difference whose trailing zeros trim away.
+  assert.equal(subtractAmounts("2.50", "1.5"), "1");
+  assert.equal(subtractAmounts("0.6", "0.84"), "-0.24");
+  // Still bigint-safe with a fraction riding along.
+  assert.equal(subtractAmounts("9007199254740993.5", "9007199254740991"), "2.5");
+});
+
 // =============================================================================
 // 6. THE CONTROLLER — bounds, confirmation, and never a cached token
 // =============================================================================

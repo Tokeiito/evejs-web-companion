@@ -150,11 +150,15 @@
     if (value === null) {
       return "—";
     }
-    try {
-      return BigInt(value).toLocaleString();
-    } catch {
+    // Fixed-point, never Number: the whole part groups through BigInt (ISK can
+    // exceed 2^53) and a fractional part rides along verbatim — a wallet
+    // difference like "129271601.6" is a real payout, not a formatting error.
+    const match = /^(-?\d+)(?:\.(\d+))?$/.exec(value);
+    if (match === null) {
       return value;
     }
+    const whole = BigInt(match[1]).toLocaleString();
+    return match[2] !== undefined ? `${whole}.${match[2]}` : whole;
   }
 
   async function run(action: () => Promise<void> | void): Promise<void> {
