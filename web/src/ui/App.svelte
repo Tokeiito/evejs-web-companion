@@ -183,9 +183,16 @@
   // the 7th pilot's login/select in the browser queue. Background pilots keep
   // refreshing themselves over ordinary reads (every bridge response carries
   // its notification drain); the switched-to pilot re-attaches here.
+  // ⚠ TWO SEPARATE THINGS, DRIVEN FROM ONE CONDITION. Push is about which pilot
+  // holds the tab's one EventSource; foreground is about which pilot wins a
+  // request lane when they compete. A background pilot's bot keeps working —
+  // that is the point of multibox — but the browser's ~6 connections per origin
+  // do not multiply with the roster, so its calls yield to the pilot on screen.
   $effect(() => {
     for (const s of sessions) {
-      s.flow.setLivePush(s.id === activeId);
+      const isActive = s.id === activeId;
+      s.flow.setLivePush(isActive);
+      s.flow.setForeground(isActive);
     }
   });
 

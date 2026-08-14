@@ -12,6 +12,9 @@ import assert from "node:assert/strict";
 import { createAppFlow } from "./flow.ts";
 import { createClientStore } from "../store/clientStore.ts";
 import type { EventSourceLike } from "./api.ts";
+import { readFileSync } from "node:fs";
+import { foregroundCallPriority } from "./flow.ts";
+import type { RequestPriority } from "./transport.ts";
 
 const CHARACTER_ROW = {
   type: "object",
@@ -157,4 +160,55 @@ test("setLivePush(true) with nobody online opens nothing until the next select",
   await flow.selectCharacter(140000003);
   // Push was enabled, so select's own startLiveStream attaches.
   assert.equal(streams.opened.length, 1);
+});
+
+// --- R92: a background pilot yields its lane to the one on screen ------------
+//
+// ⚠ THE MULTIBOX SHAPE THIS PROTECTS. A background pilot's flow OUTLIVES its
+// panel — switch away from a mining pilot and its bot loop keeps ticking every
+// two seconds, which is the whole point of multibox. But the browser's ~6
+// connections per origin do not multiply with the roster, so a four-pilot tab
+// has four loops drawing on one budget. Without a priority the requests that
+// lose are whichever arrive last, which is usually the click just made.
+//
+// The three-week-old fix above stopped every pilot holding an EventSource. This
+// is the same problem one layer down: not who holds a connection for ever, but
+// who gets one first.
+
+test("a BACKGROUND pilot's calls are marked as background work", () => {
+  assert.equal(foregroundCallPriority(false), "poll");
+});
+
+test("the FOREGROUND pilot names no priority, so its own calls decide", () => {
+  // ⚠ Undefined, not "read". The space poll passes "poll" explicitly and must
+  // keep it even for the pilot on screen — a poll is background work whoever
+  // owns it. Forcing "read" here would quietly promote every active pilot's
+  // polling above every other pilot's actual work.
+  assert.equal(foregroundCallPriority(true), undefined);
+});
+
+test("switching pilots re-marks BOTH of them", () => {
+  // The failure worth naming: a switch that promotes the new pilot but never
+  // demotes the old one leaves two foreground pilots and no yielding at all.
+  const roster = ["a", "b"];
+  const marks = new Map<string, RequestPriority | undefined>();
+  for (const id of roster) {
+    marks.set(id, foregroundCallPriority(id === "b"));
+  }
+  assert.equal(marks.get("a"), "poll", "the pilot switched AWAY from still competes");
+  assert.equal(marks.get("b"), undefined);
+});
+
+test("the roster marks exactly ONE pilot as foreground", () => {
+  // ⚠ Read from the source, because the bug this prevents is a switch that
+  // updates push but forgets priority — leaving a pilot nobody is looking at
+  // competing as though they were on screen. The two calls live in one loop for
+  // that reason.
+  const source = readFileSync(
+    new URL("../ui/App.svelte", import.meta.url),
+    "utf8",
+  );
+  const effect = source.slice(source.indexOf("for (const s of sessions)"));
+  assert.match(effect, /setLivePush\(isActive\)/, "push is no longer driven by the active id");
+  assert.match(effect, /setForeground\(isActive\)/, "the roster never marks a foreground pilot");
 });

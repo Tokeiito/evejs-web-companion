@@ -96,6 +96,7 @@ import {
 import { decodeSkillSheet, skillQueueRefusal } from "../bridge/skills.ts";
 import { decodeColonyReport } from "../bridge/planets.ts";
 import { createSpacePoller, targetsReadIsDue, type SpacePoller } from "./spacePoll.ts";
+import type { RequestPriority } from "./transport.ts";
 import type { FlightStepResult } from "./api.ts";
 import { BridgeCallError } from "../bridge/callMethod.ts";
 import { refusalWords as sayRefusalWords } from "../bridge/refusals.ts";
@@ -929,6 +930,8 @@ export interface AppFlow {
    * Enabling while the character is online (re-)opens the stream immediately.
    */
   setLivePush(enabled: boolean): void;
+  /** R92 multibox — mark this flow as the pilot on screen (or not). */
+  setForeground(active: boolean): void;
   /** Release the persistent session (character offline), back to the select list. */
   releaseSession(): Promise<void>;
   logout(): Promise<void>;
@@ -1009,6 +1012,18 @@ function errorWords(error: unknown): string {
 /** Turn a raw refusal into a sentence, keeping the raw recoverable (R31). */
 const sayRefusal = sayRefusalWords;
 
+/**
+ * The lane priority a pilot's calls carry, given whether it is on screen.
+ *
+ * ⚠ UNDEFINED, NOT "read", FOR THE FOREGROUND. Absent lets app/api.ts apply its
+ * own default, and — more importantly — lets a call that names its own priority
+ * still win: the space poll passes "poll" whether or not its pilot is on screen,
+ * because a poll is background work even for the pilot you are looking at.
+ */
+export function foregroundCallPriority(active: boolean): RequestPriority | undefined {
+  return active ? undefined : "poll";
+}
+
 export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}): AppFlow {
   // R107 — in per-session mode the `token` key is present (starting null) so
   // every api.ts / callMethod.ts call authenticates with THIS flow's token and
@@ -1021,6 +1036,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     fetch?: typeof fetch;
     eventSource?: (url: string) => api.EventSourceLike;
     token?: string | null;
+    priority?: RequestPriority;
   } = {
     ...(options.baseUrl !== undefined ? { baseUrl: options.baseUrl } : {}),
     ...(options.fetch !== undefined ? { fetch: options.fetch } : {}),
@@ -7722,6 +7738,27 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     },
 
     requestNames,
+
+    /**
+     * R92 multibox — is this the pilot the player is LOOKING at?
+     *
+     * ⚠ A BACKGROUND PILOT IS STILL WORKING, AND THAT IS THE POINT OF MULTIBOX.
+     * Its flow outlives the panel: switch away from a mining pilot and its bot
+     * loop keeps ticking every two seconds, which is exactly what was asked for.
+     * But the browser's ~6 connections per origin do not multiply with the
+     * roster, so a four-pilot tab has four loops drawing on one budget, and the
+     * requests that lose are whichever happen to arrive last — usually the click
+     * that was just made, because that is the one a person is waiting on.
+     *
+     * So a background pilot's calls drop to "poll": they still run, they still
+     * retry, they simply yield to the pilot on screen. Explicitly separate from
+     * `setLivePush` even though App.svelte drives both from the same condition —
+     * one is about holding an EventSource, the other about who wins a lane, and
+     * a later change to either should not silently move the other.
+     */
+    setForeground(active) {
+      callOptions.priority = foregroundCallPriority(active);
+    },
 
     setLivePush(enabled) {
       if (enabled === livePushEnabled) {
