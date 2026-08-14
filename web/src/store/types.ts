@@ -1638,6 +1638,12 @@ export interface SpaceSnapshot {
  */
 export interface SpaceState {
   readonly snapshot: SpaceSnapshot | null;
+  /**
+   * R89 — when the current snapshot arrived, on the BROWSER's clock. Null before
+   * the first one lands. See the note on the `space/snapshot` event for why this
+   * is not `snapshot.sampledAtMs`.
+   */
+  readonly receivedAtMs: number | null;
   /** True once a snapshot read has populated the slice. */
   readonly loaded: boolean;
   /** Non-null when the last snapshot read failed (non-fatally). */

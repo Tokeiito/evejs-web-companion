@@ -221,7 +221,40 @@ test("a refused move from a row is shown as a reason, not a silent no-op", async
 });
 
 test("the overview poll runs at the retail overview cadence", () => {
-  assert.equal(SPACE_POLL_INTERVAL_MS, 1_000);
+  // ⚠ R89 raised this from 1_000. It is the rate at which the picture is TRUE;
+  // the viewport draws every animation frame and predicts between reads
+  // (space/deadReckoning.ts), so smoothness is not bought by polling harder.
+  assert.equal(SPACE_POLL_INTERVAL_MS, 200);
+});
+
+test("a beat is SKIPPED while a read is still in flight", async () => {
+  // The safety property that makes 5 Hz sane: a server that cannot answer in
+  // 200 ms is throttled to whatever it can actually do, instead of accumulating
+  // a queue of overlapping reads.
+  let inFlight = 0;
+  let peak = 0;
+  // Held in an object for the same reason the test above does it: assigning
+  // inside a callback lets TS narrow the local to `never` and reject the call.
+  const held: { release: (() => void) | null } = { release: null };
+  const poller = createSpacePoller({
+    refresh: () => {
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      return new Promise<void>((resolve) => {
+        held.release = () => {
+          inFlight -= 1;
+          resolve();
+        };
+      });
+    },
+    shouldPoll: () => true,
+    intervalMs: 5,
+  });
+  poller.start();
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  held.release?.();
+  poller.stop();
+  assert.equal(peak, 1, "reads must never overlap");
 });
 
 test("the poll starts with the panel and stops when the ship is no longer in space", async () => {

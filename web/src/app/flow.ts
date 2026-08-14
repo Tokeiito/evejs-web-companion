@@ -3543,7 +3543,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       return;
     }
     const snapshot = decodeSpaceSnapshot(result.space);
-    store.apply({ type: "space/snapshot", snapshot, gateLinks: gateLinksForSnapshot(snapshot) });
+    store.apply({
+      type: "space/snapshot",
+      snapshot,
+      gateLinks: gateLinksForSnapshot(snapshot),
+      receivedAtMs: Date.now(),
+    });
     // Keep the flight readout honest too: a snapshot that says the ship is no
     // longer in space means the poll is about to stop, and the panel should not
     // keep showing the last grid it saw.
@@ -4588,7 +4593,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         try {
           const result = await api.getSpaceSnapshot(callOptions);
           const snapshot = decodeSpaceSnapshot(result.space);
-          store.apply({ type: "space/snapshot", snapshot, gateLinks: gateLinksForSnapshot(snapshot) });
+          store.apply({
+      type: "space/snapshot",
+      snapshot,
+      gateLinks: gateLinksForSnapshot(snapshot),
+      receivedAtMs: Date.now(),
+    });
           return snapshot;
         } catch (error) {
           if (isSessionLost(error)) {
@@ -4882,7 +4892,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         const snapshot = decodeSpaceSnapshot(result.space);
         // Push it to the space slice too, so the Overview stays live while the
         // bot works even if the panel's own poll is not running.
-        store.apply({ type: "space/snapshot", snapshot, gateLinks: gateLinksForSnapshot(snapshot) });
+        store.apply({
+      type: "space/snapshot",
+      snapshot,
+      gateLinks: gateLinksForSnapshot(snapshot),
+      receivedAtMs: Date.now(),
+    });
         return snapshot;
       },
       // THE LOCK AUTHORITY. A failed read must return null, never [] — an empty
@@ -5783,7 +5798,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         const status = decodeFlightStatus(flightStep.flight);
         void observeFlightStatus(status);
         const snapshot = decodeSpaceSnapshot(spaceResult.space);
-        store.apply({ type: "space/snapshot", snapshot, gateLinks: gateLinksForSnapshot(snapshot) });
+        store.apply({
+      type: "space/snapshot",
+      snapshot,
+      gateLinks: gateLinksForSnapshot(snapshot),
+      receivedAtMs: Date.now(),
+    });
         const observedShipID = snapshot?.ship?.itemID ?? status.shipID ?? null;
         const capabilities = await capabilityCache.read(capabilityScope(observedShipID));
         const lockedTargetIDs = decodeTargetIDs(targetsResult.targetIDs);

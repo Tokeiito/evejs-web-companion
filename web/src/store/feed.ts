@@ -569,6 +569,18 @@ export type FeedEvent =
        * an empty array is a real answer meaning "this grid has no gates".
        */
       readonly gateLinks?: readonly GateLink[];
+      /**
+       * R89 — when this snapshot ARRIVED, on the BROWSER's clock.
+       *
+       * ⚠ NOT `snapshot.sampledAtMs`, which is the server's sim clock. The two
+       * are different clocks on possibly different machines, so subtracting one
+       * from the other yields whatever their offset happens to be — minutes, in
+       * either direction, on a badly-set box. Dead reckoning needs "how long
+       * since I was told this", which only a stamp taken HERE can answer. The
+       * producer stamps it, as live notifications already do, so the reducer
+       * stays a pure function of its event.
+       */
+      readonly receivedAtMs?: number;
     }
   | { readonly type: "space/gate-map-error"; readonly message: string }
   // Goal R23 slice A — the GENERIC in-space action layer. Nothing here names

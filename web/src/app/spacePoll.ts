@@ -1,11 +1,13 @@
 // Overview refresh cadence (goal R11).
 //
 // The retail client re-renders its overview every 0.5-1.0s off a locally
-// dead-reckoned ballpark. We do the honest equivalent: re-read the authoritative
-// snapshot once a second while the ship is in space and the panel is open. So
-// polling here is not a stand-in for push — it IS the cadence the real client
-// runs at, and the R10 push channel does not replace it (the channel carries
-// events, not continuous positions).
+// dead-reckoned ballpark. We now do BOTH halves of that: this poller re-reads the
+// authoritative snapshot five times a second while the ship is in space and the
+// panel is open, and the viewport predicts between those reads
+// (`space/deadReckoning.ts`) so motion is smooth rather than stepped. Polling
+// here is not a stand-in for push — it IS the cadence the real client runs at,
+// and the R10 push channel does not replace it (the channel carries events, not
+// continuous positions).
 //
 // Two rules keep it from getting in the autopilot's way:
 //   - it is a READ, and it is skipped whenever a read is already in flight, so a
@@ -15,8 +17,21 @@
 // The autopilot loop owns its own cadence and its own flight-status reads; this
 // poller never issues a movement call and never blocks one.
 
-/** The in-space overview cadence — retail's own overview re-render rate. */
-export const SPACE_POLL_INTERVAL_MS = 1_000;
+/**
+ * The in-space cadence — how often the AUTHORITATIVE grid is re-read.
+ *
+ * ⚠ R89 RAISED THIS FROM 1_000, AND THE COST IS REAL: five times the snapshot
+ * reads, five times the bytes. Two things keep it safe rather than merely
+ * faster. A beat is SKIPPED whenever a read is still in flight (see below), so a
+ * server that cannot answer in 200 ms is naturally throttled to whatever it can
+ * actually do instead of accumulating a queue. And the poller stops entirely the
+ * moment the ship is not in space, the panel closes, or the tab is hidden.
+ *
+ * This is the rate at which the picture is TRUE. The viewport draws every
+ * animation frame by predicting between these reads, so smoothness is no longer
+ * bought by polling harder — which is why this is 200 ms and not 16.
+ */
+export const SPACE_POLL_INTERVAL_MS = 200;
 
 export interface SpacePollerDeps {
   /** Perform one snapshot read. Rejections are swallowed by the poller. */

@@ -42,6 +42,12 @@
   import { spaceSelection } from "../space/selection.ts";
   import { showInfo } from "./showInfo.ts";
   import { overviewPreset } from "../space/overviewPreset.ts";
+  import {
+    anythingMoving,
+    elapsedSinceArrival,
+    extrapolate,
+    extrapolateEntities,
+  } from "../space/deadReckoning.ts";
   import { applyPreset } from "../space/overviewPresets.ts";
   import { actionsForRow, type RowAction } from "../space/rowActions.ts";
   import { dispatchRowAction, isSingleCallAction } from "../space/rowActionRunner.ts";
@@ -71,7 +77,6 @@
 
   const snapshot = $derived($space.snapshot ?? null);
   const ship = $derived(snapshot?.ship ?? null);
-  const origin = $derived(ship?.position ?? { x: 0, y: 0, z: 0 });
   /**
    * R79 — the grid as the chosen overview tab sees it. The picture and the list
    * read the SAME shared preset, so switching to Mining cannot leave stargates
@@ -82,7 +87,59 @@
    * WHAT is drawn and never where a given distance sits.)
    */
   const presetSignal = overviewPreset.preset;
-  const entities = $derived(applyPreset(snapshot?.entities ?? [], $presetSignal));
+  const measuredEntities = $derived(applyPreset(snapshot?.entities ?? [], $presetSignal));
+
+  // --- R89: smooth motion between snapshots ---------------------------------
+  //
+  // The picture used to redraw exactly when a snapshot landed, so its motion WAS
+  // the poll rate — objects teleported from one measured position to the next.
+  // It now draws every animation frame and advances each object along the
+  // velocity the SERVER reported, snapping back to truth on every snapshot.
+  //
+  // ⚠ THE FRAME LOOP ONLY RUNS WHEN SOMETHING IS ACTUALLY MOVING. A belt is two
+  // hundred parked rocks and a stationary ship; redrawing that sixty times a
+  // second to produce an identical picture is the kind of idle cost that never
+  // shows up in a profile anyone runs. `anythingMoving` includes YOUR ship,
+  // because closing on a rock at 300 m/s is your movement, not the rock's.
+  const shipVelocity = $derived(ship?.velocity ?? null);
+  const moving = $derived(anythingMoving(measuredEntities, shipVelocity));
+
+  /** The browser clock, advanced per frame while anything is moving. */
+  let frameNowMs = $state(Date.now());
+  $effect(() => {
+    if (!moving) {
+      return;
+    }
+    let handle = 0;
+    const tick = (): void => {
+      frameNowMs = Date.now();
+      handle = requestAnimationFrame(tick);
+    };
+    handle = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(handle);
+  });
+
+  /**
+   * How long since the current snapshot ARRIVED. Measured against the browser
+   * clock the snapshot was stamped with on arrival — never against the server's
+   * own sim clock, which is a different clock on a different machine.
+   *
+   * When nothing is moving this deliberately reads 0, so the whole prediction
+   * chain collapses to the measured grid and re-derives nothing.
+   */
+  const elapsedMs = $derived(
+    moving ? elapsedSinceArrival($space.receivedAtMs, frameNowMs) : 0,
+  );
+
+  const entities = $derived(extrapolateEntities(measuredEntities, elapsedMs));
+  /**
+   * Your own hull moves too, and the origin is what every bracket is measured
+   * FROM — so a plot that advanced the grid but not the observer would show a
+   * belt sliding backwards past a ship that never moved.
+   */
+  const origin = $derived(
+    ship ? extrapolate(ship.position, ship.velocity, elapsedMs) : { x: 0, y: 0, z: 0 },
+  );
 
   /**
    * ⚠ R86 — THE SCALE IS FIXED, NOT AUTO-RANGED. It used to stretch to whatever
