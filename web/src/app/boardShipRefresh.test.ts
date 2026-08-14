@@ -19,6 +19,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createClientStore } from "../store/clientStore.ts";
 import { createAppFlow } from "./flow.ts";
+import { deriveShipStats } from "../bridge/shipStats.ts";
 
 const OLD_SHIP = 9988400023309;
 const NEW_SHIP = 9988400091901;
@@ -206,4 +207,115 @@ test("leaving a ship closes the bays instead of leaving a ghost hull open", asyn
     null,
     "a hull you are no longer in must not stay open",
   );
+});
+
+// --- R88: the store makes it impossible, not merely unlikely -----------------
+//
+// R87 put the fix in the CALLERS: board/leave re-read the hull-scoped views.
+// That works until something else changes the active ship — a server push, a
+// bot, an eject, a hull destroyed under you — and then the same silent
+// staleness is back. These exercise the store directly, with no flow involved,
+// because that is where the guarantee now lives.
+
+function inventoryEvent(activeShipID: number | null) {
+  return {
+    type: "inventory/loaded" as const,
+    stationID: 60003760,
+    activeShipID,
+    hangar: { rows: [], capacity: null, error: null },
+    cargo: { rows: [], capacity: null, error: null },
+  };
+}
+
+function withFitAndOpenShip(activeShipID: number) {
+  const store = createClientStore();
+  store.apply(inventoryEvent(activeShipID) as never);
+  store.apply({
+    type: "inventory/ship-open",
+    itemID: activeShipID,
+    typeID: 622,
+  } as never);
+  store.apply({
+    type: "fitting/loaded",
+    activeShipID,
+    slots: [],
+    resources: {
+      cpu: { used: 0, total: 0, known: false },
+      powergrid: { used: 0, total: 0, known: false },
+      capacitor: { used: 0, total: 0, known: false },
+      calibration: { used: 0, total: 0, known: false },
+    },
+    stats: deriveShipStats(new Map()),
+    slotsError: null,
+    resourcesError: null,
+  } as never);
+  return store;
+}
+
+test("the STORE drops a fit that belongs to a hull you are no longer in", () => {
+  const store = withFitAndOpenShip(OLD_SHIP);
+  assert.equal(store.get().fitting.loaded, true, "precondition: a fit is loaded");
+
+  store.apply(inventoryEvent(NEW_SHIP) as never);
+
+  assert.equal(
+    store.get().fitting.loaded,
+    false,
+    "the previous hull's modules must not survive the swap",
+  );
+});
+
+test("the STORE drops a bays card that was tracking the hull you were flying", () => {
+  const store = withFitAndOpenShip(OLD_SHIP);
+  store.apply(inventoryEvent(NEW_SHIP) as never);
+  assert.equal(store.get().inventory.openShip, null);
+});
+
+test("a bays card opened on some OTHER ship is KEPT", () => {
+  // Looking inside a hull parked in the hangar is a deliberate pick, and it is
+  // still true after boarding something else. Closing it would throw the pick
+  // away for no reason.
+  const store = createClientStore();
+  store.apply(inventoryEvent(OLD_SHIP) as never);
+  const OTHER = 9988400055555;
+  store.apply({ type: "inventory/ship-open", itemID: OTHER, typeID: 622 } as never);
+
+  store.apply(inventoryEvent(NEW_SHIP) as never);
+
+  assert.equal(store.get().inventory.openShip?.itemID, OTHER);
+});
+
+test("the FIRST load is not a hull change", () => {
+  // ⚠ activeShipID moves from null to a real hull on the first read. Treating
+  // that as a swap would make every character coming online throw away the fit
+  // it had just been given. Same three-valued reasoning the dock transition
+  // needed, for the same reason.
+  const store = createClientStore();
+  store.apply({
+    type: "fitting/loaded",
+    activeShipID: OLD_SHIP,
+    slots: [],
+    resources: {
+      cpu: { used: 0, total: 0, known: false },
+      powergrid: { used: 0, total: 0, known: false },
+      capacitor: { used: 0, total: 0, known: false },
+      calibration: { used: 0, total: 0, known: false },
+    },
+    stats: deriveShipStats(new Map()),
+    slotsError: null,
+    resourcesError: null,
+  } as never);
+
+  store.apply(inventoryEvent(OLD_SHIP) as never);
+
+  assert.equal(store.get().fitting.loaded, true, "the first reading discarded a good fit");
+});
+
+test("a reload with the SAME hull keeps everything", () => {
+  // The ordinary case: polling, a move, a stack. Nothing about the ship changed,
+  // so nothing hull-scoped may be thrown away.
+  const store = withFitAndOpenShip(OLD_SHIP);
+  store.apply(inventoryEvent(OLD_SHIP) as never);
+  assert.equal(store.get().fitting.loaded, true);
+  assert.equal(store.get().inventory.openShip?.itemID, OLD_SHIP);
 });

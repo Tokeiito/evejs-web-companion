@@ -1056,6 +1056,38 @@ export function createClientStore(): ClientStore {
         break;
       case "inventory/loaded": {
         const previous = inventory.get();
+        /**
+         * R88 — WHICH HULL YOU ARE FLYING CHANGED, SO EVERYTHING KEYED TO THE
+         * HULL IS NOW A LIE.
+         *
+         * R87 fixed boarding by having the board/leave flows re-read the
+         * hull-scoped views. That worked, but it put the guarantee in the
+         * CALLERS: any future action that changes the active ship — a server
+         * push, a bot, an eject, a ship destroyed under you — would have to
+         * remember to do the same, and the failure mode is silent. A stale fit
+         * or a stale set of bays looks live, sits under the right heading, and
+         * says nothing about describing a different ship.
+         *
+         * So the invalidation lives HERE, where the change is observed, and it
+         * cannot be forgotten. The flows still re-read (so the panels refill
+         * immediately rather than sitting empty); this is what makes the stale
+         * state impossible rather than merely unlikely.
+         *
+         * ⚠ `previous.loaded` IS THE GUARD, AND IT IS NOT OPTIONAL. The first
+         * load moves activeShipID from null to a real hull, which is not a
+         * change of ship — it is the first time we looked. Without this, every
+         * character coming online would throw away the fit it had just read.
+         * (The dock transition needed the same three-valued reasoning for the
+         * same reason; see ui/dockTransition.ts.)
+         */
+        const hullChanged = previous.loaded && previous.activeShipID !== event.activeShipID;
+        if (hullChanged) {
+          // The fit, its resources, its stats and its dogma snapshot all belong
+          // to the hull. Clearing rather than re-reading here keeps the store
+          // free of I/O; the panels that care watch `loaded` and refill.
+          fitting.set(INITIAL_FITTING);
+          dogma.set(INITIAL_DOGMA);
+        }
         // A reload drops any selection whose item is no longer in the hangar or
         // cargo: acting on a stale tick would move something the player can no
         // longer see.
@@ -1075,6 +1107,26 @@ export function createClientStore(): ClientStore {
           cargo: event.cargo,
           loaded: true,
           selection: previous.selection.filter((itemID) => visible.has(itemID)),
+          /**
+           * ⚠ THE OPEN BAYS CARD FOLLOWS THE HULL, BUT ONLY WHEN IT WAS
+           * TRACKING IT.
+           *
+           * The card is normally opened on the ship you are flying (the panel
+           * does that on mount), so when the hull changes it must not keep
+           * showing the one you stepped out of — that is the reported bug, and
+           * at its sharpest it left a Procurer's 16,000 m³ ore hold on screen
+           * after boarding a frigate.
+           *
+           * But a player can also open some OTHER ship's bays deliberately, to
+           * look inside a hull sitting in the hangar. That card is still true
+           * after boarding something else, and closing it would throw away a
+           * pick they made on purpose. So only a card that was pointing at the
+           * PREVIOUS active hull is dropped.
+           */
+          openShip:
+            hullChanged && previous.openShip?.itemID === previous.activeShipID
+              ? null
+              : previous.openShip,
           // A successful load clears any stale mutation error.
           actionError: null,
         });

@@ -1527,8 +1527,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    * right panel, and nothing about them says they are describing a different
    * ship.
    *
-   * Called after every action that changes the active hull, so the fix cannot be
-   * half-applied to one of them.
+   * ⚠ THIS IS THE REFILL, NOT THE GUARANTEE. R88 moved the invalidation into the
+   * store, where the hull change is OBSERVED (see `inventory/loaded`): the fit
+   * and the bays card are dropped there, so no caller can leave stale hull state
+   * on screen by forgetting to call this. What this adds is promptness — the
+   * panels refill on the same beat as the board instead of sitting empty until
+   * something else asks. Deleting it degrades the experience; deleting the store
+   * half reintroduces the bug.
    */
   async function refreshActiveShipViews(): Promise<void> {
     // Read the hull AFTER the mutation's own reload, so this is the ship the
