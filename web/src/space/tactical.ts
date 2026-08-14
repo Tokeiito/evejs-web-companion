@@ -20,13 +20,17 @@
 // the centre — i.e. the entire belt a miner is working collapses into the ship's
 // own dot, while one planet owns the rim. Every naive space view fails this way.
 //
-// So the RADIUS is log-compressed and the BEARING is not. Direction is truthful:
-// a rock to galactic north is drawn north, and two rocks 30° apart are drawn 30°
+// So the RADIUS is compressed and the BEARING is not. Direction is truthful: a
+// rock to galactic north is drawn north, and two rocks 30° apart are drawn 30°
 // apart. Distance is ORDERED and readable but not to scale — which is precisely
 // the bargain retail's own tactical overlay strikes, and why it draws labelled
 // range rings. The rings are not decoration: they are what makes a compressed
-// radius legible, so `tacticalRings` is part of this module and not the view's
-// idea of a nice touch.
+// radius legible.
+//
+// R86 went further and made the rings the DEFINITION of the compression rather
+// than markings on top of it — see RANGE_ANCHORS. A plain logarithm gave the
+// inner fifth of the plot to everything out to 100 km, which is every range at
+// which a pilot actually decides anything.
 //
 // ---------------------------------------------------------------------------
 // THE PLANE, THE TILT, AND THE DROP LINE
@@ -57,14 +61,6 @@ export interface TacticalViewport {
   /** Plot box in CSS pixels. */
   readonly width: number;
   readonly height: number;
-  /**
-   * Distance at the CENTRE of the plot. Anything nearer than this is drawn at
-   * the centre rather than at a negative radius. 1 km by default: closer than
-   * that and you are, for every purpose a pilot has, on top of the thing.
-   */
-  readonly minRangeMeters?: number;
-  /** Distance at the RIM. Objects beyond it clamp to the rim and say so. */
-  readonly maxRangeMeters: number;
   /**
    * How hard the disc is squashed: 1 is a true top-down circle, 0 would be an
    * edge-on line. 0.42 is the default and reads as a shallow overhead angle.
@@ -133,7 +129,6 @@ export interface TacticalBracket extends TacticalPoint {
   readonly vectorY: number;
 }
 
-const DEFAULT_MIN_RANGE = 1_000;
 const DEFAULT_TILT = 0.42;
 const DEFAULT_HEIGHT_GAIN = 0.35;
 const DEFAULT_MARGIN = 28;
@@ -153,12 +148,9 @@ const VECTOR_LENGTH_FRACTION = 0.075;
 /**
  * Squeeze a ratio into 0-1.
  *
- * ⚠ THE NON-FINITE BRANCH IS LOAD-BEARING, NOT DEFENSIVE PADDING. It is the ONLY
- * thing standing between a degenerate range and a ruined plot — see
- * `radialFraction` below, which relies on it rather than pre-checking its own
- * bounds. Deleting it does not throw and does not produce a visible NaN; it welds
- * every bracket to the rim. Mutating it is caught by the degenerate-range test in
- * `tactical.test.ts`, which is where that behaviour is pinned.
+ * ⚠ THE NON-FINITE BRANCH IS LOAD-BEARING, NOT DEFENSIVE PADDING. A degenerate
+ * interpolation hands back NaN or Infinity, and a canvas silently declines to
+ * draw either — so a bracket would simply not appear rather than appear wrongly.
  */
 function clamp01(value: number): number {
   if (!Number.isFinite(value)) {
@@ -167,56 +159,94 @@ function clamp01(value: number): number {
   return value < 0 ? 0 : value > 1 ? 1 : value;
 }
 
-/**
- * The log compression, in one place: where a distance falls between the centre
- * (`min`) and the rim (`max`), as 0-1.
- *
- * ⚠ A DEGENERATE RANGE IS REAL AND IS HANDLED BY `clamp01`, NOT BY A BOUNDS CHECK
- * HERE. `max <= min` happens whenever a grid's only object is nearer than the
- * centre distance — one rock 200 m away auto-ranges to a rim at or below the 1 km
- * floor. `Math.log(max/min)` is then `log(1) = 0` and the division yields
- * ±Infinity, which `clamp01` collapses to the centre. That is the truth in that
- * case: everything really is on top of you.
- *
- * An explicit `if (max <= min) return 0` was tried here and removed — it could
- * never change the result, so no test could tell whether it was present, which
- * makes it exactly the kind of guard that reads as protection while protecting
- * nothing.
- */
-export function radialFraction(distance: number, min: number, max: number): number {
-  if (!Number.isFinite(distance) || distance <= min) {
-    return 0;
-  }
-  return clamp01(Math.log(distance / min) / Math.log(max / min));
+/** One point where a distance is pinned to a fraction of the plot radius. */
+export interface RangeAnchor {
+  readonly meters: number;
+  /** 0 at the ship, 1 at the rim. */
+  readonly radial: number;
 }
 
 /**
- * The rim distance to use for a set of distances: the farthest one, rounded UP
- * to the next decade so the outermost object sits inside the rim rather than on
- * it, and floored so an empty or very tight grid still gets a sane plot.
+ * THE SCALE, DEFINED BY THE RINGS THAT MATTER (goal R86).
  *
- * Auto-ranging rather than a fixed zoom is deliberate. A player who warps from a
- * belt (tens of km) to a planet (AU) would otherwise have to reach for a zoom
- * control on every arrival, and the one thing a viewport must never do is need
- * fiddling before it can be read.
+ * ⚠ WHY THIS IS A TABLE AND NOT A FORMULA. The first version was a plain
+ * logarithm from 1 km to whatever the farthest object happened to be, and it was
+ * measurably wrong for the way the picture is actually used: at a 20 AU rim it
+ * put 10 km at 11% of the radius, 50 km at 18% and 100 km at 21%. The ENTIRE
+ * combat and mining envelope — every range at which a pilot makes a decision —
+ * lived in the inner fifth of the plot, while four fifths were spent on empty
+ * space between 100 km and the horizon.
+ *
+ * So the ranges a pilot thinks in are pinned to where they should APPEAR, and
+ * the curve is fitted to them rather than the other way round. 0-100 km now owns
+ * 68% of the radius. Everything past it still spreads (500 km at 71%, 1 AU at
+ * 94%), because the outer band is interpolated logarithmically — it is
+ * compressed, not collapsed.
+ *
+ * The scale is also FIXED rather than auto-ranged to what is on grid. That is a
+ * deliberate trade: a plot whose meaning changes as objects come and go can be
+ * read but not learnt, and these four rings are worth learning. The cost is that
+ * a grid holding nothing past 20 km uses only the inner 40% — visible, spread,
+ * and honest about how close everything is.
  */
-export function autoRangeMeters(
-  distances: readonly number[],
-  floorMeters = 50_000,
-): number {
-  let farthest = 0;
-  for (const distance of distances) {
-    if (Number.isFinite(distance) && distance > farthest) {
-      farthest = distance;
+export const RANGE_ANCHORS: readonly RangeAnchor[] = [
+  { meters: 0, radial: 0 },
+  { meters: 10_000, radial: 0.3 },
+  { meters: 50_000, radial: 0.52 },
+  { meters: 100_000, radial: 0.68 },
+  { meters: 20 * METRES_PER_AU, radial: 1 },
+];
+
+/** The farthest distance the plot can express; beyond it, brackets pin to the rim. */
+export const MAX_RANGE_METERS: number =
+  RANGE_ANCHORS[RANGE_ANCHORS.length - 1]?.meters ?? 20 * METRES_PER_AU;
+
+/**
+ * Where a distance falls between the ship and the rim, 0-1.
+ *
+ * Interpolates between the anchors above: LINEARLY inside the innermost band and
+ * LOGARITHMICALLY beyond it.
+ *
+ * ⚠ THE TWO INTERPOLATIONS ARE DIFFERENT ON PURPOSE. The innermost band contains
+ * zero, which has no logarithm — but more than that, at scram range a pilot wants
+ * TRUE relative spacing: 2 km and 8 km should look four times apart, because that
+ * is what they are, and a log there would flatten exactly the distances being
+ * judged most finely. Past 10 km the bands span decades and only a log keeps them
+ * readable.
+ */
+export function radialFraction(distance: number): number {
+  // ⚠ THESE TWO EARLY RETURNS ARE BELT-AND-BRACES, NOT THE ENFORCEMENT.
+  // Deleting either leaves the behaviour correct — `clamp01` already floors a
+  // negative distance at 0, and the loop below already falls through to 1 for
+  // anything past the outermost anchor. A mutation run proved exactly that: both
+  // deletions survived a full test pass.
+  //
+  // They stay because they state the contract where a reader will look for it
+  // and cost nothing. But do not assume a test will catch you removing one —
+  // what the tests pin is the RESULT (0 at or below the ship, 1 past the rim,
+  // never NaN), which is the thing that actually matters.
+  if (!Number.isFinite(distance) || distance <= 0) {
+    return 0;
+  }
+  if (distance >= MAX_RANGE_METERS) {
+    return 1;
+  }
+  for (let index = 1; index < RANGE_ANCHORS.length; index += 1) {
+    const low = RANGE_ANCHORS[index - 1] as RangeAnchor;
+    const high = RANGE_ANCHORS[index] as RangeAnchor;
+    if (distance > high.meters) {
+      continue;
     }
+    const span = high.radial - low.radial;
+    if (low.meters <= 0) {
+      // The innermost band: linear, so near distances keep their true ratios.
+      return clamp01(low.radial + span * (distance / high.meters));
+    }
+    return clamp01(
+      low.radial + span * (Math.log(distance / low.meters) / Math.log(high.meters / low.meters)),
+    );
   }
-  if (farthest <= 0) {
-    return floorMeters;
-  }
-  // Next power of ten, with a little air so the farthest bracket is not welded
-  // to the rim.
-  const decade = Math.pow(10, Math.ceil(Math.log10(farthest * 1.15)));
-  return Math.max(floorMeters, decade);
+  return 1;
 }
 
 /** The plot's centre and usable radius, derived from the box. */
@@ -249,7 +279,6 @@ export function projectPoint(
   view: TacticalViewport,
 ): Omit<TacticalPoint, "itemID"> {
   const { cx, cy, radius } = plotGeometry(view);
-  const min = view.minRangeMeters ?? DEFAULT_MIN_RANGE;
   const tilt = view.tilt ?? DEFAULT_TILT;
   const heightGain = view.heightGain ?? DEFAULT_HEIGHT_GAIN;
 
@@ -258,8 +287,8 @@ export function projectPoint(
   const dz = position.z - origin.z;
 
   const distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
-  const radial = radialFraction(distance, min, view.maxRangeMeters);
-  const clamped = distance > view.maxRangeMeters;
+  const radial = radialFraction(distance);
+  const clamped = distance > MAX_RANGE_METERS;
 
   // Bearing on the ground plane. An object DIRECTLY above the ship has no
   // bearing at all (dx and dz both ~0); atan2(0,0) is 0, which parks it at the
@@ -275,7 +304,7 @@ export function projectPoint(
   // Height uses the SAME log compression as range, so a 10× taller object is one
   // "decade" higher on screen rather than 10× further up the box.
   const heightSign = dy < 0 ? -1 : 1;
-  const heightRadial = radialFraction(Math.abs(dy), min, view.maxRangeMeters);
+  const heightRadial = radialFraction(Math.abs(dy));
   const heightPx = heightSign * heightRadial * radius * heightGain;
 
   return {
@@ -389,66 +418,34 @@ export interface TacticalRing {
   readonly meters: number;
   /** 0-1 from the centre — multiply by the plot radius. */
   readonly radial: number;
-  /** What the ring says: "10 km", "1 AU". Units, never an id (R7d). */
+  /** What the ring says: "10 km", "20 AU". Units, never an id (R7d). */
   readonly label: string;
 }
 
-/**
- * The distances worth drawing a ring at. A fixed ladder rather than an even
- * subdivision of the range, because a ring is only useful if it stands for a
- * number a pilot already thinks in — 10 km is a scram, 150 km is a warp-in,
- * 1 AU is a warp. "2.7 km" is a ring nobody reads.
- */
-const RING_LADDER: readonly number[] = [
-  1_000,
-  5_000,
-  10_000,
-  50_000,
-  100_000,
-  500_000,
-  1_000_000,
-  10_000_000,
-  METRES_PER_AU / 10,
-  METRES_PER_AU / 2,
-  METRES_PER_AU,
-  METRES_PER_AU * 5,
-  METRES_PER_AU * 20,
-  METRES_PER_AU * 100,
-];
-
 function ringLabel(meters: number): string {
-  if (meters >= METRES_PER_AU / 10) {
+  if (meters >= METRES_PER_AU) {
     const au = meters / METRES_PER_AU;
-    return `${au >= 1 ? Math.round(au) : au.toFixed(1)} AU`;
+    return `${Number.isInteger(au) ? au : au.toFixed(1)} AU`;
   }
   return `${Math.round(meters / 1_000)} km`;
 }
 
 /**
- * The rings for a viewport, outermost last. Capped so a wide range does not
- * produce a bullseye — beyond about five rings the plot reads as texture rather
- * than as a scale.
+ * The rings.
+ *
+ * ⚠ THEY ARE THE SCALE'S OWN ANCHORS, not a ladder chosen to fit a range. That
+ * is the whole point of R86: a ring is where it is because the scale was BUILT
+ * to put it there, so the picture cannot drift out of step with its own labels.
+ * Adding a ring means adding an anchor, which means deciding what it costs the
+ * bands either side of it — which is the decision that should be deliberate.
+ *
+ * The ship's own position (anchor 0) is not a ring; there is nothing to label.
  */
-export function tacticalRings(view: TacticalViewport, maxRings = 5): readonly TacticalRing[] {
-  const min = view.minRangeMeters ?? DEFAULT_MIN_RANGE;
-  const inRange = RING_LADDER.filter(
-    (meters) => meters > min && meters <= view.maxRangeMeters,
-  );
-  if (inRange.length === 0) {
-    return [];
-  }
-  // Keep the outermost, then thin inwards by an even stride — so the rim always
-  // carries a ring (it is the one the rest are read against).
-  const stride = Math.ceil(inRange.length / maxRings);
-  const kept: number[] = [];
-  for (let index = inRange.length - 1; index >= 0; index -= stride) {
-    kept.push(inRange[index] as number);
-  }
-  kept.reverse();
-  return kept.map((meters) => ({
-    meters,
-    radial: radialFraction(meters, min, view.maxRangeMeters),
-    label: ringLabel(meters),
+export function tacticalRings(): readonly TacticalRing[] {
+  return RANGE_ANCHORS.filter((anchor) => anchor.meters > 0).map((anchor) => ({
+    meters: anchor.meters,
+    radial: anchor.radial,
+    label: ringLabel(anchor.meters),
   }));
 }
 
@@ -530,23 +527,4 @@ export function labelledBracketIDs(
     taken += 1;
   }
   return ids;
-}
-
-/**
- * Distance from the ship to each entity — the input `autoRangeMeters` wants.
- * Here rather than at the call site so the viewport and the overview measure the
- * same way (centre to centre, as `distanceMeters` does).
- */
-export function entityDistances(
-  entities: readonly SpaceEntity[],
-  origin: SpaceVector,
-): readonly number[] {
-  const out: number[] = [];
-  for (const entity of entities) {
-    if (entity.isSelf) {
-      continue;
-    }
-    out.push(distanceMeters(origin, entity.position));
-  }
-  return out;
 }

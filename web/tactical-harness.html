@@ -215,8 +215,6 @@
       // actually ships rather than a copy of it that could quietly drift.
       import "/src/styles.css";
       import {
-        autoRangeMeters,
-        entityDistances,
         labelledBracketIDs,
         projectBrackets,
         tacticalRings,
@@ -347,11 +345,7 @@
       const ctx = canvas.getContext("2d");
       ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
 
-      const view = {
-        width,
-        height,
-        maxRangeMeters: autoRangeMeters(entityDistances(entities, ORIGIN)),
-      };
+      const view = { width, height };
       const brackets = projectBrackets(entities, ORIGIN, view);
       // Pick a rock, so the selected treatment (bigger bracket + full ring) shows.
       const selectedID = 1003;
@@ -359,7 +353,7 @@
       drawTactical(ctx, {
         view,
         brackets,
-        rings: tacticalRings(view),
+        rings: tacticalRings(),
         labelled: labelledBracketIDs(brackets, selectedID),
         selectedID,
         palette: readPalette(document.documentElement),
@@ -491,8 +485,7 @@
       };
       window.__harness = {
         brackets: brackets.length,
-        rings: tacticalRings(view).length,
-        maxRangeMeters: view.maxRangeMeters,
+        rings: tacticalRings().length,
         painted: true,
         radial: (() => {
           const items = [...radialRoot.querySelectorAll("button[data-radial-item]")];

@@ -1,15 +1,15 @@
-// The tactical projection (goal R70): a log-compressed radius with a truthful
-// bearing, a squashed disc with drop lines for height, labelled rings that stand
-// for distances a pilot thinks in, and a hit test that hands back the bracket a
-// player can actually see.
+// The tactical projection (goal R70, rescaled in R86): a compressed radius with
+// a truthful bearing, a squashed disc with drop lines for height, rings that
+// DEFINE the compression rather than decorate it, and a hit test that hands back
+// the bracket a player can actually see.
 
 import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
-  autoRangeMeters,
+  MAX_RANGE_METERS,
+  RANGE_ANCHORS,
   bracketRole,
-  entityDistances,
   hitTestBrackets,
   labelledBracketIDs,
   plotGeometry,
@@ -28,7 +28,6 @@ const ORIGIN: SpaceVector = { x: 0, y: 0, z: 0 };
 const VIEW: TacticalViewport = {
   width: 800,
   height: 600,
-  maxRangeMeters: 1_000_000,
 };
 
 function entity(over: Partial<SpaceEntity> & { itemID: number }): SpaceEntity {
@@ -65,43 +64,93 @@ function entity(over: Partial<SpaceEntity> & { itemID: number }): SpaceEntity {
   };
 }
 
-// --- the compression ---------------------------------------------------------
+// --- the scale ---------------------------------------------------------------
+//
+// ⚠ REWRITTEN IN R86. These used to assert a plain logarithm between a caller's
+// min and max ("10 km is one decade of three, so a third of the way out"). The
+// scale is defined by ANCHORS now, and the reason is measurable: at a 20 AU rim
+// the old curve put 10 km at 11% of the radius, 50 km at 18% and 100 km at 21%,
+// so every range at which a pilot decides anything lived in the inner fifth of
+// the picture.
 
-test("radialFraction puts the centre at 0 and the rim at 1", () => {
-  assert.equal(radialFraction(1_000, 1_000, 1_000_000), 0);
-  assert.equal(radialFraction(1_000_000, 1_000, 1_000_000), 1);
+test("the ship is the centre and the outermost anchor is the rim", () => {
+  assert.equal(radialFraction(0), 0);
+  assert.equal(radialFraction(MAX_RANGE_METERS), 1);
 });
 
-test("radialFraction is logarithmic, not linear", () => {
-  // Three decades of range: 10 km is ONE decade out of three, so it sits a third
-  // of the way to the rim. A linear scale would put it at 1%.
-  const at10km = radialFraction(10_000, 1_000, 1_000_000);
-  assert.ok(Math.abs(at10km - 1 / 3) < 1e-9, `expected ~0.333, got ${at10km}`);
-  const at100km = radialFraction(100_000, 1_000, 1_000_000);
-  assert.ok(Math.abs(at100km - 2 / 3) < 1e-9, `expected ~0.667, got ${at100km}`);
+test("every anchor lands EXACTLY where it was pinned", () => {
+  // The rings are drawn at these fractions, so if the curve did not pass through
+  // them the labels would be in the wrong place — the one failure that would
+  // make the whole picture lie.
+  for (const anchor of RANGE_ANCHORS) {
+    const actual = radialFraction(anchor.meters);
+    assert.ok(
+      Math.abs(actual - anchor.radial) < 1e-9,
+      `${anchor.meters} m should sit at ${anchor.radial}, got ${actual}`,
+    );
+  }
 });
 
-test("radialFraction clamps below the centre and beyond the rim", () => {
-  assert.equal(radialFraction(1, 1_000, 1_000_000), 0);
-  assert.equal(radialFraction(50 * METRES_PER_AU, 1_000, 1_000_000), 1);
+test("the near field gets the MAJORITY of the radius", () => {
+  // The whole point of the rework. 0-100 km is where a pilot makes decisions.
+  const at100km = radialFraction(100_000);
+  assert.ok(at100km > 0.6, `100 km should be past 60% of the radius, got ${at100km}`);
+  // ...and it must still leave room for everything beyond.
+  assert.ok(at100km < 0.8, `100 km at ${at100km} leaves too little for the rest`);
 });
 
-test("a degenerate range collapses to the centre instead of pinning to the rim", () => {
-  // A snapshot whose rim distance is not actually beyond the centre distance —
-  // one object 200 m away, auto-ranged to a max at or below the 1 km floor.
-  // log(max/min) is then log(1) = 0, and the unguarded division hands back
-  // Infinity, which clamps to 1: EVERY bracket welded to the rim of a plot whose
-  // scale means nothing. Collapsing to the centre is the honest answer.
-  //
-  // ⚠ The distance here must be ABOVE `min`. A nearer one returns 0 at the first
-  // guard without ever reaching the one this test is about — which is how this
-  // test originally passed against a deliberately broken build.
-  const value = radialFraction(5_000, 1_000, 1_000);
-  assert.equal(value, 0);
-  assert.ok(Number.isFinite(value));
+test("close range keeps its TRUE proportions", () => {
+  // Inside the first ring the interpolation is linear on purpose: at scram range
+  // 2 km and 8 km should look four times apart, because they are. A logarithm
+  // there would flatten exactly the distances being judged most finely.
+  const at2km = radialFraction(2_000);
+  const at8km = radialFraction(8_000);
+  assert.ok(Math.abs(at8km / at2km - 4) < 1e-9, `expected 4x, got ${at8km / at2km}`);
+});
 
-  // Same again with a rim INSIDE the centre distance.
-  assert.equal(radialFraction(5_000, 1_000, 800), 0);
+test("the scale never goes backwards", () => {
+  // Monotonic across every band boundary — a further object must never be drawn
+  // nearer, which piecewise interpolation makes easy to get wrong at the seams.
+  let previous = -1;
+  for (const distance of [
+    100, 1_000, 5_000, 9_999, 10_000, 10_001, 25_000, 49_999, 50_000, 50_001,
+    75_000, 99_999, 100_000, 100_001, 500_000, 1e6, 1e9, METRES_PER_AU,
+    5 * METRES_PER_AU, 19.9 * METRES_PER_AU, MAX_RANGE_METERS,
+  ]) {
+    const value = radialFraction(distance);
+    assert.ok(value >= previous, `${distance} m went backwards: ${value} < ${previous}`);
+    previous = value;
+  }
+});
+
+test("beyond the outermost anchor everything pins to the rim", () => {
+  assert.equal(radialFraction(50 * METRES_PER_AU), 1);
+  assert.equal(radialFraction(Number.MAX_VALUE), 1);
+});
+
+test("a nonsensical distance collapses to the centre rather than to NaN", () => {
+  // A canvas silently declines to draw NaN, so a bracket would simply not appear.
+  for (const bad of [Number.NaN, Number.POSITIVE_INFINITY * 0, -1, -Infinity]) {
+    const value = radialFraction(bad);
+    assert.ok(Number.isFinite(value), `${bad} produced ${value}`);
+    assert.equal(value, 0);
+  }
+});
+
+test("the anchors themselves are ordered and bounded", () => {
+  // They define the scale, so a table that is out of order or runs past the rim
+  // makes every interpolation meaningless.
+  let lastMeters = -1;
+  let lastRadial = -1;
+  for (const anchor of RANGE_ANCHORS) {
+    assert.ok(anchor.meters > lastMeters, `anchor ${anchor.meters} m is out of order`);
+    assert.ok(anchor.radial > lastRadial, `anchor at ${anchor.radial} is out of order`);
+    assert.ok(anchor.radial >= 0 && anchor.radial <= 1, "an anchor sits outside the plot");
+    lastMeters = anchor.meters;
+    lastRadial = anchor.radial;
+  }
+  assert.equal(RANGE_ANCHORS[0]?.meters, 0, "the scale must start at the ship");
+  assert.equal(RANGE_ANCHORS[RANGE_ANCHORS.length - 1]?.radial, 1, "the last anchor is the rim");
 });
 
 // --- the plot ----------------------------------------------------------------
@@ -208,28 +257,6 @@ test("the projection is measured from the SHIP, not from the origin of space", (
   assert.equal(alongside.x, cx);
   assert.equal(alongside.y, cy);
   assert.equal(alongside.distance, 0);
-});
-
-// --- auto range --------------------------------------------------------------
-
-test("autoRangeMeters clears the farthest object", () => {
-  const range = autoRangeMeters([1_000, 42_000, 380_000]);
-  assert.ok(range > 380_000, `range ${range} must leave the farthest inside the rim`);
-});
-
-test("autoRangeMeters floors an empty or very tight grid", () => {
-  assert.equal(autoRangeMeters([]), 50_000);
-  assert.equal(autoRangeMeters([200]), 50_000);
-});
-
-test("autoRangeMeters reaches AU scale for a planet on grid", () => {
-  const range = autoRangeMeters([4 * METRES_PER_AU]);
-  assert.ok(range > 4 * METRES_PER_AU);
-});
-
-test("autoRangeMeters ignores a NaN distance rather than poisoning the range", () => {
-  const range = autoRangeMeters([10_000, Number.NaN, 200_000]);
-  assert.ok(Number.isFinite(range) && range > 200_000);
 });
 
 // --- roles -------------------------------------------------------------------
@@ -360,54 +387,70 @@ test("brackets carry the health ratios the snapshot already sends", () => {
 });
 
 // --- rings -------------------------------------------------------------------
+//
+// ⚠ REWRITTEN IN R86. The rings used to be a fixed LADDER of candidate distances
+// thinned to fit whatever range the plot happened to have, so most of these
+// tests were about the thinning. The rings ARE the scale's anchors now, which
+// makes the thinning — and every test of it — meaningless.
 
-test("rings stand for distances a pilot thinks in", () => {
-  const rings = tacticalRings({ ...VIEW, maxRangeMeters: 100_000 });
-  assert.ok(rings.length > 0);
-  for (const ring of rings) {
-    assert.match(ring.label, /^\d+(\.\d)? (km|AU)$/);
+test("the rings are exactly the ranges a pilot asked for", () => {
+  const rings = tacticalRings();
+  assert.deepEqual(
+    rings.map((ring) => ring.label),
+    ["10 km", "50 km", "100 km", "20 AU"],
+  );
+});
+
+test("every ring sits where the scale actually puts its distance", () => {
+  // ⚠ THE ONE THAT MATTERS. A ring drawn anywhere other than where
+  // `radialFraction` maps its own distance is a label pointing at the wrong
+  // circle — the picture would be lying, and lying plausibly.
+  for (const ring of tacticalRings()) {
+    assert.equal(
+      ring.radial,
+      radialFraction(ring.meters),
+      `the ${ring.label} ring is not drawn at ${ring.label}`,
+    );
   }
-});
-
-test("no ring is drawn outside the rim or inside the centre", () => {
-  const rings = tacticalRings({ ...VIEW, maxRangeMeters: 100_000 });
-  for (const ring of rings) {
-    assert.ok(ring.meters <= 100_000, `${ring.label} is outside the rim`);
-    assert.ok(ring.meters > 1_000, `${ring.label} is inside the centre`);
-    assert.ok(ring.radial > 0 && ring.radial <= 1);
-  }
-});
-
-test("the outermost ring is kept — it is the one the rest are read against", () => {
-  const rings = tacticalRings({ ...VIEW, maxRangeMeters: 100_000 });
-  const outer = rings[rings.length - 1];
-  assert.equal(outer?.meters, 100_000);
-});
-
-test("rings are capped so a wide range does not become a bullseye", () => {
-  const rings = tacticalRings({ ...VIEW, maxRangeMeters: METRES_PER_AU * 100 }, 5);
-  assert.ok(rings.length <= 5, `got ${rings.length} rings`);
 });
 
 test("rings come out in order, innermost first", () => {
-  const rings = tacticalRings({ ...VIEW, maxRangeMeters: METRES_PER_AU });
+  const rings = tacticalRings();
   for (let index = 1; index < rings.length; index += 1) {
     assert.ok(
       (rings[index]?.meters ?? 0) > (rings[index - 1]?.meters ?? 0),
       "rings must ascend",
     );
+    assert.ok(
+      (rings[index]?.radial ?? 0) > (rings[index - 1]?.radial ?? 0),
+      "and so must their radii",
+    );
   }
 });
 
-test("a range with no ladder rung in it draws no rings at all", () => {
-  const rings = tacticalRings({ ...VIEW, maxRangeMeters: 900 });
-  assert.deepEqual(rings, []);
+test("no ring sits on the ship or outside the rim", () => {
+  for (const ring of tacticalRings()) {
+    assert.ok(ring.radial > 0, `${ring.label} is on top of the ship`);
+    assert.ok(ring.radial <= 1, `${ring.label} is outside the rim`);
+  }
+});
+
+test("the ship's own anchor is not drawn as a ring", () => {
+  // Anchor zero exists to make the innermost band interpolate; there is nothing
+  // to label at the centre.
+  assert.equal(
+    tacticalRings().some((ring) => ring.meters === 0),
+    false,
+  );
 });
 
 test("AU rings are labelled in AU and short ones in km", () => {
-  const rings = tacticalRings({ ...VIEW, maxRangeMeters: METRES_PER_AU * 5 }, 14);
-  assert.ok(rings.some((ring) => ring.label.endsWith("km")));
-  assert.ok(rings.some((ring) => ring.label.endsWith("AU")));
+  const labels = tacticalRings().map((ring) => ring.label);
+  assert.ok(labels.some((label) => label.endsWith("km")));
+  assert.ok(labels.some((label) => label.endsWith("AU")));
+  for (const label of labels) {
+    assert.match(label, /^\d+(\.\d)? (km|AU)$/);
+  }
 });
 
 // --- labels ------------------------------------------------------------------
@@ -543,17 +586,4 @@ test("the hit tolerance is honoured", () => {
 test("an exact tie goes to the nearer object in space", () => {
   const brackets = [bracketAt(1, 100, 100, 900_000), bracketAt(2, 100, 100, 5_000)];
   assert.equal(hitTestBrackets(brackets, 100, 100)?.itemID, 2);
-});
-
-// --- distances ---------------------------------------------------------------
-
-test("entityDistances measures from the ship and skips your own hull", () => {
-  const distances = entityDistances(
-    [
-      entity({ itemID: 1, isSelf: true, position: { x: 999, y: 0, z: 0 } }),
-      entity({ itemID: 2, position: { x: 3_000, y: 4_000, z: 0 } }),
-    ],
-    ORIGIN,
-  );
-  assert.deepEqual(distances, [5_000]);
 });

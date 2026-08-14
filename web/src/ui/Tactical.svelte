@@ -1,7 +1,7 @@
 <script lang="ts">
   // THE TACTICAL VIEWPORT (goal R70) — the picture of space the client has never
   // had. It sits behind the in-space shell's chrome and draws what the ship can
-  // see: brackets on a tilted, log-compressed disc, labelled range rings, drop
+  // see: brackets on a tilted, range-compressed disc, labelled range rings, drop
   // lines for height, velocity vectors, and the one object you have picked.
   //
   // ---------------------------------------------------------------------------
@@ -30,8 +30,6 @@
   // rather than swallowed, then the viewport is left blank instead of taking the
   // cockpit down with it.
   import {
-    autoRangeMeters,
-    entityDistances,
     hitTestBrackets,
     labelledBracketIDs,
     projectBrackets,
@@ -79,30 +77,26 @@
    * read the SAME shared preset, so switching to Mining cannot leave stargates
    * drawn on a viewport whose list says it is showing rocks.
    *
-   * The auto-range is computed from these too, which is the point: hiding the
-   * planet 4 AU out on the Mining tab pulls the rim in to the belt, and the
-   * rocks stop being a knot in the middle of the plot.
+   * (R86 note: this used to narrow the auto-range as well — hiding the planet
+   * pulled the rim in to the belt. The scale is fixed now, so a preset changes
+   * WHAT is drawn and never where a given distance sits.)
    */
   const presetSignal = overviewPreset.preset;
   const entities = $derived(applyPreset(snapshot?.entities ?? [], $presetSignal));
 
   /**
-   * The rim distance. Auto-ranged from what is actually on grid, so warping from
-   * a belt (tens of km) to a planet (AU) never needs a zoom control — the one
-   * thing a viewport must not do is need fiddling before it can be read.
+   * ⚠ R86 — THE SCALE IS FIXED, NOT AUTO-RANGED. It used to stretch to whatever
+   * was farthest on grid, which meant the same rock sat at a different radius
+   * depending on whether a planet happened to be in view. A plot whose meaning
+   * changes as objects come and go can be read but never learnt, and the four
+   * rings are worth learning. `space/tactical.ts` owns the scale now.
    */
-  const maxRangeMeters = $derived(autoRangeMeters(entityDistances(entities, origin)));
-
-  const view = $derived<TacticalViewport>({
-    width,
-    height,
-    maxRangeMeters,
-  });
+  const view = $derived<TacticalViewport>({ width, height });
 
   const brackets = $derived(
     width > 0 && height > 0 ? projectBrackets(entities, origin, view) : [],
   );
-  const rings = $derived(width > 0 && height > 0 ? tacticalRings(view) : []);
+  const rings = $derived(width > 0 && height > 0 ? tacticalRings() : []);
   const labelled = $derived(labelledBracketIDs(brackets, $selected));
 
   /** A bracket's name as the player reads it: its own, else its type's (R7d). */
