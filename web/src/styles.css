@@ -1166,6 +1166,73 @@
     gap: 0.4rem;
   }
 
+  /* ============================================== the order books (R84) --
+   * Who is selling and who is buying, as rows that DO something: clicking one
+   * carries its price into the order draft.
+   *
+   * They were six-column tables and had the overview's problem (R82) — reading
+   * them in a market window meant scrolling sideways. Price and quantity are
+   * what a trader actually reads; the station, system, distance and minimum are
+   * a muted line underneath that truncates.
+   *
+   * ⚠ A ROW PRE-FILLS A DRAFT, IT DOES NOT BUY. Its tooltip says "use this
+   * price" for exactly that reason — the confirm step is untouched, and what a
+   * write really cost is still read back from the wallet afterwards. */
+  .market-book {
+    list-style: none;
+    margin: 0.2rem 0 0.6rem;
+    padding: 0;
+    max-height: 18rem;
+    overflow-y: auto;
+    overflow-x: hidden;
+  }
+  .book-row {
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr) max-content;
+    align-items: center;
+    gap: 0.5rem;
+    width: 100%;
+    min-height: 2.5rem;
+    padding: 0.25rem 0.4rem;
+    text-align: left;
+    background: transparent;
+    border: 1px solid transparent;
+    border-bottom-color: var(--color-row-line);
+    color: var(--color-cell);
+  }
+  .book-row:hover:not(:disabled) {
+    background: rgb(127 180 217 / 0.08);
+    border-color: var(--color-accent-dim);
+  }
+  /* The number the whole row exists for. Tabular so a column of prices lines up
+   * under itself, which is how "which of these is cheapest" becomes a glance. */
+  .book-price {
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+    color: var(--color-text-bright);
+  }
+  .book-main {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    line-height: 1.2;
+  }
+  .book-where,
+  .book-meta {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .book-where { color: var(--color-text); font-size: 12px; }
+  .book-meta { color: var(--color-muted); font-size: 11px; }
+  .book-qty {
+    font-variant-numeric: tabular-nums;
+    font-size: 12px;
+    color: var(--color-muted);
+    white-space: nowrap;
+  }
+
   /* ============================================== the market picker (R83) --
    * Browsing the market tree: a breadcrumb over one list where a GROUP descends
    * and an ITEM opens its order books.

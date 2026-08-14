@@ -221,6 +221,42 @@
     confirming = false;
   }
 
+  /**
+   * R84 — TAKE A PRICE OFF THE BOOK.
+   *
+   * Placing an order meant typing a price and a quantity by hand while the
+   * numbers you wanted were sitting on screen a few centimetres away. Clicking
+   * a row carries them into the draft.
+   *
+   * ⚠ IT PRE-FILLS A DRAFT, IT DOES NOT BUY. The wording everywhere is "use this
+   * price", never "buy it now", and the existing confirm step is untouched.
+   * Placing a buy at a seller's price is not the same act as taking that
+   * specific listing — whether it matches immediately is the SERVER's business,
+   * and this panel has never been willing to claim an outcome it has not read
+   * back. `lastOutcome` still reports what actually happened to the wallet.
+   *
+   * Clicking a SELL order (someone is selling) drafts a BUY; clicking a BUY
+   * order (someone is buying) drafts a SELL.
+   */
+  function useOrderPrice(order: MarketOrderRow, side: MarketSide): void {
+    startDraft(side);
+    const current = draft;
+    if (current === null) {
+      return;
+    }
+    if (side === "buy") {
+      draft = { ...current, price: order.price, quantity: String(order.volumeRemaining) };
+      return;
+    }
+    // Selling: never offer more than the counterparty wants, and never more than
+    // the stack actually holds. Both caps are real refusals if ignored.
+    const stack = sellableStacks[0] ?? null;
+    const most = stack
+      ? Math.min(stack.quantity, order.volumeRemaining)
+      : order.volumeRemaining;
+    draft = { ...current, price: order.price, quantity: String(most) };
+  }
+
   function closeDraft(): void {
     draft = null;
     confirming = false;
@@ -552,68 +588,77 @@
         </button>
       </p>
 
+      <!--
+        R84 — THE BOOKS ARE LISTS, AND THE ROWS DO SOMETHING.
+
+        They were six-column tables, so reading them in a market window meant
+        scrolling sideways — the same failure the overview had (R82), and the
+        same fix: price and quantity are what a trader reads, everything else is
+        a muted line underneath that truncates.
+
+        Each row is a button that carries its price into the order draft. The
+        numbers you want were already on screen; typing them again by hand was
+        the only way to use them.
+      -->
       <h3>On sale (you can buy these)</h3>
       {#if sells.length === 0}
         <p class="empty">Nobody is selling this here right now.</p>
       {:else}
-        <div class="table-wrap overflow-x-auto">
-          <table class="guests reflow">
-            <thead>
-              <tr>
-                <th class="num">Price each</th>
-                <th class="num">How many</th>
-                <th>Where</th>
-                <th>System</th>
-                <th class="num">Distance</th>
-                <th class="num">Smallest deal</th>
-              </tr>
-            </thead>
-            <tbody>
-              {#each sells as order (order.orderID)}
-                <tr>
-                  <td class="num" data-label="Price each">{formatIsk(order.price)}</td>
-                  <td class="num" data-label="How many">{order.volumeRemaining}</td>
-                  <td data-label="Where">{stationName(order.stationID)}</td>
-                  <td data-label="System">{systemName(order.solarSystemID)}</td>
-                  <td class="num" data-label="Distance">{distanceLabel(order.jumps)}</td>
-                  <td class="num" data-label="Smallest deal">{order.minimumVolume}</td>
-                </tr>
-              {/each}
-            </tbody>
-          </table>
-        </div>
+        <ul class="market-book">
+          {#each sells as order (order.orderID)}
+            <li>
+              <button
+                type="button"
+                class="book-row"
+                disabled={busy}
+                title={`Use ${formatIsk(order.price)} as your buy price`}
+                onclick={() => useOrderPrice(order, "buy")}
+              >
+                <span class="book-price">{formatIsk(order.price)}</span>
+                <span class="book-main">
+                  <span class="book-where">{stationName(order.stationID)}</span>
+                  <span class="book-meta">
+                    {systemName(order.solarSystemID)} · {distanceLabel(order.jumps)}{order.minimumVolume >
+                    1
+                      ? ` · ${order.minimumVolume} minimum`
+                      : ""}
+                  </span>
+                </span>
+                <span class="book-qty">×{order.volumeRemaining}</span>
+              </button>
+            </li>
+          {/each}
+        </ul>
       {/if}
 
       <h3>Wanted (you can sell to these)</h3>
       {#if buys.length === 0}
         <p class="empty">Nobody is buying this here right now.</p>
       {:else}
-        <div class="table-wrap overflow-x-auto">
-          <table class="guests reflow">
-            <thead>
-              <tr>
-                <th class="num">Price each</th>
-                <th class="num">How many</th>
-                <th>Where</th>
-                <th>System</th>
-                <th class="num">Distance</th>
-                <th>Reaches</th>
-              </tr>
-            </thead>
-            <tbody>
-              {#each buys as order (order.orderID)}
-                <tr>
-                  <td class="num" data-label="Price each">{formatIsk(order.price)}</td>
-                  <td class="num" data-label="How many">{order.volumeRemaining}</td>
-                  <td data-label="Where">{stationName(order.stationID)}</td>
-                  <td data-label="System">{systemName(order.solarSystemID)}</td>
-                  <td class="num" data-label="Distance">{distanceLabel(order.jumps)}</td>
-                  <td data-label="Reaches">{rangeLabel(order.range)}</td>
-                </tr>
-              {/each}
-            </tbody>
-          </table>
-        </div>
+        <ul class="market-book">
+          {#each buys as order (order.orderID)}
+            <li>
+              <button
+                type="button"
+                class="book-row"
+                disabled={busy}
+                title={`Use ${formatIsk(order.price)} as your sell price`}
+                onclick={() => useOrderPrice(order, "sell")}
+              >
+                <span class="book-price">{formatIsk(order.price)}</span>
+                <span class="book-main">
+                  <span class="book-where">{stationName(order.stationID)}</span>
+                  <span class="book-meta">
+                    {systemName(order.solarSystemID)} · {distanceLabel(order.jumps)} · reaches {rangeLabel(
+                      order.range,
+                    )}
+                  </span>
+                </span>
+                <span class="book-qty">×{order.volumeRemaining}</span>
+              </button>
+            </li>
+          {/each}
+        </ul>
       {/if}
 
       {#if $market.priceHistory.length > 0}
