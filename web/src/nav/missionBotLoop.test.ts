@@ -869,6 +869,108 @@ test("a SUCCESSFUL Complete counts the mission and measures what it actually pai
   assert.equal(bot.snapshot().lpEarned, "213");
 });
 
+/** The world in which a Complete lands on the first tick — shared by the balance-read tests. */
+function completingHarness(): Harness {
+  return harness({
+    status: status({ stationID: DROPOFF, solarSystemID: DROPOFF_SYSTEM }),
+    conversation: AT_DROPOFF,
+    briefing: BRIEFING,
+    journal: journalAccepted(),
+    cargo: cargo([]),
+    hangar: [row({ itemID: PACKAGE_ITEM, quantity: 1 })],
+    actionResult: decodeConversation(completedResult() as never),
+  });
+}
+
+/** Let every pending microtask chain (the void-async baseline loop) run out. */
+function flushAsync(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
+test("the OPENING balance read is RETRIED — one dropped read no longer costs the run its readout", async () => {
+  const h = completingHarness();
+  // The first two baseline reads drop; the third lands. Single-shot, the run
+  // would have no baseline and every payout would measure as unknown forever.
+  let balanceReads = 0;
+  h.deps.getBalances = async () => {
+    balanceReads += 1;
+    if (balanceReads <= 2) {
+      throw new Error("transport dropped");
+    }
+    return { isk: h.world.isk, lp: h.world.lp };
+  };
+  const bot = createMissionBot(h.deps);
+  bot.start(PLAN);
+  await flushAsync();
+
+  h.world.isk = "1140250";
+  h.world.lp = "213";
+  await bot.tick();
+
+  assert.equal(bot.snapshot().iskEarned, "140250");
+  assert.equal(bot.snapshot().lpEarned, "213");
+});
+
+test("the PAYOUT read is RETRIED — one dropped read after a Complete no longer leaves earnings stale", async () => {
+  const h = completingHarness();
+  // Read #1 is the opening baseline (lands). Read #2 is the payout read and
+  // drops; the retry (#3) lands. Single-shot, a one-mission run would end with
+  // Jobs done 1 and ISK earned unknown.
+  let balanceReads = 0;
+  h.deps.getBalances = async () => {
+    balanceReads += 1;
+    if (balanceReads === 2) {
+      throw new Error("transport dropped");
+    }
+    return { isk: h.world.isk, lp: h.world.lp };
+  };
+  const bot = createMissionBot(h.deps);
+  bot.start(PLAN);
+  await flushAsync();
+
+  h.world.isk = "1140250";
+  h.world.lp = "213";
+  await bot.tick();
+
+  assert.equal(bot.snapshot().missionsCompleted, 1);
+  assert.equal(bot.snapshot().iskEarned, "140250");
+  assert.equal(bot.snapshot().lpEarned, "213");
+});
+
+test("a completion that OUTRUNS the baseline fills in the moment the baseline lands", async () => {
+  const h = completingHarness();
+  // The opening read is SLOW rather than failing: it answers — with the
+  // pre-completion balance it actually read — only after the first Complete
+  // has already landed and measured its payout.
+  const opening: { answer: ((v: { isk: string | null; lp: string | null }) => void) | null } = {
+    answer: null,
+  };
+  let balanceReads = 0;
+  h.deps.getBalances = async () => {
+    balanceReads += 1;
+    if (balanceReads === 1) {
+      return new Promise((resolve) => {
+        opening.answer = resolve;
+      });
+    }
+    return { isk: h.world.isk, lp: h.world.lp };
+  };
+  const bot = createMissionBot(h.deps);
+  bot.start(PLAN);
+  await flushAsync();
+
+  h.world.isk = "1140250";
+  h.world.lp = "213";
+  await bot.tick();
+  assert.equal(bot.snapshot().missionsCompleted, 1);
+  assert.equal(bot.snapshot().iskEarned, null, "no baseline yet — unknown, never a confident 0");
+
+  opening.answer?.({ isk: "1000000", lp: "0" });
+  await flushAsync();
+  assert.equal(bot.snapshot().iskEarned, "140250", "the late baseline fills the readout in");
+  assert.equal(bot.snapshot().lpEarned, "213");
+});
+
 // --- No branch repeats unboundedly -------------------------------------------
 //
 // Each of these hands the loop a world in which the rung can NEVER make

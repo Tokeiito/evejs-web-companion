@@ -107,6 +107,16 @@ const SETTLE_CARGO = 2;
 const SETTLE_TRAVEL = 2;
 
 /**
+ * Balance-read retries. Earnings are only measurable at two moments — the run's
+ * start (the baseline) and just after a Complete lands (the payout) — and both
+ * used to be single-shot: one dropped read at the start cost the entire run its
+ * earnings readout, and one after a Complete left it stale until the next
+ * mission (forever, on the last one).
+ */
+export const MAX_OPENING_BALANCE_ATTEMPTS = 5;
+export const MAX_PAYOUT_READ_ATTEMPTS = 3;
+
+/**
  * Consecutive Request decisions with the conversation still offering no
  * mission. `doAgentAction` answers success either way, so the only evidence a
  * Request landed is an OFFER appearing, and three tries without one is already
@@ -996,6 +1006,11 @@ interface BotMemory {
   // Earnings, measured as a difference between two readings of the ACCOUNTS.
   startISK: string | null;
   startLP: string | null;
+  /** The most recent post-Complete reading — kept so a baseline that lands
+   * LATE (its read retried past the first completion) can still fill the
+   * readout in, instead of the run never showing earnings at all. */
+  latestISK: string | null;
+  latestLP: string | null;
   iskEarned: string | null;
   lpEarned: string | null;
   // Every counter below counts CONSECUTIVE decisions of one kind whose authority
@@ -1050,6 +1065,8 @@ function freshMemory(): BotMemory {
     jumpsRemaining: null,
     startISK: null,
     startLP: null,
+    latestISK: null,
+    latestLP: null,
     iskEarned: null,
     lpEarned: null,
     requestAttempts: 0,
@@ -1144,7 +1161,9 @@ function parseFixed(text: string): { readonly units: bigint; readonly scale: num
   if (match === null) {
     return null;
   }
-  const [, sign, whole, fraction = ""] = match;
+  const sign = match[1] ?? "";
+  const whole = match[2] ?? "";
+  const fraction = match[3] ?? "";
   return { units: BigInt(sign + whole + fraction), scale: fraction.length };
 }
 
@@ -1191,6 +1210,43 @@ export function createMissionBot(deps: MissionBotDeps): MissionBotController {
 
   function emit(): void {
     deps.onProgress(snapshot());
+  }
+
+  /**
+   * Earnings are latest-minus-start, recomputed whenever EITHER side lands.
+   * That order-independence is the point: a baseline whose read retried past
+   * the first completion still fills the readout in when it arrives. A real
+   * value is never downgraded back to unknown.
+   */
+  function recomputeEarnings(): void {
+    const isk = subtractAmounts(memory.latestISK, memory.startISK);
+    if (isk !== null) {
+      memory.iskEarned = isk;
+    }
+    const lp = subtractAmounts(memory.latestLP, memory.startLP);
+    if (lp !== null) {
+      memory.lpEarned = lp;
+    }
+  }
+
+  /**
+   * Read the accounts just after a landed Complete. Retried, because this is
+   * the only moment the payout can be measured: single-shot, one dropped read
+   * left the readout stale for the rest of the run.
+   */
+  async function measurePayout(): Promise<void> {
+    for (let attempt = 1; attempt <= MAX_PAYOUT_READ_ATTEMPTS; attempt += 1) {
+      const after = await safely(() => deps.getBalances());
+      if (after && (after.isk !== null || after.lp !== null)) {
+        memory.latestISK = after.isk;
+        memory.latestLP = after.lp;
+        recomputeEarnings();
+        return;
+      }
+      if (attempt < MAX_PAYOUT_READ_ATTEMPTS) {
+        await deps.sleep(MISSION_BOT_CADENCE_MS);
+      }
+    }
   }
 
   function setPause(reason: string): void {
@@ -1466,11 +1522,7 @@ export function createMissionBot(deps: MissionBotDeps): MissionBotController {
             // What it actually PAID, as a balance difference. Never
             // `lastActionInfo.loyaltyPoints` — R35 saw that read 0 on a
             // completion that paid 213 LP.
-            const after = await safely(() => deps.getBalances());
-            if (after) {
-              memory.iskEarned = subtractAmounts(after.isk, memory.startISK);
-              memory.lpEarned = subtractAmounts(after.lp, memory.startLP);
-            }
+            await measurePayout();
             memory.why = "The job is handed in and paid.";
           }
           memory.settleTicks = SETTLE_AGENT;
@@ -1685,11 +1737,7 @@ export function createMissionBot(deps: MissionBotDeps): MissionBotController {
       if (missionAccepted(observation.journal, current.agentID) === false) {
         memory.missionsCompleted += 1;
         memory.completeAttempts = 0;
-        const after = await safely(() => deps.getBalances());
-        if (after) {
-          memory.iskEarned = subtractAmounts(after.isk, memory.startISK);
-          memory.lpEarned = subtractAmounts(after.lp, memory.startLP);
-        }
+        await measurePayout();
         memory.why = "The job was handed in — the server settled it after a slow answer.";
       }
     }
@@ -1806,12 +1854,30 @@ export function createMissionBot(deps: MissionBotDeps): MissionBotController {
       }.`;
       runToken += 1;
       // The opening balance, so what a mission PAID can be measured rather than
-      // read off a field that has been seen to lie.
+      // read off a field that has been seen to lie. RETRIED: single-shot, one
+      // dropped read here cost the entire run its earnings readout. The loop is
+      // keyed to THIS run's memory object (not the runToken, which pause/resume
+      // also bump), so it survives a pause and dies with a stop or a restart.
+      // If a completion somehow outruns the baseline, the late baseline
+      // includes that payout — the readout then undercounts by one mission
+      // rather than never showing anything.
+      const mine = memory;
       void (async () => {
-        const opening = await deps.getBalances().catch(() => null);
-        if (opening) {
-          memory.startISK = opening.isk;
-          memory.startLP = opening.lp;
+        for (let attempt = 1; attempt <= MAX_OPENING_BALANCE_ATTEMPTS; attempt += 1) {
+          const opening = await deps.getBalances().catch(() => null);
+          if (memory !== mine || mine.status === "stopped" || mine.status === "error") {
+            return;
+          }
+          if (opening && (opening.isk !== null || opening.lp !== null)) {
+            mine.startISK = opening.isk;
+            mine.startLP = opening.lp;
+            recomputeEarnings();
+            emit();
+            return;
+          }
+          if (attempt < MAX_OPENING_BALANCE_ATTEMPTS) {
+            await deps.sleep(MISSION_BOT_CADENCE_MS);
+          }
         }
       })();
       emit();
