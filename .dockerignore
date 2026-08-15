@@ -13,14 +13,10 @@
 !scripts/**
 !web/
 !web/**
-!public/
-!public/**
 
 # ...minus the parts of those trees that must never be baked in.
 **/node_modules
 **/node_modules/**
-public/dist
-public/dist/**
 src/**/*.test.js
 **/.env
 **/.env.*
