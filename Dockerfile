@@ -22,7 +22,6 @@ RUN apt-get update \
 
 COPY tsconfig.json vite.config.ts ./
 COPY web ./web
-COPY public ./public
 RUN npm run build:web
 
 

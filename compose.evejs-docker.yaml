@@ -23,6 +23,10 @@ services:
       EVEJS_GATEWAY_URL: http://evejs-server:26002/_evejs-web/v1
       EVEJS_GAMESTORE_DATA_DIR: /var/lib/evejs/gameStore/data
       EVEJS_SDE_DIR: /var/lib/evejs/sde/eve-online-static-data-3396210-jsonl
+      # config.js's default (<EVEJS_ROOT>/_local/gameStore/gamestore.sqlite)
+      # only matches the native layout. Only scripts/cache-icons.js reads this
+      # single-file DB; the running server never does.
+      EVEJS_GAMESTORE_DB: /var/lib/evejs/gameStore/gamestore.sqlite
     networks:
       # Merged with the base file's implicit `default`, which is what keeps the
       # published 127.0.0.1:26500 reachable from the host.
