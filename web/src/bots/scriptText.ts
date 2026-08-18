@@ -66,6 +66,8 @@ export function macroName(macro: MacroID): string {
       return "Leave the station";
     case "travel-to-station":
       return "Fly to a station and dock";
+    case "travel-to-belt":
+      return "Fly to a belt";
     case "mine-at-belt":
       return "Mine at a belt";
     case "deliver-ore":
@@ -94,6 +96,8 @@ export function macroName(macro: MacroID): string {
       return "Salvage the wrecks";
     case "loot-wrecks":
       return "Loot your wrecks";
+    case "loot-containers":
+      return "Loot the containers";
     case "refine-ore":
       return "Refine the ore";
     case "hardeners-on":
@@ -144,6 +148,8 @@ export function macroName(macro: MacroID): string {
       return "Feed a fleet-mate's capacitor";
     case "jettison-cargo":
       return "Jettison the cargo into space";
+    case "jettison-ore":
+      return "Jettison the ore hold into space";
     case "tidy-hangar":
       return "Tidy the hangar";
     case "compress-ore":
@@ -301,6 +307,11 @@ function macroPhrase(step: MacroStep): string {
           : "a station you pick";
       return `Fly to ${where} and dock`;
     }
+    case "travel-to-belt": {
+      const belt = step.args["belt"];
+      const where = belt !== undefined && belt.kind === "belt" ? beltPhrase(belt.belt) : "a belt you pick";
+      return `Fly to ${where}`;
+    }
     case "deliver-ore": {
       const station = step.args["station"];
       const where =
@@ -403,6 +414,8 @@ function macroPhrase(step: MacroStep): string {
       return "Salvage the wrecks on this grid";
     case "loot-wrecks":
       return "Loot your own wrecks on this grid";
+    case "loot-containers":
+      return "Loot every container on this grid";
     case "refine-ore":
       return "Refine the ore in the hangar";
     case "buy-item": {
@@ -482,6 +495,14 @@ function macroPhrase(step: MacroStep): string {
         item !== undefined && item.kind === "itemType" && item.name !== null && item.name.length > 0
           ? `all your ${item.name}`
           : "everything in the cargo hold";
+      return `Jettison ${what} into space`;
+    }
+    case "jettison-ore": {
+      const item = step.args["item"];
+      const what =
+        item !== undefined && item.kind === "itemType" && item.name !== null && item.name.length > 0
+          ? `all your ${item.name}`
+          : "everything in the ore hold";
       return `Jettison ${what} into space`;
     }
     case "tidy-hangar":

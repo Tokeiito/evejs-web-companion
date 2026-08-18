@@ -88,6 +88,7 @@ function policy(risks: readonly BotRiskClass[], restartSafe = true): MacroRunPol
 export const MACRO_RUN_POLICY: Readonly<Record<MacroID, MacroRunPolicy>> = Object.freeze({
   undock: SAFE,
   "travel-to-station": SAFE,
+  "travel-to-belt": SAFE,
   "mine-at-belt": SAFE,
   "deliver-ore": policy(["inventory"]),
   "defend-with-drones": policy(["combat"]),
@@ -104,6 +105,7 @@ export const MACRO_RUN_POLICY: Readonly<Record<MacroID, MacroRunPolicy>> = Objec
   "unload-cargo": policy(["inventory"]),
   "salvage-wrecks": policy(["combat", "inventory"]),
   "loot-wrecks": policy(["inventory"]),
+  "loot-containers": policy(["inventory"]),
   // Reprocessing consumes stacks and charges tax. Even though the block
   // confirms by re-read, a restart could consume newly arrived matching ore.
   "refine-ore": policy(["financial", "inventory"], false),
@@ -131,6 +133,7 @@ export const MACRO_RUN_POLICY: Readonly<Record<MacroID, MacroRunPolicy>> = Objec
   "dock-at-nearest": SAFE,
   "remote-cap": policy(["fleet"]),
   "jettison-cargo": policy(["inventory", "destructive"], false),
+  "jettison-ore": policy(["inventory", "destructive"], false),
   "tidy-hangar": policy(["inventory"]),
   "compress-ore": policy(["inventory", "fleet"]),
   // Launch/recover move probe charges between ship and space. Analyze itself is

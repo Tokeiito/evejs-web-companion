@@ -115,6 +115,7 @@ import type {
   FittingSlot,
   FleetAction,
   FlightStatus,
+  InventoryItemRow,
   InventoryPlace,
   SlotFamily,
   StationStatic,
@@ -5786,6 +5787,49 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     throw new Error(`The custom-bot action dispatcher is missing an action: ${String(action)}`);
   }
 
+  // Retail's Asteroid category — every ore type lives in it. Same constant
+  // scriptMacros.ts's refine-ore reaches for, kept local here since it is not
+  // exported and this is a different module.
+  const CATEGORY_ORE = 25;
+
+  /**
+   * Move a wreck/can's rows out, ore-category ones to the ore hold and
+   * everything else to cargo — split into two transfers rather than one call
+   * to a single destination. Loot-container and loot-wreck both dumped
+   * EVERYTHING into cargo before this: harmless for a combat ship, but on a
+   * mining/hauling hull the cargo hold is typically tiny next to the ore
+   * hold, so ore-bearing loot trickled in a few units at a time instead of
+   * landing where it actually fits. A ship with no ore hold at all just
+   * declines that half (TransferResult.declinedSilently) — nothing here
+   * throws over it, and the ore stays put in the wreck/can rather than being
+   * lost or wrongly forced into cargo.
+   */
+  async function transferLootedRows(
+    rows: readonly InventoryItemRow[],
+    from: { readonly kind: "container"; readonly itemID: number },
+  ): Promise<void> {
+    const ore = rows.filter((row) => row.categoryID === CATEGORY_ORE);
+    const rest = rows.filter((row) => row.categoryID !== CATEGORY_ORE);
+    if (ore.length > 0) {
+      await api.transferItems(
+        ore.map((row) => row.itemID),
+        from,
+        { kind: "shipBay", bay: "ore" },
+        null,
+        callOptions,
+      );
+    }
+    if (rest.length > 0) {
+      await api.transferItems(
+        rest.map((row) => row.itemID),
+        from,
+        { kind: "cargo" },
+        null,
+        callOptions,
+      );
+    }
+  }
+
   function makeScriptRunnerDeps(
     initialCapabilities: ScriptModuleCapabilities,
     startingStationID: number | null,
@@ -6322,6 +6366,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           case "lock":
             await api.lockTarget(action.targetID, callOptions);
             return;
+          case "unlock":
+            await api.unlockTarget(action.targetID, callOptions);
+            return;
           case "activate":
             // targetID 0 = a SELF-targeted module (repairer, hardener) — the
             // target key is omitted so the server activates it on the ship.
@@ -6475,19 +6522,24 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             }
             return;
           case "lootWreck": {
-            // Read the wreck's contents, then move the lot into the cargo hold.
-            // The wreck is addressed as a plain container; the transfer route
-            // re-reads and even absorbs the loot-raises-after-move server quirk.
+            // Read the wreck's contents, then move the lot out — ore to the ore
+            // hold, everything else to cargo (transferLootedRows). The wreck is
+            // addressed as a plain container; the transfer route re-reads and
+            // even absorbs the loot-raises-after-move server quirk.
             const contents = await api.openContainer(action.wreckID, callOptions);
             const rows = decodeInventoryRows(contents.list);
             if (rows.length > 0) {
-              await api.transferItems(
-                rows.map((row) => row.itemID),
-                { kind: "container", itemID: action.wreckID },
-                { kind: "cargo" },
-                null,
-                callOptions,
-              );
+              await transferLootedRows(rows, { kind: "container", itemID: action.wreckID });
+            }
+            return;
+          }
+          case "lootContainer": {
+            // Same shape as lootWreck — the server applies no ownership check to
+            // a container, so nothing here needs to either.
+            const contents = await api.openContainer(action.containerID, callOptions);
+            const rows = decodeInventoryRows(contents.list);
+            if (rows.length > 0) {
+              await transferLootedRows(rows, { kind: "container", itemID: action.containerID });
             }
             return;
           }

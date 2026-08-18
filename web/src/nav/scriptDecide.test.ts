@@ -79,11 +79,15 @@ function script(program: readonly ProgramNode[], interrupts: readonly InterruptR
 const registry = { undock, "deliver-ore": deliver, "mine-at-belt": mine, "travel-to-station": undock };
 
 // Drive the runner across a sequence of observations, stopping when it leaves "running".
-function run(s: BotScript, seq: readonly ScriptObservation[]): { results: ReturnType<typeof decideScriptAction>[]; mem: ScriptMemory } {
+function run(
+  s: BotScript,
+  seq: readonly ScriptObservation[],
+  reg: Record<string, MacroDecider> = registry,
+): { results: ReturnType<typeof decideScriptAction>[]; mem: ScriptMemory } {
   let mem = initialMemory(s);
   const results: ReturnType<typeof decideScriptAction>[] = [];
   for (const o of seq) {
-    const r = decideScriptAction(s, o, mem, registry, home);
+    const r = decideScriptAction(s, o, mem, reg, home);
     results.push(r);
     mem = r.memory;
     if (r.status !== "running") break;
@@ -127,6 +131,50 @@ test("a times-2 loop runs its body twice and stops, memory resetting each pass",
   assert.equal(results[0]?.stepPath, "m");
   assert.equal(results[2]?.stepPath, "m", "pass 2 mines again after the wrap");
   assert.equal(results.at(-1)?.status, "done");
+});
+
+test("until-met with a mining laser still cycling switches it off before advancing", () => {
+  // mine-at-belt's own tick (module 1, "activate") is thrown away the instant
+  // `until` reads met — but if the laser is ALREADY active from an earlier
+  // tick, leaving it cycling keeps filling the very hold the next step (a
+  // jettison, typically) is trying to drain. It has to come off first.
+  const s = script([macroStep("m", "mine-at-belt", { kind: "ore-hold-at-least", fraction: 0.9 }), macroStep("h", "deliver-ore")]);
+  const activeSnapshot = { ship: { activeModuleIDs: [1] } } as unknown as ScriptObservation["snapshot"];
+  const { results } = run(s, [
+    // until met, laser still active -> deactivate it, stay on the mine step.
+    obs({ oreHoldFraction: 0.95, holdEmpty: false, miningModuleIDs: [1], snapshot: activeSnapshot }),
+    // laser off now -> the mine step actually advances to the haul step.
+    obs({
+      oreHoldFraction: 0.95, holdEmpty: false, miningModuleIDs: [1],
+      snapshot: { ship: { activeModuleIDs: [] } } as unknown as ScriptObservation["snapshot"],
+    }),
+  ]);
+  assert.equal(results[0]?.action.kind, "deactivate");
+  assert.ok(results[0]?.action.kind === "deactivate" && results[0].action.moduleID === 1);
+  assert.equal(results[0]?.stepPath, "m", "still on the mine step — it has not advanced yet");
+  assert.equal(results[1]?.stepPath, "h", "the laser is off, so it can advance now");
+});
+
+test("until-met with the laser off but the rock still locked releases the lock before advancing", () => {
+  // The lock outlives the step exactly the same way the laser did above — left
+  // alone, the NEXT mining cycle (after a jettison, say) picks a fresh rock on
+  // top of it instead of trading it out, and a few cycles of that walk the ship
+  // up to its max locked targets.
+  const mineHoldingRock2: MacroDecider = () =>
+    tick({ kind: "activate", moduleID: 1, targetID: 2 }, { kind: "acting" }, true, { rockID: 2 });
+  const s = script([macroStep("m", "mine-at-belt", { kind: "ore-hold-at-least", fraction: 0.9 }), macroStep("h", "deliver-ore")]);
+  const idleSnapshot = { ship: { activeModuleIDs: [] } } as unknown as ScriptObservation["snapshot"];
+  const localRegistry = { ...registry, "mine-at-belt": mineHoldingRock2 };
+  const { results } = run(s, [
+    // until met, laser already off, rock 2 still locked -> release it, stay put.
+    obs({ oreHoldFraction: 0.95, holdEmpty: false, miningModuleIDs: [1], lockedTargetIDs: [2], snapshot: idleSnapshot }),
+    // rock 2 no longer locked -> the mine step can finally advance.
+    obs({ oreHoldFraction: 0.95, holdEmpty: false, miningModuleIDs: [1], lockedTargetIDs: [], snapshot: idleSnapshot }),
+  ], localRegistry);
+  assert.equal(results[0]?.action.kind, "unlock");
+  assert.ok(results[0]?.action.kind === "unlock" && results[0].action.targetID === 2);
+  assert.equal(results[0]?.stepPath, "m", "still on the mine step — it has not advanced yet");
+  assert.equal(results[1]?.stepPath, "h", "the rock is unlocked, so it can advance now");
 });
 
 test("a loop whose body can never do anything pauses on the livelock guard", () => {

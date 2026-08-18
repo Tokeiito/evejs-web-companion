@@ -89,12 +89,132 @@ test("mine: no rocks but a distant belt -> warp to the belt", () => {
   assert.ok(t.action.kind === "warp" && t.action.targetID === 40001);
 });
 
+test("mine: a pinned belt beats a nearer unpinned one", () => {
+  const near = entity({ itemID: 40001, name: "Asteroid Belt 1", position: { x: 500000, y: 0, z: 0 } });
+  const chosen = entity({ itemID: 40002, name: "Asteroid Belt 2", position: { x: 900000, y: 0, z: 0 } });
+  const step: MacroStep = {
+    id: "m",
+    kind: "macro",
+    macro: "mine-at-belt",
+    args: {
+      belt: {
+        kind: "belt",
+        belt: { mode: "chosen", ref: { entity: "belt", id: 40002, name: "Asteroid Belt 2", systemName: null } },
+      },
+    },
+    until: { kind: "ore-hold-at-least", fraction: 0.9 },
+  };
+  const t = mine(step, obs({ snapshot: snapshot([near, chosen]) }), NM, {});
+  assert.equal(t.action.kind, "warp");
+  assert.ok(t.action.kind === "warp" && t.action.targetID === 40002);
+});
+
+test("mine: a pinned belt not on this grid -> blocked, never a silent fallback to nearest", () => {
+  const near = entity({ itemID: 40001, name: "Asteroid Belt 1", position: { x: 500000, y: 0, z: 0 } });
+  const step: MacroStep = {
+    id: "m",
+    kind: "macro",
+    macro: "mine-at-belt",
+    args: {
+      belt: {
+        kind: "belt",
+        belt: { mode: "chosen", ref: { entity: "belt", id: 99999, name: "Asteroid Belt 9", systemName: null } },
+      },
+    },
+    until: { kind: "ore-hold-at-least", fraction: 0.9 },
+  };
+  const t = mine(step, obs({ snapshot: snapshot([near]) }), NM, {});
+  assert.equal(t.outcome.kind, "blocked");
+  assert.match(t.outcome.kind === "blocked" ? t.outcome.reason : "", /pinned/i);
+});
+
+const travelToBeltStep: MacroStep = {
+  id: "tb", kind: "macro", macro: "travel-to-belt",
+  args: { belt: { kind: "belt", belt: { mode: "nearest" } } },
+};
+const travelToBelt = SCRIPT_MACROS["travel-to-belt"]!;
+
+test("travel-to-belt: no belt in view -> blocked", () => {
+  const t = travelToBelt(travelToBeltStep, obs({ snapshot: snapshot([]) }), NM, {});
+  assert.equal(t.outcome.kind, "blocked");
+});
+
+test("travel-to-belt: a distant belt -> warp to it", () => {
+  const belt = entity({ itemID: 40001, name: "Asteroid Belt 1", position: { x: 500000, y: 0, z: 0 } });
+  const t = travelToBelt(travelToBeltStep, obs({ snapshot: snapshot([belt]) }), NM, {});
+  assert.equal(t.action.kind, "warp");
+  assert.ok(t.action.kind === "warp" && t.action.targetID === 40001);
+});
+
+test("travel-to-belt: already on the belt -> done, no mining involved", () => {
+  const belt = entity({ itemID: 40001, name: "Asteroid Belt 1", position: { x: 5000, y: 0, z: 0 } });
+  const t = travelToBelt(travelToBeltStep, obs({ snapshot: snapshot([belt]) }), NM, {});
+  assert.equal(t.outcome.kind, "done");
+});
+
+test("travel-to-belt: a pinned belt not on this grid -> blocked, never a silent fallback to nearest", () => {
+  const near = entity({ itemID: 40001, name: "Asteroid Belt 1", position: { x: 500000, y: 0, z: 0 } });
+  const step: MacroStep = {
+    id: "tb2",
+    kind: "macro",
+    macro: "travel-to-belt",
+    args: {
+      belt: {
+        kind: "belt",
+        belt: { mode: "chosen", ref: { entity: "belt", id: 99999, name: "Asteroid Belt 9", systemName: null } },
+      },
+    },
+  };
+  const t = travelToBelt(step, obs({ snapshot: snapshot([near]) }), NM, {});
+  assert.equal(t.outcome.kind, "blocked");
+  assert.match(t.outcome.kind === "blocked" ? t.outcome.reason : "", /pinned/i);
+});
+
 test("mine: a rock in range -> orbit it at 5km and remember it", () => {
   const rock = entity({ itemID: 50001, name: "Veldspar", miningYieldTypeID: 1230, beltID: 40001, position: { x: 8000, y: 0, z: 0 } });
   const t = mine(mineStep, obs({ snapshot: snapshot([rock]) }), NM, {});
   assert.equal(t.action.kind, "orbit");
   assert.ok(t.action.kind === "orbit" && t.action.targetID === 50001 && t.action.range === 5000);
   assert.equal(t.nextMem["rockID"], 50001);
+});
+
+test("mine: rock locked but still out of range, not yet approached -> close in", () => {
+  const rock = entity({ itemID: 50001, name: "Veldspar", miningYieldTypeID: 1230, position: { x: 15000, y: 0, z: 0 } });
+  const t = mine(
+    mineStep,
+    obs({ snapshot: snapshot([rock], { activeModuleIDs: [] }), lockedTargetIDs: [50001], miningModuleIDs: [700, 701] }),
+    { rockID: 50001, lockIssued: true, waited: 0 },
+    {},
+  );
+  assert.equal(t.action.kind, "orbit");
+  assert.ok(t.action.kind === "orbit" && t.action.targetID === 50001 && t.action.range === 5000);
+  assert.equal(t.nextMem["approachedRockID"], 50001);
+});
+
+test("mine: rock locked, out of range, already closing in -> wait rather than activate", () => {
+  const rock = entity({ itemID: 50001, name: "Veldspar", miningYieldTypeID: 1230, position: { x: 15000, y: 0, z: 0 } });
+  const t = mine(
+    mineStep,
+    obs({ snapshot: snapshot([rock], { activeModuleIDs: [] }), lockedTargetIDs: [50001], miningModuleIDs: [700, 701] }),
+    { rockID: 50001, lockIssued: true, waited: 0, approachedRockID: 50001 },
+    {},
+  );
+  assert.equal(t.action.kind, "wait");
+  assert.match(t.phase, /Approaching/);
+});
+
+test("mine: rock locked at 7km — an orbit of 5km overshooting a little — still activates", () => {
+  // An orbit command holds APPROXIMATELY its radius, not exactly it, so a ship
+  // told to orbit at 5km can genuinely settle a bit outside that. The range
+  // check has to tolerate that wobble rather than treat it as still too far.
+  const rock = entity({ itemID: 50001, name: "Veldspar", miningYieldTypeID: 1230, position: { x: 7000, y: 0, z: 0 } });
+  const t = mine(
+    mineStep,
+    obs({ snapshot: snapshot([rock], { activeModuleIDs: [] }), lockedTargetIDs: [50001], miningModuleIDs: [700, 701] }),
+    { rockID: 50001, lockIssued: true, waited: 0, approachedRockID: 50001 },
+    {},
+  );
+  assert.ok(t.action.kind === "activate" && t.action.targetID === 50001 && t.action.moduleID === 700);
 });
 
 test("mine: rock locked, a miner idle -> activate it on the rock", () => {
@@ -118,6 +238,18 @@ test("mine: rock locked, all miners running -> wait (mining)", () => {
   );
   assert.equal(t.action.kind, "wait");
   assert.match(t.phase, /Mining/);
+});
+
+test("mine: rock locked, but no mining equipment was detected -> blocked, not a silent 'mining'", () => {
+  const rock = entity({ itemID: 50001, name: "Veldspar", miningYieldTypeID: 1230, position: { x: 4000, y: 0, z: 0 } });
+  const t = mine(
+    mineStep,
+    obs({ snapshot: snapshot([rock], { activeModuleIDs: [] }), lockedTargetIDs: [50001], miningModuleIDs: [] }),
+    { rockID: 50001, lockIssued: true, waited: 0 },
+    {},
+  );
+  assert.equal(t.outcome.kind, "blocked");
+  assert.match(t.outcome.kind === "blocked" ? t.outcome.reason : "", /no mining equipment/i);
 });
 
 test("deliver: docked with ore -> unload; docked empty -> done", () => {
@@ -291,6 +423,92 @@ test("loot: far from your wreck -> approach first; looted wrecks are not reopene
 
   const skip = loot(s, obs({ snapshot: snapshot([far]), myCharacterID: 90000001 }), { looted: [70001] }, {});
   assert.equal(skip.outcome.kind, "done", "an already-looted wreck is never reopened");
+});
+
+test("loot-containers: any container is fair game, no ownership check", () => {
+  const loot = SCRIPT_MACROS["loot-containers"]!;
+  const s = { id: "lc", kind: "macro", macro: "loot-containers", args: {} } as const;
+  const mine = entity({ itemID: 80001, kind: "container", ownerID: 90000001, position: { x: 1000, y: 0, z: 0 } });
+  const theirs = entity({ itemID: 80002, kind: "container", ownerID: 555, position: { x: 500, y: 0, z: 0 } });
+  const unknown = entity({ itemID: 80003, kind: "container", ownerID: null, position: { x: 200, y: 0, z: 0 } });
+
+  // Nearest wins regardless of owner — unlike loot-wrecks, nothing here is off limits.
+  const t = loot(s, obs({ snapshot: snapshot([mine, theirs, unknown]), myCharacterID: 90000001 }), {}, {});
+  assert.ok(t.action.kind === "lootContainer" && t.action.containerID === 80003);
+
+  // Nothing left, and the settle window (see the dedicated test below) has
+  // already run out -> done.
+  const done = loot(
+    s,
+    obs({ snapshot: snapshot([]), myCharacterID: 90000001 }),
+    { emptyChecks: 30 },
+    {},
+  );
+  assert.equal(done.outcome.kind, "done");
+});
+
+test("loot-containers: an empty read right after arrival waits out a settle window instead of leaving immediately", () => {
+  // No natural pause the way a player starting the bot by hand gets — landing
+  // on a belt and checking for containers on the very next tick can read one
+  // tick ahead of a not-yet-caught-up snapshot. A single empty read must not
+  // send the bot straight back to the station.
+  const loot = SCRIPT_MACROS["loot-containers"]!;
+  const s = { id: "lc", kind: "macro", macro: "loot-containers", args: {} } as const;
+
+  const firstCheck = loot(s, obs({ snapshot: snapshot([]) }), {}, {});
+  assert.equal(firstCheck.action.kind, "wait");
+  assert.notEqual(firstCheck.outcome.kind, "done", "one empty read is not proof the grid never had a can");
+  assert.equal(firstCheck.nextMem["emptyChecks"], 1);
+
+  // A can showing up mid-window resets the count and gets worked normally.
+  const can = entity({ itemID: 80001, kind: "container", position: { x: 90000, y: 0, z: 0 } });
+  const found = loot(s, obs({ snapshot: snapshot([can]) }), firstCheck.nextMem, {});
+  assert.ok(found.action.kind === "approach" && found.action.targetID === 80001);
+  assert.equal(found.nextMem["emptyChecks"], 0);
+
+  // Genuinely nothing there for the whole window -> done, not stuck forever.
+  const stillEmpty = loot(s, obs({ snapshot: snapshot([]) }), { emptyChecks: 30 }, {});
+  assert.equal(stillEmpty.outcome.kind, "done");
+});
+
+test("loot-containers: far from a container -> approach first", () => {
+  const loot = SCRIPT_MACROS["loot-containers"]!;
+  const s = { id: "lc", kind: "macro", macro: "loot-containers", args: {} } as const;
+  const far = entity({ itemID: 80001, kind: "container", position: { x: 90000, y: 0, z: 0 } });
+
+  const go = loot(s, obs({ snapshot: snapshot([far]) }), {}, {});
+  assert.ok(go.action.kind === "approach" && go.action.targetID === 80001);
+});
+
+test("loot-containers: still on grid after a loot attempt -> tried again, never silently believed emptied", () => {
+  // A jetcan the server has not despawned is a jetcan that is NOT actually
+  // empty yet (jettisonRuntime.js's maybeExpireEmptySpaceContainer despawns it
+  // the instant it truly is) — so seeing it again next tick means the transfer
+  // likely declined, and the block has to retry rather than trust its own
+  // "I already issued the action" memory and move on leaving the ore behind.
+  const loot = SCRIPT_MACROS["loot-containers"]!;
+  const s = { id: "lc", kind: "macro", macro: "loot-containers", args: {} } as const;
+  const can = entity({ itemID: 80001, kind: "container", position: { x: 1000, y: 0, z: 0 } });
+
+  const retry = loot(s, obs({ snapshot: snapshot([can]) }), { tries: { "80001": 1 } }, {});
+  assert.ok(retry.action.kind === "lootContainer" && retry.action.containerID === 80001);
+  assert.equal((retry.nextMem["tries"] as Record<string, number>)["80001"], 2);
+});
+
+test("loot-containers: a can that keeps refusing for MAX_BLOCK_ATTEMPTS is set aside, not looped forever", () => {
+  const loot = SCRIPT_MACROS["loot-containers"]!;
+  const s = { id: "lc", kind: "macro", macro: "loot-containers", args: {} } as const;
+  const stuck = entity({ itemID: 80001, kind: "container", position: { x: 1000, y: 0, z: 0 } });
+  const other = entity({ itemID: 80002, kind: "container", position: { x: 2000, y: 0, z: 0 } });
+
+  // MAX_BLOCK_ATTEMPTS is 5 (scriptMacros.ts, not exported) — this is the 6th try.
+  const gaveUp = loot(s, obs({ snapshot: snapshot([stuck]) }), { tries: { "80001": 5 } }, {});
+  assert.equal(gaveUp.action.kind, "wait");
+  assert.deepEqual(gaveUp.nextMem["skipped"], [80001]);
+
+  // Next tick: the stuck can is skipped, so a different one on grid is picked instead.
+  const next = loot(s, obs({ snapshot: snapshot([stuck, other]) }), gaveUp.nextMem, {});
+  assert.ok(next.action.kind === "lootContainer" && next.action.containerID === 80002);
 });
 
 test("hardeners-on: switches idle hardeners on one per tick; all running -> done; none fitted -> blocked", () => {
@@ -1382,6 +1600,60 @@ test("jettison-cargo: dumps the whole hold, or only the picked item; empty is do
 test("jettison-cargo: docked is blocked, since a can needs space to float in", () => {
   const t = jettison(
     jettisonStep,
+    obs({ inSpace: false, flightStatus: flight({ docked: true, inSpace: false }) }),
+    {},
+    {},
+  );
+  assert.equal(t.outcome.kind, "blocked");
+});
+
+const jettisonOreStep: MacroStep = { id: "jo", kind: "macro", macro: "jettison-ore", args: {} };
+const jettisonOre = SCRIPT_MACROS["jettison-ore"]!;
+
+test("jettison-ore: dumps the ore hold, never the (empty) cargo hold", () => {
+  const holds: NonNullable<ScriptObservation["holds"]> = [
+    { key: "cargo", label: "Cargo Hold", items: [], capacity: null, present: true, error: null },
+    {
+      key: "ore",
+      label: "Ore Hold",
+      items: [
+        { itemID: 21, typeID: 1230, quantity: 500, singleton: false },
+        { itemID: 22, typeID: 1228, quantity: 300, singleton: false },
+      ] as unknown as NonNullable<ScriptObservation["holds"]>[number]["items"],
+      capacity: null,
+      present: true,
+      error: null,
+    },
+  ];
+  const all = jettisonOre(jettisonOreStep, obs({ holds }), {}, {});
+  assert.ok(all.action.kind === "jettison" && all.action.itemIDs.length === 2);
+
+  const onlyVeldspar: MacroStep = {
+    id: "jo2", kind: "macro", macro: "jettison-ore",
+    args: { item: { kind: "itemType", typeID: 1230, name: "Veldspar" } },
+  };
+  const one = jettisonOre(onlyVeldspar, obs({ holds }), {}, {});
+  assert.ok(one.action.kind === "jettison" && one.action.itemIDs.length === 1 && one.action.itemIDs[0] === 21);
+});
+
+test("jettison-ore: an empty ore hold is done; a ship with no ore hold is blocked", () => {
+  const emptyOre: NonNullable<ScriptObservation["holds"]> = [
+    { key: "ore", label: "Ore Hold", items: [], capacity: null, present: true, error: null },
+  ];
+  const emptied = jettisonOre(jettisonOreStep, obs({ holds: emptyOre }), {}, {});
+  assert.equal(emptied.outcome.kind, "done");
+
+  const cargoOnly: NonNullable<ScriptObservation["holds"]> = [
+    { key: "cargo", label: "Cargo Hold", items: [], capacity: null, present: true, error: null },
+  ];
+  const noHold = jettisonOre(jettisonOreStep, obs({ holds: cargoOnly }), {}, {});
+  assert.equal(noHold.outcome.kind, "blocked");
+  assert.match(noHold.outcome.kind === "blocked" ? noHold.outcome.reason : "", /no ore hold/i);
+});
+
+test("jettison-ore: docked is blocked, since a can needs space to float in", () => {
+  const t = jettisonOre(
+    jettisonOreStep,
     obs({ inSpace: false, flightStatus: flight({ docked: true, inSpace: false }) }),
     {},
     {},

@@ -70,6 +70,8 @@
   const inventory = store.inventory;
   // svelte-ignore state_referenced_locally
   const names = store.names;
+  // svelte-ignore state_referenced_locally
+  const space = store.space;
 
   let idSeed = 0;
   const makeId = (): string => `n${(idSeed += 1)}`;
@@ -642,6 +644,53 @@
     updateStep(
       i,
       (s) => ({ ...s, args: { ...s.args, bookmark: { kind: "bookmark", bookmarkID: match.bookmarkID, name: match.name } } }),
+      side,
+      j,
+    );
+  }
+  // ── The mine-at-belt block's belt picker ────────────────────────────────────
+  // Belt ids are grid-local, not global (unlike a station — see
+  // StationPicker.svelte's own note), so a galaxy-wide search makes no sense
+  // here. Offer whatever belts are on the CURRENT grid right now, matched by
+  // the same name regex the runtime uses to resolve "nearest" — picking one
+  // here just pins that same name-match for later ticks.
+  const beltsOnGrid = $derived(
+    ($space.snapshot?.entities ?? [])
+      .filter((e) => /belt/i.test(e.name ?? ""))
+      .map((e) => ({ itemID: e.itemID, name: e.name ?? "Unnamed belt" })),
+  );
+  function beltArgMode(step: MacroStep): "nearest" | "chosen" {
+    const arg = step.args["belt"];
+    return arg !== undefined && arg.kind === "belt" && arg.belt.mode === "chosen" ? "chosen" : "nearest";
+  }
+  function beltArgID(step: MacroStep): number | null {
+    const arg = step.args["belt"];
+    return arg !== undefined && arg.kind === "belt" && arg.belt.mode === "chosen" ? arg.belt.ref.id : null;
+  }
+  function beltArgName(step: MacroStep): string | null {
+    const arg = step.args["belt"];
+    return arg !== undefined && arg.kind === "belt" && arg.belt.mode === "chosen" ? arg.belt.ref.name : null;
+  }
+  function setStepBeltNearest(i: number, side: Side | null = null, j = -1): void {
+    updateStep(i, (s) => ({ ...s, args: { ...s.args, belt: { kind: "belt", belt: { mode: "nearest" } } } }), side, j);
+  }
+  function setStepBeltChosen(i: number, itemID: number, side: Side | null = null, j = -1): void {
+    const match = beltsOnGrid.find((b) => b.itemID === itemID);
+    if (match === undefined) return;
+    const systemID = $space.snapshot?.solarSystemID ?? null;
+    const systemName = systemID !== null ? ($names.resolved[nameKey("system", systemID)] ?? null) : null;
+    updateStep(
+      i,
+      (s) => ({
+        ...s,
+        args: {
+          ...s.args,
+          belt: {
+            kind: "belt",
+            belt: { mode: "chosen", ref: { entity: "belt", id: match.itemID, name: match.name, systemName } },
+          },
+        },
+      }),
       side,
       j,
     );
@@ -1269,12 +1318,71 @@
                 <option value="nearest">nearest rock first</option>
                 <option value="biggest">biggest rock first</option>
               </select>
+              at
+              <select
+                class="belt-pick"
+                value={beltArgMode(step) === "chosen" ? String(beltArgID(step) ?? "") : "nearest"}
+                onchange={(e) => {
+                  const v = e.currentTarget.value;
+                  if (v === "nearest") {
+                    setStepBeltNearest(i, side, j);
+                  } else {
+                    setStepBeltChosen(i, Number(v), side, j);
+                  }
+                }}
+              >
+                <option value="nearest">the nearest belt</option>
+                {#if beltArgMode(step) === "chosen" && beltArgID(step) !== null && !beltsOnGrid.some((b) => b.itemID === beltArgID(step))}
+                  <!-- The pinned belt isn't on the current grid right now — keep it
+                       selectable/visible rather than silently blanking the picker.
+                       Kept short: a native <select> popup sizes itself to its widest
+                       option and cannot be constrained or resized from page CSS, so a
+                       long suffix here was pushing the whole dropdown off-screen. -->
+                  <option value={String(beltArgID(step))}>{beltArgName(step) ?? "Pinned belt"} (off grid)</option>
+                {/if}
+                {#each beltsOnGrid as b (b.itemID)}
+                  <option value={String(b.itemID)}>{b.name}</option>
+                {/each}
+              </select>
+            </span>
+          {/if}
+          {#if step.macro === "travel-to-belt"}
+            <span class="inline-edit">
+              to
+              <select
+                class="belt-pick"
+                value={beltArgMode(step) === "chosen" ? String(beltArgID(step) ?? "") : "nearest"}
+                onchange={(e) => {
+                  const v = e.currentTarget.value;
+                  if (v === "nearest") {
+                    setStepBeltNearest(i, side, j);
+                  } else {
+                    setStepBeltChosen(i, Number(v), side, j);
+                  }
+                }}
+              >
+                <option value="nearest">the nearest belt</option>
+                {#if beltArgMode(step) === "chosen" && beltArgID(step) !== null && !beltsOnGrid.some((b) => b.itemID === beltArgID(step))}
+                  <option value={String(beltArgID(step))}>{beltArgName(step) ?? "Pinned belt"} (off grid)</option>
+                {/if}
+                {#each beltsOnGrid as b (b.itemID)}
+                  <option value={String(b.itemID)}>{b.name}</option>
+                {/each}
+              </select>
             </span>
           {/if}
           {#if step.macro === "jettison-cargo"}
             <span class="inline-edit">
               <select value={moveArg(step, "item")} onchange={(e) => setMoveItem(i, e.currentTarget.value, side, j)}>
                 <option value="">everything in the hold</option>
+                {#each knownItems as it (it.typeID)}<option value={it.typeID}>{it.name}</option>{/each}
+              </select>
+            </span>
+          {/if}
+          {#if step.macro === "jettison-ore"}
+            <span class="inline-edit">
+              <select value={moveArg(step, "item")} onchange={(e) => setMoveItem(i, e.currentTarget.value, side, j)}>
+                <option value="">everything in the ore hold</option>
                 {#each knownItems as it (it.typeID)}<option value={it.typeID}>{it.name}</option>{/each}
               </select>
             </span>
@@ -1605,6 +1713,9 @@
   }
   input.chat-in {
     width: 14rem;
+  }
+  select.belt-pick {
+    max-width: 14rem;
   }
   /* A branch reads as one block with two indented sides. */
   .row.is-branch {
