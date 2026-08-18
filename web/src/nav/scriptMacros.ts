@@ -39,6 +39,15 @@ const WAIT = { kind: "wait" } as const;
 const ACTING = { kind: "acting" } as const;
 
 const ORBIT_RANGE_M = 5000; // the operator's "orbit of 5km" — inside mining range
+// The "close enough to activate" check, kept DELIBERATELY BELOW even a basic
+// mining laser or strip miner's ~10-15km optimal range (same margin style as
+// SALVAGE_RANGE_M and ORBIT_BOOST_RANGE_M/REMOTE_ASSIST_RANGE_M below) — the
+// orbit command targets 5km, but an orbit holds APPROXIMATELY that radius, not
+// exactly it, so gating "in range" on the same 5km the orbit aims for meant a
+// ship settling at 6-7km could circle forever without ever reading as close
+// enough to try. Checking against this wider, still-safe floor instead lets
+// the orbit's normal wobble stay inside the range that matters.
+const MINING_RANGE_M = 10_000;
 const DOCK_RANGE_M = 2500; // dock once this close (retail's docking radius)
 const MAX_LOCK_WAIT_TICKS = 8; // ~16s acquiring one rock before moving on
 const RECALL_MAX_WAIT_TICKS = 15; // ~30s waiting for drones home before we leave anyway
@@ -174,6 +183,33 @@ function rockLabel(rock: SpaceEntity): string {
   return rock.name ?? "a rock";
 }
 
+/** True when a step pins a specific belt rather than "nearest". */
+function isChosenBelt(step: MacroStep): boolean {
+  const arg = step.args["belt"];
+  return arg !== undefined && arg.kind === "belt" && arg.belt.mode === "chosen";
+}
+
+/**
+ * The belt a mine-at-belt step should head for when no rocks are in range.
+ * "chosen" pins one belt by NAME (never id — unlike a station, a belt's id is
+ * grid-local, not globally stable, so it can only be re-resolved against what
+ * is actually on THIS grid, the same way "nearest" already is). No match on
+ * this grid comes back null so the caller can block rather than silently
+ * drifting to the wrong belt.
+ */
+function beltTarget(
+  step: MacroStep,
+  belts: readonly SpaceEntity[],
+  measurement: SpaceMeasurement | null,
+): SpaceEntity | null {
+  const arg = step.args["belt"];
+  if (arg !== undefined && arg.kind === "belt" && arg.belt.mode === "chosen") {
+    const ref = arg.belt.ref;
+    return ref.name !== null ? (belts.find((b) => b.name === ref.name) ?? null) : null;
+  }
+  return nearest(belts, measurement);
+}
+
 /**
  * Which rock to work next. Default (and the shipped behaviour) is the NEAREST;
  * "biggest" reaches for the most ore left instead, which means fewer rock changes
@@ -218,11 +254,41 @@ const undock: MacroDecider = (_step, obs) => {
   return tick(WAIT, "Waiting for the ship to say where it is.", "Leaving the station", ACTING, false);
 };
 
+// ── travel-to-belt ───────────────────────────────────────────────────────────
+// Warp to a belt — a pinned one, or the nearest — and stop once on grid with
+// it. No rocks, no locking: just the trip, for a hauler heading out to pick up
+// a jetcan without ever sitting down to mine. Reuses mine-at-belt's own
+// beltTarget/isChosenBelt (below) so "pin a belt" behaves identically in both.
+const travelToBelt: MacroDecider = (step, obs) => {
+  const snapshot = obs.snapshot ?? null;
+  if (obs.inWarp === true) {
+    return tick(WAIT, "In warp — nothing decided mid-warp.", "Flying to the belt", ACTING, false, {});
+  }
+  if (obs.inSpace !== true || snapshot === null) {
+    return tick(WAIT, "Waiting for the ship to be out in space.", "Getting ready", ACTING, false, {});
+  }
+  const measurement = measureSpace(snapshot);
+  const belts = snapshot.entities.filter((e) => /belt/i.test(e.name ?? ""));
+  const belt = beltTarget(step, belts, measurement);
+  if (belt === null) {
+    const reason = isChosenBelt(step)
+      ? "The belt this step is pinned to is not on this grid."
+      : "There is no asteroid belt here to fly to.";
+    return tick(WAIT, "No asteroid belt in view.", "Nothing to fly to", { kind: "blocked", reason });
+  }
+  const beltDist = measurement?.distances.get(belt.itemID) ?? Number.POSITIVE_INFINITY;
+  if (beltDist <= BELT_ARRIVAL_RADIUS_M) {
+    return tick(WAIT, "At the belt.", "Arrived", { kind: "done" });
+  }
+  return tick({ kind: "warp", targetID: belt.itemID }, `Warping to ${rockLabel(belt)}.`, "Flying to the belt", ACTING, false, {});
+};
+
 // ── mine-at-belt ───────────────────────────────────────────────────────────
 // Find the nearest rock, orbit it at 5km, lock it, run the miners, and when it
-// is gone pick the next — warping to the nearest belt first if no rock is in
-// range. The player's `until` (ore hold full) is what ends the block.
-const mineAtBelt: MacroDecider = (_step, obs, mem) => {
+// is gone pick the next — warping to the step's belt (a pinned one, or else
+// the nearest) first if no rock is in range. The player's `until` (ore hold
+// full) is what ends the block.
+const mineAtBelt: MacroDecider = (step, obs, mem) => {
   const snapshot = obs.snapshot ?? null;
   if (obs.inWarp === true) {
     return tick(WAIT, "In warp — nothing decided mid-warp.", "Flying to the belt", ACTING, false, mem);
@@ -235,14 +301,17 @@ const mineAtBelt: MacroDecider = (_step, obs, mem) => {
   const rocks = snapshot.entities.filter(isMineableRock);
 
   if (rocks.length === 0) {
-    // No rocks in range. If we are already sitting on a belt, it is mined out;
-    // otherwise fly to the nearest belt to find some.
+    // No rocks in range. If we are already sitting on the right belt, it is
+    // mined out; otherwise fly there to find some.
     const belts = snapshot.entities.filter((e) => /belt/i.test(e.name ?? ""));
-    const belt = nearest(belts, measurement);
+    const belt = beltTarget(step, belts, measurement);
     if (belt === null) {
+      const reason = isChosenBelt(step)
+        ? "The belt this step is pinned to is not on this grid."
+        : "There is no asteroid belt here to mine at.";
       return tick(WAIT, "No asteroid belt in view to mine at.", "Nothing to mine", {
         kind: "blocked",
-        reason: "There is no asteroid belt here to mine at.",
+        reason,
       });
     }
     const beltDist = measurement?.distances.get(belt.itemID) ?? Number.POSITIVE_INFINITY;
@@ -263,7 +332,7 @@ const mineAtBelt: MacroDecider = (_step, obs, mem) => {
   }
 
   if (rockID === null) {
-    const pick = pickRock(_step, rocks, measurement);
+    const pick = pickRock(step, rocks, measurement);
     if (pick === null) {
       return tick(WAIT, "Nothing pickable to mine.", "Picking a rock", ACTING, true, {});
     }
@@ -274,7 +343,7 @@ const mineAtBelt: MacroDecider = (_step, obs, mem) => {
       "Approaching a rock",
       ACTING,
       true,
-      { rockID: pick.itemID, lockIssued: false, waited: 0 },
+      { rockID: pick.itemID, lockIssued: false, waited: 0, approachedRockID: pick.itemID },
     );
   }
 
@@ -285,6 +354,7 @@ const mineAtBelt: MacroDecider = (_step, obs, mem) => {
         rockID,
         lockIssued: true,
         waited: 0,
+        approachedRockID: num(mem, "approachedRockID"),
       });
     }
     const waited = (num(mem, "waited") ?? 0) + 1;
@@ -292,12 +362,59 @@ const mineAtBelt: MacroDecider = (_step, obs, mem) => {
       // It will not lock — let it go and pick another next tick.
       return tick(WAIT, "That rock would not lock, so moving on.", "Picking another rock", ACTING, true, {});
     }
-    return tick(WAIT, "Waiting for the lock.", "Locking on", ACTING, true, { rockID, lockIssued: true, waited });
+    return tick(WAIT, "Waiting for the lock.", "Locking on", ACTING, true, {
+      rockID,
+      lockIssued: true,
+      waited,
+      approachedRockID: num(mem, "approachedRockID"),
+    });
   }
 
-  // Locked — switch on any mining module that is not already cycling.
+  // Locked, but a lock reaches much further than the mining equipment does — a
+  // rock picked far across the belt can land its lock well before the orbit
+  // issued above has actually closed the distance. Same check repHurtMate and
+  // the combat engage do: measure, and if still out of range, close in before
+  // ever trying to switch the equipment on rather than silently doing nothing.
+  const rockDist = measurement?.distances.get(rockID) ?? null;
+  const outOfRange = rockDist !== null && rockDist > MINING_RANGE_M;
+  if (outOfRange) {
+    if (num(mem, "approachedRockID") !== rockID) {
+      return tick(
+        { kind: "orbit", targetID: rockID, range: ORBIT_RANGE_M },
+        "Closing in — too far out to mine yet.",
+        "Approaching a rock",
+        ACTING,
+        true,
+        { rockID, lockIssued: true, waited: 0, approachedRockID: rockID },
+      );
+    }
+    return tick(WAIT, "Closing in — too far out to mine yet.", "Approaching a rock", ACTING, true, {
+      rockID,
+      lockIssued: true,
+      waited: 0,
+      approachedRockID: rockID,
+    });
+  }
+
+  // Locked and in range — switch on any mining module that is not already cycling.
+  //
+  // ⚠ AN EMPTY LIST IS NOT "NOTHING LEFT TO SWITCH ON". `miningModuleIDs` is
+  // auto-detected from the ship's fit (flow.ts's `resolveMiningModuleIDs`, by
+  // high-slot + the game's own mining group names) — if that comes back empty
+  // (a fit that failed to load, or a module whose group never resolved), the
+  // `.find()` below would ALSO report "nothing left to activate" and this
+  // block would silently declare "Mining the rock" having never issued an
+  // activate at all. Reported as blocked instead, so a genuinely fitted-but-
+  // undetected miner is not indistinguishable from a fully spun-up one.
+  const miners = obs.miningModuleIDs ?? [];
+  if (miners.length === 0) {
+    return tick(WAIT, "No mining equipment was found fitted to this ship.", "No miners fitted", {
+      kind: "blocked",
+      reason: "No mining equipment was found fitted to this ship.",
+    });
+  }
   const active = new Set(snapshot.ship?.activeModuleIDs ?? []);
-  const nextMiner = (obs.miningModuleIDs ?? []).find((id) => !active.has(id));
+  const nextMiner = miners.find((id) => !active.has(id));
   if (nextMiner !== undefined) {
     return tick(
       { kind: "activate", moduleID: nextMiner, targetID: rockID },
@@ -305,10 +422,10 @@ const mineAtBelt: MacroDecider = (_step, obs, mem) => {
       "Mining",
       ACTING,
       true,
-      { rockID, lockIssued: true, waited: 0 },
+      { rockID, lockIssued: true, waited: 0, approachedRockID: rockID },
     );
   }
-  return tick(WAIT, "Mining the rock.", "Mining", ACTING, true, { rockID, lockIssued: true, waited: 0 });
+  return tick(WAIT, "Mining the rock.", "Mining", ACTING, true, { rockID, lockIssued: true, waited: 0, approachedRockID: rockID });
 };
 
 // ── deliver-ore ──────────────────────────────────────────────────────────────
@@ -1080,6 +1197,103 @@ const lootWrecks: MacroDecider = (_step, obs, mem) => {
     ACTING,
     true,
     { ...mem, approaching: null, looted: [...looted, target.itemID] },
+  );
+};
+
+// ── loot-containers ───────────────────────────────────────────────────────────
+
+function containersOnGrid(snapshot: SpaceSnapshot | null): readonly SpaceEntity[] {
+  return (snapshot?.entities ?? []).filter((e) => e.kind === "container");
+}
+
+// How long to keep checking an apparently-empty grid before believing it —
+// generous on purpose. This block has nothing better to do than wait for a
+// can that has not shown up yet, so there is no cost to giving the snapshot
+// plenty of room to catch up rather than racing it.
+const CONTAINER_SETTLE_TICKS = 30; // ~2s/tick elsewhere in this file -> roughly a minute
+
+// Loot every container on the grid, nearest first: fly inside loot range, empty
+// it, next. No ownership check — this is an emulator, not a client guarding
+// real players from can-flipping, and the server enforces none either.
+//
+// ⚠ NOT MARKED DONE THE INSTANT IT IS ISSUED. flow.ts's lootContainer dispatch
+// re-reads the transfer's own result, but nothing here ever saw it — so
+// marking a can "looted" the moment the action went out (the old behaviour)
+// believed a silently-declined transfer exactly as readily as a real one, and
+// moved on leaving the ore sitting in an untouched can. A jetcan despawns the
+// instant the SERVER sees it truly empty (any looter, not just this one — see
+// jettisonRuntime.js's maybeExpireEmptySpaceContainer) — so "still on grid" IS
+// "still has something in it", and re-targeting the same can next tick is
+// exactly the retry a decline needs. Only a can that keeps refusing for
+// MAX_BLOCK_ATTEMPTS running gets set aside, so a genuinely stuck one does not
+// loop the block forever.
+const lootContainers: MacroDecider = (_step, obs, mem) => {
+  const snapshot = obs.snapshot ?? null;
+  if (obs.inWarp === true) {
+    return tick(WAIT, "In warp — nothing decided mid-warp.", "Looting", ACTING, false, mem);
+  }
+  if (obs.inSpace !== true || snapshot === null) {
+    return tick(WAIT, "Waiting for the ship to be out in space.", "Looting", ACTING, false, mem);
+  }
+  const skippedRaw = mem["skipped"];
+  const skipped = new Set<number>(Array.isArray(skippedRaw) ? (skippedRaw as number[]) : []);
+  const cans = containersOnGrid(snapshot).filter((c) => !skipped.has(c.itemID));
+  if (cans.length === 0) {
+    // A can that has not shown up in THIS tick's snapshot is not proof the
+    // grid never had one — landing on a belt and checking for containers on
+    // the very next tick (no natural pause the way a player starting the bot
+    // by hand gets) can read one tick ahead of a not-yet-caught-up snapshot.
+    // Wait out a short settle window of consecutive empty reads before
+    // believing "nothing here" for real, so one stale tick right after
+    // arrival does not turn the bot straight back around.
+    const emptyChecks = (num(mem, "emptyChecks") ?? 0) + 1;
+    if (emptyChecks <= CONTAINER_SETTLE_TICKS) {
+      return tick(WAIT, "Checking the grid for containers.", "Looting", ACTING, true, { ...mem, emptyChecks });
+    }
+    return tick(WAIT, "Every container here is emptied.", "Looting", { kind: "done" });
+  }
+  // A can IS present this tick — the settle window above was for nothing, and
+  // any leftover count from an earlier blip must not linger and delay the
+  // eventual "done" once every can here really is emptied.
+  const memClean: MacroMemory = { ...mem, emptyChecks: 0 };
+  const measurement = measureSpace(snapshot);
+  const target = nearest(cans, measurement);
+  if (target === null) {
+    return tick(WAIT, "Nothing reachable to loot.", "Looting", ACTING, true, memClean);
+  }
+  const dist = measurement?.distances.get(target.itemID) ?? Number.POSITIVE_INFINITY;
+  if (dist > LOOT_RANGE_M) {
+    if (num(memClean, "approaching") === target.itemID) {
+      return tick(WAIT, "Flying to the container.", "Looting", ACTING, true, memClean);
+    }
+    return tick(
+      { kind: "approach", targetID: target.itemID },
+      "Heading for the container.",
+      "Looting",
+      ACTING,
+      true,
+      { ...memClean, approaching: target.itemID },
+    );
+  }
+  const triesRaw = memClean["tries"];
+  const tries: Record<string, number> =
+    triesRaw !== null && typeof triesRaw === "object" ? { ...(triesRaw as Record<string, number>) } : {};
+  const targetTries = (tries[target.itemID] ?? 0) + 1;
+  if (targetTries > MAX_BLOCK_ATTEMPTS) {
+    return tick(WAIT, "That container would not give up its contents.", "Looting", ACTING, true, {
+      ...memClean,
+      approaching: null,
+      skipped: [...skipped, target.itemID],
+    });
+  }
+  tries[target.itemID] = targetTries;
+  return tick(
+    { kind: "lootContainer", containerID: target.itemID },
+    "Taking what's inside.",
+    "Looting",
+    ACTING,
+    true,
+    { ...memClean, approaching: null, tries },
   );
 };
 
@@ -2871,6 +3085,60 @@ const jettisonCargo: MacroDecider = (step, obs, mem) => {
   );
 };
 
+// ── jettison-ore ─────────────────────────────────────────────────────────────
+// The same jetcan-drop as jettison-cargo, but empties the ORE hold (or
+// whichever specialty hold — ice, gas — the ship carries) instead: a mining
+// ship's own cargo hold sits empty the whole run, so a hauling loop built
+// around jettison-cargo has nothing to work with. Same one-item-or-everything
+// filter, same retry-then-block on a refused jettison; the only difference is
+// which hold it reads.
+const jettisonOre: MacroDecider = (step, obs, mem) => {
+  if (obs.flightStatus?.docked === true || obs.inSpace === false) {
+    return tick(WAIT, "Not in space — a can has to go somewhere.", "Jettisoning", {
+      kind: "blocked",
+      reason: "Undock first — jettisoning drops a container into space.",
+    });
+  }
+  if (obs.inSpace !== true) {
+    return tick(WAIT, "Waiting for the ship to say where it is.", "Jettisoning", ACTING, false, mem);
+  }
+  const holds = obs.holds ?? null;
+  if (holds === null) {
+    return tick(WAIT, "Reading the ore hold.", "Jettisoning", ACTING, false, mem);
+  }
+  // The specialty hold — ore, ice, gas, whichever this hull has — never cargo,
+  // same selection move-items already makes for its own "ore-hold" place.
+  const oreHold = holds.find((hold) => hold.key !== "cargo" && hold.present) ?? null;
+  if (oreHold === null) {
+    return tick(WAIT, "This ship has no ore hold.", "Jettisoning", {
+      kind: "blocked",
+      reason: "This ship has no ore hold to jettison from.",
+    });
+  }
+  const item = step.args["item"];
+  const wanted =
+    item !== undefined && item.kind === "itemType" && item.typeID !== null ? item.typeID : null;
+  const rows = (oreHold.items ?? []).filter((row) => wanted === null || row.typeID === wanted);
+  if (rows.length === 0) {
+    return tick(WAIT, "Nothing left in the ore hold to jettison.", "Jettisoning", { kind: "done" });
+  }
+  const tries = (num(mem, "tries") ?? 0) + 1;
+  if (tries > MAX_BLOCK_ATTEMPTS) {
+    return tick(WAIT, "The ore would not go out.", "Jettisoning", {
+      kind: "blocked",
+      reason: "The ore would not jettison after several tries, so the bot stopped.",
+    });
+  }
+  return tick(
+    { kind: "jettison", itemIDs: rows.map((row) => row.itemID) },
+    "Jettisoning the ore into space.",
+    "Jettisoning",
+    ACTING,
+    false,
+    { ...mem, tries },
+  );
+};
+
 // ── tidy-hangar ──────────────────────────────────────────────────────────────
 // Stack everything loose in the station hangar. One shot: the server merges what
 // it can, and a second pass would find nothing to do — so this issues once and is
@@ -3100,6 +3368,7 @@ const recoverScanProbes: MacroDecider = (_step, obs) => {
 /** The registry the runner dispatches on, keyed by MacroID. */
 export const SCRIPT_MACROS: CompleteMacroRegistry = {
   undock,
+  "travel-to-belt": travelToBelt,
   "mine-at-belt": mineAtBelt,
   "deliver-ore": deliverOre,
   "travel-to-station": travelToStation,
@@ -3115,6 +3384,7 @@ export const SCRIPT_MACROS: CompleteMacroRegistry = {
   "unload-cargo": unloadCargo,
   "salvage-wrecks": salvageWrecks,
   "loot-wrecks": lootWrecks,
+  "loot-containers": lootContainers,
   "refine-ore": refineOre,
   "hardeners-on": hardenersOn,
   "fight-the-rats": fightTheRats,
@@ -3140,6 +3410,7 @@ export const SCRIPT_MACROS: CompleteMacroRegistry = {
   "dock-at-nearest": dockAtNearest,
   "remote-cap": remoteCap,
   "jettison-cargo": jettisonCargo,
+  "jettison-ore": jettisonOre,
   "tidy-hangar": tidyHangar,
   "compress-ore": compressOre,
   "launch-scan-probes": launchScanProbes,

@@ -19,7 +19,7 @@
   import Tactical from "./Tactical.svelte";
   import ErrorBoundary from "./ErrorBoundary.svelte";
   import { tabLabel, isTabVisible, type TabID } from "./tabs.ts";
-  import { isWindowTab, type WinState } from "./desktop.ts";
+  import { isWindowTab, MIN_W, MIN_H, type WinState } from "./desktop.ts";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
 
@@ -51,9 +51,41 @@
 
   // Only real window tabs valid in the current state get rendered.
   const shown = $derived(wins.filter((w) => isWindowTab(w.id) && isTabVisible(w.id, isDocked)));
+
+  let deskEl = $state<HTMLElement | null>(null);
+
+  // A window is absolutely positioned and the desktop clips anything past its
+  // own box (the same clip R70's tactical view relies on) — so a window placed
+  // or sized for a roomier screen (the default cascade plus whatever it was
+  // last dragged to) can end up with its title bar and its own resize handles
+  // past the visible edge on a narrower one, with nothing reachable on screen
+  // to pull it back: the handles that would do it are exactly what's cut off.
+  // Whenever the desktop's own box changes size — including first mount — pull
+  // every window fully back inside it.
+  $effect(() => {
+    if (!deskEl) return;
+    const el = deskEl;
+    const reconcile = (): void => {
+      const areaW = el.clientWidth;
+      const areaH = el.clientHeight;
+      if (areaW <= 0 || areaH <= 0) return;
+      for (const win of wins) {
+        const w = Math.min(win.w, Math.max(MIN_W, areaW));
+        const h = win.collapsed ? win.h : Math.min(win.h, Math.max(MIN_H, areaH));
+        if (w !== win.w || h !== win.h) onResize(win.id, w, h);
+        const x = Math.min(Math.max(0, win.x), Math.max(0, areaW - w));
+        const y = Math.min(Math.max(0, win.y), Math.max(0, areaH - h));
+        if (x !== win.x || y !== win.y) onMove(win.id, x, y);
+      }
+    };
+    reconcile();
+    const ro = new ResizeObserver(reconcile);
+    ro.observe(el);
+    return () => ro.disconnect();
+  });
 </script>
 
-<div class="desktop" class:has-view={!isDocked}>
+<div class="desktop" class:has-view={!isDocked} bind:this={deskEl}>
   {#if !isDocked}
     <!-- Its own boundary: a drawing failure must cost the picture, never the
          windows floating on top of it. -->

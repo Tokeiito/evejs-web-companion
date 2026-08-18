@@ -149,6 +149,12 @@ const ENTRIES: Readonly<Record<MacroID, MacroCatalogEntry>> = {
     "Flies to a station, through gates if it needs to, and docks.",
     "A station to go to",
   ),
+  "travel-to-belt": entry(
+    "travel-to-belt",
+    "movement",
+    "Warps to a belt — a pinned one, or whichever is nearest — and stops once you are there. No mining, no locking: just the trip, for a hauler heading to pick up a jetcan a mining loop dropped on a belt it never sat down on itself.",
+    "Being in space, in the belt's system",
+  ),
   "mine-at-belt": entry(
     "mine-at-belt",
     "mining",
@@ -235,6 +241,12 @@ const ENTRIES: Readonly<Record<MacroID, MacroCatalogEntry>> = {
     "hauling",
     "Flies to each of YOUR OWN wrecks in turn and takes what's inside. It never touches anyone else's wreck, so it can never get you flagged as a thief.",
     "Wrecks of yours on the grid",
+  ),
+  "loot-containers": entry(
+    "loot-containers",
+    "hauling",
+    "Flies to each container on the grid in turn — jetcans included — and takes what's inside. Handy for a hauler working a belt behind miners jettisoning ore.",
+    "Containers on the grid",
   ),
   "refine-ore": entry(
     "refine-ore",
@@ -385,6 +397,12 @@ const ENTRIES: Readonly<Record<MacroID, MacroCatalogEntry>> = {
     "hauling",
     "Dumps your cargo hold into space as a floating container — the jetcan a miner fills instead of flying home. Pick one item to dump just that, or leave it and the whole hold goes. Anything you jettison is out in the open where another pilot could take it.",
     "Being in space with something in the cargo hold",
+  ),
+  "jettison-ore": entry(
+    "jettison-ore",
+    "mining",
+    "Dumps your ore hold into space as a floating container — the jetcan a mining loop fills for a hauler to pick up, without ever touching your cargo hold. Pick one item to dump just that, or leave it and the whole hold goes.",
+    "Being in space with something in the ore hold",
   ),
   "tidy-hangar": entry(
     "tidy-hangar",

@@ -58,6 +58,7 @@ export type ScriptAction =
   | { readonly kind: "orbit"; readonly targetID: number; readonly range: number }
   | { readonly kind: "jump"; readonly fromGateID: number; readonly toGateID: number }
   | { readonly kind: "lock"; readonly targetID: number }
+  | { readonly kind: "unlock"; readonly targetID: number }
   | { readonly kind: "activate"; readonly moduleID: number; readonly targetID: number }
   | { readonly kind: "deactivate"; readonly moduleID: number }
   | { readonly kind: "launchDrones"; readonly droneItemIDs: readonly number[] }
@@ -75,6 +76,8 @@ export type ScriptAction =
   | { readonly kind: "salvageDrones"; readonly droneIDs: readonly number[]; readonly targetID: number }
   /** Take everything out of ONE wreck (an owned wreck — the decider guarantees it). */
   | { readonly kind: "lootWreck"; readonly wreckID: number }
+  /** Take everything out of ONE container (any container on grid — no ownership check). */
+  | { readonly kind: "lootContainer"; readonly containerID: number }
   /** Run these hangar stacks through the station refinery (verified server-side). */
   | { readonly kind: "reprocessOre"; readonly itemIDs: readonly number[] }
   /** Warp to a scanned site by its scan-signature label ("QEE-288"). */
@@ -388,6 +391,44 @@ export function decideScriptAction(
 
   // 3. The program, with the forward scan. `res.safetyBlind` seeds the streak.
   return runProgram(script, obs, scanMem, registry, res.safetyBlind);
+}
+
+/**
+ * Equipment the CURRENT step switched on that has to be off before the step
+ * can actually finish — see the `until`-met branch above for why. Scoped to
+ * mine-at-belt for now: the same gap exists for other equipment-activating
+ * blocks (salvage-wrecks, hardeners-on, fight-the-rats), but mining is the one
+ * that actively refills the very hold the next step tends to be draining.
+ */
+function equipmentToShutDownBeforeLeaving(step: MacroStep, obs: ScriptObservation): number | null {
+  if (step.macro !== "mine-at-belt") {
+    return null;
+  }
+  const active = new Set(obs.snapshot?.ship?.activeModuleIDs ?? []);
+  return (obs.miningModuleIDs ?? []).find((id) => active.has(id)) ?? null;
+}
+
+/**
+ * The rock the CURRENT step locked that has to be released before the step
+ * can actually finish — see the `until`-met branch above for why. Reads the
+ * rock id back out of the step's OWN memory (already updated with this tick's
+ * `nextMem` above) rather than guessing from `lockedTargetIDs` at large, so
+ * this only ever releases a lock mine-at-belt itself put on — never a target
+ * the player, or some other block, locked for its own reason.
+ */
+function targetToUnlockBeforeLeaving(
+  step: MacroStep,
+  obs: ScriptObservation,
+  macroMem: Readonly<Record<string, MacroMemory>>,
+): number | null {
+  if (step.macro !== "mine-at-belt") {
+    return null;
+  }
+  const rockID = macroMem[step.id]?.["rockID"];
+  if (typeof rockID !== "number") {
+    return null;
+  }
+  return (obs.lockedTargetIDs ?? []).includes(rockID) ? rockID : null;
 }
 
 /** A running repairer whose repair watch has recovered, or null. */
@@ -710,6 +751,46 @@ function runProgram(
     if (step.until !== undefined) {
       const verdict = evaluateCondition(step.until, obs);
       if (verdict === "met" && tick.armed) {
+        // The macro's own tick action (computed above) is about to be thrown
+        // away in favour of advancing — but equipment it already switched on
+        // (mine-at-belt's lasers) keeps cycling regardless of what the program
+        // does next, since nothing else ever tells it to stop. Left running, it
+        // goes on filling the very hold the next step (typically a jettison) is
+        // trying to empty, so that hold never reads empty and the loop never
+        // completes. Switch it off first, one module per tick — the same move
+        // the interrupt ladder's repair thermostat makes above.
+        const runningModuleID = equipmentToShutDownBeforeLeaving(step, obs);
+        if (runningModuleID !== null) {
+          return {
+            action: { kind: "deactivate", moduleID: runningModuleID },
+            why: "The until condition is met — switching the mining equipment off before moving on.",
+            phase: tick.phase,
+            stepPath: step.id,
+            interruptID: null,
+            status: "running",
+            pauseReason: null,
+            memory: { ...mem, position, loopPass, macroMem, board },
+          };
+        }
+        // The lock on the rock the step was working outlives the step itself
+        // exactly the same way — nothing else ever releases it, so leaving the
+        // rock locked and picking a fresh one (usually a different one) next
+        // cycle only ADDS a lock, never trades one out. A few of these cycles
+        // and the ship is sitting at its max locked targets with old, no-longer-
+        // relevant rocks still held, unable to lock the next one at all.
+        const lockedTargetID = targetToUnlockBeforeLeaving(step, obs, macroMem);
+        if (lockedTargetID !== null) {
+          return {
+            action: { kind: "unlock", targetID: lockedTargetID },
+            why: "The until condition is met — releasing the lock before moving on.",
+            phase: tick.phase,
+            stepPath: step.id,
+            interruptID: null,
+            status: "running",
+            pauseReason: null,
+            memory: { ...mem, position, loopPass, macroMem, board },
+          };
+        }
         macroMem = omit(macroMem, step.id); // leaving the step — its memory resets
         const next = advance(script, position, loopPass);
         position = next.position;

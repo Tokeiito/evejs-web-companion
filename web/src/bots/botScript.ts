@@ -435,6 +435,7 @@ export interface InterruptRow {
 export type MacroID =
   | "undock"
   | "travel-to-station"
+  | "travel-to-belt"
   | "mine-at-belt"
   | "deliver-ore"
   | "defend-with-drones"
@@ -449,6 +450,7 @@ export type MacroID =
   | "unload-cargo"
   | "salvage-wrecks"
   | "loot-wrecks"
+  | "loot-containers"
   | "refine-ore"
   | "hardeners-on"
   | "fight-the-rats"
@@ -483,6 +485,7 @@ export type MacroID =
   | "remote-cap"
   // ── Cargo extras: dump a can into space; tidy the hangar.
   | "jettison-cargo"
+  | "jettison-ore"
   | "tidy-hangar"
   // ── Mining extra: squeeze the ore down against a support ship on grid.
   | "compress-ore"
@@ -495,6 +498,7 @@ export type MacroID =
 export const MACRO_IDS: readonly MacroID[] = Object.freeze<MacroID[]>([
   "undock",
   "travel-to-station",
+  "travel-to-belt",
   "mine-at-belt",
   "deliver-ore",
   "defend-with-drones",
@@ -509,6 +513,7 @@ export const MACRO_IDS: readonly MacroID[] = Object.freeze<MacroID[]>([
   "unload-cargo",
   "salvage-wrecks",
   "loot-wrecks",
+  "loot-containers",
   "refine-ore",
   "hardeners-on",
   "fight-the-rats",
@@ -534,6 +539,7 @@ export const MACRO_IDS: readonly MacroID[] = Object.freeze<MacroID[]>([
   "dock-at-nearest",
   "remote-cap",
   "jettison-cargo",
+  "jettison-ore",
   "tidy-hangar",
   "compress-ore",
   "launch-scan-probes",

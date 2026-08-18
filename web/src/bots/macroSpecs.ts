@@ -24,6 +24,13 @@ export const MACRO_SPECS: Readonly<Record<MacroID, MacroSpec>> = {
     args: [{ key: "station", kind: "station", required: true }],
     untilRequired: false,
   },
+  // Same belt arg as mine-at-belt (a pinned one, or "nearest") — just the trip,
+  // no mining. For a hauler heading to a belt to pick up a jetcan a mining
+  // loop dropped there, without ever sitting down to mine itself.
+  "travel-to-belt": {
+    args: [{ key: "belt", kind: "belt", required: true }],
+    untilRequired: false,
+  },
   "mine-at-belt": {
     args: [
       { key: "belt", kind: "belt", required: true },
@@ -74,6 +81,8 @@ export const MACRO_SPECS: Readonly<Record<MacroID, MacroSpec>> = {
   // when nothing salvageable is left. Loot only touches YOUR OWN wrecks.
   "salvage-wrecks": { args: [], untilRequired: false },
   "loot-wrecks": { args: [], untilRequired: false },
+  // Empties every container on the grid — jetcans included. No ownership check.
+  "loot-containers": { args: [], untilRequired: false },
   // Docked: run every ore stack in the station hangar through the refinery.
   "refine-ore": { args: [], untilRequired: false },
   // One press at the top of a fight/mine: switch every fitted hardener and
@@ -202,6 +211,13 @@ export const MACRO_SPECS: Readonly<Record<MacroID, MacroSpec>> = {
   // ── Cargo extras. Jettison takes an OPTIONAL item filter: absent = the whole
   // cargo hold goes into the can, set = only that item type.
   "jettison-cargo": {
+    args: [{ key: "item", kind: "itemType", required: false }],
+    untilRequired: false,
+  },
+  // Same optional item filter as jettison-cargo, but empties the ORE hold (or
+  // whichever specialty hold — ice, gas — the ship has) instead of the cargo
+  // hold: a mining ship's hold, not its otherwise-empty cargo bay.
+  "jettison-ore": {
     args: [{ key: "item", kind: "itemType", required: false }],
     untilRequired: false,
   },
