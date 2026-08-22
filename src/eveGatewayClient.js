@@ -623,6 +623,8 @@ function getGatewayWebSocketUrl(query) {
  * notifications onto every response, so a stream that never opens (or drops)
  * costs liveness, never correctness.
  */
+const DEFAULT_STREAM_PING_INTERVAL_MS = 30_000;
+
 function openSessionEventStream(options = {}) {
   const {
     bridgeSessionID,
@@ -631,6 +633,7 @@ function openSessionEventStream(options = {}) {
     onFrame,
     onOpen,
     onClose,
+    pingIntervalMs = DEFAULT_STREAM_PING_INTERVAL_MS,
   } = options;
   const query = {
     userid: Number(userid) || 0,
@@ -651,17 +654,73 @@ function openSessionEventStream(options = {}) {
     socket = new WebSocket(getGatewayWebSocketUrl(query), { headers });
   } catch (error) {
     // A configuration failure is not recoverable by retrying; report it as a
-    // close so the caller degrades to polling instead of hanging.
-    if (typeof onClose === "function") {
-      onClose({ code: 0, reason: error.message || "stream unavailable" });
-    }
+    // close so the caller degrades to polling instead of hanging. Deferred,
+    // never synchronous: the caller must be holding the returned handle when
+    // the close fires, or it can store a dead handle over the null the close
+    // handler just wrote and wedge the channel with no retry.
+    queueMicrotask(() => {
+      if (typeof onClose === "function") {
+        onClose({ code: 0, reason: error.message || "stream unavailable" });
+      }
+    });
     return { close() {} };
   }
 
   let closed = false;
   let refusalStatus = 0;
 
+  // Half-open detection. The gateway pings us and `ws` answers automatically,
+  // but nothing on this side would ever notice a silently dead TCP connection
+  // (sleeping host, NAT reap): `close` never fires on a half-open socket, the
+  // retry loop never starts, and the browser trusts a dead channel. So ping
+  // the gateway ourselves and terminate if a whole interval passes silent —
+  // termination fires the normal close path, which retries.
+  let pongAlive = true;
+  let pingTimer = null;
+
+  function stopPingWatchdog() {
+    if (pingTimer !== null) {
+      clearInterval(pingTimer);
+      pingTimer = null;
+    }
+  }
+
+  function startPingWatchdog() {
+    if (!(pingIntervalMs > 0) || pingTimer !== null) {
+      return;
+    }
+    pingTimer = setInterval(() => {
+      if (closed || socket.readyState !== WebSocket.OPEN) {
+        stopPingWatchdog();
+        return;
+      }
+      if (!pongAlive) {
+        stopPingWatchdog();
+        try {
+          socket.terminate();
+        } catch {
+          // finish() below still reports the drop.
+        }
+        finish(0, "ping timeout");
+        return;
+      }
+      pongAlive = false;
+      try {
+        socket.ping();
+      } catch {
+        // The socket is going down; its close event owns the report.
+      }
+    }, pingIntervalMs);
+    if (typeof pingTimer.unref === "function") {
+      pingTimer.unref();
+    }
+  }
+
+  socket.on("pong", () => {
+    pongAlive = true;
+  });
   socket.on("open", () => {
+    startPingWatchdog();
     if (typeof onOpen === "function") {
       onOpen();
     }
@@ -699,6 +758,7 @@ function openSessionEventStream(options = {}) {
       return;
     }
     closed = true;
+    stopPingWatchdog();
     if (typeof onClose === "function") {
       onClose({ code, reason, refusalStatus });
     }
@@ -710,6 +770,7 @@ function openSessionEventStream(options = {}) {
     },
     close() {
       closed = true;
+      stopPingWatchdog();
       try {
         if (
           socket.readyState === WebSocket.OPEN ||

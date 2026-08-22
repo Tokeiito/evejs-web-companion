@@ -578,16 +578,31 @@ function publishStreamStatus(held, state, detail) {
   });
 }
 
+// The push channel's only server-side evidence. Lifecycle strings and a short
+// session-id prefix only — never the full bridgeSessionID and never a token —
+// so a drop, refusal, or reconnect loop is visible in the BFF log instead of
+// leaving nothing to diagnose from.
+function logStreamEvent(held, message) {
+  const sessionTag = String(held.bridgeSessionID || "").slice(0, 8) || "unknown";
+  console.log(
+    `[${new Date().toISOString()}] [bridge-events ${sessionTag}] ${message}`,
+  );
+}
+
 function openHeldStream(webSessionID, held) {
   if (held.stream || held.streamSubscribers.size === 0) {
     return;
   }
-  held.streamRetryTimer = null;
+  if (held.streamRetryTimer) {
+    clearTimeout(held.streamRetryTimer);
+    held.streamRetryTimer = null;
+  }
   held.stream = gateway.openSessionEventStream({
     bridgeSessionID: held.bridgeSessionID,
     userid: Number(held.accountID),
     cursor: held.streamCursor || null,
     onOpen() {
+      logStreamEvent(held, "gateway stream live");
       publishStreamStatus(held, "live");
     },
     onFrame(frame) {
@@ -595,7 +610,13 @@ function openHeldStream(webSessionID, held) {
     },
     onClose(details) {
       held.stream = null;
+      const code = Number(details && details.code) || 0;
+      const reason = (details && details.reason) || "";
       if (held.streamSubscribers.size === 0) {
+        logStreamEvent(
+          held,
+          `gateway stream closed (code=${code} reason=${reason || "none"}); no subscribers, not retrying`,
+        );
         return;
       }
       // Tell the browser the channel is degraded so it leans on its poll, then
@@ -604,10 +625,16 @@ function openHeldStream(webSessionID, held) {
       // surface SESSION_NOT_FOUND.
       const refusal = Number(details && details.refusalStatus) || 0;
       if (refusal === 404) {
+        logStreamEvent(held, "gateway refused the stream (404); session ended");
         publishStreamStatus(held, "ended", "session_not_found");
         return;
       }
-      publishStreamStatus(held, "degraded", (details && details.reason) || null);
+      logStreamEvent(
+        held,
+        `gateway stream dropped (code=${code} reason=${reason || "none"}` +
+          `${refusal ? ` refusal=${refusal}` : ""}); retrying in ${STREAM_RETRY_MS}ms`,
+      );
+      publishStreamStatus(held, "degraded", reason || null);
       held.streamRetryTimer = setTimeout(() => {
         held.streamRetryTimer = null;
         if (bridgeSessions.get(webSessionID) === held) {

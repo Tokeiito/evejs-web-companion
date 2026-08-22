@@ -233,7 +233,7 @@ Subsequent calls carry the handle (plus the normal `session.userid`, which must 
 ### Ending the session: release, idle TTL, takeover
 
 - `POST /_evejs-web/v1/session/release` with `{ "bridgeSessionID", "session"?: { "userid" } }` → `{ "ok": true, "released": true, "characterID": <id|null> }`. Runs the **same disconnect path a retail socket close runs** (`services/_shared/sessionDisconnect.js`: logoff persistence, guest-list departure, space/trade/chat cleanup, control release) — the character goes offline. Releasing an already-gone session is 404 `SESSION_NOT_FOUND` (the TTL got there first; treat as already released).
-- **Idle TTL:** 30 minutes without a call (gateway default, `browserSessionIdleTtlMs`); an unref'd sweep (60s interval) reaps idle sessions through the same disconnect path. Any later use of the handle is `SESSION_NOT_FOUND`.
+- **Idle TTL:** 30 minutes without a call (gateway default, `browserSessionIdleTtlMs`); an unref'd sweep (60s interval) reaps idle sessions through the same disconnect path. Any later use of the handle is `SESSION_NOT_FOUND`. **A live `/session-events` subscriber counts as activity** (since 2026-08-22): the sweep refreshes an attached session instead of reaping it, and the idle window restarts when the last subscriber detaches — a docked player who is only receiving events is not idle.
 - **Retail takeover:** if EveJS's own mechanics evict the browser session (login takeover), the store notices the defunct session on next use and reports `SESSION_NOT_FOUND`.
 - Gateway shutdown releases all persistent sessions through the same path.
 
@@ -1989,9 +1989,10 @@ retried with the cursor; a gateway 404 (the session is gone) is announced as
   re-renders its own overview every 0.5-1.0 s, so a ~1 s poll IS the faithful
   cadence, not a fallback the channel replaces.
 - **The chat backlog poll itself**, as a safety net: it drops from 4s to 30s
-  while the channel is live and snaps back to 4s the moment it is not. It also
-  keeps the held bridge session warm against its idle TTL for a player who is
-  only watching chat.
+  while the channel is live and snaps back to 4s the moment it is not. (It
+  also used to be the only thing keeping the held bridge session warm against
+  its idle TTL; since 2026-08-22 the attached channel itself counts as
+  activity, so the poll is purely a data safety net.)
 
 The browser side feeds pushed messages into the chat slice (deduplicated against
 what a poll already delivered, by author + text + timestamp) and pushed
