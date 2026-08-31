@@ -15,6 +15,7 @@ const staticDataModule = require("./staticData");
 const config = require("./config");
 const botScriptStoreModule = require("./botScriptStore");
 const botHostModule = require("./botHost");
+const { createAccountCache } = require("./accountCache");
 const {
   isBridgeWritePair,
   pickSafeBrowserSessionFields,
@@ -60,6 +61,10 @@ const botScripts =
 // bridgeSessionID the gateway minted, held server-side only. The browser
 // never sees the handle; it just gets its character/station state back.
 const bridgeSessions = options.bridgeSessionStore || new Map();
+// Short-lived cache for the auth path's account lookup (src/accountCache.js).
+// Without it, every authenticated request costs a second owner call re-reading
+// an unchanged account — half of all measured gateway traffic.
+const accountCache = options.accountCache || createAccountCache();
 const errorLogger = options.errorLogger || ((error) => console.error(error));
 // Server-side bot host (see src/botHost.js): runs the browser bot stack in
 // THIS process, driving the routes below over loopback as just another
@@ -208,7 +213,14 @@ function makeRequireAuth({ allowQueryParam = false } = {}) {
     }
 
     try {
-      const account = await store.getAccount(payload.username);
+      // Cached for a few seconds (src/accountCache.js). This lookup used to be
+      // a gateway round trip on EVERY authenticated request — 51% of all owner
+      // calls on a measured two-client run — re-reading a value that had not
+      // changed. Every check below still runs on the resolved account.
+      const account = await accountCache.resolve(
+        payload.username,
+        () => store.getAccount(payload.username),
+      );
       if (!account || account.accountID !== Number(payload.accountID)) {
         clearSessionCookie(res);
         res.status(401).json({ ok: false, error: "ACCOUNT_NOT_FOUND" });
@@ -372,6 +384,11 @@ app.post("/api/logout", async (req, res) => {
     } catch {
       forgetBridgeSession(payload.sessionID);
     }
+  }
+  if (payload && payload.username) {
+    // Drop the cached account rather than let a signed-out user's record sit
+    // in the auth cache for the rest of its TTL.
+    accountCache.invalidate(payload.username);
   }
   clearSessionCookie(res);
   res.json({ ok: true });
