@@ -23,6 +23,8 @@
   import { setSessionToken, clearSessionToken } from "../app/sessionToken.ts";
   import { getHealth } from "../app/api.ts";
   import { skipWhileBusy } from "../app/skipWhileBusy.ts";
+  import { healthPollIntervalMs, resolveServerStatus } from "../app/serverStatus.ts";
+  import type { LiveStreamStatus } from "../store/types.ts";
 
   // Read the roster retained across a refresh ONCE, before any write effect can
   // clobber it, so a reload can bring the same pilots back online.
@@ -211,18 +213,45 @@
     else clearSessionToken();
   });
 
-  // Server connection status for the character bar: a light poll of the
-  // unauthenticated /api/health (BFF reachable + gateway ready), independent of
-  // any pilot, so it flips to "offline" the moment the server or gateway drops.
-  let serverStatus = $state<"checking" | "online" | "offline">("checking");
+  // Server connection status for the character bar.
+  //
+  // The ACTIVE pilot's push stream is the primary signal; the /api/health poll
+  // is the fallback for when there is no stream (character select) or it is not
+  // carrying. See app/serverStatus.ts for why: the poll runs at the lowest
+  // priority in a four-lane transport, so under load the page starved its own
+  // health ping and reported a healthy server as offline — which is why the
+  // companion "disconnected" with two clients as readily as with twelve.
+  // Subscribed explicitly rather than with `$store`: which pilot is active
+  // changes, so the signal being read changes with it, and there is no signal at
+  // all on the character-select screen. `subscribe` returns its unsubscriber,
+  // which is exactly what $effect wants for cleanup.
+  let liveStatus = $state<LiveStreamStatus>("idle");
   $effect(() => {
+    const signal = active?.store.live;
+    if (!signal) {
+      liveStatus = "idle";
+      return;
+    }
+    return signal.subscribe((value) => {
+      liveStatus = value.status;
+    });
+  });
+
+  // Last health answer: null until one arrives. Kept separate from the rendered
+  // status so the stream can override it without destroying it.
+  let healthReady = $state<boolean | null>(null);
+  const serverStatus = $derived(resolveServerStatus({ live: liveStatus, healthReady }));
+
+  $effect(() => {
+    // Re-armed when the stream state changes, so the cadence follows it.
+    const intervalMs = healthPollIntervalMs(liveStatus);
     let cancelled = false;
     const ping = async (): Promise<void> => {
       try {
         const { ready } = await getHealth({ priority: "poll" });
-        if (!cancelled) serverStatus = ready ? "online" : "offline";
+        if (!cancelled) healthReady = ready;
       } catch {
-        if (!cancelled) serverStatus = "offline";
+        if (!cancelled) healthReady = false;
       }
     };
     // ⚠ GUARDED. This one is mounted for the WHOLE session, so an unguarded
@@ -232,7 +261,7 @@
     // app/skipWhileBusy.ts.
     const beat = skipWhileBusy(ping);
     void beat();
-    const handle = setInterval(() => void beat(), 10_000);
+    const handle = setInterval(() => void beat(), intervalMs);
     return () => {
       cancelled = true;
       clearInterval(handle);
