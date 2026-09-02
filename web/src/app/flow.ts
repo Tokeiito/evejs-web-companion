@@ -5718,6 +5718,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     readonly salvage: readonly number[];
     readonly defense: DefenseModuleIDs;
     readonly remoteReps: RemoteRepModuleIDs;
+    /**
+     * How far the hull can LOCK, in metres, so the combat ladder never picks a
+     * target it cannot reach. It rides this cache rather than the per-tick reads
+     * because it comes off the very fit read the module lists already come off —
+     * no extra call, and it refreshes on exactly the same fit-changed signature.
+     * Null when the ship does not report it; the ladder then does not gate.
+     */
+    readonly maxTargetRangeM: number | null;
   }
 
   /** A stable fit identity: active hull + every module fact used by classifiers. */
@@ -5753,6 +5761,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       salvage: resolveSalvageModuleIDs(),
       defense: resolveDefenseModuleIDs(),
       remoteReps: resolveRemoteRepModuleIDs(),
+      maxTargetRangeM: fit.stats.targeting.maxTargetRange.known
+        ? fit.stats.targeting.maxTargetRange.value
+        : null,
     };
   }
   // Market orders a bot places rest the retail maximum, so a resting order does
@@ -6350,6 +6361,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           fleetMemberCharacterIDs,
           hardenerModuleIDs: capabilities.defense.hardeners,
           weaponModuleIDs: capabilities.defense.weapons,
+          maxTargetRangeM: capabilities.maxTargetRangeM,
           tackleModuleIDs: capabilities.defense.tackle,
           webModuleIDs: capabilities.defense.webs,
           capacitorRatio: ship?.capacitorRatio ?? null,

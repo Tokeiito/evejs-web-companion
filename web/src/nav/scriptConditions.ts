@@ -112,6 +112,18 @@ export interface ScriptObservation {
   /** Fitted WEAPONS (turrets/launchers), resolved once at start (the fight block runs these). */
   readonly weaponModuleIDs?: readonly number[];
   /**
+   * How far this hull can LOCK, in metres — the ship's own `maxTargetRange`
+   * after the server's dogma pass. The combat ladder engages nothing beyond it.
+   *
+   * ⚠ NULL IS "DO NOT GATE", NOT "NOTHING IS IN RANGE". It rides the fitting
+   * read, which a bot run does not force, so it is frequently unreadable — and
+   * the null rule everywhere else in this file (unreadable never decides) has to
+   * hold here too: a bot whose fit was never opened must still be able to shoot
+   * back. With it null the ladder falls back to its bounded lock, which gives up
+   * on an unlockable target after `MAX_LOCK_WAIT_TICKS` and moves on.
+   */
+  readonly maxTargetRangeM?: number | null;
+  /**
    * Fitted TACKLE, resolved once at start — the PvP blocks switch these on before
    * the guns so the target cannot simply warp off. `tackleModuleIDs` is the point
    * (SDE group 52 holds both Warp Disruptors and Warp Scramblers);
