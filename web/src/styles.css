@@ -4415,6 +4415,91 @@
   }
 
   /* ======================================================================
+   * ROW ACTIONS AS ICONS
+   * ----------------------------------------------------------------------
+   * The six settled verbs — run, pause, stop, edit, export, delete — drawn as
+   * glyphs so a table of rows stops repeating the same six words in every row.
+   * See `actionIcons.ts` for the shapes and for why an icon is never the only
+   * label.
+   *
+   * ⚠ THE WORD IS NOT DELETED, ONLY FOLDED AWAY. `.icon-btn-label` is a real
+   * element that comes back wherever the row has room — and it MUST come back
+   * in the reflow layout, because `title` produces no tooltip on a touch
+   * screen and an unlabelled bin icon is not a thing to guess at.
+   * ====================================================================*/
+  .icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.4rem;
+    /* Square at icon-only size, and still a full touch target (R8). */
+    min-width: 2.5rem;
+    min-height: 2.5rem;
+    padding: 0.4rem;
+  }
+  .icon-btn-glyph {
+    width: 1.25rem;
+    height: 1.25rem;
+    flex: 0 0 auto;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.6;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  /* Hidden, not removed: the button's accessible name comes from its
+   * `aria-label`, so a screen reader is unaffected either way. */
+  .icon-btn-label {
+    display: none;
+  }
+
+  /* The pilot row's launch controls: a bot to pick, and two different ways to
+   * start it. NOT `.row-actions` — that lays out a flat row of buttons, and
+   * these are a small form, which is why they used to run off the end of the
+   * cell and collide with the row beneath. */
+  .pilot-launch {
+    display: flex;
+    flex-direction: column;
+    gap: 0.45rem;
+    min-width: 0;
+  }
+  .pilot-launch > label {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    color: var(--color-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-size: 11px;
+  }
+  .pilot-launch select {
+    min-width: 10rem;
+    max-width: 100%;
+  }
+  .pilot-launch-run {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4rem;
+  }
+  /* Where the bot will fly, beside the button that sends it there. This is the
+   * whole difference between the two buttons, so it is text and not a tooltip. */
+  .pilot-launch-where {
+    color: var(--color-muted);
+    font-size: 12px;
+  }
+  .pilot-launch-limit {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    color: var(--color-muted);
+    font-size: 12px;
+  }
+  .pilot-launch-limit select {
+    min-width: 7rem;
+  }
+
+  /* ======================================================================
    * THE BOT BUILDER — a plan of numbered sentences, plus an inspector
    * ----------------------------------------------------------------------
    * docs/bot-builder-interface.md §2. Three stacked regions: the watches, the
@@ -4527,6 +4612,25 @@
     display: flex;
     gap: 0.2rem;
   }
+  /* Stacked control rows need air between them. `.controls` carries an internal
+   * gap but deliberately NO outer margin (the panel head depends on that), so
+   * two rows in a panel body sit flush — and the second row's uppercase label
+   * then reads as a caption belonging to the field above it rather than as the
+   * start of its own field. Only rows in a panel BODY: the header's own
+   * `.controls` must stay at zero. */
+  .botbuilder section > .controls {
+    margin-top: 0.9rem;
+  }
+
+  /* Name beside Notes. The house `.controls` row bottom-aligns its fields,
+   * which is right when they are all one-line inputs and wrong here: the notes
+   * box is two rows tall, so bottom-aligning pushed its LABEL a line above the
+   * name's and the two fields read as though they belonged to different rows.
+   * Top-align this one row instead, and let the taller box grow downwards. */
+  .botbuilder .identity-row {
+    align-items: flex-start;
+  }
+
   /* The repeat control lives in the plan's HEADER, because it wraps everything
    * under it. The house `.controls > label` is a 12rem column, which stacks two
    * of them and makes the header taller than the title it holds — so in this
@@ -4817,6 +4921,14 @@
     .row-actions button {
       padding: 0.5rem 0.9rem;
       font-size: 14px;
+    }
+    /* A phone has no hover, so `title` never fires: the word comes back, and
+     * the icon becomes what it should have been all along — reinforcement. */
+    .icon-btn-label {
+      display: inline;
+    }
+    .icon-btn {
+      justify-content: flex-start;
     }
   }
 }
