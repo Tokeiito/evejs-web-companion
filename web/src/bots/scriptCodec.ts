@@ -46,6 +46,7 @@ import {
   ITEM_PLACES,
   CHAT_CHANNEL_ARGS,
   ROCK_PICKS,
+  MAX_ORE_LIST,
   MAX_TEXT_ARG_LEN,
   SCRIPT_FORMAT,
   SCRIPT_VERSION,
@@ -55,6 +56,7 @@ import {
   type Arg,
   type ChatChannelArg,
   type RockPick,
+  type OreFamilyArg,
   type BoardSlot,
   type BeltArg,
   type BotScript,
@@ -148,6 +150,8 @@ const WARN = {
   clampIsk: (to: number): string => `A wallet amount was brought into range (now ${to.toLocaleString()} ISK).`,
   forgotWorldId: "A saved location did not look valid and was forgotten — pick it again.",
   reassignedIds: "Renamed some step handles that were missing or repeated.",
+  droppedDuplicateOres: "Removed repeated entries from an ore priority list.",
+  truncatedOreList: (max: number): string => `An ore priority list was cut down to ${max} entries.`,
 } as const;
 
 // ─── Refusal as control flow ─────────────────────────────────────────────────
@@ -537,6 +541,33 @@ function readArg(raw: unknown, expected: Arg["kind"], label: string, ctx: Ctx): 
       refuse(SAY.badArg(label));
     }
     return { kind: "rockPick", pick: pick as RockPick };
+  }
+  if (expected === "oreList") {
+    const arr = asArray(obj["ores"], SAY.badArg(label));
+    const seen = new Set<number>();
+    const ores: OreFamilyArg[] = [];
+    let droppedDuplicate = false;
+    for (const item of arr) {
+      const oreObj = asObject(item, SAY.badArg(label));
+      const groupID = oreObj["groupID"];
+      if (typeof groupID !== "number" || !Number.isSafeInteger(groupID) || groupID <= 0) {
+        refuse(SAY.badArg(label));
+      }
+      const name = readText(oreObj["name"], { min: 0, max: MAX_WORLD_NAME_LEN, allowNewline: false }, ctx, SAY.badArg(label));
+      if (seen.has(groupID)) {
+        droppedDuplicate = true;
+        continue;
+      }
+      seen.add(groupID);
+      ores.push({ groupID, name });
+    }
+    if (droppedDuplicate) {
+      ctx.warn(WARN.droppedDuplicateOres);
+    }
+    if (ores.length > MAX_ORE_LIST) {
+      ctx.warn(WARN.truncatedOreList(MAX_ORE_LIST));
+    }
+    return { kind: "oreList", ores: ores.slice(0, MAX_ORE_LIST) };
   }
   if (expected === "chatChannel") {
     const channel = obj["channel"];
@@ -1101,6 +1132,11 @@ function orderArg(arg: Arg): unknown {
       return { kind: "destination", ref: orderRef(arg.ref) };
     case "rockPick":
       return { kind: "rockPick", pick: arg.pick };
+    case "oreList":
+      return {
+        kind: "oreList",
+        ores: arg.ores.map((ore) => ({ groupID: ore.groupID, name: ore.name })),
+      };
     default: {
       // ⚠ EXHAUSTIVE ON PURPOSE. Every Arg kind MUST serialise here, or an export
       // silently drops it (the reader accepts an arg the writer forgets). A new
