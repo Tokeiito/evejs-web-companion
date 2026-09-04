@@ -63,6 +63,7 @@ export type WidgetKind =
   | "chat-channel-select"
   | "destination-picker"
   | "rock-pick-select"
+  | "ore-list-picker"
   | "text-input";
 
 /** Every `Arg["kind"]` mapped to the widget that edits it — exhaustive by type. */
@@ -83,6 +84,7 @@ export const ARG_KIND_WIDGET: Readonly<Record<Arg["kind"], WidgetKind>> = {
   chatChannel: "chat-channel-select",
   destination: "destination-picker",
   rockPick: "rock-pick-select",
+  oreList: "ore-list-picker",
   text: "text-input",
 };
 
@@ -104,6 +106,7 @@ export const ARG_KIND_LABEL: Readonly<Record<Arg["kind"], string>> = {
   chatChannel: "Channel",
   destination: "Destination",
   rockPick: "Which rock first",
+  oreList: "Ore priority",
   text: "Text",
 };
 
