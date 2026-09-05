@@ -31,6 +31,7 @@ function customBot(over: Partial<CustomBotState> = {}): CustomBotState {
     phase: null,
     why: null,
     stepPath: null,
+    refusals: [],
     interruptID: null,
     pauseReason: null,
     note: null,
