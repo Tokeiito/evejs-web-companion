@@ -65,6 +65,7 @@ export type WidgetKind =
   | "rock-pick-select"
   | "ore-list-picker"
   | "bay-list-picker"
+  | "item-list-picker"
   | "text-input";
 
 /** Every `Arg["kind"]` mapped to the widget that edits it — exhaustive by type. */
@@ -87,6 +88,7 @@ export const ARG_KIND_WIDGET: Readonly<Record<Arg["kind"], WidgetKind>> = {
   rockPick: "rock-pick-select",
   oreList: "ore-list-picker",
   bayList: "bay-list-picker",
+  itemList: "item-list-picker",
   text: "text-input",
 };
 
@@ -110,6 +112,7 @@ export const ARG_KIND_LABEL: Readonly<Record<Arg["kind"], string>> = {
   rockPick: "Which rock first",
   oreList: "Ore priority",
   bayList: "Leave alone",
+  itemList: "Keep aboard",
   text: "Text",
 };
 
@@ -121,6 +124,7 @@ export const ARG_KIND_LABEL: Readonly<Record<Arg["kind"], string>> = {
  */
 const ARG_KEY_LABEL: Readonly<Record<string, string>> = {
   exceptBays: "Bays to leave alone",
+  keepItems: "Items to keep aboard",
   belt: "Belt",
   station: "Station",
   equipment: "Equipment",
