@@ -50,11 +50,14 @@
     flow,
     onOpen,
     sessions,
+    onFocusPilot,
   }: {
     store: ClientStore;
     flow: AppFlow;
     onOpen?: (tab: TabID) => void;
     sessions?: readonly Session[];
+    /** Make another held pilot active — see PanelHost.svelte for why. */
+    onFocusPilot?: (sessionID: string) => void;
   } = $props();
 
   /**
@@ -273,6 +276,10 @@
               serverBot={characterID === null ? null : serverBotFor(serverBots, characterID)}
               {scripts}
               onChanged={refreshPilots}
+              onSetUpBuiltIn={() => {
+                onFocusPilot?.(session.id);
+                onOpen?.("bots");
+              }}
             />
           {/each}
           {#each extraServerBots as bot (bot.botID)}
