@@ -24,6 +24,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { register } from "node:module";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
 
 register("./svelteSsrHook.ts", import.meta.url);
 
@@ -34,6 +37,9 @@ const WorkspaceHeader = (await import("./WorkspaceHeader.svelte")).default;
 const Neocom = (await import("./Neocom.svelte")).default;
 const PanelHost = (await import("./PanelHost.svelte")).default;
 const TargetBracket = (await import("./TargetBracket.svelte")).default;
+
+const UI_DIR = path.dirname(fileURLToPath(import.meta.url));
+const HUD_SOURCE = readFileSync(path.join(UI_DIR, "HudBar.svelte"), "utf8");
 
 /** A flow stub — the server generator never runs onMount / handlers. */
 function fakeFlow(): unknown {
@@ -82,6 +88,36 @@ function dockedStore(): unknown {
   return store;
 }
 
+/** The in-space snapshot, hoisted so a test can clone and vary one field. */
+const SHIP_SNAPSHOT = {
+  inSpace: true,
+  solarSystemID: SYSTEM_ID,
+  shipID: SHIP_ID,
+  sampledAtMs: 1_700_000_000_000,
+  entities: [],
+  ship: {
+    itemID: SHIP_ID,
+    typeID: SHIP_TYPE_ID,
+    name: null as string | null,
+    mode: "STOP",
+    shieldRatio: 1,
+    armorRatio: 0.5,
+    hullRatio: 1,
+    capacitorRatio: 0.75,
+    shieldCapacity: 400,
+    armorCapacity: 300,
+    hullCapacity: 600,
+    radius: 100,
+    maxVelocity: 300,
+    activeModuleIDs: [] as number[],
+    overloadedModuleIDs: [] as number[],
+    moduleDamage: {},
+    weaponBanks: {},
+    position: { x: 0, y: 0, z: 0 },
+    velocity: { x: 0, y: 0, z: 0 },
+  },
+};
+
 function inSpaceStore(): unknown {
   const store = createClientStore();
   store.apply({
@@ -106,43 +142,13 @@ function inSpaceStore(): unknown {
     stationName: null,
     structureName: null,
   });
-  store.apply({
-    type: "space/snapshot",
-    snapshot: {
-      inSpace: true,
-      solarSystemID: SYSTEM_ID,
-      shipID: SHIP_ID,
-      sampledAtMs: 1_700_000_000_000,
-      entities: [],
-      ship: {
-        itemID: SHIP_ID,
-        typeID: SHIP_TYPE_ID,
-        name: null,
-        mode: "STOP",
-        shieldRatio: 1,
-        armorRatio: 0.5,
-        hullRatio: 1,
-        capacitorRatio: 0.75,
-        shieldCapacity: 400,
-        armorCapacity: 300,
-        hullCapacity: 600,
-        radius: 100,
-        maxVelocity: 300,
-        activeModuleIDs: [],
-        overloadedModuleIDs: [],
-        moduleDamage: {},
-        weaponBanks: {},
-        position: { x: 0, y: 0, z: 0 },
-        velocity: { x: 0, y: 0, z: 0 },
-      },
-    },
-  });
+  store.apply({ type: "space/snapshot", snapshot: SHIP_SNAPSHOT });
   return store;
 }
 
 function renderHud(store: unknown): string {
   return render(HudBar as never, {
-    props: { store, flow: fakeFlow(), onOpen: () => {} },
+    props: { store, flow: fakeFlow() },
   } as never).body;
 }
 
@@ -182,13 +188,91 @@ test("in space the HUD reads the ship's condition off the live snapshot", () => 
   assert.match(text, /50%/, "the armor reading does not report its ratio");
 });
 
-test("the HUD offers the module rack and the flight panels", () => {
+test("the HUD offers the module rack", () => {
   const body = renderHud(inSpaceStore());
   // ⚠ THE HEADING, not the word. `/Modules/` against the visible text also
   // matches the rack's own empty hint ("Modules appear once your ship's fitting
   // has loaded"), so it went on passing with the heading renamed to nonsense.
   assert.match(body, /id="hud-modules-h"[^>]*>Modules</, "no module rack heading");
-  assert.match(visibleText(body), /Mining/, "no mining nav control");
+});
+
+test("the HUD no longer duplicates the rail's own launchers", () => {
+  // ⚠ THIS ANCHOR MOVED DELIBERATELY. It used to assert /Mining/ — a nav button
+  // for the Mining window. Every one of those buttons was also a Neocom rail
+  // entry, on screen at the same time; two ways to open one window, one of them
+  // costing a row of a fixed-height HUD, is not a feature. `neocomRail.test.ts`
+  // and the neocom test below are what now hold the promise that the panels are
+  // reachable, so nothing here is unprotected.
+  const text = visibleText(renderHud(inSpaceStore()));
+  for (const gone of ["Mining", "Flight"]) {
+    assert.equal(new RegExp(gone).test(text), false, `${gone} is a rail entry, not a HUD button`);
+  }
+});
+
+test("the HUD header names the ship once, not the same word twice", () => {
+  // ⚠ FOUND LIVE. A ship nobody renamed carries its hull's own name, so a header
+  // that prints name AND hull unconditionally says "Sunchaser Sunchaser" — one fact
+  // rendered as two, which reads as a bug rather than as detail.
+  const store = inSpaceStore() as { apply: (event: unknown) => void; space: { get: () => never } };
+  store.apply({
+    type: "names/resolved",
+    entries: { [`type:${SHIP_TYPE_ID}`]: "Sunchaser" },
+  });
+  // The ship carries the hull's own name — the live case this was found in.
+  const snapshot = JSON.parse(JSON.stringify(SHIP_SNAPSHOT));
+  snapshot.ship.name = "Sunchaser";
+  store.apply({ type: "space/snapshot", snapshot });
+  const head = renderHud(store);
+  const from = head.indexOf("hud-head");
+  const header = visibleText(head.slice(from, head.indexOf("</header>", from)));
+  assert.match(header, /Sunchaser/, "the hull is not named at all");
+  assert.equal(
+    (header.match(/Sunchaser/g) ?? []).length,
+    1,
+    "the hull was printed twice — the ship carries its hull's name",
+  );
+});
+
+// --- Stop, and the rule that travels with it ---------------------------------
+//
+// These three moved here from `flightStrip.test.ts` when Stop moved from the
+// overview window's flight strip to the HUD footer. The rule did not soften in
+// the move: it is the control a pilot reaches for when things are going wrong,
+// which is exactly the moment other requests are in flight.
+
+test("in space, the HUD carries Stop", () => {
+  assert.match(visibleText(renderHud(inSpaceStore())), /Stop the ship/);
+});
+
+test("STOP IS NEVER DISABLED — not by a shared flag, not by its own", () => {
+  const body = renderHud(inSpaceStore());
+  const index = body.indexOf("Stop the ship");
+  assert.ok(index > 0, "the Stop control is rendered");
+  const openTag = body.lastIndexOf("<button", index);
+  const buttonTag = body.slice(openTag, index);
+  assert.equal(
+    /disabled/.test(buttonTag),
+    false,
+    "Stop must never render a disabled attribute — see the comment in HudBar.svelte",
+  );
+});
+
+test("Stop is not silently swallowed by a busy guard either", () => {
+  // The other half of the same rule: an enabled button that drops the click
+  // because something else is in flight is the same failure wearing a
+  // friendlier face. So the handler must not be gated on anything at all.
+  const handler = HUD_SOURCE.slice(
+    HUD_SOURCE.indexOf("async function stopShip("),
+    HUD_SOURCE.indexOf("</script>"),
+  );
+  assert.ok(handler.length > 0, "the Stop handler is not where this test looks");
+  assert.equal(
+    /if\s*\(/.test(handler),
+    false,
+    "Stop's handler grew a guard — any early return is the disabled button again",
+  );
+  assert.match(handler, /await flow\.stopShip\(\)/, "Stop must actually call stopShip");
+  assert.match(HUD_SOURCE, /MUST NEVER GET ONE/, "the rule is not written down for the next reader");
 });
 
 test("the module rack draws its three racks, and invents no module", () => {
@@ -251,8 +335,20 @@ test("the neocom launches every openable panel for the current state", () => {
   assert.doesNotMatch(docked, /Flight/, "an in-space-only tab leaked into the docked rail");
   assert.match(docked, /Fitting/, "the docked Fitting tab is missing");
   assert.doesNotMatch(space, /Fitting/, "a docked-only tab leaked into the in-space rail");
-  // The overview is fixed chrome (the dock panel), not a rail entry.
-  assert.doesNotMatch(space, /Around Your Ship/, "the overview leaked into the rail");
+  // ⚠ "Around Your Ship" IS GONE, and this assertion is its headstone.
+  //
+  // It was fixed chrome, then briefly a window while the cockpit was taken
+  // apart section by section, and now the file behind it does not exist. The
+  // overview is `SpaceOverview` in the dock panel — always on screen, never
+  // something to launch — and every section that used to sit under that tab has
+  // its own home: Drones, Shots Fired and Equipment are rail entries of their
+  // own, the gauges and racks are the HUD, and the flight narration is on
+  // Flight.
+  assert.doesNotMatch(space, /Around Your Ship/, "the deleted cockpit tab came back");
+  for (const moved of ["Drones", "Shots Fired", "Equipment"]) {
+    assert.match(space, new RegExp(moved), `${moved} must be reachable in space`);
+    assert.doesNotMatch(docked, new RegExp(moved), `${moved} leaked into the docked rail`);
+  }
 });
 
 test("the panel host renders the real panel for a selected tab", () => {

@@ -18,7 +18,22 @@ export interface WinState {
   readonly w: number;
   readonly h: number;
   readonly z: number;
+  /** Shaded to its title bar. Still on screen, still where you left it. */
   readonly collapsed: boolean;
+  /**
+   * Put away — not drawn at all, and reachable only from the window strip.
+   *
+   * ⚠ THIS IS NOT `collapsed` UNDER ANOTHER NAME, and they are not worth
+   * merging. Collapsing shades a window you are still watching, so its title
+   * stays where you put it and you can read it at a glance; minimizing gets it
+   * out of the way entirely. A window can be both — minimize a collapsed window
+   * and it comes back collapsed, which is what you left.
+   *
+   * ⚠ AND A MINIMIZED WINDOW MUST ALWAYS HAVE A WAY BACK. It is hidden, not
+   * closed, so the strip lists it and the launcher rail still counts it as
+   * open. A hide with no visible handle is a window the player has lost.
+   */
+  readonly minimized: boolean;
 }
 
 export const MIN_W = 260;
@@ -29,10 +44,17 @@ const CASCADE_STEP = 28;
 const CASCADE_ORIGIN = 16;
 
 // Panels that are fixed chrome (the top-right dock), never floating windows.
-// Only the in-space Overview remains: while docked the dock panel hosts the
-// Inventory & Ship tabs, and the station services/guests are a TAB inside it
-// (there is no separate station window to float).
-const CHROME_TABS = new Set<TabID>(["overview"]);
+//
+// ⚠ EMPTY, AND THAT IS THE POINT NOW. Both halves of the dock frame are their
+// own components with no TabID at all — `StationPanel` docked, `SpaceOverview`
+// in space — so neither can be opened as a window by construction rather than
+// by being listed here.
+//
+// `overview` used to be listed: it WAS the in-space dock panel. It became a
+// window for one phase, while the old cockpit was taken apart section by
+// section — and then that file was deleted and the tab with it. Every section
+// it held has its own home now, so there is nothing left for this set to name.
+const CHROME_TABS = new Set<TabID>([]);
 
 /** True when this tab opens as a floating window (i.e. is not fixed chrome). */
 export function isWindowTab(id: TabID): boolean {
@@ -44,10 +66,17 @@ export function topZ(wins: readonly WinState[]): number {
   return wins.reduce((max, w) => (w.z > max ? w.z : max), 0);
 }
 
-/** The id of the front-most window, or null when the desktop is empty. */
+/**
+ * The id of the front-most window, or null when nothing is on screen.
+ *
+ * ⚠ A MINIMIZED WINDOW IS NEVER THE FRONT ONE. It is not drawn, so calling it
+ * focused would light its entry in the launcher rail and put the focus ring on
+ * something the player cannot see.
+ */
 export function focusedId(wins: readonly WinState[]): TabID | null {
   let front: WinState | null = null;
   for (const w of wins) {
+    if (w.minimized) continue;
     if (front === null || w.z > front.z) front = w;
   }
   return front ? front.id : null;
@@ -73,7 +102,10 @@ export function openWindow(
   const z = topZ(wins) + 1;
   const existing = wins.find((w) => w.id === id);
   if (existing) {
-    return wins.map((w) => (w.id === id ? { ...w, z, collapsed: false } : w));
+    // Opening from the launcher must always REVEAL the panel — so it un-shades
+    // and un-hides, not just raises. Picking a rail entry and watching nothing
+    // happen because the window was minimized is the whole bug this prevents.
+    return wins.map((w) => (w.id === id ? { ...w, z, collapsed: false, minimized: false } : w));
   }
   const next: WinState = {
     id,
@@ -83,6 +115,7 @@ export function openWindow(
     h: size?.h ?? DEFAULT_H,
     z,
     collapsed: false,
+    minimized: false,
   };
   return [...wins, next];
 }
@@ -113,6 +146,17 @@ export function toggleCollapse(wins: readonly WinState[], id: TabID): WinState[]
   return wins.map((w) => (w.id === id ? { ...w, collapsed: !w.collapsed } : w));
 }
 
+/**
+ * Put a window away, or bring it back. Coming back also raises it: a window
+ * restored under three others would look like nothing happened.
+ */
+export function toggleMinimize(wins: readonly WinState[], id: TabID): WinState[] {
+  const z = topZ(wins) + 1;
+  return wins.map((w) =>
+    w.id === id ? { ...w, minimized: !w.minimized, z: w.minimized ? z : w.z } : w,
+  );
+}
+
 // ── persistence: per-character desktop layout in localStorage ──────────────
 
 export const DEFAULT_DOCK_WIDTH = 340;
@@ -127,6 +171,16 @@ export interface DesktopLayout {
   readonly dockWidth: number;
   readonly targetsX: number;
   readonly targetsY: number;
+  /**
+   * The player asked the docked Station panel to take the whole work area.
+   *
+   * ⚠ A PREFERENCE, NOT A STATE. It is remembered even while the pilot is in
+   * space, where it means nothing — Workspace DERIVES the real flag as
+   * `isDocked && this`, so undocking can never leave somebody in space with the
+   * desktop and the HUD hidden. Storing the preference is what makes the panel
+   * come back expanded on the next dock.
+   */
+  readonly stationExpanded: boolean;
 }
 
 const STORAGE_VERSION = 1;
@@ -152,6 +206,9 @@ function isWinState(v: unknown): v is WinState {
     isFiniteNumber(o.h) &&
     isFiniteNumber(o.z) &&
     typeof o.collapsed === "boolean"
+    // ⚠ `minimized` is deliberately NOT required. Every layout saved before it
+    // existed lacks the field, and demanding it would throw away every window
+    // those players had open. It is read as `=== true` below instead.
   );
 }
 
@@ -171,16 +228,30 @@ export function loadLayout(characterID: number): DesktopLayout | null {
     // good, because the bad layout is written back on the next change. First
     // one wins; the rest are dropped on the way in.
     const seen = new Set<TabID>();
-    const wins = (Array.isArray(o.wins) ? o.wins.filter(isWinState) : []).filter((w) => {
-      if (seen.has(w.id)) return false;
-      seen.add(w.id);
-      return true;
-    });
+    const wins = (Array.isArray(o.wins) ? o.wins.filter(isWinState) : [])
+      .filter((w) => {
+        if (seen.has(w.id)) return false;
+        seen.add(w.id);
+        return true;
+      })
+      // Absent in every layout written before the window strip existed, and
+      // `=== true` is what makes that read as "on screen" rather than throwing
+      // a returning player's whole desktop into the strip.
+      .map((w) => ({ ...w, minimized: (w as { minimized?: unknown }).minimized === true }));
     const dockWidth =
       typeof o.dockWidth === "number" && o.dockWidth >= MIN_DOCK_WIDTH ? o.dockWidth : DEFAULT_DOCK_WIDTH;
     const targetsX = isFiniteNumber(o.targetsX) ? o.targetsX : DEFAULT_TARGETS_POS.x;
     const targetsY = isFiniteNumber(o.targetsY) ? o.targetsY : DEFAULT_TARGETS_POS.y;
-    return { wins, dockCollapsed: o.dockCollapsed === true, dockWidth, targetsX, targetsY };
+    return {
+      wins,
+      dockCollapsed: o.dockCollapsed === true,
+      dockWidth,
+      targetsX,
+      targetsY,
+      // Absent in every layout saved before the expand toggle existed, and
+      // `=== true` is what makes that read as "not expanded" rather than throw.
+      stationExpanded: o.stationExpanded === true,
+    };
   } catch {
     return null;
   }
