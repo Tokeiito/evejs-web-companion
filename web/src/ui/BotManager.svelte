@@ -53,7 +53,7 @@
   }: {
     store: ClientStore;
     flow: AppFlow;
-    onOpen?: (tab: TabID) => void;
+    onOpen?: (tab: TabID, sessionID?: string) => void;
     sessions?: readonly Session[];
   } = $props();
 
@@ -151,6 +151,20 @@
   const filtered = $derived(view.kind === "rows" ? view.rows : []);
 
   function edit(_scriptID: string): void {
+    onOpen?.("botBuilder");
+  }
+
+  /**
+   * Open the Bot Builder with nothing selected — "I want a bot that does not
+   * exist yet".
+   *
+   * ⚠ THIS IS THE ONLY WAY TO REACH THE BUILDER WITH AN EMPTY LIBRARY, and that
+   * is why it exists. The Builder has no launcher entry of its own any more (it
+   * is reached through this panel, which is the one door onto bots); before this
+   * button the only route here was the Edit action on a saved row, so a player
+   * with no saved bots had no way to write their first one.
+   */
+  function newBot(): void {
     onOpen?.("botBuilder");
   }
 
@@ -254,11 +268,16 @@
         <tbody>
           {#each heldSessions as session (session.id)}
             {@const characterID = session.store.station.get().online?.characterID ?? null}
+            <!-- ⚠ `onSetUpBuiltIn` NAMES THIS ROW'S PILOT, never the active one.
+                 The panel it opens reads the MOUNTED pilot's ship, so an
+                 unaddressed open would show one pilot's hull under another's
+                 name — a requirement checklist about the wrong ship. -->
             <BotManagerPilotRow
               {session}
               serverBot={characterID === null ? null : serverBotFor(serverBots, characterID)}
               {scripts}
               onChanged={refreshPilots}
+              onSetUpBuiltIn={() => onOpen?.("bots", session.id)}
             />
           {/each}
           {#each extraServerBots as bot (bot.botID)}
@@ -329,6 +348,7 @@
         bind:value={query}
       />
     </label>
+    <button type="button" class="primary" onclick={newBot}>New bot</button>
   </div>
 
   <!-- One switch over the pure view, so "a failed read is never 'no bots
@@ -338,7 +358,11 @@
   {:else if view.kind === "loading"}
     <p class="note">Loading the bot library…</p>
   {:else if view.kind === "empty"}
-    <p class="empty">No bots saved yet. Build one in the Bot Builder, then save it here.</p>
+    <!-- ⚠ IT NAMES THE BUTTON, NOT A LAUNCHER ENTRY. This used to read "Build
+         one in the Bot Builder", which was a direction to a rail entry that no
+         longer exists — the worst kind of empty state, one that sends a player
+         somewhere they cannot go. -->
+    <p class="empty">No bots saved yet. Choose <strong>New bot</strong> above to write your first one.</p>
   {:else if view.kind === "no-matches"}
     <p class="empty">No saved bots match “{query}”.</p>
   {:else}

@@ -10,6 +10,7 @@
 // reaches the page (R7d).
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { register } from "node:module";
 
 register("./svelteSsrHook.ts", import.meta.url);
@@ -132,4 +133,52 @@ test("the R7d sweep would actually catch a leak", () => {
   // could not spot an id in rendered text, the test above would pass forever.
   const leaked = visibleText("<td>Saved by</td><td>424242</td>");
   assert.match(leaked, /\b\d{4,}\b/);
+});
+
+// --- the one door onto bots -------------------------------------------------
+//
+// The Bot Builder has no launcher entry any more: it is reached from this
+// panel. That makes the ways in from here load-bearing rather than convenient,
+// so they get their own tests.
+
+test("the panel offers a way to write a bot that does not exist yet", () => {
+  const text = visibleText(renderPanel());
+  assert.match(text, /New bot/i);
+});
+
+test("the Manager is the door onto BOTH panels that left the rail", () => {
+  // `botBuilder` and `bots` are both `launchable: false` now, so the rail cannot
+  // reach either. This panel is the only way in, and each door answers a
+  // different question: "write or change a bot" (the Builder) and "set up one of
+  // the built-ins on this pilot" (Bots). If either opener is lost or retargeted,
+  // that panel becomes unreachable and nothing else in the app will say so.
+  const source = readFileSync(new URL("./BotManager.svelte", import.meta.url), "utf8");
+  const opened = new Set([...source.matchAll(/onOpen\?\.\("([a-zA-Z]+)"/g)].map((m) => m[1]));
+  assert.deepEqual([...opened].sort(), ["botBuilder", "bots"]);
+});
+
+test("setting up a built-in names THIS ROW'S pilot, not whoever is active", () => {
+  // ⚠ THE BUG THIS PINS SHOWS THE WRONG SHIP. The Manager lists every held pilot,
+  // but only ONE pilot's workspace is mounted, and the built-in bots panel reads
+  // the mounted pilot's fitting, holds and flight status. An unaddressed open
+  // would put one pilot's hull under another pilot's name — a requirement
+  // checklist about a ship that is not the one named, which a player would act
+  // on. Addressing it is what lets App switch pilots first.
+  const source = readFileSync(new URL("./BotManager.svelte", import.meta.url), "utf8");
+  assert.match(
+    source,
+    /onOpen\?\.\("bots",\s*session\.id\)/,
+    "opening the built-in bots panel must name the row's own session",
+  );
+});
+test("the empty library points at the button, not at a launcher entry that is gone", () => {
+  // ⚠ The regression this guards is a dead end, not a typo. The old copy read
+  // "Build one in the Bot Builder", which was a direction to a rail entry that
+  // no longer exists — so a player with no saved bots was told to go somewhere
+  // unreachable.
+  const source = readFileSync(new URL("./BotManager.svelte", import.meta.url), "utf8");
+  const empty = source.match(/No bots saved yet.*?<\/p>/s);
+  assert.ok(empty, "the empty-library message is gone");
+  assert.doesNotMatch(empty[0], /in the Bot Builder/i);
+  assert.match(empty[0], /New bot/);
 });
