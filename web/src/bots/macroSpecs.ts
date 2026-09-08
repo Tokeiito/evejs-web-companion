@@ -100,9 +100,15 @@ export const MACRO_SPECS: Readonly<Record<MacroID, MacroSpec>> = {
   // One press at the top of a fight/mine: switch every fitted hardener and
   // damage control on. Done when they are all running.
   "hardeners-on": { args: [], untilRequired: false },
-  // Guns + drones on the nearest rat, next rat when it dies; done when the grid
-  // is clear and the drones are home. Its own end, so no until required.
-  "fight-the-rats": { args: [], untilRequired: false },
+  // Guns + drones on the rat the priority list ranks first, next rat when it
+  // dies; done when the grid is clear and the drones are home. Its own end, so
+  // no until required. `targets` is OPTIONAL by design: unset, the block runs
+  // the shipped ladder (tackle, then ewar, then logi, then everything else,
+  // nearest first inside a class) — which is what it always did, plus a reason.
+  "fight-the-rats": {
+    args: [{ key: "targets", kind: "targetList", required: false }],
+    untilRequired: false,
+  },
   // Warp to the next unvisited combat anomaly in this system (the scanner's own
   // list). Done on arrival; blocked when the system has none left this run.
   "warp-to-anomaly": { args: [], untilRequired: false },
@@ -183,7 +189,10 @@ export const MACRO_SPECS: Readonly<Record<MacroID, MacroSpec>> = {
   // ── The PvP set (in space). `only` is OPTIONAL by design: left unset, any
   // player ship is a target; set, the block hunts that one pilot alone.
   "attack-player": {
-    args: [{ key: "only", kind: "character", required: false }],
+    args: [
+      { key: "only", kind: "character", required: false },
+      { key: "targets", kind: "targetList", required: false },
+    ],
     untilRequired: false,
   },
   // hunt-player roams from where it starts: `maxJumps` bounds how far from that
@@ -194,6 +203,7 @@ export const MACRO_SPECS: Readonly<Record<MacroID, MacroSpec>> = {
       { key: "only", kind: "character", required: false },
       { key: "maxJumps", kind: "count", required: false },
       { key: "range", kind: "count", required: false },
+      { key: "targets", kind: "targetList", required: false },
     ],
     untilRequired: false,
   },

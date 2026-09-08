@@ -33,6 +33,7 @@ import {
   packageAboard,
 } from "./missionBotLoop.ts";
 import { decideCloseIn, measureSpace, type SpaceMeasurement } from "./autopilotLoop.ts";
+import { DEFAULT_TARGET_PRIORITY, pickPrimary, type TargetClass } from "./targetPriority.ts";
 import { canMyShipOrderDrone, hostileRows, type OverviewRow } from "../space/overview.ts";
 import { compressionFacilities } from "../space/compression.ts";
 import { AGENT_BUTTON } from "../bridge/agents.ts";
@@ -74,6 +75,30 @@ function num(mem: MacroMemory, key: string): number | null {
 }
 function flag(mem: MacroMemory, key: string): boolean {
   return mem[key] === true;
+}
+
+/**
+ * The target ladder this step fights by: the player's ordering when they set
+ * one, otherwise the shipped one. An EMPTY list is the default too — a player
+ * who cleared the picker asked for the default back, not for a step with no
+ * ordering at all.
+ */
+function targetPriorityOf(step: MacroStep): readonly TargetClass[] {
+  const arg = step.args["targets"];
+  return arg !== undefined && arg.kind === "targetList" && arg.classes.length > 0
+    ? arg.classes
+    : DEFAULT_TARGET_PRIORITY;
+}
+
+/**
+ * How a hull's group name is looked up this tick. An observation with no
+ * resolved groups answers null for everything, which ranks every hull with
+ * "everything else" — nearest-first, exactly the behaviour that shipped before
+ * the ladder existed.
+ */
+function targetGroupOf(obs: ScriptObservation): (typeID: number) => string | null {
+  const groups = obs.targetGroupNames ?? null;
+  return (typeID: number): string | null => (groups === null ? null : (groups[typeID] ?? null));
 }
 
 /** Nearest entity in a set, by measured surface distance (unknown sorts last). */
@@ -1848,7 +1873,7 @@ function hostilesInReach(obs: ScriptObservation, snapshot: SpaceSnapshot, origin
 // one is picked. Done when the grid is clear AND the drones are back aboard.
 // Players on grid are FRIENDLY in this world (operator decision) — only NPC
 // hostiles (hostileRows) are ever engaged.
-const fightTheRats: MacroDecider = (_step, obs, mem) => {
+const fightTheRats: MacroDecider = (step, obs, mem) => {
   const snapshot = obs.snapshot ?? null;
   if (obs.inWarp === true) {
     return tick(WAIT, "In warp — nothing decided mid-warp.", "Fighting", ACTING, false, mem);
@@ -1889,14 +1914,22 @@ const fightTheRats: MacroDecider = (_step, obs, mem) => {
     });
   }
 
-  // The primary: nearest hostile (hostileRows is nearest-first), remembered so
-  // fire is CONCENTRATED — spread damage kills nothing.
+  // The primary: the hostile the ladder ranks first (nearest inside a class —
+  // hostileRows is nearest-first, and the pick keeps that order on a tie),
+  // remembered so fire is CONCENTRATED — spread damage kills nothing.
   let targetID = num(mem, "targetID");
   if (targetID !== null && !hostiles.some((h) => h.itemID === targetID)) {
     targetID = null; // it died — next
   }
   if (targetID === null) {
-    const primary = hostiles[0]!;
+    const primary =
+      pickPrimary(
+        hostiles,
+        (row) => row.typeID,
+        (row) => row.distance,
+        targetGroupOf(obs),
+        targetPriorityOf(step),
+      ) ?? hostiles[0]!;
     return tick(
       { kind: "lock", targetID: primary.itemID },
       "Locking the nearest pirate.",
@@ -2916,6 +2949,7 @@ function engagePrey(
   mem: MacroMemory,
   phase: string,
   prey: readonly SpaceEntity[],
+  priority: readonly TargetClass[],
 ): MacroTick {
   const snapshot = obs.snapshot ?? null;
   const roster = droneRoster(obs, "combat");
@@ -2928,13 +2962,22 @@ function engagePrey(
   }
   mem = launch.mem;
 
-  // The primary: nearest allowed player, remembered so fire is CONCENTRATED.
+  // The primary: the allowed player the ladder ranks first, remembered so fire
+  // is CONCENTRATED.
   let targetID = num(mem, "targetID");
   if (targetID !== null && !prey.some((p) => p.itemID === targetID)) {
     targetID = null; // it died or left the grid — next
   }
   if (targetID === null) {
-    const primary = nearest(prey, measureSpace(snapshot)) ?? prey[0]!;
+    const measurement = measureSpace(snapshot);
+    const primary =
+      pickPrimary(
+        prey,
+        (entity) => entity.typeID,
+        (entity) => measurement?.distances.get(entity.itemID) ?? null,
+        targetGroupOf(obs),
+        priority,
+      ) ?? prey[0]!;
     return tick(
       { kind: "lock", targetID: primary.itemID },
       "Locking the player's ship.",
@@ -3077,7 +3120,7 @@ const attackPlayer: MacroDecider = (step, obs, mem) => {
     // Fresh memory here drops a stale primary, so the next arrival re-picks.
     return tick(WAIT, "Watching for players.", "Camping", ACTING, true, {});
   }
-  return engagePrey(obs, mem, "Attacking", prey);
+  return engagePrey(obs, mem, "Attacking", prey, targetPriorityOf(step));
 };
 
 // ── hunt-player ──────────────────────────────────────────────────────────────
@@ -3161,7 +3204,7 @@ const huntPlayer: MacroDecider = (step, obs, mem, board) => {
       webTries: mem["webTries"],
       approached: mem["approached"],
     };
-    return engagePrey(obs, combatKeys, "Attacking", prey);
+    return engagePrey(obs, combatKeys, "Attacking", prey, targetPriorityOf(step));
   }
 
   // A chase that landed (or never started) resolves here: mark the hit visited.
