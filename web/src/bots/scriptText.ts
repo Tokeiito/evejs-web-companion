@@ -22,6 +22,7 @@ import type {
   MacroStep,
   Repeat,
   TargetClassArg,
+  SquadRoleArg,
   WorldRef,
 } from "./botScript.ts";
 
@@ -334,6 +335,27 @@ const TARGET_CLASS_WORD: Readonly<Record<TargetClassArg, string>> = {
   other: "everything else",
 };
 
+/** What each fleet-fire role is called on screen. */
+const SQUAD_ROLE_WORD: Readonly<Record<SquadRoleArg, string>> = {
+  off: "on its own",
+  call: "calling the primary for the fleet",
+  follow: "on the fleet's primary",
+};
+
+/** The role words, for the picker. "off" is the default and says nothing. */
+export function squadRoleWord(role: SquadRoleArg): string {
+  return SQUAD_ROLE_WORD[role];
+}
+
+/** ", calling the primary for the fleet" — empty when the block flies alone. */
+function squadPhrase(step: MacroStep): string {
+  const arg = step.args["squad"];
+  if (arg === undefined || arg.kind !== "squadRole" || arg.role === "off") {
+    return "";
+  }
+  return `, ${SQUAD_ROLE_WORD[arg.role]}`;
+}
+
 /** What one target class is called on screen — the picker reads it from here. */
 export function targetClassWord(cls: TargetClassArg): string {
   return TARGET_CLASS_WORD[cls];
@@ -443,7 +465,7 @@ function macroPhrase(step: MacroStep): string {
     case "hardeners-on":
       return "Switch every hardener and damage control on";
     case "fight-the-rats":
-      return `Fight the rats until the grid is clear${targetPhrase(step)}`;
+      return `Fight the rats until the grid is clear${targetPhrase(step)}${squadPhrase(step)}`;
     case "warp-to-anomaly":
       return "Warp to the next pirate den the scanner shows";
     case "refit-ship": {
@@ -540,8 +562,8 @@ function macroPhrase(step: MacroStep): string {
           ? only.name
           : null;
       return name !== null
-        ? `Attack ${name} if they appear here${targetPhrase(step)}`
-        : `Attack any player who appears here${targetPhrase(step)}`;
+        ? `Attack ${name} if they appear here${targetPhrase(step)}${squadPhrase(step)}`
+        : `Attack any player who appears here${targetPhrase(step)}${squadPhrase(step)}`;
     }
     case "hunt-player": {
       const only = step.args["only"];
@@ -554,7 +576,7 @@ function macroPhrase(step: MacroStep): string {
         jumps !== undefined && jumps.kind === "count"
           ? ` up to ${jumps.value} ${jumps.value === 1 ? "jump" : "jumps"} from home`
           : "";
-      return `Roam and hunt ${prey}${reach}${targetPhrase(step)}`;
+      return `Roam and hunt ${prey}${reach}${targetPhrase(step)}${squadPhrase(step)}`;
     }
     case "set-destination": {
       const dest = step.args["destination"];
