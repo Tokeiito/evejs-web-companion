@@ -65,6 +65,7 @@ export type WidgetKind =
   | "rock-pick-select"
   | "ore-list-picker"
   | "target-list-picker"
+  | "squad-role-select"
   | "bay-list-picker"
   | "item-list-picker"
   | "text-input";
@@ -89,6 +90,7 @@ export const ARG_KIND_WIDGET: Readonly<Record<Arg["kind"], WidgetKind>> = {
   rockPick: "rock-pick-select",
   oreList: "ore-list-picker",
   targetList: "target-list-picker",
+  squadRole: "squad-role-select",
   bayList: "bay-list-picker",
   itemList: "item-list-picker",
   text: "text-input",
@@ -114,6 +116,7 @@ export const ARG_KIND_LABEL: Readonly<Record<Arg["kind"], string>> = {
   rockPick: "Which rock first",
   oreList: "Ore priority",
   targetList: "Target priority",
+  squadRole: "Fleet fire",
   bayList: "Leave alone",
   itemList: "Keep aboard",
   text: "Text",
@@ -129,6 +132,7 @@ const ARG_KEY_LABEL: Readonly<Record<string, string>> = {
   exceptBays: "Bays to leave alone",
   keepItems: "Items to keep aboard",
   targets: "Shoot first",
+  squad: "With the fleet",
   belt: "Belt",
   station: "Station",
   equipment: "Equipment",

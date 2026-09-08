@@ -106,7 +106,10 @@ export const MACRO_SPECS: Readonly<Record<MacroID, MacroSpec>> = {
   // the shipped ladder (tackle, then ewar, then logi, then everything else,
   // nearest first inside a class) — which is what it always did, plus a reason.
   "fight-the-rats": {
-    args: [{ key: "targets", kind: "targetList", required: false }],
+    args: [
+      { key: "targets", kind: "targetList", required: false },
+      { key: "squad", kind: "squadRole", required: false },
+    ],
     untilRequired: false,
   },
   // Warp to the next unvisited combat anomaly in this system (the scanner's own
@@ -192,6 +195,7 @@ export const MACRO_SPECS: Readonly<Record<MacroID, MacroSpec>> = {
     args: [
       { key: "only", kind: "character", required: false },
       { key: "targets", kind: "targetList", required: false },
+      { key: "squad", kind: "squadRole", required: false },
     ],
     untilRequired: false,
   },
@@ -204,6 +208,7 @@ export const MACRO_SPECS: Readonly<Record<MacroID, MacroSpec>> = {
       { key: "maxJumps", kind: "count", required: false },
       { key: "range", kind: "count", required: false },
       { key: "targets", kind: "targetList", required: false },
+      { key: "squad", kind: "squadRole", required: false },
     ],
     untilRequired: false,
   },
