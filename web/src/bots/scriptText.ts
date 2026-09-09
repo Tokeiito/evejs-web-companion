@@ -138,6 +138,8 @@ export function macroName(macro: MacroID): string {
       return "Invite a pilot to your fleet";
     case "join-fleet":
       return "Join a fleet";
+    case "join-advertised-fleet":
+      return "Join a fleet from the fleet finder";
     case "attack-player":
       return "Attack players here";
     case "hunt-player":
@@ -581,6 +583,13 @@ function macroPhrase(step: MacroStep): string {
     }
     case "join-fleet":
       return "Accept a fleet invitation when one arrives";
+    case "join-advertised-fleet": {
+      const named = step.args["fleetName"];
+      const name = named !== undefined && named.kind === "text" ? named.text.trim() : "";
+      return name.length > 0
+        ? `Join the fleet "${name}" if it is in the fleet finder`
+        : "Join a fleet you name if it is in the fleet finder";
+    }
     case "attack-player": {
       const only = step.args["only"];
       const name =

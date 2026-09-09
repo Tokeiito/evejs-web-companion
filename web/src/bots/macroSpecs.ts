@@ -198,6 +198,15 @@ export const MACRO_SPECS: Readonly<Record<MacroID, MacroSpec>> = {
     untilRequired: false,
   },
   "join-fleet": { args: [], untilRequired: false },
+  // The fleet-finder twin of join-fleet: instead of waiting to be invited, it
+  // looks the fleet up by NAME in the advert listing and applies. Opportunistic
+  // by design (see the decider) - the name is the whole argument, a plain `text`
+  // rather than an id, because an advert's fleetID is minted fresh every time the
+  // boss forms up and could never be saved in a script.
+  "join-advertised-fleet": {
+    args: [{ key: "fleetName", kind: "text", required: true }],
+    untilRequired: false,
+  },
   // ── The PvP set (in space). `only` is OPTIONAL by design: left unset, any
   // player ship is a target; set, the block hunts that one pilot alone.
   "attack-player": {

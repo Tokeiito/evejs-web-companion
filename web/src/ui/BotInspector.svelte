@@ -54,6 +54,7 @@
     CONDITION_FRACTION_BOUNDS,
     CONDITION_NOUN_LABEL,
     CONDITION_UNTIL_LABEL,
+    textPlaceholder,
     PLACE_OPTIONS,
     RESPONSE_OPTIONS,
     UNTIL_CONDITION_KINDS,
@@ -908,7 +909,7 @@
           id={fieldId}
           type="text"
           maxlength={MAX_TEXT_ARG_LEN}
-          placeholder="write the message…"
+          placeholder={textPlaceholder(arg.key)}
           value={textValue(step, arg.key)}
           oninput={(e) => onArg(arg.key, { kind: "text", text: e.currentTarget.value.slice(0, MAX_TEXT_ARG_LEN) })}
         />

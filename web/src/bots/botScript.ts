@@ -658,6 +658,7 @@ export type MacroID =
   | "create-fleet"
   | "invite-to-fleet"
   | "join-fleet"
+  | "join-advertised-fleet"
   // ── The PvP set. Camp a grid / roam and hunt another player's ship.
   | "attack-player"
   | "hunt-player"
@@ -719,6 +720,7 @@ export const MACRO_IDS: readonly MacroID[] = Object.freeze<MacroID[]>([
   "create-fleet",
   "invite-to-fleet",
   "join-fleet",
+  "join-advertised-fleet",
   "attack-player",
   "hunt-player",
   "send-chat",

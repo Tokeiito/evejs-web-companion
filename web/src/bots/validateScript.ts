@@ -59,6 +59,7 @@ const ARG_LABEL: Readonly<Record<string, string>> = {
   who: "a pilot to invite",
   channel: "a channel to talk in",
   message: "a message to send",
+  fleetName: "a fleet name to look for",
   destination: "somewhere to go",
   system: "a solar system to go to",
   fitting: "a fitting to switch to",
@@ -200,7 +201,16 @@ function validateStep(step: MacroStep, problems: ScriptProblem[]): void {
       );
     }
     if (arg.kind === "text" && arg.text.trim().length === 0) {
-      problems.push(blocking(step.id, "Write the message this step says."));
+      // Both `text` args are mandatory, but they mean different things: a chat
+      // step is missing its line, a fleet-finder step its fleet name.
+      problems.push(
+        blocking(
+          step.id,
+          argSpec.key === "fleetName"
+            ? "Type the name of the fleet to look for in the fleet finder."
+            : "Write the message this step says.",
+        ),
+      );
     }
     if (arg.kind === "destination" && arg.ref.id === null) {
       problems.push(blocking(step.id, "Pick where this step sets the destination to."));

@@ -159,8 +159,28 @@ const ARG_KEY_LABEL: Readonly<Record<string, string>> = {
   message: "Message",
   destination: "Destination",
   system: "Solar system",
+  fleetName: "Fleet name",
   pick: "Which rock first",
 };
+
+/**
+ * What an empty TEXT box invites the player to type, keyed by argument.
+ *
+ * There was one text box in the builder for a long time and its invitation was
+ * written into the template, which was fine right up until a second argument of
+ * the same kind arrived: a box asking for a chat message while it wants a fleet
+ * name is wrong in the one way a player can only discover by being confused. The
+ * key, not the kind, decides - same reason `ARG_KEY_LABEL` exists above.
+ */
+const TEXT_ARG_PLACEHOLDER: Readonly<Record<string, string>> = {
+  message: "write the message…",
+  fleetName: "the fleet's name, as it appears in the fleet finder",
+};
+
+/** The invitation for one text box; a plain one for a key with no entry. */
+export function textPlaceholder(key: string): string {
+  return TEXT_ARG_PLACEHOLDER[key] ?? "type it here";
+}
 
 function argLabel(arg: MacroArgSpec): string {
   return ARG_KEY_LABEL[arg.key] ?? ARG_KIND_LABEL[arg.kind];
@@ -206,7 +226,7 @@ export interface MacroArgDescriptors {
    * The FORMAT allows an `until` on any step (`scriptCodec.ts` reads one
    * wherever a step is read), so this is a UI judgement, not a format fact:
    * offering "Leave the station until your wallet rises above 10m ISK" on all
-   * 50 macros would put a control nobody wants on almost every step. It is
+   * 51 macros would put a control nobody wants on almost every step. It is
    * offered where the macro cannot end on its own (`untilRequired`) and on
    * `wait`, whose own spec names "wait until shields are back above X" as the
    * intended combination. A step that ALREADY carries an `until` — from an
