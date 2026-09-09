@@ -68,6 +68,8 @@ export function macroName(macro: MacroID): string {
       return "Leave the station";
     case "travel-to-station":
       return "Fly to a station and dock";
+    case "travel-to-system":
+      return "Fly to a solar system";
     case "travel-to-belt":
       return "Fly to a belt";
     case "mine-at-belt":
@@ -136,6 +138,8 @@ export function macroName(macro: MacroID): string {
       return "Invite a pilot to your fleet";
     case "join-fleet":
       return "Join a fleet";
+    case "join-advertised-fleet":
+      return "Join a fleet from the fleet finder";
     case "attack-player":
       return "Attack players here";
     case "hunt-player":
@@ -413,6 +417,14 @@ function macroPhrase(step: MacroStep): string {
           : "a station you pick";
       return `Fly to ${where} and dock`;
     }
+    case "travel-to-system": {
+      const system = step.args["system"];
+      const where =
+        system !== undefined && system.kind === "system"
+          ? worldRefPhrase(system.ref, "system")
+          : "a system you pick";
+      return `Fly to ${where} and wait until you are there`;
+    }
     case "travel-to-belt": {
       const belt = step.args["belt"];
       const where = belt !== undefined && belt.kind === "belt" ? beltPhrase(belt.belt) : "a belt you pick";
@@ -571,6 +583,13 @@ function macroPhrase(step: MacroStep): string {
     }
     case "join-fleet":
       return "Accept a fleet invitation when one arrives";
+    case "join-advertised-fleet": {
+      const named = step.args["fleetName"];
+      const name = named !== undefined && named.kind === "text" ? named.text.trim() : "";
+      return name.length > 0
+        ? `Join the fleet "${name}" if it is in the fleet finder`
+        : "Join a fleet you name if it is in the fleet finder";
+    }
     case "attack-player": {
       const only = step.args["only"];
       const name =

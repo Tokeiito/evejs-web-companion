@@ -88,6 +88,7 @@ function policy(risks: readonly BotRiskClass[], restartSafe = true): MacroRunPol
 export const MACRO_RUN_POLICY: Readonly<Record<MacroID, MacroRunPolicy>> = Object.freeze({
   undock: SAFE,
   "travel-to-station": SAFE,
+  "travel-to-system": SAFE,
   "travel-to-belt": SAFE,
   "mine-at-belt": SAFE,
   "deliver-ore": policy(["inventory"]),
@@ -126,6 +127,7 @@ export const MACRO_RUN_POLICY: Readonly<Record<MacroID, MacroRunPolicy>> = Objec
   "create-fleet": policy(["fleet"]),
   "invite-to-fleet": policy(["fleet"], false),
   "join-fleet": policy(["fleet"]),
+  "join-advertised-fleet": policy(["fleet"]),
   "attack-player": policy(["combat", "destructive"], false),
   "hunt-player": policy(["combat", "destructive"], false),
   "send-chat": policy(["social"], false),
