@@ -517,6 +517,7 @@ const COMPANION_ON_WIRE: ServerBotCompanion = {
   followingOrderFrom: "broadcast",
   lastOrderHeard: "the fleet's target call",
   canTag: false,
+  fitWarnings: [],
 };
 
 function companionSlice(over: Partial<FleetCompanionState> = {}): FleetCompanionState {
@@ -599,6 +600,7 @@ test("a companion that has not reported yet is all-unknown, not all-no", () => {
     followingOrderFrom: null,
     lastOrderHeard: null,
     canTag: null,
+    fitWarnings: [],
   });
   assert.notEqual(fresh?.inFleet, false);
   assert.notEqual(fresh?.canTag, false);
