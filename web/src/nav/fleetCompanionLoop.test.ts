@@ -11,6 +11,7 @@ import {
   decideCompanionAction,
   freshLadderMemory,
   supervisorsInFleet,
+  type CompanionDecision,
   type CompanionLadderMemory,
   type FleetCompanionDeps,
   type FleetCompanionObservation,
@@ -671,7 +672,7 @@ test("the ladder's memory is threaded, not dropped, between ticks", async () => 
   assert.equal(companion.snapshot().inFleet, true);
 });
 
-// --- rung 5: obeying the fleet ------------------------------------------------
+// --- rung 6: obeying the fleet ------------------------------------------------
 //
 // Below the supervision gate (only reached while a human is here) and above
 // "Standing by". Tag beats broadcast — AUTHORITY, not freshness: a tag can
@@ -868,7 +869,7 @@ test("obeying the fleet is skipped entirely once the supervision gate has failed
   assert.match(decision.stop as string, /no safe spot/i);
 });
 
-// --- rung 5: the Heal family --------------------------------------------------
+// --- rung 6: the Heal family --------------------------------------------------
 //
 // HealShield/HealArmor/HealCapacitor/HealTarget. Checked BEFORE the tag and
 // the Target broadcast (a rep call is time-critical; a tag is standing
@@ -1075,7 +1076,7 @@ test("once the heal is already running, the SAME tick's tag is obeyed — not mu
   assert.equal(decision.followingOrderFrom, "tag");
 });
 
-// --- rung 5: opening fire once a called target is locked ---------------------
+// --- rung 6: opening fire once a called target is locked ---------------------
 //
 // `lockThenEngage` replaced `lockOrHold` (see its own header in
 // fleetCompanionLoop.ts): a called target that is ALREADY locked no longer
@@ -1383,7 +1384,7 @@ test("a satisfied Heal call falls through to the tag; a satisfied rack does not 
   assert.match(decision.why, /firing on it/i);
 });
 
-// --- rung 5: TravelTo ---------------------------------------------------------
+// --- rung 6: TravelTo ---------------------------------------------------------
 
 /** Synthetic solar system ids — no on-grid meaning, just a destination. */
 const SYSTEM_B = 30000001;
@@ -1419,7 +1420,7 @@ test("a TravelTo broadcast naming a NEW system routes again", () => {
   assert.deepEqual(second.action, { kind: "travelTo", systemID: SYSTEM_C });
 });
 
-// --- rung 5: JumpTo (honest partial) ------------------------------------------
+// --- rung 6: JumpTo (honest partial) ------------------------------------------
 //
 // `itemID` is a single stargate; `api.jump` needs the gate on the far side
 // too, which nothing available to this pure, synchronous ladder can supply
@@ -1488,7 +1489,7 @@ test("a JumpTo broadcast for a gate OFF this grid falls through", () => {
   assert.equal(decision.phase, "Standing by");
 });
 
-// --- rung 5: chat commands ----------------------------------------------------
+// --- rung 6: chat commands ----------------------------------------------------
 //
 // A chat order reaches the SAME c-f branches a broadcast does, through
 // `resolveNamedOrder` — see that function's own header and `decideFleetOrders`'s
@@ -1842,7 +1843,7 @@ test("chat orders are ALSO skipped once the supervision gate has failed", () => 
   assert.notEqual(decision.phase, "Obeying fleet");
 });
 
-// --- rung 5: everything above is skipped once abandonment starts -------------
+// --- rung 6: everything above is skipped once abandonment starts -------------
 
 test("Heal and TravelTo are ALSO skipped once the supervision gate has failed", () => {
   const request: FleetCompanionRequest = { ...REQUEST, remoteShieldModuleIDs: [SHIELD_MODULE] };
@@ -2186,13 +2187,29 @@ test("no player-facing string in this module carries a decorative non-ASCII char
     })
     .join("\n");
 
-  const literal = new RegExp('"((?:[^"\\\\\\n]|\\\\.)*)"', "g");
+  // ⚠ TEMPLATE LITERALS ARE SCANNED TOO, AND THEY WERE NOT UNTIL PHASE 5.
+  // This swept double-quoted literals only. That was complete when it was
+  // written -- every `why` in the file was a plain string -- and phase 7's tag
+  // messages were the first to interpolate, so they were the first player-facing
+  // strings this guard could not see. They happened to be clean; the guard was
+  // blind to them either way, and a rung that reports a drone count or a
+  // hold-off has every reason to interpolate. Backticked strings are now swept
+  // on the same terms. The `${...}` holes are blanked first: what a hole
+  // interpolates is a value, judged where it is built, not text this file wrote.
+  const doubleQuoted = new RegExp('"((?:[^"\\\\\\n]|\\\\.)*)"', "g");
+  const backticked = new RegExp("`((?:[^`\\\\]|\\\\.)*)`", "g");
   const offenders: string[] = [];
-  for (const match of code.matchAll(literal)) {
-    const value = match[1] ?? "";
-    if ([...value].some((character) => (character.codePointAt(0) ?? 0) > 127)) {
-      offenders.push(value);
+  const judge = (value: string): void => {
+    const withoutHoles = value.replace(/\$\{[^}]*\}/g, "");
+    if ([...withoutHoles].some((character) => (character.codePointAt(0) ?? 0) > 127)) {
+      offenders.push(withoutHoles);
     }
+  };
+  for (const match of code.matchAll(doubleQuoted)) {
+    judge(match[1] ?? "");
+  }
+  for (const match of code.matchAll(backticked)) {
+    judge(match[1] ?? "");
   }
   assert.deepEqual(
     offenders,
@@ -2431,7 +2448,7 @@ test("a standing fleet tag order does not starve the tackle rung", () => {
     TAGGING,
     taggingObs({
       snapshot: gridWithEntities([LOGI, TACKLE]),
-      // The FC has already called LOGI, so rung 5 has work and would park.
+      // The FC has already called LOGI, so rung 6 has work and would park.
       fleetTargetTags: new Map([[LOGI, "A"]]),
       lockedTargetIDs: [LOGI],
       tackledBy: [TACKLE],
@@ -2472,4 +2489,475 @@ test("an unsupervised pilot tags nothing", () => {
     }),
   );
   assert.notEqual(decision.action.kind, "setFleetTargetTag");
+});
+
+// --- the parking fix: a standing order no longer ends the tick ---------------
+//
+// `lockThenEngage`'s last branch used to return an ordinary wait once the called
+// target was locked and the guns were running. That ended the ladder, so while a
+// target call stood every rung BELOW the fleet-order rung was starved - which is
+// exactly when they most want a turn. A pilot obeying a target call would never
+// have fled.
+//
+// It now hands back a `standing` decision instead: the ladder holds it aside,
+// runs everything beneath it, and falls back to it only if nothing else acted.
+//
+// ⚠ THE FULL PROOF OF THIS ARRIVES WITH PHASE 6. Its flee is the first rung to
+// sit BENEATH the fleet-order rung, and the test that matters - "a pilot obeying
+// a standing target call still flees when it drops through its floor" - can only
+// be written once that rung exists. What is provable here is the mechanism: the
+// decision is marked standing, the readout survives, and the ladder reaches its
+// own end rather than returning from the middle.
+
+/** A pilot with a gun fitted, which is what makes the standing case reachable. */
+const ENGAGING: FleetCompanionRequest = { ...REQUEST, weaponModuleIDs: [GUN_1] };
+
+/** A pilot locked onto, and shooting, the target the fleet called. */
+function standingEngagement(
+  overrides: Partial<FleetCompanionObservation> = {},
+): FleetCompanionObservation {
+  return obs({
+    snapshot: gridWithEntitiesAndRack([TACKLE], [GUN_1]),
+    fleetTargetTags: new Map([[TACKLE, "A"]]),
+    lockedTargetIDs: [TACKLE],
+    ...overrides,
+  });
+}
+
+/**
+ * The tick AFTER the rack is running. A snapshot says a gun is cycling and
+ * never says what it is cycling AT, so the first tick still has a weapon to
+ * start and only the next one has nothing left to issue -- which is the tick
+ * the standing case is about.
+ */
+function afterTheGunsAreUp(): CompanionDecision {
+  const first = decideCompanionAction(ENGAGING, standingEngagement());
+  assert.equal(first.action.kind, "activate", "the first tick starts the gun");
+  return decideCompanionAction(ENGAGING, standingEngagement(), first.memory);
+}
+
+test("a standing, already-engaged target call is marked standing rather than parking", () => {
+  const decision = afterTheGunsAreUp();
+  assert.deepEqual(decision.action, { kind: "wait" });
+  assert.equal(
+    decision.standing,
+    true,
+    "the fleet rung has nothing new to issue, so its decision must be held aside, not returned outright",
+  );
+});
+
+// ⚠ THE READOUT IS WHY IT WAS PARKED IN THE FIRST PLACE, so losing it would be
+// trading one bug for another. A pilot whose guns are running must not tell its
+// operator it is standing by.
+test("the standing readout survives the fall-through and still says Obeying fleet", () => {
+  const decision = afterTheGunsAreUp();
+  assert.equal(decision.phase, "Obeying fleet");
+  assert.notEqual(decision.phase, "Standing by");
+  assert.equal(decision.followingOrderFrom, "tag");
+  assert.ok(decision.lastOrderHeard);
+  assert.match(decision.why, /firing/i);
+});
+
+// ⚠ A STANDING DECISION IS A READOUT AND NOTHING ELSE. If one ever carried a
+// real call, holding it aside and then falling back to it a rung later would
+// issue it late - or, if a lower rung acted, drop it silently.
+test("nothing that is marked standing carries a real action", () => {
+  for (const observation of [
+    standingEngagement(),
+    standingEngagement({ fleetTargetTags: null, fleetBroadcast: fleetBroadcast("Target", TACKLE) }),
+  ]) {
+    const decision = decideCompanionAction(ENGAGING, observation);
+    if (decision.standing === true) {
+      assert.deepEqual(decision.action, { kind: "wait" });
+    }
+  }
+});
+
+// The other half: a rung that DOES have something to issue still wins outright,
+// which is what the decided precedence says and what must not regress.
+test("a fleet order with a real call to make still beats everything beneath it", () => {
+  const decision = decideCompanionAction(
+    ENGAGING,
+    standingEngagement({ lockedTargetIDs: [] }),
+  );
+  assert.deepEqual(decision.action, { kind: "lock", targetID: TACKLE });
+  assert.notEqual(decision.standing, true, "a real call is never merely standing");
+});
+
+// --- rung 5: drones ----------------------------------------------------------
+//
+// Recall a hurt drone, hold off, put them back out. Driven by a RECORD rather
+// than by the condition that started it, because the condition extinguishes
+// itself: the instant the recall lands the drones are not in space, so
+// lowestDroneHealth reads null and the thing that fired is no longer true.
+//
+// ⚠ WHAT A RECALL ACTUALLY BUYS ON THIS SERVER IS A SHIELD REPAIR, not a broken
+// lock. buildDroneRecoveryItemPatch stamps shieldCharge: 1 onto the item as it
+// enters the bay; armour and hull damage survive. There is no target-loss
+// memory and no drone cooldown anywhere in this server.
+
+const DRONE_A = 700001;
+const DRONE_B = 700002;
+const DRONE_BAY_STACK = 800001;
+
+/** A companion set up to fly drones, with the shipped floor and hold-off. */
+const WITH_DRONES: FleetCompanionRequest = { ...REQUEST, useDrones: true };
+
+function droneObs(
+  overrides: Partial<FleetCompanionObservation> = {},
+): FleetCompanionObservation {
+  return obs({
+    snapshot: gridWithEntities([TACKLE]),
+    hostileOnGrid: true,
+    myDroneIDs: [],
+    droneBayItemIDs: [DRONE_BAY_STACK],
+    lowestDroneHealth: null,
+    ...overrides,
+  });
+}
+
+test("a hostile on grid and an empty sky puts the drones out", () => {
+  const decision = decideCompanionAction(WITH_DRONES, droneObs());
+  assert.deepEqual(decision.action, {
+    kind: "launchDrones",
+    droneItemIDs: [DRONE_BAY_STACK],
+  });
+  assert.equal(decision.phase, "Drones");
+});
+
+// ⚠ THE DEAD-CONFIG TEST. useDrones had exactly one reader anywhere - the risk
+// classifier that labels a run before launch - and no rung consulted it.
+test("useDrones OFF launches nothing, whatever is on grid", () => {
+  const decision = decideCompanionAction(REQUEST, droneObs());
+  assert.notEqual(decision.action.kind, "launchDrones");
+  assert.equal(REQUEST.useDrones, false, "the default must stay off");
+});
+
+// ⚠ hostileOnGrid IS THREE-STATE and only `true` launches. `null` means the
+// grid could not be read, and putting drones out onto a grid this pilot cannot
+// see is the one place they are hardest to get back.
+test("an unreadable grid launches nothing", () => {
+  const decision = decideCompanionAction(WITH_DRONES, droneObs({ hostileOnGrid: null }));
+  assert.notEqual(decision.action.kind, "launchDrones");
+});
+
+test("a quiet grid launches nothing", () => {
+  const decision = decideCompanionAction(WITH_DRONES, droneObs({ hostileOnGrid: false }));
+  assert.notEqual(decision.action.kind, "launchDrones");
+});
+
+// A null bay is "did not look" and an empty one is "nothing aboard". Neither
+// launches, and neither is an error - a pilot with no drones fights without.
+test("no bay listing and an empty bay both launch nothing", () => {
+  for (const droneBayItemIDs of [null, []]) {
+    const decision = decideCompanionAction(WITH_DRONES, droneObs({ droneBayItemIDs }));
+    assert.notEqual(decision.action.kind, "launchDrones", String(droneBayItemIDs));
+  }
+});
+
+test("drones already out are not launched again", () => {
+  const decision = decideCompanionAction(WITH_DRONES, droneObs({ myDroneIDs: [DRONE_A] }));
+  assert.notEqual(decision.action.kind, "launchDrones");
+});
+
+test("a drone below the floor is recalled, and the readout says what that buys", () => {
+  const decision = decideCompanionAction(
+    WITH_DRONES,
+    droneObs({ myDroneIDs: [DRONE_A, DRONE_B], lowestDroneHealth: 0.2 }),
+  );
+  assert.deepEqual(decision.action, {
+    kind: "recallDrones",
+    droneIDs: [DRONE_A, DRONE_B],
+  });
+  assert.match(decision.why, /shield/i);
+});
+
+test("a healthy drone is left alone", () => {
+  const decision = decideCompanionAction(
+    WITH_DRONES,
+    droneObs({ myDroneIDs: [DRONE_A], lowestDroneHealth: 0.9 }),
+  );
+  assert.notEqual(decision.action.kind, "recallDrones");
+});
+
+// ⚠ null is "nothing out to judge", never "healthy" and never "hurt" - the same
+// rule the DSL's own drone-health condition follows.
+test("an unreadable drone health recalls nothing", () => {
+  const decision = decideCompanionAction(
+    WITH_DRONES,
+    droneObs({ myDroneIDs: [DRONE_A], lowestDroneHealth: null }),
+  );
+  assert.notEqual(decision.action.kind, "recallDrones");
+});
+
+// ⚠ THE WHOLE POINT OF THE RECORD. Once the recall is issued the drones leave
+// space, so the trigger reads null - and a rung that re-derived its state from
+// the observation would forget it was ever in a cycle.
+test("the cycle survives its own trigger disappearing, and relaunches after the hold-off", () => {
+  let memory: CompanionLadderMemory = freshLadderMemory();
+
+  const recall = decideCompanionAction(
+    WITH_DRONES,
+    droneObs({ myDroneIDs: [DRONE_A], lowestDroneHealth: 0.2 }),
+    memory,
+  );
+  assert.equal(recall.action.kind, "recallDrones");
+  memory = recall.memory;
+
+  // The drones are gone from the grid and the trigger now reads null.
+  const gone = droneObs({ myDroneIDs: [], lowestDroneHealth: null });
+  const ticks: string[] = [];
+  for (let tick = 0; tick < 12; tick += 1) {
+    const decision = decideCompanionAction(WITH_DRONES, gone, memory);
+    memory = decision.memory;
+    ticks.push(decision.action.kind);
+    if (decision.action.kind === "launchDrones") {
+      break;
+    }
+  }
+  assert.ok(
+    ticks.includes("launchDrones"),
+    "the hold-off must end in a relaunch, not in the cycle being forgotten",
+  );
+  assert.ok(
+    ticks.filter((kind) => kind === "launchDrones").length === 1,
+    "and it relaunches once, not every tick after",
+  );
+});
+
+// ⚠ HOLDING OFF MUST NOT PARK THE TICK. The hold-off is a floor on a wait, not
+// a reason to stop obeying the fleet - a pilot that went quiet every time a
+// drone got shot would be worse than one with no drones at all.
+test("the pilot keeps obeying its fleet all the way through the hold-off", () => {
+  let memory: CompanionLadderMemory = freshLadderMemory();
+  const recall = decideCompanionAction(
+    WITH_DRONES,
+    droneObs({ myDroneIDs: [DRONE_A], lowestDroneHealth: 0.2 }),
+    memory,
+  );
+  memory = recall.memory;
+
+  // Mid-hold-off, with a fleet tag standing on a target that is not locked.
+  const holding = droneObs({
+    myDroneIDs: [],
+    lowestDroneHealth: null,
+    fleetTargetTags: new Map([[TACKLE, "A"]]),
+  });
+  const decision = decideCompanionAction(WITH_DRONES, holding, memory);
+  assert.deepEqual(
+    decision.action,
+    { kind: "lock", targetID: TACKLE },
+    "the drone rung is holding off and issuing nothing, so the fleet rung gets the tick",
+  );
+});
+
+// ⚠ WATCHED PER RECORDED DRONE, never off a coarse flag. This ship may launch
+// others mid-cycle, and a flag would call the recall finished the moment one
+// unrelated drone came home.
+test("the recall is not finished while one of the recalled drones is still out", () => {
+  let memory: CompanionLadderMemory = freshLadderMemory();
+  const recall = decideCompanionAction(
+    WITH_DRONES,
+    droneObs({ myDroneIDs: [DRONE_A, DRONE_B], lowestDroneHealth: 0.2 }),
+    memory,
+  );
+  memory = recall.memory;
+
+  const oneStillOut = droneObs({ myDroneIDs: [DRONE_B], lowestDroneHealth: null });
+  for (let tick = 0; tick < 3; tick += 1) {
+    const decision = decideCompanionAction(WITH_DRONES, oneStillOut, memory);
+    memory = decision.memory;
+    assert.notEqual(
+      decision.action.kind,
+      "launchDrones",
+      "nothing relaunches while a recalled drone is still on grid",
+    );
+  }
+});
+
+// ⚠ THE SILENT STUCK CASE. A drone that reaches scoop range to find a FULL BAY
+// is refused, and the tick-driven recall path throws that refusal away - nothing
+// reaches the client. The drone circles at 2500 m for ever, still on grid, with
+// no error anywhere. Without a bound the rung would wait on it until the run
+// ended.
+test("a recall that never completes is given up on rather than waited on for ever", () => {
+  let memory: CompanionLadderMemory = freshLadderMemory();
+  const recall = decideCompanionAction(
+    WITH_DRONES,
+    droneObs({ myDroneIDs: [DRONE_A], lowestDroneHealth: 0.2 }),
+    memory,
+  );
+  memory = recall.memory;
+
+  // The drone never leaves the grid, because the bay it is trying to enter is
+  // full and nothing will ever say so.
+  const stuck = droneObs({ myDroneIDs: [DRONE_A], lowestDroneHealth: 0.2 });
+  let letGo = false;
+  let longestWait = 0;
+  for (let tick = 0; tick < 25; tick += 1) {
+    memory = decideCompanionAction(WITH_DRONES, stuck, memory).memory;
+    if (memory.droneCycle === null) {
+      letGo = true;
+      break;
+    }
+    longestWait = Math.max(longestWait, memory.droneCycle.waited);
+  }
+  assert.ok(letGo, "the stuck cycle must be let go of rather than waited on for ever");
+  assert.ok(longestWait <= 15, `the wait must be bounded, saw ${longestWait} ticks`);
+});
+
+// ⚠ THE SECOND CYCLE IS WORTH LESS THAN THE FIRST AND THE FOURTH IS WORTH
+// NOTHING: a recall refills shields but not armour, so once the damage is in
+// armour every later cycle returns the same hurt drone and re-trips the floor
+// immediately. Bounding the count is what stops that eating the run.
+test("the recall budget is spent, and then the pilot fights on without cycling", () => {
+  let memory: CompanionLadderMemory = freshLadderMemory();
+  const hurt = droneObs({ myDroneIDs: [DRONE_A], lowestDroneHealth: 0.2 });
+  const gone = droneObs({ myDroneIDs: [], lowestDroneHealth: null });
+  let recalls = 0;
+
+  for (let tick = 0; tick < 120; tick += 1) {
+    // Alternate what the grid says so a full cycle can complete each time.
+    const decision = decideCompanionAction(
+      WITH_DRONES,
+      memory.droneCycle === null ? hurt : gone,
+      memory,
+    );
+    memory = decision.memory;
+    if (decision.action.kind === "recallDrones") {
+      recalls += 1;
+    }
+  }
+  assert.ok(recalls > 0, "it must cycle at least once");
+  assert.ok(recalls <= 3, `the budget must bound the cycles, saw ${recalls}`);
+});
+
+// Rung 1 still outranks everything.
+test("nothing about drones is decided mid-warp", () => {
+  const decision = decideCompanionAction(
+    WITH_DRONES,
+    droneObs({ inWarp: true, myDroneIDs: [DRONE_A], lowestDroneHealth: 0.2 }),
+  );
+  assert.deepEqual(decision.action, { kind: "wait" });
+});
+
+// ⚠ AND IT SITS ABOVE THE FLEET RUNG. A drone bleeding out while the FC has a
+// target called is exactly the case that matters: the recall costs one call,
+// moves nothing, and does not stop the pilot obeying.
+test("a standing fleet order does not stop a hurt drone being recalled", () => {
+  const decision = decideCompanionAction(
+    WITH_DRONES,
+    droneObs({
+      myDroneIDs: [DRONE_A],
+      lowestDroneHealth: 0.2,
+      fleetTargetTags: new Map([[TACKLE, "A"]]),
+      lockedTargetIDs: [TACKLE],
+    }),
+  );
+  assert.deepEqual(decision.action, { kind: "recallDrones", droneIDs: [DRONE_A] });
+});
+
+// --- getting safe no longer gives the drones away ---------------------------
+//
+// ⚠ THE SERVER ABANDONS EVERY CONTROLLED DRONE ON ANY WARP, JUMP OR DOCK.
+// handleControllerLost only attempts a bay recovery when the lifecycle reason is
+// a disconnect or a logoff, and a normal departure passes neither - so the
+// recovery branch is skipped outright however close the drones are. And an
+// abandoned drone can be scooped by ANYBODY on grid. Leaving without a recall
+// does not merely cost this pilot its drones; it hands them to whoever is
+// still there.
+
+test("an unsupervised pilot with drones out recalls them before it warps", () => {
+  const decision = decideCompanionAction(
+    WITH_DRONES,
+    alone({ snapshot: gridWithStation(500_000), myDroneIDs: [DRONE_A] }),
+  );
+  assert.deepEqual(decision.action, { kind: "recallDrones", droneIDs: [DRONE_A] });
+  assert.equal(decision.phase, "Getting safe");
+});
+
+test("with nothing out it warps straight away, exactly as it did before", () => {
+  const decision = decideCompanionAction(
+    WITH_DRONES,
+    alone({ snapshot: gridWithStation(500_000), myDroneIDs: [] }),
+  );
+  assert.equal(decision.action.kind, "warp");
+});
+
+// ⚠ A HOST THAT DOES NOT WIRE THE READ UP GETS THE OLD BEHAVIOUR, not a pilot
+// that refuses to leave over drones nobody can see.
+test("an absent drone read does not strand the pilot", () => {
+  const decision = decideCompanionAction(
+    WITH_DRONES,
+    alone({ snapshot: gridWithStation(500_000) }),
+  );
+  assert.equal(decision.action.kind, "warp");
+});
+
+test("the recall is issued once, then waited on rather than resent", () => {
+  let memory: CompanionLadderMemory = freshLadderMemory();
+  const stillOut = alone({ snapshot: gridWithStation(500_000), myDroneIDs: [DRONE_A] });
+
+  const first = decideCompanionAction(WITH_DRONES, stillOut, memory);
+  assert.equal(first.action.kind, "recallDrones");
+  memory = first.memory;
+
+  const second = decideCompanionAction(WITH_DRONES, stillOut, memory);
+  assert.deepEqual(second.action, { kind: "wait" }, "a second recall would be a wasted call");
+  assert.equal(second.phase, "Getting safe");
+});
+
+test("once the drones are home the warp goes ahead", () => {
+  let memory: CompanionLadderMemory = freshLadderMemory();
+  memory = decideCompanionAction(
+    WITH_DRONES,
+    alone({ snapshot: gridWithStation(500_000), myDroneIDs: [DRONE_A] }),
+    memory,
+  ).memory;
+
+  const decision = decideCompanionAction(
+    WITH_DRONES,
+    alone({ snapshot: gridWithStation(500_000), myDroneIDs: [] }),
+    memory,
+  );
+  assert.equal(decision.action.kind, "warp");
+});
+
+// ⚠ DRONES ARE WORTH A FEW SECONDS AND ARE NOT WORTH THE SHIP. A recall that
+// cannot complete - a full bay, which the server refuses in silence - must not
+// strand an unsupervised pilot in space for the whole thirty-minute wait.
+test("a recall that never completes does not strand the pilot in space", () => {
+  let memory: CompanionLadderMemory = freshLadderMemory();
+  const stuck = alone({ snapshot: gridWithStation(500_000), myDroneIDs: [DRONE_A] });
+  let left = false;
+
+  for (let tick = 0; tick < 20; tick += 1) {
+    const decision = decideCompanionAction(WITH_DRONES, stuck, memory);
+    memory = decision.memory;
+    if (decision.action.kind === "warp") {
+      left = true;
+      break;
+    }
+  }
+  assert.ok(left, "the pilot must give up on the recall and get itself safe");
+});
+
+// The safe-spot half of the ladder is a departure too, and has the same hazard.
+test("the safe-spot warp also recalls first", () => {
+  const decision = decideCompanionAction(
+    { ...WITH_DRONES, safeSpotBookmarkID: 60000002 },
+    alone({ snapshot: gridWithStation(null), myDroneIDs: [DRONE_A] }),
+  );
+  assert.deepEqual(decision.action, { kind: "recallDrones", droneIDs: [DRONE_A] });
+});
+
+// Docking is not a departure - it is the destination, and the recall already
+// happened before the warp that got here. A pilot on the station must not
+// stall.
+test("a pilot already at the station docks without a fresh recall round", () => {
+  const decision = decideCompanionAction(
+    WITH_DRONES,
+    alone({ snapshot: gridWithStation(500), myDroneIDs: [] }),
+  );
+  assert.equal(decision.action.kind, "dock");
 });
