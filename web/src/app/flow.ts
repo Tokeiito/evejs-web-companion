@@ -5468,6 +5468,29 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         store.apply({ type: "targeting/targets", targetIDs: lockedTargetIDs });
         const status = decodeFlightStatus(statusStep.flight);
         void observeFlightStatus(status);
+        // ⚠ THE REPAIR QUOTE IS DOUBLE-GATED, and it has to be. It is a sixth
+        // round trip on a two-second tick, so it is gated on the operator
+        // having ticked `repairsAtStation` -- the same cost gate the chat read
+        // and the drone bay are under -- AND on actually being docked, because
+        // the shop only answers to a ship in its own station.
+        //
+        // It runs AFTER the Promise.all rather than inside it because `docked`
+        // is not known until the flight status resolves. That costs a serial
+        // round trip on the ticks it fires, which are only ever ticks spent
+        // sitting in a station with nothing else to do.
+        //
+        // ⚠ NULL IS "COULD NOT SAY", NEVER "NOTHING IS DAMAGED" -- the same
+        // contract the DSL's repair-ship read keeps, and the flee rung treats
+        // it as a tick spent waiting rather than as permission to undock.
+        let damagedItemIDs: FleetCompanionObservation["damagedItemIDs"] = null;
+        if (liveCompanionRequest?.repairsAtStation === true && status.docked) {
+          try {
+            const quotes = await quoteShipRepair();
+            damagedItemIDs = quotes === null ? null : quotes.map((quote) => quote.itemID);
+          } catch {
+            damagedItemIDs = null;
+          }
+        }
         const snapshot = decodeSpaceSnapshot(spaceResult.space);
         // Keep the Overview live while the companion flies, exactly as the
         // mining bot does — the panel's own poll may not be running.
@@ -5596,6 +5619,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
                   canMyShipOrderDrone(entity, ship?.itemID ?? null),
                 ),
           flightStatus: status,
+          damagedItemIDs,
           snapshot,
           inFleet,
           fleetMemberCharacterIDs,
@@ -5664,7 +5688,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           case "acceptFleetInvite":
             await api.acceptFleetInvite(action.fleetID, callOptions);
             return;
-          // Rung 3, "obeying the fleet" (fleetCompanionLoop.ts): a tag or a
+          // Rung 7, "obeying the fleet" (fleetCompanionLoop.ts): a tag or a
           // `Target` broadcast, locked; an `AlignTo` broadcast, aligned to.
           // Straight to the api layer for the same reason every case above
           // is — the companion has to see a refusal to decide on it, not have
@@ -5675,7 +5699,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           case "lock":
             await api.lockTarget(action.targetID, callOptions);
             return;
-          // Rung 3, the Heal family (fleetCompanionLoop.ts): a fitted remote
+          // Rung 7, the Heal family (fleetCompanionLoop.ts): a fitted remote
           // repairer, aimed at the ship the broadcast named. `repeat: -1` is
           // this codebase's own "run continuously" (see the DSL's own
           // `activate` case above `makeFleetCompanionDeps`). Phase 3 adds
@@ -5697,7 +5721,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           case "deactivate":
             await api.deactivateModule(action.moduleID, {}, callOptions);
             return;
-          // Rung 3, `TravelTo`: hand off to the SHARED autopilot, exactly as
+          // Rung 7, `TravelTo`: hand off to the SHARED autopilot, exactly as
           // the DSL's own `startSystemRoute` case does — same solver, same
           // bounds, and the ride ends in space at the destination system
           // since a fleet companion has no station to dock at here.
@@ -5715,7 +5739,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           case "setFleetTargetTag":
             await api.setFleetTargetTag(action.targetID, action.tag, callOptions);
             return;
-          // Rung 5. `launchDrones` takes BAY STACK ids and `recallDrones` takes
+          // Rung 6. `launchDrones` takes BAY STACK ids and `recallDrones` takes
           // the ENTITY ids of drones in space -- two different id spaces, which
           // is why the two action kinds carry differently named fields rather
           // than sharing one.
@@ -5737,6 +5761,26 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           // duplicate what it is already doing.
           case "recallDrones":
             await api.recallDrones(action.droneIDs, callOptions);
+            return;
+          // Rung 5, the flee's recovery step. ⚠ THE ITEM IDS ARE THE SHOP'S OWN
+          // QUOTE, read in observe() above and never guessed at here. The
+          // wrapper carries `confirm: true` in the body, which is what
+          // `requireWriteConfirmation` on the route wants -- a caller stating
+          // intent, not a dialog. Forgetting it is a 400 CONFIRMATION_REQUIRED,
+          // never a hang.
+          //
+          // ⚠ AND IT SPENDS THE OPERATOR'S MONEY. Nothing reaches this case
+          // unless `repairsAtStation` was ticked; the rung checks before it
+          // decides, and the request's risk classes say `financial` because of
+          // it.
+          case "repairItems":
+            await api.repairItems(action.itemIDs, callOptions);
+            return;
+          // Rung 5, the last step of a round trip: back out into space. The
+          // only call this loop makes that deliberately re-enters danger, which
+          // is why `recoverAndReturn` does all its checking above it.
+          case "undock":
+            await api.undock(callOptions);
             return;
           default: {
             // ⚠ EXHAUSTIVE ON PURPOSE. Every FleetCompanionAction kind MUST be
