@@ -38,6 +38,10 @@
     type FleetCompanionOrderSource,
     type FleetCompanionRole,
   } from "../nav/fleetCompanionLoop.ts";
+  import {
+    isFleetBroadcastFresh,
+    type FleetBroadcastName,
+  } from "../bridge/fleetBroadcasts.ts";
   import type { FleetCompanionState } from "../store/types.ts";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
@@ -69,6 +73,15 @@
    * own comment).
    */
   let picked = $state<number[]>([]);
+  /**
+   * The player's OWN pick of fitted REMOTE repair modules, one list per
+   * family — a shield booster cannot repair armour, so each answers only its
+   * own kind of Heal broadcast (see `FleetCompanionRequest.remoteShieldModuleIDs`'s
+   * own comment). Same "nothing ticked for you" rule as `picked` above.
+   */
+  let pickedRemoteShield = $state<number[]>([]);
+  let pickedRemoteArmor = $state<number[]>([]);
+  let pickedRemoteCapacitor = $state<number[]>([]);
   let fleeHealthFloorPercent = $state(Math.round(DEFAULT_FLEET_COMPANION_REQUEST.fleeHealthFloor * 100));
   let capacitorFloorPercent = $state(Math.round(DEFAULT_FLEET_COMPANION_REQUEST.capacitorFloor * 100));
   let maxFleeAttempts = $state(DEFAULT_FLEET_COMPANION_REQUEST.maxFleeAttempts);
@@ -154,6 +167,24 @@
 
   function toggleDefense(itemID: number): void {
     picked = picked.includes(itemID) ? picked.filter((id) => id !== itemID) : [...picked, itemID];
+  }
+
+  function toggleRemoteShield(itemID: number): void {
+    pickedRemoteShield = pickedRemoteShield.includes(itemID)
+      ? pickedRemoteShield.filter((id) => id !== itemID)
+      : [...pickedRemoteShield, itemID];
+  }
+
+  function toggleRemoteArmor(itemID: number): void {
+    pickedRemoteArmor = pickedRemoteArmor.includes(itemID)
+      ? pickedRemoteArmor.filter((id) => id !== itemID)
+      : [...pickedRemoteArmor, itemID];
+  }
+
+  function toggleRemoteCapacitor(itemID: number): void {
+    pickedRemoteCapacitor = pickedRemoteCapacitor.includes(itemID)
+      ? pickedRemoteCapacitor.filter((id) => id !== itemID)
+      : [...pickedRemoteCapacitor, itemID];
   }
 
   function toggleObeys(source: FleetCompanionOrderSource): void {
@@ -244,6 +275,70 @@
     }
   });
 
+  /**
+   * What the fleet has most recently said, in the player's words.
+   *
+   * ⚠ THIS READS THE SLICE DIRECTLY, NOT THE COMPANION'S READOUT, and that is
+   * the point of having it. The store records every broadcast the session
+   * receives whether or not this pilot is configured to obey it, so the panel
+   * can show "your FC broadcast Target and this pilot ignores broadcasts"
+   * — which is a settings problem the player can fix, and is otherwise
+   * indistinguishable from a bot that is simply not working.
+   */
+  const lastOrder = $derived($fleet.lastBroadcast);
+  const orderIsFresh = $derived(
+    lastOrder === null ? false : isFleetBroadcastFresh(lastOrder, Date.now()),
+  );
+  /**
+   * ⚠ THIS READS THE SETUP FORM, NOT THE RUNNING PILOT'S REQUEST, and it is
+   * only correct because of something that is not obvious.
+   *
+   * `$companion` is THIS TAB's own store slice, so this readout can only ever
+   * be showing a companion this tab started — a headless one's state lives in
+   * the BFF's store, not here — and the form is the only way to start one, so
+   * `obeys` still holds exactly what was sent. A reload would desynchronise
+   * them, but a reload also empties the slice, so `active` goes false and this
+   * block does not render at all.
+   *
+   * The day this panel learns to display a HEADLESS companion, that argument
+   * collapses and this warning starts lying — telling a player to go and fix a
+   * setting that is already correct, which is worse than saying nothing. Carry
+   * `obeys` on the companion readout before that happens.
+   */
+  const obeysBroadcasts = $derived(obeys.includes("broadcast"));
+
+  // The broadcaster is a character id; the player should read a name. Same
+  // shape as the chat-commander lookup above.
+  $effect(() => {
+    const sender = $fleet.lastBroadcast?.senderCharID ?? null;
+    if (sender !== null) {
+      flow.requestNames([{ kind: "character", id: sender } as NameRef]);
+    }
+  });
+
+  /** Plain words for a broadcast name. Never the wire name, which is jargon. */
+  const broadcastWords: Record<FleetBroadcastName, string> = {
+    // ⚠ NOT "shoot this". Answering a Target call means LOCKING the ship --
+    // the companion has no weapons rung and does not fire. Saying "shoot" here
+    // would promise the player something the pilot cannot do, which is exactly
+    // what `lockOrHold`'s own comment warns against.
+    Target: "lock this target",
+    AlignTo: "align to this",
+    WarpTo: "warp to this",
+    JumpTo: "jump through this gate",
+    TravelTo: "travel to this system",
+    JumpBeacon: "jump to this beacon",
+    HealShield: "needs shield reps",
+    HealArmor: "needs armour reps",
+    HealCapacitor: "needs capacitor",
+    HealTarget: "rep this pilot",
+    EnemySpotted: "enemy spotted",
+    NeedBackup: "needs backup",
+    HoldPosition: "hold position",
+    InPosition: "in position",
+    Location: "reporting position",
+  };
+
   function canTagWords(value: boolean | null): string {
     if (value === null) {
       return "not known";
@@ -308,6 +403,9 @@
       flow.startFleetCompanion({
         role,
         defenseModuleIDs: picked,
+        remoteShieldModuleIDs: pickedRemoteShield,
+        remoteArmorModuleIDs: pickedRemoteArmor,
+        remoteCapacitorModuleIDs: pickedRemoteCapacitor,
         fleeHealthFloor: clamp(fleeHealthFloorPercent, MIN_FLEE_HEALTH_FLOOR * 100, MAX_FLEE_HEALTH_FLOOR * 100) / 100,
         capacitorFloor: clamp(capacitorFloorPercent, MIN_CAPACITOR_FLOOR * 100, MAX_CAPACITOR_FLOOR * 100) / 100,
         maxFleeAttempts: clamp(maxFleeAttempts, MIN_FLEE_ATTEMPTS, MAX_FLEE_ATTEMPTS),
@@ -403,6 +501,48 @@
         </tbody>
       </table>
     </div>
+    <!--
+      WHAT THE FLEET IS SAYING. Deliberately shown even before this pilot can
+      act on any of it: during live QA the first question is always "is the
+      broadcast even arriving", and a panel that only showed what the pilot DID
+      cannot answer it.
+    -->
+    <h3>What the fleet is saying</h3>
+    {#if lastOrder === null}
+      <p class="note">
+        Nothing has come over the fleet yet. Broadcasts and target tags only
+        arrive while someone in the fleet is actually sending them.
+      </p>
+    {:else}
+      <p class="stat-line">
+        <strong>{broadcastWords[lastOrder.name] ?? lastOrder.name}</strong>
+        <span class="note">
+          - from {resolvedName($names.resolved, "character", lastOrder.senderCharID, "someone in the fleet")}
+        </span>
+      </p>
+      {#if !orderIsFresh}
+        <p class="note">
+          That call has lapsed, so this pilot is back on its own judgement. A
+          call only stands for about half a minute.
+        </p>
+      {:else if !obeysBroadcasts}
+        <p class="note warn">
+          This pilot is set NOT to listen to broadcasts, so it is ignoring that.
+          Stop it and tick "Fleet broadcasts" if you want it answered.
+        </p>
+      {/if}
+    {/if}
+    {#if $fleet.targetTags === null}
+      <p class="note">No target tags have been read from this fleet.</p>
+    {:else if $fleet.targetTags.size === 0}
+      <p class="note">The fleet has tagged nothing.</p>
+    {:else}
+      <p class="note">
+        The fleet has tagged {$fleet.targetTags.size} ship(s):
+        {[...$fleet.targetTags.values()].join(", ")}.
+      </p>
+    {/if}
+
     {#if $companion.abandonment}
       <p class="note warn">
         Nobody is left in this fleet that this computer is not flying, so this
@@ -484,6 +624,53 @@
             type="checkbox"
             checked={picked.includes(row.itemID)}
             onchange={() => toggleDefense(row.itemID)}
+          />
+          {row.label}
+        </label>
+      {/each}
+    {/if}
+
+    <h3>Remote repair</h3>
+    <p class="note">
+      Tick what this pilot may run on a fleet-mate who calls for reps. A
+      shield booster cannot repair armour, so pick each fitted module under
+      the layer it actually reps - nothing is guessed for you here either.
+    </p>
+    {#if equipment.length === 0}
+      <p class="empty">
+        Nothing powered up. Power your remote-repair equipment up under Your
+        equipment, then come back.
+      </p>
+    {:else}
+      <p><strong>Remote shield boosters</strong> (answers "needs shield reps")</p>
+      {#each equipment as row (row.itemID)}
+        <label class="check">
+          <input
+            type="checkbox"
+            checked={pickedRemoteShield.includes(row.itemID)}
+            onchange={() => toggleRemoteShield(row.itemID)}
+          />
+          {row.label}
+        </label>
+      {/each}
+      <p><strong>Remote armour repairers</strong> (answers "needs armour reps")</p>
+      {#each equipment as row (row.itemID)}
+        <label class="check">
+          <input
+            type="checkbox"
+            checked={pickedRemoteArmor.includes(row.itemID)}
+            onchange={() => toggleRemoteArmor(row.itemID)}
+          />
+          {row.label}
+        </label>
+      {/each}
+      <p><strong>Capacitor transfer arrays</strong> (answers "needs capacitor")</p>
+      {#each equipment as row (row.itemID)}
+        <label class="check">
+          <input
+            type="checkbox"
+            checked={pickedRemoteCapacitor.includes(row.itemID)}
+            onchange={() => toggleRemoteCapacitor(row.itemID)}
           />
           {row.label}
         </label>

@@ -229,6 +229,11 @@ import {
   decodeFleetInviteNotification,
 } from "../bridge/fleetCenter.ts";
 import { decodeAvailableFleetAds } from "../bridge/fleetAds.ts";
+import {
+  decodeFleetBroadcastNotification,
+  decodeFleetStateChangeNotification,
+  isFleetBroadcastFresh,
+} from "../bridge/fleetBroadcasts.ts";
 import type { BotScript, WorldRef } from "../bots/botScript.ts";
 import { decodeScriptValue } from "../bots/scriptCodec.ts";
 import { expandSubBots, hasSubBots, type BotResolution, type SubBotReference } from "../bots/subBots.ts";
@@ -1330,17 +1335,116 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     "OnSystemScanDone",
   ]);
 
+  /**
+   * Feed the notifications a bridge RESPONSE carried into the same dispatch the
+   * live channel uses.
+   *
+   * ⚠ WITHOUT THIS, A HEADLESS BOT RECEIVES NO PUSHED NOTIFICATION AT ALL, and
+   * that is not a degradation — it is total. `applyPushedNotification` has
+   * exactly one other caller, the SSE `notification` branch, and `src/botHost.js`
+   * hands every headless bot `stubEventSource()`: a channel that is never live,
+   * by design. So on the BFF's bot host the push dispatch simply never runs.
+   *
+   * The BFF already anticipated this and holds up its end — "every request
+   * route still drains notifications onto its response, so a stream that never
+   * opens or drops mid-flight degrades to the old poll-based behaviour rather
+   * than losing data" (`src/server.js`, above `STREAM_RETRY_MS`). Nothing on
+   * this side ever consumed that drain, so only half the fallback existed.
+   *
+   * ⚠ WHY IT WENT UNNOTICED FOR SO LONG, and why a fleet broadcast is the thing
+   * that finally forced it: almost every push consumer here is an INVALIDATION
+   * that schedules a re-read (`scheduleFleetRefresh`, `scheduleHoldRefresh`),
+   * so missing the push costs a little freshness and nothing else. A broadcast
+   * has no re-read to fall back on — there is no "what is the current
+   * broadcast" route anywhere — so a push that never arrives is an order lost
+   * for good.
+   *
+   * Double delivery is safe and does not need a dedupe scheme. The drain is
+   * destructive, so the gateway hands each notification to exactly one of the
+   * two paths; and were that ever to change, the dispatch is idempotent anyway
+   * — the refresh schedulers coalesce on a microtask, and every payload
+   * consumer is last-write-wins.
+   */
+  function applyDrainedNotifications(notifications: readonly JsonValue[]): void {
+    if (notifications.length === 0) {
+      return;
+    }
+    const receivedAtMs = Date.now();
+    for (const entry of notifications) {
+      if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+        continue;
+      }
+      const row = entry as Record<string, JsonValue>;
+      const method = typeof row.method === "string" ? row.method : null;
+      if (method === null) {
+        continue;
+      }
+      applyPushedNotification(method, Array.isArray(row.args) ? row.args : [], receivedAtMs);
+    }
+  }
+
   function applyPushedNotification(
     method: string | null,
     args: readonly unknown[],
     receivedAtMs: number,
+    insideMultiEvent = false,
   ): void {
+    // ⚠ `"__MultiEvent"` UNWRAP — THIS IS A REAL FIX, NOT DEFENSIVE CODE. The
+    // server has exactly one call site for it (`notifyFleetMultiEvent`,
+    // fleetRuntime.js:786), and it fires ONLY when more than one
+    // `OnFleetMemberChanged` lands in the same tick, wrapping them as
+    // `method: "__MultiEvent"`. Before this branch existed,
+    // `fleetSnapshotNotifications.has("__MultiEvent")` always missed, so the
+    // WHOLE BATCH was silently dropped — no `scheduleFleetRefresh`, and the
+    // roster went stale with nobody the wiser. The payload is a bare array of
+    // `[name, args]` pairs (mirrors how `OnFleetBroadcast`'s payload array
+    // becomes `args` verbatim — see fleetBroadcasts.ts's wire-contract
+    // comment), so each pair is re-dispatched through this same function.
+    //
+    // ⚠ ONE LEVEL ONLY, REFUSED RATHER THAN BOUNDED. The server's only call
+    // site never wraps its own wrapper — nesting cannot happen legitimately —
+    // so a nested `__MultiEvent` is corrupt or hostile data, not a deeper
+    // batch to drain. Refusing it outright is simpler than a recursion counter
+    // and loses nothing a real payload would ever need.
+    if (method === "__MultiEvent") {
+      if (insideMultiEvent) {
+        return;
+      }
+      for (const pair of args) {
+        if (!Array.isArray(pair)) {
+          continue;
+        }
+        const [innerMethod, innerArgs] = pair as [unknown, unknown];
+        applyPushedNotification(
+          typeof innerMethod === "string" ? innerMethod : null,
+          Array.isArray(innerArgs) ? innerArgs : [],
+          receivedAtMs,
+          true,
+        );
+      }
+      return;
+    }
     const fleetInvite = decodeFleetInviteNotification(method, args, receivedAtMs);
     if (fleetInvite !== null) {
       store.apply({ type: "fleet/pending-invite", invite: fleetInvite });
       if (fleetInvite.inviterID !== null) {
         requestNames([{ kind: "character", id: fleetInvite.inviterID }]);
       }
+      return;
+    }
+    // The two fleet pushes that carry their own payload rather than merely
+    // invalidating a read. ⚠ NEITHER NAME GOES IN `fleetSnapshotNotifications`
+    // below: that set is invalidation-only — its members carry nothing usable
+    // and exist only to trigger a re-read — while these two ARE the payload,
+    // so a re-read would neither produce nor invalidate them.
+    const fleetBroadcast = decodeFleetBroadcastNotification(method, args, receivedAtMs);
+    if (fleetBroadcast !== null) {
+      store.apply({ type: "fleet/broadcast", broadcast: fleetBroadcast });
+      return;
+    }
+    const fleetTargetTags = decodeFleetStateChangeNotification(method, args);
+    if (fleetTargetTags !== null) {
+      store.apply({ type: "fleet/target-tags", tags: fleetTargetTags });
       return;
     }
     if (method !== null && fleetSnapshotNotifications.has(method)) {
@@ -5289,11 +5393,37 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         // The supervision read rides along with the other two rather than
         // queueing behind them: it is independent of both, and a companion
         // decides on a two-second cadence.
-        const [statusStep, spaceResult, botDriven] = await Promise.all([
+        const [statusStep, spaceResult, targetsResult, botDriven] = await Promise.all([
           api.getFlightStatus(callOptions),
           api.getSpaceSnapshot(callOptions),
+          // ⚠ THE LOCK LIST IS AUTHORITATIVE AND THE LADDER NEEDS IT, rather
+          // than its own memory of what it last asked for. A lock the server
+          // REFUSED still looks issued from in here, so a rung that stamped
+          // "I locked that" and trusted the stamp would never retry —
+          // permanently and silently, for the rest of the run. Reading the real
+          // list every tick is what makes the fleet-order rung's already-locked
+          // check honest rather than hopeful.
+          api.getTargets(callOptions),
           botDrivenCharacterIDs(),
         ]);
+        // ⚠ BEFORE ANYTHING IS DECODED. These reads are the companion's only
+        // regular traffic, so on the bot host they are the ONLY chance a pushed
+        // notification gets to be seen at all — the live channel there is a
+        // stub. Draining them here is what makes a fleet broadcast reach a
+        // headless companion; see `applyDrainedNotifications`.
+        //
+        // The other loops do not do this yet, and that is a real gap rather
+        // than a decision — they simply have no push-only input to miss today.
+        // A loop that grows one must drain here too.
+        applyDrainedNotifications([
+          ...statusStep.notifications,
+          ...spaceResult.notifications,
+          ...targetsResult.notifications,
+        ]);
+        // The same authority the Targeting panel reads, kept live while the
+        // companion flies so the panel never shows a stale lock list.
+        const lockedTargetIDs = decodeTargetIDs(targetsResult.targetIDs);
+        store.apply({ type: "targeting/targets", targetIDs: lockedTargetIDs });
         const status = decodeFlightStatus(statusStep.flight);
         void observeFlightStatus(status);
         const snapshot = decodeSpaceSnapshot(spaceResult.space);
@@ -5322,6 +5452,24 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           inFleet = null;
           fleetMemberCharacterIDs = null;
         }
+        // ⚠ FREE, NEVER GATED — unlike the roster read just above (an HTTP
+        // call, gated elsewhere behind FLEET_SUPPORT_MACROS), these two ride
+        // the fleet slice the notification drain already fills. Gating them
+        // too would mean a companion that could have obeyed its fleet simply
+        // never looked.
+        const fleetSlice = store.fleet.get();
+        const fleetTargetTags = fleetSlice.targetTags;
+        // ⚠ TTL APPLIED HERE, AT OBSERVATION BUILD — never in the store's
+        // reducer. The store keeps the raw broadcast until the next one
+        // replaces it; asking "is it still fresh" is this reader's job, same
+        // discipline as `src/squadBoard.js` dropping a lapsed call when ASKED
+        // rather than on a timer. A follower whose call has lapsed falls back
+        // to its own ladder, which is a working bot, not a stopped one.
+        const fleetBroadcast =
+          fleetSlice.lastBroadcast !== null &&
+          isFleetBroadcastFresh(fleetSlice.lastBroadcast, Date.now())
+            ? fleetSlice.lastBroadcast
+            : null;
         return {
           inSpace: status.inSpace,
           docked: status.docked,
@@ -5347,9 +5495,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           inFleet,
           fleetMemberCharacterIDs,
           myCharacterID: store.station.get().online?.characterID ?? null,
-          // Phase 1 fills the tags; phase 7 fills the tagging verdict. Until
-          // then they are honestly unknown rather than falsely empty.
-          fleetTargetTags: null,
+          fleetTargetTags,
+          fleetBroadcast,
+          lockedTargetIDs,
+          // Phase 7 fills the tagging verdict; that is a roster-role question,
+          // not a store read, so it stays honestly unknown until then.
           canTag: null,
           botDrivenCharacterIDs: botDriven,
           // The invite the notification drain already parked in the fleet slice.
@@ -5387,6 +5537,38 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             return;
           case "acceptFleetInvite":
             await api.acceptFleetInvite(action.fleetID, callOptions);
+            return;
+          // Rung 3, "obeying the fleet" (fleetCompanionLoop.ts): a tag or a
+          // `Target` broadcast, locked; an `AlignTo` broadcast, aligned to.
+          // Straight to the api layer for the same reason every case above
+          // is — the companion has to see a refusal to decide on it, not have
+          // it swallowed the way the flow's own lockTarget()/alignTo() do.
+          case "align":
+            await api.alignTo(action.targetID, callOptions);
+            return;
+          case "lock":
+            await api.lockTarget(action.targetID, callOptions);
+            return;
+          // Rung 3, the Heal family (fleetCompanionLoop.ts): a fitted remote
+          // repairer, aimed at the ship the broadcast named. `repeat: -1` is
+          // this codebase's own "run continuously" (see the DSL's own
+          // `activate` case above `makeFleetCompanionDeps`). Every heal
+          // target the ladder issues is a REAL on-grid ship it already
+          // measured, never the DSL's targetID-0 "self" convention, so that
+          // branch is not needed here.
+          case "activate":
+            await api.activateModule(
+              action.moduleID,
+              { targetID: action.targetID, repeat: -1 },
+              callOptions,
+            );
+            return;
+          // Rung 3, `TravelTo`: hand off to the SHARED autopilot, exactly as
+          // the DSL's own `startSystemRoute` case does — same solver, same
+          // bounds, and the ride ends in space at the destination system
+          // since a fleet companion has no station to dock at here.
+          case "travelTo":
+            await startRoute(action.systemID);
             return;
         }
       },
@@ -7168,6 +7350,26 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             fleetMemberCharacterIDs = null;
           }
         }
+        // Fleet target tags + the most recent broadcast, straight off the
+        // STORE rather than a read. ⚠ FREE, AND NEVER GATED like the roster
+        // read just above — that one costs an HTTP call per macro, so it is
+        // gated behind FLEET_MANAGEMENT_MACROS/FLEET_SUPPORT_MACROS; this one
+        // costs nothing, and gating it would mean a bot that could have
+        // obeyed its fleet simply never looked.
+        const fleetSlice = store.fleet.get();
+        const fleetTargetTags: ScriptObservation["fleetTargetTags"] = fleetSlice.targetTags;
+        // ⚠ TTL APPLIED HERE, AT OBSERVATION BUILD — never in the store's
+        // reducer. The store keeps the raw broadcast until the next one
+        // replaces it; the freshness question belongs to the reader, same
+        // discipline as `src/squadBoard.js` dropping a lapsed call when ASKED
+        // rather than on a timer, and the read-time BELT_MEMORY_CACHE_MS check
+        // elsewhere in this file. A follower whose call has lapsed falls back
+        // to its own ladder, which is a working bot, not a stopped one.
+        const fleetBroadcast: ScriptObservation["fleetBroadcast"] =
+          fleetSlice.lastBroadcast !== null &&
+          isFleetBroadcastFresh(fleetSlice.lastBroadcast, Date.now())
+            ? fleetSlice.lastBroadcast
+            : null;
         // The fleet finder, for the one block that joins by name. Read only when
         // that block is the active step, and only while this pilot is NOT already
         // fleeted — a fleeted pilot's block is already done, so the listing would
@@ -7387,6 +7589,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           fleetAds,
           fleetApplication,
           fleetMemberCharacterIDs,
+          fleetTargetTags,
+          fleetBroadcast,
           targetGroupNames,
           squadPrimaryTargetID,
           hardenerModuleIDs: capabilities.defense.hardeners,

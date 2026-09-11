@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import {
   DEFAULT_FLEET_COMPANION_REQUEST,
@@ -15,6 +16,7 @@ import {
   type FleetCompanionRequest,
 } from "./fleetCompanionLoop.ts";
 import type { SpaceSnapshot } from "../store/types.ts";
+import type { FleetBroadcast } from "../bridge/fleetBroadcasts.ts";
 
 /**
  * Two obviously-synthetic character ids: the human whose presence satisfies the
@@ -84,6 +86,52 @@ function gridWithStation(distanceM: number | null): SpaceSnapshot {
     ship: { position: { x: 0, y: 0, z: 0 }, radius: 0, mode: null },
     entities,
   } as unknown as SpaceSnapshot;
+}
+
+/**
+ * A space snapshot carrying a self ship plus one entity per given itemID, at
+ * INCREASING distance in the order given — the first id is nearest. Used by
+ * the rung-3 ("obeying the fleet") tests, where distance must sometimes lose
+ * to a better tag rank, and sometimes be the only thing distinguishing
+ * otherwise-equal candidates.
+ */
+function gridWithEntities(itemIDs: readonly number[]): SpaceSnapshot {
+  const entities = [
+    {
+      itemID: 1,
+      kind: "ship",
+      isSelf: true,
+      position: { x: 0, y: 0, z: 0 },
+      radius: 0,
+      mode: null,
+    },
+    ...itemIDs.map((itemID, index) => ({
+      itemID,
+      kind: "ship",
+      isSelf: false,
+      position: { x: (index + 1) * 10_000, y: 0, z: 0 },
+      radius: 0,
+      mode: null,
+    })),
+  ];
+  return {
+    inSpace: true,
+    ship: { position: { x: 0, y: 0, z: 0 }, radius: 0, mode: null },
+    entities,
+  } as unknown as SpaceSnapshot;
+}
+
+/** A minimal, already-fresh fleet broadcast — decideCompanionAction never re-checks the TTL. */
+function fleetBroadcast(name: FleetBroadcast["name"], itemID: number | null): FleetBroadcast {
+  return {
+    name,
+    scope: 3,
+    senderCharID: HUMAN,
+    senderSolarSystemID: null,
+    itemID,
+    typeID: null,
+    receivedAtMs: 0,
+  };
 }
 
 function makeDeps(
@@ -620,4 +668,584 @@ test("the ladder's memory is threaded, not dropped, between ticks", async () => 
   // After one supervised tick the loop is holding the human, ready to become
   // the rejoin allowlist the moment they leave.
   assert.equal(companion.snapshot().inFleet, true);
+});
+
+// --- rung 3: obeying the fleet ------------------------------------------------
+//
+// Below the supervision gate (only reached while a human is here) and above
+// "Standing by". Tag beats broadcast — AUTHORITY, not freshness: a tag can
+// only be a commander's write, a `Target` broadcast can come from any member.
+// An order for something off THIS grid is not an order for this pilot at all,
+// and it falls through rather than waiting.
+
+/** Synthetic on-grid item ids — ordinary ships, not player or station ids. */
+const TACKLE = 200001;
+const LOGI = 200002;
+const OTHER = 200003;
+
+test("a fleet tag on grid is locked", () => {
+  const decision = decideCompanionAction(
+    REQUEST,
+    obs({ snapshot: gridWithEntities([TACKLE]), fleetTargetTags: new Map([[TACKLE, "A"]]) }),
+  );
+  assert.deepEqual(decision.action, { kind: "lock", targetID: TACKLE });
+  assert.equal(decision.phase, "Obeying fleet");
+  assert.equal(decision.followingOrderFrom, "tag");
+  assert.ok(decision.lastOrderHeard);
+});
+
+test("the BEST tag wins when several are tagged, not the nearest", () => {
+  // TACKLE is nearer (gridWithEntities puts the first id closest) but tagged
+  // "Z" — the worst recognised letter. OTHER is farther but tagged "1", a
+  // digit, which outranks every letter. Rank must win over distance.
+  const decision = decideCompanionAction(
+    REQUEST,
+    obs({
+      snapshot: gridWithEntities([TACKLE, OTHER]),
+      fleetTargetTags: new Map([
+        [TACKLE, "Z"],
+        [OTHER, "1"],
+      ]),
+    }),
+  );
+  assert.deepEqual(decision.action, { kind: "lock", targetID: OTHER });
+});
+
+test("an unrecognised tag is still obeyed, not dropped", () => {
+  // "Q" is not in the stock menu's A-J/X/Y/Z alphabet, but fleetTagRank still
+  // gives it a finite rank — a hand-typed or non-stock tag is a real order.
+  const decision = decideCompanionAction(
+    REQUEST,
+    obs({ snapshot: gridWithEntities([TACKLE]), fleetTargetTags: new Map([[TACKLE, "Q"]]) }),
+  );
+  assert.deepEqual(decision.action, { kind: "lock", targetID: TACKLE });
+});
+
+test("a tag on an item OFF this grid falls through to a broadcast", () => {
+  // The tagged item (999999) never appears in the snapshot's entities, so the
+  // tag names nothing this pilot can act on — it falls through to the Target
+  // broadcast, which names an entity that IS on grid.
+  const decision = decideCompanionAction(
+    REQUEST,
+    obs({
+      snapshot: gridWithEntities([TACKLE]),
+      fleetTargetTags: new Map([[999999, "A"]]),
+      fleetBroadcast: fleetBroadcast("Target", TACKLE),
+    }),
+  );
+  assert.deepEqual(decision.action, { kind: "lock", targetID: TACKLE });
+  assert.equal(decision.followingOrderFrom, "broadcast");
+});
+
+test("a Target broadcast locks the item it names, when it is on grid", () => {
+  const decision = decideCompanionAction(
+    REQUEST,
+    obs({
+      snapshot: gridWithEntities([TACKLE]),
+      fleetTargetTags: null,
+      fleetBroadcast: fleetBroadcast("Target", TACKLE),
+    }),
+  );
+  assert.deepEqual(decision.action, { kind: "lock", targetID: TACKLE });
+  assert.equal(decision.followingOrderFrom, "broadcast");
+});
+
+test("a tag BEATS a simultaneous conflicting Target broadcast — authority, not freshness", () => {
+  // ⚠ This is the ordering that looks backwards. The broadcast is the fresher
+  // act, but `setFleetTargetTag` refuses anyone who is not a fleet commander
+  // while `sendBroadcast` checks only membership — a tag that exists is
+  // provably the FC's, a broadcast could be any squad member's. The tag must
+  // win even though the broadcast points at a DIFFERENT, equally on-grid item.
+  const decision = decideCompanionAction(
+    REQUEST,
+    obs({
+      snapshot: gridWithEntities([TACKLE, OTHER]),
+      fleetTargetTags: new Map([[TACKLE, "A"]]),
+      fleetBroadcast: fleetBroadcast("Target", OTHER),
+    }),
+  );
+  assert.deepEqual(decision.action, { kind: "lock", targetID: TACKLE });
+  assert.equal(decision.followingOrderFrom, "tag");
+});
+
+test("an AlignTo broadcast aligns to the item it names", () => {
+  const decision = decideCompanionAction(
+    REQUEST,
+    obs({
+      snapshot: gridWithEntities([LOGI]),
+      fleetTargetTags: null,
+      fleetBroadcast: fleetBroadcast("AlignTo", LOGI),
+    }),
+  );
+  assert.deepEqual(decision.action, { kind: "align", targetID: LOGI });
+  assert.equal(decision.followingOrderFrom, "broadcast");
+  // Never the wire name verbatim — the panel shows plain words.
+  assert.ok(!decision.lastOrderHeard?.includes("AlignTo"));
+});
+
+test("obeys without \"tag\" ignores a tag on grid", () => {
+  const request: FleetCompanionRequest = { ...REQUEST, obeys: ["broadcast"] };
+  const decision = decideCompanionAction(
+    request,
+    obs({ snapshot: gridWithEntities([TACKLE]), fleetTargetTags: new Map([[TACKLE, "A"]]) }),
+  );
+  assert.notEqual(decision.action.kind, "lock");
+  assert.equal(decision.phase, "Standing by");
+});
+
+test("obeys without \"broadcast\" ignores a Target broadcast", () => {
+  const request: FleetCompanionRequest = { ...REQUEST, obeys: ["tag"] };
+  const decision = decideCompanionAction(
+    request,
+    obs({
+      snapshot: gridWithEntities([TACKLE]),
+      fleetTargetTags: null,
+      fleetBroadcast: fleetBroadcast("Target", TACKLE),
+    }),
+  );
+  assert.notEqual(decision.action.kind, "lock");
+  assert.equal(decision.phase, "Standing by");
+});
+
+test("an already-locked target is not re-locked", () => {
+  const decision = decideCompanionAction(
+    REQUEST,
+    obs({
+      snapshot: gridWithEntities([TACKLE]),
+      fleetTargetTags: new Map([[TACKLE, "A"]]),
+      lockedTargetIDs: [TACKLE],
+    }),
+  );
+  assert.equal(decision.action.kind, "wait");
+  assert.equal(decision.phase, "Obeying fleet");
+  assert.equal(decision.followingOrderFrom, "tag");
+  assert.match(decision.why, /already locked/i);
+});
+
+test("a lock the SERVER refused is retried, because the real list is consulted", () => {
+  // ⚠ THE REGRESSION THIS PINS IS PERMANENT AND SILENT. A lock is issued
+  // optimistically; the server can refuse it (out of range, already at max
+  // targets, the ship died). If the already-locked check trusted this loop's
+  // own memory of what it last ASKED for, a refused lock would read as done
+  // for the rest of the run and the pilot would sit next to the fleet's
+  // primary never locking it, with nothing in the readout saying why.
+  //
+  // So `obs.lockedTargetIDs` -- the authoritative list, re-read every tick --
+  // wins over memory whenever it is available. An empty array is a real
+  // "nothing is locked" answer and must be trusted as one.
+  const memory = { ...freshLadderMemory(), lastLockIssuedFor: TACKLE };
+  const decision = decideCompanionAction(
+    REQUEST,
+    obs({
+      snapshot: gridWithEntities([TACKLE]),
+      fleetTargetTags: new Map([[TACKLE, "A"]]),
+      lockedTargetIDs: [],
+    }),
+    memory,
+  );
+  assert.deepEqual(decision.action, { kind: "lock", targetID: TACKLE });
+});
+
+test("obeying the fleet is skipped entirely once the supervision gate has failed", () => {
+  // ⚠ An abandoned pilot getting safe must not start locking things. Nobody is
+  // left to have given the order in the first place, and the whole point of
+  // rung 2 sitting ABOVE this one is that it never runs while abandoned.
+  const decision = decideCompanionAction(
+    REQUEST,
+    alone({ snapshot: gridWithEntities([TACKLE]), fleetTargetTags: new Map([[TACKLE, "A"]]) }),
+  );
+  assert.notEqual(decision.action.kind, "lock");
+  assert.notEqual(decision.phase, "Obeying fleet");
+  // The abandonment protocol ran instead — no station and no safe spot here,
+  // so it stops the run rather than doing anything with the tagged ship.
+  assert.ok(decision.stop);
+  assert.match(decision.stop as string, /no safe spot/i);
+});
+
+// --- rung 3: the Heal family --------------------------------------------------
+//
+// HealShield/HealArmor/HealCapacitor/HealTarget. Checked BEFORE the tag and
+// the Target broadcast (a rep call is time-critical; a tag is standing
+// state), but an already-satisfied Heal falls through to them instead of
+// parking the tick — repairing and locking are not mutually exclusive for
+// the same ship. See `decideFleetOrders`'s header for the full reasoning.
+
+/** A fleet-mate's ship, distinct from the TACKLE/LOGI/OTHER combat targets. */
+const ALLY = 200004;
+const SHIELD_MODULE = 11200002;
+const ARMOR_MODULE = 11200003;
+const CAPACITOR_MODULE = 11200004;
+
+/**
+ * A grid carrying one or more ships plus this ship's own `activeModuleIDs` —
+ * the authoritative "what is cycling" read the Heal rungs consult. `null`
+ * means unreadable, matching `SpaceShipStatus.activeModuleIDs`'s own
+ * null-means-unknown contract.
+ */
+function gridWithShipsAndActive(
+  itemIDs: readonly number[],
+  activeModuleIDs: readonly number[] | null = [],
+): SpaceSnapshot {
+  const entities = [
+    { itemID: 1, kind: "ship", isSelf: true, position: { x: 0, y: 0, z: 0 }, radius: 0, mode: null },
+    ...itemIDs.map((itemID, index) => ({
+      itemID,
+      kind: "ship",
+      isSelf: false,
+      position: { x: (index + 1) * 10_000, y: 0, z: 0 },
+      radius: 0,
+      mode: null,
+    })),
+  ];
+  return {
+    inSpace: true,
+    ship: { position: { x: 0, y: 0, z: 0 }, radius: 0, mode: null, activeModuleIDs },
+    entities,
+  } as unknown as SpaceSnapshot;
+}
+
+test("HealShield activates a fitted remote SHIELD module on the ship the call names", () => {
+  const request: FleetCompanionRequest = { ...REQUEST, remoteShieldModuleIDs: [SHIELD_MODULE] };
+  const decision = decideCompanionAction(
+    request,
+    obs({ snapshot: gridWithShipsAndActive([ALLY]), fleetBroadcast: fleetBroadcast("HealShield", ALLY) }),
+  );
+  assert.deepEqual(decision.action, { kind: "activate", moduleID: SHIELD_MODULE, targetID: ALLY });
+  assert.equal(decision.phase, "Obeying fleet");
+  assert.equal(decision.followingOrderFrom, "broadcast");
+});
+
+test("HealArmor activates the ARMOUR list, never the shield one — families do not cross", () => {
+  const request: FleetCompanionRequest = {
+    ...REQUEST,
+    remoteShieldModuleIDs: [SHIELD_MODULE],
+    remoteArmorModuleIDs: [ARMOR_MODULE],
+  };
+  const decision = decideCompanionAction(
+    request,
+    obs({ snapshot: gridWithShipsAndActive([ALLY]), fleetBroadcast: fleetBroadcast("HealArmor", ALLY) }),
+  );
+  assert.deepEqual(decision.action, { kind: "activate", moduleID: ARMOR_MODULE, targetID: ALLY });
+});
+
+test("HealCapacitor activates the CAPACITOR list", () => {
+  const request: FleetCompanionRequest = { ...REQUEST, remoteCapacitorModuleIDs: [CAPACITOR_MODULE] };
+  const decision = decideCompanionAction(
+    request,
+    obs({ snapshot: gridWithShipsAndActive([ALLY]), fleetBroadcast: fleetBroadcast("HealCapacitor", ALLY) }),
+  );
+  assert.deepEqual(decision.action, { kind: "activate", moduleID: CAPACITOR_MODULE, targetID: ALLY });
+});
+
+test("HealTarget draws on whichever remote-repair family this pilot has fitted", () => {
+  // Real fleet logi use HealTarget to say "focus on THIS ship" without
+  // saying which layer is hurt — this pilot brings whatever it has.
+  const request: FleetCompanionRequest = { ...REQUEST, remoteArmorModuleIDs: [ARMOR_MODULE] };
+  const decision = decideCompanionAction(
+    request,
+    obs({ snapshot: gridWithShipsAndActive([ALLY]), fleetBroadcast: fleetBroadcast("HealTarget", ALLY) }),
+  );
+  assert.deepEqual(decision.action, { kind: "activate", moduleID: ARMOR_MODULE, targetID: ALLY });
+});
+
+test("a Heal call with no matching module fitted falls through — a logi-less pilot still flies", () => {
+  const decision = decideCompanionAction(
+    REQUEST, // no remote modules fitted at all
+    obs({ snapshot: gridWithShipsAndActive([ALLY]), fleetBroadcast: fleetBroadcast("HealShield", ALLY) }),
+  );
+  assert.notEqual(decision.action.kind, "activate");
+  assert.equal(decision.phase, "Standing by");
+});
+
+test("a Heal call for a ship OFF this grid falls through rather than waiting", () => {
+  const request: FleetCompanionRequest = { ...REQUEST, remoteShieldModuleIDs: [SHIELD_MODULE] };
+  const decision = decideCompanionAction(
+    request,
+    obs({
+      // ALLY, the ship the call names, is not among these entities.
+      snapshot: gridWithShipsAndActive([TACKLE]),
+      fleetBroadcast: fleetBroadcast("HealShield", ALLY),
+    }),
+  );
+  assert.notEqual(decision.action.kind, "activate");
+  assert.equal(decision.phase, "Standing by");
+});
+
+test("a module the server confirms is already running on this target is not re-activated", () => {
+  const request: FleetCompanionRequest = { ...REQUEST, remoteShieldModuleIDs: [SHIELD_MODULE] };
+  const first = decideCompanionAction(
+    request,
+    obs({
+      snapshot: gridWithShipsAndActive([ALLY], []),
+      fleetBroadcast: fleetBroadcast("HealShield", ALLY),
+    }),
+  );
+  assert.deepEqual(first.action, { kind: "activate", moduleID: SHIELD_MODULE, targetID: ALLY });
+  // The server now shows it cycling, and this ladder's own memory agrees it
+  // was the one that aimed it at ALLY — nothing new to start.
+  const second = decideCompanionAction(
+    request,
+    obs({
+      snapshot: gridWithShipsAndActive([ALLY], [SHIELD_MODULE]),
+      fleetBroadcast: fleetBroadcast("HealShield", ALLY),
+    }),
+    first.memory,
+  );
+  assert.notEqual(second.action.kind, "activate");
+});
+
+test("with no authoritative module read, the ladder falls back to its OWN memory of what it issued", () => {
+  const request: FleetCompanionRequest = { ...REQUEST, remoteShieldModuleIDs: [SHIELD_MODULE] };
+  const first = decideCompanionAction(
+    request,
+    obs({
+      snapshot: gridWithShipsAndActive([ALLY], null),
+      fleetBroadcast: fleetBroadcast("HealShield", ALLY),
+    }),
+  );
+  assert.deepEqual(first.action, { kind: "activate", moduleID: SHIELD_MODULE, targetID: ALLY });
+  const second = decideCompanionAction(
+    request,
+    obs({
+      snapshot: gridWithShipsAndActive([ALLY], null),
+      fleetBroadcast: fleetBroadcast("HealShield", ALLY),
+    }),
+    first.memory,
+  );
+  assert.notEqual(second.action.kind, "activate");
+});
+
+test("the heal call moving to a DIFFERENT ship re-issues the module at the new one", () => {
+  const request: FleetCompanionRequest = { ...REQUEST, remoteShieldModuleIDs: [SHIELD_MODULE] };
+  const OTHER_ALLY = 200005;
+  const first = decideCompanionAction(
+    request,
+    obs({
+      snapshot: gridWithShipsAndActive([ALLY], [SHIELD_MODULE]),
+      fleetBroadcast: fleetBroadcast("HealShield", ALLY),
+    }),
+  );
+  const second = decideCompanionAction(
+    request,
+    obs({
+      snapshot: gridWithShipsAndActive([OTHER_ALLY], [SHIELD_MODULE]),
+      fleetBroadcast: fleetBroadcast("HealShield", OTHER_ALLY),
+    }),
+    first.memory,
+  );
+  assert.deepEqual(second.action, { kind: "activate", moduleID: SHIELD_MODULE, targetID: OTHER_ALLY });
+});
+
+test("a fresh Heal call is answered even while a tag also stands — urgency wins this tick", () => {
+  const request: FleetCompanionRequest = { ...REQUEST, remoteShieldModuleIDs: [SHIELD_MODULE] };
+  const decision = decideCompanionAction(
+    request,
+    obs({
+      snapshot: gridWithShipsAndActive([TACKLE, ALLY]),
+      fleetTargetTags: new Map([[TACKLE, "A"]]),
+      fleetBroadcast: fleetBroadcast("HealShield", ALLY),
+    }),
+  );
+  assert.deepEqual(decision.action, { kind: "activate", moduleID: SHIELD_MODULE, targetID: ALLY });
+});
+
+test("once the heal is already running, the SAME tick's tag is obeyed — not mutually exclusive", () => {
+  const request: FleetCompanionRequest = { ...REQUEST, remoteShieldModuleIDs: [SHIELD_MODULE] };
+  const memory: CompanionLadderMemory = {
+    ...freshLadderMemory(),
+    lastHealTargetID: ALLY,
+    lastHealModuleIDs: [SHIELD_MODULE],
+  };
+  const decision = decideCompanionAction(
+    request,
+    obs({
+      snapshot: gridWithShipsAndActive([TACKLE, ALLY], [SHIELD_MODULE]),
+      fleetTargetTags: new Map([[TACKLE, "A"]]),
+      fleetBroadcast: fleetBroadcast("HealShield", ALLY),
+    }),
+    memory,
+  );
+  assert.deepEqual(decision.action, { kind: "lock", targetID: TACKLE });
+  assert.equal(decision.followingOrderFrom, "tag");
+});
+
+// --- rung 3: TravelTo ---------------------------------------------------------
+
+/** Synthetic solar system ids — no on-grid meaning, just a destination. */
+const SYSTEM_B = 30000001;
+const SYSTEM_C = 30000002;
+
+test("a TravelTo broadcast starts the route once, and not again for the same system", () => {
+  const first = decideCompanionAction(
+    REQUEST,
+    obs({ snapshot: gridWithEntities([]), fleetBroadcast: fleetBroadcast("TravelTo", SYSTEM_B) }),
+  );
+  assert.deepEqual(first.action, { kind: "travelTo", systemID: SYSTEM_B });
+  assert.equal(first.memory.lastRoutedSystemID, SYSTEM_B);
+  assert.equal(first.followingOrderFrom, "broadcast");
+
+  const second = decideCompanionAction(
+    REQUEST,
+    obs({ snapshot: gridWithEntities([]), fleetBroadcast: fleetBroadcast("TravelTo", SYSTEM_B) }),
+    first.memory,
+  );
+  assert.notEqual(second.action.kind, "travelTo");
+});
+
+test("a TravelTo broadcast naming a NEW system routes again", () => {
+  const first = decideCompanionAction(
+    REQUEST,
+    obs({ snapshot: gridWithEntities([]), fleetBroadcast: fleetBroadcast("TravelTo", SYSTEM_B) }),
+  );
+  const second = decideCompanionAction(
+    REQUEST,
+    obs({ snapshot: gridWithEntities([]), fleetBroadcast: fleetBroadcast("TravelTo", SYSTEM_C) }),
+    first.memory,
+  );
+  assert.deepEqual(second.action, { kind: "travelTo", systemID: SYSTEM_C });
+});
+
+// --- rung 3: JumpTo (honest partial) ------------------------------------------
+//
+// `itemID` is a single stargate; `api.jump` needs the gate on the far side
+// too, which nothing available to this pure, synchronous ladder can supply
+// without inventing it. So this rung gets the ship TO the gate and holds —
+// see `decideFleetOrders`'s own comment for the full reasoning.
+
+const GATE = 200006;
+
+/** A grid carrying one stargate at a given surface distance (or none). */
+function gridWithGate(distanceM: number | null): SpaceSnapshot {
+  const entities = [
+    { itemID: 1, kind: "ship", isSelf: true, position: { x: 0, y: 0, z: 0 }, radius: 0, mode: null },
+  ];
+  if (distanceM !== null) {
+    entities.push({
+      itemID: GATE,
+      kind: "stargate",
+      isSelf: false,
+      position: { x: distanceM, y: 0, z: 0 },
+      radius: 0,
+      mode: null,
+    });
+  }
+  return {
+    inSpace: true,
+    ship: { position: { x: 0, y: 0, z: 0 }, radius: 0, mode: null },
+    entities,
+  } as unknown as SpaceSnapshot;
+}
+
+test("a JumpTo broadcast warps to the named gate when it is far", () => {
+  const decision = decideCompanionAction(
+    REQUEST,
+    obs({ snapshot: gridWithGate(200_000), fleetBroadcast: fleetBroadcast("JumpTo", GATE) }),
+  );
+  assert.deepEqual(decision.action, { kind: "warp", targetID: GATE });
+  assert.equal(decision.followingOrderFrom, "broadcast");
+});
+
+test("a JumpTo broadcast closes in when too close for the server to warp to", () => {
+  const decision = decideCompanionAction(
+    REQUEST,
+    obs({ snapshot: gridWithGate(50_000), fleetBroadcast: fleetBroadcast("JumpTo", GATE) }),
+  );
+  assert.deepEqual(decision.action, { kind: "approach", targetID: GATE });
+  assert.equal(decision.memory.closingOn, GATE);
+});
+
+test("a JumpTo broadcast HOLDS at jump range — it never invents a second gate id", () => {
+  const decision = decideCompanionAction(
+    REQUEST,
+    obs({ snapshot: gridWithGate(1_000), fleetBroadcast: fleetBroadcast("JumpTo", GATE) }),
+  );
+  assert.equal(decision.action.kind, "wait");
+  assert.equal(decision.phase, "Obeying fleet");
+  assert.equal(decision.followingOrderFrom, "broadcast");
+  assert.match(decision.why, /holding here/i);
+});
+
+test("a JumpTo broadcast for a gate OFF this grid falls through", () => {
+  const decision = decideCompanionAction(
+    REQUEST,
+    obs({ snapshot: gridWithGate(null), fleetBroadcast: fleetBroadcast("JumpTo", GATE) }),
+  );
+  assert.notEqual(decision.action.kind, "warp");
+  assert.equal(decision.phase, "Standing by");
+});
+
+// --- rung 3: everything above is skipped once abandonment starts -------------
+
+test("Heal and TravelTo are ALSO skipped once the supervision gate has failed", () => {
+  const request: FleetCompanionRequest = { ...REQUEST, remoteShieldModuleIDs: [SHIELD_MODULE] };
+  const healDecision = decideCompanionAction(
+    request,
+    alone({ snapshot: gridWithShipsAndActive([ALLY]), fleetBroadcast: fleetBroadcast("HealShield", ALLY) }),
+  );
+  assert.notEqual(healDecision.action.kind, "activate");
+  assert.notEqual(healDecision.phase, "Obeying fleet");
+
+  const travelDecision = decideCompanionAction(
+    REQUEST,
+    alone({ snapshot: gridWithEntities([]), fleetBroadcast: fleetBroadcast("TravelTo", SYSTEM_B) }),
+  );
+  assert.notEqual(travelDecision.action.kind, "travelTo");
+  assert.notEqual(travelDecision.phase, "Obeying fleet");
+});
+
+// --- the player-facing surface ----------------------------------------------
+
+test("no player-facing string in this module carries a decorative non-ASCII character", () => {
+  // ⚠ THIS SCANS THE SOURCE, NOT THE LADDER'S OUTPUT, ON PURPOSE. The panel
+  // suite already has an ASCII check, but it renders against hand-written
+  // fixture stores -- so it proves the FIXTURES are clean and never sees a
+  // single `why` this ladder actually produces. Eight real strings slipped
+  // past it that way, including the warp-yield line that fires on essentially
+  // every fleet warp.
+  //
+  // Code COMMENTS are exempt and this file uses non-ASCII in them freely, so
+  // they are stripped before the scan. Only string literals are judged.
+  const source = readFileSync(new URL("./fleetCompanionLoop.ts", import.meta.url), "utf8");
+  const blockComment = new RegExp("/\\*[\\s\\S]*?\\*/", "g");
+  const code = source
+    .replace(blockComment, "")
+    .split("\n")
+    .map((line) => {
+      const comment = line.indexOf("//");
+      return comment < 0 ? line : line.slice(0, comment);
+    })
+    .join("\n");
+
+  const literal = new RegExp('"((?:[^"\\\\\\n]|\\\\.)*)"', "g");
+  const offenders: string[] = [];
+  for (const match of code.matchAll(literal)) {
+    const value = match[1] ?? "";
+    if ([...value].some((character) => (character.codePointAt(0) ?? 0) > 127)) {
+      offenders.push(value);
+    }
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    "player-facing strings must be plain ASCII; an em-dash is the usual culprit",
+  );
+});
+
+test("nothing this ladder says about a Target call claims the pilot is shooting", () => {
+  // ⚠ THE COMPANION HAS NO WEAPONS RUNG. Answering a Target call means LOCKING
+  // the ship, which is the real first half of answering a primary and not a
+  // stand-in for the second. A readout saying "shoot" or "attack" promises
+  // something the pilot cannot do, and a player would then read a pilot
+  // sitting there holding a lock as broken rather than as working exactly as
+  // built.
+  const decision = decideCompanionAction(
+    REQUEST,
+    obs({
+      snapshot: gridWithEntities([TACKLE]),
+      fleetBroadcast: fleetBroadcast("Target", TACKLE),
+    }),
+  );
+  assert.equal(decision.action.kind, "lock");
+  const said = `${decision.why} ${decision.lastOrderHeard ?? ""}`;
+  assert.doesNotMatch(said, /shoot|shooting|fir(e|ing)|attack/i, said);
 });

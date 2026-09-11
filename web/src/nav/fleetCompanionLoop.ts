@@ -39,9 +39,14 @@ import { REPAIR_CAP_FLOOR } from "./scriptDecide.ts";
 import {
   decideCloseIn,
   measureSpace,
+  MAX_STARGATE_JUMPING_DISTANCE_M,
   STATION_DOCKING_RADIUS_M,
   type SpaceMeasurement,
 } from "./autopilotLoop.ts";
+// The kill-order authority (rung 3, "obeying the fleet"). Imported rather than
+// re-derived for the same reason the get-safe helpers above are: one answer to
+// "where does this tag rank", shared with the combat priority list.
+import { fleetTagRank } from "./targetPriority.ts";
 import type { SpaceEntity } from "../store/types.ts";
 
 /** The run states, mirroring the other loops exactly (`MiningBotRunState`). */
@@ -91,6 +96,22 @@ export interface FleetCompanionRequest {
    * guessed: a wrong guess cycles the wrong module.
    */
   readonly defenseModuleIDs: readonly number[];
+  /**
+   * The player's OWN pick of fitted REMOTE shield-repair modules, by item id
+   * — never guessed, for the same reason `defenseModuleIDs` above is not: a
+   * wrong guess cycles the wrong module. Answers a `HealShield` broadcast
+   * (and, alongside the other two lists below, a `HealTarget` one — see
+   * `healModuleCandidates`'s own comment for why that call draws on all
+   * three). Empty means this pilot has no shield remote-rep fitted, and a
+   * `HealShield` call simply falls through unanswered.
+   */
+  readonly remoteShieldModuleIDs: readonly number[];
+  /** As `remoteShieldModuleIDs`, for armour — a shield booster cannot repair
+   *  armour, so `HealArmor` draws on this list and never the shield one. */
+  readonly remoteArmorModuleIDs: readonly number[];
+  /** As `remoteShieldModuleIDs`, for capacitor transfers — `HealCapacitor`
+   *  draws on this list alone, for the same reason. */
+  readonly remoteCapacitorModuleIDs: readonly number[];
   /** Remaining fraction (0-1) of any health layer that starts a flee. */
   readonly fleeHealthFloor: number;
   /**
@@ -192,6 +213,9 @@ export const MAX_DRONE_HOLD_OFF_SECONDS = 300;
 export const DEFAULT_FLEET_COMPANION_REQUEST: FleetCompanionRequest = Object.freeze({
   role: "dps",
   defenseModuleIDs: Object.freeze([]),
+  remoteShieldModuleIDs: Object.freeze([]),
+  remoteArmorModuleIDs: Object.freeze([]),
+  remoteCapacitorModuleIDs: Object.freeze([]),
   fleeHealthFloor: 0.3,
   // Not a guess and not a placeholder: the constant the script runner already
   // uses to switch a repairer off, with the same reasoning ("an empty capacitor
@@ -222,12 +246,6 @@ export const DEFAULT_FLEET_COMPANION_REQUEST: FleetCompanionRequest = Object.fre
  * They stay EMPTY in phase 0; each is filled by the phase that needs it.
  */
 export interface FleetCompanionObservation extends ScriptObservation {
-  /**
-   * Fleet target tags, itemID -> tag. `null` means never received; an empty map
-   * means received and nothing is tagged. The distinction decides whether a
-   * tagger may pick a letter at all.
-   */
-  readonly fleetTargetTags: ReadonlyMap<number, string> | null;
   /**
    * Whether THIS pilot's tag write can land, from the fleet roster's role/job.
    *
@@ -299,10 +317,15 @@ export interface FleetCompanionDeps {
 /**
  * What one tick decided to do.
  *
- * Everything below `wait` belongs to ONE behaviour — the abandonment protocol
- * (decision 5). The companion's ordinary work still decides `wait` and issues
- * nothing; these exist because a companion left without a human has somewhere
- * to be, and getting there is the one thing it may do unsupervised.
+ * `wait` is what most ticks decide — nothing new to do. Below it sit two
+ * unrelated groups, each belonging to its own rung:
+ *
+ *   • the abandonment protocol (decision 5, rung 2) — warp / approach / dock /
+ *     warpToBookmark / leaveFleet / acceptFleetInvite — the one thing a
+ *     companion left without a human may do unsupervised.
+ *   • obeying the fleet (rung 3) — lock / align / activate / travelTo —
+ *     answering a fleet tag or broadcast while a human IS supervising. See
+ *     `decideFleetOrders`.
  */
 export type FleetCompanionAction =
   | { readonly kind: "wait" }
@@ -313,7 +336,28 @@ export type FleetCompanionAction =
   /** The fallback when no station is on grid: the operator's own safe spot. */
   | { readonly kind: "warpToBookmark"; readonly bookmarkID: number }
   | { readonly kind: "leaveFleet" }
-  | { readonly kind: "acceptFleetInvite"; readonly fleetID: number };
+  | { readonly kind: "acceptFleetInvite"; readonly fleetID: number }
+  /**
+   * Obeying the fleet (rung 3): a tag or a `Target` broadcast, locked. Locking
+   * is the whole of what this rung does with a target — there is no weapons
+   * rung yet, so this is never a stand-in for shooting.
+   */
+  | { readonly kind: "lock"; readonly targetID: number }
+  /** Obeying the fleet (rung 3): an `AlignTo` broadcast. */
+  | { readonly kind: "align"; readonly targetID: number }
+  /**
+   * Obeying the fleet (rung 3): a Heal broadcast, answered with a fitted
+   * remote-repair module aimed at the ship named. `repeat: -1` (run
+   * continuously) is this codebase's own "keep cycling" — see the DSL's
+   * `activate` case in flow.ts.
+   */
+  | { readonly kind: "activate"; readonly moduleID: number; readonly targetID: number }
+  /**
+   * Obeying the fleet (rung 3): a `TravelTo` broadcast — a solar system, not
+   * an on-grid object, so this hands off to the SHARED autopilot
+   * (flow.ts's `startRoute`) rather than warping or approaching itself.
+   */
+  | { readonly kind: "travelTo"; readonly systemID: number };
 
 export interface FleetCompanionProgress {
   readonly status: FleetCompanionRunState;
@@ -437,10 +481,41 @@ export interface CompanionLadderMemory {
   readonly abandonment: CompanionAbandonment | null;
   /** The target of an approach this loop started, for `decideCloseIn`. */
   readonly closingOn: number | null;
+  /**
+   * The target rung 3 last issued a `lock` call for — the fallback for
+   * `isAlreadyLocked` when `obs.lockedTargetIDs` itself is unreadable. See
+   * that function's own comment for why the authoritative read still wins
+   * whenever it is available.
+   */
+  readonly lastLockIssuedFor: number | null;
+  /**
+   * The ship rung 3 last aimed a Heal-family `activate` at, and which fitted
+   * modules it has issued for THAT ship. This is the fallback
+   * `isHealModuleAlreadyRunning` uses when `activeModuleIDs` cannot say —
+   * nothing in a space snapshot exposes a remote-repair module's target, so
+   * the server confirming a module is cycling is not by itself proof it is
+   * cycling on the ship THIS tick's call names. Reset to a fresh list the
+   * moment the call names a different ship.
+   */
+  readonly lastHealTargetID: number | null;
+  readonly lastHealModuleIDs: readonly number[];
+  /**
+   * The solar system rung 3 last issued a `travelTo` route to, so a standing
+   * `TravelTo` broadcast does not restart the shared autopilot every tick.
+   */
+  readonly lastRoutedSystemID: number | null;
 }
 
 export function freshLadderMemory(): CompanionLadderMemory {
-  return { lastSupervisorIDs: [], abandonment: null, closingOn: null };
+  return {
+    lastSupervisorIDs: [],
+    abandonment: null,
+    closingOn: null,
+    lastLockIssuedFor: null,
+    lastHealTargetID: null,
+    lastHealModuleIDs: [],
+    lastRoutedSystemID: null,
+  };
 }
 
 export interface CompanionDecision {
@@ -460,6 +535,16 @@ export interface CompanionDecision {
    * pilot is flyable from a tab again. A pause would hold the ship forever.
    */
   readonly stop?: string;
+  /**
+   * Which authority this decision came from, for the readout. Omitted (never
+   * `null` here — `tick()` supplies the default) by every rung except rung 3;
+   * the controller reads that omission as `"own-ladder"`, which is the honest
+   * answer for the warp yield, the supervision gate, the abandonment protocol
+   * and "Standing by" alike — none of them are obeying an external order.
+   */
+  readonly followingOrderFrom?: "tag" | "broadcast";
+  /** Short plain words for the panel — never the broadcast's wire name. */
+  readonly lastOrderHeard?: string;
 }
 
 /**
@@ -544,6 +629,11 @@ function nearestOf(
  *     companion to boss. So what this catches is not merely "kept flying
  *     unsupervised"; it is "was made fleet commander, and its tag writes
  *     started landing", in a fleet nobody is in.
+ *
+ * ⚠ RUNG 3 IS OBEYING THE FLEET, BELOW THE SUPERVISION GATE AND ABOVE
+ * "Standing by". Unlike rung 2 it IS an order source (see
+ * `decideFleetOrders`'s own header for the tag-over-broadcast reasoning and
+ * why an off-grid call is not an order for this pilot at all).
  */
 export function decideCompanionAction(
   request: FleetCompanionRequest,
@@ -563,7 +653,7 @@ export function decideCompanionAction(
         : memory;
     return waiting(
       "In warp",
-      "The fleet is warping this ship — nothing is decided until it lands.",
+      "The fleet is warping this ship. Nothing is decided until it lands.",
       next,
     );
   }
@@ -592,11 +682,24 @@ export function decideCompanionAction(
     lastSupervisorIDs: [...supervisors],
     abandonment: null,
     closingOn: memory.closingOn,
+    lastLockIssuedFor: memory.lastLockIssuedFor,
+    lastHealTargetID: memory.lastHealTargetID,
+    lastHealModuleIDs: memory.lastHealModuleIDs,
+    lastRoutedSystemID: memory.lastRoutedSystemID,
   };
 
-  // Phases 2-8 add their rungs here, in the order documented in
+  const obeying = decideFleetOrders(request, obs, supervised);
+  if (obeying !== null) {
+    return obeying;
+  }
+
+  // Phases 4-8 add further rungs here, in the order documented in
   // docs/fleet-companion-implementation.md, "The rung ladder".
-  return waiting("Standing by", "No companion behaviour is built yet.", supervised);
+  return waiting(
+    "Standing by",
+    "No fleet order to obey right now, and no further companion behaviour is built yet.",
+    supervised,
+  );
 }
 
 /**
@@ -650,7 +753,7 @@ function decideAbandonment(
     return {
       action: { kind: "leaveFleet" },
       phase: "Abandoned",
-      why: "Safe, and nobody is left to fly with — leaving the fleet.",
+      why: "Safe, and nobody is left to fly with, so this pilot is leaving the fleet.",
       memory: mem,
     };
   }
@@ -765,7 +868,7 @@ function getSafe(
     return {
       action: { kind: "warpToBookmark", bookmarkID },
       phase: "Getting safe",
-      why: "No station in view — warping to the safe spot.",
+      why: "No station in view, so this pilot is warping to the safe spot.",
       memory: { ...mem, abandonment: { ...running, safeSpotWarpIssued: true } },
     };
   }
@@ -773,6 +876,488 @@ function getSafe(
   // do NOT give up: the warp may simply not have started yet, and the
   // thirty-minute bound above is already the answer to one that never does.
   return waiting("Getting safe", "Waiting for the warp to the safe spot to start.", mem);
+}
+
+/** An entity present on THIS grid, or null when the snapshot does not carry it. */
+function entityOnGrid(itemID: number, entities: readonly SpaceEntity[]): SpaceEntity | null {
+  return entities.find((entity) => entity.itemID === itemID) ?? null;
+}
+
+/**
+ * The best-ranked TAGGED entity on grid, by `fleetTagRank` — nearest breaks a
+ * tie between two entities carrying tags of equal rank (an unrecognised tag,
+ * or two hand-typed tags that happen to collide; see `fleetTagRank`'s own
+ * comment on why an unrecognised tag still gets a finite rank rather than
+ * being dropped).
+ */
+function bestTaggedEntity(
+  tags: ReadonlyMap<number, string>,
+  entities: readonly SpaceEntity[],
+  measurement: SpaceMeasurement | null,
+): SpaceEntity | null {
+  let bestRank = Number.POSITIVE_INFINITY;
+  let candidates: SpaceEntity[] = [];
+  for (const entity of entities) {
+    const tag = tags.get(entity.itemID);
+    if (tag === undefined) {
+      continue;
+    }
+    const rank = fleetTagRank(tag);
+    if (rank < bestRank) {
+      bestRank = rank;
+      candidates = [entity];
+    } else if (rank === bestRank) {
+      candidates.push(entity);
+    }
+  }
+  return candidates.length === 0 ? null : nearestOf(candidates, measurement);
+}
+
+/**
+ * Whether `targetID` is already locked.
+ *
+ * ⚠ THE AUTHORITATIVE READ WINS WHENEVER IT IS READABLE AT ALL. `obs.lockedTargetIDs`
+ * comes straight off the server's own lock list, the same authority
+ * `miningBotLoop.ts`'s `getLockedTargetIDs` trusts over its own memory — an
+ * EMPTY array is a real "nothing locked" answer, not a failed read, so it is
+ * trusted exactly like a non-empty one. Only `null`/`undefined` (unreadable,
+ * or simply not wired up by this host's `observe()` yet) falls back to the
+ * ladder's own memory of the last target IT issued a `lock` call for — the
+ * same "compare and stamp" `closingOn` already uses, so a target whose lock is
+ * merely in flight is not re-issued every tick just because this tick's
+ * authoritative read did not arrive.
+ */
+function isAlreadyLocked(
+  targetID: number,
+  lockedTargetIDs: readonly number[] | null | undefined,
+  memory: CompanionLadderMemory,
+): boolean {
+  if (lockedTargetIDs !== null && lockedTargetIDs !== undefined) {
+    return lockedTargetIDs.includes(targetID);
+  }
+  return memory.lastLockIssuedFor === targetID;
+}
+
+/** One rung-3 decision: lock `targetID`, or hold if it is already locked. */
+function lockOrHold(
+  targetID: number,
+  source: "tag" | "broadcast",
+  heard: string,
+  why: string,
+  obs: FleetCompanionObservation,
+  memory: CompanionLadderMemory,
+): CompanionDecision {
+  if (isAlreadyLocked(targetID, obs.lockedTargetIDs, memory)) {
+    return {
+      action: WAIT,
+      phase: "Obeying fleet",
+      why: why + " Already locked.",
+      memory,
+      followingOrderFrom: source,
+      lastOrderHeard: heard,
+    };
+  }
+  return {
+    action: { kind: "lock", targetID },
+    phase: "Obeying fleet",
+    why: why + " Locking it.",
+    memory: { ...memory, lastLockIssuedFor: targetID },
+    followingOrderFrom: source,
+    lastOrderHeard: heard,
+  };
+}
+
+/** The four Heal broadcast names, narrowed out of `FleetBroadcastName`. */
+type HealBroadcastName = "HealShield" | "HealArmor" | "HealCapacitor" | "HealTarget";
+
+function asHealBroadcastName(name: string | undefined): HealBroadcastName | null {
+  return name === "HealShield" ||
+    name === "HealArmor" ||
+    name === "HealCapacitor" ||
+    name === "HealTarget"
+    ? name
+    : null;
+}
+
+/**
+ * Which of this pilot's fitted REMOTE repair modules answer a given Heal
+ * broadcast.
+ *
+ * `HealShield`/`HealArmor`/`HealCapacitor` each name their own layer, so each
+ * draws from exactly one list — a shield booster cannot repair armour, and
+ * reaching across families would cycle a module that does nothing for the
+ * layer the call is actually about.
+ *
+ * `HealTarget` is different, and deliberately not treated as a fourth family
+ * of its own: real fleet logi use it to say "concentrate on THIS ship"
+ * without saying which layer is hurt — that judgement is left to whichever
+ * logi answers, using whatever they have fitted. So it draws on all three
+ * lists, shield first then armour then capacitor, and this pilot brings
+ * whatever remote reps it owns to a call that does not specify one.
+ */
+function healModuleCandidates(
+  name: HealBroadcastName,
+  request: FleetCompanionRequest,
+): readonly number[] {
+  switch (name) {
+    case "HealShield":
+      return request.remoteShieldModuleIDs;
+    case "HealArmor":
+      return request.remoteArmorModuleIDs;
+    case "HealCapacitor":
+      return request.remoteCapacitorModuleIDs;
+    case "HealTarget":
+      return [
+        ...request.remoteShieldModuleIDs,
+        ...request.remoteArmorModuleIDs,
+        ...request.remoteCapacitorModuleIDs,
+      ];
+  }
+}
+
+/** Plain words for a Heal broadcast, for the readout — never the wire name. */
+function healOrderWhy(name: HealBroadcastName): string {
+  switch (name) {
+    case "HealShield":
+      return "The fleet called for shield reps on a ship on this grid.";
+    case "HealArmor":
+      return "The fleet called for armour reps on a ship on this grid.";
+    case "HealCapacitor":
+      return "The fleet called for a capacitor transfer to a ship on this grid.";
+    case "HealTarget":
+      return "The fleet called to focus reps on a ship on this grid.";
+  }
+}
+
+function healOrderHeard(name: HealBroadcastName): string {
+  switch (name) {
+    case "HealShield":
+      return "the fleet's call for shield reps";
+    case "HealArmor":
+      return "the fleet's call for armour reps";
+    case "HealCapacitor":
+      return "the fleet's call for a capacitor transfer";
+    case "HealTarget":
+      return "the fleet's call to focus reps";
+  }
+}
+
+/**
+ * Whether `moduleID` is already cycling on `targetID`, so rung 3 does not
+ * re-activate a running repairer every tick.
+ *
+ * ⚠ THE AUTHORITATIVE READ (`activeModuleIDs`, the ship snapshot's own
+ * cycling set — see `SpaceShipStatus.activeModuleIDs`'s own comment) IS
+ * PREFERRED, exactly as `isAlreadyLocked` prefers `obs.lockedTargetIDs`. But
+ * it answers a DIFFERENT question: it says whether the module is cycling at
+ * all, never AT WHOM — nothing in a space snapshot exposes a remote-repair
+ * module's target. So a module the server confirms is active only counts as
+ * "already answering THIS call" when this ladder's own memory also agrees it
+ * was the one that aimed that module at `targetID`; otherwise it is cycling
+ * on a stale target from before the broadcast changed, and must be
+ * re-issued to redirect it.
+ *
+ * When `activeModuleIDs` cannot be read at all (`null`), there is nothing
+ * authoritative to prefer, so this falls back to the memory alone — the same
+ * "compare and stamp" `isAlreadyLocked` falls back to.
+ */
+function isHealModuleAlreadyRunning(
+  moduleID: number,
+  targetID: number,
+  activeModuleIDs: readonly number[] | null,
+  memory: CompanionLadderMemory,
+): boolean {
+  const issuedForThisTarget =
+    memory.lastHealTargetID === targetID && memory.lastHealModuleIDs.includes(moduleID);
+  if (activeModuleIDs !== null) {
+    return activeModuleIDs.includes(moduleID) && issuedForThisTarget;
+  }
+  return issuedForThisTarget;
+}
+
+/**
+ * The Heal family's own rung-3 sub-decision. `null` covers every "nothing
+ * NEW to do" case at once — no matching broadcast, no matching module
+ * fitted, the named ship is off this grid, or every fitted candidate for
+ * this call is already cycling on it — and the caller falls through on all
+ * of them alike; see `decideFleetOrders`'s header for why that fall-through,
+ * rather than a parked "wait", is the point.
+ */
+function decideHealOrder(
+  request: FleetCompanionRequest,
+  obs: FleetCompanionObservation,
+  entities: readonly SpaceEntity[],
+  memory: CompanionLadderMemory,
+): CompanionDecision | null {
+  const name = asHealBroadcastName(obs.fleetBroadcast?.name);
+  if (name === null) {
+    return null;
+  }
+  // ⚠ ITEMID IS THE SHIP TO REPAIR, DIRECTLY, FOR ALL FOUR NAMES — never
+  // `senderCharID` resolved to an entity. `HealShield`/`HealArmor`/
+  // `HealCapacitor` name the SENDER's own ship this way; `HealTarget` names
+  // a third party's. See `FLEET_BROADCAST_CLASSIFICATION` in
+  // fleetBroadcasts.ts.
+  const targetID = obs.fleetBroadcast?.itemID ?? null;
+  if (targetID === null || entityOnGrid(targetID, entities) === null) {
+    // Off this grid — not an order for this pilot right now. A logi two
+    // systems away is not being asked to do anything.
+    return null;
+  }
+  const activeModuleIDs = obs.snapshot?.ship?.activeModuleIDs ?? null;
+  const moduleID = healModuleCandidates(name, request).find(
+    (id) => !isHealModuleAlreadyRunning(id, targetID, activeModuleIDs, memory),
+  );
+  if (moduleID === undefined) {
+    // Either this pilot has nothing fitted for this call — a dps-role
+    // companion is not obligated to grow a repairer it was never given, and
+    // A LOGI-LESS PILOT IS STILL A WORKING PILOT: it must fall through to
+    // its tag/Target lock rather than freeze on a call it cannot answer —
+    // or everything fitted for this call is already cycling on this target,
+    // in which case there is still nothing NEW to start.
+    return null;
+  }
+  return {
+    action: { kind: "activate", moduleID, targetID },
+    phase: "Obeying fleet",
+    why: healOrderWhy(name) + " Activating the fitted remote repairer.",
+    memory: {
+      ...memory,
+      lastHealTargetID: targetID,
+      lastHealModuleIDs:
+        memory.lastHealTargetID === targetID ? [...memory.lastHealModuleIDs, moduleID] : [moduleID],
+    },
+    followingOrderFrom: "broadcast",
+    lastOrderHeard: healOrderHeard(name),
+  };
+}
+
+/**
+ * Rung 3: obeying the fleet. Below the supervision gate (only reached while a
+ * human is here) and above "Standing by". Returns `null` when there is
+ * nothing to obey, which is how the caller falls through to standing by.
+ *
+ * Checked in this order — the Heal family, then a fleet tag, then a `Target`
+ * broadcast, then `AlignTo`, then `TravelTo`, then `JumpTo` — for two
+ * DIFFERENT reasons, not one:
+ *
+ * ⚠ HEAL OUTRANKS EVEN THE TAG, AND THE REASON IS NOT AUTHORITY, IT IS
+ * URGENCY AND NON-EXCLUSIVITY. A tag is standing fleet state — still true
+ * next tick, and the tick after that — where a rep call is time-critical:
+ * someone is dying now. And unlike locking, which competes with a tag for
+ * the very same action, healing does not compete with locking for the
+ * SHIP'S STATE at all — a logi can run a repairer and hold a lock at once.
+ * It only competes for THIS TICK'S one atomic call. That is exactly why
+ * `decideHealOrder` returns `null` — falls through, rather than parking the
+ * tick the way `lockOrHold`'s "already locked" branch does — the moment
+ * there is nothing NEW to start: a logi whose repairer is already cycling is
+ * still free to lock the primary on the very same tick's next check, and a
+ * dps pilot with nothing fitted for the call is never blocked by it at all.
+ *
+ * ⚠ A TAG OUTRANKS A BROADCAST, WHICH LOOKS BACKWARDS: a broadcast is the
+ * FRESHER, more deliberate act, so a later reader will want to swap these.
+ * Don't — the reason is AUTHORITY, and it is in the server, not in freshness.
+ * `setFleetTargetTag` refuses any writer who is not a fleet commander, so a
+ * tag that EXISTS is provably a commander's. `sendBroadcast` checks fleet
+ * MEMBERSHIP and nothing else — any member may broadcast `Target` — and
+ * receiving one says nothing at all about who sent it. When the two disagree,
+ * the tag is the one that can only be the FC's. (This is a SEPARATE ranking
+ * question from Heal-vs-tag above: Target/AlignTo/TravelTo/JumpTo are all
+ * read off the SAME `obs.fleetBroadcast` slot as Heal, so only one of them
+ * can ever match in a given tick anyway — their relative order below never
+ * actually competes for anything.)
+ *
+ * ⚠ A CALL FOR SOMETHING NOT ON THIS GRID IS NOT AN ORDER FOR THIS PILOT. A
+ * tagged or called item absent from `obs.snapshot` is skipped — falling
+ * through to the next source, and ultimately to "Standing by" — rather than
+ * waited on. That is what keeps a follower flying its own ladder while the FC
+ * is off doing something two systems away. `TravelTo` is the one exception:
+ * its itemID is a solar SYSTEM, not an object, so there is nothing on this
+ * grid to check it against.
+ *
+ * ⚠ LOCKING IS THE WHOLE OF WHAT THIS RUNG DOES WITH A TAGGED OR CALLED
+ * TARGET, AND THAT IS HONEST, NOT HALF-DONE. There is no weapons rung yet
+ * and no weapon-module field on `FleetCompanionRequest` — shooting is a
+ * later phase. A lock is the real, complete first half of answering a
+ * primary; the readout says exactly that rather than implying this pilot is
+ * shooting.
+ */
+function decideFleetOrders(
+  request: FleetCompanionRequest,
+  obs: FleetCompanionObservation,
+  memory: CompanionLadderMemory,
+): CompanionDecision | null {
+  const snapshot = obs.snapshot ?? null;
+  if (snapshot === null) {
+    return null;
+  }
+  const entities = snapshot.entities;
+  const measurement = measureSpace(snapshot);
+
+  // a. The Heal family — see the header above for why this is checked first.
+  if (request.obeys.includes("broadcast")) {
+    const healDecision = decideHealOrder(request, obs, entities, memory);
+    if (healDecision !== null) {
+      return healDecision;
+    }
+  }
+
+  // b. The fleet's target tags — a commander's call.
+  if (
+    request.obeys.includes("tag") &&
+    obs.fleetTargetTags !== null &&
+    obs.fleetTargetTags !== undefined
+  ) {
+    const tagged = bestTaggedEntity(obs.fleetTargetTags, entities, measurement);
+    if (tagged !== null) {
+      return lockOrHold(
+        tagged.itemID,
+        "tag",
+        "the fleet's tagged target",
+        "The fleet has tagged a target on this grid.",
+        obs,
+        memory,
+      );
+    }
+  }
+
+  // c. A `Target` broadcast — any member may send one, so it is only reached
+  //    once the tag above has found nothing to obey.
+  if (request.obeys.includes("broadcast") && obs.fleetBroadcast?.name === "Target") {
+    const itemID = obs.fleetBroadcast.itemID;
+    if (itemID !== null && entityOnGrid(itemID, entities) !== null) {
+      return lockOrHold(
+        itemID,
+        "broadcast",
+        "the fleet's target call",
+        "The fleet broadcast a target on this grid.",
+        obs,
+        memory,
+      );
+    }
+  }
+
+  // d. An `AlignTo` broadcast.
+  if (request.obeys.includes("broadcast") && obs.fleetBroadcast?.name === "AlignTo") {
+    const itemID = obs.fleetBroadcast.itemID;
+    if (itemID !== null && entityOnGrid(itemID, entities) !== null) {
+      return {
+        action: { kind: "align", targetID: itemID },
+        phase: "Obeying fleet",
+        why: "The fleet broadcast an align point on this grid, so this pilot is aligning to it.",
+        memory,
+        followingOrderFrom: "broadcast",
+        lastOrderHeard: "the fleet's align call",
+      };
+    }
+  }
+
+  // e. A `TravelTo` broadcast — a destination SOLAR SYSTEM
+  //    (`FLEET_BROADCAST_CLASSIFICATION`'s "destination-system"), not an
+  //    on-grid object, so there is no grid-presence check here. Routing
+  //    restarts the shared autopilot, so it is issued once per DISTINCT
+  //    destination and never re-issued merely because the tick repeats —
+  //    `lastRoutedSystemID` is this ladder's memory of that, the same
+  //    "compare and stamp" `closingOn`/`lastLockIssuedFor` already use.
+  //
+  //    ⚠ ONCE ISSUED, THIS RUNG DOES NOT SUPPRESS ITSELF FURTHER. The route
+  //    runs on the SHARED autopilot controller (flow.ts's `startRoute`), a
+  //    SEPARATE decide-loop from this one, and this ladder keeps ticking at
+  //    its own cadence throughout. Rung 1's warp yield covers the actual
+  //    transit (`inWarp` is true while the autopilot's own warp is in
+  //    flight), but the moments between hops — approaching or sitting at a
+  //    gate — are NOT covered, and a fleet order landing in one of those
+  //    gaps could still issue a lock/align/heal call alongside the
+  //    autopilot's own navigation. That is an accepted, un-solved gap, not a
+  //    claim that this rung fully hands off control.
+  if (request.obeys.includes("broadcast") && obs.fleetBroadcast?.name === "TravelTo") {
+    const systemID = obs.fleetBroadcast.itemID;
+    if (systemID !== null && systemID !== memory.lastRoutedSystemID) {
+      return {
+        action: { kind: "travelTo", systemID },
+        phase: "Obeying fleet",
+        why: "The fleet broadcast a system to travel to, so this pilot is starting the route.",
+        memory: { ...memory, lastRoutedSystemID: systemID },
+        followingOrderFrom: "broadcast",
+        lastOrderHeard: "the fleet's travel call",
+      };
+    }
+  }
+
+  // f. A `JumpTo` broadcast — HONEST PARTIAL, not a full jump.
+  //
+  //    ⚠ WHAT IS MISSING, AND WHY. `itemID` here is a single stargate
+  //    (`FLEET_BROADCAST_CLASSIFICATION`'s "stargate"), but `api.jump` needs
+  //    the gate on the FAR SIDE too (`fromGateID`, `toGateID` —
+  //    autopilotLoop.ts's own `jump` case), and the only place `toGateID`
+  //    comes from is a planned hop's `RouteHop.jumpToGateID`, solved by the
+  //    static route graph `loadRouteGraph()` loads ASYNCHRONOUSLY. This
+  //    ladder is pure and synchronous and carries no route graph — giving a
+  //    fleet-order rung its own copy of the autopilot's route solver just to
+  //    answer one broadcast is a bigger change than this rung earns, and
+  //    inventing a second gate id could fling an unattended ship into the
+  //    wrong system. So this rung gets the ship TO the named gate and stops
+  //    there: warp, then close in, then hold at jump range — it never fires
+  //    the jump itself. A later phase that threads the route graph in can
+  //    finish this.
+  if (request.obeys.includes("broadcast") && obs.fleetBroadcast?.name === "JumpTo") {
+    const gateID = obs.fleetBroadcast.itemID;
+    if (gateID !== null && entityOnGrid(gateID, entities) !== null) {
+      const step = decideCloseIn(gateID, MAX_STARGATE_JUMPING_DISTANCE_M, measurement, memory.closingOn);
+      if (step === null) {
+        return {
+          action: WAIT,
+          phase: "Obeying fleet",
+          why: "The fleet called a gate on this grid, but it is not measurable this tick.",
+          memory,
+          followingOrderFrom: "broadcast",
+          lastOrderHeard: "the fleet's jump call",
+        };
+      }
+      if (step.kind === "arrive") {
+        return {
+          action: WAIT,
+          phase: "Obeying fleet",
+          why:
+            "At the gate the fleet called, holding here. Jumping needs the gate on the far " +
+            "side too, and there is no safe way to get that from the call alone.",
+          memory,
+          followingOrderFrom: "broadcast",
+          lastOrderHeard: "the fleet's jump call",
+        };
+      }
+      if (step.kind === "closing") {
+        return {
+          action: WAIT,
+          phase: "Obeying fleet",
+          why: "Closing on the gate the fleet called.",
+          memory,
+          followingOrderFrom: "broadcast",
+          lastOrderHeard: "the fleet's jump call",
+        };
+      }
+      if (step.kind === "approach") {
+        return {
+          action: { kind: "approach", targetID: gateID },
+          phase: "Obeying fleet",
+          why: "The fleet called a gate on this grid, so this pilot is closing on it.",
+          memory: { ...memory, closingOn: gateID },
+          followingOrderFrom: "broadcast",
+          lastOrderHeard: "the fleet's jump call",
+        };
+      }
+      return {
+        action: { kind: "warp", targetID: gateID },
+        phase: "Obeying fleet",
+        why: "The fleet called a gate on this grid, so this pilot is warping to it.",
+        memory,
+        followingOrderFrom: "broadcast",
+        lastOrderHeard: "the fleet's jump call",
+      };
+    }
+  }
+
+  return null;
 }
 
 interface CompanionMemory {
@@ -886,6 +1471,13 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
     mem.phase = decision.phase;
     mem.why = decision.why;
     mem.action = decision.action.kind;
+    // ⚠ "own-ladder" IS THE DEFAULT, NOT `null`. Every rung except rung 3
+    // (obeying the fleet) leaves these two fields unset on its decision, and
+    // that omission means "this pilot is not obeying an external order" —
+    // the warp yield, the supervision gate, the abandonment protocol and
+    // "Standing by" are all the companion's own ladder, not a fleet order.
+    mem.followingOrderFrom = decision.followingOrderFrom ?? "own-ladder";
+    mem.lastOrderHeard = decision.lastOrderHeard ?? null;
     if (decision.stop !== undefined) {
       // The ladder has decided the run is over. Not `stop()`: that clears the
       // readout, and the whole value of these two endings is the sentence that
@@ -927,6 +1519,14 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
             safeSpotWarpSeen: false,
           },
           closingOn: null,
+          // A resumed run has locked, healed and routed nothing yet either —
+          // same reasoning as the get-safe flags just above: this run has
+          // not issued any of those calls, so it must not assume one already
+          // landed.
+          lastLockIssuedFor: null,
+          lastHealTargetID: null,
+          lastHealModuleIDs: [],
+          lastRoutedSystemID: null,
         };
       }
       runToken += 1;
