@@ -135,7 +135,13 @@ import {
   decodeMessageEntry,
 } from "../bridge/chat.ts";
 import { decodeDirectionalScanHitIDs } from "../bridge/boundScanWrites.ts";
+import { itemHasActivationCycle } from "../bridge/boundDogma.ts";
 import { nameKey, type NameRef } from "../store/names.ts";
+import {
+  companionFitWarnings,
+  requestForFit,
+  type CompanionFitFacts,
+} from "../bots/companionFitCheck.ts";
 import type { BotLogDraft, BotLogSink } from "../nav/botLog.ts";
 import {
   buildSystemGraph,
@@ -6502,6 +6508,104 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    * went down, so its thirty-minute clock continues instead of restarting.
    * Only the bot host ever passes it; a player pressing Start never does.
    */
+  /** A fit we could not read: judged nowhere, warned about nowhere. */
+  const UNREADABLE_COMPANION_FIT: CompanionFitFacts = Object.freeze({
+    defenseModuleIDs: [],
+    shieldBoosterModuleIDs: [],
+    armorRepairerModuleIDs: [],
+    hullRepairerModuleIDs: [],
+    remoteShieldModuleIDs: [],
+    remoteArmorModuleIDs: [],
+    remoteCapacitorModuleIDs: [],
+    weaponModuleIDs: [],
+    modules: [],
+    droneBay: null,
+    fitReadable: false,
+  });
+
+  /**
+   * What ship this companion is actually in: the eight lists classified off the
+   * hull, plus what each module is carrying.
+   *
+   * ⚠ THE GROUP NAMES MUST BE WARMED FIRST OR EVERY LIST COMES BACK EMPTY.
+   * `resolveDefenseModuleIDs` and `resolveRemoteRepModuleIDs` both skip any
+   * module whose typeGroup is not already in the name cache -- deliberately,
+   * "never run a mystery module" -- and on the BOT HOST that cache starts
+   * EMPTY. Without the `resolveNamesNow` below, a headless deriving start would
+   * classify nothing, fly with no tank and no guns, and report no error at all.
+   * The DSL path gets this warming as a side effect of calling
+   * `resolveMiningModuleIDs` first; relying on that here would be an invisible
+   * coupling to a mining read the companion has no other use for.
+   */
+  async function readCompanionFitFacts(
+    request: FleetCompanionRequest,
+  ): Promise<CompanionFitFacts> {
+    try {
+      await loadFitting();
+      const fit = store.fitting.get();
+      if (fit.slotsError !== null) {
+        return UNREADABLE_COMPANION_FIT;
+      }
+      await resolveNamesNow(
+        fit.slots
+          .filter((slot) => slot.module !== null)
+          .map((slot) => ({ kind: "typeGroup" as const, id: slot.module!.typeID })),
+      );
+      // ⚠ AWAITED, UNLIKE loadFitting's OWN FIRE-AND-FORGET CALL. `loadFitting`
+      // kicks dogma off with `void loadDogma().catch(...)` so a stumbling dogma
+      // read cannot hold the fit up -- which means that after awaiting the fit
+      // alone the dogma slice may still be empty. The hardener branch needs it
+      // to tell a Damage Control from a real hardener; without this the
+      // classifier falls back to the name every time and inherits the very
+      // defect it now avoids.
+      await loadDogma().catch(() => {});
+      const defense = resolveDefenseModuleIDs();
+      const remote = resolveRemoteRepModuleIDs();
+      const modules = fit.slots
+        .filter((slot) => slot.module !== null && slot.module.online)
+        .map((slot) => {
+          const module = slot.module!;
+          const fitment = fit.chargeFits[module.typeID];
+          return {
+            itemID: module.itemID,
+            typeID: module.typeID,
+            hasCharge: module.charge !== null,
+            // ⚠ NULL WHEREVER WE CANNOT SAY. `decodeChargeFits` gives `{}` both
+            // for a module that takes no charge and for a fit whose charge data
+            // did not arrive, so only a positive group list is a confident
+            // "this has somewhere to load something".
+            takesCharge: fitment !== undefined && fitment.groups.length > 0 ? true : null,
+          };
+        });
+      // Only when this run would actually use them: the bay is a round trip,
+      // and the same gate `observe()` puts it behind.
+      let droneBay: readonly { readonly quantity: number }[] | null = null;
+      if (request.useDrones) {
+        try {
+          const raw = await api.getDrones(callOptions);
+          droneBay = decodeDroneBay(raw.bay);
+        } catch {
+          droneBay = null;
+        }
+      }
+      return {
+        defenseModuleIDs: defense.hardeners,
+        shieldBoosterModuleIDs: defense.shield,
+        armorRepairerModuleIDs: defense.armor,
+        hullRepairerModuleIDs: defense.hull,
+        remoteShieldModuleIDs: remote.shield,
+        remoteArmorModuleIDs: remote.armor,
+        remoteCapacitorModuleIDs: remote.cap,
+        weaponModuleIDs: defense.weapons,
+        modules,
+        droneBay,
+        fitReadable: true,
+      };
+    } catch {
+      return UNREADABLE_COMPANION_FIT;
+    }
+  }
+
   async function startFleetCompanion(
     request: FleetCompanionRequest,
     resuming: CompanionAbandonmentRecord | null = null,
@@ -6519,15 +6623,31 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       return;
     }
 
-    store.apply({ type: "companion/started", role: request.role, startedAt: Date.now() });
+    // ⚠ READ THE SHIP BEFORE THE LOOP SEES THE REQUEST. A deriving request's
+    // eight module lists are empty until this fills them in, and the first tick
+    // can fire immediately -- so a loop started on the un-derived request would
+    // spend that tick believing the ship carries nothing.
+    const fitFacts = await readCompanionFitFacts(request);
+    const flownRequest = requestForFit(request, fitFacts);
+    // Warnings are computed for EVERY start, not only a deriving one: an empty
+    // ammo bay is worth saying whoever picked the guns. They are advisory and
+    // never refuse the start -- a human loads the missing thing or flies anyway.
+    const fitWarnings = companionFitWarnings(request, fitFacts);
+
+    store.apply({
+      type: "companion/started",
+      role: request.role,
+      startedAt: Date.now(),
+      fitWarnings,
+    });
 
     if (!fleetCompanion) {
       fleetCompanion = createFleetCompanion(makeFleetCompanionDeps());
     }
     // Before start(), not after: the first tick can fire immediately, and a tick
     // that read a stale request would decide this run on the last one's orders.
-    liveCompanionRequest = request;
-    fleetCompanion.start(request, resuming);
+    liveCompanionRequest = flownRequest;
+    fleetCompanion.start(flownRequest, resuming);
     void fleetCompanion.run();
   }
 
@@ -6668,7 +6788,26 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         } else if (/hull repair/i.test(group)) {
           hull.push(slot.module.itemID);
         } else if (/hardener|damage control|resistance/i.test(group)) {
-          hardeners.push(slot.module.itemID);
+          // ⚠ THE GROUP NAME IS NOT ENOUGH HERE, AND ONLY HERE. Checked against
+          // the SDE on 2026-09-11: group 60 "Damage Control" holds Damage
+          // Control II, which has NO duration and is passive the moment it is
+          // online, AND Assault Damage Control II, which cycles for 10125ms and
+          // is worth running. One group, both answers -- so no regex over this
+          // name could ever have told them apart, which is why this defect
+          // outlived attempts to fix it by editing the pattern. Group 295
+          // "Shield Resistance Amplifier" is passive throughout and was being
+          // swept in by the `/resistance/` arm for the same reason.
+          //
+          // Dogma attribute 73 ("Activation time / duration") is the real
+          // discriminator, and the server sends it per fitted module.
+          //
+          // ⚠ UNREADABLE FAILS OPEN, back to the name's verdict. A dogma
+          // snapshot that did not arrive must not quietly stop a ship
+          // hardening: cycling a passive module wastes a call, refusing to
+          // cycle a real hardener loses the tank.
+          if (itemHasActivationCycle(fit.dogma, slot.module.itemID) !== false) {
+            hardeners.push(slot.module.itemID);
+          }
         } else if (/^warp scrambler$/i.test(group)) {
           // ⚠ ANCHORED ON PURPOSE, and verified against the SDE
           // (`_local/sde/.../groups.jsonl`): group 52 is named "Warp Scrambler"

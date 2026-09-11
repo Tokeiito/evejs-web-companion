@@ -22,6 +22,7 @@ import type { BotID, ShipControllerID } from "../nav/botRegistry.ts";
 import type { MiningRungID, MiningStepID } from "../nav/miningLadder.ts";
 import type {
   CompanionAbandonmentRecord,
+  CompanionOrderAuthority,
   FleetCompanionRole,
   FleetCompanionRunState,
 } from "../nav/fleetCompanionLoop.ts";
@@ -2335,15 +2336,19 @@ export interface FleetCompanionState {
   readonly role: FleetCompanionRole | null;
   readonly inFleet: boolean | null;
   /** Which authority the last decision came from, for the readout. */
-  readonly followingOrderFrom:
-    | "broadcast"
-    | "tag"
-    | "chat"
-    | "squad-board"
-    | "own-ladder"
-    | null;
+  readonly followingOrderFrom: CompanionOrderAuthority | null;
   readonly lastOrderHeard: string | null;
   readonly canTag: boolean | null;
+  /**
+   * What was missing or unusable about this pilot's fit when it started: no
+   * ammunition loaded, an empty drone bay, nothing that defends the ship.
+   *
+   * ⚠ ADVISORY, AND MEASURED ONCE AT START. Nothing here ever refused a start
+   * -- the operator's rule is that a human loads the missing thing or ignores
+   * it and flies. Empty means nothing worth saying, which is ALSO what an
+   * unreadable fit produces: this list only speaks when it is confident.
+   */
+  readonly fitWarnings: readonly string[];
   /**
    * Non-null while decision 5's abandonment protocol is running: nobody in the
    * fleet this host is not flying, so the pilot got safe, dropped fleet, and is

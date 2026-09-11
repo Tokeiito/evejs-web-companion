@@ -26,6 +26,8 @@ const HangarSquadAssign = (await import("./HangarSquadAssign.svelte")).default;
 const HangarSquadPicker = (await import("./HangarSquadPicker.svelte")).default;
 
 const ROSTER_KEY = "evejs-web-known-characters:v1";
+import { DEFAULT_FLEET_COMPANION_REQUEST } from "../nav/fleetCompanionLoop.ts";
+
 const PREFS_KEY = "evejs-web-hangar-prefs:v1";
 
 function storage(seed: Record<string, string> = {}) {
@@ -283,6 +285,23 @@ test("an empty picker says so rather than showing an empty box", () => {
 
 // --- the row on its own -----------------------------------------------------
 
+/** The same pilot `renderRow` builds by default, for tests that vary it. */
+function basePilot() {
+  return {
+    characterID: 90000001,
+    name: "Ore Farmer",
+    accountName: "Test Account",
+    shipName: "Venture",
+    locationName: "Jita",
+    skillPoints: 134_900_000,
+    balance: 4.82e9,
+    training: "Mining Barge V - 4d 6h",
+    online: false,
+    pinned: false,
+    squads: [] as { id: string; name: string; color: string }[],
+  };
+}
+
 function renderRow(overrides: Record<string, unknown> = {}): string {
   const pilot = {
     characterID: 90000001,
@@ -431,4 +450,114 @@ test("with no squads yet the chooser is straight to naming a new one", () => {
   assert.doesNotMatch(body, /Create a new squad/, "nothing to choose between");
   assert.match(body, /Squad name/);
   assert.match(body, /Create squad with 2 pilots/);
+});
+
+
+// --- starting a squad's companions on the server ----------------------------
+
+const SQUAD = { id: "s-fly", name: "Strike Wing", color: "#52d9a3" };
+
+function prefsWithSquad(configured: boolean): string {
+  const request = {
+    ...DEFAULT_FLEET_COMPANION_REQUEST,
+    deriveModulesFromFit: true,
+  };
+  return JSON.stringify({
+    squads: [SQUAD],
+    members: { [SQUAD.id]: [90000001] },
+    pinnedSquads: [SQUAD.id],
+    pinnedPilots: [],
+    collapsedAccounts: [],
+    companionConfigs: configured ? { [SQUAD.id]: { "90000001": request } } : {},
+  });
+}
+
+test("a squad with nobody set up offers no FLY control at all", () => {
+  // ⚠ THE CONTROL IS GATED ON THERE BEING SOMETHING TO START. A squad start
+  // works from the saved per-pilot setups; a squad with none would start
+  // nothing, and a button that does nothing is worse than no button.
+  setKnownCharacterStorage(storage({ [ROSTER_KEY]: ROSTER }));
+  setHangarPrefsStorage(storage({ [PREFS_KEY]: prefsWithSquad(false) }));
+  const body = renderHangar();
+  assert.match(body, /Strike Wing/, "the squad chip is there either way");
+  assert.doesNotMatch(body, />FLY</);
+});
+
+test("a squad with a configured pilot offers FLY, and says how it differs from ALL", () => {
+  // ⚠ TWO DIFFERENT THINGS, ONE CHIP ROW. "ALL" signs pilots into THIS TAB and
+  // they stop when it closes. "FLY" starts their companions on the bot host,
+  // which keeps flying with the tab shut and does not need them signed in here
+  // at all. A player who cannot tell those apart will close the tab on a fleet.
+  setKnownCharacterStorage(storage({ [ROSTER_KEY]: ROSTER }));
+  setHangarPrefsStorage(storage({ [PREFS_KEY]: prefsWithSquad(true) }));
+  const body = renderHangar();
+  assert.match(body, />FLY</);
+  assert.match(body, />. ALL</, "the tab launch is still there");
+  assert.match(
+    body,
+    /keep flying when this tab closes/,
+    "the difference must be stated on the control itself",
+  );
+});
+
+
+// --- the per-pilot companion setup, in the squad popover --------------------
+
+test("a ticked squad offers a role picker; an unticked one does not", () => {
+  // ⚠ ONLY THE SQUADS THIS PILOT IS IN GROW A SECOND LINE. Growing EVERY row
+  // was tried before and rejected: at eleven squads it made each row about
+  // 230px tall (docs/pilot-hangar.md). A pilot is typically in one or two.
+  const inOne = renderRow({
+    manage: true,
+    squadMenuOpen: true,
+    squads: [SQUAD, { id: "s-other", name: "Scout Net", color: "#6fb4e8" }],
+    pilot: { ...basePilot(), squads: [SQUAD] },
+  });
+  assert.match(inOne, /Flies as/, "the squad it is in offers a setup");
+  assert.match(inOne, /Not set up/);
+  assert.equal((inOne.match(/Flies as/g) ?? []).length, 1, "and only that one does");
+});
+
+test("the tick and the role picker are SEPARATE controls", () => {
+  // ⚠ A CONTROL NESTED IN THE TICK WOULD BE INVALID HTML AND WOULD FIRE THE
+  // MEMBERSHIP TOGGLE ON EVERY CLICK. The row is a <button>; the setup is its
+  // sibling. This asserts the select is not inside the button element.
+  const body = renderRow({
+    manage: true,
+    squadMenuOpen: true,
+    squads: [SQUAD],
+    pilot: { ...basePilot(), squads: [SQUAD] },
+  });
+  const rowStart = body.indexOf('class="hangar-squadmenu-row');
+  assert.ok(rowStart >= 0, "the membership button is there");
+  const rowEnd = body.indexOf("</button>", rowStart);
+  const selectAt = body.indexOf("<select", rowStart);
+  assert.ok(selectAt > rowEnd, "the select must sit AFTER the button closes");
+});
+
+test("a pilot with no setup is not offered a tagging choice", () => {
+  // "Calls targets" only means something once a role is chosen: there is no
+  // setup to put it on otherwise.
+  const body = renderRow({
+    manage: true,
+    squadMenuOpen: true,
+    squads: [SQUAD],
+    pilot: { ...basePilot(), squads: [SQUAD] },
+    companionRoleFor: () => null,
+  });
+  assert.doesNotMatch(body, /Calls targets/);
+});
+
+test("a pilot set up as logi shows that role, and can be told to call targets", () => {
+  const body = renderRow({
+    manage: true,
+    squadMenuOpen: true,
+    squads: [SQUAD],
+    pilot: { ...basePilot(), squads: [SQUAD] },
+    companionRoleFor: () => "logi",
+    companionTagsFor: () => true,
+  });
+  assert.match(body, /Logistics/);
+  assert.match(body, /Calls targets/);
+  assert.match(body, /checked/, "the tagging choice reflects what is stored");
 });

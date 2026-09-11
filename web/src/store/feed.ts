@@ -99,6 +99,7 @@ import type { ShipStats } from "../bridge/shipStats.ts";
 import type { MiningRungID, MiningStepID } from "../nav/miningLadder.ts";
 import type {
   CompanionAbandonmentRecord,
+  CompanionOrderAuthority,
   FleetCompanionRole,
   FleetCompanionRunState,
 } from "../nav/fleetCompanionLoop.ts";
@@ -870,6 +871,8 @@ export type FeedEvent =
       readonly type: "companion/started";
       readonly role: FleetCompanionRole;
       readonly startedAt: number;
+      /** What is missing or unusable about this pilot's fit. Advisory, never fatal. */
+      readonly fitWarnings: readonly string[];
     }
   | {
       readonly type: "companion/progress";
@@ -879,13 +882,7 @@ export type FeedEvent =
       readonly why: string | null;
       readonly role: FleetCompanionRole | null;
       readonly inFleet: boolean | null;
-      readonly followingOrderFrom:
-        | "broadcast"
-        | "tag"
-        | "chat"
-        | "squad-board"
-        | "own-ladder"
-        | null;
+      readonly followingOrderFrom: CompanionOrderAuthority | null;
       readonly lastOrderHeard: string | null;
       readonly canTag: boolean | null;
       /**

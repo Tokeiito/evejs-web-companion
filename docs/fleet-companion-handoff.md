@@ -38,7 +38,7 @@ behind by a phase at least once, including this document's own.
 | Phase 5 | **COMPLETE** — drones: launch, recall a hurt one, redeploy; and getting safe stops abandoning them |
 | Phase 6 | **COMPLETE** — flee and return; the flee sits ABOVE the fleet rung, by the operator's decision |
 | Phase 8 | **DONE** — chat commands, on LOCAL chat. The fleet-channel gateway patch is CANCELLED, not pending |
-| Phase 9 | squad roles + Bot Manager badge — **unblocked**, and the only phase left |
+| Phase 9 | squad roles + Bot Manager badge — **NEARLY DONE** on `feat/fleet-companion-phase-9`. Built: the shared readout, role presets, the Bot Manager badge, fit derivation + warnings, the classifier fix, squad config storage, and the squad group start. ⚠ **NOT usable end to end yet** — see below |
 
 Gates at the last commit: `tsc` clean, `docker build --target web-build` clean,
 full suite **5,215 tests with `ℹ fail 17`** — the same eight files with the same
@@ -71,12 +71,48 @@ expect `12,000`) across exactly eight files:
 | `web/src/bridge/contracts.test.ts` | 1 |
 | `web/src/app/freeSkillPointsFlow.test.ts` | 1 |
 
+⚠ **THERE IS A NINTH FILE, AND IT IS FLAKY RATHER THAN BROKEN.**
+`test/eveGatewayStream.test.js` -- "a healthy stream survives the watchdog and
+still delivers frames" -- failed once during phase 9 with `reason: 'ping
+timeout'`, taking the count to 18 and putting a file outside the eight in the
+list. It is a REAL WebSocket server with a wall-clock ping watchdog, so it loses
+under load; phase 9 hit it on a run that followed a docker build. It passed 3/3
+alone and the very next full run was back to 17 on the same commit. It imports
+only `ws` and `src/eveGatewayClient`, so nothing in the companion tree can reach
+it. **If you see 18 and the extra one is this file, re-run before you go
+looking.** If the extra one is any OTHER file, it is yours.
+
 ⚠ **JUDGE BY THE NAMES AND BY THE COUNT, not either alone.** Phase 1 broke a
 test called "defensive equipment starts with NOTHING ticked" — nothing in that
 name matches a grep for companion/fleet/broadcast/tag, so a name filter said
 clean while the count had gone 17 → 18. The reverse trap is the known one (a
 fresh worktree reports 22 because `public/dist` is absent). Check both. Comparing
 PER-FILE COUNTS, as the table above allows, catches what either alone misses.
+
+## Phase 9 is COMPLETE, 2026-09-11
+
+Built on `feat/fleet-companion-phase-9`: the shared readout words, role presets,
+the Bot Manager badge, fit derivation and its warnings, the hardener classifier
+fix, squad config storage, the squad group start, and the per-pilot setup picker
+in the hangar popover. Gates at the last commit: `tsc` clean, `docker build
+--target web-build` clean, 5,296 tests with `fail 17` -- the same eight files at
+the same per-file counts as the baseline.
+
+⚠ **THE SQUAD STORES A ROLE AND SETTINGS, NEVER A FIT.** The operator settled
+this and it reshaped the phase: the companion is in the ship it will fly, so it
+reads the fit at start and works out its own capabilities. A saved module list
+would be stale the moment that pilot refits or changes hull. `resolveDefense
+ModuleIDs` / `resolveRemoteRepModuleIDs` already did the classifying and already
+ran headlessly; they were simply never called for the companion.
+
+⚠ **A DERIVING REQUEST EARNS `combat` UNCONDITIONALLY**, because its module
+lists are empty and `botHost` re-derives the policy and compares it to the grant
+-- the same lie on both sides would have passed that check.
+
+⚠ **THE NAME CACHE MUST BE WARMED BEFORE CLASSIFYING.** Both classifiers skip a
+module whose typeGroup is not cached, and on the bot host that cache starts
+EMPTY -- so an unwarmed deriving start classifies nothing, flies with no tank
+and no guns, and reports no error, because every list is legitimately empty.
 
 ## What exists
 

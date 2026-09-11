@@ -70,15 +70,14 @@ const ENDED_STATUSES = new Set(["stopped", "error", "idle"]);
 // script). Not exhaustive by construction on purpose: an unrecognised role
 // cannot reach here at all, since decodeFleetCompanionRequestValue refuses
 // any value outside FLEET_COMPANION_ROLES before start() ever calls this.
-const COMPANION_ROLE_LABELS = Object.freeze({
-  dps: "DPS",
-  logi: "Logistics",
-  tackle: "Tackle",
-  support: "Support",
-});
-
-function companionScriptName(role) {
-  const label = COMPANION_ROLE_LABELS[role] || "companion";
+//
+// ⚠ THE LABELS THEMSELVES ARE NOT DEFINED HERE, AND USED TO BE. They were a
+// verbatim second copy of `roleLabels` in FleetCompanion.svelte, in a second
+// language, with nothing to fail if one drifted -- exactly the bug the
+// COMPANION_GRANT_SCRIPT_REV comment above exists to prevent. They now come off
+// the loaded stack, the same way that sentinel does.
+function companionScriptName(role, labels) {
+  const label = labels[role] || "companion";
   return `Fleet companion (${label})`;
 }
 
@@ -107,14 +106,16 @@ function defaultLoadStack() {
     const webSrc = path.resolve(__dirname, "..", "web", "src");
     const webUrl = (rel) => pathToFileURL(path.join(webSrc, rel)).href;
     stackPromise = (async () => {
-      const [sessionToken, clientStore, flow, codec, runPolicy, companionRunPolicy] = await Promise.all([
-        import(webUrl("app/sessionToken.ts")),
-        import(webUrl("store/clientStore.ts")),
-        import(webUrl("app/flow.ts")),
-        import(webUrl("bots/scriptCodec.ts")),
-        import(webUrl("bots/runPolicy.ts")),
-        import(webUrl("bots/companionRunPolicy.ts")),
-      ]);
+      const [sessionToken, clientStore, flow, codec, runPolicy, companionRunPolicy, companionReadout] =
+        await Promise.all([
+          import(webUrl("app/sessionToken.ts")),
+          import(webUrl("store/clientStore.ts")),
+          import(webUrl("app/flow.ts")),
+          import(webUrl("bots/scriptCodec.ts")),
+          import(webUrl("bots/runPolicy.ts")),
+          import(webUrl("bots/companionRunPolicy.ts")),
+          import(webUrl("bots/companionReadout.ts")),
+        ]);
       // The server has no sessionStorage; force the in-memory fallback. Bots
       // never use the global token anyway (perSessionToken), but the module
       // must not touch a browser API on import of anything else.
@@ -131,6 +132,10 @@ function defaultLoadStack() {
         decodeFleetCompanionRequestValue: companionRunPolicy.decodeFleetCompanionRequestValue,
         decodeCompanionAbandonmentValue: companionRunPolicy.decodeCompanionAbandonmentValue,
         COMPANION_GRANT_SCRIPT_REV: companionRunPolicy.COMPANION_GRANT_SCRIPT_REV,
+        // The role LABELS, off the shared layer for the same reason the sentinel
+        // above is: this host and the browser both put them in front of a player
+        // and two copies would drift in silence. See companionReadout.ts.
+        COMPANION_ROLE_LABELS: companionReadout.COMPANION_ROLE_LABELS,
       };
     })();
     stackPromise.catch(() => {
@@ -306,6 +311,13 @@ function createBotHost(options) {
       startError: record.startError,
       startedAt: record.startedAt,
       endedAt: record.endedAt,
+      // The companion badge's five facts, or null for a script and for a
+      // companion that has not pushed progress yet. Nested rather than spread
+      // flat so a reader can tell "this is not a companion" from "this
+      // companion has not reported": `kind` above answers the first, this
+      // answers the second, and flattening would merge the two into one row of
+      // nulls that means either.
+      companion: record.companionReadout ?? null,
     };
   }
 
@@ -363,12 +375,39 @@ function createBotHost(options) {
       // untouched keeps them at their initial `null` rather than inventing a
       // value for a column the companion has no honest answer to.
       //
-      // The companion's OWN distinguishing fields — action, role, inFleet,
-      // followingOrderFrom, lastOrderHeard, canTag, failureReason — are read
-      // by the store subscription below but have no slot on this record or on
-      // publicBot()'s wire shape yet: that shape is `ServerBot`
-      // (web/src/app/api.ts) and web/src/ui/**, both out of scope for this
-      // change. Nothing here fabricates a place for them either.
+      // The companion's OWN distinguishing fields NOW HAVE A SLOT, which they
+      // did not when this comment first said they had none: phase 9 carried
+      // five of them through to `publicBot()` and on to the Bot Manager badge,
+      // because a HEADLESS companion had no other way to say what it was doing
+      // (a server-only row has no session and so no store to read).
+      //
+      // ⚠ FIVE, NOT SEVEN. `action` and `failureReason` are still left out.
+      // `why` already carries the sentence a player reads, and `failureReason`
+      // duplicates what `startError` and the ended-run outcome already say --
+      // adding either would put a second, drifting answer on the wire for a
+      // question the row can already answer.
+      //
+      // ⚠ THIS RUNS ON EVERY STORE PUSH, roughly every two seconds per bot, and
+      // it must stay a plain assignment. It deliberately does NOT persistRoster:
+      // see the record's own `companionReadout` comment for why a readout has no
+      // business on disk.
+      record.companionReadout = {
+        role: typeof snapshot.role === "string" ? snapshot.role : null,
+        inFleet: typeof snapshot.inFleet === "boolean" ? snapshot.inFleet : null,
+        followingOrderFrom:
+          typeof snapshot.followingOrderFrom === "string" ? snapshot.followingOrderFrom : null,
+        lastOrderHeard:
+          typeof snapshot.lastOrderHeard === "string" ? snapshot.lastOrderHeard : null,
+        canTag: typeof snapshot.canTag === "boolean" ? snapshot.canTag : null,
+        // ⚠ THE ONLY ROUTE THESE HAVE TO A PLAYER ON A HEADLESS RUN. The fit
+        // warnings are measured once, in the browser stack this host is
+        // driving, and there is no panel open anywhere to show them -- a squad
+        // start is the case they exist for. Advisory, so they ride the readout
+        // rather than blocking anything.
+        fitWarnings: Array.isArray(snapshot.fitWarnings)
+          ? snapshot.fitWarnings.filter((line) => typeof line === "string")
+          : [],
+      };
       //
       // `abandonment` is the ONE exception, and it is not a readout: it is
       // durable state this host owns (see persistRoster). Written through to
@@ -547,7 +586,7 @@ function createBotHost(options) {
       // scriptName is derived from the request's role so a player reads a
       // sensible pilot name in the roster instead of a blank column.
       recordScriptID = "companion";
-      recordScriptName = companionScriptName(decodedRequest.role);
+      recordScriptName = companionScriptName(decodedRequest.role, stack.COMPANION_ROLE_LABELS);
     } else {
       // A stored bot doc is untrusted bytes like any other; the codec is the door.
       const decoded = stack.decodeScriptValue(doc);
@@ -657,6 +696,17 @@ function createBotHost(options) {
       // Seeded from the persisted row on a resume, then owned by
       // applySnapshot. Null for a script and for a fresh companion start.
       companionAbandonment: isCompanion ? resumingAbandonment : null,
+      // The companion's live READOUT -- the five facts the Bot Manager badge
+      // shows. Null until the loop's first progress push, which is honest: a
+      // run that has not decided anything yet has not heard an order either.
+      //
+      // ⚠ NOT DURABLE, AND DELIBERATELY ABSENT FROM persistRoster's ROW.
+      // These describe what a pilot is doing this second; a resumed run
+      // re-derives all five on its first tick from a fresh fleet read. Writing
+      // them to disk would let a restart hand the player a confident readout
+      // of a fleet the pilot may no longer be in. `companionAbandonment` above
+      // is the ONE companion field that is durable, and its comment says why.
+      companionReadout: null,
     };
     // Claim BEFORE the first await — two concurrent starts must not both win,
     // and the select guard must already know this bot when its select arrives.

@@ -86,6 +86,23 @@ export const FLEET_COMPANION_ORDER_SOURCES: readonly FleetCompanionOrderSource[]
   Object.freeze<FleetCompanionOrderSource[]>(["broadcast", "tag", "chat", "squad-board"]);
 
 /**
+ * Which authority a decision actually came from, for the readout.
+ *
+ * ⚠ NOT THE SAME AS `FleetCompanionOrderSource` ABOVE, AND THE DIFFERENCE IS
+ * `own-ladder`. That one is a setting: the channels an operator may switch on
+ * and off. This one is an OBSERVATION, and it has a fifth member no operator
+ * can tick, because "nobody told it, it decided for itself" is a real answer to
+ * "who is this pilot following" and is not a channel.
+ *
+ * Named here because it had been written out inline in four places -- this
+ * file, the store's types, the store's feed, and the readout words -- and phase
+ * 9's wire shape would have been a fifth. Four copies of a five-member union
+ * with nothing to fail if one drifted is the same shape of bug as two copies of
+ * a bare 1; see COMPANION_GRANT_SCRIPT_REV.
+ */
+export type CompanionOrderAuthority = FleetCompanionOrderSource | "own-ladder";
+
+/**
  * One companion run's whole configuration. Flat, serialisable, UI-editable.
  *
  * ⚠ FLATNESS IS LOAD-BEARING. This is stored as the VALUE against a pilot in a
@@ -164,6 +181,30 @@ export interface FleetCompanionRequest {
    * commander's broadcast.
    */
   readonly weaponModuleIDs: readonly number[];
+  /**
+   * Read the eight module lists off the SHIP'S OWN FIT at start, instead of
+   * using the eight lists above.
+   *
+   * ⚠ THIS EXISTS FOR THE SQUAD PATH, WHERE PICKING IS IMPOSSIBLE. Every list
+   * above is an `itemID` of one particular fitted module on one particular
+   * hull, chosen by an operator looking at that ship. A squad start has no such
+   * operator: the pilots are not mounted, nobody can see their fits, and a list
+   * saved earlier would be stale the moment that pilot refits or changes ship.
+   * So the squad stores settings and this flag, and the bot host -- which HAS
+   * signed the pilot in and CAN read the fit -- fills the lists in.
+   *
+   * ⚠ IT IS A FLAG AND NOT "EMPTY MEANS DERIVE", DELIBERATELY. Empty already
+   * means something else and something load-bearing: "nothing fitted for that
+   * layer", and for `weaponModuleIDs` it means "lock the call, never fire it".
+   * Making empty mean derive would ARM every pilot whose operator deliberately
+   * left the weapon list alone.
+   *
+   * ⚠ AND IT COSTS THE RUN ITS COMBAT RISK CLASS UNCONDITIONALLY. See
+   * `analyzeCompanionRunPolicy`: a fit that has not been read yet may hold
+   * anything, so a grant claiming no combat while the pilot turns out to be
+   * armed would be a falsehood the server validates as truth.
+   */
+  readonly deriveModulesFromFit: boolean;
   /** Remaining fraction (0-1) of any health layer that starts a flee. */
   readonly fleeHealthFloor: number;
   /**
@@ -349,6 +390,10 @@ export const DEFAULT_FLEET_COMPANION_REQUEST: FleetCompanionRequest = Object.fre
   // A floor on the wait, not a safety guarantee — see the field's own comment.
   droneRedeployHoldOffSeconds: 10,
   attemptsTagging: false,
+  // Off: the eight lists above are what an operator picked, and a default that
+  // overrode them with whatever happened to be bolted on would be picking for
+  // them. The squad path turns it on because it has nobody to ask.
+  deriveModulesFromFit: false,
   obeys: Object.freeze<FleetCompanionOrderSource[]>(["broadcast", "tag"]),
   chatCommandSenders: Object.freeze([]),
   // No safe spot until an operator names one. See the field's own comment for
@@ -660,13 +705,7 @@ export interface FleetCompanionProgress {
   /** Whether this pilot is in a fleet at all. Null while the roster is unread. */
   readonly inFleet: boolean | null;
   /** Which authority the last decision came from, for the readout. */
-  readonly followingOrderFrom:
-    | "broadcast"
-    | "tag"
-    | "chat"
-    | "squad-board"
-    | "own-ladder"
-    | null;
+  readonly followingOrderFrom: CompanionOrderAuthority | null;
   readonly lastOrderHeard: string | null;
   /**
    * Whether this pilot's tag write would land. Three states, and the third is

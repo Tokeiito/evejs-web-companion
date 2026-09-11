@@ -80,6 +80,16 @@ function makeFakeStack(log) {
     // it the way the real stack does: the host reads the revision off the stack
     // rather than holding a second copy of a bare 1 of its own.
     COMPANION_GRANT_SCRIPT_REV: 1,
+    // ⚠ AND THE ROLE LABELS FOR THE SAME REASON. `companionScriptName` reads
+    // them off the stack rather than holding a second copy, so a fake stack
+    // without them makes every companion start throw on `labels[role]` --
+    // which is how this fake was found wanting when the labels moved.
+    COMPANION_ROLE_LABELS: {
+      dps: "DPS",
+      logi: "Logistics",
+      tackle: "Tackle",
+      support: "Support",
+    },
     analyzeCompanionRunPolicy: (request) => ({
       riskClasses:
         request && (request.useDrones === true || (request.defenseModuleIDs || []).length > 0)
@@ -888,6 +898,74 @@ test("a companion's progress maps status/phase/why honestly, and leaves script-s
   assert.equal(row.stepPath, null);
   assert.equal(row.pauseReason, null);
   assert.equal(row.note, null);
+});
+
+test("a companion's badge facts reach the wire, and a script's stay null", async () => {
+  const log = [];
+  const host = makeHost({ log });
+  await host.start(COMPANION_START);
+  const store = lastStore(log);
+  store._set({
+    companion: {
+      ...IDLE_COMPANION_SLICE,
+      status: "running",
+      phase: "Obeying fleet",
+      why: "The fleet broadcast a target on this grid.",
+      role: "logi",
+      inFleet: true,
+      followingOrderFrom: "broadcast",
+      lastOrderHeard: "the fleet's target call",
+      canTag: false,
+      fitWarnings: ["One weapon has nothing loaded. It will not fire until you load it."],
+    },
+  });
+  await settle();
+  const row = host.list(7)[0];
+  assert.equal(row.kind, "companion");
+  assert.deepEqual(row.companion, {
+    role: "logi",
+    inFleet: true,
+    followingOrderFrom: "broadcast",
+    lastOrderHeard: "the fleet's target call",
+    canTag: false,
+    // ⚠ THE ONLY ROUTE THESE HAVE TO A PLAYER ON A HEADLESS RUN. No panel is
+    // open for a bot on the host, and a squad start is the case they exist for.
+    fitWarnings: ["One weapon has nothing loaded. It will not fire until you load it."],
+  });
+
+  // ⚠ FALSE AND NULL ARE DIFFERENT ANSWERS HERE. `canTag: false` means the
+  // server would drop this pilot's tag write; null means the roster has not
+  // been read yet. A headless companion is the ONLY place a player can see
+  // that distinction, so the wire must not flatten it.
+  assert.equal(row.companion.canTag, false);
+  assert.notEqual(row.companion.canTag, null);
+});
+
+test("a script run carries no companion readout at all", async () => {
+  const host = makeHost();
+  const started = await host.start(START);
+  const row = host.list(7).find((entry) => entry.botID === started.bot.botID);
+  assert.equal(row.kind, "script");
+  assert.equal(row.companion, null, "a script must not grow a companion badge");
+});
+
+test("the companion readout is a READOUT and never reaches the disk", async () => {
+  // ⚠ THE DURABILITY BOUNDARY, AND IT IS LOAD-BEARING. `abandonment` is
+  // persisted because it is a thirty-minute clock that must survive a restart.
+  // These five are what a pilot is doing this second: a resumed run re-derives
+  // them on its first tick, and writing them down would let a restart hand the
+  // player a confident readout of a fleet the pilot may since have left.
+  const rosterPath = tempRosterPath();
+  const host = makeHost({ persistPath: rosterPath, log: [] });
+  await host.start({ ...COMPANION_START, persistPath: rosterPath });
+  const persisted = readRosterFile(rosterPath);
+  assert.equal(persisted.length, 1);
+  for (const key of ["companion", "role", "inFleet", "followingOrderFrom", "lastOrderHeard", "canTag", "companionReadout"]) {
+    assert.ok(!(key in persisted[0]), `the roster row must not carry ${key}`);
+  }
+  // The one companion field that IS durable is still there to prove the test
+  // is looking at a companion row at all.
+  assert.ok("request" in persisted[0]);
 });
 
 test("the persisted roster row for a companion carries kind, the flat request, and its hash — not a script doc", async () => {

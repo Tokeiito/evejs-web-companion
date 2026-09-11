@@ -40,6 +40,21 @@
     type FleetCompanionOrderSource,
     type FleetCompanionRole,
   } from "../nav/fleetCompanionLoop.ts";
+  // The words this readout uses live in the shared layer, because the Bot
+  // Manager's per-pilot row says the same things about the same run and the two
+  // must not drift. See companionReadout.ts's header.
+  import {
+    COMPANION_ORDER_SOURCE_LABELS,
+    COMPANION_ROLE_LABELS,
+    canTagWords,
+    companionRoleLabel,
+    inFleetWords,
+    orderFromWords,
+  } from "../bots/companionReadout.ts";
+  import {
+    presetForRole,
+    remoteRepairsCanFire,
+  } from "../bots/companionRolePresets.ts";
   import {
     isFleetBroadcastFresh,
     type FleetBroadcastName,
@@ -242,6 +257,41 @@
       : [...pickedWeapon, itemID];
   }
 
+  /**
+   * Picking a role fills in that role's starting points.
+   *
+   * ⚠ IT OVERWRITES, AND THAT IS THE CONTRACT. A role is a starting point, so
+   * choosing one resets what it covers -- today the flee floor and nothing
+   * else. The table is deliberately narrow and companionRolePresets.ts records
+   * why each other field is excluded; a preset that also reset, say, the module
+   * picks would throw away work the operator cannot get back.
+   *
+   * ⚠ READS THE ROLE OFF THE EVENT, NOT OFF `role`. Both this and `bind:value`
+   * fire from the same change, and depending on the binding to have landed
+   * first would make the preset silently one selection stale.
+   */
+  function applyRolePreset(next: FleetCompanionRole): void {
+    const preset = presetForRole(next);
+    fleeHealthFloorPercent = Math.round(preset.fleeHealthFloor * 100);
+  }
+
+  /**
+   * Remote-rep modules that can never fire, because the call that would ask for
+   * them is a BROADCAST and this pilot is not listening to broadcasts.
+   *
+   * ⚠ THIS IS A WARNING, NEVER A CORRECTION. `obeys` is a deliberate setting
+   * and the panel does not quietly turn it back on -- see the `obeys` note in
+   * companionRolePresets.ts for why this is not a role preset.
+   */
+  const remoteRepsCannotFire = $derived(
+    !remoteRepairsCanFire({
+      obeys,
+      remoteShieldModuleIDs: pickedRemoteShield,
+      remoteArmorModuleIDs: pickedRemoteArmor,
+      remoteCapacitorModuleIDs: pickedRemoteCapacitor,
+    }),
+  );
+
   function toggleObeys(source: FleetCompanionOrderSource): void {
     obeys = obeys.includes(source) ? obeys.filter((row) => row !== source) : [...obeys, source];
   }
@@ -276,36 +326,6 @@
     }
   });
 
-  const roleLabels: Record<FleetCompanionRole, string> = {
-    dps: "DPS",
-    logi: "Logistics",
-    tackle: "Tackle",
-    support: "Support",
-  };
-
-  const orderSourceLabels: Record<FleetCompanionOrderSource, string> = {
-    broadcast: "Fleet broadcasts",
-    tag: "Target tags",
-    chat: "Fleet chat commands",
-    "squad-board": "The squad board",
-  };
-
-  function orderFromWords(value: FleetCompanionState["followingOrderFrom"]): string {
-    switch (value) {
-      case "broadcast":
-        return "a fleet broadcast";
-      case "tag":
-        return "a target tag";
-      case "chat":
-        return "a fleet chat command";
-      case "squad-board":
-        return "the squad board";
-      case "own-ladder":
-        return "its own judgement";
-      default:
-        return "nothing yet";
-    }
-  }
 
   /**
    * Roughly how long an abandoned pilot has left, in whole minutes.
@@ -394,19 +414,6 @@
     Location: "reporting position",
   };
 
-  function canTagWords(value: boolean | null): string {
-    if (value === null) {
-      return "not known";
-    }
-    return value ? "yes" : "no - not a fleet commander";
-  }
-
-  function inFleetWords(value: boolean | null): string {
-    if (value === null) {
-      return "not known";
-    }
-    return value ? "yes" : "no";
-  }
 
   function clamp(value: number, min: number, max: number): number {
     return Math.min(max, Math.max(min, value));
@@ -554,7 +561,7 @@
         </thead>
         <tbody>
           <tr>
-            <td data-label="Role">{$companion.role ? roleLabels[$companion.role] : "-"}</td>
+            <td data-label="Role">{companionRoleLabel($companion.role)}</td>
             <td data-label="In fleet">{inFleetWords($companion.inFleet)}</td>
             <td data-label="Following orders from">{orderFromWords($companion.followingOrderFrom)}</td>
             <td data-label="Last order heard">{$companion.lastOrderHeard ?? "-"}</td>
@@ -563,6 +570,21 @@
         </tbody>
       </table>
     </div>
+    {#if $companion.fitWarnings.length > 0}
+      <!--
+        WHAT THIS SHIP IS MISSING, measured once when the run started.
+        ADVISORY, NEVER A REFUSAL: the operator's rule is that a human either
+        loads the missing thing or ignores this and flies. Nothing here stops a
+        start, and nothing here nags on an unreadable fit -- an empty list is
+        what both "all well" and "could not tell" produce.
+      -->
+      <p class="note"><strong>Worth knowing about this fit:</strong></p>
+      <ul>
+        {#each $companion.fitWarnings as warning (warning)}
+          <li class="note">{warning}</li>
+        {/each}
+      </ul>
+    {/if}
     <!--
       WHAT THE FLEET IS SAYING. Deliberately shown even before this pilot can
       act on any of it: during live QA the first question is always "is the
@@ -656,14 +678,20 @@
 
     <h3>Role</h3>
     <p class="note">
-      Picks the defaults below - it does not gate what the companion can
-      actually do.
+      Picks the starting points below - it does not gate what the companion
+      can actually do, and every capability stays its own setting. Choosing a
+      role resets what it covers, so pick it first and tune afterwards.
     </p>
     <p class="field">
       <label for="companion-role">This pilot is</label>
-      <select id="companion-role" bind:value={role}>
+      <select
+        id="companion-role"
+        bind:value={role}
+        onchange={(event) =>
+          applyRolePreset((event.currentTarget as HTMLSelectElement).value as FleetCompanionRole)}
+      >
         {#each FLEET_COMPANION_ROLES as choice (choice)}
-          <option value={choice}>{roleLabels[choice]}</option>
+          <option value={choice}>{COMPANION_ROLE_LABELS[choice]}</option>
         {/each}
       </select>
     </p>
@@ -910,9 +938,17 @@
     <h3>What it listens to</h3>
     <p class="note">
       Turning a channel off never changes the order of who wins - the server's
-      own fleet warp always comes first, then a broadcast, then a chat command,
-      then this pilot's own flee rule, then its own judgement.
+      own fleet warp always comes first, then this pilot's own flee rule, then
+      a broadcast, then a chat command, then its own judgement.
     </p>
+    {#if remoteRepsCannotFire}
+      <p class="note">
+        <strong>Heads up:</strong> this pilot has remote repair modules ticked
+        but is not listening to fleet broadcasts. A call for shields or armour
+        arrives as a broadcast, so those modules will never fire. Tick Fleet
+        broadcasts below to answer them.
+      </p>
+    {/if}
     {#each FLEET_COMPANION_ORDER_SOURCES as source (source)}
       <label class="check">
         <input
@@ -920,7 +956,7 @@
           checked={obeys.includes(source)}
           onchange={() => toggleObeys(source)}
         />
-        {orderSourceLabels[source]}
+        {COMPANION_ORDER_SOURCE_LABELS[source]}
       </label>
     {/each}
     {#if obeys.includes("chat")}
@@ -937,6 +973,10 @@
         Whoever the fleet roster already names a commander is obeyed
         regardless. This is only for anyone else you want heard, by character
         ID - never filled in from chat text itself.
+      </p>
+      <p class="note">
+        Commands are read from LOCAL chat, so everyone in the system can see
+        what you type. Fleet chat is not reachable on this server at all.
       </p>
       {#if chatCommandSenderIDs.length > 0}
         <p class="note">
