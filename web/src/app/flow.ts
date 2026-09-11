@@ -237,6 +237,7 @@ import {
   decodeFleetStateChangeNotification,
   isFleetBroadcastFresh,
 } from "../bridge/fleetBroadcasts.ts";
+import { decodeJamNotification, tacklersHolding } from "../bridge/jamNotifications.ts";
 import type { BotScript, WorldRef } from "../bots/botScript.ts";
 import { decodeScriptValue } from "../bots/scriptCodec.ts";
 import { expandSubBots, hasSubBots, type BotResolution, type SubBotReference } from "../bots/subBots.ts";
@@ -1448,6 +1449,16 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const fleetTargetTags = decodeFleetStateChangeNotification(method, args);
     if (fleetTargetTags !== null) {
       store.apply({ type: "fleet/target-tags", tags: fleetTargetTags });
+      return;
+    }
+    // Fleet-companion phase 7 — `OnJamStart` / `OnJamEnd`, the ONLY read
+    // anywhere that says who is holding this ship down. Like the two fleet
+    // pushes above and unlike the invalidation sets below, these ARE the
+    // payload: there is no route to re-read them from, and a dropped one is a
+    // tackler the tag rung never learns about.
+    const jam = decodeJamNotification(method, args, receivedAtMs);
+    if (jam !== null) {
+      store.apply({ type: "space/jam", event: jam });
       return;
     }
     if (method !== null && fleetSnapshotNotifications.has(method)) {
@@ -5561,6 +5572,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           // here, and a companion polls no extra route for it.
           pendingFleetInvite: companionPendingInvite(),
           chatMessages,
+          // Rung 4, "tackle → tag". Narrowed to the two tackle jam types and
+          // freshness-filtered HERE, at observation build, for the same reason
+          // `fleetBroadcast` is: the slice keeps every jam the wire carried
+          // until its `OnJamEnd` lands, and one clock read per tick gives the
+          // whole ladder one consistent answer. Free — it rides the same
+          // notification drain the fleet slice does and polls nothing.
+          tackledBy: tacklersHolding(store.space.get().jams, Date.now()),
         };
       },
       issue: async (action) => {
@@ -5631,6 +5649,17 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           // since a fleet companion has no station to dock at here.
           case "travelTo":
             await startRoute(action.systemID);
+            return;
+          // Rung 4, "tackle → tag". ⚠ NOTHING IS READ BACK OFF THIS CALL, AND
+          // NOTHING CAN BE. The server refuses a non-commander with a bare
+          // `false` that its own caller discards, so the ack is identical
+          // whether the tag landed or was dropped. The gate ran before the
+          // write (`bridge/fleetCommand.ts`), and the confirmation is the
+          // letter turning up in a later `fleetTargetTags` — which is why the
+          // rung keeps its own attempt budget rather than trusting this
+          // returning cleanly.
+          case "setFleetTargetTag":
+            await api.setFleetTargetTag(action.targetID, action.tag, callOptions);
             return;
           default: {
             // ⚠ EXHAUSTIVE ON PURPOSE. Every FleetCompanionAction kind MUST be
