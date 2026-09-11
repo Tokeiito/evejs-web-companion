@@ -142,10 +142,12 @@ and publishes onto the SSE stream
 lands in the bounded `live` slice and is discarded. **The bytes are already
 there.**
 
-> ⚠ This makes the note in `src/squadBoard.js:18` out of date. It says the
-> in-game tag equivalent is blocked because "nothing in the client can READ a
-> tag back yet". The read path is the push channel, and it works. Fix that
-> comment when the tag decoder lands.
+> ⚠ This made the note in `src/squadBoard.js:18` out of date — it said the
+> in-game tag equivalent was blocked because "nothing in the client can READ a
+> tag back yet". **Fixed 2026-09-11 when the decoder landed.** That header now
+> describes the board as the FALLBACK beneath a real tag or broadcast, and says
+> why it must not be deleted: a fleet mechanism is visible to every pilot
+> including the humans, and the board is visible only to bots on one BFF.
 
 ### The fifteen broadcast names
 
@@ -176,11 +178,25 @@ questions that were previously marked "needs a live capture".**
 | `Target` | the tactical target | system | **yes** — primary |
 | `AlignTo` | an object, gated by `CanAlignOrWarpToTypeID` | system | **yes** — align |
 | `WarpTo` | an object, same gate | system | no — the server warps the fleet itself |
-| `JumpTo` | **a stargate** — gated to `groupStargate` | system | **yes** — a real jump, not just an align |
+| `JumpTo` | **a stargate** — gated to `groupStargate` | system | **partly** — see below |
 | `TravelTo` | **a solar system id** (`session.solarsystemid2`) | global | **yes** — route to it |
 | `JumpBeacon` | an **active beacon** the sender holds | global | prefer `OnBridgeModeChange` |
 | `EnemySpotted` / `NeedBackup` / `HoldPosition` / `InPosition` | the sender's **nearest object** (`GetNearestBall`) | global | log only |
 | `Location` | the sender's system, plus their nearest object | global | log only |
+
+⚠ **`JumpTo` COULD NOT BE BUILT AS THIS TABLE SAYS, and the row above is
+corrected to "partly".** Discovered while building it, 2026-09-11: `api.jump`
+needs the gate on BOTH sides of the jump, and the broadcast carries one. The far
+gate exists only in the static route graph, which is loaded asynchronously —
+and the companion's ladder is pure and synchronous and carries no route graph.
+Giving one rung its own copy of the autopilot's route solver is a bigger change
+than the rung earns, and inventing the second id risks flinging an unattended
+ship into the wrong system.
+
+So the companion warps to the called gate, closes on it, and HOLDS at jump
+range, and its readout says why rather than looking like a stuck bot. A later
+phase that threads the route graph into the observation can finish it. The rest
+of this table is unaffected.
 
 Three things fall out of this that no amount of reasoning would have produced:
 
@@ -238,6 +254,29 @@ stopped one. Do not invent a second staleness policy.
 **Prefer a real broadcast or tag over the squad board.** The board was always
 the stand-in for the in-game mechanism. Once tags decode, `squad: follow` should
 read: in-game tag first, then broadcast, then board, then own ladder.
+
+⚠ **WHY A TAG OUTRANKS A BROADCAST, which this doc asserted twice without ever
+saying.** It looks backwards: a broadcast is the fresher, more deliberate act,
+and a reader who trusts that intuition will "fix" the order. The reason is
+AUTHORITY, and it is in the server (checked 2026-09-11):
+
+- `setFleetTargetTag` (`fleetRuntime.js:1318-1326`) refuses any writer that is
+  not a commander -- `(member.job & FLEET_JOB_CREATOR) !== 0` or a role in
+  `FLEET_CMDR_ROLES`. **A tag that exists is provably a commander's.**
+- `sendBroadcast` (`:2519-2522`) checks `ensureFleetMembership` and nothing
+  else. Name, rate limit, range and per-recipient scope are all gated; **the
+  SENDER's rank is not.** Any fleet member may broadcast `Target`, and scope
+  only decides who hears it -- so receiving one says nothing about who sent it.
+
+So the ordering is not "state beats calls", it is "a verified commander beats
+an unverified one". Keep it, and keep this note with it.
+
+**The upgrade this points at, not built yet.** `OnFleetBroadcast` carries
+`senderCharID`, and `boundFleet.ts` already decodes each member's `role` and
+`job` -- fields nothing currently consumes. So a follower COULD check whether a
+broadcast came from a commander and rank a verified one above a tag. That is
+the same roster read phase 7's tagging gate needs, which is where it belongs;
+noted here so the two are built together rather than twice.
 
 ### 2. Chat commands
 
@@ -558,6 +597,104 @@ runs across pilots, as a per-run badge: in fleet, following whom, last order
 heard, and whether this pilot can tag. That last one matters because a pilot
 silently unable to tag looks identical to one that has nothing to tag.
 
+## Two things the server does not do, found by reading it
+
+Both were on the "needs a live capture" list. Neither needed one, and both
+overturn something this doc previously asserted.
+
+### Warp costs no capacitor here, so a "cap floor to protect the escape" is fiction
+
+Retail charges capacitor to warp (`warpCapacitorNeed`, dogma attribute 153) and
+that is why a flattened capacitor is fatal there. **eve.js does not implement
+it.** There is no reference to capacitor anywhere under `space/destiny/` — not
+in `warp.js`, `warpState.js`, `warpContract.js`, `warpBuilders.js` or
+`warpCommands.js`. A ship on this server warps fine at zero capacitor.
+
+So the framing this doc used — "the floor protects the escape, not the tank" —
+is wrong here, and the inverted rule it justified ("stop boosting while still
+hurt") loses its reason.
+
+**The floor that does earn its place already exists in this codebase.**
+`REPAIR_CAP_FLOOR = 0.2` (`scriptDecide.ts:1062`), shipped, not a placeholder,
+with the reasoning "an empty capacitor repairs nothing" — and already used to
+switch a running repairer off below it. The companion reuses that constant
+rather than inventing a second answer to the same question.
+
+If a per-fit number is ever wanted, both inputs are already on the wire:
+per-module activation cost is dogma attribute 6 (`moduleAttributes.ts`) and
+capacitor capacity is 482 (`shipStats.ts`), both flowing through
+`GET /api/bridge/bound-dogma`. That is a formula over readable quantities, not a
+measurement.
+
+### Recall-and-redeploy does not break an NPC's lock
+
+⚠ **This one means a requested behaviour cannot be built as described.**
+
+The ask was: when a drone starts taking damage, recall it and relaunch a bit
+later so the NPC loses lock. On this server there is **no target-loss memory and
+no drone cooldown of any kind**:
+
+- A recalled drone leaves the scene immediately (`droneRuntime.js:4305`).
+- On the NPC's next think tick — `thinkIntervalMs`, 100-500 ms, median ~185 ms
+  (`npcBehaviorLoop.js:4305`) — the target is simply gone and it re-scores every
+  candidate by distance (`findNearestCombatTarget:1814`).
+- The only stickiness is generic: profiles that set `allowTargetSwitching` hold
+  a target for `NPC_TARGET_SWITCH_INTERVAL_MS` (60 s; 10 s on a couple of dozen
+  burner profiles). **Roughly 40% of profiles set it at all**, so the rest can
+  relock the relaunched drone on the very next tick.
+- Nothing anywhere scores drones specially. There is no grudge, no memory, no
+  re-acquire delay to wait out.
+
+**What to build instead.** The recall itself is still worth having — it takes a
+damaged drone out of danger, and that half works perfectly. What changes is the
+relaunch trigger: it is not a timer, because no duration is safe. It is an
+**observable condition** — relaunch when something else is holding the rat's
+aggro (which the majority-profile 60 s stickiness does give you, once your ship
+has absorbed it), or when the drone is simply no longer being shot.
+
+So `droneRedeployHoldOffSeconds` survives as a floor on the wait, never as the
+thing that makes it safe. Do not describe this feature to a player as breaking
+lock; it does not.
+
+### The chat link format, read out of the client
+
+The third "unanswerable from source" item. It was answerable — from the client,
+which is the thing that produces the markup. What the eve.js server does not
+know, `ClientCodeGrabber` does.
+
+At Enter-press the chat window serialises with `GetValue(html=0)`
+(`chat/client/window.py:381`), which emits the **unquoted** form:
+
+```
+<url=showinfo:TYPEID//ITEMID>Display text</url>
+```
+
+`showinfo:{type_id}//{item_id}` comes from `format_show_info_url`
+(`evelink/format/show_info.py:8`). A solar system is `typeSolarSystem = 5`, so a
+system link is `<url=showinfo:5//30000142>Jita</url>`. The client's own decoder
+is `split(":")` then `split("//")` (`show_info/parse.py:22`) — mirror that.
+
+Accept the `<a href="showinfo:…">` form too: other client surfaces (mail,
+notifications) emit it, and being liberal costs nothing.
+
+⚠ **LINKS CONTAIN SPACES, AND THIS DECIDES THE GRAMMAR.** The URL half never
+does — it is a scheme word and decimal digits joined by `//`. But the display
+half is the object's name, and station and bookmark names routinely contain
+spaces ("Jita IV - Moon 4 - Caldari Navy Assembly Plant"). So a parser must
+**never whitespace-split a message before extracting the link**: split once on
+the literal `destination:` prefix, then run a tag regex over the remainder.
+
+Two smaller facts worth keeping:
+
+- `<`, `>` and `&` inside the display text are always entity-escaped
+  (`editPlainText.py:320`), so a station name can never spoof a closing `</url>`.
+- A message is hard-truncated at 2048 characters with a trailing `" ..."`
+  (`chat/client/util.py:51`), which can cut a link mid-tag. Tolerate a mangled
+  trailing link rather than rejecting the whole message.
+
+**The numeric id is authoritative — take `item_id`, ignore the display text.**
+That sidesteps name lookup and localisation entirely.
+
 ## Decisions to make before writing code
 
 **1. Who may command.** Broadcasts and tags are naturally bounded — fleet
@@ -585,11 +722,11 @@ call.
 script at all.** See "The shape of the thing" above. This was previously left
 open as "consider a `follow-the-fleet` block"; it is now settled the other way.
 
-**3. Precedence — DECIDED.** The order in which the authorities win, once, for
-every ambiguous case:
+**3. Precedence — DECIDED, and AMENDED 2026-09-11 when phase 6 was built.**
+The order in which the authorities win, once, for every ambiguous case:
 
 ```
-server fleet warp  >  FC broadcast  >  chat command  >  own flee rule  >  own ladder
+server fleet warp  >  own flee rule  >  FC broadcast  >  chat command  >  own ladder
 ```
 
 The consequence worth stating out loud, because it is the one that will look
@@ -597,12 +734,181 @@ like a bug: **a bot being fleet-warped does not flee, does not re-target, and
 does not answer a chat command until the warp lands.** That is correct. A pilot
 who breaks formation to save themselves mid-warp is not a fleet-mate.
 
+⚠ **The flee used to sit BELOW the FC broadcast, and that was wrong.** The
+original order read `... > chat command > own flee rule > own ladder`, which
+makes a standing target call outrank a pilot's own survival. It was written
+before there was any code, and `decideFleetOrders` was already contradicting it
+in a comment — "phase 6 must not put its flee beneath this rung; a pilot that
+never stops obeying a target call would never flee" — so the two could not both
+stand.
+
+**What phase 5 had already fixed, and what it had not.** The parking fix made a
+STANDING call (target locked, guns running, nothing new to issue) hand back a
+readout that the ladder holds aside, so rungs below it still get their tick. That
+removed the worst reading of the old order. What it did not remove: a fleet order
+with something REAL left to issue still wins outright, and `lockThenEngage`
+issues one lock and then one activate per weapon before it goes quiet. On a fresh
+primary with six guns that is seven ticks — about fourteen seconds at the two
+second cadence — and an FC that keeps re-calling extends it without limit.
+
+**The operator was asked, and chose the flee.** Fleet warp was never in dispute
+and keeps its place at the top: rung 1 yields to it unconditionally.
+
+⚠ **This is the acceptance test, and only one half of it discriminates.** With
+the flee rung moved back beneath the fleet rung, "a pilot obeying a *standing*
+target call still flees" STILL PASSES, because the parking fix handles it. The
+case that fails is **a pilot mid-lock on a fresh primary**. That was established
+by moving the rung, not by argument, and both tests are in
+`fleetCompanionLoop.test.ts` with a comment saying which is which.
+
+⚠ **A side effect worth knowing.** Nothing now sits beneath the fleet rung, so
+`CompanionDecision.standing` — built in phase 5 specifically so a flee could
+live below it — has no behavioural consumer. It is kept because the readout it
+protects is still correct (a pilot whose guns are running must not report
+"Standing by"), and because phase 8's chat rung is the next candidate for that
+slot. Do not remove it on the grounds that nothing needs it.
+
+**4. The headless launch grant — DECIDED: keep the machinery, drop the dialog.**
+
+A bot script's grant (`web/src/bots/runPolicy.ts:57`) is three fields: the exact
+stored revision, exactly the risk classes derived from that revision, and a hard
+minute cap. The BFF re-derives all of it and refuses anything broader or stale,
+because browser-supplied policy is never trusted as fact.
+
+The **consent** half does not earn its place here. It exists because a
+player-composed script can call arbitrary risky macros and the player should see
+which ones before it flies. A companion's surface is fixed at build time, the
+operator wrote the request, and a companion only ever flies in a fleet with a
+human in it (decision 5). So there is **no review step: the start control
+launches.**
+
+The **deadline** half is not about supervision at all, and it is the half that
+bites. `maxRuntimeMinutes` is the only thing that ends an unattended run:
+`botHost.js:405` derives `expiresAt` from it and nothing else, the timer at
+`botHost.js:512` is the sole unattended stop, and `resume()` (`botHost.js:734`)
+refuses any persisted row whose `expiresAt` has already passed — which is also
+what stops a restarted BFF from reviving yesterday's companion into a fleet that
+no longer exists.
+
+So the shape is:
+
+- `analyzeCompanionRunPolicy(request)`, mirroring `analyzeBotRunPolicy(script)`:
+  `combat` from `useDrones` / `defenseModuleIDs` / **any of the three
+  remote-repair module lists** (widened in phase 1, see below), `fleet` from `attemptsTagging`
+  and the warp yield, `social` from the chat send.
+- `validateBotLaunchGrant` **unchanged** — the request's revision and canonical
+  hash fill the `scriptRev` slot a script's revision fills today.
+- The cap defaults to `DEFAULT_SERVER_BOT_RUNTIME_MINUTES` and **is editable on
+  the start control**, so live QA can set a short one and watch it expire.
+
+⚠ **Do not pass an empty `riskClasses` to save the derivation.**
+`pilotRoster.ts:229` renders an empty list as the sentence "No consequential
+permissions", and the comment above it says that is deliberate — "an empty list
+is a sentence, not a blank". A pilot that writes fleet tags and sends chat must
+not describe itself that way in the Bot Manager.
+
+⚠ **TWO SUB-DECISIONS PHASE 1 MADE IN CODE, RECORDED HERE AFTER THE FACT.**
+Both were argued out in a comment and would otherwise be re-derived, or
+re-litigated, by whoever reads the code next.
+
+**(a) `combat` is earned by a remote repairer too.** The derivation above named
+`useDrones` and `defenseModuleIDs` only, because those were the fields that
+existed. Phase 1 added `remoteShieldModuleIDs`, `remoteArmorModuleIDs` and
+`remoteCapacitorModuleIDs` so the companion can answer a rep call, and all three
+now earn `combat` as well. The reasoning is the same one the class already
+rested on — "nothing on the ship can be cycled into a fight" is what withholds
+it, and a fitted remote repairer is exactly such a thing. A logistics pilot with
+a working repairer is a participant in a fight as much as a gunner is.
+
+**(b) A Heal broadcast is answered ABOVE a target tag**, which is a different
+question from the tag-versus-`Target` precedence above and has a different
+answer for a different reason. That one is authority. This one is urgency and
+NON-EXCLUSIVITY: a tag is standing state and is still true next tick, a rep call
+is time-critical, and a logi can hold a lock AND run a repairer — the two
+compete only for one tick's single atomic call. So the heal rung falls THROUGH
+the moment there is nothing new to start, rather than parking the tick. A logi
+whose repairer is already cycling still locks the primary; a pilot with nothing
+fitted is never blocked by a call it cannot answer.
+
+**5. A human in the fleet is a CONTINUOUS condition — DECIDED, with a protocol.**
+
+The rule the operator stated: a companion does no unsupervised work. That is not
+a preflight. `FLEET_COMPANION_REQUIREMENTS` today (`botRegistry.ts:442`) only
+asks whether the fleet **read** succeeded (`availability === "ready"`), so a
+companion alone in a fleet of one passes it, and passing it once says nothing
+about the next six hours.
+
+**The check.** At least one fleet member that **this host is not driving** —
+subtracting the tab's own claims and the BFF's bot roster (`claims`, already in
+`botHost.js`). Re-evaluated every tick, above every order source in the
+precedence list, because it is a liveness gate and not an order.
+
+⚠ Counting members does **not** work. Four companions plus the operator is four
+members after the operator logs off.
+
+⚠ Honest limit: another account's companion in the fleet reads as human, because
+we can only subtract the bots we know about. Accepted.
+
+**Why the naive version fails, read out of the server** (2026-09-10,
+`/d/evet/server/src/services/fleets/fleetRuntime.js`):
+
+- A disconnect **removes** the character from the fleet
+  (`handleSessionDisconnected`, :1861). So a logged-off human cannot satisfy the
+  check, and `inFleet` is not hollow. Good.
+- But the fleet **survives with one member**. That size test is `<= 1` *before*
+  the removal, so a human leaving a two-member fleet leaves the companion in a
+  fleet of one — and `assignBossToAnyRemainingMember` (:1838) **promotes it to
+  boss**. The failure mode is therefore not merely "keeps flying unsupervised";
+  it is "is promoted to commander, and its tag writes start succeeding", in a
+  fleet nobody is in. Only a drop to zero members destroys the fleet.
+
+**The protocol, when the check fails.** Get safe, then disband, then wait.
+
+1. **Get safe.** Dock, reusing the travel-and-dock machinery `travel-to-station`
+   already has (`continueHeadingHome` — one of the private helpers the handoff
+   lists). The scene reports stations directly: `station` is one of its own
+   entity kinds, and `api.dock(stationID)` is `api.ts:2409`.
+2. **Drop fleet.** `api.leaveFleet()` (`api.ts:1278`), per pilot. Each companion
+   decides for itself, so "all pilots drop fleet" is the emergent effect of one
+   rung — never a broadcast, and never one pilot acting for another.
+3. **Wait, bounded: 30 minutes.** Then stop and release the hull.
+4. **Rejoin only the human who left.** `OnFleetInvite` carries the inviter's
+   character id (`fleetCenter.ts:111`) and `api.acceptFleetInvite(fleetID)`
+   (`api.ts:1231`) accepts it. Accept **only** from a character id that was a
+   non-bot fleet-mate at the moment of abandonment, remembered on the record.
+   ⚠ Without that gate, an idle docked companion can be fleet-invited by a
+   stranger and handed a ship.
+
+⚠ **Order is load-bearing.** Safe first, *then* leave. Leaving first gives up the
+fleet-warp channel while the ship is still in space.
+
+⚠ **The 30-minute clock must be persisted.** The roster row survives a BFF
+restart (`persistRoster`), so an abandonment timestamp held only in memory hands
+the companion a fresh 30 minutes on every restart — an unbounded wait assembled
+out of bounded ones.
+
+**One step cannot be built as asked: "a safe spot (the sun) if no station
+exists".** There is no sun to warp to. The scene's entity kinds are `ship`,
+`structure`, `drone`, `asteroid`, `stargate`, `station`, `sentryGun`,
+`container`, `cynoField` and `signatureSite` — no sun, no planet, no celestial —
+and there is no celestial read anywhere in `api.ts` or on the BFF, whose map
+routes are static-data station and system lookups. Checked 2026-09-10.
+
+What exists instead, and is better: **a bookmark.** `api.loadBookmarks` and
+`api.warpToBookmark` (`api.ts:3823`, `:3830`) are both already there, so the safe
+spot is one optional field on the request — `safeSpotBookmarkID` — and the
+operator picks somewhere they have actually checked, rather than the celestial
+every other pilot in the system also warps to. A system with no station **and**
+no bookmark is the one case with nothing to do: the companion stops where it is
+and says why, because a fabricated safe spot is worse than an honest stop.
+
 ## Work breakdown
 
 Ordered by value per unit of work. Phases 1-3 need no gateway change.
 
 | # | Phase | Depends on | Size |
 | --- | --- | --- | --- |
+| 0b | **DONE 2026-09-11.** Supervision gate + abandonment protocol (decision 5): the non-bot-member check as a top rung, dock, drop fleet, bounded wait, invite-gated rejoin | botHost persistence for the clock | medium; the rejoin gate is the careful part |
 | 1 | `OnFleetBroadcast` + `OnFleetStateChange` decoders, store slice with TTL, `follow-the-fleet` block covering Target / AlignTo / HealShield / HealArmor | — | largest single chunk, entirely in-repo |
 | 2 | Yield to `inWarp`; precedence rules | 1 | small |
 | 3 | Tank-up block (hardeners + repairers, cap-aware) | — | small, independent |
@@ -641,8 +947,10 @@ them with a real session before building on a guess — the
    `<url=…>` token, or something else, and **whether it contains literal spaces**
    — which is what would break a naive space-splitting command parser.
 
-   Until then, `destination: <name>` taking a plain system name is the buildable
-   version, and does not block phase 8.
+   **ANSWERED 2026-09-10 from the client** — see "The chat link format" above.
+   The format is `<url=showinfo:5//ITEMID>Name</url>`, the numeric id is
+   authoritative, and links contain spaces. `destination: <name>` remains a fine
+   fallback, but the link form is now buildable.
 
    ⚠ The `/`-prefixed and `.`-prefixed chat commands in `chatCommands.js` are a
    **server-admin GM console**, not related to this feature. Do not build the
@@ -655,9 +963,10 @@ them with a real session before building on a guess — the
    answer was a notification, not a field, which is why looking only at
    `space.ts` said no.
 
-3. **The NPC re-target cadence** after a drone leaves and re-enters space.
-   Determines the drone redeploy hold-off default. **Still open** — needs a
-   measurement, not a code read.
+3. ~~The NPC re-target cadence.~~ **ANSWERED 2026-09-10, and it kills the
+   mechanic.** There is no target-loss memory and no drone cooldown; the AI
+   re-scores by distance every 100-500 ms. See "Two things the server does not
+   do" above. No measurement was needed — the AI is in the server source.
 
 4. ~~Whether the two fleet notifications arrive wrapped in `__MultiEvent`.~~
    **ANSWERED 2026-09-10: no, never.** `notifyFleetMultiEvent`
@@ -685,6 +994,38 @@ them with a real session before building on a guess — the
    session only ever receives a broadcast it already passed both filters for.
    `scope` still arrives as arg[1], but for labelling, not for filtering.
 
+### The exact positional shape of both notifications
+
+Read out of `fleetRuntime.js:2538` and confirmed against the decompiled
+client's own handler signature (`fleetSvc.py:1542`,
+`def OnFleetBroadcast(self, name, scope, charID, solarSystemID, itemID, typeID)`).
+Recorded here because the tables above describe what the fields MEAN without
+ever stating the order, and a decoder needs the order.
+
+`OnFleetBroadcast` is SIX positional arguments:
+
+```
+[0] name                 one of the 15; the server refuses anything else
+[1] scope                1 = DOWN, 2 = UP, 3 = ALL (fleetConstants.js:11-13)
+[2] senderCharID         normalized server-side, plain safe number
+[3] senderSolarSystemID  normalized server-side, plain safe number
+[4] itemID               NOT normalized - see the subtlety below
+[5] typeID               NOT normalized - see the subtlety below
+```
+
+⚠ **`senderSolarSystemID` sits BETWEEN the sender and the itemID.** A decoder
+that assumes the obvious four-field shape reads the system id as the target.
+
+`OnFleetStateChange` is ONE argument, and **the question the implementation doc
+called "the one genuinely open question in phase 1" is now closed.**
+`args[0]` is a `util.KeyVal` whose `targetTags` field carries the dict
+(`buildFleetStateChangePayload`, `fleetPayloads.js:207-211`) - so `targetTags`
+is ONE FIELD of a state object, not the payload itself. Both server call sites
+(`fleetRuntime.js:899` fleet-wide, `:1675` on join) use the identical builder,
+so there is no second shape to handle. The spec's belt-and-braces fallback
+(treat `args[0]` as the dict if the field is absent) costs nothing and should
+stay, but it is now insurance rather than a coin flip.
+
 ### One decoder subtlety, found while answering 4 and 5
 
 `OnFleetBroadcast`'s `senderCharID` and `senderSolarSystemID` are normalised
@@ -703,6 +1044,40 @@ target.
 
 Fleet target tags do **not** have this problem: `buildTargetTagsPayload` runs
 every key through `toInteger` server-side, so tag keys are plain JSON numbers.
+
+⚠ **A READING OF THE MARSHAL PATH SAYS THE OPPOSITE, AND IT IS THE WRONG PATH.**
+Re-checked 2026-09-11 after a survey concluded no bare-string case could exist.
+That survey traced `sendNotification` -> `marshalEncode`, where a bigint becomes
+a lossless `PyLongLong` and no string is ever produced. That is correct **for
+the retail client**, which speaks binary Python-marshal. Our web client does
+not: it reads the web gateway's JSON, and `encodeJsonSafeCallValue`
+(`_secondary/express/evejsWebGatewayRuntime.js:4203`) is
+
+```js
+JSON.parse(JSON.stringify(value, (key, fieldValue) => (
+  typeof fieldValue === "bigint" ? fieldValue.toString() : fieldValue
+)))
+```
+
+applied to `notifications` on every response (`:6403`, `:6525`, `:6680`) and to
+`notification` on the stream (`:6500`). A bigint id therefore reaches US as a
+bare decimal string. **Keep the `/^\d+$/` fallback and keep the test that pins
+it**, and do not let a marshal-path argument talk anyone out of either.
+
+### The tag alphabet the real client actually offers
+
+Settled 2026-09-11 from the decompiled client (`menusvc.py:1943-1948`). The
+server enforces no vocabulary at all (below), but the stock client's tag menu
+offers exactly:
+
+- the digits `0`-`9`
+- the letters `A B C D E F G H I J X Y Z` - note the classic gap, **no K
+  through W**
+
+So those are what a human FC in the real client will actually send, and they
+are what our ranking should order deliberately. It does not narrow the reader's
+obligation one bit: `normalizeFleetTag` still accepts any non-empty string, so
+an unrecognised tag must be RANKED rather than dropped.
 
 ### The tag alphabet is ours to choose
 

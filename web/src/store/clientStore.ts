@@ -88,6 +88,7 @@ import type {
   StationStatic,
   CustomBotState,
   MiningBotState,
+  FleetCompanionState,
   MissionBotState,
   SkillsState,
   PlanetsState,
@@ -98,6 +99,7 @@ import type {
 } from "./types.ts";
 import type { NamesState } from "./names.ts";
 import { deriveShipStats } from "../bridge/shipStats.ts";
+import { applyJamEvent, type ActiveJam } from "../bridge/jamNotifications.ts";
 
 // --- Typed state slices ----------------------------------------------------
 
@@ -173,6 +175,7 @@ export interface ClientState {
   readonly travel: TravelState;
   readonly bot: MiningBotState;
   readonly missionBot: MissionBotState;
+  readonly companion: FleetCompanionState;
   readonly customBot: CustomBotState;
   readonly bots: BotsState;
   readonly chat: ChatState;
@@ -359,6 +362,9 @@ const INITIAL_FLEET: FleetCenterState = Object.freeze({
   readError: null,
   actionError: null,
   refreshedAtMs: null,
+  lastBroadcast: null,
+  targetTags: null,
+  authoritativeFleetID: null,
 });
 
 const INITIAL_SCANNER: ScannerCenterState = Object.freeze({
@@ -514,6 +520,7 @@ const INITIAL_SPACE: SpaceState = Object.freeze({
   error: null,
   gateLinks: Object.freeze([]) as readonly GateLink[],
   gateLinksError: null,
+  jams: Object.freeze([]) as readonly ActiveJam[],
 });
 
 // R23 slice A — the generic in-space action layer. Reset alongside the space
@@ -614,6 +621,22 @@ const INITIAL_CUSTOM_BOT: CustomBotState = Object.freeze({
 // R36 — the mission bot's readout. Every "unknown" is null, never 0 or "": an
 // unmeasured payout must not render as "earned nothing", and a job whose name
 // has not been read must not render as a job with no name.
+const INITIAL_FLEET_COMPANION: FleetCompanionState = Object.freeze({
+  status: "idle" as FleetCompanionState["status"],
+  phase: null,
+  action: null,
+  why: null,
+  inFleet: null,
+  followingOrderFrom: null,
+  lastOrderHeard: null,
+  canTag: null,
+  fitWarnings: Object.freeze([]),
+  abandonment: null,
+  startedAt: null,
+  startError: null,
+  failureReason: null,
+});
+
 const INITIAL_MISSION_BOT: MissionBotState = Object.freeze({
   status: "idle" as MissionBotState["status"],
   phase: null,
@@ -772,6 +795,7 @@ export interface ClientStore {
   readonly travel: ReadableSignal<TravelState>;
   readonly bot: ReadableSignal<MiningBotState>;
   readonly missionBot: ReadableSignal<MissionBotState>;
+  readonly companion: ReadableSignal<FleetCompanionState>;
   readonly customBot: ReadableSignal<CustomBotState>;
   readonly bots: ReadableSignal<BotsState>;
   readonly chat: ReadableSignal<ChatState>;
@@ -831,6 +855,7 @@ export function createClientStore(): ClientStore {
   const travel = createSignal<TravelState>(INITIAL_TRAVEL);
   const bot = createSignal<MiningBotState>(INITIAL_BOT);
   const missionBot = createSignal<MissionBotState>(INITIAL_MISSION_BOT);
+  const companion = createSignal<FleetCompanionState>(INITIAL_FLEET_COMPANION);
   const customBot = createSignal<CustomBotState>(INITIAL_CUSTOM_BOT);
   const bots = createSignal<BotsState>(INITIAL_BOTS);
   const chat = createSignal<ChatState>(INITIAL_CHAT);
@@ -877,6 +902,7 @@ export function createClientStore(): ClientStore {
     travel: travel.get(),
     bot: bot.get(),
     missionBot: missionBot.get(),
+    companion: companion.get(),
     customBot: customBot.get(),
     bots: bots.get(),
     chat: chat.get(),
@@ -931,6 +957,7 @@ export function createClientStore(): ClientStore {
         travel.set(INITIAL_TRAVEL);
         bot.set(INITIAL_BOT);
         customBot.set(INITIAL_CUSTOM_BOT);
+        companion.set(INITIAL_FLEET_COMPANION);
         chat.set(INITIAL_CHAT);
         live.set(INITIAL_LIVE);
         break;
@@ -991,6 +1018,7 @@ export function createClientStore(): ClientStore {
         travel.set(INITIAL_TRAVEL);
         bot.set(INITIAL_BOT);
         customBot.set(INITIAL_CUSTOM_BOT);
+        companion.set(INITIAL_FLEET_COMPANION);
         chat.set(INITIAL_CHAT);
         live.set(INITIAL_LIVE);
         break;
@@ -1025,6 +1053,7 @@ export function createClientStore(): ClientStore {
         travel.set(INITIAL_TRAVEL);
         bot.set(INITIAL_BOT);
         customBot.set(INITIAL_CUSTOM_BOT);
+        companion.set(INITIAL_FLEET_COMPANION);
         chat.set(INITIAL_CHAT);
         live.set(INITIAL_LIVE);
         break;
@@ -1368,6 +1397,41 @@ export function createClientStore(): ClientStore {
         break;
       case "fleet/loaded": {
         const current = fleet.get();
+        // ⚠ Broadcasts and target tags are PER-FLEET: a dict left over from
+        // the previous fleet, read as current in the window before the new
+        // fleet's first OnFleetStateChange arrives, would point the guns at
+        // ships that are not there. Keyed on the fleetID ITSELF changing, not
+        // on availability changing — those are different events, and only a
+        // real fleet swap is the hazard. A "ready" refresh of the SAME fleet
+        // must not wipe out a broadcast or tag map that just arrived.
+        //
+        // ⚠ AND AN UNREADABLE FLEET IS NOT A FLEET SWITCH. "unavailable" is the
+        // arm every read failed on — a gateway timeout, say — and it carries a
+        // null `fleetID`, so comparing ids alone reads a blip as "you left
+        // fleet 1 and joined nothing" and clears both fields.
+        //
+        // That is not a cosmetic wipe. `targetTags` back at `null` means "never
+        // received", and tags only arrive again when the commander CHANGES one
+        // — which may be many minutes into a fight. So a single failed read
+        // would silently switch tag-following off and leave it off, with the
+        // readout showing nothing wrong.
+        //
+        // Could-not-look is never evidence of a change, which is the same rule
+        // `authoritativeFleetMemberCharacterIDs` applies one layer down and the
+        // same one the companion's supervision gate fails open on. Only an
+        // AUTHORITATIVE read ("ready" or "not-in-fleet") gets to say the fleet
+        // changed.
+        // ⚠ COMPARED AGAINST `authoritativeFleetID`, NEVER `current.fleet.fleetID`.
+        // An unavailable read is stored like any other, so `current.fleet` is
+        // already the decoded-but-empty value with a null id by the time the
+        // NEXT read arrives. Comparing against it means a recovery to the very
+        // same fleet reads as a switch and wipes tags nobody left behind --
+        // which is exactly the bug that survived the first attempt at this
+        // guard, because refusing to clear ON the blip does nothing about the
+        // blip having already destroyed the basis.
+        const authoritative = event.availability !== "unavailable";
+        const switchedFleet =
+          authoritative && current.authoritativeFleetID !== event.fleet.fleetID;
         fleet.set({
           ...current,
           loaded: true,
@@ -1377,6 +1441,12 @@ export function createClientStore(): ClientStore {
           // Joining consumes the invite. Keeping it after a later leave would
           // falsely resurrect an already-used popup.
           pendingInvite: event.availability === "ready" ? null : current.pendingInvite,
+          lastBroadcast: switchedFleet ? null : current.lastBroadcast,
+          targetTags: switchedFleet ? null : current.targetTags,
+          // Only an authoritative read moves the basis; a blip leaves it alone.
+          authoritativeFleetID: authoritative
+            ? event.fleet.fleetID
+            : current.authoritativeFleetID,
           readError: event.readError,
           refreshedAtMs: event.refreshedAtMs,
         });
@@ -1398,6 +1468,12 @@ export function createClientStore(): ClientStore {
         break;
       case "fleet/pending-invite":
         fleet.set({ ...fleet.get(), pendingInvite: event.invite });
+        break;
+      case "fleet/broadcast":
+        fleet.set({ ...fleet.get(), lastBroadcast: event.broadcast });
+        break;
+      case "fleet/target-tags":
+        fleet.set({ ...fleet.get(), targetTags: event.tags });
         break;
       case "fleet/cleared":
         fleet.set(INITIAL_FLEET);
@@ -1785,9 +1861,19 @@ export function createClientStore(): ClientStore {
           error: null,
           gateLinks: event.gateLinks ?? previous.gateLinks,
           gateLinksError: event.gateLinks !== undefined ? null : previous.gateLinksError,
+          // ⚠ CARRIED FORWARD, for a different reason than the gate links
+          // above. The jams are not part of a snapshot read at all — they are
+          // folded from pushes that arrive on their own schedule, and the
+          // snapshot poll runs ~1s. Rebuilding them from `event` would wipe a
+          // live scram once a second and leave the tackle rung looking at an
+          // empty set on most ticks.
+          jams: previous.jams,
         });
         break;
       }
+      case "space/jam":
+        space.set({ ...space.get(), jams: applyJamEvent(space.get().jams, event.event) });
+        break;
       case "space/gate-map-error":
         // The star map could not be read. Say so rather than rendering a grid
         // whose gates silently offer nothing.
@@ -2245,6 +2331,37 @@ export function createClientStore(): ClientStore {
       case "mission-bot/cleared":
         missionBot.set(INITIAL_MISSION_BOT);
         break;
+      // The fleet companion. Same construction as the two bots above: the loop
+      // decides, this slice records.
+      case "companion/started":
+        companion.set({
+          ...INITIAL_FLEET_COMPANION,
+          status: "running",
+            startedAt: event.startedAt,
+          fitWarnings: event.fitWarnings,
+        });
+        break;
+      case "companion/progress":
+        companion.set({
+          ...companion.get(),
+          status: event.status,
+          phase: event.phase,
+          action: event.action,
+          why: event.why,
+            inFleet: event.inFleet,
+          followingOrderFrom: event.followingOrderFrom,
+          lastOrderHeard: event.lastOrderHeard,
+          canTag: event.canTag,
+          abandonment: event.abandonment,
+          failureReason: event.failureReason,
+        });
+        break;
+      case "companion/start-error":
+        companion.set({ ...companion.get(), status: "idle", startError: event.message });
+        break;
+      case "companion/cleared":
+        companion.set(INITIAL_FLEET_COMPANION);
+        break;
       case "chat/loaded": {
         const current = chat.get();
         chat.set({
@@ -2351,6 +2468,7 @@ export function createClientStore(): ClientStore {
   const botStatus: Readonly<Record<ShipControllerID, () => string>> = {
     mining: () => bot.get().status,
     mission: () => missionBot.get().status,
+    companion: () => companion.get().status,
     custom: () => customBot.get().status,
   };
 
@@ -2446,6 +2564,7 @@ export function createClientStore(): ClientStore {
     travel: readonlySignal(travel),
     bot: readonlySignal(bot),
     missionBot: readonlySignal(missionBot),
+    companion: readonlySignal(companion),
     customBot: readonlySignal(customBot),
     bots: readonlySignal(bots),
     chat: readonlySignal(chat),

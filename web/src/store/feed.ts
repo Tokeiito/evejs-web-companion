@@ -92,9 +92,16 @@ import type {
 } from "./types.ts";
 import type { BoundDogmaAllInfo } from "../bridge/boundDogma.ts";
 import type { BoundFleet } from "../bridge/boundFleet.ts";
+import type { FleetBroadcast } from "../bridge/fleetBroadcasts.ts";
+import type { JamEvent } from "../bridge/jamNotifications.ts";
 import type { FleetAvailability, FleetPendingInvite } from "../bridge/fleetCenter.ts";
 import type { ShipStats } from "../bridge/shipStats.ts";
 import type { MiningRungID, MiningStepID } from "../nav/miningLadder.ts";
+import type {
+  CompanionAbandonmentRecord,
+  CompanionOrderAuthority,
+  FleetCompanionRunState,
+} from "../nav/fleetCompanionLoop.ts";
 
 export type FeedStatus = "idle" | "connecting" | "connected" | "disconnected";
 
@@ -333,6 +340,13 @@ export type FeedEvent =
   | { readonly type: "fleet/action-started"; readonly action: FleetAction }
   | { readonly type: "fleet/action-finished"; readonly error: string | null }
   | { readonly type: "fleet/pending-invite"; readonly invite: FleetPendingInvite }
+  // A one-shot fleet call (OnFleetBroadcast). Pure push-to-store, same shape
+  // as fleet/pending-invite: last-write-wins, no reducer-side interpretation.
+  | { readonly type: "fleet/broadcast"; readonly broadcast: FleetBroadcast }
+  // The standing itemID -> tag dict from OnFleetStateChange. `tags` is
+  // whatever decodeFleetStateChangeNotification produced — an empty map is a
+  // legitimate "received, nothing tagged" answer, not "not received".
+  | { readonly type: "fleet/target-tags"; readonly tags: ReadonlyMap<number, string> }
   | { readonly type: "fleet/cleared" }
   // Scanner / Exploration Center. Both reads are independent; a failed scan is
   // unknown, never a successful empty current system.
@@ -587,6 +601,11 @@ export type FeedEvent =
       readonly gateLinks?: readonly GateLink[];
     }
   | { readonly type: "space/gate-map-error"; readonly message: string }
+  // Fleet-companion phase 7 — one `OnJamStart` / `OnJamEnd` push, already
+  // decoded. Carries the event rather than the folded set on purpose: the fold
+  // is identity-sensitive (a jam IS the source/module pair) and belongs in one
+  // place, beside the decoder that knows the wire, not in each producer.
+  | { readonly type: "space/jam"; readonly event: JamEvent }
   // Goal R23 slice A — the GENERIC in-space action layer. Nothing here names
   // mining or combat: these five events carry a target, a module and an effect
   // name, and a later combat goal reuses them unchanged.
@@ -845,6 +864,35 @@ export type FeedEvent =
     }
   | { readonly type: "mission-bot/start-error"; readonly message: string | null }
   | { readonly type: "mission-bot/cleared" }
+  // The fleet companion's readout (fleet-companion phase 0). Same construction
+  // as the two bots above: the loop pushes, this slice records.
+  | {
+      readonly type: "companion/started";
+      readonly startedAt: number;
+      /** What is missing or unusable about this pilot's fit. Advisory, never fatal. */
+      readonly fitWarnings: readonly string[];
+    }
+  | {
+      readonly type: "companion/progress";
+      readonly status: FleetCompanionRunState;
+      readonly phase: string | null;
+      readonly action: string | null;
+      readonly why: string | null;
+      readonly inFleet: boolean | null;
+      readonly followingOrderFrom: CompanionOrderAuthority | null;
+      readonly lastOrderHeard: string | null;
+      readonly canTag: boolean | null;
+      /**
+       * Decision 5's abandonment, or null. Carried through the slice rather
+       * than kept in the loop because the BFF's bot host reads it off the
+       * store to persist the thirty-minute clock — see
+       * FLEET_COMPANION_ABANDONMENT_WAIT_MS.
+       */
+      readonly abandonment: CompanionAbandonmentRecord | null;
+      readonly failureReason: string | null;
+    }
+  | { readonly type: "companion/start-error"; readonly message: string | null }
+  | { readonly type: "companion/cleared" }
   // The player Bot Builder runner's readout (pushed each tick; survives the shell switch).
   | { readonly type: "custom-bot/started"; readonly name: string }
   | {

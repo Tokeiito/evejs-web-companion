@@ -5,10 +5,18 @@ Companion to [fleet-companion-plan.md](fleet-companion-plan.md). That doc says
 know it works**. Read the plan first — nothing here re-argues a decision made
 there.
 
-Status: **not started, phases 1-6 specified.** Specs for phases 1, 2, 4,
-5 and 6 are below and have been checked against the code. Two of the three live
-unknowns are answered (see the plan doc); the chat-link shape remains open and
-needs a capture, not a code read.
+Status: **phases 0, 0b, 1 and 2 are COMPLETE** (see the handoff doc for state).
+Specs for 3, 4, 5 and 6 are below and have been checked against the code.
+
+⚠ **ALL THREE live unknowns are answered, and this line used to say the
+chat-link shape "remains open and needs a capture, not a code read".** It was
+wrong twice over: the plan doc had ALREADY answered it from the decompiled
+client on 2026-09-10 -- see its "The chat link format, read out of the client"
+section, which gives the showinfo url form, the anchor-tag variant, the
+entity-escaping, the 2048-char truncation, and the rule that a link CONTAINS
+SPACES so a parser must never whitespace-split before extracting it -- and the
+answer simply never reached this file. A doc that calls a settled question open
+costs a session re-answering it.
 
 ## Branch and commit strategy
 
@@ -21,11 +29,14 @@ enough that a single commit would be unreviewable, and small enough that a
 long-lived branch is unnecessary. Within a phase, one commit per step of that
 phase's spec.
 
-The gateway patch (phase 8) does **not** live here. It lands in `/d/evet`, and
-this repo's phase 8 branch depends on it being applied to the running container
-first. Sequence that deliberately: a companion branch that cannot run because
-the gateway underneath it has not been patched is a branch nobody can review.
-The procedure is below.
+⚠ **THE GATEWAY PATCH BELOW IS CANCELLED, 2026-09-11.** The operator decided we
+do not modify upstream and work with what we have, so fleet chat is not
+happening and neither is the PR this section proposed. Phase 8 is finished as
+shipped -- its parser is channel-agnostic and its commands ride LOCAL chat.
+
+The section is kept because it records what was investigated about the gateway's
+chat layer, which is worth having if the question ever returns. **It is not a
+plan.** See "Fleet chat is not happening" in the handoff doc.
 
 ### The phase 8 gateway patch, in `/d/evet`
 
@@ -176,7 +187,7 @@ the role (see the tagging constraint in the plan doc).
 
 | Phase | The scenario | What proves it |
 | --- | --- | --- |
-| 1 | FC broadcasts `Target` on a rat; FC tags a rat `A` | the follower shoots that rat, and the tag ranks above its own ladder |
+| 1 | FC broadcasts `Target` on a rat; FC tags a rat `A` | ⚠ a SCRIPT bot set to `squad: follow` shoots that rat. The COMPANION only LOCKS it — it has no weapons rung and no weapon-module field on its request, so a locked-and-not-shooting pilot is the pass condition, not a failure. Both must rank the tag above their own ladder |
 | 2 | FC fleet-warps while the follower is mid-approach | the follower stops issuing orders and does not produce refusals |
 | 3 | rats aggress a companion pilot | hardeners come on, booster cycles, capacitor does not flatline |
 | 4 | order each of the four new calls by hand | each lands; the tag one is run BOTH as a commander and as a plain member |
@@ -238,13 +249,13 @@ not exist is worse than no spec, because it reads as authority.
 | --- | --- | --- |
 | 1 | broadcast + tag decode, store slice, observation, script surface | **below, verified** |
 | 4 | keep-at-range / orbit-a-mate / fleet tag / jump-through-fleet | **below, verified** |
-| 5 | drone recall-and-redeploy | **below, verified** |
-| 6 | flee and return | **below, verified** |
+| 5 | drone recall-and-redeploy | **BUILT** — see the handoff doc. ⚠ two claims in the spec below are WRONG and the handoff says why: a recalled drone does NOT leave the scene immediately, and a recall does NOT merge it into a stack |
+| 6 | flee and return | **BUILT** — see the handoff doc's phase 6 section. ⚠ the spec's PACKAGING half is void (it predates the sibling-loop decision), and the rung went ABOVE the fleet rung rather than below, which the OPERATOR decided |
 | 2 | one inWarp guard | **below, verified** |
-| 3 | tank-up block | small enough to spec inline when started |
-| 7 | tackle -> tag | unblocked: the tackle read exists; spec when started |
-| 8 | blocked on the chat-link wire shape | blocked |
-| 9 | blocked on 1-8 | blocked |
+| 3 | tank-up: port the DSL thermostat into the companion | **below, verified** |
+| 7 | tackle -> tag | **BUILT** — see the handoff doc's phase 7 section. ⚠ the read did not exist and had to be built (decoder, slice, push, observation); the rung went ABOVE obeying the fleet, not below |
+| 8 | chat commands, on LOCAL chat | **DONE** — the fleet-channel work is CANCELLED, not pending; see the handoff |
+| 9 | squad roles + Bot Manager badge | **unblocked** — 1-8 are all closed |
 
 ## Open questions being investigated
 
@@ -563,7 +574,37 @@ the way past.
 
 **`scope` needs no filtering, and that is now confirmed rather than assumed.**
 The spec's instinct to keep it an opaque passthrough was right. The server
-filters on scope and range before any session is notified.
+filters on scope and range before any session is notified —
+`collectBroadcastRecipientSessions` for range and `shouldReceiveBroadcast` for
+scope, both inside `sendBroadcast` before any `notifySession` call.
+
+**There are FOUR fleet-slice resets, not three.** Verified 2026-09-11:
+`clientStore.ts:935` (`session/logged-out`), `:998` (**`character/online`** —
+the one this doc missed), `:1033` (`character/offline`) and `:1427`
+(`fleet/cleared`). Any new field on the slice must be reset by all four, and
+`character/online` is the easy one to miss because "coming online" does not
+sound like a reset.
+
+⚠ **`fleet/cleared` is reachable-but-unwired.** It is declared in `feed.ts` and
+handled in `clientStore.ts`, but nothing in `flow.ts` dispatches it — its only
+other reference is `fleetSlice.test.ts`. So do not rely on it to clear a
+broadcast or a tag dict in production; the clear-on-fleet-switch rule has to
+hang off something that actually fires.
+
+**⚠ A PREREQUISITE THIS SPEC IS MISSING: a headless companion receives NO pushed
+notifications at all.** Found 2026-09-11. `applyPushedNotification` has exactly
+one caller — the SSE `notification` branch (`flow.ts:1273`) — and `botHost.js`
+hands every headless bot `stubEventSource()`, a channel that is never live. The
+BFF already anticipates this: "every request route still drains notifications
+onto its response, so a stream that never opens or drops mid-flight degrades to
+the old poll-based behaviour rather than losing data" (`server.js:585`). But
+**nothing in `flow.ts` consumes that drain**, so the fallback is only half
+built. Most push consumers today have a re-read fallback, which is why this has
+gone unnoticed; a broadcast has none — there is no "read the current broadcast"
+route, so a missed push is an order lost for good. Phase 1 needs a commit that
+feeds drained notifications into the same dispatch, or the whole phase works in
+a browser tab and is dead on the bot host that decision 3 made the real
+deployment target.
 
 **`itemID` can arrive as a bare numeric string.** The spec reasoned these ids sit
 under 2^53 and need `unwrapLong` only for the wrapper case. True as far as it
@@ -579,6 +620,148 @@ accepts **any** non-empty trimmed string and no tag vocabulary exists anywhere
 in the server. So the ordering is ours to define. Two consequences: our writer
 picks its own letters, and our reader must rank an unrecognised tag rather than
 drop it, because a human FC in the real client can type anything at all.
+
+### Phase 3 — the spec
+
+⚠ **THE RUNG-2 TABLE ABOVE IS WRONG IN BOTH ITS "ENTIRELY NEW" ROWS, and this
+spec replaces it.** Checked against the code 2026-09-11. Self-repair and
+capacitor awareness both already exist, symmetric across all three tank layers,
+and have done since before this feature started:
+
+| The table said | What is actually there |
+| --- | --- |
+| shield/armour/hull booster cycling — "entirely new", "nothing in the codebase self-reps" | The `repair` interrupt response (`scriptDecide.ts`) is a per-layer self-repair thermostat. `repairersFor(kind, obs)` dispatches `shield-below` → `shieldRepairerIDs`, `armor-below` → `armorRepairerIDs`, `hull-below` → `hullRepairerIDs`, and `health-below` → all three. It switches one idle repairer on per tick, self-targeted |
+| capacitor awareness — "entirely new", "`hardenersOn` has none" | The same response stops at `REPAIR_CAP_FLOOR`, and INVERTS below it: it switches a running repairer OFF even while the layer is still hurt |
+| hardeners off when the fight ends — "new" | Correct, and it exists as `standDownAfterFight`, which is the SHAPE to copy, exactly as the table says |
+
+The DSL also lights the tank before the guns on a `fight-back` watch, and its
+comment is the principle this phase's rung order rests on: **"THE TANK GOES UP
+FIRST. A hardener is instant and self-targeted ... the same thing a player
+reaches for before they reach for the guns."**
+
+⚠ **The cap floor's stated REASON in the rung-2 table is the one already
+retracted twice elsewhere.** It says the floor answers "can I still afford to
+warp out". It does not: warp costs no capacitor on this server (no reference to
+capacitor anywhere under `space/destiny/`), and both the handoff's "Two things
+the server does not do" and `FleetCompanionRequest.capacitorFloor`'s own comment
+say so at length. The floor earns its place because **an empty capacitor repairs
+nothing** — a repairer running below it burns cycles that heal nothing. Same
+number, sound reason.
+
+#### So phase 3 is a PORT, not an invention
+
+The whole of the work is carrying a proven pattern into a loop that cannot reach
+it. The companion cannot reuse the DSL's version directly for the reason the
+handoff already gives — `observe(hint)` is not reusable, and `decideScriptAction`
+is driven by `InterruptRow`s the companion does not have — but the *shape* is
+settled, and departing from it needs a reason.
+
+Three things genuinely block it, and they are the real spec:
+
+**1. The companion's action vocabulary cannot switch a module OFF.**
+`FleetCompanionAction` has an `activate` kind and no `deactivate` kind at all.
+Both halves of this phase need one: hardeners down when the fight ends, and a
+repairer off at the cap floor. Add the kind, and its `issue:` case in
+`makeFleetCompanionDeps` calling `api.deactivateModule`.
+
+> ⚠ `api.deactivateModule`'s own comment warns that a prop mod only actually
+> STOPS when Deactivate names its propulsion effect — the server infers a
+> default effect on activate but not on deactivate. Hardeners and repairers are
+> not affected. Do not generalise this action kind to prop mods without reading
+> that comment.
+
+**2. The companion's `activate` case cannot self-target.** `makeFleetCompanionDeps`
+always passes a real `targetID`, and its comment says so deliberately: "Every
+heal target the ladder issues is a REAL on-grid ship it already measured, never
+the DSL's targetID-0 'self' convention, so that branch is not needed here."
+Hardeners and self-repairers ARE self-targeted. Relax the case to the DSL's
+form — `targetID > 0 ? {targetID, repeat: -1} : {repeat: -1}` — and correct that
+comment, because it stops being true the moment this phase lands.
+
+**3. The companion has no module lists to cycle.** Its `observe()` never
+populates `hardenerModuleIDs` or the three `*RepairerIDs`; they are inherited
+from `ScriptObservation` and simply never assigned, so they read `undefined`.
+
+⚠ **DO NOT CLOSE THAT GAP BY CLASSIFYING THE FIT.** Take them off the REQUEST,
+the way every other module list this loop uses is taken. `defenseModuleIDs`
+already exists for the hardeners and is consumed by nothing yet; add three
+self-repair lists mirroring the remote trio. The reason is the one already
+written on `defenseModuleIDs` and on `weaponModuleIDs` — a wrong guess cycles
+the wrong module — and here it buys two specific bugs for free:
+
+- **The Damage Control problem disappears.** `resolveDefenseModuleIDs` matches
+  one regex, `/hardener|damage control|resistance/i`, so a free Damage Control
+  and a cap-hungry active hardener land in one indistinguishable list. The
+  rung-2 table's advice was to cap-gate both and accept delaying a free cycle.
+  A player's own pick does not have the problem to solve.
+- **The Remote-Shield-Booster double-classification disappears.** `/shield
+  boost/i` is UNANCHORED, so a group named "Remote Shield Booster" matches it
+  AND `/remote shield/i` — the same module in `shieldRepairerIDs` and
+  `remoteShieldRepairerIDs` at once. The code's own neighbouring comment names
+  this bug shape as the reason the warp-scrambler branch was anchored; the
+  shield branch was never fixed. **Unverified against the SDE group name and
+  worth confirming — if it is live it is a DSL bug independent of this phase.**
+
+#### The rung, and where it sits
+
+Rung 2, ABOVE the fleet-order rung, on the DSL's own stated principle: the tank
+goes up before the guns. It costs at most a tick or two of not obeying, because
+the rung has something to do only while a module is off, and falls through the
+moment the rack is up — the same fall-through `decideHealOrder` uses, and for
+the same reason.
+
+The ladder, in order, one action per tick:
+
+1. **Hardeners up while a fight is on.** Trigger on `obs.hostileOnGrid` (and
+   `targetedByPlayer` if it is readable — both already exist on the
+   observation). One per tick, self-targeted, skipping any already cycling.
+
+   > ⚠ **"Both already exist on the observation" was true of the TYPE and
+   > false of the VALUE, and that cost the rung half its trigger.**
+   > `FleetCompanionObservation` inherits `targetedByPlayer` from
+   > `ScriptObservation`, so this compiled and the ladder's unit tests —
+   > which build their observations by hand — passed. But
+   > `makeFleetCompanionDeps()`'s `observe()` never filled it, so the field
+   > was permanently `undefined` on a live companion and the trigger was
+   > `hostileOnGrid` alone. `hostileOnGrid` is `hostileRows`, which filters
+   > on `isHostile` — NPC-or-not — so a PLAYER engagement lit neither half
+   > and the hardeners stayed dark. Fixed by wiring `observe()` to
+   > `space/overview.ts`'s `isTargetedByPlayer` (the same function the
+   > script runner uses); `targetGroupNames` was unfilled for the same
+   > reason and got the same treatment. Both are proved at the FLOW level
+   > in `web/src/app/companionFlow.test.ts`, because no test that
+   > constructs an observation directly can see this class of bug.
+2. **A hurt layer cycles its own repairer.** Per layer against
+   `request.fleeHealthFloor`'s sibling — a hurt threshold, not the flee floor —
+   shield from the shield list, armour from the armour list, hull from the hull
+   list. Never across families: a shield booster cannot repair armour.
+3. **The cap floor inverts it.** Below `request.capacitorFloor`, switch a
+   RUNNING repairer off rather than starting another, even while the layer is
+   still hurt. This is the inversion the whole rung exists for and it must be
+   tested as its own case.
+4. **Stand down when the fight ends.** Copy `standDownAfterFight`'s shape, not
+   its code: a record of what THIS rung switched on, driven by its own always-run
+   pass rather than by the trigger — because the trigger is gone the moment the
+   grid clears, which is precisely when the stand-down has to run. Only switch
+   off what this rung itself lit.
+
+⚠ **Never stand down on a blind read.** `standDownAfterFight` fires only on an
+explicit `not-met`, never on cannot-tell, and its comment says why: "standing
+down blind is the worst possible moment to drop the tank." A null
+`hostileOnGrid` keeps the tank up.
+
+#### What phase 3 must NOT do
+
+- **Do not cap-gate the hardeners.** The rung-2 table said to, because the DSL's
+  merged list cannot tell a Damage Control from an active hardener. Off a
+  player's own pick there is nothing to be unsure about, and delaying a free
+  cycle for a cap floor that exists to protect REPAIR throughput is a cost with
+  no matching benefit.
+- **Do not invent a second cap constant.** `request.capacitorFloor` exists,
+  defaults to `REPAIR_CAP_FLOOR`, and is consumed by nothing today. This phase
+  is its first consumer.
+- **Do not add a flee.** That is phase 6, and `fleeHealthFloor` is its field,
+  not this one's.
 
 ### Phase 4 — the spec
 
@@ -598,11 +781,18 @@ call, no new action, no new `issue:` case. It is purely a block that resolves a
 *named* fleet-mate instead of the nearest one. `follow-fleet-mate` needs a new
 action kind and `issue:` case but no new wrapper.
 
-**Reuse `orbit-and-boost` as the template** (`scriptMacros.ts:3091`). It already
-does the whole chain: `fleetMatesOnGrid` → pick an anchor → emit once, gated on
-a memory key so it does not re-issue every tick. The new blocks differ in one
-line: `friendlies.find(e => e.characterID === who.charID)` instead of
-`nearest(...)`. The `character` arg kind is fully built already — reuse it.
+**Reuse `orbit-and-boost` as the template** (`scriptMacros.ts:3095`) — but for
+HALF the chain only. It does `fleetMatesOnGrid` → pick an anchor → emit once,
+gated on a memory key (`mem["orbiting"]`, compared and re-stamped at
+`:3117-3125`) so it does not re-issue every tick. That memory-gating idiom is
+exactly what the new blocks want.
+
+⚠ **It is NOT an example of resolving a NAMED fleet-mate, and this doc said it
+was.** Corrected 2026-09-11: `orbitAndBoost` is declared `(_step, obs, mem)` —
+it discards `step` entirely and picks by `nearest(friendlies, ...)`, so there is
+no name resolution in it to copy. For that half, follow `onlyPilotID(step)`
+(`scriptMacros.ts:3386`) as used by `attackPlayer` (`:3661`) and `huntPlayer`
+(`:3701`). Take the gating from one and the resolution from the other.
 
 ⚠ **Add the new macros to `FLEET_SUPPORT_MACROS`** (`flow.ts:6102`) or
 `obs.fleetMemberCharacterIDs` is never fetched and every block waits forever.
@@ -795,10 +985,13 @@ the request body (`server.js:5300`) — it exists to make the caller state inten
 not to raise UI. A bot passes it directly. Expect a `400
 CONFIRMATION_REQUIRED`, not a hang, if it is forgotten.
 
-### The one genuinely open question in phase 1
+### ~~The one genuinely open question in phase 1~~ — ANSWERED 2026-09-11
 
-The exact envelope of `OnFleetStateChange`'s `args[0]` — whether `targetTags` is
-the payload or one field of a larger state KeyVal. The spec's answer is right
-and cheap: try `keyValField(args[0], "targetTags")` first, fall back to treating
-`args[0]` as the dict, and test both shapes. That handles either outcome without
-needing to know which, so it does not block the commit.
+The exact envelope of `OnFleetStateChange`'s `args[0]`. **It is a `util.KeyVal`
+with `targetTags` as one field**, built by `buildFleetStateChangePayload`
+(`fleetPayloads.js:207-211`), and both server call sites use the identical
+builder. So `keyValField(args[0], "targetTags")` is the right read and there is
+no second shape in the server. Keep the fallback and both tests anyway — they
+now cost nothing and pin the assumption.
+
+Phase 1 has no open questions left.
