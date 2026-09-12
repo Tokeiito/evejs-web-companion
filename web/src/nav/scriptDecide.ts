@@ -154,6 +154,15 @@ export type ScriptAction =
       readonly to: string;
       readonly qty: number | null;
     }
+  | {
+      readonly kind: "haulTransfer";
+      readonly itemID: number;
+      readonly typeID: number;
+      readonly quantity: number;
+      readonly from: { readonly kind: "cargo" } | { readonly kind: "corp"; readonly division: number };
+      readonly to: { readonly kind: "cargo" } | { readonly kind: "corp"; readonly division: number };
+      readonly expectedStationID: number;
+    }
   /** Place a market BUY order (server confirm-gated; spends ISK + broker fee). */
   | { readonly kind: "placeBuyOrder"; readonly typeID: number; readonly price: number; readonly quantity: number }
   /** Place a market SELL order for one owned stack (server confirm-gated). */
@@ -479,6 +488,11 @@ export function activeMacroID(script: BotScript, mem: ScriptMemory): string | nu
   }
   const step = activeStep(script, mem.position);
   return step?.macro ?? null;
+}
+
+/** The exact step the next observation serves, including its configured arguments. */
+export function activeMacroStep(script: BotScript, mem: ScriptMemory): MacroStep | null {
+  return activeMacroID(script, mem) === null ? null : activeStep(script, mem.position);
 }
 
 // ─── The decision returned each tick ─────────────────────────────────────────

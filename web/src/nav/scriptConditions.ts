@@ -311,6 +311,16 @@ export interface ScriptObservation {
   readonly journal?: JournalState | null;
   /** The active ship's cargo rows + capacity. */
   readonly cargo?: CargoReading | null;
+  /** Station-pinned reads used only by the purpose-built corporation hauler. */
+  readonly haulAll?: {
+    readonly cargo: CargoReading | null;
+    readonly corpDivisions: readonly {
+      readonly division: number;
+      readonly rows: readonly InventoryItemRow[] | null;
+      readonly error: string | null;
+    }[] | null;
+    readonly readError: string | null;
+  } | null;
   /**
    * The active hull's SPECIALISED bays, contents included — what `unload-cargo`
    * needs to empty a hauler whose freight went to the ore hold rather than to

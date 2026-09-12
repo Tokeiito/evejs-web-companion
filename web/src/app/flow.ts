@@ -2032,7 +2032,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         name: division.name,
         // A division the character cannot query answers an EMPTY list, not an
         // error — the server filtered it, and that is the authority.
-        rows: division.list === null ? [] : decodeInventoryRows(division.list),
+        rows: division.list === null ? [] : decodeInventoryRows(division.list, reads.volumes),
         error: division.error,
       })),
     });
@@ -8074,6 +8074,49 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         let colonies: ScriptObservation["colonies"] = null;
         let damagedItemIDs: ScriptObservation["damagedItemIDs"] = null;
         let scannerOperations: ScriptObservation["scannerOperations"] = null;
+        let haulAll: ScriptObservation["haulAll"] = null;
+        if (macro === "haul-all") {
+          haulAll = { cargo: null, corpDivisions: null, readError: null };
+          if (status.docked === true && status.stationID !== null) {
+            try {
+              const pickup = hint.activeStep?.args["pickupStation"];
+              const delivery = hint.activeStep?.args["deliveryStation"];
+              const atEndpoint =
+                (pickup?.kind === "station" && pickup.ref.id === status.stationID) ||
+                (delivery?.kind === "station" && delivery.ref.id === status.stationID);
+              const [panel, corp] = await Promise.all([
+                api.loadInventory(callOptions, status.stationID),
+                atEndpoint
+                  ? api.loadCorpHangar(callOptions, status.stationID)
+                  : Promise.resolve(null),
+              ]);
+              if (panel.cargo.error !== null) {
+                throw new Error(`Cargo Hold: ${panel.cargo.error}`);
+              }
+              if (corp !== null && !corp.available) {
+                throw new Error(corp.reason ?? "No corporation office is available at this station.");
+              }
+              haulAll = {
+                cargo: {
+                  rows: decodeInventoryRows(panel.cargo.list, panel.volumes),
+                  capacity: decodeCapacity(panel.cargo.capacity),
+                },
+                corpDivisions: corp === null
+                  ? null
+                  : corp.divisions.map((division) => ({
+                      division: division.division,
+                      rows: division.list === null
+                        ? null
+                        : decodeInventoryRows(division.list, corp.volumes),
+                      error: division.error,
+                    })),
+                readError: null,
+              };
+            } catch (error) {
+              haulAll = { cargo: null, corpDivisions: null, readError: errorWords(error) };
+            }
+          }
+        }
         const systemName = store.flight.get().solarSystemName;
         let dryBelts: ScriptObservation["dryBelts"] = null;
         if (macro === "mine-at-belt" && systemName !== null) {
@@ -8541,6 +8584,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           bookmarks,
           colonies,
           damagedItemIDs,
+          haulAll,
           inSpace: status.inSpace,
           docked: status.docked,
           inWarp: status.shipMode === null ? null : /warp/i.test(status.shipMode),
@@ -8822,6 +8866,24 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
                 action.qty,
                 callOptions,
               );
+            }
+            return;
+          }
+          case "haulTransfer": {
+            const result = await api.transferItems(
+              [action.itemID],
+              action.from,
+              action.to,
+              action.quantity,
+              callOptions,
+              action.expectedStationID,
+            );
+            if (
+              result.applied !== true ||
+              result.declined.length > 0 ||
+              result.notFound.length > 0
+            ) {
+              throw new Error("The hauling transfer did not move the requested stack completely.");
             }
             return;
           }

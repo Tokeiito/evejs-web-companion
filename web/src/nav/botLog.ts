@@ -184,6 +184,8 @@ export function describeAction(action: ScriptAction): string {
       return action.targetID === null ? "clear the fleet's called primary" : `call ${action.targetID} as the fleet's primary`;
     case "moveItems":
       return `move ${action.itemIDs.join(",")} ${action.from} -> ${action.to}${action.qty === null ? "" : ` x${action.qty}`}`;
+    case "haulTransfer":
+      return `haul item ${action.itemID} x${action.quantity} at station ${action.expectedStationID}`;
     case "placeBuyOrder":
       return `buy ${action.quantity} of type ${action.typeID} at ${action.price}`;
     case "placeSellOrder":

@@ -76,6 +76,8 @@ export function macroName(macro: MacroID): string {
       return "Mine at a belt";
     case "deliver-ore":
       return "Haul the ore home";
+    case "haul-all":
+      return "Haul everything between corporation hangars";
     case "defend-with-drones":
       return "Fight off rats with drones";
     case "find-distribution-agent":
@@ -459,6 +461,17 @@ function macroPhrase(step: MacroStep): string {
           ? `, into Corporate Hangar division ${destination.division}`
           : ", into your personal hangar";
       return `Haul the ore to ${where}${destinationWords}`;
+    }
+    case "haul-all": {
+      const pickup = step.args["pickupStation"];
+      const delivery = step.args["deliveryStation"];
+      const pickupDivision = step.args["pickupCorpDivision"];
+      const deliveryDivision = step.args["deliveryCorpDivision"];
+      const pickupWords = pickup?.kind === "station" ? worldRefPhrase(pickup.ref, "a pickup station") : "a pickup station";
+      const deliveryWords = delivery?.kind === "station" ? worldRefPhrase(delivery.ref, "a delivery station") : "a delivery station";
+      const from = pickupDivision?.kind === "corpDivision" ? `division ${pickupDivision.division}` : "a corporation division";
+      const to = deliveryDivision?.kind === "corpDivision" ? `division ${deliveryDivision.division}` : "a corporation division";
+      return `Haul everything from ${from} at ${pickupWords} to ${to} at ${deliveryWords}`;
     }
     case "defend-with-drones":
       return "Fight off rats with your combat drones";

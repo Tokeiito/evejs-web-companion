@@ -25,7 +25,7 @@ import {
   MIN_CORP_DIVISION,
 } from "../bots/botScript.ts";
 import type { MacroStep, OreFamilyArg, SquadRoleArg, WorldRef } from "../bots/botScript.ts";
-import type { SpaceEntity, SpaceSnapshot, SpaceVector } from "../store/types.ts";
+import type { InventoryItemRow, SpaceEntity, SpaceSnapshot, SpaceVector } from "../store/types.ts";
 import { BELT_ARRIVAL_RADIUS_M, freightHoldItemIDs, holdsFreeM3, isMineableRock } from "./miningBotLoop.ts";
 import { nearestUnworkedBelt, type BeltOption } from "./beltRotation.ts";
 import type { ExplorationSiteKind } from "../scanner/siteKind.ts";
@@ -2673,6 +2673,277 @@ const moveItems: MacroDecider = (step, obs, mem) => {
   );
 };
 
+// ── haul-all ────────────────────────────────────────────────────────────────
+// A deliberately narrow corporation courier: fixed corp division -> ordinary
+// Cargo Hold -> fixed corp division, one verified stack movement per tick.
+// `manifest` begins from a proven-empty hold and is the run's ownership proof;
+// a fresh process has no such proof and therefore refuses non-empty cargo.
+type HaulLeg = "pickup" | "delivery";
+interface HaulPending {
+  readonly leg: HaulLeg;
+  readonly typeID: number;
+  readonly quantity: number;
+  readonly sourceBefore: number;
+  readonly destinationBefore: number;
+}
+interface HaulState {
+  readonly trusted: boolean;
+  readonly leg: HaulLeg;
+  readonly manifest: Readonly<Record<string, number>>;
+  readonly sourceEmptyAtDeparture: boolean;
+  readonly pending: HaulPending | null;
+}
+
+const INITIAL_HAUL_STATE: HaulState = {
+  trusted: false,
+  leg: "pickup",
+  manifest: {},
+  sourceEmptyAtDeparture: false,
+  pending: null,
+};
+
+function itemTotals(rows: readonly InventoryItemRow[]): Record<string, number> {
+  const totals: Record<string, number> = {};
+  for (const row of rows) {
+    if (row.typeID > 0 && row.quantity > 0) {
+      const key = String(row.typeID);
+      totals[key] = (totals[key] ?? 0) + row.quantity;
+    }
+  }
+  return totals;
+}
+
+function typeTotal(rows: readonly InventoryItemRow[], typeID: number): number {
+  return itemTotals(rows)[String(typeID)] ?? 0;
+}
+
+function sameTotals(left: Readonly<Record<string, number>>, right: Readonly<Record<string, number>>): boolean {
+  const keys = new Set([...Object.keys(left), ...Object.keys(right)]);
+  for (const key of keys) {
+    if ((left[key] ?? 0) !== (right[key] ?? 0)) return false;
+  }
+  return true;
+}
+
+function withManifestDelta(state: HaulState, typeID: number, delta: number): HaulState {
+  const key = String(typeID);
+  const next = { ...state.manifest };
+  const quantity = (next[key] ?? 0) + delta;
+  if (quantity > 0) next[key] = quantity;
+  else delete next[key];
+  return { ...state, manifest: next, pending: null };
+}
+
+function haulState(mem: MacroMemory): HaulState {
+  return (mem["haulAll"] as HaulState | undefined) ?? INITIAL_HAUL_STATE;
+}
+
+function haulTick(
+  action: MacroTick["action"],
+  why: string,
+  phase: string,
+  outcome: MacroTick["outcome"],
+  mem: MacroMemory,
+  state: HaulState,
+): MacroTick {
+  return tick(action, why, phase, outcome, false, { ...mem, haulAll: state });
+}
+
+const haulAll: MacroDecider = (step, obs, mem) => {
+  const pickupStation = step.args["pickupStation"];
+  const pickupDivision = step.args["pickupCorpDivision"];
+  const deliveryStation = step.args["deliveryStation"];
+  const deliveryDivision = step.args["deliveryCorpDivision"];
+  if (
+    pickupStation?.kind !== "station" || pickupStation.ref.id === null ||
+    deliveryStation?.kind !== "station" || deliveryStation.ref.id === null ||
+    pickupDivision?.kind !== "corpDivision" ||
+    deliveryDivision?.kind !== "corpDivision" ||
+    !Number.isSafeInteger(pickupDivision.division) ||
+    pickupDivision.division < MIN_CORP_DIVISION || pickupDivision.division > MAX_CORP_DIVISION ||
+    !Number.isSafeInteger(deliveryDivision.division) ||
+    deliveryDivision.division < MIN_CORP_DIVISION || deliveryDivision.division > MAX_CORP_DIVISION ||
+    (pickupStation.ref.id === deliveryStation.ref.id && pickupDivision.division === deliveryDivision.division)
+  ) {
+    return tick(WAIT, "The hauling route is not fully configured.", "Hauling", {
+      kind: "blocked",
+      reason: "Pick two different corporation hangar locations with valid divisions 1 to 7.",
+    });
+  }
+
+  const reading = obs.haulAll ?? null;
+  let state = haulState(mem);
+  if (!state.trusted) {
+    if (obs.flightStatus?.docked !== true) {
+      return tick(WAIT, "The Cargo Hold cannot be trusted at a fresh start.", "Hauling", {
+        kind: "blocked",
+        reason: "Start this hauling run while docked with an empty Cargo Hold.",
+      });
+    }
+    if (reading?.readError !== null && reading?.readError !== undefined) {
+      return tick(WAIT, reading.readError, "Hauling", { kind: "blocked", reason: reading.readError });
+    }
+    if (reading?.cargo === null || reading?.cargo === undefined) {
+      return tick(WAIT, "The Cargo Hold could not be read.", "Hauling", {
+        kind: "blocked",
+        reason: "The Cargo Hold must be read as empty before hauling starts.",
+      });
+    }
+    if (Object.keys(itemTotals(reading.cargo.rows)).length > 0) {
+      return tick(WAIT, "The Cargo Hold is not empty.", "Hauling", {
+        kind: "blocked",
+        reason: "A fresh hauling run cannot adopt cargo whose ownership it cannot prove.",
+      });
+    }
+    state = { ...INITIAL_HAUL_STATE, trusted: true };
+  }
+
+  const stationID = obs.flightStatus?.stationID ?? null;
+  const expectedStationID = state.leg === "pickup" ? pickupStation.ref.id : deliveryStation.ref.id;
+  if (obs.flightStatus?.docked !== true || stationID !== expectedStationID) {
+    if (state.pending !== null) {
+      return haulTick(WAIT, "A transfer could not be verified at its station.", "Hauling", {
+        kind: "blocked",
+        reason: "The ship left before the last hauling transfer could be verified.",
+      }, mem, state);
+    }
+    if (obs.flightStatus?.docked === true) {
+      if (reading?.readError !== null && reading?.readError !== undefined) {
+        return haulTick(WAIT, reading.readError, "Hauling", { kind: "blocked", reason: reading.readError }, mem, state);
+      }
+      if (reading?.cargo === null || reading?.cargo === undefined || !sameTotals(itemTotals(reading.cargo.rows), state.manifest)) {
+        return haulTick(WAIT, "The Cargo Hold no longer matches this run.", "Hauling", {
+          kind: "blocked",
+          reason: "Cargo changed outside this hauling run, so it stopped without moving anything else.",
+        }, mem, state);
+      }
+    }
+    const ride = rideAutopilotTo(obs, expectedStationID, state.leg === "pickup" ? "Flying to pickup" : "Flying to delivery");
+    return ride === null ? haulTick(WAIT, "Arrived.", "Hauling", ACTING, mem, state) : { ...ride, nextMem: { ...mem, haulAll: state } };
+  }
+
+  if (reading?.readError !== null && reading?.readError !== undefined) {
+    return haulTick(WAIT, reading.readError, "Hauling", { kind: "blocked", reason: reading.readError }, mem, state);
+  }
+  if (reading?.cargo === null || reading?.cargo === undefined || reading.corpDivisions === null) {
+    return haulTick(WAIT, "The configured inventories could not be read.", "Hauling", {
+      kind: "blocked",
+      reason: "Cargo and the configured corporation division must both be readable.",
+    }, mem, state);
+  }
+  const division = state.leg === "pickup" ? pickupDivision.division : deliveryDivision.division;
+  const corp = reading.corpDivisions.find((entry) => entry.division === division);
+  if (corp === undefined || corp.error !== null || corp.rows === null) {
+    const reason = corp?.error ?? "The configured corporation division is unreadable.";
+    return haulTick(WAIT, reason, "Hauling", { kind: "blocked", reason }, mem, state);
+  }
+
+  const cargoRows = reading.cargo.rows;
+  const corpRows = corp.rows;
+  if (state.pending !== null) {
+    const sourceRows = state.pending.leg === "pickup" ? corpRows : cargoRows;
+    const destinationRows = state.pending.leg === "pickup" ? cargoRows : corpRows;
+    const sourceDelta = state.pending.sourceBefore - typeTotal(sourceRows, state.pending.typeID);
+    const destinationDelta = typeTotal(destinationRows, state.pending.typeID) - state.pending.destinationBefore;
+    if (sourceDelta !== state.pending.quantity || destinationDelta !== state.pending.quantity) {
+      return haulTick(WAIT, "The source and destination rereads disagree.", "Hauling", {
+        kind: "blocked",
+        reason: "The last hauling transfer was partial or uncertain, so the run stopped.",
+      }, mem, state);
+    }
+    state = withManifestDelta(
+      state,
+      state.pending.typeID,
+      state.pending.leg === "pickup" ? state.pending.quantity : -state.pending.quantity,
+    );
+  }
+
+  if (!sameTotals(itemTotals(cargoRows), state.manifest)) {
+    return haulTick(WAIT, "The Cargo Hold no longer matches this run.", "Hauling", {
+      kind: "blocked",
+      reason: "Cargo changed outside this hauling run, so it stopped without moving anything else.",
+    }, mem, state);
+  }
+
+  if (state.leg === "pickup") {
+    const sourceRows = corpRows.filter((row) => row.itemID > 0 && row.typeID > 0 && row.quantity > 0);
+    if (sourceRows.length === 0) {
+      state = { ...state, sourceEmptyAtDeparture: true };
+      if (Object.keys(state.manifest).length === 0) {
+        return haulTick(WAIT, "The source division and Cargo Hold are empty.", "Hauling complete", { kind: "done" }, mem, state);
+      }
+      state = { ...state, leg: "delivery" };
+      return haulTick(WAIT, "The last load is ready for delivery.", "Hauling", ACTING, mem, state);
+    }
+    const capacity = reading.cargo.capacity;
+    if (capacity === null || !Number.isFinite(capacity.capacity) || !Number.isFinite(capacity.used) || capacity.used > capacity.capacity) {
+      return haulTick(WAIT, "Cargo Hold capacity is unreadable.", "Hauling", {
+        kind: "blocked",
+        reason: "The run cannot safely decide what fits in the Cargo Hold.",
+      }, mem, state);
+    }
+    const free = Math.max(0, capacity.capacity - capacity.used);
+    const candidate = sourceRows
+      .map((row) => ({ row, units: typeof row.volume === "number" && row.volume > 0 ? Math.floor(free / row.volume) : 0 }))
+      .find((entry) => entry.units > 0);
+    if (candidate === undefined) {
+      if (Object.keys(state.manifest).length === 0) {
+        return haulTick(WAIT, "Nothing in the source can safely fit.", "Hauling", {
+          kind: "blocked",
+          reason: "No source item has a readable volume that fits in the empty Cargo Hold.",
+        }, mem, state);
+      }
+      state = { ...state, leg: "delivery", sourceEmptyAtDeparture: false };
+      return haulTick(WAIT, "The Cargo Hold cannot safely take more.", "Hauling", ACTING, mem, state);
+    }
+    const quantity = Math.min(candidate.row.quantity, candidate.units);
+    const pending: HaulPending = {
+      leg: "pickup",
+      typeID: candidate.row.typeID,
+      quantity,
+      sourceBefore: typeTotal(corpRows, candidate.row.typeID),
+      destinationBefore: typeTotal(cargoRows, candidate.row.typeID),
+    };
+    state = { ...state, pending, sourceEmptyAtDeparture: false };
+    return haulTick({
+      kind: "haulTransfer",
+      itemID: candidate.row.itemID,
+      typeID: candidate.row.typeID,
+      quantity,
+      from: { kind: "corp", division: pickupDivision.division },
+      to: { kind: "cargo" },
+      expectedStationID: pickupStation.ref.id,
+    }, "Loading the next source stack into the Cargo Hold.", "Loading cargo", ACTING, mem, state);
+  }
+
+  const cargoStacks = cargoRows.filter((row) => row.itemID > 0 && row.typeID > 0 && row.quantity > 0);
+  if (cargoStacks.length === 0) {
+    if (state.sourceEmptyAtDeparture) {
+      return haulTick(WAIT, "The source division and Cargo Hold are empty.", "Hauling complete", { kind: "done" }, mem, state);
+    }
+    state = { ...state, leg: "pickup" };
+    return haulTick(WAIT, "This load is delivered; returning for the next one.", "Hauling", ACTING, mem, state);
+  }
+  const stack = cargoStacks[0]!;
+  const pending: HaulPending = {
+    leg: "delivery",
+    typeID: stack.typeID,
+    quantity: stack.quantity,
+    sourceBefore: typeTotal(cargoRows, stack.typeID),
+    destinationBefore: typeTotal(corpRows, stack.typeID),
+  };
+  state = { ...state, pending };
+  return haulTick({
+    kind: "haulTransfer",
+    itemID: stack.itemID,
+    typeID: stack.typeID,
+    quantity: stack.quantity,
+    from: { kind: "cargo" },
+    to: { kind: "corp", division: deliveryDivision.division },
+    expectedStationID: deliveryStation.ref.id,
+  }, "Unloading the next run-owned stack into the destination division.", "Delivering cargo", ACTING, mem, state);
+};
+
 // ── warp-to-bookmark ─────────────────────────────────────────────────────────
 // Warp to a saved spot, matched BY NAME from the live bookmark list (the id is a
 // same-world hint). In-space only, and only in the spot's own system — a saved
@@ -4781,6 +5052,7 @@ export const SCRIPT_MACROS: CompleteMacroRegistry = {
   "warp-to-ore-anomaly": warpToOreAnomaly,
   "refit-ship": refitShip,
   "move-items": moveItems,
+  "haul-all": haulAll,
   "warp-to-bookmark": warpToBookmark,
   "find-combat-agent": findCombatAgent,
   "fly-to-mission-site": flyToMissionSite,

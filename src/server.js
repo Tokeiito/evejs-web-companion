@@ -1185,7 +1185,10 @@ app.get("/api/bridge/inventory", requireAuth, async (req, res, next) => {
     // Sync held station/ship to the live position first, so the hangar/cargo
     // binds target the CURRENT station + active ship after a new dock, not the
     // select-time ones.
-    await readHeldFlight(held, req.webSessionID);
+    const fresh = await readHeldFlight(held, req.webSessionID);
+    if (req.query.expectedStationID !== undefined) {
+      requireExpectedStation(fresh.flight, req.query.expectedStationID);
+    }
     const shipID = held.activeShipID;
     const hangarSpec = hangarBindSpec(held);
     const cargoSpec = shipID ? cargoBindSpec(held, shipID) : null;
@@ -1243,6 +1246,9 @@ app.get("/api/bridge/inventory", requireAuth, async (req, res, next) => {
       },
     });
   } catch (error) {
+    if (sendPlaceError(res, error)) {
+      return;
+    }
     next(error);
   }
 });
@@ -2449,6 +2455,26 @@ async function listPlace(held, webSessionID, place) {
   return decodeInventoryRows(outcome.result);
 }
 
+function requireExpectedStation(flight, rawExpectedStationID) {
+  const expectedStationID = Number(rawExpectedStationID);
+  if (!Number.isSafeInteger(expectedStationID) || expectedStationID <= 0) {
+    throw Object.assign(new Error("A valid expected station is required."), {
+      code: "INVALID_EXPECTED_STATION",
+      status: 400,
+    });
+  }
+  if (
+    !flight ||
+    flight.docked !== true ||
+    Number(flight.stationID) !== expectedStationID
+  ) {
+    throw Object.assign(new Error("The ship is not docked at the configured station."), {
+      code: "WRONG_STATION",
+      status: 409,
+    });
+  }
+}
+
 function sendPlaceError(res, error) {
   if (error && error.status) {
     res.status(error.status).json({ ok: false, error: error.code, message: error.message });
@@ -2546,7 +2572,11 @@ app.post("/api/bridge/inventory/transfer", requireAuth, async (req, res, next) =
     return;
   }
   try {
-    await readHeldFlight(held, req.webSessionID);
+    let fresh = await readHeldFlight(held, req.webSessionID);
+    const hasExpectedStation = Object.prototype.hasOwnProperty.call(body, "expectedStationID");
+    if (hasExpectedStation) {
+      requireExpectedStation(fresh.flight, body.expectedStationID);
+    }
     const from = await resolvePlace(held, req.webSessionID, body.from);
     const to = await resolvePlace(held, req.webSessionID, body.to);
 
@@ -2565,6 +2595,12 @@ app.post("/api/bridge/inventory/transfer", requireAuth, async (req, res, next) =
       return;
     }
     const present = itemIDs.filter((itemID) => sourceByID.has(itemID));
+    if (hasExpectedStation) {
+      // Resolve/list may take several bridge calls. Re-pin immediately before
+      // Add so a concurrent undock or dock elsewhere cannot use stale binds.
+      fresh = await readHeldFlight(held, req.webSessionID);
+      requireExpectedStation(fresh.flight, body.expectedStationID);
+    }
     // Quote the source location the ITEMS report, never an assumed one.
     const sourceLocationID =
       from.locationID !== null && from.locationID !== undefined
@@ -2843,7 +2879,10 @@ app.get("/api/bridge/inventory/corp", requireAuth, async (req, res, next) => {
     return;
   }
   try {
-    await readHeldFlight(held, req.webSessionID);
+    const fresh = await readHeldFlight(held, req.webSessionID);
+    if (req.query.expectedStationID !== undefined) {
+      requireExpectedStation(fresh.flight, req.query.expectedStationID);
+    }
     const [officeSettled, corporationSettled] = await Promise.allSettled([
       readCorpOffice(held, req.webSessionID),
       heldTopLevelCall(held, req.webSessionID, "corpRegistry", "GetCorporation", [], null),
@@ -2890,6 +2929,7 @@ app.get("/api/bridge/inventory/corp", requireAuth, async (req, res, next) => {
     }
     res.json({
       ok: true,
+      stationID: held.stationID,
       available: true,
       divisions: ordinals.map((division, index) => {
         const settled = settledLists[index];
@@ -2905,8 +2945,17 @@ app.get("/api/bridge/inventory/corp", requireAuth, async (req, res, next) => {
               : null,
         };
       }),
+      volumes: Object.assign(
+        {},
+        ...settledLists
+          .filter((settled) => settled.status === "fulfilled")
+          .map((settled) => readTypeVolumes(settled.value.result)),
+      ),
     });
   } catch (error) {
+    if (sendPlaceError(res, error)) {
+      return;
+    }
     next(error);
   }
 });

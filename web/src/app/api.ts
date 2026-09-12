@@ -462,8 +462,10 @@ function readRawContainer(value: JsonValue | undefined): RawContainer {
 /** Load the full Inventory & Ship panel (station hangar + active-ship cargo). */
 export async function loadInventory(
   options: ApiOptions = {},
+  expectedStationID: number | null = null,
 ): Promise<RawInventoryPanel> {
-  const data = await getJson("/api/bridge/inventory", options);
+  const query = expectedStationID === null ? "" : `?expectedStationID=${encodeURIComponent(String(expectedStationID))}`;
+  const data = await getJson(`/api/bridge/inventory${query}`, options);
   const cargo = (data.cargo ?? {}) as Record<string, JsonValue>;
   const volumes =
     data.volumes && typeof data.volumes === "object" && !Array.isArray(data.volumes)
@@ -566,6 +568,7 @@ export async function transferItems(
   to: InventoryPlace,
   qty: number | null = null,
   options: ApiOptions = {},
+  expectedStationID: number | null = null,
 ): Promise<TransferResult> {
   const body: Record<string, JsonValue> = {
     itemIDs: [...itemIDs],
@@ -574,6 +577,9 @@ export async function transferItems(
   };
   if (qty !== null) {
     body.qty = qty;
+  }
+  if (expectedStationID !== null) {
+    body.expectedStationID = expectedStationID;
   }
   const data = await postJson("/api/bridge/inventory/transfer", body, options);
   return {
@@ -709,9 +715,11 @@ export interface RawCorpDivision {
 }
 
 export interface RawCorpHangar {
+  readonly stationID: number | null;
   readonly available: boolean;
   readonly reason: string | null;
   readonly divisions: readonly RawCorpDivision[];
+  readonly volumes: Readonly<Record<string, number>>;
 }
 
 /**
@@ -720,10 +728,15 @@ export interface RawCorpHangar {
  * the query role for simply reads empty — the server filters it, and that
  * filtering is the authority (the UI's own greying-out is cosmetic).
  */
-export async function loadCorpHangar(options: ApiOptions = {}): Promise<RawCorpHangar> {
-  const data = await getJson("/api/bridge/inventory/corp", options);
+export async function loadCorpHangar(
+  options: ApiOptions = {},
+  expectedStationID: number | null = null,
+): Promise<RawCorpHangar> {
+  const query = expectedStationID === null ? "" : `?expectedStationID=${encodeURIComponent(String(expectedStationID))}`;
+  const data = await getJson(`/api/bridge/inventory/corp${query}`, options);
   const divisions = Array.isArray(data.divisions) ? data.divisions : [];
   return {
+    stationID: asNumberOrNull(data.stationID),
     available: data.available === true,
     reason: typeof data.reason === "string" ? data.reason : null,
     divisions: divisions.map((entry) => {
@@ -735,6 +748,10 @@ export async function loadCorpHangar(options: ApiOptions = {}): Promise<RawCorpH
         error: typeof row.error === "string" ? row.error : null,
       };
     }),
+    volumes:
+      data.volumes && typeof data.volumes === "object" && !Array.isArray(data.volumes)
+        ? (data.volumes as Record<string, number>)
+        : {},
   };
 }
 

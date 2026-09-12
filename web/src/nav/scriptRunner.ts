@@ -22,6 +22,7 @@ import type { BotScript, SquadRoleArg } from "../bots/botScript.ts";
 import { resolveStationRef } from "./scriptMacros.ts";
 import {
   activeMacroID,
+  activeMacroStep,
   activeSquadRole,
   watchSquadRole,
   decideScriptAction,
@@ -53,6 +54,7 @@ import { isSessionChangeSettling, refusalWords } from "../bridge/refusals.ts";
  */
 export interface ObserveHint {
   readonly activeMacro: string | null;
+  readonly activeStep?: import("../bots/botScript.ts").MacroStep | null;
   /** Whether that block follows the fleet's called primary (see activeSquadRole). */
   readonly squadRole: SquadRoleArg;
   /**
@@ -317,6 +319,7 @@ export function createScriptRunner(deps: ScriptRunnerDeps): ScriptRunnerControll
     try {
       obs = await deps.observe({
         activeMacro: activeMacroID(script, memory),
+        activeStep: activeMacroStep(script, memory),
         squadRole: activeSquadRole(script, memory),
         watchSquadRole: watchSquadRole(script),
         board: memory.board,

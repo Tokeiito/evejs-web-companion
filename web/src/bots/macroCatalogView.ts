@@ -174,6 +174,12 @@ const ENTRIES: Readonly<Record<MacroID, MacroCatalogEntry>> = {
     "Flies to a station and unloads the ore into your hangar.",
     "A station to unload at",
   ),
+  "haul-all": entry(
+    "haul-all",
+    "hauling",
+    "Moves every item from one corporation hangar division to another, using only the ship's Cargo Hold and making as many trips as needed.",
+    "Pickup and delivery stations and corporation divisions, with an empty Cargo Hold at the start",
+  ),
   "defend-with-drones": entry(
     "defend-with-drones",
     "combat",

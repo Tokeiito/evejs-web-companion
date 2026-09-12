@@ -61,6 +61,15 @@ export const MACRO_SPECS: Readonly<Record<MacroID, MacroSpec>> = {
     ],
     untilRequired: false,
   },
+  "haul-all": {
+    args: [
+      { key: "pickupStation", kind: "station", required: true },
+      { key: "pickupCorpDivision", kind: "corpDivision", required: true },
+      { key: "deliveryStation", kind: "station", required: true },
+      { key: "deliveryCorpDivision", kind: "corpDivision", required: true },
+    ],
+    untilRequired: false,
+  },
   "defend-with-drones": { args: [], untilRequired: false },
   // ── The distribution-mission set. Every arg is OPTIONAL by design: the find
   // block defaults to level 1 / any corp / any distance, and the later blocks
