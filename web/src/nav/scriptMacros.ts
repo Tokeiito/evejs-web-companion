@@ -2675,7 +2675,8 @@ const moveItems: MacroDecider = (step, obs, mem) => {
 
 // ── haul-all ────────────────────────────────────────────────────────────────
 // A deliberately narrow corporation courier: fixed corp division -> ordinary
-// Cargo Hold -> fixed corp division, one verified stack movement per tick.
+// Cargo Hold -> fixed corp division, optionally limited to one item type, with
+// one verified stack movement per tick.
 // `manifest` begins from a proven-empty hold and is the run's ownership proof;
 // a fresh process has no such proof and therefore refuses non-empty cargo.
 type HaulLeg = "pickup" | "delivery";
@@ -2754,6 +2755,8 @@ const haulAll: MacroDecider = (step, obs, mem) => {
   const pickupDivision = step.args["pickupCorpDivision"];
   const deliveryStation = step.args["deliveryStation"];
   const deliveryDivision = step.args["deliveryCorpDivision"];
+  const item = step.args["item"];
+  const wantedTypeID = item?.kind === "itemType" && item.typeID !== null ? item.typeID : null;
   if (
     pickupStation?.kind !== "station" || pickupStation.ref.id === null ||
     deliveryStation?.kind !== "station" || deliveryStation.ref.id === null ||
@@ -2866,7 +2869,10 @@ const haulAll: MacroDecider = (step, obs, mem) => {
   }
 
   if (state.leg === "pickup") {
-    const sourceRows = corpRows.filter((row) => row.itemID > 0 && row.typeID > 0 && row.quantity > 0);
+    const sourceRows = corpRows.filter(
+      (row) => row.itemID > 0 && row.typeID > 0 && row.quantity > 0 &&
+        (wantedTypeID === null || row.typeID === wantedTypeID),
+    );
     if (sourceRows.length === 0) {
       state = { ...state, sourceEmptyAtDeparture: true };
       if (Object.keys(state.manifest).length === 0) {

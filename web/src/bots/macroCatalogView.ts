@@ -177,7 +177,7 @@ const ENTRIES: Readonly<Record<MacroID, MacroCatalogEntry>> = {
   "haul-all": entry(
     "haul-all",
     "hauling",
-    "Moves every item from one corporation hangar division to another, using only the ship's Cargo Hold and making as many trips as needed.",
+    "Moves every item, or every stack of one selected item type, from one corporation hangar division to another using only the ship's Cargo Hold.",
     "Pickup and delivery stations and corporation divisions, with an empty Cargo Hold at the start",
   ),
   "defend-with-drones": entry(

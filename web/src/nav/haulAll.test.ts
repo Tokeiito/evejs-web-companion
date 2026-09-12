@@ -21,6 +21,14 @@ const step: MacroStep = {
   },
 };
 
+const filteredStep: MacroStep = {
+  ...step,
+  args: {
+    ...step.args,
+    item: { kind: "itemType", typeID: 35, name: "Pyerite" },
+  },
+};
+
 function row(itemID: number, quantity: number, typeID = 34): InventoryItemRow {
   return {
     itemID,
@@ -63,6 +71,64 @@ test("haul-all loads a capacity-sized source slice directly from corp into Cargo
     to: { kind: "cargo" },
     expectedStationID: PICKUP,
   });
+});
+
+test("haul-all without an item selection continues across every source item type", () => {
+  const first = haul(step, at(PICKUP, [], 1, [row(100, 2, 34), row(101, 3, 35)], 0), {}, {});
+  assert.equal(first.action.kind, "haulTransfer");
+  assert.equal(first.action.kind === "haulTransfer" ? first.action.typeID : null, 34);
+
+  const second = haul(
+    step,
+    at(PICKUP, [row(200, 2, 34)], 1, [row(101, 3, 35)], 4),
+    first.nextMem,
+    {},
+  );
+  assert.equal(second.action.kind, "haulTransfer");
+  assert.equal(second.action.kind === "haulTransfer" ? second.action.typeID : null, 35);
+  assert.equal(second.action.kind === "haulTransfer" ? second.action.quantity : null, 3);
+});
+
+test("haul-all with an item selection loads only the matching typeID", () => {
+  const decision = haul(filteredStep, at(PICKUP, [], 1, [row(100, 4, 34), row(101, 3, 35)], 0), {}, {});
+  assert.deepEqual(decision.action, {
+    kind: "haulTransfer",
+    itemID: 101,
+    typeID: 35,
+    quantity: 3,
+    from: { kind: "corp", division: 1 },
+    to: { kind: "cargo" },
+    expectedStationID: PICKUP,
+  });
+});
+
+test("filtered haul-all leaves mixed non-selected source stacks untouched", () => {
+  const first = haul(filteredStep, at(PICKUP, [], 1, [row(100, 4, 34), row(101, 3, 35)], 0), {}, {});
+  const afterLoad = haul(
+    filteredStep,
+    at(PICKUP, [row(201, 3, 35)], 1, [row(100, 4, 34)], 6),
+    first.nextMem,
+    {},
+  );
+  assert.equal(afterLoad.action.kind, "wait");
+  assert.equal(afterLoad.outcome.kind, "acting");
+  assert.equal((afterLoad.nextMem["haulAll"] as { leg: string }).leg, "delivery");
+  assert.equal((afterLoad.nextMem["haulAll"] as { sourceEmptyAtDeparture: boolean }).sourceEmptyAtDeparture, true);
+});
+
+test("filtered haul-all completes with non-selected source items once its manifest is empty", () => {
+  const mem = {
+    haulAll: {
+      trusted: true,
+      leg: "pickup",
+      manifest: {},
+      sourceEmptyAtDeparture: false,
+      pending: null,
+    },
+  };
+  const decision = haul(filteredStep, at(PICKUP, [], 1, [row(100, 4, 34)], 0), mem, {});
+  assert.equal(decision.outcome.kind, "done");
+  assert.equal(decision.action.kind, "wait");
 });
 
 test("haul-all unloads only its trusted Cargo Hold manifest directly into destination corp", () => {

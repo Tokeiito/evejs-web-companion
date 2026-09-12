@@ -67,6 +67,7 @@ export const MACRO_SPECS: Readonly<Record<MacroID, MacroSpec>> = {
       { key: "pickupCorpDivision", kind: "corpDivision", required: true },
       { key: "deliveryStation", kind: "station", required: true },
       { key: "deliveryCorpDivision", kind: "corpDivision", required: true },
+      { key: "item", kind: "itemType", required: false },
     ],
     untilRequired: false,
   },

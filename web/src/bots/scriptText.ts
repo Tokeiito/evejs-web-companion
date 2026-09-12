@@ -467,11 +467,15 @@ function macroPhrase(step: MacroStep): string {
       const delivery = step.args["deliveryStation"];
       const pickupDivision = step.args["pickupCorpDivision"];
       const deliveryDivision = step.args["deliveryCorpDivision"];
+      const item = step.args["item"];
       const pickupWords = pickup?.kind === "station" ? worldRefPhrase(pickup.ref, "a pickup station") : "a pickup station";
       const deliveryWords = delivery?.kind === "station" ? worldRefPhrase(delivery.ref, "a delivery station") : "a delivery station";
       const from = pickupDivision?.kind === "corpDivision" ? `division ${pickupDivision.division}` : "a corporation division";
       const to = deliveryDivision?.kind === "corpDivision" ? `division ${deliveryDivision.division}` : "a corporation division";
-      return `Haul everything from ${from} at ${pickupWords} to ${to} at ${deliveryWords}`;
+      const what = item?.kind === "itemType" && item.typeID !== null
+        ? `all ${item.name ?? "of the selected item"}`
+        : "everything";
+      return `Haul ${what} from ${from} at ${pickupWords} to ${to} at ${deliveryWords}`;
     }
     case "defend-with-drones":
       return "Fight off rats with your combat drones";
