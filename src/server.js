@@ -17060,6 +17060,16 @@ app.get("/api/bridge/ship/:shipID/bays", requireAuth, async (req, res, next) => 
   // its own inventory, so there is no ship-specific bind method.
   const spec = containerBindSpec(shipID);
   try {
+    if (req.query.expectedStationID !== undefined) {
+      const fresh = await readHeldFlight(held, req.webSessionID);
+      requireExpectedStation(fresh.flight, req.query.expectedStationID);
+      if (held.activeShipID !== shipID) {
+        throw Object.assign(new Error("The selected transport bay is not on the active ship."), {
+          code: "WRONG_ACTIVE_SHIP",
+          status: 409,
+        });
+      }
+    }
     // One capacity read per candidate flag, all independent: a hull that
     // refuses one bay must not blank the other twenty-six.
     const settled = await Promise.allSettled(

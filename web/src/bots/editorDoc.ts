@@ -255,6 +255,17 @@ export function newStepFor(macro: MacroID, makeId: IdGen): MacroStep {
       args: { from: { kind: "place", place: "hangar" }, to: { kind: "place", place: "cargo" } },
     };
   }
+  if (macro === "route-hauler") {
+    return {
+      id,
+      kind: "macro",
+      macro,
+      args: {
+        transportBay: { kind: "place", place: "cargo" },
+        returnCargo: { kind: "toggle", enabled: false },
+      },
+    };
+  }
   if (macro === "buy-item") {
     // The item stays to pick; the quantity and price get starting values to edit.
     return {

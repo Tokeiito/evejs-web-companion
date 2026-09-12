@@ -2950,6 +2950,347 @@ const haulAll: MacroDecider = (step, obs, mem) => {
   }, "Unloading the next run-owned stack into the destination division.", "Delivering cargo", ACTING, mem, state);
 };
 
+// ── route-hauler ────────────────────────────────────────────────────────────
+// A continuous two-station shuttle. Each direction owns a separate manifest;
+// only the manifest for the current leg may be present in the selected bay.
+// Empty sources advance immediately to travel rather than completing or idling.
+type RouteDirection = "aToB" | "bToA";
+type RouteTransferPhase = "loadA" | "unloadB" | "loadB" | "unloadA";
+type RoutePhase = RouteTransferPhase | "travelToB" | "travelToA";
+
+interface RoutePending {
+  readonly phase: RouteTransferPhase;
+  readonly direction: RouteDirection;
+  readonly movement: "load" | "unload";
+  readonly typeID: number;
+  readonly quantity: number;
+  readonly sourceBefore: number;
+  readonly destinationBefore: number;
+}
+
+interface RouteHaulerState {
+  readonly trusted: boolean;
+  readonly phase: RoutePhase;
+  readonly manifests: Readonly<Record<RouteDirection, Readonly<Record<string, number>>>>;
+  readonly pending: RoutePending | null;
+}
+
+const INITIAL_ROUTE_HAULER_STATE: RouteHaulerState = {
+  trusted: false,
+  phase: "loadA",
+  manifests: { aToB: {}, bToA: {} },
+  pending: null,
+};
+
+function routeState(mem: MacroMemory): RouteHaulerState {
+  return (mem["routeHauler"] as RouteHaulerState | undefined) ?? INITIAL_ROUTE_HAULER_STATE;
+}
+
+function routeDirection(phase: RoutePhase): RouteDirection {
+  return phase === "loadA" || phase === "travelToB" || phase === "unloadB" ? "aToB" : "bToA";
+}
+
+function routeManifestDelta(
+  state: RouteHaulerState,
+  direction: RouteDirection,
+  typeID: number,
+  delta: number,
+): RouteHaulerState {
+  const key = String(typeID);
+  const manifest = { ...state.manifests[direction] };
+  const quantity = (manifest[key] ?? 0) + delta;
+  if (quantity > 0) manifest[key] = quantity;
+  else delete manifest[key];
+  return {
+    ...state,
+    manifests: { ...state.manifests, [direction]: manifest },
+    pending: null,
+  };
+}
+
+function routeTick(
+  action: MacroTick["action"],
+  why: string,
+  phase: string,
+  outcome: MacroTick["outcome"],
+  mem: MacroMemory,
+  state: RouteHaulerState,
+): MacroTick {
+  return tick(action, why, phase, outcome, false, { ...mem, routeHauler: state });
+}
+
+function routeBlocked(reason: string, mem: MacroMemory, state: RouteHaulerState): MacroTick {
+  return routeTick(WAIT, reason, "Route hauler blocked", { kind: "blocked", reason }, mem, state);
+}
+
+const routeHauler: MacroDecider = (step, obs, mem) => {
+  const transportArg = step.args["transportBay"];
+  const stationAArg = step.args["stationA"];
+  const stationBArg = step.args["stationB"];
+  const pickupAArg = step.args["pickupDivisionA"];
+  const deliveryBArg = step.args["deliveryDivisionB"];
+  const returnArg = step.args["returnCargo"];
+  const pickupBArg = step.args["pickupDivisionB"];
+  const deliveryAArg = step.args["deliveryDivisionA"];
+
+  const transport =
+    transportArg?.kind === "place" && transportArg.place === "cargo"
+      ? ({ kind: "cargo" } as const)
+      : transportArg?.kind === "place" && transportArg.place === "ore-hold"
+        ? ({ kind: "shipBay", bay: "ore" } as const)
+        : null;
+  const stationA = stationAArg?.kind === "station" ? stationAArg.ref.id : null;
+  const stationB = stationBArg?.kind === "station" ? stationBArg.ref.id : null;
+  const pickupA = pickupAArg?.kind === "corpDivision" ? pickupAArg.division : null;
+  const deliveryB = deliveryBArg?.kind === "corpDivision" ? deliveryBArg.division : null;
+  const returnCargo = returnArg?.kind === "toggle" ? returnArg.enabled : null;
+  const pickupB = pickupBArg?.kind === "corpDivision" ? pickupBArg.division : null;
+  const deliveryA = deliveryAArg?.kind === "corpDivision" ? deliveryAArg.division : null;
+  const validDivision = (division: number | null): division is number =>
+    division !== null && Number.isSafeInteger(division) &&
+    division >= MIN_CORP_DIVISION && division <= MAX_CORP_DIVISION;
+  const selection = (key: "itemsAToB" | "itemsBToA"): ReadonlySet<number> | null | undefined => {
+    const arg = step.args[key];
+    if (arg === undefined) return null;
+    if (arg.kind !== "itemList" || arg.items.some((item) => item.match !== "type")) return undefined;
+    const ids = arg.items.map((item) => item.match === "type" ? item.typeID : 0);
+    return ids.length === 0 ? null : new Set(ids);
+  };
+  const aToBTypes = selection("itemsAToB");
+  const bToATypes = selection("itemsBToA");
+
+  if (
+    transport === null || stationA === null || stationB === null || stationA === stationB ||
+    !validDivision(pickupA) || !validDivision(deliveryB) || returnCargo === null ||
+    aToBTypes === undefined || bToATypes === undefined ||
+    (returnCargo && (!validDivision(pickupB) || !validDivision(deliveryA)))
+  ) {
+    return tick(WAIT, "The shuttle route is not fully configured.", "Route hauler blocked", {
+      kind: "blocked",
+      reason: "Configure two different stations, supported transport bay, valid corporation divisions, and type-only cargo selections.",
+    });
+  }
+
+  const reading = obs.routeHauler ?? null;
+  let state = routeState(mem);
+  if (!state.trusted) {
+    if (obs.flightStatus?.docked !== true) {
+      return routeBlocked("Start Route Hauler while docked with its selected transport bay empty.", mem, state);
+    }
+    if (reading?.readError !== null && reading?.readError !== undefined) {
+      return routeBlocked(reading.readError, mem, state);
+    }
+    if (reading?.transport === null || reading?.transport === undefined) {
+      return routeBlocked("The selected transport bay must be read as empty before this route starts.", mem, state);
+    }
+    if (Object.keys(itemTotals(reading.transport.rows)).length > 0) {
+      return routeBlocked("A fresh route cannot adopt cargo already in the selected transport bay.", mem, state);
+    }
+    state = { ...INITIAL_ROUTE_HAULER_STATE, trusted: true };
+  }
+
+  const stationID = obs.flightStatus?.stationID ?? null;
+  const direction = routeDirection(state.phase);
+  const manifest = state.manifests[direction];
+  const otherManifest = state.manifests[direction === "aToB" ? "bToA" : "aToB"];
+  if (Object.keys(otherManifest).length > 0) {
+    return routeBlocked("Cargo manifests from both route directions are present at once.", mem, state);
+  }
+
+  const checkDockedManifest = (): MacroTick | null => {
+    if (reading?.readError !== null && reading?.readError !== undefined) {
+      return routeBlocked(reading.readError, mem, state);
+    }
+    if (
+      reading?.transport === null || reading?.transport === undefined ||
+      !sameTotals(itemTotals(reading.transport.rows), manifest)
+    ) {
+      return routeBlocked("The selected transport bay no longer matches this route's trusted manifest.", mem, state);
+    }
+    return null;
+  };
+
+  if (state.phase === "travelToB" || state.phase === "travelToA") {
+    if (state.pending !== null) {
+      return routeBlocked("The ship left before its last route transfer could be verified.", mem, state);
+    }
+    const target = state.phase === "travelToB" ? stationB : stationA;
+    if (obs.flightStatus?.docked === true) {
+      const mismatch = checkDockedManifest();
+      if (mismatch !== null) return mismatch;
+      if (stationID === target) {
+        state = { ...state, phase: state.phase === "travelToB" ? "unloadB" : "unloadA" };
+      }
+    }
+    if (state.phase === "travelToB" || state.phase === "travelToA") {
+      const ride = rideAutopilotTo(obs, target, target === stationB ? "Shuttling to Station B" : "Shuttling to Station A");
+      return ride === null
+        ? routeTick(WAIT, "Preparing the next shuttle leg.", "Route hauling", ACTING, mem, state)
+        : { ...ride, nextMem: { ...mem, routeHauler: state } };
+    }
+  }
+
+  const expectedStation = state.phase === "loadA" || state.phase === "unloadA" ? stationA : stationB;
+  if (obs.flightStatus?.docked !== true || stationID !== expectedStation) {
+    if (state.pending !== null) {
+      return routeBlocked("The ship left before its last route transfer could be verified.", mem, state);
+    }
+    if (obs.flightStatus?.docked === true) {
+      const mismatch = checkDockedManifest();
+      if (mismatch !== null) return mismatch;
+    }
+    const ride = rideAutopilotTo(obs, expectedStation, expectedStation === stationA ? "Shuttling to Station A" : "Shuttling to Station B");
+    return ride === null
+      ? routeTick(WAIT, "Preparing the next shuttle leg.", "Route hauling", ACTING, mem, state)
+      : { ...ride, nextMem: { ...mem, routeHauler: state } };
+  }
+
+  if (reading?.readError !== null && reading?.readError !== undefined) {
+    return routeBlocked(reading.readError, mem, state);
+  }
+  if (reading?.transport === null || reading?.transport === undefined || reading.corpDivisions === null) {
+    return routeBlocked("The selected transport bay and corporation inventories must both be readable.", mem, state);
+  }
+
+  const transportRows = reading.transport.rows;
+  for (let transitions = 0; transitions < 3; transitions += 1) {
+    const currentDirection = routeDirection(state.phase);
+    const currentManifest = state.manifests[currentDirection];
+    const phase = state.phase as RouteTransferPhase;
+    const loading = phase === "loadA" || phase === "loadB";
+    const division =
+      phase === "loadA" ? pickupA :
+        phase === "unloadB" ? deliveryB :
+          phase === "loadB" ? pickupB : deliveryA;
+    if (!validDivision(division)) {
+      return routeBlocked("The corporation division for this route leg is invalid.", mem, state);
+    }
+    const corp = reading.corpDivisions.find((entry) => entry.division === division);
+    if (corp === undefined || corp.error !== null || corp.rows === null) {
+      return routeBlocked(corp?.error ?? "The corporation division for this route leg is unreadable.", mem, state);
+    }
+    const corpRows = corp.rows;
+
+    if (state.pending !== null) {
+      if (state.pending.phase !== phase || state.pending.direction !== currentDirection) {
+        return routeBlocked("The pending route transfer does not belong to the current leg.", mem, state);
+      }
+      const sourceRows = state.pending.movement === "load" ? corpRows : transportRows;
+      const destinationRows = state.pending.movement === "load" ? transportRows : corpRows;
+      const sourceDelta = state.pending.sourceBefore - typeTotal(sourceRows, state.pending.typeID);
+      const destinationDelta = typeTotal(destinationRows, state.pending.typeID) - state.pending.destinationBefore;
+      if (sourceDelta !== state.pending.quantity || destinationDelta !== state.pending.quantity) {
+        return routeBlocked("The last route transfer was partial or uncertain, so the shuttle stopped.", mem, state);
+      }
+      state = routeManifestDelta(
+        state,
+        currentDirection,
+        state.pending.typeID,
+        state.pending.movement === "load" ? state.pending.quantity : -state.pending.quantity,
+      );
+    }
+
+    if (!sameTotals(itemTotals(transportRows), state.manifests[currentDirection])) {
+      return routeBlocked("The selected transport bay no longer matches this route's trusted manifest.", mem, state);
+    }
+
+    if (loading) {
+      if (phase === "loadB" && !returnCargo) {
+        state = { ...state, phase: "travelToA" };
+      } else {
+        const wanted = phase === "loadA" ? aToBTypes : bToATypes;
+        const sourceRows = corpRows.filter(
+          (row) => row.itemID > 0 && row.typeID > 0 && row.quantity > 0 &&
+            (wanted === null || wanted.has(row.typeID)),
+        );
+        const capacity = reading.transport.capacity;
+        if (
+          capacity === null || !Number.isFinite(capacity.capacity) || !Number.isFinite(capacity.used) ||
+          capacity.used > capacity.capacity
+        ) {
+          return routeBlocked("The selected transport bay capacity is unreadable.", mem, state);
+        }
+        const free = Math.max(0, capacity.capacity - capacity.used);
+        const candidate = sourceRows
+          .map((row) => ({
+            row,
+            units: typeof row.volume === "number" && row.volume > 0 ? Math.floor(free / row.volume) : 0,
+          }))
+          .find((entry) => entry.units > 0);
+        if (candidate !== undefined) {
+          const quantity = Math.min(candidate.row.quantity, candidate.units);
+          state = {
+            ...state,
+            pending: {
+              phase,
+              direction: currentDirection,
+              movement: "load",
+              typeID: candidate.row.typeID,
+              quantity,
+              sourceBefore: typeTotal(corpRows, candidate.row.typeID),
+              destinationBefore: typeTotal(transportRows, candidate.row.typeID),
+            },
+          };
+          return routeTick({
+            kind: "haulTransfer",
+            itemID: candidate.row.itemID,
+            typeID: candidate.row.typeID,
+            quantity,
+            from: { kind: "corp", division },
+            to: transport,
+            expectedStationID: expectedStation,
+          }, "Loading the next selected corporation stack.", "Loading route cargo", ACTING, mem, state);
+        }
+        state = { ...state, phase: phase === "loadA" ? "travelToB" : "travelToA" };
+      }
+      const target = state.phase === "travelToB" ? stationB : stationA;
+      const ride = rideAutopilotTo(obs, target, target === stationB ? "Shuttling to Station B" : "Shuttling to Station A");
+      return ride === null
+        ? routeTick(WAIT, "Preparing the next shuttle leg.", "Route hauling", ACTING, mem, state)
+        : { ...ride, nextMem: { ...mem, routeHauler: state } };
+    }
+
+    const stacks = transportRows.filter((row) => row.itemID > 0 && row.typeID > 0 && row.quantity > 0);
+    if (stacks.length > 0) {
+      const stack = stacks[0]!;
+      state = {
+        ...state,
+        pending: {
+          phase,
+          direction: currentDirection,
+          movement: "unload",
+          typeID: stack.typeID,
+          quantity: stack.quantity,
+          sourceBefore: typeTotal(transportRows, stack.typeID),
+          destinationBefore: typeTotal(corpRows, stack.typeID),
+        },
+      };
+      return routeTick({
+        kind: "haulTransfer",
+        itemID: stack.itemID,
+        typeID: stack.typeID,
+        quantity: stack.quantity,
+        from: transport,
+        to: { kind: "corp", division },
+        expectedStationID: expectedStation,
+      }, "Unloading the next trusted route stack.", "Unloading route cargo", ACTING, mem, state);
+    }
+
+    state = {
+      ...state,
+      phase: phase === "unloadB" ? (returnCargo ? "loadB" : "travelToA") : "loadA",
+    };
+    if (state.phase === "travelToA") {
+      const ride = rideAutopilotTo(obs, stationA, "Shuttling to Station A");
+      return ride === null
+        ? routeTick(WAIT, "Preparing the empty return leg.", "Route hauling", ACTING, mem, state)
+        : { ...ride, nextMem: { ...mem, routeHauler: state } };
+    }
+  }
+
+  return routeBlocked("The route state could not advance safely.", mem, state);
+};
+
 // ── warp-to-bookmark ─────────────────────────────────────────────────────────
 // Warp to a saved spot, matched BY NAME from the live bookmark list (the id is a
 // same-world hint). In-space only, and only in the spot's own system — a saved
@@ -5059,6 +5400,7 @@ export const SCRIPT_MACROS: CompleteMacroRegistry = {
   "refit-ship": refitShip,
   "move-items": moveItems,
   "haul-all": haulAll,
+  "route-hauler": routeHauler,
   "warp-to-bookmark": warpToBookmark,
   "find-combat-agent": findCombatAgent,
   "fly-to-mission-site": flyToMissionSite,

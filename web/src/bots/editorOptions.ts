@@ -50,6 +50,7 @@ export type WidgetKind =
   | "belt-picker"
   | "station-picker"
   | "corp-division-select"
+  | "toggle-select"
   | "equipment-picker"
   | "agent-picker"
   | "count-input"
@@ -77,6 +78,7 @@ export const ARG_KIND_WIDGET: Readonly<Record<Arg["kind"], WidgetKind>> = {
   belt: "belt-picker",
   station: "station-picker",
   corpDivision: "corp-division-select",
+  toggle: "toggle-select",
   equipment: "equipment-picker",
   agent: "agent-picker",
   count: "count-input",
@@ -105,6 +107,7 @@ export const ARG_KIND_LABEL: Readonly<Record<Arg["kind"], string>> = {
   belt: "Belt",
   station: "Station",
   corpDivision: "Ore destination",
+  toggle: "Choice",
   equipment: "Equipment",
   agent: "Agent",
   count: "Amount",
@@ -146,6 +149,16 @@ const ARG_KEY_LABEL: Readonly<Record<string, string>> = {
   pickupCorpDivision: "Pickup division",
   deliveryStation: "Delivery station",
   deliveryCorpDivision: "Delivery division",
+  transportBay: "Transport bay",
+  stationA: "Station A",
+  stationB: "Station B",
+  pickupDivisionA: "A pickup division",
+  deliveryDivisionB: "B delivery division",
+  itemsAToB: "A to B cargo",
+  returnCargo: "Return cargo",
+  pickupDivisionB: "B pickup division",
+  deliveryDivisionA: "A delivery division",
+  itemsBToA: "B to A cargo",
   equipment: "Equipment",
   agent: "Agent",
   level: "Agent level",

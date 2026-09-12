@@ -117,6 +117,16 @@ const PARAM_LABEL: Readonly<Record<string, string>> = {
   destination: "Destination",
   pick: "Which rock first",
   ores: "Ore priority",
+  transportBay: "Transport bay",
+  stationA: "Station A",
+  stationB: "Station B",
+  pickupDivisionA: "A pickup division",
+  deliveryDivisionB: "B delivery division",
+  itemsAToB: "A to B cargo",
+  returnCargo: "Return cargo",
+  pickupDivisionB: "B pickup division",
+  deliveryDivisionA: "A delivery division",
+  itemsBToA: "B to A cargo",
 };
 
 function paramView(arg: MacroArgSpec): MacroParamView {
@@ -179,6 +189,12 @@ const ENTRIES: Readonly<Record<MacroID, MacroCatalogEntry>> = {
     "hauling",
     "Moves every item, or every stack of one selected item type, from one corporation hangar division to another using only the ship's Cargo Hold.",
     "Pickup and delivery stations and corporation divisions, with an empty Cargo Hold at the start",
+  ),
+  "route-hauler": entry(
+    "route-hauler",
+    "hauling",
+    "Shuttles continuously between two stations, carrying selected corporation cargo in both directions or returning empty.",
+    "Two stations, corporation divisions, a transport bay, and an empty selected bay at the start",
   ),
   "defend-with-drones": entry(
     "defend-with-drones",

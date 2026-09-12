@@ -159,8 +159,14 @@ export type ScriptAction =
       readonly itemID: number;
       readonly typeID: number;
       readonly quantity: number;
-      readonly from: { readonly kind: "cargo" } | { readonly kind: "corp"; readonly division: number };
-      readonly to: { readonly kind: "cargo" } | { readonly kind: "corp"; readonly division: number };
+      readonly from:
+        | { readonly kind: "cargo" }
+        | { readonly kind: "shipBay"; readonly bay: "ore" }
+        | { readonly kind: "corp"; readonly division: number };
+      readonly to:
+        | { readonly kind: "cargo" }
+        | { readonly kind: "shipBay"; readonly bay: "ore" }
+        | { readonly kind: "corp"; readonly division: number };
       readonly expectedStationID: number;
     }
   /** Place a market BUY order (server confirm-gated; spends ISK + broker fee). */

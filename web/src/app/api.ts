@@ -694,11 +694,15 @@ export async function getShipBays(
   shipID: number,
   options: ApiOptions = {},
   keys: readonly string[] = [],
+  expectedStationID: number | null = null,
 ): Promise<RawShipBaysResult> {
   // Naming the bays turns 27 capacity calls into as many as were asked for,
   // which is what makes this affordable on a bot's loot path rather than only
   // once for a panel.
-  const query = keys.length > 0 ? `?keys=${encodeURIComponent(keys.join(","))}` : "";
+  const params = new URLSearchParams();
+  if (keys.length > 0) params.set("keys", keys.join(","));
+  if (expectedStationID !== null) params.set("expectedStationID", String(expectedStationID));
+  const query = params.size > 0 ? `?${params.toString()}` : "";
   const data = await getJson(`/api/bridge/ship/${shipID}/bays${query}`, options);
   return {
     shipID: asNumberOrNull(data.shipID) ?? shipID,

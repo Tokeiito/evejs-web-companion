@@ -534,6 +534,13 @@ function readArg(raw: unknown, expected: Arg["kind"], label: string, ctx: Ctx): 
     }
     return { kind: "corpDivision", division };
   }
+  if (expected === "toggle") {
+    const enabled = obj["enabled"];
+    if (typeof enabled !== "boolean") {
+      refuse(SAY.badArg(label));
+    }
+    return { kind: "toggle", enabled };
+  }
   if (expected === "agent") {
     return { kind: "agent", ref: readWorldRef(obj["ref"], "agent", ctx, SAY.badArg(label)) };
   }
@@ -1294,6 +1301,8 @@ function orderArg(arg: Arg): unknown {
       return { kind: "station", ref: orderRef(arg.ref) };
     case "corpDivision":
       return { kind: "corpDivision", division: arg.division };
+    case "toggle":
+      return { kind: "toggle", enabled: arg.enabled };
     case "agent":
       return { kind: "agent", ref: orderRef(arg.ref) };
     case "equipment":

@@ -229,6 +229,8 @@ export type Arg =
   | { readonly kind: "station"; readonly ref: WorldRef }
   /** Optional ore-delivery destination. Absence means the personal station hangar. */
   | { readonly kind: "corpDivision"; readonly division: number }
+  /** A two-state builder choice whose meaning is supplied by the argument key. */
+  | { readonly kind: "toggle"; readonly enabled: boolean }
   | { readonly kind: "equipment"; readonly equipment: EquipmentArg }
   /** A specific agent (WorldRef entity "agent"). Optional on mission blocks — left
    * unset, the block uses the agent the find block published on the run's board. */
@@ -666,6 +668,7 @@ export type MacroID =
   | "mine-at-belt"
   | "deliver-ore"
   | "haul-all"
+  | "route-hauler"
   | "defend-with-drones"
   | "find-distribution-agent"
   | "request-mission"
@@ -751,6 +754,7 @@ export const MACRO_IDS: readonly MacroID[] = Object.freeze<MacroID[]>([
   "mine-at-belt",
   "deliver-ore",
   "haul-all",
+  "route-hauler",
   "defend-with-drones",
   "find-distribution-agent",
   "request-mission",

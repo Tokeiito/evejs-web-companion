@@ -8075,6 +8075,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         let damagedItemIDs: ScriptObservation["damagedItemIDs"] = null;
         let scannerOperations: ScriptObservation["scannerOperations"] = null;
         let haulAll: ScriptObservation["haulAll"] = null;
+        let routeHauler: ScriptObservation["routeHauler"] = null;
         if (macro === "haul-all") {
           haulAll = { cargo: null, corpDivisions: null, readError: null };
           if (status.docked === true && status.stationID !== null) {
@@ -8114,6 +8115,68 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
               };
             } catch (error) {
               haulAll = { cargo: null, corpDivisions: null, readError: errorWords(error) };
+            }
+          }
+        }
+        if (macro === "route-hauler") {
+          routeHauler = { transport: null, corpDivisions: null, readError: null };
+          if (status.docked === true && status.stationID !== null) {
+            try {
+              const step = hint.activeStep;
+              const stationA = step?.args["stationA"];
+              const stationB = step?.args["stationB"];
+              const transportBay = step?.args["transportBay"];
+              const atEndpoint =
+                (stationA?.kind === "station" && stationA.ref.id === status.stationID) ||
+                (stationB?.kind === "station" && stationB.ref.id === status.stationID);
+              const [panel, corp] = await Promise.all([
+                api.loadInventory(callOptions, status.stationID),
+                atEndpoint
+                  ? api.loadCorpHangar(callOptions, status.stationID)
+                  : Promise.resolve(null),
+              ]);
+              let transport: NonNullable<ScriptObservation["routeHauler"]>["transport"];
+              if (transportBay?.kind === "place" && transportBay.place === "cargo") {
+                if (panel.cargo.error !== null) {
+                  throw new Error(`Cargo Hold: ${panel.cargo.error}`);
+                }
+                transport = {
+                  rows: decodeInventoryRows(panel.cargo.list, panel.volumes),
+                  capacity: decodeCapacity(panel.cargo.capacity),
+                };
+              } else if (transportBay?.kind === "place" && transportBay.place === "ore-hold") {
+                if (panel.activeShipID === null) {
+                  throw new Error("No active ship is available for the Ore Hold read.");
+                }
+                const bays = decodeShipBays(
+                  (await api.getShipBays(panel.activeShipID, callOptions, ["ore"], status.stationID)).bays,
+                );
+                const ore = bays.find((bay) => bay.key === "ore");
+                if (ore === undefined || ore.present !== true || ore.items === null || ore.capacity === null || ore.error !== null) {
+                  throw new Error(ore?.error ?? "The active ship's Ore Hold is unavailable or unreadable.");
+                }
+                transport = { rows: ore.items, capacity: ore.capacity };
+              } else {
+                throw new Error("Route Hauler supports only the Cargo Hold or Ore Hold.");
+              }
+              if (corp !== null && !corp.available) {
+                throw new Error(corp.reason ?? "No corporation office is available at this station.");
+              }
+              routeHauler = {
+                transport,
+                corpDivisions: corp === null
+                  ? null
+                  : corp.divisions.map((division) => ({
+                      division: division.division,
+                      rows: division.list === null
+                        ? null
+                        : decodeInventoryRows(division.list, corp.volumes),
+                      error: division.error,
+                    })),
+                readError: null,
+              };
+            } catch (error) {
+              routeHauler = { transport: null, corpDivisions: null, readError: errorWords(error) };
             }
           }
         }
@@ -8585,6 +8648,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           colonies,
           damagedItemIDs,
           haulAll,
+          routeHauler,
           inSpace: status.inSpace,
           docked: status.docked,
           inWarp: status.shipMode === null ? null : /warp/i.test(status.shipMode),

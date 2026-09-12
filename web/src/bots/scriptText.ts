@@ -78,6 +78,8 @@ export function macroName(macro: MacroID): string {
       return "Haul the ore home";
     case "haul-all":
       return "Haul everything between corporation hangars";
+    case "route-hauler":
+      return "Run a corporation shuttle route";
     case "defend-with-drones":
       return "Fight off rats with drones";
     case "find-distribution-agent":
@@ -476,6 +478,14 @@ function macroPhrase(step: MacroStep): string {
         ? `all ${item.name ?? "of the selected item"}`
         : "everything";
       return `Haul ${what} from ${from} at ${pickupWords} to ${to} at ${deliveryWords}`;
+    }
+    case "route-hauler": {
+      const stationA = step.args["stationA"];
+      const stationB = step.args["stationB"];
+      const a = stationA?.kind === "station" ? worldRefPhrase(stationA.ref, "Station A") : "Station A";
+      const b = stationB?.kind === "station" ? worldRefPhrase(stationB.ref, "Station B") : "Station B";
+      const returnCargo = step.args["returnCargo"];
+      return `Shuttle from ${a} to ${b}${returnCargo?.kind === "toggle" && returnCargo.enabled ? " with return cargo" : " and return empty"}`;
     }
     case "defend-with-drones":
       return "Fight off rats with your combat drones";

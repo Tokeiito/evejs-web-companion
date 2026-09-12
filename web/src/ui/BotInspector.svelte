@@ -149,6 +149,10 @@
     const arg = argOf(step, key);
     return arg !== undefined && arg.kind === "place" ? arg.place : "";
   }
+  function toggleValue(step: MacroStep, key: string): string {
+    const arg = argOf(step, key);
+    return arg !== undefined && arg.kind === "toggle" && arg.enabled ? "enabled" : "disabled";
+  }
   function corpDivisionValue(step: MacroStep, key: string): string {
     const arg = argOf(step, key);
     return arg !== undefined && arg.kind === "corpDivision" ? String(arg.division) : "";
@@ -277,6 +281,12 @@
   function itemListValue(step: MacroStep, key: string): readonly ItemMatchArg[] {
     const arg = argOf(step, key);
     return arg !== undefined && arg.kind === "itemList" ? arg.items : [];
+  }
+
+  const TRANSPORT_BAY_OPTIONS = PLACE_OPTIONS.filter((place) => place.value === "cargo" || place.value === "ore-hold");
+
+  function routeItemSelection(key: string): boolean {
+    return key === "itemsAToB" || key === "itemsBToA";
   }
 
   let keepQuery = $state("");
@@ -676,18 +686,23 @@
   {:else if arg.widget === "item-list-picker"}
     {@const chosenKeep = itemListValue(step, arg.key)}
     {@const keepHits = keepMatches(keepQuery)}
+    {@const routeItems = routeItemSelection(arg.key)}
     <div class="inspector-field">
       <span class="inspector-label">
         {arg.label}{#if !arg.required}<span class="inspector-optional"> - optional</span>{/if}
       </span>
       <span class="inspector-suffix">
-        Anything listed here stays on the ship. "All like this" keeps every
-        variant, which is usually what you want for crystals or ammunition.
+        {#if routeItems}
+          Leave this empty to carry all transferable items, or add each item type this direction should carry.
+        {:else}
+          Anything listed here stays on the ship. "All like this" keeps every
+          variant, which is usually what you want for crystals or ammunition.
+        {/if}
       </span>
       <input
         id={fieldId}
         type="text"
-        placeholder="search what is aboard by name"
+        placeholder={routeItems ? "search corporation items by name" : "search what is aboard by name"}
         value={keepQuery}
         oninput={(e) => (keepQuery = e.currentTarget.value)}
       />
@@ -702,7 +717,7 @@
               >
                 <span class="pick-main"><span class="pick-name">{hit.name}</span></span>
               </button>
-              {#if hit.groupID !== null && hit.groupID !== undefined}
+              {#if !routeItems && hit.groupID !== null && hit.groupID !== undefined}
                 <button
                   type="button"
                   class="pick-row"
@@ -931,7 +946,12 @@
         </select>
       {:else if arg.widget === "place-select"}
         <select id={fieldId} value={placeValue(step, arg.key)} onchange={(e) => onArg(arg.key, { kind: "place", place: e.currentTarget.value as never })}>
-          {#each PLACE_OPTIONS as place (place.value)}<option value={place.value}>{place.label}</option>{/each}
+          {#each (arg.key === "transportBay" ? TRANSPORT_BAY_OPTIONS : PLACE_OPTIONS) as place (place.value)}<option value={place.value}>{place.label}</option>{/each}
+        </select>
+      {:else if arg.widget === "toggle-select"}
+        <select id={fieldId} value={toggleValue(step, arg.key)} onchange={(e) => onArg(arg.key, { kind: "toggle", enabled: e.currentTarget.value === "enabled" })}>
+          <option value="disabled">Disabled</option>
+          <option value="enabled">Enabled</option>
         </select>
       {:else if arg.widget === "corp-division-select"}
         <select id={fieldId} value={corpDivisionValue(step, arg.key)} onchange={(e) => setCorpDivision(arg.key, e.currentTarget.value)}>

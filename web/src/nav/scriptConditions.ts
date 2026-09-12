@@ -321,6 +321,16 @@ export interface ScriptObservation {
     }[] | null;
     readonly readError: string | null;
   } | null;
+  /** Station-pinned selected-bay and corp reads for the continuous shuttle. */
+  readonly routeHauler?: {
+    readonly transport: CargoReading | null;
+    readonly corpDivisions: readonly {
+      readonly division: number;
+      readonly rows: readonly InventoryItemRow[] | null;
+      readonly error: string | null;
+    }[] | null;
+    readonly readError: string | null;
+  } | null;
   /**
    * The active hull's SPECIALISED bays, contents included — what `unload-cargo`
    * needs to empty a hauler whose freight went to the ore hold rather than to
