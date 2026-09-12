@@ -428,10 +428,45 @@ test("mine: the ore-priority list running out entirely -> blocked, never a silen
 test("deliver: docked with ore -> unload; docked empty -> done", () => {
   const withOre: MiningHold[] = [{ key: "ore", label: "Ore Hold", items: [{ itemID: 8, typeID: 1230, groupID: 462, categoryID: 25, quantity: 100 }], capacity: null, present: true, error: null }];
   const unload = deliver(haulStep, obs({ flightStatus: flight({ docked: true, inSpace: false, stationID: 60000004 }), holds: withOre }), NM, {});
-  assert.ok(unload.action.kind === "unloadOre" && unload.action.itemIDs.includes(8));
+  assert.deepEqual(unload.action, {
+    kind: "unloadOre",
+    itemIDs: [8],
+    destination: { kind: "hangar" },
+    expectedStationID: 60000004,
+  });
 
   const done = deliver(haulStep, obs({ flightStatus: flight({ docked: true, inSpace: false, stationID: 60000004 }), holds: [] }), NM, {});
   assert.equal(done.outcome.kind, "done");
+});
+
+test("deliver: a corporation division is explicit on the unload action", () => {
+  const step: MacroStep = {
+    ...haulStep,
+    args: { ...haulStep.args, corpDivision: { kind: "corpDivision", division: 7 } },
+  };
+  const holds: MiningHold[] = [
+    { key: "ore", label: "Ore Hold", items: [{ itemID: 8, typeID: 1230, groupID: 462, categoryID: 25, quantity: 100 }], capacity: null, present: true, error: null },
+  ];
+  const result = deliver(step, obs({ flightStatus: flight({ docked: true, inSpace: false, stationID: 60000004 }), holds }), NM, {});
+  assert.deepEqual(result.action, {
+    kind: "unloadOre",
+    itemIDs: [8],
+    destination: { kind: "corp", division: 7 },
+    expectedStationID: 60000004,
+  });
+});
+
+test("deliver: an invalid in-memory corporation division blocks without a Personal Hangar fallback", () => {
+  const step = {
+    ...haulStep,
+    args: { ...haulStep.args, corpDivision: { kind: "corpDivision", division: 8 } },
+  } as MacroStep;
+  const holds: MiningHold[] = [
+    { key: "ore", label: "Ore Hold", items: [{ itemID: 8, typeID: 1230, groupID: 462, categoryID: 25, quantity: 100 }], capacity: null, present: true, error: null },
+  ];
+  const result = deliver(step, obs({ flightStatus: flight({ docked: true, inSpace: false, stationID: 60000004 }), holds }), NM, {});
+  assert.equal(result.outcome.kind, "blocked");
+  assert.equal(result.action.kind, "wait");
 });
 
 test("deliver: the ore hold goes ashore, the CARGO hold stays aboard", () => {

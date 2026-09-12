@@ -49,6 +49,7 @@ import { MACRO_SPECS, type MacroArgSpec } from "./macroSpecs.ts";
 export type WidgetKind =
   | "belt-picker"
   | "station-picker"
+  | "corp-division-select"
   | "equipment-picker"
   | "agent-picker"
   | "count-input"
@@ -75,6 +76,7 @@ export type WidgetKind =
 export const ARG_KIND_WIDGET: Readonly<Record<Arg["kind"], WidgetKind>> = {
   belt: "belt-picker",
   station: "station-picker",
+  corpDivision: "corp-division-select",
   equipment: "equipment-picker",
   agent: "agent-picker",
   count: "count-input",
@@ -102,6 +104,7 @@ export const ARG_KIND_WIDGET: Readonly<Record<Arg["kind"], WidgetKind>> = {
 export const ARG_KIND_LABEL: Readonly<Record<Arg["kind"], string>> = {
   belt: "Belt",
   station: "Station",
+  corpDivision: "Ore destination",
   equipment: "Equipment",
   agent: "Agent",
   count: "Amount",
@@ -138,6 +141,7 @@ const ARG_KEY_LABEL: Readonly<Record<string, string>> = {
   squad: "With the fleet",
   belt: "Belt",
   station: "Station",
+  corpDivision: "Ore destination",
   equipment: "Equipment",
   agent: "Agent",
   level: "Agent level",

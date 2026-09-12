@@ -83,6 +83,14 @@ test("equipment, agent and corp each resolve to a real widget kind", () => {
   }
 });
 
+test("deliver-ore exposes an optional Corporate Hangar destination selector", () => {
+  const destination = MACRO_ARG_DESCRIPTORS["deliver-ore"].all.find((arg) => arg.key === "corpDivision");
+  assert.ok(destination);
+  assert.equal(destination.kind, "corpDivision");
+  assert.equal(destination.widget, "corp-division-select");
+  assert.equal(destination.required, false);
+});
+
 test("request-mission (previously editor-less) has a real editor descriptor for its agent arg", () => {
   const desc = MACRO_ARG_DESCRIPTORS["request-mission"];
   const agent = desc.all.find((a) => a.key === "agent");

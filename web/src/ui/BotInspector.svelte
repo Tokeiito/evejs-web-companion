@@ -29,6 +29,7 @@
     type MacroStep,
     type SubBotNode,
     type WorldRef,
+    CORP_DIVISIONS,
     MAX_ISK_ARG,
     MAX_ITEM_LIST,
     type ItemMatchArg,
@@ -88,6 +89,7 @@
     spots = [],
     savedBots = [],
     oreFamilies = [],
+    corpDivisions = [],
     problems = [],
     onArg,
     onCondition,
@@ -111,6 +113,7 @@
      * A grade within a family (0-Grade, II-, III-, …) is the runtime's business
      * and is never listed here — see `OreFamilyArg` in botScript.ts. */
     oreFamilies?: readonly { groupID: number; name: string }[];
+    corpDivisions?: readonly { division: number; name: string | null }[];
     problems?: readonly ScriptProblem[];
     /** One argument changed. `undefined` clears it back to the macro's default. */
     onArg: (key: string, value: Arg | undefined) => void;
@@ -145,6 +148,26 @@
   function placeValue(step: MacroStep, key: string): string {
     const arg = argOf(step, key);
     return arg !== undefined && arg.kind === "place" ? arg.place : "";
+  }
+  function corpDivisionValue(step: MacroStep, key: string): string {
+    const arg = argOf(step, key);
+    return arg !== undefined && arg.kind === "corpDivision" ? String(arg.division) : "";
+  }
+  function corpDivisionName(division: number): string {
+    const name = corpDivisions.find((entry) => entry.division === division)?.name?.trim();
+    return name ? `${division} — ${name}` : `Division ${division}`;
+  }
+  function setCorpDivision(key: string, raw: string): void {
+    if (raw === "") {
+      onArg(key, undefined);
+      return;
+    }
+    const division = Number(raw);
+    if (!Number.isSafeInteger(division) || !CORP_DIVISIONS.includes(division)) {
+      onArg(key, undefined);
+      return;
+    }
+    onArg(key, { kind: "corpDivision", division });
   }
   /** The world ref a station-, destination- or system-shaped argument points at. */
   function worldRefValue(step: MacroStep, key: string, kind: Arg["kind"]): WorldRef {
@@ -909,6 +932,13 @@
       {:else if arg.widget === "place-select"}
         <select id={fieldId} value={placeValue(step, arg.key)} onchange={(e) => onArg(arg.key, { kind: "place", place: e.currentTarget.value as never })}>
           {#each PLACE_OPTIONS as place (place.value)}<option value={place.value}>{place.label}</option>{/each}
+        </select>
+      {:else if arg.widget === "corp-division-select"}
+        <select id={fieldId} value={corpDivisionValue(step, arg.key)} onchange={(e) => setCorpDivision(arg.key, e.currentTarget.value)}>
+          <option value="">Personal Hangar</option>
+          {#each CORP_DIVISIONS as division (division)}
+            <option value={String(division)}>Corporation Hangar — {corpDivisionName(division)}</option>
+          {/each}
         </select>
       {:else if arg.widget === "character-picker"}
         <select id={fieldId} value={characterValue(step, arg.key)} onchange={(e) => setCharacter(arg.key, e.currentTarget.value)}>

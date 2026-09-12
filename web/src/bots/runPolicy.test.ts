@@ -137,6 +137,27 @@ test("observed-state movement scripts remain restart-safe", () => {
   assert.deepEqual(result.restartBlockers, []);
 });
 
+test("Personal Hangar delivery keeps its policy; Corporate Hangar delivery is destructive and restart-unsafe", () => {
+  const personal = analyzeBotRunPolicy(script([step("deliver-ore")]));
+  assert.deepEqual(personal.riskClasses, ["inventory"]);
+  assert.equal(personal.restartSafe, true);
+  assert.deepEqual(personal.restartBlockers, []);
+
+  const corporate: ProgramNode = {
+    id: "corp-delivery",
+    kind: "macro",
+    macro: "deliver-ore",
+    args: { corpDivision: { kind: "corpDivision", division: 1 } },
+  };
+  const corporatePolicy = analyzeBotRunPolicy(script([corporate]));
+  assert.deepEqual(corporatePolicy.riskClasses, ["inventory", "destructive"]);
+  assert.equal(corporatePolicy.restartSafe, false);
+  assert.deepEqual(corporatePolicy.restartBlockers, ["deliver-ore"]);
+
+  const personalGrant = createBotLaunchGrant(4, personal, 60);
+  assert.equal(validateBotLaunchGrant(personalGrant, 4, corporatePolicy).ok, false);
+});
+
 test("a launch grant is exact-revision, exact-risk, and finite", () => {
   const policy = analyzeBotRunPolicy(script([step("buy-item")]));
   const grant = createBotLaunchGrant(7, policy, 60);

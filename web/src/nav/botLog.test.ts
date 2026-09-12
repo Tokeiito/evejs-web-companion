@@ -33,7 +33,7 @@ const EVERY_ACTION: readonly ScriptAction[] = [
   { kind: "launchDrones", droneItemIDs: [11, 12] },
   { kind: "engageDrones", droneIDs: [11], targetID: 1001 },
   { kind: "recallDrones", droneIDs: [11] },
-  { kind: "unloadOre", itemIDs: [21] },
+  { kind: "unloadOre", itemIDs: [21], destination: { kind: "hangar" }, expectedStationID: 60003760 },
   { kind: "agentButton", agentID: 3019494, actionID: 4, label: "Accept" },
   { kind: "startRoute", stationID: 60003760 },
   { kind: "loadMissionCargo", typeID: 34, quantity: 5 },

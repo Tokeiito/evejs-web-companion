@@ -272,6 +272,14 @@ function visitStep(
   if (!entry.restartSafe) {
     restartBlockers.add(step.macro);
   }
+  // A corporation delivery transfers ownership and may not be reversible by
+  // this pilot. Personal delivery keeps the long-standing inventory-only,
+  // restart-safe policy; the optional argument alone strengthens the grant.
+  const destination = step.args["corpDivision"];
+  if (step.macro === "deliver-ore" && destination?.kind === "corpDivision") {
+    risks.add("destructive");
+    restartBlockers.add(step.macro);
+  }
 }
 
 function visitNode(

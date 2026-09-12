@@ -16758,9 +16758,9 @@ app.get("/api/bridge/ship/ore-hold", requireAuth, async (req, res, next) => {
   }
 });
 
-// Unload mined ore into the station hangar. This is R3's invbroker.Add in the
-// unfit direction: the DESTINATION (the hangar) is the bound object and the ship
-// is the source location — no new server method at all.
+// Unload mined ore into the personal station hangar, or an explicitly selected
+// corporation division. The DESTINATION is bound and Add names the active ship
+// as the source; corporate deliveries never stage through the personal hangar.
 //
 // Docked-only, because there is nowhere else for it to go.
 app.post("/api/bridge/ship/ore-hold/unload", requireAuth, async (req, res, next) => {
@@ -16790,21 +16790,73 @@ app.post("/api/bridge/ship/ore-hold/unload", requireAuth, async (req, res, next)
       });
       return;
     }
+    const hasExpectedStation = Object.prototype.hasOwnProperty.call(body, "expectedStationID");
+    const expectedStationID = body.expectedStationID;
+    if (
+      hasExpectedStation &&
+      (!Number.isSafeInteger(expectedStationID) || expectedStationID <= 0)
+    ) {
+      res.status(400).json({
+        ok: false,
+        error: "INVALID_EXPECTED_STATION",
+        message: "A valid expected station is required for this delivery.",
+      });
+      return;
+    }
+    const hasDestination = Object.prototype.hasOwnProperty.call(body, "destination");
+    if (hasDestination && !hasExpectedStation) {
+      res.status(400).json({
+        ok: false,
+        error: "INVALID_EXPECTED_STATION",
+        message: "A Corporate Hangar delivery requires its expected station.",
+      });
+      return;
+    }
+    if (hasExpectedStation && held.stationID !== expectedStationID) {
+      res.status(409).json({
+        ok: false,
+        error: "WRONG_STATION",
+        message: "The ship is not docked at the station selected for this delivery.",
+      });
+      return;
+    }
     const shipID = held.activeShipID;
     if (!shipID) {
       res.status(409).json({ ok: false, error: "NO_ACTIVE_SHIP", message: "No active ship." });
       return;
     }
-    const hangarSpec = hangarBindSpec(held);
+    let destination;
+    if (!hasDestination) {
+      destination = { spec: hangarBindSpec(held), flag: ITEM_FLAG_HANGAR };
+    } else {
+      const descriptor = body.destination;
+      if (
+        !descriptor ||
+        typeof descriptor !== "object" ||
+        Array.isArray(descriptor) ||
+        descriptor.kind !== "corp" ||
+        typeof descriptor.division !== "number"
+      ) {
+        res.status(400).json({
+          ok: false,
+          error: "INVALID_DESTINATION",
+          message: "Choose a valid Corporation Hangar division from 1 to 7.",
+        });
+        return;
+      }
+      // `resolvePlace` remains the authority for the ordinal range, office
+      // lookup, binding identity, and retail flag mapping.
+      destination = await resolvePlace(held, req.webSessionID, descriptor);
+    }
     const notifications = [];
     for (const itemID of requested) {
       const outcome = await boundCall(
         held,
         req.webSessionID,
-        hangarSpec,
+        destination.spec,
         "Add",
         [itemID, shipID],
-        { flag: ITEM_FLAG_HANGAR },
+        { flag: destination.flag },
       );
       notifications.push(...outcome.notifications);
     }
@@ -16812,16 +16864,29 @@ app.post("/api/bridge/ship/ore-hold/unload", requireAuth, async (req, res, next)
     // what the HOLDS say afterwards: anything still sitting in a mining hold
     // did not move, and is named as such rather than assumed moved.
     const spec = cargoBindSpec(held, shipID);
+    const verification = await Promise.allSettled(
+      MINING_HOLDS.map((hold) =>
+        boundCall(held, req.webSessionID, spec, "List", [hold.flag], null),
+      ),
+    );
+    const failedVerification = verification.find((entry) => entry.status === "rejected");
+    if (failedVerification) {
+      if (failedVerification.reason && failedVerification.reason.code === "SESSION_NOT_FOUND") {
+        throw failedVerification.reason;
+      }
+      res.json({
+        ok: true,
+        requested,
+        moved: null,
+        remaining: null,
+        notifications,
+      });
+      return;
+    }
     const stillHeld = new Set();
-    for (const hold of MINING_HOLDS) {
-      try {
-        const listed = await boundCall(held, req.webSessionID, spec, "List", [hold.flag], null);
-        for (const row of decodeInventoryRows(listed.result)) {
-          stillHeld.add(row.itemID);
-        }
-      } catch {
-        // A hold that cannot be re-read leaves its items unverified; they are
-        // reported as not-moved rather than silently counted as moved.
+    for (const listed of verification) {
+      for (const row of decodeInventoryRows(listed.value.result)) {
+        stillHeld.add(row.itemID);
       }
     }
     const moved = requested.filter((itemID) => !stillHeld.has(itemID));
@@ -16833,6 +16898,9 @@ app.post("/api/bridge/ship/ore-hold/unload", requireAuth, async (req, res, next)
       notifications,
     });
   } catch (error) {
+    if (sendPlaceError(res, error)) {
+      return;
+    }
     next(error);
   }
 });

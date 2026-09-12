@@ -55,7 +55,10 @@ export const MACRO_SPECS: Readonly<Record<MacroID, MacroSpec>> = {
     untilRequired: true,
   },
   "deliver-ore": {
-    args: [{ key: "station", kind: "station", required: true }],
+    args: [
+      { key: "station", kind: "station", required: true },
+      { key: "corpDivision", kind: "corpDivision", required: false },
+    ],
     untilRequired: false,
   },
   "defend-with-drones": { args: [], untilRequired: false },

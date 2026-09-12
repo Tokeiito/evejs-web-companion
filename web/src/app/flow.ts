@@ -8675,10 +8675,23 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
               // delivery that moved nothing looked exactly like one that
               // worked. Raising here is what puts it in front of the refusal
               // ledger instead of nowhere.
-              const result = await api.unloadMiningHolds(action.itemIDs, callOptions);
+              const result = await api.unloadMiningHolds(
+                action.itemIDs,
+                callOptions,
+                action.destination,
+                action.expectedStationID,
+              );
               const moved = result.moved ?? null;
               if (moved !== null && moved.length === 0) {
-                throw new Error("Nothing moved to your hangar, and the server gave no reason.");
+                throw new Error("Nothing moved to the delivery destination, and the server gave no reason.");
+              }
+              if (action.destination.kind === "corp") {
+                if (moved === null || result.remaining === null) {
+                  throw new Error("The Corporate Hangar delivery could not be verified.");
+                }
+                if (result.remaining.length > 0 || moved.length !== action.itemIDs.length) {
+                  throw new Error("Only part of the Corporate Hangar delivery moved.");
+                }
               }
             }
             return;

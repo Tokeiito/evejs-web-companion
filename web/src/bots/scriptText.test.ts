@@ -181,6 +181,7 @@ test("a chosen world slot shows its name, never its id (R7d)", () => {
     },
   };
   assert.match(stepSentence(named), /Home Station/);
+  assert.match(stepSentence(named), /personal hangar/i);
   assert.doesNotMatch(stepSentence(named), LOOKS_LIKE_ID);
 
   // A reference with an id but no resolved name must fall back to words, not the number.
@@ -194,6 +195,19 @@ test("a chosen world slot shows its name, never its id (R7d)", () => {
   };
   assert.doesNotMatch(stepSentence(unnamed), LOOKS_LIKE_ID);
   assert.match(stepSentence(unnamed), /a station you pick/);
+});
+
+test("a Corporate Hangar delivery names its explicit division", () => {
+  const step: MacroStep = {
+    id: "corp-delivery",
+    kind: "macro",
+    macro: "deliver-ore",
+    args: {
+      station: { kind: "station", ref: { entity: "station", id: 60000004, name: "Home Station", systemName: "Aunia" } },
+      corpDivision: { kind: "corpDivision", division: 7 },
+    },
+  };
+  assert.match(stepSentence(step), /Corporate Hangar division 7/);
 });
 
 test("a combat step with a target priority names it, in order and in play words", () => {

@@ -2742,6 +2742,10 @@ export interface MiningActionResult {
   readonly notifications: readonly JsonValue[];
 }
 
+export type OreDeliveryDestination =
+  | { readonly kind: "hangar" }
+  | { readonly kind: "corp"; readonly division: number };
+
 function readIDArray(value: JsonValue | undefined): readonly number[] | null {
   if (!Array.isArray(value)) {
     return null;
@@ -2758,14 +2762,25 @@ export async function getMiningHolds(options: ApiOptions = {}): Promise<MiningHo
   };
 }
 
-/** Move mined ore from the ship's holds into the station hangar (docked only). */
+/** Move mined ore into the personal hangar, or an explicit corporation division. */
 export async function unloadMiningHolds(
   itemIDs: readonly number[],
   options: ApiOptions = {},
+  destination: OreDeliveryDestination = { kind: "hangar" },
+  expectedStationID: number | null = null,
 ): Promise<MiningActionResult> {
+  const body: Record<string, JsonValue> = { itemIDs: [...itemIDs] };
+  // Personal panel callers retain the historical request representation. A
+  // corporate intent is never encoded as omission, so it cannot fall back.
+  if (destination.kind === "corp") {
+    body.destination = { kind: "corp", division: destination.division };
+  }
+  if (expectedStationID !== null) {
+    body.expectedStationID = expectedStationID;
+  }
   const data = await postJson(
     "/api/bridge/ship/ore-hold/unload",
-    { itemIDs: [...itemIDs] },
+    body,
     options,
   );
   return {

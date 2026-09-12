@@ -217,9 +217,18 @@ export const CHAT_CHANNEL_ARGS: readonly ChatChannelArg[] = Object.freeze<ChatCh
 export const DEFAULT_HUNT_MAX_JUMPS = 3;
 export const DEFAULT_HUNT_RANGE_AU = 14;
 
+/** Corporation hangar divisions are addressed by ordinal; retail flag ids stay on the BFF. */
+export const MIN_CORP_DIVISION = 1;
+export const MAX_CORP_DIVISION = 7;
+export const CORP_DIVISIONS: readonly number[] = Object.freeze(
+  Array.from({ length: MAX_CORP_DIVISION }, (_, index) => index + MIN_CORP_DIVISION),
+);
+
 export type Arg =
   | { readonly kind: "belt"; readonly belt: BeltArg }
   | { readonly kind: "station"; readonly ref: WorldRef }
+  /** Optional ore-delivery destination. Absence means the personal station hangar. */
+  | { readonly kind: "corpDivision"; readonly division: number }
   | { readonly kind: "equipment"; readonly equipment: EquipmentArg }
   /** A specific agent (WorldRef entity "agent"). Optional on mission blocks — left
    * unset, the block uses the agent the find block published on the run's board. */

@@ -453,7 +453,12 @@ function macroPhrase(step: MacroStep): string {
         station !== undefined && station.kind === "station"
           ? worldRefPhrase(station.ref, "station")
           : "a station you pick";
-      return `Haul the ore to ${where}`;
+      const destination = step.args["corpDivision"];
+      const destinationWords =
+        destination !== undefined && destination.kind === "corpDivision"
+          ? `, into Corporate Hangar division ${destination.division}`
+          : ", into your personal hangar";
+      return `Haul the ore to ${where}${destinationWords}`;
     }
     case "defend-with-drones":
       return "Fight off rats with your combat drones";

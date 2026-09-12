@@ -58,6 +58,10 @@ import {
 
 // ─── The one action a tick emits ─────────────────────────────────────────────
 
+export type OreDeliveryDestination =
+  | { readonly kind: "hangar" }
+  | { readonly kind: "corp"; readonly division: number };
+
 export type ScriptAction =
   | { readonly kind: "wait" }
   | { readonly kind: "undock" }
@@ -83,7 +87,12 @@ export type ScriptAction =
   | { readonly kind: "launchDrones"; readonly droneItemIDs: readonly number[] }
   | { readonly kind: "engageDrones"; readonly droneIDs: readonly number[]; readonly targetID: number }
   | { readonly kind: "recallDrones"; readonly droneIDs: readonly number[] }
-  | { readonly kind: "unloadOre"; readonly itemIDs: readonly number[] }
+  | {
+      readonly kind: "unloadOre";
+      readonly itemIDs: readonly number[];
+      readonly destination: OreDeliveryDestination;
+      readonly expectedStationID: number;
+    }
   // ── Mission actions (the distribution blocks). Each is one proven mission-bot
   //    operation: a labeled button press in the agent conversation, a handoff to
   //    the shared autopilot, or a package move confirmed by re-read next tick.

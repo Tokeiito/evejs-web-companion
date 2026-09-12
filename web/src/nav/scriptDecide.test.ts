@@ -53,7 +53,12 @@ const undock: MacroDecider = (_s, o) =>
 
 // Deliver: done once the hold is empty, else unloads.
 const deliver: MacroDecider = (_s, o) =>
-  o.holdEmpty ? tick({ kind: "wait" }, { kind: "done" }) : tick({ kind: "unloadOre", itemIDs: [1] }, { kind: "acting" });
+  o.holdEmpty
+    ? tick({ kind: "wait" }, { kind: "done" })
+    : tick(
+        { kind: "unloadOre", itemIDs: [1], destination: { kind: "hangar" }, expectedStationID: 60000004 },
+        { kind: "acting" },
+      );
 
 // Mine: always acting and armed; the step's `until` decides when it is finished.
 const mine: MacroDecider = () => tick({ kind: "activate", moduleID: 1, targetID: 2 }, { kind: "acting" }, true);

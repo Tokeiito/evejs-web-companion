@@ -43,6 +43,7 @@
     MAX_NOTES_LEN,
     MAX_REPEAT_TIMES,
     MIN_REPEAT_TIMES,
+    CORP_DIVISIONS,
   } from "../bots/botScript.ts";
   import { CATEGORY_LABEL, categoriesInUse, type BlockCategory } from "../bots/macroCatalogView.ts";
   import {
@@ -608,6 +609,7 @@
         oreFamilies = rows;
       })
       .catch(() => {});
+    void flow.loadCorpHangar().catch(() => {});
     void refreshSaved();
   });
 
@@ -625,6 +627,12 @@
     }
     return [...seen.entries()].map(([groupID, label]) => ({ groupID, label }));
   });
+  const corpDivisions = $derived.by<readonly { division: number; name: string | null }[]>(() =>
+    CORP_DIVISIONS.map((division) => ({
+      division,
+      name: $inventory.corp.divisions.find((entry) => entry.division === division)?.name ?? null,
+    })),
+  );
   // Items offered = what is visible in the hangar/cargo right now, by NAME.
   // groupID rides along so a "keep everything like this" rule can be built: every
   // grade of a mining crystal shares a group, where a type list would need a
@@ -869,6 +877,7 @@
     fittings={savedFittings}
     spots={savedSpots}
     oreFamilies={oreFamilies}
+    {corpDivisions}
     savedBots={savedList}
     problems={selectedProblems}
     onArg={applyArg}

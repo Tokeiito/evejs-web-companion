@@ -17,7 +17,13 @@ import type {
   ScriptBoard,
 } from "./scriptDecide.ts";
 import type { DryBelt, FleetAdRow, ScriptObservation } from "./scriptConditions.ts";
-import { BOARD_SLOT_KEY, DEFAULT_HUNT_MAX_JUMPS, DEFAULT_HUNT_RANGE_AU } from "../bots/botScript.ts";
+import {
+  BOARD_SLOT_KEY,
+  DEFAULT_HUNT_MAX_JUMPS,
+  DEFAULT_HUNT_RANGE_AU,
+  MAX_CORP_DIVISION,
+  MIN_CORP_DIVISION,
+} from "../bots/botScript.ts";
 import type { MacroStep, OreFamilyArg, SquadRoleArg, WorldRef } from "../bots/botScript.ts";
 import type { SpaceEntity, SpaceSnapshot, SpaceVector } from "../store/types.ts";
 import { BELT_ARRIVAL_RADIUS_M, freightHoldItemIDs, holdsFreeM3, isMineableRock } from "./miningBotLoop.ts";
@@ -950,7 +956,34 @@ const deliverOre: MacroDecider = (step, obs, mem, board) => {
     // crystals and ammunition ashore every lap — see freightHoldItemIDs.
     const items = freightHoldItemIDs(obs.holds ?? null);
     if (items.length > 0) {
-      return tick({ kind: "unloadOre", itemIDs: items }, "Unloading the ore into the hangar.", "Unloading", ACTING);
+      const division = step.args["corpDivision"];
+      if (
+        division !== undefined &&
+        (
+          division.kind !== "corpDivision" ||
+          !Number.isSafeInteger(division.division) ||
+          division.division < MIN_CORP_DIVISION ||
+          division.division > MAX_CORP_DIVISION
+        )
+      ) {
+        return tick(WAIT, "The delivery destination is invalid.", "Hauling", {
+          kind: "blocked",
+          reason: "Pick a valid Corporate Hangar division, or use the Personal Hangar.",
+        });
+      }
+      const destination =
+        division === undefined
+          ? { kind: "hangar" as const }
+          : { kind: "corp" as const, division: division.division };
+      const where = destination.kind === "corp"
+        ? `Corporate Hangar division ${destination.division}`
+        : "the Personal Hangar";
+      return tick(
+        { kind: "unloadOre", itemIDs: items, destination, expectedStationID: target },
+        `Unloading the ore into ${where}.`,
+        "Unloading",
+        ACTING,
+      );
     }
     return tick(WAIT, "The ore is unloaded.", "Done hauling", { kind: "done" });
   }

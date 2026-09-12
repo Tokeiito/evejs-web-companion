@@ -47,10 +47,22 @@ function makeFakeStack(log) {
       doc && doc.valid === true
         ? { ok: true, doc, warnings: [] }
         : { ok: false, refusal: "That bot could not be read." },
-    analyzeBotRunPolicy: (doc) => ({
-      riskClasses: Array.isArray(doc.riskClasses) ? doc.riskClasses : [],
-      restartSafe: doc.restartSafe !== false,
-    }),
+    analyzeBotRunPolicy: (doc) => {
+      const corporateDelivery = Array.isArray(doc.program) && doc.program.some(
+        (step) =>
+          step &&
+          step.macro === "deliver-ore" &&
+          step.args &&
+          step.args.corpDivision &&
+          step.args.corpDivision.kind === "corpDivision",
+      );
+      return {
+        riskClasses: corporateDelivery
+          ? ["inventory", "destructive"]
+          : Array.isArray(doc.riskClasses) ? doc.riskClasses : [],
+        restartSafe: corporateDelivery ? false : doc.restartSafe !== false,
+      };
+    },
     validateBotLaunchGrant: (grant, scriptRev, policy) => {
       if (!grant || Number(grant.scriptRev) !== scriptRev) {
         return { ok: false, code: "BOT_GRANT_REQUIRED", message: "Review this run." };
@@ -349,6 +361,33 @@ test("a server run requires an exact revision-and-risk grant", async () => {
     ).ok,
     true,
   );
+});
+
+test("a headless Corporate Hangar delivery requires the stronger exact grant and is not restart-safe", async () => {
+  const host = makeHost();
+  const request = {
+    ...START,
+    doc: {
+      valid: true,
+      program: [{
+        macro: "deliver-ore",
+        args: { corpDivision: { kind: "corpDivision", division: 1 } },
+      }],
+    },
+  };
+  assert.equal(
+    (await host.start({
+      ...request,
+      grant: { scriptRev: 1, riskClasses: ["inventory"], maxRuntimeMinutes: 30 },
+    })).code,
+    "BOT_GRANT_STALE",
+  );
+  const started = await host.start({
+    ...request,
+    grant: { scriptRev: 1, riskClasses: ["inventory", "destructive"], maxRuntimeMinutes: 30 },
+  });
+  assert.equal(started.ok, true);
+  assert.equal(started.bot.restartSafe, false);
 });
 
 test("stop releases the claim and the character", async () => {
