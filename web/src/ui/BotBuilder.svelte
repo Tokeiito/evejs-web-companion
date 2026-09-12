@@ -639,7 +639,13 @@
   // dozen entries and would silently miss the thirteenth.
   const knownItems = $derived.by<readonly { typeID: number; groupID: number | null; name: string }[]>(() => {
     const seen = new Map<number, { groupID: number | null; name: string }>();
-    for (const row of [...$inventory.hangar.rows, ...$inventory.cargo.rows]) {
+    const corpRows = $inventory.corp.divisions.flatMap((division) => division.rows);
+
+    for (const row of [
+      ...$inventory.hangar.rows,
+      ...$inventory.cargo.rows,
+      ...corpRows,
+    ]) {
       if (row.typeID > 0 && !seen.has(row.typeID)) {
         const label = $names.resolved[nameKey("type", row.typeID)] ?? null;
         if (label !== null && label.length > 0) {

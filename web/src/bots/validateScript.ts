@@ -66,6 +66,10 @@ const ARG_LABEL: Readonly<Record<string, string>> = {
   bookmark: "a saved bookmark to warp to",
   from: "where to move items from",
   to: "where to move items to",
+  pickupStation: "a pickup station",
+  pickupCorpDivision: "a pickup corporation hangar division",
+  deliveryStation: "a delivery station",
+  deliveryCorpDivision: "a delivery corporation hangar division",
 };
 
 /** Every fixable problem in a draft, in reading order. Empty means ready to start. */
