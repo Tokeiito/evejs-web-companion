@@ -42,7 +42,12 @@ function mt(action: ScriptAction, outcome: MacroTick["outcome"]): MacroTick {
 const undock: MacroDecider = (_s, o) =>
   o.inSpace ? mt({ kind: "wait" }, { kind: "done" }) : mt({ kind: "undock" }, { kind: "acting" });
 const deliver: MacroDecider = (_s, o) =>
-  o.holdEmpty ? mt({ kind: "wait" }, { kind: "done" }) : mt({ kind: "unloadOre", itemIDs: [1] }, { kind: "acting" });
+  o.holdEmpty
+    ? mt({ kind: "wait" }, { kind: "done" })
+    : mt(
+        { kind: "unloadOre", itemIDs: [1], destination: { kind: "hangar" }, expectedStationID: 60000004 },
+        { kind: "acting" },
+      );
 const home: HomeTravelDecider = (o) =>
   o.docked ? mt({ kind: "wait" }, { kind: "done" }) : mt({ kind: "warp", targetID: 9 }, { kind: "acting" });
 
@@ -592,7 +597,11 @@ test("`shipIsCapsule: null` is not a verdict — an older BFF must not stop a he
 
   await h.runner.tick();
 
-  assert.deepEqual(h.issued, [{ kind: "unloadOre", itemIDs: [1] }], "the script flies on");
+  assert.deepEqual(
+    h.issued,
+    [{ kind: "unloadOre", itemIDs: [1], destination: { kind: "hangar" }, expectedStationID: 60000004 }],
+    "the script flies on",
+  );
   const latest = h.progress[h.progress.length - 1]!;
   assert.equal(/capsule/i.test(latest.why ?? ""), false, "we were not told, so nothing is claimed");
 });

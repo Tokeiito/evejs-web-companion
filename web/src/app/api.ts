@@ -462,8 +462,10 @@ function readRawContainer(value: JsonValue | undefined): RawContainer {
 /** Load the full Inventory & Ship panel (station hangar + active-ship cargo). */
 export async function loadInventory(
   options: ApiOptions = {},
+  expectedStationID: number | null = null,
 ): Promise<RawInventoryPanel> {
-  const data = await getJson("/api/bridge/inventory", options);
+  const query = expectedStationID === null ? "" : `?expectedStationID=${encodeURIComponent(String(expectedStationID))}`;
+  const data = await getJson(`/api/bridge/inventory${query}`, options);
   const cargo = (data.cargo ?? {}) as Record<string, JsonValue>;
   const volumes =
     data.volumes && typeof data.volumes === "object" && !Array.isArray(data.volumes)
@@ -566,6 +568,7 @@ export async function transferItems(
   to: InventoryPlace,
   qty: number | null = null,
   options: ApiOptions = {},
+  expectedStationID: number | null = null,
 ): Promise<TransferResult> {
   const body: Record<string, JsonValue> = {
     itemIDs: [...itemIDs],
@@ -574,6 +577,9 @@ export async function transferItems(
   };
   if (qty !== null) {
     body.qty = qty;
+  }
+  if (expectedStationID !== null) {
+    body.expectedStationID = expectedStationID;
   }
   const data = await postJson("/api/bridge/inventory/transfer", body, options);
   return {
@@ -688,11 +694,15 @@ export async function getShipBays(
   shipID: number,
   options: ApiOptions = {},
   keys: readonly string[] = [],
+  expectedStationID: number | null = null,
 ): Promise<RawShipBaysResult> {
   // Naming the bays turns 27 capacity calls into as many as were asked for,
   // which is what makes this affordable on a bot's loot path rather than only
   // once for a panel.
-  const query = keys.length > 0 ? `?keys=${encodeURIComponent(keys.join(","))}` : "";
+  const params = new URLSearchParams();
+  if (keys.length > 0) params.set("keys", keys.join(","));
+  if (expectedStationID !== null) params.set("expectedStationID", String(expectedStationID));
+  const query = params.size > 0 ? `?${params.toString()}` : "";
   const data = await getJson(`/api/bridge/ship/${shipID}/bays${query}`, options);
   return {
     shipID: asNumberOrNull(data.shipID) ?? shipID,
@@ -709,9 +719,11 @@ export interface RawCorpDivision {
 }
 
 export interface RawCorpHangar {
+  readonly stationID: number | null;
   readonly available: boolean;
   readonly reason: string | null;
   readonly divisions: readonly RawCorpDivision[];
+  readonly volumes: Readonly<Record<string, number>>;
 }
 
 /**
@@ -720,10 +732,15 @@ export interface RawCorpHangar {
  * the query role for simply reads empty — the server filters it, and that
  * filtering is the authority (the UI's own greying-out is cosmetic).
  */
-export async function loadCorpHangar(options: ApiOptions = {}): Promise<RawCorpHangar> {
-  const data = await getJson("/api/bridge/inventory/corp", options);
+export async function loadCorpHangar(
+  options: ApiOptions = {},
+  expectedStationID: number | null = null,
+): Promise<RawCorpHangar> {
+  const query = expectedStationID === null ? "" : `?expectedStationID=${encodeURIComponent(String(expectedStationID))}`;
+  const data = await getJson(`/api/bridge/inventory/corp${query}`, options);
   const divisions = Array.isArray(data.divisions) ? data.divisions : [];
   return {
+    stationID: asNumberOrNull(data.stationID),
     available: data.available === true,
     reason: typeof data.reason === "string" ? data.reason : null,
     divisions: divisions.map((entry) => {
@@ -735,6 +752,10 @@ export async function loadCorpHangar(options: ApiOptions = {}): Promise<RawCorpH
         error: typeof row.error === "string" ? row.error : null,
       };
     }),
+    volumes:
+      data.volumes && typeof data.volumes === "object" && !Array.isArray(data.volumes)
+        ? (data.volumes as Record<string, number>)
+        : {},
   };
 }
 
@@ -2742,6 +2763,10 @@ export interface MiningActionResult {
   readonly notifications: readonly JsonValue[];
 }
 
+export type OreDeliveryDestination =
+  | { readonly kind: "hangar" }
+  | { readonly kind: "corp"; readonly division: number };
+
 function readIDArray(value: JsonValue | undefined): readonly number[] | null {
   if (!Array.isArray(value)) {
     return null;
@@ -2758,14 +2783,25 @@ export async function getMiningHolds(options: ApiOptions = {}): Promise<MiningHo
   };
 }
 
-/** Move mined ore from the ship's holds into the station hangar (docked only). */
+/** Move mined ore into the personal hangar, or an explicit corporation division. */
 export async function unloadMiningHolds(
   itemIDs: readonly number[],
   options: ApiOptions = {},
+  destination: OreDeliveryDestination = { kind: "hangar" },
+  expectedStationID: number | null = null,
 ): Promise<MiningActionResult> {
+  const body: Record<string, JsonValue> = { itemIDs: [...itemIDs] };
+  // Personal panel callers retain the historical request representation. A
+  // corporate intent is never encoded as omission, so it cannot fall back.
+  if (destination.kind === "corp") {
+    body.destination = { kind: "corp", division: destination.division };
+  }
+  if (expectedStationID !== null) {
+    body.expectedStationID = expectedStationID;
+  }
   const data = await postJson(
     "/api/bridge/ship/ore-hold/unload",
-    { itemIDs: [...itemIDs] },
+    body,
     options,
   );
   return {

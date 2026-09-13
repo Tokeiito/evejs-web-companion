@@ -92,6 +92,8 @@ export const MACRO_RUN_POLICY: Readonly<Record<MacroID, MacroRunPolicy>> = Objec
   "travel-to-belt": SAFE,
   "mine-at-belt": SAFE,
   "deliver-ore": policy(["inventory"]),
+  "haul-all": policy(["inventory", "destructive"], false),
+  "route-hauler": policy(["inventory", "destructive"], false),
   "defend-with-drones": policy(["combat"]),
   "find-distribution-agent": SAFE,
   "request-mission": policy(["mission"]),
@@ -270,6 +272,14 @@ function visitStep(
     risks.add(risk);
   }
   if (!entry.restartSafe) {
+    restartBlockers.add(step.macro);
+  }
+  // A corporation delivery transfers ownership and may not be reversible by
+  // this pilot. Personal delivery keeps the long-standing inventory-only,
+  // restart-safe policy; the optional argument alone strengthens the grant.
+  const destination = step.args["corpDivision"];
+  if (step.macro === "deliver-ore" && destination?.kind === "corpDivision") {
+    risks.add("destructive");
     restartBlockers.add(step.macro);
   }
 }

@@ -54,6 +54,8 @@ import {
   MAX_ORE_LIST,
   MAX_TARGET_LIST,
   MAX_TEXT_ARG_LEN,
+  MIN_CORP_DIVISION,
+  MAX_CORP_DIVISION,
   SCRIPT_FORMAT,
   SCRIPT_VERSION,
   conditionAllowedAt,
@@ -519,6 +521,25 @@ function readArg(raw: unknown, expected: Arg["kind"], label: string, ctx: Ctx): 
   }
   if (expected === "station") {
     return { kind: "station", ref: readWorldRef(obj["ref"], "station", ctx, SAY.badArg(label)) };
+  }
+  if (expected === "corpDivision") {
+    const division = obj["division"];
+    if (
+      typeof division !== "number" ||
+      !Number.isSafeInteger(division) ||
+      division < MIN_CORP_DIVISION ||
+      division > MAX_CORP_DIVISION
+    ) {
+      refuse(SAY.badArg(label));
+    }
+    return { kind: "corpDivision", division };
+  }
+  if (expected === "toggle") {
+    const enabled = obj["enabled"];
+    if (typeof enabled !== "boolean") {
+      refuse(SAY.badArg(label));
+    }
+    return { kind: "toggle", enabled };
   }
   if (expected === "agent") {
     return { kind: "agent", ref: readWorldRef(obj["ref"], "agent", ctx, SAY.badArg(label)) };
@@ -1278,6 +1299,10 @@ function orderArg(arg: Arg): unknown {
         : { kind: "belt", belt: { mode: "chosen", ref: orderRef(arg.belt.ref) } };
     case "station":
       return { kind: "station", ref: orderRef(arg.ref) };
+    case "corpDivision":
+      return { kind: "corpDivision", division: arg.division };
+    case "toggle":
+      return { kind: "toggle", enabled: arg.enabled };
     case "agent":
       return { kind: "agent", ref: orderRef(arg.ref) };
     case "equipment":

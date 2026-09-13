@@ -58,6 +58,10 @@ import {
 
 // ─── The one action a tick emits ─────────────────────────────────────────────
 
+export type OreDeliveryDestination =
+  | { readonly kind: "hangar" }
+  | { readonly kind: "corp"; readonly division: number };
+
 export type ScriptAction =
   | { readonly kind: "wait" }
   | { readonly kind: "undock" }
@@ -83,7 +87,12 @@ export type ScriptAction =
   | { readonly kind: "launchDrones"; readonly droneItemIDs: readonly number[] }
   | { readonly kind: "engageDrones"; readonly droneIDs: readonly number[]; readonly targetID: number }
   | { readonly kind: "recallDrones"; readonly droneIDs: readonly number[] }
-  | { readonly kind: "unloadOre"; readonly itemIDs: readonly number[] }
+  | {
+      readonly kind: "unloadOre";
+      readonly itemIDs: readonly number[];
+      readonly destination: OreDeliveryDestination;
+      readonly expectedStationID: number;
+    }
   // ── Mission actions (the distribution blocks). Each is one proven mission-bot
   //    operation: a labeled button press in the agent conversation, a handoff to
   //    the shared autopilot, or a package move confirmed by re-read next tick.
@@ -144,6 +153,21 @@ export type ScriptAction =
       readonly from: string;
       readonly to: string;
       readonly qty: number | null;
+    }
+  | {
+      readonly kind: "haulTransfer";
+      readonly itemID: number;
+      readonly typeID: number;
+      readonly quantity: number;
+      readonly from:
+        | { readonly kind: "cargo" }
+        | { readonly kind: "shipBay"; readonly bay: "ore" }
+        | { readonly kind: "corp"; readonly division: number };
+      readonly to:
+        | { readonly kind: "cargo" }
+        | { readonly kind: "shipBay"; readonly bay: "ore" }
+        | { readonly kind: "corp"; readonly division: number };
+      readonly expectedStationID: number;
     }
   /** Place a market BUY order (server confirm-gated; spends ISK + broker fee). */
   | { readonly kind: "placeBuyOrder"; readonly typeID: number; readonly price: number; readonly quantity: number }
@@ -470,6 +494,11 @@ export function activeMacroID(script: BotScript, mem: ScriptMemory): string | nu
   }
   const step = activeStep(script, mem.position);
   return step?.macro ?? null;
+}
+
+/** The exact step the next observation serves, including its configured arguments. */
+export function activeMacroStep(script: BotScript, mem: ScriptMemory): MacroStep | null {
+  return activeMacroID(script, mem) === null ? null : activeStep(script, mem.position);
 }
 
 // ─── The decision returned each tick ─────────────────────────────────────────

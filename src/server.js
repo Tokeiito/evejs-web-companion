@@ -1185,7 +1185,10 @@ app.get("/api/bridge/inventory", requireAuth, async (req, res, next) => {
     // Sync held station/ship to the live position first, so the hangar/cargo
     // binds target the CURRENT station + active ship after a new dock, not the
     // select-time ones.
-    await readHeldFlight(held, req.webSessionID);
+    const fresh = await readHeldFlight(held, req.webSessionID);
+    if (req.query.expectedStationID !== undefined) {
+      requireExpectedStation(fresh.flight, req.query.expectedStationID);
+    }
     const shipID = held.activeShipID;
     const hangarSpec = hangarBindSpec(held);
     const cargoSpec = shipID ? cargoBindSpec(held, shipID) : null;
@@ -1243,6 +1246,9 @@ app.get("/api/bridge/inventory", requireAuth, async (req, res, next) => {
       },
     });
   } catch (error) {
+    if (sendPlaceError(res, error)) {
+      return;
+    }
     next(error);
   }
 });
@@ -2449,6 +2455,26 @@ async function listPlace(held, webSessionID, place) {
   return decodeInventoryRows(outcome.result);
 }
 
+function requireExpectedStation(flight, rawExpectedStationID) {
+  const expectedStationID = Number(rawExpectedStationID);
+  if (!Number.isSafeInteger(expectedStationID) || expectedStationID <= 0) {
+    throw Object.assign(new Error("A valid expected station is required."), {
+      code: "INVALID_EXPECTED_STATION",
+      status: 400,
+    });
+  }
+  if (
+    !flight ||
+    flight.docked !== true ||
+    Number(flight.stationID) !== expectedStationID
+  ) {
+    throw Object.assign(new Error("The ship is not docked at the configured station."), {
+      code: "WRONG_STATION",
+      status: 409,
+    });
+  }
+}
+
 function sendPlaceError(res, error) {
   if (error && error.status) {
     res.status(error.status).json({ ok: false, error: error.code, message: error.message });
@@ -2546,7 +2572,11 @@ app.post("/api/bridge/inventory/transfer", requireAuth, async (req, res, next) =
     return;
   }
   try {
-    await readHeldFlight(held, req.webSessionID);
+    let fresh = await readHeldFlight(held, req.webSessionID);
+    const hasExpectedStation = Object.prototype.hasOwnProperty.call(body, "expectedStationID");
+    if (hasExpectedStation) {
+      requireExpectedStation(fresh.flight, body.expectedStationID);
+    }
     const from = await resolvePlace(held, req.webSessionID, body.from);
     const to = await resolvePlace(held, req.webSessionID, body.to);
 
@@ -2565,6 +2595,12 @@ app.post("/api/bridge/inventory/transfer", requireAuth, async (req, res, next) =
       return;
     }
     const present = itemIDs.filter((itemID) => sourceByID.has(itemID));
+    if (hasExpectedStation) {
+      // Resolve/list may take several bridge calls. Re-pin immediately before
+      // Add so a concurrent undock or dock elsewhere cannot use stale binds.
+      fresh = await readHeldFlight(held, req.webSessionID);
+      requireExpectedStation(fresh.flight, body.expectedStationID);
+    }
     // Quote the source location the ITEMS report, never an assumed one.
     const sourceLocationID =
       from.locationID !== null && from.locationID !== undefined
@@ -2843,7 +2879,10 @@ app.get("/api/bridge/inventory/corp", requireAuth, async (req, res, next) => {
     return;
   }
   try {
-    await readHeldFlight(held, req.webSessionID);
+    const fresh = await readHeldFlight(held, req.webSessionID);
+    if (req.query.expectedStationID !== undefined) {
+      requireExpectedStation(fresh.flight, req.query.expectedStationID);
+    }
     const [officeSettled, corporationSettled] = await Promise.allSettled([
       readCorpOffice(held, req.webSessionID),
       heldTopLevelCall(held, req.webSessionID, "corpRegistry", "GetCorporation", [], null),
@@ -2890,6 +2929,7 @@ app.get("/api/bridge/inventory/corp", requireAuth, async (req, res, next) => {
     }
     res.json({
       ok: true,
+      stationID: held.stationID,
       available: true,
       divisions: ordinals.map((division, index) => {
         const settled = settledLists[index];
@@ -2905,8 +2945,17 @@ app.get("/api/bridge/inventory/corp", requireAuth, async (req, res, next) => {
               : null,
         };
       }),
+      volumes: Object.assign(
+        {},
+        ...settledLists
+          .filter((settled) => settled.status === "fulfilled")
+          .map((settled) => readTypeVolumes(settled.value.result)),
+      ),
     });
   } catch (error) {
+    if (sendPlaceError(res, error)) {
+      return;
+    }
     next(error);
   }
 });
@@ -16758,9 +16807,9 @@ app.get("/api/bridge/ship/ore-hold", requireAuth, async (req, res, next) => {
   }
 });
 
-// Unload mined ore into the station hangar. This is R3's invbroker.Add in the
-// unfit direction: the DESTINATION (the hangar) is the bound object and the ship
-// is the source location — no new server method at all.
+// Unload mined ore into the personal station hangar, or an explicitly selected
+// corporation division. The DESTINATION is bound and Add names the active ship
+// as the source; corporate deliveries never stage through the personal hangar.
 //
 // Docked-only, because there is nowhere else for it to go.
 app.post("/api/bridge/ship/ore-hold/unload", requireAuth, async (req, res, next) => {
@@ -16790,21 +16839,73 @@ app.post("/api/bridge/ship/ore-hold/unload", requireAuth, async (req, res, next)
       });
       return;
     }
+    const hasExpectedStation = Object.prototype.hasOwnProperty.call(body, "expectedStationID");
+    const expectedStationID = body.expectedStationID;
+    if (
+      hasExpectedStation &&
+      (!Number.isSafeInteger(expectedStationID) || expectedStationID <= 0)
+    ) {
+      res.status(400).json({
+        ok: false,
+        error: "INVALID_EXPECTED_STATION",
+        message: "A valid expected station is required for this delivery.",
+      });
+      return;
+    }
+    const hasDestination = Object.prototype.hasOwnProperty.call(body, "destination");
+    if (hasDestination && !hasExpectedStation) {
+      res.status(400).json({
+        ok: false,
+        error: "INVALID_EXPECTED_STATION",
+        message: "A Corporate Hangar delivery requires its expected station.",
+      });
+      return;
+    }
+    if (hasExpectedStation && held.stationID !== expectedStationID) {
+      res.status(409).json({
+        ok: false,
+        error: "WRONG_STATION",
+        message: "The ship is not docked at the station selected for this delivery.",
+      });
+      return;
+    }
     const shipID = held.activeShipID;
     if (!shipID) {
       res.status(409).json({ ok: false, error: "NO_ACTIVE_SHIP", message: "No active ship." });
       return;
     }
-    const hangarSpec = hangarBindSpec(held);
+    let destination;
+    if (!hasDestination) {
+      destination = { spec: hangarBindSpec(held), flag: ITEM_FLAG_HANGAR };
+    } else {
+      const descriptor = body.destination;
+      if (
+        !descriptor ||
+        typeof descriptor !== "object" ||
+        Array.isArray(descriptor) ||
+        descriptor.kind !== "corp" ||
+        typeof descriptor.division !== "number"
+      ) {
+        res.status(400).json({
+          ok: false,
+          error: "INVALID_DESTINATION",
+          message: "Choose a valid Corporation Hangar division from 1 to 7.",
+        });
+        return;
+      }
+      // `resolvePlace` remains the authority for the ordinal range, office
+      // lookup, binding identity, and retail flag mapping.
+      destination = await resolvePlace(held, req.webSessionID, descriptor);
+    }
     const notifications = [];
     for (const itemID of requested) {
       const outcome = await boundCall(
         held,
         req.webSessionID,
-        hangarSpec,
+        destination.spec,
         "Add",
         [itemID, shipID],
-        { flag: ITEM_FLAG_HANGAR },
+        { flag: destination.flag },
       );
       notifications.push(...outcome.notifications);
     }
@@ -16812,16 +16913,29 @@ app.post("/api/bridge/ship/ore-hold/unload", requireAuth, async (req, res, next)
     // what the HOLDS say afterwards: anything still sitting in a mining hold
     // did not move, and is named as such rather than assumed moved.
     const spec = cargoBindSpec(held, shipID);
+    const verification = await Promise.allSettled(
+      MINING_HOLDS.map((hold) =>
+        boundCall(held, req.webSessionID, spec, "List", [hold.flag], null),
+      ),
+    );
+    const failedVerification = verification.find((entry) => entry.status === "rejected");
+    if (failedVerification) {
+      if (failedVerification.reason && failedVerification.reason.code === "SESSION_NOT_FOUND") {
+        throw failedVerification.reason;
+      }
+      res.json({
+        ok: true,
+        requested,
+        moved: null,
+        remaining: null,
+        notifications,
+      });
+      return;
+    }
     const stillHeld = new Set();
-    for (const hold of MINING_HOLDS) {
-      try {
-        const listed = await boundCall(held, req.webSessionID, spec, "List", [hold.flag], null);
-        for (const row of decodeInventoryRows(listed.result)) {
-          stillHeld.add(row.itemID);
-        }
-      } catch {
-        // A hold that cannot be re-read leaves its items unverified; they are
-        // reported as not-moved rather than silently counted as moved.
+    for (const listed of verification) {
+      for (const row of decodeInventoryRows(listed.value.result)) {
+        stillHeld.add(row.itemID);
       }
     }
     const moved = requested.filter((itemID) => !stillHeld.has(itemID));
@@ -16833,6 +16947,9 @@ app.post("/api/bridge/ship/ore-hold/unload", requireAuth, async (req, res, next)
       notifications,
     });
   } catch (error) {
+    if (sendPlaceError(res, error)) {
+      return;
+    }
     next(error);
   }
 });
@@ -16943,6 +17060,16 @@ app.get("/api/bridge/ship/:shipID/bays", requireAuth, async (req, res, next) => 
   // its own inventory, so there is no ship-specific bind method.
   const spec = containerBindSpec(shipID);
   try {
+    if (req.query.expectedStationID !== undefined) {
+      const fresh = await readHeldFlight(held, req.webSessionID);
+      requireExpectedStation(fresh.flight, req.query.expectedStationID);
+      if (held.activeShipID !== shipID) {
+        throw Object.assign(new Error("The selected transport bay is not on the active ship."), {
+          code: "WRONG_ACTIVE_SHIP",
+          status: 409,
+        });
+      }
+    }
     // One capacity read per candidate flag, all independent: a hull that
     // refuses one bay must not blank the other twenty-six.
     const settled = await Promise.allSettled(

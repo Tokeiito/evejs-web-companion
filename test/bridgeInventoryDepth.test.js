@@ -147,6 +147,7 @@ function fakeGateway(options = {}) {
     world.set(item.itemID, { ...item });
   }
   let nextSplitItemID = 990_000;
+  let addCount = 0;
   const declineAll = options.declineAll === true;
   const officeRows =
     options.officeRows === undefined
@@ -248,6 +249,16 @@ function fakeGateway(options = {}) {
     },
     async bindObject(service, method, args, kwargs, sessionFields, bridgeSessionID) {
       calls.bind.push({ service, method, args, kwargs, bridgeSessionID });
+      if (
+        options.refuseOfficeBind === true
+        && method === "GetInventoryFromId"
+        && Number(args[0]) === OFFICE_PUBLISHED_ID
+      ) {
+        throw Object.assign(
+          new Error("You do not have permission to bind the corporation office inventory."),
+          { code: "CALL_REFUSED", statusCode: 409 },
+        );
+      }
       return { boundHandle: handleFor(service, method, args), service, method, notifications: [] };
     },
     async callBoundMethod(service, method, args, kwargs, sessionFields, bridgeSessionID, boundHandle) {
@@ -256,6 +267,9 @@ function fakeGateway(options = {}) {
       const flag = kwargs && kwargs.flag !== undefined ? kwargs.flag : null;
 
       if (method === "List") {
+        if (options.failVerificationList === true && addCount > 0) {
+          throw Object.assign(new Error("inventory verification failed"), { code: "CALL_FAILED" });
+        }
         // No flag argument at all -> list everything at this location. This is
         // the container rule.
         const listFlag = args.length > 0 ? args[0] : null;
@@ -269,6 +283,12 @@ function fakeGateway(options = {}) {
         return { service, method, result: null, notifications: [] };
       }
       if (method === "Add") {
+        if (options.refuseAdd === true) {
+          throw Object.assign(
+            new Error("You do not have the required corporation access."),
+            { code: "CALL_REFUSED", statusCode: 409 },
+          );
+        }
         // A dispatch failure with NOTHING applied — the ordinary error case,
         // which must still surface as an error.
         if (options.throwOnAdd === true) {
@@ -319,6 +339,7 @@ function fakeGateway(options = {}) {
           item.locationID = destination;
           item.flagID = flag === null ? FLAG_HANGAR : flag;
         }
+        addCount += 1;
         return { service, method, result: null, notifications: [] };
       }
       if (method === "MultiAdd") {
@@ -1011,6 +1032,213 @@ test("corp move IN files a personal item under the chosen division's flag", asyn
   assert.equal(add.kwargs.flag, FLAG_DIVISION_2);
   assert.equal(gateway.world.get(100).locationID, OFFICE_CONTENT_LOCATION_ID);
   assert.equal(gateway.world.get(100).flagID, FLAG_DIVISION_2);
+});
+
+test("haul-all uses station-pinned direct corp-cargo transfers and never binds Personal Hangar", async () => {
+  const wrongGateway = fakeGateway({ items: fixtureItems() });
+  const { baseUrl: wrongUrl } = await startTestServer({ gateway: wrongGateway });
+  await selectOnServer(wrongUrl);
+  const wrong = await apiRequest(wrongUrl, "/api/bridge/inventory/transfer", {
+    method: "POST",
+    body: {
+      itemIDs: [400],
+      from: { kind: "corp", division: 1 },
+      to: { kind: "cargo" },
+      qty: 900,
+      expectedStationID: STATION_ID + 1,
+    },
+  });
+  assert.equal(wrong.response.status, 409);
+  assert.equal(wrong.payload.error, "WRONG_STATION");
+  assert.equal(wrongGateway.calls.boundCall.some((call) => call.method === "Add"), false);
+
+  const gateway = fakeGateway({ items: fixtureItems() });
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+  const loaded = await apiRequest(baseUrl, "/api/bridge/inventory/transfer", {
+    method: "POST",
+    body: {
+      itemIDs: [400],
+      from: { kind: "corp", division: 1 },
+      to: { kind: "cargo" },
+      qty: 900,
+      expectedStationID: STATION_ID,
+    },
+  });
+  assert.equal(loaded.response.status, 200, JSON.stringify(loaded.payload));
+  assert.equal(loaded.payload.applied, true);
+
+  const delivered = await apiRequest(baseUrl, "/api/bridge/inventory/transfer", {
+    method: "POST",
+    body: {
+      itemIDs: [400],
+      from: { kind: "cargo" },
+      to: { kind: "corp", division: 2 },
+      qty: 900,
+      expectedStationID: STATION_ID,
+    },
+  });
+  assert.equal(delivered.response.status, 200, JSON.stringify(delivered.payload));
+  assert.equal(delivered.payload.applied, true);
+  assert.equal(gateway.world.get(400).locationID, OFFICE_CONTENT_LOCATION_ID);
+  assert.equal(gateway.world.get(400).flagID, FLAG_DIVISION_2);
+  assert.equal(
+    gateway.calls.bind.some((call) => call.method === "GetInventory" && call.args[0] === STATION_ID),
+    false,
+  );
+
+  for (const options of [{ refuseAdd: true }, {}]) {
+    const refusedGateway = fakeGateway({ items: fixtureItems(), ...options });
+    const { baseUrl: refusedUrl } = await startTestServer({ gateway: refusedGateway });
+    await selectOnServer(refusedUrl);
+    const refused = await apiRequest(refusedUrl, "/api/bridge/inventory/transfer", {
+      method: "POST",
+      body: {
+        itemIDs: [400],
+        from: { kind: "corp", division: options.refuseAdd ? 1 : 8 },
+        to: { kind: "cargo" },
+        qty: 900,
+        expectedStationID: STATION_ID,
+      },
+    });
+    assert.notEqual(refused.response.status, 200);
+    assert.equal(refusedGateway.world.get(400).locationID, OFFICE_CONTENT_LOCATION_ID);
+    assert.equal(
+      refusedGateway.calls.bind.some((call) => call.method === "GetInventory" && call.args[0] === STATION_ID),
+      false,
+    );
+  }
+});
+
+test("ore delivery binds the corp office and moves directly from ship freight to the selected division", async () => {
+  const gateway = fakeGateway({ items: [...fixtureItems(), oreInHold()] });
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+
+  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/ship/ore-hold/unload", {
+    method: "POST",
+    body: {
+      itemIDs: [500, 300],
+      destination: { kind: "corp", division: 2 },
+      expectedStationID: STATION_ID,
+    },
+  });
+
+  assert.equal(response.status, 200, JSON.stringify(payload));
+  assert.deepEqual([...payload.moved].sort((a, b) => a - b), [300, 500]);
+  assert.deepEqual(payload.remaining, []);
+  for (const itemID of [500, 300]) {
+    assert.equal(gateway.world.get(itemID).locationID, OFFICE_CONTENT_LOCATION_ID);
+    assert.equal(gateway.world.get(itemID).flagID, FLAG_DIVISION_2);
+  }
+  const adds = gateway.calls.boundCall.filter((call) => call.method === "Add");
+  assert.equal(adds.length, 2);
+  assert.ok(adds.every((call) => call.args[1] === ACTIVE_SHIP_ID));
+  assert.ok(adds.every((call) => call.kwargs.flag === FLAG_DIVISION_2));
+  assert.equal(
+    gateway.calls.bind.some((call) => call.method === "GetInventory" && call.args[0] === STATION_ID),
+    false,
+    "a corporate delivery never bound or staged through the Personal Hangar",
+  );
+});
+
+test("corporate ore delivery rejects wrong station, invalid division, and missing office without fallback", async () => {
+  const cases = [
+    {
+      options: {},
+      body: { destination: { kind: "corp", division: 1 }, expectedStationID: STATION_ID + 1 },
+      status: 409,
+      error: "WRONG_STATION",
+    },
+    {
+      options: {},
+      body: { destination: { kind: "corp", division: 8 }, expectedStationID: STATION_ID },
+      status: 400,
+      error: "INVALID_DIVISION",
+    },
+    {
+      options: { officeRows: [] },
+      body: { destination: { kind: "corp", division: 1 }, expectedStationID: STATION_ID },
+      status: 409,
+      error: "NO_CORP_OFFICE",
+    },
+  ];
+  let itemID = 600;
+  for (const entry of cases) {
+    const gateway = fakeGateway({ ...entry.options, items: [...fixtureItems(), oreInHold(itemID)] });
+    const { baseUrl } = await startTestServer({ gateway });
+    await selectOnServer(baseUrl);
+    const { response, payload } = await apiRequest(baseUrl, "/api/bridge/ship/ore-hold/unload", {
+      method: "POST",
+      body: { itemIDs: [itemID], ...entry.body },
+    });
+    assert.equal(response.status, entry.status, JSON.stringify(payload));
+    assert.equal(payload.error, entry.error);
+    assert.equal(gateway.world.get(itemID).locationID, ACTIVE_SHIP_ID);
+    assert.equal(gateway.calls.boundCall.some((call) => call.method === "Add"), false);
+    itemID += 1;
+  }
+});
+
+test("corporate ore delivery requires an expected station", async () => {
+  const gateway = fakeGateway({ items: [...fixtureItems(), oreInHold()] });
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/ship/ore-hold/unload", {
+    method: "POST",
+    body: { itemIDs: [500], destination: { kind: "corp", division: 1 } },
+  });
+  assert.equal(response.status, 400, JSON.stringify(payload));
+  assert.equal(payload.error, "INVALID_EXPECTED_STATION");
+  assert.equal(gateway.world.get(500).locationID, ACTIVE_SHIP_ID);
+  assert.equal(gateway.calls.boundCall.some((call) => call.method === "Add"), false);
+});
+
+test("a present malformed destination is rejected and never treated as Personal Hangar", async () => {
+  for (const destination of [null, { kind: "hangar" }, { kind: "corp", division: "1" }]) {
+    const gateway = fakeGateway({ items: [...fixtureItems(), oreInHold()] });
+    const { baseUrl } = await startTestServer({ gateway });
+    await selectOnServer(baseUrl);
+    const { response, payload } = await apiRequest(baseUrl, "/api/bridge/ship/ore-hold/unload", {
+      method: "POST",
+      body: { itemIDs: [500], destination, expectedStationID: STATION_ID },
+    });
+    assert.equal(response.status, 400, JSON.stringify(payload));
+    assert.equal(payload.error, "INVALID_DESTINATION");
+    assert.equal(gateway.world.get(500).locationID, ACTIVE_SHIP_ID);
+    assert.equal(gateway.calls.boundCall.some((call) => call.method === "Add"), false);
+  }
+});
+
+test("corporate ore delivery propagates destination binding and Add permission refusals", async () => {
+  for (const options of [{ refuseOfficeBind: true }, { refuseAdd: true }]) {
+    const gateway = fakeGateway({ items: [...fixtureItems(), oreInHold()], ...options });
+    const { baseUrl } = await startTestServer({ gateway });
+    await selectOnServer(baseUrl);
+    const { response, payload } = await apiRequest(baseUrl, "/api/bridge/ship/ore-hold/unload", {
+      method: "POST",
+      body: { itemIDs: [500], destination: { kind: "corp", division: 1 }, expectedStationID: STATION_ID },
+    });
+    assert.equal(response.status, 409, JSON.stringify(payload));
+    assert.equal(payload.error, "CALL_REFUSED");
+    assert.equal(gateway.world.get(500).locationID, ACTIVE_SHIP_ID);
+  }
+});
+
+test("a failed post-move hold read reports unknown movement", async () => {
+  const gateway = fakeGateway({
+    items: [...fixtureItems(), oreInHold()],
+    failVerificationList: true,
+  });
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/ship/ore-hold/unload", {
+    method: "POST",
+    body: { itemIDs: [500], destination: { kind: "corp", division: 1 }, expectedStationID: STATION_ID },
+  });
+  assert.equal(response.status, 200, JSON.stringify(payload));
+  assert.equal(payload.moved, null);
+  assert.equal(payload.remaining, null);
 });
 
 test("transfer rejects a division outside 1-7", async () => {

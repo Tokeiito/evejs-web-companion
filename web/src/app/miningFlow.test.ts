@@ -17,6 +17,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { createAppFlow } from "./flow.ts";
+import { unloadMiningHolds as unloadMiningHoldsApi } from "./api.ts";
 import { createClientStore } from "../store/clientStore.ts";
 
 interface Recorded {
@@ -224,10 +225,30 @@ test("unloadMiningHolds reports success quietly, and re-reads the holds", async 
   assert.equal(state.lastAction, "Unload");
   assert.equal(state.silentDecline, null);
   assert.equal(state.actionError, null);
+  const unloadRequest = requests.find((entry) => entry.path === "/api/bridge/ship/ore-hold/unload");
+  assert.deepEqual(unloadRequest?.body, { itemIDs: [ORE_STACK_ID] });
   assert.ok(
     requests.some((entry) => entry.path === "/api/bridge/ship/ore-hold"),
     "the holds are re-read so the panel shows the truth after the move",
   );
+});
+
+test("the ore API forwards an explicit Corporate Hangar destination and expected station", async () => {
+  const { fetch, requests } = makeFakeFetch(() => ({
+    status: 200,
+    body: { ok: true, requested: [ORE_STACK_ID], moved: [ORE_STACK_ID], remaining: [] },
+  }));
+  await unloadMiningHoldsApi(
+    [ORE_STACK_ID],
+    { fetch },
+    { kind: "corp", division: 7 },
+    60003760,
+  );
+  assert.deepEqual(requests[0]?.body, {
+    itemIDs: [ORE_STACK_ID],
+    destination: { kind: "corp", division: 7 },
+    expectedStationID: 60003760,
+  });
 });
 
 test("an unload that moved NOTHING is a silent decline, with no cause invented", async () => {

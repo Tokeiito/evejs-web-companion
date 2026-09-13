@@ -19,6 +19,7 @@ import assert from "node:assert/strict";
 
 import { createAppFlow } from "./flow.ts";
 import { createClientStore } from "../store/clientStore.ts";
+import type { BotScript } from "../bots/botScript.ts";
 // R43 — the preflight reads the FIT before it starts, so the harness has to
 // serve a ship that can actually mine. These are Farmer's live Procurer's own
 // captured bytes rather than a hand-typed stand-in.
@@ -347,6 +348,88 @@ test("a docked bot unloads first and only then undocks — and the readout says 
   // the full docked -> unload -> undock -> belt sequence is driven end to end in
   // miningBotLoop.test.ts, which owns the clock.)
   assert.equal(store.get().bot.cyclesCompleted, 1);
+});
+
+async function runCorporateDelivery(result: { moved: readonly number[] | null; remaining: readonly number[] | null }) {
+  const ore = [
+    { itemID: 90001, typeID: 1230, groupID: 462, categoryID: 25, quantity: 2_000 },
+    { itemID: 90002, typeID: 1230, groupID: 462, categoryID: 25, quantity: 2_000 },
+  ];
+  const { fetch, requests } = makeFakeFetch((path, _method, body) => {
+    if (path === "/api/bridge/flight/status") return { status: 200, body: flightBody(true) };
+    if (path === "/api/bridge/space/snapshot") {
+      return {
+        status: 200,
+        body: {
+          ok: true,
+          space: { inSpace: false, solarSystemID: 30000142, shipID: SHIP, sampledAtMs: 0, ship: null, entities: [] },
+          notifications: [],
+        },
+      };
+    }
+    if (path === "/api/bridge/targets") {
+      return { status: 200, body: { ok: true, targetIDs: [], notifications: [] } };
+    }
+    if (path === "/api/bridge/ship/ore-hold") {
+      return { status: 200, body: holdsBody(4_000, ore) };
+    }
+    if (path === "/api/bridge/drones") {
+      return { status: 200, body: { ok: true, activeShipID: SHIP, bay: [], inSpace: false, shipInfo: null, errors: {} } };
+    }
+    if (path === "/api/bridge/fitting") return { status: 200, body: fittingBody() };
+    if (path === "/api/names") return { status: 200, body: namesBody(body) };
+    if (path === "/api/bridge/ship/ore-hold/unload") {
+      return { status: 200, body: { ok: true, requested: ore.map((entry) => entry.itemID), ...result } };
+    }
+    return { status: 200, body: { ok: true } };
+  });
+  const doc: BotScript = {
+    format: "evejs-bot-script",
+    version: 1,
+    name: "Corporate ore delivery",
+    notes: "",
+    home: { entity: "station", id: STATION, name: "Home", systemName: "Jita" },
+    interrupts: [],
+    program: [{
+      id: "delivery",
+      kind: "macro",
+      macro: "deliver-ore",
+      args: {
+        station: { kind: "station", ref: { entity: "station", id: STATION, name: "Home", systemName: "Jita" } },
+        corpDivision: { kind: "corpDivision", division: 7 },
+      },
+    }],
+  };
+  const store = createClientStore();
+  const flow = createAppFlow(store, { fetch });
+  await flow.startCustomBot(doc);
+  await new Promise((resolve) => setTimeout(resolve, 180));
+  flow.stopCustomBot();
+
+  return { requests, store, itemIDs: ore.map((entry) => entry.itemID) };
+}
+
+test("a custom Corporate Hangar delivery forwards its destination and expected station, and unknown movement is refused", async () => {
+  const { requests, store, itemIDs } = await runCorporateDelivery({ moved: null, remaining: null });
+
+  const unload = requests.find((request) => request.path === "/api/bridge/ship/ore-hold/unload");
+  assert.deepEqual(unload?.body, {
+    itemIDs,
+    destination: { kind: "corp", division: 7 },
+    expectedStationID: STATION,
+  });
+  assert.ok(store.customBot.get().refusals.length > 0, "unknown movement reached the refusal ledger");
+  assert.match(store.customBot.get().refusals[0]?.words ?? "", /could not be verified/i);
+});
+
+test("zero and partial Corporate Hangar movement both enter the refusal ledger", async () => {
+  const zero = await runCorporateDelivery({ moved: [], remaining: [90001, 90002] });
+  assert.ok(zero.store.customBot.get().refusals.length > 0);
+  assert.match(zero.store.customBot.get().refusals[0]?.words ?? "", /nothing moved/i);
+
+  const partial = await runCorporateDelivery({ moved: [90001], remaining: [90002] });
+  assert.ok(partial.store.customBot.get().refusals.length > 0);
+  assert.match(partial.store.customBot.get().refusals[0]?.words ?? "", /only part/i);
 });
 
 test("pause / carry on / stop drive the loop and land in the store", async () => {

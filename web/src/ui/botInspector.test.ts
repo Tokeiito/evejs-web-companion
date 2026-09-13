@@ -51,6 +51,10 @@ const OPTIONS = {
     { groupID: 450001, name: "Test Veldspar" },
     { groupID: 450002, name: "Test Kernite" },
   ],
+  corpDivisions: [
+    { division: 1, name: "Mining" },
+    { division: 7, name: null },
+  ],
 };
 
 function renderInspector(target: unknown, over: Record<string, unknown> = {}): string {
@@ -111,6 +115,7 @@ const WIDGET_CASES: readonly { macro: string; key: string; expect: RegExp; why: 
   // which is exactly the bug a shared widget could hide, so it is what these
   // two look for.
   { macro: "travel-to-station", key: "station", expect: /or search a station by name/, why: "station-picker" },
+  { macro: "deliver-ore", key: "corpDivision", expect: /Personal Hangar/, why: "corp-division-select" },
   {
     macro: "set-destination",
     key: "destination",
@@ -134,6 +139,30 @@ for (const { macro, key, expect, why } of WIDGET_CASES) {
     assert.match(html, expect, `${macro}.${key} rendered no ${why}`);
   });
 }
+
+test("the ore destination offers Personal Hangar and all seven corporation divisions", () => {
+  const html = renderInspector({ kind: "step", step: step("deliver-ore") });
+  assert.match(html, /<option value=""[^>]*>Personal Hangar/);
+  for (let division = 1; division <= 7; division += 1) {
+    assert.ok(html.includes(`value="${division}"`), `Corporation Hangar division ${division} is missing`);
+  }
+  assert.match(html, /Corporation Hangar — 1 — Mining/);
+  assert.match(html, /Corporation Hangar — Division 7/);
+});
+
+test("haul-all offers exactly Cargo Hold and Ore Hold as transport bays", () => {
+  const html = renderInspector({ kind: "step", step: step("haul-all") });
+  const select = html.match(/<select[^>]*id="arg-step-under-test-transportBay"[\s\S]*?<\/select>/)?.[0] ?? "";
+  assert.match(select, /value="cargo"[^>]*>cargo hold/);
+  assert.match(select, /value="ore-hold"[^>]*>ore hold/);
+  assert.equal((select.match(/<option /g) ?? []).length, 2);
+});
+
+test("Route Hauler's type-only multi-select advertises the global item search", () => {
+  const html = renderInspector({ kind: "step", step: step("route-hauler") });
+  assert.match(html, /placeholder="search all item types by name"/);
+  assert.match(html, /Leave this empty to carry all transferable items/);
+});
 
 test("every argument of every macro is rendered by some widget, none silently skipped", () => {
   // The generic renderer's real promise: no macro has an argument the

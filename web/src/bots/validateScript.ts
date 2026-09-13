@@ -66,6 +66,16 @@ const ARG_LABEL: Readonly<Record<string, string>> = {
   bookmark: "a saved bookmark to warp to",
   from: "where to move items from",
   to: "where to move items to",
+  pickupStation: "a pickup station",
+  pickupCorpDivision: "a pickup corporation hangar division",
+  deliveryStation: "a delivery station",
+  deliveryCorpDivision: "a delivery corporation hangar division",
+  transportBay: "a transport bay",
+  stationA: "Station A",
+  stationB: "Station B",
+  pickupDivisionA: "a pickup corporation division at Station A",
+  deliveryDivisionB: "a delivery corporation division at Station B",
+  returnCargo: "whether the return trip carries cargo",
 };
 
 /** Every fixable problem in a draft, in reading order. Empty means ready to start. */
@@ -236,6 +246,49 @@ function validateStep(step: MacroStep, problems: ScriptProblem[]): void {
     fromArg.place === toArg.place
   ) {
     problems.push(blocking(step.id, "This step moves items to the same place they already are."));
+  }
+
+  if (step.macro === "haul-all") {
+    const transportBay = step.args["transportBay"];
+    if (
+      transportBay !== undefined &&
+      (transportBay.kind !== "place" || (transportBay.place !== "cargo" && transportBay.place !== "ore-hold"))
+    ) {
+      problems.push(blocking(step.id, "Haul All supports only the Cargo Hold or Ore Hold."));
+    }
+  }
+
+  if (step.macro === "route-hauler") {
+    const transportBay = step.args["transportBay"];
+    if (
+      transportBay !== undefined &&
+      (transportBay.kind !== "place" || (transportBay.place !== "cargo" && transportBay.place !== "ore-hold"))
+    ) {
+      problems.push(blocking(step.id, "Route Hauler supports only the Cargo Hold or Ore Hold."));
+    }
+    const stationA = step.args["stationA"];
+    const stationB = step.args["stationB"];
+    if (
+      stationA?.kind === "station" && stationA.ref.id !== null &&
+      stationB?.kind === "station" && stationB.ref.id === stationA.ref.id
+    ) {
+      problems.push(blocking(step.id, "Pick two different stations for this shuttle route."));
+    }
+    const returnCargo = step.args["returnCargo"];
+    if (returnCargo?.kind === "toggle" && returnCargo.enabled) {
+      if (step.args["pickupDivisionB"]?.kind !== "corpDivision") {
+        problems.push(blocking(step.id, "Pick the return-cargo pickup division at Station B."));
+      }
+      if (step.args["deliveryDivisionA"]?.kind !== "corpDivision") {
+        problems.push(blocking(step.id, "Pick the return-cargo delivery division at Station A."));
+      }
+    }
+    for (const key of ["itemsAToB", "itemsBToA"]) {
+      const selection = step.args[key];
+      if (selection?.kind === "itemList" && selection.items.some((item) => item.match !== "type")) {
+        problems.push(blocking(step.id, "Route Hauler item selections must contain individual item types."));
+      }
+    }
   }
 
   if (spec.untilRequired && step.until === undefined) {

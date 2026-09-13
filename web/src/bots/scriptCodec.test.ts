@@ -104,6 +104,38 @@ test("encode then decode is a lossless round trip", () => {
   assert.deepStrictEqual([...warnings], []);
 });
 
+test("deliver-ore omission remains Personal Hangar, while divisions 1 and 7 round-trip", () => {
+  const personal = mustAccept(decodeScriptValue(golden())).doc;
+  const loop = personal.program[0];
+  assert.ok(loop?.kind === "loop");
+  const delivery = loop.body[1];
+  assert.ok(delivery?.kind === "macro" && delivery.macro === "deliver-ore");
+  assert.equal(delivery.args["corpDivision"], undefined);
+
+  for (const division of [1, 7]) {
+    const value = clone();
+    value.program[0].body[1].args.corpDivision = { kind: "corpDivision", division };
+    const decoded = mustAccept(decodeScriptValue(value)).doc;
+    const round = mustAccept(decodeScriptText(encodeScriptDoc(decoded))).doc;
+    const roundLoop = round.program[0];
+    assert.ok(roundLoop?.kind === "loop");
+    const roundDelivery = roundLoop.body[1];
+    assert.ok(roundDelivery?.kind === "macro");
+    assert.deepEqual(roundDelivery.args["corpDivision"], { kind: "corpDivision", division });
+  }
+});
+
+test("deliver-ore refuses invalid or non-integer corporation divisions", () => {
+  for (const division of [0, 8, 1.5, "1"]) {
+    const value = clone();
+    value.program[0].body[1].args.corpDivision = { kind: "corpDivision", division };
+    assert.match(mustRefuse(decodeScriptValue(value)), /corpDivision/i);
+  }
+  const wrongKind = clone();
+  wrongKind.program[0].body[1].args.corpDivision = { kind: "count", value: 1 };
+  assert.match(mustRefuse(decodeScriptValue(wrongKind)), /corpDivision/i);
+});
+
 // The golden fixture only exercises belt/station/equipment args, so on its own it
 // cannot catch a serialiser that forgets a kind. This document uses EVERY OTHER
 // arg kind (count, corp, agent, fitting, itemType, place, bookmark) — if any is

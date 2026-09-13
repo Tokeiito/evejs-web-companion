@@ -76,6 +76,10 @@ export function macroName(macro: MacroID): string {
       return "Mine at a belt";
     case "deliver-ore":
       return "Haul the ore home";
+    case "haul-all":
+      return "Haul everything between corporation hangars";
+    case "route-hauler":
+      return "Run a corporation shuttle route";
     case "defend-with-drones":
       return "Fight off rats with drones";
     case "find-distribution-agent":
@@ -453,7 +457,39 @@ function macroPhrase(step: MacroStep): string {
         station !== undefined && station.kind === "station"
           ? worldRefPhrase(station.ref, "station")
           : "a station you pick";
-      return `Haul the ore to ${where}`;
+      const destination = step.args["corpDivision"];
+      const destinationWords =
+        destination !== undefined && destination.kind === "corpDivision"
+          ? `, into Corporate Hangar division ${destination.division}`
+          : ", into your personal hangar";
+      return `Haul the ore to ${where}${destinationWords}`;
+    }
+    case "haul-all": {
+      const pickup = step.args["pickupStation"];
+      const delivery = step.args["deliveryStation"];
+      const pickupDivision = step.args["pickupCorpDivision"];
+      const deliveryDivision = step.args["deliveryCorpDivision"];
+      const transportBay = step.args["transportBay"];
+      const item = step.args["item"];
+      const pickupWords = pickup?.kind === "station" ? worldRefPhrase(pickup.ref, "a pickup station") : "a pickup station";
+      const deliveryWords = delivery?.kind === "station" ? worldRefPhrase(delivery.ref, "a delivery station") : "a delivery station";
+      const from = pickupDivision?.kind === "corpDivision" ? `division ${pickupDivision.division}` : "a corporation division";
+      const to = deliveryDivision?.kind === "corpDivision" ? `division ${deliveryDivision.division}` : "a corporation division";
+      const what = item?.kind === "itemType" && item.typeID !== null
+        ? `all ${item.name ?? "of the selected item"}`
+        : "everything";
+      const bay = transportBay?.kind === "place" && transportBay.place === "ore-hold"
+        ? " through the Ore Hold"
+        : "";
+      return `Haul ${what} from ${from} at ${pickupWords} to ${to} at ${deliveryWords}${bay}`;
+    }
+    case "route-hauler": {
+      const stationA = step.args["stationA"];
+      const stationB = step.args["stationB"];
+      const a = stationA?.kind === "station" ? worldRefPhrase(stationA.ref, "Station A") : "Station A";
+      const b = stationB?.kind === "station" ? worldRefPhrase(stationB.ref, "Station B") : "Station B";
+      const returnCargo = step.args["returnCargo"];
+      return `Shuttle from ${a} to ${b}${returnCargo?.kind === "toggle" && returnCargo.enabled ? " with return cargo" : " and return empty"}`;
     }
     case "defend-with-drones":
       return "Fight off rats with your combat drones";
