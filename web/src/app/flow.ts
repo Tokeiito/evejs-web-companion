@@ -196,6 +196,7 @@ import {
   type FleetCompanionRequest,
   type CompanionAbandonmentRecord,
   type CompanionCargoCharge,
+  type CompanionPropulsionModule,
 } from "../nav/fleetCompanionLoop.ts";
 import { highSlotMiningModules, isDockableKind, ungroupedHighSlotModules } from "../space/rowActions.ts";
 import {
@@ -253,7 +254,11 @@ import {
   decodeFleetStateChangeNotification,
   isFleetBroadcastFresh,
 } from "../bridge/fleetBroadcasts.ts";
-import { decodeJamNotification, tacklersHolding } from "../bridge/jamNotifications.ts";
+import {
+  decodeJamNotification,
+  scrammedByWarpScrambler,
+  tacklersHolding,
+} from "../bridge/jamNotifications.ts";
 import type { BotScript, WorldRef } from "../bots/botScript.ts";
 import { decodeScriptValue } from "../bots/scriptCodec.ts";
 import { expandSubBots, hasSubBots, type BotResolution, type SubBotReference } from "../bots/subBots.ts";
@@ -6069,6 +6074,28 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           // whole ladder one consistent answer. Free — it rides the same
           // notification drain the fleet slice does and polls nothing.
           tackledBy: tacklersHolding(store.space.get().jams, Date.now()),
+          // The narrower half of the same jam slice: is a warp SCRAMBLER on us,
+          // as opposed to the disruptor `tackledBy` also counts. Only the
+          // scrambler carries `blocksMicrowarpdrive`, so only it means anything
+          // to `decidePropulsion` — and reading it off the same one clock read
+          // keeps the two answers about this tick consistent.
+          scrammed: scrammedByWarpScrambler(store.space.get().jams, Date.now()),
+          // ⚠ WHAT "TRAVELLING" MEANS FOR A COMPANION, and the only place it can
+          // be seen. Both of the companion's own travel rungs — the `destination`
+          // trip and a `TravelTo` order — hand the flying to the SHARED autopilot
+          // (`startRoute`), so the autopilot's own status IS the answer to "is
+          // this pilot on a trip". Synchronous, no gateway call, exactly as the
+          // DSL observation's identical read is; null when no autopilot exists
+          // yet, which reads as "not travelling" and never as "travelling".
+          travel: autopilot
+            ? {
+                status: autopilot.snapshot().status,
+                destinationStationID: store.travel.get().destinationStationID,
+                destinationSystemID: store.travel.get().destinationSystemID,
+                remainingJumps: autopilot.snapshot().remainingJumps,
+                failureReason: autopilot.snapshot().failureReason,
+              }
+            : null,
           lowestDroneHealth,
           myDroneIDs,
           droneBayItemIDs,
@@ -6177,8 +6204,21 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           // Phase 3, "tank up": switch a module OFF. Same shape as the DSL's
           // own `deactivate` case — no target, since deactivation always
           // targets the caster's own fit.
+          //
+          // ⚠ THE typeID IS NOT OPTIONAL DECORATION FOR A PROP MOD. Deactivate
+          // stops an afterburner/MWD only when it names the module's propulsion
+          // effect, and the BFF resolves that name from the typeID alone —
+          // without it the call returns success and the burner keeps cycling
+          // (`api.deactivateModule`'s own header, and the route's in
+          // src/server.js). The rung that emits a propulsion `deactivate` fills
+          // this in; the tank-up rung leaves it undefined and the body simply
+          // omits the key, exactly as before.
           case "deactivate":
-            await api.deactivateModule(action.moduleID, {}, callOptions);
+            await api.deactivateModule(
+              action.moduleID,
+              action.typeID === undefined ? {} : { typeID: action.typeID },
+              callOptions,
+            );
             return;
           // Rung 7, `TravelTo`: hand off to the SHARED autopilot, exactly as
           // the DSL's own `startSystemRoute` case does — same solver, same
@@ -7040,6 +7080,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     remoteCapacitorModuleIDs: [],
     weaponModuleIDs: [],
     salvagerModuleIDs: [],
+    propulsionModules: [],
     modules: [],
     droneBay: null,
     droneBayRoles: { combat: [], salvage: [], logistic: [], unknown: [] },
@@ -7176,7 +7217,16 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       await resolveNamesNow(
         fit.slots
           .filter((slot) => slot.module !== null)
-          .map((slot) => ({ kind: "typeGroup" as const, id: slot.module!.typeID })),
+          .flatMap((slot) => [
+            { kind: "typeGroup" as const, id: slot.module!.typeID },
+            // ⚠ WARMED HERE OR THE PROPULSION SPLIT SILENTLY COLLAPSES. Group 46
+            // says "this is a prop mod" and this says WHICH, and the classifier
+            // reads both out of the already-resolved cache rather than awaiting
+            // anything itself. A prop mod whose effect is unresolved is still
+            // classified (the group answered), but as neither kind -- see
+            // `resolveDefenseModuleIDs`, which records what that costs.
+            { kind: "propulsionEffect" as const, id: slot.module!.typeID },
+          ]),
       );
       // ⚠ AWAITED, UNLIKE loadFitting's OWN FIRE-AND-FORGET CALL. `loadFitting`
       // kicks dogma off with `void loadDogma().catch(...)` so a stumbling dogma
@@ -7249,6 +7299,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         // game's own "Salvager" group in high slots only; reusing it means one
         // answer to "is this a salvager", not two that can drift.
         salvagerModuleIDs: resolveSalvageModuleIDs(),
+        propulsionModules: defense.propulsion,
         modules,
         droneBay,
         droneBayRoles,
@@ -7408,6 +7459,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     readonly weapons: readonly number[];
     readonly tackle: readonly number[];
     readonly webs: readonly number[];
+    readonly propulsion: readonly CompanionPropulsionModule[];
   } {
     const fit = store.fitting.get();
     const shield: number[] = [];
@@ -7417,6 +7469,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const weapons: number[] = [];
     const tackle: number[] = [];
     const webs: number[] = [];
+    const propulsion: CompanionPropulsionModule[] = [];
     if (fit.slotsError === null) {
       const resolved = store.names.get().resolved;
       for (const slot of fit.slots) {
@@ -7505,6 +7558,50 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           // a module you activate on one target, so it does not belong in a
           // lock-then-activate ladder.
           webs.push(slot.module.itemID);
+        } else if (/^propulsion module$/i.test(group)) {
+          // ⚠ ONE GROUP, TWO MODULES THAT MUST BE TOLD APART, AND THE GROUP NAME
+          // CANNOT DO IT. SDE group 46 "Propulsion Module" holds every
+          // afterburner AND every microwarpdrive, so this branch is the whole of
+          // what the group can say. The split comes from the SDE's own
+          // dogmaEffects instead — 6731 `moduleBonusAfterburner`, 6730
+          // `moduleBonusMicrowarpdrive` — resolved through the `propulsionEffect`
+          // name kind and warmed alongside the group above.
+          //
+          // ⚠ AND THE SPLIT IS LOAD-BEARING, not decoration. A warp SCRAMBLER
+          // (`warpScramblerMWD`, the jam that carries `blocksMicrowarpdrive`)
+          // shuts an MWD off and leaves an afterburner running at full effect.
+          // A classifier that knew only "prop mod" would have to pick one wrong
+          // behaviour for every scrammed companion: keep re-activating an MWD
+          // the server has already killed, or stand down an afterburner that is
+          // working — and the second is worse, because a scrammed ship is
+          // exactly the one that needs its speed.
+          //
+          // ⚠ THE TYPEID RIDES ALONG BECAUSE TURNING ONE OFF NEEDS IT. Deactivate
+          // only stops a prop mod when it NAMES the propulsion effect; the server
+          // infers the default effect on activate but not on deactivate, so a
+          // bare Deactivate answers success while the burner keeps cycling
+          // (src/server.js's `/api/bridge/modules/deactivate`). The BFF resolves
+          // that name from the typeID, so the id is what a caller must carry —
+          // which is why this list holds objects and the seven above hold ids.
+          //
+          // ⚠ AN UNRESOLVED EFFECT IS `null`, AND THAT IS NOT AN ERROR. It means
+          // "the group said prop mod and the effect read did not arrive": the
+          // module is still run, because refusing to would disarm a ship over a
+          // missing cache entry, and it is treated as scram-vulnerable, because
+          // between wasting a call on a dead MWD and stripping the speed off a
+          // tackled ship the first is the cheap mistake. Same fail-open shape as
+          // `itemHasActivationCycle` above.
+          const effect = resolved[nameKey("propulsionEffect", slot.module.typeID)] ?? null;
+          propulsion.push({
+            itemID: slot.module.itemID,
+            typeID: slot.module.typeID,
+            kind:
+              effect === "moduleBonusAfterburner"
+                ? "afterburner"
+                : effect === "moduleBonusMicrowarpdrive"
+                  ? "microwarpdrive"
+                  : null,
+          });
         } else if (slot.family === "high" && /weapon|launcher|turret/i.test(group)) {
           // "Projectile Weapon", "Hybrid Weapon", "Energy Weapon", "Missile
           // Launcher …" — the game's own turret/launcher groups, high slots only.
@@ -7512,7 +7609,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         }
       }
     }
-    return { shield, armor, hull, hardeners, weapons, tackle, webs };
+    return { shield, armor, hull, hardeners, weapons, tackle, webs, propulsion };
   }
 
   /**
