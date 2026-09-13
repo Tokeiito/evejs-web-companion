@@ -8082,6 +8082,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             try {
               const pickup = hint.activeStep?.args["pickupStation"];
               const delivery = hint.activeStep?.args["deliveryStation"];
+              const transportBay = hint.activeStep?.args["transportBay"];
               const atEndpoint =
                 (pickup?.kind === "station" && pickup.ref.id === status.stationID) ||
                 (delivery?.kind === "station" && delivery.ref.id === status.stationID);
@@ -8091,17 +8092,35 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
                   ? api.loadCorpHangar(callOptions, status.stationID)
                   : Promise.resolve(null),
               ]);
-              if (panel.cargo.error !== null) {
-                throw new Error(`Cargo Hold: ${panel.cargo.error}`);
+              let transport: NonNullable<ScriptObservation["haulAll"]>["cargo"];
+              if (transportBay === undefined || (transportBay.kind === "place" && transportBay.place === "cargo")) {
+                if (panel.cargo.error !== null) {
+                  throw new Error(`Cargo Hold: ${panel.cargo.error}`);
+                }
+                transport = {
+                  rows: decodeInventoryRows(panel.cargo.list, panel.volumes),
+                  capacity: decodeCapacity(panel.cargo.capacity),
+                };
+              } else if (transportBay.kind === "place" && transportBay.place === "ore-hold") {
+                if (panel.activeShipID === null) {
+                  throw new Error("No active ship is available for the Ore Hold read.");
+                }
+                const bays = decodeShipBays(
+                  (await api.getShipBays(panel.activeShipID, callOptions, ["ore"], status.stationID)).bays,
+                );
+                const ore = bays.find((bay) => bay.key === "ore");
+                if (ore === undefined || ore.present !== true || ore.items === null || ore.capacity === null || ore.error !== null) {
+                  throw new Error(ore?.error ?? "The active ship's Ore Hold is unavailable or unreadable.");
+                }
+                transport = { rows: ore.items, capacity: ore.capacity };
+              } else {
+                throw new Error("Haul All supports only the Cargo Hold or Ore Hold.");
               }
               if (corp !== null && !corp.available) {
                 throw new Error(corp.reason ?? "No corporation office is available at this station.");
               }
               haulAll = {
-                cargo: {
-                  rows: decodeInventoryRows(panel.cargo.list, panel.volumes),
-                  capacity: decodeCapacity(panel.cargo.capacity),
-                },
+                cargo: transport,
                 corpDivisions: corp === null
                   ? null
                   : corp.divisions.map((division) => ({

@@ -67,6 +67,9 @@ export const MACRO_SPECS: Readonly<Record<MacroID, MacroSpec>> = {
       { key: "pickupCorpDivision", kind: "corpDivision", required: true },
       { key: "deliveryStation", kind: "station", required: true },
       { key: "deliveryCorpDivision", kind: "corpDivision", required: true },
+      // Optional for compatibility with saved haul-all scripts: omission is
+      // the original Cargo Hold behaviour.
+      { key: "transportBay", kind: "place", required: false },
       { key: "item", kind: "itemType", required: false },
     ],
     untilRequired: false,

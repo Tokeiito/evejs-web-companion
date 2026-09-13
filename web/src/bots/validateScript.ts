@@ -248,6 +248,16 @@ function validateStep(step: MacroStep, problems: ScriptProblem[]): void {
     problems.push(blocking(step.id, "This step moves items to the same place they already are."));
   }
 
+  if (step.macro === "haul-all") {
+    const transportBay = step.args["transportBay"];
+    if (
+      transportBay !== undefined &&
+      (transportBay.kind !== "place" || (transportBay.place !== "cargo" && transportBay.place !== "ore-hold"))
+    ) {
+      problems.push(blocking(step.id, "Haul All supports only the Cargo Hold or Ore Hold."));
+    }
+  }
+
   if (step.macro === "route-hauler") {
     const transportBay = step.args["transportBay"];
     if (

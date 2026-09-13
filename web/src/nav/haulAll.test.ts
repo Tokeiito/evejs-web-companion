@@ -29,6 +29,16 @@ const filteredStep: MacroStep = {
   },
 };
 
+const cargoStep: MacroStep = {
+  ...step,
+  args: { ...step.args, transportBay: { kind: "place", place: "cargo" } },
+};
+
+const oreStep: MacroStep = {
+  ...step,
+  args: { ...step.args, transportBay: { kind: "place", place: "ore-hold" } },
+};
+
 function row(itemID: number, quantity: number, typeID = 34): InventoryItemRow {
   return {
     itemID,
@@ -40,6 +50,14 @@ function row(itemID: number, quantity: number, typeID = 34): InventoryItemRow {
     singleton: false,
     volume: 2,
   };
+}
+
+function oreRow(itemID: number, quantity: number): InventoryItemRow {
+  return { ...row(itemID, quantity, 1230), groupID: 462, categoryID: 25 };
+}
+
+function moduleRow(itemID: number, quantity: number): InventoryItemRow {
+  return { ...row(itemID, quantity, 9999), groupID: 53, categoryID: 7 };
 }
 
 function at(
@@ -60,7 +78,7 @@ function at(
   } as unknown as ScriptObservation;
 }
 
-test("haul-all loads a capacity-sized source slice directly from corp into Cargo Hold", () => {
+test("legacy haul-all without a bay argument defaults to Cargo Hold", () => {
   const decision = haul(step, at(PICKUP, [], 1, [row(100, 10)], 0), {}, {});
   assert.deepEqual(decision.action, {
     kind: "haulTransfer",
@@ -71,6 +89,69 @@ test("haul-all loads a capacity-sized source slice directly from corp into Cargo
     to: { kind: "cargo" },
     expectedStationID: PICKUP,
   });
+});
+
+test("haul-all with an explicit Cargo Hold uses Cargo Hold", () => {
+  const decision = haul(cargoStep, at(PICKUP, [], 1, [row(100, 2)], 0), {}, {});
+  assert.equal(decision.action.kind, "haulTransfer");
+  assert.deepEqual(decision.action.kind === "haulTransfer" ? decision.action.to : null, { kind: "cargo" });
+});
+
+test("haul-all with an explicit Ore Hold loads and unloads only through Ore Hold", () => {
+  const load = haul(oreStep, at(PICKUP, [], 1, [oreRow(100, 2)], 0), {}, {});
+  assert.equal(load.action.kind, "haulTransfer");
+  assert.deepEqual(load.action.kind === "haulTransfer" ? load.action.to : null, { kind: "shipBay", bay: "ore" });
+
+  const deliveryMem = {
+    haulAll: {
+      trusted: true,
+      leg: "delivery",
+      manifest: { "1230": 2 },
+      sourceEmptyAtDeparture: true,
+      pending: null,
+    },
+  };
+  const unload = haul(oreStep, at(DELIVERY, [oreRow(200, 2)], 7, [], 4), deliveryMem, {});
+  assert.equal(unload.action.kind, "haulTransfer");
+  assert.deepEqual(unload.action.kind === "haulTransfer" ? unload.action.from : null, { kind: "shipBay", bay: "ore" });
+  assert.equal(JSON.stringify([load.action, unload.action]).includes('"kind":"cargo"'), false);
+  assert.equal(JSON.stringify([load.action, unload.action]).includes('"kind":"hangar"'), false);
+});
+
+test("haul-all All mode loads only Ore Hold-compatible rows and leaves an incompatible module", () => {
+  const first = haul(oreStep, at(PICKUP, [], 1, [oreRow(100, 2), moduleRow(101, 1)], 0), {}, {});
+  assert.equal(first.action.kind, "haulTransfer");
+  assert.equal(first.action.kind === "haulTransfer" ? first.action.typeID : null, 1230);
+
+  const depart = haul(
+    oreStep,
+    at(PICKUP, [oreRow(200, 2)], 1, [moduleRow(101, 1)], 4),
+    first.nextMem,
+    {},
+  );
+  assert.equal(depart.action.kind, "wait");
+  assert.equal(depart.outcome.kind, "acting");
+  assert.equal((depart.nextMem["haulAll"] as { leg: string }).leg, "delivery");
+  assert.equal(JSON.stringify([first.action, depart.action]).includes("9999"), false);
+  assert.equal(JSON.stringify([first.action, depart.action]).includes('"kind":"cargo"'), false);
+});
+
+test("haul-all All mode considers an Ore Hold source exhausted when only incompatible rows remain", () => {
+  const decision = haul(oreStep, at(PICKUP, [], 1, [moduleRow(101, 1)], 0), {}, {});
+  assert.equal(decision.outcome.kind, "done");
+  assert.equal(decision.action.kind, "wait");
+});
+
+test("haul-all blocks an explicitly selected incompatible Ore Hold item without fallback", () => {
+  const selected: MacroStep = {
+    ...oreStep,
+    args: { ...oreStep.args, item: { kind: "itemType", typeID: 9999, name: "Test Module" } },
+  };
+  const decision = haul(selected, at(PICKUP, [], 1, [moduleRow(101, 1)], 0), {}, {});
+  assert.equal(decision.outcome.kind, "blocked");
+  assert.equal(decision.action.kind, "wait");
+  assert.match(decision.outcome.kind === "blocked" ? decision.outcome.reason : "", /not classified.*Ore Hold/i);
+  assert.equal(JSON.stringify(decision).includes('"kind":"cargo"'), false);
 });
 
 test("haul-all without an item selection continues across every source item type", () => {

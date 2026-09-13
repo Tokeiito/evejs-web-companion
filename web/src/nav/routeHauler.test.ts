@@ -47,6 +47,14 @@ function row(itemID: number, quantity: number, typeID = 34): InventoryItemRow {
   };
 }
 
+function oreRow(itemID: number, quantity: number): InventoryItemRow {
+  return { ...row(itemID, quantity, 1230), groupID: 462, categoryID: 25 };
+}
+
+function moduleRow(itemID: number, quantity: number): InventoryItemRow {
+  return { ...row(itemID, quantity, 9999), groupID: 53, categoryID: 7 };
+}
+
 function at(
   stationID: number,
   transport: readonly InventoryItemRow[],
@@ -211,9 +219,49 @@ test("route-hauler uses the selected Ore Hold without Cargo Hold fallback", () =
     ...baseStep,
     args: { ...baseStep.args, transportBay: { kind: "place", place: "ore-hold" } },
   };
-  const decision = route(oreStep, at(STATION_A, [], [{ division: 1, rows: [row(100, 2)] }], 0), {}, {});
+  const decision = route(oreStep, at(STATION_A, [], [{ division: 1, rows: [oreRow(100, 2)] }], 0), {}, {});
   assert.equal(decision.action.kind, "haulTransfer");
   assert.deepEqual(decision.action.kind === "haulTransfer" ? decision.action.to : null, { kind: "shipBay", bay: "ore" });
+});
+
+test("route-hauler All mode loads only Ore Hold-compatible rows and travels past incompatible cargo", () => {
+  const oreStep: MacroStep = {
+    ...baseStep,
+    args: { ...baseStep.args, transportBay: { kind: "place", place: "ore-hold" } },
+  };
+  const first = route(
+    oreStep,
+    at(STATION_A, [], [{ division: 1, rows: [oreRow(100, 2), moduleRow(101, 1)] }], 0),
+    {},
+    {},
+  );
+  assert.equal(first.action.kind === "haulTransfer" ? first.action.typeID : null, 1230);
+
+  const depart = route(
+    oreStep,
+    at(STATION_A, [oreRow(200, 2)], [{ division: 1, rows: [moduleRow(101, 1)] }], 4),
+    first.nextMem,
+    {},
+  );
+  assert.deepEqual(depart.action, { kind: "startRoute", stationID: STATION_B });
+  assert.equal(JSON.stringify([first.action, depart.action]).includes("9999"), false);
+  assert.equal(JSON.stringify([first.action, depart.action]).includes('"kind":"cargo"'), false);
+});
+
+test("route-hauler blocks an explicitly selected incompatible Ore Hold item without fallback", () => {
+  const selected: MacroStep = {
+    ...baseStep,
+    args: {
+      ...baseStep.args,
+      transportBay: { kind: "place", place: "ore-hold" },
+      itemsAToB: { kind: "itemList", items: [{ match: "type", typeID: 9999, name: "Test Module" }] },
+    },
+  };
+  const decision = route(selected, at(STATION_A, [], [{ division: 1, rows: [moduleRow(101, 1)] }], 0), {}, {});
+  assert.equal(decision.outcome.kind, "blocked");
+  assert.equal(decision.action.kind, "wait");
+  assert.match(decision.outcome.kind === "blocked" ? decision.outcome.reason : "", /not classified.*Ore Hold/i);
+  assert.equal(JSON.stringify(decision).includes('"kind":"cargo"'), false);
 });
 
 test("route-hauler blocks inventory refusal without a Personal Hangar fallback", () => {

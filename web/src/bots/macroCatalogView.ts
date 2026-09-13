@@ -187,8 +187,8 @@ const ENTRIES: Readonly<Record<MacroID, MacroCatalogEntry>> = {
   "haul-all": entry(
     "haul-all",
     "hauling",
-    "Moves every item, or every stack of one selected item type, from one corporation hangar division to another using only the ship's Cargo Hold.",
-    "Pickup and delivery stations and corporation divisions, with an empty Cargo Hold at the start",
+    "Moves every item, or every stack of one selected item type, from one corporation hangar division to another through the selected transport bay.",
+    "Pickup and delivery stations and corporation divisions, with an empty selected bay at the start",
   ),
   "route-hauler": entry(
     "route-hauler",

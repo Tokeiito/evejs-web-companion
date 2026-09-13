@@ -44,7 +44,7 @@ import { DEFAULT_TARGET_PRIORITY, fleetTagRank, pickPrimary, type TargetClass } 
 import { canMyShipOrderDrone, hostileRows, type OverviewRow } from "../space/overview.ts";
 import { compressionFacilities } from "../space/compression.ts";
 import { AGENT_BUTTON } from "../bridge/agents.ts";
-import { FREIGHT_BAYS } from "../bridge/bayRouting.ts";
+import { FREIGHT_BAYS, preferredBays } from "../bridge/bayRouting.ts";
 import { isUnreachable, refusalFor, shipHasNoRoom, shouldSetAside } from "./refusalLedger.ts";
 import { movableRows, type KeepRule } from "../bridge/keepAboard.ts";
 
@@ -2674,9 +2674,9 @@ const moveItems: MacroDecider = (step, obs, mem) => {
 };
 
 // ── haul-all ────────────────────────────────────────────────────────────────
-// A deliberately narrow corporation courier: fixed corp division -> ordinary
-// Cargo Hold -> fixed corp division, optionally limited to one item type, with
-// one verified stack movement per tick.
+// A deliberately narrow corporation courier: fixed corp division -> selected
+// Cargo/Ore Hold -> fixed corp division, optionally limited to one item type,
+// with one verified stack movement per tick. Omitted selection means Cargo.
 // `manifest` begins from a proven-empty hold and is the run's ownership proof;
 // a fresh process has no such proof and therefore refuses non-empty cargo.
 type HaulLeg = "pickup" | "delivery";
@@ -2718,6 +2718,10 @@ function typeTotal(rows: readonly InventoryItemRow[], typeID: number): number {
   return itemTotals(rows)[String(typeID)] ?? 0;
 }
 
+function oreHoldCompatible(row: InventoryItemRow): boolean {
+  return preferredBays(row).includes("ore");
+}
+
 function sameTotals(left: Readonly<Record<string, number>>, right: Readonly<Record<string, number>>): boolean {
   const keys = new Set([...Object.keys(left), ...Object.keys(right)]);
   for (const key of keys) {
@@ -2755,9 +2759,17 @@ const haulAll: MacroDecider = (step, obs, mem) => {
   const pickupDivision = step.args["pickupCorpDivision"];
   const deliveryStation = step.args["deliveryStation"];
   const deliveryDivision = step.args["deliveryCorpDivision"];
+  const transportArg = step.args["transportBay"];
   const item = step.args["item"];
+  const transport = transportArg === undefined || (transportArg.kind === "place" && transportArg.place === "cargo")
+    ? ({ kind: "cargo" } as const)
+    : transportArg.kind === "place" && transportArg.place === "ore-hold"
+      ? ({ kind: "shipBay", bay: "ore" } as const)
+      : null;
+  const transportName = transport?.kind === "shipBay" ? "Ore Hold" : "Cargo Hold";
   const wantedTypeID = item?.kind === "itemType" && item.typeID !== null ? item.typeID : null;
   if (
+    transport === null ||
     pickupStation?.kind !== "station" || pickupStation.ref.id === null ||
     deliveryStation?.kind !== "station" || deliveryStation.ref.id === null ||
     pickupDivision?.kind !== "corpDivision" ||
@@ -2778,22 +2790,22 @@ const haulAll: MacroDecider = (step, obs, mem) => {
   let state = haulState(mem);
   if (!state.trusted) {
     if (obs.flightStatus?.docked !== true) {
-      return tick(WAIT, "The Cargo Hold cannot be trusted at a fresh start.", "Hauling", {
+      return tick(WAIT, `The ${transportName} cannot be trusted at a fresh start.`, "Hauling", {
         kind: "blocked",
-        reason: "Start this hauling run while docked with an empty Cargo Hold.",
+        reason: `Start this hauling run while docked with an empty ${transportName}.`,
       });
     }
     if (reading?.readError !== null && reading?.readError !== undefined) {
       return tick(WAIT, reading.readError, "Hauling", { kind: "blocked", reason: reading.readError });
     }
     if (reading?.cargo === null || reading?.cargo === undefined) {
-      return tick(WAIT, "The Cargo Hold could not be read.", "Hauling", {
+      return tick(WAIT, `The ${transportName} could not be read.`, "Hauling", {
         kind: "blocked",
-        reason: "The Cargo Hold must be read as empty before hauling starts.",
+        reason: `The ${transportName} must be read as empty before hauling starts.`,
       });
     }
     if (Object.keys(itemTotals(reading.cargo.rows)).length > 0) {
-      return tick(WAIT, "The Cargo Hold is not empty.", "Hauling", {
+      return tick(WAIT, `The ${transportName} is not empty.`, "Hauling", {
         kind: "blocked",
         reason: "A fresh hauling run cannot adopt cargo whose ownership it cannot prove.",
       });
@@ -2815,7 +2827,7 @@ const haulAll: MacroDecider = (step, obs, mem) => {
         return haulTick(WAIT, reading.readError, "Hauling", { kind: "blocked", reason: reading.readError }, mem, state);
       }
       if (reading?.cargo === null || reading?.cargo === undefined || !sameTotals(itemTotals(reading.cargo.rows), state.manifest)) {
-        return haulTick(WAIT, "The Cargo Hold no longer matches this run.", "Hauling", {
+        return haulTick(WAIT, `The ${transportName} no longer matches this run.`, "Hauling", {
           kind: "blocked",
           reason: "Cargo changed outside this hauling run, so it stopped without moving anything else.",
         }, mem, state);
@@ -2831,7 +2843,7 @@ const haulAll: MacroDecider = (step, obs, mem) => {
   if (reading?.cargo === null || reading?.cargo === undefined || reading.corpDivisions === null) {
     return haulTick(WAIT, "The configured inventories could not be read.", "Hauling", {
       kind: "blocked",
-      reason: "Cargo and the configured corporation division must both be readable.",
+      reason: `The ${transportName} and configured corporation division must both be readable.`,
     }, mem, state);
   }
   const division = state.leg === "pickup" ? pickupDivision.division : deliveryDivision.division;
@@ -2862,30 +2874,42 @@ const haulAll: MacroDecider = (step, obs, mem) => {
   }
 
   if (!sameTotals(itemTotals(cargoRows), state.manifest)) {
-    return haulTick(WAIT, "The Cargo Hold no longer matches this run.", "Hauling", {
+    return haulTick(WAIT, `The ${transportName} no longer matches this run.`, "Hauling", {
       kind: "blocked",
       reason: "Cargo changed outside this hauling run, so it stopped without moving anything else.",
     }, mem, state);
   }
 
   if (state.leg === "pickup") {
-    const sourceRows = corpRows.filter(
+    const matchingRows = corpRows.filter(
       (row) => row.itemID > 0 && row.typeID > 0 && row.quantity > 0 &&
         (wantedTypeID === null || row.typeID === wantedTypeID),
     );
+    if (
+      transport.kind === "shipBay" && wantedTypeID !== null &&
+      matchingRows.some((row) => !oreHoldCompatible(row))
+    ) {
+      return haulTick(WAIT, "The selected item cannot use the Ore Hold.", "Hauling", {
+        kind: "blocked",
+        reason: "The configured haul-all item is not classified for the Mining/Ore Hold.",
+      }, mem, state);
+    }
+    const sourceRows = transport.kind === "shipBay"
+      ? matchingRows.filter(oreHoldCompatible)
+      : matchingRows;
     if (sourceRows.length === 0) {
       state = { ...state, sourceEmptyAtDeparture: true };
       if (Object.keys(state.manifest).length === 0) {
-        return haulTick(WAIT, "The source division and Cargo Hold are empty.", "Hauling complete", { kind: "done" }, mem, state);
+        return haulTick(WAIT, `The source division and ${transportName} are empty.`, "Hauling complete", { kind: "done" }, mem, state);
       }
       state = { ...state, leg: "delivery" };
       return haulTick(WAIT, "The last load is ready for delivery.", "Hauling", ACTING, mem, state);
     }
     const capacity = reading.cargo.capacity;
     if (capacity === null || !Number.isFinite(capacity.capacity) || !Number.isFinite(capacity.used) || capacity.used > capacity.capacity) {
-      return haulTick(WAIT, "Cargo Hold capacity is unreadable.", "Hauling", {
+      return haulTick(WAIT, `${transportName} capacity is unreadable.`, "Hauling", {
         kind: "blocked",
-        reason: "The run cannot safely decide what fits in the Cargo Hold.",
+        reason: `The run cannot safely decide what fits in the ${transportName}.`,
       }, mem, state);
     }
     const free = Math.max(0, capacity.capacity - capacity.used);
@@ -2896,11 +2920,11 @@ const haulAll: MacroDecider = (step, obs, mem) => {
       if (Object.keys(state.manifest).length === 0) {
         return haulTick(WAIT, "Nothing in the source can safely fit.", "Hauling", {
           kind: "blocked",
-          reason: "No source item has a readable volume that fits in the empty Cargo Hold.",
+          reason: `No source item has a readable volume that fits in the empty ${transportName}.`,
         }, mem, state);
       }
       state = { ...state, leg: "delivery", sourceEmptyAtDeparture: false };
-      return haulTick(WAIT, "The Cargo Hold cannot safely take more.", "Hauling", ACTING, mem, state);
+      return haulTick(WAIT, `The ${transportName} cannot safely take more.`, "Hauling", ACTING, mem, state);
     }
     const quantity = Math.min(candidate.row.quantity, candidate.units);
     const pending: HaulPending = {
@@ -2917,15 +2941,15 @@ const haulAll: MacroDecider = (step, obs, mem) => {
       typeID: candidate.row.typeID,
       quantity,
       from: { kind: "corp", division: pickupDivision.division },
-      to: { kind: "cargo" },
+      to: transport,
       expectedStationID: pickupStation.ref.id,
-    }, "Loading the next source stack into the Cargo Hold.", "Loading cargo", ACTING, mem, state);
+    }, `Loading the next source stack into the ${transportName}.`, "Loading cargo", ACTING, mem, state);
   }
 
   const cargoStacks = cargoRows.filter((row) => row.itemID > 0 && row.typeID > 0 && row.quantity > 0);
   if (cargoStacks.length === 0) {
     if (state.sourceEmptyAtDeparture) {
-      return haulTick(WAIT, "The source division and Cargo Hold are empty.", "Hauling complete", { kind: "done" }, mem, state);
+      return haulTick(WAIT, `The source division and ${transportName} are empty.`, "Hauling complete", { kind: "done" }, mem, state);
     }
     state = { ...state, leg: "pickup" };
     return haulTick(WAIT, "This load is delivered; returning for the next one.", "Hauling", ACTING, mem, state);
@@ -2944,7 +2968,7 @@ const haulAll: MacroDecider = (step, obs, mem) => {
     itemID: stack.itemID,
     typeID: stack.typeID,
     quantity: stack.quantity,
-    from: { kind: "cargo" },
+    from: transport,
     to: { kind: "corp", division: deliveryDivision.division },
     expectedStationID: deliveryStation.ref.id,
   }, "Unloading the next run-owned stack into the destination division.", "Delivering cargo", ACTING, mem, state);
@@ -3199,10 +3223,23 @@ const routeHauler: MacroDecider = (step, obs, mem) => {
         state = { ...state, phase: "travelToA" };
       } else {
         const wanted = phase === "loadA" ? aToBTypes : bToATypes;
-        const sourceRows = corpRows.filter(
+        const matchingRows = corpRows.filter(
           (row) => row.itemID > 0 && row.typeID > 0 && row.quantity > 0 &&
             (wanted === null || wanted.has(row.typeID)),
         );
+        if (
+          transport.kind === "shipBay" && wanted !== null &&
+          matchingRows.some((row) => !oreHoldCompatible(row))
+        ) {
+          return routeBlocked(
+            "A selected Route Hauler item is not classified for the Mining/Ore Hold.",
+            mem,
+            state,
+          );
+        }
+        const sourceRows = transport.kind === "shipBay"
+          ? matchingRows.filter(oreHoldCompatible)
+          : matchingRows;
         const capacity = reading.transport.capacity;
         if (
           capacity === null || !Number.isFinite(capacity.capacity) || !Number.isFinite(capacity.used) ||

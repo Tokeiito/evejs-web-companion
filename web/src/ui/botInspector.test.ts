@@ -150,6 +150,20 @@ test("the ore destination offers Personal Hangar and all seven corporation divis
   assert.match(html, /Corporation Hangar — Division 7/);
 });
 
+test("haul-all offers exactly Cargo Hold and Ore Hold as transport bays", () => {
+  const html = renderInspector({ kind: "step", step: step("haul-all") });
+  const select = html.match(/<select[^>]*id="arg-step-under-test-transportBay"[\s\S]*?<\/select>/)?.[0] ?? "";
+  assert.match(select, /value="cargo"[^>]*>cargo hold/);
+  assert.match(select, /value="ore-hold"[^>]*>ore hold/);
+  assert.equal((select.match(/<option /g) ?? []).length, 2);
+});
+
+test("Route Hauler's type-only multi-select advertises the global item search", () => {
+  const html = renderInspector({ kind: "step", step: step("route-hauler") });
+  assert.match(html, /placeholder="search all item types by name"/);
+  assert.match(html, /Leave this empty to carry all transferable items/);
+});
+
 test("every argument of every macro is rendered by some widget, none silently skipped", () => {
   // The generic renderer's real promise: no macro has an argument the
   // inspector cannot draw. Proven by rendering all 49 and counting labels,

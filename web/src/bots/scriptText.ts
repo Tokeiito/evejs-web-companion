@@ -469,6 +469,7 @@ function macroPhrase(step: MacroStep): string {
       const delivery = step.args["deliveryStation"];
       const pickupDivision = step.args["pickupCorpDivision"];
       const deliveryDivision = step.args["deliveryCorpDivision"];
+      const transportBay = step.args["transportBay"];
       const item = step.args["item"];
       const pickupWords = pickup?.kind === "station" ? worldRefPhrase(pickup.ref, "a pickup station") : "a pickup station";
       const deliveryWords = delivery?.kind === "station" ? worldRefPhrase(delivery.ref, "a delivery station") : "a delivery station";
@@ -477,7 +478,10 @@ function macroPhrase(step: MacroStep): string {
       const what = item?.kind === "itemType" && item.typeID !== null
         ? `all ${item.name ?? "of the selected item"}`
         : "everything";
-      return `Haul ${what} from ${from} at ${pickupWords} to ${to} at ${deliveryWords}`;
+      const bay = transportBay?.kind === "place" && transportBay.place === "ore-hold"
+        ? " through the Ore Hold"
+        : "";
+      return `Haul ${what} from ${from} at ${pickupWords} to ${to} at ${deliveryWords}${bay}`;
     }
     case "route-hauler": {
       const stationA = step.args["stationA"];

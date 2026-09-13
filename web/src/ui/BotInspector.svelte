@@ -68,6 +68,7 @@
   import type { ScriptProblem } from "../bots/validateScript.ts";
   import type { AppFlow } from "../app/flow.ts";
   import StationPicker from "./StationPicker.svelte";
+  import { findRouteItemChoices, type RouteItemChoice } from "./routeItemSearch.ts";
 
   /** What the inspector is looking at. A branch and a sub-bot get their own
    * small forms; a loop header is never selectable, so there is no case for it. */
@@ -290,11 +291,30 @@
   }
 
   let keepQuery = $state("");
+  let routeKeepHits = $state<readonly RouteItemChoice[]>([]);
+  let routeKeepSearch = 0;
 
   function keepMatches(query: string): readonly { typeID: number; groupID?: number | null; name: string }[] {
     const q = query.trim().toLowerCase();
     if (q.length === 0) return [];
     return items.filter((it) => it.name.toLowerCase().includes(q)).slice(0, 8);
+  }
+
+  async function updateKeepQuery(query: string, routeItems: boolean): Promise<void> {
+    keepQuery = query;
+    const search = ++routeKeepSearch;
+    if (!routeItems) {
+      routeKeepHits = [];
+      return;
+    }
+    try {
+      const hits = await findRouteItemChoices(query, items, (q) => flow.findMarketTypes(q));
+      if (search === routeKeepSearch && keepQuery === query) routeKeepHits = hits;
+    } catch {
+      // A static-search refusal must not turn local inventory into a false
+      // global catalogue. Keep the picker empty until another query succeeds.
+      if (search === routeKeepSearch && keepQuery === query) routeKeepHits = [];
+    }
   }
 
   function keepId(entry: ItemMatchArg): string {
@@ -305,6 +325,8 @@
     if (chosen.length >= MAX_ITEM_LIST || chosen.some((c) => keepId(c) === keepId(entry))) return;
     onArg(key, { kind: "itemList", items: [...chosen, entry] });
     keepQuery = "";
+    routeKeepHits = [];
+    routeKeepSearch += 1;
   }
 
   function removeKeep(key: string, chosen: readonly ItemMatchArg[], id: string): void {
@@ -685,8 +707,8 @@
     </div>
   {:else if arg.widget === "item-list-picker"}
     {@const chosenKeep = itemListValue(step, arg.key)}
-    {@const keepHits = keepMatches(keepQuery)}
     {@const routeItems = routeItemSelection(arg.key)}
+    {@const keepHits = routeItems ? routeKeepHits : keepMatches(keepQuery)}
     <div class="inspector-field">
       <span class="inspector-label">
         {arg.label}{#if !arg.required}<span class="inspector-optional"> - optional</span>{/if}
@@ -702,9 +724,9 @@
       <input
         id={fieldId}
         type="text"
-        placeholder={routeItems ? "search corporation items by name" : "search what is aboard by name"}
+        placeholder={routeItems ? "search all item types by name" : "search what is aboard by name"}
         value={keepQuery}
-        oninput={(e) => (keepQuery = e.currentTarget.value)}
+        oninput={(e) => void updateKeepQuery(e.currentTarget.value, routeItems)}
       />
       {#if keepHits.length > 0}
         <ul class="market-picker">
