@@ -208,6 +208,52 @@ test("mine: rock locked but still out of range, not yet approached -> close in",
   assert.equal(t.nextMem["approachedRockID"], 50001);
 });
 
+// ⚠ THE ORBIT HALF OF THE SILENT-REFUSAL RUNG. `CmdOrbit` is gated and thrown
+// away exactly like `CmdFollowBall`, and a belt is where it bites: the first
+// order after the warp in is the orbit, on the very tick eve.js still has the
+// hull landingPending. GOTO is the deadlock's signature — SetSpeedFraction(1.0)
+// took, the orbit after it did not.
+test("⚠ mine: an orbit the server accepted and ignored -> re-order, STOP, re-order, then blocked", () => {
+  const rock = entity({ itemID: 50001, name: "Veldspar", miningYieldTypeID: 1230, position: { x: 15000, y: 0, z: 0 } });
+  const world = obs({
+    snapshot: snapshot([rock], { activeModuleIDs: [], mode: "GOTO" }),
+    lockedTargetIDs: [50001],
+    miningModuleIDs: [700, 701],
+  });
+  let mem: MacroMemory = { rockID: 50001, lockIssued: true, waited: 0, approachedRockID: 50001 };
+  const script: string[] = [];
+  for (let i = 0; i < 20; i += 1) {
+    const t = mine(mineStep, world, mem, {});
+    script.push(t.action.kind);
+    if (t.outcome.kind === "blocked") {
+      assert.match(t.outcome.reason, /takes move orders and does not move/);
+      break;
+    }
+    mem = t.nextMem;
+  }
+  assert.deepEqual(
+    script.filter((kind) => kind !== "wait"),
+    ["orbit", "stopShip", "orbit"],
+    "it re-sends its OWN order — an orbit, never an approach",
+  );
+  assert.ok(script.length < 20, "a miner that cannot reach the belt says so");
+});
+
+test("mine: a hull already ORBITING is never stopped — an orbit IS closing", () => {
+  const rock = entity({ itemID: 50001, name: "Veldspar", miningYieldTypeID: 1230, position: { x: 15000, y: 0, z: 0 } });
+  const world = obs({
+    snapshot: snapshot([rock], { activeModuleIDs: [], mode: "ORBIT" }),
+    lockedTargetIDs: [50001],
+    miningModuleIDs: [700, 701],
+  });
+  let mem: MacroMemory = { rockID: 50001, lockIssued: true, waited: 0, approachedRockID: 50001 };
+  for (let i = 0; i < 20; i += 1) {
+    const t = mine(mineStep, world, mem, {});
+    assert.equal(t.action.kind, "wait", `tick ${i} disturbed an orbit that was running`);
+    mem = t.nextMem;
+  }
+});
+
 test("mine: rock locked, out of range, already closing in -> wait rather than activate", () => {
   const rock = entity({ itemID: 50001, name: "Veldspar", miningYieldTypeID: 1230, position: { x: 15000, y: 0, z: 0 } });
   const t = mine(
@@ -790,6 +836,51 @@ test("salvage: no drones, salvager fitted -> approach, lock, run it on the wreck
     {},
   );
   assert.ok(run.action.kind === "activate" && run.action.moduleID === 800 && run.action.targetID === 70001);
+});
+
+// ⚠ THE SILENT-REFUSAL TESTS. `CmdFollowBall` answers 200 whether the server
+// flew the order or threw it away — a hull with a pending warp landing has every
+// approach refused while the approach route's own SetSpeedFraction leaves it
+// coasting in GOTO, which is the deadlock that used to leave this block saying
+// "Flying to the wreck" all night. The hull's MODE is the only evidence, so
+// these two pin both readings of it.
+const farWreck = () => entity({ itemID: 70001, kind: "wreck", position: { x: 30000, y: 0, z: 0 } });
+
+test("salvage: a hull that IS following is left alone — no re-order, however long the leg", () => {
+  const salvage = SCRIPT_MACROS["salvage-wrecks"]!;
+  const s = { id: "sv", kind: "macro", macro: "salvage-wrecks", args: {} } as const;
+  const world = obs({ snapshot: snapshot([farWreck()], { mode: "FOLLOW" }), salvageModuleIDs: [800] });
+  let mem: MacroMemory = { wreckID: 70001, lockIssued: false, waited: 0 };
+  for (let i = 0; i < 20; i += 1) {
+    const t = salvage(s, world, mem, {});
+    assert.equal(t.action.kind, "wait", `tick ${i} re-ordered a flight that was already running`);
+    assert.equal(t.why, "Flying to the wreck.");
+    mem = t.nextMem;
+  }
+});
+
+test("⚠ salvage: an approach the server accepted and ignored -> re-order, STOP, re-order, then blocked", () => {
+  const salvage = SCRIPT_MACROS["salvage-wrecks"]!;
+  const s = { id: "sv", kind: "macro", macro: "salvage-wrecks", args: {} } as const;
+  // GOTO is the deadlock's own signature: full speed on a straight line, which
+  // is what SetSpeedFraction(1.0) leaves behind when the FollowBall after it is
+  // refused for the pending landing.
+  const world = obs({ snapshot: snapshot([farWreck()], { mode: "GOTO" }), salvageModuleIDs: [800] });
+  let mem: MacroMemory = { wreckID: 70001, lockIssued: false, waited: 0 };
+  const script: string[] = [];
+  for (let i = 0; i < 20; i += 1) {
+    const t = salvage(s, world, mem, {});
+    script.push(t.action.kind);
+    if (t.outcome.kind === "blocked") {
+      assert.match(t.outcome.reason, /takes move orders and does not move/);
+      assert.match(t.outcome.reason, /Sign this pilot in again/);
+      break;
+    }
+    mem = t.nextMem;
+  }
+  const ordered = script.filter((kind) => kind !== "wait");
+  assert.deepEqual(ordered, ["approach", "stopShip", "approach"], "the stop is what frees a stuck landing");
+  assert.ok(script.length < 20, "it gives up rather than narrating a flight that is not happening");
 });
 
 test("salvage: nothing to salvage with -> SKIPPED with a plain reason, not a stop", () => {
@@ -1915,6 +2006,49 @@ test("attack-player: locked -> guns onto them; no guns and no drones -> blocked"
   assert.ok(t.action.kind === "activate" && t.action.moduleID === 700 && t.action.targetID === 801);
   const unarmed = attack(attackStep, obs({ snapshot: snapshot([prey]), weaponModuleIDs: [], droneBayItemIDs: [] }), {}, {});
   assert.equal(unarmed.outcome.kind, "blocked");
+});
+
+// ⚠ THE ENGAGE HALF OF THE SILENT-REFUSAL RUNG (`engagePrey`, shared by
+// attack-player and hunt-player). A den or a camp is reached by warping to it,
+// which is exactly when eve.js still has the hull landingPending and throws the
+// fight's FIRST approach away — so "once per target" had to stop meaning "once,
+// whatever the server did with it".
+test("⚠ attack-player: a refused approach is re-ordered and the hull stopped — and the run is NEVER blocked mid-fight", () => {
+  const prey = playerShip(801, 90001, 40000); // out past ENGAGE_CLOSE_ABOVE_M
+  const world = obs({
+    snapshot: snapshot([prey], { mode: "GOTO" }), // SetSpeedFraction took, the follow did not
+    lockedTargetIDs: [801],
+    weaponModuleIDs: [700],
+  });
+  let mem: MacroMemory = { targetID: 801, lockIssued: true, waited: 0, dronesOn: 801, approached: 801 };
+  const script: string[] = [];
+  for (let i = 0; i < 30; i += 1) {
+    const t = attack(attackStep, world, mem, {});
+    assert.notEqual(t.outcome.kind, "blocked", "a hull that cannot close can still shoot");
+    script.push(t.action.kind);
+    mem = t.nextMem;
+  }
+  assert.ok(script.includes("stopShip"), `the stop that frees a stuck landing goes out: ${script.join(",")}`);
+  assert.ok(script.includes("approach"), "and the order the server threw away is put back in");
+  // The ladder restarts rather than going quiet: a fight outlasts one pass.
+  assert.ok(script.filter((kind) => kind === "stopShip").length >= 2, "it keeps asking for as long as the fight lasts");
+  assert.ok(script.includes("activate"), "and the guns still run while the movement problem is worked");
+});
+
+test("attack-player: a hull that IS following is left to close — the once-per-target bound still holds", () => {
+  const prey = playerShip(801, 90001, 40000);
+  const world = obs({
+    snapshot: snapshot([prey], { mode: "FOLLOW" }),
+    lockedTargetIDs: [801],
+    weaponModuleIDs: [700],
+  });
+  let mem: MacroMemory = { targetID: 801, lockIssued: true, waited: 0, dronesOn: 801, approached: 801 };
+  for (let i = 0; i < 20; i += 1) {
+    const t = attack(attackStep, world, mem, {});
+    assert.notEqual(t.action.kind, "approach", `tick ${i} re-ordered an approach that was already running`);
+    assert.notEqual(t.action.kind, "stopShip", `tick ${i} stopped a hull that was closing`);
+    mem = t.nextMem;
+  }
 });
 
 test("attack-player: docked -> blocked with an undock hint", () => {
