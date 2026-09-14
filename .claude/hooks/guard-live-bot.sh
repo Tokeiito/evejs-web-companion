@@ -39,6 +39,12 @@ cmd="$(printf '%s' "$payload" | jq -r '.tool_input.command // ""' 2>/dev/null)" 
 # legitimately sit in front of it (cd, sudo, env, nohup, time, timeout N).
 # Anything quoted inside an echo or a grep pattern is then just an argument to
 # some other program, which is exactly what it is.
+#
+# The SUBCOMMAND is read the same way, for the same reason — see the parse below.
+# Getting the binary right and then substring-matching the verb was the second
+# version of the first mistake, and it cost two refusals in the middle of real
+# work before anyone noticed. `.claude/hooks/guard-live-bot.test.sh` is the case
+# table that now holds both halves down.
 invokes_docker=0
 while IFS= read -r segment; do
   case "$segment" in
@@ -50,13 +56,67 @@ while IFS= read -r segment; do
     -e 's/^(sudo|nohup|time|env)[[:space:]]+//' \
     -e 's/^timeout[[:space:]]+[0-9]+m?[[:space:]]+//' \
     -e 's/^cd[[:space:]]+[^[:space:]]+[[:space:]]*//')"
-  case "$stripped" in
-    docker[[:space:]]*compose*up*|docker[[:space:]]*compose*down*|\
-    docker[[:space:]]*compose*restart*|docker[[:space:]]*compose*stop*|\
-    docker-compose[[:space:]]*up*|docker-compose[[:space:]]*down*|\
-    docker-compose[[:space:]]*restart*|docker-compose[[:space:]]*stop*|\
-    docker[[:space:]]*restart*|docker[[:space:]]*stop*|\
-    docker[[:space:]]*kill*|docker[[:space:]]*rm*)
+  # ⚠ THE VERB IS A POSITION, NOT A SUBSTRING, and the globs this replaces did
+  # not know that. `docker[[:space:]]*rm*` is "docker, a space, anything, rm,
+  # anything" — so it fired on `docker ps --format ...` because `--format`
+  # contains "rm", and `docker[[:space:]]*stop*` fired on any command whose
+  # arguments merely mentioned a stop. Both were denied while five pilots were
+  # mining, which is how a guard teaches people to switch it off.
+  #
+  # So the segment is split into words and READ: the binary, then docker's own
+  # global options (the ones that take a value are stepped over WITH it, or the
+  # value would be mistaken for the subcommand), then the subcommand itself. A
+  # verb appearing anywhere else is an argument to some other program, which is
+  # exactly what it is — `docker exec c sh -c '... compose up ...'` parses as
+  # `exec` and is allowed, because it is.
+  set -f                 # a bare * in the command must not glob the cwd
+  # shellcheck disable=SC2086
+  set -- $stripped
+  set +f
+  bin="${1:-}"
+  [ $# -gt 0 ] && shift
+  compose=0
+  case "$bin" in
+    docker) ;;
+    docker-compose) compose=1 ;;
+    *) continue ;;
+  esac
+
+  # Step over the binary's own options to reach the subcommand. An option that
+  # takes a VALUE is stepped over WITH it — otherwise `--context prod stop` reads
+  # `prod` as the verb, and worse, `-H unix://... rm` reads the socket.
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -H|--host|-c|--context|--config|--log-level|\
+      --tlscacert|--tlscert|--tlskey|\
+      -f|--file|-p|--project-name|--project-directory|--profile|--env-file)
+        shift; [ $# -gt 0 ] && shift ;;
+      -*) shift ;;
+      *) break ;;
+    esac
+  done
+
+  # `docker compose` has a second layer: its own options, then the real verb.
+  if [ "$compose" = "0" ] && [ "${1:-}" = "compose" ]; then
+    compose=1
+    shift
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        -f|--file|-p|--project-name|--project-directory|--profile|--env-file)
+          shift; [ $# -gt 0 ] && shift ;;
+        -*) shift ;;
+        *) break ;;
+      esac
+    done
+  fi
+  verb="${1:-}"
+
+  # `docker up` is not a command, so plain-docker never blocks on it; the rest
+  # end containers either way. Anything not listed here — build, ps, exec, logs,
+  # inspect — touches nothing that is running and is none of this hook's business.
+  case "$compose:$verb" in
+    1:up|1:down|1:restart|1:stop|1:kill|1:rm|\
+    0:restart|0:stop|0:kill|0:rm)
       invokes_docker=1
       break
       ;;
