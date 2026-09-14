@@ -446,8 +446,13 @@
     // players as the bot ignoring the pirate, so it is no longer the default);
     // being targeted or joined by players is news rather than damage, so it
     // tells you; anything about health heads home.
+    // ⚠ `tackled` DEFAULTS TO FIGHTING, AND ANYTHING ELSE WOULD BE A TRAP. It is
+    // the one condition whose obvious first response is impossible: a held ship
+    // cannot warp, so it cannot dock either, and the "dock-and-pause" fallback
+    // below would hand every new tackle watch a row that can only ever fail.
+    // Killing what is holding the ship is the only response that frees it.
     const respond: InterruptResponse =
-      kind === "hostile-on-grid"
+      kind === "hostile-on-grid" || kind === "tackled"
         ? "fight-back"
         : kind === "targeted-by-player" || kind === "players-in-system-above"
           ? "alert"

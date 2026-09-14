@@ -422,6 +422,9 @@ export const CONDITION_NOUN_LABEL: Readonly<Record<ConditionKind, string>> = {
   "players-in-system-above": "Other pilots in system",
   "targeted-by-player": "Being targeted",
   "drone-health-below": "A drone's health",
+  // Not "Scrambled": the label has to say what it COSTS, because the response a
+  // player reaches for depends on knowing that leaving is off the table.
+  tackled: "Held down, cannot warp",
 };
 
 /**
@@ -446,6 +449,9 @@ export const CONDITION_UNTIL_LABEL: Readonly<Record<ConditionKind, string>> = {
   "players-in-system-above": "another pilot comes into this system",
   "targeted-by-player": "another player locks onto your ship",
   "drone-health-below": "one of your drones drops below…",
+  // Present for exhaustiveness only — `tackled` is interrupt-only, so no until
+  // picker ever offers it (see UNTIL_CONDITION_KINDS above).
+  tackled: "something has your ship scrambled and it cannot warp out",
 };
 
 /**
@@ -525,7 +531,9 @@ export function conditionUsesFraction(kind: ConditionKind): boolean {
     kind !== "wallet-below" &&
     kind !== "wallet-above" &&
     kind !== "targeted-by-player" &&
-    kind !== "players-in-system-above"
+    kind !== "players-in-system-above" &&
+    // "Held" is not a quantity: there is no percentage of being scrammed.
+    kind !== "tackled"
   );
 }
 
