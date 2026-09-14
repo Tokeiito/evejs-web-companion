@@ -34,6 +34,7 @@
   import type { Session } from "../app/sessions.ts";
   import type { TabID } from "./tabs.ts";
   import { lastSavedPhrase, libraryView, savedByLabel } from "../bots/libraryView.ts";
+  import { editInBuilder, libraryChanged, newInBuilder } from "../bots/builderTarget.ts";
   import {
     serverBotFor,
     serverOnlyBots,
@@ -135,6 +136,22 @@
     }
   }
 
+  // The builder saved something. This list is poll-free — right for a list of
+  // saved bots, wrong the moment the only thing that writes to it moved into
+  // another window — so a save says so and this re-reads (builderTarget.ts).
+  //
+  // ⚠ THE MARK IS SEEDED AT MOUNT, NOT AT ZERO. Every effect runs once on
+  // mount, and `onMount` below is already fetching; starting from zero would
+  // make every open of this window fire two reads of the same list.
+  const libraryWrites = libraryChanged;
+  let servedLibraryWrite = libraryChanged.get();
+  $effect(() => {
+    const count = $libraryWrites;
+    if (count === servedLibraryWrite) return;
+    servedLibraryWrite = count;
+    void refresh();
+  });
+
   onMount(() => {
     void refresh();
     // Guarded, like every other periodic read — see app/skipWhileBusy.ts. Only
@@ -202,7 +219,20 @@
     return `${pilotsPart} · ${libraryPart}`;
   });
 
-  function edit(_scriptID: string): void {
+  /**
+   * Open the Bot Builder ON THIS ROW'S BOT.
+   *
+   * ⚠ THE id IS HALF THE BUTTON, and it used to be dropped here. Opening the
+   * builder's window is not editing a bot: the builder that appeared was
+   * showing whatever it had last, and the bot whose Edit button had just been
+   * pressed had to be found again in a SECOND copy of this library that the
+   * builder carried for that purpose. `editInBuilder` is the other half —
+   * which bot — and it travels on its own signal because the open request
+   * between these two windows addresses a tab and carries no payload
+   * (bots/builderTarget.ts).
+   */
+  function edit(scriptID: string): void {
+    editInBuilder(scriptID);
     onOpen?.("botBuilder");
   }
 
@@ -215,8 +245,13 @@
    * is reached through this panel, which is the one door onto bots); before this
    * button the only route here was the Edit action on a saved row, so a player
    * with no saved bots had no way to write their first one.
+   *
+   * It says "new" out loud for the same reason Edit says which bot: a builder
+   * already open on a saved bot would otherwise answer this button by showing
+   * that bot, and the player would edit it thinking it was their new one.
    */
   function newBot(): void {
+    newInBuilder();
     onOpen?.("botBuilder");
   }
 
