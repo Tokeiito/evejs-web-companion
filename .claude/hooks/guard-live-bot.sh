@@ -127,47 +127,10 @@ EOF
 
 [ "$invokes_docker" = "1" ] || exit 0
 
-command -v docker >/dev/null 2>&1 || exit 0
-
-# A log touched RECENTLY whose final line is not an "end" is a run that is still
-# going. The window has to be generous, because the runner writes one line per
-# CHANGE, not per tick, and a bot doing something repetitive changes nothing for
-# a long time.
-#
-# ⚠ TWO MINUTES WAS WRONG, AND IT WAS WRONG IN THE DIRECTION THAT COSTS SHIPS.
-# It was picked with a warp in mind. Mining is the case that matters: on
-# 2026-09-14 three mining runs were sampled by the server ORBITING with three
-# lasers cycling — unambiguously flying — while their logs had been untouched for
-# eleven to sixteen minutes, because a full belt cycle simply produces no new
-# decision to record. The guard would have failed open and allowed the restart
-# that killed all five pilots, which is the exact thing it exists to prevent.
-#
-# Measured over those runs, the largest quiet gap inside a live mining log was
-# ~830s (the runner-up gaps, ~340-510s, are the same cycle seen shorter); a
-# ratting log's largest was 63s. THIRTY MINUTES is a shade over twice the worst
-# observed, which is the right kind of margin for a bound whose failure mode is
-# a dead pilot rather than a wasted minute.
-#
-# It stays cheap because it is not the only test: a run that finished writes an
-# "end" line and is skipped no matter how recent it is, so widening this window
-# does not hold up a restart after an ordinary stop. The only thing it delays is
-# a restart following a run that died WITHOUT writing its end line — a crash —
-# and waiting out half an hour, or saying so and being asked again, is a far
-# cheaper mistake than the one above.
-live="$(docker exec evejs-web-poc-bff-1 sh -c '
-  now=$(date +%s)
-  for f in /app/data/bot-logs/*.jsonl; do
-    [ -f "$f" ] || continue
-    case "$f" in *.prev.jsonl) continue ;; esac
-    m=$(stat -c %Y "$f" 2>/dev/null) || continue
-    [ $((now - m)) -le 1800 ] || continue
-    last=$(tail -1 "$f" 2>/dev/null)
-    case "$last" in
-      *\"kind\":\"end\"*) ;;
-      *\"status\":\"running\"*) basename "$f" .jsonl ;;
-      *\"kind\":\"decide\"*|*\"kind\":\"issue\"*|*\"kind\":\"start\"*) basename "$f" .jsonl ;;
-    esac
-  done' 2>/dev/null)" || exit 0
+# Whether a bot is flying is one question with one answer, and it lives in
+# live-bot-pilots.sh so the Stop-hook rebuild asks it exactly the same way. It
+# fails open (prints nothing) on every way of being unable to look.
+live="$(bash "$(dirname "$0")/live-bot-pilots.sh")" || exit 0
 
 [ -n "$live" ] || exit 0
 
