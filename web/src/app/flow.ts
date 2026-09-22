@@ -9343,7 +9343,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             savedFittings = null;
           }
         }
-        if (macro !== null && ANOMALY_MACROS.has(macro)) {
+        // `needsOreSites` is the site-mode mining block asking for the same
+        // list. It is a hint rather than a third entry in ANOMALY_MACROS
+        // because `mine-at-belt` earns the read only when its belt argument
+        // says "site" — pointed at a belt, the same block must not pay for a
+        // scanner read it will never look at (see activeStepToursOreSites).
+        if (macro !== null && (ANOMALY_MACROS.has(macro) || hint.needsOreSites === true)) {
           try {
             const full = decodeFullState(await api.loadScanFullState(callOptions));
             // The whole row is classified here, not just labelled: `targetID` is
@@ -9356,6 +9361,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
                 : [{
                     label: site.targetID,
                     kind: siteKind(site.fields["scanStrengthAttribute"], site.fields["archetypeID"]),
+                    // The row's own `position`, carried so a refused warp can be
+                    // told apart from standing in the site already. A row
+                    // without one stays null — never an origin, which would
+                    // read as "the ship is right here" for every site at once.
+                    position:
+                      site.position === null || site.position.length < 3
+                        ? null
+                        : { x: site.position[0]!, y: site.position[1]!, z: site.position[2]! },
                   }],
             );
           } catch {
