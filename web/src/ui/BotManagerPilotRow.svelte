@@ -19,7 +19,7 @@
   // inside `$effect` (App.svelte's station-watch effect is the precedent for
   // subscribing explicitly rather than with `$store` sugar) instead of once
   // at the top level.
-  import { getBotScript, startServerBot as apiStartServerBot, stopServerBot, type BotScriptSummary, type ServerBot } from "../app/api.ts";
+  import { getBotScript, startServerBot as apiStartServerBot, stopServerBot, type ApiOptions, type BotScriptSummary, type ServerBot } from "../app/api.ts";
   import type { Session } from "../app/sessions.ts";
   import {
     lastAlertPhrase,
@@ -40,6 +40,7 @@
     session,
     serverBot,
     scripts,
+    ownerOptions,
     onChanged,
     onSetUpBuiltIn,
   }: {
@@ -47,6 +48,12 @@
     serverBot: ServerBot | null;
     /** The library rows the panel already loaded — this row never fetches its own. */
     scripts: readonly BotScriptSummary[];
+    /**
+     * The options a call about a pilot rides — its account's, for a
+     * server-only row that has no session here. Absent in tests, where the
+     * row falls back to the tab's own token.
+     */
+    ownerOptions?: (characterID: number) => Promise<ApiOptions>;
     /** Fires after a stop OR a start, so the panel refreshes the roster and server-bot list either way. */
     onChanged: () => void;
     /**
@@ -201,10 +208,13 @@
     stopError = null;
     try {
       // Direct api.ts calls must ride the owning pilot's flow options; a
-      // server-only row (no session held here) has no flow of its own and
-      // falls back to the tab's active-pilot token, same as any other legacy
-      // call without per-session options (see App.svelte's token mirror).
-      await stopServerBot(serverBot.botID, session?.flow.requestOptions() ?? {});
+      // server-only row (no session held here) has no flow of its own and is
+      // stopped AS ITS ACCOUNT — /api/bots/:id/stop is scoped to the caller's
+      // account, so the tab's token would refuse any other account's bot.
+      const options = session
+        ? session.flow.requestOptions()
+        : ((await ownerOptions?.(serverBot.characterID)) ?? {});
+      await stopServerBot(serverBot.botID, options);
       onChanged();
     } catch {
       stopError = "Could not stop that bot — it may have already ended.";
