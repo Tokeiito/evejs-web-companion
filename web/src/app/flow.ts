@@ -9354,6 +9354,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
                 .map((pin) => ({
                   pinID: pin.pinID,
                   resourceTypeID: pin.program?.resourceTypeID ?? null,
+                  headRadius: pin.program?.headRadius ?? null,
                   expiresAtMs:
                     pin.program?.expiresAtMs === null || pin.program?.expiresAtMs === undefined
                       ? null
@@ -10245,7 +10246,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             await api.warpToBookmark(action.bookmarkID, 0, callOptions);
             return;
           case "restartExtractor":
-            await api.restartExtractorProgram(action.planetID, action.pinID, action.resourceTypeID, callOptions);
+            await api.restartExtractorProgram(
+              action.planetID,
+              action.pinID,
+              action.resourceTypeID,
+              action.headRadius,
+              callOptions,
+            );
             return;
           case "launchCommodities":
             await api.launchCommodities(
