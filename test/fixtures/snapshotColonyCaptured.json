@@ -1,5 +1,5 @@
 {
-  "provenance": "One colony exactly as GET /_evejs-web/v1/snapshot returned it inside planetRuntimeState.coloniesByKey, captured against the live gateway on 2026-09-23 with the owning pilot logged out and nothing selected. ownerID, charID, planetID and solarSystemID are substituted (90000001 is ESI's documented example character id); every other field, value and key order is as captured.",
+  "provenance": "One colony exactly as GET /_evejs-web/v1/snapshot returned it inside planetRuntimeState.coloniesByKey, captured against the live gateway on 2026-09-23 with the owning pilot logged out and nothing selected. ownerID, charID, planetID, solarSystemID and every pin id are substituted (90000001 is ESI's documented example character id); every other field, value and key order is as captured.",
   "colony": {
     "planetID": 40000002,
     "ownerID": 90000001,
@@ -206,8 +206,8 @@
         "lastLaunchTime": "0"
       },
       {
-        "id": 9988400025163,
-        "pinID": 9988400025163,
+        "id": 900000000008,
+        "pinID": 900000000008,
         "ownerID": 90000001,
         "typeID": 2524,
         "latitude": 1.0487206361525208,
