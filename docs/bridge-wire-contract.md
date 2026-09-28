@@ -1142,8 +1142,9 @@ panel issues after payout. Three are new top-level (non-bound) server-tier reads
 (added to the allowlist above); the fourth (the mission journal) was already
 allowlisted in R4:
 
-- `account.GetCashBalance(0)` → the personal ISK balance (a plain number, or a
-  `{type:"long"}`). Decoded to a bigint-safe decimal string.
+- `account.GetCashBalance(0)` → the personal ISK balance, which eve.js sends as a
+  `{type:"real"}` (a plain number or a `{type:"long"}` also decodes). Decoded to a
+  bigint-safe decimal string.
 - `LPSvc.GetAllMyCharacterWalletLPBalances()` → a CRowset (`objectex2`) of packed
   rows `[issuerCorpID, loyaltyPoints]`. LP kept as decimal strings.
 - `standingMgr.GetCharStandings()` → a header/lines Rowset of `[fromID, standing]`
@@ -1155,7 +1156,10 @@ allowlisted in R4:
 
 **Decoder rule:** amounts decode long-aware (`unwrapLong`, never
 `typeof === "number" ? … : 0`); ISK/LP are decimal strings, standings numbers
-(`web/src/bridge/rewards.ts`).
+(`web/src/bridge/rewards.ts`). eve.js also sends ISK money as a marshalled real,
+`{type:"real", value}` (character selection's `balance`, `GetCharacterInfo`'s
+`balance`/`bounty`/`aurBalance`), so decoders read it real-aware too:
+`unwrapReal` for a number, `toAmountString` for a decimal string.
 
 Proven in-process end to end by `eve.js server/tests/webGatewayCourierComplete.test.js`:
 in-person accept → deliver the package to the dropoff → `DoAction(Complete)` actually
