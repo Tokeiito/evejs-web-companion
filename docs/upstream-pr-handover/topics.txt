@@ -1,0 +1,164 @@
+25358ac 2026-09-02 merge: station repair shop in the docked Station Services tab
+ecf595b 2026-09-02 merge: the platform-wide bot library and the Bot Manager
+0c57011 2026-09-02 merge: generate the Bot Builder's editors from the format
+c37f934 2026-09-02 merge: hand off the Bot Builder's visual redesign
+f41e929 2026-09-02 merge: rebuild the Bot Builder as a plan, a watch region and an inspector
+52dd3d5 2026-09-02 merge: let the station picker's buttons reach the 40px touch target
+4d3ba79 2026-09-02 merge: prove the Bot Builder's document round-trip, and fix what it found
+0635cb2 2026-09-02 merge: move the node-creation defaults into the tested document layer
+a15bbe6 2026-09-02 merge: builder polish, pilot-row layout, and icon row actions
+a6bbc15 2026-09-02 merge: fight back at pirates instead of only launching drones
+500ae82 2026-09-02 merge: ship the web sources the bot host imports at runtime
+110e19f 2026-09-02 merge: seed the starter bots through the app, not a scope it cannot see
+9a7102b 2026-09-03 merge: land on a hangar of every pilot, not a list of every character
+dd680fb 2026-09-03 merge: launch and order drones by role, not the whole bay
+42ecca2 2026-09-03 merge: skip the salvage step with a warning instead of stopping the bot
+893b770 2026-09-04 merge: finish the hangar's squad flow, and stop it being a one-way door
+188d155 2026-09-04 merge: mine every belt from the nearest, following an ore priority list, with a shared dry-belt memory
+25c294a 2026-09-05 merge: route loot to the bays a hull actually has, and unload every one
+60d1cc4 2026-09-05 docs: design the unload/jettison "what stays aboard" policy
+5ea9e1d 2026-09-05 merge: deliver ore, not the whole ship
+bf3a30c 2026-09-05 merge: tell the ore from the crystals in a shared cargo hold
+9bbd417 2026-09-05 docs: FakeItemNotFound is two failures, not one — correct the plan
+48fa108 2026-09-06 merge: notice when the server keeps saying no
+1aa55b4 2026-09-06 merge: give a bot a memory of what has been refusing it
+e6d1cd4 2026-09-06 merge: loot what fits, instead of asking for the lot and being refused
+8fb2883 2026-09-06 fix(bots): keep every cargo type in its own bay, and out of ship cargo
+23282dd 2026-09-06 merge: plain text in the bot readout
+c461354 2026-09-06 fix(bots): say when a can fits nowhere, instead of retrying it in silence
+ac82df9 2026-09-06 merge: route fuel and ammo to their own bays, and let a ship keep them
+a540a73 2026-09-06 feat(bots): let a script name what stays on the ship
+92dc12c 2026-09-06 merge: a bind refusal that says what it was, and which bind it was
+43eea1f 2026-09-06 merge: a full ship stops looting, instead of proving it once per can
+37d415e 2026-09-07 merge: the docked station panel, the in-space workspace, and one inventory panel
+2094a5e 2026-09-07 merge: one way to put a window away, not two
+5e5d728 2026-09-07 merge: the ship HUD, matched to its reference
+eac050c 2026-09-07 merge: a transient note that is actually transient
+3e1ba21 2026-09-07 merge: plug the notice system in, and put it where you look
+a1b8b0e 2026-09-07 merge: the message this all started for, out of the HUD and into the flash
+990936d 2026-09-07 merge: the ring is the slot, and the HUD cell is one row shorter
+9389405 2026-09-07 merge: give the HUD cell back the height it was not using
+2adac84 2026-09-07 merge: centre the HUD's two instruments, and fix the sentence that exposed
+008c3aa 2026-09-07 merge: tighten the HUD's two instruments
+8cba9f6 2026-09-07 merge: put the banking icon on the rack centre line
+cc2aede 2026-09-07 merge: make the module rack work on a phone
+2674f4f 2026-09-07 merge: put the cargo bays in the HUD
+362685b 2026-09-07 merge: let the HUD cell wrap instead of squeezing
+7ea4eb7 2026-09-07 merge: fold Server Bots into the Bot Manager and make it a global window
+c60ec0f 2026-09-07 merge: group every bot panel behind the Bot Manager
+0423db9 2026-09-07 merge: drop the Bot Manager's standing notes
+3f64f40 2026-09-08 merge: the Qty box is a number, and the move reads it as one
+da0559f 2026-09-08 merge: the pirate watch hardens up first and stands down after
+85c90b7 2026-09-08 merge: a bot that cannot leave fights, and never comes to rest in space
+7fe70b2 2026-09-08 merge: the runner's own faults head home too, instead of stopping in place
+2f6aecb 2026-09-08 merge: a bot that has gone blind is sent to a station, not left floating
+4be2b3d 2026-09-08 merge: a blind bot uses the dock station it was CONFIGURED with
+31c880e 2026-09-08 merge: show the contracts offered to you, and let a pilot take one on
+96a4f86 2026-09-08 merge: shoot the tackle first, then the jammers, then everything else
+ced4083 2026-09-08 merge: a fleet can call one primary, and every pilot in it can hear it
+c890afe 2026-09-08 merge: a combat block can call the fleet's primary, or shoot what it calls
+db91821 2026-09-08 merge: the watch that actually fights can call the fleet's primary too
+322504a 2026-09-08 merge: a flight recorder every action writes to without being asked
+4ca0f18 2026-09-08 fix(bots): a run ends once in the log, however often it is stopped
+579557e 2026-09-08 merge: take everything out of a wreck or a can, by hand
+2e7c0bd 2026-09-08 merge: one assembled module is one, not minus one
+d88bd5a 2026-09-08 merge: stop a server bot from the screen you land on
+834fe69 2026-09-08 merge: a step added to a reopened bot cannot steal an id
+d2264b7 2026-09-09 merge: join a fleet by name from the fleet finder
+dd36ce6 2026-09-09 merge: applying to a fleet is not joining it -- accept the invite
+1c74bbf 2026-09-09 merge: a watch that docks at home, repairs, and carries on
+8517ffa 2026-09-09 merge: a module stuck showing as running, and the square that lit with it
+d58912a 2026-09-09 merge: the mining surveyor, and mining the ore that is worth the most
+cae296e 2026-09-09 merge: what a pilot is really training, steady account order, and belts you name
+a6657d4 2026-09-09 merge: a typed belt name survives a flip to the nearest belt and back
+c860e8a 2026-09-09 merge: pin that a belt saved by the old editor still opens
+27a1b4e 2026-09-10 merge: a ship that jumps a gate can move, and a pod stops flying the script
+b431ac5 2026-09-10 merge: a stargate stops offering to be mined
+442bfc3 2026-09-10 merge: retry the arrival re-park, and say so when it gives up
+18deb18 2026-09-10 merge: a bot can tell an ore site from a pirate den
+47a7edc 2026-09-10 merge: say which dead end the anomaly blocks hit, and show the site's group
+308c392 2026-09-10 merge: an anomaly tour is a lap, and an empty scanner is re-read
+52aa3b9 2026-09-10 merge: the bot-start tests follow the platform-wide script library
+8302828 2026-09-10 docs(fleet): plan a fleet companion, and find most of it already on the wire
+6c60119 2026-09-10 docs(fleet): the companion is a decide-loop, not a bot script
+7488415 2026-09-10 docs(fleet): read the broadcast semantics out of the client, and spec the rungs
+26c9ad1 2026-09-11 merge(fleet): the fleet companion, from the first rung to a squad that flies
+c98a923 2026-09-12 merge(chat): Local and Corp over XMPP, and the orders a fleet types into them
+99ce9bc 2026-09-13 merge(companion): the fleet companion leaves the bots and gets a window of its own
+d05e39c 2026-09-13 merge(companion): one window strip, so putting a window away has one answer
+2fda802 2026-09-13 merge(companion): the window stops explaining itself
+2c74039 2026-09-13 merge(chrome): a floating window scrolls in the app's own colours
+b812b2d 2026-09-13 merge(chrome): every window says its name once, in one strip
+124da4d 2026-09-13 merge(chrome): the title bar meets the frame, and the bevel is drawn
+eb6567c 2026-09-13 merge(chrome): a window is a plain rectangle
+a378dc7 2026-09-13 merge(chrome): the strip carries what changes, on the last four windows
+a61b23c 2026-09-13 merge(chrome): a block inside a window is not a card
+19d502e 2026-09-13 merge(copy): the second pass over prose a panel did not need to say
+001bc5a 2026-09-13 merge(companion): the roster is five short columns, and still reports a tag it cannot write
+08d16d5 2026-09-13 merge(companion): the window is a roster you build, and it joins the fleet you name
+1461869 2026-09-13 merge(companion): a wreck one pilot emptied is one no other pilot flies to
+6032148 2026-09-13 merge(companion): a pilot that may not letter a target can still call it out
+0083db9 2026-09-13 merge(companion): a pilot that is going somewhere burns to get there
+78aef7c 2026-09-13 merge(deploy): a tag here is a release there
+eac217c 2026-09-13 merge(companion): the latch that waits on an approach reads the server's own words
+e50917f 2026-09-13 merge(companion): a pilot that is already holding the order stops sleeping on it
+2084547 2026-09-13 merge(companion): a pilot in a station judges itself by what a station can see
+18a5631 2026-09-13 merge(companion): a pilot flees on the layer it is tanked in, and a docked one can leave at all
+37681cf 2026-09-13 merge(companion): a brick says where its tank is, even though it cycles nothing
+9992387 2026-09-14 merge(companion): Edit opens the bot it was pressed on, and one window owns the library
+b65d5c8 2026-09-14 merge(companion): a bot deleted in the Manager stops being on offer in the Builder
+381ad80 2026-09-14 merge(companion): the Bot Builder opens beside the window that opened it, not under it
+ed92c13 2026-09-14 merge(companion): a watch that can do nothing stops silencing the ones under it
+657c058 2026-09-14 merge(companion): a bot deleted while it is open stops being the bot the Builder claims to edit
+6736360 2026-09-14 merge(companion): the Hardeners-on block stops reaching for a damage control that has nothing to switch
+a1b5f67 2026-09-14 merge(companion): a ship with no hardener is skipped past, not stopped
+9990b26 2026-09-14 merge(companion): a lock costs two seconds again, not six
+ab6ea68 2026-09-14 merge(companion): what a drone boat needs that the ratting block cannot say
+5467dfb 2026-09-14 merge(companion): the four things a drone boat needs before it can be flown
+39f99e4 2026-09-14 merge(companion): a script bot can now see what a drone boat has to know
+84f73d6 2026-09-14 merge(companion): a site that keeps winning has to be given up on, and the trip cap cannot see it
+7e2e5a7 2026-09-14 merge(companion): a den that keeps winning is given up on, and a den that keeps dying never is
+8131cbd 2026-09-14 merge(companion): the decision core of a drone boat, with nothing wired to it yet
+510c2a6 2026-09-14 merge(companion): Fight with drones, a block a drone boat can actually be flown by
+c72fb2f 2026-09-14 merge(companion): one copy of each rule the drone boat and the gun ladders share
+eb35c34 2026-09-14 merge(companion): the four things that killed a Tristan in a 0.5 den
+d028d4a 2026-09-14 merge(companion): the ship holds a range now, and the leash read was gated out by its own guard
+c9e69b5 2026-09-14 merge(companion): the close-in order the server took and threw away
+92a0a15 2026-09-14 merge(companion): a warp refused once stopped the ship where it stood
+d286c71 2026-09-14 merge(companion): the close-in stall does not free a landing, and said it did
+3fe96ff 2026-09-14 merge(tooling): the restart guard read its verb as a substring, not a position
+69418ba 2026-09-14 merge(companion): a site the ship is already sitting in is arrived at, not refused
+b0c75b0 2026-09-15 feat(companion): a hauler can fill the bays it was already able to empty
+3ca1f84 2026-09-15 fix(companion): a command centre is not a planetary commodity, and the hold says so
+15085da 2026-09-20 merge(companion): a bot told to mine anomalies never tours the belts instead
+cd199a5 2026-09-21 merge(companion): a planet says what it needs before you open it
+190d652 2026-09-22 merge(companion): a bot told to mine ore sites finishes the lap
+70fb611 2026-09-22 merge(companion): an ore-site miner stops paying for the belt memory it never reads
+1ef83c1 2026-09-22 merge(companion): a bot can send a colony's goods up to orbit
+d9d080e 2026-09-22 merge(companion): a miner that fills its hold slowly is not mistaken for a stuck one
+baa8180 2026-09-22 merge(companion): planetary industry - the recipe tree, a factory's cost, and the design
+65dead8 2026-09-22 docs(companion): reading a colony needs ownership, not a session - proved live
+27d71ed 2026-09-23 merge(companion): a site that refuses the warp is skipped, not the end of the run
+2dd519c 2026-09-23 merge(companion): planetary industry - read every pilot's colonies with none selected, and a board for them
+0b2be1f 2026-09-23 merge(companion): an account added with no pilots stays on the hangar
+6de1d31 2026-09-23 merge(companion): a bot run's teardown outlives its deadline, and its log keeps the end
+4c0cc88 2026-09-23 merge(companion): a squad start speaks as each pilot it starts
+d288fac 2026-09-23 merge(companion): the PI list's remove button says Remove
+50b4586 2026-09-24 merge(companion): a factory is starved only when nothing is feeding it
+c36ccee 2026-09-24 merge(companion): restart a pilot's ended extractors from the PI board
+ef2d7ef 2026-09-24 merge(companion): open Bot Manager, PI and Companions from the brand strip
+948abe0 2026-09-24 merge(companion): drop the hangar header's in-client counter
+312f8e2 2026-09-24 merge(companion): restart an extractor with its own drill area
+809fe2e 2026-09-24 merge(companion): give the Planetary Industry window its own menu
+c54a075 2026-09-24 merge(companion): redraw the PI colonies view as a list by pilot
+ad88e70 2026-09-24 merge(companion): add PI stock and the planner
+7042e63 2026-09-24 merge(companion): drop the PI planner's deadline
+e28b070 2026-09-24 merge(companion): draw the PI plan as a tree
+b62cc1f 2026-09-24 merge(companion): list what the PI plan is missing, by tier
+64d90fe 2026-09-24 merge(companion): judge PI colonies by the game's own attention rules
+038b569 2026-09-24 merge(companion): save PI plans in the companion's own database
+7e42fb5 2026-09-24 merge(companion): lay the PI planner out as plans beside the open plan
+1d89b12 2026-09-24 merge(companion): group PI pilots by account, restart on the colonies
+48abf4c 2026-09-25 merge(companion): read PI corp hangars through server bots
+7408060 2026-09-25 merge(companion): allow server bot runs up to 72 hours
+623bcd1 2026-09-27 merge(companion): dock server bots before the run deadline logs them off
