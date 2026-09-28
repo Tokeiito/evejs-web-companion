@@ -172,16 +172,6 @@ function everyArgKind(): BotScript {
         args: { who: { kind: "character", charID: 90000001, name: "Alt Pilot" } },
       },
       {
-        id: "a8",
-        kind: "macro",
-        macro: "hunt-player",
-        args: {
-          only: { kind: "character", charID: 90000002, name: "Prey Pilot" },
-          maxJumps: { kind: "count", value: 5 },
-          range: { kind: "count", value: 14 },
-        },
-      },
-      {
         id: "a9",
         kind: "macro",
         macro: "send-chat",
@@ -477,6 +467,17 @@ test("encode then decode round-trips EVERY arg kind losslessly", () => {
   const { doc, warnings } = mustAccept(decodeScriptText(text));
   assert.deepStrictEqual(doc, everyArgKind());
   assert.deepStrictEqual([...warnings], []);
+});
+
+test("retired player-versus-player blocks are refused rather than stripped", () => {
+  for (const macro of ["attack-player", "hunt-player"]) {
+    const legacy = clone();
+    legacy.program = [{ id: `legacy-${macro}`, kind: "macro", macro, args: {} }];
+    assert.equal(
+      mustRefuse(decodeScriptValue(legacy)),
+      `This script uses "${macro}", which is no longer available in the web companion.`,
+    );
+  }
 });
 
 test("a valid branch decodes; nested / all-empty / off-site branches are refused", () => {

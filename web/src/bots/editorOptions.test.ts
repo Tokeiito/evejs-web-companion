@@ -252,14 +252,6 @@ test("argBounds narrows a count argument to what that argument actually means", 
   assert.deepEqual(argBounds("wait", seconds), { min: 1, max: 500 });
 });
 
-test("a per-macro override wins: hunt-player's leash is shorter than a courier's trip", () => {
-  const hunt = MACRO_ARG_DESCRIPTORS["hunt-player"].all.find((a) => a.key === "maxJumps");
-  const find = MACRO_ARG_DESCRIPTORS["find-distribution-agent"].all.find((a) => a.key === "maxJumps");
-  assert.ok(hunt && find, "maxJumps is missing from one of the two macros");
-  assert.deepEqual(argBounds("hunt-player", hunt), { min: 1, max: 30 });
-  assert.deepEqual(argBounds("find-distribution-agent", find), { min: 1, max: 50 });
-});
-
 test("argBounds falls back to the format's own bounds, and is null for a non-number", () => {
   const price = MACRO_ARG_DESCRIPTORS["buy-item"].all.find((a) => a.key === "price");
   assert.ok(price);

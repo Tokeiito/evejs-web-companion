@@ -185,10 +185,6 @@ export function macroName(macro: MacroID): string {
       return "Join a fleet";
     case "join-advertised-fleet":
       return "Join a fleet from the fleet finder";
-    case "attack-player":
-      return "Attack players here";
-    case "hunt-player":
-      return "Hunt a player down";
     case "send-chat":
       return "Say something in chat";
     case "set-destination":
@@ -801,29 +797,6 @@ function macroPhrase(step: MacroStep): string {
       return name.length > 0
         ? `Join the fleet "${name}" if it is in the fleet finder`
         : "Join a fleet you name if it is in the fleet finder";
-    }
-    case "attack-player": {
-      const only = step.args["only"];
-      const name =
-        only !== undefined && only.kind === "character" && only.name !== null && only.name.length > 0
-          ? only.name
-          : null;
-      return name !== null
-        ? `Attack ${name} if they appear here${targetPhrase(step)}${squadPhrase(step)}`
-        : `Attack any player who appears here${targetPhrase(step)}${squadPhrase(step)}`;
-    }
-    case "hunt-player": {
-      const only = step.args["only"];
-      const prey =
-        only !== undefined && only.kind === "character" && only.name !== null && only.name.length > 0
-          ? only.name
-          : "a player";
-      const jumps = step.args["maxJumps"];
-      const reach =
-        jumps !== undefined && jumps.kind === "count"
-          ? ` up to ${jumps.value} ${jumps.value === 1 ? "jump" : "jumps"} from home`
-          : "";
-      return `Roam and hunt ${prey}${reach}${targetPhrase(step)}${squadPhrase(step)}`;
     }
     case "set-destination": {
       const dest = step.args["destination"];
