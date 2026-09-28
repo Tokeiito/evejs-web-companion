@@ -225,10 +225,6 @@ export const CHAT_CHANNEL_ARGS: readonly ChatChannelArg[] = Object.freeze<ChatCh
   "corp",
 ]);
 
-/** The hunt block's editable defaults — shared by the editor and the runtime. */
-export const DEFAULT_HUNT_MAX_JUMPS = 3;
-export const DEFAULT_HUNT_RANGE_AU = 14;
-
 /**
  * A stand-off distance a player types, IN KILOMETRES.
  *
@@ -881,9 +877,6 @@ export type MacroID =
   | "invite-to-fleet"
   | "join-fleet"
   | "join-advertised-fleet"
-  // ── The PvP set. Camp a grid / roam and hunt another player's ship.
-  | "attack-player"
-  | "hunt-player"
   // ── Social. Say something in a chat channel (pairs with a branch for
   //    "announce when a check holds").
   | "send-chat"
@@ -950,8 +943,6 @@ export const MACRO_IDS: readonly MacroID[] = Object.freeze<MacroID[]>([
   "invite-to-fleet",
   "join-fleet",
   "join-advertised-fleet",
-  "attack-player",
-  "hunt-player",
   "send-chat",
   "set-destination",
   "dock-at-nearest",

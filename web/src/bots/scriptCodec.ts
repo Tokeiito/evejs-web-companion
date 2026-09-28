@@ -108,6 +108,10 @@ export type DecodeResult =
 // simply cannot be imported until it gets one.
 
 const KNOWN_MACROS = new Set<string>(Object.keys(MACRO_SPECS));
+// The player-versus-player blocks were valid v1 script constructs until they
+// were removed. Keep their names only to refuse old saved/imported documents
+// plainly; never add them back to the authoring schema.
+const RETIRED_WEB_COMPANION_MACROS = new Set(["attack-player", "hunt-player"]);
 // Derived from the format's own list, so a new response can never be forgotten here.
 const KNOWN_RESPONSES = new Set<InterruptResponse>(INTERRUPT_RESPONSES);
 const WORLD_ENTITIES = new Set<WorldEntity>(["station", "belt", "agent", "system"]);
@@ -139,6 +143,10 @@ const SAY = {
     safe.length > 0
       ? `This script uses an action this app does not have: "${safe}".`
       : "This script uses an action this app does not have.",
+  retiredWebCompanionFeature: (safe: string): string =>
+    safe.length > 0
+      ? `This script uses "${safe}", which is no longer available in the web companion.`
+      : "This script uses a feature that is no longer available in the web companion.",
   unknownCondition: "This script uses a check this app does not have.",
   conditionOffSite:
     "This script checks for something out in space at a point where the ship may not be there yet.",
@@ -472,6 +480,9 @@ function readBranchSide(raw: unknown, ctx: Ctx): readonly MacroStep[] {
 function readMacroStep(obj: Readonly<Record<string, unknown>>, ctx: Ctx): MacroStep {
   const id = readRawId(obj["id"]);
   const macro = obj["macro"];
+  if (typeof macro === "string" && RETIRED_WEB_COMPANION_MACROS.has(macro)) {
+    refuse(SAY.retiredWebCompanionFeature(safeToken(macro)));
+  }
   if (typeof macro !== "string" || !KNOWN_MACROS.has(macro)) {
     refuse(SAY.unknownMacro(safeToken(macro)));
   }

@@ -136,7 +136,6 @@ import {
   decodeChatChannelName,
   decodeMessageEntry,
 } from "../bridge/chat.ts";
-import { decodeDirectionalScanHitIDs } from "../bridge/boundScanWrites.ts";
 import { itemHasActivationCycle } from "../bridge/boundDogma.ts";
 import { nameKey, type NameRef } from "../store/names.ts";
 import {
@@ -7845,8 +7844,6 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     readonly hull: readonly number[];
     readonly hardeners: readonly number[];
     readonly weapons: readonly number[];
-    readonly tackle: readonly number[];
-    readonly webs: readonly number[];
     readonly propulsion: readonly CompanionPropulsionModule[];
   } {
     const fit = store.fitting.get();
@@ -7855,8 +7852,6 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const hull: number[] = [];
     const hardeners: number[] = [];
     const weapons: number[] = [];
-    const tackle: number[] = [];
-    const webs: number[] = [];
     const propulsion: CompanionPropulsionModule[] = [];
     if (fit.slotsError === null) {
       const resolved = store.names.get().resolved;
@@ -7930,22 +7925,6 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           // Amplifier" is passive throughout and was being swept in by the
           // `/resistance/` arm for the same reason.
           hardeners.push(slot.module.itemID);
-        } else if (/^warp scrambler$/i.test(group)) {
-          // ⚠ ANCHORED ON PURPOSE, and verified against the SDE
-          // (`_local/sde/.../groups.jsonl`): group 52 is named "Warp Scrambler"
-          // and holds EVERY Warp Disruptor **and** Warp Scrambler (63 types), so
-          // one group covers both point and scram. The anchors matter — a loose
-          // /warp/i would also catch "Warp Core Stabilizer" (a low-slot module
-          // that stops nobody) and "Structure Warp Scrambler", and the
-          // Remote-Shield-Booster-read-as-a-local-rep bug two branches up is
-          // exactly what an unanchored group regex costs.
-          tackle.push(slot.module.itemID);
-        } else if (/^stasis web$/i.test(group)) {
-          // Group 65 "Stasis Web" — the webifiers (22 types). Deliberately NOT
-          // group 899 "Warp Disrupt Field Generator": that is an AREA bubble, not
-          // a module you activate on one target, so it does not belong in a
-          // lock-then-activate ladder.
-          webs.push(slot.module.itemID);
         } else if (/^propulsion module$/i.test(group)) {
           // ⚠ ONE GROUP, TWO MODULES THAT MUST BE TOLD APART, AND THE GROUP NAME
           // CANNOT DO IT. SDE group 46 "Propulsion Module" holds every
@@ -7970,7 +7949,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           // bare Deactivate answers success while the burner keeps cycling
           // (src/server.js's `/api/bridge/modules/deactivate`). The BFF resolves
           // that name from the typeID, so the id is what a caller must carry —
-          // which is why this list holds objects and the seven above hold ids.
+          // which is why this list holds objects and the others above hold ids.
           //
           // ⚠ AN UNRESOLVED EFFECT IS `null`, AND THAT IS NOT AN ERROR. It means
           // "the group said prop mod and the effect read did not arrive": the
@@ -7997,7 +7976,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         }
       }
     }
-    return { shield, armor, hull, hardeners, weapons, tackle, webs, propulsion };
+    return { shield, armor, hull, hardeners, weapons, propulsion };
   }
 
   /**
@@ -8102,8 +8081,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    * ⚠ THE FLAG IS A BOOLEAN, NOT A MACRO NAME, because the fleet companion has
    * no macros at all — it runs a ladder, not a script — and would otherwise
    * have to invent a fake step name to be told about the hulls it exists to
-   * rank. Each caller answers the question in its own terms: the script runner
-   * asks `PVP_MACROS`, the companion asks whether its operator wants tagging.
+   * rank. The script runner never asks (no script block targets a player); the
+   * companion asks whether its operator wants tagging.
    *
    * Cheap after the first look: `requestNames` skips ids already cached or in
    * flight, so this costs one round trip per NEW ship type, not one per tick,
@@ -8552,9 +8531,6 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // fleet-read block below), not because it reads `fleetMemberCharacterIDs`.
     "fleet-tag-target",
   ]);
-  // The blocks for which another PLAYER's hull is a target rather than scenery —
-  // the only ones that resolve player ship groups for the priority ladder.
-  const PVP_MACROS = new Set(["attack-player", "hunt-player"]);
   const SCANNER_MACROS = new Set([
     "launch-scan-probes",
     "analyze-signatures",
@@ -8567,10 +8543,6 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     readonly hull: readonly number[];
     readonly hardeners: readonly number[];
     readonly weapons: readonly number[];
-    /** Warp disruptors + scramblers (SDE group 52) — the PvP blocks' point. */
-    readonly tackle: readonly number[];
-    /** Stasis webifiers (SDE group 65). */
-    readonly webs: readonly number[];
     /**
      * Afterburners and microwarpdrives (SDE group 46), each with the `kind` the
      * SDE's own dogma effects supply — `resolveDefenseModuleIDs` has always
@@ -9126,8 +9098,6 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     let beltMemoryCache: { system: string; at: number; rows: readonly DryBelt[] } | null = null;
     // The hunt's jump-distance table, computed once per home system (a full
     // breadth-first sweep over the gate graph is too much to redo every tick).
-    let huntDistanceAnchor: number | null = null;
-    let huntDistances: Map<number, number> | null = null;
     const capabilityCache = createCapabilityCache(
       {
         value: initialCapabilities,
@@ -9240,7 +9210,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         const targetGroupNames = await classifyTargetGroups(
           snapshot,
           origin,
-          macro !== null && PVP_MACROS.has(macro),
+          // No script block targets another player's hull, so a script never
+          // asks for player hulls to be ranked; only the fleet companion does.
+          false,
           ship?.itemID ?? null,
         );
         // The dogma half of the same question, under the same gate: what each
@@ -9520,14 +9492,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             cargoFraction = null;
           }
         }
-        // ── Hunt reads (hunt-player only) — the local roster, a directional
-        // sweep, and the roam map. Each best-effort: a failure lands as null
-        // (unreadable, never an empty sky or an empty system).
+        // The local roster, read only for a players-in-system watch. Best-effort:
+        // a failure lands as null (unreadable, never an empty system).
         let localPlayers: ScriptObservation["localPlayers"] = null;
-        let dscanHitIDs: ScriptObservation["dscanHitIDs"] = null;
-        let huntRoam: ScriptObservation["huntRoam"] = null;
-        // The roster is read for the hunt block AND for a players-in-system watch.
-        if (macro === "hunt-player" || rosterWatched) {
+        if (rosterWatched) {
           const selfID = store.station.get().online?.characterID ?? null;
           try {
             const roster = decodeChatChannel(await api.readChat("local", callOptions)).roster;
@@ -9536,45 +9504,6 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
               .map((m) => ({ characterID: m.characterID, name: m.name }));
           } catch {
             localPlayers = null;
-          }
-        }
-        if (macro === "hunt-player") {
-          // The sweep is a bound scan write (confirm-gated on the BFF); only
-          // meaningful with the ship in space. The server clamps the range to
-          // the ship's own scanner reach.
-          if (status.inSpace === true) {
-            try {
-              const rangeAU =
-                typeof hint.board["huntRangeAU"] === "number" ? (hint.board["huntRangeAU"] as number) : 14;
-              const raw = await api.coneScan(api.DSCAN_FULL_SWEEP_RADIANS, rangeAU * api.AU_METERS, callOptions);
-              dscanHitIDs = decodeDirectionalScanHitIDs(raw);
-            } catch {
-              dscanHitIDs = null;
-            }
-          }
-          try {
-            const current = status.solarSystemID;
-            if (current !== null) {
-              const anchor =
-                typeof hint.board["huntAnchorSystemID"] === "number"
-                  ? (hint.board["huntAnchorSystemID"] as number)
-                  : current;
-              const graph = await loadRouteGraph();
-              if (huntDistances === null || huntDistanceAnchor !== anchor) {
-                huntDistances = distancesFrom(graph, anchor);
-                huntDistanceAnchor = anchor;
-              }
-              const table = huntDistances;
-              huntRoam = {
-                jumpsFromAnchor: table.get(current) ?? null,
-                neighbors: graph.neighbors(current).map((edge) => ({
-                  systemID: edge.toSystemID,
-                  jumpsFromAnchor: table.get(edge.toSystemID) ?? null,
-                })),
-              };
-            }
-          } catch {
-            huntRoam = null;
           }
         }
         // The travel reading is a synchronous look at the shared autopilot — no
@@ -9893,8 +9822,6 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           anomalies,
           scannerOperations,
           localPlayers,
-          dscanHitIDs,
-          huntRoam,
           otherPilotsInSystem: localPlayers === null ? null : localPlayers.length,
           systemName,
           dryBelts,
@@ -9981,8 +9908,6 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           // right answer for a count nobody read; what changed is that a fit
           // that DOES report it now reaches the block.
           maxLockedTargets: capabilities.maxLockedTargets,
-          tackleModuleIDs: capabilities.defense.tackle,
-          webModuleIDs: capabilities.defense.webs,
           // The shared policy's input (nav/propulsion.ts) -- the SAME list the
           // fleet companion's ladder runs on, resolved once by
           // `resolveDefenseModuleIDs` rather than a second time here.

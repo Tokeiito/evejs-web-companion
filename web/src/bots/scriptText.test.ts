@@ -293,7 +293,7 @@ test("a combat step with a target priority names it, in order and in play words"
   const hunt: MacroStep = {
     id: "s2",
     kind: "macro",
-    macro: "hunt-player",
+    macro: "fight-the-rats",
     args: { targets: { kind: "targetList", classes: ["logi"] } },
   };
   assert.match(stepSentence(hunt), /logistics first/);
@@ -305,7 +305,7 @@ test("a combat step at the default ladder says nothing about order", () => {
   const emptied: MacroStep = {
     id: "s2",
     kind: "macro",
-    macro: "attack-player",
+    macro: "fight-the-rats",
     args: { targets: { kind: "targetList", classes: [] } },
   };
   assert.doesNotMatch(stepSentence(emptied), /first/);
@@ -323,7 +323,7 @@ test("a combat step flying with the fleet says which part it plays", () => {
   const following: MacroStep = {
     id: "s2",
     kind: "macro",
-    macro: "attack-player",
+    macro: "fight-the-rats",
     args: { squad: { kind: "squadRole", role: "follow" } },
   };
   assert.match(stepSentence(following), /on the fleet's primary/);
@@ -331,7 +331,7 @@ test("a combat step flying with the fleet says which part it plays", () => {
   const alone: MacroStep = {
     id: "s3",
     kind: "macro",
-    macro: "hunt-player",
+    macro: "fight-the-rats",
     args: { squad: { kind: "squadRole", role: "off" } },
   };
   assert.doesNotMatch(stepSentence(alone), /fleet/, "flying alone is the default and says nothing");

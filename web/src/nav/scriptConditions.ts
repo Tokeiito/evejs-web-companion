@@ -357,14 +357,6 @@ export interface ScriptObservation {
    * on an unlockable target after `MAX_LOCK_WAIT_TICKS` and moves on.
    */
   readonly maxTargetRangeM?: number | null;
-  /**
-   * Fitted TACKLE, resolved once at start — the PvP blocks switch these on before
-   * the guns so the target cannot simply warp off. `tackleModuleIDs` is the point
-   * (SDE group 52 holds both Warp Disruptors and Warp Scramblers);
-   * `webModuleIDs` is the webifiers (group 65), which slow the target down.
-   */
-  readonly tackleModuleIDs?: readonly number[];
-  readonly webModuleIDs?: readonly number[];
   /** Who "you" are — the loot block only ever touches YOUR wrecks (no can flipping). */
   readonly myCharacterID?: number | null;
   readonly myCorporationID?: number | null;
@@ -446,31 +438,12 @@ export interface ScriptObservation {
   readonly activeShipID?: number | null;
   /** Item ids the repair shop quotes as DAMAGED (read when a repair step is active). */
   readonly damagedItemIDs?: readonly number[] | null;
-  // ── Hunt reads (the hunt-player block). Read ONLY when a hunt step is active,
-  //    so no other bot pays for a chat-roster read or a directional scan.
   /**
    * The OTHER pilots in this solar system, from the local chat roster (self
-   * already removed). Empty = genuinely alone; null = the roster was unreadable.
+   * already removed), read only for a players-in-system watch. Empty =
+   * genuinely alone; null = the roster was unreadable.
    */
   readonly localPlayers?: readonly { readonly characterID: number; readonly name: string | null }[] | null;
-  /**
-   * This tick's directional-scan hits (entity ids within the block's range).
-   * The scan sees everything — celestials included — so the block subtracts what
-   * is already on grid before chasing a hit. null = the scan was unreadable.
-   */
-  readonly dscanHitIDs?: readonly number[] | null;
-  /**
-   * Where the roam may go next: the current system's distance from the hunt's
-   * home system, and each neighbouring system with its own distance. null when
-   * the map could not be read this tick.
-   */
-  readonly huntRoam?: {
-    readonly jumpsFromAnchor: number | null;
-    readonly neighbors: readonly {
-      readonly systemID: number;
-      readonly jumpsFromAnchor: number | null;
-    }[];
-  } | null;
   /**
    * The character's PI colonies, projected to what the restart block needs:
    * each colony's extractor pins with their last program + expiry. Read only

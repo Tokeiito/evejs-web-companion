@@ -369,12 +369,10 @@ const ARG_KEY_BOUNDS: Readonly<Record<string, NumericBounds>> = {
 
 /**
  * Per-macro overrides of the above, for a key whose sensible range genuinely
- * differs by macro. `hunt-player`'s `maxJumps` is a LEASH on a bot that chases
- * a player — it is deliberately shorter than the distance a courier bot may
- * travel to reach an agent, even though both are "maxJumps".
+ * differs by macro. None does today; an entry here wins over the shared
+ * bounds above for that one macro's key.
  */
 const MACRO_ARG_BOUNDS: Readonly<Partial<Record<MacroID, Readonly<Record<string, NumericBounds>>>>> = {
-  "hunt-player": { maxJumps: { min: 1, max: 30 } },
 };
 
 /**

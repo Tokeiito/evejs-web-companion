@@ -421,18 +421,6 @@ const ENTRIES: Readonly<Record<MacroID, MacroCatalogEntry>> = {
     "Joins the fleet with the name you type, if somebody has it listed in the fleet finder. Does nothing at all when you are already in a fleet, or when no fleet by that name is listed - it simply finishes and the next block runs - so it is safe at the top of a loop that should carry on alone while nobody has formed up yet. The server asks before it goes through.",
     null,
   ),
-  "attack-player": entry(
-    "attack-player",
-    "combat",
-    "Camps the spot you parked it at and attacks any player ship that shows up — or one pilot alone, if you pick one. Locks them, holds them still with a warp disruptor or scrambler if you have one fitted, webs them, then sets the drones on them and runs the guns. Keeps watching for as long as it is left on; a watch or your own hand stops it.",
-    "Being in space, with guns fitted or combat drones in the bay",
-  ),
-  "hunt-player": entry(
-    "hunt-player",
-    "combat",
-    "Roams from system to system looking for a player, staying within your jump limit of where it started. Watches local chat for company, sweeps the directional scanner, warps down the hits, and attacks the ship it finds — holding it in place first if you have a warp disruptor or scrambler fitted.",
-    "Being in space, with guns fitted or combat drones in the bay",
-  ),
   "send-chat": entry(
     "send-chat",
     "social",
