@@ -121,17 +121,17 @@ test("an empty group says where to go and fill it, rather than showing dead cont
 
 test("a squad row has ONE start, and a Server box that decides where it flies", () => {
   // ⚠ THE TWO STARTS BECAME ONE. They differed only in what happens when the
-  // tab closes, so that is a setting (ticked by default: the server reaches
-  // every free pilot, signed in here or not) rather than a second button. What
-  // an unticked box can reach is the status line's job -- see
-  // bots/pilotGroups.test.ts, "with Server unticked...".
+  // tab closes, so that is a setting rather than a second button. UNTICKED by
+  // default: a server run keeps flying unwatched, so it is opted into. With no
+  // tab open here, the status says why Start reaches nobody.
   const body = renderRow({ group: squadGroup() });
   const text = visibleText(body);
-  assert.match(body, /type="checkbox"[^>]*checked/);
+  assert.match(body, /type="checkbox"/);
+  assert.doesNotMatch(body, /type="checkbox"[^>]*checked/);
   assert.match(text, /Server/);
-  assert.match(text, /Start on the server/);
+  assert.match(text, /Start in this tab/);
   assert.doesNotMatch(text, /Run here|Run on server/);
-  assert.match(text, /Idle/);
+  assert.match(text, /No tab open here/);
 });
 
 test("a member the server is already flying is counted as flying, not as free", () => {
@@ -170,7 +170,7 @@ test("a member the server is already flying is counted as flying, not as free", 
   // ⚠ AND THE ONE BUTTON IS NOW STOP. Something this row may stop is flying,
   // so Start gives way to it; pressing Start again would only reach the free.
   assert.match(text, /Stop Mining Op/);
-  assert.doesNotMatch(text, /Start on the server/);
+  assert.doesNotMatch(text, /Start (in this tab|on the server)/);
   assert.match(text, /1 flying/);
 });
 
