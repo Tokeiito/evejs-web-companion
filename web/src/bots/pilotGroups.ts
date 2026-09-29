@@ -236,25 +236,81 @@ export function groupStatusWords(states: readonly GroupMemberState[]): string {
   return parts.join(" - ");
 }
 
+// --- stopping a group ---------------------------------------------------------
+
+export interface GroupStopPlan {
+  /** Script bots the server is flying for members, by the id to stop them with. */
+  readonly onServer: readonly { readonly characterID: number; readonly botID: string }[];
+  /** Members whose tab here is flying a bot of its own. */
+  readonly here: readonly number[];
+  /**
+   * Members flying a fleet companion on the server.
+   *
+   * ⚠ NEVER STOPPED FROM A GROUP ROW. Stopping a companion is the Fleet
+   * companions window's act -- the same rule the pilot row keeps by offering no
+   * Stop on a companion's row -- so these are only counted, to say where to go.
+   */
+  readonly companions: readonly number[];
+}
+
 /**
- * What "Run here" can reach, said out loud when it is less than the whole group.
+ * Who the group's Stop would stop.
  *
- * ⚠ THIS IS THE HALF OF THE TWO-BUTTON CHOICE A PLAYER CANNOT SEE. "Run on
- * server" starts every free member; "Run here" can only start the ones this tab
- * already holds, and with none held it does nothing at all. A disabled button
- * with no sentence beside it reads as broken.
+ * ⚠ ONLY WHAT IS FLYING NOW, AND ONLY THIS GROUP'S MEMBERS. A group Stop is the
+ * pilot row's Stop pressed once per member; it reaches no pilot outside the
+ * group, and a member that is idle is simply not in the plan.
  */
-export function runHereReachWords(plan: GroupLaunchPlan): string | null {
-  if (plan.onServer.length === 0) {
-    return null; // nothing to start either way; the status line already says so
+export function planGroupStop(
+  states: readonly GroupMemberState[],
+  serverBots: readonly ServerBot[],
+): GroupStopPlan {
+  const onServer: { characterID: number; botID: string }[] = [];
+  const companions: number[] = [];
+  for (const state of states) {
+    if (state.where !== "running-server") continue;
+    const bot = serverBotFor(serverBots, state.characterID);
+    if (bot === null) continue;
+    if (bot.kind === "companion") {
+      companions.push(state.characterID);
+    } else {
+      onServer.push({ characterID: state.characterID, botID: bot.botID });
+    }
   }
-  if (plan.here.length === 0) {
-    return "No pilot in this group has a tab open here.";
+  return {
+    onServer,
+    here: states.filter((s) => s.where === "running-here").map((s) => s.characterID),
+    companions,
+  };
+}
+
+/** Whether the row's one button is Stop rather than Start. */
+export function groupCanStop(plan: GroupStopPlan): boolean {
+  return plan.onServer.length + plan.here.length > 0;
+}
+
+/**
+ * The row's status when nothing is starting: who is flying, or why Start
+ * reaches fewer pilots than the group has.
+ *
+ * ⚠ THE "NO TAB OPEN HERE" CASE IS THE ONE THAT MATTERS. With Server unticked,
+ * Start can only reach pilots signed in to this tab; with none, the button is
+ * disabled, and a disabled button with no sentence beside it reads as broken.
+ */
+export function groupRunStatusWords(launch: GroupLaunchPlan, onServer: boolean): string {
+  const flying = launch.busy.length;
+  if (flying > 0) {
+    return `${flying} flying`;
   }
-  if (plan.here.length === plan.onServer.length) {
-    return null; // both buttons reach the same pilots; nothing to warn about
+  if (launch.onServer.length === 0) {
+    return "Nobody free";
   }
-  return `Only ${pilotWords(plan.here.length)} of the ${plan.onServer.length} free have a tab open here.`;
+  if (!onServer) {
+    if (launch.here.length === 0) return "No tab open here";
+    if (launch.here.length < launch.onServer.length) {
+      return `${launch.here.length} of ${launch.onServer.length} here`;
+    }
+  }
+  return "Idle";
 }
 
 /**

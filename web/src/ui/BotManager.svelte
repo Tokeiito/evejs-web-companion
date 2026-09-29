@@ -65,6 +65,7 @@
   import BotManagerGroupRow from "./BotManagerGroupRow.svelte";
   import BotManagerPilotRow from "./BotManagerPilotRow.svelte";
   import ActionButton from "./ActionButton.svelte";
+  import { DEFAULT_SERVER_BOT_RUNTIME_MINUTES } from "../bots/runPolicy.ts";
 
   let {
     onOpen,
@@ -166,6 +167,11 @@
   }
 
   const groups = $derived(pilotGroups(prefs));
+  /**
+   * How long any group's server start may fly. One setting under the list, not
+   * a picker on every row: nobody set the five differently.
+   */
+  let runtimeMinutes = $state(DEFAULT_SERVER_BOT_RUNTIME_MINUTES);
   /** Each companion's saved setup, so the Companions row can start them. */
   const companionSetups = $derived(
     new Map(companionGroupRoster(prefs).map((member) => [member.characterID, member.setup])),
@@ -520,8 +526,9 @@
               <tr>
                 <th class="bm-col-group">Group</th>
                 <th class="bm-col-bot">Bot</th>
-                <th>Launch</th>
-                <th class="bm-col-progress">Progress</th>
+                <th class="bm-col-tight">Server</th>
+                <th class="bm-col-tight"><span class="sr-only">Start or stop</span></th>
+                <th class="bm-col-status">Status</th>
               </tr>
             </thead>
             <tbody>
@@ -534,6 +541,7 @@
                   {libraryOptions}
                   {companionSetups}
                   {nameOf}
+                  {runtimeMinutes}
                   sessions={heldSessions}
                   onChanged={refreshPilots}
                 />
@@ -547,8 +555,20 @@
              row's height and read as noise by the third group. What differs per
              row — how many pilots each button reaches — stays on the row. -->
         <ul class="bm-legend">
-          <li class="note"><strong>In this tab</strong> - flies pilots signed in here, and stops when this tab closes.</li>
-          <li class="note"><strong>On the server</strong> - keeps flying if this tab closes, up to the limit you pick.</li>
+          <li class="note bm-limit">
+            <span><strong>Server</strong> ticked: keeps flying if this tab closes, and stops after</span>
+            <select aria-label="Server run time limit" bind:value={runtimeMinutes}>
+              <option value={60}>1 hour</option>
+              <option value={240}>4 hours</option>
+              <option value={720}>12 hours</option>
+              <option value={1440}>24 hours</option>
+              <option value={2880}>48 hours</option>
+              <option value={4320}>72 hours</option>
+            </select>
+          </li>
+          <li class="note">
+            Unticked: flies only the pilots signed in to this tab, and stops when this tab closes.
+          </li>
           <li class="note">
             Built-in bots are set up against one pilot's own ship, so they start from that
             pilot's row under <button type="button" class="bm-link" onclick={() => (page = "pilots")}>Pilots</button>.
@@ -868,8 +888,21 @@
   .bm-groups .bm-col-bot {
     width: 22%;
   }
-  .bm-groups .bm-col-progress {
-    width: 12%;
+  .bm-groups .bm-col-tight {
+    width: 1%;
+    white-space: nowrap;
+  }
+  .bm-groups .bm-col-status {
+    width: 16%;
+  }
+  .bm-limit {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+  }
+  .bm-limit select {
+    width: auto;
   }
   .bm-legend {
     list-style: none;
@@ -926,7 +959,7 @@
     }
     .bm-groups .bm-col-group,
     .bm-groups .bm-col-bot,
-    .bm-groups .bm-col-progress {
+    .bm-groups .bm-col-status {
       width: auto;
     }
   }
