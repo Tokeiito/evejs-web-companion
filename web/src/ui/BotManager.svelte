@@ -775,6 +775,13 @@
   /* PiManager.svelte's rail and strip, value for value, so the two windows read
      as one family. Kept scoped rather than shared: each window owns its layout,
      and a change to one must not quietly move the other. */
+  /* ⚠ THE PANEL IS ITS OWN SIZE CONTAINER, or the `@container` rules below
+     never fire: nothing between here and the page is one, so a query would
+     find no container and the rail stayed a rail in a 450px window. Safe to
+     contain: a panel's width comes from its window, never its contents. */
+  .bm {
+    container-type: inline-size;
+  }
   .bm-body {
     display: grid;
     grid-template-columns: 11rem minmax(0, 1fr);
