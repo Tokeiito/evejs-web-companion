@@ -4,7 +4,7 @@ Every branch carried on top of `vendor`, in the order it is merged into `main`. 
 authority: a patch not listed here is lost on the next rebuild, and a patch listed here is one
 somebody has decided is still needed. See `CLAUDE.md` for the workflow.
 
-**Vendor:** `origin/master` at `344380d` (2026-09-29, PR #35 merged).
+**Vendor:** `origin/master` at `1c9338a` (2026-09-29, PR #40 merged).
 
 The `On main` column is a cache of `git branch --merged main`; if the two disagree, ancestry wins.
 
@@ -12,11 +12,18 @@ The `On main` column is a cache of `git branch --merged main`; if the two disagr
 | - | ------ | --------------- | ----- | -------- | ------- |
 | 1 | `local/tooling` | This workflow: `CLAUDE.md`, this manifest, and the Claude Code hooks registered in `.claude/settings.local.json` -- `guard-live-bot.sh` (refuses restarts that would kill running bots) and `rebuild-when-stale.sh`, each with its test | `CLAUDE.md`, `PATCHES.md`, `.claude/hooks/` | never | yes |
 | 2 | `local/deploy` | The hive release pipeline: a `release/*` tag on Gitea builds and pushes the image and moves `deploy/prod`, which Portainer polls; `compose.hive.yaml` joins the evej stack's network and volume as externals | `.gitea/workflows/release.yaml`, `compose.hive.yaml`, `docs/DEPLOYMENT.md` | never | yes |
-| 3 | `fix/companion-fleet-not-in-fleet` | A fleetless character is refused `FleetNotInFleet` by the server's member gate, not `FleetNotFound`; the Fleet window read that as "could not read" and bot fleet lookups never settled. Accept either refusal | `web/src/bridge/fleetCenter.ts` (+ test) | [#36](https://github.com/rrfarmer/evejs-web-companion/pull/36) open | yes |
-| 4 | `feat/companion-bot-manager-rail` | The Bot Manager laid out like the PI Manager: a menu rail (Groups, Pilots, Recent runs, Saved bots), a four-number strip, one view at a time; a group row is one line: bot, a Server checkbox, and one Start that becomes Stop while the group flies (never stopping a companion); one shared time limit under the list | `web/src/ui/BotManager.svelte`, `web/src/ui/BotManagerGroupRow.svelte`, `web/src/bots/pilotGroups.ts` (+ tests) | [#38](https://github.com/rrfarmer/evejs-web-companion/pull/38) open | yes |
-| 5 | `fix/companion-pi-narrow-container` | The PI Manager's `@container (max-width: 640px)` rules (rail to a top row, 2-column summary, colony cards) never fired because no ancestor set `container-type`; `.pi-manager` is now its own inline-size container, as the Bot Manager's root is | `web/src/ui/PiManager.svelte` | [#37](https://github.com/rrfarmer/evejs-web-companion/pull/37) open | yes |
-| 6 | `fix/companion-drone-stack-quantity` | The scripted bots and the mining bot launched ONE drone per bay stack, so repackaged drones (one stack of five) put out one; all three bot launch paths and the Drones panel's Launch buttons now ask for each stack's full quantity via `wholeStackLaunch`, and the server applies `maxActiveDrones` and bandwidth as it does for the retail client | `web/src/nav/droneLaunch.ts` (+ test), `web/src/app/flow.ts` | [#39](https://github.com/rrfarmer/evejs-web-companion/pull/39) open | yes |
-| 7 | `fix/companion-salvage-lock-wreck` | Salvage drones were sent on the server's auto-pick (`CmdSalvage` target 0), which only takes the pilot's or a current fleet mate's wrecks, so with the fleet dropped every salvage drone sat launched and idle for hours. The `salvage-wrecks` macro and the companion's `salvage` order now lock a wreck and send the drones at it by id, once per wreck | `web/src/nav/scriptMacros.ts`, `web/src/nav/fleetCompanionLoop.ts` (+ tests) | [#40](https://github.com/rrfarmer/evejs-web-companion/pull/40) open | yes |
+
+## Retired 2026-09-29 (second sync): upstream merged all five
+
+Upstream merged PRs #36-#40 as true merges, so each branch became an ancestor of `vendor` and was
+retired outright. `main` as it ran before this sync is tag `custom/2026-09-29.2`; each branch is
+`archive/<branch>/2026-09-29.2`.
+
+- `fix/companion-fleet-not-in-fleet` -- [#36](https://github.com/rrfarmer/evejs-web-companion/pull/36)
+- `fix/companion-pi-narrow-container` -- [#37](https://github.com/rrfarmer/evejs-web-companion/pull/37)
+- `feat/companion-bot-manager-rail` -- [#38](https://github.com/rrfarmer/evejs-web-companion/pull/38)
+- `fix/companion-drone-stack-quantity` -- [#39](https://github.com/rrfarmer/evejs-web-companion/pull/39)
+- `fix/companion-salvage-lock-wreck` -- [#40](https://github.com/rrfarmer/evejs-web-companion/pull/40)
 
 ## Retired at the start of this model (2026-09-29)
 
