@@ -339,7 +339,13 @@
   }
 </script>
 
-<tr>
+<!--
+  ⚠ ONE LINE OF CONTROLS PER GROUP. What is true of every group alike -- what
+  "in this tab" and "on the server" mean, and why built-ins are not in the
+  picker -- is said once under the list by BotManager.svelte. What differs per
+  group stays here: who is in it, and how many pilots each button reaches.
+-->
+<tr class="bot-group-row">
   <td data-label="Group">
     <span class="bot-group-name">
       {#if group.color}
@@ -349,75 +355,61 @@
       {/if}
       {group.name}
     </span>
+    <span class="bot-group-count">{statusWords}</span>
     {#if isCompanions}
       <!-- What makes this group the special one, in the place a player is
            deciding whether to press its button. -->
       <p class="note why">Always flies the fleet companion.</p>
     {/if}
-  </td>
-  <td data-label="Pilots">
-    {statusWords}
     {#if states.length > 0}
       <p class="note why">
         {states.map((s) => (s.botName === null ? s.name : `${s.name} (${s.botName})`)).join(", ")}
       </p>
     {/if}
   </td>
+  <td data-label="Bot">
+    {#if group.members.length === 0}
+      <!-- Nothing to pick for: the Launch cell says where to fill the group. -->
+    {:else if isCompanions}
+      <span class="note">Fleet companion</span>
+    {:else}
+      <select
+        class="bot-group-pick"
+        aria-label={`Bot for ${group.name}`}
+        bind:value={selectedScriptID}
+        disabled={busy}
+      >
+        <option value={null}>Choose a bot</option>
+        {#each scripts as script (script.scriptID)}
+          <option value={script.scriptID}>{script.name}</option>
+        {/each}
+      </select>
+      {#if scripts.length === 0}
+        <span class="note">No saved bots yet.</span>
+      {/if}
+    {/if}
+  </td>
   <td data-label="Launch">
     {#if group.members.length === 0}
       <span class="note">{groupStartEmptyWords(group.kind, 0)}</span>
     {:else}
-      <div class="pilot-launch">
+      <div class="bot-group-launch">
         {#if !isCompanions}
-          <label class="pilot-launch-bot">
-            Bot
-            <select bind:value={selectedScriptID} disabled={busy}>
-              <option value={null}>Choose a bot</option>
-              {#each scripts as script (script.scriptID)}
-                <option value={script.scriptID}>{script.name}</option>
-              {/each}
-            </select>
-          </label>
-          {#if scripts.length === 0}
-            <span class="note">No saved bots yet.</span>
-          {/if}
-          <!-- Why the built-ins are not in that list. Without this the absence
-               reads as a missing feature rather than a deliberate one. -->
-          <span class="note why">
-            Built-in bots are set up against one pilot's own ship, so they start
-            from that pilot's row below.
-          </span>
-        {/if}
-
-        {#if !isCompanions}
-          <div class="pilot-launch-run">
+          <span class="pilot-launch-run">
             <ActionButton
               action="run-here"
-              primary
               disabled={busy || !canStart || plan.here.length === 0}
               onclick={runHere}
             />
             <span class="pilot-launch-where">
               in this tab{plan.here.length > 0 ? ` (${plan.here.length})` : ""}
             </span>
-          </div>
-          {#if reachNote}
-            <span class="note why">{reachNote}</span>
-          {/if}
-        {:else}
-          <!-- A companion in THIS TAB is the Fleet companions window's whole
-               job, and it is where an op is watched and stopped. Offering a
-               second, weaker door onto it here would split one operation
-               across two windows. -->
-          <span class="note why">
-            To fly companions in this tab, use the Companions window.
           </span>
         {/if}
-
-        <div class="pilot-launch-run">
+        <span class="pilot-launch-run">
           <ActionButton
             action="run-on-server"
-            primary={isCompanions}
+            primary
             disabled={busy || !canStart || plan.onServer.length === 0}
             label={busy ? "Starting" : undefined}
             onclick={runOnServer}
@@ -427,7 +419,7 @@
           </span>
           {#if !isCompanions}
             <label class="pilot-launch-limit">
-              for up to
+              up to
               <select bind:value={runtimeMinutes} disabled={busy}>
                 <option value={60}>1 hour</option>
                 <option value={240}>4 hours</option>
@@ -438,9 +430,19 @@
               </select>
             </label>
           {/if}
-        </div>
-        <span class="note why">Keeps flying if this tab closes.</span>
+        </span>
       </div>
+      {#if isCompanions}
+        <!-- A companion in THIS TAB is the Fleet companions window's whole
+             job, and it is where an op is watched and stopped. Offering a
+             second, weaker door onto it here would split one operation
+             across two windows. -->
+        <p class="note why">To fly companions in this tab, use the Companions window.</p>
+      {:else if reachNote}
+        <!-- ⚠ STAYS ON THE ROW: it is this group's own count, and a disabled
+             button with no sentence beside it reads as broken. -->
+        <p class="note why">{reachNote}</p>
+      {/if}
     {/if}
 
     {#if startError}
@@ -475,12 +477,36 @@
     display: inline-flex;
     align-items: center;
     gap: 0.4rem;
+    color: var(--color-text-bright);
   }
+  /* Square, as the hangar's own squad swatches are. */
   .bot-group-swatch {
     width: 0.6rem;
     height: 0.6rem;
-    border-radius: 50%;
     flex: 0 0 auto;
+  }
+  .bot-group-count {
+    display: block;
+    margin-left: 1rem;
+    color: var(--color-muted);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+  }
+  .bot-group-row .note.why {
+    margin: 0.2rem 0 0;
+  }
+  .bot-group-row td[data-label="Group"] > .note.why {
+    margin-left: 1rem;
+  }
+  .bot-group-pick {
+    width: 100%;
+    min-width: 8rem;
+  }
+  .bot-group-launch {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4rem 1rem;
   }
   /* Companions has no squad colour to show. A ring rather than a filled dot,
      so it reads as "not one of your squads" instead of borrowing a palette

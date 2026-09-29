@@ -85,14 +85,11 @@ test("NO RAW ID REACHES THE PAGE — members are named (R7d)", () => {
   assert.doesNotMatch(visibleText(body), new RegExp(String(PILOT_A)));
 });
 
-test("a squad row offers the saved library, and says why the built-ins are absent", () => {
-  // ⚠ THE ABSENCE IS DELIBERATE AND HAS TO READ AS SUCH. A built-in is set up
-  // against one pilot's own ship; in a group list it would be a choice with no
-  // button under it.
+test("a squad row offers the saved library", () => {
+  // Why the built-ins are absent is said once under the list, not per row --
+  // see the panel test "the group list says once what is true of every row".
   const text = visibleText(renderRow({ group: squadGroup() }));
   assert.match(text, /Sample belt loop/);
-  assert.match(text, /Built-in bots/i);
-  assert.match(text, /that pilot's row/i);
 });
 
 test("THE COMPANIONS ROW HAS NO BOT PICKER — its bot is what it is", () => {
@@ -175,8 +172,13 @@ test("a row with a held session still renders — the store reads are plain gets
   assert.match(text, /Mining Op/);
 });
 
-test("the server start says plainly that it outlives the tab", () => {
+test("a squad row names both ways to start, and where each one flies", () => {
+  // What the two mean is said once under the list (panel test); the row still
+  // names each button's destination beside it, because that is the whole
+  // difference between the two buttons.
   const text = visibleText(renderRow({ group: squadGroup() }));
   assert.match(text, /Run on server/);
-  assert.match(text, /Keeps flying if this tab closes/);
+  assert.match(text, /on the server/);
+  assert.match(text, /in this tab/);
+  assert.doesNotMatch(text, /Keeps flying if this tab closes/, "the per-row repeat is back");
 });
