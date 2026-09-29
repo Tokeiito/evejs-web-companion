@@ -27,6 +27,7 @@ import {
   planGroupLaunch,
   planGroupStop,
   groupCanStop,
+  groupRosterWords,
   groupRunStatusWords,
   type GroupMemberState,
 } from "./pilotGroups.ts";
@@ -301,6 +302,24 @@ test("a group Stop reaches only what is flying, and never a companion", () => {
 
   // Idle members are not in the plan at all.
   assert.equal(groupCanStop(planGroupStop(states([[PILOT_A, "free"]]), bots)), false);
+});
+
+test("the group names its bot once, and per pilot only when they differ", () => {
+  const row = (name: string, botName: string | null): GroupMemberState => ({
+    characterID: PILOT_A,
+    name,
+    where: botName === null ? "free" : "running-server",
+    botName,
+  });
+  const same = groupRosterWords([row("One", "Belt loop"), row("Two", "Belt loop"), row("Three", null)]);
+  assert.equal(same.names, "One, Two, Three");
+  assert.equal(same.commonBot, "Belt loop");
+
+  const mixed = groupRosterWords([row("One", "Belt loop"), row("Two", "Fleet companion")]);
+  assert.equal(mixed.names, "One (Belt loop), Two (Fleet companion)");
+  assert.equal(mixed.commonBot, null);
+
+  assert.equal(groupRosterWords([row("One", null)]).commonBot, null);
 });
 
 test("the empty sentence names what the player has to go and do", () => {

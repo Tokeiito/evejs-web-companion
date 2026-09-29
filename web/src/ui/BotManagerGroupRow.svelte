@@ -36,6 +36,7 @@
     groupMemberStates,
     groupStartEmptyWords,
     groupCanStop,
+    groupRosterWords,
     groupRunStatusWords,
     groupStatusWords,
     planGroupLaunch,
@@ -134,6 +135,7 @@
   );
   const plan = $derived(planGroupLaunch(states));
   const statusWords = $derived(groupStatusWords(states));
+  const roster = $derived(groupRosterWords(states));
   const stopPlan = $derived(planGroupStop(states, serverBots));
   /** The row's one button is Stop while anything this row may stop is flying. */
   const canStop = $derived(groupCanStop(stopPlan));
@@ -412,7 +414,9 @@
       return `${started} of ${rows.length} started`;
     }
     if (stopping) return "Stopping";
-    return groupRunStatusWords(plan, isCompanions || onServer);
+    const words = groupRunStatusWords(plan, isCompanions || onServer);
+    // The bot the whole group flies, said once here rather than per name.
+    return plan.busy.length > 0 && roster.commonBot !== null ? `${words} - ${roster.commonBot}` : words;
   });
 
   /** Members a start refused, with the server's own reason -- never dropped. */
@@ -442,9 +446,7 @@
       <p class="note why">Always flies the fleet companion.</p>
     {/if}
     {#if states.length > 0}
-      <p class="note why">
-        {states.map((s) => (s.botName === null ? s.name : `${s.name} (${s.botName})`)).join(", ")}
-      </p>
+      <p class="note why">{roster.names}</p>
     {/if}
   </td>
   {#if group.members.length === 0}
