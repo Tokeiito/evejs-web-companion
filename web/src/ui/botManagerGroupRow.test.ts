@@ -165,8 +165,9 @@ test("a member the server is already flying is counted as flying, not as free", 
   const text = visibleText(renderRow({ group: squadGroup(), serverBots }));
   assert.match(text, /1 already flying/);
   assert.match(text, /1 free/);
-  // And it says WHAT is flying it, beside the pilot's name.
-  assert.match(text, /Test Pilot One \(Sample belt loop\)/);
+  // And it says WHAT is flying it -- once, in the status, not beside the name.
+  assert.doesNotMatch(text, /Test Pilot One \(Sample belt loop\)/);
+  assert.match(text, /1 flying - Sample belt loop/);
   // ⚠ AND THE ONE BUTTON IS NOW STOP. Something this row may stop is flying,
   // so Start gives way to it; pressing Start again would only reach the free.
   assert.match(text, /Stop Mining Op/);

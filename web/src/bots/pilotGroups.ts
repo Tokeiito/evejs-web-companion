@@ -283,6 +283,30 @@ export function planGroupStop(
   };
 }
 
+/**
+ * The group's members as one line of names, and the bot they fly when it is
+ * the same one.
+ *
+ * ⚠ THE BOT IS SAID ONCE, NOT BESIDE EVERY NAME. A group started together flies
+ * one bot, and "Name (Smart miner v2)" five times over said it five times. It
+ * is named per pilot only when the flying members differ -- one started on its
+ * own from the Pilots view, say -- because that is the one case the per-pilot
+ * name tells a player something.
+ */
+export function groupRosterWords(states: readonly GroupMemberState[]): {
+  readonly names: string;
+  readonly commonBot: string | null;
+} {
+  const bots = new Set(states.flatMap((s) => (s.botName === null ? [] : [s.botName])));
+  if (bots.size <= 1) {
+    return { names: states.map((s) => s.name).join(", "), commonBot: [...bots][0] ?? null };
+  }
+  return {
+    names: states.map((s) => (s.botName === null ? s.name : `${s.name} (${s.botName})`)).join(", "),
+    commonBot: null,
+  };
+}
+
 /** Whether the row's one button is Stop rather than Start. */
 export function groupCanStop(plan: GroupStopPlan): boolean {
   return plan.onServer.length + plan.here.length > 0;
