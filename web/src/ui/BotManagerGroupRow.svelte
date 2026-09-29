@@ -149,15 +149,17 @@
   let selectedScriptID = $state<string | null>(null);
 
   /**
-   * Where Start flies the group: on the server (the default, it outlives the
-   * tab), or unticked, only in this tab.
+   * Where Start flies the group: unticked (the default), only the pilots
+   * signed in to this tab; ticked, on the server, where it outlives the tab.
+   * Unticked by default at the player's request: a server run is the one that
+   * keeps flying unwatched, so it is the one a player opts into.
    *
    * ⚠ ONE BUTTON, AND THIS IS WHAT USED TO BE THE SECOND ONE. The two starts
    * differ only in what happens when the tab closes, so it is a setting on the
    * start rather than a second start. Companions always fly on the server and
    * have no box to untick.
    */
-  let onServer = $state(true);
+  let onServer = $state(false);
 
   const isCompanions = $derived(group.kind === "companions");
   /** Companions flies itself; a squad needs a bot chosen first. */
