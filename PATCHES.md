@@ -4,7 +4,7 @@ Every branch carried on top of `vendor`, in the order it is merged into `main`. 
 authority: a patch not listed here is lost on the next rebuild, and a patch listed here is one
 somebody has decided is still needed. See `CLAUDE.md` for the workflow.
 
-**Vendor:** `origin/master` at `1c9338a` (2026-09-29, PR #40 merged).
+**Vendor:** `origin/master` at `7c5d540` (2026-09-30, PR #48 merged). `main` as it ran before this sync is tag `custom/2026-09-30`.
 
 The `On main` column is a cache of `git branch --merged main`; if the two disagree, ancestry wins.
 
