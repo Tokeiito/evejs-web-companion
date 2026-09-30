@@ -258,3 +258,22 @@ test("Edit opens the builder ON THAT ROW'S BOT, and New bot says it is new", () 
   // exactly what would come back if someone re-wired this by hand.
   assert.doesNotMatch(source, /function edit\(_scriptID/, "Edit is ignoring its argument again");
 });
+
+test("Saved bots has category shelves under it: All, Uncategorized and a way to add one", () => {
+  // The categories themselves arrive with the library read, which the SSR
+  // harness never makes, so a first mount shows only the fixed shelves.
+  const text = visibleText(renderPanel());
+  assert.match(text, /All/);
+  assert.match(text, /Uncategorized/);
+  assert.match(text, /\+ New category/);
+  assert.match(renderPanel(), /aria-label="Saved bot categories"/);
+});
+
+test("deleting a category says its bots are kept, never deleted", () => {
+  // The prompt's wording is libraryView.ts's and tested there; this pins that
+  // the rail's delete really asks through it before calling the server.
+  const source = readFileSync(new URL("./BotManager.svelte", import.meta.url), "utf8");
+  const remove = source.match(/async function removeCategory[\s\S]*?deleteBotCategory/);
+  assert.ok(remove, "removeCategory calls deleteBotCategory");
+  assert.match(remove[0], /window\.confirm\(deleteCategoryPrompt\(/);
+});
