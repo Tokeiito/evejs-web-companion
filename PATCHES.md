@@ -12,6 +12,7 @@ The `On main` column is a cache of `git branch --merged main`; if the two disagr
 | - | ------ | --------------- | ----- | -------- | ------- |
 | 1 | `local/tooling` | This workflow: `CLAUDE.md`, this manifest, and the Claude Code hooks registered in `.claude/settings.local.json` -- `guard-live-bot.sh` (refuses restarts that would kill running bots) and `rebuild-when-stale.sh`, each with its test | `CLAUDE.md`, `PATCHES.md`, `.claude/hooks/` | never | yes |
 | 2 | `local/deploy` | The hive release pipeline: a `release/*` tag on Gitea builds and pushes the image and moves `deploy/prod`, which Portainer polls; `compose.hive.yaml` joins the evej stack's network and volume as externals | `.gitea/workflows/release.yaml`, `compose.hive.yaml`, `docs/DEPLOYMENT.md` | never | yes |
+| 3 | `fix/companion-builder-without-pilot` | The Bot Manager's New bot and Edit work with no pilot in the client: the Bot Builder takes a narrow `BuilderFlow`, and on the hangar it floats on the global layer riding an account sign-in | `web/src/bots/builderFlow.ts`, `web/src/ui/HangarBotBuilder.svelte`, `BotBuilder`/`BotManager`/`App`/`GlobalPanel.svelte`, `globalWindow.ts`, picker prop types | not yet opened | yes |
 
 ## Retired 2026-09-29 (second sync): upstream merged all five
 
