@@ -1335,6 +1335,7 @@
   /* Reads as text with a faint underline: a hint that it can be changed,
      without eleven dropdowns down the column. */
   .bm-category-label {
+    width: auto; /* not the reflow card's full-width action button */
     min-height: 0;
     padding: 0;
     background: transparent;
