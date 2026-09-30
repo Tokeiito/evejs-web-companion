@@ -59,6 +59,7 @@
   import {
     ALL_BOTS,
     deleteCategoryPrompt,
+    categoryLabel,
     effectiveCategory,
     lastSavedPhrase,
     libraryView,
@@ -415,8 +416,36 @@
     }
   }
 
+  /**
+   * The one row whose Category cell is a menu right now.
+   *
+   * ⚠ A CELL IS A LABEL UNTIL IT IS CLICKED. Moving a bot is rare, and eleven
+   * permanent dropdowns made a quiet list look like a form. The label is a
+   * button (keyboard and screen readers reach it), and the menu it becomes
+   * goes back to a label on a pick, on Esc, or when focus leaves it.
+   */
+  let movingID = $state<string | null>(null);
+
+  /** Focus the menu as it appears and open its list, so one click is enough. */
+  function openMenu(select: HTMLSelectElement): void {
+    select.focus();
+    try {
+      select.showPicker?.();
+    } catch {
+      // No user activation left, or no showPicker: focused is enough.
+    }
+  }
+
+  function menuKey(event: KeyboardEvent): void {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      movingID = null;
+    }
+  }
+
   /** File one bot from its row's Category menu ("" = Uncategorized). */
   async function fileBot(script: BotScriptSummary, value: string): Promise<void> {
+    movingID = null;
     if (busyID !== null) return;
     const categoryID = value === "" ? null : value;
     if (categoryID === effectiveCategory(script, categories)) return;
@@ -1039,18 +1068,32 @@
                   <tr>
                     <td data-label="Name">{script.name}</td>
                     <td data-label="Category">
-                      <select
-                        class="bm-category"
-                        aria-label="Category for {script.name}"
-                        disabled={busyID !== null}
-                        value={effectiveCategory(script, categories) ?? ""}
-                        onchange={(event) => void fileBot(script, event.currentTarget.value)}
-                      >
-                        <option value="">Uncategorized</option>
-                        {#each categories as category (category.categoryID)}
-                          <option value={category.categoryID}>{category.name}</option>
-                        {/each}
-                      </select>
+                      {#if movingID === script.scriptID}
+                        <select
+                          class="bm-category"
+                          aria-label="Category for {script.name}"
+                          value={effectiveCategory(script, categories) ?? ""}
+                          use:openMenu
+                          onchange={(event) => void fileBot(script, event.currentTarget.value)}
+                          onkeydown={menuKey}
+                          onblur={() => (movingID = null)}
+                        >
+                          <option value="">Uncategorized</option>
+                          {#each categories as category (category.categoryID)}
+                            <option value={category.categoryID}>{category.name}</option>
+                          {/each}
+                        </select>
+                      {:else}
+                        <button
+                          type="button"
+                          class="bm-category-label"
+                          class:none={effectiveCategory(script, categories) === null}
+                          title="Change category"
+                          aria-label="Category: {categoryLabel(script, categories)}. Change category for {script.name}"
+                          disabled={busyID !== null}
+                          onclick={() => (movingID = script.scriptID)}
+                        >{busyID === script.scriptID ? "Moving…" : categoryLabel(script, categories)}</button>
+                      {/if}
                     </td>
                     <td data-label="Saved by">{savedByLabel(script)}</td>
                     <td class="num" data-label="Revision">{script.rev}</td>
@@ -1288,6 +1331,27 @@
   .bm-category {
     width: auto;
     max-width: 12rem;
+  }
+  /* Reads as text with a faint underline: a hint that it can be changed,
+     without eleven dropdowns down the column. */
+  .bm-category-label {
+    min-height: 0;
+    padding: 0;
+    background: transparent;
+    border: 0;
+    border-bottom: 1px dashed var(--color-line-strong);
+    color: var(--color-text);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  .bm-category-label.none {
+    color: var(--color-muted);
+  }
+  .bm-category-label:hover:not(:disabled),
+  .bm-category-label:focus-visible {
+    color: var(--color-accent);
+    border-bottom-color: var(--color-accent);
   }
   .bm-badge {
     min-width: 1.4rem;

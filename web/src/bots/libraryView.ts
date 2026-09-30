@@ -95,6 +95,12 @@ export function effectiveCategory(
   return id !== null && categories.some((category) => category.categoryID === id) ? id : null;
 }
 
+/** What a row's Category cell reads: the category's name, or "Uncategorized". */
+export function categoryLabel(script: BotScriptSummary, categories: readonly BotCategory[]): string {
+  const id = effectiveCategory(script, categories);
+  return categories.find((category) => category.categoryID === id)?.name ?? "Uncategorized";
+}
+
 /** The rows on one shelf. */
 export function onShelf(
   scripts: readonly BotScriptSummary[],
