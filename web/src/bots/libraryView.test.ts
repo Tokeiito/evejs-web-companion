@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   ALL_BOTS,
+  categoryLabel,
   deleteCategoryPrompt,
   filterLibrary,
   lastSavedPhrase,
@@ -186,4 +187,11 @@ test("the delete-category prompt says the bots are kept", () => {
   assert.match(deleteCategoryPrompt("Mining", 2), /2 bots move to Uncategorized; no bot is deleted/);
   assert.match(deleteCategoryPrompt("Mining", 1), /1 bot moves to Uncategorized/);
   assert.match(deleteCategoryPrompt("Mining", 0), /holds no bots/);
+});
+
+test("a row's category label is its category's name, or Uncategorized", () => {
+  const rows = shelfRows();
+  assert.equal(categoryLabel(rows[0]!, CATEGORIES), "Mining");
+  assert.equal(categoryLabel(rows[3]!, CATEGORIES), "Uncategorized");
+  assert.equal(categoryLabel(rows[4]!, CATEGORIES), "Uncategorized", "a deleted category reads as Uncategorized");
 });

@@ -277,3 +277,13 @@ test("deleting a category says its bots are kept, never deleted", () => {
   assert.ok(remove, "removeCategory calls deleteBotCategory");
   assert.match(remove[0], /window\.confirm\(deleteCategoryPrompt\(/);
 });
+
+test("a row's category is a label until clicked, not a standing dropdown", () => {
+  // The rows only exist after the library read, which SSR never makes, so this
+  // pins the markup: the menu is behind the one row being moved.
+  const source = readFileSync(new URL("./BotManager.svelte", import.meta.url), "utf8");
+  const cell = source.match(/<td data-label="Category">[\s\S]*?<\/td>/);
+  assert.ok(cell, "the Category cell is there");
+  assert.match(cell[0], /\{#if movingID === script\.scriptID\}\s*<select/);
+  assert.match(cell[0], /\{:else\}\s*<button[^>]*class="bm-category-label"/);
+});
