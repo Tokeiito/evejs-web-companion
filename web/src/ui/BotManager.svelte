@@ -1125,11 +1125,17 @@
     gap: 1rem;
     margin-top: 0.75rem;
   }
+  /* The rail is a column: the tabs, then the library's shelves right under
+     "Saved bots", which take the rest of the height so the rail's line runs
+     to the bottom as it did when the tabs alone filled it. */
+  .bm-menu {
+    display: flex;
+    flex-direction: column;
+  }
   .bm-menu-list {
     display: flex;
     flex-direction: column;
     border-right: 1px solid var(--color-line);
-    height: 100%;
   }
   /* ⚠ NOT `class:active` — a bare `button.active` is a filled accent control
    * in the app's component layer (see StationPanel's tabs). */
@@ -1161,6 +1167,7 @@
   /* The library's shelves: indented under the rail, each one a row that shows
      its rename / delete tools on hover or keyboard focus. */
   .bm-shelves {
+    flex: 1 1 auto;
     list-style: none;
     margin: 0;
     padding: 0 0 0.5rem;
