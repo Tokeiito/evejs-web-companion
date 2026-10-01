@@ -4,7 +4,7 @@ Every branch carried on top of `vendor`, in the order it is merged into `main`. 
 authority: a patch not listed here is lost on the next rebuild, and a patch listed here is one
 somebody has decided is still needed. See `CLAUDE.md` for the workflow.
 
-**Vendor:** `origin/master` at `29615a9` (2026-09-30, PRs #49-#52 merged). `main` as it ran before this sync is tag `custom/2026-09-30.3`.
+**Vendor:** `origin/master` at `03edcd5` (2026-10-01, PR #53 merged). `main` as it ran before this sync is tag `custom/2026-10-01`.
 
 The `On main` column is a cache of `git branch --merged main`; if the two disagree, ancestry wins.
 
@@ -12,7 +12,15 @@ The `On main` column is a cache of `git branch --merged main`; if the two disagr
 | - | ------ | --------------- | ----- | -------- | ------- |
 | 1 | `local/tooling` | This workflow: `CLAUDE.md`, this manifest, and the Claude Code hooks registered in `.claude/settings.local.json` -- `guard-live-bot.sh` (refuses restarts that would kill running bots) and `rebuild-when-stale.sh`, each with its test | `CLAUDE.md`, `PATCHES.md`, `.claude/hooks/` | never | yes |
 | 2 | `local/deploy` | The hive release pipeline: a `release/*` tag on Gitea builds and pushes the image and moves `deploy/prod`, which Portainer polls; `compose.hive.yaml` joins the evej stack's network and volume as externals | `.gitea/workflows/release.yaml`, `compose.hive.yaml`, `docs/DEPLOYMENT.md` | never | yes |
-| 3 | `fix/companion-fight-back-out-of-reach` | A `hostile-on-grid -> fight-back` watch no longer seizes the ship for a pirate beyond targeting range. The condition counts the whole grid and the borrowed ladder only what is in reach, so the ladder spent its three empty-grid confirm reads, released for one tick and was borrowed again: the step under it ran one tick in four. The watch now falls through when every visible hostile is out of reach and it has no fight in progress. The mining drone flight (under `mine-at-belt`) takes its hostile from the same in-reach list, so it no longer keeps combat drones on a far rat and swallows the ladder's recall (which starved the step until the rat died). Off a mining step and not moving, the flight also leaves combat drones to whoever launched them: it used to count "not mining" as leaving and recall the combat flight a fight-back watch or Fight-the-rats step had just put out (launch/recall every few seconds); it still recalls everything before movement and still calls home a finished mining step's drones. The block's confirm reads (2026-09-14) and the mid-fight stand-down are unchanged; `hostilesInReach` moves to `scriptConditions.ts` so all three share it; the `hostile-on-grid` condition still counts the whole grid. | `web/src/nav/scriptDecide.ts`, `scriptConditions.ts`, `scriptMacros.ts`, tests | [#53](https://github.com/rrfarmer/evejs-web-companion/pull/53) | yes |
+| 3 | `feat/companion-industry-manager` | The Industry Manager (goal R109, `docs/goal-prompts/r109-industry-manager.md`): a global window beside Planetary Industry. Pick a blueprint a signed-in pilot owns or search any published one, and see its whole build tree worked once per type with the server's own per-job material rounding, batch leftovers and reactions (the blueprint table's own product index misses all 119 reactions, so the index is built from activity products). Plans are saved like PI plans (migration 2, `industry_plans`, intent only). Stock comes from every hangar pilot's snapshot (`POST /api/roster/stock`, no select) and their corps' hangars. Missing items come with every place they sit and a Copy multibuy, and running jobs count toward the plan. Start next opens the holding pilot's Industry panel with the job filled in, behind that panel's own confirm. Invention odds use the server's formula and a decryptor chosen per plan. Touches PI only to export two helpers and give the PI stock and corp reads an optional type filter that defaults to planetary. Not yet exercised live at the time of writing. | `src/industryRecipes.js`, `industryPlanStore.js`, `companionDb.js`, `server.js`, `staticData.js`, `web/src/bridge/industry*.ts`, `web/src/app/industry*.ts`, `web/src/ui/IndustryManager.svelte`, `Industry.svelte` (prefill), tab registration, tests | not yet | yes |
+
+## Retired 2026-10-01 (fourth sync): upstream merged one
+
+Upstream merged PR #53 as a true merge, so the branch became an ancestor of `vendor` and was
+retired outright. `main` as it ran before this sync is tag `custom/2026-10-01`; the branch is
+`archive/fix/companion-fight-back-out-of-reach/2026-10-01`.
+
+- `fix/companion-fight-back-out-of-reach` -- [#53](https://github.com/rrfarmer/evejs-web-companion/pull/53)
 
 ## Retired 2026-09-30 (third sync): upstream merged four
 
