@@ -105,8 +105,13 @@
     onOpen?: (tab: TabID, sessionID?: string) => void;
   } = $props();
 
-  type Source = "owned" | "any";
-  let source = $state<Source>("owned");
+  // The left column's two views (option C, 2026-10-01): your saved plans, or
+  // the blueprints to start one from. The right side is only ever the plan.
+  type LeftTab = "plans" | "blueprints";
+  let leftTab = $state<LeftTab>("plans");
+  // Sessions already asked for their blueprints and skills, so a pilot coming
+  // online is read once and not on every store change after.
+  const askedSessions = new Set<string>();
 
   // Bumped whenever a pilot's store moves, so the owned list re-reads.
   let storeTick = $state(0);
@@ -191,6 +196,11 @@
     });
   });
   const onlineCount = $derived(reads.length);
+  /** An online pilot whose blueprints have not been read yet: never say "none" for them. */
+  const unreadOnline = $derived.by(() => {
+    void storeTick;
+    return onlineSessions().some(({ session }) => !session.store.industry.get().loaded);
+  });
   const owned = $derived(ownedBlueprints(reads));
   const terms = $derived(ownedTerms(owned));
   const held = $derived(heldByType(stock?.holdings ?? []));
@@ -294,9 +304,26 @@
   const productName = $derived(productTypeID === null ? null : nameFor(productTypeID) ?? draftName);
   const folds = $derived(openPlanID === null ? {} : view.folds[openPlanID] ?? {});
   let draftFolds = $state<Record<string, boolean>>({});
-  const ownedChoice = $derived(
-    productTypeID === null ? "" : String(owned.find((blueprint) => blueprint.productTypeID === productTypeID)?.itemID ?? ""),
-  );
+  /** Owned blueprints whose name holds the filter text. */
+  const ownedShown = $derived.by(() => {
+    const needle = query.trim().toLowerCase();
+    return needle.length === 0 ? owned : owned.filter((blueprint) => (blueprint.blueprintName ?? "").toLowerCase().includes(needle));
+  });
+  /**
+   * The plan's terms in one line: which blueprint it is planned with, at what
+   * efficiencies, held by whom. The facility is not counted yet, and says so.
+   */
+  const termsWords = $derived.by((): string | null => {
+    if (!chain || productTypeID === null) return null;
+    const top = chain.lines.get(productTypeID)?.blueprint;
+    if (!top) return null;
+    const efficiencies = `material ${top.materialEfficiency}%, time ${top.timeEfficiency}%`;
+    if (!top.assumed) {
+      const copy = owned.find((blueprint) => blueprint.blueprintTypeID === top.blueprintTypeID);
+      return copy ? `${ownedWords(copy).split(" - ")[0]} - ${efficiencies} - ${copy.characterName}` : `Owned - ${efficiencies}`;
+    }
+    return top.invention ? `Invented copy - ${efficiencies}` : `No owned blueprint - assumed ${efficiencies}`;
+  });
 
   /** The decryptor chosen for a T2 blueprint in these choices, or null. */
   function decryptorOf(from: IndustryPlanChoices, blueprintTypeID: number): DecryptorTerms | null {
@@ -488,6 +515,7 @@
       for (const entry of plans) {
         void loadBook(entry.productTypeID);
       }
+      if (plans.length === 0 && productTypeID === null) leftTab = "blueprints";
       const remembered = plans.find((entry) => entry.planID === view.openID);
       if (remembered && openPlanID === null && productTypeID === null) {
         showPlan(remembered);
@@ -709,6 +737,29 @@
     saveIndustryPlanView(view);
   }
 
+  /**
+   * Read the blueprints and skills of every online pilot not read yet. Runs
+   * when the window opens and whenever a pilot comes online in this tab: a
+   * pilot signed in after the window opened used to be listed as holding no
+   * blueprints, because nothing had read them (seen live, 2026-10-01).
+   */
+  function readNewcomers(): void {
+    const newcomers = onlineSessions().filter(({ session }) => !askedSessions.has(session.id));
+    if (newcomers.length === 0) return;
+    for (const { session } of newcomers) askedSessions.add(session.id);
+    const unread = newcomers.filter(({ session }) => !session.store.industry.get().loaded);
+    if (unread.length > 0) {
+      refreshing = true;
+      void Promise.allSettled(unread.map(({ session }) => session.flow.loadIndustry())).finally(() => {
+        refreshing = false;
+        storeTick += 1;
+      });
+    }
+    for (const { session } of newcomers) {
+      if (!session.store.skills.get().loaded) void session.flow.loadSkills().catch(() => {});
+    }
+  }
+
   // Each pilot's store, watched so a read made elsewhere (their Industry panel,
   // a Refresh here) shows up in the list without asking again. Re-subscribed
   // when a pilot joins or leaves the tab.
@@ -719,7 +770,10 @@
     const stops = untrack(() =>
       list.flatMap((session) => [
         session.store.industry.subscribe(() => (storeTick += 1)),
-        session.store.station.subscribe(() => (storeTick += 1)),
+        session.store.station.subscribe(() => {
+          storeTick += 1;
+          readNewcomers();
+        }),
         session.store.skills.subscribe(() => (storeTick += 1)),
       ]),
     );
@@ -741,21 +795,7 @@
   onMount(() => {
     void loadPlans();
     void loadInventionTerms();
-    // Each online pilot's skills, for invention odds, read on its own session
-    // as its Skills panel would; a pilot already read is not asked again.
-    for (const { session } of onlineSessions()) {
-      if (!session.store.skills.get().loaded) void session.flow.loadSkills().catch(() => {});
-    }
-    const tick = setInterval(() => (browserNowMs = Date.now()), 30_000);
-    // Read the blueprints of any online pilot whose industry was never read.
-    const unread = onlineSessions().filter(({ session }) => !session.store.industry.get().loaded);
-    if (unread.length > 0) {
-      refreshing = true;
-      void Promise.allSettled(unread.map(({ session }) => session.flow.loadIndustry())).finally(() => {
-        refreshing = false;
-        storeTick += 1;
-      });
-    }
+    readNewcomers();
     return () => {
       clearInterval(tick);
       if (stockTimer !== null) {
@@ -787,110 +827,140 @@
   </header>
 
   <div class="im-body">
-    <!-- YOUR PLANS. Active first, done below; a card opens its plan. -->
-    <aside class="im-plans" aria-label="Your plans">
-      <div class="im-plans-head">
-        <h3>Your plans</h3>
-        <button type="button" class="im-new" onclick={() => showPlan(null)}>+ New plan</button>
+    <!-- THE LEFT COLUMN: your plans, or the blueprints to start one from. -->
+    <aside class="im-side" aria-label="Plans and blueprints">
+      <div class="im-tabs" role="tablist" aria-label="Show">
+        <button type="button" role="tab" class="im-tab" class:on={leftTab === "plans"} aria-selected={leftTab === "plans"} onclick={() => (leftTab = "plans")}>
+          Plans{#if activePlans.length > 0}<span class="im-count-badge">{activePlans.length}</span>{/if}
+        </button>
+        <button type="button" role="tab" class="im-tab" class:on={leftTab === "blueprints"} aria-selected={leftTab === "blueprints"} onclick={() => (leftTab = "blueprints")}>
+          Blueprints{#if owned.length > 0}<span class="im-count-badge">{owned.length}</span>{/if}
+        </button>
       </div>
-      {#snippet planCard(entry: SavedIndustryPlan)}
-        {@const cardStanding = cardStandings.get(entry.planID)}
-        <li>
-          <button
-            type="button"
-            class="im-plan-card"
-            class:on={entry.planID === openPlanID}
-            aria-current={entry.planID === openPlanID ? "true" : undefined}
-            onclick={() => showPlan(entry)}
-          >
-            <TypeIcon typeID={entry.productTypeID} name={planTitle(entry)} size="md" />
-            <span class="im-plan-card-text">
-              <span class="im-plan-card-name">{planTitle(entry)}</span>
-              <span class="im-plan-card-sub">
-                {countWords(entry.runs)} {entry.runs === 1 ? "run" : "runs"}{entry.note ? ` - ${entry.note}` : ""}
-              </span>
-              {#if cardStanding}
-                <span class="im-plan-card-foot">
-                  <span class="im-meter" aria-hidden="true">
-                    <span class="im-meter-fill tone-{cardStanding.tone}" style:width={`${Math.round(cardStanding.share * 100)}%`}></span>
-                  </span>
-                  <span class="im-pill tone-{cardStanding.tone}">{cardStanding.words}</span>
+
+      {#if leftTab === "plans"}
+        {#snippet planCard(entry: SavedIndustryPlan)}
+          {@const cardStanding = cardStandings.get(entry.planID)}
+          <li>
+            <button
+              type="button"
+              class="im-item"
+              class:on={entry.planID === openPlanID}
+              aria-current={entry.planID === openPlanID ? "true" : undefined}
+              onclick={() => showPlan(entry)}
+            >
+              <TypeIcon typeID={entry.productTypeID} name={planTitle(entry)} size="md" />
+              <span class="im-item-text">
+                <span class="im-item-name">{planTitle(entry)}</span>
+                <span class="im-item-sub">
+                  {countWords(entry.runs)} {entry.runs === 1 ? "run" : "runs"}{entry.note ? ` - ${entry.note}` : ""}
                 </span>
-              {/if}
-            </span>
-          </button>
-        </li>
-      {/snippet}
-      {#if plansError}
-        <p class="im-error" role="alert">{plansError}</p>
-      {:else if !plansLoaded}
-        <p class="im-note">Reading your saved plans...</p>
-      {:else if activePlans.length === 0}
-        <p class="im-note">{donePlans.length > 0 ? "No active plans." : "No plans yet. Choose a blueprint and save it."}</p>
+                {#if cardStanding}
+                  <span class="im-item-foot">
+                    <span class="im-meter" aria-hidden="true">
+                      <span class="im-meter-fill tone-{cardStanding.tone}" style:width={`${Math.round(cardStanding.share * 100)}%`}></span>
+                    </span>
+                    <span class="im-pill tone-{cardStanding.tone}">{cardStanding.words}</span>
+                  </span>
+                {/if}
+              </span>
+            </button>
+          </li>
+        {/snippet}
+        <button
+          type="button"
+          class="im-new"
+          onclick={() => {
+            showPlan(null);
+            leftTab = "blueprints";
+          }}
+        >+ New plan</button>
+        {#if plansError}
+          <p class="im-error" role="alert">{plansError}</p>
+        {:else if !plansLoaded}
+          <p class="im-note">Reading your saved plans...</p>
+        {:else if activePlans.length === 0}
+          <p class="im-note">{donePlans.length > 0 ? "No active plans." : "No plans yet."}</p>
+        {:else}
+          <ul class="im-list">
+            {#each activePlans as entry (entry.planID)}
+              {@render planCard(entry)}
+            {/each}
+          </ul>
+        {/if}
+        {#if donePlans.length > 0}
+          <h4 class="im-section-title">Done</h4>
+          <ul class="im-list">
+            {#each donePlans as entry (entry.planID)}
+              {@render planCard(entry)}
+            {/each}
+          </ul>
+        {/if}
       {:else}
-        <ul class="im-plan-list">
-          {#each activePlans as entry (entry.planID)}
-            {@render planCard(entry)}
-          {/each}
-        </ul>
-      {/if}
-      {#if donePlans.length > 0}
-        <h4 class="im-section-title">Done</h4>
-        <ul class="im-plan-list">
-          {#each donePlans as entry (entry.planID)}
-            {@render planCard(entry)}
-          {/each}
-        </ul>
-      {/if}
-    </aside>
+        <input
+          type="search"
+          class="im-filter"
+          aria-label="Filter blueprints"
+          placeholder="Filter, or search all"
+          bind:value={query}
+          oninput={onQuery}
+        />
+        {#if onlineCount === 0}
+          <p class="im-note">Sign a pilot in here to list their blueprints.</p>
+        {:else if owned.length === 0}
+          <p class="im-note">{unreadOnline || refreshing ? "Looking at your blueprints..." : "None of your signed-in pilots holds a blueprint."}</p>
+        {:else if ownedShown.length === 0}
+          <p class="im-note">None of your blueprints is called that.</p>
+        {:else}
+          <h4 class="im-section-title">Yours</h4>
+          <ul class="im-list" aria-label="Your blueprints">
+            {#each ownedShown as blueprint (blueprint.itemID)}
+              <li>
+                <button
+                  type="button"
+                  class="im-item"
+                  class:on={openPlan === null && productTypeID === blueprint.productTypeID}
+                  onclick={() => chooseOwned(String(blueprint.itemID))}
+                >
+                  <TypeIcon typeID={blueprint.productTypeID} name={blueprint.blueprintName} size="md" />
+                  <span class="im-item-text">
+                    <span class="im-item-name">{(blueprint.blueprintName ?? "An unnamed blueprint").replace(/ Blueprint$/, "")}</span>
+                    <span class="im-item-sub">
+                      {blueprint.original ? "Original" : `Copy, ${blueprint.runs ?? 0} ${blueprint.runs === 1 ? "run" : "runs"}`}
+                      {blueprint.materialEfficiency}/{blueprint.timeEfficiency} - {blueprint.characterName}{blueprint.busy ? " - in a job" : ""}
+                    </span>
+                  </span>
+                </button>
+              </li>
+            {/each}
+          </ul>
+        {/if}
 
-    <div class="im-plan">
-      {#if openPlan === null}
-        <div class="im-pick">
-          <div class="im-source" role="radiogroup" aria-label="Choose from">
-            <button type="button" role="radio" class="im-source-item" class:on={source === "owned"} aria-checked={source === "owned"} onclick={() => (source = "owned")}>Owned</button>
-            <button type="button" role="radio" class="im-source-item" class:on={source === "any"} aria-checked={source === "any"} onclick={() => (source = "any")}>Any</button>
-          </div>
-
-          {#if source === "owned"}
-            {#if onlineCount === 0}
-              <p class="im-note">Sign a pilot in here to list their blueprints.</p>
-            {:else if owned.length === 0}
-              <p class="im-note">{refreshing ? "Looking at your blueprints..." : "None of your signed-in pilots holds a blueprint."}</p>
-            {:else}
-              <label class="im-field im-grow">
-                <span>Blueprint</span>
-                <select value={ownedChoice} onchange={(event) => chooseOwned(event.currentTarget.value)}>
-                  <option value="">Choose a blueprint</option>
-                  {#each owned as blueprint (blueprint.itemID)}
-                    <option value={String(blueprint.itemID)}>
-                      {blueprint.blueprintName ?? "An unnamed blueprint"} - {ownedWords(blueprint)} - {blueprint.characterName}{blueprint.busy ? " (in a job)" : ""}
-                    </option>
-                  {/each}
-                </select>
-              </label>
-            {/if}
-          {:else}
-            <label class="im-field im-grow">
-              <span>Find a blueprint</span>
-              <input type="search" placeholder="Hobgoblin II" bind:value={query} oninput={onQuery} />
-            </label>
-          {/if}
-        </div>
-
-        {#if source === "any"}
+        {#if query.trim().length < 2}
+          <p class="im-note">Type two letters to search every blueprint too.</p>
+        {:else}
+          <h4 class="im-section-title">All blueprints</h4>
           {#if searchError}
             <p class="im-error" role="alert">{searchError}</p>
-          {:else if query.trim().length >= 2 && !searching && matches.length === 0}
+          {:else if searching && matches.length === 0}
+            <p class="im-note">Looking...</p>
+          {:else if matches.length === 0}
             <p class="im-note">No blueprint is called that.</p>
-          {:else if matches.length > 0}
-            <ul class="im-matches" aria-label="Blueprints found">
+          {:else}
+            <ul class="im-list" aria-label="All blueprints">
               {#each matches as match (match.blueprintTypeID)}
                 <li>
-                  <button type="button" class="im-match" class:on={productTypeID === match.productTypeID} onclick={() => chooseMatch(match)}>
-                    <TypeIcon typeID={match.productTypeID} name={match.productName ?? match.blueprintName} />
-                    <span>{match.blueprintName}</span>
-                    {#if match.activity === "reaction"}<span class="im-chip">reaction</span>{/if}
+                  <button
+                    type="button"
+                    class="im-item"
+                    class:on={openPlan === null && productTypeID === match.productTypeID}
+                    onclick={() => chooseMatch(match)}
+                  >
+                    <TypeIcon typeID={match.productTypeID} name={match.productName ?? match.blueprintName} size="md" />
+                    <span class="im-item-text">
+                      <span class="im-item-name">{match.blueprintName.replace(/ (Blueprint|Reaction Formula)$/, "")}</span>
+                      <span class="im-item-sub">{match.activity === "reaction" ? "Reaction formula" : "Blueprint"}</span>
+                    </span>
                   </button>
                 </li>
               {/each}
@@ -901,7 +971,9 @@
           {/if}
         {/if}
       {/if}
+    </aside>
 
+    <div class="im-plan">
       {#if productTypeID === null}
         <p class="im-empty">Choose a blueprint and this will work out everything it takes to build.</p>
       {:else}
@@ -911,27 +983,12 @@
           </span>
           <div class="im-head-title">
             <h3>
-              {productName ?? "An unnamed item"}
+              <span>{productName ?? "An unnamed item"}</span>
               {#if openPlan?.status === "done"}<span class="im-chip">done</span>{/if}
               {#if openPlan === null}<span class="im-chip">not saved</span>{/if}
             </h3>
-            <input
-              class="im-note-input"
-              aria-label="Note"
-              placeholder="Add a note"
-              maxlength="500"
-              bind:value={noteText}
-              onchange={commitNote}
-            />
-            {#if chain}
-              {@const top = chain.lines.get(productTypeID)}
-              {#if top?.blueprint}
-                <p class="im-note">
-                  {top.blueprint.assumed ? "No owned blueprint - assumed" : "Owned blueprint -"}
-                  material {top.blueprint.materialEfficiency}%, time {top.blueprint.timeEfficiency}%.
-                  No facility bonus counted.
-                </p>
-              {/if}
+            {#if termsWords}
+              <p class="im-terms">{termsWords} <span class="im-terms-quiet">- no facility bonus counted</span></p>
             {/if}
           </div>
           <div class="im-head-actions">
@@ -956,6 +1013,14 @@
             {/if}
           </div>
         </header>
+        <input
+          class="im-note-input"
+          aria-label="Note"
+          placeholder="Add a note"
+          maxlength="500"
+          bind:value={noteText}
+          onchange={commitNote}
+        />
         {#if planError}
           <p class="im-error" role="alert">{planError}</p>
         {/if}
@@ -1210,17 +1275,18 @@
     align-items: start;
     margin-top: 0.75rem;
   }
-  .im-plans,
+  .im-side,
   .im-plan {
     background: var(--color-panel-3);
     border: 1px solid var(--color-line);
     border-radius: var(--radius-frame);
     min-width: 0;
   }
-  .im-plans {
+  .im-side {
     display: grid;
-    gap: 0.4rem;
-    padding: 0.6rem;
+    align-content: start;
+    gap: 0.5rem;
+    padding: 0 0.6rem 0.6rem;
   }
   /* ⚠ ITS OWN CONTAINER. The rows inside fold to their narrow layout by the
    * width of THIS pane, not the window: beside the plan list a 700px window
@@ -1228,30 +1294,67 @@
    * their wide grid and scrolled sideways (seen live, 2026-10-01). */
   .im-plan {
     display: grid;
+    align-content: start;
     gap: 0.75rem;
     padding: 1rem 1.1rem;
     container-type: inline-size;
   }
-  .im-plans-head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
+
+  /* The left column's two views, as a tab strip across its top. */
+  .im-tabs {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    margin: 0 -0.6rem;
+    border-bottom: 1px solid var(--color-line);
   }
-  .im-plans-head h3,
+  /* ⚠ NOT `class:active` — a bare `button.active` is a filled accent control
+   * in the app's component layer. */
+  .im-tab {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.4rem;
+    min-height: 40px;
+    padding: 0 0.6rem;
+    background: transparent;
+    border: 0;
+    border-bottom: 2px solid transparent;
+    color: var(--color-muted);
+    font-weight: 500;
+    cursor: pointer;
+  }
+  .im-tab.on {
+    border-bottom-color: var(--color-accent);
+    color: var(--color-text-bright);
+  }
+  .im-count-badge {
+    min-width: 1.3rem;
+    padding: 0 0.3rem;
+    border: 1px solid var(--color-line-strong);
+    color: var(--color-cell);
+    font-size: 11px;
+    text-align: center;
+  }
+  .im-new {
+    justify-self: start;
+    min-height: 32px;
+    padding: 0 0.7rem;
+  }
+  .im-filter {
+    width: 100%;
+    min-height: 36px;
+  }
   .im-section-title {
-    margin: 0;
+    margin: 0.2rem 0 0;
     font-size: 11px;
     font-weight: 600;
     letter-spacing: 0.08em;
     text-transform: uppercase;
     color: var(--color-muted);
   }
-  .im-new {
-    min-height: 28px;
-    padding: 0 0.6rem;
-  }
-  .im-plan-list,
-  .im-matches,
+
+  /* One row in either list: icon, name, and one muted line under it. */
+  .im-list,
   .im-buy,
   .im-tree,
   .im-tree-kids {
@@ -1259,17 +1362,17 @@
     margin: 0;
     padding: 0;
   }
-  .im-plan-list {
+  .im-list {
     display: grid;
-    gap: 0.3rem;
+    gap: 0.2rem;
   }
-  .im-plan-card {
+  .im-item {
     display: flex;
     align-items: center;
     gap: 0.55rem;
     width: 100%;
     min-height: 44px;
-    padding: 0.45rem 0.55rem;
+    padding: 0.4rem 0.5rem;
     background: transparent;
     border: 1px solid transparent;
     border-radius: var(--radius-control);
@@ -1277,69 +1380,37 @@
     text-align: left;
     cursor: pointer;
   }
-  .im-plan-card:hover:not(.on) {
+  .im-item:hover:not(.on) {
     background: var(--color-panel);
     border-color: var(--color-line);
   }
-  .im-plan-card.on {
+  .im-item.on {
     background: var(--color-panel-2);
     border-color: var(--color-accent-dim);
   }
-  .im-plan-card-text {
+  .im-item-text {
     display: grid;
     flex: 1 1 auto;
     min-width: 0;
   }
-  .im-plan-card-name {
+  .im-item-name {
     color: var(--color-text-bright);
     overflow: hidden;
     white-space: nowrap;
     text-overflow: ellipsis;
   }
-  .im-plan-card-sub {
+  .im-item-sub {
     color: var(--color-muted);
     font-size: 0.8rem;
     overflow: hidden;
     white-space: nowrap;
     text-overflow: ellipsis;
   }
-  .im-pick {
+  .im-item-foot {
     display: flex;
-    flex-wrap: wrap;
-    align-items: flex-end;
-    gap: 0.75rem;
-  }
-  .im-source {
-    display: flex;
-    border: 1px solid var(--color-line-strong);
-  }
-  /* ⚠ NOT `class:active` — a bare `button.active` is a filled accent control
-   * in the app's component layer. */
-  .im-source-item {
-    min-height: 38px;
-    padding: 0 0.9rem;
-    background: transparent;
-    border: 0;
-    color: var(--color-muted);
-    cursor: pointer;
-  }
-  .im-source-item.on {
-    background: var(--color-panel-2);
-    color: var(--color-text-bright);
-  }
-  .im-field {
-    display: grid;
-    gap: 0.25rem;
-    color: var(--color-muted);
-    font-size: 0.8rem;
-  }
-  .im-field input,
-  .im-field select {
-    min-height: 38px;
-  }
-  .im-grow {
-    flex: 1 1 18rem;
-    min-width: 0;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 0.25rem;
   }
   .im-note,
   .im-empty {
@@ -1351,30 +1422,6 @@
     margin: 0;
     color: var(--color-danger);
     font-size: 0.85rem;
-  }
-  .im-matches {
-    display: grid;
-    max-height: 16rem;
-    overflow-y: auto;
-    border: 1px solid var(--color-line);
-  }
-  .im-match {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    width: 100%;
-    min-height: 40px;
-    padding: 0 0.6rem;
-    background: transparent;
-    border: 0;
-    border-top: 1px solid var(--color-row-line);
-    color: var(--color-text);
-    text-align: left;
-    cursor: pointer;
-  }
-  .im-match.on {
-    background: var(--color-panel-2);
-    color: var(--color-text-bright);
   }
   .im-chip,
   .im-tag {
@@ -1397,9 +1444,9 @@
     color: var(--color-danger);
   }
   .im-head {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: flex-start;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
     gap: 0.9rem;
   }
   .im-head-icon {
@@ -1408,13 +1455,13 @@
     justify-content: center;
     width: 3.25rem;
     height: 3.25rem;
+    overflow: hidden;
     background: var(--color-panel-2);
     border: 1px solid var(--color-line);
   }
   .im-head-title {
     display: grid;
-    flex: 1 1 14rem;
-    gap: 0.2rem;
+    gap: 0.25rem;
     min-width: 0;
   }
   .im-head-title h3 {
@@ -1427,11 +1474,30 @@
     font-weight: 500;
     color: var(--color-text-bright);
   }
+  .im-terms {
+    margin: 0;
+    color: var(--color-cell);
+    font-size: 0.85rem;
+  }
+  .im-terms-quiet {
+    color: var(--color-muted);
+  }
+  .im-head-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+  .im-head-actions button {
+    min-height: 34px;
+  }
+  /* The note: a quiet line under the header that reads as text until used. */
   .im-note-input {
-    min-height: 28px;
-    padding: 0 0.3rem;
+    width: 100%;
+    min-height: 30px;
+    padding: 0 0.4rem;
     background: transparent;
     border: 1px solid transparent;
+    border-bottom-color: var(--color-row-line);
     color: var(--color-muted);
     font-size: 0.85rem;
   }
@@ -1440,15 +1506,6 @@
     border-color: var(--color-line-strong);
     background: var(--color-field);
     color: var(--color-text);
-  }
-  .im-head-actions {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 0.5rem;
-  }
-  .im-head-actions button {
-    min-height: 34px;
   }
   .im-runs {
     display: flex;
@@ -1565,12 +1622,6 @@
     overflow: hidden;
     clip: rect(0 0 0 0);
     white-space: nowrap;
-  }
-  .im-plan-card-foot {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    margin-top: 0.25rem;
   }
   .im-meter {
     flex: 1 1 auto;
@@ -1701,11 +1752,11 @@
     .im-body {
       grid-template-columns: minmax(0, 1fr);
     }
-    .im-pick > * {
-      flex: 1 1 100%;
+    .im-head {
+      grid-template-columns: auto minmax(0, 1fr);
     }
     .im-head-actions {
-      flex: 1 1 100%;
+      grid-column: 1 / -1;
     }
     .im-head-actions button {
       flex: 1 1 auto;
