@@ -424,3 +424,14 @@ test("an empty or unrecognizable error reports a decline without inventing a cau
   assert.match(message, /gave no reason/i);
   assert.doesNotMatch(message, /material|fee|slot|skill/i);
 });
+
+test("R109: a blueprint in the wrong place is refused in plain words, not the generic sentence", () => {
+  assert.equal(
+    industryRefusalMessage(new Error("IndustryValidationError: INVALID_BLUEPRINT_LOCATION")),
+    "That blueprint is not somewhere a job can start from. Put it in a hangar where industry is offered.",
+  );
+  assert.equal(
+    industryRefusalMessage(new Error("IndustryValidationError: BLUEPRINT_WRONG_FACILITY")),
+    "That blueprint is in a different facility. A job starts where its blueprint is.",
+  );
+});

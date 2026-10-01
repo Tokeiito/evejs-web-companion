@@ -24,6 +24,9 @@
   import { getIndustryRecipeClosure, listActiveServerBots, searchIndustryBlueprints } from "../app/api.ts";
   import { readIndustryStock, type IndustryStock } from "../app/industryStockRead.ts";
   import type { OnlinePilot } from "../app/piCorpRead.ts";
+  import { installTarget } from "../app/industryInstallTarget.ts";
+  import { installFrom, jobSupply, startNext } from "../bridge/industryJobs.ts";
+  import type { TabID } from "./tabs.ts";
   import { loadKnownCharacters } from "../app/knownCharacters.ts";
   import {
     askAsAnyone,
@@ -78,7 +81,14 @@
   } from "../bridge/industryStock.ts";
   import TypeIcon from "./TypeIcon.svelte";
 
-  let { sessions = [] }: { sessions?: readonly Session[] } = $props();
+  let {
+    sessions = [],
+    onOpen,
+  }: {
+    sessions?: readonly Session[];
+    /** Open a per-pilot panel on that pilot's workspace (the Industry panel, to start a job). */
+    onOpen?: (tab: TabID, sessionID?: string) => void;
+  } = $props();
 
   // The left column's two views (option C, 2026-10-01): your saved plans, or
   // the blueprints to start one from. The right side is only ever the plan.
@@ -176,6 +186,21 @@
   const owned = $derived(ownedBlueprints(reads));
   const terms = $derived(ownedTerms(owned));
   const held = $derived(heldByType(stock?.holdings ?? []));
+  /** Every online pilot's jobs, as their own industry read holds them. */
+  const jobLists = $derived.by(() => {
+    void storeTick;
+    return onlineSessions().map(({ session }) => session.store.industry.get().jobs);
+  });
+  /** Each online pilot and the station or structure it is docked in, for the handoff. */
+  const dockedAt = $derived.by(() => {
+    void storeTick;
+    const docked = new Map<number, number | null>();
+    for (const { session, characterID } of onlineSessions()) {
+      const online = session.store.station.get().online;
+      docked.set(characterID, online?.stationID ?? online?.structureID ?? null);
+    }
+    return docked;
+  });
   const places = $derived(holdingsByType(stock?.holdings ?? []));
 
   const openPlan = $derived(plans.find((entry) => entry.planID === openPlanID) ?? null);
@@ -193,7 +218,20 @@
     if (productTypeID === null || book === null || runs === null) {
       return null;
     }
-    return resolveIndustryChain({ book, productTypeID, runs, choices: resolverChoices(choices, terms), held });
+    return resolveIndustryChain({
+      book,
+      productTypeID,
+      runs,
+      choices: resolverChoices(choices, terms),
+      held,
+      inProduction: jobSupply(jobLists, book).inProduction,
+    });
+  });
+  const startGroups = $derived(chain ? startNext(chain) : []);
+  const allRunning = $derived.by(() => {
+    if (!chain || productTypeID === null) return false;
+    const top = chain.lines.get(productTypeID);
+    return top !== undefined && top.short === 0 && top.inProduction > 0;
   });
   const standing = $derived(chain ? planStanding(chain) : null);
   const stale = $derived(stock ? staleWords(stock.holdings, browserNowMs) : null);
@@ -212,6 +250,7 @@
         runs: entry.runs,
         choices: resolverChoices(entry.choices, terms),
         held,
+        inProduction: jobSupply(jobLists, entryBook).inProduction,
       });
       if (entryChain) standings.set(entry.planID, planStanding(entryChain));
     }
@@ -368,6 +407,25 @@
     } catch {
       copied = "Your browser would not copy the list.";
     }
+  }
+
+  /**
+   * Open the Industry panel of the pilot who holds the best idle copy of this
+   * step's blueprint, with the job filled in. The facility, the cost and the
+   * confirm stay that panel's (app/industryInstallTarget.ts).
+   */
+  function setUp(line: IndustryLine): void {
+    const from = installFrom(line, owned, dockedAt);
+    const session = from ? onlineSessions().find((entry) => entry.characterID === from.characterID) : undefined;
+    if (!from || !session) return;
+    installTarget.ask({
+      characterID: from.characterID,
+      blueprintItemID: from.itemID,
+      facilityID: from.facilityID ?? 0,
+      activity: line.obtain === "react" ? "reaction" : "manufacturing",
+      runs: line.jobRuns[0] ?? line.runs,
+    });
+    onOpen?.("industry", session.session.id);
   }
 
   function togglePlaces(typeID: number): void {
@@ -903,6 +961,8 @@
           <!-- THE VERDICT FIRST, so a screen reader reaches the answer before the tree. -->
           {#if stock === null}
             <p class="im-verdict">{stockReading ? "Looking at your hangars..." : "What you hold has not been read yet."}</p>
+          {:else if allRunning}
+            <p class="im-verdict tone-ok">All of it is in production.{openPlan?.status === "active" ? " Mark it done once it is delivered." : ""}</p>
           {:else if standing && standing.missing === 0}
             <p class="im-verdict tone-ok">You have everything to build {countWords(chain.root.quantity)} {productName ?? "of these"}.</p>
           {:else if standing}
@@ -965,6 +1025,43 @@
             </ul>
           {/if}
 
+          <!-- START NEXT, by stage as a build is worked. A step whose inputs are all
+               in hand can be set up in the Industry panel of the pilot who holds its
+               blueprint; starting it is still that panel's confirm. -->
+          {#if startGroups.length > 0}
+            <h4 class="im-section-title">Start next</h4>
+            {#if toBuy.length > 0}
+              <p class="im-note">Buy {countWords(toBuy.length)} {toBuy.length === 1 ? "item" : "items"} first - see Missing.</p>
+            {/if}
+            {#each startGroups as group (group.stage)}
+              <h5 class="im-stage">{group.label}</h5>
+              <ul class="im-start" aria-label={group.label}>
+                {#each group.steps as step (step.line.typeID)}
+                  {@const from = installFrom(step.line, owned, dockedAt)}
+                  <li class="im-start-row" class:ready={step.canStart}>
+                    <span class="im-buy-name">
+                      <TypeIcon typeID={step.line.typeID} name={lineName(step.line)} />
+                      {lineName(step.line)}
+                    </span>
+                    <span class="im-start-runs">
+                      {countWords(step.line.runs)} {step.line.runs === 1 ? "run" : "runs"}{step.line.jobRuns.length > 1 ? ` in ${step.line.jobRuns.length} jobs` : ""}
+                      {#if step.line.inProduction > 0}- {countWords(step.line.inProduction)} already in production{/if}
+                    </span>
+                    {#if !step.canStart}
+                      <span class="im-pill tone-act">waits for inputs</span>
+                    {:else if from}
+                      <button type="button" class="im-setup" title="Opens {from.characterName}'s Industry panel with this job filled in" onclick={() => setUp(step.line)}>
+                        Set up in Industry
+                      </button>
+                    {:else}
+                      <span class="im-pill" title="Nobody online here holds an idle copy of its blueprint in a hangar where industry is offered">no usable blueprint</span>
+                    {/if}
+                  </li>
+                {/each}
+              </ul>
+            {/each}
+          {/if}
+
           <!-- THE TREE. Each type is worked once for the whole plan; a type
                that appears again is marked "above" rather than drawn twice. -->
           {#snippet treeNode(node: IndustryNode, isRoot: boolean)}
@@ -990,6 +1087,9 @@
                     <span class="im-tag" title="Drawn in full above">above</span>
                   {/if}
                   {#if line.planetary}<span class="im-tag">PI</span>{/if}
+                  {#if line.inProduction > 0 && !node.repeat}
+                    <span class="im-tag ok" title="Jobs already running for it">{countWords(line.inProduction)} in production</span>
+                  {/if}
                   {#if line.held > 0 && !node.repeat}
                     <span class="im-tag ok" title="Used from what you hold">{countWords(line.held)} held</span>
                   {/if}
@@ -1347,6 +1447,38 @@
     color: var(--color-muted);
     font-size: 11px;
   }
+  .im-stage {
+    margin: 0.3rem 0 0;
+    font-size: 0.8rem;
+    font-weight: 500;
+    color: var(--color-cell);
+  }
+  .im-start {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+  .im-start-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(8rem, auto) auto;
+    gap: 0.6rem;
+    align-items: center;
+    min-height: 40px;
+    padding: 0.2rem 0.6rem;
+    border-top: 1px solid var(--color-line);
+    border-left: 3px solid var(--color-line-strong);
+  }
+  .im-start-row.ready {
+    border-left-color: var(--color-good);
+  }
+  .im-start-runs {
+    color: var(--color-muted);
+    font-size: 0.85rem;
+  }
+  .im-setup {
+    min-height: 32px;
+    padding: 0 0.7rem;
+  }
   .im-meter {
     flex: 1 1 auto;
     height: 4px;
@@ -1496,6 +1628,19 @@
     }
     .im-obtain,
     .im-obtain-fixed {
+      min-height: 40px;
+    }
+    .im-start-row,
+    .im-buy-row {
+      grid-template-columns: minmax(0, 1fr) auto;
+    }
+    .im-start-runs,
+    .im-buy-held {
+      grid-column: 1 / -1;
+      grid-row: 2;
+      text-align: left;
+    }
+    .im-setup {
       min-height: 40px;
     }
   }

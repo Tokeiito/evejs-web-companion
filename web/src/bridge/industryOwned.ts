@@ -45,6 +45,12 @@ export interface OwnedBlueprint {
   readonly timeEfficiency: number;
   /** In a job right now. Still owned, still plannable. */
   readonly busy: boolean;
+  /**
+   * The industry facility it sits in, or null when it is somewhere no job can
+   * start from (a ship, a container, a station without industry). The server
+   * installs a job only in the blueprint's own facility.
+   */
+  readonly facilityID: number | null;
 }
 
 /**
@@ -111,6 +117,7 @@ export function ownedBlueprints(reads: readonly PilotBlueprintRead[]): OwnedBlue
         materialEfficiency: row.materialEfficiency,
         timeEfficiency: row.timeEfficiency,
         busy: row.jobID !== null,
+        facilityID: row.facilityID,
       });
     }
   }
