@@ -826,7 +826,7 @@
       {:else if !plansLoaded}
         <p class="im-note">Reading your saved plans...</p>
       {:else if activePlans.length === 0}
-        <p class="im-note">No plans yet. Choose a blueprint and save it.</p>
+        <p class="im-note">{donePlans.length > 0 ? "No active plans." : "No plans yet. Choose a blueprint and save it."}</p>
       {:else}
         <ul class="im-plan-list">
           {#each activePlans as entry (entry.planID)}
@@ -1161,7 +1161,7 @@
                       needs {line.blueprint.invention.copies} invented {line.blueprint.invention.copies === 1 ? "copy" : "copies"}
                     </span>
                   {/if}
-                  {#if line.blueprint && !isRoot && line.blueprint.assumed}
+                  {#if line.blueprint && !isRoot && line.blueprint.assumed && line.obtain === "build" && line.runs > 0}
                     <span class="im-tag" title="No pilot here owns this blueprint">assumed material {line.blueprint.materialEfficiency}%</span>
                   {/if}
                   {#if line.buyReason === "cycle"}
@@ -1222,10 +1222,15 @@
     gap: 0.4rem;
     padding: 0.6rem;
   }
+  /* ⚠ ITS OWN CONTAINER. The rows inside fold to their narrow layout by the
+   * width of THIS pane, not the window: beside the plan list a 700px window
+   * leaves the pane about 400px, and measured by the window the tree rows kept
+   * their wide grid and scrolled sideways (seen live, 2026-10-01). */
   .im-plan {
     display: grid;
     gap: 0.75rem;
     padding: 1rem 1.1rem;
+    container-type: inline-size;
   }
   .im-plans-head {
     display: flex;
