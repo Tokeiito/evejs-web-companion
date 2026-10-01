@@ -1692,6 +1692,9 @@
     padding: 0 0.5rem;
   }
   .im-obtain-fixed {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     color: var(--color-muted);
   }
   @container (max-width: 640px) {
@@ -1708,8 +1711,9 @@
       flex: 1 1 auto;
       min-height: 40px;
     }
+    /* Name, count and the build/buy button on one line; the tags below. */
     .im-node {
-      grid-template-columns: minmax(0, 1fr) auto;
+      grid-template-columns: minmax(0, 1fr) auto auto;
     }
     .im-tags {
       grid-column: 1 / -1;
