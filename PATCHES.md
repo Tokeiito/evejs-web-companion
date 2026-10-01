@@ -4,7 +4,7 @@ Every branch carried on top of `vendor`, in the order it is merged into `main`. 
 authority: a patch not listed here is lost on the next rebuild, and a patch listed here is one
 somebody has decided is still needed. See `CLAUDE.md` for the workflow.
 
-**Vendor:** `origin/master` at `13da177` (2026-10-01, PRs #55-#61 merged). `main` as it ran before this sync is tag `custom/2026-10-01.11`.
+**Vendor:** `origin/master` at `79c02b2` (2026-10-01, PR #62 merged). `main` as it ran before this sync is tag `custom/2026-10-01.12`.
 
 The `On main` column is a cache of `git branch --merged main`; if the two disagree, ancestry wins.
 
@@ -12,7 +12,14 @@ The `On main` column is a cache of `git branch --merged main`; if the two disagr
 | - | ------ | --------------- | ----- | -------- | ------- |
 | 1 | `local/tooling` | This workflow: `CLAUDE.md`, this manifest, and the Claude Code hooks registered in `.claude/settings.local.json` -- `guard-live-bot.sh` (refuses restarts that would kill running bots) and `rebuild-when-stale.sh`, each with its test | `CLAUDE.md`, `PATCHES.md`, `.claude/hooks/` | never | yes |
 | 2 | `local/deploy` | The hive release pipeline: a `release/*` tag on Gitea builds and pushes the image and moves `deploy/prod`, which Portainer polls; `compose.hive.yaml` joins the evej stack's network and volume as externals | `.gitea/workflows/release.yaml`, `compose.hive.yaml`, `docs/DEPLOYMENT.md` | never | yes |
-| 3 | `feat/companion-industry-decryptor-handoff` | Follow-up to #55: the Industry Manager hands a plan's decryptor to the Industry panel. Set up in Industry offers an invention with its planned decryptor, counted as an input like the datacores (one per run, in the hangar where the copy is), and the request carries it for the panel to fill in. The manager also words decryptors as the panel does (chance, runs, material and time). | `web/src/bridge/industryJobs.ts`, `web/src/ui/IndustryManager.svelte`, `web/src/bridge/industryJobs.test.ts` | not yet | yes |
+
+## Retired 2026-10-01 (seventh sync): upstream merged one
+
+Upstream merged PR #62 as a true merge, so the branch became an ancestor of `vendor` and was
+retired outright. `main` as it ran before this sync is tag `custom/2026-10-01.12`; the branch is
+`archive/feat/companion-industry-decryptor-handoff/2026-10-01.12`.
+
+- `feat/companion-industry-decryptor-handoff` -- [#62](https://github.com/rrfarmer/evejs-web-companion/pull/62)
 
 ## Retired 2026-10-01 (sixth sync): upstream merged one of ours
 
