@@ -307,7 +307,11 @@
   /** Owned blueprints whose name holds the filter text. */
   const ownedShown = $derived.by(() => {
     const needle = query.trim().toLowerCase();
-    return needle.length === 0 ? owned : owned.filter((blueprint) => (blueprint.blueprintName ?? "").toLowerCase().includes(needle));
+    // The name as listed, without the " Blueprint" every one carries: matched
+    // against it, "ri" kept them all.
+    return needle.length === 0
+      ? owned
+      : owned.filter((blueprint) => (blueprint.blueprintName ?? "").replace(/ Blueprint$/, "").toLowerCase().includes(needle));
   });
   /**
    * The plan's terms in one line: which blueprint it is planned with, at what
