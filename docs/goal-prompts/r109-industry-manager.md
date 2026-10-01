@@ -1,6 +1,6 @@
 # Goal R109: Industry Manager — a build tree you can save and work through
 
-**Status:** All six slices built on `feat/companion-industry-manager` (2026-10-01). Not yet exercised on the running companion. **Client + BFF only; no eve.js change.**
+**Status:** All six slices built and exercised on the running companion (2026-10-01). The layout of section 4 became option C after the first live run: the blueprint browser lives in the left column as a second tab beside the plans, and the right side is only the plan. **Client + BFF only; no eve.js change.**
 
 This is a design document, not a brief to start coding from. It follows R108 (the
 Planetary Industry manager) on purpose: same spine-first shape, same intent-only saved
