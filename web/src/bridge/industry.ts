@@ -516,6 +516,8 @@ const REFUSAL_SENTENCES: Readonly<Record<string, string>> = {
   INVALID_ACTIVITY: "That kind of work cannot be done here.",
   INCOMPATIBLE_ACTIVITY: "That blueprint cannot be used for that kind of work.",
   MISSING_FACILITY: "That facility could not be found.",
+  INVALID_BLUEPRINT_LOCATION: "That blueprint is not somewhere a job can start from. Put it in a hangar where industry is offered.",
+  BLUEPRINT_WRONG_FACILITY: "That blueprint is in a different facility. A job starts where its blueprint is.",
   FACILITY_OFFLINE: "That facility is offline.",
   FACILITY_ACTIVITY: "That facility does not do that kind of work.",
   FACILITY_DENIED: "That facility will not take this job.",
