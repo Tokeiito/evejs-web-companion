@@ -21,9 +21,13 @@
   import { onMount, untrack } from "svelte";
   import type { Session } from "../app/sessions.ts";
   import type { ApiOptions } from "../app/api.ts";
-  import { getIndustryRecipeClosure, listActiveServerBots, searchIndustryBlueprints } from "../app/api.ts";
+  import { getIndustryRecipeClosure, listActiveServerBots, loadSystemGraph, searchIndustryBlueprints } from "../app/api.ts";
   import { readIndustryStock, type IndustryStock } from "../app/industryStockRead.ts";
   import type { OnlinePilot } from "../app/piCorpRead.ts";
+  import { installTarget } from "../app/industryInstallTarget.ts";
+  import { installBlockWords, installCheck, jobSupply, startNext, type InstallPilot } from "../bridge/industryJobs.ts";
+  import { buildSystemGraph, distancesFrom, type SystemGraph } from "../nav/routeSolver.ts";
+  import type { TabID } from "./tabs.ts";
   import { loadKnownCharacters } from "../app/knownCharacters.ts";
   import {
     askAsAnyone,
@@ -78,7 +82,14 @@
   } from "../bridge/industryStock.ts";
   import TypeIcon from "./TypeIcon.svelte";
 
-  let { sessions = [] }: { sessions?: readonly Session[] } = $props();
+  let {
+    sessions = [],
+    onOpen,
+  }: {
+    sessions?: readonly Session[];
+    /** Open a per-pilot panel on that pilot's workspace (the Industry panel, to start a job). */
+    onOpen?: (tab: TabID, sessionID?: string) => void;
+  } = $props();
 
   // The left column's two views (option C, 2026-10-01): your saved plans, or
   // the blueprints to start one from. The right side is only ever the plan.
@@ -176,6 +187,46 @@
   const owned = $derived(ownedBlueprints(reads));
   const terms = $derived(ownedTerms(owned));
   const held = $derived(heldByType(stock?.holdings ?? []));
+  /** Every online pilot's jobs, as their own industry read holds them. */
+  const jobLists = $derived.by(() => {
+    void storeTick;
+    return onlineSessions().map(({ session }) => session.store.industry.get().jobs);
+  });
+  /**
+   * What the handoff checks about each online pilot: where it is, its skills,
+   * the facilities its own industry read offers, and its stock with places.
+   */
+  const installPilots = $derived.by(() => {
+    void storeTick;
+    const pilots = new Map<number, InstallPilot>();
+    for (const { session, characterID, characterName } of onlineSessions()) {
+      const online = session.store.station.get().online;
+      const skills = session.store.skills.get().skills;
+      pilots.set(characterID, {
+        characterName,
+        solarSystemID: online?.solarSystemID ?? null,
+        dockedAt: online?.stationID ?? online?.structureID ?? null,
+        skills: skills === null ? null : new Map(skills.map((skill) => [skill.typeID, skill.level])),
+        facilities: new Map(session.store.industry.get().facilities.map((facility) => [facility.facilityID, facility.solarSystemID])),
+        stock: stock?.hangars.get(characterID) ?? null,
+      });
+    }
+    return pilots;
+  });
+  // The stargate graph, for how far a facility is: the same one the server
+  // counts jumps over. Read once per open window; static data.
+  let systemGraph = $state<SystemGraph | null>(null);
+  const jumpCache = new Map<number, Map<number, number>>();
+  function jumpsBetween(fromSystemID: number, toSystemID: number): number | null {
+    if (fromSystemID === toSystemID) return 0;
+    if (systemGraph === null) return null;
+    let distances = jumpCache.get(fromSystemID);
+    if (!distances) {
+      distances = distancesFrom(systemGraph, fromSystemID);
+      jumpCache.set(fromSystemID, distances);
+    }
+    return distances.get(toSystemID) ?? null;
+  }
   const places = $derived(holdingsByType(stock?.holdings ?? []));
 
   const openPlan = $derived(plans.find((entry) => entry.planID === openPlanID) ?? null);
@@ -193,7 +244,20 @@
     if (productTypeID === null || book === null || runs === null) {
       return null;
     }
-    return resolveIndustryChain({ book, productTypeID, runs, choices: resolverChoices(choices, terms), held });
+    return resolveIndustryChain({
+      book,
+      productTypeID,
+      runs,
+      choices: resolverChoices(choices, terms),
+      held,
+      inProduction: jobSupply(jobLists, book).inProduction,
+    });
+  });
+  const startGroups = $derived(chain ? startNext(chain) : []);
+  const allRunning = $derived.by(() => {
+    if (!chain || productTypeID === null) return false;
+    const top = chain.lines.get(productTypeID);
+    return top !== undefined && top.short === 0 && top.inProduction > 0;
   });
   const standing = $derived(chain ? planStanding(chain) : null);
   const stale = $derived(stock ? staleWords(stock.holdings, browserNowMs) : null);
@@ -212,6 +276,7 @@
         runs: entry.runs,
         choices: resolverChoices(entry.choices, terms),
         held,
+        inProduction: jobSupply(jobLists, entryBook).inProduction,
       });
       if (entryChain) standings.set(entry.planID, planStanding(entryChain));
     }
@@ -368,6 +433,27 @@
     } catch {
       copied = "Your browser would not copy the list.";
     }
+  }
+
+  /**
+   * Open the Industry panel of the pilot whose copy passed installCheck, with
+   * the job and its facility filled in. The cost and the confirm stay that
+   * panel's (app/industryInstallTarget.ts).
+   */
+  function setUp(line: IndustryLine): void {
+    const check = installCheck(line, owned, installPilots, jumpsBetween);
+    if (!check.ok) return;
+    const from = check.from;
+    const session = onlineSessions().find((entry) => entry.characterID === from.characterID);
+    if (!session) return;
+    installTarget.ask({
+      characterID: from.characterID,
+      blueprintItemID: from.itemID,
+      facilityID: from.facilityID ?? 0,
+      activity: line.obtain === "react" ? "reaction" : "manufacturing",
+      runs: line.jobRuns[0] ?? line.runs,
+    });
+    onOpen?.("industry", session.session.id);
   }
 
   function togglePlaces(typeID: number): void {
@@ -610,7 +696,7 @@
   }
 
   /**
-   * Read the blueprints of every online pilot not read yet. Runs
+   * Read the blueprints and skills of every online pilot not read yet. Runs
    * when the window opens and whenever a pilot comes online in this tab: a
    * pilot signed in after the window opened used to be listed as holding no
    * blueprints, because nothing had read them (seen live, 2026-10-01).
@@ -626,6 +712,10 @@
         refreshing = false;
         storeTick += 1;
       });
+    }
+    // Skills, for how far each pilot can start a job from where it is.
+    for (const { session } of newcomers) {
+      if (!session.store.skills.get().loaded) void session.flow.loadSkills().catch(() => {});
     }
   }
 
@@ -643,6 +733,7 @@
           storeTick += 1;
           readNewcomers();
         }),
+        session.store.skills.subscribe(() => (storeTick += 1)),
       ]),
     );
     return () => {
@@ -659,6 +750,14 @@
 
   onMount(() => {
     void loadPlans();
+    void ask((options) => loadSystemGraph(options))
+      .then((data) => {
+        systemGraph = buildSystemGraph(data);
+      })
+      .catch(() => {
+        // Without it, a facility in another system reads as out of reach;
+        // one in the pilot's own system is still checked.
+      });
     readNewcomers();
     // Moves the read-at ages on; touches no network.
     const tick = setInterval(() => (browserNowMs = Date.now()), 30_000);
@@ -903,6 +1002,8 @@
           <!-- THE VERDICT FIRST, so a screen reader reaches the answer before the tree. -->
           {#if stock === null}
             <p class="im-verdict">{stockReading ? "Looking at your hangars..." : "What you hold has not been read yet."}</p>
+          {:else if allRunning}
+            <p class="im-verdict tone-ok">All of it is in production.{openPlan?.status === "active" ? " Mark it done once it is delivered." : ""}</p>
           {:else if standing && standing.missing === 0}
             <p class="im-verdict tone-ok">You have everything to build {countWords(chain.root.quantity)} {productName ?? "of these"}.</p>
           {:else if standing}
@@ -965,6 +1066,46 @@
             </ul>
           {/if}
 
+          <!-- START NEXT, by stage as a build is worked. A step whose inputs are all
+               in hand can be set up in the Industry panel of the pilot who holds its
+               blueprint; starting it is still that panel's confirm. -->
+          {#if startGroups.length > 0}
+            <h4 class="im-section-title">Start next</h4>
+            {#if toBuy.length > 0}
+              <p class="im-note">Buy {countWords(toBuy.length)} {toBuy.length === 1 ? "item" : "items"} first - see Missing.</p>
+            {/if}
+            {#each startGroups as group (group.stage)}
+              <h5 class="im-stage">{group.label}</h5>
+              <ul class="im-start" aria-label={group.label}>
+                {#each group.steps as step (step.line.typeID)}
+                  {@const check = installCheck(step.line, owned, installPilots, jumpsBetween)}
+                  <li class="im-start-row" class:ready={step.canStart}>
+                    <span class="im-buy-name">
+                      <TypeIcon typeID={step.line.typeID} name={lineName(step.line)} />
+                      {lineName(step.line)}
+                    </span>
+                    <span class="im-start-runs">
+                      {countWords(step.line.runs)} {step.line.runs === 1 ? "run" : "runs"}{step.line.jobRuns.length > 1 ? ` in ${step.line.jobRuns.length} jobs` : ""}
+                      {#if step.line.inProduction > 0}- {countWords(step.line.inProduction)} already in production{/if}
+                    </span>
+                    {#if !step.canStart}
+                      <span class="im-pill tone-act">waits for inputs</span>
+                    {:else if check.ok}
+                      <button type="button" class="im-setup" title="Opens {check.from.characterName}'s Industry panel with this job filled in" onclick={() => setUp(step.line)}>
+                        Set up in Industry
+                      </button>
+                    {:else}
+                      <span class="im-pill tone-act">cannot start here</span>
+                    {/if}
+                  </li>
+                  {#if step.canStart && !check.ok}
+                    <li class="im-start-why">{installBlockWords(check)}</li>
+                  {/if}
+                {/each}
+              </ul>
+            {/each}
+          {/if}
+
           <!-- THE TREE. Each type is worked once for the whole plan; a type
                that appears again is marked "above" rather than drawn twice. -->
           {#snippet treeNode(node: IndustryNode, isRoot: boolean)}
@@ -990,6 +1131,9 @@
                     <span class="im-tag" title="Drawn in full above">above</span>
                   {/if}
                   {#if line.planetary}<span class="im-tag">PI</span>{/if}
+                  {#if line.inProduction > 0 && !node.repeat}
+                    <span class="im-tag ok" title="Jobs already running for it">{countWords(line.inProduction)} in production</span>
+                  {/if}
                   {#if line.held > 0 && !node.repeat}
                     <span class="im-tag ok" title="Used from what you hold">{countWords(line.held)} held</span>
                   {/if}
@@ -1347,6 +1491,43 @@
     color: var(--color-muted);
     font-size: 11px;
   }
+  .im-stage {
+    margin: 0.3rem 0 0;
+    font-size: 0.8rem;
+    font-weight: 500;
+    color: var(--color-cell);
+  }
+  .im-start {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+  .im-start-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(8rem, auto) auto;
+    gap: 0.6rem;
+    align-items: center;
+    min-height: 40px;
+    padding: 0.2rem 0.6rem;
+    border-top: 1px solid var(--color-line);
+    border-left: 3px solid var(--color-line-strong);
+  }
+  .im-start-why {
+    padding: 0 0.6rem 0.4rem 1.2rem;
+    color: var(--color-muted);
+    font-size: 0.8rem;
+  }
+  .im-start-row.ready {
+    border-left-color: var(--color-good);
+  }
+  .im-start-runs {
+    color: var(--color-muted);
+    font-size: 0.85rem;
+  }
+  .im-setup {
+    min-height: 32px;
+    padding: 0 0.7rem;
+  }
   .im-meter {
     flex: 1 1 auto;
     height: 4px;
@@ -1496,6 +1677,19 @@
     }
     .im-obtain,
     .im-obtain-fixed {
+      min-height: 40px;
+    }
+    .im-start-row,
+    .im-buy-row {
+      grid-template-columns: minmax(0, 1fr) auto;
+    }
+    .im-start-runs,
+    .im-buy-held {
+      grid-column: 1 / -1;
+      grid-row: 2;
+      text-align: left;
+    }
+    .im-setup {
       min-height: 40px;
     }
   }
