@@ -4,7 +4,7 @@ Every branch carried on top of `vendor`, in the order it is merged into `main`. 
 authority: a patch not listed here is lost on the next rebuild, and a patch listed here is one
 somebody has decided is still needed. See `CLAUDE.md` for the workflow.
 
-**Vendor:** `origin/master` at `fecf96d` (2026-10-02, PRs #64-#67 merged). `main` as it ran before this sync is tag `custom/2026-10-02b`.
+**Vendor:** `origin/master` at `2ef352f` (2026-10-03, PR #68 taken upstream's own way via #69). `main` as it ran before this sync is tag `custom/2026-10-03`.
 
 The `On main` column is a cache of `git branch --merged main`; if the two disagree, ancestry wins.
 
@@ -13,8 +13,26 @@ The `On main` column is a cache of `git branch --merged main`; if the two disagr
 | 1 | `local/tooling` | This workflow: `CLAUDE.md`, this manifest, and the Claude Code hooks registered in `.claude/settings.local.json` -- `guard-live-bot.sh` (refuses restarts that would kill running bots) and `rebuild-when-stale.sh`, each with its test | `CLAUDE.md`, `PATCHES.md`, `.claude/hooks/` | never | yes |
 | 2 | `local/deploy` | The hive release pipeline: a `release/*` tag on Gitea builds and pushes the image and moves `deploy/prod`, which Portainer polls; `compose.hive.yaml` joins the evej stack's network and volume as externals | `.gitea/workflows/release.yaml`, `compose.hive.yaml`, `docs/DEPLOYMENT.md` | never | yes |
 | 3 | `feat/companion-industry-facility-bonuses` | The Industry Manager counts facility bonuses and shows job times: each job is worked where it would run (its copy, else the plan Build at / React at facility, saved as `choices.facilities`), with that facility material and time modifiers from GetFacilities (category, group, type matching), and job time the server way (TE, facility, the pilot industry time attribute from skills, required-skill bonuses from dogma 1982). Checked against the server own functions on 64 cases. Not exercised in game, by choice. | `web/src/bridge/industryFacility.ts`, `industry.ts`, `industryRecipes.ts`, `industryChain.ts`, `web/src/ui/IndustryManager.svelte`, `web/src/app/industryPlans.ts`, `api.ts`, `store/types.ts`, `src/industryRecipes.js`, `industryPlanStore.js`, `server.js` (closure route), tests | not yet | yes |
-| 4 | `feat/companion-pi-haul-button` | The Planetary Industry window hauls the ticked colonies: a checkbox per colony and, per pilot, a Haul button that writes the board's saved bot "Planetary: haul" (launch the ticked colonies, board a parked hull with a planetary hold, collect per system, deliver, unload, back into the earlier ship) and starts it through the bot host. "Deliver to" station and "Unload into" division remembered per pilot; division names learned per corporation from an online pilot or a running bot (new BFF read `/api/bots/corp-division-names`). Adds the `planetList` arg (launch-commodities `planets`) and the `board-planetary-hauler` block. | `web/src/ui/PiManager.svelte`, `web/src/app/piDispatch.ts`, `piHaulPrefs.ts`, `api.ts`, `flow.ts`, `web/src/bridge/piBoard.ts`, `web/src/nav/scriptMacros.ts`, `scriptConditions.ts`, `web/src/bots/*` (arg kind, block), `web/src/ui/BotInspector.svelte`, `src/server.js`, tests | [#68](https://github.com/rrfarmer/evejs-web-companion/pull/68) (open) | yes |
-| 5 | `feat/companion-pi-customs-export` | The Haul button launches the ticked colonies' LAUNCHPADS into their customs offices and hauls from there. `invbroker.ImportExportWithPlanet` is not on the web gateway, so the companion speaks the GAME PORT for that one hop: a vendored marshal codec, a game client, and `POST /api/pi/customs-export`, which reads the colonies out of the gateway snapshot first (no connection when the pads are empty), looks the office up in `map.GetSolarsystemItems` rather than computing it, refuses a pilot a bot or another tab is flying, and releases and re-selects the caller's own pilot - answering its reads 409 CHARACTER_IN_USE for the length of the hop so the tab does not prune the cockpit. The lap loses its launch block and gains `collect-customs` in place of `collect-launches`. DEPENDS ON ROW 4 (it rewrites `piHaulBotDoc`), so the two are one PR upstream. | `src/gameClient.js`, `src/gameProtocol/`, `src/piCustomsExport.js`, `src/server.js`, `web/src/nav/scriptMacros.ts`, `scriptDecide.ts`, `scriptConditions.ts`, `scriptRunner.ts`, `botLog.ts`, `web/src/bots/*`, `web/src/app/{api,flow,piDispatch}.ts`, `web/src/bridge/piBoard.ts`, `web/src/ui/PiManager.svelte`, tests | not yet | yes |
+| 4 | `feat/companion-pi-customs-export` | The Haul button launches the ticked colonies' LAUNCHPADS into their customs offices and hauls from there. `invbroker.ImportExportWithPlanet` is not on the web gateway, so the companion speaks the GAME PORT for that one hop: a vendored marshal codec, a game client, and `POST /api/pi/customs-export`, which reads the colonies out of the gateway snapshot first (no connection when the pads are empty), looks the office up in `map.GetSolarsystemItems` rather than computing it, refuses a pilot a bot or another tab is flying, and releases and re-selects the caller's own pilot - answering its reads 409 CHARACTER_IN_USE for the length of the hop so the tab does not prune the cockpit. The lap loses its launch block and gains `collect-customs` in place of `collect-launches`. DEPENDS ON ROW 4 (it rewrites `piHaulBotDoc`), so the two are one PR upstream. | `src/gameClient.js`, `src/gameProtocol/`, `src/piCustomsExport.js`, `src/server.js`, `web/src/nav/scriptMacros.ts`, `scriptDecide.ts`, `scriptConditions.ts`, `scriptRunner.ts`, `botLog.ts`, `web/src/bots/*`, `web/src/app/{api,flow,piDispatch}.ts`, `web/src/bridge/piBoard.ts`, `web/src/ui/PiManager.svelte`, tests | [#70](https://github.com/rrfarmer/evejs-web-companion/pull/70) (open) | yes |
+
+## Retired 2026-10-03 (ninth sync): upstream took the Haul button its own way
+
+Upstream did not merge `feat/companion-pi-haul-button` as commits. It re-expressed the work on
+its own `codex/pr-68-integration` branch and merged that as
+[#69](https://github.com/rrfarmer/evejs-web-companion/pull/69), so the branch is NOT an ancestor
+of `vendor` and `git branch --merged vendor` does not list it. The Haul button, the per-colony
+checkboxes, the "Deliver to" / "Unload into" pickers, the division-name learning, the
+`planetList` arg and the `board-planetary-hauler` block are all in `vendor` now, so the branch is
+retired.
+
+⚠ ONE THING DID NOT COME BACK. Upstream dropped the in-tab path (our `a553827`): their
+`restartExtractors` and `haul` both go straight to the server bot host, which refuses a pilot a
+web session holds. So the one pilot the player has open in the tab is again the one pilot the PI
+window cannot use. Nothing carries that behaviour today; it is a deliberate gap, recorded here
+rather than silently re-added.
+
+- `feat/companion-pi-haul-button` -- [#68](https://github.com/rrfarmer/evejs-web-companion/pull/68),
+  taken via [#69](https://github.com/rrfarmer/evejs-web-companion/pull/69)
 
 ## Retired 2026-10-02 (eighth sync): upstream merged four
 
