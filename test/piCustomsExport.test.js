@@ -579,6 +579,35 @@ test("⚠ a pilot another tab is flying is refused, and nothing is sent", async 
   assert.deepEqual(client.calls, []);
 });
 
+test("⚠ a pilot with nothing to send is never logged out at all", async () => {
+  // The hop is what costs a session. A Haul that has nothing to launch must not
+  // blink the tab's pilot out and back for nothing -- which is exactly what the
+  // first live run did.
+  const client = fakeClient();
+  const gateway = fakeGateway({
+    colonies: [snapshotColony(PLANET_A, FARMER_ID, [{ pinID: 5, typeID: LAUNCHPAD_TYPE_ID, contents: {} }])],
+  });
+  const bridgeSessionStore = new Map([["sid", {
+    bridgeSessionID: "bridge-before",
+    characterID: FARMER_ID,
+    accountID: ACCOUNT.accountID,
+    boundHandles: new Map(),
+    streamSubscribers: new Set(),
+  }]]);
+  const baseUrl = await startTestServer({ gateway, client, bridgeSessionStore });
+  const { payload } = await post(baseUrl, "/api/pi/customs-export", {
+    confirm: true,
+    characterID: FARMER_ID,
+    planetIDs: [PLANET_A],
+  });
+  assert.equal(payload.connected, false);
+  assert.equal(payload.handedBack, null);
+  assert.deepEqual(gateway.released, []);
+  assert.deepEqual(gateway.selected, []);
+  // The session the tab held is untouched.
+  assert.equal(bridgeSessionStore.get("sid").bridgeSessionID, "bridge-before");
+});
+
 test("a pilot with nothing on its pads is answered without a connection", async () => {
   const client = fakeClient();
   const gateway = fakeGateway({

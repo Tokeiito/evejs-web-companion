@@ -52,7 +52,7 @@ const { createBotLogStore } = require("./botLogStore");
 // The game port, for the one write the web gateway does not carry: moving a
 // colony's launchpad goods into its customs office (src/piCustomsExport.js).
 const { GameClient } = require("./gameClient");
-const { runCustomsExport } = require("./piCustomsExport");
+const { runCustomsExport, planCustomsExports } = require("./piCustomsExport");
 const {
   isBridgeWritePair,
   pickSafeBrowserSessionFields,
@@ -20281,12 +20281,20 @@ app.post("/api/pi/customs-export", requireAuth, async (req, res, next) => {
     }
     const snapshot = await gateway.getSnapshot(req.account.accountID, characterID);
     const { colonies } = coloniesFromSnapshot(snapshot);
+    // ⚠ THE PLAN DECIDES WHETHER ANYBODY IS LOGGED OUT. The hop is what costs a
+    // session, and it only happens when a ticked launchpad is holding something
+    // -- so the plan is read FIRST and a pilot with nothing to send is never
+    // released at all. Without this the tab's pilot blinked out and back on
+    // every Haul, including the ones that had nothing to launch.
+    const plan = planCustomsExports(colonies, planetIDs);
+    const willConnect = plan.some((entry) => entry.pads.length > 0);
     // The tab's own pilot goes on hold for the hop, exactly as /api/bridge/select
     // reserves one for a character switch - and with the extra gamePortHolds
     // entry, which is what keeps a read landing mid-hop from pruning the cockpit.
     const reservation = Symbol("customs-export");
-    const ownsCharacterReservation = heldHere && !characterOperations.has(characterID);
-    if (heldHere) {
+    const holding = heldHere && willConnect;
+    const ownsCharacterReservation = holding && !characterOperations.has(characterID);
+    if (holding) {
       if (ownsCharacterReservation) characterOperations.set(characterID, reservation);
       sessionOperations.set(req.webSessionID, reservation);
       gamePortHolds.set(req.webSessionID, Date.now() + GAME_PORT_HOLD_MS);
@@ -20294,7 +20302,7 @@ app.post("/api/pi/customs-export", requireAuth, async (req, res, next) => {
     let outcome;
     let handedBack = null;
     try {
-      if (heldHere) {
+      if (holding) {
         // One client session per web login, as the select route puts it: the
         // game port is about to take this character, so let go of it here first.
         await releaseHeldBridgeSession(req.webSessionID);
@@ -20304,13 +20312,14 @@ app.post("/api/pi/customs-export", requireAuth, async (req, res, next) => {
         characterID,
         colonies,
         planetIDs,
+        plan,
         createClient: gameClientFactory,
         log: (line) => console.log(`[PI customs export] character ${characterID}: ${line}`),
       });
       // Hand the pilot back to the tab that asked, if it was the tab's own. A
       // failure here is reported rather than thrown: the goods DID move, and a
       // caller told otherwise would launch them again.
-      if (heldHere) {
+      if (holding) {
         try {
           await selectHeldCharacter(req.webSessionID, req.account, characterID);
           handedBack = true;
@@ -20320,9 +20329,11 @@ app.post("/api/pi/customs-export", requireAuth, async (req, res, next) => {
         }
       }
     } finally {
-      gamePortHolds.delete(req.webSessionID);
-      if (sessionOperations.get(req.webSessionID) === reservation) sessionOperations.delete(req.webSessionID);
-      if (characterOperations.get(characterID) === reservation) characterOperations.delete(characterID);
+      if (holding) {
+        gamePortHolds.delete(req.webSessionID);
+        if (sessionOperations.get(req.webSessionID) === reservation) sessionOperations.delete(req.webSessionID);
+        if (characterOperations.get(characterID) === reservation) characterOperations.delete(characterID);
+      }
     }
     res.json({
       ok: true,

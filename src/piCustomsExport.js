@@ -242,12 +242,16 @@ async function runCustomsExport({
   characterID,
   colonies,
   planetIDs,
+  // The caller may pass the plan it already read, so the decision it took on it
+  // (whether to let go of the pilot at all) and the one taken here cannot
+  // diverge. Absent, it is read here.
+  plan: planned = null,
   env = process.env,
   createClient = (endpoint) => new GameClient(endpoint),
   settleMs = SELECT_SETTLE_MS,
   log = () => {},
 }) {
-  const plan = planCustomsExports(colonies, planetIDs);
+  const plan = planned ?? planCustomsExports(colonies, planetIDs);
   const withGoods = plan.filter((entry) => entry.pads.length > 0);
   if (withGoods.length === 0) {
     // Nothing to send: nobody is evicted and no game connection is opened.
