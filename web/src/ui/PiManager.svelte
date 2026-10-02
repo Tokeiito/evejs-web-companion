@@ -45,7 +45,7 @@
     type PiDispatchState,
     type PilotAttempt,
   } from "../bridge/piBoard.ts";
-  import { haulFor, restartExtractorsFor, type PiHaulDivision } from "../app/piDispatch.ts";
+  import { haulFor, piHaulBotDoc, piRestartBotDoc, restartExtractorsFor, type PiHaulDivision } from "../app/piDispatch.ts";
   import {
     divisionLabel,
     learnDivisionNames,
@@ -181,6 +181,23 @@
       next.set(characterID, state);
       dispatch = next;
     };
+    // Online in this tab: run it right here, as the Haul button does.
+    const here = sessions.find((session) => session.store.station.get().online?.characterID === characterID);
+    if (here !== undefined) {
+      const running = here.store.customBot.get().status;
+      if (running === "running" || running === "paused") {
+        set({ kind: "refused", sentence: "A bot is already running on this pilot in this tab. Stop it first." });
+        return;
+      }
+      set({ kind: "starting" });
+      try {
+        await here.flow.startCustomBot(piRestartBotDoc());
+        set({ kind: "started" });
+      } catch (error) {
+        set({ kind: "refused", sentence: error instanceof Error && error.message ? error.message : "The restart could not start in this tab." });
+      }
+      return;
+    }
     if (!accountName) {
       set({ kind: "refused", sentence: "This pilot is no longer in the hangar, so there is no account to start it with." });
       return;
@@ -290,7 +307,16 @@
     return corporationID !== null && haulPrefs.divisionNames.has(corporationID);
   }
 
-  /** Haul the ticked colonies of this pilot, as a SERVER run (the restart's rules). */
+  /**
+   * Haul the ticked colonies of this pilot.
+   *
+   * ⚠ A PILOT ONLINE IN THIS TAB IS DRIVEN RIGHT HERE. The tab already holds
+   * the hull, so the haul runs as this session's own bot (the Bot Manager's
+   * in-tab start): nothing is signed out, handed over or logged in again. Only
+   * a pilot that is NOT online here goes to the server bot host, which signs it
+   * in on a throwaway token exactly as the restart does - and which refuses a
+   * pilot another tab or bot holds, in its own words.
+   */
   async function haul(characterID: number, rows: readonly PiColonyRow[]): Promise<void> {
     const accountName = known.find((pilot) => pilot.characterID === characterID)?.accountName;
     const set = (state: PiDispatchState) => {
@@ -298,10 +324,6 @@
       next.set(characterID, state);
       haulDispatch = next;
     };
-    if (!accountName) {
-      set({ kind: "refused", sentence: "This pilot is no longer in the hangar, so there is no account to start it with." });
-      return;
-    }
     const ticked = haulTicked.get(characterID) ?? new Set<number>();
     const colonies = rows
       .filter((row) => ticked.has(row.planetID))
@@ -311,13 +333,35 @@
         solarSystemID: row.solarSystemID,
         solarSystemName: row.solarSystemName,
       }));
+    const division = haulPrefs.divisions.get(characterID) ?? null;
+    const deliverTo = haulPrefs.deliverTo.get(characterID) ?? null;
+    const here = sessions.find((session) => session.store.station.get().online?.characterID === characterID);
+    if (here !== undefined) {
+      const running = here.store.customBot.get().status;
+      if (running === "running" || running === "paused") {
+        set({ kind: "refused", sentence: "A bot is already running on this pilot in this tab. Stop it first." });
+        return;
+      }
+      set({ kind: "starting" });
+      try {
+        await here.flow.startCustomBot(piHaulBotDoc(colonies, division, deliverTo));
+        set({ kind: "started" });
+      } catch (error) {
+        set({ kind: "refused", sentence: error instanceof Error && error.message ? error.message : "The haul could not start in this tab." });
+      }
+      return;
+    }
+    if (!accountName) {
+      set({ kind: "refused", sentence: "This pilot is no longer in the hangar, so there is no account to start it with." });
+      return;
+    }
     set({ kind: "starting" });
     set(await haulFor(
       accountName,
       characterID,
       colonies,
-      haulPrefs.divisions.get(characterID) ?? null,
-      haulPrefs.deliverTo.get(characterID) ?? null,
+      division,
+      deliverTo,
     ));
     await loadActiveBots();
   }
@@ -969,9 +1013,10 @@
                flown from this site or by another bot — so that refusal, not a
                promise from this window, is what keeps a ship from being taken. -->
           <p class="note pi-footnote">
-            A restart or a haul runs on the server, which will not take a pilot already flown
-            from this site or by another bot; if it refuses, its reason is shown
-            above that pilot's colonies.
+            A restart or a haul for a pilot online in this tab runs right here, as that
+            pilot's own bot. For any other pilot it runs on the server, which will not take
+            a pilot flown from another tab or by another bot; if it refuses, its reason is
+            shown above that pilot's colonies.
           </p>
         {/if}
       </section>

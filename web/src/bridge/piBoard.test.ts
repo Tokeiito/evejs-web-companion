@@ -390,7 +390,7 @@ test("what a start did is said on the pilot's row, a refusal in the server's own
   const started = buildPiBoard(input({ members: [FARMER], readings, dispatch: new Map([[FARMER, { kind: "started" }]]) }));
   assert.equal(
     started.pilots[0]!.dispatchWords,
-    "The run has started on the server. Refresh once it has finished to see the extractors running.",
+    "The run has started. Refresh once it has finished to see the extractors running.",
   );
   const inUse = "A web session is flying this character. Log it out (or wait for it to expire), then start the bot.";
   const refused = buildPiBoard(input({ members: [FARMER], readings, dispatch: new Map([[FARMER, { kind: "refused", sentence: inUse }]]) }));

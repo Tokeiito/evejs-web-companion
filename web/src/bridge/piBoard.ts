@@ -250,7 +250,7 @@ function dispatchFor(
     : state.kind === "starting"
       ? "Starting the run on the server..."
       : state.kind === "started"
-        ? "The run has started on the server. Refresh once it has finished to see the extractors running."
+        ? "The run has started. Refresh once it has finished to see the extractors running."
         : state.sentence;
   let restart: PiRestartOffer | null = null;
   if (reading !== null) {
@@ -645,7 +645,7 @@ export function piHaulWords(
   return {
     label: `Haul ${colonies}`,
     words:
-      `This starts a server run for ${pilotName} that launches what the ticked colonies hold, gets into a ship parked ` +
+      `This starts a run for ${pilotName} (in this tab when the pilot is online here, else on the server) that launches what the ticked colonies hold, gets into a ship parked ` +
       `where the pilot is docked that has a planetary hold, collects the launches, ${station} and unloads into ${where}, ` +
       `then ${andBack}gets back into the ship it started in. The launch is taxed. It runs for two hours at most.`,
   };
@@ -655,6 +655,6 @@ export function piHaulWords(
 export function piHaulDispatchWords(state: PiDispatchState | null): string | null {
   if (state === null) return null;
   if (state.kind === "starting") return "Starting the haul on the server...";
-  if (state.kind === "started") return "The haul has started on the server. Its steps show in the Bot Manager.";
+  if (state.kind === "started") return "The haul has started. Its steps show in the Bot Manager.";
   return state.sentence;
 }
