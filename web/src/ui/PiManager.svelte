@@ -125,6 +125,9 @@
   // per pilot in this browser, because it is the same answer every haul.
   let haulTicked = $state<Map<number, Set<number>>>(new Map());
   let haulPrefs = $state<PiHaulPrefs>(loadPiHaulPrefs());
+  // A Deliver to picker the player pressed Change on: open on its search, not
+  // yet a choice. Never stored - only a picked station (or "starting") is.
+  let deliverChoosing = $state<Set<number>>(new Set());
   let haulDispatch = $state<Map<number, PiDispatchState>>(new Map());
 
   // One view at a time, picked from the window's own menu. An empty roster
@@ -216,9 +219,20 @@
     keepHaul({ ...haulPrefs, divisions: withEntry(haulPrefs.divisions, characterID, picked) });
   }
 
-  /** "Where the run starts" is the default, so it is stored as nothing. */
+  /**
+   * "Where the run starts" is the default, so it is stored as nothing. An
+   * empty ref is the picker's Change: it opens the search and decides nothing.
+   */
   function pickDeliverTo(characterID: number, ref: WorldRef): void {
-    const picked = ref.starting === true || ref.id === null ? null : ref;
+    const choosing = new Set(deliverChoosing);
+    if (ref.starting !== true && ref.id === null) {
+      choosing.add(characterID);
+      deliverChoosing = choosing;
+      return;
+    }
+    choosing.delete(characterID);
+    deliverChoosing = choosing;
+    const picked = ref.starting === true ? null : ref;
     keepHaul({ ...haulPrefs, deliverTo: withEntry(haulPrefs.deliverTo, characterID, picked) });
   }
 
@@ -934,7 +948,9 @@
                   <span class="note">Deliver to</span>
                   <StationPicker
                     flow={stationSearch}
-                    value={deliverTo ?? startingStation()}
+                    value={deliverChoosing.has(group.characterID)
+                      ? { entity: "station", id: null, name: null, systemName: null }
+                      : deliverTo ?? startingStation()}
                     current={null}
                     onPick={(ref) => pickDeliverTo(group.characterID, ref)}
                   />
