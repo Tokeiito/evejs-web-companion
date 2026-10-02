@@ -257,9 +257,17 @@ test("the roster is grouped by account, and a shared age is said once", () => {
   assert.match(text, /No longer in the hangar 1 pilot A pilot no longer in the hangar/);
 });
 
-test("⚠ a restart goes through the server bot host, never a select in this tab", () => {
+test("⚠ a pilot online in this tab is run right here; any other goes through the server bot host", () => {
+  // Offline pilots: the bot host, which signs in on a throwaway token and
+  // refuses a pilot another tab or bot holds.
   assert.match(SOURCE, /restartExtractorsFor\(accountName, characterID\)/);
-  assert.doesNotMatch(SOURCE, /startLocal|runHere|flow\.start/);
+  assert.match(SOURCE, /haulFor\(/);
+  // Online here: that session's own bot, found among the sessions the tab
+  // already holds. Never a select (pinned by the test below).
+  assert.match(SOURCE, /session\.store\.station\.get\(\)\.online\?\.characterID === characterID/);
+  assert.match(SOURCE, /here\.flow\.startCustomBot\(piRestartBotDoc\(\)\)/);
+  assert.match(SOURCE, /here\.flow\.startCustomBot\(piHaulBotDoc\(/);
+  assert.doesNotMatch(SOURCE, /startLocal|runHere/);
   // The flying-bot list loads in onMount, which SSR never runs, so the
   // disabled state is pinned where it is decided: the board's own verdict.
   assert.match(SOURCE, /disabled=\{!pilot\.restart\.enabled\}/);
