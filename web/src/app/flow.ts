@@ -113,7 +113,7 @@ import { decodeRecipeBook } from "../bridge/piRecipes.ts";
 import { decodeRepairQuotes, repairTargets, type RepairQuoteRow } from "../bridge/repairQuotes.ts";
 import { createSpacePoller, targetsReadIsDue, type SpacePoller } from "./spacePoll.ts";
 import type { RequestPriority } from "./transport.ts";
-import type { CorpOfficesResult, DronesResult, FlightStepResult } from "./api.ts";
+import type { CorpOfficesResult, CustomsExportResult, DronesResult, FlightStepResult } from "./api.ts";
 import { BridgeCallError } from "../bridge/callMethod.ts";
 import { classifyDistributionAgentConversation, selectDistributionAgent } from "../nav/distributionAgentSelection.ts";
 import { refusalWords as sayRefusalWords } from "../bridge/refusals.ts";
@@ -1232,6 +1232,12 @@ export interface AppFlow {
   // --- Player Bot Builder runner (the fourth decide-loop) ----------------
   /** Start a player-built script; the live readout is pushed to `store.customBot`. */
   startCustomBot(doc: BotScript, sourceScriptID?: string | null): Promise<void>;
+  /**
+   * Send these colonies' launchpad goods up into their customs offices, on
+   * THIS session's own token — which matters: the hop logs the character out
+   * of the game and the BFF hands it straight back to the session that asked.
+   */
+  exportToCustomsOffices(characterID: number, planetIDs: readonly number[]): Promise<CustomsExportResult>;
   /** Pause it (it stops issuing; the ship finishes its last move). */
   pauseCustomBot(): void;
   /** Resume a paused script from where it stopped. */
@@ -1382,6 +1388,11 @@ function errorWords(error: unknown): string {
 }
 
 /** Turn a raw refusal into a sentence, keeping the raw recoverable (R31). */
+// invGroups 1025, Planetary Customs Offices — the group a customs office is, in
+// both its flavours (the synthesized InterBus office every planet carries and an
+// anchored POCO). The GROUP says what a structure is for; its name and its
+// position do not.
+const CUSTOMS_OFFICE_GROUP_ID = 1025;
 const sayRefusal = sayRefusalWords;
 
 /**
@@ -10317,6 +10328,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         let savedFittings: ScriptObservation["savedFittings"] = null;
         let colonies: ScriptObservation["colonies"] = null;
         let piLaunches: ScriptObservation["piLaunches"] = null;
+        let customsOffices: ScriptObservation["customsOffices"] = null;
         let planetaryHaulerShipIDs: ScriptObservation["planetaryHaulerShipIDs"] = null;
         let damagedItemIDs: ScriptObservation["damagedItemIDs"] = null;
         let scannerOperations: ScriptObservation["scannerOperations"] = null;
@@ -10426,6 +10438,35 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             }));
           } catch {
             piLaunches = null;
+          }
+        }
+        if (macro === "collect-customs") {
+          // ONE CONTAINER READ PER OFFICE IN THE SYSTEM, and only while this
+          // block is active — the same bargain board-planetary-hauler strikes
+          // when it pays one capacity read per parked ship. An office is a
+          // structure: it is never listed as "something to collect" and does not
+          // vanish when emptied, so reading it is the only way to know. What it
+          // lists is this pilot's own: the server partitions an office's storage
+          // by depositor.
+          //
+          // ⚠ ALL OR NOTHING. One failed read leaves the whole observation null
+          // ("nobody looked"), because a partial list would read as "that office
+          // is empty" and the hauler would leave full offices behind.
+          const officeIDs = (snapshot?.entities ?? [])
+            .filter((entity) => entity.groupID === CUSTOMS_OFFICE_GROUP_ID && entity.itemID > 0)
+            .map((entity) => entity.itemID);
+          try {
+            customsOffices = await Promise.all(officeIDs.map(async (officeID) => {
+              const reads = await api.openContainer(officeID, callOptions);
+              const rows = decodeInventoryRows(reads.list, reads.volumes);
+              return {
+                officeID,
+                stacks: rows.length,
+                units: rows.reduce((total, row) => total + row.quantity, 0),
+              };
+            }));
+          } catch {
+            customsOffices = null;
           }
         }
         let bookmarks: ScriptObservation["bookmarks"] = null;
@@ -10958,6 +10999,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           bookmarks,
           colonies,
           piLaunches,
+          customsOffices,
           planetaryHaulerShipIDs,
           damagedItemIDs,
           inSpace: status.inSpace,
@@ -11515,6 +11557,17 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             await api.deleteLaunch(action.launchID, callOptions);
             return;
           }
+          case "collectCustoms": {
+            // No claim and no record to delete. An office's storage is
+            // partitioned by depositor server-side, so these rows are this
+            // pilot's and no other hauler shares them; and an office is a
+            // structure that stays where it is, so the next tick's read of it
+            // is what says whether anything is left. lootFrom throws when
+            // nothing at all fits, which is what the refusal ledger needs to
+            // hear so the block can go and unload.
+            await lootFrom(action.officeID);
+            return;
+          }
           case "placeBuyOrder":
             // A resting order rests the full 90 days; the API's own confirm gate
             // is the second lock behind the server's. The block is one-shot, so a
@@ -11646,6 +11699,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       travelHome: scriptTravelHome,
       log: botLogSink,
     };
+  }
+
+  async function exportPlanetaryGoodsToCustomsOffices(
+    characterID: number,
+    planetIDs: readonly number[],
+  ): Promise<CustomsExportResult> {
+    return api.exportToCustomsOffices(characterID, planetIDs, callOptions);
   }
 
   async function startCustomBot(input: BotScript, sourceScriptID: string | null = null): Promise<void> {
@@ -12827,6 +12887,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     },
 
     startCustomBot,
+    exportToCustomsOffices: exportPlanetaryGoodsToCustomsOffices,
 
     pauseCustomBot() {
       scriptRunner?.pause();

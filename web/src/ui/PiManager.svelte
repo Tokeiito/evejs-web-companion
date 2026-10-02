@@ -45,7 +45,7 @@
     type PiDispatchState,
     type PilotAttempt,
   } from "../bridge/piBoard.ts";
-  import { haulFor, piHaulBotDoc, piRestartBotDoc, restartExtractorsFor, type PiHaulDivision } from "../app/piDispatch.ts";
+  import { haulFor, piHaulBotDoc, piRestartBotDoc, restartExtractorsFor, summarizeCustomsExport, type PiHaulDivision } from "../app/piDispatch.ts";
   import {
     divisionLabel,
     learnDivisionNames,
@@ -358,8 +358,16 @@
       }
       set({ kind: "starting" });
       try {
+        // ⚠ THE LAUNCH FIRST, AND ON THIS SESSION'S OWN TOKEN. The hop selects
+        // the pilot on the game port, which logs this tab's session out - the
+        // BFF holds the cockpit through it and selects the pilot straight back,
+        // which it can only do for the session that asked. Doing it after the
+        // bot started would take the ship out from under it.
+        const exported = summarizeCustomsExport(
+          await here.flow.exportToCustomsOffices(characterID, colonies.map((colony) => colony.planetID)),
+        );
         await here.flow.startCustomBot(piHaulBotDoc(colonies, division, deliverTo));
-        set({ kind: "started" });
+        set({ kind: "started", exported });
       } catch (error) {
         set({ kind: "refused", sentence: error instanceof Error && error.message ? error.message : "The haul could not start in this tab." });
       }

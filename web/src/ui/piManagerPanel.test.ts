@@ -345,3 +345,14 @@ test("the corp hangar read rides a session already online, and never selects any
   const api = readFileSync(path.join(UI_DIR, "../app/api.ts"), "utf8");
   assert.match(api, /getJson\(`\/api\/bots\/corp-assets\?/, "the bot read is a GET");
 });
+
+test("⚠ a haul launches into the customs offices BEFORE it starts the bot", () => {
+  // The hop selects the pilot on the GAME PORT, which logs out whichever
+  // session holds it. Doing it after the bot started would take the ship out
+  // from under the run. In this tab it goes on that session's own token,
+  // because the BFF hands the pilot back to the session that asked.
+  assert.match(SOURCE, /here\.flow\.exportToCustomsOffices\(characterID/);
+  const hop = SOURCE.indexOf("exportToCustomsOffices(characterID");
+  const start = SOURCE.indexOf("startCustomBot(piHaulBotDoc(");
+  assert.ok(hop > 0 && start > hop, "the export is written before the in-tab start");
+});
