@@ -109,9 +109,18 @@ test("⚠ an unread list waits; it is never read as 'every office is empty'", ()
   assert.match(t.why, /Reading the customs offices/);
 });
 
-test("no office in the system at all finishes the block", () => {
+test("⚠ an empty grid read waits before it is believed; a gate jump lands on one", () => {
+  // "There is no office here" finishes the block, which would walk the hauler
+  // past a full office if the tick after a jump saw a sparse snapshot.
   const t = collect(step, obs({ snapshot: snapshot([]), customsOffices: [] }), {}, NB);
+  assert.equal(t.outcome.kind, "acting");
+  assert.match(t.why, /Looking for this system's customs offices/);
+});
+
+test("a system that really has no office finishes the block, once", () => {
+  const t = collect(step, obs({ snapshot: snapshot([]), customsOffices: [] }), { looked: 15 }, NB);
   assert.equal(t.outcome.kind, "done");
+  assert.match(t.why, /no customs office in this system/);
 });
 
 test("every office read empty finishes the block", () => {
@@ -170,8 +179,9 @@ test("⚠ a structure that is not a customs office is never opened", () => {
   const t = collect(step, obs({
     snapshot: snapshot([gantry]),
     customsOffices: [holding(OFFICE_B, 99)],
-  }), {}, NB);
+  }), { looked: 15 }, NB);
   assert.equal(t.outcome.kind, "done");
+  assert.equal(t.action.kind, "wait");
 });
 
 test("a full ship is a finished trip, not a failure", () => {

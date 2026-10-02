@@ -5086,6 +5086,16 @@ const collectLaunches: MacroDecider = (step, obs, mem) => {
 // uncolonised planet carries and an anchored POCO; a gantry or a construction
 // platform is a different group and holds nothing.
 const GROUP_PLANETARY_CUSTOMS_OFFICES = 1025;
+/**
+ * Ticks to keep looking for an office before believing a system has none.
+ *
+ * ⚠ AN EMPTY GRID READ IS NOT AN EMPTY SYSTEM. A customs office is a static
+ * entity and arrives in every snapshot of its system, but the tick that lands
+ * after a gate jump can still see a sparse one - and "there is no office here"
+ * finishes the block, which would walk the hauler straight past a full office.
+ * Generous on purpose: the block has nothing better to do than wait.
+ */
+const CUSTOMS_SETTLE_TICKS = 15;
 
 /** Every customs office in this snapshot, nearest first. */
 function customsOfficesOnGrid(snapshot: SpaceSnapshot): readonly SpaceEntity[] {
@@ -5122,6 +5132,10 @@ const collectCustoms: MacroDecider = (step, obs, mem) => {
   }
   const offices = customsOfficesOnGrid(snapshot);
   if (offices.length === 0) {
+    const looked = (num(mem, "looked") ?? 0) + 1;
+    if (looked <= CUSTOMS_SETTLE_TICKS) {
+      return tick(WAIT, "Looking for this system's customs offices.", phase, ACTING, false, { ...mem, looked });
+    }
     return tick(WAIT, "There is no customs office in this system.", phase, { kind: "done" });
   }
   // ⚠ NULL IS "NOBODY HAS READ THEM YET", NEVER "THEY ARE EMPTY". The read is
