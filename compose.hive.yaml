@@ -1,0 +1,181 @@
+# Production compose for the dedicated server (hive), deployed by Portainer.
+#
+# This file is the SOURCE OF TRUTH and lives here on the integration branch. The
+# release workflow copies it to the deploy/prod branch as compose.yaml, alongside
+# a stack.env holding the image tag. Portainer polls deploy/prod, never this
+# branch: this branch is rebased and force-pushed as upstream moves, and a
+# polling stack must not track a branch whose history is rewritten.
+#
+# It is compose.yaml PLUS compose.evejs-docker.yaml, minus the two things that
+# cannot exist on a host with no shell:
+#
+#   - No `build:`. The image is pulled by tag from the Gitea registry.
+#   - No ${EVEJS_ROOT} bind mount. There is no host checkout on hive, and a bind
+#     mount over a missing path yields an empty root-owned directory that this
+#     container (USER node, uid 1000) cannot read or write. The static gameStore
+#     and SDE come from EveJS's own evejs-data volume instead, which is where the
+#     overlay already pointed them.
+#   - Ports publish on EVEJS_WEB_BIND_ADDR (hive's tailscale address), not
+#     127.0.0.1, so tailnet peers can reach the companion. This is NOT a public
+#     interface, and the companion is no more hardened for one than the emulator
+#     behind it.
+#
+# ⚠ THIS STACK CANNOT START ITSELF. It joins evejs-net and mounts evejs-data,
+# both owned by the evej stack and both declared external here so this project
+# never creates, relabels or deletes them. Bring evej up first. That is not a
+# limitation worth working around: with no EveJS there is nothing to talk to.
+
+name: evejs-web
+
+# EVERY variable below carries a default, so this file resolves with no external
+# environment at all -- verify with `docker compose -f compose.hive.yaml config`
+# and nothing set. Portainer does not apply a committed stack.env to
+# interpolation, so a deploy that depends on a variable arriving from there is a
+# deploy that fails at the worst moment.
+#
+# The one deliberate exception is EVEJS_WEB_GATEWAY_TOKEN, which defaults to
+# empty because a shared secret must not be committed. See "The token is the
+# deploy" in docs/DEPLOYMENT.md: the stack comes up either way, and every gateway
+# call answers 403 until the token is set as a Portainer UI variable on THIS
+# stack and the evej stack, to the same value.
+x-image: &image ${EVEJS_WEB_IMAGE_REPO:-git.airplane-rooster.ts.net:3000/tokeiito/evejs-web-companion}:${EVEJS_WEB_IMAGE_TAG:-v0.1.0-1}
+
+# Shared by the BFF and the one-shot below, which runs the same code against the
+# same volume and needs the same view of EveJS.
+x-bff-environment: &bff-environment
+  # Container-to-container: `evejs-server` is the alias the evej stack puts on
+  # its `server` service, and 26002 is that container's own listener, not a
+  # published port. The request never leaves the bridge.
+  EVEJS_GATEWAY_URL: ${EVEJS_WEB_GATEWAY_URL:-http://evejs-server:26002/_evejs-web/v1}
+  # ⚠ Empty here on purpose, and empty means REFUSED, not open. The gateway
+  # grants token-less access only to peers at 127.0.0.1/::1; a request from this
+  # container arrives from a bridge address.
+  EVEJS_WEB_GATEWAY_TOKEN: ${EVEJS_WEB_GATEWAY_TOKEN:-}
+  # Static names, read out of EveJS's own volume -- the authoritative copy the
+  # running server was built from, rather than whatever a host checkout contains.
+  EVEJS_GAMESTORE_DATA_DIR: /var/lib/evejs/gameStore/data
+  EVEJS_SDE_DIR: /var/lib/evejs/sde/eve-online-static-data-3396210-jsonl
+
+services:
+  bff:
+    image: *image
+    environment: *bff-environment
+    networks:
+      # The project's own default is what keeps the published port reachable
+      # from the host. evejs-net is what makes `evejs-server` resolve.
+      - default
+      - evejs-net
+    volumes:
+      # Sessions, the web-user store, the bot script store, the bot flight
+      # recorders and the icon cache. Named, so a release does not sign everyone
+      # out and does not destroy the overnight bot logs.
+      - evejs-web-data:/app/data
+      # Read-only: the companion never writes into the gameStore.
+      - evejs-data:/var/lib/evejs:ro
+    ports:
+      - "${EVEJS_WEB_BIND_ADDR:-100.102.41.86}:${EVEJS_WEB_PORT:-26500}:26500"
+    restart: unless-stopped
+    # The default json-file driver is UNCAPPED, so a chatty run grows until the
+    # disk complains. Three 20 MB files is roughly a long weekend of this service.
+    #
+    # ⚠ THIS BOUNDS GROWTH. IT DOES NOT SURVIVE A RECREATE -- and every release
+    # is a recreate. A container's log belongs to the CONTAINER: the deploy that
+    # ships the fix also destroys the evidence of the bug. Anything you will want
+    # to read after a release has to be on the data volume (the bot flight
+    # recorders under /app/data/bot-logs already are) or copied out first.
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+  # Creating the first web user is `npm run webpass -- <user> <password>` on a
+  # machine with a shell. hive has neither a shell nor an equivalent of
+  # `docker compose run`, so that instruction is unfollowable there and the only
+  # other route is hand-building a one-off container in the UI for every user.
+  #
+  # This service makes it a stack-level switch instead, on the same shape as the
+  # evej stack's market-seed:
+  #
+  #   Empty token                    -> does nothing. Never "create".
+  #   Token changed to a fresh value -> sets that password exactly ONCE.
+  #   Same token on a later deploy   -> does nothing.
+  #
+  # The trigger is a CHANGE, not a state, because a release rewrites this whole
+  # file from compose.hive.yaml and reverts any hand-set value to its default. A
+  # plain flag would re-run on every redeploy until somebody remembered to clear
+  # it -- and this one overwrites a password, so the deploy nobody thought was
+  # risky would be the one that locks a player out.
+  #
+  # Set all three as Portainer UI variables (a password does not belong in git),
+  # redeploy, then clear them. The stamp in the volume is what makes clearing
+  # them safe.
+  #
+  # $$ escapes compose interpolation: read by the shell at runtime, not
+  # substituted when the file is parsed.
+  webpass:
+    image: *image
+    environment:
+      <<: *bff-environment
+      WEB_SEED_TOKEN: ${EVEJS_WEB_SEED_TOKEN:-}
+      WEB_SEED_USER: ${EVEJS_WEB_SEED_USER:-}
+      WEB_SEED_PASSWORD: ${EVEJS_WEB_SEED_PASSWORD:-}
+    networks:
+      - default
+      - evejs-net
+    volumes:
+      - evejs-web-data:/app/data
+      - evejs-data:/var/lib/evejs:ro
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        STAMP=/app/data/.webpass-token
+        if [ -z "$${WEB_SEED_TOKEN:-}" ]; then
+          echo "webpass: no token set; nothing to do"
+          exit 0
+        fi
+        if [ "$$(cat "$$STAMP" 2>/dev/null || echo '')" = "$${WEB_SEED_TOKEN}" ]; then
+          echo "webpass: token '$${WEB_SEED_TOKEN}' already acted on; nothing to do"
+          exit 0
+        fi
+        if [ -z "$${WEB_SEED_USER:-}" ] || [ -z "$${WEB_SEED_PASSWORD:-}" ]; then
+          echo "webpass: token set but user or password is empty; refusing" >&2
+          exit 1
+        fi
+        # set-web-password.js resolves the EveJS account THROUGH THE GATEWAY, so
+        # this cannot run before the evej stack answers and the shared token
+        # matches. Two minutes of patience turns "deployed in the wrong order"
+        # from a failure into a wait; a wrong token still fails, and should.
+        i=0
+        until node -e 'require("/app/src/eveStore").getStatus().then(()=>process.exit(0)).catch(()=>process.exit(1))'; do
+          i=$$((i + 1))
+          if [ "$$i" -ge 24 ]; then
+            echo "webpass: gateway unreachable after 2 minutes -- is the evej stack up, and does EVEJS_WEB_GATEWAY_TOKEN match on both stacks?" >&2
+            exit 1
+          fi
+          echo "webpass: waiting for the EveJS gateway ($$i/24)"
+          sleep 5
+        done
+        node scripts/set-web-password.js "$${WEB_SEED_USER}" "$${WEB_SEED_PASSWORD}"
+        # Stamped only on success, so a failed run retries on the next deploy
+        # rather than going quiet with the password unset.
+        printf '%s' "$${WEB_SEED_TOKEN}" > "$$STAMP"
+        echo "webpass: set the password for $${WEB_SEED_USER}"
+    restart: "no"
+
+networks:
+  evejs-net:
+    name: evejs-net
+    # Owned by the evej stack. External so this project neither relabels it
+    # (which breaks that stack's next deploy) nor removes it on `down`.
+    external: true
+
+volumes:
+  evejs-web-data:
+    name: evejs-web-data
+  # Also owned by the evej stack. External so that `down --volumes` in THIS
+  # project can never delete the universe.
+  evejs-data:
+    name: evejs-data
+    external: true
