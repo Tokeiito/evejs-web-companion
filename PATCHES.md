@@ -4,7 +4,7 @@ Every branch carried on top of `vendor`, in the order it is merged into `main`. 
 authority: a patch not listed here is lost on the next rebuild, and a patch listed here is one
 somebody has decided is still needed. See `CLAUDE.md` for the workflow.
 
-**Vendor:** `origin/master` at `2ef352f` (2026-10-03, PR #68 taken upstream's own way via #69). `main` as it ran before this sync is tag `custom/2026-10-03`.
+**Vendor:** `origin/master` at `7e4133b` (2026-10-03, PR #70 merged). `main` as it ran before this sync is tag `custom/2026-10-03b`.
 
 The `On main` column is a cache of `git branch --merged main`; if the two disagree, ancestry wins.
 
@@ -13,7 +13,18 @@ The `On main` column is a cache of `git branch --merged main`; if the two disagr
 | 1 | `local/tooling` | This workflow: `CLAUDE.md`, this manifest, and the Claude Code hooks registered in `.claude/settings.local.json` -- `guard-live-bot.sh` (refuses restarts that would kill running bots) and `rebuild-when-stale.sh`, each with its test | `CLAUDE.md`, `PATCHES.md`, `.claude/hooks/` | never | yes |
 | 2 | `local/deploy` | The hive release pipeline: a `release/*` tag on Gitea builds and pushes the image and moves `deploy/prod`, which Portainer polls; `compose.hive.yaml` joins the evej stack's network and volume as externals | `.gitea/workflows/release.yaml`, `compose.hive.yaml`, `docs/DEPLOYMENT.md` | never | yes |
 | 3 | `feat/companion-industry-facility-bonuses` | The Industry Manager counts facility bonuses and shows job times: each job is worked where it would run (its copy, else the plan Build at / React at facility, saved as `choices.facilities`), with that facility material and time modifiers from GetFacilities (category, group, type matching), and job time the server way (TE, facility, the pilot industry time attribute from skills, required-skill bonuses from dogma 1982). Checked against the server own functions on 64 cases. Not exercised in game, by choice. | `web/src/bridge/industryFacility.ts`, `industry.ts`, `industryRecipes.ts`, `industryChain.ts`, `web/src/ui/IndustryManager.svelte`, `web/src/app/industryPlans.ts`, `api.ts`, `store/types.ts`, `src/industryRecipes.js`, `industryPlanStore.js`, `server.js` (closure route), tests | not yet | yes |
-| 4 | `feat/companion-pi-customs-export` | The Haul button launches the ticked colonies' LAUNCHPADS into their customs offices and hauls from there. `invbroker.ImportExportWithPlanet` is not on the web gateway, so the companion speaks the GAME PORT for that one hop: a vendored marshal codec, a game client, and `POST /api/pi/customs-export`, which reads the colonies out of the gateway snapshot first (no connection when the pads are empty), looks the office up in `map.GetSolarsystemItems` rather than computing it, refuses a pilot a bot or another tab is flying, and releases and re-selects the caller's own pilot - answering its reads 409 CHARACTER_IN_USE for the length of the hop so the tab does not prune the cockpit. The lap loses its launch block and gains `collect-customs` in place of `collect-launches`. DEPENDS ON ROW 4 (it rewrites `piHaulBotDoc`), so the two are one PR upstream. | `src/gameClient.js`, `src/gameProtocol/`, `src/piCustomsExport.js`, `src/server.js`, `web/src/nav/scriptMacros.ts`, `scriptDecide.ts`, `scriptConditions.ts`, `scriptRunner.ts`, `botLog.ts`, `web/src/bots/*`, `web/src/app/{api,flow,piDispatch}.ts`, `web/src/bridge/piBoard.ts`, `web/src/ui/PiManager.svelte`, tests | [#70](https://github.com/rrfarmer/evejs-web-companion/pull/70) (open) | yes |
+
+## Retired 2026-10-03 (tenth sync): upstream merged the customs export
+
+Upstream merged PR #70 as a true merge, so the branch became an ancestor of `vendor` and was
+retired outright. Upstream added two commits of its own to the PR branch before merging
+(`1279c05` export ownership and partial progress, `721edc4` drone readiness across the docked
+handback); they arrive through `vendor`. Stale local branches `feat/companion-pi-haul-button`
+(retired in the ninth sync) and `patch/happy-albattani-658b4f` (already in `vendor`) were deleted
+with it, and every fork branch whose PR is merged. `main` as it ran before this sync is tag
+`custom/2026-10-03b`; the branches are `archive/<branch>/2026-10-03b`.
+
+- `feat/companion-pi-customs-export` -- [#70](https://github.com/rrfarmer/evejs-web-companion/pull/70)
 
 ## Retired 2026-10-03 (ninth sync): upstream took the Haul button its own way
 
