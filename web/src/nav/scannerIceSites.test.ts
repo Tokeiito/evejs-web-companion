@@ -113,6 +113,7 @@ test("on an ice grid the mine block works the ice chunk with the harvester, neve
     obs({ snapshot: snapshot([rock, chunk]), miningModuleIDs: [7001, 7002], iceMiningModuleIDs: [7002], anomalies: [ICE_FIELD] }),
     {}, { iceAnomsVisited: "ICE-001" });
   assert.deepEqual(out.action, { kind: "orbit", targetID: 50002, range: 5000 });
+  assert.equal(out.phase, "Approaching an ice chunk");
 });
 
 test("an ice step with no online Ice Harvester stops and says so", () => {

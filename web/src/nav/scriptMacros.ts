@@ -500,8 +500,8 @@ function stationTarget(step: MacroStep, obs: ScriptObservation, board: ScriptBoa
   return resolveStationRef(arg.ref, obs.startingStationID ?? null, board);
 }
 
-function rockLabel(rock: SpaceEntity): string {
-  return rock.name ?? "a rock";
+function rockLabel(rock: SpaceEntity, oneNoun = "a rock"): string {
+  return rock.name ?? oneNoun;
 }
 
 /** True when a step pins a specific belt rather than "nearest". */
@@ -1697,7 +1697,10 @@ function mineWithRocks(
   measurement: SpaceMeasurement | null,
   effectiveRangeMeters?: number,
 ): MacroTick {
-  // We have rocks. Track the one we are working.
+  // We have rocks. Track the one we are working. On an ice field they are
+  // ice chunks, and the pilot reads them as that.
+  const noun = rocks.some((r) => r.miningResourceFamily === "ice") ? "ice chunk" : "rock";
+  const oneNoun = noun === "rock" ? "a rock" : "an ice chunk";
   let rockID = num(mem, "rockID");
   const present = rockID !== null && rocks.some((r) => r.itemID === rockID);
   if (!present) {
@@ -1714,8 +1717,8 @@ function mineWithRocks(
     // Orbit the new rock at 5km to get into mining range; lock next tick.
     return tick(
       { kind: "orbit", targetID: pick.itemID, range: ORBIT_RANGE_M },
-      `Closing in on ${rockLabel(pick)}.`,
-      "Approaching a rock",
+      `Closing in on ${rockLabel(pick, oneNoun)}.`,
+      `Approaching ${oneNoun}`,
       ACTING,
       true,
       clearCloseInStall({ rockID: pick.itemID, lockIssued: false, waited: 0, approachedRockID: pick.itemID }),
@@ -1725,7 +1728,7 @@ function mineWithRocks(
   const locked = (obs.lockedTargetIDs ?? []).includes(rockID);
   if (!locked) {
     if (!flag(mem, "lockIssued")) {
-      return tick({ kind: "lock", targetID: rockID }, "Locking the rock.", "Locking on", ACTING, true, {
+      return tick({ kind: "lock", targetID: rockID }, `Locking the ${noun}.`, "Locking on", ACTING, true, {
         rockID,
         lockIssued: true,
         waited: 0,
@@ -1758,7 +1761,7 @@ function mineWithRocks(
       return tick(
         { kind: "orbit", targetID: rockID, range: ORBIT_RANGE_M },
         "Closing in — too far out to mine yet.",
-        "Approaching a rock",
+        `Approaching ${oneNoun}`,
         ACTING,
         true,
         clearCloseInStall({ rockID, lockIssued: true, waited: 0, approachedRockID: rockID }),
@@ -1784,15 +1787,15 @@ function mineWithRocks(
       stallStage: num(stall.mem, "stallStage") ?? 0,
     };
     if (stall.step === "reorder") {
-      return tick({ kind: "orbit", targetID: rockID, range: ORBIT_RANGE_M }, STALL_REORDER_WHY, "Approaching a rock", ACTING, true, closing);
+      return tick({ kind: "orbit", targetID: rockID, range: ORBIT_RANGE_M }, STALL_REORDER_WHY, `Approaching ${oneNoun}`, ACTING, true, closing);
     }
     if (stall.step === "unstick") {
-      return tick({ kind: "stopShip" }, STALL_UNSTICK_WHY, "Approaching a rock", ACTING, true, closing);
+      return tick({ kind: "stopShip" }, STALL_UNSTICK_WHY, `Approaching ${oneNoun}`, ACTING, true, closing);
     }
     if (stall.step === "stuck") {
-      return tick(WAIT, STALL_STUCK_WHY, "Approaching a rock", { kind: "blocked", reason: STALL_STUCK_REASON });
+      return tick(WAIT, STALL_STUCK_WHY, `Approaching ${oneNoun}`, { kind: "blocked", reason: STALL_STUCK_REASON });
     }
-    return tick(WAIT, "Closing in — too far out to mine yet.", "Approaching a rock", ACTING, true, closing);
+    return tick(WAIT, "Closing in — too far out to mine yet.", `Approaching ${oneNoun}`, ACTING, true, closing);
   }
 
   // Locked and in range — switch on any mining module that is not already cycling.
@@ -1824,7 +1827,7 @@ function mineWithRocks(
       { rockID, lockIssued: true, waited: 0, approachedRockID: rockID },
     );
   }
-  return tick(WAIT, "Mining the rock.", "Mining", ACTING, true, { rockID, lockIssued: true, waited: 0, approachedRockID: rockID });
+  return tick(WAIT, `Mining the ${noun}.`, "Mining", ACTING, true, { rockID, lockIssued: true, waited: 0, approachedRockID: rockID });
 }
 
 // ── deliver-ore ──────────────────────────────────────────────────────────────
