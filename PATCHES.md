@@ -4,7 +4,11 @@ Every branch carried on top of `vendor`, in the order it is merged into `main`. 
 authority: a patch not listed here is lost on the next rebuild, and a patch listed here is one
 somebody has decided is still needed. See `CLAUDE.md` for the workflow.
 
-**Vendor:** `origin/master` at `7967153` (2026-10-04, PR #89 merged). `main` as it ran before this sync is tag `custom/2026-10-04`.
+**Vendor:** `origin/master` at `b0dfa57` (2026-10-04, PR #93 merged; fast-forwarded from `7967153` to cut row 5's PR, no sync yet). `main` as it ran before the last sync is tag `custom/2026-10-04`.
+
+⚠ **Upstream has moved under the freeze.** `7967153..b0dfa57` brings row 3's commits in through #92/#93
+(retire it at the next sync) and #91 "restore stock hosted start selection", which may be the fix the
+freeze is waiting for. Check hosted Start against it before syncing.
 
 ## FROZEN 2026-10-04: `main` is rolled back to `custom/2026-10-03b`, built on upstream `2ef352f`
 
@@ -29,8 +33,11 @@ upstream's mistake, and we are not patching around it. We are waiting for upstre
   the patch itself is unchanged, and its 415 tests pass in the web-build image). The pre-rebase tip is
   `archive/fix/companion-refused-warp-and-lock/2026-10-04b`.
 - Row 3 is on the frozen `main` (merged after the rollback); row 4 is NOT.
-- Row 5 is based on `2ef352f` like row 3, and merged into the frozen `main` with one conflict
-  against row 3 in `warpToAnomalyOfKind` (row 3's `visitedLabels`, row 5's `flavour.matches`).
+- Row 5 runs on the frozen `main` as tag `archive/feat/companion-scanner-ice-sites/2026-10-04`: three
+  commits on `2ef352f`, merged with one conflict against row 3 in `warpToAnomalyOfKind` (row 3's
+  `visitedLabels`, row 5's `flavour.matches`). The branch itself was then squashed onto `vendor`
+  (`b0dfa57`) for its PR, keeping upstream's `scriptScannerSites` in place of row 5's own archetype
+  carry, so `git branch --merged main` no longer lists it; the next rebuild merges the branch.
 - To lift the freeze: once upstream serves hosted Start without the missing route (or the
   server gains it), do a normal sync from `vendor` and rebuild `main` from the rows below.
 
@@ -42,7 +49,7 @@ The `On main` column is a cache of `git branch --merged main`; if the two disagr
 | 2 | `local/deploy` | The hive release pipeline: a `release/*` tag on Gitea builds and pushes the image and moves `deploy/prod`, which Portainer polls; `compose.hive.yaml` joins the evej stack's network and volume as externals | `.gitea/workflows/release.yaml`, `compose.hive.yaml`, `docs/DEPLOYMENT.md` | never | yes |
 | 3 | `fix/companion-refused-warp-and-lock` | A refused warp or lock is handled instead of re-pressed to the runner's ten-refusal cap. Since upstream `2fd4a77` the runner commits a block's memory only when its action succeeds, so the warp tour (already in the site = arrived; refused site set aside, next one tried) and the mining lock (would not lock = move on) never saw their own "issued" flag after a refusal. The tour now commits its pick on a wait tick before the warp and reads the refusal from the ledger; the mining lock waits for a known targeting range, holds a far refusal until the rock is 20% closer, and baselines the ledger at pick time. Every other lock that recorded its press on the pressing tick reads the ledger the same way (`readLockRefusals`): salvage, fight-the-rats and the fight-back watch, the drone boat's primary and its pre-lock, the fleet-mate rep and cap locks, and the fight out of a blocked trip home, whose decider is now told the id its presses are booked under. Seen live 2026-10-03/04: five miners sent home by the cap. | `web/src/nav/scriptMacros.ts`, `droneBoatLadder.ts`, `scriptDecide.ts`, `refusalLedger.ts`, `scriptRunnerRefusals.test.ts` (new, real runner + refusing issue), `scriptMacros.test.ts`, `scriptMissionMacros.test.ts` | [#90](https://github.com/rrfarmer/evejs-web-companion/pull/90) (open, based on `2ef352f`) | yes (merged into the frozen main 2026-10-04) |
 | 4 | `fix/companion-persist-bridge-sessions` | A BFF restart releases the pilots the previous process held. The bridge handles lived only in memory, so every restart left each selected pilot online at the gateway (`retail_client`) until its 30-minute idle TTL, and hosted Start refused them all ("A web session is flying this character"). The held map now mirrors handle/account/character to `data/bridge-sessions.json`; `startServer` releases those before resuming bots. Seen live 2026-10-04: five pilots refused after the 08:22 rebuild. | `src/bridgeSessionJournal.js` (new), `src/server.js`, `src/bridgeSessionJournal.test.js`, `test/bridgeSessionRestart.test.js` | not yet (verify live first); still based on `7967153` | no (frozen) |
-| 5 | `feat/companion-scanner-ice-sites` | Fly to / Mine at "the scanner's ice sites" without a Mining Operation. An ice field is a gravimetric (211) scanner row like an ore site; only archetype 28 tells it apart, so the standalone ore tour flew into ice fields and the `ice-site` mode refused outright with no operation behind it. The tours now filter by family (ore skips ice, a new ice tour takes only ice, each with its own visited/barren lists); an ice grid mines only ice chunks with only Ice Harvesters; an ice step's hold-full reads the ice hold; the block editor offers the option (not on Fleet Miner). | `web/src/nav/scriptMacros.ts`, `scriptDecide.ts`, `scriptRunner.ts`, `scannerIceSites.test.ts` (new), `web/src/app/flow.ts`, `web/src/bots/scriptText.ts`, `web/src/ui/BotInspector.svelte` | not yet (verify live first); based on `2ef352f` | yes (merged into the frozen main 2026-10-04) |
+| 5 | `feat/companion-scanner-ice-sites` | Fly to / Mine at "the scanner's ice sites" without a Mining Operation. An ice field is a gravimetric (211) scanner row like an ore site; only archetype 28 tells it apart, so the standalone ore tour flew into ice fields and the `ice-site` mode could not run without an operation (Fly-to refused, and Ice Harvesters were only identified under one). The tours now filter by family (ore skips ice, a new ice tour takes only ice, each with its own visited/barren lists); a site script gets its miners split into ore lasers and ice harvesters (Start refuses an ice script with no harvester); an ice grid mines only ice chunks with only Ice Harvesters and reads "ice chunk" not "rock"; an ice step's hold-full reads the ice hold; the block editor offers the option (not on Fleet Miner). | `web/src/nav/scriptMacros.ts`, `scriptDecide.ts`, `scriptRunner.ts`, `miningSite.ts`, `scannerIceSites.test.ts` (new), `web/src/app/flow.ts`, `web/src/bots/scriptText.ts`, `web/src/ui/BotInspector.svelte` | PR pending (verified live 2026-10-04: ice tour, harvest into the mining hold); branch squashed onto `b0dfa57` | as `archive/feat/companion-scanner-ice-sites/2026-10-04` (frozen main) |
 
 ## Retired 2026-10-04 (eleventh sync): upstream merged the facility bonuses
 
