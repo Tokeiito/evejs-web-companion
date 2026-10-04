@@ -11061,7 +11061,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           hullRatio: ship?.hullRatio ?? null,
           health: lowestHealth(snapshot),
           oreHoldFraction: (miningOperation?.logisticsTarget ?? miningOperation?.currentTarget)?.targetType === "ICE" ||
-            (miningOperation?.area.targetClasses.length === 1 && miningOperation.area.targetClasses[0] === "ICE")
+            (miningOperation?.area.targetClasses.length === 1 && miningOperation.area.targetClasses[0] === "ICE") ||
+            hint.minesIce === true
             ? iceHoldFraction(holds) : oreHoldFraction,
           holdEmpty,
           hostileOnGrid,

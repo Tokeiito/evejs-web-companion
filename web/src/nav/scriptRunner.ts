@@ -28,6 +28,7 @@ import { resolveStationRef } from "./scriptMacros.ts";
 import {
   activeMacroID,
   activeStepNeedsTypeNames,
+  activeStepMinesIce,
   activeStepToursOreSites,
   activeSquadRole,
   watchSquadRole,
@@ -76,6 +77,8 @@ export interface ObserveHint {
    * means "no", which is what every block but a site-mode mining one wants.
    */
   readonly needsOreSites?: boolean;
+  /** Whether that block mines the scanner's ICE sites, so the hold to watch is the ice hold (see activeStepMinesIce). */
+  readonly minesIce?: boolean;
   /** Whether that block follows the fleet's called primary (see activeSquadRole). */
   readonly squadRole: SquadRoleArg;
   /**
@@ -463,6 +466,7 @@ export function createScriptRunner(deps: ScriptRunnerDeps): ScriptRunnerControll
         activeMacro: activeMacroID(script, memory),
         needsTypeNames: activeStepNeedsTypeNames(script, memory),
         needsOreSites: activeStepToursOreSites(script, memory),
+        minesIce: activeStepMinesIce(script, memory),
         squadRole: activeSquadRole(script, memory),
         watchSquadRole: watchSquadRole(script),
         board: memory.board,
