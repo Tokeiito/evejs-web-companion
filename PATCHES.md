@@ -17,7 +17,10 @@ failed with `GATEWAY_ROUTE_NOT_FOUND` ("EveJS web gateway route was not found.")
 upstream's mistake, and we are not patching around it. We are waiting for upstream to fix it.
 
 - `main` is `custom/2026-10-03b` (upstream `2ef352f` + rows 1-2 + the facility bonuses branch,
-  since merged upstream as #79) plus a merge of `local/tooling` for this note. The broken
+  since merged upstream as #79) plus a merge of `local/tooling-frozen` for this note. 
+  `local/tooling` itself is based on `7967153`, so merging it would bring the broken upstream
+  back. While the freeze lasts, edit the manifest on `local/tooling`, copy it to
+  `local/tooling-frozen` (based on the tooling `main` already had) and merge that. The broken
   `main` is tag `custom/2026-10-04b`.
 - `vendor` stays at `7967153`: rule 1 forbids rewinding it. Until the freeze lifts, `vendor` is
   NOT the base of `main`. Row 3 is based on `2ef352f`, not `vendor`; `git diff vendor <branch>` is
