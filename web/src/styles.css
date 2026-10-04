@@ -6756,15 +6756,20 @@
      palette — the same strip as the character bar's, so the Bot Manager is
      found beside the brand whether or not anybody is in the client. */
   .hangar .global-launchers { align-self: center; height: 28px; }
+  /* Filled, with a border and a blue glyph, so the doors read as buttons: at
+     line-3 on the header's own background they read as labels. */
   .hangar .global-launch {
-    border-color: var(--hangar-line-3);
-    color: var(--hangar-text-dim);
+    background: var(--hangar-row-hover);
+    border-color: var(--hangar-line-5);
+    color: var(--hangar-text-mid);
     font-family: var(--hangar-mono, inherit);
     font-size: 11px;
     letter-spacing: 1px;
     text-transform: uppercase;
+    text-decoration: none;
   }
-  .hangar .global-launch:hover { color: var(--hangar-text-bright); border-color: var(--hangar-line-5); }
+  .hangar .global-launch-glyph { color: var(--hangar-link); }
+  .hangar .global-launch:hover { color: var(--hangar-text-bright); border-color: var(--hangar-accent); }
   .hangar .global-launch.open {
     color: var(--hangar-link-bright);
     border-color: var(--hangar-accent);
@@ -6828,7 +6833,11 @@
     margin-left: auto;
     flex-wrap: wrap;
   }
+  /* inline-flex so the Pilot Training link centres its label like the
+     buttons beside it; a link's text otherwise sits at the top of its box. */
   .hangar-manage {
+    display: inline-flex;
+    align-items: center;
     height: 30px;
     padding: 0 13px;
     flex: none;
@@ -6838,6 +6847,7 @@
     font-size: 12px;
     letter-spacing: 1.2px;
     text-transform: uppercase;
+    text-decoration: none;
   }
   .hangar-manage.is-on {
     background: var(--hangar-warn-fill);
