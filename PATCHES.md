@@ -4,7 +4,7 @@ Every branch carried on top of `vendor`, in the order it is merged into `main`. 
 authority: a patch not listed here is lost on the next rebuild, and a patch listed here is one
 somebody has decided is still needed. See `CLAUDE.md` for the workflow.
 
-**Vendor:** `origin/master` at `7e4133b` (2026-10-03, PR #70 merged). `main` as it ran before this sync is tag `custom/2026-10-03b`.
+**Vendor:** `origin/master` at `7967153` (2026-10-04, PR #89 merged). `main` as it ran before this sync is tag `custom/2026-10-04`.
 
 The `On main` column is a cache of `git branch --merged main`; if the two disagree, ancestry wins.
 
@@ -12,7 +12,18 @@ The `On main` column is a cache of `git branch --merged main`; if the two disagr
 | - | ------ | --------------- | ----- | -------- | ------- |
 | 1 | `local/tooling` | This workflow: `CLAUDE.md`, this manifest, and the Claude Code hooks registered in `.claude/settings.local.json` -- `guard-live-bot.sh` (refuses restarts that would kill running bots) and `rebuild-when-stale.sh`, each with its test | `CLAUDE.md`, `PATCHES.md`, `.claude/hooks/` | never | yes |
 | 2 | `local/deploy` | The hive release pipeline: a `release/*` tag on Gitea builds and pushes the image and moves `deploy/prod`, which Portainer polls; `compose.hive.yaml` joins the evej stack's network and volume as externals | `.gitea/workflows/release.yaml`, `compose.hive.yaml`, `docs/DEPLOYMENT.md` | never | yes |
-| 3 | `feat/companion-industry-facility-bonuses` | The Industry Manager counts facility bonuses and shows job times: each job is worked where it would run (its copy, else the plan Build at / React at facility, saved as `choices.facilities`), with that facility material and time modifiers from GetFacilities (category, group, type matching), and job time the server way (TE, facility, the pilot industry time attribute from skills, required-skill bonuses from dogma 1982). Checked against the server own functions on 64 cases. Not exercised in game, by choice. | `web/src/bridge/industryFacility.ts`, `industry.ts`, `industryRecipes.ts`, `industryChain.ts`, `web/src/ui/IndustryManager.svelte`, `web/src/app/industryPlans.ts`, `api.ts`, `store/types.ts`, `src/industryRecipes.js`, `industryPlanStore.js`, `server.js` (closure route), tests | [#79](https://github.com/rrfarmer/evejs-web-companion/pull/79) (open) | yes |
+| 3 | `fix/companion-refused-warp-and-lock` | A refused warp or lock is handled instead of re-pressed to the runner's ten-refusal cap. Since upstream `2fd4a77` the runner commits a block's memory only when its action succeeds, so the warp tour (already in the site = arrived; refused site set aside, next one tried) and the mining lock (would not lock = move on) never saw their own "issued" flag after a refusal. The tour now commits its pick on a wait tick before the warp and reads the refusal from the ledger; the mining lock waits for a known targeting range, holds a far refusal until the rock is 20% closer, and baselines the ledger at pick time. Seen live 2026-10-03/04: five miners sent home by the cap. | `web/src/nav/scriptMacros.ts`, `scriptRunnerRefusals.test.ts` (new, real runner + refusing issue), `scriptMacros.test.ts`, `scriptMissionMacros.test.ts` | not yet opened | yes |
+
+## Retired 2026-10-04 (eleventh sync): upstream merged the facility bonuses
+
+Upstream merged PR #79 as a true merge, so the branch became an ancestor of `vendor` and was
+retired outright. The same sync brought in #74-#78 and #80-#85 from another contributor
+(provisioning, Startup/Main execution, the Defender role) and an overview PR that upstream merged
+and then reverted (#87-#89); 143 files in all, `scriptRunner.ts`, `scriptDecide.ts` and
+`scriptMacros.ts` among them, none of it touching how a refused action is committed. `main` as it
+ran before this sync is tag `custom/2026-10-04`; the branches are `archive/<branch>/2026-10-04`.
+
+- `feat/companion-industry-facility-bonuses` -- [#79](https://github.com/rrfarmer/evejs-web-companion/pull/79)
 
 ## Retired 2026-10-03 (tenth sync): upstream merged the customs export
 
