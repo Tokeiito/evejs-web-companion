@@ -4,7 +4,30 @@ Every branch carried on top of `vendor`, in the order it is merged into `main`. 
 authority: a patch not listed here is lost on the next rebuild, and a patch listed here is one
 somebody has decided is still needed. See `CLAUDE.md` for the workflow.
 
-**Vendor:** `origin/master` at `2ef352f` (2026-10-03, PR #68 taken upstream's own way via #69). `main` as it ran before this sync is tag `custom/2026-10-03`.
+**Vendor:** `origin/master` at `7967153` (2026-10-04, PR #89 merged). `main` as it ran before this sync is tag `custom/2026-10-04`.
+
+## FROZEN 2026-10-04: `main` is rolled back to `custom/2026-10-03b`, built on upstream `2ef352f`
+
+Do NOT rebuild `main` on the current `vendor`, and do not sync, until upstream fixes hosted Start.
+
+Upstream `de60080` ("fix(bots): honor exact hosted start reservations", part of #81) sends every
+hosted bot Start through `POST /_evejs-web/v1/factory/session`. Our server's gateway has no such
+route (404, and nothing under `/d/evet` serves it), so after the eleventh sync every bot Start
+failed with `GATEWAY_ROUTE_NOT_FOUND` ("EveJS web gateway route was not found."). That call was
+upstream's mistake, and we are not patching around it. We are waiting for upstream to fix it.
+
+- `main` is `custom/2026-10-03b` (upstream `2ef352f` + rows 1-2 + the facility bonuses branch,
+  since merged upstream as #79) plus a merge of `local/tooling` for this note. The broken
+  `main` is tag `custom/2026-10-04b`.
+- `vendor` stays at `7967153`: rule 1 forbids rewinding it. Until the freeze lifts, `vendor` is
+  NOT the base of `main`. Row 3 is based on `2ef352f`, not `vendor`; `git diff vendor <branch>` is
+  not the patch while frozen, so use `git diff 2ef352f <branch>`.
+- Row 3 (PR #90) was rebased onto `2ef352f` (one import-context conflict from the Defender imports;
+  the patch itself is unchanged, and its 415 tests pass in the web-build image). The pre-rebase tip is
+  `archive/fix/companion-refused-warp-and-lock/2026-10-04b`.
+- Rows 3 and 4 are NOT on the running `main`.
+- To lift the freeze: once upstream serves hosted Start without the missing route (or the
+  server gains it), do a normal sync from `vendor` and rebuild `main` from the rows below.
 
 The `On main` column is a cache of `git branch --merged main`; if the two disagree, ancestry wins.
 
@@ -12,8 +35,31 @@ The `On main` column is a cache of `git branch --merged main`; if the two disagr
 | - | ------ | --------------- | ----- | -------- | ------- |
 | 1 | `local/tooling` | This workflow: `CLAUDE.md`, this manifest, and the Claude Code hooks registered in `.claude/settings.local.json` -- `guard-live-bot.sh` (refuses restarts that would kill running bots) and `rebuild-when-stale.sh`, each with its test | `CLAUDE.md`, `PATCHES.md`, `.claude/hooks/` | never | yes |
 | 2 | `local/deploy` | The hive release pipeline: a `release/*` tag on Gitea builds and pushes the image and moves `deploy/prod`, which Portainer polls; `compose.hive.yaml` joins the evej stack's network and volume as externals | `.gitea/workflows/release.yaml`, `compose.hive.yaml`, `docs/DEPLOYMENT.md` | never | yes |
-| 3 | `feat/companion-industry-facility-bonuses` | The Industry Manager counts facility bonuses and shows job times: each job is worked where it would run (its copy, else the plan Build at / React at facility, saved as `choices.facilities`), with that facility material and time modifiers from GetFacilities (category, group, type matching), and job time the server way (TE, facility, the pilot industry time attribute from skills, required-skill bonuses from dogma 1982). Checked against the server own functions on 64 cases. Not exercised in game, by choice. | `web/src/bridge/industryFacility.ts`, `industry.ts`, `industryRecipes.ts`, `industryChain.ts`, `web/src/ui/IndustryManager.svelte`, `web/src/app/industryPlans.ts`, `api.ts`, `store/types.ts`, `src/industryRecipes.js`, `industryPlanStore.js`, `server.js` (closure route), tests | not yet | yes |
-| 4 | `feat/companion-pi-customs-export` | The Haul button launches the ticked colonies' LAUNCHPADS into their customs offices and hauls from there. `invbroker.ImportExportWithPlanet` is not on the web gateway, so the companion speaks the GAME PORT for that one hop: a vendored marshal codec, a game client, and `POST /api/pi/customs-export`, which reads the colonies out of the gateway snapshot first (no connection when the pads are empty), looks the office up in `map.GetSolarsystemItems` rather than computing it, refuses a pilot a bot or another tab is flying, and releases and re-selects the caller's own pilot - answering its reads 409 CHARACTER_IN_USE for the length of the hop so the tab does not prune the cockpit. The lap loses its launch block and gains `collect-customs` in place of `collect-launches`. DEPENDS ON ROW 4 (it rewrites `piHaulBotDoc`), so the two are one PR upstream. | `src/gameClient.js`, `src/gameProtocol/`, `src/piCustomsExport.js`, `src/server.js`, `web/src/nav/scriptMacros.ts`, `scriptDecide.ts`, `scriptConditions.ts`, `scriptRunner.ts`, `botLog.ts`, `web/src/bots/*`, `web/src/app/{api,flow,piDispatch}.ts`, `web/src/bridge/piBoard.ts`, `web/src/ui/PiManager.svelte`, tests | [#70](https://github.com/rrfarmer/evejs-web-companion/pull/70) (open) | yes |
+| 3 | `fix/companion-refused-warp-and-lock` | A refused warp or lock is handled instead of re-pressed to the runner's ten-refusal cap. Since upstream `2fd4a77` the runner commits a block's memory only when its action succeeds, so the warp tour (already in the site = arrived; refused site set aside, next one tried) and the mining lock (would not lock = move on) never saw their own "issued" flag after a refusal. The tour now commits its pick on a wait tick before the warp and reads the refusal from the ledger; the mining lock waits for a known targeting range, holds a far refusal until the rock is 20% closer, and baselines the ledger at pick time. Every other lock that recorded its press on the pressing tick reads the ledger the same way (`readLockRefusals`): salvage, fight-the-rats and the fight-back watch, the drone boat's primary and its pre-lock, the fleet-mate rep and cap locks, and the fight out of a blocked trip home, whose decider is now told the id its presses are booked under. Seen live 2026-10-03/04: five miners sent home by the cap. | `web/src/nav/scriptMacros.ts`, `droneBoatLadder.ts`, `scriptDecide.ts`, `refusalLedger.ts`, `scriptRunnerRefusals.test.ts` (new, real runner + refusing issue), `scriptMacros.test.ts`, `scriptMissionMacros.test.ts` | [#90](https://github.com/rrfarmer/evejs-web-companion/pull/90) (open, based on `2ef352f`) | no (frozen) |
+| 4 | `fix/companion-persist-bridge-sessions` | A BFF restart releases the pilots the previous process held. The bridge handles lived only in memory, so every restart left each selected pilot online at the gateway (`retail_client`) until its 30-minute idle TTL, and hosted Start refused them all ("A web session is flying this character"). The held map now mirrors handle/account/character to `data/bridge-sessions.json`; `startServer` releases those before resuming bots. Seen live 2026-10-04: five pilots refused after the 08:22 rebuild. | `src/bridgeSessionJournal.js` (new), `src/server.js`, `src/bridgeSessionJournal.test.js`, `test/bridgeSessionRestart.test.js` | not yet (verify live first); still based on `7967153` | no (frozen) |
+
+## Retired 2026-10-04 (eleventh sync): upstream merged the facility bonuses
+
+Upstream merged PR #79 as a true merge, so the branch became an ancestor of `vendor` and was
+retired outright. The same sync brought in #74-#78 and #80-#85 from another contributor
+(provisioning, Startup/Main execution, the Defender role) and an overview PR that upstream merged
+and then reverted (#87-#89); 143 files in all, `scriptRunner.ts`, `scriptDecide.ts` and
+`scriptMacros.ts` among them, none of it touching how a refused action is committed. `main` as it
+ran before this sync is tag `custom/2026-10-04`; the branches are `archive/<branch>/2026-10-04`.
+
+- `feat/companion-industry-facility-bonuses` -- [#79](https://github.com/rrfarmer/evejs-web-companion/pull/79)
+
+## Retired 2026-10-03 (tenth sync): upstream merged the customs export
+
+Upstream merged PR #70 as a true merge, so the branch became an ancestor of `vendor` and was
+retired outright. Upstream added two commits of its own to the PR branch before merging
+(`1279c05` export ownership and partial progress, `721edc4` drone readiness across the docked
+handback); they arrive through `vendor`. Stale local branches `feat/companion-pi-haul-button`
+(retired in the ninth sync) and `patch/happy-albattani-658b4f` (already in `vendor`) were deleted
+with it, and every fork branch whose PR is merged. `main` as it ran before this sync is tag
+`custom/2026-10-03b`; the branches are `archive/<branch>/2026-10-03b`.
+
+- `feat/companion-pi-customs-export` -- [#70](https://github.com/rrfarmer/evejs-web-companion/pull/70)
 
 ## Retired 2026-10-03 (ninth sync): upstream took the Haul button its own way
 
