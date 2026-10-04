@@ -34,6 +34,7 @@ const { readTrainingSettingsContext } = require("./trainingSettingsRead");
 const { createTrainingAccounts } = require("./trainingAccounts");
 const { createCharacterCreation } = require("./characterCreation");
 const { createCreationAttemptJournal } = require("./creationAttemptJournal");
+const { createBridgeSessionJournal } = require("./bridgeSessionJournal");
 const config = require("./config");
 const botScriptStoreModule = require("./botScriptStore");
 const { lazyCompanionDb } = require("./companionDb");
@@ -249,7 +250,13 @@ const industryPlans =
 // Persistent-session handles (goal R2): webSessionID -> the opaque
 // bridgeSessionID the gateway minted, held server-side only. The browser
 // never sees the handle; it just gets its character/station state back.
-const bridgeSessions = options.bridgeSessionStore || new Map();
+// Mirrored to disk (src/bridgeSessionJournal.js) so the next start can release
+// what this process held instead of leaving the pilots online until the TTL.
+const bridgeSessionJournal = createBridgeSessionJournal({
+  filePath: options.bridgeSessionStore ? null : options.bridgeSessionJournalPath ||
+    (options.eveStore ? null : path.join(config.dataDir, "bridge-sessions.json")),
+});
+const bridgeSessions = options.bridgeSessionStore || bridgeSessionJournal.createSessionMap();
 // The tally says of a read of one character whether that character was online here then: a read the plan
 // keeps on the gateway for pilots who are offline is another matter when the pilot is online.
 gatewayLedger?.watch({ isOnline: (characterID) => [...bridgeSessions.values()].some((held) => Number(held && held.characterID) === characterID) });
@@ -407,6 +414,9 @@ const botHost =
   });
 app.locals.botHost = botHost;
 app.locals.bridgeSessions = bridgeSessions;
+// startServer() releases the previous process's sessions before bots resume.
+app.locals.releaseOrphanedBridgeSessions = () => bridgeSessionJournal.releaseOrphans(
+  (bridgeSessionID, sessionFields) => gateway.releaseBridgeSession(bridgeSessionID, sessionFields));
 app.locals.replenishment = replenishment;
 const factorySessions = createFactorySessions({ store, gateway, operations: characterOperations, heldSessions: bridgeSessions, botHost,
   withLease: mutationFence.withLease });
@@ -25482,9 +25492,21 @@ function startServer(options = {}) {
       console.error(error);
     }
     // Bots that were running when the server last stopped come back now —
-    // AFTER listen, because every server bot drives this server over loopback.
+    // AFTER listen, because every server bot drives this server over loopback,
+    // and AFTER the last process's sessions are released, because until then
+    // the gateway still has every one of those pilots online and a resumed bot
+    // would be refused its own hull.
+    const released = appToStart.locals.releaseOrphanedBridgeSessions?.()
+      .then((outcome) => {
+        if (options.silent !== true && outcome.released + outcome.gone + outcome.failed > 0) {
+          console.log(`Previous sessions: ${outcome.released} released, ${outcome.gone} already gone, ${outcome.failed} failed`);
+        }
+      })
+      .catch((error) => console.error(error));
     if (options.resumeServerBots !== false) {
-      void appToStart.locals.botHost?.resume().catch((error) => console.error(error));
+      void Promise.resolve(released)
+        .then(() => appToStart.locals.botHost?.resume())
+        .catch((error) => console.error(error));
     }
   });
   // One socket for a tab, carrying the routes' operations with no HTTP hop of their own (the plan's Phase 6a;
