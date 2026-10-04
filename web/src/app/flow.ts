@@ -19,7 +19,7 @@ import { dispatchSupportCollectionAction } from "./supportCollectionFlow.ts";
 import { NO_ROOM_CODE } from "../nav/refusalLedger.ts";
 import { confirmControlledDronesHome, controlledFlightSettled } from "../nav/controlledDroneStop.ts";
 import { runFleetParking, parkingScript, type FleetParkingPolicy } from "../nav/fleetParking.ts";
-import { iceHoldFraction, iceMiningType, siteMiningFitRefusal } from "../nav/miningSite.ts";
+import { iceHoldFraction, iceMiningType, scriptMinesScannerSites, siteMiningFitRefusal } from "../nav/miningSite.ts";
 import { fittedTravelPropulsion, travelPropulsionActivation } from "../nav/travelAssist.ts";
 import { ensureSiteLogisticsBookmark } from "../nav/siteLogisticsBookmark.ts";
 import { readRecoveryDrones, recoverLostDroneFlight, type DroneRecoveryState } from "../nav/lostDroneRecovery.ts";
@@ -9283,6 +9283,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       work: { readyForRelocation: false, reason: "Support has not been observed." as string | null, phase: "RECOVERY" } };
   }
   let supportScript: ReturnType<typeof freshSupportScript> | null = null;
+  // True while the running script flies to or mines the scanner's ore/ice sites: like an
+  // operation, it needs its miners split into ore lasers and ice harvesters.
+  let classifySiteMiners = false;
   function readMiningSupportWork(): SupportWorkDiagnostics | null {
     return supportScript?.diagnostics ? structuredClone(supportScript.diagnostics) : null;
   }
@@ -9720,7 +9723,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const droneControlRangeM = await resolveDroneControlRange(fit);
     let iceMining: number[] = [];
     let oreMining: number[] = [];
-    if (options.miningOperationID && mining.length > 0 && fit.slotsError === null) {
+    if ((options.miningOperationID || classifySiteMiners) && mining.length > 0 && fit.slotsError === null) {
       const modules = fit.slots.flatMap(slot => slot.module && slot.module.online && mining.includes(slot.module.itemID) ? [slot.module] : []);
       const facts = await api.fetchTypeDogma(modules.map(module => module.typeID), [77, 182, 183, 184, 1285, 1289, 1290], callOptions)
         .catch(() => ({} as Readonly<Record<number, Readonly<Record<number, number>>>>));
@@ -10561,6 +10564,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
                 : [{
                     label: site.targetID,
                     kind: siteKind(site.fields["scanStrengthAttribute"], site.fields["archetypeID"]),
+                    // Carried as well as classified: an ice field and an ore
+                    // site are both "ore" to `siteKind`, and only the archetype
+                    // (28 = ice) keeps the ore tour out of an ice field.
+                    archetypeID: typeof site.fields["archetypeID"] === "number" ? site.fields["archetypeID"] : null,
                     // The row's own `position`, carried so a refused warp can be
                     // told apart from standing in the site already. A row
                     // without one stays null — never an origin, which would
@@ -11773,13 +11780,18 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       return; // superseded while the included bots were read
     }
     supportScript = options.miningOperationID && doc.program.some(step => step.kind === "macro" && step.macro === "mining-support") ? freshSupportScript() : null;
+    classifySiteMiners = scriptMinesScannerSites(doc);
     store.apply({ type: "custom-bot/started", name: doc.name });
     // Seed the fitted-module cache. The runner refreshes it after a refit or
     // active-hull change; this first read only keeps tick one honest.
     const initialCapabilities = await resolveScriptModuleCapabilities();
-    if (options.miningOperationID) {
+    if (options.miningOperationID || classifySiteMiners) {
       const refusal = siteMiningFitRefusal(doc, initialCapabilities.oreMining, initialCapabilities.iceMining);
-      if (refusal) throw Object.assign(new Error(refusal), { code: refusal.split(":")[0] });
+      // Without an operation only the ice check refuses Start: an ore site
+      // script ran on `mining` before ore lasers were told apart, and still does.
+      if (refusal && (options.miningOperationID || refusal.startsWith("ICE_"))) {
+        throw Object.assign(new Error(refusal), { code: refusal.split(":")[0] });
+      }
     }
     if (gen !== customBotGeneration) {
       return; // a newer start / a stop / a panic superseded us during the read

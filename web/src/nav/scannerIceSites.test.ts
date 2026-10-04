@@ -17,6 +17,7 @@ import type { BotScript, MacroStep } from "../bots/botScript.ts";
 import { activeStepMinesIce, initialMemory } from "./scriptDecide.ts";
 import { SCRIPT_MACROS } from "./scriptMacros.ts";
 import { stepSentence } from "../bots/scriptText.ts";
+import { scriptMinesScannerSites } from "./miningSite.ts";
 
 const ORIGIN = { x: 0, y: 0, z: 0 };
 const AU = 149_597_870_700;
@@ -148,4 +149,13 @@ test("the hold an ice step watches is the ice hold", () => {
 
 test("the block reads as a trip to the scanner's ice site", () => {
   assert.match(stepSentence(beltStep("travel-to-belt", "ice-site")), /Fly to the ice site the scanner shows/);
+});
+
+test("a script that tours the scanner's sites asks for its miners to be told apart", () => {
+  const wrap = (step: MacroStep): BotScript =>
+    ({ version: 1, name: "S", home: null, program: [{ id: "l", kind: "loop", repeat: { kind: "forever" }, body: [step] }] }) as unknown as BotScript;
+  assert.equal(scriptMinesScannerSites(wrap(beltStep("mine-at-belt", "ice-site"))), true);
+  assert.equal(scriptMinesScannerSites(wrap(beltStep("travel-to-belt", "site"))), true);
+  const nearest: MacroStep = { id: "n", kind: "macro", macro: "mine-at-belt", args: { belt: { kind: "belt", belt: { mode: "nearest" } } } };
+  assert.equal(scriptMinesScannerSites(wrap(nearest)), false);
 });
