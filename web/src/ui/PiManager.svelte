@@ -1540,15 +1540,13 @@
                 {coverage.summary.basicsMade} of {coverage.summary.basicsKnown}
               </dd>
             </div>
-            <div class="pi-summary-help">
-              <dt>Below balance</dt>
+            <div>
+              <dt>Below balance <button type="button" class="pi-help" aria-label={BALANCE_HELP} title={BALANCE_HELP}>?</button></dt>
               <dd class:warn={coverage.summary.short > 0}>{coverage.summary.short}</dd>
-              <button type="button" class="pi-help" aria-label={BALANCE_HELP} title={BALANCE_HELP}>?</button>
             </div>
-            <div class="pi-summary-help">
-              <dt>Weak colonies</dt>
+            <div>
+              <dt>Weak colonies <button type="button" class="pi-help" aria-label={WEAK_HELP} title={WEAK_HELP}>?</button></dt>
               <dd class:warn={coverage.summary.weak > 0}>{coverage.summary.weak}</dd>
-              <button type="button" class="pi-help" aria-label={WEAK_HELP} title={WEAK_HELP}>?</button>
             </div>
           </dl>
 
@@ -2303,15 +2301,10 @@
     border-bottom: 1px solid var(--color-row-line);
     border-left: 3px solid var(--color-good);
   }
-  .pi-summary-help {
-    position: relative;
-    padding-right: 1.5rem;
-  }
   .pi-help {
-    position: absolute;
-    top: 0;
-    right: 0;
     display: inline-flex;
+    vertical-align: middle;
+    margin-left: 0.3rem;
     align-items: center;
     justify-content: center;
     width: 16px;
