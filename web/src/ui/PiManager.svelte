@@ -458,12 +458,12 @@
       .filter((group) => group.lines.length > 0);
   });
 
-  /** "about 2 colonies", "none made", "covered", or "-" where no target applies. */
+  /** "about 2 colonies short", "none made", "balanced", or "-" where no balance applies. */
   function gapWords(line: CoverageLine): string {
     if (line.state === "untargeted") return "-";
-    if (line.state === "ok") return "covered";
+    if (line.state === "ok") return "balanced";
     if (line.colonyGap === null) return line.state === "none" ? "none made" : "short";
-    return line.colonyGap === 1 ? "about 1 colony" : `about ${line.colonyGap} colonies`;
+    return line.colonyGap === 1 ? "about 1 colony short" : `about ${line.colonyGap} colonies short`;
   }
 
   function rateWords(perHour: number): string {
@@ -1532,7 +1532,7 @@
               </dd>
             </div>
             <div>
-              <dt>Below target</dt>
+              <dt>Below balance</dt>
               <dd class:warn={coverage.summary.short > 0}>{coverage.summary.short}</dd>
             </div>
             <div>
@@ -1557,6 +1557,12 @@
             </div>
           </div>
 
+          <p class="note pi-coverage-explain">
+            Balanced is your basics' total output per hour, split the way the recipes use each one to make every P4 once.
+            It comes from the recipes, not from a setting. A basic below balance is the one that runs short first, and its gap
+            says roughly how many colonies like yours would close it.
+          </p>
+
           {#if coverageGroups.length === 0}
             <p class="empty">Nothing in this tier is made by a colony that was read.</p>
           {:else}
@@ -1567,7 +1573,7 @@
                     <th>Commodity</th>
                     <th class="num">Colonies</th>
                     <th class="num">Per hour</th>
-                    <th class="num">Target</th>
+                    <th class="num" title="This basic's share of the basics made now, split the way the recipes use them to make every P4 once">Balanced</th>
                     <th class="num">Gap</th>
                   </tr>
                 </thead>
@@ -1627,8 +1633,7 @@
             </div>
           {/if}
           <p class="note">
-            Target: the share of the basics made now that each would get if every P4 were made once.
-            Rates are what the extractors and running factories can do on the programs installed now.
+            Rates are what the extractors can pull up on the programs installed now, and what running factories can make.
           </p>
         {/if}
       </section>
@@ -2292,6 +2297,10 @@
     padding: 0.5rem 0.75rem;
     border-bottom: 1px solid var(--color-row-line);
     border-left: 3px solid var(--color-good);
+  }
+  .pi-coverage-explain {
+    max-width: 60rem;
+    margin: 0 0 0.5rem;
   }
   .pi-colony.tone-planned {
     border-left-color: var(--color-line-strong);
