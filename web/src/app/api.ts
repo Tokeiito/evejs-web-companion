@@ -3447,6 +3447,58 @@ export async function deletePiPlan(planID: string, options: ApiOptions = {}): Pr
   await postJson(`/api/pi/plans/${encodeURIComponent(planID)}/delete`, {}, options);
 }
 
+// ─── Saved PI expansion plans (src/piExpansionStore.js) ──────────────────────
+// Handed back RAW: app/piExpansions.ts decodes them.
+
+export interface PiExpansionFields {
+  readonly settings?: {
+    readonly homeSystemID: number;
+    readonly maxJumps: number;
+    readonly nullsecTolerance: number;
+    readonly characterIDs: readonly number[];
+  };
+  readonly rows?: readonly {
+    readonly characterID: number;
+    readonly planetID: number;
+    readonly resourceTypeID: number;
+    readonly productTypeID: number;
+  }[];
+  readonly note?: string;
+  readonly status?: "active" | "done";
+}
+
+export async function listPiExpansions(options: ApiOptions = {}): Promise<JsonValue> {
+  return (await getJson("/api/pi/expansions", options)).plans ?? null;
+}
+
+export async function createPiExpansion(fields: PiExpansionFields, options: ApiOptions = {}): Promise<JsonValue> {
+  return (await postJson("/api/pi/expansions", fields, options)).plan ?? null;
+}
+
+export async function updatePiExpansion(
+  planID: string,
+  fields: PiExpansionFields,
+  baseRev: number,
+  options: ApiOptions = {},
+): Promise<JsonValue> {
+  const data = await postJson(`/api/pi/expansions/${encodeURIComponent(planID)}`, { ...fields, baseRev }, options);
+  return data.plan ?? null;
+}
+
+export async function deletePiExpansion(planID: string, options: ApiOptions = {}): Promise<void> {
+  await postJson(`/api/pi/expansions/${encodeURIComponent(planID)}/delete`, {}, options);
+}
+
+/** Every planet within `jumps` of a system, from static data (raw; bridge/piExpansion.ts decodes). */
+export async function getPlanetsNear(systemID: number, jumps: number, options: ApiOptions = {}): Promise<JsonValue> {
+  return await getJson(`/api/pi/planets-near?systemID=${encodeURIComponent(systemID)}&jumps=${encodeURIComponent(jumps)}`, options) as JsonValue;
+}
+
+/** Each planet's GetPlanetResourceInfo on the HELD session these options carry (raw). */
+export async function getPlanetRichness(planetIDs: readonly number[], options: ApiOptions = {}): Promise<JsonValue> {
+  return await getJson(`/api/pi/planet-richness?planetIDs=${planetIDs.map((id) => encodeURIComponent(id)).join(",")}`, options) as JsonValue;
+}
+
 // ─── Saved Industry Manager plans (src/industryPlanStore.js) ─────────────────
 // Handed back RAW, as for PI plans: app/industryPlans.ts decodes them.
 

@@ -77,7 +77,37 @@
     tierTag,
     type CorpStockRead,
   } from "../bridge/piStock.ts";
-  import { buildCoverage, type CoverageLine } from "../bridge/piCoverage.ts";
+  import { balancedDemand, buildCoverage, type CoverageLine } from "../bridge/piCoverage.ts";
+  import {
+    commandCentresToBuy,
+    decodePlanetsNear,
+    expansionGroups,
+    expansionPilots,
+    homeSystems,
+    layoutToCopy,
+    proposeExpansion,
+    rowState,
+    type ExpansionGroupView,
+    type ExpansionProposal,
+    type PlanetNear,
+  } from "../bridge/piExpansion.ts";
+  import {
+    createPiExpansion,
+    deletePiExpansion,
+    loadPiExpansions,
+    updatePiExpansion,
+    type SavedPiExpansion,
+  } from "../app/piExpansions.ts";
+  import {
+    loadRichness,
+    mergeRichness,
+    readRichness,
+    richnessFromReadings,
+    saveRichness,
+    type RichnessMap,
+  } from "../app/piRichness.ts";
+  import { getPlanetsNear } from "../app/api.ts";
+  import { DEFAULT_PI_PLAN_DEPS, signedIn } from "../app/piPlans.ts";
   import { missingByTier, planStepCounts, planWithStock, type PlanNode, type PlannerColony } from "../bridge/piPlanner.ts";
   import { readCorpStock, type BotPilot, type OnlinePilot } from "../app/piCorpRead.ts";
   import {
@@ -167,6 +197,23 @@
   let planSaving = $state(false);
   let planNote = $state("");
   let planView = $state<PiPlanView>(loadPiPlanView());
+  // EXPANSION PLANS (app/piExpansions.ts): where free colony slots should go.
+  // The rows live on the server; the draft, the map read for it and which
+  // plan is open live in this window.
+  let expansions = $state<SavedPiExpansion[]>([]);
+  let expansionsLoaded = $state(false);
+  let openExpansionID = $state<string | null>(null);
+  let composeKind = $state<"commodity" | "expansion">("commodity");
+  let expHome = $state("");
+  let expJumps = $state("2");
+  let expTolerance = $state("20");
+  let expBusy = $state(false);
+  let expWords = $state<string | null>(null);
+  let expError = $state<string | null>(null);
+  let expPlanets = $state<Map<number, PlanetNear>>(new Map());
+  let draft = $state<ExpansionProposal | null>(null);
+  let draftSettings = $state<{ homeSystemID: number; maxJumps: number; nullsecTolerance: number } | null>(null);
+  let richness = $state<RichnessMap>(loadRichness());
 
   async function loadActiveBots(): Promise<void> {
     try {
@@ -560,6 +607,7 @@
   }
 
   function showPlan(entry: SavedPiPlan | null): void {
+    openExpansionID = null;
     planError = null;
     placesOpen = new Set();
     if (entry === null) {
@@ -680,6 +728,204 @@
     }
   }
 
+  // ⑥ EXPANSION PLANS. Free slots, the map around a home system, and the
+  // richness of its planets go in; a proposal comes out (bridge/piExpansion.ts).
+  const knownRichness = $derived(mergeRichness(richness, richnessFromReadings(memberReadings)));
+  const expansionRoster = $derived(expansionPilots(roster.members, memberReadings, names));
+  const freeSlots = $derived(expansionRoster.pilots.reduce((total, pilot) => total + pilot.freeSlots, 0));
+  const homes = $derived(homeSystems(memberReadings));
+  const openExpansion = $derived(expansions.find((entry) => entry.planID === openExpansionID) ?? null);
+  const activeExpansions = $derived(expansions.filter((entry) => entry.status === "active"));
+  const doneExpansions = $derived(expansions.filter((entry) => entry.status === "done"));
+  /** The draft's rows, or the open plan's, as the window shows them. */
+  const expansionShown = $derived.by((): readonly ExpansionGroupView[] => {
+    if (!recipes?.readable) return [];
+    const rows = openExpansion
+      ? openExpansion.rows
+      : (draft?.rows ?? []).map((row) => ({
+          characterID: row.characterID,
+          planetID: row.planet.planetID,
+          resourceTypeID: row.resourceTypeID,
+          productTypeID: row.productTypeID,
+        }));
+    return expansionGroups(rows, expPlanets, knownRichness, memberReadings, names, recipes);
+  });
+  const expansionRows = $derived(expansionShown.flatMap((group) => group.rows));
+  const expansionToBuy = $derived(
+    commandCentresToBuy(expansionRows.map((row) => ({ planetTypeName: row.planetTypeName, state: row.state }))),
+  );
+
+  /** Each saved expansion's standing: how many of its rows stand built now. */
+  function expansionStanding(entry: SavedPiExpansion): { words: string; share: number; tone: "ok" | "act" } {
+    const built = entry.rows.filter((row) => rowState(row, memberReadings) === "built").length;
+    const total = entry.rows.length;
+    return { words: `${built} of ${total} built`, share: total > 0 ? built / total : 1, tone: built === total ? "ok" : "act" };
+  }
+
+  function systemName(solarSystemID: number): string {
+    return homes.find((home) => home.solarSystemID === solarSystemID)?.name ?? "A system this map does not name";
+  }
+
+  async function loadExpansions(): Promise<void> {
+    try {
+      expansions = await loadPiExpansions(planAccounts());
+      expansionsLoaded = true;
+    } catch (error) {
+      expError = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  /** The map around a system, asked on a throwaway sign-in like the plans are. */
+  async function readPlanetsNear(systemID: number, jumps: number): Promise<Map<number, PlanetNear>> {
+    const raw = await signedIn(planAccounts(), DEFAULT_PI_PLAN_DEPS, (token) =>
+      getPlanetsNear(systemID, jumps, { token, priority: "user" }));
+    return new Map(decodePlanetsNear(raw).planets.map((planet) => [planet.planetID, planet]));
+  }
+
+  /** A pilot online in this tab, whose session may ask the game for richness. */
+  function richnessReader(): { name: string; options: ReturnType<Session["flow"]["requestOptions"]> } | null {
+    for (const session of sessions) {
+      const online = session.store.station.get().online;
+      if (online) return { name: online.characterName, options: session.flow.requestOptions() };
+    }
+    return null;
+  }
+
+  function newExpansion(): void {
+    showPlan(null);
+    composeKind = "expansion";
+    if (expHome === "" && homes[0]) expHome = String(homes[0].solarSystemID);
+  }
+
+  function showExpansion(entry: SavedPiExpansion): void {
+    showPlan(null);
+    openExpansionID = entry.planID;
+    draft = null;
+    expWords = null;
+    expError = null;
+    if (entry.settings.homeSystemID > 0) {
+      void readPlanetsNear(entry.settings.homeSystemID, entry.settings.maxJumps)
+        .then((planets) => {
+          if (openExpansionID === entry.planID) expPlanets = planets;
+        })
+        .catch((error) => (expError = error instanceof Error ? error.message : String(error)));
+    }
+  }
+
+  /** Read the map and the richness it needs, then propose. Nothing is saved until Keep. */
+  async function proposeNow(): Promise<void> {
+    const homeSystemID = Number(expHome);
+    const maxJumps = Number(expJumps);
+    const tolerancePercent = Number(expTolerance);
+    if (!Number.isSafeInteger(homeSystemID) || homeSystemID <= 0) {
+      expError = "Choose a system to look around.";
+      return;
+    }
+    if (!Number.isFinite(tolerancePercent) || tolerancePercent < 0 || tolerancePercent > 100) {
+      expError = "Enter a tolerance from 0 to 100 percent.";
+      return;
+    }
+    if (!recipes?.readable || coverage === null) {
+      expError = "The recipe table has not been read yet. Refresh reads it.";
+      return;
+    }
+    expError = null;
+    expBusy = true;
+    try {
+      const planets = await readPlanetsNear(homeSystemID, maxJumps);
+      expPlanets = planets;
+      // Only the planets that carry a resource a basic is refined from, and whose richness is not known yet.
+      const unknown = [...planets.values()]
+        .filter((planet) => planet.resourceTypeIDs.length > 0 && !knownRichness.has(planet.planetID))
+        .map((planet) => planet.planetID);
+      const reader = unknown.length > 0 ? richnessReader() : null;
+      let notRead = unknown.length;
+      if (reader) {
+        const found = await readRichness(unknown, reader.options);
+        richness = mergeRichness(richness, found);
+        saveRichness(richness);
+        notRead = unknown.filter((planetID) => !found.has(planetID)).length;
+      }
+      draftSettings = { homeSystemID, maxJumps, nullsecTolerance: tolerancePercent / 100 };
+      draft = proposeExpansion({
+        book: recipes,
+        coverage,
+        demand: balancedDemand(recipes),
+        pilots: expansionRoster.pilots,
+        planets: [...planets.values()],
+        richness: mergeRichness(richness, richnessFromReadings(memberReadings)),
+        readings: memberReadings,
+        nullsecTolerance: tolerancePercent / 100,
+      });
+      const parts = [`${planets.size} planets within ${maxJumps === 1 ? "1 jump" : `${maxJumps} jumps`}.`];
+      if (reader && unknown.length > notRead) {
+        parts.push(`Richness read for ${unknown.length - notRead} of them through ${reader.name}, and kept.`);
+      }
+      if (notRead > 0) {
+        parts.push(reader
+          ? `${notRead} did not answer, so they rank below the planets whose richness is known.`
+          : `No pilot is online in this tab, so ${notRead} planets' richness is unknown and they rank last. Bring a pilot online here and propose again to read it.`);
+      }
+      if (draft.unusedSlots > 0) parts.push(`${draft.unusedSlots} free slots found nothing left to drill in reach.`);
+      expWords = parts.join(" ");
+    } catch (error) {
+      expError = error instanceof Error ? error.message : String(error);
+    } finally {
+      expBusy = false;
+    }
+  }
+
+  async function keepDraft(): Promise<void> {
+    if (draft === null || draftSettings === null || draft.rows.length === 0) return;
+    expBusy = true;
+    try {
+      const plan = await createPiExpansion(planAccounts(), {
+        settings: { ...draftSettings, characterIDs: [...new Set(draft.rows.map((row) => row.characterID))] },
+        rows: draft.rows.map((row) => ({
+          characterID: row.characterID,
+          planetID: row.planet.planetID,
+          resourceTypeID: row.resourceTypeID,
+          productTypeID: row.productTypeID,
+        })),
+      });
+      expansions = [plan, ...expansions];
+      draft = null;
+      expWords = null;
+      openExpansionID = plan.planID;
+    } catch (error) {
+      expError = `Not saved: ${error instanceof Error ? error.message : String(error)}`;
+    } finally {
+      expBusy = false;
+    }
+  }
+
+  async function setExpansionStatus(entry: SavedPiExpansion, status: "active" | "done"): Promise<void> {
+    expBusy = true;
+    try {
+      const plan = await updatePiExpansion(planAccounts(), entry, { status });
+      expansions = expansions.map((row) => (row.planID === plan.planID ? plan : row));
+    } catch (error) {
+      expError = error instanceof Error ? error.message : String(error);
+      void loadExpansions();
+    } finally {
+      expBusy = false;
+    }
+  }
+
+  /** For good -- offered only on a plan already marked done, as for commodity plans. */
+  async function removeExpansion(entry: SavedPiExpansion): Promise<void> {
+    expBusy = true;
+    try {
+      await deletePiExpansion(planAccounts(), entry.planID);
+      expansions = expansions.filter((row) => row.planID !== entry.planID);
+      if (openExpansionID === entry.planID) openExpansionID = null;
+    } catch (error) {
+      expError = error instanceof Error ? error.message : String(error);
+    } finally {
+      expBusy = false;
+    }
+  }
+
   /** Pilots online in this tab, read at call time, for the corp hangar read. */
   function onlinePilots(): OnlinePilot[] {
     const pilots: OnlinePilot[] = [];
@@ -787,6 +1033,7 @@
   onMount(() => {
     void refresh();
     void loadPlans();
+    void loadExpansions();
     const tick = setInterval(() => (browserNowMs = Date.now()), 30_000);
     return () => clearInterval(tick);
   });
@@ -1440,23 +1687,57 @@
                   </button>
                 </li>
               {/snippet}
-              {#if !plansLoaded && !plansError}
+              {#snippet expansionRow(entry: SavedPiExpansion)}
+                {@const standing = expansionStanding(entry)}
+                <li>
+                  <button
+                    type="button"
+                    class="pi-plan-card"
+                    class:on={entry.planID === openExpansionID}
+                    aria-current={entry.planID === openExpansionID ? "true" : undefined}
+                    onclick={() => showExpansion(entry)}
+                  >
+                    <span class="pi-plan-card-top">
+                      <TypeIcon typeID={entry.rows[0]?.productTypeID ?? null} name="Expand colonies" size="md" />
+                      <span class="pi-plan-card-text">
+                        <span class="pi-plan-card-name">Expand colonies</span>
+                        <span class="pi-plan-card-sub">
+                          {systemName(entry.settings.homeSystemID)} - {entry.rows.length} colonies{entry.note ? ` - ${entry.note}` : ""}
+                        </span>
+                      </span>
+                    </span>
+                    <span class="pi-plan-card-foot">
+                      <span class="pi-meter" aria-hidden="true">
+                        <span class="pi-meter-fill tone-{standing.tone}" style:width={`${Math.round(standing.share * 100)}%`}></span>
+                      </span>
+                      <span class="pi-pill tone-{standing.tone}">{standing.words}</span>
+                    </span>
+                  </button>
+                </li>
+              {/snippet}
+              {#if (!plansLoaded && !plansError) || (!expansionsLoaded && !expError)}
                 <p class="pi-plans-empty">Reading your saved plans...</p>
-              {:else if activePlans.length === 0}
+              {:else if activePlans.length === 0 && activeExpansions.length === 0}
                 <p class="pi-plans-empty">No plans yet. Start one with New.</p>
               {:else}
                 <ul class="pi-plan-list">
                   {#each activePlans as entry (entry.planID)}
                     {@render planRow(entry)}
                   {/each}
+                  {#each activeExpansions as entry (entry.planID)}
+                    {@render expansionRow(entry)}
+                  {/each}
                 </ul>
               {/if}
-              {#if donePlans.length > 0}
+              {#if donePlans.length > 0 || doneExpansions.length > 0}
                 <details class="pi-plans-done">
-                  <summary>Done ({donePlans.length})</summary>
+                  <summary>Done ({donePlans.length + doneExpansions.length})</summary>
                   <ul class="pi-plan-list">
                     {#each donePlans as entry (entry.planID)}
                       {@render planRow(entry)}
+                    {/each}
+                    {#each doneExpansions as entry (entry.planID)}
+                      {@render expansionRow(entry)}
                     {/each}
                   </ul>
                 </details>
@@ -1468,7 +1749,165 @@
                 <p class="pi-plan-error" role="alert">{plansError}</p>
               {/if}
 
-              {#if planRequest === null}
+              <!-- AN EXPANSION'S BODY, for a draft and a kept plan alike: the
+                   colonies by pilot, as the Colonies view draws a pilot, then
+                   the command centres still to buy. -->
+              {#snippet expansionBody()}
+                {@const built = expansionRows.filter((row) => row.state === "built").length}
+                {@const toBuy = expansionToBuy.reduce((total, entry) => total + entry.count, 0)}
+                {@const rated = expansionRows.filter((row) => row.quality !== null).length}
+                <dl class="pi-summary">
+                  <div>
+                    <dt>Colonies</dt>
+                    <dd>{expansionRows.length}</dd>
+                  </div>
+                  <div>
+                    <dt>Built</dt>
+                    <dd class:good={built > 0 && built === expansionRows.length}>{built}</dd>
+                  </div>
+                  <div>
+                    <dt>Command centres to buy</dt>
+                    <dd>{toBuy}</dd>
+                  </div>
+                  <div>
+                    <dt>Richness known</dt>
+                    <dd class:warn={rated < expansionRows.length}>{rated} of {expansionRows.length}</dd>
+                  </div>
+                </dl>
+                {#each expansionShown as group (group.characterID)}
+                  {@const layout = group.commandCenterLevel === null ? null : layoutToCopy(group.commandCenterLevel, memberReadings, names)}
+                  <section class="pi-group" aria-label={`${group.pilotName}'s new colonies`}>
+                    <header class="pi-group-head">
+                      <h3>
+                        {group.pilotName}
+                        <span class="note">- {group.rows.length === 1 ? "1 colony" : `${group.rows.length} colonies`}{group.commandCenterLevel === null ? "" : `, command centre ${group.commandCenterLevel}`}</span>
+                      </h3>
+                      {#if layout}<span class="note">{layout.words}</span>{/if}
+                    </header>
+                    <ul class="pi-colonies">
+                      {#each group.rows as row (row.key)}
+                        <li class="pi-colony" class:tone-planned={row.state !== "built"}>
+                          <span class="pi-colony-place">
+                            <TypeIcon typeID={expPlanets.get(row.ref.planetID)?.planetTypeID ?? null} name={row.planetTypeName ?? "Planet"} size="md" />
+                            <span>
+                              <span class="pi-colony-name">{row.planetName}</span>
+                              <span class="note">{[row.planetTypeName, row.placeWords].filter(Boolean).join(" - ")}</span>
+                            </span>
+                          </span>
+                          <span class="pi-colony-resources">
+                            <span class="pi-chip">{row.resourceName}</span>
+                            <span class="note">for {row.productName}</span>
+                          </span>
+                          <span class="pi-colony-program">
+                            <span class="pi-status">{row.quality === null ? "richness not read" : `richness ${row.quality}`}</span>
+                          </span>
+                          <span class="pi-colony-storage">
+                            <span class="note" class:good={row.state === "built"} class:warn={row.state === "other-resource"}>
+                              {row.state === "built" ? "Built" : row.state === "other-resource" ? "Built, drilling something else" : "Not built"}
+                            </span>
+                          </span>
+                        </li>
+                      {/each}
+                    </ul>
+                  </section>
+                {/each}
+                {#if expansionToBuy.length > 0}
+                  <h4 class="pi-section-title">Command centres to buy</h4>
+                  <p class="note">{expansionToBuy.map((entry) => `${entry.planetTypeName} ${entry.count}`).join(" - ")}</p>
+                {/if}
+              {/snippet}
+
+              {#if openExpansion}
+                <header class="pi-detail-head">
+                  <div class="pi-detail-title">
+                    <h3>
+                      Expand colonies
+                      {#if openExpansion.status === "done"}<span class="pi-pill">done</span>{/if}
+                    </h3>
+                    <p class="note">
+                      Around {systemName(openExpansion.settings.homeSystemID)}, within {openExpansion.settings.maxJumps === 1 ? "1 jump" : `${openExpansion.settings.maxJumps} jumps`},
+                      nullsec unless {Math.round(openExpansion.settings.nullsecTolerance * 100)}% poorer
+                    </p>
+                  </div>
+                  <div class="pi-detail-actions">
+                    {#if openExpansion.status === "active"}
+                      <button type="button" disabled={expBusy} onclick={() => openExpansion && setExpansionStatus(openExpansion, "done")}>Mark done</button>
+                    {:else}
+                      <button type="button" disabled={expBusy} onclick={() => openExpansion && setExpansionStatus(openExpansion, "active")}>Reopen</button>
+                      <button type="button" class="danger" disabled={expBusy} onclick={() => openExpansion && removeExpansion(openExpansion)}>Delete</button>
+                    {/if}
+                  </div>
+                </header>
+                {#if expError}
+                  <p class="pi-plan-error" role="alert">{expError}</p>
+                {/if}
+                {@render expansionBody()}
+              {:else if planRequest === null && composeKind === "expansion"}
+                <!-- A NEW EXPANSION. Proposed from the map, the richness and the
+                     free slots; nothing is kept until Keep this plan. -->
+                <form
+                  class="pi-compose"
+                  onsubmit={(event) => {
+                    event.preventDefault();
+                    void proposeNow();
+                  }}
+                >
+                  <h3 class="pi-compose-title">New plan</h3>
+                  <div class="pi-tiers" role="group" aria-label="Kind of plan">
+                    <button type="button" class="pi-tier" aria-pressed="false" onclick={() => (composeKind = "commodity")}>Make a commodity</button>
+                    <button type="button" class="pi-tier on" aria-pressed="true">Expand colonies</button>
+                  </div>
+                  <div class="pi-compose-row">
+                    <label class="pi-field pi-field-grow">
+                      <span>Look around</span>
+                      <select id="pi-exp-home" bind:value={expHome} onchange={() => (expError = null)}>
+                        <option value="">Choose a system</option>
+                        {#each homes as home (home.solarSystemID)}
+                          <option value={String(home.solarSystemID)}>{home.name} - {home.colonies === 1 ? "1 colony" : `${home.colonies} colonies`}</option>
+                        {/each}
+                      </select>
+                    </label>
+                    <label class="pi-field pi-field-qty">
+                      <span>Within jumps</span>
+                      <select bind:value={expJumps}>
+                        {#each [0, 1, 2, 3, 4, 5] as jumps (jumps)}
+                          <option value={String(jumps)}>{jumps}</option>
+                        {/each}
+                      </select>
+                    </label>
+                    <label class="pi-field pi-field-qty">
+                      <span>Nullsec unless poorer by %</span>
+                      <input inputmode="numeric" bind:value={expTolerance} oninput={() => (expError = null)} />
+                    </label>
+                  </div>
+                  <p class="note">
+                    {freeSlots === 1 ? "1 free colony slot" : `${freeSlots} free colony slots`} across
+                    {expansionRoster.pilots.filter((pilot) => pilot.freeSlots > 0).length} pilots.
+                    {#if expansionRoster.unknown.length > 0}
+                      {expansionRoster.unknown.length === 1 ? "1 pilot's" : `${expansionRoster.unknown.length} pilots'`} skills were not read; Refresh reads them.
+                    {/if}
+                  </p>
+                  <div class="pi-compose-actions">
+                    {#if draft && draft.rows.length > 0}
+                      <button type="button" disabled={expBusy} onclick={() => void proposeNow()}>Propose again</button>
+                      <button type="button" class="primary" disabled={expBusy} onclick={() => void keepDraft()}>Keep this plan</button>
+                    {:else}
+                      <button type="submit" class="primary" disabled={expBusy || freeSlots === 0}>{expBusy ? "Looking..." : "Propose colonies"}</button>
+                    {/if}
+                  </div>
+                  {#if expWords}
+                    <p class="note">{expWords}</p>
+                  {/if}
+                  {#if expError}
+                    <p class="pi-plan-error" role="alert">{expError}</p>
+                  {/if}
+                </form>
+                {#if draft && draft.rows.length > 0}
+                  {@render expansionBody()}
+                {:else if draft}
+                  <p class="empty">Nothing in reach is left to drill for the basics that need it. Look further, or around another system.</p>
+                {/if}
+              {:else if planRequest === null}
                 <!-- A NEW PLAN. It is kept the moment it is planned. -->
                 <form
                   class="pi-compose"
@@ -1478,6 +1917,10 @@
                   }}
                 >
                   <h3 class="pi-compose-title">New plan</h3>
+                  <div class="pi-tiers" role="group" aria-label="Kind of plan">
+                    <button type="button" class="pi-tier on" aria-pressed="true">Make a commodity</button>
+                    <button type="button" class="pi-tier" aria-pressed="false" onclick={newExpansion}>Expand colonies</button>
+                  </div>
                   <div class="pi-compose-row">
                     <label class="pi-field pi-field-qty">
                       <span>Make</span>
@@ -1849,6 +2292,12 @@
     padding: 0.5rem 0.75rem;
     border-bottom: 1px solid var(--color-row-line);
     border-left: 3px solid var(--color-good);
+  }
+  .pi-colony.tone-planned {
+    border-left-color: var(--color-line-strong);
+  }
+  .note.good {
+    color: var(--color-good);
   }
   .pi-colony.tone-soon {
     border-left-color: var(--color-warn);

@@ -117,3 +117,12 @@ test("⚠ a pilot asked about and not answered is named as unanswered, in ask or
   );
   assert.deepEqual(unansweredPilots([FARMER_ID], pilots), []);
 });
+
+test("a pilot's planetary skills decode, and a missing or damaged sheet is unknown, not untrained", () => {
+  const decode = (planetSkills: unknown) =>
+    decodeRosterColonies({ serverNowMs: SERVER_NOW_MS, pilots: [{ characterID: FARMER_ID, planetSkills }] } as never, BROWSER_NOW_MS)[0]!.planetSkills;
+  assert.deepEqual(decode({ consolidation: 4, commandCenterUpgrades: 5 }), { consolidation: 4, commandCenterUpgrades: 5 });
+  assert.deepEqual(decode({ consolidation: 0, commandCenterUpgrades: 0 }), { consolidation: 0, commandCenterUpgrades: 0 });
+  assert.equal(decode(undefined), null);
+  assert.equal(decode({ consolidation: 7, commandCenterUpgrades: 5 }), null);
+});

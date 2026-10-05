@@ -41,6 +41,29 @@ export interface PilotColonyReading {
   readonly stock?: readonly PilotStockStack[] | null;
   /** The pilot's corporation, whose hangars it could read online. Absent or null: unknown. */
   readonly corporationID?: number | null;
+  /**
+   * The two skills that bound its colonies, trained levels. Absent or null
+   * when the skill sheet was not read: unknown, never "untrained".
+   */
+  readonly planetSkills?: PlanetSkills | null;
+}
+
+export interface PlanetSkills {
+  /** Interplanetary Consolidation: one colony, plus one a level. */
+  readonly consolidation: number;
+  /** Command Center Upgrades: the highest level its command centres reach. */
+  readonly commandCenterUpgrades: number;
+}
+
+function decodePlanetSkills(value: JsonValue | undefined): PlanetSkills | null {
+  const record = asRecord(value);
+  const level = (raw: JsonValue | undefined): number | null => {
+    const numeric = Number(raw);
+    return raw !== null && raw !== undefined && Number.isInteger(numeric) && numeric >= 0 && numeric <= 5 ? numeric : null;
+  };
+  const consolidation = level(record.consolidation);
+  const commandCenterUpgrades = level(record.commandCenterUpgrades);
+  return consolidation === null || commandCenterUpgrades === null ? null : { consolidation, commandCenterUpgrades };
 }
 
 /** What holds a stack inside the station: nothing (the hangar), a ship, a container. */
@@ -136,6 +159,7 @@ export function decodeRosterColonies(
       corporationID: Number.isSafeInteger(Number(pilot.corporationID)) && Number(pilot.corporationID) > 0
         ? Number(pilot.corporationID)
         : null,
+      planetSkills: decodePlanetSkills(pilot.planetSkills),
     });
   }
   return readings;

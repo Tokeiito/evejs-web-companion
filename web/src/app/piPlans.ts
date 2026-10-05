@@ -122,9 +122,9 @@ export const NO_ACCOUNT_WORDS = "Saved plans need an account in the hangar to re
  * after. Throws `NO_ACCOUNT_WORDS` when none does; a refusal from `ask` itself
  * is thrown as it came, carrying the server's own sentence.
  */
-async function signedIn<T>(
+export async function signedIn<T>(
   accounts: readonly string[],
-  deps: PiPlanDeps,
+  deps: Pick<PiPlanDeps, "signIn" | "signOut">,
   ask: (token: string) => Promise<T>,
 ): Promise<T> {
   for (const accountName of new Set(accounts)) {

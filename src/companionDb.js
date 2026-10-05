@@ -52,6 +52,19 @@ const MIGRATIONS = Object.freeze([
      created_at      TEXT NOT NULL,
      updated_at      TEXT NOT NULL
    )`,
+  // 3 -- saved PI expansion plans. Intent only: where to look (settings) and the
+  // colonies the player accepted (rows). Whether each row is built is
+  // re-derived from live colonies on every read.
+  `CREATE TABLE pi_expansion_plans (
+     id         TEXT PRIMARY KEY,
+     settings   TEXT NOT NULL DEFAULT '{}',
+     rows       TEXT NOT NULL DEFAULT '[]',
+     note       TEXT NOT NULL DEFAULT '',
+     status     TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','done')),
+     rev        INTEGER NOT NULL DEFAULT 1,
+     created_at TEXT NOT NULL,
+     updated_at TEXT NOT NULL
+   )`,
 ]);
 
 /** Bring an open database up to the latest schema. Returns the version reached. */
