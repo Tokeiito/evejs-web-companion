@@ -458,6 +458,15 @@
       .filter((group) => group.lines.length > 0);
   });
 
+  // What the two summary numbers mean, on their question marks.
+  const BALANCE_HELP =
+    "Balanced is your basics' total output per hour, split the way the recipes use each one to make every P4 once. "
+    + "It comes from the recipes, not from a setting. A basic below balance runs short first; its gap says roughly "
+    + "how many colonies like yours would close it.";
+  const WEAK_HELP =
+    "A colony extracting under three quarters of what the typical colony drilling the same resource does: "
+    + "usually a poor planet or a thin extractor layout. Open the Raw rows to see which.";
+
   /** "about 2 colonies short", "none made", "balanced", or "-" where no balance applies. */
   function gapWords(line: CoverageLine): string {
     if (line.state === "untargeted") return "-";
@@ -1531,13 +1540,15 @@
                 {coverage.summary.basicsMade} of {coverage.summary.basicsKnown}
               </dd>
             </div>
-            <div>
+            <div class="pi-summary-help">
               <dt>Below balance</dt>
               <dd class:warn={coverage.summary.short > 0}>{coverage.summary.short}</dd>
+              <button type="button" class="pi-help" aria-label={BALANCE_HELP} title={BALANCE_HELP}>?</button>
             </div>
-            <div>
+            <div class="pi-summary-help">
               <dt>Weak colonies</dt>
               <dd class:warn={coverage.summary.weak > 0}>{coverage.summary.weak}</dd>
+              <button type="button" class="pi-help" aria-label={WEAK_HELP} title={WEAK_HELP}>?</button>
             </div>
           </dl>
 
@@ -1556,12 +1567,6 @@
               {/each}
             </div>
           </div>
-
-          <p class="note pi-coverage-explain">
-            Balanced is your basics' total output per hour, split the way the recipes use each one to make every P4 once.
-            It comes from the recipes, not from a setting. A basic below balance is the one that runs short first, and its gap
-            says roughly how many colonies like yours would close it.
-          </p>
 
           {#if coverageGroups.length === 0}
             <p class="empty">Nothing in this tier is made by a colony that was read.</p>
@@ -2298,9 +2303,33 @@
     border-bottom: 1px solid var(--color-row-line);
     border-left: 3px solid var(--color-good);
   }
-  .pi-coverage-explain {
-    max-width: 60rem;
-    margin: 0 0 0.5rem;
+  .pi-summary-help {
+    position: relative;
+    padding-right: 1.5rem;
+  }
+  .pi-help {
+    position: absolute;
+    top: 0;
+    right: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    min-height: 0;
+    padding: 0;
+    background: transparent;
+    border: 1px solid var(--color-line-strong);
+    border-radius: var(--radius-control);
+    color: var(--color-muted);
+    font-size: 11px;
+    line-height: 1;
+    cursor: help;
+  }
+  .pi-help:hover,
+  .pi-help:focus-visible {
+    color: var(--color-text-bright);
+    border-color: var(--color-accent);
   }
   .pi-colony.tone-planned {
     border-left-color: var(--color-line-strong);
