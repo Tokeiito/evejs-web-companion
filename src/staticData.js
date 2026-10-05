@@ -922,6 +922,180 @@ function getSolarSystemGraph() {
   return graph;
 }
 
+// --- Planetary resources by planet type, and planets near a system ----------
+// PORTED FROM eve.js: server/src/services/planet/planetStaticData.js — its
+// RESOURCE_TYPE and PLANET_RESOURCES_BY_TYPE_ID. That file is the emulator's
+// authority on which raw resources a planet of a given type can be surveyed
+// for, so a planner choosing where to colonise has to agree with it.
+//
+// ⚠ THESE ARE COPIED, NOT READ, so they can go stale. They only change when the
+// game's own data does; if a planet's resources look wrong, check them against
+// that file before suspecting the lookup below.
+const PI_PLANET_RESOURCES_BY_TYPE_ID = (() => {
+  const MICROORGANISMS = 2073;
+  const BASE_METALS = 2267;
+  const AQUEOUS_LIQUIDS = 2268;
+  const NOBLE_METALS = 2270;
+  const HEAVY_METALS = 2272;
+  const PLANKTIC_COLONIES = 2286;
+  const COMPLEX_ORGANISMS = 2287;
+  const CARBON_COMPOUNDS = 2288;
+  const AUTOTROPHS = 2305;
+  const NON_CS_CRYSTALS = 2306;
+  const FELSIC_MAGMA = 2307;
+  const SUSPENDED_PLASMA = 2308;
+  const IONIC_SOLUTIONS = 2309;
+  const NOBLE_GAS = 2310;
+  const REACTIVE_GAS = 2311;
+
+  const temperate = [AQUEOUS_LIQUIDS, AUTOTROPHS, CARBON_COMPOUNDS, COMPLEX_ORGANISMS, MICROORGANISMS];
+  const ice = [AQUEOUS_LIQUIDS, HEAVY_METALS, MICROORGANISMS, NOBLE_GAS, PLANKTIC_COLONIES];
+  const gas = [AQUEOUS_LIQUIDS, BASE_METALS, IONIC_SOLUTIONS, NOBLE_GAS, REACTIVE_GAS];
+  const oceanic = [AQUEOUS_LIQUIDS, CARBON_COMPOUNDS, COMPLEX_ORGANISMS, MICROORGANISMS, PLANKTIC_COLONIES];
+  const lava = [BASE_METALS, FELSIC_MAGMA, HEAVY_METALS, NON_CS_CRYSTALS, SUSPENDED_PLASMA];
+  const barren = [AQUEOUS_LIQUIDS, BASE_METALS, CARBON_COMPOUNDS, MICROORGANISMS, NOBLE_METALS];
+  const storm = [AQUEOUS_LIQUIDS, BASE_METALS, IONIC_SOLUTIONS, NOBLE_GAS, SUSPENDED_PLASMA];
+  const plasma = [BASE_METALS, HEAVY_METALS, NOBLE_METALS, NON_CS_CRYSTALS, SUSPENDED_PLASMA];
+
+  // 2015/56020 lava, 2016/56018/73911 barren, 2017/56024 storm, 2063/56022
+  // plasma: the 5600x ids are the same planet types under their later typeIDs.
+  const table = {
+    11: temperate, // Temperate
+    12: ice, // Ice
+    13: gas, // Gas
+    2014: oceanic, // Oceanic
+    2015: lava, // Lava
+    2016: barren, // Barren
+    2017: storm, // Storm
+    2063: plasma, // Plasma
+    56018: barren,
+    56019: ice,
+    56020: lava,
+    56021: oceanic,
+    56022: plasma,
+    56023: temperate,
+    56024: storm,
+    73911: barren,
+  };
+  const frozen = {};
+  for (const [typeID, list] of Object.entries(table)) {
+    frozen[typeID] = Object.freeze([...list]);
+  }
+  return Object.freeze(frozen);
+})();
+
+/**
+ * The raw planetary resource typeIDs a planet of this type carries, as a fresh
+ * array; `[]` for a type with no entry (e.g. a shattered planet).
+ */
+function getPlanetResourceTypeIDs(planetTypeID) {
+  return [...(PI_PLANET_RESOURCES_BY_TYPE_ID[Number(planetTypeID) || 0] || [])];
+}
+
+function getPlanetsBySystemIndex() {
+  const cacheKey = "map:planetsBySystem";
+  if (caches.has(cacheKey)) {
+    return caches.get(cacheKey);
+  }
+  const bySystem = new Map();
+  for (const row of buildJsonlIndex("mapPlanets.jsonl", "_key").values()) {
+    const systemID = Number(row && row.solarSystemID) || 0;
+    if (systemID <= 0) {
+      continue;
+    }
+    if (!bySystem.has(systemID)) {
+      bySystem.set(systemID, []);
+    }
+    bySystem.get(systemID).push(row);
+  }
+  caches.set(cacheKey, bySystem);
+  return bySystem;
+}
+
+function getAdjacencyIndex() {
+  const cacheKey = "map:adjacency";
+  if (caches.has(cacheKey)) {
+    return caches.get(cacheKey);
+  }
+  const adjacency = new Map();
+  for (const [from, to] of getSolarSystemGraph().edges) {
+    if (!adjacency.has(from)) {
+      adjacency.set(from, new Set());
+    }
+    adjacency.get(from).add(to);
+  }
+  caches.set(cacheKey, adjacency);
+  return adjacency;
+}
+
+/**
+ * Every planet within `maxJumps` stargate jumps of a system (0..5, clamped),
+ * with the resources its type carries. Null when the origin system is unknown.
+ * Sorted by jumps, then system name, then celestial index. Every planet is
+ * listed, `resourceTypeIDs` may be empty. `security` is the gameStore
+ * solarSystems row's `security`, or null when absent.
+ */
+function getPlanetsNear(solarSystemID, maxJumps) {
+  const originID = Number(solarSystemID) || 0;
+  const origin = originID > 0 ? getSolarSystem(originID) : null;
+  if (!origin) {
+    return null;
+  }
+  const limit = Math.min(5, Math.max(0, Math.floor(Number(maxJumps)) || 0));
+  const adjacency = getAdjacencyIndex();
+  const distance = new Map([[originID, 0]]);
+  let frontier = [originID];
+  for (let depth = 1; depth <= limit && frontier.length > 0; depth += 1) {
+    const next = [];
+    for (const systemID of frontier) {
+      for (const neighbour of adjacency.get(systemID) || []) {
+        if (!distance.has(neighbour)) {
+          distance.set(neighbour, depth);
+          next.push(neighbour);
+        }
+      }
+    }
+    frontier = next;
+  }
+  const bySystem = getPlanetsBySystemIndex();
+  const planets = [];
+  for (const [systemID, jumps] of distance) {
+    const system = getSolarSystem(systemID);
+    const systemName = getSolarSystemName(systemID);
+    const security = system && typeof system.security === "number" ? system.security : null;
+    for (const row of bySystem.get(systemID) || []) {
+      const planetTypeID = Number(row.typeID) || 0;
+      const type = planetTypeID ? getType(planetTypeID) : null;
+      planets.push({
+        planetID: Number(row._key),
+        planetName: getPlanetName(row._key),
+        planetTypeID,
+        planetTypeName: type && type.name ? String(type.name) : null,
+        solarSystemID: systemID,
+        solarSystemName: systemName,
+        security,
+        jumps,
+        resourceTypeIDs: getPlanetResourceTypeIDs(planetTypeID),
+        celestialIndex: Number(row.celestialIndex) || 0,
+      });
+    }
+  }
+  planets.sort(
+    (a, b) =>
+      a.jumps - b.jumps ||
+      a.solarSystemName.localeCompare(b.solarSystemName) ||
+      a.celestialIndex - b.celestialIndex,
+  );
+  for (const planet of planets) {
+    delete planet.celestialIndex;
+  }
+  return {
+    origin: { solarSystemID: originID, solarSystemName: getSolarSystemName(originID) },
+    maxJumps: limit,
+    planets,
+  };
+}
+
 // --- Agent reference data (goal R6a) ---------------------------------------
 // The per-station agentMgr.GetAgents roster is unreliable for *finding* an
 // agent to travel to (it returns 0 for a character re-selected directly into a
@@ -1737,6 +1911,8 @@ module.exports = {
   getNpcIndustryFacility,
   getPlanetCelestial,
   getPlanetName,
+  getPlanetResourceTypeIDs,
+  getPlanetsNear,
   getPlanetSchematic,
   getPlanetSchematicName,
   getAllPlanetSchematics,

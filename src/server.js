@@ -30,6 +30,7 @@ const config = require("./config");
 const botScriptStoreModule = require("./botScriptStore");
 const { lazyCompanionDb } = require("./companionDb");
 const { createPiPlanStore } = require("./piPlanStore");
+const { createPiExpansionStore } = require("./piExpansionStore");
 const { createIndustryPlanStore } = require("./industryPlanStore");
 const industryRecipes = require("./industryRecipes");
 const industryInstall = require("./industryInstall");
@@ -90,6 +91,13 @@ const PI_PLAN_STATUS = {
   PI_PLAN_REV_CONFLICT: 409,
   PI_PLAN_NOT_FOUND: 404,
 };
+// The same for a saved PI expansion plan (src/piExpansionStore.js).
+const PI_EXPANSION_STATUS = {
+  PI_EXPANSION_INVALID: 400,
+  PI_EXPANSION_LIMIT_REACHED: 409,
+  PI_EXPANSION_REV_CONFLICT: 409,
+  PI_EXPANSION_NOT_FOUND: 404,
+};
 // The same for a saved Industry Manager plan (src/industryPlanStore.js).
 const INDUSTRY_PLAN_STATUS = {
   INDUSTRY_PLAN_INVALID: 400,
@@ -99,6 +107,14 @@ const INDUSTRY_PLAN_STATUS = {
 };
 function sendIndustryPlanError(res, error, next) {
   const status = error && INDUSTRY_PLAN_STATUS[error.code];
+  if (status) {
+    res.status(status).json({ ok: false, error: error.code, message: error.message });
+    return;
+  }
+  next(error);
+}
+function sendPiExpansionError(res, error, next) {
+  const status = error && PI_EXPANSION_STATUS[error.code];
   if (status) {
     res.status(status).json({ ok: false, error: error.code, message: error.message });
     return;
@@ -153,6 +169,9 @@ const botScripts =
 // opened on the first request that needs it -- never eve.js's gamestore.
 const piPlans =
   options.piPlanStore || createPiPlanStore({ db: lazyCompanionDb({ dataDir: config.dataDir }) });
+// Saved PI expansion plans: where to look and the colonies the player accepted.
+const piExpansions =
+  options.piExpansionStore || createPiExpansionStore({ db: lazyCompanionDb({ dataDir: config.dataDir }) });
 // Saved Industry Manager plans (R109), in the same file. A second lazy handle
 // is a second connection to it, which WAL and the busy timeout are there for.
 const industryPlans =
@@ -2415,6 +2434,54 @@ function planetBoundReads(planetID, ownerID, resourceTypeID) {
     ["GetProgramResultInfo", [pid, rtid, [], PLANET_PROGRAM_HEAD_RADIUS]],
   ];
 }
+
+/**
+ * GET /api/pi/planet-richness?planetIDs=a,b,c -- each planet's resource
+ * richness, the game's own GetPlanetResourceInfo, on the tab's HELD session.
+ *
+ * Only that one read, never the other six /bound-planet makes: richness is
+ * static per planet and safe for anyone (see planetBoundReads), so a page that
+ * wants it for fifty planets should not also ask fifty colonies' networks.
+ * A few at a time, each planet answering for itself; the raw marshaled result
+ * goes back for web/src/bridge/boundPlanets.ts to decode.
+ */
+const PLANET_RICHNESS_MAX_IDS = 60;
+const PLANET_RICHNESS_PARALLEL = 4;
+app.get("/api/pi/planet-richness", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const planetIDs = [...new Set(String(req.query.planetIDs || "").split(",").map((id) => Number(id)).filter((id) => Number.isSafeInteger(id) && id > 0))];
+  if (planetIDs.length > PLANET_RICHNESS_MAX_IDS) {
+    res.status(400).json({ ok: false, error: "TOO_MANY_PLANETS", message: `Ask about at most ${PLANET_RICHNESS_MAX_IDS} planets at a time.` });
+    return;
+  }
+  try {
+    const planets = new Array(planetIDs.length);
+    let nextIndex = 0;
+    const worker = async () => {
+      while (nextIndex < planetIDs.length) {
+        const index = nextIndex++;
+        const planetID = planetIDs[index];
+        try {
+          const read = await boundCall(held, req.webSessionID, planetBindSpec(planetID), "GetPlanetResourceInfo", [planetID], null);
+          planets[index] = { planetID, result: read.result };
+        } catch (error) {
+          if (error && error.code === "SESSION_NOT_FOUND") throw error;
+          planets[index] = { planetID, error: String((error && error.code) || "READ_FAILED") };
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(PLANET_RICHNESS_PARALLEL, planetIDs.length) }, worker));
+    res.json({ ok: true, characterID: held.characterID, planets });
+  } catch (error) {
+    if (error && error.code === "SESSION_NOT_FOUND") {
+      forgetBridgeSession(req.webSessionID, held);
+    }
+    next(error);
+  }
+});
 
 app.get("/api/bridge/bound-planet", requireAuth, async (req, res, next) => {
   const held = requireHeldBridgeSession(req, res);
@@ -20229,6 +20296,29 @@ function projectColony(staticDataSource, colony) {
  * telling a player they have no colonies. `coloniesReadable` carries which one
  * happened.
  */
+// The two skills that bound a pilot's colonies: Interplanetary Consolidation
+// (one colony, plus one a level) and Command Center Upgrades (the highest
+// level its command centres reach).
+const INTERPLANETARY_CONSOLIDATION_TYPE_ID = 2495;
+const COMMAND_CENTER_UPGRADES_TYPE_ID = 2505;
+
+/**
+ * { consolidation, commandCenterUpgrades } trained levels, or null when the
+ * skill sheet was not read. A skill the sheet lacks is level 0, untrained.
+ */
+function planetSkillsFrom(skills) {
+  if (!skills || !Array.isArray(skills.skills)) return null;
+  const levelOf = (typeID) => {
+    const row = skills.skills.find((entry) => Number(entry && entry.typeID) === typeID);
+    const level = Number(row && row.level);
+    return Number.isInteger(level) && level >= 0 && level <= 5 ? level : 0;
+  };
+  return {
+    consolidation: levelOf(INTERPLANETARY_CONSOLIDATION_TYPE_ID),
+    commandCenterUpgrades: levelOf(COMMAND_CENTER_UPGRADES_TYPE_ID),
+  };
+}
+
 function coloniesFromSnapshot(snapshot) {
   const runtime = snapshot && snapshot.planetRuntimeState;
   const coloniesReadable = Boolean(
@@ -20478,6 +20568,13 @@ app.get("/api/roster/planets", requireAuth, async (req, res, next) => {
           ? snapshot.characters[String(characterID)]
           : null;
         const corporationID = Number(character && character.corporationID) || 0;
+        let skills = null;
+        try {
+          skills = await gateway.getSkills(req.account.accountID, characterID);
+        } catch (error) {
+          // The colonies still stand; only the slot count goes unknown.
+          void error;
+        }
         return {
           characterID,
           readAtMs,
@@ -20485,6 +20582,7 @@ app.get("/api/roster/planets", requireAuth, async (req, res, next) => {
           corporationID: corporationID > 0 ? corporationID : null,
           ...coloniesFromSnapshot(snapshot),
           stock: stockFromSnapshot(staticData, snapshot),
+          planetSkills: planetSkillsFrom(skills),
         };
       }),
     );
@@ -22011,6 +22109,55 @@ app.get("/api/industry/invention-terms", requireAuth, async (req, res, next) => 
       .filter((decryptor) => decryptor.typeID > 0)
       .sort((a, b) => (a.name || "").localeCompare(b.name || "") || a.typeID - b.typeID);
     res.json({ ok: true, source: "static-data", lowerRateSkillTypeIDs, decryptors });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Saved PI expansion plans. Same four routes as PI plans.
+app.get("/api/pi/expansions", requireAuth, (req, res, next) => {
+  try {
+    res.json({ ok: true, plans: piExpansions.list() });
+  } catch (error) {
+    sendPiExpansionError(res, error, next);
+  }
+});
+app.post("/api/pi/expansions", requireAuth, (req, res, next) => {
+  try {
+    res.json({ ok: true, plan: piExpansions.create(req.body || {}) });
+  } catch (error) {
+    sendPiExpansionError(res, error, next);
+  }
+});
+app.post("/api/pi/expansions/:planID", requireAuth, (req, res, next) => {
+  try {
+    const { baseRev, ...fields } = req.body || {};
+    res.json({ ok: true, plan: piExpansions.update(req.params.planID, fields, baseRev) });
+  } catch (error) {
+    sendPiExpansionError(res, error, next);
+  }
+});
+app.post("/api/pi/expansions/:planID/delete", requireAuth, (req, res, next) => {
+  try {
+    res.json({ ok: true, removed: piExpansions.remove(req.params.planID) });
+  } catch (error) {
+    sendPiExpansionError(res, error, next);
+  }
+});
+
+/**
+ * GET /api/pi/planets-near?systemID=&jumps= -- every planet within that many
+ * stargate jumps, with what each carries. Static map data, no session: where a
+ * colony could go is a fact about the map, not about any pilot.
+ */
+app.get("/api/pi/planets-near", requireAuth, (req, res, next) => {
+  try {
+    const near = staticData.getPlanetsNear(Number(req.query.systemID) || 0, Number(req.query.jumps) || 0);
+    if (!near) {
+      res.status(404).json({ ok: false, error: "SYSTEM_NOT_FOUND", message: "That solar system is not on the map." });
+      return;
+    }
+    res.json({ ok: true, ...near });
   } catch (error) {
     next(error);
   }
