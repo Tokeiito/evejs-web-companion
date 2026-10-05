@@ -164,24 +164,32 @@ function colonyContributions(
     out.push({ typeID, source: { ...base, perHour: entry.perHour, quality: quality(typeID), programWords: programWords(entry), weak: false } });
   }
 
-  // Made: running factories, per recipe. A basic is capped by what this colony pulls up.
+  // Made, per recipe. ⚠ A FACTORY FED BY ITS OWN COLONY IS NOT JUDGED BY THIS
+  // INSTANT. It runs a batch whenever a batch's worth has arrived and sits
+  // idle between, so whether it is mid-cycle at the moment of the read says
+  // nothing about its rate: a whole colony read between batches would count as
+  // making nothing. Such a basic is credited with what the colony pulls up,
+  // capped by every factory set to the recipe. A factory fed from elsewhere
+  // (P2 and up) is counted only while the server says it is running.
+  const setTo = new Map<number, number>();
   const running = new Map<number, number>();
   for (const pin of colony.pins) {
-    if (pin.kind === "factory" && pin.schematicID !== null && pin.active !== false) {
-      running.set(pin.schematicID, (running.get(pin.schematicID) ?? 0) + 1);
-    }
+    if (pin.kind !== "factory" || pin.schematicID === null) continue;
+    setTo.set(pin.schematicID, (setTo.get(pin.schematicID) ?? 0) + 1);
+    if (pin.active !== false) running.set(pin.schematicID, (running.get(pin.schematicID) ?? 0) + 1);
   }
-  for (const [schematicID, count] of running) {
+  for (const [schematicID, count] of setTo) {
     const recipe = book.bySchematicID.get(schematicID);
     if (!recipe) continue;
-    let perHour = perHourOf(recipe, count);
+    let perHour = perHourOf(recipe, running.get(schematicID) ?? 0);
     let resource: number | null = null;
     const only = recipe.inputs.length === 1 ? recipe.inputs[0] : null;
     if (only && tierOf(book, only.typeID) === 0 && raw.has(only.typeID)) {
       const pulled = raw.get(only.typeID)!;
-      perHour = Math.min(perHour, (pulled.perHour * recipe.output.quantity) / only.quantity);
+      perHour = Math.min(perHourOf(recipe, count), (pulled.perHour * recipe.output.quantity) / only.quantity);
       resource = only.typeID;
     }
+    if (perHour <= 0 && resource === null) continue;
     const pulled = resource === null ? null : raw.get(resource)!;
     out.push({
       typeID: recipe.output.typeID,
@@ -274,7 +282,8 @@ export function buildCoverage(input: CoverageInput): Coverage {
       basicsMade: basicsMade.length,
       basicsKnown: basics.length,
       short: lines.filter((line) => line.state === "short" || line.state === "none").length,
-      weak: lines.filter((line) => line.tier === 1).reduce((total, line) => total + line.weakCount, 0),
+      // Weak is a planet's word: counted where the drilling is, on the raw lines.
+      weak: lines.filter((line) => line.tier === 0).reduce((total, line) => total + line.weakCount, 0),
     },
   };
 }

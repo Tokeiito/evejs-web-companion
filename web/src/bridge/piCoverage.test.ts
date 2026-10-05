@@ -166,14 +166,17 @@ test("a basic is credited with the smaller of what the colony pulls up and what 
   assert.equal(line(refinedShort, RAW_A).perHour, 30000, "the raw line keeps the full extraction");
 });
 
-test("idle factories and ended programs make nothing", () => {
+test("a factory fed by its own colony counts between batches; an ended program makes nothing", () => {
+  // Read between batches: every factory idle. The colony still pulls up
+  // 3,000 an hour, which is 20 basic an hour, so that is what it makes.
   const result = coverageOf({
     [PILOT]: [
-      colony(1, "Alpha I", [extractor(RAW_A, 3000), factory(1, false)]),
+      colony(1, "Alpha I", [extractor(RAW_A, 3000), factory(1, false), factory(1, false)]),
       colony(2, "Alpha II", [extractor(RAW_B, 3000, -HOUR), factory(2)]),
     ],
   });
-  assert.equal(line(result, BASIC_A).perHour, 0);
+  assert.equal(line(result, BASIC_A).perHour, 20);
+  assert.equal(line(result, BASIC_A).colonies, 1);
   assert.equal(line(result, BASIC_B).perHour, 0);
   assert.equal(line(result, BASIC_B).sources[0]!.programWords, "ended");
 });
