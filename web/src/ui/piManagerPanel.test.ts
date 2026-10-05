@@ -282,7 +282,7 @@ test("⚠ the window never selects a character, and never reads on a timer", () 
 
 test("the window has its own menu, and shows one view at a time", () => {
   const body = renderSeeded();
-  for (const id of ["colonies", "stock", "planner", "pilots"]) {
+  for (const id of ["colonies", "stock", "coverage", "planner", "pilots"]) {
     assert.match(body, new RegExp(`<button[^>]*role="tab"[^>]*id="pi-tab-${id}"`));
   }
   // A roster with pilots opens on Colonies; the other views are hidden, not
@@ -292,13 +292,22 @@ test("the window has its own menu, and shows one view at a time", () => {
   assert.match(body, /<section[^>]*id="pi-view-pilots"[^>]*hidden/);
   assert.match(body, /<section[^>]*id="pi-view-planner"[^>]*hidden/);
   assert.match(body, /<section[^>]*id="pi-view-stock"[^>]*hidden/);
+  assert.match(body, /<section[^>]*id="pi-view-coverage"[^>]*hidden/);
 });
 
 test("the menu badges say what waits in each view", () => {
   const text = visibleText(renderSeeded());
   // One colony needs you. The restart waits on the colonies too, so Pilots
   // has no badge of its own.
-  assert.match(text, /Colonies 1 Stock Planner Pilots (?!\d)/);
+  assert.match(text, /Colonies 1 Stock Coverage Planner Pilots (?!\d)/);
+});
+
+test("coverage says plainly when it has no recipe table to weigh with", () => {
+  // Rendering never reads, so there is no table: no table of coverage either.
+  const body = renderSeeded();
+  const coverage = body.slice(body.indexOf('id="pi-view-coverage"'), body.indexOf('id="pi-view-planner"'));
+  assert.match(visibleText(coverage), /The recipe table has not been read yet\. Refresh reads it\./);
+  assert.doesNotMatch(coverage, /<table/);
 });
 
 test("an empty roster opens on Pilots, where a pilot is added", () => {

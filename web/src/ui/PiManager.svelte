@@ -73,9 +73,11 @@
     stockLines,
     stockSources,
     stockSummary,
+    tierLabel,
     tierTag,
     type CorpStockRead,
   } from "../bridge/piStock.ts";
+  import { buildCoverage, type CoverageLine } from "../bridge/piCoverage.ts";
   import { missingByTier, planStepCounts, planWithStock, type PlanNode, type PlannerColony } from "../bridge/piPlanner.ts";
   import { readCorpStock, type BotPilot, type OnlinePilot } from "../app/piCorpRead.ts";
   import {
@@ -133,7 +135,7 @@
   // opens on Pilots, because adding one is the only thing to do there.
   // ⚠ Every view is RENDERED and the others are `hidden`, not left out: a
   // restart already started keeps saying so while the player looks elsewhere.
-  type View = "colonies" | "stock" | "planner" | "pilots";
+  type View = "colonies" | "stock" | "coverage" | "planner" | "pilots";
   let view = $state<View>(loadPiRoster().members.length === 0 ? "pilots" : "colonies");
 
   // What each corporation's hangars said at the last Refresh (R108 slice 5).
@@ -142,6 +144,9 @@
   let stockTier = $state<PiTier | "all">("all");
   let stockSearch = $state("");
   let stockOpen = $state<Set<number>>(new Set());
+  // The Coverage view's own controls, the Stock view's in kind.
+  let coverageTier = $state<PiTier | "all">("all");
+  let coverageOpen = $state<Set<number>>(new Set());
   // The planner's form, and the request its Plan button last made. The plan is
   // derived from the request and the stock as it stands, so a Refresh re-plans.
   let planTarget = $state("");
@@ -364,6 +369,7 @@
       urgent: board.needsYou.some((item) => item.urgency === "now"),
     },
     { id: "stock", label: "Stock", badge: 0, urgent: false },
+    { id: "coverage", label: "Coverage", badge: 0, urgent: false },
     { id: "planner", label: "Planner", badge: 0, urgent: false },
     { id: "pilots", label: "Pilots", badge: 0, urgent: false },
   ]);
@@ -392,6 +398,30 @@
     if (corpReads.length === 0) return "-";
     return read === corpReads.length ? countWords(summary.inCorp) : `${read} of ${corpReads.length} read`;
   });
+
+  // ⑤ WHAT THE COLONIES MAKE (bridge/piCoverage.ts), against the balanced aim.
+  const coverage = $derived(
+    recipes?.readable ? buildCoverage({ book: recipes, readings: memberReadings, names, browserNowMs }) : null,
+  );
+  const coverageGroups = $derived.by(() => {
+    if (coverage === null) return [];
+    const shown = coverage.lines.filter((line) => coverageTier === "all" || line.tier === coverageTier);
+    return ([0, 1, 2, 3, 4] as const)
+      .map((tier) => ({ tier, label: tierLabel(tier), lines: shown.filter((line) => line.tier === tier) }))
+      .filter((group) => group.lines.length > 0);
+  });
+
+  /** "about 2 colonies", "none made", "covered", or "-" where no target applies. */
+  function gapWords(line: CoverageLine): string {
+    if (line.state === "untargeted") return "-";
+    if (line.state === "ok") return "covered";
+    if (line.colonyGap === null) return line.state === "none" ? "none made" : "short";
+    return line.colonyGap === 1 ? "about 1 colony" : `about ${line.colonyGap} colonies`;
+  }
+
+  function rateWords(perHour: number): string {
+    return perHour > 0 && perHour < 10 ? (Math.round(perHour * 10) / 10).toString() : countWords(perHour);
+  }
 
   function toggle(set: Set<number>, typeID: number): Set<number> {
     const next = new Set(set);
@@ -1225,6 +1255,137 @@
         {/if}
       </section>
 
+      <!-- ⑤ COVERAGE. What the colonies make, tier by tier, built like Stock. The
+           basics carry a target: the balanced share of what is made now
+           (bridge/piCoverage.ts). Opening a row lists every colony behind it. -->
+      <section
+        class="pi-view"
+        id="pi-view-coverage"
+        role="tabpanel"
+        aria-labelledby="pi-tab-coverage"
+        hidden={view !== "coverage"}
+      >
+        {#if roster.members.length === 0}
+          <p class="empty">
+            No pilots are on planetary industry yet.
+            <button type="button" class="pi-link" onclick={() => (view = "pilots")}>Add one under Pilots</button>
+          </p>
+        {:else if coverage === null}
+          <p class="empty">{reading ? "Reading the recipe table..." : "The recipe table has not been read yet. Refresh reads it."}</p>
+        {:else}
+          <dl class="pi-summary">
+            <div>
+              <dt>Colonies</dt>
+              <dd>{coverage.summary.colonies}</dd>
+            </div>
+            <div>
+              <dt>Basics made</dt>
+              <dd class:good={coverage.summary.basicsMade === coverage.summary.basicsKnown}>
+                {coverage.summary.basicsMade} of {coverage.summary.basicsKnown}
+              </dd>
+            </div>
+            <div>
+              <dt>Below target</dt>
+              <dd class:warn={coverage.summary.short > 0}>{coverage.summary.short}</dd>
+            </div>
+            <div>
+              <dt>Weak colonies</dt>
+              <dd class:warn={coverage.summary.weak > 0}>{coverage.summary.weak}</dd>
+            </div>
+          </dl>
+
+          <div class="pi-filter">
+            <div class="pi-tiers" role="group" aria-label="Tier">
+              {#each ["all", 0, 1, 2, 3, 4] as const as tier (tier)}
+                <button
+                  type="button"
+                  class="pi-tier"
+                  class:on={coverageTier === tier}
+                  aria-pressed={coverageTier === tier}
+                  onclick={() => (coverageTier = tier)}
+                >
+                  {tier === "all" ? "All" : tier === 0 ? "Raw" : `P${tier}`}
+                </button>
+              {/each}
+            </div>
+          </div>
+
+          {#if coverageGroups.length === 0}
+            <p class="empty">Nothing in this tier is made by a colony that was read.</p>
+          {:else}
+            <div class="table-wrap overflow-x-auto">
+              <table class="pi-table">
+                <thead>
+                  <tr>
+                    <th>Commodity</th>
+                    <th class="num">Colonies</th>
+                    <th class="num">Per hour</th>
+                    <th class="num">Target</th>
+                    <th class="num">Gap</th>
+                  </tr>
+                </thead>
+                {#each coverageGroups as group (group.tier)}
+                  <tbody>
+                    <tr class="pi-tier-head">
+                      <th colspan="5" scope="rowgroup">{group.label}</th>
+                    </tr>
+                    {#each group.lines as line (line.typeID)}
+                      <tr>
+                        <td>
+                          <button
+                            type="button"
+                            class="pi-open"
+                            aria-expanded={coverageOpen.has(line.typeID)}
+                            disabled={line.sources.length === 0}
+                            onclick={() => (coverageOpen = toggle(coverageOpen, line.typeID))}
+                          >
+                            <span class="pi-caret" aria-hidden="true">{line.sources.length === 0 ? "" : coverageOpen.has(line.typeID) ? "v" : ">"}</span>
+                            <TypeIcon typeID={line.typeID} name={line.typeName} />
+                            <span>{line.typeName}</span>
+                          </button>
+                        </td>
+                        <td class="num">
+                          {line.colonies > 0 ? line.colonies : "-"}
+                          {#if line.weakCount > 0}<span class="note warn"> - {line.weakCount} weak</span>{/if}
+                        </td>
+                        <td class="num">{line.perHour > 0 ? rateWords(line.perHour) : "-"}</td>
+                        <td class="num">{line.targetPerHour === null ? "-" : rateWords(line.targetPerHour)}</td>
+                        <td
+                          class="num"
+                          class:good={line.state === "ok"}
+                          class:warn={line.state === "short" || line.state === "none"}
+                        >{gapWords(line)}</td>
+                      </tr>
+                      {#if coverageOpen.has(line.typeID) && line.sources.length > 0}
+                        <tr class="pi-where">
+                          <td colspan="5">
+                            <ul>
+                              {#each line.sources as source, index (index)}
+                                <li>
+                                  <span class="pi-source" class:warn={source.weak}>{source.weak ? "weak" : "colony"}</span>
+                                  {source.ownerName} - {source.placeWords}
+                                  {#if source.quality !== null} - richness {source.quality}{/if}
+                                  - up to {rateWords(source.perHour)} an hour
+                                  {#if source.programWords}<span class="note">- {source.programWords}</span>{/if}
+                                </li>
+                              {/each}
+                            </ul>
+                          </td>
+                        </tr>
+                      {/if}
+                    {/each}
+                  </tbody>
+                {/each}
+              </table>
+            </div>
+          {/if}
+          <p class="note">
+            Target: the share of the basics made now that each would get if every P4 were made once.
+            Rates are what the extractors and running factories can do on the programs installed now.
+          </p>
+        {/if}
+      </section>
+
       <!-- ④ THE PLANNER (R108 slice 5). Something to make and how many; the
            verdict, the gaps in the order worth telling, then the chain. Every
            number is recipe arithmetic or a server-stated fact. -->
@@ -1952,6 +2113,10 @@
   }
   .pi-table td.bad {
     color: var(--color-danger);
+  }
+  .pi-table td.warn,
+  .pi-source.warn {
+    color: var(--color-warn);
   }
   .pi-tier-head th {
     padding-top: 0.75rem;
