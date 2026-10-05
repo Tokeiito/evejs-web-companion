@@ -487,3 +487,34 @@ test("the planetary read is unchanged by the type filter's arrival: a mineral is
   const { payload } = await get(baseUrl, `/api/roster/planets?characterIDs=${STOCK_ID}`);
   assert.equal(payload.pilots[0].stock.some((stack) => stack.typeID === 34), false);
 });
+
+test("each pilot carries the two skills that bound its colonies, read off its skill sheet", async () => {
+  const gateway = {
+    ...fakeGateway(),
+    async getSkills(accountID, characterID) {
+      if (characterID === UNREADABLE_ID) throw new Error("EveJS gateway is unreachable.");
+      return {
+        skills: [
+          { typeID: 2495, name: "Interplanetary Consolidation", level: 4 },
+          { typeID: 2505, name: "Command Center Upgrades", level: 5 },
+        ],
+      };
+    },
+  };
+  const baseUrl = await startTestServer(gateway);
+  const { payload } = await get(baseUrl, `/api/roster/planets?characterIDs=${FARMER_ID}`);
+  assert.deepEqual(payload.pilots[0].planetSkills, { consolidation: 4, commandCenterUpgrades: 5 });
+});
+
+test("a skill sheet that cannot be read leaves the skills unknown, and the colonies standing", async () => {
+  const gateway = {
+    ...fakeGateway(),
+    async getSkills() {
+      throw new Error("EveJS gateway is unreachable.");
+    },
+  };
+  const baseUrl = await startTestServer(gateway);
+  const { payload } = await get(baseUrl, `/api/roster/planets?characterIDs=${FARMER_ID}`);
+  assert.equal(payload.pilots[0].planetSkills, null);
+  assert.equal(payload.pilots[0].colonies.length, 2);
+});

@@ -264,6 +264,11 @@ const TIER_LABELS: Readonly<Record<PiTier, string>> = Object.freeze({
   4: "P4 - advanced",
 });
 
+/** "P1 - basic": a tier's group heading, as every PI table names it. */
+export function tierLabel(tier: PiTier | null): string {
+  return tier === null ? "Other" : TIER_LABELS[tier];
+}
+
 /** "P2", "raw" — the short tag beside a commodity. */
 export function tierTag(tier: PiTier | null): string | null {
   return tier === null ? null : tier === 0 ? "raw" : `P${tier}`;
@@ -318,7 +323,7 @@ export function stockByTier(lines: readonly StockLine[]): StockTierGroup[] {
   for (const tier of [0, 1, 2, 3, 4, null] as const) {
     const inTier = lines.filter((line) => line.tier === tier);
     if (inTier.length > 0) {
-      groups.push({ tier, label: tier === null ? "Other" : TIER_LABELS[tier], lines: inTier });
+      groups.push({ tier, label: tierLabel(tier), lines: inTier });
     }
   }
   return groups;
