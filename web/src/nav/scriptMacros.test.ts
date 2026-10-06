@@ -4046,7 +4046,8 @@ test("warp-to-ore-anomaly: rock (or rats) on the grid is still not evidence of a
     {},
   );
 
-  assert.equal(out.outcome.kind, "blocked", "no shortcut without a reading to justify it");
+  assert.notEqual(out.outcome.kind, "done", "no shortcut without a reading to justify it");
+  assert.notEqual(out.phase, "Arrived");
 });
 
 /**
@@ -4140,7 +4141,7 @@ test("warp-to-ore-anomaly: a refusal with the ship INSIDE the site it aimed at i
   assert.equal(out.boardPatch?.["oreAnomsVisited"], "ABC-123", "the site is named on the board for the miner");
 });
 
-test("warp-to-ore-anomaly: a refusal with the site a real warp away stops as mined out, in the server's words", () => {
+test("warp-to-ore-anomaly: a refusal with the site a real warp away is mined out only once the scanner drops it, in the server's words", () => {
   const oreMacro = SCRIPT_MACROS["warp-to-ore-anomaly"]!;
   // 4 AU out: whatever the server refused for, it was not that the ship is there.
   const site = rocksAt("ABC-123", 4 * 149_597_870_700);
@@ -4157,10 +4158,95 @@ test("warp-to-ore-anomaly: a refusal with the site a real warp away stops as min
     committed.nextMem,
     {},
   );
+  assert.equal(out.outcome.kind, "acting", "one refusal is not proof the site is gone");
+  assert.equal(out.action.kind, "wait");
 
+  const gone = oreMacro(ORE_ANOM_STEP, obs({ anomalies: [], completedWarps: 3, refusals: warpRefused(CANNOT_WARP), snapshot: snapshot([]) }), out.nextMem, {});
+  // An EMPTY scanner is its own dead end (read three times); a scanner that
+  // still lists other things but not this site is the torn-down case.
+  const other = { label: "DEN-1", kind: "combat" as const };
+  const dropped = oreMacro(ORE_ANOM_STEP, obs({ anomalies: [other], completedWarps: 3, refusals: warpRefused(CANNOT_WARP), snapshot: snapshot([]) }), out.nextMem, {});
+  assert.equal(gone.outcome.kind, "acting");
+  assert.equal(dropped.outcome.kind, "blocked");
+  const reason = dropped.outcome.kind === "blocked" ? dropped.outcome.reason : "";
+  assert.match(reason, /Every ore site in this system is mined out/);
+  assert.match(reason, /cannot warp there right now/i, "what the server said must survive");
+});
+
+// ─── A site the server refuses while the scanner still lists it ────────────
+//
+// A server restart caught a pilot mid-warp and restored her off the ice
+// field's grid with the server still filing her ship under that field's pocket.
+// Every warp at the field came back "You cannot warp there right now" while
+// four pilots mined in it, and the block flew her home calling the system
+// mined out. A dock clears the pocket: she warped straight in after one.
+
+const FAR = 4 * 149_597_870_700;
+const REJOIN_HOME = 60000004;
+
+/** Drive the block from a fresh pick to the end of the scanner re-check. */
+function refusedAndStillListed(
+  oreMacro: NonNullable<(typeof SCRIPT_MACROS)["warp-to-ore-anomaly"]>,
+  site: ReturnType<typeof rocksAt>,
+  count: number,
+  over: Partial<ScriptObservation>,
+  startMem: MacroMemory = {},
+): MacroTick {
+  let mem = oreMacro(ORE_ANOM_STEP, obs({ anomalies: [site], completedWarps: 3, refusals: count > 1 ? [{ ...warpRefused(CANNOT_WARP)[0]!, count: count - 1 }] : undefined, ...over }), startMem, {}).nextMem;
+  const refused = obs({ anomalies: [site], completedWarps: 3, refusals: [{ ...warpRefused(CANNOT_WARP)[0]!, count }], snapshot: snapshot([]), ...over });
+  let t = oreMacro(ORE_ANOM_STEP, refused, mem, {});
+  for (let read = 0; read < 20 && t.outcome.kind === "acting" && t.nextMem["doubted"] !== undefined && t.nextMem["rejoin"] === undefined; read += 1) {
+    mem = t.nextMem;
+    t = oreMacro(ORE_ANOM_STEP, refused, mem, {});
+  }
+  return t;
+}
+
+test("warp-to-ore-anomaly: a refused site the scanner keeps listing sends the ship to dock and back, not home to stop", () => {
+  const oreMacro = SCRIPT_MACROS["warp-to-ore-anomaly"]!;
+  const site = rocksAt("ETY-001", FAR);
+  const start = refusedAndStillListed(oreMacro, site, 1, { homeStationID: REJOIN_HOME });
+  assert.equal(start.outcome.kind, "acting", "a site still listed is not mined out");
+  assert.equal(start.nextMem["rejoin"], "home");
+
+  // In space: the autopilot takes it home.
+  const fly = oreMacro(ORE_ANOM_STEP, obs({ anomalies: [site], homeStationID: REJOIN_HOME }), start.nextMem, {});
+  assert.deepEqual(fly.action, { kind: "startRoute", stationID: REJOIN_HOME });
+  assert.equal(fly.nextMem["rejoin"], "home", "the trip is remembered across the ride");
+
+  // Docked: undock, and keep pressing it until the ship is out.
+  const docked = obs({ anomalies: null, homeStationID: REJOIN_HOME, flightStatus: flight({ docked: true, inSpace: false, stationID: REJOIN_HOME }) });
+  const undock = oreMacro(ORE_ANOM_STEP, docked, fly.nextMem, {});
+  assert.deepEqual(undock.action, { kind: "undock" });
+  assert.equal(oreMacro(ORE_ANOM_STEP, docked, undock.nextMem, {}).action.kind, "undock", "never 'Undock first' on its own trip");
+
+  // Out: pick the site again and warp at it.
+  const out = obs({ anomalies: [site], completedWarps: 3, homeStationID: REJOIN_HOME });
+  const repick = oreMacro(ORE_ANOM_STEP, out, undock.nextMem, {});
+  assert.equal(repick.nextMem["target"], "ETY-001");
+  const issued = oreMacro(ORE_ANOM_STEP, out, repick.nextMem, {});
+  assert.deepEqual(issued.action, { kind: "warpScan", target: "ETY-001" });
+});
+
+test("warp-to-ore-anomaly: refused again after the dock trip, it stops and says the site is still listed", () => {
+  const oreMacro = SCRIPT_MACROS["warp-to-ore-anomaly"]!;
+  const site = rocksAt("ETY-001", FAR);
+  const out = refusedAndStillListed(oreMacro, site, 2, { homeStationID: REJOIN_HOME }, { rejoined: true });
+  assert.equal(out.outcome.kind, "blocked", "one trip, not a commute");
+  const reason = out.outcome.kind === "blocked" ? out.outcome.reason : "";
+  assert.doesNotMatch(reason, /mined out/);
+  assert.match(reason, /ETY-001 after docking and undocking/);
+  assert.match(reason, /cannot warp there right now/i);
+});
+
+test("warp-to-ore-anomaly: with no home to dock at, a still-listed refused site stops honestly", () => {
+  const oreMacro = SCRIPT_MACROS["warp-to-ore-anomaly"]!;
+  const site = rocksAt("ETY-001", FAR);
+  const out = refusedAndStillListed(oreMacro, site, 1, {});
   assert.equal(out.outcome.kind, "blocked");
   const reason = out.outcome.kind === "blocked" ? out.outcome.reason : "";
-  assert.match(reason, /cannot warp there right now/i, "what the server said must survive");
+  assert.doesNotMatch(reason, /mined out/);
+  assert.match(reason, /still lists it/);
 });
 
 test("warp-to-ore-anomaly: the position read is of the TARGETED site, not of whichever one is nearest", () => {
@@ -4253,8 +4339,12 @@ test("warp-to-ore-anomaly: when every ore site has refused, it stops as mined ou
     snapshot: snapshot([]),
   });
   const out = oreMacro(ORE_ANOM_STEP, twice, picked.nextMem, {});
-  assert.equal(out.outcome.kind, "blocked");
-  const reason = out.outcome.kind === "blocked" ? out.outcome.reason : "";
+  assert.equal(out.outcome.kind, "acting", "the last refusal is checked against the scanner first");
+  // The server tore both down: they leave the scanner, and that is the verdict.
+  const torn = obs({ anomalies: [{ label: "DEN-1", kind: "combat" as const }], completedWarps: 3, refusals: twice.refusals, snapshot: snapshot([]) });
+  const gone = oreMacro(ORE_ANOM_STEP, torn, out.nextMem, {});
+  assert.equal(gone.outcome.kind, "blocked");
+  const reason = gone.outcome.kind === "blocked" ? gone.outcome.reason : "";
   assert.match(reason, /Every ore site in this system is mined out/);
 });
 

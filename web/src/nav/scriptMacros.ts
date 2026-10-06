@@ -4316,6 +4316,17 @@ const WARP_START_WAIT_TICKS = 10; // ~20s for a warp to actually begin
 // lies.
 const EMPTY_SCAN_CONFIRM_READS = 3; // ~6s of agreeing before "this system is empty"
 
+// ⚠ A REFUSED MINING SITE IS NOT PROOF THE SITE IS GONE. The server words a
+// torn-down site (SCAN_TARGET_NOT_FOUND) and a ship it still files under that
+// site's pocket (DunCannotWarpWithinComplex) identically: "You cannot warp
+// there right now." It happened for real: a server restart caught a pilot
+// mid-warp, restored her off the ice field's grid with the pocket tracker still
+// set, and every warp at the field came back refused while four pilots mined
+// in it. The block called the system mined out and flew her home. A site that
+// is really gone drops off the scanner, so the scanner is read again before
+// that verdict; one still listed after this many reads is not gone.
+const SITE_GONE_CONFIRM_READS = 10; // ~20s of the scanner still listing it
+
 /** The same rule for the GRID: an empty one right after a warp has not arrived yet. */
 const EMPTY_GRID_CONFIRM_TICKS = 3;
 
@@ -4532,10 +4543,64 @@ function minedOutReason(flavour: AnomalyFlavour, words?: string): string {
   return `Every ${flavour.noun} in this system is mined out: the server would not take the ship to any site the scanner still listed.${said}`;
 }
 
+/** A mining site the server keeps refusing while the scanner keeps listing it: not mined out, and said so. */
+function siteStillListedReason(flavour: AnomalyFlavour, site: string, words: string | null, rejoined: boolean): string {
+  const said = words === null ? "" : ` It said: ${words}`;
+  return rejoined
+    ? `The server still would not let the ship warp to the ${flavour.noun} ${site} after docking and undocking, though the scanner still lists it.${said}`
+    : `The server would not let the ship warp to the ${flavour.noun} ${site}, though the scanner still lists it and the ship is not in it.${said} ` +
+      "This bot does not know which station is home, so it cannot dock to clear that and try again.";
+}
+
+/**
+ * The run's one way out of a pocket the server will not let the ship leave by
+ * warping back in: dock, undock, try again. Docking clears the ship's site
+ * tracker (observed live: the pilot refused at the field warped straight in
+ * after a dock). `rejoined` survives the trip so a second refusal stops the
+ * bot instead of commuting forever.
+ */
+const REJOINED: MacroMemory = { rejoined: true };
+function rejoinedCarry(mem: MacroMemory): MacroMemory {
+  return flag(mem, "rejoined") ? REJOINED : {};
+}
+
 function warpToAnomalyOfKind(
   flavour: AnomalyFlavour,
 ): MacroDecider {
   return (step, obs, mem, board) => {
+    // ── The dock-and-retry trip (see SITE_GONE_CONFIRM_READS) ──────────────
+    // "home" while flying to dock, "undock" once the undock is issued: the
+    // undock commits before the ship is in space, so the next ticks still read
+    // docked and must re-press it rather than fall into "Undock first" below.
+    const rejoin = label(mem, "rejoin");
+    if (rejoin !== null) {
+      if (obs.flightStatus?.docked === true) {
+        return tick({ kind: "undock" }, `Docked. Undocking to try the ${flavour.noun} again.`, "Rejoining", ACTING, false, {
+          rejoin: "undock",
+          ...REJOINED,
+        });
+      }
+      if (rejoin === "undock") {
+        mem = REJOINED;
+      } else {
+        const home = obs.homeStationID ?? null;
+        if (home === null) {
+          return tick(WAIT, "Home is not known.", "Rejoining", {
+            kind: "blocked",
+            reason: siteStillListedReason(flavour, label(mem, "doubted") ?? `the ${flavour.noun}`, label(mem, "doubtWords"), false),
+          });
+        }
+        const recall = recallBeforeLeaving(obs, mem, "Rejoining", null);
+        if (recall !== null) {
+          return recall;
+        }
+        const ride = rideAutopilotTo(obs, home, "Rejoining", obs.homeDockableKind ?? "station");
+        if (ride === null || ride.outcome.kind === "blocked") {
+          return ride ?? tick(WAIT, "Docking.", "Rejoining", ACTING, false, mem);
+        }
+        return { ...ride, nextMem: mem };
+      }
+    }
     if (obs.flightStatus?.docked === true) {
       return tick(WAIT, "Docked — there is no scanner to fly on from here.", "Scanning", {
         kind: "blocked",
@@ -4579,6 +4644,47 @@ function warpToAnomalyOfKind(
       });
     }
     const ofKind = anomalies.filter(flavour.matches);
+    // ── The last mining site refused: is it gone, or is it the server? ──────
+    const doubted = label(mem, "doubted");
+    if (doubted !== null) {
+      const words = label(mem, "doubtWords");
+      const refused = listOf(mem, "refused");
+      if (!ofKind.some((site) => site.label === doubted)) {
+        // Gone from the scanner: it really was torn down.
+        const setAside = [...refused, doubted];
+        if (pickSite(anomalies, board, setAside) === null) {
+          return tick(WAIT, `The ${flavour.noun} left the scanner.`, "Scanning", {
+            kind: "blocked",
+            reason: minedOutReason(flavour, words ?? undefined),
+          });
+        }
+        return tick(WAIT, `The ${flavour.noun} left the scanner. Choosing another.`, "Scanning", ACTING, false, {
+          refused: setAside.join(","),
+          ...rejoinedCarry(mem),
+        });
+      }
+      const reads = (num(mem, "doubtReads") ?? 0) + 1;
+      if (reads < SITE_GONE_CONFIRM_READS) {
+        return tick(WAIT, `The ${flavour.noun} refused the ship. Checking the scanner still lists it.`, "Scanning", ACTING, false, {
+          ...mem,
+          doubtReads: reads,
+        });
+      }
+      if (flag(mem, "rejoined") || (obs.homeStationID ?? null) === null) {
+        return tick(WAIT, `The ${flavour.noun} is still listed and still refuses the ship.`, "Scanning", {
+          kind: "blocked",
+          reason: siteStillListedReason(flavour, doubted, words, flag(mem, "rejoined")),
+        });
+      }
+      return tick(
+        WAIT,
+        `The ${flavour.noun} is still listed, so it is not mined out: the server is holding the ship. Docking to clear that, then coming back.`,
+        "Rejoining",
+        ACTING,
+        false,
+        { rejoin: "home", doubted, ...(words !== null ? { doubtWords: words } : {}) },
+      );
+    }
     // ── PHASE 2: a site is committed — read what became of the last warp, or press ──
     //
     // ⚠ THE TARGET IS COMMITTED BY A WAIT TICK BEFORE THE WARP IS ISSUED, AND THAT
@@ -4635,24 +4741,33 @@ function warpToAnomalyOfKind(
           return tick(WAIT, `The ${flavour.noun} could not be warped to — trying another.`, "Scanning", ACTING, false, {
             refused: setAside.join(","),
             refusalsSeen: refusal.count,
+            ...rejoinedCarry(mem),
+          });
+        }
+        if (!flavour.givesUpOnSites) {
+          // The last one left: see SITE_GONE_CONFIRM_READS before calling it mined out.
+          return tick(WAIT, `The ${flavour.noun} refused the ship. Checking the scanner still lists it.`, "Scanning", ACTING, false, {
+            doubted: target,
+            doubtReads: 0,
+            doubtWords: refusal.words,
+            ...(refused.length > 0 ? { refused: refused.join(",") } : {}),
+            ...rejoinedCarry(mem),
           });
         }
         // Cannot tell, or told no, and nowhere else to go. Stop — but with what
-        // the SERVER said, not with a guess about the warp never starting. For
-        // a mining tour the last site refusing is the system running dry: the
-        // server tears a site down once it is emptied, and that is what it is
-        // refusing for. `blocked` flies the ship home before it stops.
+        // the SERVER said, not with a guess about the warp never starting.
+        // (A mining tour never reaches here: it re-reads the scanner above.)
+        // `blocked` flies the ship home before it stops.
         return tick(WAIT, `The ${flavour.noun} could not be warped to.`, "Scanning", {
           kind: "blocked",
-          reason: flavour.givesUpOnSites
-            ? `The ship would not warp to the ${flavour.noun}: ${refusal.words} ` +
-              "If the ship is already sitting in it, there was nothing left to fly to."
-            : minedOutReason(flavour, refusal.words),
+          reason: `The ship would not warp to the ${flavour.noun}: ${refusal.words} ` +
+            "If the ship is already sitting in it, there was nothing left to fly to.",
         });
       }
       const carried: MacroMemory = {
         ...(refused.length > 0 ? { refused: refused.join(",") } : {}),
         ...(num(mem, "refusalsSeen") !== null ? { refusalsSeen: num(mem, "refusalsSeen") } : {}),
+        ...rejoinedCarry(mem),
       };
       // The scanner moved on under the committed target (a site mined out and
       // torn down in the meantime): drop it and let phase 1 pick again.
@@ -4722,6 +4837,7 @@ function warpToAnomalyOfKind(
       target: pick.next.label,
       refusalsSeen: stale,
       ...(refused.length > 0 ? { refused: refused.join(",") } : {}),
+      ...rejoinedCarry(mem),
     });
   };
 
