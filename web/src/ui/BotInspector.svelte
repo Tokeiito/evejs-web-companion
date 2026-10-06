@@ -66,7 +66,8 @@
   import type { AppFlow } from "../app/flow.ts";
   import StationPicker from "./StationPicker.svelte";
   import CorpHangarPicker from "./CorpHangarPicker.svelte";
-  import { fittingPickerGroups, type PickerFitting } from "../bots/fittingPicker.ts";
+  import FittingSelect from "./FittingSelect.svelte";
+  import type { PickerFitting } from "../bots/fittingPicker.ts";
 
   /** What the inspector is looking at. A branch and a sub-bot get their own
    * small forms; a loop header is never selectable, so there is no case for it. */
@@ -424,11 +425,6 @@
       kind: "agent",
       ref: { entity: "agent", id: match.agentID, name: match.name, systemName: match.solarSystemName ?? null },
     });
-  }
-  let fittingQuery = $state("");
-  function fittingGroups(step: MacroStep, key: string) {
-    const picked = fittingValue(step, key);
-    return fittingPickerGroups(fittings, fittingQuery, picked === "" ? null : Number(picked));
   }
   function setFitting(key: string, raw: string): void {
     const match = fittings.find((f) => f.fittingID === Number(raw));
@@ -922,6 +918,20 @@
         shot, just last. Left empty: tacklers, then jammers, then logistics, then everything else.
       </span>
     </div>
+  {:else if arg.widget === "fitting-picker"}
+    <!-- Not inside a <label>: a click on an option would also activate the
+         labelled trigger and open the list again. -->
+    {@const picked = fittingValue(step, arg.key)}
+    <div class="inspector-field">
+      <span class="inspector-label">
+        {arg.label}{#if !arg.required}<span class="inspector-optional"> — optional</span>{/if}
+      </span>
+      <FittingSelect
+        id={fieldId}
+        {fittings}
+        value={picked === "" ? null : Number(picked)}
+        onPick={(fittingID) => setFitting(arg.key, String(fittingID))} />
+    </div>
   {:else}
     <label class="inspector-field" for={fieldId}>
       <span class="inspector-label">
@@ -968,23 +978,6 @@
         {#if agents.length === 0}
           <span class="inspector-suffix">No agents found yet — open the Agent Finder first to pick one by hand.</span>
         {/if}
-      {:else if arg.widget === "fitting-picker"}
-        {@const groups = fittingGroups(step, arg.key)}
-        {#if fittings.length > 0}
-          <input
-            type="search"
-            placeholder="filter by ship or fitting name"
-            aria-label="Filter saved fittings by ship or fitting name"
-            bind:value={fittingQuery} />
-        {/if}
-        <select id={fieldId} value={fittingValue(step, arg.key)} onchange={(e) => setFitting(arg.key, e.currentTarget.value)}>
-          <option value="" disabled>{groups.length === 0 && fittings.length > 0 ? "no fitting matches the filter" : "pick a saved fitting…"}</option>
-          {#each groups as g (g.label)}
-            <optgroup label={g.label}>
-              {#each g.fittings as f (f.fittingID)}<option value={String(f.fittingID)}>{f.label}</option>{/each}
-            </optgroup>
-          {/each}
-        </select>
       {:else if arg.widget === "bookmark-picker"}
         <select id={fieldId} value={bookmarkValue(step, arg.key)} onchange={(e) => setBookmark(arg.key, e.currentTarget.value)}>
           <option value="" disabled>pick a saved spot…</option>
