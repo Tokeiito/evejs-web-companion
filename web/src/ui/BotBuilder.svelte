@@ -108,23 +108,35 @@
   import StationPicker from "./StationPicker.svelte";
   import { onMount } from "svelte";
   import type { ClientStore } from "../store/clientStore.ts";
-  import type { BuilderFlow } from "../bots/builderFlow.ts";
+  import type { BuilderDataSource, BuilderFlow } from "../bots/builderFlow.ts";
   import { nameKey } from "../store/names.ts";
   import { loadKnownCharacters } from "../app/knownCharacters.ts";
   import type { PickerFitting } from "../bots/fittingPicker.ts";
 
-  let { store, flow }: { store: ClientStore; flow: BuilderFlow } = $props();
+  let {
+    store,
+    flow,
+    dataSource = null,
+  }: {
+    store: ClientStore;
+    flow: BuilderFlow;
+    /**
+     * The "Data from" picker: which signed-in pilot the pickers read (fittings,
+     * corp fittings, bookmarks, hangar items, corp divisions). Only the floating
+     * builder has one (HangarBotBuilder.svelte); on a phone the builder is the
+     * mounted pilot's panel and reads that pilot.
+     */
+    dataSource?: BuilderDataSource | null;
+  } = $props();
 
-  // svelte-ignore state_referenced_locally
-  const flight = store.flight;
-  // svelte-ignore state_referenced_locally
-  const inventory = store.inventory;
-  // svelte-ignore state_referenced_locally
-  const names = store.names;
-  // svelte-ignore state_referenced_locally
-  const fitting = store.fitting;
-  // svelte-ignore state_referenced_locally
-  const finder = store.finder;
+  // ⚠ DERIVED, NOT READ ONCE. "Data from" hands this builder another pilot's
+  // store and flow WITHOUT remounting it, because a remount would throw the
+  // draft away; everything read from them has to follow the swap.
+  const flight = $derived(store.flight);
+  const inventory = $derived(store.inventory);
+  const names = $derived(store.names);
+  const fitting = $derived(store.fitting);
+  const finder = $derived(store.finder);
 
   // ── The document being edited ───────────────────────────────────────────────
   // The list the player sees is what a LOOP BODY may hold (steps and branches),
@@ -693,7 +705,12 @@
   // The known-pilots roster (multibox onboarding records it) — names and ids
   // only, from localStorage; no token, no live read.
   let knownPilots = $state<readonly { characterID: number; characterName: string }[]>([]);
-  onMount(() => {
+  // An effect rather than onMount: it reads `flow`, so it runs again when "Data
+  // from" swaps the pilot. Nothing else it reads is reactive. The lists are
+  // emptied first so a failed read never leaves the last pilot's showing.
+  $effect(() => {
+    savedFittings = [];
+    savedSpots = [];
     knownPilots = loadKnownCharacters().map((k) => ({ characterID: k.characterID, characterName: k.characterName }));
     void flow
       .listSavedFittings()
@@ -719,8 +736,8 @@
         oreFamilies = rows;
       })
       .catch(() => {});
-    void refreshSaved();
   });
+  onMount(() => void refreshSaved());
 
   // Which fitted modules are the miners — from the ACTIVE ship's slots,
   // deduplicated by GROUP, because the format's equipment argument is a group
@@ -1151,6 +1168,9 @@
      styles.css): a real two-pane layout cannot honour "no sideways scrolling
      at 360px". -->
 {#snippet inspector(target: InspectorTarget)}
+  <!-- Keyed on the flow so a "Data from" swap re-reads the corp divisions,
+       which the hangar picker reads once per mount. -->
+  {#key flow}
   <BotInspector
     {target}
     {flow}
@@ -1172,6 +1192,7 @@
     onSubBot={applySubBot}
     onClose={() => (selection = null)}
   />
+  {/key}
 {/snippet}
 
 {#snippet problemNotes(path: string)}
@@ -1212,6 +1233,20 @@
       {/if}
     </p>
     <div class="controls">
+      {#if dataSource !== null}
+        <label class="data-source" title="Which pilot's fittings, corp fittings, bookmarks, hangar items and corporation divisions the pickers offer">
+          Data from
+          <select
+            value={dataSource.current ?? ""}
+            onchange={(e) => dataSource.onPick(e.currentTarget.value === "" ? null : e.currentTarget.value)}
+          >
+            <option value="">No pilot</option>
+            {#each dataSource.choices as choice (choice.sessionID)}
+              <option value={choice.sessionID}>{choice.name}</option>
+            {/each}
+          </select>
+        </label>
+      {/if}
       <button type="button" class="primary" disabled={problemIndex.hasBlocking} onclick={saveBot}>Save</button>
     </div>
   </header>

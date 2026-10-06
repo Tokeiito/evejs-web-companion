@@ -35,6 +35,23 @@ export type BuilderFlow = Pick<
   requestOptions(): ApiOptions | Promise<ApiOptions>;
 };
 
+/** One signed-in pilot the floating builder can read its pickers' data from. */
+export interface BuilderPilotChoice {
+  readonly sessionID: string;
+  readonly name: string;
+}
+
+/**
+ * The floating builder's "Data from" picker: the pilots on offer, the one in
+ * use (null for none), and how to switch. App owns the choice; see
+ * `builderSessionID` in App.svelte.
+ */
+export interface BuilderDataSource {
+  readonly choices: readonly BuilderPilotChoice[];
+  readonly current: string | null;
+  readonly onPick: (sessionID: string | null) => void;
+}
+
 /** Why the corporation picker has nothing to offer here. */
 export const NO_PILOT_FOR_CORP_OFFICES = "No pilot is in the client to read a corporation's offices.";
 

@@ -232,6 +232,14 @@ test("the builder draws over the hangar with nobody in the client", () => {
   const text = visibleText(body);
   assert.match(text, /Bot builder/);
   assert.match(text, /The plan/);
+  // Its "Data from" picker, offering no pilot when none is signed in.
+  assert.match(text, /Data from/);
+  assert.match(body, /<option value=""[^>]*>No pilot<\/option>/);
+});
+
+test("the pilot's own builder panel has no Data from picker", () => {
+  // On a phone the builder is the mounted pilot's panel and reads that pilot.
+  assert.doesNotMatch(visibleText(renderPanel()), /Data from/);
 });
 
 test("the bot's Category menu sits beside its name, starting Uncategorized", () => {
