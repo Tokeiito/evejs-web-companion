@@ -43,6 +43,60 @@ export function slotFlagOf(family: SlotFamily, index: number): number | null {
   return SLOT_FAMILY_FLAGS[family][index] ?? null;
 }
 
+/** Whether an inventory flag is a fitting slot (not cargo, drone bay, etc.). */
+export function isSlotFlag(flag: number): boolean {
+  return SLOT_FAMILY_ORDER.some((family) => SLOT_FAMILY_FLAGS[family].includes(flag));
+}
+
+/** Whether an inventory flag is a rig slot (unfitting a rig destroys it). */
+export function isRigFlag(flag: number): boolean {
+  return SLOT_FAMILY_FLAGS.rig.includes(flag);
+}
+
+/** What applying a saved fitting needs from the hangar, and what it lacks. */
+export interface FittingApplyPlan {
+  /** Slot flag -> module type, for every slot the apply still has to fill. */
+  readonly modulesByFlag: Readonly<Record<number, number>>;
+  /** Module type -> hangar item ids to fit from (whole stacks, as the client sends). */
+  readonly itemsByType: Readonly<Record<number, readonly number[]>>;
+  /** Module types the hangar cannot supply, with how many are short. */
+  readonly missing: readonly { readonly typeID: number; readonly count: number }[];
+}
+
+/**
+ * Plan a refit the way the retail client's LoadFitting does: name every
+ * hangar stack of each needed type, taking stacks until the count is met. The
+ * server fits a slot only from the ids listed here and moves the module already
+ * in a high, mid or low slot to the hangar itself. Rigs are left out (the
+ * apply never touches them), as are drones, charges and cargo, and so is a slot
+ * already holding the fit's module.
+ */
+export function planFittingApply(
+  fitting: { readonly modules: readonly { readonly flagID: number; readonly typeID: number }[] },
+  hangar: readonly { readonly itemID: number; readonly typeID: number; readonly quantity: number }[],
+  fitted: readonly { readonly flagID: number; readonly typeID: number }[],
+): FittingApplyPlan {
+  const modulesByFlag: Record<number, number> = {};
+  const need = new Map<number, number>();
+  for (const module of fitting.modules) {
+    if (!isSlotFlag(module.flagID) || isRigFlag(module.flagID) || module.typeID <= 0) continue;
+    if (modulesByFlag[module.flagID] !== undefined) continue;
+    if (fitted.some((m) => m.flagID === module.flagID && m.typeID === module.typeID)) continue;
+    modulesByFlag[module.flagID] = module.typeID;
+    need.set(module.typeID, (need.get(module.typeID) ?? 0) + 1);
+  }
+  const itemsByType: Record<number, number[]> = {};
+  const short = new Map(need);
+  for (const row of hangar) {
+    const left = short.get(row.typeID) ?? 0;
+    if (left <= 0) continue;
+    (itemsByType[row.typeID] ??= []).push(row.itemID);
+    short.set(row.typeID, left - Math.max(1, row.quantity));
+  }
+  const missing = [...short].filter(([, count]) => count > 0).map(([typeID, count]) => ({ typeID, count }));
+  return { modulesByFlag, itemsByType, missing };
+}
+
 /** Render order: how a fitting window reads top to bottom. */
 export const SLOT_FAMILY_ORDER: readonly SlotFamily[] = [
   "high",

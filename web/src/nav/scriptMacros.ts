@@ -26,6 +26,8 @@ import { createCorporateHauler } from "./corporateHauling.ts";
 import type { RatThreat } from "./ratThreat.ts";
 import { hostilesInReach, pickAdvertisedFleet } from "./scriptConditions.ts";
 import { BOARD_SLOT_KEY } from "../bots/botScript.ts";
+import { refitLanded } from "../bots/startup.ts";
+import { planFittingApply } from "../bridge/fitting.ts";
 import type { MacroStep, OreFamilyArg, SquadRoleArg, WorldRef } from "../bots/botScript.ts";
 import { dockedAt, type DockableKind } from "./dockableLocation.ts";
 import { launchFullPercent } from "../bots/macroSpecs.ts";
@@ -4764,10 +4766,25 @@ const PREVIOUS_SHIP_BOARD_KEY = "shipBeforeRefit";
 
 const refitShip: MacroDecider = (step, obs, mem, board) => {
   if (obs.flightStatus?.docked !== true) {
-    return tick(WAIT, "Not docked — refitting happens in a station.", "Refitting", {
-      kind: "blocked",
-      reason: "Dock at a station first — refitting happens in its hangar.",
-    });
+    // In space: a ship already in the fit has nothing to do. Otherwise fly home
+    // and dock, and refit from the home hangar on arrival. (Blocking here sent
+    // the run on a safety trip that docked and then stopped, never refitting.)
+    if (refitLanded(step, obs) === true) {
+      return tick(WAIT, "The fitting is in place.", "Refitting", { kind: "done" });
+    }
+    const home = obs.homeStationID ?? null;
+    if (home === null) {
+      return tick(WAIT, "Home is not known.", "Refitting", {
+        kind: "blocked",
+        reason: "This bot does not know which station is home, so it cannot fly there to refit.",
+      });
+    }
+    const recall = recallBeforeLeaving(obs, mem, "Refitting", null);
+    if (recall !== null) {
+      return recall;
+    }
+    return rideAutopilotTo(obs, home, "Refitting", obs.homeDockableKind ?? "station") ??
+      tick(WAIT, "Docking at home to refit.", "Refitting", ACTING, false, mem);
   }
   const arg = step.args["fitting"];
   if (arg === undefined || arg.kind !== "fitting" || (arg.fittingID === null && (arg.name === null || arg.name === ""))) {
@@ -4824,8 +4841,34 @@ const refitShip: MacroDecider = (step, obs, mem, board) => {
       ? boarding
       : withBoardPatch(boarding, { [PREVIOUS_SHIP_BOARD_KEY]: activeShipID });
   }
+  // ⚠ DONE MEANS SEEN FITTED, NOT "THE APPLY WAS SENT". A sent apply that
+  // fitted nothing used to read as done, and the ship undocked with its old
+  // modules. The fitted slots are re-read; rigs are never part of the check.
+  const landed = refitLanded(step, obs);
+  if (landed === true) {
+    return tick(WAIT, "The fitting is in place.", "Refitting", { kind: "done" });
+  }
   if (flag(mem, "applied")) {
-    return tick(WAIT, "The fitting is applied.", "Refitting", { kind: "done" });
+    const checks = (num(mem, "checks") ?? 0) + 1;
+    if (checks > MAX_BLOCK_ATTEMPTS) {
+      return tick(WAIT, "The fitting did not land.", "Refitting", {
+        kind: "blocked",
+        reason: `The ship is still not fitted as ${fitting.name} after applying it, so the bot stopped before leaving.`,
+      });
+    }
+    return tick(WAIT, "Checking the fitting landed.", "Refitting", ACTING, false, { ...mem, checks });
+  }
+  const fitted = obs.activeFitting ?? null;
+  if (landed === null || fitted === null) {
+    return tick(WAIT, "Reading what the ship has fitted.", "Refitting", ACTING, false, mem);
+  }
+  // Refuse up front, before anything moves, when this hangar cannot supply the fit.
+  const short = planFittingApply(fitting, hangar, fitted.modules).missing.reduce((sum, m) => sum + m.count, 0);
+  if (short > 0) {
+    return tick(WAIT, "Modules missing from the hangar.", "Refitting", {
+      kind: "blocked",
+      reason: `This hangar is ${short} module${short === 1 ? "" : "s"} short of ${fitting.name}, so the ship was not refitted.`,
+    });
   }
   return tick(
     { kind: "applyFitting", fittingID: fitting.fittingID },

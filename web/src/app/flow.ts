@@ -24,7 +24,7 @@ import { fittedTravelPropulsion, travelPropulsionActivation } from "../nav/trave
 import { ensureSiteLogisticsBookmark } from "../nav/siteLogisticsBookmark.ts";
 import { readRecoveryDrones, recoverLostDroneFlight, type DroneRecoveryState } from "../nav/lostDroneRecovery.ts";
 import { createSignal, readonlySignal, type ReadableSignal } from "../store/signals.ts";
-import { buildSlots, decodeChargeFits, decodeResources, decodeShipAttributes } from "../bridge/fitting.ts";
+import { buildSlots, decodeChargeFits, decodeResources, decodeShipAttributes, planFittingApply, slotFlagOf } from "../bridge/fitting.ts";
 import { deriveShipStats } from "../bridge/shipStats.ts";
 import {
   decodeBlueprints,
@@ -10615,6 +10615,22 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             savedFittings = null;
           }
         }
+        // What the active ship has fitted, so a Startup refit can prove it landed.
+        let activeFitting: ScriptObservation["activeFitting"] = null;
+        if (macro === "refit-ship") {
+          try {
+            const reads = await api.loadFitting(callOptions);
+            if (reads.activeShipID !== null && reads.errors.slots === null) {
+              const modules = buildSlots(reads.slots, reads.shipInfo, reads.online).flatMap((slot) => {
+                const flagID = slotFlagOf(slot.family, slot.index);
+                return slot.module !== null && flagID !== null ? [{ flagID, typeID: slot.module.typeID }] : [];
+              });
+              activeFitting = { shipID: reads.activeShipID, modules };
+            }
+          } catch {
+            activeFitting = null;
+          }
+        }
         // `needsOreSites` is the site-mode mining block asking for the same
         // list. It is a hint rather than a third entry in ANOMALY_MACROS
         // because `mine-at-belt` earns the read only when its belt argument
@@ -11103,6 +11119,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           myDrones: snapshot === null ? undefined : myDrones,
           cargoFraction,
           savedFittings,
+          activeFitting,
           activeShipID,
           bookmarks,
           colonies,
@@ -11665,24 +11682,30 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             if (fittingFlight.structureID) {
               throw new Error("Scripted fitting at a player structure is not supported by the current fitting contract.");
             }
-            // Re-read the library at issue time (never a stale module list), then
-            // hand the server the {flag: type} plan; it pulls from this hangar.
+            // Re-read the library, the hangar and the current fit at issue time
+            // (never a stale list), and name the hangar items to fit from, as
+            // the retail client does: the server fits a slot only from the ids
+            // it is handed. Rigs stay as they are (fitRigs off).
             const library = decodeFittings(await api.loadSavedFittings(callOptions));
             const fitting = library.find((f) => f.fittingID === action.fittingID);
             const stationID = fittingFlight.stationID;
-            const shipID = store.inventory.get().activeShipID;
-            if (fitting !== undefined && stationID !== null && shipID !== null) {
-              const modulesByFlag: Record<number, number> = {};
-              for (const module of fitting.modules) {
-                if (module.flagID > 0 && module.typeID > 0 && modulesByFlag[module.flagID] === undefined) {
-                  modulesByFlag[module.flagID] = module.typeID;
-                }
-              }
-              await api.applySavedFitting(shipID, stationID, modulesByFlag, callOptions);
-              capabilityCache.invalidate();
-              bayCache = null;
-              await loadInventory().catch(() => {});
+            const shipID = fittingFlight.shipID;
+            if (fitting === undefined || stationID === null || !shipID) {
+              throw new Error("The fitting, the station or the ship could not be read, so nothing was fitted.");
             }
+            const panel = await api.loadInventory(callOptions);
+            const fitReads = await api.loadFitting(callOptions);
+            const fitted = buildSlots(fitReads.slots, fitReads.shipInfo, fitReads.online).flatMap((slot) => {
+              const flagID = slotFlagOf(slot.family, slot.index);
+              return slot.module !== null && flagID !== null ? [{ flagID, typeID: slot.module.typeID }] : [];
+            });
+            const plan = planFittingApply(fitting, decodeInventoryRows(panel.hangar.list, panel.volumes), fitted);
+            if (Object.keys(plan.modulesByFlag).length > 0) {
+              await api.applySavedFitting(shipID, stationID, plan.modulesByFlag, plan.itemsByType, callOptions);
+            }
+            capabilityCache.invalidate();
+            bayCache = null;
+            await loadInventory().catch(() => {});
             return;
           }
           case "reprocessOre":
