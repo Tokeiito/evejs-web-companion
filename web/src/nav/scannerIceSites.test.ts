@@ -35,10 +35,10 @@ function entity(over: Partial<SpaceEntity> & { itemID: number }): SpaceEntity {
   };
 }
 
-function snapshot(entities: SpaceEntity[]): SpaceSnapshot {
+function snapshot(entities: SpaceEntity[], position = ORIGIN): SpaceSnapshot {
   const ship = {
     itemID: 9001, typeID: 17480, name: "Procurer", mode: null, maxVelocity: 100, radius: 100,
-    position: ORIGIN, velocity: ORIGIN, shieldRatio: 1, armorRatio: 1, hullRatio: 1, capacitorRatio: 1,
+    position, velocity: ORIGIN, shieldRatio: 1, armorRatio: 1, hullRatio: 1, capacitorRatio: 1,
     shieldCapacity: null, armorCapacity: null, hullCapacity: null, activeModuleIDs: [],
   } as unknown as SpaceShipStatus;
   return { inSpace: true, solarSystemID: 30000142, shipID: 9001, sampledAtMs: 1, entities, ship };
@@ -126,7 +126,8 @@ test("an ice step with no online Ice Harvester stops and says so", () => {
 
 test("a mined-out ice field moves on to the next ice field, keeping its own lists", () => {
   const step = beltStep("mine-at-belt", "ice-site");
-  const observation = obs({ snapshot: snapshot([]), iceMiningModuleIDs: [7002], anomalies: [ICE_FIELD, ORE_SITE, ICE_FIELD_2] });
+  // The ship is ON the field the board names: that is what makes its empty grid barren.
+  const observation = obs({ snapshot: snapshot([], ICE_FIELD.position!), iceMiningModuleIDs: [7002], anomalies: [ICE_FIELD, ORE_SITE, ICE_FIELD_2] });
   const board: ScriptBoard = { iceAnomsVisited: "ICE-001", oreAnomsVisited: "ORE-001" };
   let mem: MacroMemory = {};
   let out = SCRIPT_MACROS["mine-at-belt"]!(step, observation, mem, board);
@@ -162,7 +163,7 @@ test("unclassified mineable chunks wait and reset the ice tour's consecutive bar
   assert.deepEqual(identified.action, { kind: "orbit", targetID: 50002, range: 5000 });
 
   // Once authority returns an empty grid, all three fresh reads are required.
-  const empty = { ...observation, snapshot: snapshot([]) };
+  const empty = { ...observation, snapshot: snapshot([], ICE_FIELD.position!) };
   for (let read = 0; read < 2; read += 1) {
     const out = SCRIPT_MACROS["mine-at-belt"]!(step, empty, mem, board);
     assert.equal(out.action.kind, "wait");
