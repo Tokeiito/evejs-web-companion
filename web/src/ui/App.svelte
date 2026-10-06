@@ -578,11 +578,12 @@
    * The pilot the floating Bot Builder reads (its ship, holds and fittings), or
    * null for the account-backed builder over the hangar.
    *
-   * ⚠ BOUND WHEN THE WINDOW OPENS, NOT FOLLOWING THE ACTIVE PILOT. Rebinding
-   * remounts the builder and throws away the draft in it, so a builder already
-   * open keeps its pilot through a pilot switch and through a second Edit/New
-   * (which bots/builderTarget.ts delivers to the builder that is mounted). It is
-   * rebound only when that pilot has gone from the roster.
+   * ⚠ BOUND WHEN THE WINDOW OPENS, NOT FOLLOWING THE ACTIVE PILOT. A builder
+   * already open keeps its pilot through a pilot switch and through a second
+   * Edit/New (which bots/builderTarget.ts delivers to the builder that is
+   * mounted): the player chose that pilot, by opening it or with the builder's
+   * own "Data from" picker. It is rebound on open only when that pilot has gone
+   * from the roster.
    */
   let builderSessionID = $state<string | null>(null);
   const builderSession = $derived(sessions.find((s) => s.id === builderSessionID) ?? null);
@@ -719,6 +720,7 @@
             tab={win.id}
             {sessions}
             {builderSession}
+            onBuilderPilot={(id) => (builderSessionID = id)}
             onOpen={requestOpenInWorkspace}
             onGoToPilot={(id) => {
               hangarOpen = false;
