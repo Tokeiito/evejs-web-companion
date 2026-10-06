@@ -230,6 +230,31 @@ test("the loop sequences undock -> warp gate -> jump -> warp station -> dock (wi
   assert.equal(snap.totalJumps, 1);
 });
 
+test("a gate's Jump (one hop, no final dock) warps to the gate, jumps, and arrives IN SPACE", async () => {
+  // `flow.jumpThrough` hands the loop exactly this plan from an overview gate
+  // row. Arrival is the far system read back from flight status — the loop must
+  // not undock, dock, or treat "not docked" as unfinished business.
+  const mock = makeMock();
+  mock.state.docked = false;
+  mock.state.inSpace = true;
+  mock.state.stationID = null;
+  mock.state.shipMode = "STOP";
+  const { deps } = makeDeps(mock);
+  const controller = createAutopilot(deps);
+
+  controller.start({ ...PLAN, destinationStationID: null, destinationKind: null });
+  await drive(controller);
+
+  assert.deepEqual(mock.calls, [
+    { m: "warp", a: [GATE_ORIGIN] },
+    { m: "jump", a: [GATE_ORIGIN, GATE_DEST] },
+  ]);
+  const snap = controller.snapshot();
+  assert.equal(snap.status, "arrived");
+  assert.equal(snap.remainingJumps, 0);
+  assert.equal(mock.state.system, DEST_SYSTEM);
+});
+
 test("ready-returning undock, jump, and dock allow the next decision immediately without duplicate calls", async () => {
   const mock = makeMock({ dockRefusals: 0 });
   const { deps } = makeDeps(mock);

@@ -39,7 +39,7 @@ function recordingFlow(): { flow: RowActionFlow; calls: Call[] } {
       keepAtRange: record("keepAtRange"),
       alignTo: record("alignTo"),
       dockAt: record("dockAt"),
-      jump: record("jump"),
+      jumpThrough: record("jumpThrough"),
       lockTarget: record("lockTarget"),
       unlockTarget: record("unlockTarget"),
     } as RowActionFlow,
@@ -77,12 +77,20 @@ test("the ranged verbs carry the PLAYER'S chosen distance, each its own", async 
   ]);
 });
 
-test("jump carries the FAR side of the gate, not the gate itself", async () => {
-  const link = { destinationGateID: 60009, destinationSolarSystemID: 30000144 } as unknown as GateLink;
+test("jump hands the WHOLE gate link to the closing-in ladder, not the raw jump", async () => {
+  // Like Dock: the raw jump is refused outside 2,500 m, so the verb has to
+  // carry what the ladder needs to warp, approach and then jump — this gate,
+  // its far side, and the system that counts as arrival.
+  const link: GateLink = {
+    gateID: ITEM,
+    toSystemID: 30000144,
+    toSystemName: "Far Side",
+    destinationGateID: 60009,
+  };
   const { flow, calls } = recordingFlow();
   const ran = await dispatchRowAction(flow, "jump", { itemID: ITEM, gateLink: link }, RANGES);
   assert.equal(ran, true);
-  assert.deepEqual(calls, [{ name: "jump", args: [ITEM, 60009] }]);
+  assert.deepEqual(calls, [{ name: "jumpThrough", args: [link] }]);
 });
 
 test("jump with no far side calls NOTHING rather than sending a guess", async () => {

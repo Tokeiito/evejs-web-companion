@@ -1131,8 +1131,19 @@ export interface AppFlow {
   loadPlanets(): Promise<void>;
   /** R41 — open one colony, or close the open one with null. View state. */
   selectColony(planetID: number | null): void;
-  /** Jump through an NPC stargate (fromGate -> toGate). */
+  /**
+   * Jump through an NPC stargate (fromGate -> toGate) — ONE `CmdStargateJump`,
+   * no closing in. Out of jump range the server refuses; for a Jump that closes
+   * the distance itself, use `jumpThrough`.
+   */
   jump(fromGateID: number, toGateID: number): Promise<void>;
+  /**
+   * JUMP, the way Dock means it: close the distance and then jump. Runs the
+   * same browser decide-loop as `dockAt` over a ONE-hop plan through this gate,
+   * so it warps, approaches and jumps in whatever order the measurement calls
+   * for, and arrival is the next system read back from FLIGHT STATUS.
+   */
+  jumpThrough(link: GateLink): Promise<void>;
   /**
    * R30 slice A — the stargates in `systemID` and where each one leads.
    *
@@ -6073,6 +6084,83 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       destinationName,
       route: [],
       totalJumps: 0,
+      startedAt: Date.now(),
+    });
+
+    if (!autopilot) {
+      autopilot = createAutopilot(makeAutopilotDeps());
+    }
+    autopilot.start(plan);
+    void autopilot.run();
+  }
+
+  // The smart Jump command: `dockAt`'s twin for a stargate. A ONE-hop plan
+  // through this gate with no final dock, handed to the same controller — the
+  // ladder's gate rung already tests the server's 2,500 m jump range, so the
+  // jump is asked when it will work instead of being refused from 200 km.
+  // Arrival is `solarSystemID` reading the far system, never the call's 200.
+  async function jumpThrough(link: GateLink): Promise<void> {
+    store.apply({ type: "travel/plan-error", message: null });
+    if (!(link.gateID > 0) || !(link.destinationGateID > 0)) {
+      store.apply({ type: "travel/plan-error", message: "This gate has no far side to jump to." });
+      return;
+    }
+
+    let status: FlightStatus;
+    try {
+      const step = await api.getFlightStatus(callOptions);
+      status = decodeFlightStatus(step.flight);
+      void observeFlightStatus(status);
+    } catch (error) {
+      if (isSessionLost(error)) {
+        stopLiveStream();
+        store.apply({ type: "character/offline" });
+        throw error;
+      }
+      store.apply({
+        type: "travel/plan-error",
+        message: `Could not read your location: ${errorWords(error)}`,
+      });
+      return;
+    }
+
+    const fromSystemID = status.solarSystemID;
+    if (fromSystemID === null) {
+      store.apply({ type: "travel/plan-error", message: "Your current solar system is unknown." });
+      return;
+    }
+    if (fromSystemID === link.toSystemID) {
+      store.apply({ type: "travel/plan-error", message: "You are already in that system." });
+      return;
+    }
+
+    const hop = {
+      fromSystemID,
+      toSystemID: link.toSystemID,
+      gateToWarpID: link.gateID,
+      jumpToGateID: link.destinationGateID,
+    };
+    const plan: RoutePlan = {
+      destinationSystemID: link.toSystemID,
+      destinationStationID: null,
+      destinationKind: null,
+      destinationName: link.toSystemName,
+      hops: [hop],
+    };
+
+    store.apply({
+      type: "travel/planned",
+      destinationSystemID: link.toSystemID,
+      destinationStationID: null,
+      destinationName: link.toSystemName,
+      route: [
+        {
+          ...hop,
+          fromSystemName: routeGraph?.systemName(fromSystemID) ?? null,
+          toSystemName: link.toSystemName,
+        },
+      ],
+      totalJumps: 1,
       startedAt: Date.now(),
     });
 
@@ -13008,6 +13096,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     async jump(fromGateID, toGateID) {
       await runFlightStep("Jump", () => api.jump(fromGateID, toGateID, callOptions));
     },
+    jumpThrough,
 
     // R30 slice A. A pure read over the cached graph — it issues no game call
     // and starts nothing, so a panel may ask for it on every system change.

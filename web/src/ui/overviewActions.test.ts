@@ -525,7 +525,7 @@ test("R77: the movement verbs have exactly ONE dispatch site, in the shared runn
     "flow.keepAtRange(",
     "flow.alignTo(",
     "flow.dockAt(",
-    "flow.jump(",
+    "flow.jumpThrough(",
     "flow.lockTarget(",
     "flow.unlockTarget(",
   ]) {
