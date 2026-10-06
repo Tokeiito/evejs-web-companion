@@ -24,6 +24,7 @@ import {
   decodeAllianceFittings,
   decodeCommunityFittings,
   decodeCorpFittings,
+  refitLibrary,
 } from "./sharedFittings.ts";
 import type { JsonValue } from "./wire.ts";
 
@@ -113,4 +114,21 @@ test("decodeAllianceFittings decodes a RAW dict (no cache wrapper)", () => {
 
 test("decodeAllianceFittings on an empty dict is [] (a real 'no alliance fits')", () => {
   assert.deepEqual(decodeAllianceFittings({ type: "dict", entries: [] }), []);
+});
+
+test("refitLibrary lists personal fits first, then corp fits, each tagged with its source", () => {
+  const fit = (fittingID: number, name: string) =>
+    ({ fittingID, name, description: "", shipTypeID: 626, ownerID: 1, savedDate: null, modules: [] });
+  const merged = refitLibrary([fit(1, "Vexor"), fit(2, "Hauler")], [fit(3, "Vexor"), fit(2, "Hauler"), fit(4, "Corp Miner")]);
+  assert.deepEqual(
+    merged.map((f) => [f.fittingID, f.name, f.source]),
+    [
+      [1, "Vexor", "personal"],
+      [2, "Hauler", "personal"],
+      [3, "Vexor", "corporation"],
+      [4, "Corp Miner", "corporation"],
+    ],
+  );
+  // A name both libraries use resolves to the pilot's own fit (first match).
+  assert.equal(merged.find((f) => f.name === "Vexor")?.source, "personal");
 });

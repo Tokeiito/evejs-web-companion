@@ -288,6 +288,7 @@ import { decodeFormations } from "../bridge/formations.ts";
 import { scannerStateFromBoundRead } from "../scanner/scannerCenter.ts";
 import { siteKind } from "../scanner/siteKind.ts";
 import { decodeFittings } from "../bridge/fittings.ts";
+import { decodeCorpFittings, refitLibrary, type SourcedFitting } from "../bridge/sharedFittings.ts";
 import { decodeActiveBookmarks } from "../bridge/bookmarks.ts";
 import {
   authoritativeFleetMemberCharacterIDs,
@@ -1273,8 +1274,8 @@ export interface AppFlow {
    * ScriptRunnerController.headHome).
    */
   headCustomBotHome(reason: string): boolean;
-  /** The character's saved-fitting library (for the Bot Builder's fitting picker). */
-  listSavedFittings(): Promise<readonly import("../bridge/fittings.ts").SavedFitting[]>;
+  /** The character's and its corp's saved fittings, with hull names (for the Bot Builder's fitting picker). */
+  listSavedFittings(): Promise<readonly (import("../bridge/sharedFittings.ts").SourcedFitting & { readonly shipName: string | null })[]>;
   /** The character's saved bookmarks (for the Bot Builder's saved-spot picker). */
   listBookmarks(): Promise<readonly { bookmarkID: number; name: string }[]>;
   /**
@@ -2193,6 +2194,17 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             .join("; ")
         : null,
     });
+  }
+
+  // Every fitting the refit block may apply: the pilot's own, then the session
+  // corp's. The personal read decides success; a corp read that fails (or a
+  // pilot in an NPC corp) leaves the personal library standing on its own.
+  async function loadRefitLibrary(): Promise<readonly SourcedFitting[]> {
+    const [personal, corporation] = await Promise.all([
+      api.loadSavedFittings(callOptions).then(decodeFittings),
+      api.loadCorporationFittings(callOptions).then(decodeCorpFittings).catch(() => []),
+    ]);
+    return refitLibrary(personal, corporation);
   }
 
   // Load the Inventory & Ship panel. The two containers are decoded
@@ -10698,7 +10710,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         let activeShipID: ScriptObservation["activeShipID"] = null;
         if (macro === "refit-ship") {
           try {
-            savedFittings = decodeFittings(await api.loadSavedFittings(callOptions));
+            savedFittings = await loadRefitLibrary();
           } catch {
             savedFittings = null;
           }
@@ -11755,7 +11767,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             }
             // Re-read the library at issue time (never a stale module list), then
             // hand the server the {flag: type} plan; it pulls from this hangar.
-            const library = decodeFittings(await api.loadSavedFittings(callOptions));
+            const library = await loadRefitLibrary();
             const fitting = library.find((f) => f.fittingID === action.fittingID);
             const stationID = fittingFlight.stationID;
             const shipID = store.inventory.get().activeShipID;
@@ -13208,7 +13220,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     panicRecallAndDock,
 
     async listSavedFittings() {
-      return decodeFittings(await api.loadSavedFittings(callOptions));
+      const library = await loadRefitLibrary();
+      // The picker heads each fit with its hull, since fit names often omit it.
+      // Hull names are static data; a failed lookup leaves the type id showing.
+      const hulls = [...new Set(library.map((f) => f.shipTypeID))].map((id) => ({ kind: "type" as const, id }));
+      const names = await api.resolveNames(hulls, callOptions).then((r) => r.names).catch(() => ({}) as Record<string, string | null>);
+      return library.map((f) => ({ ...f, shipName: names[nameKey("type", f.shipTypeID)] ?? null }));
     },
 
     async listBookmarks() {
