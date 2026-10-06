@@ -509,6 +509,16 @@ export interface ScriptObservation {
   readonly scannerOperations?: ScannerOperationsSnapshot | null;
   /** The character's saved-fitting library (read when a refit step is active). */
   readonly savedFittings?: readonly SavedFitting[] | null;
+  /**
+   * What is fitted in the active ship's slots right now (read when a refit step
+   * is active), for proving a refit landed. `shipID` is the ship the read came
+   * from, so a read taken across a ship swap cannot vouch for the new hull.
+   * Charges are not modules and are left out. null = unreadable.
+   */
+  readonly activeFitting?: {
+    readonly shipID: number;
+    readonly modules: readonly { readonly flagID: number; readonly typeID: number }[];
+  } | null;
   /** Saved bookmarks (label + id + system), read when a bookmark-flying step is active. */
   readonly bookmarks?: readonly {
     readonly bookmarkID: number;

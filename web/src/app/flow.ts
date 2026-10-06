@@ -24,7 +24,7 @@ import { fittedTravelPropulsion, travelPropulsionActivation } from "../nav/trave
 import { ensureSiteLogisticsBookmark } from "../nav/siteLogisticsBookmark.ts";
 import { readRecoveryDrones, recoverLostDroneFlight, type DroneRecoveryState } from "../nav/lostDroneRecovery.ts";
 import { createSignal, readonlySignal, type ReadableSignal } from "../store/signals.ts";
-import { buildSlots, decodeChargeFits, decodeResources, decodeShipAttributes } from "../bridge/fitting.ts";
+import { buildSlots, decodeChargeFits, decodeResources, decodeShipAttributes, slotFlagOf } from "../bridge/fitting.ts";
 import { deriveShipStats } from "../bridge/shipStats.ts";
 import {
   decodeBlueprints,
@@ -10615,6 +10615,22 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             savedFittings = null;
           }
         }
+        // What the active ship has fitted, so a Startup refit can prove it landed.
+        let activeFitting: ScriptObservation["activeFitting"] = null;
+        if (macro === "refit-ship") {
+          try {
+            const reads = await api.loadFitting(callOptions);
+            if (reads.activeShipID !== null && reads.errors.slots === null) {
+              const modules = buildSlots(reads.slots, reads.shipInfo, reads.online).flatMap((slot) => {
+                const flagID = slotFlagOf(slot.family, slot.index);
+                return slot.module !== null && flagID !== null ? [{ flagID, typeID: slot.module.typeID }] : [];
+              });
+              activeFitting = { shipID: reads.activeShipID, modules };
+            }
+          } catch {
+            activeFitting = null;
+          }
+        }
         // `needsOreSites` is the site-mode mining block asking for the same
         // list. It is a hint rather than a third entry in ANOMALY_MACROS
         // because `mine-at-belt` earns the read only when its belt argument
@@ -11103,6 +11119,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           myDrones: snapshot === null ? undefined : myDrones,
           cargoFraction,
           savedFittings,
+          activeFitting,
           activeShipID,
           bookmarks,
           colonies,
