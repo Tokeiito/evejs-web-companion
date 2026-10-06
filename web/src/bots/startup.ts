@@ -64,13 +64,24 @@ export function startupActionLanded(step: MacroStep, action: ScriptAction, obs: 
   return null;
 }
 
+/**
+ * Actions a Startup step may take without the dispatch fence: travel that is
+ * safe to repeat after a restart (setting a route, aligning, recalling drones).
+ * The refit flies home through these when started in space; the step still
+ * completes only on its own postcondition.
+ */
+export function startupActionUnfenced(step: MacroStep, action: ScriptAction): boolean {
+  return step.macro === "refit-ship" &&
+    ["startRoute", "startSystemRoute", "align", "recallDrones"].includes(action.kind);
+}
+
 /** Steps whose job is to change the ship, so the run's ship moves with them. */
 export function startupChangesShip(step: MacroStep): boolean {
   return step.macro === "refit-ship";
 }
 
 /**
- * The refit is in place: docked, in a hull of the fitting's ship type, with
+ * The refit is in place: in a hull of the fitting's ship type, with
  * every module the fitting puts in a high, mid, low or subsystem slot fitted
  * there. Extra modules do not fail it; rigs (a refit never touches them),
  * charges, drones and cargo in the fitting are not checked. The fitting is
@@ -79,7 +90,8 @@ export function startupChangesShip(step: MacroStep): boolean {
  */
 export function refitLanded(step: MacroStep, obs: ScriptObservation): boolean | null {
   const flight = obs.flightStatus;
-  if (flight?.docked !== true || !flight.shipID) return null;
+  // Docked or not: a ship in space already carrying the fit is the fit in place.
+  if (!flight?.shipID) return null;
   const arg = step.args["fitting"];
   const library = obs.savedFittings ?? null;
   const fitted = obs.activeFitting ?? null;

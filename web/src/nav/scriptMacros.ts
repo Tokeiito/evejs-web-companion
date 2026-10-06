@@ -4828,10 +4828,25 @@ const PREVIOUS_SHIP_BOARD_KEY = "shipBeforeRefit";
 
 const refitShip: MacroDecider = (step, obs, mem, board) => {
   if (obs.flightStatus?.docked !== true) {
-    return tick(WAIT, "Not docked — refitting happens in a station.", "Refitting", {
-      kind: "blocked",
-      reason: "Dock at a station first — refitting happens in its hangar.",
-    });
+    // In space: a ship already in the fit has nothing to do. Otherwise fly home
+    // and dock, and refit from the home hangar on arrival. (Blocking here sent
+    // the run on a safety trip that docked and then stopped, never refitting.)
+    if (refitLanded(step, obs) === true) {
+      return tick(WAIT, "The fitting is in place.", "Refitting", { kind: "done" });
+    }
+    const home = obs.homeStationID ?? null;
+    if (home === null) {
+      return tick(WAIT, "Home is not known.", "Refitting", {
+        kind: "blocked",
+        reason: "This bot does not know which station is home, so it cannot fly there to refit.",
+      });
+    }
+    const recall = recallBeforeLeaving(obs, mem, "Refitting", null);
+    if (recall !== null) {
+      return recall;
+    }
+    return rideAutopilotTo(obs, home, "Refitting", obs.homeDockableKind ?? "station") ??
+      tick(WAIT, "Docking at home to refit.", "Refitting", ACTING, false, mem);
   }
   const arg = step.args["fitting"];
   if (arg === undefined || arg.kind !== "fitting" || (arg.fittingID === null && (arg.name === null || arg.name === ""))) {

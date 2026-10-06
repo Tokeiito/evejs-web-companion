@@ -190,6 +190,9 @@ function createStartupRuns({ filePath = null, now = Date.now } = {}) {
         if (preparation && !preparationReady(preparation)) throw new Error("Operation preparation is not ready.");
         const block = currentStep(step);
         if (block && ["PENDING", "BLOCKED", "COMPLETE"].includes(block.state)) throw new Error("Startup dispatch is already fenced.");
+        // Repeatable travel (a refit flying home) needs no fence; completion is
+        // still the step's own postcondition.
+        if (adapters.unfenced?.(step, action) === true) return;
         if (!adapters.actionSupported(step, action)) throw new Error("This startup action has no reconciliation adapter.");
         setBlock(step.id, { state: "PENDING", invocation, action, issuedAt: now(),
           ...(block?.landed > 0 ? { landed: block.landed } : {}) }); save();
