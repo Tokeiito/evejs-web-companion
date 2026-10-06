@@ -182,6 +182,8 @@
   /** Which row's ⋮ menu is open — at most one, and never on first render. */
   let menuFor = $state<string | null>(null);
   let stepPickerOpen = $state(false);
+  // Which section "+ Step" adds to; the picker opens under that section's button.
+  let pickerTarget = $state<"main" | "startup">("main");
   let watchPickerOpen = $state(false);
   let pickerQuery = $state("");
   let pickerCategory = $state<BlockCategory | null>(null);
@@ -266,6 +268,14 @@
   // The rows of "the plan". A preserved advanced program renders its real
   // structure — loop headers and branch sides — rather than a flattened guess.
   const planRows = $derived(flattenProgram(advancedProgram ?? (steps as readonly ProgramNode[])));
+  // Startup only exists when Main repeats: a run-once plan (which includes any
+  // plan that runs a saved bot) is all startup already.
+  const showStartup = $derived(!readOnlyPlan && !hasSubBot && repeatMode !== "once");
+  const mainLabel = $derived(
+    repeatMode === "times"
+      ? `Main: repeats ${repeatCount} ${repeatCount === 1 ? "time" : "times"}`
+      : "Main: repeats forever",
+  );
 
   /** What the inspector is looking at, or null when the region collapses. */
   const inspectorTarget = $derived.by<InspectorTarget | null>(() => {
@@ -454,8 +464,22 @@
     selection = { kind: "step", id: node.id };
   }
 
+  /** Open the step picker under the section it adds to, or close it there. */
+  function togglePicker(target: "main" | "startup"): void {
+    stepPickerOpen = !(stepPickerOpen && pickerTarget === target);
+    pickerTarget = target;
+  }
+
   function addStep(macro: MacroID): void {
-    appendNode(newStepFor(macro, makeId));
+    const node = newStepFor(macro, makeId);
+    if (pickerTarget === "startup" && !readOnlyPlan && !hasSubBot && repeatMode !== "once") {
+      // The end of Startup is the start of Main: insert there and widen the cut.
+      steps = insertNode(steps as readonly ProgramNode[], node, startupCount) as EditorNode[];
+      startupCount += 1;
+      selection = { kind: "step", id: node.id };
+    } else {
+      appendNode(node);
+    }
     stepPickerOpen = false;
     pickerQuery = "";
   }
@@ -1396,10 +1420,15 @@
     </header>
     {@render problemNotes("program")}
     {@render problemNotes("main-loop")}
-    {#if !readOnlyPlan && repeatMode !== "once"}
-      <h3>Startup — once before Main</h3>
-      <p class="note">{startupCount === 0 ? "Empty. Move a setup step here using its row menu." : "These steps run before the main loop."}
-        Durable completion applies to server-hosted runs. Unsupported startup mutations block before dispatch.</p>
+    {#if showStartup}
+      <h3 class="plan-section-label">Startup: runs once when the bot starts</h3>
+      <p class="note">
+        These steps run once, in order, before the repeating work begins. On a server-hosted run only
+        undocking and waiting are supported here for now; any other step pauses the bot before it acts.
+      </p>
+      {#if startupCount === 0}
+        {@render startupAdd()}
+      {/if}
     {/if}
 
     {#if readOnlyPlan}
@@ -1416,8 +1445,11 @@
       <ol class="plan-list">
         {#each planRows as row, i (row.nodeId)}
           {@const previous = planRows[i - 1]}
-          {#if !readOnlyPlan && repeatMode !== "once" && row.nodeId === steps[startupCount]?.id}
-            <li class="plan-side-label">Main — repeating work</li>
+          {#if showStartup && row.nodeId === steps[startupCount]?.id}
+            {#if startupCount > 0}
+              <li class="plan-startup-add">{@render startupAdd()}</li>
+            {/if}
+            <li class="plan-section-label">{mainLabel}</li>
           {/if}
           {#if row.branchSide !== null && (previous?.branchSide ?? null) !== row.branchSide}
             <li class="plan-side-label" style={`--depth: ${row.depth}`}>
@@ -1454,15 +1486,45 @@
         {/each}
       </ol>
     {/if}
+    {#if showStartup && startupCount > 0 && startupCount === steps.length}
+      <!-- Every step is in Startup, so no Main row carries the add button and label. -->
+      {@render startupAdd()}
+      <p class="plan-section-label">{mainLabel}</p>
+    {/if}
 
     <div class="plan-add" inert={readOnlyPlan}>
-      <button type="button" aria-expanded={stepPickerOpen} onclick={() => (stepPickerOpen = !stepPickerOpen)}>
+      <button
+        type="button"
+        aria-expanded={stepPickerOpen && pickerTarget === "main"}
+        onclick={() => togglePicker("main")}
+      >
         + Step
       </button>
       <button type="button" onclick={addBranch}>+ Branch</button>
       <button type="button" disabled={startupCount > 0} onclick={addSubBot}>+ Saved bot</button>
 
-      {#if stepPickerOpen}
+      {#if stepPickerOpen && pickerTarget === "main"}
+        {@render stepPicker()}
+      {/if}
+    </div>
+  </section>
+
+  {#snippet startupAdd()}
+    <div class="plan-add">
+      <button
+        type="button"
+        aria-expanded={stepPickerOpen && pickerTarget === "startup"}
+        onclick={() => togglePicker("startup")}
+      >
+        + Startup step
+      </button>
+      {#if stepPickerOpen && pickerTarget === "startup"}
+        {@render stepPicker()}
+      {/if}
+    </div>
+  {/snippet}
+
+  {#snippet stepPicker()}
         <!-- Browse AND search, not a smaller catalogue: Google's own answer to a
              large Blockly toolbox was a search plugin, and visible categories
              beat hidden navigation for discoverability. Both narrow the SAME
@@ -1502,9 +1564,7 @@
             </div>
           {/if}
         </div>
-      {/if}
-    </div>
-  </section>
+  {/snippet}
 
   {#if inspectorTarget !== null && inspectorTarget.kind !== "watch"}
     {@render inspector(inspectorTarget)}
