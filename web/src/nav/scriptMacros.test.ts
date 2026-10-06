@@ -643,7 +643,7 @@ const siteWarpRefused = (count: number) => [{
   key: "ms:warpScan:-", count, firstAt: 0, lastAt: 0, words: SITE_GONE, kind: "refused" as const,
 }];
 
-test("mine (site mode): a refused next site is struck off and the scanner is read again for another", () => {
+test("mine (site mode): a refused next site is set aside and the scanner is read again for another", () => {
   const sites = [
     { label: "QEE-100", kind: "ore" as const },
     { label: "QEE-200", kind: "ore" as const },
@@ -663,13 +663,13 @@ test("mine (site mode): a refused next site is struck off and the scanner is rea
   const repick = mine(siteStep(), refusedWorld, mem, board);
   assert.equal(repick.action.kind, "wait", "no second press at the site that was just refused");
   assert.equal(repick.nextMem["siteTarget"], "QEE-300");
-  assert.equal(repick.boardPatch?.["oreSitesBarren"], "QEE-100,QEE-200", "the gone site is struck off for the run");
+  assert.equal(repick.boardPatch?.["oreSitesBarren"], "QEE-100", "a refusal alone does not strike the site off for the run");
 
   const retry = mine(siteStep(), refusedWorld, repick.nextMem, board);
   assert.ok(retry.action.kind === "warpScan" && retry.action.target === "QEE-300", "it warps to the next site");
 });
 
-test("mine (site mode): when the last listed site refuses, the run ends as mined out (and flies home)", () => {
+test("mine (site mode): when the last listed site refuses and then leaves the scanner, the run ends as mined out (and flies home)", () => {
   const sites = [
     { label: "QEE-100", kind: "ore" as const },
     { label: "QEE-200", kind: "ore" as const },
@@ -680,9 +680,89 @@ test("mine (site mode): when the last listed site refuses, the run ends as mined
     mem = mine(siteStep(), obs({ snapshot: snapshot([]), anomalies: sites }), mem, board).nextMem;
   }
   assert.equal(mem["siteTarget"], "QEE-200");
-  const out = mine(siteStep(), obs({ snapshot: snapshot([]), anomalies: sites, refusals: siteWarpRefused(1) }), mem, board);
+  const doubt = mine(siteStep(), obs({ snapshot: snapshot([]), anomalies: sites, refusals: siteWarpRefused(1) }), mem, board);
+  assert.equal(doubt.outcome.kind, "acting", "one refusal is not proof the site is gone");
+  assert.equal(doubt.nextMem["doubted"], "QEE-200");
+
+  // The server tore it down: it leaves the scanner, and that is the verdict.
+  const gone = obs({ snapshot: snapshot([]), anomalies: [sites[0]!], refusals: siteWarpRefused(1) });
+  const out = mine(siteStep(), gone, doubt.nextMem, board);
   assert.equal(out.outcome.kind, "blocked", "blocked is what sends the ship home before the run stops");
   assert.equal(out.outcome.kind === "blocked" ? out.outcome.reason : "", "Every ore site in this system is mined out.");
+  assert.equal(out.boardPatch?.["oreSitesBarren"], "QEE-100,QEE-200", "a site that left the scanner is barren for the run");
+});
+
+// ─── The last site refuses while the scanner still lists it ──────────────────
+// See the warp-to-ore-anomaly twin below: the server words a torn-down site and
+// a ship it still files under a site's pocket the same way.
+
+const SITE_FAR = 4 * 149_597_870_700;
+const SITE_HOME = 60000004;
+
+test("mine (site mode): a last refused site the scanner keeps listing gets the dock trip, then the warp again", () => {
+  const sites = [
+    { label: "QEE-100", kind: "ore" as const, position: ORIGIN },
+    { label: "QEE-200", kind: "ore" as const, position: { x: SITE_FAR, y: 0, z: 0 } },
+  ];
+  const board = { oreAnomsVisited: "QEE-100" };
+  const world = (over: Partial<ScriptObservation> = {}) =>
+    obs({ snapshot: snapshot([]), anomalies: sites, homeStationID: SITE_HOME, ...over });
+  let mem: MacroMemory = {};
+  for (let read = 0; read < 3; read += 1) {
+    mem = mine(siteStep(), world(), mem, board).nextMem;
+  }
+  let t = mine(siteStep(), world({ refusals: siteWarpRefused(1) }), mem, board);
+  for (let read = 0; read < 20 && t.nextMem["rejoin"] === undefined && t.outcome.kind === "acting"; read += 1) {
+    t = mine(siteStep(), world({ refusals: siteWarpRefused(1) }), t.nextMem, board);
+  }
+  assert.equal(t.outcome.kind, "acting", "a site still listed is not mined out");
+  assert.equal(t.nextMem["rejoin"], "home");
+  assert.equal(t.boardPatch?.["oreSitesBarren"], "QEE-100", "and it is not struck off");
+
+  const fly = mine(siteStep(), world({ refusals: siteWarpRefused(1) }), t.nextMem, board);
+  assert.deepEqual(fly.action, { kind: "startRoute", stationID: SITE_HOME });
+
+  const docked = world({ inSpace: false, docked: true, snapshot: null, flightStatus: flight({ docked: true, inSpace: false, stationID: SITE_HOME }) });
+  const undock = mine(siteStep(), docked, fly.nextMem, board);
+  assert.deepEqual(undock.action, { kind: "undock" });
+  assert.equal(mine(siteStep(), docked, undock.nextMem, board).action.kind, "undock", "pressed until the ship is out");
+
+  // Out on the station's grid, nowhere near either site: the empty grid marks
+  // nothing barren, and the doubted site is the next warp.
+  const station = { x: 2 * SITE_FAR, y: 0, z: 0 };
+  const out = world({ refusals: siteWarpRefused(1), snapshot: snapshot([], { position: station }) });
+  let back = mine(siteStep(), out, undock.nextMem, board);
+  for (let read = 0; read < 5 && back.action.kind === "wait"; read += 1) {
+    back = mine(siteStep(), out, back.nextMem, board);
+  }
+  assert.deepEqual(back.action, { kind: "warpScan", target: "QEE-200" });
+});
+
+test("mine (site mode): refused again after the dock trip, it stops and says the site is still listed", () => {
+  const sites = [
+    { label: "QEE-100", kind: "ore" as const },
+    { label: "QEE-200", kind: "ore" as const },
+  ];
+  const board = { oreAnomsVisited: "QEE-100" };
+  const world = obs({ snapshot: snapshot([]), anomalies: sites, homeStationID: SITE_HOME, refusals: siteWarpRefused(2) });
+  // Where the trip leaves it: the doubted site committed, the old refusal the baseline.
+  let t = mine(siteStep(), world, { rejoined: true, siteTarget: "QEE-200", siteRefusalsSeen: 1, oreGridEmptyReads: 3 }, board);
+  for (let read = 0; read < 20 && t.outcome.kind === "acting"; read += 1) {
+    t = mine(siteStep(), world, t.nextMem, board);
+  }
+  assert.equal(t.outcome.kind, "blocked", "one trip, not a commute");
+  const reason = t.outcome.kind === "blocked" ? t.outcome.reason : "";
+  assert.doesNotMatch(reason, /mined out/);
+  assert.match(reason, /QEE-200 after docking and undocking/);
+});
+
+test("mine (site mode): an empty grid far from the site the board names does not make that site barren", () => {
+  // A server restart caught the pilot mid-warp: she wakes in open space with
+  // the board still naming the site she was flying to.
+  const sites = [{ label: "QEE-100", kind: "ore" as const, position: { x: SITE_FAR, y: 0, z: 0 } }];
+  const t = mineUntilBarren(siteStep(), obs({ snapshot: snapshot([]), anomalies: sites }), { oreAnomsVisited: "QEE-100" });
+  assert.deepEqual(t.action, { kind: "warpScan", target: "QEE-100" }, "it flies back to the site instead of calling it mined out");
+  assert.notEqual(t.outcome.kind, "blocked");
 });
 
 test("mine (site mode): a refusal already on record is not read as a refusal of the new warp", () => {
