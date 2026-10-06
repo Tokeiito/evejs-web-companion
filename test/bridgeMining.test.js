@@ -148,6 +148,9 @@ function fakeGateway(overrides = {}) {
       stationID: state.docked ? ORIGIN_STATION_ID : null,
       structureID: null,
       shipID: SHIP_ID,
+      // Unknown unless a test names the hull: the gateway sends null while a
+      // ship change settles, and the hold read must then ask about every hold.
+      shipTypeID: state.shipTypeID ?? null,
       shipMode: state.docked ? null : "STOP",
       shipSpeedFraction: 0,
     };
@@ -347,7 +350,7 @@ async function startTestServer(options = {}) {
     eveStore: options.store || fakeStore(),
     eveGatewayClient: options.gateway || fakeGateway(),
     webAuth: fakeAuth(),
-    staticData: fakeStaticData(),
+    staticData: options.staticData || fakeStaticData(),
     errorLogger() {},
   });
   const server = app.listen(0, "127.0.0.1");
@@ -370,9 +373,9 @@ async function apiRequest(baseUrl, path, options = {}) {
   return { response, payload: await response.json() };
 }
 
-async function docked(overrides) {
+async function docked(overrides, options = {}) {
   const gateway = fakeGateway(overrides);
-  const { baseUrl } = await startTestServer({ gateway });
+  const { baseUrl } = await startTestServer({ gateway, staticData: options.staticData });
   await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
   // Board the fixture ship so the ore-hold read has a ship to bind.
   await apiRequest(baseUrl, "/api/bridge/ship/board", {
@@ -420,6 +423,67 @@ test("the hold read asks for the WHOLE ladder, cargo included", async () => {
     boundOf(gateway, "invbroker", "GetCapacity").map((c) => Number(c.args[0])),
     [FLAG_ORE_HOLD, FLAG_GAS_HOLD, FLAG_ICE_HOLD, FLAG_ASTEROID_HOLD, FLAG_CARGO],
   );
+});
+
+// A barge-like hull: a mining hold (generalMiningHoldCapacity, 1556) and
+// nothing else, the way the static typeDogma table writes it.
+const BARGE_TYPE_ID = 17476;
+function hullStaticData() {
+  return {
+    ...fakeStaticData(),
+    getTypeDogma(typeID) {
+      return Number(typeID) === BARGE_TYPE_ID ? { attributes: { 1556: 27500 } } : null;
+    },
+    getTypeDogmaAttribute(typeID, attributeID, fallback = null) {
+      const dogma = this.getTypeDogma(typeID);
+      const value = dogma ? dogma.attributes[String(attributeID)] : undefined;
+      return value === undefined ? fallback : value;
+    },
+  };
+}
+
+test("a known hull reads only the holds its TYPE carries, as the retail client decides", async () => {
+  // The retail inventory tree adds a hold only when the ship type's capacity
+  // attribute for it is non-zero, without asking the server. Gas, ice and
+  // asteroid holds this hull's type lacks cost no List and no GetCapacity.
+  const { gateway, baseUrl } = await docked(undefined, { staticData: hullStaticData() });
+  gateway.state.shipTypeID = BARGE_TYPE_ID;
+
+  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/ship/ore-hold");
+  assert.equal(response.status, 200, JSON.stringify(payload));
+  assert.deepEqual(boundOf(gateway, "invbroker", "List").map((c) => Number(c.args[0])), [FLAG_ORE_HOLD, FLAG_CARGO]);
+  assert.deepEqual(boundOf(gateway, "invbroker", "GetCapacity").map((c) => Number(c.args[0])), [FLAG_ORE_HOLD, FLAG_CARGO]);
+
+  // The answer keeps its shape: every rung is named, the unread ones absent.
+  assert.deepEqual(payload.holds.map((hold) => hold.key), ["ore", "gas", "ice", "asteroid", "cargo"]);
+  const byKey = new Map(payload.holds.map((hold) => [hold.key, hold]));
+  assert.equal(byKey.get("ore").present, true);
+  assert.equal(byKey.get("ore").items.length, 1);
+  for (const key of ["gas", "ice", "asteroid"]) {
+    assert.equal(byKey.get(key).present, false, `${key} is absent`);
+    assert.deepEqual(byKey.get(key).items, [], `${key} is empty, not unknown`);
+    assert.equal(byKey.get(key).error, null);
+  }
+});
+
+test("a hull type the static data does not know still reads the whole ladder", async () => {
+  const { gateway, baseUrl } = await docked(undefined, { staticData: hullStaticData() });
+  gateway.state.shipTypeID = 999999;
+  await apiRequest(baseUrl, "/api/bridge/ship/ore-hold");
+  assert.equal(boundOf(gateway, "invbroker", "List").length, 5);
+});
+
+test("a hull type reported for a different ship than the bound one is not trusted", async () => {
+  // Flight status names the ship it typed; while a ship change settles that
+  // can be another ship than the one the read binds, so every hold is read.
+  const { gateway, baseUrl } = await docked({
+    async readFlightStatus() {
+      return { flight: { docked: true, stationID: ORIGIN_STATION_ID, solarSystemID: ORIGIN_SYSTEM_ID,
+        shipID: SHIP_ID + 1, shipTypeID: BARGE_TYPE_ID }, notifications: [] };
+    },
+  }, { staticData: hullStaticData() });
+  await apiRequest(baseUrl, "/api/bridge/ship/ore-hold");
+  assert.equal(boundOf(gateway, "invbroker", "List").length, 5);
 });
 
 test("GET /bays?keys= reads ONLY the bays asked for", async () => {
