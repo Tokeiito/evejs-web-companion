@@ -551,6 +551,10 @@ function mineUntilBarren(step: MacroStep, observation: ScriptObservation, board:
     mem = last.nextMem;
     last = mine(step, observation, mem, board);
   }
+  // A pick is committed by a wait tick before the warp is pressed.
+  if (last.outcome.kind === "acting" && last.nextMem["siteTarget"] !== undefined) {
+    last = mine(step, observation, last.nextMem, board);
+  }
   return last;
 }
 
@@ -630,6 +634,72 @@ test("mine (site mode): every ore site barren, no ore list configured -> the pla
   assert.equal(t.outcome.kind === "blocked" ? t.outcome.reason : "", "Every ore site in this system is mined out.");
 });
 
+// A site the fleet just emptied is still on the scanner for a moment after the
+// server tore it down. The warp at it is refused, and the refused issue commits
+// nothing — so the block used to re-pick the same dead site every tick until the
+// runner stopped the bot on ten refusals in a row, in space.
+const SITE_GONE = "You have not scanned that site down, so you cannot warp to it yet.";
+const siteWarpRefused = (count: number) => [{
+  key: "ms:warpScan:-", count, firstAt: 0, lastAt: 0, words: SITE_GONE, kind: "refused" as const,
+}];
+
+test("mine (site mode): a refused next site is struck off and the scanner is read again for another", () => {
+  const sites = [
+    { label: "QEE-100", kind: "ore" as const },
+    { label: "QEE-200", kind: "ore" as const },
+    { label: "QEE-300", kind: "ore" as const },
+  ];
+  const board = { oreAnomsVisited: "QEE-100" };
+  const issued = mineUntilBarren(siteStep(), obs({ snapshot: snapshot([]), anomalies: sites }), board);
+  assert.ok(issued.action.kind === "warpScan" && issued.action.target === "QEE-200");
+
+  // The runner did not commit the issuing tick: the next one sees the PICK
+  // tick's memory, plus the refusal.
+  let mem: MacroMemory = {};
+  for (let read = 0; read < 3; read += 1) {
+    mem = mine(siteStep(), obs({ snapshot: snapshot([]), anomalies: sites }), mem, board).nextMem;
+  }
+  const refusedWorld = obs({ snapshot: snapshot([]), anomalies: sites, refusals: siteWarpRefused(1) });
+  const repick = mine(siteStep(), refusedWorld, mem, board);
+  assert.equal(repick.action.kind, "wait", "no second press at the site that was just refused");
+  assert.equal(repick.nextMem["siteTarget"], "QEE-300");
+  assert.equal(repick.boardPatch?.["oreSitesBarren"], "QEE-100,QEE-200", "the gone site is struck off for the run");
+
+  const retry = mine(siteStep(), refusedWorld, repick.nextMem, board);
+  assert.ok(retry.action.kind === "warpScan" && retry.action.target === "QEE-300", "it warps to the next site");
+});
+
+test("mine (site mode): when the last listed site refuses, the run ends as mined out (and flies home)", () => {
+  const sites = [
+    { label: "QEE-100", kind: "ore" as const },
+    { label: "QEE-200", kind: "ore" as const },
+  ];
+  const board = { oreAnomsVisited: "QEE-100" };
+  let mem: MacroMemory = {};
+  for (let read = 0; read < 3; read += 1) {
+    mem = mine(siteStep(), obs({ snapshot: snapshot([]), anomalies: sites }), mem, board).nextMem;
+  }
+  assert.equal(mem["siteTarget"], "QEE-200");
+  const out = mine(siteStep(), obs({ snapshot: snapshot([]), anomalies: sites, refusals: siteWarpRefused(1) }), mem, board);
+  assert.equal(out.outcome.kind, "blocked", "blocked is what sends the ship home before the run stops");
+  assert.equal(out.outcome.kind === "blocked" ? out.outcome.reason : "", "Every ore site in this system is mined out.");
+});
+
+test("mine (site mode): a refusal already on record is not read as a refusal of the new warp", () => {
+  const sites = [
+    { label: "QEE-100", kind: "ore" as const },
+    { label: "QEE-200", kind: "ore" as const },
+  ];
+  const board = { oreAnomsVisited: "QEE-100" };
+  const stale = obs({ snapshot: snapshot([]), anomalies: sites, refusals: siteWarpRefused(2) });
+  let mem: MacroMemory = {};
+  for (let read = 0; read < 3; read += 1) {
+    mem = mine(siteStep(), stale, mem, board).nextMem;
+  }
+  const out = mine(siteStep(), stale, mem, board);
+  assert.ok(out.action.kind === "warpScan" && out.action.target === "QEE-200");
+});
+
 test("mine (site mode): a barren grid with no ore-site tour ahead of it -> blocked asking for one, never a guessed label", () => {
   const sites = [{ label: "QEE-100", kind: "ore" as const }];
   const t = mineUntilBarren(siteStep(), obs({ snapshot: snapshot([]), anomalies: sites }), {});
@@ -689,7 +759,12 @@ test("mine (site mode): a grid empty for the full confirm count is marked barren
 
   mem = last.nextMem;
   last = mine(siteStep(), world, mem, board);
-  assert.equal(last.action.kind, "warpScan", "read 3 of 3 — now it acts on the confirmed barren grid");
+  assert.equal(last.action.kind, "wait", "read 3 of 3 — the next site is committed before the press");
+  assert.equal(last.nextMem["siteTarget"], "QEE-200");
+  assert.equal(last.boardPatch?.["oreSitesBarren"], "QEE-100");
+
+  last = mine(siteStep(), world, last.nextMem, board);
+  assert.equal(last.action.kind, "warpScan", "then it warps");
   assert.ok(last.action.kind === "warpScan" && last.action.target === "QEE-200");
   assert.equal(last.boardPatch?.["oreSitesBarren"], "QEE-100");
 });
@@ -4065,7 +4140,7 @@ test("warp-to-ore-anomaly: a refusal with the ship INSIDE the site it aimed at i
   assert.equal(out.boardPatch?.["oreAnomsVisited"], "ABC-123", "the site is named on the board for the miner");
 });
 
-test("warp-to-ore-anomaly: a refusal with the site a real warp away still stops, in the server's words", () => {
+test("warp-to-ore-anomaly: a refusal with the site a real warp away stops as mined out, in the server's words", () => {
   const oreMacro = SCRIPT_MACROS["warp-to-ore-anomaly"]!;
   // 4 AU out: whatever the server refused for, it was not that the ship is there.
   const site = rocksAt("ABC-123", 4 * 149_597_870_700);
@@ -4158,7 +4233,7 @@ test("warp-to-ore-anomaly: a refused site is set aside and the next one is tried
   assert.equal(waiting.phase, "Flying to the ore site");
 });
 
-test("warp-to-ore-anomaly: when every ore site has refused, it stops with the server's words", () => {
+test("warp-to-ore-anomaly: when every ore site has refused, it stops as mined out", () => {
   const oreMacro = SCRIPT_MACROS["warp-to-ore-anomaly"]!;
   const a = rocksAt("GUN-001", 4 * 149_597_870_700);
   const b = rocksAt("GUV-002", 6 * 149_597_870_700);
@@ -4180,7 +4255,7 @@ test("warp-to-ore-anomaly: when every ore site has refused, it stops with the se
   const out = oreMacro(ORE_ANOM_STEP, twice, picked.nextMem, {});
   assert.equal(out.outcome.kind, "blocked");
   const reason = out.outcome.kind === "blocked" ? out.outcome.reason : "";
-  assert.match(reason, /not scanned that site down/i);
+  assert.match(reason, /Every ore site in this system is mined out/);
 });
 
 const den = (label: string) => ({ label, kind: "combat" as const });

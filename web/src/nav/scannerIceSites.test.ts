@@ -134,6 +134,9 @@ test("a mined-out ice field moves on to the next ice field, keeping its own list
     mem = out.nextMem;
     out = SCRIPT_MACROS["mine-at-belt"]!(step, observation, mem, board);
   }
+  // The pick is committed by a wait tick, then the warp is pressed.
+  assert.equal(out.nextMem["siteTarget"], "ICE-002");
+  out = SCRIPT_MACROS["mine-at-belt"]!(step, observation, out.nextMem, board);
   assert.deepEqual(out.action, { kind: "warpScan", target: "ICE-002" });
   assert.equal(out.boardPatch?.["iceSitesBarren"], "ICE-001");
   assert.equal(out.boardPatch?.["iceAnomsVisited"], "ICE-001,ICE-002");
@@ -166,7 +169,9 @@ test("unclassified mineable chunks wait and reset the ice tour's consecutive bar
     assert.equal(out.boardPatch, undefined);
     mem = out.nextMem;
   }
-  const barren = SCRIPT_MACROS["mine-at-belt"]!(step, empty, mem, board);
+  const picked = SCRIPT_MACROS["mine-at-belt"]!(step, empty, mem, board);
+  assert.equal(picked.nextMem["siteTarget"], "ICE-002");
+  const barren = SCRIPT_MACROS["mine-at-belt"]!(step, empty, picked.nextMem, board);
   assert.deepEqual(barren.action, { kind: "warpScan", target: "ICE-002" });
   assert.equal(barren.boardPatch?.["iceSitesBarren"], "ICE-001");
 });
