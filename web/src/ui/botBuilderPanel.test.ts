@@ -76,6 +76,24 @@ test("the top-level repeat sits in the plan's header, because it wraps everythin
   assert.match(text, /a set number of times/);
 });
 
+// Startup used to be a heading with no way in except a row menu's "Move to
+// Startup", so it read as fixed system text. It is a list with its own add
+// button, labelled like Main.
+test("Startup is an editable list above Main, with its own add button", () => {
+  const body = renderPanel();
+  const text = visibleText(body);
+  const startup = text.indexOf("Startup: runs once when the bot starts");
+  const add = text.indexOf("+ Startup step");
+  const main = text.search(/Main: repeats/);
+  assert.ok(startup > 0, "the Startup heading is missing");
+  assert.ok(add > startup, "Startup has no add button of its own");
+  assert.ok(main > add, "the Main label must come after Startup");
+  assert.ok(text.indexOf("Leave the station") > main, "the starter steps must sit in Main");
+  assert.doesNotMatch(text, /block before dispatch/, "the internal Startup wording is back");
+  // Both pickers start closed, and only one button opens each.
+  assert.equal((body.match(/aria-expanded="true"/g) ?? []).length, 0);
+});
+
 test("every row offers an actions menu, and it starts closed", () => {
   const body = renderPanel();
   assert.match(body, /aria-label="Actions for Leave the station"/, "a plan row has no actions menu");
