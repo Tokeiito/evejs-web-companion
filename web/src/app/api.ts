@@ -4813,11 +4813,14 @@ export async function applySavedFitting(
   shipID: number,
   sourceLocationID: number,
   modulesByFlag: Readonly<Record<number, number>>,
+  itemsByType: Readonly<Record<number, readonly number[]>>,
   options: ApiOptions = {},
 ): Promise<void> {
+  // fitRigs off: a refit never touches rigs (unfitting one destroys it).
   await postJson(
     "/api/bridge/inventory/fit-fitting",
-    { shipID, sourceLocationID, modulesByFlag: modulesByFlag as unknown as JsonValue, confirm: true },
+    { shipID, sourceLocationID, modulesByFlag: modulesByFlag as unknown as JsonValue,
+      itemsByType: itemsByType as unknown as JsonValue, fitRigs: false, confirm: true },
     options,
   );
 }
