@@ -16,13 +16,14 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 import {
+  BUILDER_TAB,
   DEFAULT_GLOBAL_POS,
   GLOBAL_LAUNCHERS,
   GLOBAL_TABS,
   isGlobalTab,
+  isGlobalWindow,
   loadGlobalWindows,
   openGlobal,
-  PILOTLESS_BUILDER,
   saveGlobalWindows,
 } from "./globalWindow.ts";
 import { isWindowTab, loadLayout, openWindow, saveLayout, type WinState } from "./desktop.ts";
@@ -189,12 +190,17 @@ test("a tab that is not global is refused rather than placed here", () => {
   assert.deepEqual(openGlobal([], "market"), []);
 });
 
-test("the Bot Builder floats here for a hangar with nobody in the client", () => {
-  // The Bot Manager's New and Edit open it, and with no pilot there is no
-  // desktop to put it on: refusing it here is what greyed both buttons out.
-  const wins = openGlobal([], PILOTLESS_BUILDER);
-  assert.deepEqual(wins.map((w) => w.id), ["botBuilder"]);
-  assert.equal(isGlobalTab(PILOTLESS_BUILDER), false, "it would leave every pilot's desktop");
+test("the Bot Builder floats here, over the Bot Manager that opens it", () => {
+  // The Manager's New and Edit are its only doors. On a pilot's desktop it sat
+  // under this layer, behind the Manager; and with nobody in the client there
+  // is no desktop at all.
+  const manager = openGlobal([], "botManager");
+  const wins = openGlobal(manager, BUILDER_TAB);
+  assert.deepEqual(wins.map((w) => w.id), ["botManager", "botBuilder"]);
+  const [m, b] = wins as [WinState, WinState];
+  assert.ok(b.z > m.z, "the builder opened under the Manager");
+  assert.equal(isGlobalWindow(BUILDER_TAB), true);
+  assert.equal(isGlobalTab(BUILDER_TAB), false, "it would demand a launcher in the brand strip");
 });
 
 // ─── persistence ────────────────────────────────────────────────────────────
@@ -313,8 +319,8 @@ test("a put-away window comes back put away, not on screen", () => {
 });
 
 test("a floating Bot Builder is not reopened by a reload", () => {
-  // It floats only because New or Edit was pressed with nobody in the client.
+  // Which pilot it reads is decided by the New or Edit that opened it.
   installStorage();
-  saveGlobalWindows([win("botManager"), win(PILOTLESS_BUILDER)]);
+  saveGlobalWindows([win("botManager"), win(BUILDER_TAB)]);
   assert.deepEqual(loadGlobalWindows().map((w) => w.id), ["botManager"]);
 });

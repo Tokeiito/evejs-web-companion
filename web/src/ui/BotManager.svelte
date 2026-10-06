@@ -580,7 +580,7 @@
    * that bot, and the player would edit it thinking it was their new one.
    *
    * It works with nobody in the client too: App floats the builder over the
-   * hangar then (globalWindow.ts `PILOTLESS_BUILDER`). Both buttons used to be
+   * hangar then (globalWindow.ts `BUILDER_TAB`). Both buttons used to be
    * greyed out there, so a player could list their bots but not write one.
    */
 
