@@ -321,7 +321,7 @@ const ENTRIES: Readonly<Record<MacroID, MacroCatalogEntry>> = {
   "refit-ship": entry(
     "refit-ship",
     "ship",
-    "Boards the right hull from your hangar if you are flying something else, then applies the saved fitting you picked — modules pulled from this station's hangar.",
+    "Boards the right hull from your hangar if you are flying something else, then applies the saved fitting you picked (yours or your corporation's) — modules pulled from this station's hangar.",
     "Being docked, the saved fitting, and its modules in the hangar",
   ),
   "board-planetary-hauler": entry(
