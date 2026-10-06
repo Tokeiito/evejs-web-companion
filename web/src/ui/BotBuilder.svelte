@@ -111,6 +111,7 @@
   import type { BuilderFlow } from "../bots/builderFlow.ts";
   import { nameKey } from "../store/names.ts";
   import { loadKnownCharacters } from "../app/knownCharacters.ts";
+  import type { FittingSource } from "../bridge/sharedFittings.ts";
 
   let { store, flow }: { store: ClientStore; flow: BuilderFlow } = $props();
 
@@ -659,7 +660,7 @@
   }
 
   // ── What the inspector's pickers can offer ──────────────────────────────────
-  let savedFittings = $state<readonly { fittingID: number; name: string }[]>([]);
+  let savedFittings = $state<readonly { fittingID: number; name: string; source: FittingSource }[]>([]);
   let savedSpots = $state<readonly { bookmarkID: number; name: string }[]>([]);
   // The ore-family catalogue for the mine block's priority list — static
   // reference data, loaded once. An empty result (offline, or not shipped
@@ -673,7 +674,7 @@
     void flow
       .listSavedFittings()
       .then((rows) => {
-        savedFittings = rows.map((f) => ({ fittingID: f.fittingID, name: f.name }));
+        savedFittings = rows.map((f) => ({ fittingID: f.fittingID, name: f.name, source: f.source }));
       })
       .catch(() => {});
     void flow

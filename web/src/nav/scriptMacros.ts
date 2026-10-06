@@ -4755,7 +4755,9 @@ const warpToOreAnomaly: MacroDecider = (step, obs, mem, board) => {
 // is only a same-world hint), board a hull of its ship type from the hangar if
 // the active ship is something else, then apply the fitting. Confirmed by
 // re-read at each stage: boarding by the active ship's type changing, and the
-// apply is issued once (the server pulls modules from this hangar).
+// apply is issued once (the server pulls modules from this hangar). The library
+// is the pilot's own fits followed by the session corp's (flow.ts
+// loadRefitLibrary), so a name both use resolves to the pilot's own.
 const CATEGORY_SHIP_ROW = 6;
 // The hull refit-ship boarded AWAY from, for board-previous-ship to go back to.
 // Written only when refit-ship actually swaps hulls, and never over a value
@@ -4778,16 +4780,16 @@ const refitShip: MacroDecider = (step, obs, mem, board) => {
   }
   const library = obs.savedFittings ?? null;
   if (library === null) {
-    return tick(WAIT, "Reading your saved fittings.", "Refitting", ACTING, false, mem);
+    return tick(WAIT, "Reading your and your corporation's saved fittings.", "Refitting", ACTING, false, mem);
   }
   const fitting =
     library.find((f) => arg.name !== null && f.name === arg.name) ??
     library.find((f) => arg.fittingID !== null && f.fittingID === arg.fittingID) ??
     null;
   if (fitting === null) {
-    return tick(WAIT, "That fitting is not in your library.", "Refitting", {
+    return tick(WAIT, "That fitting is not in your or your corporation's library.", "Refitting", {
       kind: "blocked",
-      reason: `There is no saved fitting called ${arg.name ?? "that"} in your library.`,
+      reason: `There is no saved fitting called ${arg.name ?? "that"} in your fittings or your corporation's.`,
     });
   }
   const hangar = obs.stationHangar ?? null;

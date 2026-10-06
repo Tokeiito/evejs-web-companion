@@ -19,11 +19,39 @@
 // R7d is inherited from decodeFittings: shipTypeID / module typeIDs / flagID /
 // ownerID stay numeric fields. An empty library is a REAL "no shared fits" answer.
 
-import { decodeFittings } from "./fittings.ts";
+import { decodeFittings, type SavedFitting } from "./fittings.ts";
 import { unwrapCachedResult } from "./market.ts";
 import { type JsonValue } from "./wire.ts";
 
 export type { SavedFitting } from "./fittings.ts";
+
+/** Which library a fitting the refit block can apply came from. */
+export type FittingSource = "personal" | "corporation";
+
+/** A saved fitting tagged with the library it was read from. */
+export interface SourcedFitting extends SavedFitting {
+  readonly source: FittingSource;
+}
+
+/**
+ * The library the refit block picks from: the character's own fits, then the
+ * session corp's. Personal comes first so a name both libraries use resolves
+ * to the pilot's own fit, as it did before corp fits were offered. The server
+ * draws every owner's fittingID from one counter, so an id seen twice is the
+ * same row and is kept once.
+ */
+export function refitLibrary(personal: readonly SavedFitting[], corporation: readonly SavedFitting[]): readonly SourcedFitting[] {
+  const seen = new Set<number>();
+  const out: SourcedFitting[] = [];
+  for (const [rows, source] of [[personal, "personal"], [corporation, "corporation"]] as const) {
+    for (const row of rows) {
+      if (seen.has(row.fittingID)) continue;
+      seen.add(row.fittingID);
+      out.push({ ...row, source });
+    }
+  }
+  return out;
+}
 
 /** Decode corpFittingMgr.GetFittings (a CachedMethodCallResult wrapping the dict). */
 export function decodeCorpFittings(result: JsonValue): ReturnType<typeof decodeFittings> {

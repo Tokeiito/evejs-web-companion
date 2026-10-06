@@ -4740,6 +4740,22 @@ export async function loadSavedFittings(options: ApiOptions = {}): Promise<JsonV
   return data.fittings ?? null;
 }
 
+/**
+ * The session corp's saved-fitting library, raw (decoded by
+ * bridge/sharedFittings.ts decodeCorpFittings). The route reads corp, community
+ * and alliance libraries side by side, each with its own error code; a corp
+ * read that failed throws here so the caller can fall back to personal fits.
+ */
+export async function loadCorporationFittings(options: ApiOptions = {}): Promise<JsonValue> {
+  const data = await getJson("/api/bridge/shared-fittings", options);
+  const errors = data.errors as Record<string, JsonValue> | null | undefined;
+  const code = errors?.corp;
+  if (typeof code === "string" && code.length > 0) {
+    throw new Error(`Corporation fittings could not be read (${code}).`);
+  }
+  return data.corp ?? null;
+}
+
 /** Apply a saved fitting to a ship — modules pulled from the docked hangar. */
 export async function applySavedFitting(
   shipID: number,
