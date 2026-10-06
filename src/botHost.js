@@ -1151,7 +1151,9 @@ function createBotHost(options) {
           hostedStartup = startupRuns.open({ logicalRunID: record.operationPreparation ? record.logicalRunID : resumed ? logicalRunID : null,
             accountID: record.accountID, characterID, scriptHash: normalizedHash, scriptRev: normalizedRev,
             steps: startup.startupSteps(decodedDoc), prefixLength: startup.startupPrefix(decodedDoc).length, program: decodedDoc.program,
-            adapters: { postcondition: startup.startupPostcondition, actionSupported: startup.startupActionSupported } });
+            adapters: { postcondition: startup.startupPostcondition, actionSupported: startup.startupActionSupported,
+              actionLanded: startup.startupActionLanded, changesShip: startup.startupChangesShip,
+              unfenced: startup.startupActionUnfenced } });
           record.startup = hostedStartup;
           record.logicalRunID = hostedStartup.logicalRunID;
           persistRoster();

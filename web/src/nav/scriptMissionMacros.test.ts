@@ -886,11 +886,15 @@ test("warp-to-ore-anomaly: the dead end says WHICH dead end it is", () => {
   assert.ok(allUnreadable.outcome.kind === "blocked" && allUnreadable.outcome.reason.includes("It did not say what kind of site it is"));
 });
 
-test("refit-ship: boards the right hull when needed, applies by NAME, done after apply", () => {
+test("refit-ship: boards the right hull when needed, applies by NAME, done only once seen fitted", () => {
   const refit = SCRIPT_MACROS["refit-ship"]!;
   const s: MacroStep = { id: "r", kind: "macro", macro: "refit-ship", args: { fitting: { kind: "fitting", fittingID: 5, name: "Ratting Vexor" } } } as never;
-  const fitting = { fittingID: 5, name: "Ratting Vexor", description: "", shipTypeID: 626, ownerID: 1, savedDate: null, modules: [{ typeID: 500, flagID: 27, quantity: 1 }] };
-  const dockedObs = (over: Record<string, unknown>) => obs({ savedFittings: [fitting], activeShipID: 9001, ...over } as never);
+  // The rig (flag 92) is never part of a refit: not applied, not checked.
+  const fitting = { fittingID: 5, name: "Ratting Vexor", description: "", shipTypeID: 626, ownerID: 1, savedDate: null,
+    modules: [{ typeID: 500, flagID: 27, quantity: 1 }, { typeID: 700, flagID: 92, quantity: 1 }] };
+  const fittedWith = (modules: { flagID: number; typeID: number }[]) => ({ shipID: 9001, modules });
+  const dockedObs = (over: Record<string, unknown>) =>
+    obs({ savedFittings: [fitting], activeShipID: 9001, activeFitting: fittedWith([{ flagID: 27, typeID: 501 }]), ...over } as never);
 
   // Flying the wrong hull (type 17476) with a Vexor (626) in the hangar -> board it.
   const wrongHull = dockedObs({
@@ -899,14 +903,27 @@ test("refit-ship: boards the right hull when needed, applies by NAME, done after
   const board = refit(s, wrongHull, {}, NB);
   assert.ok(board.action.kind === "boardShip" && board.action.shipID === 9002);
 
-  // Right hull already -> apply the fitting, then done next tick.
-  const rightHull = dockedObs({
-    stationHangar: [row({ itemID: 9001, typeID: 626, categoryID: 6, singleton: true })],
-  });
+  // Right hull, wrong module in the high slot, the right one in the hangar -> apply.
+  const hullRow = row({ itemID: 9001, typeID: 626, categoryID: 6, singleton: true });
+  const rightHull = dockedObs({ stationHangar: [hullRow, row({ itemID: 9100, typeID: 500, quantity: 1 })] });
   const apply = refit(s, rightHull, {}, NB);
   assert.ok(apply.action.kind === "applyFitting" && apply.action.fittingID === 5);
-  const done = refit(s, rightHull, apply.nextMem, NB);
-  assert.equal(done.outcome.kind, "done");
+  // ⚠ The apply being SENT is not done: the old module is still fitted.
+  const stillOld = refit(s, rightHull, apply.nextMem, NB);
+  assert.equal(stillOld.outcome.kind, "acting");
+  let mem = apply.nextMem;
+  let last = stillOld;
+  for (let i = 0; i < 10 && last.outcome.kind === "acting"; i++) { last = refit(s, rightHull, mem, NB); mem = last.nextMem; }
+  assert.ok(last.outcome.kind === "blocked" && last.outcome.reason.includes("still not fitted"), "a fit that never lands must stop the bot");
+  // Seen fitted (rig untouched) -> done.
+  const landed = dockedObs({ stationHangar: [hullRow], activeFitting: fittedWith([{ flagID: 27, typeID: 500 }, { flagID: 92, typeID: 701 }]) });
+  assert.equal(refit(s, landed, apply.nextMem, NB).outcome.kind, "done");
+  // Already in the fit -> done without applying anything.
+  const already = refit(s, landed, {}, NB);
+  assert.ok(already.outcome.kind === "done" && already.action.kind === "wait");
+  // The hangar lacks the module -> refused before anything moves.
+  const empty = refit(s, dockedObs({ stationHangar: [hullRow] }), {}, NB);
+  assert.ok(empty.outcome.kind === "blocked" && empty.outcome.reason.includes("1 module short"));
 
   // Fitting missing from the library -> blocked; undocked -> blocked.
   const missing = refit(s, dockedObs({ savedFittings: [], stationHangar: [] }), {}, NB);

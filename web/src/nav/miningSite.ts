@@ -1,6 +1,7 @@
 import type { ScannedAnomaly, MiningOperationTarget } from "./scriptConditions.ts";
 import type { MiningHold, SpaceEntity, SpaceVector } from "../store/types.ts";
 import type { BotScript } from "../bots/botScript.ts";
+import { startupSteps } from "../bots/startup.ts";
 import type { ScanSite } from "../bridge/boundSmallServices.ts";
 import { siteKind } from "../scanner/siteKind.ts";
 
@@ -27,6 +28,10 @@ export function scriptScannerSites(sites: readonly ScanSite[]): readonly Scanned
 
 export function siteMiningFitRefusal(script: BotScript, ore: readonly number[], ice: readonly number[],
   policy: { readonly requireOre?: boolean } = {}): string | null {
+  // A Startup refit changes the hull before any mining step runs, so the ship
+  // sitting here at Start says nothing about it. The mining step still refuses
+  // at run time if the refitted ship has no harvester for its site.
+  if (startupSteps(script).some((step) => step.macro === "refit-ship")) return null;
   function visit(nodes: BotScript["program"]): string | null {
     for (const node of nodes) {
       if (node.kind === "loop") { const reason = visit(node.body); if (reason) return reason; }

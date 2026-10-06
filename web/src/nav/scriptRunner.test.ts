@@ -182,7 +182,17 @@ function harness(opts: Harness = {}) {
   return { runner, issued, progress, setObs: (o: ScriptObservation) => { obs = o; } };
 }
 
-const completionCases: readonly { step: MacroStep; observation: ScriptObservation; action: ScriptAction["kind"] }[] = [
+// `after`: what the world shows once the action has landed, for a step that is
+// done only when it SEES its result (a refit is done when the fit is fitted).
+const refitBefore = calm({ inSpace: false, docked: true, flightStatus: flight({ inSpace: false, docked: true, stationID: 1, shipID: 9001 }),
+  activeShipID: 9001,
+  stationHangar: [{ itemID: 9001, typeID: 626, categoryID: 6, groupID: null, flagID: null, quantity: 1, singleton: true },
+    { itemID: 9100, typeID: 500, categoryID: 7, groupID: null, flagID: null, quantity: 1, singleton: false }],
+  savedFittings: [{ fittingID: 5, name: "Vexor", description: "", shipTypeID: 626, ownerID: 1, savedDate: null,
+    modules: [{ typeID: 500, flagID: 27, quantity: 1 }] }],
+  activeFitting: { shipID: 9001, modules: [] },
+});
+const completionCases: readonly { step: MacroStep; observation: ScriptObservation; after?: ScriptObservation; action: ScriptAction["kind"] }[] = [
   {
     step: { id: "buy", kind: "macro", macro: "buy-item", args: {
       item: { kind: "itemType", typeID: 34, name: "Tritanium" },
@@ -195,11 +205,8 @@ const completionCases: readonly { step: MacroStep; observation: ScriptObservatio
     step: { id: "refit", kind: "macro", macro: "refit-ship", args: {
       fitting: { kind: "fitting", fittingID: 5, name: "Vexor" },
     } },
-    observation: calm({ inSpace: false, docked: true, flightStatus: flight({ inSpace: false, docked: true, stationID: 1 }),
-      activeShipID: 9001,
-      stationHangar: [{ itemID: 9001, typeID: 626, categoryID: 6, groupID: null, flagID: null, quantity: 1, singleton: true }],
-      savedFittings: [{ fittingID: 5, name: "Vexor", description: "", shipTypeID: 626, ownerID: 1, savedDate: null, modules: [] }],
-    }),
+    observation: refitBefore,
+    after: { ...refitBefore, activeFitting: { shipID: 9001, modules: [{ flagID: 27, typeID: 500 }] } },
     action: "applyFitting",
   },
   {
@@ -225,7 +232,8 @@ for (const scenario of completionCases) {
   for (const refusal of [new Error("CALL_REFUSED: NotEnoughMoney"), settling()]) {
     test(`${scenario.step.macro} retries an explicit ${refusal.message.split(":")[0]} without committing completion`, async () => {
       let attempts = 0;
-      const h = harness({ registry: SCRIPT_MACROS, issueThrows: () => attempts++ === 0 ? refusal : null });
+      const h: ReturnType<typeof harness> = harness({ registry: SCRIPT_MACROS, issueThrows: () => attempts++ === 0 ? refusal : null,
+        issueNote: (a) => { if (scenario.after && a.kind === scenario.action) h.setObs(scenario.after); return null; } });
       h.setObs(scenario.observation);
       h.runner.start(script([scenario.step]));
       await issueTicks(h, 2);
@@ -372,8 +380,9 @@ for (const scenario of completionCases) {
     const started = new Promise<void>(resolve => { entered = resolve; });
     const pending = new Promise<void>(resolve => { finish = resolve; });
     const issued: ScriptAction[] = [];
-    const runner = createScriptRunner({ observe: async () => scenario.observation,
-      issue: async action => { issued.push(action); entered(); await pending; },
+    let world = scenario.observation;
+    const runner = createScriptRunner({ observe: async () => world,
+      issue: async action => { issued.push(action); entered(); await pending; world = scenario.after ?? world; },
       sleep: async () => {}, onProgress: () => {}, isSessionLost: () => false, refusalReason: String,
       registry: SCRIPT_MACROS, travelHome: home,
     });

@@ -18,6 +18,7 @@ import {
   decodeResources,
   decodeShipAttributes,
   isFittableRow,
+  planFittingApply,
   slotsOfFamily,
 } from "./fitting.ts";
 import type { JsonValue } from "./wire.ts";
@@ -427,4 +428,31 @@ test("a malformed or absent map decodes to {} — 'we cannot sort', not 'nothing
   assert.deepEqual(decodeChargeFits(undefined), {});
   assert.deepEqual(decodeChargeFits(null as unknown as JsonValue), {});
   assert.deepEqual(decodeChargeFits([] as unknown as JsonValue), {});
+});
+
+// --- planFittingApply: what a refit hands FitFitting ------------------------
+// The server fits a slot only from the hangar item ids it is given; an empty
+// itemsByType fits nothing (the bug that sent a strip-miner hull out to ice).
+// Same rules as the retail client's LoadFitting: whole stacks until the count
+// is met. Rigs are never planned, nor is a slot already holding its module.
+
+test("planFittingApply names hangar stacks per type, skips rigs and satisfied slots", () => {
+  const fitting = { modules: [
+    { flagID: 27, typeID: 500 }, { flagID: 28, typeID: 500 }, { flagID: 29, typeID: 500 },
+    { flagID: 19, typeID: 600 },
+    { flagID: 11, typeID: 650 },
+    { flagID: 92, typeID: 700 },
+    { flagID: 87, typeID: 800 },
+  ] };
+  const hangar = [
+    { itemID: 1, typeID: 500, quantity: 1 },
+    { itemID: 2, typeID: 500, quantity: 5 },
+    { itemID: 3, typeID: 500, quantity: 1 },
+    { itemID: 4, typeID: 700, quantity: 1 },
+    { itemID: 5, typeID: 800, quantity: 5 },
+  ];
+  const plan = planFittingApply(fitting, hangar, [{ flagID: 11, typeID: 650 }, { flagID: 19, typeID: 601 }]);
+  assert.deepEqual(plan.modulesByFlag, { 27: 500, 28: 500, 29: 500, 19: 600 });
+  assert.deepEqual(plan.itemsByType, { 500: [1, 2] }, "stacks are taken only until the count is met");
+  assert.deepEqual(plan.missing, [{ typeID: 600, count: 1 }]);
 });

@@ -6231,6 +6231,19 @@
     letter-spacing: 0.08em;
     font-size: 11px;
   }
+  /* Startup and Main: two sibling lists, so their headings match. */
+  .plan-section-label {
+    margin: 0.9rem 0 0.3rem;
+    color: var(--color-accent-bright);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .plan-startup-add {
+    list-style: none;
+    margin-bottom: 0.4rem;
+  }
   .plan-ops {
     flex: 0 0 auto;
     display: flex;

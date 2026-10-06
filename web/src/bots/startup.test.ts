@@ -5,10 +5,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createScriptRunner } from "../nav/scriptRunner.ts";
+import { SCRIPT_MACROS } from "../nav/scriptMacros.ts";
 import type { BotScript, MacroStep } from "./botScript.ts";
 import type { ScriptObservation } from "../nav/scriptConditions.ts";
 import type { ScriptAction, MacroTick } from "../nav/scriptDecide.ts";
-import { startupPrefix, startupSteps, startupPostcondition, startupActionSupported, type StartupCheckpoint } from "./startup.ts";
+import { startupPrefix, startupSteps, startupPostcondition, startupActionSupported, startupActionLanded, startupChangesShip,
+  startupActionUnfenced,
+  type StartupCheckpoint } from "./startup.ts";
 import { toEditorState, toScript } from "./editorDoc.ts";
 import { encodeScriptDoc, decodeScriptValue } from "./scriptCodec.ts";
 const { createStartupRuns } = createRequire(import.meta.url)("../../../src/startupRuns.js");
@@ -73,10 +76,12 @@ test("restored completed checkpoint skips Startup; Stop then fresh Start creates
   h.runner.stop(); same.end(); const next = m.open(); assert.notEqual(next.logicalRunID, first.logicalRunID);
   const fresh = harness(next); fresh.runner.start(doc); await fresh.runner.tick(); assert.equal(fresh.issued[0]?.kind, "undock");
 });
-test("unsupported mutation including legacy refit-ship is blocked before dispatch", async () => {
-  const unsafe = { ...setup, macro: "refit-ship" as const };
+test("unsupported mutation is blocked before dispatch", async () => {
+  const unsafe = { ...setup, macro: "move-items" as const };
   assert.equal(startupPostcondition(unsafe, observation(true), 60), null);
   assert.equal(startupActionSupported(unsafe, { kind: "applyFitting", fittingID: 1 }), false);
+  // Refit actions belong to the refit step only.
+  assert.equal(startupActionSupported(setup, { kind: "boardShip", shipID: 77 }), false);
 });
 function fileFor(t: { after(fn: () => void): void }): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "wc-startup-"));
@@ -193,4 +198,151 @@ test("Startup authority cannot relax Farmer recovery for an unrelated MAIN actio
     travelHome: () => tick({ kind: "wait" }, { kind: "done" }) });
   runner.start(doc); await runner.tick(); await runner.suspendTransport();
   assert.throws(() => runner.resumeTransport(), /state that cannot be reset safely/);
+});
+
+// ── Refit in Startup: board the fitting's hull, apply the fit, then MAIN ──────
+// Two actions in one step, and the second runs in a different ship, so this
+// exercises the engine's landed-action and ship-change rules end to end.
+const refit: MacroStep = { id: "refit", kind: "macro", macro: "refit-ship",
+  args: { fitting: { kind: "fitting", fittingID: 5, name: "Ice fit" } } };
+const refitDoc: BotScript = { ...doc, program: [refit, doc.program[1]!] };
+const iceFit = { fittingID: 5, name: "Ice fit", description: "", shipTypeID: 900, ownerID: 1, savedDate: null,
+  modules: [{ typeID: 11, flagID: 27, quantity: 1 }, { typeID: 12, flagID: 11, quantity: 1 },
+    // Drones in the bay are part of the fitting but not of the hull's fit.
+    { typeID: 13, flagID: 87, quantity: 5 }] };
+const FITTED = [{ flagID: 27, typeID: 11 }, { flagID: 11, typeID: 12 }];
+function refitObs(shipID: number, shipTypeID: number, modules: readonly { flagID: number; typeID: number }[]): ScriptObservation {
+  const base = observation(true);
+  return { ...base, flightStatus: { ...base.flightStatus!, shipID, shipTypeID },
+    savedFittings: [iceFit], activeFitting: { shipID, modules } };
+}
+function refitRun(start: ScriptObservation, applyLands = true) {
+  const runs = createStartupRuns();
+  const checkpoint = runs.open({ accountID: 7, characterID: 10, scriptHash: "b".repeat(64), scriptRev: 1,
+    steps: startupSteps(refitDoc), prefixLength: 1, program: refitDoc.program,
+    adapters: { postcondition: startupPostcondition, actionSupported: startupActionSupported,
+      actionLanded: startupActionLanded, changesShip: startupChangesShip } });
+  let facts = start;
+  const issued: ScriptAction[] = [];
+  const runner = createScriptRunner({ startup: checkpoint, observe: async () => facts, sleep: async () => {},
+    issue: async action => {
+      issued.push(action);
+      if (action.kind === "boardShip") facts = refitObs(action.shipID, 900, []);
+      if (action.kind === "applyFitting") facts = refitObs(77, 900, applyLands ? FITTED : FITTED.slice(1));
+    },
+    onProgress: () => {}, isSessionLost: () => false, refusalReason: String,
+    registry: { "refit-ship": (_step, obs) => obs.flightStatus?.shipID !== 77
+        ? tick({ kind: "boardShip", shipID: 77 }, { kind: "acting" })
+        : tick({ kind: "applyFitting", fittingID: 5 }, { kind: "acting" }),
+      "deliver-ore": () => tick({ kind: "unloadOre", itemIDs: [1] }, { kind: "acting" }) },
+    travelHome: () => tick({ kind: "wait" }, { kind: "done" }) });
+  return { runner, issued, checkpoint, pump: async (count = 16) => { for (let i = 0; i < count; i++) await runner.tick(); } };
+}
+
+test("refit postcondition: the fitting's hull with every slotted module, by name first", () => {
+  assert.equal(startupPostcondition(refit, refitObs(77, 900, FITTED), null), true);
+  assert.equal(startupPostcondition(refit, refitObs(77, 900, [...FITTED, { flagID: 19, typeID: 99 }]), null), true,
+    "an extra module does not fail the fit");
+  assert.equal(startupPostcondition(refit, refitObs(77, 900, FITTED.slice(1)), null), false, "a missing module is not the fit");
+  assert.equal(startupPostcondition(refit, refitObs(50, 1, FITTED), null), false, "the wrong hull is not the fit");
+  const acrossSwap = { ...refitObs(77, 900, FITTED), activeFitting: { shipID: 50, modules: FITTED } };
+  assert.equal(startupPostcondition(refit, acrossSwap, null), null, "a read from another hull proves nothing");
+  assert.equal(startupPostcondition(refit, { ...refitObs(77, 900, FITTED), activeFitting: null }, null), null);
+  const renamed = { ...refit, args: { fitting: { kind: "fitting" as const, fittingID: 999, name: "Ice fit" } } };
+  assert.equal(startupPostcondition(renamed, refitObs(77, 900, FITTED), null), true, "the name wins over a stale id");
+  // In space too: a ship already carrying the fit needs no trip home.
+  const undocked = { ...refitObs(77, 900, FITTED), flightStatus: { ...observation(false).flightStatus!, shipID: 77, shipTypeID: 900 } };
+  assert.equal(startupPostcondition(refit, undocked, null), true);
+});
+
+test("a Startup refit boards, applies, moves the run onto the new hull, then opens MAIN", async () => {
+  const h = refitRun(refitObs(50, 1, []));
+  h.runner.start(refitDoc); await h.pump();
+  assert.deepEqual(h.issued.slice(0, 2).map(action => action.kind), ["boardShip", "applyFitting"]);
+  assert.equal(h.issued.filter(action => action.kind === "boardShip").length, 1, "boarding is never resent");
+  assert.ok(h.issued.some(action => action.kind === "unloadOre"), "MAIN never started");
+  const evidence = h.checkpoint.snapshot();
+  assert.equal(evidence.blocks.refit.state, "COMPLETE");
+  assert.equal(evidence.startingShipID, 77, "the refitted hull is the run's ship from here on");
+});
+
+test("a pilot already in the fit skips the refit entirely", async () => {
+  const h = refitRun(refitObs(77, 900, FITTED));
+  h.runner.start(refitDoc); await h.pump();
+  assert.equal(h.issued.some(action => action.kind === "boardShip" || action.kind === "applyFitting"), false);
+  assert.ok(h.issued.some(action => action.kind === "unloadOre"));
+});
+
+test("a fit that only partly lands never opens MAIN and is not reapplied", async () => {
+  const h = refitRun(refitObs(50, 1, []), false);
+  h.runner.start(refitDoc); await h.pump(30);
+  assert.equal(h.issued.filter(action => action.kind === "applyFitting").length, 1);
+  assert.equal(h.issued.some(action => action.kind === "unloadOre"), false);
+  assert.equal(h.runner.getStatus(), "paused");
+});
+
+test("a ship swap the refit did not make still blocks it", async () => {
+  const h = refitRun(refitObs(50, 1, []));
+  assert.equal(await h.checkpoint.observe(refit, refitObs(50, 1, [])), "NEEDED");
+  assert.equal(await h.checkpoint.observe(refit, refitObs(60, 1, [])), "BLOCKED");
+});
+
+// ── Started in space: a hosted run seen live pausing on its own safety trip ───
+// Live 2026-10-06: a server-hosted refit started in space blocked ("dock
+// first"), the decider latched a trip home under the step's id, and the Startup
+// fence refused the trip's startRoute ("no reconciliation adapter").
+
+test("a hosted refit started in space flies home, boards, applies, then opens MAIN", async () => {
+  const runs = createStartupRuns();
+  const checkpoint = runs.open({ accountID: 7, characterID: 10, scriptHash: "c".repeat(64), scriptRev: 1,
+    steps: startupSteps(refitDoc), prefixLength: 1, program: refitDoc.program,
+    adapters: { postcondition: startupPostcondition, actionSupported: startupActionSupported,
+      actionLanded: startupActionLanded, changesShip: startupChangesShip, unfenced: startupActionUnfenced } });
+  const hangar = (_shipID: number) => [
+    { itemID: 50, typeID: 1, groupID: null, categoryID: 6, flagID: null, quantity: 1, singleton: true },
+    { itemID: 77, typeID: 900, groupID: null, categoryID: 6, flagID: null, quantity: 1, singleton: true },
+    { itemID: 301, typeID: 11, groupID: null, categoryID: 7, flagID: null, quantity: 1, singleton: false },
+    { itemID: 302, typeID: 12, groupID: null, categoryID: 7, flagID: null, quantity: 1, singleton: false },
+  ];
+  const docked = (shipID: number, shipTypeID: number, modules: readonly { flagID: number; typeID: number }[]) =>
+    ({ ...refitObs(shipID, shipTypeID, modules), homeStationID: 60, activeShipID: shipID, stationHangar: hangar(shipID) });
+  const space = observation(false);
+  let facts: ScriptObservation = { ...space, flightStatus: { ...space.flightStatus!, shipID: 50, shipTypeID: 1 },
+    savedFittings: [iceFit], activeFitting: { shipID: 50, modules: [] }, homeStationID: 60 };
+  const issued: ScriptAction[] = [];
+  const runner = createScriptRunner({ startup: checkpoint, observe: async () => facts, sleep: async () => {},
+    issue: async action => {
+      issued.push(action);
+      if (action.kind === "startRoute") facts = docked(50, 1, []);
+      if (action.kind === "boardShip") facts = docked(action.shipID, 900, []);
+      if (action.kind === "applyFitting") facts = docked(77, 900, FITTED);
+    },
+    onProgress: () => {}, isSessionLost: () => false, refusalReason: String,
+    registry: { "refit-ship": SCRIPT_MACROS["refit-ship"]!,
+      "deliver-ore": () => tick({ kind: "unloadOre", itemIDs: [1] }, { kind: "acting" }) },
+    travelHome: () => tick({ kind: "wait" }, { kind: "done" }) });
+  runner.start(refitDoc);
+  for (let i = 0; i < 24; i++) await runner.tick();
+  assert.deepEqual(issued.slice(0, 3).map(action => action.kind), ["startRoute", "boardShip", "applyFitting"]);
+  assert.ok(issued.some(action => action.kind === "unloadOre"), `MAIN never started: ${runner.getStatus()}`);
+  assert.equal(checkpoint.snapshot().blocks.refit.state, "COMPLETE");
+});
+
+test("a Startup step that blocks in space flies home instead of tripping the fence", async () => {
+  const dock: MacroStep = { id: "setup", kind: "macro", macro: "dock-at-nearest", args: {} };
+  const dockDoc: BotScript = { ...doc, program: [dock, doc.program[1]!] };
+  const checkpoint = createStartupRuns().open({ ...manager().input, steps: [dock], program: dockDoc.program });
+  const issued: ScriptAction[] = [];
+  let pauseReason: string | null = null;
+  const runner = createScriptRunner({ startup: checkpoint, observe: async () => observation(false), sleep: async () => {},
+    issue: async action => { issued.push(action); },
+    onProgress: snapshot => { pauseReason = snapshot.pauseReason ?? pauseReason; }, isSessionLost: () => false, refusalReason: String,
+    registry: { "dock-at-nearest": () => tick({ kind: "wait" }, { kind: "blocked", reason: "cannot here" }),
+      "deliver-ore": () => tick({ kind: "unloadOre", itemIDs: [1] }, { kind: "acting" }) },
+    travelHome: () => tick({ kind: "startRoute", stationID: 60 }, { kind: "acting" }) });
+  runner.start(dockDoc);
+  for (let i = 0; i < 4; i++) await runner.tick();
+  assert.ok(issued.some(action => action.kind === "startRoute"), "the safety trip home never left");
+  assert.doesNotMatch(String(pauseReason ?? ""), /reconciliation adapter/);
+  assert.equal(issued.some(action => action.kind === "unloadOre"), false, "a blocked Startup never opens MAIN");
 });

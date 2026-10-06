@@ -714,7 +714,11 @@ export function createScriptRunner(deps: ScriptRunnerDeps): ScriptRunnerControll
         t: now(), kind: "issue", run: runID, action: result.action, says: describeAction(result.action),
         stepPath: result.stepPath, interruptID: result.interruptID, phase: result.phase, why: result.why,
       });
-      const startupStep = startupSteps(script).find(step => step.id === result.stepPath);
+      // A trip home a watch or a blocked step latched is the runner's safety
+      // travel, carried under that id, never the Startup step's own work: it
+      // is not fenced, so a Startup step that blocks in space still gets home.
+      const startupStep = result.interruptID === null
+        ? startupSteps(script).find(step => step.id === result.stepPath) : undefined;
       if (startupStep && deps.startup) {
         try { await deps.startup.beforeIssue(startupStep, result.action, actionInvocation + 1); }
         catch (error) { pauseWith(`Startup dispatch blocked: ${String(error)}`); return; }

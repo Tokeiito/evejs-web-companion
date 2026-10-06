@@ -128,6 +128,14 @@ test("a codec refusal surfaces the codec's own sentence", async () => {
   assert.equal(deps.calls.startCustomBot.length, 0);
 });
 
+test("a refused local start says why instead of a generic sentence", async () => {
+  const deps = localDeps({ startCustomBot: async () => {
+    throw new Error("ICE_MINING_CAPABILITY_REQUIRED: fit an online Ice Harvester; ore modules are not a fallback.");
+  } });
+  const outcome = await startHere(deps, "script-1");
+  assert.equal(outcome.kind === "refused" ? outcome.sentence : "", "ICE_MINING_CAPABILITY_REQUIRED: fit an online Ice Harvester; ore modules are not a fallback.");
+});
+
 test("a successful local start calls startCustomBot with the DECODED doc", async () => {
   const deps = localDeps();
   const outcome = await startHere(deps, "script-1");
