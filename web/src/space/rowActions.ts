@@ -172,9 +172,9 @@ export function actionsForRow(ctx: RowActionContext): readonly RowAction[] {
   }
 
   // R30 slice A — Jump, on the gate, naming where it goes. Offered from ANY
-  // distance on purpose: the server owns the range rule and states its own
-  // refusal, and inventing a distance test here would put a guessed rule on
-  // screen beside the real one. The one case genuinely blocked is a graph edge
+  // distance on purpose: like Dock it runs the ladder, which warps or
+  // approaches until the gate is in the server's jump range and then jumps, so
+  // a distance test here would only refuse what the ladder can do. The one case genuinely blocked is a graph edge
   // with no gate on the far side — there is nothing honest to send.
   if (ctx.gateLink) {
     actions.push({

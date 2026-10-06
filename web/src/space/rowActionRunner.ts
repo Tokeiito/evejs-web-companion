@@ -42,7 +42,7 @@ export interface RowActionFlow {
   keepAtRange(itemID: number, range: number): Promise<unknown>;
   alignTo(itemID: number): Promise<unknown>;
   dockAt(itemID: number): Promise<unknown>;
-  jump(itemID: number, destinationGateID: number): Promise<unknown>;
+  jumpThrough(link: GateLink): Promise<unknown>;
   lockTarget(itemID: number): Promise<unknown>;
   unlockTarget(itemID: number): Promise<unknown>;
 }
@@ -108,7 +108,9 @@ export async function dispatchRowAction(
       if (!link) {
         return false;
       }
-      await flow.jump(subject.itemID, link.destinationGateID);
+      // Dock's twin: the ladder (close the distance, then jump), never the raw
+      // jump, which the server refuses outside 2,500 m of the gate.
+      await flow.jumpThrough(link);
       return true;
     }
     case "lock":
