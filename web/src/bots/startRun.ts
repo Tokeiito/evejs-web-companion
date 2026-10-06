@@ -141,8 +141,9 @@ export async function startHere(deps: LocalStartDeps, scriptID: string): Promise
   }
   try {
     await deps.startCustomBot(step.doc, scriptID);
-  } catch {
-    return { kind: "refused", sentence: "Could not start that bot." };
+  } catch (cause) {
+    // Say why, as the server path does: a fit refusal names what to fit.
+    return { kind: "refused", sentence: cause instanceof Error ? cause.message : "Could not start that bot." };
   }
   return { kind: "started" };
 }

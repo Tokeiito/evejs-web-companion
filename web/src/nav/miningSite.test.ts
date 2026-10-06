@@ -26,6 +26,19 @@ test("site mining capability is rejected at start, before the standard program c
   }
 });
 
+test("a Startup refit defers the site mining fit check to the refitted hull", () => {
+  const profile = buildStandardProfile({ area: { targetClasses: ["ICE"] }, unloadPolicy: "HAULER_SERVICE",
+    unloadDestination: { stationID: 60003760, stationName: "Home", systemName: "Jita", corporationDivision: 1 } }, { role: "MINER" });
+  const decoded = decodeScriptValue(profile.doc); assert.ok(decoded.ok);
+  const main = decoded.doc.program.find(node => node.kind === "loop") ??
+    { id: "main", kind: "loop" as const, repeat: { kind: "forever" as const }, body: decoded.doc.program.filter(node => node.kind === "macro") };
+  const refit = { id: "refit", kind: "macro" as const, macro: "refit-ship" as const,
+    args: { fitting: { kind: "fitting" as const, fittingID: 5, name: "Ice fit" } } };
+  const plain = { ...decoded.doc, program: [main] };
+  assert.notEqual(siteMiningFitRefusal(plain, [], []), null, "without a refit the ship at Start must already mine ice");
+  assert.equal(siteMiningFitRefusal({ ...decoded.doc, program: [refit, main] }, [], []), null);
+});
+
 test("scanner families and identity require authoritative fields, not names", () => {
   assert.equal(miningSiteFamily({ label: "Ice Haven", kind: "ore", archetypeID: 27 }), "ORE_ANOMALY");
   assert.equal(miningSiteFamily({ label: "Ordinary ore", kind: "ore", archetypeID: 28 }), "ICE");
