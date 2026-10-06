@@ -5,10 +5,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createScriptRunner } from "../nav/scriptRunner.ts";
+import { SCRIPT_MACROS } from "../nav/scriptMacros.ts";
 import type { BotScript, MacroStep } from "./botScript.ts";
 import type { ScriptObservation } from "../nav/scriptConditions.ts";
 import type { ScriptAction, MacroTick } from "../nav/scriptDecide.ts";
 import { startupPrefix, startupSteps, startupPostcondition, startupActionSupported, startupActionLanded, startupChangesShip,
+  startupActionUnfenced,
   type StartupCheckpoint } from "./startup.ts";
 import { toEditorState, toScript } from "./editorDoc.ts";
 import { encodeScriptDoc, decodeScriptValue } from "./scriptCodec.ts";
@@ -248,8 +250,9 @@ test("refit postcondition: the fitting's hull with every slotted module, by name
   assert.equal(startupPostcondition(refit, { ...refitObs(77, 900, FITTED), activeFitting: null }, null), null);
   const renamed = { ...refit, args: { fitting: { kind: "fitting" as const, fittingID: 999, name: "Ice fit" } } };
   assert.equal(startupPostcondition(renamed, refitObs(77, 900, FITTED), null), true, "the name wins over a stale id");
+  // In space too: a ship already carrying the fit needs no trip home.
   const undocked = { ...refitObs(77, 900, FITTED), flightStatus: { ...observation(false).flightStatus!, shipID: 77, shipTypeID: 900 } };
-  assert.equal(startupPostcondition(refit, undocked, null), null);
+  assert.equal(startupPostcondition(refit, undocked, null), true);
 });
 
 test("a Startup refit boards, applies, moves the run onto the new hull, then opens MAIN", async () => {
@@ -282,4 +285,64 @@ test("a ship swap the refit did not make still blocks it", async () => {
   const h = refitRun(refitObs(50, 1, []));
   assert.equal(await h.checkpoint.observe(refit, refitObs(50, 1, [])), "NEEDED");
   assert.equal(await h.checkpoint.observe(refit, refitObs(60, 1, [])), "BLOCKED");
+});
+
+// ── Started in space: a hosted run seen live pausing on its own safety trip ───
+// Live 2026-10-06: a server-hosted refit started in space blocked ("dock
+// first"), the decider latched a trip home under the step's id, and the Startup
+// fence refused the trip's startRoute ("no reconciliation adapter").
+
+test("a hosted refit started in space flies home, boards, applies, then opens MAIN", async () => {
+  const runs = createStartupRuns();
+  const checkpoint = runs.open({ accountID: 7, characterID: 10, scriptHash: "c".repeat(64), scriptRev: 1,
+    steps: startupSteps(refitDoc), prefixLength: 1, program: refitDoc.program,
+    adapters: { postcondition: startupPostcondition, actionSupported: startupActionSupported,
+      actionLanded: startupActionLanded, changesShip: startupChangesShip, unfenced: startupActionUnfenced } });
+  const hangar = (_shipID: number) => [
+    { itemID: 50, typeID: 1, groupID: null, categoryID: 6, flagID: null, quantity: 1, singleton: true },
+    { itemID: 77, typeID: 900, groupID: null, categoryID: 6, flagID: null, quantity: 1, singleton: true },
+    { itemID: 301, typeID: 11, groupID: null, categoryID: 7, flagID: null, quantity: 1, singleton: false },
+    { itemID: 302, typeID: 12, groupID: null, categoryID: 7, flagID: null, quantity: 1, singleton: false },
+  ];
+  const docked = (shipID: number, shipTypeID: number, modules: readonly { flagID: number; typeID: number }[]) =>
+    ({ ...refitObs(shipID, shipTypeID, modules), homeStationID: 60, activeShipID: shipID, stationHangar: hangar(shipID) });
+  const space = observation(false);
+  let facts: ScriptObservation = { ...space, flightStatus: { ...space.flightStatus!, shipID: 50, shipTypeID: 1 },
+    savedFittings: [iceFit], activeFitting: { shipID: 50, modules: [] }, homeStationID: 60 };
+  const issued: ScriptAction[] = [];
+  const runner = createScriptRunner({ startup: checkpoint, observe: async () => facts, sleep: async () => {},
+    issue: async action => {
+      issued.push(action);
+      if (action.kind === "startRoute") facts = docked(50, 1, []);
+      if (action.kind === "boardShip") facts = docked(action.shipID, 900, []);
+      if (action.kind === "applyFitting") facts = docked(77, 900, FITTED);
+    },
+    onProgress: () => {}, isSessionLost: () => false, refusalReason: String,
+    registry: { "refit-ship": SCRIPT_MACROS["refit-ship"]!,
+      "deliver-ore": () => tick({ kind: "unloadOre", itemIDs: [1] }, { kind: "acting" }) },
+    travelHome: () => tick({ kind: "wait" }, { kind: "done" }) });
+  runner.start(refitDoc);
+  for (let i = 0; i < 24; i++) await runner.tick();
+  assert.deepEqual(issued.slice(0, 3).map(action => action.kind), ["startRoute", "boardShip", "applyFitting"]);
+  assert.ok(issued.some(action => action.kind === "unloadOre"), `MAIN never started: ${runner.getStatus()}`);
+  assert.equal(checkpoint.snapshot().blocks.refit.state, "COMPLETE");
+});
+
+test("a Startup step that blocks in space flies home instead of tripping the fence", async () => {
+  const dock: MacroStep = { id: "setup", kind: "macro", macro: "dock-at-nearest", args: {} };
+  const dockDoc: BotScript = { ...doc, program: [dock, doc.program[1]!] };
+  const checkpoint = createStartupRuns().open({ ...manager().input, steps: [dock], program: dockDoc.program });
+  const issued: ScriptAction[] = [];
+  let pauseReason: string | null = null;
+  const runner = createScriptRunner({ startup: checkpoint, observe: async () => observation(false), sleep: async () => {},
+    issue: async action => { issued.push(action); },
+    onProgress: snapshot => { pauseReason = snapshot.pauseReason ?? pauseReason; }, isSessionLost: () => false, refusalReason: String,
+    registry: { "dock-at-nearest": () => tick({ kind: "wait" }, { kind: "blocked", reason: "cannot here" }),
+      "deliver-ore": () => tick({ kind: "unloadOre", itemIDs: [1] }, { kind: "acting" }) },
+    travelHome: () => tick({ kind: "startRoute", stationID: 60 }, { kind: "acting" }) });
+  runner.start(dockDoc);
+  for (let i = 0; i < 4; i++) await runner.tick();
+  assert.ok(issued.some(action => action.kind === "startRoute"), "the safety trip home never left");
+  assert.doesNotMatch(String(pauseReason ?? ""), /reconciliation adapter/);
+  assert.equal(issued.some(action => action.kind === "unloadOre"), false, "a blocked Startup never opens MAIN");
 });

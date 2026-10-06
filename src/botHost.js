@@ -1152,7 +1152,8 @@ function createBotHost(options) {
             accountID: record.accountID, characterID, scriptHash: normalizedHash, scriptRev: normalizedRev,
             steps: startup.startupSteps(decodedDoc), prefixLength: startup.startupPrefix(decodedDoc).length, program: decodedDoc.program,
             adapters: { postcondition: startup.startupPostcondition, actionSupported: startup.startupActionSupported,
-              actionLanded: startup.startupActionLanded, changesShip: startup.startupChangesShip } });
+              actionLanded: startup.startupActionLanded, changesShip: startup.startupChangesShip,
+              unfenced: startup.startupActionUnfenced } });
           record.startup = hostedStartup;
           record.logicalRunID = hostedStartup.logicalRunID;
           persistRoster();
