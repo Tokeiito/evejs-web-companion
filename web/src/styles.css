@@ -6285,6 +6285,23 @@
   .builder-plan > .panel-head > .controls > label input.num-in {
     width: 6rem;
   }
+
+  /* The floating builder's "Data from" picker shares the strip with Save. The
+   * house label is a caption-over-field column, which doubled the strip's
+   * height; here caption, field and Save sit on one line. */
+  .panel-head > .controls:has(> label.data-source) {
+    align-items: center;
+  }
+  .panel-head > .controls > label.data-source {
+    flex: 0 1 auto;
+    flex-direction: row;
+    align-items: center;
+    gap: 0.4rem;
+  }
+  .panel-head > .controls > label.data-source select {
+    width: auto;
+    min-width: 10rem;
+  }
   .plan-add {
     display: flex;
     flex-wrap: wrap;
