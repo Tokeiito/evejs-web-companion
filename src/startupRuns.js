@@ -5,6 +5,9 @@ const object = value => value && typeof value === "object" && !Array.isArray(val
 const positive = value => Number.isSafeInteger(value) && value > 0;
 const natural = value => Number.isSafeInteger(value) && value >= 0;
 const preparationReady = value => ["VERIFIED", "DEGRADED"].includes(value?.state);
+// Landed actions one Startup step may take before it must be finished (a refit
+// needs two: board, then apply).
+const MAX_LANDED_ACTIONS = 4;
 function credentialFree(value) {
   if (value === null || typeof value === "string" || typeof value === "boolean") return true;
   if (typeof value === "number") return Number.isFinite(value);
@@ -31,6 +34,7 @@ function validateBase(row) {
   for (const block of Object.values(row.blocks)) {
     if (!object(block) || !["NEEDED", "PENDING", "COMPLETE", "BLOCKED"].includes(block.state)) invalid();
     if (block.deadline !== undefined && !natural(block.deadline)) invalid();
+    if (block.landed !== undefined && !positive(block.landed)) invalid();
     if (["PENDING", "BLOCKED"].includes(block.state) && (!natural(block.invocation) || !object(block.action) ||
         typeof block.action.kind !== "string" || !natural(block.issuedAt))) invalid();
     if (block.state === "COMPLETE" && !object(block.evidence) && !natural(block.deadline)) invalid();
@@ -130,7 +134,10 @@ function createStartupRuns({ filePath = null, now = Date.now } = {}) {
         if (block?.state === "COMPLETE") return "COMPLETE";
         if (!positive(obs.flightStatus?.shipID)) return "BLOCKED";
         if (row.startingShipID === undefined) { row.startingShipID = obs.flightStatus.shipID; save(); }
-        if (row.startingShipID !== obs.flightStatus.shipID) return "BLOCKED";
+        // A step whose job is to change ship (a refit) may be seen in another
+        // hull; every other step still requires the ship the run is tied to.
+        const changesShip = adapters.changesShip?.(step) === true;
+        if (!changesShip && row.startingShipID !== obs.flightStatus.shipID) return "BLOCKED";
         if (row.startingLocation === null && obs.flightStatus?.docked === true) {
           row.startingLocation = obs.flightStatus.stationID || obs.flightStatus.structureID || null; save();
         }
@@ -138,8 +145,15 @@ function createStartupRuns({ filePath = null, now = Date.now } = {}) {
         if (proven === true) {
           setBlock(step.id, { ...block, state: "COMPLETE", evidence: { observedAt: now(), shipID: obs.flightStatus.shipID,
             stationID: obs.flightStatus.stationID, structureID: obs.flightStatus.structureID, docked: obs.flightStatus.docked } });
+          // The proven hull is now the run's ship for every later step.
+          if (changesShip) row.startingShipID = obs.flightStatus.shipID;
           save(); return "COMPLETE";
         }
+        // Another hull is only this step's own doing: an action of it is in
+        // flight or has landed. Before that, a different ship is a change the
+        // run did not make.
+        if (changesShip && row.startingShipID !== obs.flightStatus.shipID &&
+            block?.state !== "PENDING" && !(block?.landed > 0)) return "BLOCKED";
         if (step.macro === "wait" && !step.until) {
           // A pure wait has no world write. Persist its wall-clock deadline.
           const seconds = step.args.seconds?.kind === "count" ? step.args.seconds.value : 10;
@@ -147,6 +161,19 @@ function createStartupRuns({ filePath = null, now = Date.now } = {}) {
           const deadline = block?.deadline ?? now() + seconds * 1000;
           setBlock(step.id, { state: now() >= deadline ? "COMPLETE" : "NEEDED", deadline });
           save(); return row.blocks[step.id].state;
+        }
+        // A multi-action step (refit: board, then apply) whose dispatched action
+        // is seen to have landed may issue its next one. Only in this process:
+        // a PENDING restored from disk still needs the step's own proof.
+        if (block?.state === "PENDING" && !restored.has(step.id) &&
+            await adapters.actionLanded?.(step, block.action, obs) === true) {
+          const landed = (block.landed || 0) + 1;
+          if (landed >= MAX_LANDED_ACTIONS) {
+            setBlock(step.id, { ...block, state: "BLOCKED", reason: "Startup step kept acting without finishing." }); save();
+            return "BLOCKED";
+          }
+          setBlock(step.id, { state: "NEEDED", landed }); pendingReads.delete(step.id); save();
+          return "NEEDED";
         }
         if (block?.state === "PENDING" || block?.state === "BLOCKED") {
           const reads = (pendingReads.get(step.id) || 0) + 1; pendingReads.set(step.id, reads);
@@ -164,7 +191,8 @@ function createStartupRuns({ filePath = null, now = Date.now } = {}) {
         const block = currentStep(step);
         if (block && ["PENDING", "BLOCKED", "COMPLETE"].includes(block.state)) throw new Error("Startup dispatch is already fenced.");
         if (!adapters.actionSupported(step, action)) throw new Error("This startup action has no reconciliation adapter.");
-        setBlock(step.id, { state: "PENDING", invocation, action, issuedAt: now() }); save();
+        setBlock(step.id, { state: "PENDING", invocation, action, issuedAt: now(),
+          ...(block?.landed > 0 ? { landed: block.landed } : {}) }); save();
       },
       end() { row.ended = true; save(); },
       snapshot: () => journal.get(id),

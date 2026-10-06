@@ -43,6 +43,11 @@ export function slotFlagOf(family: SlotFamily, index: number): number | null {
   return SLOT_FAMILY_FLAGS[family][index] ?? null;
 }
 
+/** Whether an inventory flag is a fitting slot (not cargo, drone bay, etc.). */
+export function isSlotFlag(flag: number): boolean {
+  return SLOT_FAMILY_ORDER.some((family) => SLOT_FAMILY_FLAGS[family].includes(flag));
+}
+
 /** Render order: how a fitting window reads top to bottom. */
 export const SLOT_FAMILY_ORDER: readonly SlotFamily[] = [
   "high",

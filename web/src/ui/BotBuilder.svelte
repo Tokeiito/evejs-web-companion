@@ -1466,7 +1466,8 @@
       <h3 class="plan-section-label">Startup: runs once when the bot starts</h3>
       <p class="note">
         These steps run once, in order, before the repeating work begins. On a server-hosted run only
-        undocking and waiting are supported here for now; any other step pauses the bot before it acts.
+        undocking, waiting and refitting from a saved fitting are supported here for now; any other step
+        pauses the bot before it acts.
       </p>
       {#if startupCount === 0}
         {@render startupAdd()}
