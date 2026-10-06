@@ -13,8 +13,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { loadLayout, saveLayout, openWindow, moveWindow, type WinState } from "./desktop.ts";
-import { DEFAULT_GLOBAL_POS, DEFAULT_GLOBAL_W } from "./globalWindow.ts";
+import { loadLayout, saveLayout, openWindow, type WinState } from "./desktop.ts";
 
 /** A minimal localStorage, since Node has none by default. */
 function installStorage(): void {
@@ -114,33 +113,15 @@ test("⚠ A LAYOUT SAVED WHILE THE SHADE EXISTED IS STILL LOADED", () => {
   assert.equal("collapsed" in (back.wins[0] as object), false, "the shade came back with it");
 });
 
-test("the Bot Builder does not open underneath the global window that opens it", () => {
-  // ⚠ FOUND BY DRIVING IT, NOT BY READING IT. The builder has no launcher entry:
-  // the only way in is the Bot Manager's Edit / New bot, and the Manager is a
-  // GLOBAL window painted over this desktop. At the default sizes the cascade's
-  // first spot (16,16) is entirely inside the global window's default rectangle,
-  // so pressing Edit opened a panel that could not be seen — indistinguishable
-  // from the button doing nothing.
-  const builder = openWindow([], "botBuilder")[0] as WinState;
-  const globalRight = DEFAULT_GLOBAL_POS.x + DEFAULT_GLOBAL_W;
-  assert.ok(
-    builder.x >= globalRight,
-    `the builder opens at x=${builder.x}, inside the global window's rectangle (ends at ${globalRight})`,
-  );
-  // Only this one is special; everything else still cascades from the corner.
-  const market = openWindow([], "market")[0] as WinState;
-  assert.equal(market.x, 16);
-  assert.equal(market.y, 16);
-});
-
-test("a builder already open keeps where the player put it", () => {
-  // The clear-of-global spot is a FIRST position, not a home it snaps back to:
-  // pressing Edit again on a window that has been dragged somewhere must raise
-  // it where it stands, or it could not be kept anywhere.
-  const opened = openWindow([], "botBuilder");
-  const moved = moveWindow(opened, "botBuilder", 40, 300);
-  const again = openWindow(moved, "botBuilder");
-  const win = again.find((w) => w.id === "botBuilder");
-  assert.equal(win?.x, 40);
-  assert.equal(win?.y, 300);
+test("the Bot Builder never opens on a desktop, and a saved one is dropped", () => {
+  // ⚠ FOUND BY DRIVING IT. The builder is reached only from the Bot Manager's
+  // Edit / New bot, and the Manager is a GLOBAL window painted over every
+  // desktop, so a builder here opened underneath the window that opened it. It
+  // floats on the global layer instead (globalWindow.ts `BUILDER_TAB`).
+  assert.deepEqual(openWindow([], "botBuilder"), []);
+  installStorage();
+  const builder: WinState = { id: "botBuilder", x: 800, y: 48, w: 520, h: 420, z: 2, minimized: false };
+  const market: WinState = { id: "market", x: 16, y: 16, w: 520, h: 420, z: 1, minimized: false };
+  saveLayout(90000001, { wins: [market, builder], dockCollapsed: false, dockWidth: 340, targetsX: 20, targetsY: 12 } as never);
+  assert.deepEqual(loadLayout(90000001)?.wins.map((w) => w.id), ["market"]);
 });

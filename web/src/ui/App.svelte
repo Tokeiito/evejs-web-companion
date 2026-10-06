@@ -50,8 +50,8 @@
   import {
     isGlobalTab,
     loadGlobalWindows,
+    BUILDER_TAB,
     openGlobal,
-    PILOTLESS_BUILDER,
     saveGlobalWindows,
   } from "./globalWindow.ts";
   import { watchIsMobile } from "./viewport.ts";
@@ -557,16 +557,12 @@
       return;
     }
     const target = sessionID ?? activeId;
-    // The Bot Builder with nobody in the client has no workspace to open on, so
-    // it floats over the hangar instead (globalWindow.ts `PILOTLESS_BUILDER`).
-    // While that one is showing it stays THE builder even once a pilot is in:
-    // two mounted builders would race for the one Edit/New request
-    // (bots/builderTarget.ts), and the draft in the floating one would be
-    // stranded behind the desktop's.
-    const builderFloats =
-      globalWins.some((win) => win.id === PILOTLESS_BUILDER) && (!isMobile || active === null);
-    if (id === PILOTLESS_BUILDER && (target === null || builderFloats)) {
-      globalWins = openGlobal(globalWins, id);
+    // The Bot Builder floats on the global layer beside the Bot Manager that
+    // opens it, rather than on a desktop underneath it (globalWindow.ts
+    // `BUILDER_TAB`). A phone with a pilot in has no layer, so it falls through
+    // to the workspace there like any other panel.
+    if (id === BUILDER_TAB && (!isMobile || target === null)) {
+      openBuilder(target);
       return;
     }
     if (target === null) return;
@@ -577,6 +573,24 @@
     if (target !== activeId) switchTo(target);
     openRequestCount += 1;
     openRequest = { id, n: openRequestCount, sessionID: target };
+  };
+  /**
+   * The pilot the floating Bot Builder reads (its ship, holds and fittings), or
+   * null for the account-backed builder over the hangar.
+   *
+   * ⚠ BOUND WHEN THE WINDOW OPENS, NOT FOLLOWING THE ACTIVE PILOT. Rebinding
+   * remounts the builder and throws away the draft in it, so a builder already
+   * open keeps its pilot through a pilot switch and through a second Edit/New
+   * (which bots/builderTarget.ts delivers to the builder that is mounted). It is
+   * rebound only when that pilot has gone from the roster.
+   */
+  let builderSessionID = $state<string | null>(null);
+  const builderSession = $derived(sessions.find((s) => s.id === builderSessionID) ?? null);
+  const openBuilder = (target: string | null): void => {
+    const isOpen = globalWins.some((win) => win.id === BUILDER_TAB);
+    const pilotGone = builderSessionID !== null && builderSession === null;
+    if (!isOpen || pilotGone) builderSessionID = target;
+    globalWins = openGlobal(globalWins, BUILDER_TAB);
   };
   // The layer spans the viewport, so a window dragged or sized for a bigger one
   // can end up with its title bar and resize handles past the edge, with nothing
@@ -704,6 +718,7 @@
           <GlobalPanel
             tab={win.id}
             {sessions}
+            {builderSession}
             onOpen={requestOpenInWorkspace}
             onGoToPilot={(id) => {
               hangarOpen = false;

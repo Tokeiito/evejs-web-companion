@@ -10,7 +10,7 @@
 // model (App drops them; loadLayout filters them out).
 
 import { TABS, type TabID } from "./tabs.ts";
-import { CLEAR_OF_GLOBAL_POS, isGlobalTab } from "./globalWindow.ts";
+import { isGlobalWindow } from "./globalWindow.ts";
 
 export interface WinState {
   readonly id: TabID;
@@ -92,22 +92,8 @@ function cascadeAt(n: number): number {
   return CASCADE_ORIGIN + (n % 8) * CASCADE_STEP;
 }
 
-/**
- * Windows a GLOBAL window opens, which must not open underneath it.
- *
- * The Bot Builder has no launcher entry at all: the only way to it is the Bot
- * Manager's Edit or New bot, and the Manager is a global window painting over
- * this desktop. At the default sizes the cascade's first spot is entirely
- * behind it — the panel opened, drew, and could not be seen, which reads as the
- * button having done nothing. See `CLEAR_OF_GLOBAL_POS`.
- */
-const OPENED_BY_A_GLOBAL_WINDOW: ReadonlySet<TabID> = new Set<TabID>(["botBuilder"]);
-
 /** Where a window lands the first time it is opened. */
-function firstSpot(id: TabID, openCount: number): { readonly x: number; readonly y: number } {
-  if (OPENED_BY_A_GLOBAL_WINDOW.has(id)) {
-    return CLEAR_OF_GLOBAL_POS;
-  }
+function firstSpot(openCount: number): { readonly x: number; readonly y: number } {
   return { x: cascadeAt(openCount), y: cascadeAt(openCount) };
 }
 
@@ -127,8 +113,10 @@ export function openWindow(
   // desktop open its own would put a second, character-scoped copy of the
   // roster on screen, which is the exact thing the hoist removes. Kept out of
   // `isWindowTab` because the launcher rail filters on that and must go on
-  // OFFERING the panel; what is refused here is a workspace window of it.
-  if (!isWindowTab(id) || isGlobalTab(id)) return wins.slice();
+  // OFFERING the panel; what is refused here is a workspace window of it. The
+  // Bot Builder is refused too: it floats on that layer beside the Manager that
+  // opens it (globalWindow.ts `BUILDER_TAB`).
+  if (!isWindowTab(id) || isGlobalWindow(id)) return wins.slice();
   const z = topZ(wins) + 1;
   const existing = wins.find((w) => w.id === id);
   if (existing) {
@@ -137,7 +125,7 @@ export function openWindow(
     // happen because the window was minimized is the whole bug this prevents.
     return wins.map((w) => (w.id === id ? { ...w, z, minimized: false } : w));
   }
-  const spot = firstSpot(id, wins.length);
+  const spot = firstSpot(wins.length);
   const next: WinState = {
     id,
     x: spot.x,
@@ -230,7 +218,8 @@ function isWinState(v: unknown): v is WinState {
     // A layout saved before a tab became global still carries a window for it.
     // Dropping it here is the migration: the global layer has its own storage,
     // and letting the old entry through would draw a per-pilot second copy.
-    !isGlobalTab(o.id as TabID) &&
+    // A Bot Builder saved on a desktop goes the same way.
+    !isGlobalWindow(o.id as TabID) &&
     isFiniteNumber(o.x) &&
     isFiniteNumber(o.y) &&
     isFiniteNumber(o.w) &&

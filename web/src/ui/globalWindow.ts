@@ -114,19 +114,25 @@ export function isGlobalTab(id: TabID): boolean {
 }
 
 /**
- * The Bot Builder, when NOBODY is in the client.
+ * The Bot Builder, which floats on this layer but is not a global tab.
  *
- * It is a pilot's panel and not a global tab: with a pilot on screen it opens
- * on that pilot's desktop, where its pickers can read their ship. But the Bot
- * Manager's New and Edit work from the Pilot Hangar too, and there is no
- * desktop there, so App floats it on this layer instead (HangarBotBuilder.svelte).
+ * It is reached only from the Bot Manager's Edit and New bot, and the Manager
+ * is a window on this layer. A builder on a pilot's desktop sits UNDER every
+ * window here, so it opened behind the very window whose button opened it, and
+ * moving it clear to the right only helped on a screen wide enough to hold both.
+ * So it floats here too, on top of the Manager, bound to the pilot it was opened
+ * for (or to nobody, from the Pilot Hangar: HangarBotBuilder.svelte).
  *
- * ⚠ NOT IN `GLOBAL_TABS`. That would pull it off every pilot's desktop and
- * demand a launcher it has never had. Nor is it restored from storage (`readWin`
- * drops it): it floats only because somebody pressed New or Edit with nobody in
- * the client, and a reload is not that.
+ * ⚠ NOT IN `GLOBAL_TABS`. That would demand a launcher in the brand strip it has
+ * never had. Nor is it restored from storage (`readWin` drops it): which pilot
+ * it reads is decided by the button that opened it, and a reload is not that.
  */
-export const PILOTLESS_BUILDER: TabID = "botBuilder";
+export const BUILDER_TAB: TabID = "botBuilder";
+
+/** True when this tab floats on the global layer: a global tab, or the Bot Builder. */
+export function isGlobalWindow(id: TabID): boolean {
+  return isGlobalTab(id) || id === BUILDER_TAB;
+}
 
 /**
  * Where a global window first appears: offset from the top-left of its layer,
@@ -137,28 +143,6 @@ export const DEFAULT_GLOBAL_POS = { x: 64, y: 48 };
 export const DEFAULT_GLOBAL_W = 720;
 export const DEFAULT_GLOBAL_H = 520;
 
-/**
- * Where a workspace window OPENED BY a global window should first appear.
- *
- * ⚠ THE LAYERS DO NOT SHARE A CORNER, AND ONE OF THEM ALWAYS WINS. This layer
- * paints over every workspace desktop, so a desktop window at the desktop's own
- * first cascade spot (16,16) opens UNDERNEATH a global window sitting at 64,48
- * — completely hidden by it, at the default sizes. That is not a general
- * nuisance; it is specifically the Bot Builder, which has no launcher entry and
- * is reached ONLY from the Bot Manager's Edit and New bot buttons, so the one
- * window it can be buried by is the very window the player pressed the button
- * in. It looked exactly like the button doing nothing.
- *
- * Clear of the default global rectangle, not merely nudged: past its right edge
- * with a gap, and level with its top so the two sit side by side. A desktop too
- * narrow to hold that is not a problem to solve here — the desktop clamps a
- * window into its own area (Desktop.svelte), which lands this one flush against
- * the right edge, still clear of a global window anchored on the left.
- */
-export const CLEAR_OF_GLOBAL_POS = {
-  x: DEFAULT_GLOBAL_POS.x + DEFAULT_GLOBAL_W + 16,
-  y: DEFAULT_GLOBAL_POS.y,
-};
 /** The second window lands clear of the first rather than exactly on it. */
 const GLOBAL_CASCADE_STEP = 32;
 
@@ -179,10 +163,10 @@ function topGlobalZ(wins: readonly WinState[]): number {
  * A tab that is not global is refused rather than placed here: it belongs to a
  * pilot's desktop, and drawing it on this layer would put a character-scoped
  * panel above the character bar that switches characters. The one exception is
- * `PILOTLESS_BUILDER`, which is scoped to nobody when it is opened here.
+ * `BUILDER_TAB`, which App binds to one pilot (or nobody) when it opens it.
  */
 export function openGlobal(wins: readonly WinState[], id: TabID): WinState[] {
-  if (!isGlobalTab(id) && id !== PILOTLESS_BUILDER) return wins.slice();
+  if (!isGlobalWindow(id)) return wins.slice();
   const z = topGlobalZ(wins) + 1;
   const existing = wins.find((w) => w.id === id);
   if (existing) {
