@@ -18162,15 +18162,38 @@ app.get("/api/bridge/modules/:itemID/state", requireAuth, async (req, res, next)
 // ship's ordinary cargo hold as the fallback the mining runtime itself falls
 // back to. THESE NUMBERS NEVER LEAVE THIS FILE: the browser is handed a NAME
 // per hold ("Ore hold", "Ice hold") and never a flagID (R7d / R9a).
+//
+// `attributeID` is the hull TYPE's capacity attribute for that hold, as the
+// server pairs them (specialShipHoldRegistry.js): generalMiningHoldCapacity
+// 1556, specialGasHoldCapacity 1557, specialIceHoldCapacity 3136,
+// specialAsteroidHoldCapacity 3227. Cargo has none: every hull has one.
 const MINING_HOLDS = Object.freeze([
-  Object.freeze({ key: "ore", flag: 134, label: "Ore hold" }),
-  Object.freeze({ key: "gas", flag: 135, label: "Gas hold" }),
-  Object.freeze({ key: "ice", flag: 181, label: "Ice hold" }),
-  Object.freeze({ key: "asteroid", flag: 182, label: "Asteroid hold" }),
+  Object.freeze({ key: "ore", flag: 134, label: "Ore hold", attributeID: 1556 }),
+  Object.freeze({ key: "gas", flag: 135, label: "Gas hold", attributeID: 1557 }),
+  Object.freeze({ key: "ice", flag: 181, label: "Ice hold", attributeID: 3136 }),
+  Object.freeze({ key: "asteroid", flag: 182, label: "Asteroid hold", attributeID: 3227 }),
   // The fallback: a hull with no specialised hold mines straight into cargo,
   // so a miner flying a frigate must still be able to see and unload the ore.
-  Object.freeze({ key: "cargo", flag: ITEM_FLAG_CARGO_HOLD, label: "Cargo hold" }),
+  Object.freeze({ key: "cargo", flag: ITEM_FLAG_CARGO_HOLD, label: "Cargo hold", attributeID: null }),
 ]);
+
+// Which of the mining holds a hull HAS is written on its type, and the retail
+// client never asks the server: its inventory tree adds a hold node only when
+// the ship type's capacity attribute for it is non-zero (inventory/treeData.py,
+// GetChildren). Fitting can resize a hold but cannot give a hull one its type
+// lacks, so a hold the type does not carry is absent without a read. A type
+// the static data does not know (or no type at all) answers null: the caller
+// then reads the whole ladder, exactly as it did before it could tell.
+function miningHoldsCarriedByHull(shipTypeID) {
+  const typeID = Number(shipTypeID) || 0;
+  if (typeID <= 0 || typeof staticData.getTypeDogma !== "function" || !staticData.getTypeDogma(typeID)) {
+    return null;
+  }
+  return new Set(MINING_HOLDS
+    .filter((hold) => hold.attributeID === null ||
+      Number(staticData.getTypeDogmaAttribute(typeID, hold.attributeID, 0)) > 0)
+    .map((hold) => hold.key));
+}
 
 /** A util.KeyVal capacity reading ({capacity, used}) as plain numbers, or null. */
 function decodeCapacityReading(result) {
@@ -18197,18 +18220,28 @@ app.get("/api/bridge/ship/ore-hold", requireAuth, async (req, res, next) => {
     return;
   }
   try {
-    await readHeldFlight(held, req.webSessionID);
+    const status = await readHeldFlight(held, req.webSessionID);
     const shipID = held.activeShipID;
     if (!shipID) {
       res.status(409).json({ ok: false, error: "NO_ACTIVE_SHIP", message: "No active ship." });
       return;
     }
+    // The hull's type only counts when flight status names THIS ship; the
+    // gateway reports a null type while a ship change is still settling.
+    const flight = (status && status.flight) || {};
+    const carried = Number(flight.shipID) === Number(shipID)
+      ? miningHoldsCarriedByHull(flight.shipTypeID)
+      : null;
     const spec = cargoBindSpec(held, shipID);
+    // A hold the hull's type does not carry is not read: it answers what the
+    // server would (nothing in it, no capacity), and costs the server nothing.
     const settled = await Promise.allSettled(
-      MINING_HOLDS.flatMap((hold) => [
-        boundCall(held, req.webSessionID, spec, "List", [hold.flag], null),
-        boundCall(held, req.webSessionID, spec, "GetCapacity", [hold.flag], null),
-      ]),
+      MINING_HOLDS.flatMap((hold) => carried === null || carried.has(hold.key)
+        ? [
+          boundCall(held, req.webSessionID, spec, "List", [hold.flag], null),
+          boundCall(held, req.webSessionID, spec, "GetCapacity", [hold.flag], null),
+        ]
+        : [null, null]),
     );
     for (const entry of settled) {
       if (entry.status === "rejected" && entry.reason && entry.reason.code === "SESSION_NOT_FOUND") {
@@ -18223,6 +18256,9 @@ app.get("/api/bridge/ship/ore-hold", requireAuth, async (req, res, next) => {
       // may reach the browser — the whole point of naming the holds here is
       // that the page never learns 134 exists. Only what a player reads about
       // a stack survives: what it is, and how much of it there is.
+      if (listed.status === "fulfilled" && listed.value === null) {
+        return { key: hold.key, label: hold.label, items: [], capacity: { capacity: 0, used: 0 }, present: false, error: null };
+      }
       const rows =
         listed.status === "fulfilled"
           ? decodeInventoryRows(listed.value.result).map((row) => ({
