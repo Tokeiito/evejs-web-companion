@@ -10,9 +10,10 @@
   // (app/pilotReach.ts, app/piRosterRead.ts). PanelHost still carries the same
   // three for a phone, where a global tab is an ordinary workspace panel.
   //
-  // The Bot Builder is the one pilot panel drawn here, and only when it was
-  // opened with nobody in the client (globalWindow.ts `PILOTLESS_BUILDER`);
-  // HangarBotBuilder stands in for the pilot it would otherwise have.
+  // The Bot Builder is the one pilot panel drawn here (globalWindow.ts
+  // `BUILDER_TAB`), on the pilot App bound it to when it opened. Opened with
+  // nobody in the client, HangarBotBuilder stands in for that pilot.
+  import BotBuilder from "./BotBuilder.svelte";
   import BotManager from "./BotManager.svelte";
   import HangarBotBuilder from "./HangarBotBuilder.svelte";
   import FleetCompanions from "./FleetCompanions.svelte";
@@ -24,11 +25,14 @@
   let {
     tab,
     sessions,
+    builderSession = null,
     onOpen,
     onGoToPilot,
   }: {
     tab: TabID;
     sessions: readonly Session[];
+    /** The pilot the Bot Builder reads, or null for the pilotless builder. */
+    builderSession?: Session | null;
     /** Open a per-pilot panel (the Bot Builder, the built-in bots) on a workspace. */
     onOpen: (tab: TabID, sessionID?: string) => void;
     /** Make a pilot the active cockpit. */
@@ -39,7 +43,13 @@
 {#if tab === "botManager"}
   <BotManager {sessions} {onOpen} />
 {:else if tab === "botBuilder"}
-  <HangarBotBuilder {sessions} />
+  {#if builderSession}
+    {#key builderSession.id}
+      <BotBuilder store={builderSession.store} flow={builderSession.flow} />
+    {/key}
+  {:else}
+    <HangarBotBuilder {sessions} />
+  {/if}
 {:else if tab === "companion"}
   <FleetCompanions {sessions} {onGoToPilot} />
 {:else if tab === "piManager"}
