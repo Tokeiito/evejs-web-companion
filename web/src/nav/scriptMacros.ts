@@ -1571,14 +1571,14 @@ function mineAtBeltSite(
   }
   if (ores.length === 0) {
     if (allRocks.length === 0) {
-      return mineAtBeltSiteBarren(obs, mem, board, ores, tour);
+      return mineAtBeltSiteBarren(step, obs, mem, board, ores, tour);
     }
     return mineWithRocks(step, obs, mem, snapshot, richestRocks(allRocks, num(mem, "rockID")), measurement);
   }
 
   const family = ores.find((candidate) => allRocks.some((rock) => rock.groupID === candidate.groupID)) ?? null;
   if (family === null) {
-    return mineAtBeltSiteBarren(obs, mem, board, ores, tour);
+    return mineAtBeltSiteBarren(step, obs, mem, board, ores, tour);
   }
   const familyRocks = allRocks.filter((rock) => rock.groupID === family.groupID);
   return mineWithRocks(step, obs, mem, snapshot, highestGradeRocks(familyRocks), measurement);
@@ -1625,6 +1625,7 @@ function mineAtBeltSite(
  * strand.
  */
 function mineAtBeltSiteBarren(
+  step: MacroStep,
   obs: ScriptObservation,
   mem: MacroMemory,
   board: ScriptBoard,
@@ -1675,7 +1676,48 @@ function mineAtBeltSiteBarren(
   const oreNames = ores.length > 0 ? ores.map((family) => family.name).join(" and ") : null;
   const barren = new Set(barrenOreSiteLabels(board, tour));
   barren.add(currentLabel);
+
+  // ⚠ A SITE THE SERVER REFUSES IS A SITE THAT IS GONE, AND IT IS STRUCK OFF
+  // LIKE A BARREN ONE. A site the fleet just emptied stays on the scanner for a
+  // moment after the server has torn it down, and a warp at it comes back
+  // "You have not scanned that site down" (DUNGEON_INSTANCE_NOT_AUTHORIZED).
+  // This branch used to issue the warp straight off the pick, and a refused
+  // issue commits nothing — not the memory, not the board — so every tick
+  // re-picked the same dead site and the runner stopped the bot after ten
+  // refusals in a row, in space, with other sites still listed.
+  //
+  // So the same two-phase shape `warpToAnomalyOfKind` uses: a WAIT tick commits
+  // the pick (and the barren mark) BEFORE the press, which leaves a refused
+  // warp something to read. A refusal newer than the committed baseline sets
+  // that site aside and the next tick re-reads the scanner and picks again;
+  // when nothing is left the run ends `blocked`, which flies the ship home
+  // before it stops (`stopSafely`).
+  const refused = listOf(mem, "siteRefused");
+  let target = label(mem, "siteTarget");
+  if (target !== null) {
+    const refusal = refusalFor(obs.refusals, step.id, "warpScan", null);
+    if (refusal !== null && refusal.count > (num(mem, "siteRefusalsSeen") ?? 0)) {
+      refused.push(target);
+      target = null;
+    } else if (!anomalies.some((site) => site.label === target && tour.flavour.matches(site))) {
+      // Gone from the scanner between the pick and the press: pick again.
+      target = null;
+    }
+  }
+  for (const gone of refused) {
+    barren.add(gone);
+  }
   const barrenPatch = { [tour.barrenKey]: [...barren].join(",") };
+
+  if (target !== null) {
+    const why = oreNames !== null
+      ? `No ${oreNames} left here, moving to the next ${tour.flavour.noun}.`
+      : `This ${tour.flavour.noun} is mined out, moving to the next one.`;
+    return withBoardPatch(
+      tick({ kind: "warpScan", target }, why, tour.flavour.flying, ACTING, false, {}),
+      { ...barrenPatch, [tour.flavour.boardKey]: appendOreVisited(board, tour, target) },
+    );
+  }
 
   const next = anomalies.find((site) => tour.flavour.matches(site) && !barren.has(site.label));
   if (next === undefined) {
@@ -1688,12 +1730,17 @@ function mineAtBeltSiteBarren(
     );
   }
 
-  const why = oreNames !== null
-    ? `No ${oreNames} left here, moving to the next ${tour.flavour.noun}.`
-    : `This ${tour.flavour.noun} is mined out, moving to the next one.`;
+  // PHASE 1: commit the pick with a wait tick. The baseline is the ledger count
+  // RIGHT NOW, so a refusal already on record is never read as one of this warp.
   return withBoardPatch(
-    tick({ kind: "warpScan", target: next.label }, why, tour.flavour.flying, ACTING, false, {}),
-    { ...barrenPatch, [tour.flavour.boardKey]: appendOreVisited(board, tour, next.label) },
+    tick(WAIT, `Choosing the next ${tour.flavour.noun} to warp to.`, "Scanning", ACTING, false, {
+      ...mem,
+      oreGridEmptyReads: emptyReads,
+      siteTarget: next.label,
+      siteRefusalsSeen: refusalFor(obs.refusals, step.id, "warpScan", null)?.count ?? 0,
+      ...(refused.length > 0 ? { siteRefused: refused.join(",") } : {}),
+    }),
+    barrenPatch,
   );
 }
 
@@ -4477,6 +4524,12 @@ function allGivenUpReason(flavour: AnomalyFlavour, total: number): string {
   return `${listed} — nothing was dying in there, or it kept sending the ship home. Move the bot to another system, or fly something that can clear them.`;
 }
 
+/** A mining tour whose every listed site refused the warp: the server had torn them down, emptied. */
+function minedOutReason(flavour: AnomalyFlavour, words?: string): string {
+  const said = words === undefined ? "" : ` It said: ${words}`;
+  return `Every ${flavour.noun} in this system is mined out: the server would not take the ship to any site the scanner still listed.${said}`;
+}
+
 function warpToAnomalyOfKind(
   flavour: AnomalyFlavour,
 ): MacroDecider {
@@ -4583,11 +4636,16 @@ function warpToAnomalyOfKind(
           });
         }
         // Cannot tell, or told no, and nowhere else to go. Stop — but with what
-        // the SERVER said, not with a guess about the warp never starting.
+        // the SERVER said, not with a guess about the warp never starting. For
+        // a mining tour the last site refusing is the system running dry: the
+        // server tears a site down once it is emptied, and that is what it is
+        // refusing for. `blocked` flies the ship home before it stops.
         return tick(WAIT, `The ${flavour.noun} could not be warped to.`, "Scanning", {
           kind: "blocked",
-          reason: `The ship would not warp to the ${flavour.noun}: ${refusal.words} ` +
-            "If the ship is already sitting in it, there was nothing left to fly to.",
+          reason: flavour.givesUpOnSites
+            ? `The ship would not warp to the ${flavour.noun}: ${refusal.words} ` +
+              "If the ship is already sitting in it, there was nothing left to fly to."
+            : minedOutReason(flavour, refusal.words),
         });
       }
       const carried: MacroMemory = {
@@ -4637,7 +4695,9 @@ function warpToAnomalyOfKind(
       if (ofKind.length > 0 && ofKind.every((site) => refused.includes(site.label))) {
         return tick(WAIT, `No ${flavour.noun} here would take the ship.`, "Scanning", {
           kind: "blocked",
-          reason: `The ship would not warp to any ${flavour.noun} the scanner lists here, so the bot stopped.`,
+          reason: flavour.givesUpOnSites
+            ? `The ship would not warp to any ${flavour.noun} the scanner lists here, so the bot stopped.`
+            : minedOutReason(flavour),
         });
       }
       if (ofKind.length > 0) {
