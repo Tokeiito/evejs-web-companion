@@ -66,7 +66,8 @@
   import type { AppFlow } from "../app/flow.ts";
   import StationPicker from "./StationPicker.svelte";
   import CorpHangarPicker from "./CorpHangarPicker.svelte";
-  import type { FittingSource } from "../bridge/sharedFittings.ts";
+  import FittingSelect from "./FittingSelect.svelte";
+  import type { PickerFitting } from "../bots/fittingPicker.ts";
 
   /** What the inspector is looking at. A branch and a sub-bot get their own
    * small forms; a loop header is never selectable, so there is no case for it. */
@@ -104,8 +105,7 @@
     items?: readonly { typeID: number; groupID?: number | null; name: string }[];
     pilots?: readonly { characterID: number; characterName: string }[];
     agents?: readonly { agentID: number; name: string; stationName?: string | null; solarSystemName?: string | null }[];
-    /** `source` absent is a personal fit (callers that predate corp fits). */
-    fittings?: readonly { fittingID: number; name: string; source?: FittingSource }[];
+    fittings?: readonly PickerFitting[];
     spots?: readonly { bookmarkID: number; name: string }[];
     savedBots?: readonly { scriptID: string; name: string }[];
     /** Every ore family the mine block can prioritise (Veldspar, Kernite, …).
@@ -426,8 +426,6 @@
       ref: { entity: "agent", id: match.agentID, name: match.name, systemName: match.solarSystemName ?? null },
     });
   }
-  const personalFittings = $derived(fittings.filter((f) => f.source !== "corporation"));
-  const corpFittings = $derived(fittings.filter((f) => f.source === "corporation"));
   function setFitting(key: string, raw: string): void {
     const match = fittings.find((f) => f.fittingID === Number(raw));
     if (match === undefined) return;
@@ -920,6 +918,20 @@
         shot, just last. Left empty: tacklers, then jammers, then logistics, then everything else.
       </span>
     </div>
+  {:else if arg.widget === "fitting-picker"}
+    <!-- Not inside a <label>: a click on an option would also activate the
+         labelled trigger and open the list again. -->
+    {@const picked = fittingValue(step, arg.key)}
+    <div class="inspector-field">
+      <span class="inspector-label">
+        {arg.label}{#if !arg.required}<span class="inspector-optional"> — optional</span>{/if}
+      </span>
+      <FittingSelect
+        id={fieldId}
+        {fittings}
+        value={picked === "" ? null : Number(picked)}
+        onPick={(fittingID) => setFitting(arg.key, String(fittingID))} />
+    </div>
   {:else}
     <label class="inspector-field" for={fieldId}>
       <span class="inspector-label">
@@ -966,22 +978,6 @@
         {#if agents.length === 0}
           <span class="inspector-suffix">No agents found yet — open the Agent Finder first to pick one by hand.</span>
         {/if}
-      {:else if arg.widget === "fitting-picker"}
-        <select id={fieldId} value={fittingValue(step, arg.key)} onchange={(e) => setFitting(arg.key, e.currentTarget.value)}>
-          <option value="" disabled>pick a saved fitting…</option>
-          {#if corpFittings.length === 0}
-            {#each personalFittings as f (f.fittingID)}<option value={String(f.fittingID)}>{f.name}</option>{/each}
-          {:else}
-            {#if personalFittings.length > 0}
-              <optgroup label="Personal">
-                {#each personalFittings as f (f.fittingID)}<option value={String(f.fittingID)}>{f.name}</option>{/each}
-              </optgroup>
-            {/if}
-            <optgroup label="Corporation">
-              {#each corpFittings as f (f.fittingID)}<option value={String(f.fittingID)}>{f.name}</option>{/each}
-            </optgroup>
-          {/if}
-        </select>
       {:else if arg.widget === "bookmark-picker"}
         <select id={fieldId} value={bookmarkValue(step, arg.key)} onchange={(e) => setBookmark(arg.key, e.currentTarget.value)}>
           <option value="" disabled>pick a saved spot…</option>

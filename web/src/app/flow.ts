@@ -1263,8 +1263,8 @@ export interface AppFlow {
    * ScriptRunnerController.headHome).
    */
   headCustomBotHome(reason: string): boolean;
-  /** The character's and its corp's saved fittings (for the Bot Builder's fitting picker). */
-  listSavedFittings(): Promise<readonly import("../bridge/sharedFittings.ts").SourcedFitting[]>;
+  /** The character's and its corp's saved fittings, with hull names (for the Bot Builder's fitting picker). */
+  listSavedFittings(): Promise<readonly (import("../bridge/sharedFittings.ts").SourcedFitting & { readonly shipName: string | null })[]>;
   /** The character's saved bookmarks (for the Bot Builder's saved-spot picker). */
   listBookmarks(): Promise<readonly { bookmarkID: number; name: string }[]>;
   /**
@@ -13131,7 +13131,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     panicRecallAndDock,
 
     async listSavedFittings() {
-      return loadRefitLibrary();
+      const library = await loadRefitLibrary();
+      // The picker heads each fit with its hull, since fit names often omit it.
+      // Hull names are static data; a failed lookup leaves the type id showing.
+      const hulls = [...new Set(library.map((f) => f.shipTypeID))].map((id) => ({ kind: "type" as const, id }));
+      const names = await api.resolveNames(hulls, callOptions).then((r) => r.names).catch(() => ({}) as Record<string, string | null>);
+      return library.map((f) => ({ ...f, shipName: names[nameKey("type", f.shipTypeID)] ?? null }));
     },
 
     async listBookmarks() {
