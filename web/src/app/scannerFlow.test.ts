@@ -38,7 +38,7 @@ test("loadScanner keeps a successful empty current-system scan distinct from una
   const fetch: typeof globalThis.fetch = async (input) => {
     const url = String(input);
     calls.push(url);
-    if (url === "/api/bridge/bound-small-services") {
+    if (url === "/api/bridge/scan-full-state") {
       return json(scanEnvelope({ result: [emptyDict, emptyDict, emptyDict, emptyDict] }));
     }
     if (url === "/api/bridge/formations") {
@@ -52,8 +52,8 @@ test("loadScanner keeps a successful empty current-system scan distinct from una
   await createAppFlow(store, { fetch }).loadScanner();
 
   assert.deepEqual(calls.sort(), [
-    "/api/bridge/bound-small-services",
     "/api/bridge/formations",
+    "/api/bridge/scan-full-state",
     "/api/bridge/scanner/state",
   ]);
   const scanner = store.get().scanner;
@@ -71,7 +71,7 @@ test("loadScanner keeps a successful empty current-system scan distinct from una
 test("a failed GetFullState arm stays unavailable while formation data remains useful", async () => {
   const fetch: typeof globalThis.fetch = async (input) => {
     const url = String(input);
-    if (url === "/api/bridge/bound-small-services") {
+    if (url === "/api/bridge/scan-full-state") {
       return json(scanEnvelope({ error: "CALL_REFUSED", message: "scanner offline" }));
     }
     if (url === "/api/bridge/formations") {
@@ -104,7 +104,7 @@ test("probe reconnect confirms the write and always follows it with authoritativ
     if (url === "/api/bridge/scanner/reconnect") {
       return json({ ok: true, applied: true, result: null, notifications: [] });
     }
-    if (url === "/api/bridge/bound-small-services") {
+    if (url === "/api/bridge/scan-full-state") {
       return json(scanEnvelope({ result: [emptyDict, emptyDict, emptyDict, emptyDict] }));
     }
     if (url === "/api/bridge/formations") {
@@ -125,8 +125,8 @@ test("probe reconnect confirms the write and always follows it with authoritativ
   assert.deepEqual(
     calls.slice(1).map((call) => call.url).sort(),
     [
-      "/api/bridge/bound-small-services",
       "/api/bridge/formations",
+      "/api/bridge/scan-full-state",
       "/api/bridge/scanner/state",
     ],
   );
@@ -149,7 +149,7 @@ test("launch, analyze, and recover use no-input product routes and re-read after
         body: typeof init.body === "string" ? JSON.parse(init.body) : null,
       });
       if (url === expectedPath) return json({ ok: true, applied: true });
-      if (url === "/api/bridge/bound-small-services") {
+      if (url === "/api/bridge/scan-full-state") {
         return json(scanEnvelope({ result: [emptyDict, emptyDict, emptyDict, emptyDict] }));
       }
       if (url === "/api/bridge/formations") return json({ ok: true, formations: null });
@@ -177,12 +177,23 @@ test("loadScanFullState rejects a failed per-arm read instead of inventing no an
   );
 });
 
+test("loadScanFullState reads only the scanner route, never the eight-read small-services batch", async () => {
+  const calls: string[] = [];
+  const fetch: typeof globalThis.fetch = async (input) => {
+    calls.push(String(input));
+    return json(scanEnvelope({ result: [emptyDict, emptyDict, emptyDict, emptyDict] }));
+  };
+  const { loadScanFullState } = await import("./api.ts");
+  await loadScanFullState({ fetch });
+  assert.deepEqual(calls, ["/api/bridge/scan-full-state"]);
+});
+
 test("a system change clears the old scan and automatically reads the new system", async () => {
   let solarSystemID = SYSTEM_A;
   let scanReads = 0;
   const fetch: typeof globalThis.fetch = async (input) => {
     const url = String(input);
-    if (url === "/api/bridge/bound-small-services") {
+    if (url === "/api/bridge/scan-full-state") {
       scanReads += 1;
       return json(scanEnvelope({ result: [emptyDict, emptyDict, emptyDict, emptyDict] }, solarSystemID));
     }

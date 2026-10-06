@@ -3170,7 +3170,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const generation = ++scannerLoadGeneration;
     store.apply({ type: "scanner/loading" });
     const [scanResult, formationsResult, operationsResult] = await Promise.allSettled([
-      api.loadBoundSmallServices(callOptions),
+      api.loadScanFullStateEnvelope(callOptions),
       api.loadScannerFormations(callOptions),
       api.loadScannerOperations(callOptions),
     ] as const);

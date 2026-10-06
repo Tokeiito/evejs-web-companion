@@ -2712,6 +2712,43 @@ app.get("/api/bridge/bound-small-services", requireAuth, async (req, res, next) 
   }
 });
 
+// The scanner's own read: scanMgr.GetFullState and nothing else, in the same
+// envelope bound-small-services uses (reads.GetFullState = {result} or
+// {error, message}). The scanner panel and the bot's anomaly observation need
+// only this read, and going through bound-small-services cost the server seven
+// reads nobody looked at, the warRegistry pair among them.
+app.get("/api/bridge/scan-full-state", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  let cell;
+  try {
+    const value = await heldTopLevelCall(held, req.webSessionID, "scanMgr", "GetFullState", [], null);
+    cell = { result: value.result };
+  } catch (error) {
+    // A lost live session cannot be recovered by any read; surface it so the page
+    // returns to character select (matching /api/bridge/bound-small-services).
+    if (error && error.code === "SESSION_NOT_FOUND") {
+      forgetBridgeSession(req.webSessionID, held);
+      next(error);
+      return;
+    }
+    const reason = error || {};
+    cell = {
+      error: String(reason.code || "READ_FAILED"),
+      message: typeof reason.message === "string" ? reason.message : null,
+    };
+  }
+  res.json({
+    ok: true,
+    characterID: held.characterID,
+    corporationID: held.corporationID,
+    solarSystemID: held.solarSystemID,
+    reads: { GetFullState: cell },
+  });
+});
+
 // R85 — the 5 RB-FLEET Phase-2 BOUND reads (roster/init-state, wings, MOTD,
 // join-requests, composition), the LAST Phase-2 bound-read batch — CLOSES Phase-2
 // bound reads (111/111). PLUMBING ONLY — no UI, no writes. Retail addresses these
