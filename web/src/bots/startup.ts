@@ -1,7 +1,7 @@
 import type { BotScript, MacroStep, ProgramNode } from "./botScript.ts";
 import type { ScriptAction, ScriptMemory } from "../nav/scriptDecide.ts";
 import type { ScriptObservation } from "../nav/scriptConditions.ts";
-import { isSlotFlag } from "../bridge/fitting.ts";
+import { isRigFlag, isSlotFlag } from "../bridge/fitting.ts";
 
 export type StartupState = "NEEDED" | "PENDING" | "COMPLETE" | "BLOCKED";
 export interface StartupCheckpoint {
@@ -71,11 +71,13 @@ export function startupChangesShip(step: MacroStep): boolean {
 
 /**
  * The refit is in place: docked, in a hull of the fitting's ship type, with
- * every module the fitting puts in a slot fitted there. Extra modules do not
- * fail it, and charges, drones and cargo in the fitting are not checked. The
- * fitting is found the way the refit step finds it: by name, then by id.
+ * every module the fitting puts in a high, mid, low or subsystem slot fitted
+ * there. Extra modules do not fail it; rigs (a refit never touches them),
+ * charges, drones and cargo in the fitting are not checked. The fitting is
+ * found the way the refit step finds it: by name, then by id. Shared with the
+ * refit step itself, which uses it to confirm its apply landed.
  */
-function refitLanded(step: MacroStep, obs: ScriptObservation): boolean | null {
+export function refitLanded(step: MacroStep, obs: ScriptObservation): boolean | null {
   const flight = obs.flightStatus;
   if (flight?.docked !== true || !flight.shipID) return null;
   const arg = step.args["fitting"];
@@ -90,6 +92,6 @@ function refitLanded(step: MacroStep, obs: ScriptObservation): boolean | null {
   const hull = obs.stationHangar?.find((row) => row.itemID === flight.shipID)?.typeID ?? flight.shipTypeID ?? null;
   if (hull === null) return null;
   if (hull !== fitting.shipTypeID) return false;
-  return fitting.modules.every((module) => !isSlotFlag(module.flagID) ||
+  return fitting.modules.every((module) => !isSlotFlag(module.flagID) || isRigFlag(module.flagID) ||
     fitted.modules.some((m) => m.flagID === module.flagID && m.typeID === module.typeID));
 }
