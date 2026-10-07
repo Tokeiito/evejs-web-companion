@@ -147,6 +147,36 @@ phase's tests alone where a live check is named.
 - **Done when:** existing `gameClient` / `piCustomsExport` tests pass, a round-trip test over
   frames captured from a real server passes, and one live PI customs export succeeds.
 
+**Status 2026-10-07: done except the live export, which this database cannot run.**
+
+- Codec re-copied from eve.js `65f759873`; `npm run vendor:marshal` reports no drift.
+- `test/gameProtocolMarshal.test.js` pins the three fixes. All four wire tests were watched
+  failing on the old copy first.
+- `test/fixtures/gamePortFrames.json` is a recording of a real login and three read-only calls
+  (`scripts/capture-game-frames.js`, account `test2`, eve.js `7603a2966`).
+  `test/gamePortFrames.test.js` decodes it, round-trips it, and replays it through `GameClient`.
+  Watched failing under three kinds of tampering.
+- Run live as Test Two (docked): login → `SelectCharacterID` → `map.GetSolarsystemItems`
+  (92 rows, 11 customs offices) → `GetTaxRate` → `invbroker` bind. That is the PI export's whole
+  hop except `ImportExportWithPlanet`. The pilot was offline again after the socket closed.
+- **Not done:** the export call itself. `planetRuntimeState.coloniesByKey` is empty, so no pilot
+  has a colony to export from. It needs a staged colony or a database that has one.
+
+Found along the way, for later phases:
+
+- The server's version tuple carries build `3396210`, the same build as the retail client folder.
+- The recording decodes identically on the old codec: pre-select traffic contains no pickle,
+  negative long or NULL bool. The recording proves the codec reads real bytes; it does not prove
+  the fixes. (Phase 1 captures of in-game traffic should be checked for those.)
+- An integer above 32 bits can arrive as a JS number or a BigInt depending on which opcode the
+  server used, and re-encoding a number that size turns it into the BigInt form. Phase 2's
+  normaliser must treat the two as the same value.
+- `GameClient` decodes with `marshalDecode`, which ignores bytes left over after a value.
+  Phase 1 should decide whether a long-lived session uses `marshalDecodeExact`.
+- The server's handshake reply carries Python source for the retail client to run (time-dilation
+  handler, portrait upload hook). The Node client ignores it; Phase 1 should confirm nothing the
+  server later expects depends on it.
+
 ### Phase 1 — A long-lived game-port session, docked (medium)
 
 Extend `GameClient` into a session that can stay connected. Spec is the decompiled client
