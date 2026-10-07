@@ -43,6 +43,12 @@ Login and character selection on the retail path: `handshake.js` `_handleAuthent
 
 ## 4. Architecture
 
+> **Transport direction changed 2026-10-07.** Pilots are moving off the HTTP gateway described
+> below and onto the game port itself (machoNet on TCP 26000), so that a browser pilot is
+> indistinguishable from the retail client. The plan and its per-phase status are in
+> [`game-port-transport-plan.md`](game-port-transport-plan.md). What follows describes the
+> gateway bridge, which stays in service until that plan's Phase 5.
+
 Browser → web BFF (this repo) → thin EveJS bridge → the same `Handle_*` handlers the retail client hits.
 
 The bridge is **not new server infrastructure**: it is the **existing** web gateway (`server/src/_secondary/express/evejsWebGateway.js`, HTTP/WS on :26002, already separate from the machoNet game listener on :26000) extended with a whitelisted `callMethod` invocation path — the only eve.js edit in the entire plan (landed in Goal R1).

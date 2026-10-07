@@ -20,6 +20,35 @@ appears to need a server change, stop and raise it; do not patch.
 
 ---
 
+## 0. Goal and standard (operator, 2026-10-07)
+
+**The ultimate goal is EVE in a web browser, with minimal graphics.** This plan is the transport
+half of that. Option B is a step toward it, not the end state: Phase 6b moves the client's logic
+into the browser.
+
+**The standard is "identical to the retail client", not "frames the server accepts".** The game
+port must not be able to tell our session from build 3396210: same handshake, same calls in the
+same order at login and character select, same handling of what the server pushes. Where the
+existing `GameClient` takes a shortcut the retail client does not, the shortcut is a defect.
+
+Sources of truth, in the order to consult them:
+
+1. **The decompiled client**, `eve.js/tools/ClientCodeGrabber/Latest` — what the client does.
+   Decompile further with `eve.js/tools/ClientCodeGrabber` (and its V2) when a module is missing.
+2. **The legacy client install**, `D:\EVE Online - 3396210 - Copy` — the binaries the Python
+   calls into (`blue.dll`, `_destiny.dll`, `code.ccp`). Decompile them when the Python does not
+   answer the question.
+3. **The eve.js server source** — what the server accepts and sends.
+4. **A recorded real-client session** settles any disagreement between the three. One exists:
+   `eve.js/_local/logs/direct-tcp-real-client-20260809-163920.stdout.log` (login, character
+   select, in station). Record more when a phase needs them.
+
+**This is a dev machine.** Staging data in the game database (accounts, items, colonies) is
+allowed and expected. "The data does not exist" is never a reason to leave a live check undone;
+stage it, run the check, and say what was staged.
+
+---
+
 ## 1. What is true today (verified)
 
 ### 1.1 The two REST hops
@@ -106,6 +135,10 @@ PilotSession
   close()
 ```
 
+**The protocol core takes a byte transport; it never imports `node:net`.** The session, the
+packet handling and the ballpark are written against "something that sends and receives frames",
+so the same code can later run in a browser over a relay (option C) without a rewrite.
+
 **The contract of `location()`, `ballpark()` and `scanner()` is the JSON the browser already
 consumes.** That is what keeps the browser, the bots and 584 call sites unchanged while the
 transport underneath is replaced.
@@ -179,9 +212,14 @@ Found along the way, for later phases:
 
 ### Phase 1 — A long-lived game-port session, docked (medium)
 
-Extend `GameClient` into a session that can stay connected. Spec is the decompiled client
-(`eve.js/tools/ClientCodeGrabber/Latest/carbon/common/script/net/machoNet*.py`, `GPS.py`) and the
-server's `network/` code.
+Extend `GameClient` into a session that can stay connected and behaves as the retail client
+does (section 0). Spec is the decompiled client
+(`eve.js/tools/ClientCodeGrabber/Latest/carbon/common/script/net/machoNet*.py`, `GPS.py`), the
+server's `network/` code, and the recorded real-client session.
+
+- Handshake exactly as the retail client sends it, including its crypto request.
+- The retail client's own call sequence at login and at character select, read from the recorded
+  session and the decompiled services that issue each call.
 
 - Dispatch `Notification` (12), `SessionChangeNotification` (16), `SessionInitialStateNotification`
   (18), `PingReq`/`PingRsp` (20/21), `TransportClosed` (8).
@@ -225,8 +263,9 @@ the app uses (overview distance, in-range checks, arrival detection) to stay cor
 Then build, in this order:
 
 1. Destiny decoder with recorded-stream tests.
-2. Ball simulation for the modes the spike says are needed (source of truth:
-   `eve.js/server/src/space/destiny/simulation/`).
+2. Ball simulation for the modes the spike says are needed. Sources: the server's own
+   `eve.js/server/src/space/destiny/simulation/`, the client's `michelle.py`, and `_destiny.dll`
+   decompiled where those two disagree or are silent. The client's numbers win.
 3. `ballpark()` producing today's `/space/snapshot` JSON; ship HUD from dogma reads and
    notifications, as retail does.
 4. `location()` from the session mirror plus ballpark; `scanner()` from scan notifications.
@@ -251,9 +290,11 @@ Can run in parallel with the phases above; it touches a different hop.
   unchanged) and pushed notifications. Replaces 460 routes' HTTP carriage, the SSE stream, and the
   four-request lane cap in `web/src/app/transport.ts`. Hosted bots call the same operations
   in-process instead of through loopback HTTP.
-- 6b (optional, later): move route orchestration into shared TypeScript used by both the browser
-  and hosted bots, leaving only generic `call` / `bind` / `callBound` on the socket. This is also
-  what would make option C (browser speaks machoNet through a relay) a relocation, not a rewrite.
+- 6b (planned; this is what "EVE in a web browser" means for the code): move route orchestration
+  into shared TypeScript used by both the browser and hosted bots, leaving only generic `call` /
+  `bind` / `callBound` on the socket. After it, the browser decides what to call and when, as the
+  retail client does, and the BFF only relays those calls. It is also what makes option C
+  (browser speaks machoNet through a relay) a relocation, not a rewrite.
 - **Done when:** no `/api/bridge/*` HTTP route remains and no `EventSource` is opened.
 
 ---
@@ -274,7 +315,7 @@ Can run in parallel with the phases above; it touches a different hop.
 1. **BFF restart behaviour** (Phase 3): retail-equivalent drop, or a separate socket host.
 2. **Generic call path after cutover** (Phase 5): keep an allowlist in the BFF, or accept retail
    trust (a logged-in client may call anything as itself).
-3. **Phase 6b**: wanted, or stop at 6a.
+3. ~~Phase 6b: wanted, or stop at 6a.~~ Settled 2026-10-07 by the stated goal: 6b is planned.
 
 ## 6. Out of scope
 
@@ -289,4 +330,5 @@ Can run in parallel with the phases above; it touches a different hop.
 - Fixtures come from real server bytes, captured and committed, not hand-built.
 - Watch each new test fail before trusting it.
 - A local or patched server is not evidence of stock compatibility.
+- Missing data is staged, not skipped. Record what was staged beside the result.
 - Never run both transports for one character at the same time.
