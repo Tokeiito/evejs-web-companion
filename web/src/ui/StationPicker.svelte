@@ -13,6 +13,7 @@
   import type { DestinationMatch } from "../store/types.ts";
   import { BOARD_SLOTS, boardSlotStation, startingStation, type BoardSlot, type WorldRef } from "../bots/botScript.ts";
   import { boardSlotPhrase } from "../bots/scriptText.ts";
+  import { stationSearchFailure } from "./stationSearchFailure.ts";
 
   let {
     flow,
@@ -70,8 +71,8 @@
                 ? "No station or accessible structure matched that name."
               : "No stations matched that name.";
       }
-    } catch {
-      error = "Could not search just now — try again.";
+    } catch (failure) {
+      error = stationSearchFailure(failure);
       results = [];
     } finally {
       searching = false;
