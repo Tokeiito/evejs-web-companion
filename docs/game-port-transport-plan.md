@@ -141,8 +141,9 @@ phase's tests alone where a live check is named.
 ### Phase 0 — Refresh the codec (small)
 
 - Re-copy `marshal.js` and the string table from eve.js; record the source commit in the header.
-- Add a check to `scripts/check.js` that fails when the vendored copy differs from
-  `$EVEJS_ROOT/server/src/network/tcp/utils/marshal.js` (skipped when `EVEJS_ROOT` is unset).
+- Add `scripts/vendor-marshal.js` (`npm run vendor:marshal`): reports when the vendored copy
+  differs from the eve.js source, and re-copies it with `--write`. A test runs the same check
+  against `STOCK_EVEJS_ROOT` and is skipped when that is unset, like the bridge-contract test.
 - **Done when:** existing `gameClient` / `piCustomsExport` tests pass, a round-trip test over
   frames captured from a real server passes, and one live PI customs export succeeds.
 

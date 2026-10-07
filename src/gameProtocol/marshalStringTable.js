@@ -1,5 +1,6 @@
-// VENDORED from the eve.js server (D:/evet, server/src/common/marshalStringTable.js,
-// AGPL-3.0-only, same developers), unchanged.
+// VENDORED from the eve.js server (server/src/common/marshalStringTable.js at
+// eve.js 526724920, AGPL-3.0-only, same developers), unchanged. Do not edit
+// it: re-copy with `npm run vendor:marshal -- --write`.
 "use strict";
 
 /**

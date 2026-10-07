@@ -1,7 +1,8 @@
-// VENDORED from the eve.js server (D:/evet, server/src/network/tcp/utils/marshal.js,
-// AGPL-3.0-only, same developers), unchanged except for the string-table path.
-// It is the codec the game port itself speaks; src/gameClient.js uses it to talk
-// to the server the way the retail client does. Re-copy it rather than edit it.
+// VENDORED from the eve.js server (server/src/network/tcp/utils/marshal.js at
+// eve.js 65f759873, AGPL-3.0-only, same developers), unchanged except for the
+// string-table path. It is the codec the game port itself speaks;
+// src/gameClient.js uses it to talk to the server the way the retail client
+// does. Do not edit it: re-copy with `npm run vendor:marshal -- --write`.
 "use strict";
 
 /**
@@ -353,14 +354,17 @@ function encodeValue(value, chunks) {
         return;
       }
       case "cpicked": {
-        // Embed raw Python pickle bytes in the marshal stream.
-        // The client's unmarshal uses cPickle.loads() to decode this,
-        // which bypasses the EVE marshal token whitelist.
+        // Embed one Python pickle in the marshal stream. This is blue's
+        // TY_PICKLER: the pickle follows the opcode with no length, and the
+        // client's unpickler reads up to the pickle's own STOP. Every global
+        // the pickle names still has to be on the client's marshal whitelist.
         const pickleBuf = Buffer.isBuffer(value.data)
           ? value.data
           : Buffer.from(value.data);
+        if (findPickleEnd(pickleBuf, 0) !== pickleBuf.length) {
+          throw new Error("Pickle has bytes after its STOP opcode");
+        }
         chunks.push(Buffer.from([Op.cPicked]));
-        putSizeEx(pickleBuf.length, chunks);
         chunks.push(pickleBuf);
         return;
       }
@@ -1115,7 +1119,15 @@ function encodePackedRow(packedRow, chunks) {
       continue;
     }
 
-    if (normalizePackedBoolean(values[entry.index])) {
+    const value = values[entry.index];
+    if (value === null || value === undefined) {
+      const nullBit = entry.index + booleansBitLength;
+      const nullByte = nullBit >> 3;
+      bitData[nullByte] |= 1 << (nullBit & 0x7);
+      continue;
+    }
+
+    if (normalizePackedBoolean(value)) {
       const boolBit = booleanColumns.get(entry.index);
       const boolByte = boolBit >> 3;
       bitData[boolByte] |= 1 << (boolBit & 0x7);
@@ -1312,6 +1324,90 @@ function readSizeEx(state) {
   return first;
 }
 
+// Pickle opcodes of protocols 0 to 2, which is everything Python 2.7 writes,
+// grouped by how their argument is laid out. Opcodes with no argument are not
+// listed.
+const PICKLE_STOP = 0x2e;
+const PICKLE_NO_ARG_OPCODES = new Set([
+  0x28, 0x29, 0x30, 0x31, 0x32, 0x4e, 0x51, 0x52, 0x5d, 0x61, 0x62, 0x64, 0x65,
+  0x6c, 0x6f, 0x73, 0x74, 0x75, 0x7d, 0x81, 0x85, 0x86, 0x87, 0x88, 0x89,
+]);
+const PICKLE_FIXED_ARG_BYTES = new Map([
+  [0x47, 8], // BINFLOAT
+  [0x4a, 4], // BININT
+  [0x4b, 1], // BININT1
+  [0x4d, 2], // BININT2
+  [0x68, 1], // BINGET
+  [0x6a, 4], // LONG_BINGET
+  [0x71, 1], // BINPUT
+  [0x72, 4], // LONG_BINPUT
+  [0x80, 1], // PROTO
+  [0x82, 1], // EXT1
+  [0x83, 2], // EXT2
+  [0x84, 4], // EXT4
+]);
+const PICKLE_LINE_ARG_COUNT = new Map([
+  [0x46, 1], // FLOAT
+  [0x49, 1], // INT
+  [0x4c, 1], // LONG
+  [0x50, 1], // PERSID
+  [0x53, 1], // STRING
+  [0x56, 1], // UNICODE
+  [0x67, 1], // GET
+  [0x70, 1], // PUT
+  [0x63, 2], // GLOBAL
+  [0x69, 2], // INST
+]);
+const PICKLE_COUNTED_ARG_LENGTH_BYTES = new Map([
+  [0x54, 4], // BINSTRING
+  [0x55, 1], // SHORT_BINSTRING
+  [0x58, 4], // BINUNICODE
+  [0x8a, 1], // LONG1
+  [0x8b, 4], // LONG4
+]);
+
+// A pickle embedded with opcode 0x21 has no length in the stream. Walk its
+// opcodes from `start` and return the offset just past its STOP.
+function findPickleEnd(buffer, start) {
+  let pos = start;
+  while (pos < buffer.length) {
+    const opcode = buffer[pos++];
+    if (opcode === PICKLE_STOP) {
+      return pos;
+    }
+    if (PICKLE_NO_ARG_OPCODES.has(opcode)) {
+      continue;
+    }
+    if (PICKLE_FIXED_ARG_BYTES.has(opcode)) {
+      pos += PICKLE_FIXED_ARG_BYTES.get(opcode);
+      continue;
+    }
+    if (PICKLE_LINE_ARG_COUNT.has(opcode)) {
+      for (let line = PICKLE_LINE_ARG_COUNT.get(opcode); line > 0; line -= 1) {
+        const newline = buffer.indexOf(0x0a, pos);
+        if (newline === -1) {
+          throw new Error("Unexpected end of pickle data");
+        }
+        pos = newline + 1;
+      }
+      continue;
+    }
+    if (PICKLE_COUNTED_ARG_LENGTH_BYTES.has(opcode)) {
+      const lengthBytes = PICKLE_COUNTED_ARG_LENGTH_BYTES.get(opcode);
+      if (pos + lengthBytes > buffer.length) {
+        throw new Error("Unexpected end of pickle data");
+      }
+      const length = lengthBytes === 1 ? buffer[pos] : buffer.readUInt32LE(pos);
+      pos += lengthBytes + length;
+      continue;
+    }
+    throw new Error(
+      `Unknown pickle opcode: 0x${opcode.toString(16)} at position ${pos - 1}`,
+    );
+  }
+  throw new Error("Unexpected end of pickle data");
+}
+
 function decodeValue(state) {
   if (state.pos >= state.buf.length) {
     throw new Error("Unexpected end of marshal data during decodeValue");
@@ -1373,13 +1469,20 @@ function decodeValue(state) {
         break;
       }
       const bytes = readBytes(state, size);
-      // Reconstruct as a number (up to 8 bytes)
+      // Little-endian two's complement of any length: the top bit of the last
+      // byte is the sign.
       let val = BigInt(0);
       for (let i = 0; i < size; i++) {
         val |= BigInt(bytes[i]) << BigInt(i * 8);
       }
+      if (bytes[size - 1] & 0x80) {
+        val -= BigInt(1) << BigInt(size * 8);
+      }
       // If it fits in a regular number, convert
-      if (val <= BigInt(Number.MAX_SAFE_INTEGER)) {
+      if (
+        val <= BigInt(Number.MAX_SAFE_INTEGER) &&
+        val >= BigInt(Number.MIN_SAFE_INTEGER)
+      ) {
         result = Number(val);
       } else {
         result = val;
@@ -1581,10 +1684,10 @@ function decodeValue(state) {
     }
 
     case Op.cPicked: {
-      const len = readSizeEx(state);
+      const end = findPickleEnd(state.buf, state.pos);
       result = {
         type: "cpicked",
-        data: readBytes(state, len),
+        data: readBytes(state, end - state.pos),
       };
       break;
     }
