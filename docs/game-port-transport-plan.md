@@ -1,0 +1,261 @@
+# Plan: pilots on the game port (retire REST for game calls)
+
+Written 2026-10-07 against web `1874327` and eve.js `7603a2966`. Nothing in this plan has been
+built or run live; every "verified" below means "read in the source at those commits".
+
+**Decision this plan implements (option B):** the BFF becomes the retail-protocol client. Each
+logged-in pilot is one TCP connection to the eve.js game port (26000) speaking machoNet with
+marshal frames, exactly as the client in `D:\EVE Online - 3396210 - Copy` does. The browser talks
+to the BFF over one WebSocket. HTTP remains only for things the retail protocol cannot do.
+
+```
+browser ── one WebSocket (calls + pushed notifications) ──> BFF ── TCP 26000 machoNet ──> eve.js
+                                                             ├── XMPP 5222 (chat, already built)
+                                                             └── HTTP :26002 gateway, ACCOUNT-LEVEL routes only
+```
+
+⚠ **This needs no eve.js change.** It moves Web Companion further onto "the published stock EveJS
+interfaces and original game protocol" (`docs/stock-evejs-integration-policy.md`). If any phase
+appears to need a server change, stop and raise it; do not patch.
+
+---
+
+## 1. What is true today (verified)
+
+### 1.1 The two REST hops
+
+| Hop | What it is | Size |
+|---|---|---|
+| Browser → BFF | Express routes in `src/server.js` | 574 routes; 460 under `/api/bridge`; one SSE stream |
+| BFF → eve.js | HTTP JSON gateway `/_evejs-web/v1/*` on :26002 | ~25 routes; allowlist of 717 pairs; WebSocket `/session-events` |
+
+### 1.2 The seam the swap happens behind
+
+The BFF does not call the gateway from 460 places. It calls a handful of helpers:
+
+| Helper in `src/server.js` | Call sites | Game-port equivalent |
+|---|---|---|
+| `heldTopLevelCall` | 332 | `CallReq` to a service |
+| bound bind / bound call (`gateway.bindObject`, `callBoundMethod`) | few, shared | `MachoBindObject`, `CallReq` with the `N=...` object id |
+| `readHeldFlight` (`/session/flight-status`) | 69 | **none** — derive from session changes + ballpark |
+| `gateway.readSpaceSnapshot` (`/space/snapshot`) | 9 | **none** — derive from `DoDestinyUpdate` |
+| `gateway.readScannerState` | 1 | **none** — derive from scan notifications |
+| `gateway.selectCharacter` / `releaseBridgeSession` | 3 / 5 | `SelectCharacterID` / close the socket |
+| `gateway.openSessionEventStream` | 1 | notifications arrive on the same socket |
+
+The three "none" rows are web-only projections. They are the real work.
+
+### 1.3 What already speaks the real protocol
+
+- `src/gameClient.js` — handshake, login, `call`, `bind`, `callBound` over TCP 26000. Short-lived
+  and calls-only: it drops every packet that is not a `CallRsp` (7) or `ErrorResponse` (15). Used
+  only by `src/piCustomsExport.js`.
+- `src/gameProtocol/marshal.js` — the codec, vendored from eve.js. **Stale:** it predates eve.js
+  `4544f5747` (pickle framing), `972e70c96` (negative longs) and `65f759873` (NULL bool flag).
+- `src/evejsXmppChat.js` — Local and Corp chat over XMPP 5222.
+
+### 1.4 Constraints
+
+1. **One character, one session.** A game-port select evicts the gateway session for that
+   character and vice versa (`loginTakeoverEnabled: true`). In space, eviction is an emergency-warp
+   logoff. A pilot is on one transport for its whole session; there is no per-call mixing.
+2. **A game-port session has no snapshot to poll.** The gateway session deliberately discards
+   `DoDestinyUpdate` (`evejsWebGatewayRuntime.js`, "Candidate F") and serves `/space/snapshot`
+   from the server's own ballpark. The retail client simulates the ballpark itself (`_destiny.dll`).
+3. **The game port accepts any password** (`devSkipPasswordValidation: true`). Web auth in the BFF
+   is the only thing tying a browser to an account, so the BFF must do the login itself and never
+   relay a browser-chosen `user_name`.
+4. **Session lifetime becomes socket lifetime.** `socketIdleTimeoutMs` is 0 in stock config, so an
+   idle connection is not reaped; but a closed socket is an immediate logoff. Today a gateway
+   session outlives a BFF restart until its 30-minute TTL.
+5. **Hosted bots share the seam.** `src/botHost.js` runs the browser stack in Node and calls the
+   BFF's own HTTP routes through `botFetch`.
+6. **BFF write routes carry behaviour.** `/api/bridge/call` refuses writes; dedicated routes do
+   read-before, call, re-read, and static-data lookups (e.g. `modules/activate`). That logic is
+   transport-independent and stays where it is until Phase 6.
+
+### 1.5 Not yet verified — each is answered by a named phase
+
+| Unknown | Answered in |
+|---|---|
+| Does eve.js compress outbound packets? (Retail compresses ≥200 bytes.) | Phase 1 |
+| Does the patched retail client send "placebo" or a real AES session key? | Phase 1 |
+| Do wire-decoded values match the gateway's JSON closely enough for the 142 browser decoders? | Phase 2 |
+| How much of a ballpark simulation do overview, targeting and autopilot actually need? | Phase 4 spike |
+| BFF CPU cost of decoding 10 Hz destiny updates for N pilots | Phase 4 |
+| Does `piCustomsExport` work live on the refreshed codec? | Phase 0 |
+
+---
+
+## 2. Target design
+
+### 2.1 `PilotSession` — the one interface
+
+Everything that today goes through the helpers in 1.2 goes through one interface with two
+implementations. The gateway one is today's behaviour; the game-port one is the goal.
+
+```
+PilotSession
+  call(service, method, args, kwargs)            -> result
+  bind(service, bindParams)                      -> handle
+  callBound(handle, method, args, kwargs)        -> result
+  onNotification(fn)   onSessionChange(fn)   onClosed(fn)
+  location()     -> what flight-status returns today
+  ballpark()     -> what space/snapshot returns today
+  scanner()      -> what scanner-state returns today
+  close()
+```
+
+**The contract of `location()`, `ballpark()` and `scanner()` is the JSON the browser already
+consumes.** That is what keeps the browser, the bots and 584 call sites unchanged while the
+transport underneath is replaced.
+
+### 2.2 Transport is chosen per pilot, and is reversible
+
+A setting (`EVEJS_PILOT_TRANSPORT=gateway|gameport`, with a per-account override) picks the
+implementation at select time. Default stays `gateway` until Phase 5. Any pilot can be moved back
+by flipping it and re-selecting.
+
+### 2.3 What stays on HTTP, permanently
+
+The retail protocol only sees the logged-in character. Management needs more:
+
+- **eve.js gateway, account-level only:** `health`, `status`, `accounts`, `account`,
+  `account/create`, `characters`, `character-status`, `skills` and `skill-queue` for offline
+  pilots, `character-control/*`.
+- **BFF app API (~115 routes):** web login, bot host, mining/PI/industry plans, pilot training,
+  provisioning, and static data (map graph, types, names, icons, market reference).
+
+### 2.4 Authority that does not move
+
+`bridgeCallPolicy`, `pilotMutationFence`, custody journals, hosted claims and reservations are BFF
+logic above the seam. They are untouched by Phases 0–5.
+
+---
+
+## 3. Phases
+
+Each phase ends on something observable. Do not start a phase on the strength of the previous
+phase's tests alone where a live check is named.
+
+### Phase 0 — Refresh the codec (small)
+
+- Re-copy `marshal.js` and the string table from eve.js; record the source commit in the header.
+- Add a check to `scripts/check.js` that fails when the vendored copy differs from
+  `$EVEJS_ROOT/server/src/network/tcp/utils/marshal.js` (skipped when `EVEJS_ROOT` is unset).
+- **Done when:** existing `gameClient` / `piCustomsExport` tests pass, a round-trip test over
+  frames captured from a real server passes, and one live PI customs export succeeds.
+
+### Phase 1 — A long-lived game-port session, docked (medium)
+
+Extend `GameClient` into a session that can stay connected. Spec is the decompiled client
+(`eve.js/tools/ClientCodeGrabber/Latest/carbon/common/script/net/machoNet*.py`, `GPS.py`) and the
+server's `network/` code.
+
+- Dispatch `Notification` (12), `SessionChangeNotification` (16), `SessionInitialStateNotification`
+  (18), `PingReq`/`PingRsp` (20/21), `TransportClosed` (8).
+- Keep a session mirror updated from session changes (`charid`, `stationid`, `solarsystemid2`, …).
+- Inflate compressed inbound frames if the server sends them; match retail's outbound threshold.
+- Decode cached-object replies.
+- Socket loss is session loss. No silent reconnect; report it upward like retail does.
+- **Done when:** a docked pilot stays connected for 60 minutes with every pushed packet logged and
+  typed (zero "unknown packet" lines), and the two handshake unknowns in 1.5 are written down.
+
+### Phase 2 — Normaliser and parity harness (medium)
+
+- `wireToBridgeJson`: turn decoded wire values into the JSON the gateway emits (longs → decimal
+  strings, buffers → `{type:"Buffer",data}`, packed rows, object/dict shapes).
+- Notification normaliser: wire `Notification` → `{kind, service, method, idType, args, kwargs}`.
+- Parity harness: for every allowlisted read that is safe on a docked pilot, read via the gateway,
+  release, read via the game port, and diff. Sequential, never concurrent (constraint 1).
+- **Done when:** the harness report lists every pair as identical, normalised, or a named
+  divergence with a decision. This number is the real size of the browser-side work.
+
+### Phase 3 — `PilotSession` in the BFF, docked features on the game port (medium–large)
+
+- Step 1 (pure refactor): introduce the interface, implement it on the gateway, route the helpers
+  in 1.2 through it. No behaviour change; the existing suite is the proof.
+- Step 2: implement it on the Phase 1 session for calls, binds, notifications and select/release.
+  `ballpark()` and undock **refuse deliberately** on the game port until Phase 4.
+- Decide the BFF-restart behaviour (constraint 4): accept retail-equivalent drop, or host the
+  sockets in a small separate process that survives BFF restarts. Write the decision here.
+- **Done when:** with one account flagged `gameport` and the browser unchanged: login, select,
+  inventory, fitting, market, agents, skills, mail and chat all work; one hosted maintenance flow
+  (Provisioning Center Apply) completes; the gateway log shows no held session for that pilot.
+
+### Phase 4 — Space: a ballpark from destiny (large; spike first)
+
+**Spike (time-boxed, throwaway code):** record the full `DoDestinyUpdate` stream for one pilot
+through undock → warp → gate jump → dock. Write a decoder for the state blob and the incremental
+actions as the inverse of `eve.js/server/src/space/destiny/stream/*.js`, cross-checked against
+`eve/client/script/remote/michelle.py`. Answer: which ball modes must be simulated for the numbers
+the app uses (overview distance, in-range checks, arrival detection) to stay correct.
+
+Then build, in this order:
+
+1. Destiny decoder with recorded-stream tests.
+2. Ball simulation for the modes the spike says are needed (source of truth:
+   `eve.js/server/src/space/destiny/simulation/`).
+3. `ballpark()` producing today's `/space/snapshot` JSON; ship HUD from dogma reads and
+   notifications, as retail does.
+4. `location()` from the session mirror plus ballpark; `scanner()` from scan notifications.
+5. Measure BFF CPU with several pilots in space; move decoding to a worker thread if needed.
+
+- **Done when:** two pilots on the same grid, one per transport, report the same entities with
+  distances within an agreed tolerance across a warp/jump/dock route; then a hosted bot flies a
+  courier mission end to end on the game port.
+
+### Phase 5 — Cutover (small)
+
+- Default the setting to `gameport`. Keep `gateway` selectable for one release as the way back.
+- Then remove: held `bridgeSessionID` handling, the `/session-events` client, the gateway
+  implementation of `PilotSession`, and the pilot pairs from the bridge contract.
+- **Done when:** the only gateway routes the BFF calls are the account-level ones in 2.3.
+
+### Phase 6 — Browser ↔ BFF over one WebSocket (large, mechanical; independent of 0–5)
+
+Can run in parallel with the phases above; it touches a different hop.
+
+- 6a: one WebSocket per pilot carrying named operations (the existing `/api/bridge` route bodies,
+  unchanged) and pushed notifications. Replaces 460 routes' HTTP carriage, the SSE stream, and the
+  four-request lane cap in `web/src/app/transport.ts`. Hosted bots call the same operations
+  in-process instead of through loopback HTTP.
+- 6b (optional, later): move route orchestration into shared TypeScript used by both the browser
+  and hosted bots, leaving only generic `call` / `bind` / `callBound` on the socket. This is also
+  what would make option C (browser speaks machoNet through a relay) a relocation, not a rewrite.
+- **Done when:** no `/api/bridge/*` HTTP route remains and no `EventSource` is opened.
+
+---
+
+## 4. Risks
+
+| Risk | Effect | Handling |
+|---|---|---|
+| Ballpark simulation is larger than expected | Phase 4 stalls; pilots who fly stay on the gateway | Spike before committing; docked-only pilots still benefit after Phase 3 |
+| Wire shapes diverge from gateway JSON | Many browser decoders need changes | Phase 2 measures this before any decoder is touched |
+| BFF restart logs every pilot off at once | Pilots in space emergency-warp | Decision in Phase 3; separate socket host if unacceptable |
+| Marshal decode load on the BFF's main thread | Latency for every pilot | Measure in Phase 4; worker thread |
+| Gateway allowlist no longer filters the generic call path | A browser could reach any handler as its own account | Keep the current pair list as a BFF-side allowlist at cutover; widen deliberately |
+| Vendored codec drifts again | Silent wire bugs | Phase 0 drift check |
+
+## 5. Decisions needed from the operator
+
+1. **BFF restart behaviour** (Phase 3): retail-equivalent drop, or a separate socket host.
+2. **Generic call path after cutover** (Phase 5): keep an allowlist in the BFF, or accept retail
+   trust (a logged-in client may call anything as itself).
+3. **Phase 6b**: wanted, or stop at 6a.
+
+## 6. Out of scope
+
+- Any eve.js change.
+- The gRPC public gateway (`publicGatewayLocal.js`). Node can speak it if a feature needs it; none
+  in this plan does.
+- Option C (browser as the machoNet client). Phase 6b keeps it possible.
+- Rendering the ballpark. This plan only reproduces the data the app already shows.
+
+## 7. Evidence rules for this work
+
+- Fixtures come from real server bytes, captured and committed, not hand-built.
+- Watch each new test fail before trusting it.
+- A local or patched server is not evidence of stock compatibility.
+- Never run both transports for one character at the same time.
