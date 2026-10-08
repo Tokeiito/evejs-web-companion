@@ -556,6 +556,7 @@ Then build, in this order:
 | A pilot's own park, kept as michelle keeps one (`pilotSpace.js`); the space snapshot and flight status from it (`spaceProjection.js`) | done | the same pilot on each transport in turn: 95 entities both ways, fixed things within 0.0001 m, five kinds of difference, each explained; two pilots at once, one per transport, see the same 96; undock, stop and dock in the browser |
 | The ship's capacitor and capacities from dogma, kept as godma keeps them (`pilotDogma.js`) | done | a real flight with a module running: the client's recharge lands on each of the server's next reports to the sixth place; the gateway's numbers for the same ship |
 | Which modules are running or overloaded, from godma's effects (`pilotDogma.js`) | done | a recorded flight; the activate and deactivate routes on each transport in turn give the same answers; the module's button in the browser |
+| A gate jump: the park replaced, dogma asked again | done | a trip to the next system and back on each transport in turn: the same things seen after each jump; a recording played through a park per system; a 40 AU warp at rest 0.12 m and 0.06 m from the server's ship |
 | Module damage, weapon banks; the scanner in space | not started | |
 
 One thing the spike's question got wrong: the stream is not 10 Hz. The server sends an update

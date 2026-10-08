@@ -1042,3 +1042,85 @@ tests: nothing has been overloaded live.
    FORMATION, MUSHROOM.
 6. The call ledger (`ship.Undock`, `dogmaIM.Activate` and `Deactivate` to bind as the client
    does), Phase 3's hosted check and the session-less gateway calls.
+
+---
+
+## 2026-10-08 — through a gate and back on the game port
+
+Commits `6e64a79` and the one this entry is in, pushed.
+
+**Nothing in the transport had to change for a jump.** The last entries built it: a change of
+solar system lets the pilot's park go and makes another, forgets what was bound for the old
+place, and has dogma asked again. This entry is the proof that it holds on a real trip, and two
+things the trip turned up.
+
+**The trip, on each transport in turn** (`scripts/route-parity.js`, new): Test Pilot, through
+the BFF's routes with the calls the browser's autopilot makes. Undock at Jita 4-4, warp 40 AU to
+the Perimeter gate, jump, fly up to the gate arrived at, jump back, warp to the station, dock.
+
+| | Gateway | Game port |
+|---|---|---|
+| Warp to the gate: seconds in warp, top speed | 41, 3.00 AU/s | 41, 3.00 AU/s |
+| Jump out | Jita to Perimeter | Jita to Perimeter |
+| Perimeter at first look, and once settled | 89, 89 | 53, then 89 two seconds on |
+| The two views of Perimeter | | nothing missing either way; 81 fixed things within 0.0005 m |
+| Jump back: refusals while flying up to the gate | 17 | 17 |
+| Jita at first look, and once settled | 111, 111 | 84, then 111 two seconds on |
+| The two views of Jita at the gate | | nothing missing either way; 102 fixed things within 0.002 m |
+| Warp to the station: seconds in warp | 42 | 38 |
+| Own ship after each jump | STOP, capacitor 1, shield 175 | the same |
+| Docked again | yes | yes |
+
+The "first look" row is the client's own experience, not a fault. A client is sent a new system
+in two pieces: everything fixed in it, then what is on the gate's own grid stamped two ticks
+later, which the park waits for. The gateway reads the server's scene and has it all at once.
+
+**I nearly reported that row as a defect.** The first run of the script looked once, straight
+after arriving, and the game port was 36 entities short: every sentry gun, billboard and piece
+of scenery at the gate. Before writing that down as the server or the park losing them, I
+recorded the trip and looked at what each park held when it was let go: all of it. The script
+now waits for the count to stop changing. That is the brief's newest rule doing its job.
+
+**The recording** (`scripts/record-jump.js`, `test/fixtures/destinyJump.json`): the same trip on
+the game port, with a park for each system kept by the transport's own park keeper, as michelle
+keeps them. Four tests play it through:
+
+- three parks, ending with 111, 89 and 95 balls, each kind for kind what the live park held;
+  no entry failed, nothing reset;
+- a new system arriving as 53 then 89 two ticks later, the ship 15.6 km from the gate it came
+  out of, and within the 2,500 m a gate is used from by the time it jumped back;
+- the 40 AU warp: 43 ticks, as the live park counted, **cruising at exactly 3 AU a second**,
+  with the grids changing under it (station 95, in warp 76, gate 111);
+- what is at each gate by kind, the same as the gateway's lists.
+
+**A long warp against the server, at rest.** The earlier warp was 280,000 km and never reached
+top speed. `record-warp.js` to the same gate and back, asking the server for its state once the
+ship had stopped: **0.12 m and 0.06 m apart after 40 AU each way.** (Out of warp but not yet
+stopped, the route script's two passes read 600 m and 1,400 m from the gate; that is when in the
+coast each happened to look, as those two numbers at rest show.)
+
+**Two things fixed.**
+
+- **A billboard was being called a ship.** Billboards are in the same category as the ships
+  nobody flies and the sentry guns. The game port said 12 ships at Jita's gate where the gateway
+  says 9 and 3 billboards. `kindOf` now knows the group.
+- **An entry the park could not apply was counted and never said.** The park passes over it, as
+  the client does, and the count was all there was; nothing reached a log. The park now reports
+  which entry and why, and the pilot's space passes that on to the BFF's log.
+
+Suite: 8873 tests, 8848 pass, 0 fail, 24 skipped, 1 todo.
+
+**Not done:** the trip in the browser by the web client's own autopilot (the routes it uses are
+the ones flown here, by a script), and a hosted bot's courier run. The scanner in space.
+
+### Next
+
+1. **The browser's autopilot on the game port**: set a destination a jump away in the web UI and
+   let it fly, then a hosted bot flying Test Two's courier mission end to end, which closes
+   Phase 4.
+2. **The scanner in space** on the game port (the one route that still answers 501 there).
+3. Module damage and weapon banks from dogma; health from godma as the panel reads it.
+4. **Collisions**; **the park beside the server's movement log**; the sim clock; MISSILE,
+   FORMATION, MUSHROOM.
+5. The call ledger (`ship.Undock`, `dogmaIM.Activate` and `Deactivate` to bind as the client
+   does), Phase 3's hosted check and the session-less gateway calls.
