@@ -540,8 +540,10 @@ Then build, in this order:
   distances within an agreed tolerance across a warp/jump/dock route; then a hosted bot flies a
   courier mission end to end on the game port.
 
-**Status, 2026-10-08.** Steps 1 to 3 are under way. A pilot on the game port undocks, flies, warps
-(by the park, not yet through the browser) and docks; its view of space is its own ballpark.
+**Status, 2026-10-08.** The "done when" above is met: the two-pilot comparison across a warp, jump
+and dock route, and a hosted bot's courier mission end to end on the game port. A pilot on the
+game port undocks, flies, warps, jumps and docks; its view of space is its own ballpark. What the
+table marks "not started" is still to do.
 
 | Part | State | Checked against |
 |---|---|---|
@@ -557,6 +559,9 @@ Then build, in this order:
 | The ship's capacitor and capacities from dogma, kept as godma keeps them (`pilotDogma.js`) | done | a real flight with a module running: the client's recharge lands on each of the server's next reports to the sixth place; the gateway's numbers for the same ship |
 | Which modules are running or overloaded, from godma's effects (`pilotDogma.js`) | done | a recorded flight; the activate and deactivate routes on each transport in turn give the same answers; the module's button in the browser |
 | A gate jump: the park replaced, dogma asked again | done | a trip to the next system and back on each transport in turn: the same things seen after each jump; a recording played through a park per system; a 40 AU warp at rest 0.12 m and 0.06 m from the server's ship |
+| Calls the server makes to the client; an answer marked provisional | done | frames built as the server builds them; a mission quit by route and declined in the browser on the game port, the server logging its question and our answer |
+| A hosted bot's courier mission, end to end | done | one run: asked, accepted, loaded, three jumps out, turned in, three jumps back, docked; every call a packet on the game port by the server's log |
+| The server's questions shown to the user (`agents.YesNo` is answered Yes; a research agent's boxes and the customs question are not answered) | not started | |
 | Module damage, weapon banks; the scanner in space | not started | |
 
 One thing the spike's question got wrong: the stream is not 10 Hz. The server sends an update

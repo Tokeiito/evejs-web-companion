@@ -73,8 +73,8 @@ Decisions taken in your place, and anything waiting on you. Overrule any of thes
 - **On the gateway a mission cannot be quit.** The server refuses to commit a quit it could not
   warn about, and the gateway gives it nobody to warn. Measured 2026-10-08. On the game port it
   works. Not a defect of either: it goes away when the gateway does.
-- **Test Two's standing** with agent Antaken Kamola is down 0.04, and 0.0035 with the agent's
-  corporation, from the quit that proved this.
+- **Test Two's standing** with agent Antaken Kamola went to -0.539 with the quit that proved
+  this, and reads -0.434 after the courier run that followed.
 - **A hosted courier bot stops at once on a pilot who already holds the mission**, on either
   transport: "There is no accepted mission naming cargo to load". Seen on 2026-10-08 with Test
   Two, on the gateway BFF and the game-port one alike. Not looked into further: it is the bot's
@@ -1281,8 +1281,8 @@ looking for them.
   conversation went back to "Request Mission" with "Mission declined." under it, and the journal
   is empty.
 
-**Cost to the test character:** Test Two lost 0.04 standing with the agent and 0.0035 with the
-agent's corporation for the quit. The decline was the first in four hours and cost nothing.
+**Cost to the test character:** the quit's standing event carried a change of -0.0409 with the
+agent (leaving it at -0.539) and -0.0035 with the agent's corporation. The decline was the first in four hours and cost nothing.
 
 **Not done:** the three calls in the table marked "not answered" (a research agent's choice and
 quantity, and the customs question). Each needs the question shown in the browser and the answer
@@ -1293,6 +1293,69 @@ minutes and fails as unanswered.
 
 1. **A hosted bot's courier run end to end on the game port**, with a fresh mission, which closes
    Phase 4. Then the same trip by the browser's own autopilot.
+2. **The server's questions shown in the browser**: a way for the BFF to put a question to the
+   user and bring back the answer, then the three unanswered calls, and `agents.YesNo` asked
+   rather than answered.
+3. **The scanner in space** on the game port (the one route that still answers 501 there).
+4. Module damage and weapon banks from dogma; health from godma as the panel reads it.
+5. **Collisions**; **the park beside the server's movement log**; the sim clock; MISSILE,
+   FORMATION, MUSHROOM.
+6. The call ledger (`ship.Undock`, `dogmaIM.Activate` and `Deactivate` to bind as the client
+   does), Phase 3's hosted check and the session-less gateway calls.
+
+---
+
+## 2026-10-08 — a hosted bot flies a courier mission end to end on the game port
+
+No code changed in this entry. It is the run Phase 4's "done when" asks for.
+
+**The run.** Test Two (`test2`, on the game port by the check BFF's setting), docked at
+Muvolailen with no mission. A hosted script of the seven courier blocks, saved and approved the
+way the web UI's review step does it and started with `POST /api/bots/start`. The bot's own
+account of it, read from `GET /api/bots` every five seconds:
+
+| Seconds in | The bot says |
+|---|---|
+| 5 | Asking for work |
+| 15 | accepting |
+| 20 | Loading cargo |
+| 25 to 250 | Flying the delivery (in warp four times) |
+| 256 | Turning in |
+| 261 to 481 | Heading back to the agent (in warp four times) |
+| 486 | **Finished**: "The program finished, so the bot stopped." |
+
+**The server's account of the same eight minutes** (its log, 09:52:02 to 10:00:07 UTC):
+
+- the mission accepted: "Technological Secrets (2 of 3)", a transport to system 30000120;
+- undocked from station 60000004; three gate jumps; docked at station 60001480; undocked;
+  the same three gates back; docked at 60000004;
+- every call of the run came in as a packet on the game port, and no browser session of the
+  gateway's was started in that time. By name: 2 `ship.Undock`, 8 `CmdWarpToStuff`,
+  6 `CmdStargateJump`, 2 `CmdDock`, 11 `DoAction`, 8 ballparks bound (two undocks and six
+  jumps), 10 `GetAllInfo`;
+- no error lines.
+
+**The BFF's log** for the run has no ballpark failure and no unanswered call from the server.
+
+**Afterwards:** Test Two is docked where it began, its journal is empty, the agent greets it with
+"Request Mission", and its standing with the agent reads -0.434, up from the -0.539 the quit left
+it at. (The last entry said the quit "lost 0.04 standing". What the server's event carried was a
+change of -0.0409 and a standing of -0.539 after it; I should have quoted both.)
+
+**What this does and does not show.** It shows the whole courier loop, from asking the agent to
+docking back home, driven by a hosted bot over the game-port transport, with the pilot's own
+ballpark as its view of space across two undocks and six jumps. It was one run of one mission.
+It does not show the browser's own autopilot making the trip, which is next.
+
+**Phase 4's "done when" is met**: the two-pilot comparison across a warp, jump and dock route is
+in the entries above, and this is the hosted bot's courier mission. What is left of Phase 4 is
+the list of things not yet read on the game port (the plan's table has them).
+
+### Next
+
+1. **The same trip by the browser's own autopilot** on the game port. The browser pane here is
+   hidden and the page pauses its polling when hidden, so this needs the page told it is visible
+   (a test trick, not a product change), or the operator's eyes.
 2. **The server's questions shown in the browser**: a way for the BFF to put a question to the
    user and bring back the answer, then the three unanswered calls, and `agents.YesNo` asked
    rather than answered.
