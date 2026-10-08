@@ -62,7 +62,10 @@ test("GetAllInfo from a real server: the ship and its module are held, and the s
   assert.deepEqual([ATTRIBUTE.HP, ATTRIBUTE.ARMOR_HP, ATTRIBUTE.SHIELD_CAPACITY, ATTRIBUTE.CAPACITOR_CAPACITY, ATTRIBUTE.RECHARGE_RATE, ATTRIBUTE.SHIELD_RECHARGE_RATE, ATTRIBUTE.DAMAGE, ATTRIBUTE.ARMOR_DAMAGE].map((id) => dogma.attribute(SHIP, id)),
     [150, 150, 175, 125, 62500, 730000, 0, 0]);
   // What the gateway's snapshot said of the same ship: capacitor 1, capacities 175, 150, 150.
-  assert.deepEqual(dogma.shipReadings(SHIP), { capacitorRatio: 1, shieldCapacity: 175, armorCapacity: 150, hullCapacity: 150, activeModuleIDs: [], overloadedModuleIDs: [] });
+  assert.deepEqual(dogma.shipReadings(SHIP), {
+    capacitorRatio: 1, shieldRatio: 1, armorRatio: 1, hullRatio: 1, shieldCapacity: 175, armorCapacity: 150, hullCapacity: 150,
+    activeModuleIDs: [], overloadedModuleIDs: [], moduleDamage: {}, weaponBanks: {},
+  });
   assert.deepEqual([dogma.attribute(SHIP, ATTRIBUTE.CHARGE), dogma.attribute(SHIP, ATTRIBUTE.SHIELD_CHARGE)], [125, 175]);
   assert.equal(dogma.attribute(SHIP, 999999), null);
   dogma.clear();
@@ -188,7 +191,11 @@ test("when the capacity or the recharge time changes, the charge carries on from
   assert.ok(Math.abs(slow.attribute(5001, ATTRIBUTE.CHARGE, seconds(20)) - before) < 1e-9);
   assert.equal(slow.attribute(5001, ATTRIBUTE.CHARGE, seconds(40)), chargeValue(before, seconds(20), 5000000 / 5, 100, seconds(40)));
   // The shield is the other one that recharges; the readings are fractions and capacities.
-  assert.deepEqual(small().shipReadings(5001), { capacitorRatio: 1, shieldCapacity: 200, armorCapacity: 300, hullCapacity: 400, activeModuleIDs: [], overloadedModuleIDs: [] });
+  // What was never said (no armour damage, no hull damage, no ship state) is not known, and is not made up.
+  assert.deepEqual(small().shipReadings(5001), {
+    capacitorRatio: 1, shieldRatio: 1, armorRatio: null, hullRatio: null, shieldCapacity: 200, armorCapacity: 300, hullCapacity: 400,
+    activeModuleIDs: [], overloadedModuleIDs: [], moduleDamage: {}, weaponBanks: null,
+  });
   assert.ok(Math.abs(small({ charge: 25 }).shipReadings(5001, T0).capacitorRatio - 0.25) < 1e-12);
 });
 
@@ -331,4 +338,192 @@ test("an active effect that cannot be read is passed over, and the rest of the i
     [5002n, keyVal([["itemID", 5002n], ["time", T0], ["attributes", { type: "dict", entries: [[4, 1]] }], ["activeEffects", { type: "dict", entries: [[OVERLOAD_SPEED, null], [AFTERBURNER, good]] }]])],
   ] }]]));
   assert.deepEqual([dogma.has(5002), dogma.effect(5002, OVERLOAD_SPEED), dogma.shipReadings(5001).activeModuleIDs], [true, null, [5002]]);
+});
+
+// ── the ship's health, its modules' damage and its weapon banks ──────────────
+//
+// The ship's panel reads its own health from godma (activeShipController.py):
+// shieldCharge / shieldCapacity, (armorHP - armorDamage) / armorHP,
+// (hp - damage) / hp. A module's damage is its damage over its hp. The banks
+// are the third part of the ship's state in GetAllInfo.
+
+const HEALTH_T = 134359220000000000n;
+const row7 = (fields) => ({ type: "packedrow", fields });
+const kv = (fields) => ({ type: "object", name: Buffer.from("util.KeyVal"), args: { type: "dict", entries: Object.entries(fields).map(([name, value]) => [Buffer.from(name), value]) } });
+const attrs = (pairs) => ({ type: "dict", entries: pairs });
+const shipRow = (shipID, pairs) => [BigInt(shipID), kv({ itemID: BigInt(shipID), invItem: row7({ itemID: shipID, typeID: 588, locationID: 30000142, flagID: 0, groupID: 237, categoryID: 6 }), time: HEALTH_T, attributes: attrs(pairs), activeEffects: attrs([]) })];
+const fittedModule = (itemID, { damage = 0, hp = 40, categoryID = 7, locationID = 5001, flagID = 27 } = {}) =>
+  [BigInt(itemID), kv({ itemID: BigInt(itemID), invItem: row7({ itemID, typeID: 3636, locationID, flagID, groupID: 53, categoryID }), time: HEALTH_T, attributes: attrs([[ATTRIBUTE.DAMAGE, damage], [ATTRIBUTE.HP, hp]]), activeEffects: attrs([]) })];
+const HEALTHY = [[ATTRIBUTE.HP, 150], [ATTRIBUTE.DAMAGE, 0], [ATTRIBUTE.ARMOR_HP, 150], [ATTRIBUTE.ARMOR_DAMAGE, 0], [ATTRIBUTE.SHIELD_CAPACITY, 175], [ATTRIBUTE.SHIELD_CHARGE, 175], [ATTRIBUTE.SHIELD_RECHARGE_RATE, 730000], [ATTRIBUTE.CAPACITOR_CAPACITY, 125], [ATTRIBUTE.CHARGE, 125], [ATTRIBUTE.RECHARGE_RATE, 62500]];
+const withAttributes = (changes) => HEALTHY.map(([id, value]) => [id, id in changes ? changes[id] : value]);
+function loaded(rows, { shipState, activeShipID = 5001n } = {}) {
+  const dogma = createPilotDogma({ characterID: PILOT, now: () => HEALTH_T });
+  const fields = { shipInfo: attrs(rows) };
+  if (shipState !== undefined) Object.assign(fields, { shipState, activeShipID });
+  dogma.loadAllInfo(kv(fields));
+  return dogma;
+}
+const bankState = (banks) => [attrs([]), attrs([]), attrs(Object.entries(banks).map(([master, slaves]) => [BigInt(master), { type: "list", items: slaves.map(BigInt) }])), attrs([])];
+const near = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e-9, `${actual} is not ${expected}`);
+
+test("the ship's health is what is left of each of its three, as godma has them", () => {
+  const readings = (changes) => loaded([shipRow(5001, withAttributes(changes))]).shipReadings(5001);
+  assert.deepEqual([readings({}).shieldRatio, readings({}).armorRatio, readings({}).hullRatio], [1, 1, 1]);
+  // Armour 52.5 down of 150, hull 30 down of 150: 0.65 and 0.8.
+  const hurt = readings({ [ATTRIBUTE.ARMOR_DAMAGE]: 52.5, [ATTRIBUTE.DAMAGE]: 30 });
+  near(hurt.armorRatio, 0.65);
+  near(hurt.hullRatio, 0.8);
+  // The shield recharges by itself: read at the moment it was true, it is what was said.
+  near(readings({ [ATTRIBUTE.SHIELD_CHARGE]: 70 }).shieldRatio, 0.4);
+  const later = loaded([shipRow(5001, withAttributes({ [ATTRIBUTE.SHIELD_CHARGE]: 70 }))]).shipReadings(5001, HEALTH_T + 600n * 10000000n);
+  assert.ok(later.shieldRatio > 0.4 && later.shieldRatio <= 1, "and ten minutes on it has climbed");
+  // More damage than there is to damage is none left, not less than none; and damage below nothing is whole.
+  assert.deepEqual([readings({ [ATTRIBUTE.ARMOR_DAMAGE]: 500 }).armorRatio, readings({ [ATTRIBUTE.DAMAGE]: 500 }).hullRatio], [0, 0]);
+  assert.deepEqual([readings({ [ATTRIBUTE.ARMOR_DAMAGE]: -5 }).armorRatio, readings({ [ATTRIBUTE.DAMAGE]: -5 }).hullRatio], [1, 1]);
+  // Nothing to be a fraction of: not known.
+  assert.deepEqual([readings({ [ATTRIBUTE.ARMOR_HP]: 0 }).armorRatio, readings({ [ATTRIBUTE.HP]: 0 }).hullRatio, readings({ [ATTRIBUTE.SHIELD_CAPACITY]: 0 }).shieldRatio], [null, null, null]);
+});
+
+test("the ship's health follows the server's changes", () => {
+  const dogma = loaded([shipRow(5001, HEALTHY)]);
+  const stamp = HEALTH_T + 10000000n;
+  dogma.feed(changes(change(5001n, ATTRIBUTE.ARMOR_DAMAGE, stamp, 75, { stamp }), change(5001n, ATTRIBUTE.DAMAGE, stamp, 15, { stamp })));
+  const now = dogma.shipReadings(5001, stamp);
+  near(now.armorRatio, 0.5);
+  near(now.hullRatio, 0.9);
+});
+
+test("each fitted module's damage is its damage over its hp, and only the damaged ones are named", () => {
+  const dogma = loaded([
+    shipRow(5001, withAttributes({ [ATTRIBUTE.DAMAGE]: 30 })),
+    fittedModule(101, { damage: 7.2 }),
+    fittedModule(102),
+    fittedModule(103, { damage: 40 }),
+    fittedModule(104, { damage: 55 }),
+    // Not modules of this ship: a charge at a slot's flag, a module in another ship, a module with no hp.
+    fittedModule(105, { damage: 5, categoryID: 8 }),
+    fittedModule(106, { damage: 5, locationID: 6001 }),
+    fittedModule(107, { damage: 5, hp: 0 }),
+  ]);
+  // The ship's own hull damage is not a module's; burnt out is 1, and so is more than that.
+  assert.deepEqual(dogma.shipReadings(5001).moduleDamage, { 101: 0.18, 103: 1, 104: 1 });
+  // Heat does more, and a repair undoes it.
+  const stamp = HEALTH_T + 10000000n;
+  dogma.feed(changes(change(102n, ATTRIBUTE.DAMAGE, stamp, 10, { stamp }), change(101n, ATTRIBUTE.DAMAGE, stamp, 0, { stamp })));
+  assert.deepEqual(dogma.shipReadings(5001).moduleDamage, { 102: 0.25, 103: 1, 104: 1 });
+  assert.deepEqual(loaded([shipRow(5001, HEALTHY), fittedModule(101)]).shipReadings(5001).moduleDamage, {});
+});
+
+test("the weapon banks are the third part of the active ship's state, and null when no state came", () => {
+  const dogma = loaded([shipRow(5001, HEALTHY)], { shipState: bankState({ 102: [103, 101, 102], 200: [201] }) });
+  // Slaves in order, and a master is not its own slave.
+  assert.deepEqual(dogma.weaponBanks(5001), { 102: [101, 103], 200: [201] });
+  assert.deepEqual(dogma.shipReadings(5001).weaponBanks, { 102: [101, 103], 200: [201] });
+  assert.equal(dogma.weaponBanks(6001), null, "another ship's are not known");
+  // A state with no banks is no banks, which is not the same as not knowing.
+  assert.deepEqual(loaded([shipRow(5001, HEALTHY)], { shipState: bankState({}) }).weaponBanks(5001), {});
+  assert.equal(loaded([shipRow(5001, HEALTHY)]).weaponBanks(5001), null);
+  // The banks go to the ship the answer names as the active one.
+  assert.deepEqual(loaded([shipRow(5001, HEALTHY)], { shipState: bankState({ 102: [103] }), activeShipID: 6001n }).weaponBanks(5001), null);
+  // A state that is not the four parts, or names no active ship, is no state.
+  assert.equal(loaded([shipRow(5001, HEALTHY)], { shipState: [attrs([]), attrs([])] }).weaponBanks(5001), null);
+  const unnamed = loaded([shipRow(5001, HEALTHY)], { shipState: bankState({ 102: [103] }), activeShipID: null });
+  assert.deepEqual([unnamed.weaponBanks(5001), unnamed.weaponBanks(null)], [null, null], "and is kept under no ship at all");
+  dogma.clear();
+  assert.equal(dogma.weaponBanks(5001), null);
+});
+
+test("the banks change by the server's word, and by the answers to the client's own grouping calls", () => {
+  const dogma = loaded([shipRow(5001, HEALTHY)], { shipState: bankState({ 102: [103] }) });
+  // OnWeaponBanksChanged: the whole set, anew.
+  assert.equal(dogma.feed({ method: "OnWeaponBanksChanged", args: [5001n, attrs([[104n, { type: "list", items: [105n, 106n] }]])] }), true);
+  assert.deepEqual(dogma.weaponBanks(5001), { 104: [105, 106] });
+  // As a tuple of slaves, and for a ship not seen before.
+  dogma.feed({ method: "OnWeaponBanksChanged", args: [6001n, attrs([[1n, [2n]]])] });
+  assert.deepEqual([dogma.weaponBanks(6001), dogma.weaponBanks(5001)], [{ 1: [2] }, { 104: [105, 106] }]);
+  // OnWeaponGroupDestroyed: that master's bank is gone.
+  assert.equal(dogma.feed({ method: "OnWeaponGroupDestroyed", args: [5001n, 104n] }), true);
+  assert.deepEqual(dogma.weaponBanks(5001), {});
+  dogma.feed({ method: "OnWeaponGroupDestroyed", args: [7001n, 1n] });
+  dogma.feed({ method: "OnWeaponGroupDestroyed" });
+  dogma.feed({ method: "OnWeaponBanksChanged" });
+  assert.deepEqual(dogma.weaponBanks(6001), { 1: [2] });
+  // The client's own: the answer to a link is the banks; an unlink takes one slave out, and an empty bank is gone.
+  dogma.setWeaponBanks(5001n, attrs([[102n, { type: "list", items: [103n, 104n] }]]));
+  assert.deepEqual(dogma.weaponBanks(5001), { 102: [103, 104] });
+  dogma.unlinkModule(5001n, 102n, 104n);
+  assert.deepEqual(dogma.weaponBanks(5001), { 102: [103] });
+  dogma.unlinkModule(5001n, 999n, 103n);
+  dogma.unlinkModule(7001n, 102n, 103n);
+  assert.deepEqual(dogma.weaponBanks(5001), { 102: [103] });
+  dogma.unlinkModule(5001n, 102n, 103n);
+  assert.deepEqual(dogma.weaponBanks(5001), {});
+  dogma.setWeaponBanks(5001n, attrs([[102n, [103n]]]));
+  dogma.setWeaponBanks(5001n, null);
+  assert.deepEqual(dogma.weaponBanks(5001), {}, "no banks is none, and known");
+});
+
+// ── a real damaged ship ──────────────────────────────────────────────────────
+//
+// test/fixtures/dogmaDamaged.json (scripts/record-dogma.js): a Reaper given
+// the GM's medium test damage while docked, with two guns grouped, undocked.
+// The server tells a client of that ship's health twice over: in GetAllInfo,
+// as dogma attributes, and in the ballpark, as a damage state. The two have to
+// agree, or the ship's own panel and everyone else's view of it differ.
+
+const damaged = require("./fixtures/dogmaDamaged.json");
+const damagedInfo = (during) => answers(damaged).find((answer) => answer.during === during && answer.value && answer.value.type === "object").value;
+/** The damage state the ballpark was sent for a ship: ((shield, tau, when), armour, hull), wherever it is in the updates. */
+function damageStateOf(recording, shipID) {
+  const wanted = BigInt(shipID);
+  let found = null;
+  const walk = (node, depth) => {
+    if (found || depth > 12 || node === null || typeof node !== "object" || Buffer.isBuffer(node)) return;
+    if (node.type === "dict" && Array.isArray(node.entries)) {
+      for (const [name, value] of node.entries) {
+        if ((name === wanted || name === Number(wanted)) && Array.isArray(value) && Array.isArray(value[0])) found = value;
+        else walk(value, depth + 1);
+      }
+      return;
+    }
+    for (const value of Array.isArray(node) ? node : Object.values(node)) walk(value, depth + 1);
+  };
+  for (const notification of notifications(recording)) if (notification.method === "DoDestinyUpdate") walk(notification.args, 0);
+  return found;
+}
+
+test("a real damaged ship: godma's health is the health the server's own ballpark gives for it", () => {
+  const dogma = createPilotDogma({ characterID: damaged.characterID });
+  dogma.loadAllInfo(damagedInfo("GetAllInfo in space"));
+  const state = damageStateOf(damaged, damaged.shipID);
+  assert.ok(state, "the recording has the ship's damage state");
+  const [[shield], armour, hull] = state;
+  assert.deepEqual([shield, armour, hull], [1, 0.65, 0.8], "the GM's medium damage");
+  const time = BigInt(new Map(damagedInfo("GetAllInfo in space").args.entries.map(([name, value]) => [name.toString(), value])).get("shipInfo").entries[0][1].args.entries.find(([name]) => name.toString() === "time")[1]);
+  const readings = dogma.shipReadings(damaged.shipID, time);
+  assert.ok(Math.abs(readings.shieldRatio - shield) < 1e-6, `shield ${readings.shieldRatio}`);
+  assert.ok(Math.abs(readings.armorRatio - armour) < 1e-6, `armour ${readings.armorRatio}`);
+  assert.ok(Math.abs(readings.hullRatio - hull) < 1e-6, `hull ${readings.hullRatio}`);
+});
+
+test("a real damaged ship: each fitted module's damage, and the two guns in one bank", () => {
+  const dogma = createPilotDogma({ characterID: damaged.characterID });
+  dogma.loadAllInfo(damagedInfo("GetAllInfo in space"));
+  const readings = dogma.shipReadings(damaged.shipID);
+  // Three fitted modules, each 7.2 down of 40: what the web gateway's own snapshot said of them, 0.18.
+  const modules = Object.keys(readings.moduleDamage).map(Number).sort((a, b) => a - b);
+  assert.equal(modules.length, 3);
+  for (const moduleID of modules) assert.ok(Math.abs(readings.moduleDamage[moduleID] - 0.18) < 1e-9, `${moduleID}: ${readings.moduleDamage[moduleID]}`);
+  assert.ok(modules.includes(damaged.moduleID));
+  // The bank the server answered LinkWeapons with when the two were grouped: the master, and its one slave.
+  const banks = Object.entries(readings.weaponBanks);
+  assert.equal(banks.length, 1);
+  const [master, slaves] = banks[0];
+  assert.equal(slaves.length, 1);
+  assert.ok(modules.includes(Number(master)) && modules.includes(slaves[0]) && Number(master) !== slaves[0]);
+  // Docked, the same ship says the same of its modules and its bank.
+  const docked = createPilotDogma({ characterID: damaged.characterID });
+  docked.loadAllInfo(damagedInfo("GetAllInfo docked"));
+  assert.deepEqual(docked.shipReadings(damaged.shipID).weaponBanks, readings.weaponBanks);
+  assert.deepEqual(Object.keys(docked.shipReadings(damaged.shipID).moduleDamage).map(Number).sort((a, b) => a - b), modules);
 });

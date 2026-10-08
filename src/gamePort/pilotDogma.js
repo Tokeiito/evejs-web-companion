@@ -46,6 +46,27 @@
 // 513): the first module of the launcher group that is online, and the
 // sublocation at that module's flag.
 //
+// The ship's own health is read the same way as its capacitor
+// (activeShipController.py 92 to 133), and the panel shows each rounded to
+// hundredths:
+//
+//   shield         shieldCharge / shieldCapacity     (it recharges, like the capacitor)
+//   armour         (armorHP - armorDamage) / armorHP
+//   hull           (hp - damage) / hp
+//
+// A module's damage is its own `damage` over its `hp` (shipmodulebutton.py
+// 192): heat is what does it, and nothing else tells a client.
+//
+// Which weapons are grouped is dogma's too, though not an attribute. GetAllInfo
+// carries the ship's state, (instances, charges by flag, weapon banks, heat),
+// and the client makes the third its banks when the ship becomes its own
+// (clientDogmaLocation._MakeShipActive, baseDogmaLocation.SetWeaponBanks):
+// {masterID: [slaveID, ...]}. After that it is told, or tells itself from the
+// answer to its own call:
+//
+//   OnWeaponBanksChanged(shipID, banks)     the whole set, anew
+//   OnWeaponGroupDestroyed(shipID, itemID)  that master's bank is gone
+//
 // An item that turns up after the ship was loaded is told of on its own, in
 // the same form as its row in GetAllInfo (godma.py 385, 1289):
 //
@@ -71,6 +92,8 @@ const ATTRIBUTE = Object.freeze({
   CAPACITOR_CAPACITY: 482,
   QUANTITY: 805,
 });
+/** inventorycommon/const.py categoryModule. */
+const CATEGORY_MODULE = 7;
 /** godma.chargedAttributeTauCaps: a recharging attribute, the attribute that is its recharge time, and the one that is its capacity. */
 const CHARGED = new Map([
   [ATTRIBUTE.CHARGE, [ATTRIBUTE.RECHARGE_RATE, ATTRIBUTE.CAPACITOR_CAPACITY]],
@@ -144,8 +167,10 @@ function createPilotDogma({ characterID = null, now = filetimeNow, effectCategor
   const lastChange = new Map();
   /** itemID -> Map(effectID -> { isActive, startTime, duration, repeat, targetID }). */
   const effects = new Map();
-  /** item key -> { typeID, groupID, flagID, locationID }: what each held item is and where. A charge in a module has no groupID. */
+  /** item key -> { typeID, groupID, categoryID, flagID, locationID }: what each held item is and where. A charge in a module has no group. */
   const identity = new Map();
+  /** ship key -> Map(masterID -> Set(slaveID)): baseDogmaLocation.slaveModulesByMasterModule. */
+  const banks = new Map();
 
   /** godma.GetAttribute. */
   function attribute(itemID, attributeID, at = now()) {
@@ -185,7 +210,33 @@ function createPilotDogma({ characterID = null, now = filetimeNow, effectCategor
       loadRow(itemID, row);
       held.push(key(itemID));
     }
+    // clientDogmaLocation._MakeShipActive: the ship's state is (instances, charges by flag, weapon banks, heat),
+    // and the third is the active ship's banks.
+    const all = fieldsOf(allInfo);
+    const shipState = all.get("shipState");
+    const activeShip = all.get("activeShipID");
+    if (Array.isArray(shipState) && shipState.length >= 3 && activeShip !== undefined && activeShip !== null) setWeaponBanks(activeShip, shipState[2]);
     return held;
+  }
+
+  /** baseDogmaLocation.SetWeaponBanks: a ship's banks, replacing what was held. {masterID: [slaveID, ...]}, or nothing. */
+  function setWeaponBanks(shipID, data) {
+    const held = new Map();
+    for (const [masterID, slaves] of data && Array.isArray(data.entries) ? data.entries : []) {
+      const master = key(masterID);
+      if (!held.has(master)) held.set(master, new Set());
+      for (const slaveID of items(slaves)) held.get(master).add(key(slaveID));
+    }
+    banks.set(key(shipID), held);
+  }
+
+  /** clientDogmaLocation.UngroupModule, once the server has answered with the slave it took out: a bank left empty is gone. */
+  function unlinkModule(shipID, masterID, slaveID) {
+    const held = banks.get(key(shipID));
+    const slaves = held ? held.get(key(masterID)) : null;
+    if (!slaves) return;
+    slaves.delete(key(slaveID));
+    if (slaves.size === 0) held.delete(key(masterID));
   }
 
   /** godma.UpdateItem: one item's row, as GetAllInfo lists it and as OnGodmaPrimeItem sends it. */
@@ -198,9 +249,9 @@ function createPilotDogma({ characterID = null, now = filetimeNow, effectCategor
     // What the item is: its inventory row, or for a charge in a module the tuple it is keyed by.
     const inventory = rowFields(fields.get("invItem"));
     if (Array.isArray(itemID)) {
-      identity.set(key(itemID), { typeID: number(itemID[2]), groupID: null, flagID: number(itemID[1]), locationID: key(itemID[0]) });
+      identity.set(key(itemID), { typeID: number(itemID[2]), groupID: null, categoryID: null, flagID: number(itemID[1]), locationID: key(itemID[0]) });
     } else if (inventory) {
-      identity.set(key(itemID), { typeID: number(inventory.typeID), groupID: number(inventory.groupID), flagID: number(inventory.flagID), locationID: key(inventory.locationID) });
+      identity.set(key(itemID), { typeID: number(inventory.typeID), groupID: number(inventory.groupID), categoryID: number(inventory.categoryID), flagID: number(inventory.flagID), locationID: key(inventory.locationID) });
     }
     // godma.RefreshItemEffects: the effects active on the item, each with when it began, how long a cycle is and how many are left.
     const active = new Map();
@@ -360,6 +411,16 @@ function createPilotDogma({ characterID = null, now = filetimeNow, effectCategor
       shipEffect(notification.args);
       return true;
     }
+    if (notification.method === "OnWeaponBanksChanged") {
+      if (Array.isArray(notification.args) && notification.args.length >= 1) setWeaponBanks(notification.args[0], notification.args[1]);
+      return true;
+    }
+    if (notification.method === "OnWeaponGroupDestroyed") {
+      const [shipID, masterID] = Array.isArray(notification.args) ? notification.args : [];
+      const held = banks.get(key(shipID));
+      if (held) held.delete(key(masterID));
+      return true;
+    }
     if (notification.method === "OnGodmaPrimeItem") {
       primeItem(Array.isArray(notification.args) ? notification.args : []);
       return true;
@@ -383,23 +444,65 @@ function createPilotDogma({ characterID = null, now = filetimeNow, effectCategor
     return found.sort((a, b) => a - b);
   }
 
+  /** What is left of something as a fraction of its whole, or null when either is not known or there is no whole. */
+  const fraction = (left, whole) => (left === null || whole === null || !(whole > 0) ? null : Math.min(1, Math.max(0, left / whole)));
+
+  /**
+   * How damaged each of the ship's fitted modules is, {itemID: 0..1}: its
+   * damage over its hp, and only the ones that are damaged at all, so an empty
+   * answer means every module is whole.
+   */
+  function moduleDamage(shipID, at = now()) {
+    const ship = key(shipID);
+    const damaged = {};
+    for (const [itemID, item] of identity) {
+      if (typeof itemID !== "number" || item.locationID !== ship || item.categoryID !== CATEGORY_MODULE) continue;
+      const ratio = fraction(attribute(itemID, ATTRIBUTE.DAMAGE, at), attribute(itemID, ATTRIBUTE.HP, at));
+      if (ratio !== null && ratio > 0) damaged[String(itemID)] = ratio;
+    }
+    return damaged;
+  }
+
+  /** The ship's weapon banks, {masterID: [slaveID, ...]} with the slaves in order, or null when its state was never loaded. */
+  function weaponBanks(shipID) {
+    const held = banks.get(key(shipID));
+    if (!held) return null;
+    const out = {};
+    for (const [masterID, slaves] of held) {
+      if (typeof masterID !== "number") continue;
+      out[String(masterID)] = [...slaves].filter((slaveID) => typeof slaveID === "number" && slaveID !== masterID).sort((a, b) => a - b);
+    }
+    return out;
+  }
+
   /**
    * What the ship's panel shows that the ballpark does not know: the capacitor
-   * as a fraction, and the three capacities. Null until the ship is loaded.
+   * and the three kinds of health as fractions, the three capacities, and what
+   * its modules are doing. Null until the ship is loaded.
    */
   function shipReadings(shipID, at = now()) {
     const id = key(shipID);
     if (!attributes.has(id)) return null;
     const capacity = attribute(id, ATTRIBUTE.CAPACITOR_CAPACITY, at);
     const charge = attribute(id, ATTRIBUTE.CHARGE, at);
+    const armor = attribute(id, ATTRIBUTE.ARMOR_HP, at);
+    const armorDamage = attribute(id, ATTRIBUTE.ARMOR_DAMAGE, at);
+    const hull = attribute(id, ATTRIBUTE.HP, at);
+    const hullDamage = attribute(id, ATTRIBUTE.DAMAGE, at);
     return {
       capacitorRatio: capacity > 0 && charge !== null ? Math.min(1, Math.max(0, charge / capacity)) : null,
+      // activeShipController: what is left of each, of its whole.
+      shieldRatio: fraction(attribute(id, ATTRIBUTE.SHIELD_CHARGE, at), attribute(id, ATTRIBUTE.SHIELD_CAPACITY, at)),
+      armorRatio: fraction(armor === null || armorDamage === null ? null : armor - armorDamage, armor),
+      hullRatio: fraction(hull === null || hullDamage === null ? null : hull - hullDamage, hull),
       shieldCapacity: attribute(id, ATTRIBUTE.SHIELD_CAPACITY, at),
       armorCapacity: attribute(id, ATTRIBUTE.ARMOR_HP, at),
       hullCapacity: attribute(id, ATTRIBUTE.HP, at),
       // Which of its modules are running, and which are overloaded.
       activeModuleIDs: modulesWith(id, RUNNING),
       overloadedModuleIDs: modulesWith(id, new Set([EFFECT_CATEGORY.OVERLOAD])),
+      moduleDamage: moduleDamage(id, at),
+      weaponBanks: weaponBanks(id),
     };
   }
 
@@ -430,6 +533,9 @@ function createPilotDogma({ characterID = null, now = filetimeNow, effectCategor
     attribute,
     applyAttributeChange,
     onlineModule,
+    setWeaponBanks,
+    unlinkModule,
+    weaponBanks,
     /** What is known of one effect on one item, or null. */
     effect: (itemID, effectID) => effects.get(key(itemID))?.get(effectID) ?? null,
     feed,
@@ -443,6 +549,7 @@ function createPilotDogma({ characterID = null, now = filetimeNow, effectCategor
       lastChange.clear();
       effects.clear();
       identity.clear();
+      banks.clear();
     },
   };
 }

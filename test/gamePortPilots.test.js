@@ -1772,3 +1772,50 @@ test("docked, the scanner is the docked answer whatever probes were out", async 
   const { pilots, handle } = await selected({}, { now: () => 1234, ...scannerStatics });
   assert.deepEqual((await pilots.readScannerState(handle, WHOSE)).scanner, { inSpace: false, solarSystemID: SYSTEM, shipID: SHIP, maxActiveProbes: 0, launcher: null, probes: [] });
 });
+
+// ── weapon banks and module damage, through the snapshot ─────────────────────
+
+test("the snapshot's weapon banks and module damage are dogma's, and the banks follow the client's own grouping calls", async () => {
+  // The ship of the capacitor test, with what GetAllInfo says of its state: one bank, and a damaged module.
+  const allInfo = shipAllInfo();
+  const fields = allInfo.args.entries;
+  fields.push([Buffer.from("activeShipID"), BigInt(SHIP)]);
+  fields.push([Buffer.from("shipState"), [{ type: "dict", entries: [] }, { type: "dict", entries: [] }, { type: "dict", entries: [[BigInt(FITTED_MODULE), { type: "list", items: [BigInt(SHIP + 2)] }]] }, { type: "dict", entries: [] }]]);
+  const moduleRow = fields.find(([name]) => name.toString() === "shipInfo")[1].entries[1][1].args.entries;
+  moduleRow.push([Buffer.from("invItem"), { type: "packedrow", fields: { itemID: FITTED_MODULE, typeID: 3636, locationID: SHIP, flagID: 27, groupID: 53, categoryID: 7 } }]);
+  moduleRow.find(([name]) => name.toString() === "attributes")[1].entries.push([3, 10]);
+
+  const hand = handTicked();
+  const answers = { ...IN_SPACE.answers, "bound:GetAllInfo": allInfo, "bound:LinkWeapons": { type: "dict", entries: [[BigInt(FITTED_MODULE), { type: "list", items: [BigInt(SHIP + 2), BigInt(SHIP + 3)] }]] }, "bound:UnlinkModule": BigInt(SHIP + 3), "bound:UnlinkAllModules": null, "bound:LinkAllWeapons": { type: "dict", entries: [[BigInt(SHIP + 2), [BigInt(SHIP + 3)]]] } };
+  const allowed = new Set(["beyonce.MachoBindObject", "dogmaIM.MachoBindObject", "dogmaIM.GetAllInfo", "dogmaIM.LinkWeapons", "dogmaIM.UnlinkModule", "dogmaIM.UnlinkAllModules", "dogmaIM.LinkAllWeapons", "dogmaIM.Activate"]);
+  const built = build({ ...IN_SPACE, answers }, { ...hand.options, now: () => DOGMA_T_MS, allowed });
+  const { bridgeSessionID: handle } = await built.pilots.selectCharacter([PILOT, null, true], null, FIELDS);
+  await built.pilots.bindObject("beyonce", "MachoBindObject", [], null, WHOSE, handle);
+  for (const update of recordedUpdates.slice(0, 5)) built.session.notify("DoDestinyUpdate", update.args);
+  hand.parks[0].tick();
+  const ship = async () => (await built.pilots.readSpaceSnapshot(handle)).space.ship;
+
+  // A module with 10 of its 40 hit points gone, and one bank.
+  assert.deepEqual([(await ship()).moduleDamage, (await ship()).weaponBanks], [{ [FITTED_MODULE]: 0.25 }, { [FITTED_MODULE]: [SHIP + 2] }]);
+  const { boundHandle } = await built.pilots.bindObject("dogmaIM", "MachoBindObject", [], null, WHOSE, handle);
+  const ask = (method, args) => built.pilots.callBoundMethod("dogmaIM", method, args, null, WHOSE, handle, boundHandle);
+  // The answer to a link is the ship's banks, anew.
+  await ask("LinkWeapons", [SHIP, FITTED_MODULE, SHIP + 3]);
+  assert.deepEqual((await ship()).weaponBanks, { [FITTED_MODULE]: [SHIP + 2, SHIP + 3] });
+  // The answer to an unlink is the slave that came out.
+  await ask("UnlinkModule", [SHIP, FITTED_MODULE]);
+  assert.deepEqual((await ship()).weaponBanks, { [FITTED_MODULE]: [SHIP + 2] });
+  await ask("UnlinkAllModules", [SHIP]);
+  assert.deepEqual((await ship()).weaponBanks, {});
+  await ask("LinkAllWeapons", [SHIP]);
+  assert.deepEqual((await ship()).weaponBanks, { [SHIP + 2]: [SHIP + 3] });
+  // Any other call on the dogma location leaves the banks alone, and the server's own word changes them.
+  await ask("Activate", [FITTED_MODULE, "x", null, 1]);
+  await ask("Activate", [SHIP, "x", null, 1]);
+  assert.deepEqual((await ship()).weaponBanks, { [SHIP + 2]: [SHIP + 3] });
+  built.session.notify("OnWeaponBanksChanged", [BigInt(SHIP), { type: "dict", entries: [] }]);
+  assert.deepEqual((await ship()).weaponBanks, {});
+  // The module's damage follows the server's changes: burnt out is 1.
+  built.session.notify("OnModuleAttributeChanges", [{ type: "list", items: [["OnModuleAttributeChange", PILOT, BigInt(FITTED_MODULE), 3, DOGMA_T + 10000000n, 40, 10, DOGMA_T + 10000000n]] }]);
+  assert.deepEqual((await ship()).moduleDamage, { [FITTED_MODULE]: 1 });
+});

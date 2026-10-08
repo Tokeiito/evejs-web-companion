@@ -943,6 +943,24 @@ function createGamePortPilots({
    * and, for the two calls the web client makes where the retail client only
    * changes its own list (SetProbeDestination, SetProbeRangeStep), that change.
    */
+  /**
+   * What the client's dogma location does to its own weapon banks once a
+   * grouping call has been answered (clientDogmaLocation.py 763 to 801):
+   *
+   *   LinkWeapons, MergeModuleGroups, PeelAndLink, LinkAllWeapons   the answer is the ship's banks, anew
+   *   UnlinkModule(shipID, moduleID)                                the answer is the slave taken out of that bank
+   *   UnlinkAllModules(shipID)                                      no banks
+   */
+  function afterGroupingCall(entry, method, args, result) {
+    if (["LinkWeapons", "MergeModuleGroups", "PeelAndLink", "LinkAllWeapons"].includes(method)) {
+      entry.dogma.setWeaponBanks(args[0], result);
+    } else if (method === "UnlinkModule") {
+      entry.dogma.unlinkModule(args[0], args[1], result);
+    } else if (method === "UnlinkAllModules") {
+      entry.dogma.setWeaponBanks(args[0], null);
+    }
+  }
+
   function afterScanManagerCall(entry, method, args, result) {
     const list = (value) => (Array.isArray(value) ? value : value && Array.isArray(value.items) ? value.items : []);
     if (method === "RequestScans") {
@@ -1091,6 +1109,7 @@ function createGamePortPilots({
     const result = await run(entry, service, method, async () =>
       entry.session.callBound(object.objectID, method, argumentsToWire(form.args), form.kwargs));
     if (service === "scanMgr") afterScanManagerCall(entry, method, form.args, result);
+    if (service === "dogmaIM") afterGroupingCall(entry, method, form.args, result);
     return {
       service,
       method,

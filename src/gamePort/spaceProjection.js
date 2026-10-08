@@ -177,9 +177,11 @@ function projectSpace(park, { solarSystemID, shipID, readings = null }) {
       radius: own.radius,
       position: own.position,
       velocity: own.velocity,
-      shieldRatio: own.shieldRatio,
-      armorRatio: own.armorRatio,
-      hullRatio: own.hullRatio,
+      // The ship's panel reads its own health from godma (activeShipController.py); the ballpark's damage state
+      // is what everyone else is shown of it, and stands in until dogma has been asked.
+      shieldRatio: readings && readings.shieldRatio !== null && readings.shieldRatio !== undefined ? readings.shieldRatio : own.shieldRatio,
+      armorRatio: readings && readings.armorRatio !== null && readings.armorRatio !== undefined ? readings.armorRatio : own.armorRatio,
+      hullRatio: readings && readings.hullRatio !== null && readings.hullRatio !== undefined ? readings.hullRatio : own.hullRatio,
       // From dogma on the retail client, not from the ballpark.
       capacitorRatio: readings ? readings.capacitorRatio : null,
       shieldCapacity: readings ? readings.shieldCapacity : null,
@@ -188,9 +190,10 @@ function projectSpace(park, { solarSystemID, shipID, readings = null }) {
       // Which modules are running or overloaded: godma's effects.
       activeModuleIDs: readings && Array.isArray(readings.activeModuleIDs) ? readings.activeModuleIDs : [],
       overloadedModuleIDs: readings && Array.isArray(readings.overloadedModuleIDs) ? readings.overloadedModuleIDs : [],
-      // How damaged each module is, and which weapons are grouped: dogma's as well, not read yet.
-      moduleDamage: {},
-      weaponBanks: {},
+      // How damaged each module is, {itemID: 0..1}, and which weapons are grouped, {masterID: [slaveID, ...]}:
+      // dogma's as well. Null, not empty, when dogma could not be asked: empty means "none".
+      moduleDamage: readings && readings.moduleDamage ? readings.moduleDamage : null,
+      weaponBanks: readings && readings.weaponBanks ? readings.weaponBanks : null,
     } : null,
   };
 }

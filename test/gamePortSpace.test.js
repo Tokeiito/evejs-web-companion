@@ -254,7 +254,8 @@ test("the snapshot of a real grid: every ball that has a slim item, in the gatew
     itemID: undock.shipID, typeID: 588, name: "Reaper", mode: "GOTO", maxVelocity: 341, radius: ball.radius,
     position: { ...ball.newPos }, velocity: { ...ball.newVel }, shieldRatio: 1, armorRatio: 1, hullRatio: 1,
     capacitorRatio: null, shieldCapacity: null, armorCapacity: null, hullCapacity: null,
-    activeModuleIDs: [], overloadedModuleIDs: [], moduleDamage: {}, weaponBanks: {},
+    // Dogma has not been asked: what only it knows is not known, which is null and not "none".
+    activeModuleIDs: [], overloadedModuleIDs: [], moduleDamage: null, weaponBanks: null,
   });
   // A station: no ship's fields, and the health the server sent for it.
   const station = row(60003760);
@@ -272,6 +273,17 @@ test("what dogma says of the pilot's own ship goes where the ballpark has nothin
   const readings = { capacitorRatio: 0.625, shieldCapacity: 175, armorCapacity: 150, hullCapacity: 151, activeModuleIDs: [9988400103292], overloadedModuleIDs: [9988400103293] };
   const space = projectSpace(park, { solarSystemID: SYSTEM, shipID: undock.shipID, readings });
   assert.deepEqual([space.ship.activeModuleIDs, space.ship.overloadedModuleIDs], [[9988400103292], [9988400103293]]);
+  // Readings that do not say how healthy the ship is leave the ballpark's word standing; ones that do are the panel's.
+  assert.deepEqual([space.ship.shieldRatio, space.ship.armorRatio, space.ship.hullRatio, space.ship.moduleDamage, space.ship.weaponBanks], [1, 1, 1, null, null]);
+  const hurt = projectSpace(park, { solarSystemID: SYSTEM, shipID: undock.shipID, readings: { ...readings, shieldRatio: 0.4, armorRatio: 0.65, hullRatio: 0, moduleDamage: { 9988400103292: 0.18 }, weaponBanks: { 9988400103292: [9988400103293] } } }).ship;
+  assert.deepEqual([hurt.shieldRatio, hurt.armorRatio, hurt.hullRatio], [0.4, 0.65, 0], "a hull with none left is 0, not the ballpark's");
+  const stripped = projectSpace(park, { solarSystemID: SYSTEM, shipID: undock.shipID, readings: { ...readings, shieldRatio: 0, armorRatio: 0, hullRatio: 0.5 } }).ship;
+  assert.deepEqual([stripped.shieldRatio, stripped.armorRatio, stripped.hullRatio], [0, 0, 0.5], "and so are a shield and an armour with none left");
+  assert.deepEqual([hurt.moduleDamage, hurt.weaponBanks], [{ 9988400103292: 0.18 }, { 9988400103292: [9988400103293] }]);
+  const partly = projectSpace(park, { solarSystemID: SYSTEM, shipID: undock.shipID, readings: { ...readings, shieldRatio: null, armorRatio: 0.5, moduleDamage: {}, weaponBanks: {} } }).ship;
+  assert.deepEqual([partly.shieldRatio, partly.armorRatio, partly.hullRatio, partly.moduleDamage, partly.weaponBanks], [1, 0.5, 1, {}, {}]);
+  // The row everyone sees of the ship keeps the ballpark's health: that is what another pilot is shown.
+  assert.deepEqual((() => { const own = projectSpace(park, { solarSystemID: SYSTEM, shipID: undock.shipID, readings: { ...readings, armorRatio: 0.5 } }).entities.find((entity) => entity.isSelf); return [own.shieldRatio, own.armorRatio, own.hullRatio]; })(), [1, 1, 1]);
   // With nothing from dogma, nothing is said to be running.
   const bare = projectSpace(park, { solarSystemID: SYSTEM, shipID: undock.shipID }).ship;
   assert.deepEqual([bare.activeModuleIDs, bare.overloadedModuleIDs, bare.capacitorRatio], [[], [], null]);
