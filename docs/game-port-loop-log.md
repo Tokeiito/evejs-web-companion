@@ -3172,3 +3172,72 @@ the unit when the page holds it:
    messages inside messages when one turns up.
 6. Small, around dialogs: the title for a dialog's kind, the "do not ask again" box, the typed
    codes not done.
+
+---
+
+## 2026-10-08 — what the ship is doing, said as the client's HUD says it
+
+Commit `53760e5`, pushed.
+
+**What the retail client does.** Its HUD carries a line about the ship's own manoeuvre: a
+header and a line beneath. It is made from the pilot's own ball and nothing else
+(`eve/client/script/parklife/spaceMgr.py`, `GetHeaderAndSubtextForActionIndication`):
+
+- in ORBIT and following something: orbiting, whom, and at what range;
+- in FOLLOW and following something: approaching (and whom) when the range in the order is
+  50 m (`appConst.approachRange`) or none; keeping at range (whom, and the range) otherwise;
+- the range is the one in the order, the ball's `followRange`, worded by `FmtDist` with no
+  decimals. It is not how far off the thing is.
+
+The words are six labels under `UI/Inflight/Messages`, a header and a line beneath for each of
+the three.
+
+**What was built.** The game port's snapshot gives the own ship's follow range (null when it
+follows nothing). `web/src/space/actionIndication.ts` is the client's rule; the ship's line
+and the workspace header are made from it, in the client's labels when the page holds them.
+Where the snapshot gives no range, which is the gateway's, both say what they said before.
+
+Found on the way: `FmtDist` asked for no decimals cuts a distance under a metre to nothing
+(`int`), where the last entry's port rounded it. Corrected, with a test.
+
+**Proof.**
+
+- Tests: 11 new, 1 changed. 46 ways of breaking the change; two slipped through at first and
+  were closed with tests; none was left untried.
+- Suite: 9121 tests, 9097 pass, 0 fail, 24 skipped, 0 todo.
+- **In the browser, on the game port**, a sentry gun picked and the page's own buttons
+  pressed:
+
+  | pressed | the header | the ship's line |
+  |---|---|---|
+  | (nothing, just undocked) | GOTO · 100% | Under way. |
+  | Approach | Approaching · 100% | Approaching Caldari Sentry Gun I |
+  | Orbit 5 km | Orbiting · 100% | Orbiting Caldari Sentry Gun I - 5,000 m |
+  | Keep 10 km | Keeping at Range · 100% | Keeping at Range Caldari Sentry Gun I - 10 km |
+
+  Before this the approach read "FOLLOW" and "Under way.". The words are the client's, read
+  from its install through the BFF.
+- **The staging was undone**: the store was copied with the server stopped before the check
+  and put back after.
+
+**Not done.** The rest of the client's rule: a ship going to a point or aligning (the ball's
+GOTO, which needs the point it is going to and what the pilot last aligned to), a warp
+(`IndicateWarp`), and the passing "ship stopping" the client shows when Stop is pressed. For
+those the page still says its own ("Under way.", "In warp.", "Engines stopped."). The client
+shows the header and the line beneath as two lines; here they are one.
+
+### Next
+
+1. **The rest of the ship's action line**: going to a point, aligning, the warp, stopping.
+2. **The park beside the server's movement log**; the sim clock; MISSILE, FORMATION, MUSHROOM;
+   a fixed ball's collision shapes and the partition's order, if a server ever sends a ball
+   that needs them.
+3. The call ledger (`ship.Undock`, `dogmaIM.Activate` and `Deactivate` to bind as the client
+   does; `GetMissionBriefingInfo` and `GetMissionObjectiveInfo`, which the client asks on every
+   layout of the agent's window), Phase 3's hosted check and the session-less gateway calls.
+4. The scanner the client's way: results kept from the server's word, a probe's destination
+   and range kept here and sent with the scan.
+5. More of a mission's words: the objectives pane, the mission's time under the agent's line,
+   messages inside messages when one turns up.
+6. Small, around dialogs: the title for a dialog's kind, the "do not ask again" box, the typed
+   codes not done.
