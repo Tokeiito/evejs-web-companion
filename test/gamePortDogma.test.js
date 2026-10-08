@@ -719,16 +719,37 @@ test("a module that stops heating is taken off, and the rack cools from where it
   near(pair.heat(21).high, calculateHeat(before.high * 100, 1000, 0.08, 0.01, 1, 100) / 100);
 });
 
-test("heat is forgotten with everything else, and a ship loaded again starts from its row", () => {
+test("a rack's heat is the ship item's: kept while that ship is loaded again, gone when another ship is", () => {
   const ship = heated();
+  const reload = (seconds, rows) => {
+    ship.clock.now = ship.at(seconds);
+    ship.dogma.clear();
+    assert.equal(ship.dogma.rackHeat(5001), null, "between the flush and the load nothing is said");
+    ship.dogma.loadAllInfo(kv({ shipInfo: attrs(rows) }));
+  };
+  const again = shipRow(5001, [...HEALTHY, ...RACKS, [HEAT_HI, 20]]);
   ship.told(0, changes(change(5001n, HEAT_HI, ship.at(0), 60)));
   ship.told(0, heatAdded(HEAT_HI, 101));
-  near(ship.heat(5).high, calculateHeat(60, 5000, 0.04, 0.01, 1, 100) / 100);
-  // The ship loaded again: a new item, with the row's heat and nothing heating it.
-  ship.clock.now = ship.at(5);
-  ship.dogma.loadAllInfo(kv({ shipInfo: attrs([shipRow(5001, [...HEALTHY, ...RACKS, [HEAT_HI, 20]])]) }));
-  assert.equal(ship.heat(5).high, 0.2);
-  near(ship.heat(65).high, (20 * Math.exp(-0.6)) / 100);
-  ship.dogma.clear();
+  const atFive = calculateHeat(60, 5000, 0.04, 0.01, 1, 100);
+  near(ship.heat(5).high, atFive / 100);
+  // A dock, an undock or a jump in the same ship: godma is flushed and loaded again, and the heat carries on
+  // with what was heating it. The row's own word for the heat is not taken: the item was not made anew.
+  reload(5, [again, heater(101)]);
+  near(ship.heat(5).high, atFive / 100);
+  near(ship.heat(10).high, calculateHeat(atFive, 5000, 0.04, 0.01, 1, 100) / 100);
+  // Loaded again without the module: it heats nothing from then, and what went before it left is not lost.
+  reload(10, [again]);
+  const atTen = calculateHeat(atFive, 5000, 0.04, 0.01, 1, 100);
+  near(ship.heat(10).high, atTen / 100);
+  near(ship.heat(20).high, (atTen * Math.exp(-0.1)) / 100);
+  // The module back aboard does not heat until the server says so again.
+  reload(20, [again, heater(101)]);
+  near(ship.heat(30).high, (atTen * Math.exp(-0.2)) / 100);
+  // Another ship: the old one was unloaded and its heat with it. Back in it, it is a new item, from its row.
+  reload(30, [shipRow(6001, [...HEALTHY, ...RACKS])]);
   assert.equal(ship.dogma.rackHeat(5001), null);
+  assert.deepEqual(ship.heat(30, 6001), { high: 0, mid: 0, low: 0 });
+  reload(40, [again]);
+  assert.equal(ship.heat(40).high, 0.2);
+  near(ship.heat(100).high, (20 * Math.exp(-0.6)) / 100);
 });

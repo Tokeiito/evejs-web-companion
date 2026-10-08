@@ -86,6 +86,13 @@
 // shows value / capacity (shipDogmaItem.GetHeatValues). The heat states in
 // GetAllInfo's ship state are unpacked by the client and never used.
 //
+// The heat belongs to the dogma location's ship item, and the client keeps the
+// ship item it has for as long as that ship is its current one: asked to make
+// it active again after a dock, an undock or a jump, _MakeShipActive sees it
+// is the same ship and does nothing. Godma is flushed and primed again each
+// time; the racks' heat, and what is heating them, carry on. A change of ship
+// unloads the old one and its heat with it.
+//
 // An item that turns up after the ship was loaded is told of on its own, in
 // the same form as its row in GetAllInfo (godma.py 385, 1289):
 //
@@ -255,6 +262,12 @@ function createPilotDogma({ characterID = null, now = filetimeNow, effectCategor
       loadRow(itemID, row);
       held.push(key(itemID));
     }
+    // The ship item the client has is kept when that ship is loaded again; any other was unloaded, and its
+    // heat with it. A module that is no longer among the ship's items heats nothing.
+    for (const [id, racks] of [...heat]) {
+      if (!held.includes(id)) heat.delete(id);
+      else for (const state of racks.values()) for (const moduleID of [...state.sources]) if (!held.includes(moduleID)) state.sources.delete(moduleID);
+    }
     // clientDogmaLocation._MakeShipActive: the ship's state is (instances, charges by flag, weapon banks, heat),
     // and the third is the active ship's banks.
     const all = fieldsOf(allInfo);
@@ -315,9 +328,9 @@ function createPilotDogma({ characterID = null, now = filetimeNow, effectCategor
     const given = fields.get("attributes");
     for (const [attributeID, value] of given && Array.isArray(given.entries) ? given.entries : []) values.set(number(attributeID), number(value));
     updateAttributes(itemID, values, clock(fields.get("time")) ?? now());
-    // HeatAttribute.__init__, for an item that has racks to heat: what the row says of each, no more than its
-    // capacity, true from now, with nothing coming in.
-    if ([...HEAT.values()].some(({ capacity }) => values.has(capacity))) {
+    // HeatAttribute.__init__, for an item that has racks to heat and is not held already: what the row says of
+    // each, no more than its capacity, true from now, with nothing coming in.
+    if (!heat.has(key(itemID)) && [...HEAT.values()].some(({ capacity }) => values.has(capacity))) {
       const racks = new Map();
       for (const [heatID, { capacity }] of HEAT) racks.set(heatID, { value: Math.min(values.get(capacity) ?? 0, values.get(heatID) ?? 0), at: now(), sources: new Set() });
       heat.set(key(itemID), racks);
@@ -576,7 +589,7 @@ function createPilotDogma({ characterID = null, now = filetimeNow, effectCategor
    */
   function rackHeat(shipID, at = now()) {
     const id = key(shipID);
-    const racks = heat.get(id);
+    const racks = attributes.has(id) ? heat.get(id) : null;
     if (!racks) return null;
     const out = {};
     for (const [heatID, { capacity, dissipation, family }] of HEAT) {
@@ -664,13 +677,16 @@ function createPilotDogma({ characterID = null, now = filetimeNow, effectCategor
     shipReadings,
     has: (itemID) => attributes.has(key(itemID)),
     clear() {
+      // Not the racks' heat: that is the ship item's, which outlives godma's flush (see the top of the file).
+      // It is brought to now first, so what went before is reckoned by what was known before; loadAllInfo
+      // lets go of it if the ship is not among what it loads.
+      for (const [id, racks] of heat) for (const heatID of racks.keys()) updateHeat(id, heatID, now());
       attributes.clear();
       charged.clear();
       lastChange.clear();
       effects.clear();
       identity.clear();
       banks.clear();
-      heat.clear();
     },
   };
 }
