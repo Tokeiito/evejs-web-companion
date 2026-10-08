@@ -42,7 +42,7 @@ const refusedBy = (key, reason = key) => sessionError("GAME_CALL_REFUSED", `refu
  * character on the session as the server's session change does.
  */
 function fakeSession({ answers = {}, userid = ACCOUNT, loginError = null, comesOnline = true, inSpace = false } = {}) {
-  const listeners = { notification: new Set(), sessionChange: new Set(), close: new Set() };
+  const listeners = { notification: new Set(), sessionChange: new Set(), close: new Set(), clientCall: new Set() };
   const session = {
     attributes: {},
     calls: [],
@@ -96,6 +96,15 @@ function fakeSession({ answers = {}, userid = ACCOUNT, loginError = null, comesO
     onNotification(listener) { listeners.notification.add(listener); return () => listeners.notification.delete(listener); },
     onSessionChange(listener) { listeners.sessionChange.add(listener); return () => listeners.sessionChange.delete(listener); },
     onClose(listener) { listeners.close.add(listener); return () => listeners.close.delete(listener); },
+    onClientCall(listener) { listeners.clientCall.add(listener); return () => listeners.clientCall.delete(listener); },
+    clientCalls: null,
+    /** The server calls one of the client's own services, as the session hands such a call on. */
+    async ask(service, method, args = [], kwargs = null) {
+      const call = { service, method, args, kwargs };
+      const answer = await session.clientCalls(call);
+      for (const listener of listeners.clientCall) listener({ ...call, answered: answer !== undefined, answer, error: null });
+      return answer;
+    },
     close() {
       if (session.closed) return;
       session.closed = true;
@@ -1190,4 +1199,38 @@ test("JSON arguments become what the client's marshaller takes, and nothing else
   // A bare object is not a marshal value. It is left for the encoder to refuse by name.
   const bare = { kicked: [] };
   assert.equal(argumentsToWire(bare), bare);
+});
+
+// ── what the server asks the client ──────────────────────────────────────────
+
+test("the server's question before a mission is quit is answered Yes, and a cache it wants forgotten is None", async () => {
+  const told = [];
+  const { pilots, made } = build({}, { onClientCall: (call, characterID) => told.push([characterID, call.service, call.method, call.answered, call.answer]) });
+  await pilots.selectCharacter([PILOT, null, true], null, FIELDS);
+  const session = made[0];
+
+  assert.equal(await session.ask("agents", "YesNo", [["UI/Agents/StandardMission/QuitMissionTitle", {}], ["UI/Agents/StandardMission/QuitMissionMessage", {}], 3008416, 4802, "AgtQuitMission"]), true);
+  assert.equal(await session.ask("objectCaching", "InvalidateCachedMethodCall", ["charFittingMgr", "GetFittings", PILOT]), null);
+  assert.equal(await session.ask("objectCaching", "InvalidateCachedMethodCalls", [[]]), null);
+  // What this client has no answer to stays unanswered: a choice among several, a number, a question in chat.
+  assert.equal(await session.ask("agents", "SingleChoiceBox", ["title", "body", []]), undefined);
+  assert.equal(await session.ask("agents", "GetQuantity", []), undefined);
+  assert.equal(await session.ask("XmppChat", "AskYesNoQuestion", []), undefined);
+
+  assert.deepEqual(told, [
+    [PILOT, "agents", "YesNo", true, true],
+    [PILOT, "objectCaching", "InvalidateCachedMethodCall", true, null],
+    [PILOT, "objectCaching", "InvalidateCachedMethodCalls", true, null],
+    [PILOT, "agents", "SingleChoiceBox", false, undefined],
+    [PILOT, "agents", "GetQuantity", false, undefined],
+    [PILOT, "XmppChat", "AskYesNoQuestion", false, undefined],
+  ]);
+});
+
+test("who answers the server's questions can be put in from outside, and is told whose pilot is asked", async () => {
+  const asked = [];
+  const { pilots, made } = build({}, { answerClientCall: (call, characterID) => { asked.push([characterID, call.method]); return false; } });
+  await pilots.selectCharacter([PILOT, null, true], null, FIELDS);
+  assert.equal(await made[0].ask("agents", "YesNo", []), false);
+  assert.deepEqual(asked, [[PILOT, "YesNo"]]);
 });

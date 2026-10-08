@@ -57,6 +57,8 @@ const MAX_IDLE_SECONDS_DEFAULT = 60;
 const CLOCK_SYNC_INTERVAL_MS = 3 * 60 * 1000;
 const CLOCK_SYNC_ITERATIONS = 5;
 const CALL_TIMEOUT_MS = 60_000;
+/** The longest delay a timer here takes: past it, one fires at once. */
+const LONGEST_TIMER_MS = 2 ** 31 - 1;
 const HANDSHAKE_TIMEOUT_MS = 20_000;
 /** FILETIME ticks (100ns) between 1601 and 1970. */
 const FILETIME_EPOCH_OFFSET = 116444736000000000n;
@@ -243,6 +245,8 @@ class GamePortSession {
     now = () => Date.now(),
     timers = { setTimeout, clearTimeout },
     callTimeoutMs = CALL_TIMEOUT_MS,
+    provisionalWaitLimitMs = Infinity,
+    clientCalls = null,
   } = {}) {
     if (!transport) throw new TypeError("A game-port session needs a transport.");
     this.transport = transport;
@@ -253,6 +257,18 @@ class GamePortSession {
     this.now = now;
     this.timers = timers;
     this.callTimeoutMs = callTimeoutMs;
+    /**
+     * The longest a call waits once the server has said its answer will be late.
+     * The client waits as long as the server says, which for a question put to
+     * the player is a day; whoever is waiting on us may not have a day.
+     */
+    this.provisionalWaitLimitMs = provisionalWaitLimitMs;
+    /**
+     * The client's own services, for the calls the server makes to it:
+     * fn({service, method, args, kwargs}) gives what the method returns, now or
+     * as a promise. Undefined means nobody here answers that call.
+     */
+    this.clientCalls = clientCalls;
 
     this.closed = false;
     this.closeReason = null;
@@ -279,7 +295,7 @@ class GamePortSession {
     this.lastSentAt = this.now();
     this.counters = { sent: 0, received: 0, compressedSent: 0, compressedReceived: 0, unknownPackets: 0 };
 
-    this.listeners = { notification: new Set(), sessionChange: new Set(), close: new Set(), packet: new Set() };
+    this.listeners = { notification: new Set(), sessionChange: new Set(), close: new Set(), packet: new Set(), clientCall: new Set() };
     this.backgroundTimers = new Set();
 
     transport.onFrame = (payload) => this._onFrame(payload);
@@ -299,6 +315,11 @@ class GamePortSession {
   onClose(listener) { return this._listen("close", listener); }
   /** fn(packet, direction) for every packet, "in" or "out". For recording. */
   onPacket(listener) { return this._listen("packet", listener); }
+  /**
+   * fn({service, method, args, kwargs, answered, answer, error}) once for every
+   * call the server made to this client, after it was answered or left alone.
+   */
+  onClientCall(listener) { return this._listen("clientCall", listener); }
 
   _listen(kind, listener) {
     this.listeners[kind].add(listener);
@@ -506,20 +527,27 @@ class GamePortSession {
       journeyID: this.journeyID,
     });
     const answered = new Promise((resolve, reject) => {
-      const timer = this.timers.setTimeout(() => {
-        this.pending.delete(callID);
-        reject(new GamePortError("CALL_TIMEOUT", `${service ?? boundObject}.${method} got no answer from the game server.`));
-      }, this.callTimeoutMs);
-      this.pending.set(callID, { label: `${service ?? boundObject}.${method}`, resolve, reject, timer });
+      const waiter = { label: `${service ?? boundObject}.${method}`, resolve, reject, timer: undefined };
+      this.pending.set(callID, waiter);
+      this._waitFor(callID, waiter, this.callTimeoutMs);
       try {
         this._writePacket(packet);
       } catch (error) {
-        this.timers.clearTimeout(timer);
+        this.timers.clearTimeout(waiter.timer);
         this.pending.delete(callID);
         reject(error);
       }
     });
     return answered.then((result) => this._unwrapCachedResult(result));
+  }
+
+  /** Give a call this long, from now, to be answered. */
+  _waitFor(callID, waiter, milliseconds) {
+    if (waiter.timer !== undefined) this.timers.clearTimeout(waiter.timer);
+    waiter.timer = this.timers.setTimeout(() => {
+      this.pending.delete(callID);
+      waiter.reject(new GamePortError("CALL_TIMEOUT", `${waiter.label} got no answer from the game server.`));
+    }, milliseconds);
   }
 
   // ── cached answers: objectCaching ──────────────────────────────────────────
@@ -784,6 +812,9 @@ class GamePortSession {
       case TYPE.PING_RSP:
         this._settleCall(packet);
         return;
+      case TYPE.CALL_REQ:
+        this._answerCall(value, packet);
+        return;
       case TYPE.NOTIFICATION:
         this._emit("notification", readNotification(packet));
         return;
@@ -819,6 +850,23 @@ class GamePortSession {
     const callID = packet.destination.callID;
     const waiter = callID === null || callID === undefined ? undefined : this.pending.get(Number(callID));
     if (!waiter) return;
+    // machoNet._BlockingCall: an answer carrying `provisional` is not the
+    // answer. It is (seconds, event, args): the caller goes on waiting, for that
+    // long from now, and the event is raised in the client meanwhile. A server
+    // sends one before it asks the player something (SendProvisionalResponse).
+    const provisional = packet.command === TYPE.CALL_RSP ? dictGet(packet.oob, "provisional") : undefined;
+    if (Array.isArray(provisional)) {
+      const seconds = Number(integer(provisional[0]) ?? NaN);
+      const asked = Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : this.callTimeoutMs;
+      this._waitFor(Number(callID), waiter, Math.min(asked, this.provisionalWaitLimitMs, LONGEST_TIMER_MS));
+      const event = text(provisional[1]);
+      if (event !== null) {
+        this._emit("notification", {
+          method: event, idtype: null, narrowcast: null, service: null, args: provisional[2] ?? [], kwargs: null, packet, provisional: true,
+        });
+      }
+      return;
+    }
     this.pending.delete(Number(callID));
     this.timers.clearTimeout(waiter.timer);
     if (packet.command === TYPE.ERROR_RESPONSE) {
@@ -832,6 +880,51 @@ class GamePortSession {
       return;
     }
     waiter.resolve(unwrapSubstream(packet.body[0]));
+  }
+
+  /**
+   * A call the server makes to this client: a method of one of the client's
+   * own services, by name (ServiceCallGPCS.CallUp, on the client's side of it).
+   * The body is what we send for a call of ours, (0, pickle((1, method, args,
+   * kw))), and the answer is what the server sends for one: the return value,
+   * pickled, back where the call came from (machoNetPacket.Response swaps the
+   * two addresses, so the server's call ID comes back as the destination's).
+   *
+   * A call nobody here answers is left unanswered and reported. The client
+   * would answer it with the exception it raised; nothing is waiting on that
+   * but the server's own patience.
+   */
+  _answerCall(raw, packet) {
+    const head = packet.body[0];
+    const inner = Array.isArray(head) && !head[0] ? unwrapSubstream(head[1]) : null;
+    const call = {
+      service: packet.destination.service ?? null,
+      method: Array.isArray(inner) ? text(inner[1]) : null,
+      args: Array.isArray(inner) ? inner[2] ?? [] : [],
+      kwargs: Array.isArray(inner) ? inner[3] ?? null : null,
+    };
+    const report = (outcome) => this._emit("clientCall", { ...call, answered: false, answer: undefined, error: null, ...outcome });
+    if (call.service === null || call.method === null || typeof this.clientCalls !== "function") {
+      report({});
+      return;
+    }
+    Promise.resolve()
+      .then(() => this.clientCalls(call))
+      .then((answer) => {
+        if (answer === undefined) {
+          report({});
+          return;
+        }
+        this._writePacket(buildPacket(TYPE.CALL_RSP, {
+          source: raw.args[2],
+          destination: raw.args[1],
+          userID: packet.userID,
+          body: [{ type: "substream", value: answer }],
+          journeyID: this.journeyID,
+        }));
+        report({ answered: true, answer });
+      })
+      .catch((error) => report({ error }));
   }
 
   /** change is (clueless, {attribute: (old, new)}). */

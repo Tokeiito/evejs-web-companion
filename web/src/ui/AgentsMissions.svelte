@@ -18,6 +18,7 @@
   // R36 — the mission bot sits with the agents it works for.
   import MissionBot from "./MissionBot.svelte";
   import { panelErrorWords } from "../bridge/refusals.ts";
+  import { agentActionQuestion } from "../bridge/agents.ts";
 
   let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
 
@@ -136,6 +137,17 @@
     }
   }
 
+  // Quit and Decline are asked about first. The retail client is asked by the
+  // server once the button is pressed; here the question comes before the press
+  // (agentActionQuestion says why).
+  function chooseAction(action: AgentAction): void {
+    const question = agentActionQuestion(action.buttonType);
+    if (question !== null && !(typeof window !== "undefined" && window.confirm(question))) {
+      return;
+    }
+    void run(() => flow.chooseAction($agents.activeAgentID as number, action));
+  }
+
   onMount(() => {
     void run(async () => {
       await flow.loadAgents();
@@ -251,7 +263,7 @@
         <button
           type="button"
           disabled={busy}
-          onclick={() => run(() => flow.chooseAction($agents.activeAgentID as number, action as AgentAction))}
+          onclick={() => chooseAction(action as AgentAction)}
         >
           {action.label}
         </button>

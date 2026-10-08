@@ -113,6 +113,42 @@ const CONTAINER_STRUCTURE = 10014;
 const LOCATION_SERVICES = new Set(["invbroker", "ship", "dogmaIM", "crimewatch", "reprocessingSvc", "entity", "beyonce", "scanMgr"]);
 const LOCATION_ATTRIBUTES = ["stationid", "structureid", "solarsystemid", "locationid"];
 
+/**
+ * How long a call waits once the server has said its answer will be late. The
+ * client waits a day for the player; the browser's request behind this call
+ * does not, so past this the call fails as one the server never answered.
+ */
+const PROVISIONAL_WAIT_LIMIT_MS = 120_000;
+
+/**
+ * What this client's own services answer when the server calls them, or
+ * undefined for a call it has no answer to. The server makes these calls and
+ * waits; on the retail client most of them put a window in front of the player.
+ *
+ *   agents.YesNo(title, body, agentID, contentID, suppressID)
+ *       ui/station/agents/agents.py 404: a Yes/No window, answered with whether
+ *       Yes was pressed. The server asks it before a mission is quit or
+ *       declined and before research is cancelled. Answered Yes, which is what
+ *       the client answers at once, with no window, when the player has ticked
+ *       "do not show this again" on that message (prompt_player's suppress_id).
+ *       ⚠ The web client does not yet put the question to its own user.
+ *   objectCaching.InvalidateCachedMethodCall(service, method, *args)
+ *       carbon/common/script/net/objectCaching.py 222: forget a method's cached
+ *       answer, so the next call asks the server. Nothing is kept here to
+ *       forget (every call is sent), and the method returns None.
+ */
+function defaultClientCallAnswer({ service, method }) {
+  switch (`${service}.${method}`) {
+    case "agents.YesNo":
+      return true;
+    case "objectCaching.InvalidateCachedMethodCall":
+    case "objectCaching.InvalidateCachedMethodCalls":
+      return null;
+    default:
+      return undefined;
+  }
+}
+
 /** The kind of a dogma effect, from the static data the BFF already reads. Loaded when first asked. */
 function defaultEffectCategory(effectID) {
   // eslint-disable-next-line global-require
@@ -202,7 +238,7 @@ function selectionRow(selection, characterID) {
 function createGamePortPilots({
   endpoint = gameEndpoint(),
   connect = () => connectTcp(endpoint),
-  createSession = (transport) => new GamePortSession({ transport }),
+  createSession = (transport) => new GamePortSession({ transport, provisionalWaitLimitMs: PROVISIONAL_WAIT_LIMIT_MS }),
   passwordFor = () => "",
   isOnline = null,
   allowed = new Set(contract.gatewayAllowlist.pairs),
@@ -217,6 +253,9 @@ function createGamePortPilots({
   onSpaceError = () => {},
   // What kind a dogma effect is, from the game's static data (dogma.data.get_effect on the retail client).
   effectCategory = defaultEffectCategory,
+  // The client's own services, for the calls the server makes to it, and a word about each call once it is over.
+  answerClientCall = defaultClientCallAnswer,
+  onClientCall = () => {},
 } = {}) {
   const sessions = new Map();
   const epoch = randomBytes(12).toString("base64url");
@@ -370,6 +409,8 @@ function createGamePortPilots({
       dogmaLoaded: null,
       ended: false,
     };
+    session.clientCalls = (call) => answerClientCall(call, characterID);
+    session.onClientCall((call) => onClientCall(call, characterID));
     session.onNotification((notification) => {
       // machoNet.OnMachoObjectDisconnect(objectID, clientID, refID): the server has let a bound object go.
       if (notification.method === "OnMachoObjectDisconnect" && Array.isArray(notification.args)) {

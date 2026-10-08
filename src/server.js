@@ -167,6 +167,12 @@ const gamePortPilots = options.gamePortPilots !== undefined
       isOnline: async (accountID, characterID) => (await accountGateway.getCharacterStatus(accountID, characterID))?.online,
       // A pilot's ballpark runs in its own time; nobody is waiting on it to hear that something went wrong.
       onSpaceError: (error, what, characterID) => console.warn(`[game-port] pilot ${characterID}: ballpark ${what} failed: ${error && error.message}`),
+      // The server asked the client something. Say what, and what it was told, since no user saw the question.
+      onClientCall: (call, characterID) => {
+        const asked = `[game-port] pilot ${characterID}: the server called ${call.service}.${call.method} on the client`;
+        if (call.answered) console.log(`${asked}, and was answered ${JSON.stringify(call.answer)}`);
+        else console.warn(`${asked}, which ${call.error ? `failed: ${call.error.message}` : "this client does not answer"}`);
+      },
     })
     : null;
 app.locals.gamePortPilots = gamePortPilots;

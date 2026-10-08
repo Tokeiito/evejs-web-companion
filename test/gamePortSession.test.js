@@ -615,3 +615,174 @@ test("the clock sync stops after three readings that each beat the last", { time
   assert.equal(transport.sent.length - before, 3);
   assert.equal(lastCall(transport).method, "GetTime");
 });
+
+// ── calls the server makes to the client ─────────────────────────────────────
+//
+// eve.js builds one in clientSession.sendClientCallRequest, and reads the answer in consumeClientCallResponse: the
+// node's call ID off the answer's destination, and the return value out of a one-item body holding a pickle. The
+// frames here are built the way that function builds them.
+
+const SERVER_CALL_ID = 610001;
+const serverCall = (service, method, args = [], kwargs = { type: "dict", entries: [["machoVersion", 1]] }, head = 0) => marshalEncode(buildPacket(TYPE.CALL_REQ, {
+  source: nodeAddress(65450, null, SERVER_CALL_ID),
+  destination: clientAddress(2065450, null, service),
+  userID: 9001,
+  body: [[head, { type: "substream", value: [head ? "C=0:1" : 1, method, args, kwargs] }]],
+  oob: { type: "dict", entries: [["machoTimeout", 86400]] },
+}));
+const lastPacket = (transport) => parsePacket(marshalDecodeExact(inflated(transport.sent.at(-1))));
+
+test("a call the server makes to the client is answered where it came from, with what the client's service returns", { timeout: 5000 }, async (context) => {
+  const asked = [];
+  const seen = [];
+  const { session, transport } = await loggedIn(context, {
+    session: { clientCalls: (call) => { asked.push(call); return true; } },
+  });
+  session.onClientCall((call) => seen.push(call));
+  const before = transport.sent.length;
+  transport.deliver(serverCall("agents", "YesNo", [["UI/Agents/StandardMission/QuitMissionTitle", { type: "dict", entries: [] }], "Sure?", 3008416, 4802, "AgtQuitMission"]));
+  await settle();
+  await settle();
+
+  // What the service was asked: its name off the address, the method and its arguments out of the pickle.
+  assert.equal(asked.length, 1);
+  assert.equal(asked[0].service, "agents");
+  assert.equal(asked[0].method, "YesNo");
+  assert.equal(asked[0].args.length, 5);
+  assert.equal(asked[0].args[2], 3008416);
+  assert.equal(text(asked[0].args[4]), "AgtQuitMission");
+  assert.equal(dictGet(asked[0].kwargs, "machoVersion"), 1);
+
+  // One packet back: a call response, the two addresses swapped, so the server's call ID is the destination's.
+  assert.equal(transport.sent.length, before + 1);
+  const reply = lastPacket(transport);
+  assert.equal(reply.command, TYPE.CALL_RSP);
+  assert.deepEqual(reply.destination, { kind: "node", nodeID: 65450, service: null, callID: SERVER_CALL_ID });
+  assert.deepEqual(reply.source, { kind: "client", clientID: 2065450, callID: null, service: "agents" });
+  // The user the call named, which need not be the one this session logged in as.
+  assert.equal(reply.userID, 9001);
+  // The body is one item, the return value pickled: what consumeClientCallResponse unwraps.
+  assert.equal(reply.body.length, 1);
+  assert.equal(reply.body[0].type, "substream");
+  assert.equal(reply.body[0].value, true);
+
+  assert.deepEqual(seen.map((call) => [call.service, call.method, call.answered, call.answer, call.error]), [["agents", "YesNo", true, true, null]]);
+  assert.equal(session.counters.unknownPackets, 0);
+});
+
+test("a service that answers later is answered for when it does, and None is an answer", { timeout: 5000 }, async (context) => {
+  let release;
+  const { transport } = await loggedIn(context, {
+    session: { clientCalls: () => new Promise((resolve) => { release = () => resolve(null); }) },
+  });
+  const before = transport.sent.length;
+  transport.deliver(serverCall("objectCaching", "InvalidateCachedMethodCall", ["charFittingMgr", "GetFittings", 140000002]));
+  await settle();
+  assert.equal(transport.sent.length, before, "nothing is sent until the service has answered");
+  release();
+  await settle();
+  await settle();
+  assert.equal(transport.sent.length, before + 1);
+  const reply = lastPacket(transport);
+  assert.equal(reply.command, TYPE.CALL_RSP);
+  assert.equal(reply.destination.callID, SERVER_CALL_ID);
+  assert.equal(reply.body[0].value, null);
+});
+
+test("a call nobody here answers is left unanswered and said so", { timeout: 5000 }, async (context) => {
+  const seen = [];
+  const cases = [
+    // No services at all.
+    [{}, serverCall("agents", "YesNo", [])],
+    // A service that has no answer to this method.
+    [{ clientCalls: () => undefined }, serverCall("agents", "SingleChoiceBox", [])],
+    // A service that fails.
+    [{ clientCalls: () => { throw new Error("no window to show it in"); } }, serverCall("agents", "YesNo", [])],
+    // A call on an object the client is meant to hold, and this one holds none.
+    [{ clientCalls: () => true }, serverCall("agents", "Anything", [], undefined, 1)],
+  ];
+  for (const [options, frame] of cases) {
+    const { session, transport } = await loggedIn(context, { session: options });
+    session.onClientCall((call) => seen.push(call));
+    const before = transport.sent.length;
+    transport.deliver(frame);
+    await settle();
+    await settle();
+    assert.equal(transport.sent.length, before, "nothing goes back");
+    assert.equal(session.counters.unknownPackets, 0);
+  }
+  assert.deepEqual(seen.map((call) => [call.method, call.answered, call.error && call.error.message]), [
+    ["YesNo", false, null],
+    ["SingleChoiceBox", false, null],
+    ["YesNo", false, "no window to show it in"],
+    [null, false, null],
+  ]);
+});
+
+test("an answer marked provisional is not the answer: the call waits on, for as long as the server says", { timeout: 5000 }, async (context) => {
+  const time = manualTime();
+  const { session, transport } = await loggedIn(context, { session: { now: time.now, timers: time.timers, callTimeoutMs: 60_000 } });
+  const events = [];
+  session.onNotification((notification) => events.push(notification));
+  let settled = null;
+  const answer = session.callBound("N=65450:7", "DoAction", [383]).then((value) => { settled = ["answered", value]; }, (error) => { settled = ["failed", error.code]; });
+  const callID = lastCall(transport).packet.source.callID;
+  const provisional = marshalEncode(buildPacket(TYPE.CALL_RSP, {
+    source: nodeAddress(65450, "agentMgr"),
+    destination: clientAddress(2065450, callID),
+    userID: 2,
+    body: [[]],
+    oob: { type: "dict", entries: [["provisional", [86400, "OnAgentProvisionalResponse", []]]] },
+  }));
+
+  await time.advance(50_000);
+  transport.deliver(provisional);
+  await settle();
+  assert.equal(settled, null, "the call is still waiting");
+  assert.equal(session.pending.has(Number(callID)), true);
+  // The event the server named is raised in the client, as machoNet scatters it.
+  assert.deepEqual(events.map((event) => [event.method, event.args, event.provisional]), [["OnAgentProvisionalResponse", [], true]]);
+
+  // Past the first minute, where the call would have given up, and on for hours.
+  await time.advance(6 * 3600 * 1000);
+  assert.equal(settled, null);
+  transport.deliver(callResponse(callID, ["the conversation", 1]));
+  await answer;
+  assert.equal(settled[0], "answered");
+  assert.equal(text(settled[1][0]), "the conversation");
+  assert.equal(session.pending.has(Number(callID)), false);
+});
+
+test("a provisional answer's wait runs from when it came, ends in a timeout, and can be capped", { timeout: 5000 }, async (context) => {
+  const provisionalFor = (callID, seconds) => marshalEncode(buildPacket(TYPE.CALL_RSP, {
+    source: nodeAddress(65450, "agentMgr"),
+    destination: clientAddress(2065450, callID),
+    userID: 2,
+    body: [[]],
+    oob: { type: "dict", entries: [["provisional", [seconds, "OnAgentProvisionalResponse", []]]] },
+  }));
+  for (const [limit, seconds, stillWaitingAt, goneAt] of [
+    // As the client: the server's 300 seconds, counted from the provisional answer and not from the call.
+    [undefined, 300, 299_000, 300_000],
+    // Capped: whoever is waiting on us has two minutes.
+    [120_000, 86400, 119_000, 120_000],
+    // A provisional answer with no time in it leaves the call the minute it began with, from now.
+    [undefined, null, 59_000, 60_000],
+  ]) {
+    const time = manualTime();
+    const { session, transport } = await loggedIn(context, {
+      session: { now: time.now, timers: time.timers, callTimeoutMs: 60_000, ...(limit === undefined ? {} : { provisionalWaitLimitMs: limit }) },
+    });
+    let failure = null;
+    session.call("agentMgr", "Anything").catch((error) => { failure = error.code; });
+    const callID = lastCall(transport).packet.source.callID;
+    await time.advance(30_000);
+    transport.deliver(provisionalFor(callID, seconds));
+    await time.advance(stillWaitingAt);
+    assert.equal(failure, null, `still waiting ${stillWaitingAt} ms after a provisional answer of ${seconds} s`);
+    await time.advance(goneAt - stillWaitingAt);
+    await settle();
+    assert.equal(failure, "CALL_TIMEOUT");
+    assert.equal(session.pending.has(Number(callID)), false);
+  }
+});
