@@ -258,8 +258,12 @@ test("the snapshot of a real grid: every ball that has a slim item, in the gatew
 
 test("what dogma says of the pilot's own ship goes where the ballpark has nothing to say", () => {
   const park = undockedPark();
-  const readings = { capacitorRatio: 0.625, shieldCapacity: 175, armorCapacity: 150, hullCapacity: 151 };
+  const readings = { capacitorRatio: 0.625, shieldCapacity: 175, armorCapacity: 150, hullCapacity: 151, activeModuleIDs: [9988400103292], overloadedModuleIDs: [9988400103293] };
   const space = projectSpace(park, { solarSystemID: SYSTEM, shipID: undock.shipID, readings });
+  assert.deepEqual([space.ship.activeModuleIDs, space.ship.overloadedModuleIDs], [[9988400103292], [9988400103293]]);
+  // With nothing from dogma, nothing is said to be running.
+  const bare = projectSpace(park, { solarSystemID: SYSTEM, shipID: undock.shipID }).ship;
+  assert.deepEqual([bare.activeModuleIDs, bare.overloadedModuleIDs, bare.capacitorRatio], [[], [], null]);
   assert.deepEqual([space.ship.capacitorRatio, space.ship.shieldCapacity, space.ship.armorCapacity, space.ship.hullCapacity], [0.625, 175, 150, 151]);
   assert.equal(space.entities.find((row) => row.isSelf).capacitorRatio, 0.625);
   // Nobody else's capacitor is known, and health is still the ballpark's.

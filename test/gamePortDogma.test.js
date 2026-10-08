@@ -10,7 +10,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { ATTRIBUTE, CHARGED, DGM_TAU_CONSTANT, chargeValue, createPilotDogma, filetimeNow } = require("../src/gamePort/pilotDogma");
+const { ATTRIBUTE, CHARGED, DGM_TAU_CONSTANT, EFFECT_CATEGORY, EFFECT_ONLINE, chargeValue, createPilotDogma, filetimeNow } = require("../src/gamePort/pilotDogma");
 const flight = require("./fixtures/dogmaFlight.json");
 const { answers, notifications } = require("./helpers/destinyRecording");
 
@@ -62,7 +62,7 @@ test("GetAllInfo from a real server: the ship and its module are held, and the s
   assert.deepEqual([ATTRIBUTE.HP, ATTRIBUTE.ARMOR_HP, ATTRIBUTE.SHIELD_CAPACITY, ATTRIBUTE.CAPACITOR_CAPACITY, ATTRIBUTE.RECHARGE_RATE, ATTRIBUTE.SHIELD_RECHARGE_RATE, ATTRIBUTE.DAMAGE, ATTRIBUTE.ARMOR_DAMAGE].map((id) => dogma.attribute(SHIP, id)),
     [150, 150, 175, 125, 62500, 730000, 0, 0]);
   // What the gateway's snapshot said of the same ship: capacitor 1, capacities 175, 150, 150.
-  assert.deepEqual(dogma.shipReadings(SHIP), { capacitorRatio: 1, shieldCapacity: 175, armorCapacity: 150, hullCapacity: 150 });
+  assert.deepEqual(dogma.shipReadings(SHIP), { capacitorRatio: 1, shieldCapacity: 175, armorCapacity: 150, hullCapacity: 150, activeModuleIDs: [], overloadedModuleIDs: [] });
   assert.deepEqual([dogma.attribute(SHIP, ATTRIBUTE.CHARGE), dogma.attribute(SHIP, ATTRIBUTE.SHIELD_CHARGE)], [125, 175]);
   assert.equal(dogma.attribute(SHIP, 999999), null);
   dogma.clear();
@@ -188,7 +188,7 @@ test("when the capacity or the recharge time changes, the charge carries on from
   assert.ok(Math.abs(slow.attribute(5001, ATTRIBUTE.CHARGE, seconds(20)) - before) < 1e-9);
   assert.equal(slow.attribute(5001, ATTRIBUTE.CHARGE, seconds(40)), chargeValue(before, seconds(20), 5000000 / 5, 100, seconds(40)));
   // The shield is the other one that recharges; the readings are fractions and capacities.
-  assert.deepEqual(small().shipReadings(5001), { capacitorRatio: 1, shieldCapacity: 200, armorCapacity: 300, hullCapacity: 400 });
+  assert.deepEqual(small().shipReadings(5001), { capacitorRatio: 1, shieldCapacity: 200, armorCapacity: 300, hullCapacity: 400, activeModuleIDs: [], overloadedModuleIDs: [] });
   assert.ok(Math.abs(small({ charge: 25 }).shipReadings(5001, T0).capacitorRatio - 0.25) < 1e-12);
 });
 
@@ -219,4 +219,116 @@ test("OnMultiEvent: a moment at a time in order, and within one the last change 
   const ordered = small();
   ordered.multiEvent([[bare(4, seconds(9), 90), seconds(9)], [bare(4, seconds(3), 30), seconds(3)]]);
   assert.equal(ordered.attribute(5001, 4), 90);
+});
+
+// ── which modules are running ────────────────────────────────────────────────
+
+/**
+ * What kind each effect of a 1MN Civilian Afterburner is, as the game's static
+ * data has it (staticData.getEffect): its slot, being online, overloading it,
+ * and the afterburner itself. Being online is filed as an activation.
+ */
+const AFTERBURNER = 6731;
+const OVERLOAD_SPEED = 3175;
+const KIND = new Map([[13, EFFECT_CATEGORY.PASSIVE], [EFFECT_ONLINE, EFFECT_CATEGORY.ACTIVATION], [OVERLOAD_SPEED, EFFECT_CATEGORY.OVERLOAD], [AFTERBURNER, EFFECT_CATEGORY.ACTIVATION]]);
+const effectCategory = (effectID) => KIND.get(effectID) ?? null;
+const MODULE = flight.moduleID;
+
+test("a real flight: the afterburner is running from the server's word that it started until its word that it stopped", () => {
+  const dogma = createPilotDogma({ characterID: PILOT, effectCategory });
+  const loaded = answers(flight).find((answer) => answer.during === "GetAllInfo in space" && answer.value && answer.value.type === "object");
+  dogma.loadAllInfo(loaded.value);
+  // Fitted and online, which is an active effect, and not running.
+  assert.deepEqual([dogma.effect(MODULE, EFFECT_ONLINE).isActive, dogma.effect(MODULE, AFTERBURNER)], [true, null]);
+  assert.deepEqual([dogma.shipReadings(SHIP).activeModuleIDs, dogma.shipReadings(SHIP).overloadedModuleIDs], [[], []]);
+
+  const seen = [];
+  for (const notification of notifications(flight)) {
+    if (notification.atMs < loaded.atMs) continue;
+    const taken = dogma.feed(notification);
+    if (notification.method === "OnGodmaShipEffect") {
+      assert.equal(taken, true);
+      seen.push({ during: notification.during, running: dogma.shipReadings(SHIP).activeModuleIDs, effect: { ...dogma.effect(MODULE, AFTERBURNER) } });
+    }
+  }
+  // Two cycles begin, each said by the server; then the stop, at the end of the cycle that was running when it was asked for.
+  assert.deepEqual(seen.map((each) => each.running), [[MODULE], [MODULE], []]);
+  assert.deepEqual(seen.map((each) => [each.effect.isActive, each.effect.duration, each.effect.repeat, each.effect.targetID]), [[true, 10000, 1000, null], [true, 10000, 1000, null], [false, 10000, 0, null]]);
+  // The second cycle began ten seconds after the first, to the tick of the server's clock.
+  assert.equal(seen[1].effect.startTime - seen[0].effect.startTime, 10000n * MS);
+  assert.deepEqual(seen.map((each) => each.during), ["module running", "module running", "dock"]);
+});
+
+test("GetAllInfo taken while a module is running says so by itself", () => {
+  const dogma = createPilotDogma({ characterID: PILOT, effectCategory });
+  dogma.loadAllInfo(allInfo("GetAllInfo after"));
+  const effect = dogma.effect(MODULE, AFTERBURNER);
+  assert.deepEqual([effect.isActive, effect.duration, effect.repeat], [true, 10000, 1000]);
+  assert.deepEqual(dogma.shipReadings(SHIP).activeModuleIDs, [MODULE]);
+  // Without the static data to say what kind an effect is, nothing can be called running.
+  const blind = createPilotDogma({ characterID: PILOT });
+  blind.loadAllInfo(allInfo("GetAllInfo after"));
+  assert.deepEqual(blind.shipReadings(SHIP).activeModuleIDs, []);
+  dogma.clear();
+  assert.equal(dogma.effect(MODULE, AFTERBURNER), null);
+});
+
+/** A dogma holding a ship (5001) and two modules (5003, 5002), nothing running. */
+function fitted() {
+  const dogma = createPilotDogma({ characterID: PILOT, effectCategory, now: () => T0 });
+  const keyVal = (entries) => ({ type: "object", name: Buffer.from("util.KeyVal"), args: { type: "dict", entries: entries.map(([name, value]) => [Buffer.from(name), value]) } });
+  const online = (itemID) => [EFFECT_ONLINE, [itemID, PILOT, 5001n, null, null, [], EFFECT_ONLINE, T0, -1, 1]];
+  const row = (itemID, activeEffects) => [itemID, keyVal([["itemID", itemID], ["time", T0], ["attributes", { type: "dict", entries: [[4, 1]] }], ["activeEffects", { type: "dict", entries: activeEffects }]])];
+  dogma.loadAllInfo(keyVal([["shipInfo", { type: "dict", entries: [row(5001n, []), row(5003n, [online(5003n)]), row(5002n, [online(5002n)])] }]]));
+  return dogma;
+}
+const effectEvent = (itemID, effectID, time, active, { target = null, repeat = 1000 } = {}) => [itemID, effectID, time, active, active, [itemID, PILOT, 5001n, target, null, [], effectID, null], time, 5000, active ? repeat : false, null];
+const shipEffect = (...args) => ({ method: "OnGodmaShipEffect", args: effectEvent(...args) });
+
+test("running and overloaded are told apart by the kind of effect, and listed in order", () => {
+  const dogma = fitted();
+  const of = () => [dogma.shipReadings(5001).activeModuleIDs, dogma.shipReadings(5001).overloadedModuleIDs];
+  assert.deepEqual(of(), [[], []]);
+  dogma.feed(shipEffect(5003n, AFTERBURNER, seconds(1), 1, { target: 9000000000001n }));
+  dogma.feed(shipEffect(5002n, AFTERBURNER, seconds(2), 1));
+  assert.deepEqual(of(), [[5002, 5003], []]);
+  assert.equal(dogma.effect(5003, AFTERBURNER).targetID, 9000000000001n);
+  // Overloading a module is an effect of its own kind: the module is overloaded, and that alone does not make it running.
+  dogma.feed(shipEffect(5002n, OVERLOAD_SPEED, seconds(3), 1));
+  dogma.feed(shipEffect(5002n, AFTERBURNER, seconds(4), 0));
+  assert.deepEqual(of(), [[5003], [5002]]);
+  // A passive effect, and an effect of a kind the static data does not know, are neither.
+  dogma.feed(shipEffect(5003n, 13, seconds(5), 1));
+  dogma.feed(shipEffect(5003n, 424242, seconds(5), 1));
+  dogma.feed(shipEffect(5003n, AFTERBURNER, seconds(6), 0));
+  assert.deepEqual(of(), [[], [5002]]);
+  // The ship itself is not one of its modules, and an item that is not held is not made up.
+  dogma.feed(shipEffect(5001n, AFTERBURNER, seconds(7), 1));
+  assert.equal(dogma.feed(shipEffect(7777n, AFTERBURNER, seconds(7), 1)), true);
+  assert.deepEqual([of(), dogma.effect(7777, AFTERBURNER)], [[[], [5002]], null]);
+});
+
+test("OnMultiEvent: of the starts and stops of one effect in one moment, the last one is what stands", () => {
+  const dogma = fitted();
+  const event = (...args) => ["OnGodmaShipEffect", ...effectEvent(...args)];
+  // Stop (at 3 s) and start (at 2 s) in one moment, out of order: the stop is the later.
+  dogma.multiEvent([[event(5003n, AFTERBURNER, seconds(3), 0), seconds(3)], [event(5003n, AFTERBURNER, seconds(2), 1), seconds(3)], [event(5002n, AFTERBURNER, seconds(2), 1), seconds(3)]]);
+  assert.deepEqual(dogma.shipReadings(5001).activeModuleIDs, [5002]);
+  assert.equal(dogma.feed({ method: "OnMultiEvent", args: [{ type: "list", items: [[event(5003n, AFTERBURNER, seconds(4), 1), seconds(4)]] }] }), true);
+  assert.deepEqual(dogma.shipReadings(5001).activeModuleIDs, [5002, 5003]);
+  // Two different effects on one module in one moment are two things, and both stand.
+  const both = fitted();
+  both.multiEvent([[event(5002n, AFTERBURNER, seconds(2), 1), seconds(2)], [event(5002n, OVERLOAD_SPEED, seconds(2), 1), seconds(2)]]);
+  assert.deepEqual([both.shipReadings(5001).activeModuleIDs, both.shipReadings(5001).overloadedModuleIDs], [[5002], [5002]]);
+});
+
+test("an active effect that cannot be read is passed over, and the rest of the item is still loaded", () => {
+  const dogma = createPilotDogma({ characterID: PILOT, effectCategory, now: () => T0 });
+  const keyVal = (entries) => ({ type: "object", name: Buffer.from("util.KeyVal"), args: { type: "dict", entries: entries.map(([name, value]) => [Buffer.from(name), value]) } });
+  const good = [5002n, PILOT, 5001n, null, null, [], AFTERBURNER, T0, 5000, 1000];
+  dogma.loadAllInfo(keyVal([["shipInfo", { type: "dict", entries: [
+    [5001n, keyVal([["itemID", 5001n], ["time", T0], ["attributes", { type: "dict", entries: [[4, 1]] }]])],
+    [5002n, keyVal([["itemID", 5002n], ["time", T0], ["attributes", { type: "dict", entries: [[4, 1]] }], ["activeEffects", { type: "dict", entries: [[OVERLOAD_SPEED, null], [AFTERBURNER, good]] }]])],
+  ] }]]));
+  assert.deepEqual([dogma.has(5002), dogma.effect(5002, OVERLOAD_SPEED), dogma.shipReadings(5001).activeModuleIDs], [true, null, [5002]]);
 });

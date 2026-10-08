@@ -467,6 +467,18 @@ function getTypeDogma(typeID) {
   return buildTypeDogmaIndex().get(Number(typeID) || 0) || null;
 }
 
+/**
+ * A dogma effect by its ID: { effectID, name, effectCategoryID, ... }, or null.
+ * The category is what says whether an effect is something a module does when
+ * it is switched on (dogma/const.py: 0 passive, 1 activation, 2 target, 3 area,
+ * 4 online, 5 overload).
+ */
+function getEffect(effectID) {
+  const cacheKey = "typeDogma:effectTypesByID";
+  if (!caches.has(cacheKey)) caches.set(cacheKey, readStaticTable("typeDogma").effectTypesByID || {});
+  return caches.get(cacheKey)[String(Number(effectID) || 0)] || null;
+}
+
 // dogmaEffects: moduleBonusAfterburner / moduleBonusMicrowarpdrive. The two
 // PROPULSION effect ids, named because deactivation needs the NAME: the eve.js
 // Deactivate handler routes a prop mod to deactivatePropulsionModule only when
@@ -1932,6 +1944,7 @@ module.exports = {
   getType,
   getTypeCategoryID,
   getTypeCategoryName,
+  getEffect,
   getTypeDogma,
   getTypeDogmaAttribute,
   getTypeDogmaAttributeOrDefault,

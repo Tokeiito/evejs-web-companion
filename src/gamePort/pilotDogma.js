@@ -27,8 +27,17 @@
 // and works out what it is now whenever it is read (CreateChargedAttribute 1729,
 // GetChargeValue 2037).
 //
-// Only the ship's items are kept here, and only what the panel's numbers need.
-// The modules' effects (which are running) are not here yet.
+// Which modules are running is godma's too. Each item's row in GetAllInfo
+// lists the effects active on it (RefreshItemEffects 1640), and the server
+// reports each start and stop:
+//
+//   OnGodmaShipEffect(itemID, effectID, time, start, active, environment, startTime, duration, repeat, error)   (1441)
+//
+// A module is running when an effect of the activation, target or area kind is
+// active on it; it is overloaded when one of the overload kind is. Being
+// online is an effect as well, and is neither.
+//
+// Only the ship's items are kept here, and only what the panel needs.
 
 /** dogma attribute IDs (dogma/const.py). */
 const ATTRIBUTE = Object.freeze({
@@ -48,6 +57,17 @@ const CHARGED = new Map([
   [ATTRIBUTE.CHARGE, [ATTRIBUTE.RECHARGE_RATE, ATTRIBUTE.CAPACITOR_CAPACITY]],
   [ATTRIBUTE.SHIELD_CHARGE, [ATTRIBUTE.SHIELD_RECHARGE_RATE, ATTRIBUTE.SHIELD_CAPACITY]],
 ]);
+/** dogma/const.py: the kinds of effect. */
+const EFFECT_CATEGORY = Object.freeze({ PASSIVE: 0, ACTIVATION: 1, TARGET: 2, AREA: 3, ONLINE: 4, OVERLOAD: 5 });
+const RUNNING = new Set([EFFECT_CATEGORY.ACTIVATION, EFFECT_CATEGORY.TARGET, EFFECT_CATEGORY.AREA]);
+/**
+ * const.effectOnline. Being online is an effect too, and the static data files it under the same kind as an afterburner's;
+ * godma leaves it out by name wherever it asks what is running (PurgeInventories 2459, requiredEffects).
+ */
+const EFFECT_ONLINE = 16;
+/** godma.py 1009-1016: where things are in an effect's environment. */
+const ENV_IDX_TARGET = 3;
+
 /** dogma/const.py dgmTauConstant: the clock's units (100 ns) in a millisecond. Recharge times are in milliseconds. */
 const DGM_TAU_CONSTANT = 10000;
 /** The clock's zero (1601) in the Unix epoch's milliseconds. */
@@ -82,15 +102,19 @@ function chargeValue(oldVal, oldTime, tau, Ec, newTime) {
 
 /**
  * `characterID` is whose items these are: a change for anyone else's is
- * refused, as godma refuses it. `now()` reads the clock.
+ * refused, as godma refuses it. `now()` reads the clock. `effectCategory(effectID)`
+ * says what kind an effect is, from the game's static data; without it no
+ * module can be told to be running.
  */
-function createPilotDogma({ characterID = null, now = filetimeNow } = {}) {
+function createPilotDogma({ characterID = null, now = filetimeNow, effectCategory = () => null } = {}) {
   /** itemID -> Map(attributeID -> value). */
   const attributes = new Map();
   /** itemID -> Map(attributeID -> [value, time, tau, capacity]). */
   const charged = new Map();
   /** "itemID:attributeID" -> the time of the last change taken for it. */
   const lastChange = new Map();
+  /** itemID -> Map(effectID -> { isActive, startTime, duration, repeat, targetID }). */
+  const effects = new Map();
 
   /** godma.GetAttribute. */
   function attribute(itemID, attributeID, at = now()) {
@@ -132,6 +156,14 @@ function createPilotDogma({ characterID = null, now = filetimeNow } = {}) {
       const given = fields.get("attributes");
       for (const [attributeID, value] of given && Array.isArray(given.entries) ? given.entries : []) values.set(number(attributeID), number(value));
       updateAttributes(itemID, values, clock(fields.get("time")) ?? now());
+      // godma.RefreshItemEffects: the effects active on the item, each with when it began, how long a cycle is and how many are left.
+      const active = new Map();
+      const listed = fields.get("activeEffects");
+      for (const [effectID, line] of listed && Array.isArray(listed.entries) ? listed.entries : []) {
+        if (!Array.isArray(line)) continue;
+        active.set(number(effectID), { isActive: true, startTime: clock(line[7]), duration: number(line[8]), repeat: number(line[9]), targetID: line[ENV_IDX_TARGET] ?? null });
+      }
+      effects.set(key(itemID), active);
       held.push(key(itemID));
     }
     return held;
@@ -189,10 +221,29 @@ function createPilotDogma({ characterID = null, now = filetimeNow } = {}) {
   }
 
   /**
+   * godma.OnGodmaShipEffect: an effect on one of the pilot's items has started
+   * or stopped. One for an item that is not held is nothing, as on the client.
+   */
+  function shipEffect(args) {
+    const [itemID, effectID, , , active, environment, startTime, duration, repeat] = args;
+    const held = effects.get(key(itemID));
+    if (!held) return false;
+    held.set(number(effectID), {
+      isActive: Boolean(active),
+      startTime: clock(startTime),
+      duration: number(duration),
+      repeat: typeof repeat === "boolean" ? Number(repeat) : number(repeat),
+      targetID: Array.isArray(environment) ? environment[ENV_IDX_TARGET] ?? null : null,
+    });
+    return true;
+  }
+
+  /**
    * godma.OnMultiEvent: events of several kinds, each paired with its moment.
    * They are taken a moment at a time, in order; of the attribute changes in
    * one moment only the last for each item's attribute counts
-   * (BroadcastFilteredMAC), and those are applied oldest first.
+   * (BroadcastFilteredMAC), and those are applied oldest first. The same goes
+   * for the effects' starts and stops (BroadcastFilteredGSF).
    */
   function multiEvent(events) {
     const moments = new Map();
@@ -217,6 +268,16 @@ function createPilotDogma({ characterID = null, now = filetimeNow } = {}) {
           // As below: one bad change does not lose the rest.
         }
       }
+      // BroadcastFilteredGSF: sorted by time, and the last one for each item's effect is the one that is told.
+      const byEffectTime = (a, b) => {
+        const [x, y] = [clock(a[3]) ?? 0n, clock(b[3]) ?? 0n];
+        return x < y ? -1 : x > y ? 1 : 0;
+      };
+      const lastEffect = new Map();
+      for (const event of moments.get(moment).filter((each) => Array.isArray(each) && text(each[0]) === "OnGodmaShipEffect").sort(byEffectTime)) {
+        lastEffect.set(`${event[1]}:${event[2]}`, event);
+      }
+      for (const event of lastEffect.values()) shipEffect(event.slice(1));
     }
   }
 
@@ -240,7 +301,27 @@ function createPilotDogma({ characterID = null, now = filetimeNow } = {}) {
       change(["OnModuleAttributeChange", ...notification.args]);
       return true;
     }
+    if (notification.method === "OnGodmaShipEffect") {
+      shipEffect(notification.args);
+      return true;
+    }
     return false;
+  }
+
+  /** The held items, other than `shipID` itself, with an active effect of one of `kinds`: in ascending order. */
+  function modulesWith(shipID, kinds) {
+    const ship = key(shipID);
+    const found = [];
+    for (const [itemID, held] of effects) {
+      if (itemID === ship || typeof itemID !== "number") continue;
+      for (const [effectID, effect] of held) {
+        if (effect.isActive && effectID !== EFFECT_ONLINE && kinds.has(effectCategory(effectID))) {
+          found.push(itemID);
+          break;
+        }
+      }
+    }
+    return found.sort((a, b) => a - b);
   }
 
   /**
@@ -257,12 +338,17 @@ function createPilotDogma({ characterID = null, now = filetimeNow } = {}) {
       shieldCapacity: attribute(id, ATTRIBUTE.SHIELD_CAPACITY, at),
       armorCapacity: attribute(id, ATTRIBUTE.ARMOR_HP, at),
       hullCapacity: attribute(id, ATTRIBUTE.HP, at),
+      // Which of its modules are running, and which are overloaded.
+      activeModuleIDs: modulesWith(id, RUNNING),
+      overloadedModuleIDs: modulesWith(id, new Set([EFFECT_CATEGORY.OVERLOAD])),
     };
   }
 
   return {
     attribute,
     applyAttributeChange,
+    /** What is known of one effect on one item, or null. */
+    effect: (itemID, effectID) => effects.get(key(itemID))?.get(effectID) ?? null,
     feed,
     loadAllInfo,
     multiEvent,
@@ -272,8 +358,9 @@ function createPilotDogma({ characterID = null, now = filetimeNow } = {}) {
       attributes.clear();
       charged.clear();
       lastChange.clear();
+      effects.clear();
     },
   };
 }
 
-module.exports = { ATTRIBUTE, CHARGED, DGM_TAU_CONSTANT, chargeValue, createPilotDogma, filetimeNow };
+module.exports = { ATTRIBUTE, CHARGED, DGM_TAU_CONSTANT, EFFECT_CATEGORY, EFFECT_ONLINE, chargeValue, createPilotDogma, filetimeNow };

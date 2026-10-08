@@ -49,7 +49,7 @@
 //     godma keeps them (pilotDogma.js).
 //
 // Not here yet (docs/game-port-transport-plan.md, Phase 4): the scanner in
-// space, and which of the ship's modules are running, overloaded or damaged.
+// space, how damaged each module is, and which weapons are grouped.
 
 const crypto = require("node:crypto");
 const { GamePortSession } = require("./session");
@@ -112,6 +112,13 @@ const CONTAINER_STRUCTURE = 10014;
  */
 const LOCATION_SERVICES = new Set(["invbroker", "ship", "dogmaIM", "crimewatch", "reprocessingSvc", "entity", "beyonce", "scanMgr"]);
 const LOCATION_ATTRIBUTES = ["stationid", "structureid", "solarsystemid", "locationid"];
+
+/** The kind of a dogma effect, from the static data the BFF already reads. Loaded when first asked. */
+function defaultEffectCategory(effectID) {
+  // eslint-disable-next-line global-require
+  const effect = require("../staticData").getEffect(effectID);
+  return effect && Number.isInteger(effect.effectCategoryID) ? effect.effectCategoryID : null;
+}
 
 /** A positive whole number, however the wire or the JSON spelled it; else null. */
 const positive = (value) => {
@@ -208,6 +215,8 @@ function createGamePortPilots({
   // A pilot's ballpark while it is in space (pilotSpace.js).
   createSpace = (options) => createPilotSpace(options),
   onSpaceError = () => {},
+  // What kind a dogma effect is, from the game's static data (dogma.data.get_effect on the retail client).
+  effectCategory = defaultEffectCategory,
 } = {}) {
   const sessions = new Map();
   const epoch = randomBytes(12).toString("base64url");
@@ -357,7 +366,7 @@ function createGamePortPilots({
       /** The pilot's ballpark while it is in space (pilotSpace.js), else null. */
       space: null,
       /** The pilot's ship as dogma has it (pilotDogma.js), and which ship and place that was loaded for. */
-      dogma: createPilotDogma({ characterID, now: () => filetime(now()) }),
+      dogma: createPilotDogma({ characterID, now: () => filetime(now()), effectCategory }),
       dogmaLoaded: null,
       ended: false,
     };

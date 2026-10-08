@@ -183,9 +183,10 @@ function projectSpace(park, { solarSystemID, shipID, readings = null }) {
       shieldCapacity: readings ? readings.shieldCapacity : null,
       armorCapacity: readings ? readings.armorCapacity : null,
       hullCapacity: readings ? readings.hullCapacity : null,
-      // Which modules are running, overloaded or damaged: godma's effects, not read yet.
-      activeModuleIDs: [],
-      overloadedModuleIDs: [],
+      // Which modules are running or overloaded: godma's effects.
+      activeModuleIDs: readings && Array.isArray(readings.activeModuleIDs) ? readings.activeModuleIDs : [],
+      overloadedModuleIDs: readings && Array.isArray(readings.overloadedModuleIDs) ? readings.overloadedModuleIDs : [],
+      // How damaged each module is, and which weapons are grouped: dogma's as well, not read yet.
       moduleDamage: {},
       weaponBanks: {},
     } : null,

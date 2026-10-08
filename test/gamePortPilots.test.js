@@ -733,15 +733,19 @@ test("docked, the space snapshot and the scanner are the gateway's docked answer
 /** A GetAllInfo answer holding the pilot's ship: 50 of 125 capacitor at the moment T. */
 const DOGMA_T = 134359220000000000n;
 const DOGMA_T_MS = 1791448400000;
-const shipAllInfo = (charge = 50) => keyVal([["shipInfo", { type: "dict", entries: [[BigInt(SHIP), keyVal([
-  ["itemID", BigInt(SHIP)], ["time", DOGMA_T],
-  ["attributes", { type: "dict", entries: [[18, charge], [482, 125], [55, 62500], [263, 175], [265, 150], [9, 151]] }],
-])]] }]]);
+const FITTED_MODULE = SHIP + 1;
+const shipAllInfo = (charge = 50) => keyVal([["shipInfo", { type: "dict", entries: [
+  [BigInt(SHIP), keyVal([
+    ["itemID", BigInt(SHIP)], ["time", DOGMA_T],
+    ["attributes", { type: "dict", entries: [[18, charge], [482, 125], [55, 62500], [263, 175], [265, 150], [9, 151]] }],
+  ])],
+  [BigInt(FITTED_MODULE), keyVal([["itemID", BigInt(FITTED_MODULE)], ["time", DOGMA_T], ["attributes", { type: "dict", entries: [[9, 40]] }], ["activeEffects", { type: "dict", entries: [] }]])],
+] }]]);
 
 test("the ship's capacitor and capacities are dogma's, loaded once for a ship in a place as godma loads them", async () => {
   const hand = handTicked();
   let clockMs = DOGMA_T_MS;
-  const built = build({ ...IN_SPACE, answers: { ...IN_SPACE.answers, "bound:GetAllInfo": shipAllInfo() } }, { ...hand.options, now: () => clockMs });
+  const built = build({ ...IN_SPACE, answers: { ...IN_SPACE.answers, "bound:GetAllInfo": shipAllInfo() } }, { ...hand.options, now: () => clockMs, effectCategory: (effectID) => (effectID === 6731 ? 1 : null) });
   const { bridgeSessionID: handle } = await built.pilots.selectCharacter([PILOT, null, true], null, FIELDS);
   await built.pilots.bindObject("beyonce", "MachoBindObject", [], null, WHOSE, handle);
   for (const update of recordedUpdates.slice(0, 5)) built.session.notify("DoDestinyUpdate", update.args);
@@ -771,6 +775,15 @@ test("the ship's capacitor and capacities are dogma's, loaded once for a ship in
   session.notify("DoDestinyUpdate", [{ type: "list", items: [[hand.parks[0].space.park.currentTime, [Buffer.from("OnSpecialFX"), []]]] }, false,
     { type: "list", items: [[["OnModuleAttributeChange", PILOT, BigInt(SHIP), 18, DOGMA_T + 100000000n, 25, 100, DOGMA_T + 100000000n], DOGMA_T + 100000000n]] }]);
   assert.ok(Math.abs((await built.pilots.readSpaceSnapshot(handle)).space.ship.capacitorRatio - 0.2) < 1e-12);
+  assert.equal(asked().length, 1);
+
+  // A module starts, by the server's word, and is in the snapshot as running; it stops, and is not.
+  assert.deepEqual((await built.pilots.readSpaceSnapshot(handle)).space.ship.activeModuleIDs, []);
+  const effect = (active) => [BigInt(FITTED_MODULE), 6731, DOGMA_T, active, active, [BigInt(FITTED_MODULE), PILOT, BigInt(SHIP), null, null, [], 6731, null], DOGMA_T, 10000, 1000, null];
+  session.notify("OnGodmaShipEffect", effect(1));
+  assert.deepEqual((await built.pilots.readSpaceSnapshot(handle)).space.ship.activeModuleIDs, [FITTED_MODULE]);
+  session.notify("OnGodmaShipEffect", effect(0));
+  assert.deepEqual((await built.pilots.readSpaceSnapshot(handle)).space.ship.activeModuleIDs, []);
   assert.equal(asked().length, 1);
 
   // Another ship: what was loaded was the old one's, so it is asked for again.
