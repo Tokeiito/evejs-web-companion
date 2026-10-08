@@ -3070,7 +3070,7 @@ the page's own words when it does not.
 
 **Proof.**
 
-- Tests: 8 new. 45 ways of breaking the change; one slipped through and was closed with a
+- Tests: 8 new. 44 ways of breaking the change; one slipped through and was closed with a
   test; none was left untried.
 - Suite: 9103 tests, 9079 pass, 0 fail, 24 skipped, 0 todo.
 - **In the browser, on the game port**, undocked by the page's own button. The page asked the
