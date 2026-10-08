@@ -35,6 +35,7 @@ const {
 } = require("./packets");
 const { caseFold, cryptoHash, passwordHash, randomBytes } = require("./placebo");
 const { keywordOrder, orderEntries } = require("./py27");
+const { wireToBridgeJson } = require("./bridgeJson");
 
 /** What the client says it is. From the client's start.ini and GPS.py. */
 const RETAIL_CLIENT = Object.freeze({
@@ -144,6 +145,44 @@ function unpickle(value) {
   const inner = unwrapSubstream(value);
   if (Buffer.isBuffer(inner) && inner.length > 0 && inner[0] === 0x7e) return marshalDecode(inner);
   return inner;
+}
+
+/**
+ * Why the server refused a call, from the exception an ErrorResponse carries.
+ *
+ * The payload is (pickle,), and the pickle is the exception: for a game refusal
+ * a UserError, whose constructor arguments are (msg, dict). `reason` is put
+ * together exactly as the web gateway puts its CALL_REFUSED message together
+ * (evejsWebGatewayRuntime.js readWrappedUserErrorRefusal), so a refusal reads
+ * the same on either transport: the handler's own sentence when it gave one
+ * (`info`, or CustomNotify's `notify`), the names in a structured `errors` list
+ * when it gave that, and otherwise the bare message key.
+ */
+function readRefusal(payload) {
+  const exception = wireToBridgeJson(unpickle(Array.isArray(payload) ? payload[0] : payload));
+  const header = exception && Array.isArray(exception.header) ? exception.header : null;
+  const className = header && header[0] && typeof header[0].value === "string" ? header[0].value : null;
+  if (!className) return null;
+  const args = Array.isArray(header[1]) ? header[1] : [];
+  const key = typeof args[0] === "string" ? args[0] : "";
+  const entries = args[1] && Array.isArray(args[1].entries) ? args[1].entries : [];
+  const prose = entries.find((entry) => Array.isArray(entry) && (entry[0] === "info" || entry[0] === "notify") && entry[1]);
+  let reason = key;
+  if (prose) {
+    reason = String(prose[1]);
+  } else {
+    const errors = entries.find((entry) => Array.isArray(entry) && entry[0] === "errors" && entry[1]);
+    const names = [];
+    for (const item of errors && Array.isArray(errors[1].items) ? errors[1].items : []) {
+      // Each is (KeyVal{value, name}, args).
+      const keyVal = Array.isArray(item) ? item[0] : item && Array.isArray(item.items) ? item.items[0] : null;
+      const entriesOf = keyVal && keyVal.args && Array.isArray(keyVal.args.entries) ? keyVal.args.entries : [];
+      const named = entriesOf.find((entry) => Array.isArray(entry) && entry[0] === "name" && entry[1]);
+      if (named && !names.includes(String(named[1])) && names.length < 8) names.push(String(named[1]));
+    }
+    if (names.length > 0) reason = `${key}: ${names.join(", ")}`;
+  }
+  return { className, key, values: args[1] ?? null, reason };
 }
 
 /** The state of a decoded object of the class whose dotted name ends `suffix`, or null. */
@@ -785,7 +824,11 @@ class GamePortSession {
     if (packet.command === TYPE.ERROR_RESPONSE) {
       // (originalCommand, code, payload)
       const detail = packet.body[2];
-      waiter.reject(new GamePortError("GAME_CALL_REFUSED", `${waiter.label} was refused by the server: ${describeError(detail)}`, detail));
+      const refusal = readRefusal(detail);
+      const error = new GamePortError("GAME_CALL_REFUSED", `${waiter.label} was refused by the server: ${refusal?.reason || describeError(detail)}`, detail);
+      // What the server refused with: {className, key, values, reason}.
+      error.refusal = refusal;
+      waiter.reject(error);
       return;
     }
     waiter.resolve(unwrapSubstream(packet.body[0]));

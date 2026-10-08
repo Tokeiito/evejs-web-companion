@@ -203,6 +203,16 @@ test("replayed against the real server's half, the session sends its own half ag
   assert.match(results.broker.objectID, /^N=\d+:\d+$/);
   assert.equal(results.broker.nodeID, session.proxyNodeID);
   assert.equal(results.hangar.type, "substruct", "GetInventory answers a bound inventory");
+  assert.ok(results.hangarItems.items.length > 0, "the hangar is not empty in the recording");
+  assert.ok(results.hangarItems.items.every((row) => row.type === "packedrow"), "its contents are packed rows");
+
+  // A refusal carries the server's own reason, the one the gateway reports too.
+  assert.equal(results.refusal.code, "GAME_CALL_REFUSED");
+  assert.deepEqual(
+    { className: results.refusal.refusal.className, key: results.refusal.refusal.key, reason: results.refusal.refusal.reason },
+    { className: "eveexceptions.UserError", key: "CrpAccessDenied", reason: "CrpAccessDenied" },
+  );
+  assert.match(results.refusal.message, /corpRegistry\.GetApplications was refused by the server: CrpAccessDenied/);
 
   // Cached answers come back as the answer, not as the wrapper around it.
   // GetKeyMap's is carried inline. GetAllCorpMedals' is a reference: the session
@@ -312,6 +322,8 @@ test("every call is addressed, numbered and wrapped as the retail client does it
     ["MachoBindObject", "node", "invbroker", 0],
     // A bound object's call: to its node, no service, flag 1, the object's ID first.
     ["GetInventory", "node", null, 1],
+    ["List", "node", null, 1],
+    ["GetApplications", "any", "corpRegistry", 0],
     ["GetKeyMap", "any", "account", 0],
     // A cached answer that is a reference: the client fetches it from
     // objectCaching through its proxy node, once.

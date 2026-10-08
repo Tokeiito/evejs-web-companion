@@ -26,6 +26,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { GamePortSession } = require("../src/gamePort/session");
 const { connectTcp, gameEndpoint } = require("../src/gamePort/tcp");
+const { text, unwrapSubstream } = require("../src/gamePort/packets");
 const { eveRoot } = require("./vendor-marshal");
 
 const WEB_ROOT = path.resolve(__dirname, "..");
@@ -38,7 +39,18 @@ const GROUP_STATION = 15;
 const CONTAINER_HANGAR = 10004;
 const SELECT_SETTLE_MS = 3000;
 
+/** The hangar's item flag. */
+const FLAG_HANGAR = 4;
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** The "N=node:id" of a bound object the server handed back (a substruct around a substream). */
+function boundObjectID(value) {
+  const inner = unwrapSubstream(value && value.type === "substruct" ? value.value : value);
+  const objectID = Array.isArray(inner) ? text(inner[0]) : text(inner);
+  if (!objectID || !objectID.startsWith("N=")) throw new Error("The server did not hand back a bound object.");
+  return objectID;
+}
 
 /** Split a byte stream into machoNet frames: 4-byte little-endian length, then payload. */
 function frameSplitter(onFrame) {
@@ -103,6 +115,12 @@ async function converse(session, { accountName, characterID = null, step = () =>
     results.broker = await session.bind("invbroker", [session.attributes.stationid, GROUP_STATION]);
     step("GetInventory");
     results.hangar = await session.callBound(results.broker.objectID, "GetInventory", [CONTAINER_HANGAR]);
+    // The hangar's contents: packed rows, the one row form nothing else here returns.
+    step("hangar List");
+    results.hangarItems = await session.callBound(boundObjectID(results.hangar), "List", [FLAG_HANGAR]);
+    // A read the server refuses, for what a refusal carries.
+    step("corpRegistry.GetApplications");
+    results.refusal = await session.call("corpRegistry", "GetApplications").then(() => null, (error) => error);
     // The two ways the server hands back a cached answer: carried inline, and
     // as a reference the client fetches from objectCaching. The second one is
     // asked twice; the client fetches it once.
@@ -173,4 +191,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { capture, converse, eveCommit, frameSplitter, recordingSessionOptions, recordingTransport };
+module.exports = { boundObjectID, capture, converse, eveCommit, frameSplitter, recordingSessionOptions, recordingTransport };
