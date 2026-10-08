@@ -1903,3 +1903,63 @@ test("a warp ordered at a thing is remembered as the client remembers its own or
   assert.equal((await warp()).destinationID, there.id);
   assert.deepEqual(hand.errors, []);
 });
+
+// ── what was last aligned to, through the snapshot ───────────────────────────
+
+test("an align is remembered as the client's menu remembers it, until the ship is steered by hand or seen doing something else", async () => {
+  const hand = handTicked();
+  const allowed = new Set(["beyonce.MachoBindObject", "beyonce.CmdAlignTo", "beyonce.CmdGotoDirection", "beyonce.CmdStop", "beyonce.CmdOrbit"]);
+  const built = build(IN_SPACE, { ...hand.options, allowed });
+  const { bridgeSessionID: handle } = await built.pilots.selectCharacter([PILOT, null, true], null, FIELDS);
+  const { boundHandle } = await built.pilots.bindObject("beyonce", "MachoBindObject", [], null, WHOSE, handle);
+  for (const update of recordedUpdates.slice(0, 5)) built.session.notify("DoDestinyUpdate", update.args);
+  hand.parks[0].tick();
+  const park = hand.parks[0].space.park;
+  const ship = async () => (await built.pilots.readSpaceSnapshot(handle)).space.ship;
+  const order = (method, args, kwargs = null) => built.pilots.callBoundMethod("beyonce", method, args, kwargs, WHOSE, handle, boundHandle);
+  const server = (name, args) => {
+    built.session.notify("DoDestinyUpdate", [{ type: "list", items: [[park.currentTime, [Buffer.from(name), [BigInt(park.ego), ...args]]]] }, false]);
+    hand.parks[0].tick();
+  };
+
+  // Just undocked, flying straight out: aligned to nothing.
+  assert.deepEqual([(await ship()).mode, (await ship()).alignTarget], ["GOTO", null]);
+  // The pilot's own order names a thing: it is kept, and said while the ship flies a course.
+  await order("CmdAlignTo", [], { dstID: 40009089, bookmarkID: null });
+  assert.deepEqual((await ship()).alignTarget, { itemID: 40009089, bookmark: false });
+  // A bookmark instead.
+  await order("CmdAlignTo", [], { dstID: null, bookmarkID: 777 });
+  assert.deepEqual((await ship()).alignTarget, { itemID: null, bookmark: true });
+  // A bookmark has no thing behind it, whatever else the order carries.
+  await order("CmdAlignTo", [], { dstID: 40009089, bookmarkID: 777 });
+  assert.deepEqual((await ship()).alignTarget, { itemID: null, bookmark: true });
+  // An order that names neither keeps nothing.
+  await order("CmdAlignTo", [], { dstID: null, bookmarkID: null });
+  assert.equal((await ship()).alignTarget, null);
+  await order("CmdAlignTo", [], null);
+  assert.equal((await ship()).alignTarget, null);
+  // It is kept for as long as the ship flies a course, however long that is.
+  await order("CmdAlignTo", [], { dstID: 40009089, bookmarkID: null });
+  for (let tick = 0; tick < 6; tick += 1) hand.parks[0].tick();
+  assert.deepEqual([(await ship()).mode, (await ship()).alignTarget], ["GOTO", { itemID: 40009089, bookmark: false }]);
+  // Steered by hand: forgotten.
+  await order("CmdGotoDirection", [1, 0, 0]);
+  assert.equal((await ship()).alignTarget, null);
+
+  // Ordered from a standstill: the ship is still stopped for a tick or two, and that is not held against it.
+  server("Stop", []);
+  assert.equal((await ship()).mode, "STOP");
+  await order("CmdAlignTo", [], { dstID: 40009089, bookmarkID: null });
+  assert.equal((await ship()).alignTarget, null, "not said of a ship that is not yet flying the course");
+  server("GotoDirection", [0, 1, 0]);
+  assert.deepEqual([(await ship()).mode, (await ship()).alignTarget], ["GOTO", { itemID: 40009089, bookmark: false }]);
+  // Seen stopped for longer than that: forgotten, and flying a course again does not bring it back.
+  server("Stop", []);
+  hand.parks[0].tick();
+  hand.parks[0].tick();
+  hand.parks[0].tick();
+  assert.equal((await ship()).alignTarget, null);
+  server("GotoDirection", [0, 0, 1]);
+  assert.deepEqual([(await ship()).mode, (await ship()).alignTarget], ["GOTO", null]);
+  assert.deepEqual(hand.errors, []);
+});

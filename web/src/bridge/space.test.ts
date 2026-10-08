@@ -294,6 +294,27 @@ test("the ship's warp decodes when it says whether the ship is lining up, and is
   assert.equal(ship({ preparing: 1, point: { x: 1, y: 2, z: 3 } }).warp, null);
 });
 
+test("what the ship was aligned to decodes as a thing or a bookmark, and is nothing otherwise", () => {
+  const ship = (alignTarget: unknown) =>
+    decodeSpaceSnapshot({
+      inSpace: true,
+      solarSystemID: 30000142,
+      shipID: 9001,
+      entities: [],
+      ship: { itemID: 9001, typeID: 606, ...(alignTarget === undefined ? {} : { alignTarget }) },
+    } as unknown as JsonValue).ship!;
+  assert.deepEqual(ship({ itemID: 40009089, bookmark: false }).alignTarget, { itemID: 40009089, bookmark: false });
+  assert.deepEqual(ship({ itemID: null, bookmark: true }).alignTarget, { itemID: null, bookmark: true });
+  // A bookmark has no thing behind it.
+  assert.deepEqual(ship({ itemID: 5, bookmark: true }).alignTarget, { itemID: null, bookmark: true });
+  // Absent (the gateway's snapshot), null, or naming neither: nothing.
+  assert.equal(ship(undefined).alignTarget, null);
+  assert.equal(ship(null).alignTarget, null);
+  assert.equal(ship({ itemID: null, bookmark: false }).alignTarget, null);
+  assert.equal(ship({ itemID: "moon" }).alignTarget, null);
+  assert.equal(ship({ bookmark: "yes" }).alignTarget, null);
+});
+
 test("R23: the locked-target list decodes long-aware, and empties safely", () => {
   assert.deepEqual(
     decodeTargetIDs([50001248, { type: "long", value: "50001249" }] as unknown as JsonValue),

@@ -18,6 +18,7 @@ import { decodeModuleReach } from "./moduleReach.ts";
 import type {
   CompressionFacility,
   SpaceEntity,
+  ShipAlignTarget,
   ShipWarp,
   SpaceShipStatus,
   SpaceSnapshot,
@@ -63,6 +64,17 @@ function ratioOrNull(value: JsonValue | undefined): number | null {
     return null;
   }
   return Math.min(1, Math.max(0, numeric));
+}
+
+/** What was last aligned to: a thing by its id, or a bookmark; null when it says neither. */
+function decodeAlignTarget(value: JsonValue | undefined): ShipAlignTarget | null {
+  if (typeof value !== "object" || value === null) {
+    return null;
+  }
+  const raw = value as Record<string, JsonValue>;
+  const itemID = idOrNull(raw.itemID);
+  const bookmark = raw.bookmark === true;
+  return itemID === null && !bookmark ? null : { itemID: bookmark ? null : itemID, bookmark };
 }
 
 /** The ship's warp: null unless it is an object that says whether the ship is still lining up. */
@@ -258,6 +270,7 @@ function decodeShip(value: JsonValue | undefined): SpaceShipStatus | null {
     followRange: rangeOrNull(raw.followRange),
     gotoPoint: pointOrNull(raw.gotoPoint),
     warp: decodeWarp(raw.warp),
+    alignTarget: decodeAlignTarget(raw.alignTarget),
     miningBurstServices: decodeMiningBurstServices(raw.miningBurstServices),
     coreMobilityFuel: decodeCoreMobilityFuel(raw.coreMobilityFuel),
     moduleReach: decodeModuleReach(raw.moduleReach),

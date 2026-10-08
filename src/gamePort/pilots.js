@@ -61,6 +61,7 @@ const { createPilotSpace } = require("./pilotSpace");
 const { createPilotDogma } = require("./pilotDogma");
 const { MAX_PROBES, createPilotScanner } = require("./pilotScanner");
 const { projectFlight, projectSpace } = require("./spaceProjection");
+const { MODE: BALL_MODE } = require("./destiny/state");
 const contract = require("../../contracts/evejs-web-bridge-contract.json");
 
 /** The gateway's own codes and statuses (WEB_CALL_ERROR_STATUS_CODES), plus the gateway client's two. */
@@ -864,7 +865,7 @@ function createGamePortPilots({
       return {
         // Until the server's state has arrived there is a park and nothing in it.
         space: park && park.validState
-          ? projectSpace(park, { solarSystemID: place.solarSystemID, shipID: place.shipID, readings, warpDestination: entry.warpDestination ?? null })
+          ? projectSpace(park, { solarSystemID: place.solarSystemID, shipID: place.shipID, readings, warpDestination: entry.warpDestination ?? null, alignTarget: alignTargetOf(entry, park) })
           : { inSpace: true, solarSystemID: place.solarSystemID, shipID: place.shipID, sampledAtMs: now(), entities: [], ship: null },
         notifications: drain(entry),
       };
@@ -966,12 +967,43 @@ function createGamePortPilots({
    * (space.WarpDestination(celestialID=...), from the menu and from the autopilot), and words the warp from it
    * if the server's warp then points there. A warp to anything else forgets it.
    */
-  function afterMovementCall(entry, method, args) {
+  function afterMovementCall(entry, method, args, kwargs) {
     if (method === "CmdWarpToStuffAutopilot") {
       entry.warpDestination = positive(args[0]);
     } else if (method === "CmdWarpToStuff") {
       entry.warpDestination = args[0] === "item" ? positive(args[1]) : null;
+    } else if (method === "CmdAlignTo") {
+      // menusvc._AlignTo: what was aligned to is kept (StoreAlignTarget), a thing or a bookmark, and the HUD
+      // names it for as long as the ship flies that course. `since` is the park's tick at the order.
+      const given = kwargs && typeof kwargs === "object" ? kwargs : {};
+      const itemID = positive(given.dstID);
+      const bookmark = positive(given.bookmarkID) !== null;
+      entry.alignTarget = itemID !== null || bookmark ? { itemID: bookmark ? null : itemID, bookmark, since: parkTick(entry) } : null;
+    } else if (method === "CmdGotoDirection") {
+      // Steered by hand: the client forgets what it had aligned to (cameraUtil, eveCommands: ClearAlignTargets).
+      entry.alignTarget = null;
     }
+  }
+
+  /** The tick of the pilot's park, or null when it has none. */
+  const parkTick = (entry) => (entry.space && entry.space.park && entry.space.park.validState ? entry.space.park.currentTime : null);
+
+  /**
+   * The client forgets what it had aligned to as soon as its ship is seen doing anything but fly that course
+   * (spaceMgr.GetHeaderAndSubtextForActionIndication: ClearAlignTargets when the ball is not in GOTO). The
+   * order takes a tick or two to come back from the server as the ball's new course, so for that long the
+   * ship's old mode is not held against it.
+   */
+  const ALIGN_GRACE_TICKS = 3;
+  function alignTargetOf(entry, park) {
+    const kept = entry.alignTarget ?? null;
+    if (kept === null) return null;
+    const ego = park.ego === null ? null : park.ballpark.ball(park.ego);
+    if (ego && ego.mode !== BALL_MODE.GOTO && (kept.since === null || park.currentTime >= kept.since + ALIGN_GRACE_TICKS)) {
+      entry.alignTarget = null;
+      return null;
+    }
+    return kept;
   }
 
   function afterScanManagerCall(entry, method, args, result) {
@@ -1123,7 +1155,7 @@ function createGamePortPilots({
       entry.session.callBound(object.objectID, method, argumentsToWire(form.args), form.kwargs));
     if (service === "scanMgr") afterScanManagerCall(entry, method, form.args, result);
     if (service === "dogmaIM") afterGroupingCall(entry, method, form.args, result);
-    if (service === "beyonce") afterMovementCall(entry, method, form.args);
+    if (service === "beyonce") afterMovementCall(entry, method, form.args, kwargs);
     return {
       service,
       method,

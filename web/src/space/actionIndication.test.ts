@@ -7,7 +7,8 @@ import assert from "node:assert/strict";
 
 import {
   ALIGNED_ANGLE, APPROACH_RANGE, CLOSE_DISTANCE, INDICATION_LABELS, INDICATION_WORD_LABELS, MAX_APPROACH_DISTANCE,
-  WARP_LABELS, actionIndication, indicationHeader, indicationText, pointIndication, pointText, shipIndication, warpIndication, warpText,
+  ALIGN_LABELS, SHIP_STOPPING_LABEL, SHIP_STOPPING_MS, WARP_LABELS,
+  actionIndication, alignIndication, alignText, indicationHeader, indicationText, pointIndication, pointText, shipIndication, shipStoppingText, warpIndication, warpText,
 } from "./actionIndication.ts";
 import type { SpaceSnapshot } from "../store/types.ts";
 
@@ -49,8 +50,10 @@ test("the labels asked for are a header and a line beneath for each of the five,
     alignPoint: { header: "UI/Inflight/Messages/AligningHeader", sub: "UI/Inflight/Messages/AligningToPointSubText" },
   });
   // Approaching a thing and approaching a point share a header: nine labels, not ten. And six for a warp.
-  assert.equal(INDICATION_WORD_LABELS.length, 15);
-  assert.equal(new Set(INDICATION_WORD_LABELS).size, 15);
+  // ...three for what was aligned to, and one for a stop.
+  assert.equal(INDICATION_WORD_LABELS.length, 19);
+  assert.equal(new Set(INDICATION_WORD_LABELS).size, 19);
+  for (const label of [...Object.values(ALIGN_LABELS), SHIP_STOPPING_LABEL]) assert.ok(INDICATION_WORD_LABELS.includes(label), label);
   for (const label of Object.values(WARP_LABELS)) assert.ok(INDICATION_WORD_LABELS.includes(label), label);
 });
 
@@ -260,4 +263,58 @@ test("without all of the client's four labels for it, the warp's line is the pag
     templates[missing] = null;
     assert.equal(warpText({ kind: "warpActive", destinationID: 40009089, distance: 2 * AU }, "A moon", templates), "To A moon · 2.00 AU to go", missing);
   }
+});
+
+// --- after an align ------------------------------------------------------------
+
+const aligned = (alignTarget: unknown, extra: Record<string, unknown> = {}): SpaceSnapshot => ({
+  inSpace: true, solarSystemID: 30000142, shipID: 9001, sampledAtMs: 1,
+  ship: { itemID: 9001, mode: "GOTO", position: HERE, velocity: { x: 300, y: 0, z: 0 }, gotoPoint: along(1e17), alignTarget, ...extra },
+  entities: [{ itemID: 9001, isSelf: true, targetEntityID: null, position: HERE }],
+}) as unknown as SpaceSnapshot;
+
+test("after an align the ship is aligning to what was named, for as long as it flies that course", () => {
+  assert.deepEqual(alignIndication(aligned({ itemID: 40009089, bookmark: false })), { kind: "alignTo", targetID: 40009089, bookmark: false });
+  assert.deepEqual(alignIndication(aligned({ itemID: null, bookmark: true })), { kind: "alignTo", targetID: null, bookmark: true });
+  // A bookmark has no thing behind it, whatever else is said.
+  assert.deepEqual(alignIndication(aligned({ itemID: 5, bookmark: true })), { kind: "alignTo", targetID: null, bookmark: true });
+  // Nothing aligned to; or the ship is doing something else; or there is no ship.
+  assert.equal(alignIndication(aligned(null)), null);
+  assert.equal(alignIndication(aligned(undefined)), null);
+  assert.equal(alignIndication(aligned({ itemID: 40009089, bookmark: false }, { mode: "STOP" })), null);
+  assert.equal(alignIndication(null), null);
+  // It comes before the rule for a point: lined up on it, where a point would say nothing, the ship is still aligning.
+  assert.equal(pointIndication("GOTO", HERE, { x: 300, y: 0, z: 0 }, along(1e17)), null);
+  assert.deepEqual(shipIndication(aligned({ itemID: 40009089, bookmark: false })), { kind: "alignTo", targetID: 40009089, bookmark: false });
+  assert.equal(shipIndication(aligned(null)), null);
+  // And near a point, where the rule for a point would say "approaching", it is still aligning.
+  assert.deepEqual(pointIndication("GOTO", HERE, { x: 300, y: 0, z: 0 }, along(50_000)), { kind: "approachPoint" });
+  assert.deepEqual(shipIndication(aligned({ itemID: 40009089, bookmark: false }, { gotoPoint: along(50_000) })), { kind: "alignTo", targetID: 40009089, bookmark: false });
+});
+
+test("the line after an align: the name after the header, or the client's whole line for a bookmark or the unnameable", () => {
+  const templates = {
+    [INDICATION_LABELS.alignPoint.header]: "Coming about",
+    [ALIGN_LABELS.location]: "towards {targetName}",
+    [ALIGN_LABELS.bookmark]: "Coming about to a saved place",
+    [ALIGN_LABELS.unknown]: "Coming about to who knows where\n",
+  };
+  assert.equal(alignText({ kind: "alignTo", targetID: 40009089, bookmark: false }, "A moon", templates), "Coming about towards A moon");
+  assert.equal(alignText({ kind: "alignTo", targetID: null, bookmark: true }, null, templates), "Coming about to a saved place");
+  assert.equal(alignText({ kind: "alignTo", targetID: null, bookmark: true }, "A moon", templates), "Coming about to a saved place", "a bookmark is not named after a thing");
+  assert.equal(alignText({ kind: "alignTo", targetID: 40009089, bookmark: false }, null, templates), "Coming about to who knows where");
+  // The page's own words, a label at a time.
+  assert.equal(alignText({ kind: "alignTo", targetID: 40009089, bookmark: false }, "A moon", {}), "Aligning A moon");
+  assert.equal(alignText({ kind: "alignTo", targetID: null, bookmark: true }, null, {}), "Turning towards a saved location");
+  assert.equal(alignText({ kind: "alignTo", targetID: 40009089, bookmark: false }, null, {}), "Turning towards somewhere out of sight");
+  assert.equal(indicationHeader("alignTo", {}), "Aligning");
+  assert.equal(indicationHeader("alignTo", templates), "Coming about");
+});
+
+test("the passing word after a stop is ordered is the client's, for two seconds", () => {
+  assert.equal(SHIP_STOPPING_MS, 2_000);
+  assert.equal(SHIP_STOPPING_LABEL, "UI/Inflight/Messages/ShipStoppingHeader");
+  assert.equal(shipStoppingText({}), "Stopping the ship");
+  assert.equal(shipStoppingText({ [SHIP_STOPPING_LABEL]: " Heaving to " }), "Heaving to");
+  assert.equal(shipStoppingText({ [SHIP_STOPPING_LABEL]: null }), "Stopping the ship");
 });

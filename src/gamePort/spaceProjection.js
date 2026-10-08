@@ -179,7 +179,7 @@ function warpOf(park, egoBall, destinationID) {
   return { preparing: egoBall.effectStamp < 0, point: point ? { ...point } : null, destinationID: lies ? id : null };
 }
 
-function projectSpace(park, { solarSystemID, shipID, readings = null, warpDestination = null }) {
+function projectSpace(park, { solarSystemID, shipID, readings = null, warpDestination = null, alignTarget = null }) {
   const ego = park.ego;
   const entities = [];
   for (const ball of park.ballpark.balls.values()) {
@@ -210,6 +210,9 @@ function projectSpace(park, { solarSystemID, shipID, readings = null, warpDestin
       // The point the ship is flying to, when that is what it is doing (the ball's GOTO): with where it is
       // and how it is moving, what the client's HUD tells an approach to a point from a turn towards one.
       gotoPoint: own.mode === "GOTO" && egoBall ? { x: egoBall.goto.x, y: egoBall.goto.y, z: egoBall.goto.z } : null,
+      // What the pilot last aligned to, a thing or a bookmark, while the ship flies that course: the client
+      // remembers it from its own order (menusvc.StoreAlignTarget) and its HUD names it.
+      alignTarget: own.mode === "GOTO" && alignTarget ? { itemID: alignTarget.itemID ?? null, bookmark: Boolean(alignTarget.bookmark) } : null,
       // In warp, or lining up for one: what the client's HUD says of it is made from this. `warpDestination`
       // is the thing the pilot asked to warp to, which the client remembers from its own order.
       warp: own.mode === "WARP" && egoBall ? warpOf(park, egoBall, warpDestination) : null,

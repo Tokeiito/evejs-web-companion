@@ -23,10 +23,16 @@
 //                                      where to (the thing the pilot asked to warp to, when the
 //                                      server's warp is aimed at it) and how far off it still is
 //
-// Not here yet: what the pilot last aligned to, which the client remembers and
-// names in place of "a point in space"; the bar the client fills while the
-// ship lines up for a warp; and the passing "ship stopping". For those, and
-// whenever the range or the point is not known, the caller keeps its own words.
+//   mode GOTO, after an align          "aligning", and what to: the client remembers what the
+//   (menusvc.StoreAlignTarget)         pilot last aligned to and names it for as long as the ship
+//                                      flies that course, however near or lined up it is
+//
+// And one that is not the ball's: for two seconds after the pilot orders a
+// stop the HUD says "ship stopping" over whatever else it would say
+// (eveCommands.CmdStopShip, a passing indication).
+//
+// Not here yet: the bar the client fills while the ship lines up for a warp.
+// Whenever the range or the point is not known, the caller keeps its own words.
 
 import { formatTemplate, plainText } from "../bridge/clientWords.ts";
 import { fmtDist, type DistanceSay } from "./overview.ts";
@@ -54,6 +60,32 @@ export interface ActionIndication {
 
 export interface PointIndication {
   readonly kind: PointKind;
+}
+
+/** After an align: what the pilot aligned to, a thing or a bookmark. */
+export interface AlignIndication {
+  readonly kind: "alignTo";
+  /** The thing, or null for a bookmark. */
+  readonly targetID: number | null;
+  readonly bookmark: boolean;
+}
+
+/** The client's labels for the line beneath "aligning", after an align. */
+export const ALIGN_LABELS = {
+  /** {targetName} */
+  location: "UI/Inflight/Messages/AligningToLocationSubText",
+  bookmark: "UI/Inflight/Messages/AligningToBookmarkSubText",
+  unknown: "UI/Inflight/Messages/AligningUnknownSubText",
+} as const;
+
+/** The client's label for the two seconds after a stop is ordered, and how long that is. */
+export const SHIP_STOPPING_LABEL = "UI/Inflight/Messages/ShipStoppingHeader";
+export const SHIP_STOPPING_MS = 2_000;
+
+/** "Ship stopping", in the client's words when the page holds them. */
+export function shipStoppingText(templates: Readonly<Record<string, string | null | undefined>>): string {
+  const template = templates[SHIP_STOPPING_LABEL];
+  return typeof template === "string" ? plainText(template).trim() : "Stopping the ship";
 }
 
 export type WarpKind = "warpPreparing" | "warpActive";
@@ -91,8 +123,46 @@ export const INDICATION_LABELS: Readonly<Record<ActionKind, { readonly header: s
 
 /** Every label above, once each, to ask the BFF for. */
 export const INDICATION_WORD_LABELS: readonly string[] = [
-  ...new Set([...Object.values(INDICATION_LABELS).flatMap(({ header, sub }) => [header, sub]), ...Object.values(WARP_LABELS)]),
+  ...new Set([
+    ...Object.values(INDICATION_LABELS).flatMap(({ header, sub }) => [header, sub]),
+    ...Object.values(WARP_LABELS),
+    ...Object.values(ALIGN_LABELS),
+    SHIP_STOPPING_LABEL,
+  ]),
 ];
+
+/**
+ * What a ship that was aligned to something is doing: aligning to it, for as
+ * long as the snapshot says it flies that course. Null otherwise.
+ */
+export function alignIndication(snapshot: SpaceSnapshot | null | undefined): AlignIndication | null {
+  const ship = snapshot?.ship ?? null;
+  const target = ship?.alignTarget ?? null;
+  if (!ship || !target || (ship.mode ?? "").trim().toUpperCase() !== "GOTO") {
+    return null;
+  }
+  return { kind: "alignTo", targetID: target.bookmark ? null : target.itemID, bookmark: target.bookmark };
+}
+
+/**
+ * The line beneath "aligning" after an align. To a thing the caller can name,
+ * the client's line is the name alone, so it is given with the header before
+ * it; to a bookmark, or to something the caller cannot name, the client's line
+ * says the whole of it.
+ */
+export function alignText(indication: AlignIndication, targetName: string | null, templates: Readonly<Record<string, string | null | undefined>>): string {
+  const worded = (label: string, args: Record<string, string>, own: string): string => {
+    const template = templates[label];
+    return typeof template === "string" ? plainText(formatTemplate(template, args, { nameOf: () => "" })).trim() : own;
+  };
+  if (indication.bookmark) {
+    return worded(ALIGN_LABELS.bookmark, {}, "Turning towards a saved location");
+  }
+  if (targetName === null) {
+    return worded(ALIGN_LABELS.unknown, {}, "Turning towards somewhere out of sight");
+  }
+  return `${indicationHeader("alignTo", templates)} ${worded(ALIGN_LABELS.location, { targetName }, targetName)}`;
+}
 
 /**
  * What a ship in warp, or lining up for one, is doing (spaceMgr.IndicateWarp);
@@ -169,7 +239,9 @@ export function actionIndication(mode: string | null | undefined, followID: numb
  * from the ship's own row), or failing that what it is doing about the point
  * it is flying to.
  */
-export function shipIndication(snapshot: SpaceSnapshot | null | undefined): (ActionIndication & { readonly followID: number }) | PointIndication | WarpIndication | null {
+export function shipIndication(
+  snapshot: SpaceSnapshot | null | undefined,
+): (ActionIndication & { readonly followID: number }) | PointIndication | WarpIndication | AlignIndication | null {
   const ship = snapshot?.ship ?? null;
   if (!snapshot || !ship) {
     return null;
@@ -183,11 +255,13 @@ export function shipIndication(snapshot: SpaceSnapshot | null | undefined): (Act
   if (indication !== null && followID !== null) {
     return { ...indication, followID };
   }
-  return pointIndication(ship.mode, ship.position, ship.velocity, ship.gotoPoint);
+  // After an align the client says "aligning" however near the point or lined up the ship is.
+  return alignIndication(snapshot) ?? pointIndication(ship.mode, ship.position, ship.velocity, ship.gotoPoint);
 }
 
 /** This page's own words, for when the client's are not to hand. */
-const OWN_HEADER: Readonly<Record<ActionKind | WarpKind, string>> = {
+const OWN_HEADER: Readonly<Record<ActionKind | WarpKind | "alignTo", string>> = {
+  alignTo: "Aligning",
   orbit: "Orbiting",
   approach: "Approaching",
   keepAtRange: "Holding range on",
@@ -242,8 +316,9 @@ export interface IndicationText {
 }
 
 /** The header alone, for where there is room for a word and no more. */
-export function indicationHeader(kind: ActionKind | WarpKind, templates: Readonly<Record<string, string | null | undefined>>): string {
-  const template = templates[kind === "warpPreparing" || kind === "warpActive" ? WARP_LABELS[kind] : INDICATION_LABELS[kind].header];
+export function indicationHeader(kind: ActionKind | WarpKind | "alignTo", templates: Readonly<Record<string, string | null | undefined>>): string {
+  const label = kind === "warpPreparing" || kind === "warpActive" ? WARP_LABELS[kind] : INDICATION_LABELS[kind === "alignTo" ? "alignPoint" : kind].header;
+  const template = templates[label];
   return typeof template === "string" ? plainText(template).trim() : OWN_HEADER[kind];
 }
 

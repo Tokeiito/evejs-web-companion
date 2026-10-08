@@ -28,11 +28,15 @@
   import { distanceSay } from "../space/distanceWords.ts";
   import {
     INDICATION_WORD_LABELS,
+    SHIP_STOPPING_MS,
     actionIndication,
+    alignIndication,
+    alignText,
     indicationHeader,
     indicationText,
     pointIndication,
     pointText,
+    shipStoppingText,
     warpIndication,
     warpText,
   } from "../space/actionIndication.ts";
@@ -171,6 +175,10 @@
   // the page's own sentence stands.
   const indication = $derived(actionIndication(ship?.mode, actedOn.id, ship?.followRange));
   const stateText = $derived.by(() => {
+    // For two seconds after the pilot orders a stop, the client's HUD says so over everything else.
+    if (stopping) {
+      return shipStoppingText($words.templates);
+    }
     // In warp, or lining up for one: the client's header, then where to and how far.
     const warp = warpIndication($space.snapshot);
     if (warp !== null) {
@@ -183,6 +191,13 @@
     if (indication !== null && actedOn.name !== null) {
       const text = indicationText(indication, actedOn.name, $words.templates, say);
       return `${text.header} ${text.sub}`;
+    }
+    // After an align: aligning, and to what, for as long as the ship flies that course.
+    const aligned = indication === null ? alignIndication($space.snapshot) : null;
+    if (aligned !== null) {
+      const thing = aligned.targetID === null ? null : (($space.snapshot?.entities ?? []).find((e) => e.itemID === aligned.targetID) ?? null);
+      const named = thing ? (thing.name && thing.name.length > 0 ? thing.name : resolvedName($names.resolved, "type", thing.typeID, "")) : "";
+      return alignText(aligned, named.length > 0 ? named : null, $words.templates);
     }
     // Flying to a point: the client's line beneath its header says the whole of it.
     const point = indication === null ? pointIndication(ship?.mode, ship?.position, ship?.velocity, ship?.gotoPoint) : null;
@@ -203,6 +218,18 @@
    * button that caused it is a failure the player will not connect to it.
    */
   let stopError = $state("");
+  /** True for the two seconds after a stop this panel ordered was taken: the client's passing "ship stopping". */
+  let stopping = $state(false);
+  let stoppingTimer: ReturnType<typeof setTimeout> | undefined;
+
+  /** Say "ship stopping" for the client's two seconds, starting them again if they are already running. */
+  function showStopping(): void {
+    stopping = true;
+    clearTimeout(stoppingTimer);
+    stoppingTimer = setTimeout(() => {
+      stopping = false;
+    }, SHIP_STOPPING_MS);
+  }
 
   /**
    * ⚠ STOP HAS NO BUSY GUARD, AND MUST NEVER GET ONE. DO NOT CLEAN THIS UP.
@@ -218,6 +245,7 @@
     stopError = "";
     try {
       await flow.stopShip();
+      showStopping();
     } catch (cause) {
       stopError = String(cause);
     }

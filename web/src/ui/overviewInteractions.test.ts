@@ -182,3 +182,11 @@ test("the tactical view's summary gives the nearest thing's distance between hul
   const client = await panel("Tactical.svelte", CLIENT_METRES);
   assert.match(client, /Nearest [^.]* at 870 metres\./);
 });
+
+test("for the moment after a stop is ordered the ship's line says so, in the client's word when the page holds it", async () => {
+  const line = (html: string) => (html.match(/class="hud-head-state[^"]*"[^>]*>([^<]*)</) ?? [])[1]?.trim();
+  assert.notEqual(line(await panel("HudBar.svelte")), "Stopping the ship");
+  assert.equal(line(await panel("HudBar.svelte", "stopping = true;")), "Stopping the ship");
+  const client = 'store.apply({ type: "words/loaded", available: true, templates: { "UI/Inflight/Messages/ShipStoppingHeader": "Heaving to" } });';
+  assert.equal(line(await panel("HudBar.svelte", `stopping = true; ${client}`)), "Heaving to");
+});

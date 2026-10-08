@@ -1727,6 +1727,13 @@ export interface CompressionFacility {
  * enumerates. Ratios are remaining fractions (0-1); capacities are the max HP
  * behind each bar (null when unavailable).
  */
+/** What the pilot last aligned to: a thing in space, or a bookmark. */
+export interface ShipAlignTarget {
+  /** The thing, or null for a bookmark. */
+  readonly itemID: number | null;
+  readonly bookmark: boolean;
+}
+
 /** What the retail client's HUD words a warp from. */
 export interface ShipWarp {
   /** Still lining up: the warp proper has not begun. */
@@ -1826,6 +1833,11 @@ export interface SpaceShipStatus {
    * says (the game port does). Null or absent: not in warp, or not known.
    */
   readonly warp?: ShipWarp | null;
+  /**
+   * What the pilot last aligned to, while the ship flies that course and the
+   * transport says (the game port does). Null or absent: nothing, or not known.
+   */
+  readonly alignTarget?: ShipAlignTarget | null;
   /**
    * How hot each rack is running, 0 to 1 of its heat capacity, as the retail
    * client's own heat gauges read it. Null when the transport does not say

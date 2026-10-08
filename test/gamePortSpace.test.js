@@ -251,7 +251,7 @@ test("the snapshot of a real grid: every ball that has a slim item, in the gatew
     targetEntityID: null, capacitorRatio: null, isNpc: false, npcEntityType: null, compressionFacility: null,
   });
   assert.deepEqual(space.ship, {
-    itemID: undock.shipID, typeID: 588, name: "Reaper", mode: "GOTO", followRange: null, gotoPoint: { ...ball.goto }, warp: null, maxVelocity: 341, radius: ball.radius,
+    itemID: undock.shipID, typeID: 588, name: "Reaper", mode: "GOTO", followRange: null, gotoPoint: { ...ball.goto }, alignTarget: null, warp: null, maxVelocity: 341, radius: ball.radius,
     position: { ...ball.newPos }, velocity: { ...ball.newVel }, shieldRatio: 1, armorRatio: 1, hullRatio: 1,
     capacitorRatio: null, shieldCapacity: null, armorCapacity: null, hullCapacity: null,
     // Dogma has not been asked: what only it knows is not known, which is null and not "none".
@@ -557,4 +557,21 @@ test("the pilot's own ship in warp: lining up or under way, the server's point, 
   assert.equal(ship(40000001).warp.preparing, false);
   // A destination given as a long is said as a number.
   assert.equal(ship(40000001n).warp.destinationID, 40000001);
+});
+
+test("the pilot's own ship says what it was last aligned to while it flies that course, and not otherwise", () => {
+  const park = undockedPark();
+  const slim = (fields) => new Map(Object.entries(fields));
+  park.ballpark.addBall({ id: 9000000000001, isFree: true, mass: 1e6, x: 1e4, maxVelocity: 250 });
+  park.slimItems.set(9000000000001, slim({ itemID: 9000000000001, typeID: 23707, groupID: 550, categoryID: 11, ownerID: 500010 }));
+  const ship = (alignTarget) => projectSpace(park, { solarSystemID: SYSTEM, shipID: undock.shipID, alignTarget }).ship;
+  // Flying a course: a thing, or a bookmark; what the pilot keeps beside them (when it was ordered) is not said.
+  assert.deepEqual([ship(null).mode, ship(null).alignTarget, ship(undefined).alignTarget], ["GOTO", null, null]);
+  assert.deepEqual(ship({ itemID: 40009089, bookmark: false, since: 12 }).alignTarget, { itemID: 40009089, bookmark: false });
+  assert.deepEqual(ship({ itemID: null, bookmark: true, since: 12 }).alignTarget, { itemID: null, bookmark: true });
+  // Doing anything else, it is aligned to nothing.
+  park.ballpark.orbit(undock.shipID, 9000000000001, 7500);
+  assert.equal(ship({ itemID: 40009089, bookmark: false, since: 12 }).alignTarget, null);
+  park.ballpark.stop(undock.shipID);
+  assert.equal(ship({ itemID: 40009089, bookmark: false, since: 12 }).alignTarget, null);
 });

@@ -753,3 +753,26 @@ test("the header's mode word is the snapshot's, which is the fresher, and the fl
   // A snapshot that does not say: the flight status's word.
   assert.match(header(null, "GOTO"), /GOTO · 100%/);
 });
+
+test("after an align the ship's line and the header say what the ship is aligning to, as the client's HUD does", () => {
+  const self = { itemID: SHIP_ID, isSelf: true, targetEntityID: null, name: null, typeID: SHIP_TYPE_ID, radius: 100, position: { x: 0, y: 0, z: 0 } };
+  const moon = { itemID: 40009089, isSelf: false, targetEntityID: null, name: "Jita IV - Moon 12", typeID: 14, radius: 5000, position: { x: 1e12, y: 0, z: 0 } };
+  const store = (alignTarget: unknown, templates: Record<string, string> = {}) => {
+    const made = inSpaceStore() as { apply: (event: unknown) => void };
+    // Lined up on a far point: where the rule for a point alone says nothing.
+    made.apply({ type: "space/snapshot", snapshot: { ...SHIP_SNAPSHOT, entities: [self, moon], ship: { ...SHIP_SNAPSHOT.ship, mode: "GOTO", gotoPoint: { x: 1e17, y: 0, z: 0 }, velocity: { x: 300, y: 0, z: 0 }, alignTarget } } });
+    if (Object.keys(templates).length > 0) made.apply({ type: "words/loaded", available: true, templates });
+    return made;
+  };
+  const line = (made: unknown) => (renderHud(made).match(/class="hud-head-state[^"]*"[^>]*>([^<]*)</) ?? [])[1]?.trim();
+  const toMoon = store({ itemID: 40009089, bookmark: false });
+  assert.equal(line(toMoon), "Aligning Jita IV - Moon 12");
+  assert.match(visibleText(renderHeader(toMoon, false)), /Aligning/);
+  assert.equal(line(store({ itemID: null, bookmark: true })), "Turning towards a saved location");
+  // A thing that is not in view cannot be named.
+  assert.equal(line(store({ itemID: 123456, bookmark: false })), "Turning towards somewhere out of sight");
+  // In the client's words when the page holds them.
+  assert.equal(line(store({ itemID: 40009089, bookmark: false }, { "UI/Inflight/Messages/AligningHeader": "Coming about", "UI/Inflight/Messages/AligningToLocationSubText": "{targetName}" })), "Coming about Jita IV - Moon 12");
+  // Aligned to nothing, and lined up: nothing to say, as before.
+  assert.equal(line(store(null)), "Under way.");
+});
