@@ -69,6 +69,20 @@ function cases() {
   return sets;
 }
 
+/** Inputs for binascii.crc_hqx, as hex. */
+const CRC_INPUTS = [
+  "", "616263", "7465737432", "00".repeat(64), "ff".repeat(300),
+  // blue.marshal.Save(('\x00' * 64,)): what Placebo hashes for its login challenge.
+  `7e00000000251340${"00".repeat(64)}`,
+  // blue.marshal.Save(('',)): the hash the client returns for an empty server challenge.
+  "7e00000000250e",
+];
+/** [userName, password] pairs for the client's password hash. */
+const PASSWORD_INPUTS = [["Alice", "correct horse"], ["  bob ", ""], ["MiXeD", "MiXeD"], ["Łukasz", "päss"]];
+const FOLD_INPUTS = ["RRFarmer", "test2", "MiXeD_Case-99"];
+/** A string as a Python 2.7 unicode literal, ASCII only in the source. */
+const pyUnicode = (value) => `u'${[...value].map((char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`).join("")}'`;
+
 /** A key as Python 2.7 source. */
 const literal = (key) => (typeof key === "string" ? JSON.stringify(key) : String(key));
 /** A key as the fixture writes it: "s:name" or "i:123", exact for any integer. */
@@ -97,6 +111,36 @@ function snippet(sets) {
     for (const key of keys) lines.push(`d[${literal(key)}] = 0`);
     lines.push("out('inserted ' + chr(31).join([tag(k) for k in d]))");
   }
+  // The parts of the Placebo crypto pack and the password hash that are plain
+  // Python: binascii.crc_hqx, and machobase.PasswordHash written out by hand
+  // (there are no codecs in here, so UTF-16LE is spelled out).
+  lines.push(
+    "import binascii, _sha",
+    "def u16(s):",
+    "    return ''.join([chr(ord(c) & 255) + chr(ord(c) >> 8) for c in s])",
+    "def password_hash(userName, password):",
+    "    unicodeUserName = u16(userName.strip())",
+    "    salt = unicodeUserName.lower()",
+    "    h = _sha.new(u16(password) + salt)",
+    "    for i in xrange(1000):",
+    "        h = _sha.new(h.digest() + salt)",
+    "    return h.digest()",
+    "def casefold(s):",
+    "    s2 = s.upper().lower()",
+    "    if s2 != s:",
+    "        return casefold(s2)",
+    "    return s2",
+  );
+  for (const hex of CRC_INPUTS) {
+    lines.push(`out('crc ${hex} %d' % binascii.crc_hqx(binascii.unhexlify('${hex}'), 0))`);
+  }
+  for (const [user, password] of PASSWORD_INPUTS) {
+    const [u, p] = [pyUnicode(user), pyUnicode(password)];
+    lines.push(`out('pw ' + binascii.hexlify(u16(${u})) + ' ' + binascii.hexlify(u16(${p})) + ' ' + binascii.hexlify(password_hash(${u}, ${p})))`);
+  }
+  for (const name of FOLD_INPUTS) {
+    lines.push(`out('fold ${name} ' + casefold('${name}'))`);
+  }
   return `${lines.join("\n")}\n`;
 }
 
@@ -120,6 +164,9 @@ function main(argv = process.argv.slice(2)) {
     maxint: 0,
     hashes: [],
     dicts: [],
+    crc: [],
+    passwordHashes: [],
+    caseFolds: [],
   };
   const orders = { literal: [], inserted: [] };
   for (const raw of output.split("\n")) {
@@ -131,6 +178,15 @@ function main(argv = process.argv.slice(2)) {
     else if (kind === "hash") {
       const split = rest.lastIndexOf(" ");
       fixture.hashes.push([rest.slice(0, split), Number(rest.slice(split + 1))]);
+    } else if (kind === "crc") {
+      // An empty input leaves two spaces: "crc  0".
+      const split = rest.lastIndexOf(" ");
+      fixture.crc.push([rest.slice(0, split), Number(rest.slice(split + 1))]);
+    } else if (kind === "pw") {
+      // [userName, password] as UTF-16LE hex, then the 20-byte digest as hex.
+      fixture.passwordHashes.push(rest.split(" "));
+    } else if (kind === "fold") {
+      fixture.caseFolds.push(rest.split(" "));
     } else if (kind === "literal" || kind === "inserted") {
       orders[kind].push(rest.split(SEPARATOR));
     }
@@ -144,7 +200,13 @@ function main(argv = process.argv.slice(2)) {
     inserted: orders.inserted[index],
   }));
   fs.writeFileSync(OUTPUT, `${JSON.stringify(fixture)}\n`, "utf8");
-  console.log(`Recorded ${fixture.hashes.length} hashes and ${fixture.dicts.length} dicts from ${fixture.interpreter}`);
+  if (fixture.crc.length !== CRC_INPUTS.length || fixture.passwordHashes.length !== PASSWORD_INPUTS.length) {
+    throw new Error("The oracle did not answer every CRC and password case.");
+  }
+  console.log(
+    `Recorded ${fixture.hashes.length} hashes, ${fixture.dicts.length} dicts, ${fixture.crc.length} CRCs and ` +
+      `${fixture.passwordHashes.length} password hashes from ${fixture.interpreter}`,
+  );
 }
 
 if (require.main === module) {

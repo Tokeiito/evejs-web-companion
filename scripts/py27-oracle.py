@@ -11,8 +11,9 @@ answers come from the real thing.
 The snippet is Python 2.7 source. It gets one name, `out`, a function that takes
 a string; whatever it passes to `out` is printed here, one line per call.
 
-Only builtin modules are available (marshal, binascii, sys, ...): the client's
-standard library lives inside its own archive and is not loaded. Run it with a
+Only builtin modules are available (marshal, binascii, zlib, _sha, sys, ...): the
+client's standard library lives inside its own archive and is not loaded, so
+there are no codecs either (encode a unicode string by hand). Run it with a
 64-bit Python 3 on Windows. It loads a second Python into this process, which is
 fine for a short snippet and nothing more.
 """
@@ -39,6 +40,10 @@ def main():
     handle, out_path = tempfile.mkstemp(suffix=".txt")
     os.close(handle)
     prelude = (
+        # No search path: the host Python's own library must never be imported
+        # into this interpreter by accident.
+        "import sys\n"
+        "sys.path[:] = []\n"
         "__f = open(%r, 'wb')\n"
         "def out(text):\n"
         "    __f.write(text + '\\n')\n"

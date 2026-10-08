@@ -1,34 +1,44 @@
 "use strict";
 
-// Capture what a real eve.js server sends on the game port, as a test fixture.
+// Record a conversation with a real eve.js server on the game port, as a test
+// fixture.
 //
-// Tests of the game-port client must run against bytes a real server wrote, not
-// bytes this repository's own encoder wrote: a codec that agrees only with
-// itself proves nothing. This logs in on the game port, makes a few read-only
-// account-level calls, and saves every frame the SERVER sent.
+// Tests of the game-port session must run against bytes a real server wrote,
+// not bytes this repository's own encoder wrote: a codec that agrees only with
+// itself proves nothing. This logs in, optionally selects a docked character
+// and reads its station inventory, and saves every frame in both directions.
 //
-//   node scripts/capture-game-frames.js <accountName> [outputPath]
+//   node scripts/capture-game-frames.js <accountName> [characterID] [outputPath]
 //
-// ⚠ It never selects a character, so it evicts nobody and changes nothing in
-// game. Use an account you are happy to see in a committed fixture: the frames
-// carry its character list.
+// ⚠ With a characterID it SELECTS that character, which evicts any other
+// session holding it, and logs it off again when it closes. Use a docked
+// character nobody is flying. It changes nothing in game.
+//
+// ⚠ Use an account you are happy to see in a committed fixture: the frames carry
+// its character list.
+//
+// The session's clock is frozen while recording. A real session decides how many
+// clock-sync calls to make from how long each took, so two recordings would
+// otherwise differ in length and a replay could not follow either.
 
 const childProcess = require("node:child_process");
 const fs = require("node:fs");
-const net = require("node:net");
 const path = require("node:path");
-const { GameClient, gameEndpoint } = require("../src/gameClient");
+const { GamePortSession } = require("../src/gamePort/session");
+const { connectTcp, gameEndpoint } = require("../src/gamePort/tcp");
 const { eveRoot } = require("./vendor-marshal");
 
 const WEB_ROOT = path.resolve(__dirname, "..");
 const DEFAULT_OUTPUT = path.join(WEB_ROOT, "test", "fixtures", "gamePortFrames.json");
+/** The same journey ID in every recording, so what we send is the same bytes. */
+const RECORDING_JOURNEY_ID = "00000000-0000-4000-8000-000000000000";
+/** invGroups 15, Station: the group half of the station inventory's bind. */
+const GROUP_STATION = 15;
+/** const.containerHangar */
+const CONTAINER_HANGAR = 10004;
+const SELECT_SETTLE_MS = 3000;
 
-// Read-only, and answered before any character is selected.
-const CALLS = [
-  ["machoNet", "GetTime", []],
-  ["machoNet", "GetInitVals", []],
-  ["charUnboundMgr", "GetCharacterSelectionData", []],
-];
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** Split a byte stream into machoNet frames: 4-byte little-endian length, then payload. */
 function frameSplitter(onFrame) {
@@ -43,6 +53,62 @@ function frameSplitter(onFrame) {
   };
 }
 
+/**
+ * Wrap a frame transport so every frame through it is kept. A server frame
+ * records how many frames the client had sent when it arrived: a replay sends
+ * it once it has seen that many, which reproduces the conversation without
+ * knowing what any frame means.
+ */
+function recordingTransport(inner, frames, step) {
+  let sent = 0;
+  const outer = {
+    onFrame: null,
+    onClose: null,
+    send(payload) {
+      sent += 1;
+      frames.push({ from: "client", during: step(), hex: payload.toString("hex") });
+      inner.send(payload);
+    },
+    close: () => inner.close(),
+  };
+  inner.onClose = (error) => outer.onClose && outer.onClose(error);
+  inner.onFrame = (payload) => {
+    frames.push({ from: "server", during: step(), afterClientFrames: sent, hex: payload.toString("hex") });
+    if (outer.onFrame) outer.onFrame(payload);
+  };
+  return outer;
+}
+
+/** The session options a recording and its replay must share. */
+function recordingSessionOptions() {
+  return { journeyID: RECORDING_JOURNEY_ID, now: () => 0 };
+}
+
+/**
+ * The conversation, as steps. A replay runs the same function against the
+ * recording, so the two cannot drift apart.
+ */
+async function converse(session, { accountName, characterID = null, step = () => {}, settleMs = SELECT_SETTLE_MS }) {
+  const results = {};
+  step("login");
+  await session.login(accountName, "");
+  step("charUnboundMgr.GetCharacterSelectionData");
+  results.selection = await session.call("charUnboundMgr", "GetCharacterSelectionData");
+  if (characterID !== null) {
+    step("charUnboundMgr.SelectCharacterID");
+    await session.call("charUnboundMgr", "SelectCharacterID", [characterID]);
+    // SelectCharacterID answers before the session change has arrived.
+    if (settleMs > 0) await sleep(settleMs);
+    step("invbroker bind");
+    results.broker = await session.bind("invbroker", [session.attributes.stationid, GROUP_STATION]);
+    step("GetInventory");
+    results.hangar = await session.callBound(results.broker.objectID, "GetInventory", [CONTAINER_HANGAR]);
+    step("pingService.Ping");
+    results.ping = await session.proxyCall("pingService", "Ping");
+  }
+  return results;
+}
+
 function eveCommit() {
   try {
     return childProcess.execFileSync("git", ["-C", eveRoot(), "rev-parse", "--short", "HEAD"], {
@@ -54,58 +120,41 @@ function eveCommit() {
   }
 }
 
-async function capture(accountName, { endpoint = gameEndpoint(), calls = CALLS } = {}) {
+async function capture({ accountName, characterID = null, endpoint = gameEndpoint() }) {
   const frames = [];
-  let label = "handshake";
-  // How many frames the client had sent when each server frame arrived. A
-  // replay sends a frame once it has seen that many, which reproduces the
-  // conversation without knowing what any frame means.
-  let sent = 0;
-  const record = frameSplitter((payload) => {
-    frames.push({ during: label, afterClientFrames: sent, hex: payload.toString("hex") });
-  });
-  const client = new GameClient({
-    ...endpoint,
-    connectImpl: (options) => {
-      const socket = net.connect(options);
-      const write = socket.write.bind(socket);
-      // GameClient writes exactly one frame per write.
-      socket.write = (...args) => {
-        sent += 1;
-        return write(...args);
-      };
-      socket.on("data", record);
-      return socket;
-    },
-  });
+  let current = "connect";
+  const transport = recordingTransport(await connectTcp(endpoint), frames, () => current);
+  const session = new GamePortSession({ transport, ...recordingSessionOptions() });
   try {
-    await client.login(accountName);
-    for (const [service, method, args] of calls) {
-      label = `${service}.${method}`;
-      await client.call(service, method, args);
-    }
+    await converse(session, { accountName, characterID, step: (name) => { current = name; } });
+    // Let anything the server was still pushing arrive.
+    await sleep(500);
   } finally {
-    client.close();
+    session.close();
   }
   return frames;
 }
 
 async function main(argv = process.argv.slice(2)) {
-  const [accountName, outputPath = DEFAULT_OUTPUT] = argv;
+  const [accountName, second, third] = argv;
   if (!accountName) {
-    throw new Error("Usage: node scripts/capture-game-frames.js <accountName> [outputPath]");
+    throw new Error("Usage: node scripts/capture-game-frames.js <accountName> [characterID] [outputPath]");
   }
-  const frames = await capture(accountName);
+  const characterID = /^\d+$/.test(second ?? "") ? Number(second) : null;
+  const outputPath = (characterID === null ? second : third) ?? DEFAULT_OUTPUT;
+  const frames = await capture({ accountName, characterID });
   const fixture = {
-    about: "Frames a real eve.js server sent on the game port. Re-capture with scripts/capture-game-frames.js; never edit by hand.",
+    about: "A conversation with a real eve.js server on the game port. Re-record with scripts/capture-game-frames.js; never edit by hand.",
     eveCommit: eveCommit(),
     capturedAt: new Date().toISOString(),
+    accountName,
+    characterID,
     frames,
   };
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
-  fs.writeFileSync(outputPath, `${JSON.stringify(fixture, null, 2)}\n`, "utf8");
-  const bytes = frames.reduce((total, frame) => total + frame.hex.length / 2, 0);
-  console.log(`Captured ${frames.length} frames (${bytes} bytes) into ${outputPath}`);
+  fs.writeFileSync(outputPath, `${JSON.stringify(fixture, null, 1)}\n`, "utf8");
+  const count = (from) => frames.filter((frame) => frame.from === from).length;
+  console.log(`Recorded ${count("client")} client and ${count("server")} server frames into ${outputPath}`);
 }
 
 if (require.main === module) {
@@ -115,4 +164,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { CALLS, capture, frameSplitter };
+module.exports = { capture, converse, frameSplitter, recordingSessionOptions, recordingTransport };
