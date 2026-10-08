@@ -10,8 +10,18 @@ Decisions taken in your place, and anything waiting on you. Overrule any of thes
 
 - **Pushing.** You started the loop with "commit as you go and push". I push `evejs-web-poc` after
   each commit. I do **not** push `eve.js`: your instruction there was to commit the fix, and its
-  `main` is what others pull. Server fixes are local commits in `eve.js`, listed in the table
-  below, waiting for you to push or to tell me to.
+  `main` is what others pull.
+- **The two server fixes are on `origin/main` of eve.js all the same, and I did not put them
+  there.** Its reflog records a push of `main` at 2026-10-08 01:09:26 local, fourteen minutes
+  after the second fix was committed. None of my commands pushed in that repository (mine at that
+  minute were test runs in this one), neither sub-agent pushed (both had finished, and both were
+  told not to), and it has no git hooks. The same reflog shows earlier commits there followed by a
+  push some minutes later, and other sessions on this machine share that checkout, so I take it
+  to be one of them pushing `main` with my two commits on it. I have not found which, and have
+  not asked them. The fixes are small, tested and re-checked live, so I have left them where they
+  are rather than rewrite a shared branch. **If you want server fixes held back until you have
+  looked, they need somewhere other than `main` to sit, and I will not make a branch unasked.**
+  Until you say, I carry on committing them to `main` as you instructed, and report each here.
 - **A BFF restart drops every game-port pilot** (default taken: accept it, as a retail client
   closing would).
 - **The generic call path** keeps today's list of pairs as the BFF's own allowlist once the
@@ -41,8 +51,8 @@ Decisions taken in your place, and anything waiting on you. Overrule any of thes
 
 | Found | Defect | Evidence | Fix (eve.js) | Re-checked |
 |---|---|---|---|---|
-| 2026-10-08 | `corpRegistry.CanLeaveCurrentCorporation` returns `[0, "CrpAccessDenied", {}]`; the bare `{}` cannot be marshalled, so every client gets None | server log: `[PKT] ERR corpRegistry CanLeaveCurrentCorporation() Cannot marshal value: object {}` (7 times); the client unpacks three values (`corp_ui_home.py` 97, 532, 544) | `2e3101da4`, local, not pushed | 2026-10-08: harness reports it identical on both transports; no `[PKT] ERR` in the run |
-| 2026-10-08 | `corpRegistry.KickOutMembers` returns a bare `{kicked, notKicked}`, which cannot be marshalled either, so the client gets None after the kicks are applied | the client indexes the answer, `results['kicked']` (`base_corporation.py` 469-471); the marshaller throws on the handler's old answer (the new test, before the fix) | `22940f822`, local, not pushed | 2026-10-08: called live on the game port with an empty list as a CEO (Farmer, docked): answers `{kicked: [], notKicked: []}` as a dict of two lists; no `[PKT] ERR` |
+| 2026-10-08 | `corpRegistry.CanLeaveCurrentCorporation` returns `[0, "CrpAccessDenied", {}]`; the bare `{}` cannot be marshalled, so every client gets None | server log: `[PKT] ERR corpRegistry CanLeaveCurrentCorporation() Cannot marshal value: object {}` (7 times); the client unpacks three values (`corp_ui_home.py` 97, 532, 544) | `2e3101da4`; on `origin/main` since 01:09 (not pushed by this loop, see above) | 2026-10-08: harness reports it identical on both transports; no `[PKT] ERR` in the run |
+| 2026-10-08 | `corpRegistry.KickOutMembers` returns a bare `{kicked, notKicked}`, which cannot be marshalled either, so the client gets None after the kicks are applied | the client indexes the answer, `results['kicked']` (`base_corporation.py` 469-471); the marshaller throws on the handler's old answer (the new test, before the fix) | `22940f822`; on `origin/main` since 01:09 (not pushed by this loop, see above) | 2026-10-08: called live on the game port with an empty list as a CEO (Farmer, docked): answers `{kicked: [], notKicked: []}` as a dict of two lists; no `[PKT] ERR` |
 
 Judged, not a defect to hand off: the server answers None, and logs `[PKT] ERR`, whenever a handler
 or its marshaller throws. See "For the operator".
