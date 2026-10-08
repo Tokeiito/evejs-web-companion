@@ -3386,3 +3386,79 @@ last aligned to, by name. The passing "ship stopping".
    messages inside messages when one turns up.
 6. Small, around dialogs: the title for a dialog's kind, the "do not ask again" box, the typed
    codes not done.
+
+---
+
+## 2026-10-08 — what the pilot last aligned to, by name, and the passing "ship stopping"
+
+Commit `75f49a0`, pushed.
+
+**What the retail client does.**
+
+- **The align.** Its menu keeps what the pilot last aligned to, a thing or a bookmark
+  (`menusvc._AlignTo`, `StoreAlignTarget`). While that is kept and the ship's ball is in GOTO,
+  the HUD says "aligning" and beneath it the thing's name, or a line of its own for a bookmark
+  or for a thing it cannot name. It goes on saying so however near the point or lined up the
+  ship is. It is forgotten when the pilot steers by hand (`cameraUtil`, `eveCommands`), and
+  whenever the HUD's line is made and the ball is in any other mode (`spaceMgr.py` 695).
+- **The stop.** On the pilot's own stop the HUD shows "ship stopping" as a passing
+  indication (`eveCommands.CmdStopShip`), which lasts two seconds
+  (`hud_action_indication_controller.py` 89) and sits over whatever else the HUD would say.
+
+**What was built.**
+
+- The pilot on the game port keeps the align from its own `CmdAlignTo`, forgets it on a
+  `CmdGotoDirection`, and forgets it once the ship has been in another mode for three ticks
+  of the park. The three ticks are mine: the order takes a tick or two to come back from the
+  server as the ball's new course, and a ship ordered to align from a standstill is still
+  stopped for that long.
+- The snapshot says `alignTarget` while the ship is in GOTO. The page names the thing from
+  what is in view, and words the line with the client's labels.
+- The ship's line says "ship stopping" for two seconds after its own Stop button is
+  answered, in the client's word.
+
+**Proof.**
+
+- Tests: 8 new, 2 changed. 39 ways of breaking the change; four slipped through at first
+  and were closed with tests; none was left untried. One thing no test here can reach: that
+  pressing Stop starts the two seconds. The rendered tests cannot press a button; they show
+  that the line says the words while the two seconds run. The press is in the browser check.
+- Suite: 9147 tests, 9123 pass, 0 fail, 24 skipped, 0 todo.
+- **In the browser, on the game port**, read every 0.2 to 0.3 seconds and noted when it
+  changed:
+
+  | what was done | the header | the ship's line |
+  |---|---|---|
+  | undocked | GOTO · 100% | Under way. |
+  | "Align to" Jita IV - Moon 12, 0.3 s on | Aligning · 100% | Aligning Jita IV - Moon 12 |
+  | the same, 14 s on, lined up | Aligning · 100% | Aligning Jita IV - Moon 12 |
+  | the HUD's Stop, 0.2 s on | Aligning · 100% | Ship Stopping |
+  | 1.6 s on | STOP · 100% | Ship Stopping |
+  | 2.0 s on | STOP · 100% | Engines stopped. |
+
+  In the entry before last the same align read "Aligning to a point in space" and then
+  nothing once lined up.
+- **The staging was undone**: the store was copied with the server stopped before the check
+  and put back after.
+
+**Not done.** An align to a character, which the client words as the last place that pilot
+was known to be. The client also says "aligning" at once on the order, before the server has
+answered; here it waits for the ship's course to change. The header's "100%" still comes
+from the flight status and read 100% over a stopped ship.
+
+### Next
+
+1. **The park beside the server's movement log**; the sim clock; MISSILE, FORMATION, MUSHROOM;
+   a fixed ball's collision shapes and the partition's order, if a server ever sends a ball
+   that needs them.
+2. The call ledger (`ship.Undock`, `dogmaIM.Activate` and `Deactivate` to bind as the client
+   does; `GetMissionBriefingInfo` and `GetMissionObjectiveInfo`, which the client asks on every
+   layout of the agent's window), Phase 3's hosted check and the session-less gateway calls.
+3. The scanner the client's way: results kept from the server's word, a probe's destination
+   and range kept here and sent with the scan.
+4. More of a mission's words: the objectives pane, the mission's time under the agent's line,
+   messages inside messages when one turns up.
+5. Small, around dialogs: the title for a dialog's kind, the "do not ask again" box, the typed
+   codes not done.
+6. Small, in space: the header's speed from the snapshot; the bar the client fills while a
+   ship lines up for a warp; a warp ordered at a bookmark or a fleet member.
