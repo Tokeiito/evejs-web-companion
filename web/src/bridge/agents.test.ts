@@ -309,3 +309,16 @@ test("agentButtonLabel names the retail dialogue buttons", () => {
   assert.equal(agentButtonLabel(AGENT_BUTTON.COMPLETE), "Complete Mission");
   assert.equal(agentButtonLabel(999), "Action 999");
 });
+
+test("every button the retail client knows has a name here, and an unknown one says its number", () => {
+  // appConst.agentDialogueButton*: 1 to 19, no gaps. A research agent's three showed as "Action 12/13/14" until named.
+  const numbers = Object.values(AGENT_BUTTON).sort((left, right) => left - right);
+  assert.deepEqual(numbers, Array.from({ length: 19 }, (_, index) => index + 1));
+  for (const buttonType of numbers) {
+    assert.doesNotMatch(agentButtonLabel(buttonType), /^Action /, `button ${buttonType} has a name`);
+  }
+  assert.equal(agentButtonLabel(AGENT_BUTTON.START_RESEARCH), "Start Research");
+  assert.equal(agentButtonLabel(AGENT_BUTTON.CANCEL_RESEARCH), "Cancel Research");
+  assert.equal(agentButtonLabel(AGENT_BUTTON.BUY_DATACORES), "Buy Datacores");
+  assert.equal(agentButtonLabel(20), "Action 20");
+});

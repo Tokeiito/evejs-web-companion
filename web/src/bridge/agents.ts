@@ -18,31 +18,52 @@ import type {
   JournalState,
 } from "../store/types.ts";
 
-// Retail agent dialogue button constants (agentMissionRuntime.js), the second
-// value in each availableActions tuple. Exported so the UI can identify the
-// Accept / Decline / Complete buttons without magic numbers.
+// Retail agent dialogue button constants (the client's appConst
+// agentDialogueButton*, 1 to 19), the second value in each availableActions
+// tuple. Exported so the UI can identify the Accept / Decline / Complete
+// buttons without magic numbers.
 export const AGENT_BUTTON = Object.freeze({
   VIEW_MISSION: 1,
   REQUEST_MISSION: 2,
   ACCEPT: 3,
+  ACCEPT_CHOICE: 4,
   ACCEPT_REMOTELY: 5,
   COMPLETE: 6,
   COMPLETE_REMOTELY: 7,
+  CONTINUE: 8,
   DECLINE: 9,
   DEFER: 10,
   QUIT: 11,
+  START_RESEARCH: 12,
+  CANCEL_RESEARCH: 13,
+  BUY_DATACORES: 14,
+  LOCATE_CHARACTER: 15,
+  LOCATE_ACCEPT: 16,
+  LOCATE_REJECT: 17,
+  YES: 18,
+  NO: 19,
 });
 
 const BUTTON_LABELS: Readonly<Record<number, string>> = Object.freeze({
   [AGENT_BUTTON.VIEW_MISSION]: "View Mission",
   [AGENT_BUTTON.REQUEST_MISSION]: "Request Mission",
   [AGENT_BUTTON.ACCEPT]: "Accept",
+  [AGENT_BUTTON.ACCEPT_CHOICE]: "Accept",
   [AGENT_BUTTON.ACCEPT_REMOTELY]: "Accept Remotely",
   [AGENT_BUTTON.COMPLETE]: "Complete Mission",
   [AGENT_BUTTON.COMPLETE_REMOTELY]: "Complete Remotely",
+  [AGENT_BUTTON.CONTINUE]: "Continue",
   [AGENT_BUTTON.DECLINE]: "Decline",
   [AGENT_BUTTON.DEFER]: "Defer",
   [AGENT_BUTTON.QUIT]: "Quit",
+  [AGENT_BUTTON.START_RESEARCH]: "Start Research",
+  [AGENT_BUTTON.CANCEL_RESEARCH]: "Cancel Research",
+  [AGENT_BUTTON.BUY_DATACORES]: "Buy Datacores",
+  [AGENT_BUTTON.LOCATE_CHARACTER]: "Locate Character",
+  [AGENT_BUTTON.LOCATE_ACCEPT]: "Accept",
+  [AGENT_BUTTON.LOCATE_REJECT]: "Reject",
+  [AGENT_BUTTON.YES]: "Yes",
+  [AGENT_BUTTON.NO]: "No",
 });
 
 export function agentButtonLabel(buttonType: number): string {
