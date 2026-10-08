@@ -3342,7 +3342,7 @@ Commit `31854db`, pushed.
 
 **Proof.**
 
-- Tests: 12 new, 2 changed. 59 ways of breaking the change. Seven slipped through at first:
+- Tests: 12 new, 2 changed. 60 ways of breaking the change. Seven slipped through at first:
   six were closed with tests, and one showed a check in the decoder that could never matter,
   which was taken out. None was left untried.
 - Suite: 9139 tests, 9115 pass, 0 fail, 24 skipped, 0 todo.
