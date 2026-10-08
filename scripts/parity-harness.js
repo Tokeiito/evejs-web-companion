@@ -371,7 +371,7 @@ function renderReport({ accountName, characterID, facts, results, skipped, notif
   row("identical", "The same JSON.");
   row("moved", "The same shape; some values or row counts changed between the two reads.");
   row("tolerated", "Differs only in spellings the shared readers in `wire.ts` accept either of.");
-  row("divergent", "A decoder written against the gateway could read this differently.");
+  row("divergent", "A decoder written against the gateway could read this differently, unless it takes both spellings (the plan, Phase 2, says which do).");
   row("gained", "The gateway answers with a cache reference the browser cannot follow. The game port returns the object.");
   row("server cannot marshal", "The handler returns something the server's marshaller refuses, so the game port gets None. A server defect: the retail client gets None too.");
   row("refused alike", "The server refused on both transports, and each reports the same reason.");

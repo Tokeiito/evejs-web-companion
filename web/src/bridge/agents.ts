@@ -51,9 +51,15 @@ export function agentButtonLabel(buttonType: number): string {
 
 // --- marshaled-value helpers ----------------------------------------------
 
-/** Items of a {type:"tuple"} or {type:"list"} wrapper; [] otherwise. */
+/**
+ * Items of a {type:"tuple"} or {type:"list"} wrapper, or of a bare array; []
+ * otherwise. The web gateway wraps a tuple; the game port gives it as an array.
+ */
 function seqItems(value: JsonValue | undefined): readonly JsonValue[] {
-  if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+  if (Array.isArray(value)) {
+    return value;
+  }
+  if (typeof value === "object" && value !== null) {
     const candidate = value as { type?: unknown; items?: unknown };
     if (
       (candidate.type === "tuple" || candidate.type === "list") &&

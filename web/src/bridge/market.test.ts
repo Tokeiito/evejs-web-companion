@@ -386,8 +386,32 @@ test("decodePriceHistory reads the day rows", () => {
   } as unknown as JsonValue;
   const days = decodePriceHistory(rowset);
   assert.equal(days.length, 1);
+  assert.equal(days[0]?.day, 133000000000000000n);
   assert.equal(days[0]?.average, "5.5");
   assert.equal(days[0]?.volume, 1000);
+});
+
+test("decodePriceHistory reads a day the gateway prints as bare digits", () => {
+  // What the gateway really sends for marketProxy.GetNewPriceHistory (parity
+  // report, 2026-10-08): the day is a bare string of digits, not {type:"long"}.
+  // The game port sends the wrapper. Both must give the same day.
+  const rowsetWithDay = (day: unknown) =>
+    ({
+      type: "object",
+      name: "eve.common.script.sys.rowset.Rowset",
+      args: {
+        type: "dict",
+        entries: [
+          ["columns", list(["historyDate", "lowPrice", "highPrice", "avgPrice", "volume", "orders"] as unknown as readonly JsonValue[])],
+          ["RowClass", { type: "token", value: "blue.DBRow" }],
+          ["lines", { type: "list", items: [[day, 5, 6, 5.5, 1000, 12]] }],
+        ],
+      },
+    }) as unknown as JsonValue;
+  const fromGateway = decodePriceHistory(rowsetWithDay("134332992000000000"));
+  const fromGamePort = decodePriceHistory(rowsetWithDay({ type: "long", value: "134332992000000000" }));
+  assert.equal(fromGateway[0]?.day, 134332992000000000n);
+  assert.deepEqual(fromGateway, fromGamePort);
 });
 
 // =============================================================================

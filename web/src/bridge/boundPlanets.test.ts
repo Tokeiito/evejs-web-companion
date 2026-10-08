@@ -393,6 +393,24 @@ test("decodeResourceData reads the distribution bytes + numBands + proximity", (
   assert.equal(rd.proximity, 0);
 });
 
+test("decodeResourceData reads bytes the game port gives without the bytes wrapper", () => {
+  // The gateway prints a byte string as {type:"bytes", value:{type:"Buffer"}};
+  // the game port gives the buffer itself. (parity report: the "shape" rows.)
+  const bare = structuredClone(FARMER_RESOURCE_DATA) as { args: { entries: [string, JsonValue][] } };
+  bare.args.entries[0] = ["data", { type: "Buffer", data: [203, 79, 3, 67, 38, 218, 78, 63] }];
+  const rd = decodeResourceData(bare as unknown as JsonValue);
+  assert.deepEqual(rd.data, [203, 79, 3, 67, 38, 218, 78, 63]);
+  assert.deepEqual(rd, decodeResourceData(FARMER_RESOURCE_DATA));
+});
+
+test("decodeResourceData gives null for data that is not bytes", () => {
+  const notBytes = structuredClone(FARMER_RESOURCE_DATA) as { args: { entries: [string, JsonValue][] } };
+  notBytes.args.entries[0] = ["data", { type: "list", items: [1, 2, 3] }];
+  assert.equal(decodeResourceData(notBytes as unknown as JsonValue).data, null);
+  notBytes.args.entries[0] = ["data", { type: "Buffer", data: "not an array" }];
+  assert.equal(decodeResourceData(notBytes as unknown as JsonValue).data, null);
+});
+
 // --- GetFullNetworkForOwner -------------------------------------------------
 
 test("decodeFullNetwork reads [pins, links] with links as bare 2-tuples", () => {

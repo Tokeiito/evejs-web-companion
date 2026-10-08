@@ -42,6 +42,12 @@ test("two spellings the shared readers both accept are 'tolerated'", () => {
   // unwrapReal: a bare number or a real wrapper.
   assert.deepEqual(kinds({ type: "real", value: 1939882211.6 }, 1939882211.6), ["real-form"]);
   assert.equal(verdict(keyVal([["bounty", { type: "real", value: 0 }], ["end", { type: "long", value: "0" }]]), keyVal([["bounty", 0], ["end", 0]])), "tolerated");
+  // unwrapLong: the bare digits the gateway prints for a handler's bare BigInt.
+  assert.deepEqual(kinds("134307936000000000", { type: "long", value: "134307936000000000" }), ["bare-bigint-string"]);
+  assert.equal(verdict("134307936000000000", { type: "long", value: "134307936000000000" }), "tolerated");
+  // ...but digits against text is still two different things.
+  assert.equal(verdict("134307936000000000", "Jita"), "moved");
+  assert.equal(verdict("134307936000000000", { type: "list", items: [] }), "divergent");
 });
 
 test("a packed row compares by column, whichever of its two forms the gateway used", () => {
@@ -56,17 +62,18 @@ test("a packed row compares by column, whichever of its two forms the gateway us
 test("what a decoder could read differently is 'divergent', and says how", () => {
   // The gateway prints a handler's {type:"tuple"}; the game port can only send a tuple.
   assert.deepEqual(kinds({ type: "tuple", items: [1, 2] }, [1, 2]), ["tuple-form"]);
-  // The gateway prints a handler's bare BigInt as bare digits. unwrapLong does not read those.
-  assert.deepEqual(kinds("134307936000000000", { type: "long", value: "134307936000000000" }), ["bare-bigint-string"]);
-  // A byte string's wrapper is lost on the wire.
-  assert.deepEqual(kinds({ type: "bytes", value: { type: "Buffer", data: [7, 228] } }, { type: "Buffer", data: [7, 228] }), ["shape"]);
+  // A byte string's wrapper is lost on the wire. No shared reader takes both; each decoder of bytes must.
+  assert.deepEqual(kinds({ type: "bytes", value: { type: "Buffer", data: [7, 228] } }, { type: "Buffer", data: [7, 228] }), ["bytes-form"]);
+  assert.deepEqual(kinds({ type: "bytes", value: { type: "Buffer", data: [7, 228] } }, { type: "Buffer", data: [7, 229] }), ["bytes-form", "value"]);
+  assert.deepEqual(kinds({ type: "bytes", value: { type: "Buffer", data: [7, 228] } }, { type: "Buffer", data: [7] }), ["bytes-form", "count"]);
+  assert.deepEqual(kinds({ type: "bytes", value: "not a buffer" }, { type: "Buffer", data: [7] }), ["shape"]);
   assert.deepEqual(kinds({ type: "rawstr", value: "util.Row" }, "util.Row"), ["string-form"]);
   assert.deepEqual(kinds(keyVal([["name", "a"]]), keyVal([["title", "a"]])), ["keys"]);
   assert.deepEqual(kinds({ type: "list", items: [] }, { type: "dict", entries: [] }), ["shape"]);
   assert.deepEqual(kinds([0, "CrpAccessDenied", {}], null), ["null-vs-value"]);
   for (const [gateway, wire] of [
     [{ type: "tuple", items: [1] }, [1]],
-    ["134307936000000000", { type: "long", value: "134307936000000000" }],
+    [{ type: "bytes", value: { type: "Buffer", data: [7] } }, { type: "Buffer", data: [7] }],
     [{ type: "list", items: [] }, null],
   ]) {
     assert.equal(verdict(gateway, wire), "divergent");
@@ -76,8 +83,11 @@ test("what a decoder could read differently is 'divergent', and says how", () =>
 test("the verdict is the worst kind found, and the kinds are listed worst first", () => {
   const gateway = keyVal([["when", "134307936000000000"], ["roles", { type: "long", value: "0" }], ["count", 1]]);
   const wire = keyVal([["when", { type: "long", value: "134307936000000000" }], ["roles", 0], ["count", 2]]);
-  assert.equal(verdict(gateway, wire), "divergent");
+  assert.equal(verdict(gateway, wire), "tolerated");
   assert.deepEqual(kinds(gateway, wire), ["bare-bigint-string", "long-form", "value"]);
+  const withTuple = (pair) => keyVal([...pair.args.entries, ["pair", pair === gateway ? { type: "tuple", items: [1] } : [1]]]);
+  assert.equal(verdict(withTuple(gateway), withTuple(wire)), "divergent");
+  assert.deepEqual(kinds(withTuple(gateway), withTuple(wire)), ["tuple-form", "bare-bigint-string", "long-form", "value"]);
 });
 
 test("the gateway's cached envelope is opened as the browser opens it", () => {

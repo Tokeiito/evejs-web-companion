@@ -50,7 +50,8 @@ function strictFitting(key, row, expectedOwnerID, data) {
     fail("Fitting identity, hull, date, or item list is invalid.");
   }
   const items = fitData.items.map((entry) => {
-    const tuple = entry && entry.type === "tuple" ? entry.items : null;
+    // The web gateway wraps a tuple; the game port gives it as an array.
+    const tuple = Array.isArray(entry) ? entry : entry && entry.type === "tuple" ? entry.items : null;
     if (!Array.isArray(tuple) || tuple.length !== 3) fail("Malformed fitting item tuple.");
     const [typeID, flagID, quantity] = tuple;
     if (!positive(typeID) || !data.getType(typeID) || !positive(flagID) || !positive(quantity) ||

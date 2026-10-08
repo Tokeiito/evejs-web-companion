@@ -21,7 +21,9 @@ export interface ModuleReachObservation {
 const object = (value: JsonValue | undefined): Record<string, JsonValue> | null =>
   value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, JsonValue> : null;
 function number(value: JsonValue | undefined): number | null {
-  if (value == null) return null;
+  // This is the BFF's own JSON, where a measurement is a number. A string here
+  // is malformed, and stays unknown: unwrapLong would read one made of digits.
+  if (value == null || typeof value === "string") return null;
   const valueNumber = typeof value === "number" ? value : Number(unwrapLong(value) ?? NaN);
   return Number.isFinite(valueNumber) && valueNumber >= 0 ? valueNumber : null;
 }

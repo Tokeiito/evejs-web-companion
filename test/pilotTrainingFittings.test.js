@@ -41,6 +41,18 @@ test("strict read preserves hull, slot/rig/charge/drone flags and quantities", (
   assert.equal(fit.fittingID, 7);
 });
 
+test("strict read gives the same fit when the game port spells it: bare tuples, no cache envelope", () => {
+  // What the web gateway prints as {type:"tuple", items} a decoded marshal
+  // stream gives as an array, and the game-port session has already opened the
+  // cached answer. The fit, and so its fingerprint, must not depend on which.
+  const [viaGateway] = decodeCorpFittingsStrict(library(), CORP, data);
+  const bareRow = row();
+  bareRow.args.entries.find(([key]) => key === "fitData")[1] = { type: "list", items: ITEMS.map((tuple) => [...tuple]) };
+  const [viaGamePort] = decodeCorpFittingsStrict({ type: "dict", entries: [[7, bareRow]] }, CORP, data);
+  assert.equal(viaGamePort.invalid, undefined);
+  assert.deepEqual(viaGamePort, viaGateway);
+});
+
 test("malformed tuple, unknown type, invalid flag and quantity never yield a partial manifest", () => {
   for (const items of [
     [[483, 27]], [[999, 27, 1]], [[483, 42, 1]], [[483, 27, 0]],

@@ -84,14 +84,18 @@ test("decodeCharacterRow types every field class: numbers, strings, nulls, and b
   assert.equal(row.toLevel, 4);
 });
 
-test("unwrapLong accepts both wire encodings and rejects garbage", () => {
+test("unwrapLong accepts each wire encoding and rejects garbage", () => {
   assert.equal(unwrapLong({ type: "long", value: 7 }), 7n);
   assert.equal(unwrapLong({ type: "long", value: "133742000000000000" }), 133742000000000000n);
   assert.equal(unwrapLong(12), 12n);
   assert.equal(unwrapLong(null), null);
   assert.equal(unwrapLong({ type: "long", value: "not-a-number" }), null);
   assert.equal(unwrapLong({ type: "long", value: 1.5 }), null);
-  assert.equal(unwrapLong("133742"), null, "bare strings are not longs");
+  // Until 2026-10-08 a bare string was refused here. The gateway prints some
+  // longs as bare digits, so it is now read; anything else in a string is not.
+  assert.equal(unwrapLong("133742"), 133742n);
+  assert.equal(unwrapLong("133742 "), null, "a string that is not all digits is not a long");
+  assert.equal(unwrapLong("Rada"), null);
 });
 
 test("decodeCharacterSelectionData skips malformed rows and keeps valid ones", () => {

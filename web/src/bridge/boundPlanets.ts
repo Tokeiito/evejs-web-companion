@@ -439,13 +439,14 @@ export interface PlanetResourceData {
   readonly proximity: number;
 }
 
-/** Bytes from a {type:"bytes", value:{type:"Buffer", data:[…]}} wrapper, else null. */
+/**
+ * Bytes from a {type:"bytes", value:{type:"Buffer", data:[…]}} wrapper, or from
+ * the {type:"Buffer", data:[…]} inside it given bare; else null. The web
+ * gateway sends the first, the game port the second.
+ */
 function decodeBytes(value: JsonValue | undefined): readonly number[] | null {
   const obj = asObject(value);
-  if (obj.type !== "bytes") {
-    return null;
-  }
-  const buffer = asObject(obj.value);
+  const buffer = obj.type === "bytes" ? asObject(obj.value) : obj;
   if (buffer.type === "Buffer" && Array.isArray(buffer.data)) {
     return (buffer.data as readonly JsonValue[]).map((b) => smallInt(b));
   }

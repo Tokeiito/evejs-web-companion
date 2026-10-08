@@ -12,13 +12,19 @@
 //   tolerated forms   two spellings of one value that the browser's shared
 //                     readers (web/src/bridge/wire.ts) already accept either of
 //   divergent         a decoder written against the gateway's answer could
-//                     read the game port's differently
+//                     read the game port's differently. Two of these are known
+//                     spellings with no shared reader, so each decoder that
+//                     meets one has to take both: tuple-form (a tuple with or
+//                     without its wrapper) and bytes-form (the same for bytes)
 //
 // The verdict for an answer is the worst kind found in it.
 
 const TOLERATED = new Set([
   // unwrapLong reads a bare integer and a {type:"long"} wrapper alike.
   "long-form",
+  // unwrapLong reads a bare string of digits too (since 2026-10-08), which is
+  // how the gateway prints a handler's bare BigInt.
+  "bare-bigint-string",
   // unwrapReal reads a bare number and a {type:"real"} wrapper alike.
   "real-form",
   // readPackedRow reads a row by `fields` or by `values` against `columns`.
@@ -28,6 +34,12 @@ const MOVED = new Set(["value", "count"]);
 
 const isObject = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
 const isIntegerString = (value) => typeof value === "string" && /^-?\d+$/.test(value);
+
+/** The byte values of a buffer as either transport spells it, or null. */
+function bytesOf(value) {
+  const buffer = isObject(value) && value.type === "bytes" ? value.value : value;
+  return isObject(buffer) && buffer.type === "Buffer" && Array.isArray(buffer.data) ? buffer.data : null;
+}
 
 /** What a value is, for telling two shapes apart. */
 function kindOf(value) {
@@ -103,8 +115,7 @@ function compare(gateway, wire, path = "$", differences = []) {
     if (!sameNumber(numberA.value, numberB.value)) note("value");
     return differences;
   }
-  // The gateway prints a handler's bare BigInt as a string of digits. The
-  // decoders' unwrapLong does not read that; whatever reads it today reads a string.
+  // The gateway prints a handler's bare BigInt as a string of digits.
   if (isIntegerString(gateway) && numberB) {
     note("bare-bigint-string");
     return differences;
@@ -121,6 +132,15 @@ function compare(gateway, wire, path = "$", differences = []) {
   // {type:"tuple", items} is a tuple too.
   const tupleItems = (value, kind) => (kind === "tuple" && !Array.isArray(value) ? value.items ?? [] : value);
   if (kindA !== kindB) {
+    // The gateway prints a byte string inside a {type:"bytes"} wrapper that
+    // the wire does not carry. Same bytes, two spellings.
+    const [bytesA, bytesB] = [bytesOf(gateway), bytesOf(wire)];
+    if (bytesA && bytesB) {
+      note("bytes-form");
+      if (bytesA.length !== bytesB.length) note("count");
+      else if (bytesA.some((byte, index) => byte !== bytesB[index])) note("value");
+      return differences;
+    }
     note(kindA === "null" || kindB === "null" ? "null-vs-value" : "shape");
     return differences;
   }

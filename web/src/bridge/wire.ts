@@ -365,11 +365,19 @@ export function readDictPairs(value: unknown): readonly DictEntry[] {
 
 /**
  * Unwrap a retail long to bigint. Accepts the {type:"long"} wrapper with a
- * number or decimal-string value (both are on the wire per the contract) and
- * bare integers; null for anything else (including absent/null fields).
+ * number or decimal-string value (both are on the wire per the contract),
+ * bare integers, and a bare string of digits; null for anything else
+ * (including absent/null fields).
+ *
+ * The bare string is the web gateway's spelling of some timestamps (market
+ * history days, dogma times), where the game port gives the wrapper for the
+ * same long. Reading both here is what lets one decoder serve either.
  */
 export function unwrapLong(value: unknown): bigint | null {
   if (typeof value === "number" && Number.isInteger(value)) {
+    return BigInt(value);
+  }
+  if (typeof value === "string" && /^-?\d+$/.test(value)) {
     return BigInt(value);
   }
   if (

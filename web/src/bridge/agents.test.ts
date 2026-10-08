@@ -271,6 +271,38 @@ test("decodeJournal buckets an OFFERED row (state 1) under offered, not active",
   assert.equal(journal.active[0]!.missionID, 666);
 });
 
+test("decodeJournal reads tuples the game port gives as bare arrays", () => {
+  // The gateway prints a tuple as {type:"tuple", items}; a decoded marshal
+  // stream has no such wrapper, so the game port gives an array. Lists keep
+  // their wrapper on both. (parity report: agentMgr.GetMyJournalDetails.)
+  const row = (state: number, missionID: number): JsonValue[] => [
+    state, 0, "UI/Agents/MissionTypes/Courier", 111, 222,
+    { type: "long", value: "134295222004640000" }, { type: "list", items: [] }, 0, 0, missionID,
+  ];
+  const journal = decodeJournal([
+    { type: "list", items: [row(1, 333), row(2, 666)] },
+    { type: "list", items: [] },
+  ]);
+  assert.equal(journal.offered.length, 1);
+  assert.equal(journal.offered[0]!.missionID, 333);
+  assert.equal(journal.active.length, 1);
+  assert.equal(journal.active[0]!.missionID, 666);
+  assert.equal(journal.active[0]!.expirationTime, "134295222004640000");
+});
+
+test("decodeJournal reads the same journal from either spelling", () => {
+  const bare = (value: JsonValue): JsonValue => {
+    if (Array.isArray(value)) return value.map(bare);
+    if (typeof value !== "object" || value === null) return value;
+    const wrapper = value as { type?: unknown; items?: JsonValue[] };
+    if (wrapper.type === "tuple" && Array.isArray(wrapper.items)) return wrapper.items.map(bare);
+    if (wrapper.type === "list" && Array.isArray(wrapper.items)) return { type: "list", items: wrapper.items.map(bare) };
+    return value;
+  };
+  assert.deepEqual(decodeJournal(bare(JOURNAL)), decodeJournal(JOURNAL));
+  assert.equal(decodeJournal(bare(JOURNAL)).active.length, 1);
+});
+
 test("agentButtonLabel names the retail dialogue buttons", () => {
   assert.equal(agentButtonLabel(AGENT_BUTTON.ACCEPT), "Accept");
   assert.equal(agentButtonLabel(AGENT_BUTTON.DECLINE), "Decline");
