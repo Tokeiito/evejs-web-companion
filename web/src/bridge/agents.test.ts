@@ -13,10 +13,13 @@ import {
   decodeConversation,
   decodeJournal,
   findAcceptAction,
+  AGENT_MISSION,
   AGENT_TYPE_RESEARCH,
+  decodeMissionChange,
   objectivesShown,
   offerOpen,
   openingAction,
+  windowOnMissionChange,
 } from "./agents.ts";
 import type { AgentConversation } from "../store/types.ts";
 import type { JsonValue } from "./wire.ts";
@@ -441,4 +444,40 @@ test("a mission is still on offer while the agent offers a way to accept it", ()
     [false, false, false, false],
   );
   assert.equal(offerOpen(null), false);
+});
+
+test("a pushed OnAgentMissionChange is read for what happened and with which agent", () => {
+  assert.deepEqual(decodeMissionChange("OnAgentMissionChange", ["modified", 3008416]), { action: "modified", agentID: 3008416 });
+  // An agent sent as a long, as the game port sends a large one.
+  assert.deepEqual(decodeMissionChange("OnAgentMissionChange", ["accepted", { type: "long", value: "3008416" }]), { action: "accepted", agentID: 3008416 });
+  // No agent: the client takes that as every agent's journal being out of date.
+  assert.deepEqual(decodeMissionChange("OnAgentMissionChange", ["offered", null]), { action: "offered", agentID: null });
+  assert.deepEqual(decodeMissionChange("OnAgentMissionChange", ["offered"]), { action: "offered", agentID: null });
+  assert.deepEqual(decodeMissionChange("OnAgentMissionChange", ["offered", 0]), { action: "offered", agentID: null });
+  // Not that notification, or one that does not say what happened.
+  assert.equal(decodeMissionChange("OnAgentMissionChanged", ["modified", 3008416]), null);
+  assert.equal(decodeMissionChange(null, ["modified", 3008416]), null);
+  assert.equal(decodeMissionChange("OnAgentMissionChange", [7, 3008416]), null);
+  assert.equal(decodeMissionChange("OnAgentMissionChange", []), null);
+});
+
+test("what the window open on an agent does when the server says a mission changed", () => {
+  const AGENT = 3008416;
+  const does = (action: string, agentID: number | null = AGENT, open: number | null = AGENT) => windowOnMissionChange({ action, agentID }, open);
+  // The client's constants, as the server sends them.
+  assert.deepEqual(AGENT_MISSION, { MODIFIED: "modified", OFFER_REMOVED: "offer_removed", RESET: "reset", TALK_TO_COMPLETED: "talk_to_completed" });
+  // Modified: it talks to its agent again.
+  assert.equal(does("modified"), "again");
+  // The offer taken away, the mission reset, the talk it asked for done: it closes.
+  assert.deepEqual(["offer_removed", "reset", "talk_to_completed"].map((action) => does(action)), ["close", "close", "close"]);
+  // Everything else the server says leaves the window as it is.
+  for (const action of ["accepted", "completed", "declined", "dungeon_moved", "failed", "offered", "offer_declined", "offer_expired", "prolong", "quit", "research_started", "research_update_ppd"]) {
+    assert.equal(does(action), "stay", action);
+  }
+  // Another agent's mission, no agent named, or no window open.
+  assert.equal(does("modified", 3008417), "stay");
+  assert.equal(does("reset", 3008417), "stay");
+  assert.equal(does("modified", null), "stay");
+  assert.equal(does("modified", AGENT, null), "stay");
+  assert.equal(does("reset", null, null), "stay");
 });

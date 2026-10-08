@@ -1717,6 +1717,9 @@ export function createClientStore(): ClientStore {
           actionError: null,
         });
         break;
+      case "agents/conversation-closed":
+        agents.set({ ...agents.get(), activeAgentID: null, conversation: null, briefing: null });
+        break;
       case "agents/mission-keywords": {
         const current = agents.get();
         agents.set({ ...current, missionKeywords: { ...current.missionKeywords, [event.key]: event.keywords } });

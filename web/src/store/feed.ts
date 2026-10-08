@@ -471,6 +471,8 @@ export type FeedEvent =
       readonly agentID: number;
       readonly conversation: AgentConversation;
     }
+  // The conversation is closed, and what was laid out beside it goes with it.
+  | { readonly type: "agents/conversation-closed" }
   // A mission's keywords, as its agent gave them (kept by "<agentID>:<contentID>").
   | {
       readonly type: "agents/mission-keywords";

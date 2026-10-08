@@ -877,3 +877,440 @@ test("a briefing that cannot be read leaves the conversation on show and says wh
   assert.equal(agents.briefing, null);
   assert.notEqual(agents.actionError, null);
 });
+
+// --- the window listens, as the client's does ---------------------------------
+//
+// agentDialogueWindow has two notify events: OnAgentMissionChange and OnSessionChanged. These tests push
+// them down the live channel, as the server does.
+
+const LISTENING_PILOT = 140000002;
+const OTHER_AGENT = 3008417;
+
+interface PushSource {
+  onmessage: ((event: { data: string }) => void) | null;
+  onopen: (() => void) | null;
+  onerror: (() => void) | null;
+  close(): void;
+}
+
+/**
+ * A pilot online with its live channel open and the Agents panel loaded. Its agents answer each DoAction
+ * from `answers`, by the action pressed (null for the opening). `hold` makes every DoAction wait.
+ */
+async function listening(answers: Record<string, ReturnType<typeof conversationWith>>, options: { journal?: boolean } = {}) {
+  const store = createClientStore();
+  const requests: Recorded[] = [];
+  const state: {
+    hold: Promise<void> | null;
+    /** One action made to wait, by what was pressed (null for the opening). */
+    holdAction: { actionID: number | null; wait: Promise<void> } | null;
+    journalHold: Promise<void> | null;
+    failAction: boolean;
+    sessionGone: boolean;
+    failJournal: boolean;
+    /** How many more DoActions the BFF refuses because the pilot is busy with a write. */
+    busyFor: number;
+  } = { hold: null, holdAction: null, journalHold: null, failAction: false, sessionGone: false, failJournal: false, busyFor: 0 };
+  const fetchImpl = (async (input: unknown, init?: { method?: string; body?: unknown }) => {
+    const path = String(input);
+    const body = init && typeof init.body === "string" ? JSON.parse(init.body) : {};
+    requests.push({ path, method: (init && init.method) || "GET", body });
+    let status = 200;
+    let answer: unknown = { ok: true };
+    if (path === "/api/bridge/call") {
+      // What coming online reads of the station: answered with nothing, in the route's own envelope.
+      answer = { ok: true, service: body.service, method: body.method, result: null, notifications: [] };
+    } else if (path === "/api/bridge/select") {
+      answer = {
+        ok: true,
+        character: { characterID: LISTENING_PILOT, characterName: "Test Two", stationID: 60000004, structureID: null, solarSystemID: 30002780, corporationID: 1000002 },
+        station: null,
+        notifications: [],
+      };
+    } else if (path === "/api/bridge/agents") {
+      answer = { ...AGENTS_RESPONSE, agents: [AGENTS_RESPONSE.agents[0]!, { ...AGENTS_RESPONSE.agents[0]!, agentID: OTHER_AGENT }] };
+    } else if (/^\/api\/bridge\/agents\/\d+\/action$/.test(path)) {
+      if (state.hold) await state.hold;
+      if (state.holdAction && state.holdAction.actionID === body.actionID) await state.holdAction.wait;
+      if (state.busyFor > 0) {
+        state.busyFor -= 1;
+        status = 409;
+        answer = { ok: false, error: "CHARACTER_IN_USE", message: "This pilot is busy with another action." };
+      } else if (state.sessionGone) {
+        status = 404;
+        answer = { ok: false, error: "SESSION_NOT_FOUND", message: "The game session is gone." };
+      } else if (state.failAction) {
+        status = 409;
+        answer = { ok: false, error: "CALL_REFUSED", message: "The agent will not talk now." };
+      } else {
+        answer = answers[String(body.actionID)];
+        if (!answer) throw new Error(`no answer for action ${String(body.actionID)}`);
+      }
+    } else if (/\/briefing$/.test(path)) {
+      answer = BRIEFING_RESPONSE;
+    } else if (path === "/api/bridge/journal") {
+      if (state.journalHold) await state.journalHold;
+      if (state.failJournal) {
+        status = 502;
+        answer = { ok: false, error: "EVE_GATEWAY_UNREACHABLE", message: "The game server is unreachable." };
+      } else {
+        answer = journalResponse([ACTIVE_MISSION_ROW]);
+      }
+    }
+    return { ok: status >= 200 && status < 300, status, async json() { return answer; } };
+  }) as unknown as typeof fetch;
+  const sources: PushSource[] = [];
+  const eventSource = (): PushSource => {
+    const source: PushSource = { onmessage: null, onopen: null, onerror: null, close() {} };
+    sources.push(source);
+    return source;
+  };
+  const flow = createAppFlow(store, { fetch: fetchImpl, eventSource, agentTalkAgainWaitMs: 2 });
+  await flow.selectCharacter(LISTENING_PILOT);
+  const source = sources[0];
+  assert.ok(source, "coming online opens the live channel");
+  source.onopen?.();
+  await flow.loadAgents();
+  if (options.journal !== false) await flow.loadJournal();
+  requests.length = 0;
+  let sequence = 0;
+  /** The server pushes a notification, and what it sets going is given time to finish. */
+  const push = async (method: string, args: readonly unknown[], kind = "client") => {
+    sequence += 1;
+    source.onmessage?.({
+      data: JSON.stringify({
+        source: "evejs-web-gateway",
+        apiVersion: 1,
+        type: "event",
+        cursor: { epoch: "epoch-1", sequence },
+        event: { kind: "notification", notification: { kind, service: null, method, args, kwargs: null } },
+      }),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  };
+  /** What was asked about agents and the journal, each by its last word (and the action pressed), sorted. */
+  const asked = () => requests
+    .filter((request) => request.path.startsWith("/api/bridge/agents/") || request.path === "/api/bridge/journal")
+    .map((request) => (request.path.endsWith("/action") ? `${request.path.split("/").at(-2)}:action:${String(request.body.actionID)}` : request.path.split("/").at(-1) ?? ""))
+    .sort();
+  return { store, flow, requests, push, asked, state };
+}
+
+const ACCEPTED = conversationWith([[819, 6], [822, 11]]);
+
+/** Waits until something is so, for two seconds at most. */
+async function until(what: () => boolean): Promise<void> {
+  for (let waited = 0; waited < 2000 && !what(); waited += 10) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+test("told its mission was modified, the open window talks to its agent again, and the journal is read again", async () => {
+  const { store, flow, requests, push, asked } = await listening({ null: ACCEPTED });
+  await flow.openConversation(3008416);
+  requests.length = 0;
+
+  await push("OnAgentMissionChange", ["modified", 3008416]);
+  // The whole opening again, and its layout: what the agent says, then the mission beside it.
+  assert.deepEqual(asked(), ["3008416:action:null", "briefing", "journal"]);
+  assert.equal(store.agents.get().activeAgentID, 3008416);
+  assert.deepEqual(store.agents.get().conversation?.actions.map((action) => action.buttonType), [6, 11]);
+  assert.equal(store.agents.get().actionError, null);
+});
+
+test("talking again is the opening again: a mission to view is pressed for, as when the window opened", async () => {
+  const { flow, requests, push, asked } = await listening({ null: conversationWith([[900, 1]]), 900: ACCEPTED });
+  await flow.openConversation(3008416);
+  requests.length = 0;
+  await push("OnAgentMissionChange", ["modified", 3008416]);
+  // The journal twice: once for the change the server told of, and once for the window's own press, as at any opening.
+  assert.deepEqual(asked(), ["3008416:action:900", "3008416:action:null", "briefing", "journal", "journal"]);
+});
+
+test("another agent's mission modified leaves the window alone; the journal is still out of date", async () => {
+  const { flow, requests, push, asked } = await listening({ null: ACCEPTED });
+  await flow.openConversation(3008416);
+  requests.length = 0;
+  await push("OnAgentMissionChange", ["modified", OTHER_AGENT]);
+  assert.deepEqual(asked(), ["journal"]);
+});
+
+test("what else the server says of a mission leaves the window as it is, and the journal is read again each time", async () => {
+  const { store, flow, requests, push, asked } = await listening({ null: ACCEPTED });
+  await flow.openConversation(3008416);
+  for (const action of ["accepted", "completed", "offered", "offer_declined", "quit", "failed", "prolong"]) {
+    requests.length = 0;
+    await push("OnAgentMissionChange", [action, 3008416]);
+    assert.deepEqual(asked(), ["journal"], action);
+    assert.equal(store.agents.get().activeAgentID, 3008416, action);
+  }
+});
+
+test("the offer taken away, the mission reset, or the talk done: the window on that agent closes", async () => {
+  for (const action of ["offer_removed", "reset", "talk_to_completed"]) {
+    const { store, flow, requests, push, asked } = await listening({ null: ACCEPTED });
+    await flow.openConversation(3008416);
+    assert.notEqual(store.agents.get().briefing, null, "a mission is laid out beside what the agent says");
+    requests.length = 0;
+
+    // About another agent: nothing closes.
+    await push("OnAgentMissionChange", [action, OTHER_AGENT]);
+    assert.equal(store.agents.get().activeAgentID, 3008416, action);
+
+    await push("OnAgentMissionChange", [action, 3008416]);
+    const agents = store.agents.get();
+    assert.equal(agents.activeAgentID, null, action);
+    assert.equal(agents.conversation, null, action);
+    assert.equal(agents.briefing, null, action);
+    // The roster and the journal are still there, and nothing was asked of the agent.
+    assert.equal(agents.agents.length, 2);
+    assert.notEqual(agents.journal, null);
+    assert.deepEqual(asked(), ["journal", "journal"], action);
+  }
+});
+
+test("with no window open a mission change is the journal's alone, and a journal never read is not read", async () => {
+  const read = await listening({ null: ACCEPTED });
+  await read.push("OnAgentMissionChange", ["modified", 3008416]);
+  assert.deepEqual(read.asked(), ["journal"]);
+
+  const unread = await listening({ null: ACCEPTED }, { journal: false });
+  await unread.push("OnAgentMissionChange", ["modified", 3008416]);
+  await unread.push("OnAgentMissionChange", ["reset", null]);
+  assert.deepEqual(unread.asked(), []);
+});
+
+test("a window that is talking to its agent is not made to start again", async () => {
+  const { flow, requests, push, asked, state } = await listening({ null: ACCEPTED });
+  await flow.openConversation(3008416);
+  requests.length = 0;
+
+  let release!: () => void;
+  state.hold = new Promise<void>((resolve) => { release = resolve; });
+  const opening = flow.openConversation(3008416);
+  // While that DoAction is out: the server says modified twice, and the pilot changes station.
+  await push("OnAgentMissionChange", ["modified", 3008416]);
+  await push("OnAgentMissionChange", ["modified", 3008416]);
+  await push("OnSessionChanged", [{ stationid: [60000004, null] }], "sessionchange");
+  release();
+  await opening;
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  assert.deepEqual(asked().filter((word) => word !== "journal"), ["3008416:action:null", "briefing"]);
+
+  // Once it has finished, it can be told again.
+  state.hold = null;
+  requests.length = 0;
+  await push("OnAgentMissionChange", ["modified", 3008416]);
+  assert.deepEqual(asked(), ["3008416:action:null", "briefing", "journal"]);
+});
+
+test("a button pressed while the window is talking to that agent does nothing; another agent's window is its own", async () => {
+  const { store, flow, requests, asked, state } = await listening({ null: ACCEPTED, 819: conversationWith([], [["missionCompleted", true]]) });
+  let release!: () => void;
+  state.hold = new Promise<void>((resolve) => { release = resolve; });
+  const opening = flow.openConversation(3008416);
+  const pressed = flow.chooseAction(3008416, { actionID: 819, buttonType: 6, label: "Complete Mission" });
+  const other = flow.openConversation(OTHER_AGENT);
+  release();
+  await Promise.all([opening, pressed, other]);
+  assert.deepEqual(asked().filter((word) => word.includes(":action:")), ["3008416:action:null", "3008417:action:null"]);
+  // Afterwards the button works.
+  state.hold = null;
+  requests.length = 0;
+  await flow.chooseAction(3008416, { actionID: 819, buttonType: 6, label: "Complete Mission" });
+  assert.deepEqual(asked().filter((word) => word.includes(":action:")), ["3008416:action:819"]);
+  assert.equal(store.agents.get().actionError, null);
+});
+
+test("changes that come while the journal is being read are answered by one more read, not one each", async () => {
+  const { push, asked, state } = await listening({ null: ACCEPTED });
+  let release!: () => void;
+  state.journalHold = new Promise<void>((resolve) => { release = resolve; });
+  await push("OnAgentMissionChange", ["completed", 3008416]);
+  await push("OnAgentMissionChange", ["offered", OTHER_AGENT]);
+  await push("OnAgentMissionChange", ["accepted", OTHER_AGENT]);
+  assert.deepEqual(asked(), ["journal"], "one read is out");
+  state.journalHold = null;
+  release();
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  assert.deepEqual(asked(), ["journal", "journal"]);
+  // And the next change after that is read for as usual.
+  await push("OnAgentMissionChange", ["quit", OTHER_AGENT]);
+  assert.deepEqual(asked(), ["journal", "journal", "journal"]);
+});
+
+test("the pilot changes station, and the open window talks to its agent again", async () => {
+  const { store, flow, requests, push, asked } = await listening({ null: ACCEPTED });
+  // No window open: a change of station asks nothing of any agent.
+  await push("OnSessionChanged", [{ stationid: [60000004, null], solarsystemid: [null, 30002780] }], "sessionchange");
+  assert.deepEqual(asked(), []);
+
+  await flow.openConversation(3008416);
+  requests.length = 0;
+  // Undocked: the station is one of the things that changed.
+  await push("OnSessionChanged", [{ stationid: [60000004, null], solarsystemid: [null, 30002780] }], "sessionchange");
+  assert.deepEqual(asked(), ["3008416:action:null", "briefing"]);
+  // Something else changed (another ship boarded): the window stays as it is.
+  requests.length = 0;
+  await push("OnSessionChanged", [{ shipid: [1, 2] }], "sessionchange");
+  await push("OnSessionChanged", [null], "sessionchange");
+  assert.deepEqual(asked(), []);
+  assert.equal(store.agents.get().activeAgentID, 3008416);
+});
+
+test("the agent refusing to talk again is shown where the conversation is, and nothing is thrown", async () => {
+  const { store, flow, push, state } = await listening({ null: ACCEPTED });
+  await flow.openConversation(3008416);
+  state.failAction = true;
+  await push("OnAgentMissionChange", ["modified", 3008416]);
+  assert.match(store.agents.get().actionError ?? "", /will not talk now/);
+  // The conversation that was on show stays on show.
+  assert.equal(store.agents.get().activeAgentID, 3008416);
+  assert.deepEqual(store.agents.get().conversation?.actions.map((action) => action.buttonType), [6, 11]);
+});
+
+test("the session going while the window talks again takes the pilot offline, and nothing is left unhandled", async () => {
+  const { store, flow, push, state } = await listening({ null: ACCEPTED });
+  await flow.openConversation(3008416);
+  assert.notEqual(store.station.get().online, null);
+  state.sessionGone = true;
+  await push("OnSessionChanged", [{ stationid: [60000004, null] }], "sessionchange");
+  assert.equal(store.station.get().online, null);
+});
+
+test("a journal that cannot be read stays as it was, and the next change reads it again", async () => {
+  const { store, push, asked, state } = await listening({ null: ACCEPTED });
+  const before = store.agents.get().journal;
+  state.failJournal = true;
+  await push("OnAgentMissionChange", ["offered", OTHER_AGENT]);
+  assert.deepEqual(asked(), ["journal"]);
+  assert.equal(store.agents.get().journal, before);
+  state.failJournal = false;
+  await push("OnAgentMissionChange", ["accepted", OTHER_AGENT]);
+  assert.deepEqual(asked(), ["journal", "journal"]);
+  assert.notEqual(store.agents.get().journal, null);
+});
+
+test("a window the server closes while its own press is out is not opened again by the answer", async () => {
+  // Declining: the server answers with the agent's parting words, and on the way says the mission was reset.
+  const { store, flow, requests, push, asked, state } = await listening({ null: ACCEPTED, 817: conversationWith([[821, 2]], [["missionDeclined", true]]) });
+  await flow.openConversation(3008416);
+  requests.length = 0;
+
+  let release!: () => void;
+  state.hold = new Promise<void>((resolve) => { release = resolve; });
+  const pressed = flow.chooseAction(3008416, { actionID: 817, buttonType: 9, label: "Decline" });
+  await push("OnAgentMissionChange", ["reset", 3008416]);
+  assert.equal(store.agents.get().activeAgentID, null, "the window closed when it was told");
+  release();
+  await pressed;
+  const agents = store.agents.get();
+  assert.equal(agents.activeAgentID, null, "and the answer did not open it again");
+  assert.equal(agents.conversation, null);
+  assert.equal(agents.briefing, null);
+  // Nothing was read for a layout nobody will see.
+  assert.deepEqual(asked().filter((word) => word !== "journal"), ["3008416:action:817"]);
+
+  // Clicked again, the agent is talked to as from new.
+  state.hold = null;
+  requests.length = 0;
+  await flow.openConversation(3008416);
+  assert.equal(store.agents.get().activeAgentID, 3008416);
+  assert.deepEqual(asked(), ["3008416:action:null", "briefing"]);
+});
+
+test("a window closed while it was opening stays closed, at either of its two questions", async () => {
+  for (const under of [null, 900]) {
+    const { store, flow, push, asked, state } = await listening({ null: conversationWith([[900, 1]]), 900: ACCEPTED });
+    let release!: () => void;
+    state.holdAction = { actionID: under, wait: new Promise<void>((resolve) => { release = resolve; }) };
+    const opening = flow.openConversation(3008416);
+    // Time for the window to reach the question it is to be closed under.
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    await push("OnAgentMissionChange", ["reset", 3008416]);
+    release();
+    await opening;
+    assert.equal(store.agents.get().activeAgentID, null, String(under));
+    assert.equal(store.agents.get().conversation, null, String(under));
+    assert.equal(store.agents.get().actionError, null, "and stopping there is not a failure");
+    // It stopped where it was closed: no further question, and nothing read for a layout.
+    assert.deepEqual(asked().filter((word) => word !== "journal"), under === null ? ["3008416:action:null"] : ["3008416:action:900", "3008416:action:null"], String(under));
+  }
+});
+
+test("a close told of another agent, or with nothing out, does not swallow the next answer", async () => {
+  const { store, flow, push, state } = await listening({ null: ACCEPTED, 819: conversationWith([], [["missionCompleted", true]]) });
+  await flow.openConversation(3008416);
+  // Closed with nothing out, then opened again: the opening is laid out.
+  await push("OnAgentMissionChange", ["reset", 3008416]);
+  await flow.openConversation(3008416);
+  assert.equal(store.agents.get().activeAgentID, 3008416);
+
+  // A press is out, and ANOTHER agent's mission is reset: this window's answer is laid out.
+  let release!: () => void;
+  state.hold = new Promise<void>((resolve) => { release = resolve; });
+  const pressed = flow.chooseAction(3008416, { actionID: 819, buttonType: 6, label: "Complete Mission" });
+  await push("OnAgentMissionChange", ["reset", OTHER_AGENT]);
+  release();
+  await pressed;
+  assert.equal(store.agents.get().activeAgentID, 3008416);
+  assert.equal(store.agents.get().conversation?.lastActionInfo.missionCompleted, true);
+});
+
+test("one agent's window closed under its question leaves another's answer to be laid out", async () => {
+  const { store, flow, push, state } = await listening({ null: ACCEPTED });
+  let release!: () => void;
+  state.hold = new Promise<void>((resolve) => { release = resolve; });
+  const first = flow.openConversation(3008416);
+  const second = flow.openConversation(OTHER_AGENT);
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  await push("OnAgentMissionChange", ["reset", 3008416]);
+  release();
+  await Promise.all([first, second]);
+  assert.equal(store.agents.get().activeAgentID, OTHER_AGENT);
+  assert.notEqual(store.agents.get().conversation, null);
+});
+
+test("told to talk again while the pilot's own write is out, the window asks until the pilot is free", async () => {
+  const { store, flow, requests, push, asked, state } = await listening({ null: ACCEPTED });
+  await flow.openConversation(3008416);
+  requests.length = 0;
+  // The undock that changed the station is still out: the BFF refuses twice, then answers.
+  state.busyFor = 2;
+  await push("OnSessionChanged", [{ stationid: [60000004, null] }], "sessionchange");
+  await until(() => asked().includes("briefing"));
+  assert.deepEqual(asked(), ["3008416:action:null", "3008416:action:null", "3008416:action:null", "briefing"]);
+  assert.equal(store.agents.get().actionError, null);
+  assert.equal(store.agents.get().activeAgentID, 3008416);
+});
+
+test("a pilot that stays busy is given up on after fifteen tries, and the window says why", async () => {
+  const { store, flow, requests, push, asked, state } = await listening({ null: ACCEPTED });
+  await flow.openConversation(3008416);
+  requests.length = 0;
+  state.busyFor = 100;
+  await push("OnAgentMissionChange", ["modified", 3008416]);
+  await until(() => store.agents.get().actionError !== null);
+  assert.equal(asked().filter((word) => word === "3008416:action:null").length, 15);
+  assert.match(store.agents.get().actionError ?? "", /busy with another action/);
+});
+
+test("an agent clicked while the pilot is busy is refused at once, as any click is", async () => {
+  const { store, flow, requests, asked, state } = await listening({ null: ACCEPTED });
+  state.busyFor = 1;
+  await flow.openConversation(3008416);
+  assert.deepEqual(asked(), ["3008416:action:null"]);
+  assert.match(store.agents.get().actionError ?? "", /busy with another action/);
+  assert.equal(store.agents.get().activeAgentID, null);
+  void requests;
+});
+
+test("only being busy is waited out: any other refusal of the window's own question is shown at once", async () => {
+  const { store, flow, requests, push, asked, state } = await listening({ null: ACCEPTED });
+  await flow.openConversation(3008416);
+  requests.length = 0;
+  state.failAction = true;
+  await push("OnAgentMissionChange", ["modified", 3008416]);
+  assert.deepEqual(asked().filter((word) => word.includes(":action:")), ["3008416:action:null"]);
+  assert.match(store.agents.get().actionError ?? "", /will not talk now/);
+});

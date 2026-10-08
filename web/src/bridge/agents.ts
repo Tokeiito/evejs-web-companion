@@ -207,6 +207,55 @@ export function offerOpen(conversation: AgentConversation | null): boolean {
   );
 }
 
+/**
+ * appConst.agentMission*: what the server says happened between a pilot and an agent, the first
+ * argument of OnAgentMissionChange(action, agentID). These are the ones the window acts on.
+ */
+export const AGENT_MISSION = Object.freeze({
+  MODIFIED: "modified",
+  OFFER_REMOVED: "offer_removed",
+  RESET: "reset",
+  TALK_TO_COMPLETED: "talk_to_completed",
+} as const);
+
+/** OnAgentMissionChange as the server pushes it. An agent of none means every agent. */
+export interface MissionChange {
+  readonly action: string;
+  readonly agentID: number | null;
+}
+
+/** Reads a pushed OnAgentMissionChange(action, agentID). Null for any other notification. */
+export function decodeMissionChange(method: string | null, args: readonly unknown[]): MissionChange | null {
+  const action = args[0];
+  if (method !== "OnAgentMissionChange" || typeof action !== "string") {
+    return null;
+  }
+  const agentID = toNumber(args[1] as JsonValue | undefined);
+  return { action, agentID: agentID !== null && agentID > 0 ? agentID : null };
+}
+
+/**
+ * What the window open on an agent does when the server says a mission changed.
+ *
+ * agents.py OnAgentMissionChange (688): the offer was taken away, the mission was reset, or the talk it
+ * asked for is done, and the window on that agent closes. agentDialogueWindow.OnAgentMissionChange
+ * (86): the mission was modified, and the window talks to its agent again. Anything else, and anything
+ * about another agent, leaves the window as it is.
+ */
+export function windowOnMissionChange(change: MissionChange, openAgentID: number | null): "close" | "again" | "stay" {
+  if (openAgentID === null || change.agentID !== openAgentID) {
+    return "stay";
+  }
+  if (
+    change.action === AGENT_MISSION.OFFER_REMOVED ||
+    change.action === AGENT_MISSION.RESET ||
+    change.action === AGENT_MISSION.TALK_TO_COMPLETED
+  ) {
+    return "close";
+  }
+  return change.action === AGENT_MISSION.MODIFIED ? "again" : "stay";
+}
+
 /** appConst.agentTypeResearchAgent. */
 export const AGENT_TYPE_RESEARCH = 4;
 

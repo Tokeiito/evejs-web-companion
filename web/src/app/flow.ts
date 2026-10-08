@@ -67,9 +67,13 @@ import {
   decodeBriefing,
   decodeConversation,
   decodeJournal,
+  decodeMissionChange,
   objectivesShown,
   openingAction,
+  windowOnMissionChange,
+  type MissionChange,
 } from "../bridge/agents.ts";
+import { sessionChangeNames } from "../bridge/sessionChange.ts";
 import {
   decodeCashBalance,
   decodeCharStandings,
@@ -412,6 +416,11 @@ export interface AppFlowOptions {
   readonly livePush?: boolean;
   /** Browser-selected pilots must settle a nearby lost flight before automation. */
   readonly browserPilotRecovery?: boolean;
+  /**
+   * How long the agent's window waits before asking again when the BFF says the pilot is busy with a
+   * write (AGENT_TALK_AGAIN_WAIT_MS). Tests shorten it.
+   */
+  readonly agentTalkAgainWaitMs?: number;
   /** Hosted MCC assignment; an absent or different authority blocks target work. */
   readonly miningOperationID?: string | null;
   /**
@@ -1917,6 +1926,17 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       if (jam.active) {
         wakeFleetCompanion();
       }
+      return;
+    }
+    const missionChange = decodeMissionChange(method, args);
+    if (missionChange !== null) {
+      onMissionChange(missionChange);
+      return;
+    }
+    // agentDialogueWindow.OnSessionChanged: another station, or none, and the window talks to its agent
+    // again, since what an agent will do depends on where the pilot is.
+    if (sessionChangeNames(method, args)?.includes("stationid")) {
+      talkToOpenAgentAgain();
       return;
     }
     if (method !== null && fleetSnapshotNotifications.has(method)) {
@@ -4015,6 +4035,142 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   async function loadJournal(): Promise<void> {
     const result = await api.loadJournal(callOptions);
     store.apply({ type: "agents/journal", journal: decodeJournal(result) });
+  }
+
+  /**
+   * A push that makes the window talk again is often the echo of the pilot's own write (an undock, a
+   * package loaded) and comes while that write is still out. The client's window just asks. The BFF runs
+   * one write for a pilot at a time and refuses a second (CHARACTER_IN_USE), and talking to an agent
+   * counts as one. So what the window asks of its own accord is asked again until the write has finished,
+   * for a few seconds at most.
+   */
+  const AGENT_TALK_AGAIN_WAIT_MS = 200;
+  const AGENT_TALK_AGAIN_TRIES = 15;
+  const agentTalkAgainWaitMs = options.agentTalkAgainWaitMs ?? AGENT_TALK_AGAIN_WAIT_MS;
+  async function whenThePilotIsFree<T>(ask: () => Promise<T>): Promise<T> {
+    for (let tries = 1; ; tries += 1) {
+      try {
+        return await ask();
+      } catch (error) {
+        if (!(error instanceof BridgeCallError && error.code === "CHARACTER_IN_USE") || tries >= AGENT_TALK_AGAIN_TRIES) {
+          throw error;
+        }
+        await new Promise((resolve) => setTimeout(resolve, agentTalkAgainWaitMs));
+      }
+    }
+  }
+
+  /** The agents whose window is talking to them now (agentDialogueWindow.isLoading, a window to an agent). */
+  const agentsBeingTalkedTo = new Set<number>();
+  /** The agents whose window was closed under a conversation that was still out (the window's `destroyed`). */
+  const agentWindowsClosedWhileTalking = new Set<number>();
+
+  /**
+   * agentDialogueWindow.InteractWithAgent: one conversation with an agent at a time. Asked to talk to
+   * an agent it is already talking to, the window does nothing.
+   */
+  async function interactWithAgent(agentID: number, talk: () => Promise<void>): Promise<void> {
+    if (agentsBeingTalkedTo.has(agentID)) {
+      return;
+    }
+    agentsBeingTalkedTo.add(agentID);
+    try {
+      await runAgentAction(talk);
+    } finally {
+      agentsBeingTalkedTo.delete(agentID);
+      agentWindowsClosedWhileTalking.delete(agentID);
+    }
+  }
+
+  /**
+   * What the agent said, for a window that is still there to show it. InteractWithAgent: "if
+   * self.destroyed: return". The server can close the window while its own question is out (declining
+   * a mission is answered with the conversation and, on the way, with a change that closes the window).
+   */
+  async function agentSays(agentID: number, actionID: number | null): Promise<AgentConversation | null> {
+    const conversation = decodeConversation(await api.agentAction(agentID, actionID, callOptions));
+    return agentWindowsClosedWhileTalking.has(agentID) ? null : conversation;
+  }
+
+  /**
+   * agentDialogueWindow._GetConversation with no action, and the layout of what comes of it: the window
+   * opens on what the agent says, and if the first thing on offer is to request a mission or view one,
+   * it presses that at once.
+   */
+  async function talkToAgent(agentID: number, ofItsOwnAccord = false): Promise<void> {
+    await interactWithAgent(agentID, async () => {
+      let conversation = ofItsOwnAccord ? await whenThePilotIsFree(() => agentSays(agentID, null)) : await agentSays(agentID, null);
+      if (conversation === null) {
+        return;
+      }
+      const agent = store.agents.get().agents.find((row) => row.agentID === agentID);
+      const first = openingAction(conversation, agent ? agent.agentTypeID : null);
+      if (first !== null) {
+        conversation = await agentSays(agentID, first.actionID);
+        if (conversation === null) {
+          return;
+        }
+      }
+      await layOutConversation(agentID, conversation);
+      // A press changes what there is between the pilot and the agent: a mission requested is an offer in the journal.
+      if (first !== null) {
+        await loadJournal();
+      }
+    });
+  }
+
+  /** The window that is open talks to its agent again, from the top, as the client's does when it is told to. */
+  function talkToOpenAgentAgain(): void {
+    const agentID = store.agents.get().activeAgentID;
+    if (agentID !== null) {
+      // Nobody is waiting on this: what goes wrong is shown where the conversation is, and a lost session has already been acted on.
+      void talkToAgent(agentID, true).catch(() => {});
+    }
+  }
+
+  let journalBeingRead = false;
+  let journalReadAgain = false;
+  /**
+   * journal.py OnAgentMissionChange: what the journal holds is out of date. The client reads it again
+   * when it is next looked at; here it is on show wherever it has been read, so it is read again now.
+   * Changes that come while it is being read are answered by one more read, not one each.
+   */
+  function refreshJournal(): void {
+    if (store.agents.get().journal === null) {
+      return;
+    }
+    if (journalBeingRead) {
+      journalReadAgain = true;
+      return;
+    }
+    journalBeingRead = true;
+    void (async () => {
+      try {
+        do {
+          journalReadAgain = false;
+          await loadJournal();
+        } while (journalReadAgain);
+      } catch {
+        // The journal on show stays as it was; the next change, or Refresh, reads it again.
+      } finally {
+        journalBeingRead = false;
+      }
+    })();
+  }
+
+  /** OnAgentMissionChange(action, agentID), as each of the client's listeners takes it. */
+  function onMissionChange(change: MissionChange): void {
+    const what = windowOnMissionChange(change, store.agents.get().activeAgentID);
+    // A window that is still opening, or has a press out, is a window too: closed, its answer is not laid out when it comes.
+    if (change.agentID !== null && agentsBeingTalkedTo.has(change.agentID) && windowOnMissionChange(change, change.agentID) === "close") {
+      agentWindowsClosedWhileTalking.add(change.agentID);
+    }
+    if (what === "close") {
+      store.apply({ type: "agents/conversation-closed" });
+    } else if (what === "again") {
+      talkToOpenAgentAgain();
+    }
+    refreshJournal();
   }
 
   async function loadBriefing(agentID: number): Promise<void> {
@@ -13092,23 +13248,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
     loadAgents,
 
-    async openConversation(agentID) {
-      await runAgentAction(async () => {
-        // agentDialogueWindow._GetConversation: the window opens on what the agent says, and if the first
-        // thing on offer is to request a mission or view one, it presses that at once.
-        let conversation = decodeConversation(await api.agentAction(agentID, null, callOptions));
-        const agent = store.agents.get().agents.find((row) => row.agentID === agentID);
-        const first = openingAction(conversation, agent ? agent.agentTypeID : null);
-        if (first !== null) {
-          conversation = decodeConversation(await api.agentAction(agentID, first.actionID, callOptions));
-        }
-        await layOutConversation(agentID, conversation);
-        // A press changes what there is between the pilot and the agent: a mission requested is an offer in the journal.
-        if (first !== null) {
-          await loadJournal();
-        }
-      });
-    },
+    openConversation: (agentID) => talkToAgent(agentID),
 
     async answerQuestion(questionID, answer) {
       try {
@@ -13123,9 +13263,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     },
 
     async chooseAction(agentID, action) {
-      await runAgentAction(async () => {
-        const result = await api.agentAction(agentID, action.actionID, callOptions);
-        const decoded = decodeConversation(result);
+      await interactWithAgent(agentID, async () => {
+        const decoded = await agentSays(agentID, action.actionID);
+        if (decoded === null) {
+          return;
+        }
         // The briefing and the objectives are read again for this layout, as for every one, and shown
         // by the client's rule (layOutConversation). Completing a mission pays out: pull the Step-12
         // reward reads (wallet / LP / standings). The journal always refreshes so the
