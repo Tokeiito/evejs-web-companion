@@ -564,7 +564,8 @@ table marks "not started" is still to do.
 | The browser's own autopilot | done | one round trip in the web UI: undock, warp, jump, jump back, warp, dock; the browser's requests, the Travel window's states and the server's log agree |
 | The server's questions shown to the user | done | `agents.YesNo`: shown in the browser and answered No and Yes on the game port, the press waiting meanwhile. A research agent's choice and number boxes: seen live too (research started on the field chosen, three datacores bought, research cancelled after a No and a Yes). The customs question: seen live as well (asked at the Muvolailen gate, answered Yes in the browser, the case closed as surrendered) |
 | The scanner in space: the probes as the client's scan service keeps them, the launcher from godma | done | a recorded probe flight played through the list; in the browser on the game port: launch, reconnect after a new session, analyze, recover, and again from an empty launcher |
-| Module damage, weapon banks | not started | |
+| The ship's health as its own panel reads it, each module's damage, the weapon banks (`pilotDogma.js`) | done | a recording of a damaged ship with two grouped guns; each transport in turn gives the same readings field for field; the panel and the rack in the browser |
+| Rack heat | not started | |
 
 One thing the spike's question got wrong: the stream is not 10 Hz. The server sends an update
 when something changes and the client steps once a second on its own, so decoding load follows

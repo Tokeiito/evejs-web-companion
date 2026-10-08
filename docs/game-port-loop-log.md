@@ -90,6 +90,12 @@ Decisions taken in your place, and anything waiting on you. Overrule any of thes
   files pass again. From now on the store is copied before a live check that stages anything
   and put back after it. **If you ran eve.js's tests on 2026-10-08 and saw customs or mission
   scenarios fail, that was this.**
+- **A fourth server fix is committed in eve.js**: `7d5dbb532`, the ship's hull damage sent in
+  hit points. Another session was committing to that checkout while the sub-agent worked (its
+  commits `db3102e15` and `35aeb673c` sit under the fix); nothing of theirs was touched.
+  Three things the sub-agent found beside it are left for you, in the entry "the ship's health":
+  station repair's totals, the ratios in the ship state's instance rows, and stray attributes on
+  module rows.
 - **Two faults in the BFF that were there on either transport since 2026-07-28 are fixed**
   (`2451cb1`): the Scanner Center's "Reconnect to probes" never asked the server, and a ship
   boarding that failed after the server accepted it answered "kind is not defined". One branch,
@@ -140,6 +146,7 @@ Decisions taken in your place, and anything waiting on you. Overrule any of thes
 | 2026-10-08 | After a No to the decline question (`agents.YesNo`), `agentMgr.DoAction` is answered with "This agent is unavailable." and no buttons, though the offer still stands | the retail client draws whatever DoAction answers (`agentDialogueWindow.py` 402); seen live on the game port: that conversation, with the offer still in the journal | `624378554` on `main`, not pushed | 2026-10-08: server restarted; Decline then No in the browser brings back the offer with Accept, Decline, Defer |
 | 2026-10-08 | Undocking with contraband aboard: the server fines and confiscates at once. It never raises `ShipContrabandWarningUndock` and ignores `ignoreContraband`, so the client's warning (OK to go on, Cancel to stay) is never shown | `ui/station/base.py` 488 to 510 catches that refusal and retries with `ignoreContraband` set; server log `[Contraband] ... fine=37500 standingLoss=0.200` at undock, the goods gone from the hold | `7282f54cc` on `main`, not pushed | 2026-10-08: server restarted; in the browser, Undock with ten Slaves aboard asks, Cancel leaves ship, goods and wallet untouched, OK undocks; the gateway route warns too |
 | 2026-10-08 | The customs question (`XmppChat.AskYesNoQuestion`, dialog `ChtCustomsConfiscationConfirmation2`) sends its contraband entries in a tuple. The client's `cfg.FormatConvert` reads a tuple given as a value as one more typed value, so it raises instead of wording the dialog | the server's bytes (one entry: opcode `0x25`, a one-tuple); the conversion's shape run in the client's own `python27.dll` raises `IndexError` on a tuple of entries and words a list; the client's own caller builds a list (`eveCfg.py` 170). Not observed on a running retail client | `85042bbce`, by a sub-agent: the entries go as a list | the fix's test decodes the bytes (watched to fail first); in the browser on the game port the question was asked, worded and answered with the server on that commit |
+| 2026-10-08 | `GetAllInfo` sends the active ship's hull `damage` (attribute 3) as the 0 to 1 ratio. The client reads hit points: hull is `(hp - damage) / hp` (`activeShipController.py` 107 to 119), so its panel shows a full hull on a damaged ship | a real answer: `damage = 0.2`, `hp = 150`, while `armorDamage = 52.5` of 150 and the server's own ballpark damage state said armour 0.65, hull 0.8; the gateway's snapshot said hull 0.8, the game port's 0.9987. Not observed on a running retail client | `7d5dbb532`, by a sub-agent: hit points, as armour and shield are sent | the fix's test (watched to fail first); the damaged ship re-recorded and read on each transport in turn: hull 0.8 on both; the browser's panel |
 
 Withdrawn the same day: "after undocking the server's ship is a tick behind". It is not; that was
 the second row above, seen through a recorder that always asked at the same point in the second.
@@ -2515,6 +2522,91 @@ port's shows what the client would know: none until a reconnect.
 3. The call ledger (`ship.Undock`, `dogmaIM.Activate` and `Deactivate` to bind as the client
    does; `GetMissionBriefingInfo` and `GetMissionObjectiveInfo`, which the client asks on every
    layout of the agent's window), Phase 3's hosted check and the session-less gateway calls.
+4. The scanner the client's way: results kept from the server's word, a probe's destination
+   and range kept here and sent with the scan.
+5. More of a mission's words: the objectives pane, the mission's time under the agent's line,
+   messages inside messages when one turns up.
+6. Small, around dialogs: the title for a dialog's kind, the "do not ask again" box, the typed
+   codes not done.
+
+---
+
+## 2026-10-08 — the ship's health, its modules' damage and its weapon banks, from dogma
+
+Commit `15de516`, pushed. In eve.js, by a sub-agent: `7d5dbb532`, not pushed by me.
+
+**What the retail client does.**
+
+- **Health.** The ship's own panel does not read the ballpark. It reads godma
+  (`activeShipController.py` 92 to 133): shield is `shieldCharge / shieldCapacity`, armour is
+  `(armorHP - armorDamage) / armorHP`, hull is `(hp - damage) / hp`, each shown rounded to
+  hundredths. The ballpark's damage state is what everyone else is shown of the ship.
+- **A module's damage** is its `damage` over its `hp` (`shipmodulebutton.py` 192), for a banked
+  weapon the worst of its bank.
+- **Weapon banks** are not attributes. `GetAllInfo` carries the ship's state, a tuple of
+  (instances, charges by flag, weapon banks, heat), and the client makes the third its banks
+  when the ship becomes its own. After that: `OnWeaponBanksChanged(shipID, banks)`,
+  `OnWeaponGroupDestroyed(shipID, itemID)`, and the answers to its own grouping calls
+  (`clientDogmaLocation.py` 763 to 801).
+
+**What was built.** The pilot's dogma (`pilotDogma.js`) now gives all three, and the game
+port's space snapshot says them. `moduleDamage` and `weaponBanks` were empty objects there,
+which the page reads as "nothing damaged, nothing banked"; they are null when dogma could not
+be asked, as on the gateway. The row everyone sees of the ship keeps the ballpark's health.
+
+**A server defect, found by setting the two transports side by side.** A Reaper given the GM's
+medium test damage and two grouped guns, read on the game port and then on the gateway:
+
+| | Game port | Gateway |
+|---|---|---|
+| shield, armour | 1, 0.65 | 1, 0.65 |
+| module damage | 0.18 on each of three | the same |
+| weapon banks | the one bank | the same |
+| **hull** | **0.9987** | **0.8** |
+
+The server's `GetAllInfo` gave the ship `damage = 0.2` with `hp = 150`: the 0 to 1 ratio, where
+the client reads hit points of damage (30). Armour and shield were sent in hit points. The
+server's own ballpark, in the same second, said hull 0.8. So by the client's own formula a
+retail player's panel showed a full hull on a ship at 80%. **Not observed** in a running retail
+client. Fixed by a sub-agent (`7d5dbb532`); with it both transports read 0.8.
+
+The sub-agent also reported, and left alone: station repair tells the client hit points worked
+out from the hull type's base totals, not the fitted ones `GetAllInfo` carries (412 against
+473.8 for a skilled pilot's Badger); the instance rows of the ship's state carry all four
+health fields as ratios, where by the client's code they are base values in hit points; and
+fitted module rows carry stray shield and armour attributes after the GM's damage command.
+
+**Proof.**
+
+- Tests: 8 new and 4 changed. Two are on a recording of the damaged ship from the fixed server
+  (`test/fixtures/dogmaDamaged.json`): one holds godma's health to the damage state the
+  server's own ballpark sent for the same ship, and it **failed on the recording made before
+  the fix** (hull 0.9987), which is how the fixture is known to notice.
+- 42 ways of breaking the new code. Three slipped through at first and were closed with tests.
+  None was left untried.
+- Suite: 9068 tests, 9043 pass, 0 fail, 24 skipped, 1 todo.
+- **Each transport in turn, the same damaged ship, the server fixed:** identical, field for
+  field: shield 1, armour 0.65, hull 0.8, capacitor 1, the three capacities, three modules at
+  0.18, one bank.
+- **In the browser, on the game port:** the ship's panel reads "SHIELD 100% ARMOR 65% HULL
+  80%"; each gun's slot says "Banked: fires with 1 other. Damaged: 18%" and the afterburner's
+  "Damaged: 18%". Before this entry the game port's rack said neither.
+- **The staging was undone both times**: the store was copied with the server stopped before
+  Test Pilot was given a skill, two guns and the damage, and put back after.
+
+**Not done.** Rack heat (the panel's "heat not known"): the heat states are the fourth part of
+the same ship's state and are not read yet. A banked weapon's damage is each module's own
+here, as on the gateway, where the client shows the worst of the bank. The client's rounding
+to hundredths is left to the page.
+
+### Next
+
+1. **Collisions**; **the park beside the server's movement log**; the sim clock; MISSILE,
+   FORMATION, MUSHROOM.
+2. The call ledger (`ship.Undock`, `dogmaIM.Activate` and `Deactivate` to bind as the client
+   does; `GetMissionBriefingInfo` and `GetMissionObjectiveInfo`, which the client asks on every
+   layout of the agent's window), Phase 3's hosted check and the session-less gateway calls.
+3. Rack heat from the ship's state, as the client reads it.
 4. The scanner the client's way: results kept from the server's word, a probe's destination
    and range kept here and sent with the scan.
 5. More of a mission's words: the objectives pane, the mission's time under the agent's line,
