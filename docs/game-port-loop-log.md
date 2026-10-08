@@ -83,7 +83,8 @@ Decisions taken in your place, and anything waiting on you. Overrule any of thes
   Set `EVEJS_CLIENT_ROOT` to the client's folder (the one holding `tq` and `ResFiles`) for the
   BFF to serve the client's own words for the server's labels. Unset, which is how the BFF runs
   unless you set it, nothing is read and the web client words things itself. I kept the text out
-  of the repository because it is CCP's.
+  of the repository because it is CCP's. Once a mission's text has been asked for, the BFF keeps
+  the whole language file in memory, about 90 MB.
 - **The page's own automation undocks without asking about contraband** (default taken): the
   autopilot and the bots send `ignoreContraband`, as the client does once its warning is
   suppressed, so a bot carrying contraband is fined at the undock as before. Only the Undock
@@ -2078,6 +2079,72 @@ served yet.
    completion with them.
 2. **Dialogs by ID** from the client's `dialogs.static`, so the undock warning and the customs
    question are worded by the client too.
+3. **The scanner in space** on the game port (the one route that still answers 501 there).
+4. Module damage and weapon banks from dogma; health from godma as the panel reads it.
+5. **Collisions**; **the park beside the server's movement log**; the sim clock; MISSILE,
+   FORMATION, MUSHROOM.
+6. The call ledger (`ship.Undock`, `dogmaIM.Activate` and `Deactivate` to bind as the client
+   does), Phase 3's hosted check and the session-less gateway calls.
+
+---
+
+## 2026-10-08 — a mission's own text
+
+Commit `ed5623a`, pushed.
+
+**What the retail client does** (`agents.py` 626 to 673). What an agent says when offering a
+mission is a message's **number** with the mission's content ID beside it. The client asks the
+agent once for that mission's keywords (`GetMissionKeywords(contentID)` on the bound agent),
+and fills the numbered message with them, the agent's own IDs and the player.
+
+**What was built.**
+
+- **A text by its message ID** in the BFF's reader. These are among the 300,000 texts no label
+  names, so the whole language file is kept from the first time one is asked for by number,
+  and not before. Measured: about 90 MB of heap, against 14 MB for the labelled texts alone.
+- **`POST /api/words` takes `messageIDs`** beside labels.
+- **`GET /api/bridge/agents/:agentID/keywords?contentID=`** asks the bound agent for the
+  mission's keywords.
+- **The page** keeps the message's number from the conversation, asks for the text and, once
+  for each mission, its keywords, and fills the one with the other.
+- **The client's markup is shown as plain text.** The live run showed a literal `<br>` in the
+  offer: the client's texts carry the client's own markup. A `<br>` is now a new line and any
+  other tag leaves the words it wrapped.
+
+**Proof.**
+
+- Tests: 6 in the BFF (4 for the reader, 1 for each route) and 11 in the page; one changed. The
+  BFF's were watched to fail on the code before. The page's passed first time, so they were
+  checked by breaking the code.
+- 42 ways of breaking the new code, all caught in the end. Four slipped through at first: two
+  were in code that turned out to do nothing and was removed, two were closed with tests.
+  **Five were not tried at all the first time**: a shell heredoc had eaten the backslashes in
+  the text to look for, and my helper printed "0 caught" and nothing more. I noticed the zero;
+  the helper now names every breakage it could not try. (Earlier runs through the helper all
+  had caught-plus-survived equal to the total, so none hid this.)
+- Suite: 8984 tests, 8959 pass, 0 fail, 24 skipped, 1 todo.
+- **Live through the BFF** (Test Two's open offer, agent 3008416, content ID 2156): the
+  keywords route answers eight (`objectiveLocationID` 60000004, `objectiveDestinationID`
+  60000019, `objectiveQuantity` 1, `objectiveDestinationSystemID` 30002778, `objectiveTypeID`
+  2595, `objectiveLocationSystemID` 30002780, `rewardTypeID` 29, `rewardQuantity` 13800), and
+  the words route has message 129932.
+- **In the browser:** the agent's line was "129932". It is now the mission's offer, 668
+  characters in three paragraphs, with "Muvolailen" where the text has
+  `{[location]objectiveLocationSystemID.name}`, no tag and no markup left showing. The page
+  asked for the keywords once and for the message once.
+
+**Not done:** the client also fills messages inside messages (an agent's label whose parameter
+is itself a mission text: `missionOfferText`, `missionBriefingText` and three more are named in
+`ProcessMessage`). None has been sent to this client yet, so it is not built. The mission
+briefing panel and the journal still show what they showed.
+
+### Next
+
+1. **Dialogs by ID** from the client's `dialogs.static`, so the undock warning and the customs
+   question are worded by the client too. The sub-agent read that file once already
+   (eve.js `7282f54cc`).
+2. **The rest of a mission's words**: the briefing panel and the journal, and messages inside
+   messages when one turns up.
 3. **The scanner in space** on the game port (the one route that still answers 501 there).
 4. Module damage and weapon banks from dogma; health from godma as the panel reads it.
 5. **Collisions**; **the park beside the server's movement log**; the sim clock; MISSILE,

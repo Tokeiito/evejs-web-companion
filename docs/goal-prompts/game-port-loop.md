@@ -176,6 +176,10 @@ Take these defaults, and list each under "For the operator" in the log so they c
 - **The server's log stamps an outgoing client call late.** `[PKT] OUT agents YesNo()
   client-call` carried the time the answer arrived, seconds after the question was on the page.
   Do not time the server by that line; time what the client saw.
+- **A breakage that was "not tried" proves nothing.** `scripts/break-and-check.js` says NOT TRIED
+  when the text to find is not in the file, and a shell heredoc halves the backslashes in a list
+  of them, so a regular expression is never found. Write breakage lists with the Write tool, and
+  read the count: caught plus survived must equal the total.
 - **The client's own text for a label**: `node scripts/client-words.js "<client folder>" <label>`
   says whether the client has it and which parameters it takes. Look there before wording a
   label or sending one's parameters; two guesses of mine on 2026-10-08 were wrong. The check
