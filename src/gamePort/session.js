@@ -79,6 +79,8 @@ const KNOWN_HANDSHAKE_FUNCTIONS = new Map([
 ]);
 
 const dict = (entries) => ({ type: "dict", entries });
+/** A Python unicode object, as opposed to a byte string. */
+const unicode = (value) => ({ type: "wstring", value });
 const bytes = (buffer) => ({ type: "bytes", value: buffer });
 
 class GamePortError extends Error {
@@ -253,7 +255,9 @@ class GamePortSession {
     this.logonQueuePosition = integer(await this._readRaw());
 
     await this._exchangeVersions();
-    this._writeRaw([null, "VK", cryptoHash(caseFold(userName))]);
+    // The name comes from the login screen's edit box, so it is a unicode
+    // object here and in the credentials below; everything else is a byte string.
+    this._writeRaw([null, "VK", cryptoHash(unicode(caseFold(userName)))]);
     // (publicKeyVersion, cryptoContext.Initialize()): Placebo has no keys.
     this._writeRaw(["placebo", dict([])]);
     await this._readRaw(); // "OK CC"; the client reads it and does not look.
@@ -265,7 +269,7 @@ class GamePortSession {
       ["boot_build", this.client.build],
       ["boot_codename", this.client.codename],
       ["boot_region", this.client.region],
-      ["user_name", userName],
+      ["user_name", unicode(userName)],
       ["user_password", passwordField],
       ["user_password_hash", hashField],
       ["user_languageid", this.languageID],

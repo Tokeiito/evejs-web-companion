@@ -235,7 +235,11 @@ test("the queue check and the version reply are the retail client's", () => {
 test("the login frames carry Placebo's values and the client's dict order", () => {
   const [, , , vipKey, cryptoRequest, login, challengeResponse] = clientFrames.map(decoded);
   assert.equal(text(vipKey[1]), "VK");
-  assert.equal(text(vipKey[2]), cryptoHash(caseFold(fixture.accountName)));
+  // The name is typed into an edit box, so the client hashes a unicode object.
+  // Hashing the same letters as a byte string gives a different number.
+  const unicodeName = { type: "wstring", value: caseFold(fixture.accountName) };
+  assert.equal(text(vipKey[2]), cryptoHash(unicodeName));
+  assert.notEqual(cryptoHash(unicodeName), cryptoHash(caseFold(fixture.accountName)));
   assert.equal(text(cryptoRequest[0]), "placebo");
   assert.deepEqual(cryptoRequest[1], { type: "dict", entries: [] });
 
@@ -245,7 +249,7 @@ test("the login frames carry Placebo's values and the client's dict order", () =
   const order = oracle.dicts[0].literal.map((tagged) => tagged.slice(2));
   assert.deepEqual(credentials.entries.map(([key]) => text(key)), order);
   const field = (name) => dictGet(credentials, name);
-  assert.equal(text(field("user_name")), fixture.accountName);
+  assert.deepEqual(field("user_name"), { type: "wstring", value: fixture.accountName }, "a unicode object, not a byte string");
   assert.equal(field("user_password"), null);
   assert.deepEqual(Buffer.from(text(field("user_password_hash")), "latin1"), passwordHash(fixture.accountName, ""));
   assert.equal(text(field("user_languageid")), "EN");

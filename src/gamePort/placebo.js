@@ -29,8 +29,9 @@ function crcHqx(bytes, crc = 0) {
 
 /**
  * placebo.crypto_hash(*args): str(binascii.crc_hqx(blue.marshal.Save(args), 0)).
- * A decimal string, not a number. Arguments are Python byte strings, given here
- * as JS strings of latin1 code units.
+ * A decimal string, not a number. An argument is whatever the codec encodes: a
+ * JS string is a Python byte string, {type: "wstring"} a unicode object. The
+ * two hash differently, so it matters which one the client had.
  */
 function cryptoHash(...args) {
   return String(crcHqx(marshalEncode(args)));
