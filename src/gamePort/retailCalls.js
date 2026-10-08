@@ -78,6 +78,7 @@ const CLIENT_DOGMA = "eve/client/script/dogma/clientDogmaLocation.py";
 const EVE_MISC = "eve/client/script/util/eveMisc.py";
 const DRONE_FUNCTIONS = "eve/client/script/ui/services/menuSvcExtras/droneFunctions.py";
 const SHIP_CONFIG = "eve/client/script/ui/services/shipConfigSvc.py";
+const FITTING_SVC = "eve/client/script/environment/fittingSvc.py";
 const CC_SVC = "eve/client/script/ui/services/ccSvc.py";
 const CC_STEPS = "eve/client/script/ui/login/charcreation/steps";
 /** What the module button sends for a module left to repeat: settings.char.autorepeat unset, and an effect that can repeat. */
@@ -160,6 +161,17 @@ function undocking(args, kwargs, context) {
 }
 
 /** A util.KeyVal with these fields, in this order. */
+/**
+ * fittingSvc.PrimeFittings (430): GetFittingMgr(ownerID).GetFittings(ownerID), where the owner
+ * is the session's own character, corporation or alliance, and says which manager is asked.
+ * The BFF often leaves the owner out and lets the server take it from the session.
+ */
+const fittingsOf = (owner, whose) => ([ownerID, ...rest], kwargs, context) => {
+  const known = ownerID ?? context[owner] ?? null;
+  if (known === null) return { args: [], kwargs, status: "differs", note: `The client asks only for an owner it has: this pilot has no ${whose}.` };
+  return { args: [known, ...rest], kwargs };
+};
+
 const keyVal = (entries) => ({ type: "object", name: "util.KeyVal", args: { type: "dict", entries } });
 /** The clock's 100 ns ticks, however a route spelt them: a long. */
 const filetime = (value) => {
@@ -215,6 +227,11 @@ const RETAIL_CALLS = Object.freeze({
     `${CC_SVC}:97`,
     "The client sends ten: (name, raceID, bloodlineID, genderID, ancestryID, charInfo, portraitInfo, schoolID, None, qaStarterSystemID), with the doll and the portrait it drew. The web client draws neither, and the BFF sends the server's older seven: (name, bloodlineID, genderID, ancestryID, None, None, 0).",
   ),
+
+  // ── saved fittings ─────────────────────────────────────────────────────────
+  "charFittingMgr.GetFittings": reshaped(`${FITTING_SVC}:430`, fittingsOf("characterID", "character"), "GetFittingMgr(session.charid).GetFittings(session.charid)"),
+  "corpFittingMgr.GetFittings": reshaped(`${FITTING_SVC}:430`, fittingsOf("corporationID", "corporation"), "GetFittingMgr(session.corpid).GetFittings(session.corpid)"),
+  "allianceFittingMgr.GetFittings": reshaped(`${FITTING_SVC}:430`, fittingsOf("allianceID", "alliance"), "GetFittingMgr(session.allianceid).GetFittings(session.allianceid), and only for a pilot in an alliance"),
 
   // ── an inventory (a bound invbroker object) ───────────────────────────────
   "invbroker.List": reshaped(

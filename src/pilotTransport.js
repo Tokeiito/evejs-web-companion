@@ -155,20 +155,23 @@ function createPilotTransport({ gateway, gamePort = null, transportFor = () => "
     };
   };
   /**
-   * accountCall(service, method, args, kwargs, { accountID, userName })
+   * accountCall(service, method, args, kwargs, { accountID, userName, fields })
    *     -> { service, method, result, notifications }
    *
    * A call of the account's own, with no character chosen. The account's login
    * name says which transport the account is on; the gateway is never told it.
+   * `fields` is what else the gateway's session is told (how the browser wants
+   * things shown), and is the gateway's alone.
    */
-  const accountCall = (service, method, args = [], kwargs = null, account = {}) => {
+  const accountCall = (service, method, args, kwargs, account = {}) => {
     const accountID = Number(account && account.accountID) || null;
     const userName = String((account && account.userName) || "");
     const onGamePort = ACCOUNT_SERVICES.has(service) && typeof gamePort.accountCall === "function" &&
       transportFor({ accountID, characterID: null, userName }) === "gameport";
+    const shown = account && account.fields && typeof account.fields === "object" ? account.fields : {};
     return onGamePort
       ? gamePort.accountCall(service, method, args, kwargs, { userid: accountID, userName })
-      : gateway.callMethod(service, method, args, kwargs, { userid: accountID });
+      : gateway.callMethod(service, method, args, kwargs, { ...shown, userid: accountID });
   };
   return new Proxy(gateway, {
     get(target, name) {

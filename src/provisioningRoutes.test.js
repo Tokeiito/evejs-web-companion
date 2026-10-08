@@ -12,7 +12,11 @@ function fixture() {
   const routes = new Map(), operations = new Map();
   const held = { accountID: 7, characterID: 10, corporationID: 30, activeShipID: 50, stationID: 60, bridgeSessionID: "own-generation" };
   const state = { writes: [], date: "100", stock: 4000, aboard: 3200, take: true, query: true, incomplete: false,
-    providerCalls: [], sourceReads: [], failAfter: false, duplicateFit: false };
+    providerCalls: [], sourceReads: [], failAfter: false, duplicateFit: false, heldFittingCalls: [], heldFittingError: null };
+  const library = owner => { const fit = id => [id, wireObject({ fittingID: id, ownerID: owner, shipTypeID: 1,
+    name: "Exact", savedDate: { type: "long", value: state.date }, fitData: wireList([
+      { type: "tuple", items: [2, 27, 1] }, { type: "tuple", items: [3, 5, 5000] }]) })];
+    return { type: "dict", entries: [fit(4), ...(state.duplicateFit ? [fit(5)] : [])] }; };
   const engine = createReplenishment({ operations, data });
   engine.withTemporaryControl = () => { throw new Error("Held provisioning must not acquire temporary Factory control."); };
   const mutationFence = createPilotMutationFence({ heldSessions: new Map([["tab", held]]), assertWritable: engine.assertWritable });
@@ -34,10 +38,7 @@ function fixture() {
     async callMethod(service, method, args, kwargs, fields, bridgeSessionID) {
       assert.equal(service, "corpFittingMgr"); assert.equal(method, "GetFittings"); assert.equal(bridgeSessionID, undefined);
       state.providerCalls.push(fields);
-      const fit = id => [id, wireObject({ fittingID: id, ownerID: fields.corpid, shipTypeID: 1,
-        name: "Exact", savedDate: { type: "long", value: state.date }, fitData: wireList([
-          { type: "tuple", items: [2, 27, 1] }, { type: "tuple", items: [3, 5, 5000] }]) })];
-      return { result: { type: "dict", entries: [fit(4), ...(state.duplicateFit ? [fit(5)] : [])] } };
+      return { result: library(fields.corpid) };
     },
     async callBoundMethod(service, method, args, kwargs, fields, bridgeSessionID, spec) {
       assert.equal(bridgeSessionID, held.bridgeSessionID);
@@ -73,10 +74,20 @@ function fixture() {
     resolvePlace, cargoBindSpec: () => ({ key: "ship" }), slots: () => [27], shipBays: () => [{ key: "ammo", flag: 143, label: "Ammo" }],
     capacity: raw => raw, mutationFence,
     boundCall: (_held, _session, spec, method, args, kwargs) => gateway.callBoundMethod("invbroker", method, args, kwargs, {}, held.bridgeSessionID, spec),
-    heldCall: async (_held, _session, _service, method) => ({ result: method === "GetMember" ? wireObject({ characterID: 10,
-      corporationID: 30, roles: "0", rolesAtHQ: String((state.query ? 1048576 : 0) | (state.take ? 8192 : 0)), rolesAtBase: "0", rolesAtOther: "0", baseID: 0, titleMask: 0 }) :
-      wireObject({ corporationID: 30, stationID: 60 }) }),
+    heldCall: async (asked, session, service, method, args, kwargs) => {
+      if (service !== "corpFittingMgr") return memberOrCorporation(method);
+      // The held pilot's own read of its corporation's fittings, as its client makes it.
+      assert.equal(asked, held); assert.equal(session, "tab"); assert.equal(method, "GetFittings"); assert.equal(kwargs, null);
+      state.heldFittingCalls.push(args);
+      if (state.heldFittingError) throw Object.assign(new Error(state.heldFittingError), { code: state.heldFittingError });
+      return { result: library(args[0]) };
+    },
   });
+  function memberOrCorporation(method) {
+    return ({ result: method === "GetMember" ? wireObject({ characterID: 10,
+      corporationID: 30, roles: "0", rolesAtHQ: String((state.query ? 1048576 : 0) | (state.take ? 8192 : 0)), rolesAtBase: "0", rolesAtOther: "0", baseID: 0, titleMask: 0 }) :
+      wireObject({ corporationID: 30, stationID: 60 }) });
+  }
   async function invoke(name, body = {}, method = "POST", query = {}) {
     const req = { body, query, webSessionID: "tab", account: { accountID: 7 } }, res = { json: value => { res.body = value; } };
     const fns = routes.get(`${method} /api/bridge/provisioning/${name}`);
@@ -286,4 +297,42 @@ test("route error after commit is proven by exact readback; structures and forei
   await assert.rejects(f.invoke("review", f.input), { code: "PROVISIONING_STATION_ONLY" });
   delete f.held.structureID; f.input.providerCharacterID = 12;
   await assert.rejects(f.invoke("review", f.input), { code: "FITTING_SOURCE_CHANGED" });
+});
+
+test("the held pilot as its own provider is asked for its corporation's fittings on its own session", async () => {
+  const f = fixture();
+  // No provider named: the pilot that is held.
+  const options = await f.invoke("options", {}, "GET");
+  assert.equal(options.providerCharacterID, 10); assert.equal(options.definitionCorporationID, 30); assert.equal(options.definitionStatus, "READY");
+  assert.deepEqual(options.fittings.map(fit => fit.fittingID), [4]);
+  assert.deepEqual(f.state.heldFittingCalls, [[30]]);
+  const input = { providerCharacterID: 10, corporationID: 30, fittingID: 4, source: { kind: "hangar" } };
+  const review = await f.invoke("review", input);
+  assert.equal(review.status.equipment, "VERIFIED"); assert.equal(review.contract.definition.characterID, 10);
+  const result = await f.invoke("replenish", { reviewID: review.reviewID, reviewHash: review.reviewHash, confirm: true });
+  assert.equal(result.state, "COMPLETE"); assert.equal(result.result.supplies, "FULL");
+  assert.deepEqual(f.state.writes, [[100, 60, 1800]]);
+  // Every read of the library, through the whole operation, was the pilot's own: the gateway was never asked to stand in for it.
+  assert.ok(f.state.heldFittingCalls.length > 2); assert.ok(f.state.heldFittingCalls.every(args => args.length === 1 && args[0] === 30));
+  assert.deepEqual(f.state.providerCalls, []);
+});
+
+test("another character as provider is still read without a session, and the held pilot's is never borrowed for it", async () => {
+  const f = fixture();
+  await f.invoke("options", {}, "GET", { providerCharacterID: "11" });
+  await f.invoke("review", f.input);
+  assert.deepEqual(f.state.heldFittingCalls, []);
+  assert.ok(f.state.providerCalls.length >= 2); assert.ok(f.state.providerCalls.every(fields => fields.characterID === 11 && fields.corpid === 20));
+});
+
+test("the held pilot's session going while its fittings are read surfaces; a refusal is an unavailable library", async () => {
+  const f = fixture();
+  const input = { providerCharacterID: 10, corporationID: 30, fittingID: 4, source: { kind: "hangar" } };
+  f.state.heldFittingError = "SESSION_NOT_FOUND";
+  await assert.rejects(f.invoke("options", {}, "GET"), { code: "SESSION_NOT_FOUND" });
+  await assert.rejects(f.invoke("review", input), { code: "SESSION_NOT_FOUND" });
+  f.state.heldFittingError = "CALL_REFUSED";
+  assert.equal((await f.invoke("options", {}, "GET")).definitionStatus, "CORP_UNAVAILABLE");
+  await assert.rejects(f.invoke("review", input), { code: "FITTING_SOURCE_CHANGED" });
+  assert.deepEqual(f.state.providerCalls, [], "and the gateway is not tried in its place");
 });

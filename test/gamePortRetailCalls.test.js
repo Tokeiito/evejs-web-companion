@@ -403,3 +403,31 @@ test("the account's calls with no character chosen: what the client sends, and w
   // Asked of the service by name, as the client asks them: none is a moniker's.
   assert.deepEqual([info.moniker, first.moniker, made.moniker], [false, false, false]);
 });
+
+test("saved fittings are asked of the owner's manager with the owner, as fittingSvc asks", () => {
+  const context = { characterID: 140000001, corporationID: 1000044, allianceID: 99000001 };
+  const cases = [
+    ["charFittingMgr", 140000001],
+    ["corpFittingMgr", 1000044],
+    ["allianceFittingMgr", 99000001],
+  ];
+  for (const [service, owner] of cases) {
+    // The BFF leaves the owner to the server; the client names it.
+    const filled = retailForm(service, "GetFittings", [], null, context);
+    assert.equal(filled.status, "reshaped", service);
+    assert.match(filled.source, /environment\/fittingSvc\.py:430$/);
+    assert.deepEqual(filled.args, [owner], service);
+    assert.equal(filled.kwargs, null);
+    assert.equal(filled.moniker, false);
+    // An owner that is given is the caller's to give.
+    assert.deepEqual(retailForm(service, "GetFittings", [7, "more"], { a: 1 }, context).args, [7, "more"]);
+    assert.deepEqual(retailForm(service, "GetFittings", [7], { a: 1 }, context).kwargs, { a: 1 });
+  }
+  // A pilot in no alliance: the client does not ask, and the BFF's call goes as it was.
+  const none = retailForm("allianceFittingMgr", "GetFittings", [], null, { characterID: 140000001, corporationID: 1000044, allianceID: null });
+  assert.equal(none.status, "differs");
+  assert.deepEqual(none.args, []);
+  assert.match(none.note, /no alliance/);
+  assert.match(retailForm("corpFittingMgr", "GetFittings", [], null, {}).note, /no corporation/);
+  assert.match(retailForm("charFittingMgr", "GetFittings", [], null).note, /no character/);
+});

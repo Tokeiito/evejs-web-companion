@@ -1256,6 +1256,8 @@ function createGamePortPilots({
     return {
       shipID: attribute(entry, "shipid"),
       characterID: entry.characterID,
+      corporationID: attribute(entry, "corpid"),
+      allianceID: attribute(entry, "allianceid"),
       onlineModules: () => {
         const shipID = attribute(entry, "shipid");
         return entry.dogmaLoaded && shipID !== null ? entry.dogma.onlineModules(shipID) : null;

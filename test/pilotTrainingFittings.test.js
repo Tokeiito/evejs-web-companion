@@ -152,3 +152,33 @@ test("corporation change or denied service read fails closed", async () => {
   assert.equal((await readAccountCorpFittings({ store: { async listCharactersForAccount() { return [{ accountID: ACCOUNT, characterID: PILOT, corporationID: CORP }]; } },
     gateway: denied, accountID: ACCOUNT, characterID: PILOT, data })).status, "CORP_UNAVAILABLE");
 });
+
+test("a provider who is logged in is asked on its own session, for its own corporation", async () => {
+  const store = { async listCharactersForAccount(accountID) { return [{ accountID, characterID: PILOT, corporationID: CORP }]; } };
+  const gateway = { async callMethod() { throw new Error("The gateway must not be asked for a pilot who is logged in."); } };
+  const asked = [];
+  const result = await readAccountCorpFittings({ store, gateway, accountID: ACCOUNT, characterID: PILOT, data,
+    ask: async (corporationID) => { asked.push(corporationID); return { result: library() }; } });
+  assert.equal(result.status, "READY");
+  assert.equal(result.fittings[0].fittingID, 7);
+  assert.deepEqual(asked, [CORP]);
+
+  // A character the account does not own is not asked for at all.
+  const other = await readAccountCorpFittings({ store, gateway, accountID: ACCOUNT, characterID: 2, data,
+    ask: async () => { throw new Error("not asked"); } });
+  assert.equal(other.status, "NOT_OWNED");
+});
+
+test("the pilot's session going is the caller's to hear of; any other refusal is an unavailable library", async () => {
+  const store = { async listCharactersForAccount(accountID) { return [{ accountID, characterID: PILOT, corporationID: CORP }]; } };
+  const read = (ask, gateway = {}) => readAccountCorpFittings({ store, gateway, accountID: ACCOUNT, characterID: PILOT, data, ask });
+  const failing = (code) => async () => { throw Object.assign(new Error(code), { code }); };
+  for (const code of ["SESSION_NOT_FOUND", "NO_LIVE_SESSION", "HOSTED_GENERATION_CHANGED"]) {
+    await assert.rejects(read(failing(code)), { code });
+  }
+  assert.equal((await read(failing("CALL_REFUSED"))).status, "CORP_UNAVAILABLE");
+  assert.equal((await read(async () => { throw new Error("no code"); })).status, "CORP_UNAVAILABLE");
+  assert.equal((await read(async () => { throw null; })).status, "CORP_UNAVAILABLE");
+  // With nobody logged in, the gateway failing the same way is still only an unavailable library.
+  assert.equal((await read(null, { callMethod: failing("SESSION_NOT_FOUND") })).status, "CORP_UNAVAILABLE");
+});

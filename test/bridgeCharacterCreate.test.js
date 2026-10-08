@@ -600,3 +600,73 @@ test("an account on the gateway asks the gateway as before, though the process h
   assert.deepEqual(call.sessionFields, { userid: ACCOUNT.accountID }, "the gateway is not told the login name");
   assert.equal(gamePort.calls.accountCall.length, 0);
 });
+
+// --- the page's own roster read, with no pilot held ---------------------------
+//
+// The hangar asks GetCharacterSelectionData through the generic call route. With
+// no pilot held that is the retail client at its character selection screen.
+
+const rosterCall = (baseUrl, body = {}) => apiRequest(baseUrl, "/api/bridge/call", {
+  method: "POST",
+  body: { service: "charUnboundMgr", method: "GetCharacterSelectionData", args: [], ...body },
+});
+
+test("with the account on the game port, the hangar's roster is asked there as the account", async () => {
+  const gateway = fakeGateway();
+  const gamePort = fakeGamePort();
+  const { baseUrl } = await startTestServer({ gateway, gamePortPilots: gamePort, pilotTransportFor: onGamePort });
+  const { response, payload } = await rosterCall(baseUrl, { session: { languageID: "DE", userid: 999 } });
+
+  assert.equal(response.status, 200);
+  assert.equal(payload.method, "GetCharacterSelectionData");
+  assert.deepEqual(gamePort.calls.accountCall, [{
+    service: "charUnboundMgr", method: "GetCharacterSelectionData", args: [], kwargs: undefined,
+    // Nothing of what the browser sent for a session: the game port logs in as the client does.
+    sessionFields: { userid: ACCOUNT.accountID, userName: ACCOUNT.username },
+  }]);
+  assert.equal(gateway.calls.callMethod.length, 0);
+});
+
+test("anything else asked with no pilot held stays the gateway's, though the account is on the game port", async () => {
+  const gateway = fakeGateway();
+  const gamePort = fakeGamePort();
+  const { baseUrl } = await startTestServer({ gateway, gamePortPilots: gamePort, pilotTransportFor: onGamePort });
+  const { response } = await rosterCall(baseUrl, { service: "corpRegistry", method: "GetTitles", session: { languageID: "DE" } });
+
+  assert.equal(response.status, 200);
+  assert.equal(gamePort.calls.accountCall.length, 0);
+  const [call] = gateway.calls.callMethod;
+  assert.equal(call.service, "corpRegistry");
+  assert.equal(call.bridgeSessionID, undefined);
+  assert.deepEqual(call.sessionFields, { languageID: "DE", userid: ACCOUNT.accountID });
+});
+
+test("an account on the gateway asks its roster of the gateway exactly as before", async () => {
+  const withGamePort = fakeGateway();
+  const first = await startTestServer({ gateway: withGamePort, gamePortPilots: fakeGamePort(), pilotTransportFor: () => "gateway" });
+  await rosterCall(first.baseUrl, { session: { languageID: "DE", userid: 999, characterID: 5 } });
+  const without = fakeGateway();
+  const second = await startTestServer({ gateway: without });
+  await rosterCall(second.baseUrl, { session: { languageID: "DE", userid: 999, characterID: 5 } });
+
+  // The same call reaches the gateway whether or not the process has a game port: the account from the login, never the browser's.
+  assert.deepEqual(withGamePort.calls.callMethod, without.calls.callMethod);
+  const [call] = without.calls.callMethod;
+  assert.equal(call.sessionFields.userid, ACCOUNT.accountID);
+  assert.equal(call.sessionFields.languageID, "DE");
+  assert.equal(call.bridgeSessionID, undefined);
+});
+
+test("with a pilot held, the generic call is that pilot's, on whichever transport holds it", async () => {
+  const gateway = fakeGateway();
+  const gamePort = fakeGamePort();
+  const { baseUrl } = await startTestServer({ gateway, gamePortPilots: gamePort, pilotTransportFor: onGamePort });
+  await selectOnServer(baseUrl);
+  const { response } = await rosterCall(baseUrl);
+
+  assert.equal(response.status, 200);
+  assert.equal(gamePort.calls.accountCall.length, 0);
+  const [call] = gamePort.calls.callMethod.filter((made) => made.method === "GetCharacterSelectionData");
+  assert.equal(call.bridgeSessionID, GAME_PORT_HANDLE);
+  assert.equal(gateway.calls.callMethod.length, 0);
+});

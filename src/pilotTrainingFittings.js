@@ -114,7 +114,19 @@ function resolveStageFittings(stages, fittings, selections, corporationID) {
   }));
 }
 
-async function readAccountCorpFittings({ store, gateway, accountID, characterID, data }) {
+/** What a held call fails with when the pilot's session is gone: the caller's to hear of, never an empty library. */
+const SESSION_GONE = new Set(["SESSION_NOT_FOUND", "NO_LIVE_SESSION", "HOSTED_GENERATION_CHANGED"]);
+
+/**
+ * A character's corporation fittings, for an account that owns the character.
+ *
+ * `ask(corporationID)`, when given, makes the read on the character's own
+ * session: the character is logged in, and its client would ask
+ * corpFittingMgr.GetFittings(session.corpid) itself (fittingSvc.py,
+ * PrimeFittings). Without it the character is one nobody is flying, and the
+ * gateway answers for it on a session made up for the one call.
+ */
+async function readAccountCorpFittings({ store, gateway, accountID, characterID, data, ask = null }) {
   // The account-filtered gateway roster carries identity and corporation. Avoid
   // getCharacterForAccount here: that older seam also reads a broad /snapshot.
   const ownedCharacter = async () => (await store.listCharactersForAccount(accountID))
@@ -127,9 +139,12 @@ async function readAccountCorpFittings({ store, gateway, accountID, characterID,
   try {
     // No bridgeSessionID: the gateway materializes a per-call service session.
     // The selected pilot is never logged in or claimed.
-    result = await gateway.callMethod("corpFittingMgr", "GetFittings", [], null,
-      { userid: accountID, characterID, corpid: corporationID, corporationID });
+    result = ask
+      ? await ask(corporationID)
+      : await gateway.callMethod("corpFittingMgr", "GetFittings", [], null,
+        { userid: accountID, characterID, corpid: corporationID, corporationID });
   } catch (error) {
+    if (ask && SESSION_GONE.has(error && error.code)) throw error;
     return { status: "CORP_UNAVAILABLE", character, corporationID };
   }
   const current = await ownedCharacter();

@@ -2573,3 +2573,21 @@ test("a connection waiting to be closed does not keep the process alive", async 
   await creationInfo(pilots);
   assert.deepEqual(let_go.map((timer) => timer.delay), [5000]);
 });
+
+// ── saved fittings ──────────────────────────────────────────────────────────
+
+test("saved fittings are asked with the owner the pilot's own client would name", async () => {
+  const pairs = ["charFittingMgr.GetFittings", "corpFittingMgr.GetFittings", "allianceFittingMgr.GetFittings"];
+  const { pilots, session, handle } = await selected({}, { allowed: new Set(["dogmaIM.ShipGetInfo", ...pairs]) });
+  for (const pair of pairs) await pilots.callMethod(pair.split(".")[0], "GetFittings", [], null, FIELDS, handle);
+  const asked = () => session.calls.filter((call) => call.method === "GetFittings").map((call) => [call.service, call.args]);
+  // The character and its corporation from the session; no alliance, so that one goes as the BFF sent it.
+  assert.deepEqual(asked(), [["charFittingMgr", [PILOT]], ["corpFittingMgr", [1000044]], ["allianceFittingMgr", []]]);
+  session.attributes.allianceid = 99000001;
+  await pilots.callMethod("allianceFittingMgr", "GetFittings", [], null, FIELDS, handle);
+  assert.deepEqual(asked().at(-1), ["allianceFittingMgr", [99000001]]);
+  const tally = Object.fromEntries(pilots.callLedger().map((row) => [row.pair, row.statuses]));
+  assert.deepEqual(tally["charFittingMgr.GetFittings"], { reshaped: 1 });
+  assert.deepEqual(tally["corpFittingMgr.GetFittings"], { reshaped: 1 });
+  assert.deepEqual(tally["allianceFittingMgr.GetFittings"], { differs: 1, reshaped: 1 });
+});

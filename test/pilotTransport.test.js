@@ -229,14 +229,15 @@ test("a game port that cannot make the account's call leaves it to the gateway",
   assert.equal(gamePort.calls.length, 0);
 });
 
-test("the account's call defaults: no arguments, no keywords, and nobody is not on the game port", () => {
+test("the account's call is handed on as it was given, and nobody is not on the game port", () => {
   const gateway = recorder("gateway");
   const gamePort = withAccountCall();
   const asked = [];
   const seam = createPilotTransport({ gateway, gamePort, transportFor: (who) => { asked.push(who); return "gateway"; } });
   seam.accountCall("charUnboundMgr", "GetCharCreationInfo");
   assert.deepEqual(asked, [{ accountID: null, characterID: null, userName: "" }]);
-  assert.deepEqual(gateway.calls[0].args, ["charUnboundMgr", "GetCharCreationInfo", [], null, { userid: null }]);
+  // What is left out is left out: each transport has its own defaults, as it had before there was a seam.
+  assert.deepEqual(gateway.calls[0].args, ["charUnboundMgr", "GetCharCreationInfo", undefined, undefined, { userid: null }]);
 });
 
 test("the seam has the account's call only when there is a game port", () => {
@@ -248,4 +249,18 @@ test("the seam has the account's call only when there is a game port", () => {
   // With none, the gateway client is what comes back, and it has no such function: the BFF calls it as it always did.
   assert.equal("accountCall" in createPilotTransport({ gateway }), false);
   assert.equal(createPilotTransport({ gateway }).accountCall, undefined);
+});
+
+test("what the browser asks to be shown goes with the account's call to the gateway, and never names another account", () => {
+  const gateway = recorder("gateway");
+  const gamePort = withAccountCall();
+  const seam = createPilotTransport({ gateway, gamePort, transportFor: byName });
+  seam.accountCall("charUnboundMgr", "GetCharacterSelectionData", [], null, { accountID: 9, userName: "rrfarmer", fields: { languageID: "DE", userid: 999 } });
+  assert.deepEqual(gateway.calls[0].args, ["charUnboundMgr", "GetCharacterSelectionData", [], null, { languageID: "DE", userid: 9 }]);
+  // The game port logs in as the client does and is told who, and nothing of the browser's.
+  seam.accountCall("charUnboundMgr", "GetCharacterSelectionData", [], null, { accountID: 4, userName: "test", fields: { languageID: "DE" } });
+  assert.deepEqual(gamePort.calls[0].args, ["charUnboundMgr", "GetCharacterSelectionData", [], null, { userid: 4, userName: "test" }]);
+  // Fields that are not an object are no fields.
+  seam.accountCall("charUnboundMgr", "GetCharacterSelectionData", [], null, { accountID: 9, userName: "rrfarmer", fields: "languageID" });
+  assert.deepEqual(gateway.calls[1].args[4], { userid: 9 });
 });

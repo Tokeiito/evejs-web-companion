@@ -927,14 +927,22 @@ app.post("/api/bridge/call", requireAuth, async (req, res, next) => {
   // the server-held handle is ever forwarded.
   const heldBridgeSession = bridgeSessions.get(req.webSessionID) || null;
   try {
-    const outcome = await gateway.callMethod(
-      body.service,
-      body.method,
-      body.args,
-      body.kwargs,
-      { ...clientSessionFields, userid: Number(req.account.accountID) },
-      heldBridgeSession ? heldBridgeSession.bridgeSessionID : undefined,
-    );
+    // With no pilot held this is the account asking (the hangar's roster is the client's character selection
+    // screen), and the seam sends what the retail client asks there to where the account is (pilotTransport.js).
+    const outcome = !heldBridgeSession && typeof gateway.accountCall === "function"
+      ? await gateway.accountCall(body.service, body.method, body.args, body.kwargs, {
+        accountID: Number(req.account.accountID),
+        userName: String(req.account.username || ""),
+        fields: clientSessionFields,
+      })
+      : await gateway.callMethod(
+        body.service,
+        body.method,
+        body.args,
+        body.kwargs,
+        { ...clientSessionFields, userid: Number(req.account.accountID) },
+        heldBridgeSession ? heldBridgeSession.bridgeSessionID : undefined,
+      );
     res.json({
       ok: true,
       service: outcome.service,

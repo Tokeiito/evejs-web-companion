@@ -6,8 +6,8 @@ const { row: serviceRow } = require("./trainingOnboarding");
 const { hash, fail, inventoryRows, buildContract, matchFittings } = require("./provisioningContracts");
 const containerGroups = new Set([12, 340, 448, 649]); // EveJS itemStore's cargo-container groups.
 
-async function readProvisioningDefinitions({ store, gateway, data, accountID, providerCharacterID, supplyPolicy }) {
-  const value = await readAccountCorpFittings({ store, gateway, data, accountID, characterID: providerCharacterID });
+async function readProvisioningDefinitions({ store, gateway, data, accountID, providerCharacterID, supplyPolicy, ask = null }) {
+  const value = await readAccountCorpFittings({ store, gateway, data, accountID, characterID: providerCharacterID, ask });
   const contracts = [], invalid = [];
   for (const fit of value.fittings || []) {
     try {
@@ -61,6 +61,10 @@ function registerProvisioningRoutes(d) {
     resolvePlace, boundCall, cargoBindSpec, inventoryManagerBindSpec, slots, shipBays, capacity, heldCall, mutationFence, pendingRecovery, boardShip } = d;
   const routerPromise = import(pathToFileURL(path.resolve(__dirname, "../web/src/bridge/bayRouting.ts")).href);
   routerPromise.catch(() => {});
+  // The pilot that is held is logged in: its corporation's fittings are asked on its own session, as its client
+  // asks them. Any other provider is a character nobody is flying, and that read stays the gateway's.
+  const askAs = (held, sessionID, providerCharacterID) => (providerCharacterID === held.characterID
+    ? corporationID => heldCall(held, sessionID, "corpFittingMgr", "GetFittings", [corporationID], null) : null);
   const strictList = async (held, sessionID, place) => {
     const result = await boundCall(held, sessionID, place.spec, "List", place.flag === 0 ? [] : [place.flag], null);
     currentHeld(held, sessionID);
@@ -88,7 +92,8 @@ function registerProvisioningRoutes(d) {
     async function library(input, allowMatch = false) {
       if (!Number.isSafeInteger(input.providerCharacterID) || !Number.isSafeInteger(input.corporationID)) fail("INVALID_DEFINITION_SOURCE");
       const result = await readProvisioningDefinitions({ store, gateway, data, accountID: Number(req.account.accountID),
-        providerCharacterID: input.providerCharacterID, supplyPolicy: input.supplyPolicy });
+        providerCharacterID: input.providerCharacterID, supplyPolicy: input.supplyPolicy,
+        ask: askAs(held, sessionID, input.providerCharacterID) });
       currentHeld(held, sessionID);
       if (result.status !== "READY" || result.corporationID !== input.corporationID) fail("FITTING_SOURCE_CHANGED");
       const contracts = result.contracts;
@@ -277,7 +282,8 @@ function registerProvisioningRoutes(d) {
     const scope = await adapter(req, held).context();
     const characters = await store.listCharactersForAccount(req.account.accountID);
     const providerCharacterID = Number(req.query.providerCharacterID) || held.characterID;
-    const library = await readAccountCorpFittings({ store, gateway, data, accountID: Number(req.account.accountID), characterID: providerCharacterID });
+    const library = await readAccountCorpFittings({ store, gateway, data, accountID: Number(req.account.accountID), characterID: providerCharacterID,
+      ask: askAs(held, req.webSessionID, providerCharacterID) });
     const containers = [];
     for (const kind of ["hangar", "cargo"]) {
       try {
