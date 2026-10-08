@@ -18,7 +18,8 @@ const { createTrainingQueueService } = require("./pilotTrainingQueue");
 const { createFactorySessions } = require("./factorySessions");
 const { createReplenishment } = require("./replenishment");
 const { createPilotMutationFence } = require("./pilotMutationFence");
-const { createPilotTransport } = require("./pilotTransport");
+const { createPilotTransport, pilotTransportSetting } = require("./pilotTransport");
+const { createGamePortPilots } = require("./gamePort/pilots");
 const { registerProvisioningRoutes } = require("./provisioningRoutes");
 const { createFactorySkills } = require("./factorySkills");
 const { createTrainingOnboarding } = require("./trainingOnboarding");
@@ -149,10 +150,28 @@ const mutationFence = createPilotMutationFence({ heldSessions: { values: () => b
 // A selected pilot is reached through this, on whichever transport holds its
 // session (src/pilotTransport.js). With no game-port transport it is the
 // gateway client itself.
+//
+// The game-port transport exists only when EVEJS_PILOT_TRANSPORT or its
+// overrides send somebody to it, and never for an app built around an injected
+// gateway client: a test gets one only by handing one in. A value there that
+// is not a transport stops the server starting.
+const accountGateway = options.eveGatewayClient || eveGatewayClient;
+const pilotSetting = options.pilotTransportFor ? null : pilotTransportSetting(options.env || process.env);
+const someoneOnGamePort = pilotSetting !== null &&
+  (pilotSetting.fallback === "gameport" || [...pilotSetting.overrides.values()].includes("gameport"));
+const gamePortPilots = options.gamePortPilots !== undefined
+  ? options.gamePortPilots
+  : someoneOnGamePort && !options.eveGatewayClient
+    ? createGamePortPilots({
+      // "Released" is said once the server itself has the character offline.
+      isOnline: async (accountID, characterID) => (await accountGateway.getCharacterStatus(accountID, characterID))?.online,
+    })
+    : null;
+app.locals.gamePortPilots = gamePortPilots;
 const gateway = mutationFence.wrap(createPilotTransport({
-  gateway: options.eveGatewayClient || eveGatewayClient,
-  gamePort: options.gamePortPilots || null,
-  transportFor: options.pilotTransportFor,
+  gateway: accountGateway,
+  gamePort: gamePortPilots,
+  transportFor: options.pilotTransportFor || (pilotSetting ? (who) => pilotSetting.transportFor(who) : undefined),
 }));
 const auth = options.webAuth || webAuth;
 const staticData = options.staticData || staticDataModule;
@@ -23993,6 +24012,10 @@ function startServer(options = {}) {
     if (options.silent !== true) {
       console.log(`EveJS Web POC listening on http://${host}:${activePort}`);
       console.log(`Using EveJS gateway: ${process.env.EVEJS_GATEWAY_URL || "http://127.0.0.1:26002/_evejs-web/v1"}`);
+      if (appToStart.locals.gamePortPilots) {
+        console.log(`Pilot transport: EVEJS_PILOT_TRANSPORT=${process.env.EVEJS_PILOT_TRANSPORT || "gateway"}` +
+          ` overrides=${process.env.EVEJS_PILOT_TRANSPORT_OVERRIDES || "none"} (game port in use)`);
+      }
     }
     // The ready-made starter bots go into the library once, on first boot.
     // Deliberately here and not from a read: the store's reads never write, and
@@ -24011,6 +24034,9 @@ function startServer(options = {}) {
       void appToStart.locals.botHost?.resume().catch((error) => console.error(error));
     }
   });
+  // A pilot on the game port is a connection held by this process. When the
+  // server stops, each is closed, which logs the pilot off as a closed client would.
+  server.on("close", () => appToStart.locals.gamePortPilots?.shutdown?.());
   return server;
 }
 
