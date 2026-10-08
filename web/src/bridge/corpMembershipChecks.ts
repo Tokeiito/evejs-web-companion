@@ -7,7 +7,9 @@
 //   • CanLeaveCurrentCorporation -> a 3-tuple [canLeave(0/1), errorCode(string|null),
 //     details(dict)]. corp AND char both from the SESSION (resolveCharacterID(session, [])
 //     IGNORES args) → SESSION-CHAR-SCOPED, SAFE. Live: Farmer (CEO) [0,"CrpCEOCanNotQuit",{}];
-//     Test Two (ordinary member) [1, null, {}].
+//     Test Two (ordinary member) [1, null, {}]. Since eve.js 2e3101da4 (2026-10-08) the
+//     empty details are a real dict, {type:"dict",entries:[]}: the bare {} could not be
+//     marshalled, so the game port answered None. Only elements 0 and 1 are read here.
 //   • CanBeKickedOut([charID]) -> a bare int 0/1. corp = resolveCorporationID(session); the
 //     member lookup is scoped to the SESSION corp, so a foreign charID that is not a member
 //     of the caller's corp just returns 0. Reveals only whether a char is a kickable member

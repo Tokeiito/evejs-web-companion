@@ -342,6 +342,33 @@ every case the gateway prints a detail of the handler's value that marshalling e
 | A tuple the gateway prints as `{type:"tuple"}`; the game port gives an array | 2 | | A reader of a tuple accepts an array. `agents.ts` `seqItems` does not yet; `fittings.ts`'s does. |
 | A byte string the gateway prints as `{type:"bytes"}`; the game port gives `{type:"Buffer"}` | 2 | planet data (`boundPlanets.ts`) | A reader of bytes accepts both. The wire does distinguish the two (a buffer and a string are different opcodes) but the stock decoder merges them; a decoder option upstream would remove this row. |
 
+**All three are made (2026-10-08, `351826d`), and the harness was run again** against a server
+carrying the fix below:
+
+| | First run | After |
+|---|---|---|
+| Identical, or the same shape with data that moved | 142 | 143 |
+| Differ only in spellings the shared readers accept | 9 | 14 |
+| Refused alike on both transports | 15 | 15 |
+| Differ in a spelling no shared reader takes | 9 | 4 |
+| The server cannot marshal its own answer | 1 | 0 |
+
+The four that remain are two known spellings, and each has a reader that takes both or no reader:
+
+| Read | Kind | Its reader |
+|---|---|---|
+| `agentMgr.GetMyJournalDetails` | tuple with or without its wrapper | `agents.ts` `seqItems`, tested on both |
+| `facilityManager.GetFacilities` | the same | `industry.ts` `tupleItems` already took both |
+| `pvpFilamentMgr.GetAllEvents`, `GetMostRecentEvent` | bytes with or without their wrapper | none: the bytes are inside a date's header, which no decoder reads |
+
+Widening `unwrapLong` also repaired something on the gateway today: the market panel's
+`decodePriceHistory` read every history day as null, because the gateway prints that day as bare
+digits. Twenty decoders had each grown their own guard against it.
+
+One reader had to be held where it was. `moduleReach.ts` reads the BFF's own JSON, in which a
+string where a range should be is malformed and must stay "unknown"; it relied on `unwrapLong`
+refusing strings, and now refuses them itself. An existing test caught this.
+
 Fourteen more reads come back from the gateway inside a cached-answer envelope that the browser
 opens, where the game port returns the answer itself. The browser's `unwrapCachedResult` helpers
 already pass a bare answer through, so these compared equal once opened. Phase 3 confirms each such
@@ -353,10 +380,12 @@ Found along the way:
   BigInt. The retail client sends a Python long, which the server reads as a number. Every read on
   a ship's inventory answered None because of it. `src/gamePort/clientMarshal.js` now encodes what
   the client sends. This also settles the reference's open row on call-ID encoding.
-- **A server defect, reported, not ours to fix.** `corpRegistry.CanLeaveCurrentCorporation` returns
-  a bare `{}` the server's marshaller refuses, so the game port, and the retail client, get None.
-  The gateway prints it happily. More generally the server answers None when a handler or the
-  marshaller throws; the only trace is a `[PKT] ERR` line in its log.
+- **A server defect, since fixed.** `corpRegistry.CanLeaveCurrentCorporation` returned a bare `{}`
+  the server's marshaller refuses, so the game port, and the retail client, got None. The gateway
+  printed it happily. Fixed in eve.js `2e3101da4` (a local commit there) and re-checked live: the
+  two transports now answer alike and the server logs no error. More generally the server answers
+  None when a handler or the marshaller throws; the only trace is a `[PKT] ERR` line in its log.
+  The loop log keeps the list of such defects.
 - **The gateway's session is not a retail session.** On character select the gateway reports a role
   mask of `0x6000000000000000` where the game port reports `0x65fc2062a0e41800`, an extra `baseID`
   attribute the retail session change does not carry, and old values of null where retail has 0.
@@ -369,8 +398,8 @@ Found along the way:
 
 What Phase 3 inherits:
 
-1. Three small reader changes in the browser (the table above), each a widening that leaves the
-   gateway path working.
+1. ~~Three small reader changes in the browser~~ Done, above. What carries forward is the rule:
+   a decoder of a tuple takes a bare array, and a decoder of bytes takes them without the wrapper.
 2. The 192 reads not compared here are compared as their feature moves, with the arguments that
    feature really sends. The harness takes them as soon as they are top-level calls with arguments
    it can derive.
