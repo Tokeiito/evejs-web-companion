@@ -76,6 +76,9 @@ Decisions taken in your place, and anything waiting on you. Overrule any of thes
   works. Not a defect of either: it goes away when the gateway does.
 - **Test Two's standing** with agent Antaken Kamola went to -0.539 with the quit that proved
   this, and reads -0.434 after the courier run that followed.
+- **A third server fix is committed in eve.js and not pushed**: `624378554`, a No to the decline
+  question. It sits on `main` beside whatever else is there, as you instructed for fixes.
+- **Test Two has an offer open** from Antaken Kamola (not accepted), left from the re-check.
 - **A hosted courier bot stops at once on a pilot who already holds the mission**, on either
   transport: "There is no accepted mission naming cargo to load". Seen on 2026-10-08 with Test
   Two, on the gateway BFF and the game-port one alike. Not looked into further: it is the bot's
@@ -93,12 +96,17 @@ Decisions taken in your place, and anything waiting on you. Overrule any of thes
 
 | 2026-10-08 | A movement order is stamped from one clock (the next whole second) and applied on another (the server's next one-second step, which begins where the system was woken). When they disagree the client is told one tick later than the server acts, and its ship ends a tick of travel away | my run: `CmdStop` handled 18 ms into one of the server's seconds, stamped B+12, server's ship slowing from 11 s after it first moved; a client stepping by the stamp is 199 m ahead five seconds later and gaining. Sub-agent: three placements, two of them wrong by a tick (`stopSpeedCommands.js` 225-229 against `nativeSubwarp.js` 676-721) | **not fixed**: not small, pinned by a test one way and by capture-tuned stamps the other; left for the operator | - |
 | 2026-10-08 | The state sent when a client asks for it (`UpdateStateRequest`) carries where the ships are now under the next second's stamp, not carried forward to that tick as `AddBalls2` is | probes every 3.5 s read -1.49, +0.58, -0.53, +0.58 ticks against a park stepped from the state before (my run); `dispatch/sceneRefresh.js` 216-229, `authority/destinyAuthority.js` 955-968 (sub-agent's read) | **not fixed**: same code, same reasons; matters only after a client has lost its place | - |
+| 2026-10-08 | After a No to the decline question (`agents.YesNo`), `agentMgr.DoAction` is answered with "This agent is unavailable." and no buttons, though the offer still stands | the retail client draws whatever DoAction answers (`agentDialogueWindow.py` 402); seen live on the game port: that conversation, with the offer still in the journal | `624378554` on `main`, not pushed | 2026-10-08: server restarted; Decline then No in the browser brings back the offer with Accept, Decline, Defer |
 
 Withdrawn the same day: "after undocking the server's ship is a tick behind". It is not; that was
 the second row above, seen through a recorder that always asked at the same point in the second.
 
 Judged, not a defect to hand off: the server answers None, and logs `[PKT] ERR`, whenever a handler
 or its marshaller throws. See "For the operator".
+
+Seen and left, 2026-10-08, around the decline question (the entry "the server fix for a No to the
+decline question" has them): a research agent's No brings back its research screen and not the
+offer (measured); three more read from the code and not measured.
 
 Seen and left: `corpRegistry.KickOutMember` (one member) returns its internal result object, which
 cannot be marshalled. The client ignores that call's answer and None is what it gets, so nothing a
@@ -1473,7 +1481,7 @@ did what an unanswered one should: it lapsed, the server was told No, and the of
   | The BFF's log | "the server called agents.YesNo on the client, and was answered false" | "... answered true" |
   | Afterwards | the offer still in the journal | "Mission declined.", "Request Mission", nothing on offer |
 
-**A server defect, found by answering No.** After a No to the decline question the server
+**A server defect, found by answering No** (fixed and re-checked in the next entry). After a No to the decline question the server
 answers the press with "This agent is unavailable." and no buttons. The retail client shows
 whatever that answer holds (`agentDialogueWindow.py` 402), so a player who presses Decline and
 then No is left with a dead-looking window while the offer still stands. The quit question's No
@@ -1505,6 +1513,66 @@ customs question are still unanswered. The server's own words for a label.
 2. **The retail client's words**: turn localisation labels into the client's own text, from the
    client's localisation data, for questions and for what agents say (the conversation shows a
    raw label today).
+3. **The scanner in space** on the game port (the one route that still answers 501 there).
+4. Module damage and weapon banks from dogma; health from godma as the panel reads it.
+5. **Collisions**; **the park beside the server's movement log**; the sim clock; MISSILE,
+   FORMATION, MUSHROOM.
+6. The call ledger (`ship.Undock`, `dogmaIM.Activate` and `Deactivate` to bind as the client
+   does), Phase 3's hosted check and the session-less gateway calls.
+
+---
+
+## 2026-10-08 — the server fix for a No to the decline question
+
+eve.js commit `624378554` on `main`, **not pushed** (by a sub-agent in the same checkout: no
+branch, no worktree, only its two files staged). No change in this repository.
+
+**The defect**, from the entry above: after a No to "decline this mission?", the server answered
+the press with "This agent is unavailable." and no buttons. The retail client draws whatever
+that answer holds (`agentDialogueWindow.py` 402).
+
+**The fix** is the line the quit question already had: anything but a confirmed Yes answers with
+the conversation as it stands (`doAgentAction(characterID, agentID, null, { session })`).
+
+**Evidence, the sub-agent's:** a new test in `server/tests/agentMgrParity.test.js` asks for an
+offer, presses Decline and answers the question five ways that are not Yes (False, None, an
+empty response, no response, a truthy 1). Before the fix all five failed on
+`[ 'This agent is unavailable.', null ]` (35 tests, 29 pass, 6 fail); after it, 35 of 35. Each
+checks the answer is the offer with Accept, Decline and Defer, and that the mission's record is
+untouched. A sixth checks Yes still declines; that one passed before and after, so the sub-agent
+broke the confirmed check by hand to see it fail. Seven neighbouring test files still pass.
+
+**Re-checked live, mine:** server restarted on the new commit (stopped without force, started
+detached, listening in 15 seconds). In the browser on the game port, Test Two: asked for a
+mission, pressed Decline, answered No. The conversation came back as **the offer, with Accept,
+Decline and Defer**, the journal still lists it, and the press finished 9 ms after the answer.
+Before the fix the same steps gave "This agent is unavailable."
+
+**Seen by the sub-agent and left alone.** One measured, the rest read from the code:
+
+- *Measured, through its harness:* with a **research** agent, a No brings back the agent's
+  research screen (a greeting; View Mission, Buy Datacores, Cancel Research) and not the offer.
+  The offer is unchanged and one press away.
+- *Read only:* a referred mission can make that same read return a promise, which the answer
+  builder would turn into "This agent is unavailable." again. The quit question's No has the
+  same exposure.
+- *Read only:* the decline question has none of the quit question's checks that the answer still
+  belongs to the same pilot and the same offer by the time it arrives.
+- *Read only:* when no client can be asked, a decline goes ahead and a quit does not.
+- What a real server answers to a No is not in any capture in the repository, so the fix follows
+  the quit question rather than a recording.
+
+**Left as it is:** Test Two has an offer from Antaken Kamola open (not accepted). The server is
+running on `624378554` (pid in the scratchpad's `evejs.pid`).
+
+### Next
+
+Unchanged from the entry above:
+
+1. **The three calls still unanswered**, on the same channel: `agents.SingleChoiceBox` and
+   `agents.GetQuantity` (a research agent), `XmppChat.AskYesNoQuestion` (customs).
+2. **The retail client's words**: turn localisation labels into the client's own text, from the
+   client's localisation data, for questions and for what agents say.
 3. **The scanner in space** on the game port (the one route that still answers 501 there).
 4. Module damage and weapon banks from dogma; health from godma as the panel reads it.
 5. **Collisions**; **the park beside the server's movement log**; the sim clock; MISSILE,
