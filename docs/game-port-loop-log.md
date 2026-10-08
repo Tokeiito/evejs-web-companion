@@ -383,3 +383,72 @@ does not. It goes in the call registry when undock stops being refused.
    with the gateway's snapshot of the same grid; then undock stops refusing.
 5. The call ledger, Phase 3's hosted check and the session-less gateway calls, as listed above.
 
+---
+
+## 2026-10-08 — the destiny port: the state reader and four movement modes
+
+Commits `8bdafac`, `2596c20`, `b4417a1`, pushed.
+
+**The notes landed.** `docs/game-port-destiny-notes.md` (2,466 lines) is the sub-agent's map of
+CCP's `destiny` and the client's `michelle`, cited to file and line, with its own list of what
+it could not determine. Its header now says which sections have been checked against the source.
+The port is made from the source; the notes say where to look.
+
+**The state blob reader** (`src/gamePort/destiny/state.js`), ported from `ReadBallFromStream`.
+All three blobs in the recording read to their last byte: 1, 76 and 19 balls, each with its slim
+item, and the ship's record holds exactly the position, velocity, mass and top speed the same
+recording then states in plain numbers. One thing the recording taught: this server stamps the
+grid's state one tick after it adds the ship, with the ship's record unchanged, not a second's
+travel further on. My test assumed otherwise and was wrong.
+
+**The simulation** (`src/gamePort/destiny/ballpark.js`): adding balls, the setters and orders,
+the integrator, the three-pass tick, and STOP, GOTO, FOLLOW and ORBIT.
+
+The expected numbers are CCP's own. Seven of the evolve tests that ship with `destiny` give a
+position or velocity after every tick. CCP's tests accept four decimal places; mine require every
+digit, and all seven match exactly:
+
+| CCP test | Ticks |
+|---|---|
+| goto direction | 10 |
+| goto point, through the homing branch | 18 |
+| a stopping ball's velocity | 10 |
+| a ball at rest | 10 |
+| follow a ball at rest | 10 |
+| follow a ball under way | 10 |
+| ball 2 orbiting ball 1 from tick 0 | 10 |
+
+What makes the digits come out is the source's arithmetic, not the physics: float members round
+to float32 on every store, a vector divided by a number is multiplied by its reciprocal, and the
+integrator is evaluated as written. So far JavaScript's `exp`, `sin` and `cos` have agreed with
+CCP's to the last bit wherever a fixture reaches them.
+
+**Proof.** 91 deliberate breakages across the reader and the simulation. Fourteen got through at
+first and each showed a real gap in the tests, now closed; they were mostly groupings that differ
+only in the last place for some values, which the fixtures happened not to reach. Two remain, both
+recorded in the tests: an orbit branch that can never give a different number, and committing
+balls one at a time, which nothing can tell apart until collisions are ported. Suite: 8742 tests,
+8717 pass, 0 fail, 24 skipped, 1 todo.
+
+**Not ported yet, and the step refuses or counts rather than guesses:** WARP, MISSILE, FORMATION,
+collisions (a massive ball is stepped without them and that is counted), orientation, and the
+whole of time: which tick it is, when to step, and what to do with an update stamped in the past
+or the future.
+
+### Next
+
+1. **Time and the update events** (notes, sections 3 and 6): the history queue, when the client
+   steps, an update one or two ticks ahead or behind, the rewind. Then apply the recording's
+   events at their stamps. The test is the recording: the ship leaves the station along
+   `GotoDirection`, never faster than `SetMaxSpeed`, and stops after `Stop`. Read
+   `_ticker.py` and `michelle.py` themselves for this; the notes flag that the decompiler
+   mis-rendered `RealFlushState`.
+2. **WARP** (4.8), against CCP's `test_warp.py`. The notes say only the alignment phase was
+   checked by calculation; cruise and deceleration need the fixture.
+3. **Collisions** (section 5): `Gradient`, `Potential`, the partition. This is what the todo test
+   waits for.
+4. **A second recording** with a warp and a gate jump, then the snapshot: `readSpaceSnapshot`,
+   flight status's ship mode and the scanner from our ballpark, set beside the gateway's snapshot
+   of the same grid. Then undock stops refusing and the browser flies.
+5. The call ledger, Phase 3's hosted check and the session-less gateway calls, as before.
+

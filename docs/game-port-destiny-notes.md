@@ -5,8 +5,19 @@ source did not settle a point it says **NOT DETERMINED** and names what was read
 
 **How far to trust it.** A sub-agent of the game-port loop wrote this as a map for the port; the port is
 made from the source itself, and each section is checked against the code it cites when that part is
-ported. Checked so far against the source and against a real server's bytes: 1.2, 1.3 and all of section 2
-(`src/gamePort/destiny/state.js`, `test/destinyState.test.js`). Everything else is as written, unchecked.
+ported. Checked so far:
+
+- 1.2, 1.3 and all of section 2, against the source and against a real server's bytes
+  (`src/gamePort/destiny/state.js`, `test/destinyState.test.js`).
+- 4.1 to 4.7 (the tick, the integrator, STOP, GOTO, FOLLOW, the old-style orbit) and the orders and
+  setters they use, against the source and against CCP's own per-tick fixtures to the last digit
+  (`src/gamePort/destiny/ballpark.js`, `test/destinyBallpark.test.js`).
+
+One correction found on the way: the note in 4.2 about evaluation order holds, but committing balls
+one at a time instead of together cannot be told apart by FOLLOW, since every acceleration is found
+before any ball moves. Only collisions (section 5), worked out during the stepping pass, can tell.
+
+Everything else is as written, unchecked.
 
 ## 0. Conventions, sources, and the three switches that change everything
 
