@@ -6508,6 +6508,15 @@ async function dispatchBridgeWrite(req, res, next, service, method, args) {
 async function accountLevelCall(req, service, method, args, kwargs = null) {
   const held = bridgeSessions.get(req.webSessionID) || null;
   try {
+    if (!held && typeof gateway.accountCall === "function") {
+      // With no pilot held this is the account's own call, as the retail client makes it before a character is
+      // chosen, and the account's login name says which transport the account is on (pilotTransport.js). The
+      // name is the BFF's, never the browser's. A process with no game port has no such function: see below.
+      return await gateway.accountCall(service, method, args, kwargs, {
+        accountID: Number(req.account.accountID),
+        userName: String(req.account.username || ""),
+      });
+    }
     return await gateway.callMethod(
       service,
       method,

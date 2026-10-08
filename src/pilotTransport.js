@@ -19,6 +19,16 @@
 // offline skill queues, health) goes to the web gateway, always. The retail
 // protocol only ever sees the character that is logged in.
 //
+// One thing lies between: what the retail client asks BEFORE a character is
+// chosen. On its character selection and creation screens it is logged in as
+// the account, and asks `charUnboundMgr`. That is `accountCall` here, a tenth
+// function this seam adds: for an account on the game port it is made there,
+// logged in as the client logs in, and for any other it is the gateway's
+// `callMethod` on a session that names the account and nothing else, exactly
+// as before. Every other call with no session handle is the BFF asking the
+// gateway to act as a pilot who is not logged in, which the retail protocol
+// cannot do: those stay the gateway's.
+//
 // The plan is docs/game-port-transport-plan.md, Phase 3.
 
 /** What marks a handle as a game-port session. A gateway handle is base64url and has no colon. */
@@ -58,6 +68,9 @@ const PILOT_FUNCTIONS = Object.freeze({
 });
 
 const TRANSPORTS = new Set(["gateway", "gameport"]);
+
+/** The service the retail client asks before a character is chosen (charUnboundMgr: "unbound" is "no character yet"). */
+const ACCOUNT_SERVICES = new Set(["charUnboundMgr"]);
 
 function isGamePortHandle(handle) {
   return typeof handle === "string" && handle.startsWith(GAME_PORT_HANDLE_PREFIX);
@@ -141,8 +154,27 @@ function createPilotTransport({ gateway, gamePort = null, transportFor = () => "
       return fn.apply(target, args);
     };
   };
+  /**
+   * accountCall(service, method, args, kwargs, { accountID, userName })
+   *     -> { service, method, result, notifications }
+   *
+   * A call of the account's own, with no character chosen. The account's login
+   * name says which transport the account is on; the gateway is never told it.
+   */
+  const accountCall = (service, method, args = [], kwargs = null, account = {}) => {
+    const accountID = Number(account && account.accountID) || null;
+    const userName = String((account && account.userName) || "");
+    const onGamePort = ACCOUNT_SERVICES.has(service) && typeof gamePort.accountCall === "function" &&
+      transportFor({ accountID, characterID: null, userName }) === "gameport";
+    return onGamePort
+      ? gamePort.accountCall(service, method, args, kwargs, { userid: accountID, userName })
+      : gateway.callMethod(service, method, args, kwargs, { userid: accountID });
+  };
   return new Proxy(gateway, {
     get(target, name) {
+      if (name === "accountCall") {
+        return accountCall;
+      }
       if (!Object.hasOwn(PILOT_FUNCTIONS, name)) {
         return target[name];
       }
@@ -152,6 +184,7 @@ function createPilotTransport({ gateway, gamePort = null, transportFor = () => "
       return routed.get(name);
     },
     has(target, name) {
+      if (name === "accountCall") return true;
       return Object.hasOwn(PILOT_FUNCTIONS, name)
         ? typeof target[name] === "function" || typeof gamePort[name] === "function"
         : name in target;
@@ -160,6 +193,7 @@ function createPilotTransport({ gateway, gamePort = null, transportFor = () => "
 }
 
 module.exports = {
+  ACCOUNT_SERVICES,
   GAME_PORT_HANDLE_PREFIX,
   PILOT_FUNCTIONS,
   createPilotTransport,

@@ -373,3 +373,33 @@ test("two reads the client never makes are still sent, and said to be the web cl
   }
 });
 
+test("the account's calls with no character chosen: what the client sends, and what it never asks", () => {
+  const info = retailForm("charUnboundMgr", "GetCharCreationInfo", [], null);
+  assert.equal(info.status, "web-only");
+  assert.match(info.source, /login\/charcreation\/steps\/bloodLineStep\.py:107$/);
+  assert.deepEqual(info.args, []);
+  assert.match(info.note, /never asks/);
+
+  // ValidateNameEx(charName, how many names the screen has checked before this one).
+  const first = retailForm("charUnboundMgr", "ValidateNameEx", ["A Name"], null);
+  assert.equal(first.status, "reshaped");
+  assert.match(first.source, /steps\/sections\/chooseNameSection\.py:201$/);
+  assert.deepEqual(first.args, ["A Name", 0]);
+  assert.equal(first.kwargs, null);
+  // A count that is given is the caller's to give, and whatever else came with it goes too.
+  assert.deepEqual(retailForm("charUnboundMgr", "ValidateNameEx", ["A Name", 3], null).args, ["A Name", 3]);
+  const more = retailForm("charUnboundMgr", "ValidateNameEx", ["A Name", 0, "more"], { a: 1 });
+  assert.deepEqual(more.args, ["A Name", 0, "more"]);
+  assert.deepEqual(more.kwargs, { a: 1 });
+
+  // The client's ten, with a doll, are not the web client's to send.
+  const seven = ["A Name", 2, 1, 8, null, null, 0];
+  const made = retailForm("charUnboundMgr", "CreateCharacterWithDoll", seven, null);
+  assert.equal(made.status, "differs");
+  assert.match(made.source, /ui\/services\/ccSvc\.py:97$/);
+  assert.deepEqual(made.args, seven);
+  assert.match(made.note, /raceID, bloodlineID, genderID, ancestryID, charInfo, portraitInfo, schoolID, None, qaStarterSystemID/);
+
+  // Asked of the service by name, as the client asks them: none is a moniker's.
+  assert.deepEqual([info.moniker, first.moniker, made.moniker], [false, false, false]);
+});

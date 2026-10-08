@@ -227,6 +227,8 @@ async function startTestServer(options = {}) {
   const app = createApp({
     eveStore: options.store || fakeStore(),
     eveGatewayClient: options.gateway,
+    gamePortPilots: options.gamePortPilots,
+    pilotTransportFor: options.pilotTransportFor,
     webAuth: fakeAuth(),
     staticData: options.staticData || fakeStaticData(),
     errorLogger() {},
@@ -494,4 +496,107 @@ test("creating while a character IS online runs on that held session", async () 
   const [call] = createCalls(gateway);
   assert.equal(call.bridgeSessionID, BRIDGE_SESSION_ID);
   assert.equal(call.args[1], 7, "the only Gallente bloodline in this world's fixture");
+});
+
+// --- an account on the game port ----------------------------------------------
+//
+// The retail client asks charUnboundMgr while it is logged in as the account and
+// nothing more. For an account whose pilots are on the game port, so does the BFF.
+
+const GAME_PORT_HANDLE = "gp:0123456789abcdef0123456789abcdef";
+
+/** A game-port transport that answers as the gateway fake does, and says which way each call came. */
+function fakeGamePort() {
+  const answering = fakeGateway();
+  const calls = { accountCall: [], callMethod: [] };
+  return {
+    calls,
+    async selectCharacter(...args) {
+      return { ...(await answering.selectCharacter(...args)), bridgeSessionID: GAME_PORT_HANDLE };
+    },
+    async releaseBridgeSession() {
+      return { released: true, characterID: CHARACTER_ID };
+    },
+    async callMethod(service, method, args, kwargs, sessionFields, bridgeSessionID) {
+      calls.callMethod.push({ service, method, args, kwargs, sessionFields, bridgeSessionID });
+      return answering.callMethod(service, method, args, kwargs, sessionFields, bridgeSessionID);
+    },
+    async accountCall(service, method, args, kwargs, sessionFields) {
+      calls.accountCall.push({ service, method, args, kwargs, sessionFields });
+      return answering.callMethod(service, method, args, kwargs, sessionFields, undefined);
+    },
+  };
+}
+
+const onGamePort = ({ userName }) => (userName === ACCOUNT.username ? "gameport" : "gateway");
+
+test("with the account on the game port, the picker read is asked there as the account", async () => {
+  const gateway = fakeGateway();
+  const gamePort = fakeGamePort();
+  const { baseUrl } = await startTestServer({ gateway, gamePortPilots: gamePort, pilotTransportFor: onGamePort });
+  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/char-creation-info");
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(payload.creationInfo, creationInfoResult());
+  assert.deepEqual(gamePort.calls.accountCall, [{
+    service: "charUnboundMgr",
+    method: "GetCharCreationInfo",
+    args: [],
+    kwargs: null,
+    // Who is asking, from the BFF's own record of the login: the browser sent neither.
+    sessionFields: { userid: ACCOUNT.accountID, userName: ACCOUNT.username },
+  }]);
+  assert.equal(gateway.calls.callMethod.length, 0, "nothing of it reaches the web gateway");
+});
+
+test("with the account on the game port, a character is created there, every call of it", async () => {
+  const gateway = fakeGateway();
+  const gamePort = fakeGamePort();
+  const { baseUrl } = await startTestServer({ gateway, gamePortPilots: gamePort, pilotTransportFor: onGamePort });
+  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/character/create-with-doll", {
+    method: "POST",
+    body: { name: "Zaphod Beeblebrox", raceID: 1, genderID: 1, bloodlineID: 2, ancestryID: 8, confirm: true },
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(payload.characterID, NEW_CHARACTER_ID);
+  const made = gamePort.calls.accountCall.map((call) => call.method);
+  // The tables, the roster and the name before, and the roster again after: five, which the transport asks on one connection.
+  assert.deepEqual(made, ["GetCharCreationInfo", "GetCharacterSelectionData", "ValidateNameEx", "CreateCharacterWithDoll", "GetCharacterSelectionData"]);
+  assert.deepEqual(gamePort.calls.accountCall.find((call) => call.method === "CreateCharacterWithDoll").args, ["Zaphod Beeblebrox", 2, 1, 8, null, null, 0]);
+  for (const call of gamePort.calls.accountCall) {
+    assert.equal(call.service, "charUnboundMgr");
+    assert.deepEqual(call.sessionFields, { userid: ACCOUNT.accountID, userName: ACCOUNT.username });
+  }
+  assert.equal(gateway.calls.callMethod.length, 0, "nothing of it reaches the web gateway");
+  assert.equal(gamePort.calls.callMethod.length, 0, "and nothing of it is a pilot's call");
+});
+
+test("with a pilot held on the game port, the account's call is made on that pilot's session", async () => {
+  const gateway = fakeGateway();
+  const gamePort = fakeGamePort();
+  const { baseUrl } = await startTestServer({ gateway, gamePortPilots: gamePort, pilotTransportFor: onGamePort });
+  await selectOnServer(baseUrl);
+  const { response } = await apiRequest(baseUrl, "/api/bridge/char-creation-info");
+
+  assert.equal(response.status, 200);
+  assert.equal(gamePort.calls.accountCall.length, 0, "the client, too, asks on the one connection it has");
+  const [call] = gamePort.calls.callMethod.filter((made) => made.method === "GetCharCreationInfo");
+  assert.equal(call.bridgeSessionID, GAME_PORT_HANDLE);
+  assert.deepEqual(call.sessionFields, { userid: ACCOUNT.accountID });
+  assert.equal(gateway.calls.callMethod.length, 0);
+});
+
+test("an account on the gateway asks the gateway as before, though the process has a game port", async () => {
+  const gateway = fakeGateway();
+  const gamePort = fakeGamePort();
+  const { baseUrl } = await startTestServer({ gateway, gamePortPilots: gamePort, pilotTransportFor: () => "gateway" });
+  const { response } = await apiRequest(baseUrl, "/api/bridge/char-creation-info");
+
+  assert.equal(response.status, 200);
+  const [call] = gateway.calls.callMethod;
+  assert.equal(call.method, "GetCharCreationInfo");
+  assert.equal(call.bridgeSessionID, undefined);
+  assert.deepEqual(call.sessionFields, { userid: ACCOUNT.accountID }, "the gateway is not told the login name");
+  assert.equal(gamePort.calls.accountCall.length, 0);
 });

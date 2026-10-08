@@ -78,6 +78,8 @@ const CLIENT_DOGMA = "eve/client/script/dogma/clientDogmaLocation.py";
 const EVE_MISC = "eve/client/script/util/eveMisc.py";
 const DRONE_FUNCTIONS = "eve/client/script/ui/services/menuSvcExtras/droneFunctions.py";
 const SHIP_CONFIG = "eve/client/script/ui/services/shipConfigSvc.py";
+const CC_SVC = "eve/client/script/ui/services/ccSvc.py";
+const CC_STEPS = "eve/client/script/ui/login/charcreation/steps";
 /** What the module button sends for a module left to repeat: settings.char.autorepeat unset, and an effect that can repeat. */
 const REPEATS = 1000;
 
@@ -201,6 +203,18 @@ const RETAIL_CALLS = Object.freeze({
   "charUnboundMgr.GetCharacterSelectionData": same(`${CHAR_SELECT}`, "no arguments"),
   "charUnboundMgr.GetCharacterLockType": same(`${CHAR_SELECT}:695`, "GetCharacterLockType(charID)"),
   "charUnboundMgr.SelectCharacterID": same(`${CHAR_SELECT}:713`, "SelectCharacterID(charID, secondChoiceID, skipTutorial)"),
+
+  // ── character creation (the account's own calls, with no character chosen) ──
+  "charUnboundMgr.GetCharCreationInfo": webOnly(`${CC_STEPS}/bloodLineStep.py:107`, "The client never asks this. The races and bloodlines on its creation screens are in its own static data (characterdata)."),
+  "charUnboundMgr.ValidateNameEx": reshaped(
+    `${CC_STEPS}/sections/chooseNameSection.py:201`,
+    ([name, checked, ...rest], kwargs) => ({ args: [name, checked ?? 0, ...rest], kwargs }),
+    "ValidateNameEx(charName, how many names the screen has checked before this one). The BFF keeps no such screen and checks the one name it is about to create, so it sends 0, as the client does with its first.",
+  ),
+  "charUnboundMgr.CreateCharacterWithDoll": differs(
+    `${CC_SVC}:97`,
+    "The client sends ten: (name, raceID, bloodlineID, genderID, ancestryID, charInfo, portraitInfo, schoolID, None, qaStarterSystemID), with the doll and the portrait it drew. The web client draws neither, and the BFF sends the server's older seven: (name, bloodlineID, genderID, ancestryID, None, None, 0).",
+  ),
 
   // ── an inventory (a bound invbroker object) ───────────────────────────────
   "invbroker.List": reshaped(

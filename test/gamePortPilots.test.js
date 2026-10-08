@@ -54,8 +54,10 @@ function fakeSession({ answers = {}, userid = ACCOUNT, loginError = null, comesO
       if (loginError) throw loginError;
       // What the session answered the server's login function with (session.js).
       session.handshakeAnswer = handshakeAnswer;
-      session.attributes.userid = userid;
-      session.change({ userid: [null, userid] });
+      // The account a name logs in as: one for every name, or told by the name.
+      const account = typeof userid === "function" ? userid(userName) : userid;
+      session.attributes.userid = account;
+      session.change({ userid: [null, account] });
     },
     async call(service, method, args = [], kwargs = null) {
       if (session.closed) throw sessionError("CONNECTION_CLOSED");
@@ -2282,4 +2284,292 @@ test("a call on a handle the BFF bound itself, with the client's arguments, is c
   await pilots.callBoundMethod("dogmaIM", "GetTargets", [], null, WHOSE, handle, bound.boundHandle);
   assert.deepEqual(session.boundCalls.at(-1), { objectID: "N=1:1", method: "GetTargets", args: [], kwargs: null });
   assert.deepEqual(pilots.callLedger().find((row) => row.pair === "dogmaIM.GetTargets").statuses, { same: 1 });
+});
+
+// ── the account's own calls, with no character chosen ───────────────────────
+
+const ACCOUNT_PAIRS = ["charUnboundMgr.GetCharCreationInfo", "charUnboundMgr.ValidateNameEx", "charUnboundMgr.CreateCharacterWithDoll", "charUnboundMgr.SelectCharacterID"];
+
+/** Timers that fire only when told to: `live` are the ones set and neither cleared nor fired. */
+function handTimers() {
+  const set = [];
+  return {
+    set,
+    get live() { return set.filter((timer) => !timer.cleared && !timer.fired); },
+    setTimeout(action, delay) { const timer = { action, delay, cleared: false, fired: false }; set.push(timer); return timer; },
+    clearTimeout(timer) { if (timer) timer.cleared = true; },
+    fire(timer) { timer.fired = true; timer.action(); },
+  };
+}
+
+/** A transport that may make the account's calls, with its timers in hand. */
+function accountBuild(sessionOptions = {}, pilotOptions = {}) {
+  const timers = handTimers();
+  const built = build(sessionOptions, { allowed: new Set(["dogmaIM.ShipGetInfo", "station.GetGuests", ...ACCOUNT_PAIRS]), timers, ...pilotOptions });
+  return { ...built, timers, get session() { return built.session; } };
+}
+const creationInfo = (pilots, fields = FIELDS) => pilots.accountCall("charUnboundMgr", "GetCharCreationInfo", [], null, fields);
+
+test("an account's own call logs in as the account and asks, with no character chosen", async () => {
+  const info = { type: "dict", entries: [[Buffer.from("races"), { type: "list", items: [] }]] };
+  const { pilots, made, timers } = accountBuild({ answers: { "charUnboundMgr.GetCharCreationInfo": info } });
+  const outcome = await creationInfo(pilots);
+
+  assert.equal(made.length, 1);
+  const [session] = made;
+  assert.deepEqual(session.logins, [["test", ""]]);
+  // Nothing of the selection screen is asked: the call and no other.
+  assert.deepEqual(session.calls, [{ service: "charUnboundMgr", method: "GetCharCreationInfo", args: [], kwargs: null }]);
+  // The answer in the gateway's own form, with nothing pushed, since nobody is listening on this connection.
+  assert.deepEqual(outcome, {
+    service: "charUnboundMgr",
+    method: "GetCharCreationInfo",
+    result: { type: "dict", entries: [["races", { type: "list", items: [] }]] },
+    notifications: [],
+  });
+  assert.equal(pilots.size, 0, "no pilot is held for it");
+  // The connection waits a little for the next thing asked, and is closed when nothing comes.
+  assert.equal(session.closed, false);
+  assert.deepEqual(timers.live.map((timer) => timer.delay), [5000]);
+  timers.fire(timers.live[0]);
+  assert.equal(session.closed, true);
+  assert.equal(timers.live.length, 0);
+});
+
+test("how long the account's connection waits is the transport's to be told", async () => {
+  const { pilots, timers } = accountBuild({}, { accountIdleMs: 1234 });
+  await creationInfo(pilots);
+  assert.deepEqual(timers.live.map((timer) => timer.delay), [1234]);
+});
+
+test("what is asked for an account in one go is asked on one connection, as the client's screen is one", async () => {
+  const { pilots, made, timers } = accountBuild({ answers: { "charUnboundMgr.ValidateNameEx": 1, "charUnboundMgr.CreateCharacterWithDoll": 140000042 } });
+  await creationInfo(pilots);
+  const [afterFirst] = timers.live;
+  await pilots.accountCall("charUnboundMgr", "ValidateNameEx", ["Zaphod Beeblebrox"], null, FIELDS);
+  await pilots.accountCall("charUnboundMgr", "CreateCharacterWithDoll", ["Zaphod Beeblebrox", 2, 1, 8, null, null, 0], null, FIELDS);
+
+  assert.equal(made.length, 1, "one connection");
+  assert.deepEqual(made[0].logins, [["test", ""]], "one login");
+  assert.deepEqual(made[0].calls.map((call) => call.method), ["GetCharCreationInfo", "ValidateNameEx", "CreateCharacterWithDoll"]);
+  // Each call puts the hanging up off: the wait is from the last of them.
+  assert.equal(afterFirst.cleared, true);
+  assert.equal(timers.set.length, 3);
+  assert.equal(timers.live.length, 1);
+  assert.equal(made[0].closed, false);
+  timers.fire(timers.live[0]);
+  assert.equal(made[0].closed, true);
+
+  // Asked again after that: a new connection, logged in again.
+  await creationInfo(pilots);
+  assert.equal(made.length, 2);
+  assert.deepEqual(made[1].logins, [["test", ""]]);
+  assert.equal(made[1].closed, false);
+});
+
+test("calls made at once share the one login, and the connection is not closed under one of them", async () => {
+  let release;
+  const waiting = new Promise((resolve) => { release = resolve; });
+  const { pilots, made, timers } = accountBuild({ answers: { "charUnboundMgr.ValidateNameEx": () => waiting, "charUnboundMgr.GetCharCreationInfo": "info" } });
+  const slow = pilots.accountCall("charUnboundMgr", "ValidateNameEx", ["A Name"], null, FIELDS);
+  const quick = await creationInfo(pilots);
+  assert.equal(quick.result, "info");
+  assert.equal(made.length, 1);
+  assert.equal(made[0].logins.length, 1);
+  // One call is still out: nothing is counting down to hang up on it.
+  assert.equal(timers.live.length, 0);
+  release(1);
+  assert.equal((await slow).result, 1);
+  assert.equal(timers.live.length, 1);
+  assert.equal(made[0].closed, false);
+});
+
+test("an account's own call is sent as the retail client sends it, and counted", async () => {
+  const { pilots, session: _unused, made } = accountBuild({ answers: { "charUnboundMgr.ValidateNameEx": 1, "charUnboundMgr.CreateCharacterWithDoll": 140000042 } });
+  // The client's second argument: how many names it has checked before this one.
+  assert.equal((await pilots.accountCall("charUnboundMgr", "ValidateNameEx", ["Zaphod Beeblebrox"], null, FIELDS)).result, 1);
+  assert.deepEqual(made[0].calls[0].args, ["Zaphod Beeblebrox", 0]);
+  // What the registry cannot make the client's goes as it was given, bridge JSON turned to what the wire takes.
+  const created = await pilots.accountCall("charUnboundMgr", "CreateCharacterWithDoll", ["Zaphod Beeblebrox", 2, 1, 8, { type: "Buffer", data: [1, 2] }, null, 0], { flag: 1 }, FIELDS);
+  assert.equal(created.result, 140000042);
+  assert.deepEqual(made[0].calls[1].args, ["Zaphod Beeblebrox", 2, 1, 8, Buffer.from([1, 2]), null, 0]);
+  assert.deepEqual(made[0].calls[1].kwargs, { flag: 1 });
+  const tally = Object.fromEntries(pilots.callLedger().map((row) => [row.pair, row.statuses]));
+  assert.deepEqual(tally["charUnboundMgr.ValidateNameEx"], { reshaped: 1 });
+  assert.deepEqual(tally["charUnboundMgr.CreateCharacterWithDoll"], { differs: 1 });
+});
+
+test("an answer of nothing is null, as the gateway says it", async () => {
+  const { pilots } = accountBuild({ answers: { "charUnboundMgr.GetCharCreationInfo": () => undefined } });
+  assert.equal((await creationInfo(pilots)).result, null);
+});
+
+test("each account has its own connection", async () => {
+  const { pilots, made, timers } = accountBuild({ userid: (userName) => (userName === "test" ? ACCOUNT : 5) });
+  await creationInfo(pilots);
+  await creationInfo(pilots, { userid: 5, userName: "test2" });
+  await creationInfo(pilots);
+  assert.deepEqual(made.map((session) => session.logins), [[["test", ""]], [["test2", ""]]]);
+  assert.deepEqual(made.map((session) => session.calls.length), [2, 1]);
+  // Hanging up on one leaves the other.
+  assert.equal(timers.live.length, 2);
+  timers.fire(timers.live[0]);
+  assert.deepEqual(made.map((session) => session.closed).sort(), [false, true]);
+});
+
+test("an account's own call does not disturb a pilot of the same account", async () => {
+  const { pilots, made, timers } = accountBuild();
+  const { bridgeSessionID: handle } = await pilots.selectCharacter([PILOT, null, true], null, FIELDS);
+  await creationInfo(pilots);
+  assert.equal(made.length, 2, "its own connection, not the pilot's");
+  assert.equal(made[0].calls.some((call) => call.method === "GetCharCreationInfo"), false);
+  timers.fire(timers.live.find((timer) => timer.delay === 5000));
+  assert.equal(made[1].closed, true);
+  assert.equal(made[0].closed, false);
+  assert.equal(pilots.size, 1);
+  // The pilot's session still answers.
+  await pilots.callMethod("station", "GetGuests", [], null, FIELDS, handle);
+});
+
+test("an account's own call needs to know whose it is, before anything is connected", async () => {
+  let connects = 0;
+  const { pilots, made } = accountBuild({}, { connect: async () => { connects += 1; return {}; } });
+  await rejects(creationInfo(pilots, { userName: "test" }), "CALL_INVALID", /userid/);
+  await rejects(creationInfo(pilots, { userid: 0, userName: "test" }), "CALL_INVALID", /userid/);
+  await rejects(creationInfo(pilots, { userid: ACCOUNT }), "CALL_INVALID", /name/);
+  await rejects(creationInfo(pilots, { userid: ACCOUNT, userName: "   " }), "CALL_INVALID", /name/);
+  await rejects(pilots.accountCall("charUnboundMgr", "GetCharCreationInfo", [], null, undefined), "CALL_INVALID");
+  await rejects(creationInfo(pilots, null), "CALL_INVALID");
+  assert.equal(connects, 0);
+  assert.equal(made.length, 0);
+});
+
+test("the account's name is logged in as it stands, without the space around it", async () => {
+  const { pilots, made } = accountBuild();
+  await creationInfo(pilots, { userid: ACCOUNT, userName: "  test " });
+  assert.deepEqual(made[0].logins, [["test", ""]]);
+});
+
+test("an account's own call is held to the allowlist, and never chooses a character", async () => {
+  let connects = 0;
+  const { pilots, made } = accountBuild({}, { connect: async () => { connects += 1; return {}; } });
+  await rejects(pilots.accountCall("charUnboundMgr", "DeleteCharacter", [PILOT], null, FIELDS), "CALL_NOT_ALLOWED", /allowlist/);
+  // On the allowlist, for the selection that keeps its session. Here it would bring a character online on a connection nobody keeps.
+  await rejects(pilots.accountCall("charUnboundMgr", "SelectCharacterID", [PILOT, null, true], null, FIELDS), "CALL_NOT_ALLOWED", /selecting/);
+  assert.equal(connects, 0);
+  assert.equal(made.length, 0);
+});
+
+test("a name that logs in as another account is not asked on that account's behalf", async () => {
+  const { pilots, made, timers } = accountBuild({ userid: 99 });
+  await rejects(creationInfo(pilots), "CALL_REFUSED", /different account/);
+  assert.deepEqual(made[0].calls, []);
+  assert.equal(made[0].closed, true);
+  assert.equal(timers.live.length, 0, "and nothing is left counting down");
+  // Not kept for the next call either: it is tried afresh.
+  await rejects(creationInfo(pilots), "CALL_REFUSED", /different account/);
+  assert.equal(made.length, 2);
+});
+
+test("the server saying no to the account is an answer: the connection stays", async () => {
+  const { pilots, made, timers } = accountBuild({
+    answers: { "charUnboundMgr.CreateCharacterWithDoll": () => { throw refusedBy("CharNameInvalid", "That name is taken."); }, "charUnboundMgr.GetCharCreationInfo": "info" },
+  });
+  await assert.rejects(pilots.accountCall("charUnboundMgr", "CreateCharacterWithDoll", ["Taken"], null, FIELDS), (error) => {
+    assert.equal(error.code, "CALL_REFUSED");
+    assert.equal(error.message, "That name is taken.");
+    assert.deepEqual(error.refusal, { key: "CharNameInvalid", values: {} });
+    return true;
+  });
+  assert.equal(made[0].closed, false);
+  assert.equal(timers.live.length, 1);
+  assert.equal((await creationInfo(pilots)).result, "info");
+  assert.equal(made.length, 1, "the next thing is asked on the same connection");
+});
+
+test("an account's own call fails as a call fails, and a connection that failed is not asked again", async () => {
+  const unreachable = createGamePortPilots({ connect: async () => { throw new Error("ECONNREFUSED"); }, allowed: new Set(ACCOUNT_PAIRS), timers: handTimers() });
+  await rejects(creationInfo(unreachable), "EVE_GATEWAY_UNREACHABLE");
+  await rejects(creationInfo(unreachable), "EVE_GATEWAY_UNREACHABLE");
+
+  // The login refused: what the session said, as a failed call.
+  const refusedLogin = accountBuild({ loginError: sessionError("LOGIN_REFUSED", "The server refused the login.") });
+  await rejects(creationInfo(refusedLogin.pilots), "CALL_FAILED", /GetCharCreationInfo failed: The server refused the login\./);
+  assert.equal(refusedLogin.session.closed, true);
+  assert.equal(refusedLogin.timers.live.length, 0);
+
+  // The connection goes while the call is out. No session was handed out, so none is reported lost.
+  const lost = { now: true };
+  const dropped = accountBuild({ answers: { "charUnboundMgr.GetCharCreationInfo": () => { if (lost.now) throw sessionError("CONNECTION_LOST"); return "info"; } } });
+  await rejects(creationInfo(dropped.pilots), "CALL_FAILED", /closed the connection/);
+  assert.equal(dropped.made[0].closed, true);
+  assert.equal(dropped.timers.live.length, 0);
+  lost.now = false;
+  assert.equal((await creationInfo(dropped.pilots)).result, "info");
+  assert.equal(dropped.made.length, 2, "the next call opens another");
+
+  // No answer in time: what state the connection is in nobody knows, so it is not kept.
+  const slow = accountBuild({ answers: { "charUnboundMgr.GetCharCreationInfo": () => { throw sessionError("CALL_TIMEOUT"); } } });
+  await rejects(creationInfo(slow.pilots), "EVE_GATEWAY_TIMEOUT");
+  assert.equal(slow.session.closed, true);
+});
+
+test("the server hanging up on a waiting account connection is not found out by the next call", async () => {
+  const { pilots, made, timers } = accountBuild({ answers: { "charUnboundMgr.GetCharCreationInfo": "info" } });
+  await creationInfo(pilots);
+  made[0].drop();
+  assert.equal(timers.live.length, 0, "nothing is left counting down to close what is closed");
+  assert.equal((await creationInfo(pilots)).result, "info");
+  assert.equal(made.length, 2);
+  assert.equal(made[1].closed, false);
+  // An old connection going does not take the new one with it.
+  made[0].close();
+  assert.equal((await creationInfo(pilots)).result, "info");
+  assert.equal(made.length, 2);
+});
+
+test("shutting the transport down hangs up on the accounts too", async () => {
+  const { pilots, made, timers } = accountBuild();
+  await creationInfo(pilots);
+  pilots.shutdown();
+  assert.equal(made[0].closed, true);
+  assert.equal(timers.live.length, 0);
+});
+
+test("a call failing late on a connection already given up does not cost the account its new one", async () => {
+  let failLate;
+  const late = new Promise((resolve, reject) => { failLate = reject; });
+  const state = { lost: true };
+  const { pilots, made } = accountBuild({
+    answers: {
+      "charUnboundMgr.ValidateNameEx": () => late,
+      "charUnboundMgr.GetCharCreationInfo": () => {
+        if (!state.lost) return "info";
+        state.lost = false;
+        throw sessionError("CONNECTION_LOST");
+      },
+    },
+  });
+  // Two calls out on the first connection. One loses it at once; the other hears later.
+  const second = pilots.accountCall("charUnboundMgr", "ValidateNameEx", ["A Name"], null, FIELDS);
+  second.catch(() => {});
+  await rejects(creationInfo(pilots), "CALL_FAILED", /closed the connection/);
+  assert.equal((await creationInfo(pilots)).result, "info");
+  assert.equal(made.length, 2, "a second connection");
+  failLate(sessionError("CONNECTION_CLOSED"));
+  await rejects(second, "CALL_FAILED", /closed the connection/);
+  assert.equal(made[1].closed, false);
+  assert.equal((await creationInfo(pilots)).result, "info");
+  assert.equal(made.length, 2, "still the second connection");
+});
+
+test("a connection waiting to be closed does not keep the process alive", async () => {
+  const let_go = [];
+  const timers = {
+    setTimeout(action, delay) { const timer = { action, delay, unref() { let_go.push(timer); return timer; } }; return timer; },
+    clearTimeout() {},
+  };
+  const { pilots } = accountBuild({}, { timers });
+  await creationInfo(pilots);
+  assert.deepEqual(let_go.map((timer) => timer.delay), [5000]);
 });

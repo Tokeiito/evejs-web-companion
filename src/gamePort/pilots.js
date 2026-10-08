@@ -132,6 +132,8 @@ const PROVISIONAL_WAIT_LIMIT_MS = 120_000;
  * before whoever made that call gives up on it.
  */
 const QUESTION_WAIT_MS = 110_000;
+/** An account's own connection, with no character chosen, is closed this long after the last call on it. */
+const ACCOUNT_IDLE_MS = 5_000;
 
 /** A localisation label as the server sends one, (labelID, {parameters}), or plain text. */
 function words(value) {
@@ -422,8 +424,12 @@ function createGamePortPilots({
   // How long a question put to the user waits for an answer, and the timers that count it.
   questionWaitMs = QUESTION_WAIT_MS,
   timers = { setTimeout, clearTimeout },
+  // How long an account's own connection is kept after the last thing asked on it.
+  accountIdleMs = ACCOUNT_IDLE_MS,
 } = {}) {
   const sessions = new Map();
+  /** The accounts' own connections, by account, each with no character chosen on it. */
+  const accountLines = new Map();
   const epoch = randomBytes(12).toString("base64url");
   /** Every call made, by pair and by how it compares with the retail client's (retailCalls.js). */
   const ledger = createCallLedger();
@@ -753,6 +759,105 @@ function createGamePortPilots({
       result: wireToBridgeJson(result === undefined ? null : result),
       notifications: drain(entry),
     };
+  }
+
+  /**
+   * An account's connection: the retail client at its character selection and
+   * creation screens, logged in as the account and nothing more. One for an
+   * account, opened by the first thing asked on it.
+   */
+  function accountLine(accountID, userName) {
+    const have = accountLines.get(accountID);
+    if (have) return have;
+    const line = { session: null, opening: null, calls: 0, timer: null };
+    const forget = () => {
+      if (accountLines.get(accountID) === line) accountLines.delete(accountID);
+      timers.clearTimeout(line.timer);
+      line.timer = null;
+    };
+    line.hangUp = () => {
+      forget();
+      if (line.session) line.session.close();
+    };
+    line.opening = (async () => {
+      let transport;
+      try {
+        transport = await connect();
+      } catch {
+        throw fail("EVE_GATEWAY_UNREACHABLE", "The game server is unreachable.");
+      }
+      line.session = createSession(transport);
+      // The server hanging up, or anything else that ends it: the next thing asked opens another.
+      line.session.onClose(forget);
+      await line.session.login(userName, passwordFor(userName));
+      if (positive(line.session.attributes.userid) !== accountID) {
+        throw fail("CALL_REFUSED", "The game server logged that name in as a different account.");
+      }
+      return line.session;
+    })();
+    accountLines.set(accountID, line);
+    return line;
+  }
+
+  /**
+   * A call the retail client makes before a character is chosen. On its
+   * character selection and creation screens the client is logged in as the
+   * account and nothing more, and it asks `charUnboundMgr` whatever those
+   * screens need, all on the one connection.
+   *
+   * The BFF has no such screen open. What it asks for an account in one go
+   * (making a character is five calls) is asked on one connection, logged in
+   * as the client logs in, and the connection is closed when nothing has been
+   * asked on it for a little while.
+   *
+   * The server lets an account log in beside its own pilot: only taking over a
+   * character that is online puts the earlier session off
+   * (charService.js, "Login takeover"). So this does not disturb a pilot of
+   * the same account that something else is flying.
+   */
+  async function accountCall(service, method, args = [], kwargs = null, sessionFields = {}) {
+    const accountID = positive(sessionFields && sessionFields.userid);
+    const userName = String((sessionFields && sessionFields.userName) || "").trim();
+    if (accountID === null) throw fail("CALL_INVALID", "Call session requires a positive integer userid.");
+    if (!userName) throw fail("CALL_INVALID", "A game-port login needs the account's name.");
+    assertAllowed(service, method);
+    // Choosing a character brings it online on the connection it is chosen on, and this one is not kept.
+    if (method === "SelectCharacterID") throw fail("CALL_NOT_ALLOWED", "A character is chosen by selecting it, not by a call of the account's.");
+    const line = accountLine(accountID, userName);
+    timers.clearTimeout(line.timer);
+    line.timer = null;
+    line.calls += 1;
+    // No session was handed out for this call, so there is none for the caller to have lost.
+    const failed = (error) => {
+      const mapped = toPilotError(error, service, method);
+      return mapped.code === "SESSION_NOT_FOUND" ? fail("CALL_FAILED", `${service}.${method} failed: the game server closed the connection.`) : mapped;
+    };
+    try {
+      let session;
+      try {
+        session = await line.opening;
+      } catch (error) {
+        line.hangUp();
+        throw failed(error);
+      }
+      try {
+        const form = shape(service, method, args, kwargs, {});
+        ledger.note(service, method, form);
+        const result = await session.call(service, method, argumentsToWire(form.args), form.kwargs);
+        return { service, method, result: wireToBridgeJson(result), notifications: [] };
+      } catch (error) {
+        // The server saying no is an answer, and the client stays on its screen. Anything else, and the connection is not asked again.
+        if (!(error && error.code === "GAME_CALL_REFUSED")) line.hangUp();
+        throw failed(error);
+      }
+    } finally {
+      line.calls -= 1;
+      if (line.calls === 0 && accountLines.get(accountID) === line) {
+        line.timer = timers.setTimeout(line.hangUp, accountIdleMs);
+        // A connection waiting to be closed is nothing to keep the process alive for.
+        if (line.timer && typeof line.timer.unref === "function") line.timer.unref();
+      }
+    }
   }
 
   async function releaseBridgeSession(bridgeSessionID, sessionFields = undefined) {
@@ -1312,6 +1417,7 @@ function createGamePortPilots({
   /** Close every session: the BFF is stopping, and each pilot logs off as a closed client's would. */
   function shutdown() {
     for (const entry of [...sessions.values()]) end(entry, "transport_shutdown");
+    for (const line of [...accountLines.values()]) line.hangUp();
   }
 
   return {
@@ -1324,6 +1430,7 @@ function createGamePortPilots({
     readScannerState,
     readSpaceSnapshot,
     openSessionEventStream,
+    accountCall,
     answerClientQuestion,
     shutdown,
     /** Every pair called since this transport was made, most called first, with how each compares with the retail client's. */

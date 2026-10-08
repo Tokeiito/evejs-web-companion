@@ -7,6 +7,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const {
+  ACCOUNT_SERVICES,
   GAME_PORT_HANDLE_PREFIX,
   PILOT_FUNCTIONS,
   createPilotTransport,
@@ -173,4 +174,78 @@ test("a setting that is not a transport is refused at start-up, not guessed at",
   assert.throws(() => pilotTransportSetting({ EVEJS_PILOT_TRANSPORT_OVERRIDES: "test" }), /is not name=transport/);
   assert.throws(() => pilotTransportSetting({ EVEJS_PILOT_TRANSPORT_OVERRIDES: "test=gameport=x" }), /is not name=transport/);
   assert.throws(() => pilotTransportSetting({ EVEJS_PILOT_TRANSPORT_OVERRIDES: "=gameport" }), /is not name=transport/);
+});
+
+// ── the account's own calls ──────────────────────────────────────────────────
+
+const byName = ({ userName }) => (userName === "test" ? "gameport" : "gateway");
+const withAccountCall = () => recorder("gameport", [...Object.keys(PILOT_FUNCTIONS), "accountCall"]);
+
+test("the account's own call goes where the account is", () => {
+  const gateway = recorder("gateway");
+  const gamePort = withAccountCall();
+  const asked = [];
+  const seam = createPilotTransport({ gateway, gamePort, transportFor: (who) => { asked.push(who); return byName(who); } });
+
+  assert.deepEqual(seam.accountCall("charUnboundMgr", "GetCharCreationInfo", [], null, { accountID: 4, userName: "test" }), { via: "gameport" });
+  assert.deepEqual(asked, [{ accountID: 4, characterID: null, userName: "test" }]);
+  assert.deepEqual(gamePort.calls.map((call) => [call.name, call.args]), [
+    ["accountCall", ["charUnboundMgr", "GetCharCreationInfo", [], null, { userid: 4, userName: "test" }]],
+  ]);
+  assert.equal(gamePort.calls[0].self, gamePort);
+  assert.equal(gateway.calls.length, 0);
+});
+
+test("for an account on the gateway it is the gateway's call, on a session that names the account and nothing else", () => {
+  const gateway = recorder("gateway");
+  const gamePort = withAccountCall();
+  const seam = createPilotTransport({ gateway, gamePort, transportFor: byName });
+
+  assert.deepEqual(seam.accountCall("charUnboundMgr", "CreateCharacterWithDoll", ["A Name", 2, 1, 8, null, null, 0], { a: 1 }, { accountID: 9, userName: "rrfarmer" }), { via: "gateway" });
+  assert.deepEqual(gateway.calls.map((call) => [call.name, call.args]), [
+    // No login name, and no session handle: exactly what the BFF sent before there was a game port.
+    ["callMethod", ["charUnboundMgr", "CreateCharacterWithDoll", ["A Name", 2, 1, 8, null, null, 0], { a: 1 }, { userid: 9 }]],
+  ]);
+  assert.equal(gateway.calls[0].self, gateway);
+  assert.equal(gamePort.calls.length, 0);
+});
+
+test("only what the retail client asks before a character is chosen is asked on the game port", () => {
+  assert.deepEqual([...ACCOUNT_SERVICES], ["charUnboundMgr"]);
+  const gateway = recorder("gateway");
+  const gamePort = withAccountCall();
+  const seam = createPilotTransport({ gateway, gamePort, transportFor: () => "gameport" });
+  // A read the BFF makes for a pilot who is not logged in: the retail protocol has no such thing.
+  seam.accountCall("corpRegistry", "GetTitles", [], null, { accountID: 4, userName: "test" });
+  assert.deepEqual(gateway.calls.map((call) => [call.name, call.args]), [["callMethod", ["corpRegistry", "GetTitles", [], null, { userid: 4 }]]]);
+  assert.equal(gamePort.calls.length, 0);
+});
+
+test("a game port that cannot make the account's call leaves it to the gateway", () => {
+  const gateway = recorder("gateway");
+  const gamePort = recorder("gameport");
+  const seam = createPilotTransport({ gateway, gamePort, transportFor: () => "gameport" });
+  assert.deepEqual(seam.accountCall("charUnboundMgr", "GetCharCreationInfo", [], null, { accountID: 4, userName: "test" }), { via: "gateway" });
+  assert.equal(gamePort.calls.length, 0);
+});
+
+test("the account's call defaults: no arguments, no keywords, and nobody is not on the game port", () => {
+  const gateway = recorder("gateway");
+  const gamePort = withAccountCall();
+  const asked = [];
+  const seam = createPilotTransport({ gateway, gamePort, transportFor: (who) => { asked.push(who); return "gateway"; } });
+  seam.accountCall("charUnboundMgr", "GetCharCreationInfo");
+  assert.deepEqual(asked, [{ accountID: null, characterID: null, userName: "" }]);
+  assert.deepEqual(gateway.calls[0].args, ["charUnboundMgr", "GetCharCreationInfo", [], null, { userid: null }]);
+});
+
+test("the seam has the account's call only when there is a game port", () => {
+  const gateway = recorder("gateway");
+  const seam = createPilotTransport({ gateway, gamePort: withAccountCall(), transportFor: byName });
+  assert.equal("accountCall" in seam, true);
+  assert.equal(typeof seam.accountCall, "function");
+  assert.equal(seam.accountCall, seam.accountCall, "the same function each time");
+  // With none, the gateway client is what comes back, and it has no such function: the BFF calls it as it always did.
+  assert.equal("accountCall" in createPilotTransport({ gateway }), false);
+  assert.equal(createPilotTransport({ gateway }).accountCall, undefined);
 });
