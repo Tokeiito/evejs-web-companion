@@ -298,7 +298,11 @@ How it was checked:
 - The server's own probe log records what a client answers at login. For the real client it reads
   `Buffer(5), Buffer(75), null`. The old `GameClient` gave `Buffer(0), Buffer(0), null`; the
   session gives the real client's line.
-- The gateway reports a session's pilot as `controlState: "retail_client"`, `transport: "tcp"`.
+- ~~The gateway reports a session's pilot as `controlState: "retail_client"`, `transport: "tcp"`.~~
+  **Not evidence (corrected 2026-10-08).** The server reports exactly that for a gateway session
+  too, because the gateway registers its session as a retail one. What tells the transports apart
+  is the server's log: a gateway session writes `[EvejsWebGateway] Browser session started`, and
+  only a call on the game port writes `[PKT] IN`. The other three points here stand on their own.
 - The server log shows the real client's addressing pattern for our calls: resolve to any node,
   bind to the named node, bound calls to that node, proxy services to the proxy node.
 - Tests replay a recorded real-server conversation and require the session to send its own half
@@ -454,6 +458,53 @@ from `evejsWebGatewayRuntime.js`:
 | `readFlightStatus` | reads the session's station, structure, system and ship; ship mode from the scene | the same from the session attributes; ship mode from our ballpark (Phase 4) |
 | `readSpaceSnapshot`, `readScannerState` | projections of the server's own scene | refuse until Phase 4 |
 | `openSessionEventStream` | a WebSocket of the same notifications, with a replay cursor | the session's own notifications, mapped by `bridgeJson.js` |
+
+**Status 2026-10-08: step 2 built, and the docked half of "done when" met.**
+`src/gamePort/pilots.js` is the transport; `EVEJS_PILOT_TRANSPORT` and
+`EVEJS_PILOT_TRANSPORT_OVERRIDES` choose it at select. Unset, no transport is created and nothing
+changes.
+
+What a "bind" turned out to be. The gateway's bind calls a method as though it were a service's
+(`invbroker.GetInventory(stationID)`) and keeps the bound object that comes back. The retail
+client binds a service's object for where the pilot is, then asks that. Each of the BFF's bind
+shapes is now made the retail way:
+
+| The BFF asks the gateway for | The game port does, as the retail client does | From |
+|---|---|---|
+| `invbroker.GetInventory [locationID]` | the station's manager, bound to `(stationid, groupStation)`, then `GetInventory(containerHangar, None)`; in a structure the manager for where the pilot is, and `containerStructure` | `invCache.py` |
+| `invbroker.GetInventoryFromId [id] {passive}` | `GetInventoryFromId(id, passive)`, both positional, on the manager for where the pilot is | `invCache.py` |
+| `ship`, `invbroker`, `dogmaIM` `.MachoBindObject` | bound to `(solarsystemid, groupSolarSystem)` or `(stationid, groupStation)`, whatever was passed | `eveMoniker.py` |
+| `fleetObjectHandler.MachoBindObject [[fleetID]]` or `[]` | `fleetID` alone, or `session.fleetid` | `eveMoniker.py` |
+| `agentMgr`, `planetMgr`, `charMgr`, `reprocessingSvc` | as passed, which is what the client passes | `eveMoniker.py` |
+| `entity`, `beyonce` | none while docked; the solar system once in space | `eveMoniker.py` |
+| `scanMgr.GetSystemScanMgr`, `fleetObjectHandler.CreateFleet` | the service call itself, keeping the bound object it answers with | `scanSvc.py`, `fleetSvc.py` |
+
+When the pilot moves, what was bound for the old place is dropped, as the client's session checks
+drop it, and the BFF binds again.
+
+How it was checked, with the test accounts on the game port and the browser unchanged:
+
+- **In the browser.** Logged in, selected the Test Pilot, and opened every docked panel: station
+  inventory, fitting, market, skills, wallet, mail, chat, agents and missions, agent finder,
+  character sheet, personal assets, standings, industry, contracts, planets, fleet, corporation
+  wallet, activity, travel, ready fit, log. Each drew its content; no failed request, no script
+  error, nothing in the BFF's error log, no `[PKT] ERR` on the server.
+- **Against the gateway, route by route.** `scripts/bff-parity.js` asks two BFFs, one per
+  transport, the 22 routes those panels fetch and compares the JSON. For the Test Pilot: 13
+  identical, 5 differing only in spellings the readers take either of, 2 where a clock moved, and
+  2 with the tuple spelling whose readers take both (the mission journal, industry facilities).
+  For Test Two, who has more to read: 11, 6, 3 and the same 2.
+- **Which transport each really used** comes from the server's log, as above: the gateway pass
+  wrote one gateway session and no game-port call; the game-port pass wrote no gateway session
+  and 230 game-port calls.
+
+Not done yet in this phase:
+
+- One hosted maintenance flow (Provisioning Center Apply) on the game port.
+- The BFF's writes. Every write route goes through the same two functions, but what each sends
+  has not been set beside what the retail client sends for it (list or tuple, text as str or
+  unicode, keyword or positional). That is per feature, and is where the remaining fidelity work is.
+- Undocking is refused and a pilot in space is refused at select, until Phase 4.
 
 ### Phase 4 — Space: a ballpark from destiny (large; spike first)
 
