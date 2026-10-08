@@ -4004,3 +4004,84 @@ overload and the rest) now go to the moniker with their arguments unread.
    fills while a ship lines up for a warp; a warp ordered at a bookmark or a fleet member.
 7. In the park, if a server ever sends a ball that needs them: MISSILE, FORMATION, MUSHROOM;
    a fixed ball's collision shapes and the partition's order.
+
+---
+
+## 2026-10-08 — the agent's window, opened and laid out as the client's
+
+Commit `8dd65a9`, pushed.
+
+**What the retail client does** (`agentDialogueWindow.py`).
+
+- **Opening** (`_GetConversation`, 402 to 411). It asks the agent what it has to say
+  (`DoAction(None)`). If the first thing on offer is to request a mission or to view one, the
+  window presses that at once and shows what comes of it, unless the agent has other business
+  too: a research agent, or one that locates characters, with more than that one thing on
+  offer.
+- **Every layout** (`ReconstructLayout`, 210 to 219), after opening and after every button:
+  it reads where the agent is (`GetAgentLocationWrap`, for its header), the mission's
+  briefing (`GetMissionBriefingInfo`, for the title, the time and the picture), and the
+  objectives (`GetMissionObjectiveInfo`), in that order.
+- **The objectives are shown** unless the last action completed the mission, declined it, quit
+  it, or was answered "not yet" (`GetObjectiveHTML`, 221 to 225). So an offer's objectives
+  are on show before it is accepted.
+
+**What the page did.** Opening showed "Request Mission" as a button to press. The briefing was
+read only after an accept, with the three reads asked in another order, and cleared again on
+opening, so a mission already offered or accepted showed nothing until something was pressed.
+
+**What was built.**
+
+- Opening makes the client's press. An agent the roster does not have is pressed for only
+  when the mission is all there is, since the client always knows what kind of agent it has.
+- Every layout reads the three again, in the client's order (the BFF's route asked for the
+  briefing first), and shows the objectives by the client's rule.
+- The title above what the agent says is the briefing's when one is held, as in the client,
+  and the journal's otherwise. After the window's own press the journal is read again.
+- An offer's briefing is on show without the two buttons for the package, which is only
+  handed over on accepting.
+
+**Proof.**
+
+- Tests: 12 new, 2 changed. 37 ways of breaking the change; one got through at first and is
+  closed with a test.
+- Suite: 9235 tests, 9211 pass, 0 fail, 24 skipped, 0 todo.
+- **In the browser, on the game port**, eve.js `10e2c22f4`, as Test Two with its courier
+  agent, read from the page and from the server's log of what arrived:
+
+  | what was done | the page | the server's log |
+  |---|---|---|
+  | the agent clicked, a mission already on offer | Accept, Decline, Defer; the mission's title; the briefing as an offer, no package buttons | `DoAction`, `GetAgentLocationWrap`, `GetMissionBriefingInfo`, `GetMissionObjectiveInfo` |
+  | Defer | the same offer, read again | |
+  | Decline, and Yes to the server's question | Request Mission; "Mission declined."; no briefing; nothing in the journal | |
+  | the agent clicked again | a new offer, with its title and briefing, and in the journal | `DoAction`, `DoAction`, then the same three reads |
+
+  The second `DoAction` in the last row is the window's own press: nothing was clicked on
+  the page but the agent. In the first row eve.js answers the opening with the offer itself,
+  so there was nothing for the window to press.
+- **The staging was undone**: the store was copied with the server stopped before the check
+  and put back after, and the journal again holds the offer it held before.
+
+**Not done.** The window does not lay itself out again when the server says the mission has
+changed (`OnAgentMissionChange`) or when the pilot changes station, as the client's does.
+The objectives pane is still the courier's table: a mission that is not a courier has a
+conversation and a title and no objectives. The mission's time and picture under the
+agent's line are not shown. The agent's place is read and not shown. The hosted mission
+bot talks to agents by its own calls and was not changed.
+
+### Next
+
+1. Phase 3's hosted check; the session-less gateway calls.
+2. The agent's window: laid out again on `OnAgentMissionChange` and a change of station;
+   the objectives of a mission that is not a courier; the mission's time under the agent's
+   line; messages inside messages when one turns up.
+3. The ledger's unread pairs, most called first: the inventory and wallet reads, then the
+   writes on `ship` and `dogmaIM`.
+4. The scanner the client's way: results kept from the server's word, a probe's destination
+   and range kept here and sent with the scan.
+5. Small, around dialogs: the title for a dialog's kind, the "do not ask again" box, the typed
+   codes not done.
+6. Small, in space: an overview row's speed columns the client's way; the bar the client
+   fills while a ship lines up for a warp; a warp ordered at a bookmark or a fleet member.
+7. In the park, if a server ever sends a ball that needs them: MISSILE, FORMATION, MUSHROOM;
+   a fixed ball's collision shapes and the partition's order.
