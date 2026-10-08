@@ -239,7 +239,20 @@ server's `network/` code, and the recorded real-client session.
 - **Done when:** a docked pilot stays connected for 60 minutes with every pushed packet logged and
   typed (zero "unknown packet" lines), and the two handshake unknowns in 1.5 are written down.
 
-**Status 2026-10-08: the session is built and verified live; two items remain.**
+**Status 2026-10-08: done as specified. Two fidelity items remain, both waiting on a recording.**
+
+The exit check, run with `scripts/soak-game-session.js` as Test Two, docked:
+
+| | |
+|---|---|
+| Held | 3600 s, not dropped |
+| Packets the session could not name | 0 |
+| Frames | 147 sent, 150 received |
+| Sent | 1 `GetServiceInfo`, 1 `SelectCharacterID`, 98 `GetTime` (the first sync, then one every three minutes), 40 `pingService.Ping` |
+| Received | 140 call answers, the initial session state, the character's session change, `OnServerSkillsChanged` |
+
+Forty keep-alives in an hour is the client's own rhythm: a clock sync counts as activity, so a ping
+only goes out when a full minute passes with nothing else sent.
 
 What exists (`src/gamePort/`, checklist in
 [`game-port-client-reference.md`](game-port-client-reference.md)):
