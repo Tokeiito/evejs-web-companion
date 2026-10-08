@@ -150,6 +150,10 @@ class Park {
     this.resets = 0;
     /** Updates that held more than one tick: the client reports each to its statistics and carries on. */
     this.fatalDesyncs = 0;
+    /** Ballpark::mTime: the sim clock's reading at the park's last step, in milliseconds, less what was left over. */
+    this.time = 0;
+    /** Ballpark::mFirstTime: nothing has stepped the park by the clock yet. */
+    this.firstTime = true;
   }
 
   get currentTime() {
@@ -209,9 +213,66 @@ class Park {
    */
   tick() {
     this.ballpark.bringOutDeadBalls();
+    this._step();
+  }
+
+  _step() {
     this.doPreTick(this.currentTime);
     this.ballpark.evolve();
     this.doPostTick(this.currentTime);
+  }
+
+  /**
+   * Ballpark::OnTick (Ballpark.cpp 217): the engine's driver. The client calls
+   * it every frame with its sim clock's reading; the park takes one step for
+   * each whole tick of that clock gone by since its last, and keeps what is
+   * left over towards the next. So a park steps once a second of game time,
+   * however long that second is, and takes at once all the steps a stalled
+   * client has missed.
+   *
+   * The first call only steps the simulation: nothing queued is applied by it
+   * (the engine's first Evolve is made without DoPreTick or DoPostTick).
+   * `simTime` is in milliseconds. Returns how many steps were taken.
+   */
+  onTick(simTime) {
+    let sinceLast = simTime - this.time;
+    this.ballpark.bringOutDeadBalls();
+    const interval = this.ballpark.tickInterval;
+    if (sinceLast < interval) return 0;
+    let steps = 1;
+    if (this.firstTime) {
+      this.ballpark.evolve();
+      sinceLast = 0;
+      this.firstTime = false;
+    } else {
+      steps = Math.trunc(sinceLast / interval);
+      for (let step = 0; step < steps; step += 1) {
+        this._step();
+        sinceLast -= interval;
+      }
+    }
+    this.time = simTime - sinceLast;
+    return steps;
+  }
+
+  /**
+   * Ballpark::AdjustTimes (4416): the park's own times moved by `delta`
+   * milliseconds. The client does this when it is told its sim clock has been
+   * rebased (michelle.DoSimClockRebase), so that the park's next step falls
+   * where it would have.
+   */
+  adjustTimes(delta) {
+    this.time += delta;
+  }
+
+  /**
+   * How far through its present tick the park is at the sim clock's reading
+   * `simTime`: what the client hands to the placing of a ball between two
+   * ticks (ClientBall::InterpolatedPosition, with its two-tick shift and the
+   * times each step leaves on a ball; Ballpark.between takes the result).
+   */
+  fraction(simTime) {
+    return (simTime - this.time) / this.ballpark.tickInterval;
   }
 
   /** Park.DoPreTick (900). */

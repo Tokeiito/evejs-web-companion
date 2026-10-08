@@ -58,6 +58,7 @@ const { notificationToBridgeJson, sessionChangeToBridgeJson, wireToBridgeJson } 
 const { GAME_PORT_HANDLE_PREFIX } = require("../pilotTransport");
 const { createCallLedger, retailForm } = require("./retailCalls");
 const { createPilotSpace } = require("./pilotSpace");
+const { createPilotClock } = require("./pilotClock");
 const { createPilotDogma } = require("./pilotDogma");
 const { MAX_PROBES, createPilotScanner } = require("./pilotScanner");
 const { projectFlight, projectSpace } = require("./spaceProjection");
@@ -597,6 +598,7 @@ function createGamePortPilots({
       throw fail("EVE_GATEWAY_UNREACHABLE", "The game server is unreachable.");
     }
     const session = createSession(transport);
+    const clock = createPilotClock({ now });
     const entry = {
       handle: `${GAME_PORT_HANDLE_PREFIX}${randomBytes(24).toString("base64url")}`,
       session,
@@ -612,10 +614,12 @@ function createGamePortPilots({
       bound: new Map(),
       /** The two inventory managers invCache keeps, by which: the "N=..." of each. */
       inventoryManagers: new Map(),
+      /** The pilot's sim clock (pilotClock.js): what its park steps by and its dogma measures in. */
+      clock,
       /** The pilot's ballpark while it is in space (pilotSpace.js), else null. */
       space: null,
       /** The pilot's ship as dogma has it (pilotDogma.js), and which ship and place that was loaded for. */
-      dogma: createPilotDogma({ characterID, now: () => filetime(now()), effectCategory }),
+      dogma: createPilotDogma({ characterID, now: () => filetime(clock.simTime()), effectCategory }),
       dogmaLoaded: null,
       /** The pilot's scan probes as the client's scan service knows them (pilotScanner.js). */
       scanner: createPilotScanner({ typeAttribute }),
@@ -631,6 +635,7 @@ function createGamePortPilots({
         const gone = notification.args[0];
         forgetObject(entry, Buffer.isBuffer(gone) ? gone.toString("utf8") : String(gone));
       }
+      entry.clock.feed(notification);
       if (entry.space) entry.space.feed(notification);
       entry.dogma.feed(notification);
       entry.scanner.feed(notification);
@@ -652,6 +657,8 @@ function createGamePortPilots({
     let row;
     try {
       await session.login(userName, passwordFor(userName));
+      // The login function the server sends has been answered: if it was the one that frees the client's clock, this pilot's is free.
+      clock.loggedIn(session.handshakeAnswer);
       if (positive(session.attributes.userid) !== accountID) {
         throw fail("SESSION_SELECT_FAILED", "The game server logged that name in as a different account.");
       }
@@ -827,7 +834,7 @@ function createGamePortPilots({
       entry.space = null;
     }
     if (wanted !== null && !entry.space) {
-      entry.space = createSpace({ session: entry.session, solarSystemID: wanted, sleep, onError: (error, what) => onSpaceError(error, what, entry.characterID) });
+      entry.space = createSpace({ session: entry.session, solarSystemID: wanted, sleep, simTime: entry.clock.simTime, onError: (error, what) => onSpaceError(error, what, entry.characterID) });
       // michelle.DoDestinyUpdate: the dogma messages riding with a ballpark update are scattered as OnMultiEvent, which is godma's.
       entry.space.park.onMultiEvent = (messages) => entry.dogma.multiEvent(messages);
       // Nobody waits on this: the state arrives when the server has answered the bind.
@@ -859,19 +866,21 @@ function createGamePortPilots({
   async function readSpaceSnapshot(bridgeSessionID, sessionFields = {}) {
     const entry = held(bridgeSessionID, sessionFields);
     const place = whereabouts(entry);
+    // The pace the pilot's clock is meant to hold (blue.os.desiredSimDilation): what the client's time dilation indicator reads.
+    const timeDilation = entry.clock.timeDilation;
     if (place.inSpace) {
       const park = entry.space ? entry.space.park : null;
       const readings = park && park.validState ? await shipReadings(entry, place) : null;
       return {
         // Until the server's state has arrived there is a park and nothing in it.
         space: park && park.validState
-          ? projectSpace(park, { solarSystemID: place.solarSystemID, shipID: place.shipID, readings, warpDestination: entry.warpDestination ?? null, alignTarget: alignTargetOf(entry, park) })
-          : { inSpace: true, solarSystemID: place.solarSystemID, shipID: place.shipID, sampledAtMs: now(), entities: [], ship: null },
+          ? { ...projectSpace(park, { solarSystemID: place.solarSystemID, shipID: place.shipID, readings, warpDestination: entry.warpDestination ?? null, alignTarget: alignTargetOf(entry, park) }), timeDilation }
+          : { inSpace: true, solarSystemID: place.solarSystemID, shipID: place.shipID, sampledAtMs: now(), entities: [], ship: null, timeDilation },
         notifications: drain(entry),
       };
     }
     return {
-      space: { inSpace: false, solarSystemID: place.solarSystemID, shipID: place.shipID, sampledAtMs: now(), entities: [], ship: null },
+      space: { inSpace: false, solarSystemID: place.solarSystemID, shipID: place.shipID, sampledAtMs: now(), entities: [], ship: null, timeDilation },
       notifications: drain(entry),
     };
   }

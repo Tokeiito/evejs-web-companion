@@ -1855,6 +1855,12 @@ export interface SpaceSnapshot {
   readonly sampledAtMs: number | null;
   readonly entities: readonly SpaceEntity[];
   readonly ship: SpaceShipStatus | null;
+  /**
+   * The pace the pilot's own clock is meant to hold, 1 being the wall's: what the client's time
+   * dilation indicator reads (blue.os.desiredSimDilation). Only a pilot on the game port has a clock
+   * of its own; null or absent when it is not known.
+   */
+  readonly timeDilation?: number | null;
 }
 
 /**

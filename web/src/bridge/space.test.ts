@@ -480,3 +480,18 @@ test("a snapshot that carries the same ball twice draws one row for it", () => {
   // First sighting wins, and the order of the rest is untouched.
   assert.equal(snapshot.entities[0]?.name, "Rifter");
 });
+
+test("the pace of the pilot's clock decodes as a number above nothing and no more than one, and is unknown otherwise", () => {
+  const pace = (timeDilation: unknown) =>
+    decodeSpaceSnapshot({
+      inSpace: true,
+      solarSystemID: 30000142,
+      shipID: 9001,
+      entities: [],
+      ship: null,
+      ...(timeDilation === undefined ? {} : { timeDilation }),
+    } as unknown as JsonValue).timeDilation;
+  assert.deepEqual([pace(1), pace(0.5), pace(0.1)], [1, 0.5, 0.1]);
+  // Absent (the gateway's snapshot), null, not a number, or no pace a clock can hold.
+  assert.deepEqual([pace(undefined), pace(null), pace("half"), pace(0), pace(-0.5), pace(1.5), pace([0.5])], [null, null, null, null, null, null, null]);
+});

@@ -10,7 +10,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { BIND_TRIES, createPilotSpace } = require("../src/gamePort/pilotSpace");
+const { BIND_TRIES, FRAME_MS, createPilotSpace, rebaseDelta } = require("../src/gamePort/pilotSpace");
 const { CATEGORY, checkWarpDestination, healthOf, kindOf, projectFlight, projectSpace } = require("../src/gamePort/spaceProjection");
 const { Ballpark } = require("../src/gamePort/destiny/ballpark");
 const { Park } = require("../src/gamePort/destiny/park");
@@ -47,14 +47,26 @@ function fakeSession({ bindFailures = 0, formationsError = null } = {}) {
   return session;
 }
 
-/** A pilot's space whose park ticks only when the test says so. */
+/**
+ * A pilot's space whose clock moves only when the test says so. `state.frame()`
+ * shows the park the clock as it stands; `state.tick()` moves the clock on a
+ * second first, so the park takes one step.
+ */
 function handTicked(sessionOptions = {}, options = {}) {
   const session = fakeSession(sessionOptions);
-  const state = { tick: null, started: 0, stopped: 0, slept: [], errors: [] };
+  const state = { tick: null, frame: null, sim: 1_000_000, started: 0, stopped: 0, slept: [], errors: [] };
   const space = createPilotSpace({
     session,
     solarSystemID: SYSTEM,
-    startTicking: (tick, ms) => { state.tick = tick; state.started += 1; state.tickMs = ms; session.asked.push("the park starts ticking"); return "timer"; },
+    simTime: () => state.sim,
+    startTicking: (frame, ms) => {
+      state.frame = frame;
+      state.tick = () => { state.sim += 1000; frame(); };
+      state.started += 1;
+      state.frameMs = ms;
+      session.asked.push("the park starts ticking");
+      return "timer";
+    },
     stopTicking: (timer) => { state.stopped += timer === "timer" ? 1 : 100; },
     sleep: async (ms) => { state.slept.push(ms); },
     onError: (error, what) => state.errors.push([what, error.message]),
@@ -63,12 +75,13 @@ function handTicked(sessionOptions = {}, options = {}) {
   return { session, space, state };
 }
 
-test("a ballpark is made as michelle makes one: formations asked for, the park ticking once a second, the system's ballpark bound", async () => {
+test("a ballpark is made as michelle makes one: formations asked for, the park ticking, the system's ballpark bound", async () => {
   const { session, space, state } = handTicked();
   assert.deepEqual([state.started, space.remotePark, space.park.validState], [0, null, false]);
   assert.equal(await space.start(), "N=1:7");
   assert.deepEqual(session.asked, ["call beyonce.GetFormations", "the park starts ticking", `bind beyonce ${SYSTEM}`]);
-  assert.deepEqual([state.started, state.tickMs, space.remotePark, space.solarSystemID], [1, 1000, "N=1:7", SYSTEM]);
+  assert.deepEqual([state.started, state.frameMs, space.remotePark, space.solarSystemID], [1, FRAME_MS, "N=1:7", SYSTEM]);
+  assert.equal(FRAME_MS, 50);
   assert.deepEqual(space.formations, ["beyonce", "GetFormations", []]);
   // Asked again, by whoever wants the remote ballpark: the same one, not another.
   assert.equal(await space.remote(), "N=1:7");
@@ -106,9 +119,14 @@ test("a park is fed the session's ballpark updates and nothing else, and steps w
   const all = notifications(undock);
   const fed = all.map((notification) => [notification.method, space.feed(notification)]);
   assert.ok(fed.some(([method]) => method !== "DoDestinyUpdate"), "the recording holds other notifications too");
-  for (const [method, taken] of fed) assert.equal(taken, method === "DoDestinyUpdate", method);
+  for (const [method, taken] of fed) assert.equal(taken, method === "DoDestinyUpdate" || method === "DoSimClockRebase", method);
   assert.equal(space.park.validState, false, "nothing is applied until the park ticks");
   state.tick();
+  // On the way into space the recording's server rebased the clock by a millisecond, and the park's second ends that much later.
+  assert.equal(rebaseDelta(all.find((notification) => notification.method === "DoSimClockRebase").args[0]), 1);
+  assert.equal(space.park.validState, false);
+  state.sim += 1;
+  state.frame();
   assert.deepEqual([space.park.validState, space.park.ego], [true, undock.shipID]);
 
   // Given only what had arrived by the first second of the flight, each tick is one step.
@@ -141,7 +159,7 @@ test("what goes wrong in the park's own time is reported and does not stop it", 
   const { space, state } = handTicked();
   await space.start();
   assert.equal(space.feed({ method: "DoDestinyUpdate", args: [{ type: "list", items: [[7, null]] }, false] }), true);
-  space.park.tick = () => { throw new Error("a step that cannot be taken"); };
+  space.park.onTick = () => { throw new Error("a step that cannot be taken"); };
   state.tick();
   assert.deepEqual(state.errors.map(([what]) => what), ["DoDestinyUpdate", "tick"]);
   assert.equal(state.errors[1][1], "a step that cannot be taken");
@@ -194,6 +212,80 @@ test("formations that cannot be had do not keep the pilot blind: the park still 
   const { session, space, state } = handTicked({ formationsError: new Error("no formations") });
   assert.equal(await space.start(), "N=1:7");
   assert.deepEqual([state.errors, state.started, session.asked.at(-1)], [[["GetFormations", "no formations"]], 1, `bind beyonce ${SYSTEM}`]);
+});
+
+test("a park steps by the pilot's clock: once for each second of it, however many frames that takes", async () => {
+  const { space, state } = handTicked();
+  await space.start();
+  // The first frame came with the start, before anything was bound: one bare step of an empty park.
+  assert.deepEqual([space.park.firstTime, space.park.time, space.park.currentTime], [false, 1_000_000, 1]);
+  for (const update of destinyUpdates(undock).slice(0, 5)) space.feed({ method: "DoDestinyUpdate", args: [{ type: "list", items: update.entries }, update.waitForBubble] });
+  const stamp = destinyUpdates(undock)[2].entries[0][0];
+  // Nineteen frames, 50 ms apart: not yet a second.
+  for (let frames = 0; frames < 19; frames += 1) {
+    state.sim += FRAME_MS;
+    state.frame();
+  }
+  assert.equal(space.park.validState, false);
+  state.sim += FRAME_MS;
+  state.frame();
+  assert.deepEqual([space.park.validState, space.park.currentTime], [true, stamp + 1]);
+  // A clock at half pace: forty frames to the next step.
+  for (let frames = 0; frames < 39; frames += 1) {
+    state.sim += FRAME_MS / 2;
+    state.frame();
+  }
+  assert.equal(space.park.currentTime, stamp + 1);
+  state.sim += FRAME_MS / 2;
+  state.frame();
+  assert.equal(space.park.currentTime, stamp + 2);
+  assert.deepEqual(state.errors, []);
+});
+
+test("told its clock was rebased, a park moves its own times by the difference, as michelle does", async () => {
+  const { space, state } = handTicked();
+  await space.start();
+  const rebase = (from, to) => space.feed({ method: "DoSimClockRebase", args: [[from, to]] });
+  // 134359651870960000 and ...970000 are two of blue's readings a millisecond apart, as eve.js sent them.
+  assert.equal(rebase(134359651870960000n, 134359651870970000n), true);
+  assert.equal(space.park.time, 1_000_001);
+  // Three seconds back: the park is three steps behind its clock, and takes them at the next frame.
+  assert.equal(rebase(134359651870960000n, 134359651870960000n - 30_000_000n), true);
+  assert.equal(space.park.time, 997_001);
+  const before = space.park.currentTime;
+  state.frame();
+  assert.deepEqual([space.park.currentTime - before, space.park.time], [2, 999_001]);
+  state.sim += 1;
+  state.frame();
+  assert.deepEqual([space.park.currentTime - before, space.park.time], [3, 1_000_001]);
+  // Forward: the next step waits that much longer.
+  rebase(0n, 5_000_000n);
+  state.tick();
+  assert.equal(space.park.currentTime - before, 3);
+  state.sim += 500;
+  state.frame();
+  assert.equal(space.park.currentTime - before, 4);
+  // The readings come as the wire gives a tuple or a list, as numbers or longs; anything else moves nothing.
+  assert.deepEqual([rebaseDelta([10_000, 30_000]), rebaseDelta({ type: "tuple", items: [10_000n, 30_000n] }), rebaseDelta([30_000n, 10_000n])], [2, 2, -2]);
+  assert.deepEqual([rebaseDelta(null), rebaseDelta([1n]), rebaseDelta([1n, 2n, 3n]), rebaseDelta(["a", 2n]), rebaseDelta([1.5, 2]), rebaseDelta(7)], [null, null, null, null, null, null]);
+  const at = space.park.time;
+  assert.equal(space.feed({ method: "DoSimClockRebase", args: [["a", "b"]] }), true);
+  assert.equal(space.feed({ method: "DoSimClockRebase", args: null }), true);
+  assert.equal(space.park.time, at);
+  assert.deepEqual(state.errors, []);
+});
+
+test("a park given no clock keeps one of its own, with the real clock", async () => {
+  const session = fakeSession();
+  let frame = null;
+  const space = createPilotSpace({ session, solarSystemID: SYSTEM, startTicking: (each) => { frame = each; return "timer"; }, stopTicking: () => {} });
+  await space.start();
+  // The first frame stepped it, at the real clock's reading.
+  assert.equal(space.park.firstTime, false);
+  assert.ok(Math.abs(space.park.time - Date.now()) < 5_000, String(space.park.time));
+  frame();
+  assert.equal(space.park.currentTime, 1, "and no second has gone by since");
+  space.release();
 });
 
 // ── what the web client is shown ─────────────────────────────────────────────

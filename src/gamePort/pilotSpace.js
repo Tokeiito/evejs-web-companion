@@ -11,7 +11,13 @@
 //       InitializeRemoteBallpark         eveMoniker.GetBallPark(solarsystemID).Bind(),
 //                                        up to ten tries a second apart
 //     sm.RemoteSvc('beyonce').GetFormations()
-//     __bp.Start()                       the park begins to tick, once a second
+//     __bp.Start()                       the park begins to tick
+//
+// A ticking park is called every frame with the client's sim clock, and steps
+// once for each second of that clock gone by (Park.onTick). So it steps once a
+// second, and more slowly when the server has slowed the pilot's clock
+// (pilotClock.js). Its first frame is the next one after Start, before the
+// bind below has been answered.
 //
 // The server answers the bind with the ballpark's state (DoDestinyUpdate), and
 // from then on sends what changes. Nothing else passes between the two about
@@ -21,26 +27,50 @@
 // ballpark (CmdGotoDirection, CmdWarpToStuff, CmdDock, UpdateStateRequest) goes
 // to it, through michelle.GetRemotePark().
 //
+// When the client is told its sim clock has been rebased (DoSimClockRebase,
+// with the old reading and the new) michelle moves the park's own times by the
+// difference (michelle.DoSimClockRebase, Ballpark::AdjustTimes). eve.js sends
+// that as a notice when a pilot enters space and when time dilation changes.
+//
 // Not here: the formations GetFormations answers with (they feed the FORMATION
-// mode, which is not ported), and the park's seconds following the server's
-// clock when it is slowed (DoSimClockRebase, OnSetTimeDilation).
+// mode, which is not ported).
 
 const { Ballpark } = require("./destiny/ballpark");
 const { Park } = require("./destiny/park");
+const { SimClock } = require("./simClock");
 
 /** InitializeRemoteBallpark: tries, and the wait between them. */
 const BIND_TRIES = 10;
 const BIND_RETRY_MS = 1000;
+/** How often the park is shown the clock. The client does it every frame it draws; a park needs it only often enough to step on time. */
+const FRAME_MS = 50;
+/** blue counts in 100 ns; the park's clock in milliseconds. */
+const BLUE_TICKS_PER_MS = 10_000n;
+
+/** The two readings of a DoSimClockRebase, as a difference in milliseconds; null if they are not two whole numbers. */
+function rebaseDelta(times) {
+  const pair = Array.isArray(times) ? times : times && Array.isArray(times.items) ? times.items : null;
+  if (!pair || pair.length !== 2) return null;
+  try {
+    const [from, to] = pair.map((value) => BigInt(value));
+    return Number(to - from) / Number(BLUE_TICKS_PER_MS);
+  } catch {
+    return null;
+  }
+}
 
 /**
- * `session` is the pilot's game-port session. `onError(error, what)` is told
- * of anything that goes wrong in the park's own time (a tick, an update, the
+ * `session` is the pilot's game-port session. `simTime()` reads the pilot's
+ * sim clock, in milliseconds (pilotClock.js); left out, the park has a clock
+ * of its own that runs with the real one. `onError(error, what)` is told of
+ * anything that goes wrong in the park's own time (a tick, an update, the
  * bind), since nobody is waiting on those.
  */
 function createPilotSpace({
   session,
   solarSystemID,
-  tickMs = 1000,
+  frameMs = FRAME_MS,
+  simTime = null,
   startTicking = (tick, ms) => setInterval(tick, ms),
   stopTicking = (timer) => clearInterval(timer),
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
@@ -62,6 +92,10 @@ function createPilotSpace({
   });
   // An entry the park could not apply is not thrown: the park goes on to the next, as the client does. It is still worth knowing.
   park.onFail = (name, error) => onError(error ?? new Error("the entry could not be applied"), `entry ${name}`);
+  const ownClock = simTime === null ? new SimClock(Date.now()) : null;
+  const readClock = simTime ?? (() => ownClock.frame(Date.now()));
+  /** One frame: the park is shown the clock, and steps if a second of it has gone by. */
+  const frame = () => guard("tick", () => park.onTick(readClock()));
   const guard = (what, action) => {
     try {
       action();
@@ -92,7 +126,8 @@ function createPilotSpace({
         onError(error, "GetFormations");
       }
       if (released) return null;
-      timer = startTicking(() => guard("tick", () => park.tick()), tickMs);
+      timer = startTicking(frame, frameMs);
+      frame();
       return bind();
     })();
     return bound;
@@ -107,6 +142,11 @@ function createPilotSpace({
     }
     if (notification.method === "DoDestinyUpdates") {
       guard("DoDestinyUpdates", () => park.doDestinyUpdates(notification.args[0]));
+      return true;
+    }
+    if (notification.method === "DoSimClockRebase") {
+      const delta = rebaseDelta(Array.isArray(notification.args) ? notification.args[0] : null);
+      if (delta !== null) park.adjustTimes(delta);
       return true;
     }
     return false;
@@ -141,4 +181,4 @@ function createPilotSpace({
   };
 }
 
-module.exports = { BIND_TRIES, createPilotSpace };
+module.exports = { BIND_TRIES, FRAME_MS, createPilotSpace, rebaseDelta };

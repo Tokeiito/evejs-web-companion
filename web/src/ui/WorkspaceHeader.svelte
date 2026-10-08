@@ -12,6 +12,7 @@
   import type { AppFlow } from "../app/flow.ts";
   import { panelErrorWords } from "../bridge/refusals.ts";
   import { INDICATION_WORD_LABELS, indicationHeader, shipIndication } from "../space/actionIndication.ts";
+  import { TIDI_WORD_LABELS, tidiHint, tidiPercent } from "../space/timeDilation.ts";
 
   let { store, flow, isDocked }: { store: ClientStore; flow: AppFlow; isDocked: boolean } = $props();
 
@@ -60,6 +61,13 @@
   $effect(() => {
     flow.requestWords(INDICATION_WORD_LABELS);
   });
+  // Time dilation, shown as the client's indicator shows it: only while the pilot's clock runs slow.
+  const tidi = $derived(isDocked ? null : tidiPercent($space.snapshot?.timeDilation));
+  $effect(() => {
+    if (tidi !== null) {
+      flow.requestWords(TIDI_WORD_LABELS);
+    }
+  });
   const speedPct = $derived(
     $flight.status?.shipSpeedFraction != null ? Math.round($flight.status.shipSpeedFraction * 100) : null,
   );
@@ -74,6 +82,9 @@
 
 <header class="ws-head">
   <span class="state-badge {isDocked ? 'docked' : 'in-space'}">{isDocked ? "Docked" : "In Space"}</span>
+  {#if tidi !== null}
+    <span class="state-badge tidi" title={tidiHint(tidi, $words.templates)}>TiDi {tidi}%</span>
+  {/if}
   <div class="ws-head-where">
     {#if isDocked}
       <strong>{stationName}</strong>

@@ -42,7 +42,7 @@ const refusedBy = (key, reason = key) => sessionError("GAME_CALL_REFUSED", `refu
  * a function of the arguments; a function may throw. Selecting puts the
  * character on the session as the server's session change does.
  */
-function fakeSession({ answers = {}, userid = ACCOUNT, loginError = null, comesOnline = true, inSpace = false } = {}) {
+function fakeSession({ answers = {}, userid = ACCOUNT, loginError = null, comesOnline = true, inSpace = false, handshakeAnswer = null } = {}) {
   const listeners = { notification: new Set(), sessionChange: new Set(), close: new Set(), clientCall: new Set() };
   const session = {
     attributes: {},
@@ -52,6 +52,8 @@ function fakeSession({ answers = {}, userid = ACCOUNT, loginError = null, comesO
     async login(userName, password) {
       session.logins.push([userName, password]);
       if (loginError) throw loginError;
+      // What the session answered the server's login function with (session.js).
+      session.handshakeAnswer = handshakeAnswer;
       session.attributes.userid = userid;
       session.change({ userid: [null, userid] });
     },
@@ -243,8 +245,14 @@ function handTicked() {
     errors,
     options: {
       createSpace(options) {
-        const made = { tick: null, stopped: false };
-        made.space = createPilotSpace({ ...options, startTicking: (tick) => { made.tick = tick; return made; }, stopTicking: () => { made.stopped = true; } });
+        // The park's clock moves only when the test says so: tick() moves it on a second and shows it to the park, which then takes one step.
+        const made = { tick: null, stopped: false, sim: 1_000_000 };
+        made.space = createPilotSpace({
+          ...options,
+          simTime: () => made.sim,
+          startTicking: (frame) => { made.tick = () => { made.sim += 1000; frame(); }; return made; },
+          stopTicking: () => { made.stopped = true; },
+        });
         parks.push(made);
         return made.space;
       },
@@ -732,8 +740,9 @@ test("flight status for a lost connection finds no session", async () => {
 
 test("docked, the space snapshot and the scanner are the gateway's docked answers", async () => {
   const { pilots, handle } = await selected({}, { now: () => 1234 });
+  // And one thing the gateway's has not: the pace of the pilot's own clock.
   assert.deepEqual((await pilots.readSpaceSnapshot(handle, { userid: ACCOUNT })).space, {
-    inSpace: false, solarSystemID: SYSTEM, shipID: SHIP, sampledAtMs: 1234, entities: [], ship: null,
+    inSpace: false, solarSystemID: SYSTEM, shipID: SHIP, sampledAtMs: 1234, entities: [], ship: null, timeDilation: 1,
   });
   assert.deepEqual((await pilots.readScannerState(handle, { userid: ACCOUNT })).scanner, {
     inSpace: false, solarSystemID: SYSTEM, shipID: SHIP, maxActiveProbes: 0, launcher: null, probes: [],
@@ -1962,4 +1971,97 @@ test("an align is remembered as the client's menu remembers it, until the ship i
   server("GotoDirection", [0, 0, 1]);
   assert.deepEqual([(await ship()).mode, (await ship()).alignTarget], ["GOTO", null]);
   assert.deepEqual(hand.errors, []);
+});
+
+// ── the pilot's clock ────────────────────────────────────────────────────────
+
+/** A pilot in space on the real clock of the test, its park shown that clock when the test says: frames[0]() is one frame. */
+async function clockedPilot(sessionOptions = {}) {
+  const allInfo = shipAllInfo();
+  const [shipRow] = allInfo.args.entries.find(([name]) => name.toString() === "shipInfo")[1].entries.map(([, row]) => row.args.entries);
+  shipRow.find(([name]) => name.toString() === "attributes")[1].entries.push([1178, 100], [1199, 100], [1200, 100], [1179, 0.01], [1196, 0.01], [1198, 0.01], [1224, 1]);
+  const state = { now: DOGMA_T_MS, frames: [], spaces: [], errors: [] };
+  const built = build({ ...IN_SPACE, ...sessionOptions, answers: { ...IN_SPACE.answers, "bound:GetAllInfo": allInfo } }, {
+    createSpace(options) {
+      const space = createPilotSpace({ ...options, startTicking: (frame) => { state.frames.push(frame); return "timer"; }, stopTicking: () => {} });
+      state.spaces.push(space);
+      return space;
+    },
+    onSpaceError: (error, what) => state.errors.push([what, error.message]),
+    now: () => state.now,
+  });
+  const { bridgeSessionID: handle } = await built.pilots.selectCharacter([PILOT, null, true], null, FIELDS);
+  await built.pilots.bindObject("beyonce", "MachoBindObject", [], null, WHOSE, handle);
+  for (const update of recordedUpdates.slice(0, 5)) built.session.notify("DoDestinyUpdate", update.args);
+  /** Real time goes by, a frame every 50 ms; how many steps the park took. */
+  const run = (ms) => {
+    const before = state.spaces[0].park.currentTime;
+    for (let gone = 0; gone < ms; gone += 50) {
+      state.now += 50;
+      state.frames[0]();
+    }
+    return state.spaces[0].park.currentTime - before;
+  };
+  const snapshot = async () => (await built.pilots.readSpaceSnapshot(handle)).space;
+  return { built, state, handle, run, snapshot, park: () => state.spaces[0].park };
+}
+/** The answer of a session that was sent the login function we know (session.js). */
+const HANDLER_ANSWER = "TIDI_HANDLER:OK\nPORTRAIT_UPLOAD_HANDLER:OK\nSKILL_EXTRACTOR_ACCESS_TOKEN:OK\n";
+
+test("a pilot's clock is the client's: slowed by the server's notice, and its park, its dogma and its snapshot go by it", async () => {
+  const { built, state, run, snapshot, park } = await clockedPilot({ handshakeAnswer: HANDLER_ANSWER });
+  const stamp = recordedUpdates[2].args[0].items[0][0];
+  // The park's first frame came when it started; a second of frames later the state is applied and the park has stepped.
+  assert.equal(run(950), 0);
+  assert.equal(park().validState, false);
+  // In space with nothing in the park yet, the snapshot still says the pace.
+  assert.deepEqual(((space) => [space.inSpace, space.ship, space.timeDilation])(await snapshot()), [true, null, 1]);
+  run(50);
+  assert.deepEqual([park().validState, park().currentTime], [true, stamp + 1]);
+  assert.equal((await snapshot()).timeDilation, 1);
+
+  // The server slows the system to half pace. The client's clock changes pace two real seconds on.
+  built.session.notify("OnSetTimeDilation", [0.5, 0.5, 0]);
+  assert.equal(run(2000), 2);
+  assert.equal((await snapshot()).timeDilation, 1);
+  // From then a step takes two real seconds, and the pilot is shown the pace.
+  assert.equal(run(1950), 0);
+  assert.equal(run(50), 1);
+  assert.equal(run(4000), 2);
+  assert.equal((await snapshot()).timeDilation, 0.5);
+
+  // Dogma measures in the same clock: a rack at half its heat, a real minute on, has cooled for thirty seconds.
+  const simNow = BigInt(Math.trunc(DOGMA_T_MS + 3000 + 3000)) ;
+  const filetime = (simNow + 11644473600000n) * 10000n;
+  built.session.notify("OnModuleAttributeChanges", [{ type: "list", items: [["OnModuleAttributeChange", PILOT, BigInt(SHIP), 1176, filetime, 50, 0, filetime]] }]);
+  assert.equal((await snapshot()).ship.rackHeat.mid, 0.5);
+  state.now += 60_000;
+  const cooled = (await snapshot()).ship.rackHeat.mid;
+  assert.ok(Math.abs(cooled - 0.5 * Math.exp(-0.3)) < 1e-9, `${cooled} is not ${0.5 * Math.exp(-0.3)}`);
+
+  // Lifted: full pace again two seconds on.
+  built.session.notify("OnSetTimeDilation", [1, 1, 100000000]);
+  state.frames[0]();
+  run(2050);
+  assert.equal((await snapshot()).timeDilation, 1);
+  assert.equal(run(2000), 2);
+  assert.deepEqual(state.errors, []);
+});
+
+test("the park's clock is the pilot's: a rebase moves the park, and a pilot never given the handler keeps the real clock", async () => {
+  const { built, run, snapshot, park } = await clockedPilot();
+  run(1000);
+  assert.equal(park().validState, true);
+  // The notice goes unheard: a step a second, and nothing to show.
+  built.session.notify("OnSetTimeDilation", [0.5, 0.5, 0]);
+  assert.equal(run(6000), 6);
+  assert.equal((await snapshot()).timeDilation, 1);
+  // A rebase is the park's whoever the pilot is: half a second on, and the next step is half a second later.
+  built.session.notify("DoSimClockRebase", [[134359220000000000n, 134359220005000000n]]);
+  assert.equal(run(1000), 0);
+  assert.equal(run(500), 1);
+  // Docked or in space, the snapshot says the pace.
+  const docked = build({}, { now: () => DOGMA_T_MS });
+  const { bridgeSessionID: handle } = await docked.pilots.selectCharacter([PILOT, null, true], null, FIELDS);
+  assert.deepEqual(((space) => [space.inSpace, space.timeDilation])((await docked.pilots.readSpaceSnapshot(handle)).space), [false, 1]);
 });

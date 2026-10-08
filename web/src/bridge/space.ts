@@ -389,6 +389,12 @@ export function decodeTargetIDs(raw: JsonValue | undefined): readonly number[] {
   return distinctIDs(decodeIDList(raw) ?? []);
 }
 
+/** The pace of the pilot's clock: a number above nothing and no more than one, or not known. */
+function paceOrNull(value: JsonValue | undefined): number | null {
+  const pace = floatOrNull(value);
+  return pace !== null && pace > 0 && pace <= 1 ? pace : null;
+}
+
 export function decodeSpaceSnapshot(raw: JsonValue | undefined): SpaceSnapshot {
   const space = asObject(raw);
   const seen = new Set<number>();
@@ -407,6 +413,7 @@ export function decodeSpaceSnapshot(raw: JsonValue | undefined): SpaceSnapshot {
     sampledAtMs: floatOrNull(space.sampledAtMs),
     entities,
     ship: decodeShip(space.ship),
+    timeDilation: paceOrNull(space.timeDilation),
   };
 }
 

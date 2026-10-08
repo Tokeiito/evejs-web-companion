@@ -1053,3 +1053,103 @@ test("a recorded warp, played through: the park keeps where the server last sent
   assert.equal(park.ballpark.ball(9000000000777).mode, MODE.WARP, "the other ball was sent on its way");
   assert.deepEqual(park.warpPoint, kept);
 });
+
+// ── stepped by the clock ─────────────────────────────────────────────────────
+
+/** A park holding the recorded undock's first state, with what the engine's driver has done to it written down. */
+function clocked() {
+  const park = new Park();
+  const calls = [];
+  for (const name of ["doPreTick", "doPostTick"]) {
+    const real = park[name].bind(park);
+    park[name] = (...args) => { calls.push(name); return real(...args); };
+  }
+  const evolve = park.ballpark.evolve.bind(park.ballpark);
+  park.ballpark.evolve = () => { calls.push("evolve"); return evolve(); };
+  const dead = park.ballpark.bringOutDeadBalls.bind(park.ballpark);
+  park.ballpark.bringOutDeadBalls = () => { calls.push("dead"); return dead(); };
+  return { park, calls };
+}
+
+test("the engine's driver: the first frame is one bare step, and after it one whole step for each second of the clock", () => {
+  const { park, calls } = clocked();
+  assert.deepEqual([park.time, park.firstTime], [0, true]);
+  // The first frame, whatever the clock reads: the simulation is stepped and nothing else is done.
+  assert.equal(park.onTick(5_000_000), 1);
+  assert.deepEqual([calls.splice(0), park.time, park.firstTime, park.currentTime], [["dead", "evolve"], 5_000_000, false, 1]);
+  // Less than a second on: the dead are brought out, as every frame, and no step is taken.
+  assert.equal(park.onTick(5_000_999), 0);
+  assert.deepEqual([calls.splice(0), park.time, park.currentTime], [["dead"], 5_000_000, 1]);
+  // A second on: what is due is applied, the step taken, the snapshot seen to.
+  assert.equal(park.onTick(5_001_000), 1);
+  assert.deepEqual([calls.splice(0), park.time, park.currentTime], [["dead", "doPreTick", "evolve", "doPostTick"], 5_001_000, 2]);
+  // What is left over of a second is kept towards the next.
+  assert.equal(park.onTick(5_002_300), 1);
+  assert.deepEqual([park.time, park.currentTime], [5_002_000, 3]);
+  assert.equal(park.onTick(5_002_999), 0);
+  assert.equal(park.onTick(5_003_000), 1);
+  assert.deepEqual([park.time, park.currentTime], [5_003_000, 4]);
+  calls.length = 0;
+  // A client that stalled takes every step it missed at once, each a whole one; a client is not the master, which would give up past five.
+  assert.equal(park.onTick(5_010_450), 7);
+  assert.deepEqual([calls.filter((name) => name === "evolve").length, calls.slice(0, 4), park.time, park.currentTime], [7, ["dead", "doPreTick", "evolve", "doPostTick"], 5_010_000, 11]);
+  // A clock that has not moved, or has gone back, steps nothing.
+  assert.deepEqual([park.onTick(5_010_450), park.onTick(4_000_000), park.time, park.currentTime], [0, 0, 5_010_000, 11]);
+});
+
+test("the first frame waits for the clock to be a second past nothing, and tick() is a whole step without the clock", () => {
+  const { park, calls } = clocked();
+  assert.equal(park.onTick(999), 0);
+  assert.deepEqual([park.firstTime, park.currentTime], [true, 0]);
+  assert.equal(park.onTick(1000), 1);
+  assert.deepEqual([park.firstTime, park.time, park.currentTime], [false, 1000, 1]);
+  calls.length = 0;
+  park.tick();
+  assert.deepEqual([calls, park.time, park.currentTime], [["dead", "doPreTick", "evolve", "doPostTick"], 1000, 2]);
+});
+
+test("a park's times moved, and how far through its tick a park is by the clock", () => {
+  const { park } = clocked();
+  park.onTick(5_000_000);
+  assert.deepEqual([park.fraction(5_000_000), park.fraction(5_000_250), park.fraction(5_001_000)], [0, 0.25, 1]);
+  park.adjustTimes(400);
+  assert.deepEqual([park.time, park.fraction(5_000_650)], [5_000_400, 0.25]);
+  // The step that was a second off is now a second off from there.
+  assert.deepEqual([park.onTick(5_001_399), park.onTick(5_001_400)], [0, 1]);
+  park.adjustTimes(-2_000);
+  assert.equal(park.time, 5_001_400 - 2_000);
+  assert.equal(park.onTick(5_001_400), 2);
+  // A slower park (CCP's tests run one at other intervals) counts its own interval.
+  const slow = new Park({ ballpark: new Ballpark({ tickInterval: 2000 }) });
+  slow.onTick(10_000);
+  assert.deepEqual([slow.onTick(11_999), slow.onTick(12_000), slow.fraction(13_000)], [0, 1, 0.5]);
+});
+
+test("a recorded warp stepped by the clock a frame at a time is the same flight as one stepped a tick at a time", () => {
+  const byTick = replayWarp().park;
+  const park = new Park();
+  const updates = destinyUpdates(warped);
+  // The recording's own clock, a frame every 50 ms. The park is started when the first update lands, as replayWarp starts its own.
+  let frames = 0;
+  let steps = 0;
+  const from = updates[0].atMs;
+  let at = from;
+  park.firstTime = false;
+  park.time = 7_000_000;
+  const frameTo = (atMs) => {
+    for (; at + 50 <= atMs; at += 50) {
+      steps += park.onTick(7_000_000 + (at + 50 - from));
+      frames += 1;
+    }
+  };
+  for (const update of updates) {
+    frameTo(update.atMs);
+    park.doDestinyUpdate(update.entries, update.waitForBubble);
+  }
+  frameTo(at + 1000);
+  assert.ok(frames > 20 * steps - 20 && steps > 100, `${frames} frames, ${steps} steps`);
+  assert.deepEqual([[...park.failed], park.resets, park.fatalDesyncs], [[], 0, 0]);
+  const [ours, theirs] = [park.ballpark.ball(warped.shipID), byTick.ballpark.ball(warped.shipID)];
+  assert.equal(park.currentTime, byTick.currentTime);
+  assert.deepEqual([ours.newPos, ours.newVel, ours.mode], [theirs.newPos, theirs.newVel, theirs.mode]);
+});

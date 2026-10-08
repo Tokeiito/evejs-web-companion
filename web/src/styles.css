@@ -4944,6 +4944,7 @@
   }
   .state-badge.docked { color: var(--color-accent); border-color: var(--color-accent); }
   .state-badge.in-space { color: var(--color-good); border-color: var(--color-good); }
+  .state-badge.tidi { color: var(--color-warn); border-color: var(--color-warn); }
 
   /* ============================================ locked-target cards (R71) --
    * EVE's target brackets: a round dial per locked target — the thing's picture

@@ -288,6 +288,8 @@ class GamePortSession {
     this.serviceInfo = null;
     this.logonQueuePosition = null;
     this.unknownHandshakeFunction = null;
+    /** What was answered to the server's login function: what the retail client prints on running it, or "" for one never seen. */
+    this.handshakeAnswer = null;
     /** The session attributes, kept current from session-change packets. */
     this.attributes = {};
     /** Server clock minus ours, in milliseconds, from the last clock sync. */
@@ -454,8 +456,10 @@ class GamePortSession {
     const known = this.handshakeFunctions.get(digest);
     if (known === undefined) {
       this.unknownHandshakeFunction = digest;
+      this.handshakeAnswer = "";
       return "";
     }
+    this.handshakeAnswer = known;
     return known;
   }
 

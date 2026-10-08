@@ -195,6 +195,8 @@ test("replayed against the real server's half, the session sends its own half ag
   assert.ok(Number.isSafeInteger(session.userID) && session.userID > 0);
   assert.ok(Number.isSafeInteger(session.proxyNodeID) && session.proxyNodeID > 0);
   assert.equal(session.unknownHandshakeFunction, null, "the server's login function is one we can answer");
+  // And what was answered is kept: it says what the function did to the client that ran it (pilotClock.js).
+  assert.equal(session.handshakeAnswer, "TIDI_HANDLER:OK\nPORTRAIT_UPLOAD_HANDLER:OK\nSKILL_EXTRACTOR_ACCESS_TOKEN:OK\n");
   assert.equal(session.serviceInfo.type, "dict");
   assert.ok(session.serviceInfo.entries.length > 100, "GetServiceInfo names the server's services");
 
@@ -406,6 +408,7 @@ test("a server of another build, release or region is refused before anything is
 test("a login function nobody has recorded an answer for gets an empty answer, and says so", { timeout: 5000 }, async (context) => {
   const { session, transport } = await loggedIn(context, { session: { handshakeFunctions: new Map() } });
   assert.match(session.unknownHandshakeFunction, /^[0-9a-f]{64}$/);
+  assert.equal(session.handshakeAnswer, "");
   const challengeResponse = marshalDecodeExact(transport.sent[6]);
   assert.equal(text(challengeResponse[0]), "44596");
   assert.equal(text(challengeResponse[1]) ?? "", "");

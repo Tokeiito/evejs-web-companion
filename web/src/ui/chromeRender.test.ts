@@ -776,3 +776,25 @@ test("after an align the ship's line and the header say what the ship is alignin
   // Aligned to nothing, and lined up: nothing to say, as before.
   assert.equal(line(store(null)), "Under way.");
 });
+
+// --- time dilation -------------------------------------------------------------
+
+test("the header shows time dilation as the client's indicator does: only while the clock runs slow, with the client's hint", () => {
+  const slowed = (timeDilation: number | null | undefined, templates: Record<string, string> = {}) => {
+    const store = inSpaceStore() as ReturnType<typeof createClientStore>;
+    store.apply({ type: "space/snapshot", snapshot: { ...SHIP_SNAPSHOT, ...(timeDilation === undefined ? {} : { timeDilation }) } });
+    if (Object.keys(templates).length > 0) store.apply({ type: "words/loaded", available: true, templates });
+    return store;
+  };
+  const half = renderHeader(slowed(0.5), false);
+  assert.match(half, /class="state-badge tidi"/);
+  assert.match(visibleText(half), /TiDi 50%/);
+  assert.match(half, /title="Time is running at 50% of its usual pace here\."/);
+  // The hint is the client's own label once it has been read.
+  const worded = renderHeader(slowed(0.756, { "UI/Neocom/TidiTooltip": "The clock here ticks at {tidiAmount}%" }), false);
+  assert.match(visibleText(worded), /TiDi 75%/);
+  assert.match(worded, /title="The clock here ticks at 75%"/);
+  // At full pace, at 0.98, with no pace given (the gateway), and docked: nothing.
+  for (const pace of [1, 0.98, null, undefined]) assert.doesNotMatch(renderHeader(slowed(pace), false), /tidi|TiDi/, String(pace));
+  assert.doesNotMatch(renderHeader(slowed(0.5), true), /tidi|TiDi/);
+});
