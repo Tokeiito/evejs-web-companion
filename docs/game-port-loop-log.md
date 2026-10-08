@@ -79,6 +79,9 @@ Decisions taken in your place, and anything waiting on you. Overrule any of thes
 - **A third server fix is committed in eve.js and not pushed**: `624378554`, a No to the decline
   question. It sits on `main` beside whatever else is there, as you instructed for fixes.
 - **Test Two has an offer open** from Antaken Kamola (not accepted), left from the re-check.
+- **Test Two was fined and lost standing proving the customs question**: 37,500 ISK and 0.2 with
+  the Caldari State at an undock with contraband aboard, and the same again for surrendering ten
+  Slaves at the gate. The Slaves were given by GM command and are all confiscated.
 - **Test Three was moved and changed to prove the research questions**: it is docked at
   Iyen-Oursta III - Roden Shipyards Factory (it was at Jita 4-4), has Science V and two research
   skills at level 1, and three datacores. To get research points I edited the game store with
@@ -102,6 +105,7 @@ Decisions taken in your place, and anything waiting on you. Overrule any of thes
 | 2026-10-08 | A movement order is stamped from one clock (the next whole second) and applied on another (the server's next one-second step, which begins where the system was woken). When they disagree the client is told one tick later than the server acts, and its ship ends a tick of travel away | my run: `CmdStop` handled 18 ms into one of the server's seconds, stamped B+12, server's ship slowing from 11 s after it first moved; a client stepping by the stamp is 199 m ahead five seconds later and gaining. Sub-agent: three placements, two of them wrong by a tick (`stopSpeedCommands.js` 225-229 against `nativeSubwarp.js` 676-721) | **not fixed**: not small, pinned by a test one way and by capture-tuned stamps the other; left for the operator | - |
 | 2026-10-08 | The state sent when a client asks for it (`UpdateStateRequest`) carries where the ships are now under the next second's stamp, not carried forward to that tick as `AddBalls2` is | probes every 3.5 s read -1.49, +0.58, -0.53, +0.58 ticks against a park stepped from the state before (my run); `dispatch/sceneRefresh.js` 216-229, `authority/destinyAuthority.js` 955-968 (sub-agent's read) | **not fixed**: same code, same reasons; matters only after a client has lost its place | - |
 | 2026-10-08 | After a No to the decline question (`agents.YesNo`), `agentMgr.DoAction` is answered with "This agent is unavailable." and no buttons, though the offer still stands | the retail client draws whatever DoAction answers (`agentDialogueWindow.py` 402); seen live on the game port: that conversation, with the offer still in the journal | `624378554` on `main`, not pushed | 2026-10-08: server restarted; Decline then No in the browser brings back the offer with Accept, Decline, Defer |
+| 2026-10-08 | Undocking with contraband aboard: the server fines and confiscates at once. It never raises `ShipContrabandWarningUndock` and ignores `ignoreContraband`, so the client's warning (OK to go on, Cancel to stay) is never shown | `ui/station/base.py` 488 to 510 catches that refusal and retries with `ignoreContraband` set; server log `[Contraband] ... fine=37500 standingLoss=0.200` at undock, the goods gone from the hold | not yet handed off: needs the web client's handling at the same time | |
 
 Withdrawn the same day: "after undocking the server's ship is a tick behind". It is not; that was
 the second row above, seen through a recorder that always asked at the same point in the second.
@@ -1723,6 +1727,78 @@ was before the edit is in the scratchpad (`gamestore.before-research-backdate.sq
 2. **The retail client's words**: turn localisation labels into the client's own text, from the
    client's localisation data, for questions and for what agents say (the conversation shows raw
    labels such as "UI/Agents/Research/ResearchStarted" today).
+3. **The scanner in space** on the game port (the one route that still answers 501 there).
+4. Module damage and weapon banks from dogma; health from godma as the panel reads it.
+5. **Collisions**; **the park beside the server's movement log**; the sim clock; MISSILE,
+   FORMATION, MUSHROOM.
+6. The call ledger (`ship.Undock`, `dogmaIM.Activate` and `Deactivate` to bind as the client
+   does), Phase 3's hosted check and the session-less gateway calls.
+
+---
+
+## 2026-10-08 — the customs question, seen live
+
+No code changed in this entry: **the run found no fault in the questions' code.** It found a
+server difference at undock, which is the next unit.
+
+**Staging.** Customs has a post at the Muvolailen gate to Maurasi (50016472), where Slaves
+(3721) are contraband under Caldari law, and Test Two's Badger is docked one warp away. The
+contraband has to be put aboard **in space** (`/giveitem 3721 10` through the page's own
+session): the first ten, loaded in the station, were taken at undock (below). Then out to
+Maurasi and back in through the gate, by the browser's own autopilot.
+
+**The server rolls dice, and they kept coming up against me.** Customs selects an arrival for a
+scan with chance 0.75 and then detects each stack with chance 0.75, both decided by a seed the
+server stores with the case. Four arrivals with contraband aboard were not selected. I checked
+each from the game store rather than guess: recomputing the roll from the stored seed gives
+0.768, 0.994, 0.993 and 0.934 against 0.75, and the same recomputation agrees with the stored
+outcome of all fourteen cases on the server (nine of those arrivals carried nothing). By the
+server's code the roll depends only on the jump's random ID. Four misses in a row is a 1 in 256
+event; I have recorded it and not explained it.
+
+**The fifth arrival was scanned.**
+
+| When (UTC) | What |
+|---|---|
+| 11:30:15 | the ship arrives at the gate; the server opens a case |
+| 11:30:19.024 | the server calls `XmppChat.AskYesNoQuestion` (its log) |
+| 11:30:19.159 | on the page: **"Caldari State customs has found contraband in your cargo: 10 × Slaves. Hand it over?"** with Yes / No, the faction's and the goods' names already filled in |
+| 11:30:23.173 | Yes pressed; `{"answer":true}`, 200 in 5 ms |
+| 11:30:23.177 | the server has the answer (its log); the BFF's log: "the server called XmppChat.AskYesNoQuestion on the client, and was answered true" |
+| after | the case is "surrendered" with the answer true and one stack detected; the Slaves are gone from the hold |
+
+(Here the server's stamp on its outgoing call is 135 ms before the page showed it, so that
+stamp is not always late. The trap in the brief still stands.)
+
+**With that, every call the server makes to the client today has been answered live** on the
+game port: `agents.YesNo`, `agents.SingleChoiceBox`, `agents.GetQuantity`,
+`XmppChat.AskYesNoQuestion`, and `objectCaching.InvalidateCachedMethodCall` by test only (the
+server sends it when a saved fitting changes, which this loop has not done).
+
+**Found on the way: the server takes contraband at undock without the warning the client is
+built to show.** The retail client's undock catches a refusal named
+`ShipContrabandWarningUndock`, asks OK / Cancel, and on OK undocks again with
+`ignoreContraband` set (`ui/station/base.py` 488 to 510; a structure's undock does the same).
+The server logs `ignoreContraband` and passes it nowhere (`shipService.js` `Handle_Undock`
+calls `undockSession(session)` without it, and `space/transitions.js` 2562 would only hand it
+back), never raises that refusal (the name does not occur in the server), and inspects on every
+undock: the
+log line `[Contraband] char=140000002 ... items=1 fine=37500 standingLoss=0.200`, and the ten
+Slaves gone from the hold before the ship had moved. So a player undocking with contraband is
+fined and loses the goods with no warning and no chance to cancel. Not yet handed off: raising
+the refusal on the server and handling it in the web client have to land together, or a web
+pilot with contraband could not undock at all. It is first in Next.
+
+**What it cost Test Two:** a 37,500 ISK fine and 0.2 standing with the Caldari State at the
+undock, the same again for the surrender at the gate (the case's own figures), and twenty Slaves
+that were never its own. It is docked at Muvolailen again.
+
+### Next
+
+1. **Contraband at undock**: the server's warning (`ShipContrabandWarningUndock`, by a
+   sub-agent, with the evidence above) and the web client's question and second attempt, together.
+2. **The retail client's words**: turn localisation labels into the client's own text, from the
+   client's localisation data, for questions and for what agents say.
 3. **The scanner in space** on the game port (the one route that still answers 501 there).
 4. Module damage and weapon banks from dogma; health from godma as the panel reads it.
 5. **Collisions**; **the park beside the server's movement log**; the sim clock; MISSILE,
