@@ -36,6 +36,43 @@ function notifications(fixture) {
   return out;
 }
 
+/**
+ * Everything the server pushed, in order: each notification as notifications()
+ * gives it with kind "notification", and each change of the session as
+ * { kind: "sessionChange", atMs, during, changes: { attribute: [old, new] } }.
+ */
+function timeline(fixture) {
+  const out = [];
+  for (const frame of fixture.frames) {
+    if (frame.from !== "server") continue;
+    let payload = Buffer.from(frame.hex, "hex");
+    if (payload[0] !== 0x7e) {
+      try {
+        payload = zlib.inflateSync(payload);
+      } catch {
+        continue;
+      }
+    }
+    let packet = null;
+    try {
+      packet = parsePacket(marshalDecode(payload));
+    } catch {
+      continue;
+    }
+    if (!packet) continue;
+    if (packet.command === TYPE.NOTIFICATION) {
+      out.push({ kind: "notification", atMs: frame.atMs, during: frame.during, ...readNotification(packet) });
+    } else if (packet.command === TYPE.SESSION_CHANGE) {
+      // (clueless, {attribute: (old, new)})
+      const dict = Array.isArray(packet.body[1]) ? packet.body[1][1] : null;
+      const changes = {};
+      for (const [name, pair] of dict && Array.isArray(dict.entries) ? dict.entries : []) changes[text(name)] = [pair[0], pair[1]];
+      out.push({ kind: "sessionChange", atMs: frame.atMs, during: frame.during, changes });
+    }
+  }
+  return out;
+}
+
 /** Every answer to a call in the recording, in order, with when it arrived and what was being done: { atMs, during, value }. */
 function answers(fixture) {
   const out = [];
@@ -103,4 +140,4 @@ function stateBlobs(fixture) {
   return blobs;
 }
 
-module.exports = { answers, destinyEvents, destinyUpdates, keyValField, notifications, slimFields, stateBlobs, text };
+module.exports = { answers, destinyEvents, destinyUpdates, keyValField, notifications, slimFields, stateBlobs, text, timeline };

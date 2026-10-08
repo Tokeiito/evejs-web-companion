@@ -140,6 +140,8 @@ class Park {
     this.solItem = null;
     /** Entries that could not be applied, by name: an order this port does not carry out yet, or one the client has no method for. */
     this.failed = new Map();
+    /** Told of each entry that fails, with the error: `onFail(name, error)`. */
+    this.onFail = null;
     this.resets = 0;
     /** Updates that held more than one tick: the client reports each to its statistics and carries on. */
     this.fatalDesyncs = 0;
@@ -167,8 +169,8 @@ class Park {
       // cannot be read is logged by the client and left out.
       try {
         entries.push(...items(marshalDecode(action[1][1])));
-      } catch {
-        this._fail("PackagedAction");
+      } catch (error) {
+        this._fail("PackagedAction", error);
       }
     }
     const expanded = entries.map(([stamp, [name, args]]) => [number(stamp), [text(name), items(args)]]);
@@ -296,8 +298,10 @@ class Park {
 
   // ── applying one tick's entries ───────────────────────────────────────────
 
-  _fail(name) {
+  _fail(name, error = null) {
     this.failed.set(name, (this.failed.get(name) ?? 0) + 1);
+    // The client writes "<name> failed." with the traceback to its log; whoever keeps this park can do the same.
+    if (typeof this.onFail === "function") this.onFail(name, error);
   }
 
   /** Park.RealFlushState (1142). */
@@ -336,9 +340,9 @@ class Park {
           }
         }
         if (typeof this.onEvent === "function") this.onEvent(funcName, args, eventStamp);
-      } catch {
+      } catch (error) {
         // The client logs "<funcName> failed." and goes on to the next entry.
-        this._fail(funcName);
+        this._fail(funcName, error);
       }
     }
   }

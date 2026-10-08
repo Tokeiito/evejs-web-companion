@@ -60,6 +60,8 @@ function createPilotSpace({
       Promise.resolve(session.callBound(remotePark, "UpdateStateRequest", [])).catch((error) => onError(error, "UpdateStateRequest"));
     },
   });
+  // An entry the park could not apply is not thrown: the park goes on to the next, as the client does. It is still worth knowing.
+  park.onFail = (name, error) => onError(error ?? new Error("the entry could not be applied"), `entry ${name}`);
   const guard = (what, action) => {
     try {
       action();

@@ -16,7 +16,9 @@ const { Ballpark } = require("../src/gamePort/destiny/ballpark");
 const { Park } = require("../src/gamePort/destiny/park");
 const { MODE } = require("../src/gamePort/destiny/state");
 const undock = require("./fixtures/destinyUndock.json");
-const { destinyUpdates, notifications } = require("./helpers/destinyRecording");
+const { destinyUpdates, notifications, timeline } = require("./helpers/destinyRecording");
+const { AU } = require("../src/gamePort/destiny/ballpark");
+const jumpTrip = require("./fixtures/destinyJump.json");
 
 const SYSTEM = 30000142;
 
@@ -143,6 +145,15 @@ test("what goes wrong in the park's own time is reported and does not stop it", 
   state.tick();
   assert.deepEqual(state.errors.map(([what]) => what), ["DoDestinyUpdate", "tick"]);
   assert.equal(state.errors[1][1], "a step that cannot be taken");
+
+  // An entry the park cannot apply is passed over inside the park; that is reported too, by name.
+  const other = handTicked();
+  await other.space.start();
+  for (const update of destinyUpdates(undock).slice(0, 5)) other.space.feed({ method: "DoDestinyUpdate", args: [{ type: "list", items: update.entries }, update.waitForBubble] });
+  other.state.tick();
+  other.space.feed({ method: "DoDestinyUpdate", args: [{ type: "list", items: [[other.space.park.currentTime, [Buffer.from("LaunchMissile"), [1, 2, 3, 4]]]] }, false] });
+  other.state.tick();
+  assert.deepEqual(other.state.errors, [["entry LaunchMissile", "LaunchMissile cannot be applied"]]);
 });
 
 test("a park that has lost its place asks its remote ballpark for the whole state, as the client does", async () => {
@@ -189,9 +200,9 @@ test("formations that cannot be had do not keep the pilot blind: the park still 
 
 test("what a thing is, told from its slim item's category and group", () => {
   assert.deepEqual(
-    [[6, 237], [3, 15], [65, 1657], [18, 100], [87, 1652], [25, 462], [46, 1025], [11, 99], [11, 550], [2, 6], [2, 7], [2, 8], [2, 9], [2, 10], [2, 186], [2, 12], [2, 340], [2, 448], [2, 649], [2, 226], [7, 53], [null, null]]
+    [[6, 237], [3, 15], [65, 1657], [18, 100], [87, 1652], [25, 462], [46, 1025], [11, 99], [11, 323], [11, 550], [2, 6], [2, 7], [2, 8], [2, 9], [2, 10], [2, 186], [2, 12], [2, 340], [2, 448], [2, 649], [2, 226], [7, 53], [null, null]]
       .map(([category, group]) => kindOf(category, group)),
-    ["ship", "station", "structure", "drone", "fighter", "asteroid", "orbital", "sentryGun", "ship", "sun", "planet", "moon", "asteroidBelt", "stargate", "wreck", "container", "container", "container", "container", "celestial", null, null],
+    ["ship", "station", "structure", "drone", "fighter", "asteroid", "orbital", "sentryGun", "billboard", "ship", "sun", "planet", "moon", "asteroidBelt", "stargate", "wreck", "container", "container", "container", "container", "celestial", null, null],
   );
   assert.equal(CATEGORY.ENTITY, 11);
 });
@@ -325,4 +336,117 @@ test("the flight status's movement is the pilot's own ball; with no ball there i
   park.ballpark.removeBall(undock.shipID);
   assert.deepEqual(projectFlight(park), { shipMode: null, shipSpeedFraction: null });
   assert.equal(projectSpace(park, { solarSystemID: SYSTEM, shipID: undock.shipID }).ship, null);
+});
+
+// ── through a gate and back ──────────────────────────────────────────────────
+//
+// test/fixtures/destinyJump.json (scripts/record-jump.js): the pilot undocks
+// at Jita 4-4, warps 40 AU to the Perimeter gate, jumps, flies up to the gate
+// it came out of, jumps back, warps to its station and docks. The recorder
+// kept a park for each system with the transport's own park keeper, and wrote
+// down what each held when it was let go.
+
+/** The recording played through: a park for the system the session is in, replaced when the system changes, ticked once a second. */
+function replayTrip() {
+  const where = {};
+  const parks = [];
+  let current = null;
+  let clock = 0;
+  const close = () => {
+    if (current) parks.push(current);
+    current = null;
+  };
+  for (const item of timeline(jumpTrip)) {
+    if (current) {
+      while (clock + 1000 <= item.atMs) {
+        current.park.tick();
+        clock += 1000;
+        const { park } = current;
+        if (!park.validState) continue;
+        current.first ??= park.currentTime;
+        if (current.counts.at(-1)?.[1] !== park.ballpark.balls.size) current.counts.push([park.currentTime - current.first, park.ballpark.balls.size]);
+        const ego = park.ego === null ? null : park.ballpark.ball(park.ego);
+        if (ego) current.peak = Math.max(current.peak, Math.hypot(ego.newVel.x, ego.newVel.y, ego.newVel.z));
+        if (ego) current.arrivedAt ??= { ...ego.newPos };
+      }
+    }
+    if (item.kind === "sessionChange") {
+      for (const [name, [, value]] of Object.entries(item.changes)) where[name] = value === null || value === undefined ? null : Number(value);
+      // michelle.UpdateBallpark: none while docked; another for another system.
+      const wanted = where.stationid ? null : where.solarsystemid ?? null;
+      if (current && current.system !== wanted) close();
+      if (wanted && !current) {
+        const made = { system: wanted, first: null, counts: [], peak: 0, posted: [] };
+        made.park = new Park({ ballpark: new Ballpark({ onPost: (name) => made.posted.push([name, made.park.currentTime - made.first]) }) });
+        current = made;
+        clock = item.atMs;
+      }
+    } else if (current && item.method === "DoDestinyUpdate") {
+      current.park.doDestinyUpdate(item.args[0], item.args[1], item.args[2]);
+    }
+  }
+  close();
+  return parks;
+}
+
+test("a recorded trip through a gate and back: a park for each system, each ending with what the live one held", () => {
+  const parks = replayTrip();
+  assert.deepEqual(parks.map((each) => each.system), [jumpTrip.homeSystemID, jumpTrip.farSystemID, jumpTrip.homeSystemID]);
+  assert.deepEqual(parks.map((each) => [each.park.ballpark.balls.size, each.park.slimItems.size]), jumpTrip.parks.map((live) => [live.balls, live.slimItems]));
+  assert.deepEqual(jumpTrip.parks.map((live) => live.balls), [111, 89, 95]);
+  for (const [index, each] of parks.entries()) {
+    assert.deepEqual([[...each.park.failed], each.park.resets, each.park.fatalDesyncs, each.park.validState], [[], 0, 0, true]);
+    // What kinds of thing, by the slim items' category and group: the same as the live park's.
+    const kinds = {};
+    for (const slim of each.park.slimItems.values()) kinds[`${slim.get("categoryID")}/${slim.get("groupID")}`] = (kinds[`${slim.get("categoryID")}/${slim.get("groupID")}`] ?? 0) + 1;
+    assert.deepEqual(kinds, jumpTrip.parks[index].byCategoryAndGroup);
+  }
+  assert.deepEqual([jumpTrip.parkErrors, jumpTrip.docked], [[], true]);
+});
+
+test("what is at a gate, by kind, is what the gateway's snapshot of the same gates called it", () => {
+  const [out, far] = replayTrip();
+  const kinds = (each) => {
+    const counted = {};
+    for (const row of projectSpace(each.park, { solarSystemID: each.system, shipID: jumpTrip.shipID }).entities) counted[row.kind] = (counted[row.kind] ?? 0) + 1;
+    return counted;
+  };
+  // Jita's Perimeter gate, as the gateway listed it: 3 billboard, 33 moon, 8 orbital, 8 planet, 24 sentryGun, 9 ship, 7 stargate, 18 station, 1 sun.
+  assert.deepEqual(kinds(out), { billboard: 3, moon: 33, orbital: 8, planet: 8, sentryGun: 24, ship: 9, stargate: 7, station: 18, sun: 1 });
+  // Perimeter's Jita gate: the same as the gateway's, but for the scenery the server placed, which it alone calls authoredSpaceProp.
+  assert.deepEqual(kinds(far), { asteroidBelt: 3, billboard: 1, celestial: 27, moon: 10, orbital: 10, planet: 10, sentryGun: 8, ship: 8, stargate: 5, station: 5, structure: 1, sun: 1 });
+  // A billboard is nobody's ship: it carries none of a ship's fields.
+  const billboard = projectSpace(far.park, { solarSystemID: far.system, shipID: jumpTrip.shipID }).entities.find((row) => row.kind === "billboard");
+  assert.deepEqual([billboard.isNpc, billboard.mode, billboard.categoryID, billboard.groupID], [undefined, undefined, 11, 323]);
+});
+
+test("a new system arrives in two pieces: everything fixed in it, then the gate's own grid two ticks later", () => {
+  const [, far, home] = replayTrip();
+  assert.deepEqual(far.counts, [[0, 53], [2, 89]]);
+  assert.deepEqual(home.counts.slice(0, 2), [[0, 84], [2, 111]]);
+  // The pilot's ship is in the first piece, some 15 km from the gate it came out of.
+  const ego = far.park.ballpark.ball(far.park.ego);
+  const gate = far.park.ballpark.ball(jumpTrip.farGateID);
+  const from = (position) => Math.hypot(position.x - gate.newPos.x, position.y - gate.newPos.y, position.z - gate.newPos.z);
+  assert.equal(far.park.ego, jumpTrip.shipID);
+  assert.ok(Math.abs(from(far.arrivedAt) - 15570) < 400, `${from(far.arrivedAt)} m from the gate on arrival`);
+  // By the time it jumped back it had flown to within the 2,500 m a gate is used from.
+  assert.ok(from(ego.newPos) - gate.radius - ego.radius < 2500, `${from(ego.newPos) - gate.radius - ego.radius} m from the gate when it jumped`);
+  assert.deepEqual(far.posted, [], "nothing warped there");
+});
+
+test("a 40 AU warp in the recording: 43 ticks, cruising at exactly three AU a second, the grids changing under it", () => {
+  const [out, , back] = replayTrip();
+  for (const each of [out, back]) {
+    const [[, entered], [, left]] = each.posted;
+    assert.deepEqual(each.posted.map(([name]) => name), ["OnActivatingWarp", "OnDeactivatingWarp", "OnExitWarp"]);
+    assert.equal(left - entered, 43);
+    assert.ok(Math.abs(each.peak / AU - 3) < 1e-12, `${each.peak / AU} AU/s at the peak`);
+  }
+  // The live park saw the same 43: the recorder wrote down the ticks.
+  const live = jumpTrip.warpEvents.filter((event) => event.name !== "OnExitWarp").map((event) => event.value);
+  assert.deepEqual([live[1] - live[0], live[3] - live[2]], [43, 43]);
+  // Out: the station's grid (95), left behind in warp (76), then the gate's (111). Back: the reverse.
+  assert.deepEqual(out.counts.map(([, count]) => count), [76, 95, 76, 111]);
+  assert.deepEqual(back.counts.map(([, count]) => count), [84, 111, 76, 95]);
 });

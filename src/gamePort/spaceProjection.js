@@ -18,7 +18,7 @@ const { MODE, MODE_NAME } = require("./destiny/state");
 /** inventorycommon/const.py. */
 const CATEGORY = { CELESTIAL: 2, STATION: 3, SHIP: 6, ENTITY: 11, DRONE: 18, ASTEROID: 25, ORBITAL: 46, STRUCTURE: 65, FIGHTER: 87 };
 const GROUP = {
-  SUN: 6, PLANET: 7, MOON: 8, ASTEROID_BELT: 9, STARGATE: 10, CARGO_CONTAINER: 12, SENTRY_GUN: 99, WRECK: 186,
+  SUN: 6, PLANET: 7, MOON: 8, ASTEROID_BELT: 9, STARGATE: 10, CARGO_CONTAINER: 12, SENTRY_GUN: 99, WRECK: 186, BILLBOARD: 323,
   SECURE_CARGO_CONTAINER: 340, AUDIT_LOG_SECURE_CONTAINER: 448, FREIGHT_CONTAINER: 649,
 };
 /**
@@ -41,9 +41,10 @@ const vector = (v) => ({ x: v.x, y: v.y, z: v.z });
  * server's own name for the entity; here it is told from the slim item's
  * category and group, which is all the retail client has to go on.
  *
- * Seen to agree with the server on a live grid: station, sun, planet, moon,
- * stargate, sentryGun, orbital, ship. The rest follow the same constants and
- * have not been set beside the server's word yet. Two things cannot be told
+ * Seen to agree with the server on live grids (a station's, and a gate's on
+ * each side of a jump): station, structure, sun, planet, moon, asteroidBelt,
+ * stargate, sentryGun, billboard, orbital, ship. The rest follow the same
+ * constants and have not been set beside the server's word yet. Two things cannot be told
  * this way and are not attempted: the server's "authoredSpaceProp" (scenery it
  * placed itself, an ordinary celestial to a client), and anything in a category
  * not listed, which answers null.
@@ -57,7 +58,8 @@ function kindOf(categoryID, groupID) {
     case CATEGORY.FIGHTER: return "fighter";
     case CATEGORY.ASTEROID: return "asteroid";
     case CATEGORY.ORBITAL: return "orbital";
-    case CATEGORY.ENTITY: return groupID === GROUP.SENTRY_GUN ? "sentryGun" : "ship";
+    // Everything nobody flies is in one category: the guns and the billboards at a gate as well as the ships.
+    case CATEGORY.ENTITY: return groupID === GROUP.SENTRY_GUN ? "sentryGun" : groupID === GROUP.BILLBOARD ? "billboard" : "ship";
     case CATEGORY.CELESTIAL:
       switch (groupID) {
         case GROUP.SUN: return "sun";

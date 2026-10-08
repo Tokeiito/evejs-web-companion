@@ -570,10 +570,16 @@ test("an entry that is not part of the simulation neither moves the park nor mar
 
 test("an entry that fails does not stop the ones after it, and is counted by name", () => {
   const park = simplePark();
+  const told = [];
+  park.onFail = (name, error) => told.push([name, error.message]);
   park.flushState([[100, ["LaunchMissile", [1, 2, 3, 4]]], [100, ["NoSuchThing", [1]]], [100, ["GotoDirection", [1, 1, 0, 0]]]], false);
   park.doPreTick();
   assert.deepEqual([...park.failed].sort(), [["LaunchMissile", 1], ["NoSuchThing", 1]]);
   assert.equal(park.ballpark.ball(1).mode, MODE.GOTO);
+  // Whoever keeps the park is told which and why, as the client's log is.
+  assert.deepEqual(told, [["LaunchMissile", "LaunchMissile cannot be applied"], ["NoSuchThing", "NoSuchThing cannot be applied"]]);
+  park.doDestinyUpdate([[100, ["PackagedAction", Buffer.from("not marshal")]]], false);
+  assert.equal(told.at(-1)[0], "PackagedAction");
 });
 
 test("orders reach the simulation with the client's defaults and conversions", () => {
