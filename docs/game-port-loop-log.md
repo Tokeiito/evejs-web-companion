@@ -79,6 +79,11 @@ Decisions taken in your place, and anything waiting on you. Overrule any of thes
 - **Two more server fixes are committed in eve.js and not pushed**: `624378554` (a No to the
   decline question) and `7282f54cc` (the contraband warning at undock). They sit on `main` beside
   whatever else is there, as you instructed for fixes.
+- **The retail client's text is read from your installed client, not kept in the repository.**
+  Set `EVEJS_CLIENT_ROOT` to the client's folder (the one holding `tq` and `ResFiles`) for the
+  BFF to serve the client's own words for the server's labels. Unset, which is how the BFF runs
+  unless you set it, nothing is read and the web client words things itself. I kept the text out
+  of the repository because it is CCP's.
 - **The page's own automation undocks without asking about contraband** (default taken): the
   autopilot and the bots send `ignoreContraband`, as the client does once its warning is
   suppressed, so a bot carrying contraband is fined at the undock as before. Only the Undock
@@ -1911,4 +1916,89 @@ its station hangar. Both check BFFs and the server were restarted and are runnin
 4. **Collisions**; **the park beside the server's movement log**; the sim clock; MISSILE,
    FORMATION, MUSHROOM.
 5. The call ledger (`ship.Undock`, `dogmaIM.Activate` and `Deactivate` to bind as the client
+   does), Phase 3's hosted check and the session-less gateway calls.
+
+---
+
+## 2026-10-08 — the retail client's own words, read from the client
+
+Commit `fb0f2fa`, pushed. The first half of the unit: the BFF can now give the client's text for
+a label. **The web client does not use it yet**; that is the second half, and first in Next.
+
+**What the retail client does.** A label such as `UI/Agents/StandardMission/DeclineMessage` is
+looked up in two files of the client's own (`localizationBase.py` loads them): one maps every
+label to a message ID, the other holds each message's text in one language, with typed
+parameters such as `{[datetime]when}` or `{[item]skillID.name}` left in for the client to fill.
+
+**Where the text comes from, and where it does not go.** It is read at run time from the
+player's own installed client, found through the client's resource index. **None of it is
+copied into this repository**: the tests use made-up texts in the files' real shape, and the
+checking script prints sizes, parameters and a first few characters, not the text.
+
+**What was built.**
+
+- **A reader for Python pickle protocol 0**, which is what those two files are (I had expected
+  the binary protocol; the first bytes said otherwise). It reads the opcodes they use and
+  refuses any other by name.
+- **The label lookup**: the client's index, the label table, the language file; a label answers
+  with the client's template or null. Read once, the first time a label is asked for, in about
+  0.55 s; only texts a label names are kept (31,814 of the 307,046 in the English file), which
+  leaves 14 MB on the heap.
+- **`EVEJS_CLIENT_ROOT`** names the client's folder (the one holding `tq` and `ResFiles`).
+  Unset, there are no words and nothing is read.
+- **`POST /api/words {labels}`** answers `{available, words: {label: template | null}}`, at
+  most 200 labels a request.
+- **`scripts/client-words.js <clientRoot> [label ...]`** checks an installed client.
+
+**Proof.**
+
+- Tests: 13 for the reader and the lookup, 3 for the route. The route's were watched to fail
+  without it. The reader's and the lookup's are new files against new code, so they were
+  checked the other way: 48 ways of breaking the code, all caught, after three tests were added
+  where three had slipped through.
+- Suite: 8943 tests, 8918 pass, 0 fail, 24 skipped, 1 todo.
+- **Against the real client** (`scripts/client-words.js`): 31,855 labels, 31,814 with English
+  text, read in 557 ms. Every label the server has sent this loop is found, with the parameters
+  the server sends for it:
+
+  | Label | The client's text takes |
+  |---|---|
+  | `.../StandardMission/DeclineMissionTitle`, `QuitMissionTitle`, `QuitMissionMessage` | nothing |
+  | `.../StandardMission/DeclineMessage` | `{[datetime]when}` |
+  | `.../Research/SkillListing` | `{[item]skillID.name}`, `{[numeric]skillLevel}` |
+  | `.../Research/DatacorePrice` | `{[item]datacoreTypeID.name}`, `{[numeric]rpAmount}`, `{[numeric]iskAmount}` |
+  | `.../DefaultMessages/RootAgentSays/GenericGreetings` | `{[character]player.name}` |
+
+- **Live, through the BFF**: with the client's folder set, the route answers those labels with
+  their templates (546 ms the first time, 3 ms after) and null for a label that does not exist;
+  with it unset, `available` is false and every label is null.
+
+**Two things the real text settles.**
+
+- The decline question's `when` is the time before which another decline costs standing. This
+  client's own wording ("within four hours") was a guess at that; the client's text says it with
+  the server's own time.
+- The line an agent says after a No to cancelling research ("DatacoreInvalidInput", noted three
+  entries ago) is the client's "did not catch that" line. So the server answers a No there with
+  the agent's line for input it could not read. Still not called a defect: I do not know what a
+  real server says.
+
+**Not done:** the browser asking for the words and filling the parameters; dialogs by ID (the
+undock warning and the customs question are dialogs, not labels, and their text is found
+another way, through `dialogs.static`); other languages than English, which the reader takes
+but nothing chooses.
+
+### Next
+
+1. **The web client uses the client's words**: ask `/api/words` for the labels in view, fill the
+   typed parameters (item, numeric, character, datetime) from the server's values and the page's
+   names, and fall back to its own wording only where the client has none. First what agents
+   say and the questions, which show raw labels or this client's guesses today.
+2. **Dialogs by ID** from the client's `dialogs.static`, so the undock warning and the customs
+   question are worded by the client too.
+3. **The scanner in space** on the game port (the one route that still answers 501 there).
+4. Module damage and weapon banks from dogma; health from godma as the panel reads it.
+5. **Collisions**; **the park beside the server's movement log**; the sim clock; MISSILE,
+   FORMATION, MUSHROOM.
+6. The call ledger (`ship.Undock`, `dogmaIM.Activate` and `Deactivate` to bind as the client
    does), Phase 3's hosted check and the session-less gateway calls.

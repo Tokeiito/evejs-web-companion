@@ -176,6 +176,11 @@ Take these defaults, and list each under "For the operator" in the log so they c
 - **The server's log stamps an outgoing client call late.** `[PKT] OUT agents YesNo()
   client-call` carried the time the answer arrived, seconds after the question was on the page.
   Do not time the server by that line; time what the client saw.
+- **The client's own text for a label**: `node scripts/client-words.js "<client folder>" <label>`
+  says whether the client has it and which parameters it takes. Look there before wording a
+  label or sending one's parameters; two guesses of mine on 2026-10-08 were wrong. The check
+  BFFs get the client's folder through `EVEJS_CLIENT_ROOT`. Do not copy the client's text into
+  the repository: fixtures use made-up text in the real shape.
 - **Staging a pilot.** GM commands go through `POST /api/bridge/gm/slash {command, confirm:
   true}` with a pilot selected: `/tr me <stationID>` moves it, `/giveskill me <typeID> <level>`
   trains it, `/help` lists the rest. From the browser, send them with the page's own token
