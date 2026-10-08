@@ -211,6 +211,13 @@ Take these defaults, and list each under "For the operator" in the log so they c
   files back, start it (a restart is about twenty seconds). Run eve.js's own tests with the live
   server stopped, and before calling one "red on unchanged source", read what its failing
   assertion found and look for that in the live store.
+- **When decompiled source looks odd, run the client's own compiled code.** The decompiler can
+  print a block at the wrong depth, and then the source says something the client does not do
+  (`agentUtil.GetMissionExpirationAndStateText`, 2026-10-08). `python scripts/client-code.py
+  <client>/tq/code.ccp <module ending .pyj> <out file>` writes one module's code object to a
+  file (outside the repository: it is the client's code), and a snippet for
+  `scripts/py27-oracle.py` loads it with `marshal`, picks the function out of `co_consts` and
+  calls it with stand-ins for what it reaches for. The script's header shows how.
 - **A dialog by its name**: `node scripts/client-words.js "<client folder>" dialog:<Name>` says
   what kind it is and which parameters its title and body take. A dialog's parameters may be
   typed tuples, `(code, value[, value2])`, which the client turns to text first

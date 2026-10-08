@@ -2302,3 +2302,96 @@ first done that way: the store is as it was before it. The brief says so.
    does), Phase 3's hosted check and the session-less gateway calls.
 6. Small, around dialogs: the title for a dialog's kind, the "do not ask again" box, the typed
    codes not done.
+
+---
+
+## 2026-10-08 — a mission's line in the journal, and its title
+
+Commit `3236186`, pushed.
+
+**What the retail client does.**
+
+- **The journal** (`journal.py` 676 on) has one line for each mission: its state, the agent, the
+  mission's **name** (a message by its number, filled with nothing), the mission's **type** (a
+  label, wrapped in a second label when the server marks the mission important), and when it
+  expires. `agentUtil.GetMissionExpirationAndStateText` chooses the state and the expiry.
+- **The agent's window** (`agentDialogueWindow.py` 235 on) puts the mission's **title** above
+  what the agent says whenever there is a mission between the two. It is filled like everything
+  else the agent says about the mission.
+
+**The decompiled source was wrong about the expiry, so I ran the real thing.** As printed, the
+second half of `GetMissionExpirationAndStateText` sits one level too shallow, and every expiry
+would end up as "expires in" with a date for a length of time. Rather than guess what was meant,
+I took the module's compiled code out of the client's own archive (`code.ccp`) and ran that one
+function in the client's own `python27.dll`, with stand-ins for the clock and the label lookup.
+For a mission that is offered (the labels' names begin "Offer") or accepted or failed
+("Mission"), it gives:
+
+| The expiry | The label |
+|---|---|
+| more than a week and a minute away | `ExpiresAt`, with the time |
+| more than a day away | `ExpiresAtExact`, with the time |
+| a day or less away | `ExpiresIn`, with the time left cut down to whole minutes |
+| **under a minute away** | **`DoesNotExpire`** |
+| any time ago | `Expired`, and the state reads `StateOfferExpired` or `StateMissionExpired` |
+| a time of zero | `DoesNotExpire` |
+| no time at all | `UndefinedExpiration` |
+
+and nothing for any other state. 21 expiries, edges among them, for states 0 to 5 and 7. So a
+retail player's mission with fifty seconds left reads as one that never expires; the page says
+what the client says. `scripts/client-code.py` now does the taking-out, for the next time a
+decompiled function looks odd.
+
+**What was built** (the page only; nothing in the BFF changed).
+
+- `web/src/bridge/journalWords.ts`: the journal line's words, chosen as above.
+- The journal's line reads state, agent, name, type, expiry, in the client's own text when the
+  BFF has a client to read. Without one it is in this client's own words, the type is the last
+  part of its label, and a name that is only a message's number is left out, as before.
+- The mission's title above what the agent says, and beside the briefing's heading, when the
+  page has the client's text for it.
+
+**Proof.**
+
+- Tests: 14 new (9 for the words, 4 that draw the panel, 1 for the journal row), all in the
+  page. The panel's were watched to fail on the panel from before; the rest were checked by
+  breaking the code.
+- 82 ways of breaking the new code. 76 were caught at once and 3 more once tests were added for
+  them. One was a condition that did nothing and was removed, one made no difference and the
+  code it was in was rewritten more simply, and one is left: a guard whose removal changes
+  nothing that is drawn, only what is asked for. None was left untried.
+- Suite: 9030 tests, 9005 pass, 0 fail, 24 skipped, 1 todo.
+- **In the browser** (Test Two, its open offer from Antaken Kamola):
+
+  | | Before | Now |
+  |---|---|---|
+  | The journal's line | "Courier · Antaken Kamola" | "Offered · Antaken Kamola · (the mission's name, 23 characters) · Courier · This offer expires at 2026.10.15 10:44" |
+  | Asked of the BFF | nothing | one request: three labels and message 57959, all four found |
+  | Above the agent's line | nothing | the mission's title, the same 23 characters |
+
+  The agent's own line is the 668 characters it was, with Accept, Decline and Defer under it.
+- **The live check was undone**: the store was copied with the server stopped before it and put
+  back after it.
+
+**Not done.**
+
+- The journal's expiry is worked out when the line is drawn and from the browser's clock, not
+  the server's; it does not count down.
+- The agent's name without its level (the client shows both).
+- The mission's time under the agent's line (`ThisMissionExpiresAt` and the two decline
+  notices), the mission's picture, and the objectives pane in the client's words.
+- Messages inside messages: still none has been sent to this client.
+
+### Next
+
+1. **The scanner in space** on the game port (the one route that still answers 501 there).
+2. Module damage and weapon banks from dogma; health from godma as the panel reads it.
+3. **Collisions**; **the park beside the server's movement log**; the sim clock; MISSILE,
+   FORMATION, MUSHROOM.
+4. The call ledger (`ship.Undock`, `dogmaIM.Activate` and `Deactivate` to bind as the client
+   does; `GetMissionBriefingInfo` and `GetMissionObjectiveInfo`, which the client asks on every
+   layout of the agent's window), Phase 3's hosted check and the session-less gateway calls.
+5. More of a mission's words: the objectives pane, the mission's time under the agent's line,
+   messages inside messages when one turns up.
+6. Small, around dialogs: the title for a dialog's kind, the "do not ask again" box, the typed
+   codes not done.
