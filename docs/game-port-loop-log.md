@@ -96,9 +96,25 @@ Decisions taken in your place, and anything waiting on you. Overrule any of thes
   Three things the sub-agent found beside it are left for you, in the entry "the ship's health":
   station repair's totals, the ratios in the ship state's instance rows, and stray attributes on
   module rows.
-- **The rack's heat bars read on the game port** (`836f1ef`); on the gateway they still say
-  "heat not known". EveJS does not send `OnHeatAdded` or `OnHeatRemoved`, which the client
-  registers for; a sub-agent was set to fix that in eve.js (see the entry "rack heat").
+- **The rack's heat bars read on the game port** (`836f1ef`, `21c55b5`); on the gateway they
+  still say "heat not known".
+- **A fifth server fix is committed in eve.js**: `10e2c22f4`, the pilot told when a module
+  starts and stops heating its rack. eve.js `main` is two commits ahead of its origin
+  (`7d5dbb532` and this one); I have not pushed it.
+- **Seventeen eve.js test files are red on unchanged source** against the store as it is, by
+  the sub-agent's measurement: `propulsionModuleParity`, `remoteSensorLinkParity`,
+  `vortonProjectorParity`, `warpDisruptFieldGeneratorParity`,
+  `commandTimeRangeUnavailableFallback`, `emergencyHullEnergizerParity`,
+  `informationCommandBurstGameplayParity`, `microJumpDriveParity`, `remoteRepairFleetShow`,
+  `shipDestructionParity`, `signatureSuppressorParity`, `skirmishCommandBurstGameplayParity`,
+  `structureBurstProjectorParity`, `structureControlService`, `structureDoomsdayParity`,
+  `targetingModuleParity`, `harnessCrimewatchScenarios`. I ran three of them myself on the
+  restored store: `propulsionModuleParity` 12 of 13 (a scrambler refused with
+  "SafetyActivated"), `microJumpDriveParity` 18 of 19, `targetingModuleParity` 6 of 7. What I
+  checked: the safety rule's source last changed on 10-03 and that test file on 09-19; the
+  store's `crimewatchRuntime` table is empty in the day's first copy (07:01) and its latest
+  (12:10). **Not found: when they last passed, or why they fail.** My live checks today were
+  each undone from a copy, but I cannot rule the store out.
 - **Two faults in the BFF that were there on either transport since 2026-07-28 are fixed**
   (`2451cb1`): the Scanner Center's "Reconnect to probes" never asked the server, and a ship
   boarding that failed after the server accepted it answered "kind is not defined". One branch,
@@ -150,6 +166,8 @@ Decisions taken in your place, and anything waiting on you. Overrule any of thes
 | 2026-10-08 | Undocking with contraband aboard: the server fines and confiscates at once. It never raises `ShipContrabandWarningUndock` and ignores `ignoreContraband`, so the client's warning (OK to go on, Cancel to stay) is never shown | `ui/station/base.py` 488 to 510 catches that refusal and retries with `ignoreContraband` set; server log `[Contraband] ... fine=37500 standingLoss=0.200` at undock, the goods gone from the hold | `7282f54cc` on `main`, not pushed | 2026-10-08: server restarted; in the browser, Undock with ten Slaves aboard asks, Cancel leaves ship, goods and wallet untouched, OK undocks; the gateway route warns too |
 | 2026-10-08 | The customs question (`XmppChat.AskYesNoQuestion`, dialog `ChtCustomsConfiscationConfirmation2`) sends its contraband entries in a tuple. The client's `cfg.FormatConvert` reads a tuple given as a value as one more typed value, so it raises instead of wording the dialog | the server's bytes (one entry: opcode `0x25`, a one-tuple); the conversion's shape run in the client's own `python27.dll` raises `IndexError` on a tuple of entries and words a list; the client's own caller builds a list (`eveCfg.py` 170). Not observed on a running retail client | `85042bbce`, by a sub-agent: the entries go as a list | the fix's test decodes the bytes (watched to fail first); in the browser on the game port the question was asked, worded and answered with the server on that commit |
 | 2026-10-08 | `GetAllInfo` sends the active ship's hull `damage` (attribute 3) as the 0 to 1 ratio. The client reads hit points: hull is `(hp - damage) / hp` (`activeShipController.py` 107 to 119), so its panel shows a full hull on a damaged ship | a real answer: `damage = 0.2`, `hp = 150`, while `armorDamage = 52.5` of 150 and the server's own ballpark damage state said armour 0.65, hull 0.8; the gateway's snapshot said hull 0.8, the game port's 0.9987. Not observed on a running retail client | `7d5dbb532`, by a sub-agent: hit points, as armour and shield are sent | the fix's test (watched to fail first); the damaged ship re-recorded and read on each transport in turn: hull 0.8 on both; the browser's panel |
+
+| 2026-10-08 | The server never sends `OnHeatAdded` or `OnHeatRemoved`. The client's dogma location registers for both (read from its compiled class) and only carries a rack's heat upward for modules it has been told are heating it (`clientDogmaLocation.py` 1340 to 1356, `heatAttribute.py`), so between the server's heat changes it cools a rack that is being heated | a model that follows the client's code, fed by the live server: the mid rack read 0.7648, then 0.7572 a second later, then 0.7694, while its module was overloading. Not observed on a running retail client | `10e2c22f4`, by a sub-agent: one add when a module starts counting toward its rack's incoming heat, one remove when it stops | the fix's nine scenarios (watched to fail first, by the sub-agent); live on the game port: sixteen readings half a second apart, none lower than the one before, each within 0.002 of the client's formula; the same in the browser's rack |
 
 Withdrawn the same day: "after undocking the server's ship is a tick behind". It is not; that was
 the second row above, seen through a recorder that always asked at the same point in the second.
@@ -2727,4 +2745,87 @@ it on between them.
 5. More of a mission's words: the objectives pane, the mission's time under the agent's line,
    messages inside messages when one turns up.
 6. Small, around dialogs: the title for a dialog's kind, the "do not ask again" box, the typed
+   codes not done.
+
+---
+
+## 2026-10-08 — the server's heat notices, and heat kept through a dock
+
+Commit `21c55b5`, pushed. In eve.js, by a sub-agent: `10e2c22f4`, not pushed by me.
+
+**The server fix.** EveJS now tells the ship's pilot `OnHeatAdded(heatID, moduleID)` when a
+fitted module starts counting toward its rack's incoming heat and `OnHeatRemoved` when it
+stops, once each way, so the modules the client holds as heating are the ones the server's
+own sum counts. The sub-agent's report, which I did not re-run except where said:
+
+- Nine new scenarios in `harnessOverheatingScenarios.test.js`, all failing on the old code at
+  the first missing `OnHeatAdded`, all passing after.
+- 190 other test files that touch heat, overload or module activation: 171 passed, 19 failed.
+  It measured 17 of the 19 failing on unchanged source too (see "For the operator"). Two
+  failed only when run eight at a time and passed alone.
+- `superweaponParity` failed once in ten runs alone with the change and passed 13 of 13
+  without it. I ran it 25 more times with the change: 25 passed. The assertion that failed
+  compares a number of milliseconds worked out when a notification was sent with one worked
+  out from the sim clock afterwards; they were 7 apart. Whether the change moves how often
+  that happens is not settled by these numbers.
+
+**What the sub-agent read in the client, and I checked.** Asked to make a ship active that is
+already its current ship, the client's dogma location does nothing
+(`clientDogmaLocation._MakeShipActive`), and the dogma location itself is only dropped on a
+session reset (`clientDogmaIM`). So the client keeps its ship item, and with it the racks'
+heat and what is heating them, through a dock, an undock or a jump in the same ship. The
+last entry's model dropped the heat each time dogma was loaded again. It now brings the heat
+to that moment and keeps it, and lets it go only when the ship is not among what is loaded
+next (`21c55b5`).
+
+**Proof.**
+
+- The test for it was rewritten and watched to fail on the old code ("0.2 is not 0.6725").
+  Nine ways of breaking the new rule, all caught.
+- Suite: 9077 tests, 9052 pass, 0 fail, 24 skipped, 1 todo.
+- **Live, on the game port, the server at `10e2c22f4`.** The call that started the overloaded
+  afterburner came back with `OnHeatAdded` among its notifications; the one that stopped it,
+  with `OnHeatRemoved`. Sixteen readings of the mid rack, half a second apart:
+
+  | seconds in | snapshot | the client's formula from cold |
+  |---|---|---|
+  | 0.52 | 0.0222 | 0.0204 |
+  | 4.11 | 0.1530 | 0.1514 |
+  | 8.21 | 0.2812 | 0.2799 |
+
+  None of the sixteen was lower than the one before. Before the fix the same overload gave
+  readings that fell between the server's words. Stopped, the rack went from 0.3252 to 0.2910
+  in 11.1 seconds, the rack's own rate.
+- **A dock and an undock in the same ship:** 0.254 before docking, 0.144 on undocking about a
+  minute later, and falling on from there (0.1437, 0.1423, 0.1408 a second apart).
+- **In the browser:** the rack's line went from "Mid 0% heat" to "Mid 28% heat" in 8.2
+  seconds, sixteen readings half a second apart, none lower than the one before, the bar's
+  width with each; High and Low read "0% heat" at the end of it. After the stop, 32% falling
+  to 30%.
+- **The staging was undone**: the store was copied with the server stopped before Test Pilot
+  was given the skill, and put back after.
+
+**Seen, and left.**
+
+- **The server lets a ship's heat go at a dock; the client does not.** After the undock the
+  rack read 0.139 here. A new overload began, and the server's first word put it at 0.02: the
+  server had started the ship from cold. By its code a retail client's gauge would make the
+  same drop. Whether a real server keeps a ship's heat through a dock I do not know.
+- From the sub-agent, measured in the harness and left: a hull its pilot ejects from goes on
+  cycling its overloaded afterburner (the rack went from 7.69 to 42.88 in 12 seconds with
+  nobody aboard); the capsule appears about 34 km from the hull; no remove is sent for a
+  module that is unfitted while it heats (read in the code, not measured).
+
+### Next
+
+1. **Collisions**; **the park beside the server's movement log**; the sim clock; MISSILE,
+   FORMATION, MUSHROOM.
+2. The call ledger (`ship.Undock`, `dogmaIM.Activate` and `Deactivate` to bind as the client
+   does; `GetMissionBriefingInfo` and `GetMissionObjectiveInfo`, which the client asks on every
+   layout of the agent's window), Phase 3's hosted check and the session-less gateway calls.
+3. The scanner the client's way: results kept from the server's word, a probe's destination
+   and range kept here and sent with the scan.
+4. More of a mission's words: the objectives pane, the mission's time under the agent's line,
+   messages inside messages when one turns up.
+5. Small, around dialogs: the title for a dialog's kind, the "do not ask again" box, the typed
    codes not done.
