@@ -2337,7 +2337,8 @@ For a mission that is offered (the labels' names begin "Offer") or accepted or f
 | a time of zero | `DoesNotExpire` |
 | no time at all | `UndefinedExpiration` |
 
-and nothing for any other state. 21 expiries, edges among them, for states 0 to 5 and 7. So a
+and nothing for any other state. That is from 14 expiries for each of states 0 to 5 and 7, and
+7 more at the edges for states 1 and 2. So a
 retail player's mission with fifty seconds left reads as one that never expires; the page says
 what the client says. `scripts/client-code.py` now does the taking-out, for the next time a
 decompiled function looks odd.
