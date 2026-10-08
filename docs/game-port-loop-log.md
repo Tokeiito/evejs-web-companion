@@ -98,11 +98,14 @@ Decisions taken in your place, and anything waiting on you. Overrule any of thes
   module rows.
 - **The rack's heat bars read on the game port** (`836f1ef`, `21c55b5`); on the gateway they
   still say "heat not known".
-- **After a warp to a station at 0, the client's ship ends 413 m from the server's** (the entry
-  "collisions"). The client makes the ship massive as it drops out of warp, the server's
-  "not massive" comes one step late, and for that step the ship bounces off the station's
-  ball. Measured on the park, not seen in a retail client. A sub-agent was set to look at the
-  server's stamps; whether it changed anything is in the entry after.
+- **After a warp to a station at 0, the client's ship ends 413 m from the server's, and this
+  one is yours to decide.** The client makes the ship massive as it drops out of warp, the
+  server's second "not massive" comes one step late in three landings of four, and for that
+  step the ship bounces off the station's ball. Measured on the park, not seen in a retail
+  client. Nothing was changed in eve.js: a third entry cannot be sent under the server's own
+  ceiling, and would make the client's park take two steps in a second and run a tick ahead;
+  the two entries one tick apart is clean on the recording but leaves a later drop uncovered.
+  The entries "collisions" and "the overview's distance" have the stamps and the replays.
 - **A fifth server fix is committed in eve.js**: `10e2c22f4`, the pilot told when a module
   starts and stops heating its rack. eve.js `main` is two commits ahead of its origin
   (`7d5dbb532` and this one); I have not pushed it.
@@ -173,6 +176,8 @@ Decisions taken in your place, and anything waiting on you. Overrule any of thes
 | 2026-10-08 | `GetAllInfo` sends the active ship's hull `damage` (attribute 3) as the 0 to 1 ratio. The client reads hit points: hull is `(hp - damage) / hp` (`activeShipController.py` 107 to 119), so its panel shows a full hull on a damaged ship | a real answer: `damage = 0.2`, `hp = 150`, while `armorDamage = 52.5` of 150 and the server's own ballpark damage state said armour 0.65, hull 0.8; the gateway's snapshot said hull 0.8, the game port's 0.9987. Not observed on a running retail client | `7d5dbb532`, by a sub-agent: hit points, as armour and shield are sent | the fix's test (watched to fail first); the damaged ship re-recorded and read on each transport in turn: hull 0.8 on both; the browser's panel |
 
 | 2026-10-08 | The server never sends `OnHeatAdded` or `OnHeatRemoved`. The client's dogma location registers for both (read from its compiled class) and only carries a rack's heat upward for modules it has been told are heating it (`clientDogmaLocation.py` 1340 to 1356, `heatAttribute.py`), so between the server's heat changes it cools a rack that is being heated | a model that follows the client's code, fed by the live server: the mid rack read 0.7648, then 0.7572 a second later, then 0.7694, while its module was overloading. Not observed on a running retail client | `10e2c22f4`, by a sub-agent: one add when a module starts counting toward its rack's incoming heat, one remove when it stops | the fix's nine scenarios (watched to fail first, by the sub-agent); live on the game port: sixteen readings half a second apart, none lower than the one before, each within 0.002 of the client's formula; the same in the browser's rack |
+
+| 2026-10-08 | After a warp the server's second `SetBallMassive(ship, 0)` is stamped two ticks after the first. A ball dropping out of warp makes itself massive (`Ballpark::WarpDistance`), and when the drop is on the first stamp's tick the second arrives one step late: for that step the ship is massive, and beside a station (sent as a massive ball 100 km in radius) it bounces off it (`Ballpark::Potential`) | two recordings, four landings: stamps (D, D+2) in three, (D+1, D+3) in one; replayed through the park the ship rests 413.2 m and 412.8 m from the server's at the station, 0.06 m in the fourth. Not observed on a running retail client | **not fixed**: a third entry cannot go out under the server's own ceiling and would make the client's park double-step; left for the operator | the recording replayed with the stamps one tick apart: within a metre at both rests (a test) |
 
 Withdrawn the same day: "after undocking the server's ship is a tick behind". It is not; that was
 the second row above, seen through a recorder that always asked at the same point in the second.
@@ -2947,4 +2952,92 @@ sub-agent is looking at the server's side of it; the outcome is in the next entr
 6. More of a mission's words: the objectives pane, the mission's time under the agent's line,
    messages inside messages when one turns up.
 7. Small, around dialogs: the title for a dialog's kind, the "do not ask again" box, the typed
+   codes not done.
+
+---
+
+## 2026-10-08 — the overview's distance, and why the server's stamps were left alone
+
+Commit `869d6e6`, pushed. Nothing changed in eve.js.
+
+### The overview's distance, between hulls
+
+**What the retail client does.** Its overview shows, and sorts by, the distance from the
+ship's surface to the object's, never below nothing: the centres' distance less both radii
+(`overviewScrollEntry._GetSurfaceDistance`, `overviewNodeUtil.py` 87). The column words it in
+three steps (`_GetColumnValueDistance`): whole metres under 10 km, whole kilometres under
+10,000,000 km, AU to one decimal beyond, the figures grouped.
+
+**What was built.** A row carries both distances now. The overview's rows, the line about the
+picked row and the threat strip show the one between hulls, in the client's steps, and the
+rows sort by it. Everything else that reads a row's distance still gets the centres': the
+bots, the tactical view, the pickers.
+
+**Proof.**
+
+- Tests: 5 new. 25 ways of breaking the change, all caught, none left untried.
+- Suite: 9095 tests, 9071 pass, 0 fail, 24 skipped, 0 todo.
+- **In the browser, on the game port**, undocked by the page's own button: 94 rows. The
+  station the ship had just left, whose ball it is still inside, reads "0 m". Then the
+  sentry guns, "72 km", "84 km", "101 km"; farther out "1,094 km", "1,841,421 km",
+  "3,249,759 km"; and from there "2.8 AU" to "42.5 AU". Before this the station's row gave
+  the distance to its centre, some 65 km at the undock and "101 km" after the landing in the
+  last entry.
+- **The staging was undone**: the store was put back from its copy after the check.
+
+**Not done.** The words for the units are this page's ("m", "km", "AU"), not read from the
+client. The target bar, the selected item and the brackets show a distance between hulls in
+the client too (`FmtDist`: the same steps, AU to two decimals); here they still show the
+centres'.
+
+### The server's "not massive" after a warp: looked at, and left alone
+
+The last entry measured that after a warp the server's second "not massive" comes one step
+late in three landings of four, and that the park's ship bounces off the station in that
+step. A sub-agent was set to see whether a third entry, one tick after the first, could close
+it. **It changed nothing, and was right not to.** What it found, each checked by me where
+said:
+
+- **The two stamps are not a bracket around an uncertain client.** The later one is the
+  server's landing stamp, four ticks ahead of the session when it is written; the earlier is
+  two before it, placed so that the client holds the later one in its queue. The server's own
+  comment says the later one is there "before the next collision pass"
+  (`space/runtime/scene/visibility.js` 5020 to 5023). By the measurement it lands one step
+  after it.
+- **A third entry cannot be sent as things stand.** The server lets exactly one update per
+  landing go out beyond its ordinary ceiling of two ticks ahead
+  (`delivery/postWarpDemotion.js`, `authority/destinyAuthority.js` 916 to 922), and its tests
+  pin two entries, two ticks apart. Sent the ordinary way, an entry meant for the tick
+  between came out stamped a tick early; sent with the one-off allowance, the whole landing
+  was rolled back. (The sub-agent's measurement; I did not repeat it.)
+- **A third entry would not be harmless to the client.** After applying one group of updates,
+  if more than one is still queued, the client's park takes a step there and then
+  (`michelle.py` 900 to 915; `destiny/park.js` 223 to 226 here). Two queued entries never
+  do that; three do. The recorded warp replayed with three: the ship touches nothing, but the
+  park takes two steps in one second at each landing and runs a tick ahead of the server from
+  then on. (Re-run by me: the same.)
+- Replayed with the two entries one tick apart instead of two, the recording is clean: one
+  step a second, nothing touched, 0.07 m apart at the station. But that leaves a client that
+  drops out one tick later than any of the four did with the ship massive until something
+  else says otherwise, and no landing measured so far says whether that happens.
+
+So there is no change that is plainly right. It is a choice about the server's landing
+design, and it is the operator's. It is in "For the operator" and in the defects table as
+found and not fixed.
+
+### Next
+
+1. **The other places the client shows a distance between hulls**: the target bar, the
+   selected item, the brackets; and the words for the units read from the client.
+2. **The park beside the server's movement log**; the sim clock; MISSILE, FORMATION, MUSHROOM;
+   a fixed ball's collision shapes and the partition's order, if a server ever sends a ball
+   that needs them.
+3. The call ledger (`ship.Undock`, `dogmaIM.Activate` and `Deactivate` to bind as the client
+   does; `GetMissionBriefingInfo` and `GetMissionObjectiveInfo`, which the client asks on every
+   layout of the agent's window), Phase 3's hosted check and the session-less gateway calls.
+4. The scanner the client's way: results kept from the server's word, a probe's destination
+   and range kept here and sent with the scan.
+5. More of a mission's words: the objectives pane, the mission's time under the agent's line,
+   messages inside messages when one turns up.
+6. Small, around dialogs: the title for a dialog's kind, the "do not ask again" box, the typed
    codes not done.
