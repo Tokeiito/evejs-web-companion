@@ -220,3 +220,20 @@ test("open questions do not outlive a break in the stream or the end of the sess
   store.apply({ type: "live/cleared" });
   assert.deepEqual(store.get().live.questions, []);
 });
+
+// ── the retail client's words ────────────────────────────────────────────────
+
+test("the client's words are kept by label, added to and never dropped, through offline and logout", () => {
+  const store = createClientStore();
+  assert.deepEqual(store.get().words, { available: null, templates: {} });
+  store.apply({ type: "words/loaded", available: true, templates: { "UI/A": "text a", "UI/B": null } });
+  store.apply({ type: "words/loaded", available: true, templates: { "UI/C": "text c", "UI/B": "text b" } });
+  assert.deepEqual(store.get().words, { available: true, templates: { "UI/A": "text a", "UI/B": "text b", "UI/C": "text c" } });
+  assert.deepEqual(store.words.get(), store.get().words);
+  store.apply({ type: "character/offline" });
+  store.apply({ type: "live/cleared" });
+  assert.equal(Object.keys(store.get().words.templates).length, 3);
+  // The BFF saying it has no client is remembered as that.
+  store.apply({ type: "words/loaded", available: false, templates: { "UI/D": null } });
+  assert.equal(store.get().words.available, false);
+});

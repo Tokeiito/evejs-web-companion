@@ -5,7 +5,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { answerFits, createBotPresses, decodeQuestion, questionNameRefs, questionText } from "./questions.ts";
+import { answerFits, createBotPresses, decodeQuestion, questionNameRefs, questionText, wordsLabels, wordsNameRefs } from "./questions.ts";
 import type { JsonValue } from "./wire.ts";
 
 const DECLINE: JsonValue = {
@@ -263,4 +263,86 @@ test("a bot's press answers a Yes/No about its agent, and never a choice or a nu
   assert.equal(presses.answers(quantity), false);
   release();
   await pressed;
+});
+
+// ── the retail client's own words ────────────────────────────────────────────
+//
+// The templates are made up, with the tags the client's real texts carry for
+// these labels (scripts/client-words.js shows them).
+
+const TEMPLATES: Record<string, string | null> = {
+  "UI/Agents/StandardMission/DeclineMissionTitle": "A made-up title?",
+  "UI/Agents/StandardMission/DeclineMessage": "Decline before {[datetime]when} and it costs you.",
+  "UI/Agents/Research/SkillListing": "{[item]skillID.name} level {[numeric]skillLevel}",
+  "UI/Agents/Research/DatacorePrice": "{[item]datacoreTypeID.name}: {[numeric]rpAmount} RP + {[numeric]iskAmount} ISK",
+  "UI/Agents/DefaultMessages/RootAgentSays/GenericGreetings": "Greetings, {[character]player.name}, from {[location]agentStationID.name}.",
+  // The client has no text for this one.
+  "UI/Agents/Research/SelectResearchTypeTitle": null,
+};
+const withClient = { templates: TEMPLATES, playerID: 140000002 };
+const moreNames = (kind: string, id: number): string => ({ "owner:140000002": "Test Two", "station:60010387": "Iyen-Oursta III" } as Record<string, string>)[`${kind}:${id}`] ?? names(kind, id);
+
+test("a label is worded by the client's own text when the page has it, with the server's values filled in", () => {
+  const decline = decodeQuestion({
+    ...(DECLINE as object),
+    body: label("UI/Agents/StandardMission/DeclineMessage", [["when", { type: "long", value: String((BigInt(Date.UTC(2026, 9, 8, 15, 30)) + 11644473600000n) * 10000n) }]]),
+  } as JsonValue)!;
+  assert.equal(questionText(decline.title, names, withClient), "A made-up title?");
+  assert.equal(questionText(decline.body, names, withClient), "Decline before 2026.10.08 15:30 and it costs you.");
+
+  const choice = decodeQuestion(CHOICE)!;
+  assert.deepEqual(choice.choices.map((each) => questionText(each, names, withClient)), ["Hydromagnetic Physics level 2", "Nanite Engineering level 2"]);
+  assert.equal(questionText(decodeQuestion(QUANTITY)!.body, names, withClient), "Datacore - Electronic Engineering: 100 RP + 10000 ISK");
+});
+
+test("where the client has no text, or the page has not got it yet, this client's own words stand", () => {
+  const choice = decodeQuestion(CHOICE)!;
+  // The client has none for this label.
+  assert.equal(questionText(choice.title, names, withClient), "Choose a field of research");
+  // Not asked for yet: the label is absent from what the page holds.
+  assert.equal(questionText(choice.body, names, withClient), "Which field should this agent research for you?");
+  // No client at all.
+  assert.equal(questionText(choice.choices[0]!, names, { templates: {} }), "Hydromagnetic Physics (level 2)");
+  assert.equal(questionText(choice.choices[0]!, names, null), "Hydromagnetic Physics (level 2)");
+  // A dialog's message ID is not a label: the BFF answers null for it, and this client's words are used.
+  assert.match(questionText(decodeQuestion(CUSTOMS)!.body, names, { templates: { ChtCustomsConfiscationConfirmation2: null } }), /^Caldari State customs has found contraband/);
+  // Plain text is shown as it is, whatever the client has.
+  assert.equal(questionText({ label: "UI/Agents/StandardMission/DeclineMissionTitle", parameters: null, text: "As written" }, names, withClient), "As written");
+  // A label nobody has words for is shown as the label.
+  assert.equal(questionText({ label: "UI/Nobody/Knows", parameters: null, text: null }, names, withClient), "UI/Nobody/Knows");
+});
+
+test("what the client adds to a message is used, and what the server sent wins over it", () => {
+  const greeting = { label: "UI/Agents/DefaultMessages/RootAgentSays/GenericGreetings", parameters: { type: "dict", entries: [] }, text: null };
+  const client = { ...withClient, extra: { agentID: 3009373, agentStationID: 60010387 } };
+  assert.equal(questionText(greeting, moreNames, client), "Greetings, Test Two, from Iyen-Oursta III.");
+  // The player is whoever the page is flying; with nobody, nothing is shown for it.
+  assert.equal(questionText(greeting, moreNames, { ...client, playerID: null }), "Greetings, , from Iyen-Oursta III.");
+  // The server's own value for a name the client also adds is the one used.
+  const elsewhere = { ...greeting, parameters: { type: "dict", entries: [["agentStationID", 60000004]] } };
+  assert.equal(questionText(elsewhere, (kind, id) => `${kind} ${id}`, client), "Greetings, owner 140000002, from station 60000004.");
+});
+
+test("the labels among some words are each asked for once, and text and nothing are not labels", () => {
+  const choice = decodeQuestion(CHOICE)!;
+  assert.deepEqual(wordsLabels([choice.title, choice.body, ...choice.choices, null, undefined, { label: null, parameters: null, text: "plain" }]), [
+    "UI/Agents/Research/SelectResearchTypeTitle",
+    "UI/Agents/Research/SelectResearchTypeMessage",
+    "UI/Agents/Research/SkillListing",
+  ]);
+  assert.deepEqual(wordsLabels([]), []);
+});
+
+test("the names a wording needs follow the wording: the client's template when there is one, this client's when not", () => {
+  const key = (refs: ReturnType<typeof wordsNameRefs>) => refs.map((ref) => `${ref.kind}:${ref.id}`);
+  const greeting = { label: "UI/Agents/DefaultMessages/RootAgentSays/GenericGreetings", parameters: null, text: null };
+  // By the client's template: the player and the agent's station, which this client's own wording knows nothing of.
+  assert.deepEqual(key(wordsNameRefs([greeting], { ...withClient, extra: { agentStationID: 60010387 } })), ["owner:140000002", "station:60010387"]);
+  assert.deepEqual(key(wordsNameRefs([greeting], null)), []);
+  // A question's names are the same either way here, because both wordings name the same things.
+  assert.deepEqual(key(questionNameRefs(decodeQuestion(CHOICE)!, withClient)), ["type:11433", "type:11442"]);
+  assert.deepEqual(key(questionNameRefs(decodeQuestion(CHOICE)!)), ["type:11433", "type:11442"]);
+  // The customs dialog is worded by this client, so its names are found this client's way.
+  assert.deepEqual(key(questionNameRefs(decodeQuestion(CUSTOMS)!, withClient)), ["type:3721", "type:3713", "faction:500001"]);
+  assert.deepEqual(key(wordsNameRefs([null, undefined], withClient)), []);
 });

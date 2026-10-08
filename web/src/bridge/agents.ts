@@ -153,13 +153,19 @@ export function decodeConversation(result: JsonValue): AgentConversation {
   const saysItems = seqItems(inner[0]);
   const firstSays = saysItems[0];
   let agentSays = "";
+  let agentSaysWords: AgentConversation["agentSaysWords"] = null;
   if (typeof firstSays === "string") {
     agentSays = firstSays;
+    agentSaysWords = { label: null, parameters: null, text: firstSays };
   } else if (typeof firstSays === "number") {
     agentSays = String(firstSays);
   } else {
+    // (label, {parameters}): agents.py ProcessMessage hands these to localization.GetByLabel.
     const nested = seqItems(firstSays);
     agentSays = typeof nested[0] === "string" ? nested[0] : "";
+    if (typeof nested[0] === "string") {
+      agentSaysWords = { label: nested[0], parameters: nested[1] ?? null, text: null };
+    }
   }
   const actions: AgentAction[] = seqItems(inner[1]).map((entry) => {
     const items = seqItems(entry);
@@ -170,6 +176,7 @@ export function decodeConversation(result: JsonValue): AgentConversation {
   const lastActionInfo = outer[1];
   return {
     agentSays,
+    agentSaysWords,
     contentID: toNumber(saysItems[1]),
     actions,
     lastActionInfo: {

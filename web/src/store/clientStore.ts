@@ -98,7 +98,7 @@ import type {
   StandingsState,
   CharacterSheetState,
 } from "./types.ts";
-import type { NamesState } from "./names.ts";
+import type { NamesState, WordsState } from "./names.ts";
 import { deriveShipStats } from "../bridge/shipStats.ts";
 import { applyJamEvent, type ActiveJam } from "../bridge/jamNotifications.ts";
 import { EMPTY_RECIPE_BOOK } from "../bridge/piRecipes.ts";
@@ -187,6 +187,7 @@ export interface ClientState {
   readonly chat: ChatState;
   readonly live: LiveState;
   readonly names: NamesState;
+  readonly words: WordsState;
   readonly feed: FeedSlice;
   readonly health: HealthSlice;
 }
@@ -761,6 +762,13 @@ const INITIAL_NAMES: NamesState = Object.freeze({
   resolved: Object.freeze({}) as NamesState["resolved"],
 });
 
+// The retail client's text for the server's labels. Like names: read once,
+// kept for the app's life, not reset on offline or logout.
+const INITIAL_WORDS: WordsState = Object.freeze({
+  available: null,
+  templates: Object.freeze({}) as WordsState["templates"],
+});
+
 // R10 live channel: how many pushed session notifications to keep. A bounded
 // tail — this is a liveness record for the page to react to, not a log.
 const LIVE_NOTIFICATION_LIMIT = 50;
@@ -826,6 +834,7 @@ export interface ClientStore {
   readonly chat: ReadableSignal<ChatState>;
   readonly live: ReadableSignal<LiveState>;
   readonly names: ReadableSignal<NamesState>;
+  readonly words: ReadableSignal<WordsState>;
   readonly feed: ReadableSignal<FeedSlice>;
   readonly health: ReadableSignal<HealthSlice>;
 
@@ -886,6 +895,7 @@ export function createClientStore(): ClientStore {
   const chat = createSignal<ChatState>(INITIAL_CHAT);
   const live = createSignal<LiveState>(INITIAL_LIVE);
   const names = createSignal<NamesState>(INITIAL_NAMES);
+  const words = createSignal<WordsState>(INITIAL_WORDS);
   const feed = createSignal<FeedSlice>(INITIAL_FEED);
   const health = createSignal<HealthSlice>(INITIAL_HEALTH);
 
@@ -933,6 +943,7 @@ export function createClientStore(): ClientStore {
     chat: chat.get(),
     live: live.get(),
     names: names.get(),
+    words: words.get(),
     feed: feed.get(),
     health: health.get(),
   });
@@ -2570,6 +2581,11 @@ export function createClientStore(): ClientStore {
         names.set({ resolved: { ...current.resolved, ...event.entries } });
         break;
       }
+      case "words/loaded": {
+        const current = words.get();
+        words.set({ available: event.available, templates: { ...current.templates, ...event.templates } });
+        break;
+      }
     }
   };
 
@@ -2688,6 +2704,7 @@ export function createClientStore(): ClientStore {
     chat: readonlySignal(chat),
     live: readonlySignal(live),
     names: readonlySignal(names),
+    words: readonlySignal(words),
     feed: readonlySignal(feed),
     health: readonlySignal(health),
     get,

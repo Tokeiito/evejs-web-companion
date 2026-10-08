@@ -42,6 +42,7 @@ function obs(over: Partial<ScriptObservation> = {}): ScriptObservation {
 function convo(actions: readonly { actionID: number; buttonType: number }[], completedFlag = false): AgentConversation {
   return {
     agentSays: "…",
+    agentSaysWords: null,
     contentID: 1,
     actions: actions.map((a) => ({ ...a, label: "btn" })),
     lastActionInfo: { missionCompleted: completedFlag, missionDeclined: null, missionQuit: null, loyaltyPoints: null },

@@ -1325,6 +1325,13 @@ export interface AppFlow {
    */
   requestNames(refs: readonly NameRef[]): void;
   /**
+   * Ask for the retail client's own text for these localisation labels, to
+   * land in `store.words`. Batched and remembered like names: a label is
+   * asked for once. Never throws. When the BFF has no client to read, every
+   * label is null and nothing more is asked.
+   */
+  requestWords(labels: readonly string[]): void;
+  /**
    * Multibox — open or close this pilot's live push channel (SSE). Browsers
    * allow only ~6 concurrent HTTP/1.1 connections per origin, and every open
    * EventSource holds one for its whole life, so a tab full of pilots each
@@ -12367,6 +12374,62 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // shows the raw ID until the name lands. Chunked to the route's server-side cap
   // so a large list is never silently truncated.
   const NAMES_REQUEST_CAP = 500;
+  // --- the retail client's words -------------------------------------------
+  // The same shape as the names below: a queue filled in a tick, flushed in
+  // one request, each label asked for once.
+  const wordsAsked = new Set<string>();
+  let wordsQueue: string[] = [];
+  let wordsFlushScheduled = false;
+  let wordsUnavailable = false;
+  const WORDS_REQUEST_CAP = 200;
+
+  async function flushWordsQueue(): Promise<void> {
+    wordsFlushScheduled = false;
+    const batch = wordsQueue;
+    wordsQueue = [];
+    for (let start = 0; start < batch.length; start += WORDS_REQUEST_CAP) {
+      const chunk = batch.slice(start, start + WORDS_REQUEST_CAP);
+      if (wordsUnavailable) {
+        store.apply({ type: "words/loaded", available: false, templates: Object.fromEntries(chunk.map((label) => [label, null])) });
+        continue;
+      }
+      let result: Awaited<ReturnType<typeof api.loadWords>>;
+      try {
+        result = await api.loadWords(chunk, callOptions);
+      } catch {
+        // Not remembered: a later ask tries again.
+        for (const label of chunk) {
+          wordsAsked.delete(label);
+        }
+        continue;
+      }
+      wordsUnavailable = !result.available;
+      store.apply({
+        type: "words/loaded",
+        available: result.available,
+        templates: Object.fromEntries(chunk.map((label) => [label, result.words[label] ?? null])),
+      });
+    }
+  }
+
+  function requestWords(labels: readonly string[]): void {
+    let queued = false;
+    for (const label of labels) {
+      if (typeof label !== "string" || label === "" || wordsAsked.has(label)) {
+        continue;
+      }
+      wordsAsked.add(label);
+      wordsQueue.push(label);
+      queued = true;
+    }
+    if (queued && !wordsFlushScheduled) {
+      wordsFlushScheduled = true;
+      queueMicrotask(() => {
+        void flushWordsQueue();
+      });
+    }
+  }
+
   const nameCache = new Map<string, string | null>();
   const namePending = new Set<string>();
   let nameQueue: NameRef[] = [];
@@ -13364,6 +13427,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     },
 
     requestNames,
+    requestWords,
 
     /**
      * R92 multibox — is this the pilot the player is LOOKING at?

@@ -9,7 +9,7 @@
   import type { AppFlow } from "../app/flow.ts";
   import type { ClientQuestion, QuestionAnswer } from "../store/types.ts";
   import { resolvedName, type NameKind } from "../store/names.ts";
-  import { answerFits, questionNameRefs, questionText } from "../bridge/questions.ts";
+  import { answerFits, questionNameRefs, questionText, wordsLabels, type ClientWording } from "../bridge/questions.ts";
   import { panelErrorWords } from "../bridge/refusals.ts";
 
   let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
@@ -17,6 +17,16 @@
   const live = store.live;
   // svelte-ignore state_referenced_locally
   const names = store.names;
+  // svelte-ignore state_referenced_locally
+  const words = store.words;
+  // svelte-ignore state_referenced_locally
+  const station = store.station;
+
+  // The retail client's own text for the labels, when the BFF has a client to read.
+  const client = $derived<ClientWording>({
+    templates: $words.templates,
+    playerID: $station.online?.characterID ?? null,
+  });
 
   let answering = $state<string | null>(null);
   let error = $state("");
@@ -24,9 +34,14 @@
   let picked = $state<Record<string, number>>({});
   let typed = $state<Record<string, string>>({});
 
-  // The names the questions' words are about (a skill, a datacore, contraband, a faction).
+  // The client's text for the questions' labels, and the names their words are about (a skill, a datacore,
+  // contraband, a faction).
   $effect(() => {
-    const refs = $live.questions.flatMap((question) => questionNameRefs(question));
+    const labels = wordsLabels($live.questions.flatMap((question) => [question.title, question.body, ...question.choices]));
+    if (labels.length > 0) {
+      flow.requestWords(labels);
+    }
+    const refs = $live.questions.flatMap((question) => questionNameRefs(question, client));
     if (refs.length > 0) {
       flow.requestNames(refs);
     }
@@ -66,14 +81,14 @@
   <div
     class="server-question"
     role="alertdialog"
-    aria-label={questionText(question.title, nameOf) || questionText(question.body, nameOf)}
+    aria-label={questionText(question.title, nameOf, client) || questionText(question.body, nameOf, client)}
     data-question-id={question.id}
     data-question-kind={question.kind}
   >
-    {#if questionText(question.title, nameOf)}
-      <strong>{questionText(question.title, nameOf)}</strong>
+    {#if questionText(question.title, nameOf, client)}
+      <strong>{questionText(question.title, nameOf, client)}</strong>
     {/if}
-    <span class="body">{questionText(question.body, nameOf)}</span>
+    <span class="body">{questionText(question.body, nameOf, client)}</span>
     {#if question.kind === "choice"}
       <span class="choices" role="radiogroup">
         {#each question.choices as choice, index (index)}
@@ -84,7 +99,7 @@
               checked={(picked[question.id] ?? 0) === index}
               onchange={() => (picked = { ...picked, [question.id]: index })}
             />
-            {questionText(choice, nameOf)}
+            {questionText(choice, nameOf, client)}
           </label>
         {/each}
       </span>

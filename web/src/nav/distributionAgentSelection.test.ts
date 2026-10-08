@@ -119,7 +119,7 @@ test("invalid level or unreadable route authority fails closed before candidate 
 });
 
 function conversation(says: string, actions: AgentConversation["actions"]): AgentConversation {
-  return { agentSays: says, contentID: null, actions,
+  return { agentSays: says, agentSaysWords: null, contentID: null, actions,
     lastActionInfo: { missionCompleted: null, missionDeclined: null, missionQuit: null, loyaltyPoints: null } };
 }
 test("conversation authority accepts usable action, rejects standings denial and malformed buttons", () => {

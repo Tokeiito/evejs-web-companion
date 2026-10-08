@@ -18,6 +18,7 @@
   // R36 — the mission bot sits with the agents it works for.
   import MissionBot from "./MissionBot.svelte";
   import { panelErrorWords } from "../bridge/refusals.ts";
+  import { questionText, wordsLabels, wordsNameRefs, type ClientWording } from "../bridge/questions.ts";
 
   let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
 
@@ -28,8 +29,48 @@
   // svelte-ignore state_referenced_locally
   const names = store.names;
 
+  // svelte-ignore state_referenced_locally
+  const words = store.words;
+  // svelte-ignore state_referenced_locally
+  const station = store.station;
+
   let busy = $state(false);
   let error = $state("");
+
+  // What the agent says, in the retail client's own words when the BFF has a
+  // client to read. The client adds the agent's own IDs to every agent message
+  // (agents.py GetAgentArgs) and the player to every message at all.
+  const saysClient = $derived.by<ClientWording>(() => {
+    const agentID = $agents.activeAgentID;
+    const row = $agents.agents.find((agent) => agent.agentID === agentID) ?? null;
+    return {
+      templates: $words.templates,
+      playerID: $station.online?.characterID ?? null,
+      extra: {
+        agentID: agentID ?? undefined,
+        agentCorpID: row?.corporationID ?? undefined,
+        agentStationID: row?.stationID ?? undefined,
+        agentLocation: row?.stationID ?? undefined,
+      },
+    };
+  });
+  const saysName = (kind: NameRef["kind"], id: number): string => resolvedName($names.resolved, kind, id, `${kind} ${id}`);
+  const saysText = $derived(
+    $agents.conversation?.agentSaysWords
+      ? questionText($agents.conversation.agentSaysWords, saysName, saysClient)
+      : $agents.conversation?.agentSays ?? "",
+  );
+  $effect(() => {
+    const said = [$agents.conversation?.agentSaysWords ?? null];
+    const labels = wordsLabels(said);
+    if (labels.length > 0) {
+      flow.requestWords(labels);
+    }
+    const refs = wordsNameRefs(said, saysClient);
+    if (refs.length > 0) {
+      flow.requestNames(refs);
+    }
+  });
 
   // Agent-roster filter (the live-test found the raw ~1,678-agent render — Jita
   // 4-4 alone has 882 courier agents — strains the browser). Default to
@@ -245,7 +286,7 @@
 {#if $agents.conversation}
   <section>
     <h2>Conversation · {agentName($agents.activeAgentID)}</h2>
-    <p class="agent-says">{$agents.conversation.agentSays}</p>
+    <p class="agent-says">{saysText}</p>
     <p class="controls">
       {#each $agents.conversation.actions as action (action.actionID)}
         <button

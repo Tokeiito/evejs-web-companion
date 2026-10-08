@@ -1113,6 +1113,12 @@ export interface AgentLastActionInfo {
 /** A decoded agent conversation: what the agent says + the action buttons. */
 export interface AgentConversation {
   readonly agentSays: string;
+  /**
+   * What the agent says as the server sent it, when that is words: a
+   * localisation label with its parameters, or plain text. Null when it is a
+   * message's number (a mission's own text), which is not worded yet.
+   */
+  readonly agentSaysWords: QuestionWords | null;
   readonly contentID: number | null;
   readonly actions: readonly AgentAction[];
   readonly lastActionInfo: AgentLastActionInfo;

@@ -322,3 +322,24 @@ test("every button the retail client knows has a name here, and an unknown one s
   assert.equal(agentButtonLabel(AGENT_BUTTON.BUY_DATACORES), "Buy Datacores");
   assert.equal(agentButtonLabel(20), "Action 20");
 });
+
+test("what an agent says is kept as the server sent it: a label with its parameters, plain text, or a message's number", () => {
+  const says = (first: JsonValue) => decodeConversation({ type: "tuple", items: [{ type: "tuple", items: [{ type: "tuple", items: [first, 4802] }, { type: "list", items: [] }] }, { type: "dict", entries: [] }] });
+  // A label with its parameters, as the web gateway wraps a tuple and as the game port gives it.
+  const wrapped = says({ type: "tuple", items: ["UI/Agents/Research/ResearchStarted", { type: "dict", entries: [["skillID", 11450]] }] });
+  assert.equal(wrapped.agentSays, "UI/Agents/Research/ResearchStarted");
+  assert.deepEqual(wrapped.agentSaysWords, { label: "UI/Agents/Research/ResearchStarted", parameters: { type: "dict", entries: [["skillID", 11450]] }, text: null });
+  const bare = says(["UI/Agents/DefaultMessages/RootAgentSays/GenericGreetings", { type: "dict", entries: [] }]);
+  assert.deepEqual(bare.agentSaysWords, { label: "UI/Agents/DefaultMessages/RootAgentSays/GenericGreetings", parameters: { type: "dict", entries: [] }, text: null });
+  // A label with nothing after it has no parameters.
+  assert.deepEqual(says(["UI/Agents/Bare"]).agentSaysWords, { label: "UI/Agents/Bare", parameters: null, text: null });
+  // Plain text is text.
+  assert.deepEqual(says("Come back later.").agentSaysWords, { label: null, parameters: null, text: "Come back later." });
+  // A mission's own text comes as its message number, which is not words yet.
+  const numbered = says(127958);
+  assert.equal(numbered.agentSays, "127958");
+  assert.equal(numbered.agentSaysWords, null);
+  assert.equal(numbered.contentID, 4802);
+  // Something that is neither is nothing.
+  assert.equal(says([7, {}]).agentSaysWords, null);
+});

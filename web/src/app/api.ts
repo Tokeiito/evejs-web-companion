@@ -3928,6 +3928,27 @@ export async function resolveNames(
   return { names, unresolved };
 }
 
+/**
+ * The retail client's own text for localisation labels, as templates with
+ * their parameters left in (POST /api/words). `available` is false when the
+ * BFF has no client install to read; a label the client does not have is null.
+ */
+export async function loadWords(
+  labels: readonly string[],
+  options: ApiOptions = {},
+): Promise<{ available: boolean; words: Record<string, string | null> }> {
+  const data = await postJson("/api/words", { labels }, options);
+  const raw =
+    typeof data.words === "object" && data.words !== null && !Array.isArray(data.words)
+      ? (data.words as Record<string, JsonValue>)
+      : {};
+  const words: Record<string, string | null> = {};
+  for (const [label, value] of Object.entries(raw)) {
+    words[label] = typeof value === "string" ? value : null;
+  }
+  return { available: data.available === true, words };
+}
+
 // --- R108 slice 3: the PI Manager's read, with no character selected ---------
 // GET /api/roster/planets?characterIDs=a,b,c answers each of those pilots'
 // colonies through the gateway's ownership check alone. The body goes back RAW:

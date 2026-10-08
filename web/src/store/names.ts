@@ -68,6 +68,19 @@ export interface NamesState {
   readonly resolved: Readonly<Record<string, string | null>>;
 }
 
+/**
+ * The retail client's own text for the server's labels, as templates with
+ * their parameters left in (web/src/bridge/clientWords.ts). A string is the
+ * client's text; null is "the client has none for this label" (or there is no
+ * client to read); an absent key means "not asked yet". Kept for the app's
+ * life, as names are: a label's text does not change.
+ */
+export interface WordsState {
+  /** Whether the BFF has a client install to read; null until the first answer. */
+  readonly available: boolean | null;
+  readonly templates: Readonly<Record<string, string | null>>;
+}
+
 /** The store-slice key for a (kind, id) pair. */
 export function nameKey(kind: NameKind, id: number): string {
   return `${kind}:${id}`;

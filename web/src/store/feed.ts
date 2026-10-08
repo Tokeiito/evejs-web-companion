@@ -1014,6 +1014,12 @@ export type FeedEvent =
   | {
       readonly type: "names/resolved";
       readonly entries: Readonly<Record<string, string | null>>;
+    }
+  // The retail client's text for some labels has been read (or found missing).
+  | {
+      readonly type: "words/loaded";
+      readonly available: boolean;
+      readonly templates: Readonly<Record<string, string | null>>;
     };
 
 /** What the store hands an adapter: publish events, report connectivity. */

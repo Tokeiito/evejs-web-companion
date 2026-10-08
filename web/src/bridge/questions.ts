@@ -23,7 +23,20 @@
 
 import type { ClientQuestion, QuestionAnswer, QuestionWords } from "../store/types.ts";
 import type { NameKind, NameRef } from "../store/names.ts";
+import { formatTemplate, templateNameRefs, type TemplateArguments } from "./clientWords.ts";
 import type { JsonValue } from "./wire.ts";
+
+/**
+ * The retail client's own text, when the page has it: its templates by label
+ * (`store.words`), the character being flown (the client's `player` in every
+ * message), and whatever else the client adds to this message's arguments
+ * (for what an agent says, the agent's own IDs).
+ */
+export interface ClientWording {
+  readonly templates: Readonly<Record<string, string | null>>;
+  readonly playerID?: number | null;
+  readonly extra?: TemplateArguments;
+}
 
 /** How a name is looked up for the words below: the page's name cache, or a stand-in. */
 export type NameOf = (kind: NameKind, id: number) => string;
@@ -166,12 +179,25 @@ export function decodeQuestion(value: JsonValue | undefined): ClientQuestion | n
 /** Names with no cache behind them: the ID, said plainly. */
 const nameByID: NameOf = (kind, id) => `${kind} ${id}`;
 
-/** What to show for a title, a body or a choice: its text, this client's words for its label, or the label itself. */
-export function questionText(words: QuestionWords, nameOf: NameOf = nameByID): string {
+/** A label's arguments: what the client adds, then what the server sent with it, which wins. */
+const argumentsFor = (words: QuestionWords, client: ClientWording): TemplateArguments =>
+  ({ ...(client.extra ?? {}), ...parametersOf(words.parameters) });
+
+/**
+ * What to show for a title, a body, a choice or an agent's line: its text;
+ * the retail client's own text for its label, filled in, when the page has
+ * it; failing that this client's words for the label; failing that the label
+ * itself.
+ */
+export function questionText(words: QuestionWords, nameOf: NameOf = nameByID, client: ClientWording | null = null): string {
   if (words.text !== null) {
     return words.text;
   }
   if (words.label !== null) {
+    const template = client ? client.templates[words.label] : null;
+    if (typeof template === "string") {
+      return formatTemplate(template, argumentsFor(words, client as ClientWording), { nameOf, playerID: client?.playerID ?? null });
+    }
     const wording = LABEL_WORDS[words.label];
     if (wording === undefined) {
       return words.label;
@@ -181,10 +207,29 @@ export function questionText(words: QuestionWords, nameOf: NameOf = nameByID): s
   return "";
 }
 
-/** The names a question's words need, for the page's name cache to fetch. */
-export function questionNameRefs(question: ClientQuestion): NameRef[] {
+/** The labels among some words, for the page to ask the client's text of. */
+export function wordsLabels(all: ReadonlyArray<QuestionWords | null | undefined>): string[] {
+  const labels: string[] = [];
+  for (const words of all) {
+    if (words && words.label !== null && !labels.includes(words.label)) {
+      labels.push(words.label);
+    }
+  }
+  return labels;
+}
+
+/** The names some words need, whichever way they end up worded, for the page's name cache to fetch. */
+export function wordsNameRefs(all: ReadonlyArray<QuestionWords | null | undefined>, client: ClientWording | null = null): NameRef[] {
   const refs: NameRef[] = [];
-  for (const words of [question.title, question.body, ...question.choices]) {
+  for (const words of all) {
+    if (!words) {
+      continue;
+    }
+    const template = client && words.label !== null ? client.templates[words.label] : null;
+    if (typeof template === "string") {
+      refs.push(...templateNameRefs(template, argumentsFor(words, client as ClientWording), { playerID: client?.playerID ?? null }));
+      continue;
+    }
     const parameters = parametersOf(words.parameters);
     for (const name of ["skillID", "datacoreTypeID"]) {
       const typeID = wholeNumber(parameters[name]);
@@ -201,6 +246,11 @@ export function questionNameRefs(question: ClientQuestion): NameRef[] {
     }
   }
   return refs;
+}
+
+/** The names a question's words need, for the page's name cache to fetch. */
+export function questionNameRefs(question: ClientQuestion, client: ClientWording | null = null): NameRef[] {
+  return wordsNameRefs([question.title, question.body, ...question.choices], client);
 }
 
 /**
