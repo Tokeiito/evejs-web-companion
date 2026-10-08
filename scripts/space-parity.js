@@ -109,6 +109,8 @@ async function hold(base, account, characterID) {
   return {
     base,
     before,
+    /** Any other route of the BFF, as this pilot: the payload of a 200, or it throws. */
+    ask: must,
     undock: () => must("POST", "/api/bridge/flight/undock", {}),
     snapshot: async () => (await must("GET", "/api/bridge/space/snapshot")).space,
     async dock(stationID) {

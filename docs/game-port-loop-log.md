@@ -973,3 +973,72 @@ from the UI.
    FORMATION, MUSHROOM.
 6. The call ledger (now with `ship.Undock`, `dogmaIM.Activate` and `Deactivate` to bind as the
    client does), Phase 3's hosted check and the session-less gateway calls.
+
+---
+
+## 2026-10-08 — which modules are running
+
+Commits `fe79800` and the one this entry is in, pushed.
+
+**What the retail client does.** A module is running when an effect is active on it. Godma
+learns which are active from each item's row in `GetAllInfo` (`RefreshItemEffects`) and is told
+of each start and stop by `OnGodmaShipEffect`, alone or bundled in `OnMultiEvent`, where the
+last one for an item's effect in a moment is what stands (`BroadcastFilteredGSF`).
+
+**What was built.** `pilotDogma.js` keeps the effects on the pilot's items. A module is
+running when an effect of the activation, target or area kind is active on it, and overloaded
+when one of the overload kind is; the kinds come from the game's static data
+(`staticData.getEffect`, new). The snapshot's ship block on the game port now carries
+`activeModuleIDs` and `overloadedModuleIDs`, which is what the BFF's activate and deactivate
+routes read to say whether a module came on.
+
+One thing the static data did not say the way I expected: being online is an effect too, and
+this data files it as an activation, the same kind as an afterburner. Godma leaves it out by
+name wherever it asks what is running, so the port leaves it out by its ID. Without that, every
+fitted module would have counted as running; the test on the real recording is what would have
+caught it.
+
+**Proof.**
+
+*From the recorded flight* (`dogmaFlight.json`): loaded in space, the afterburner is fitted,
+online and not running. It is running from the server's word that it started, through its second
+cycle ten seconds later to the tick of the server's clock, and stops at the server's word. The
+`GetAllInfo` taken while it ran says it is running by itself. On the wire the server's word
+that a module started arrives one millisecond before its answer to `Activate`, so a route that
+re-reads straight after the call sees it.
+
+*Tests.* 7 new, 3 extended. 25 deliberate breakages of the new part: two got through at first,
+both gaps, both closed. Suite: 8869 tests, 8844 pass, 0 fail, 24 skipped, 1 todo.
+
+*Through the BFF's own routes, each transport in turn*, Test Pilot's afterburner:
+
+| | Gateway | Game port |
+|---|---|---|
+| Before | nothing running, capacitor 1.0000 | the same |
+| `POST /modules/activate` | `active: true`, the module listed | the same |
+| Four seconds on | running, capacitor 0.9707 | running, capacitor 0.9713 |
+| `POST /modules/deactivate` | `stopped: true`, nothing listed | the same |
+| Docked again | yes | yes |
+
+*In the browser*, on the game port: undocked, pressed the afterburner's button. It went from
+"click to switch on" to "active. Click to switch off." (and `aria-pressed` true); pressed again,
+back to "click to switch on". Docked from the UI. A note on the check: the button answers to a
+pointer press and release, not to a synthetic click, which sent nothing.
+
+**Not done:** how damaged each module is (`moduleDamage`, dogma's `damage` on the module) and
+which weapons are grouped (`weaponBanks`, in `GetAllInfo`'s ship state). Both are empty on the
+game port; the gateway reads them from the server's own state. Overloading has only its unit
+tests: nothing has been overloaded live.
+
+### Next
+
+1. **A gate jump** on the game port: recorded and played through, then live through the BFF's
+   jump route. The session changes system, the park is replaced, dogma is asked again.
+2. **Warp, in the browser, on the game port**, then a hosted bot flying a courier mission end to
+   end on it (Phase 4's "done when"). Test Two is docked with the package aboard.
+3. **The scanner in space** on the game port.
+4. Module damage and weapon banks from dogma; health from godma as the panel reads it.
+5. **Collisions**; **the park beside the server's movement log**; the sim clock; MISSILE,
+   FORMATION, MUSHROOM.
+6. The call ledger (`ship.Undock`, `dogmaIM.Activate` and `Deactivate` to bind as the client
+   does), Phase 3's hosted check and the session-less gateway calls.
