@@ -225,6 +225,12 @@ Take these defaults, and list each under "For the operator" in the log so they c
 - **Recording what the server really sends**: `scripts/record-dogma.js`, `record-probes.js` and
   `record-destiny.js` log a character in on the game port, do one thing, and keep every frame
   for a fixture. Stage the character first and undo it after (the store copy above).
+- **What a class in the client is told of**: the decompiler prints `__notifyevents__` as
+  numbers. `scripts/client-notify-events.py` reads the names from the compiled class.
+- **The browser takes the pilot from a script.** "Bring online" in the page makes a new
+  session for a pilot a script was flying on the same BFF, and the script's is gone. To stage
+  from the browser's own session, catch the page's `authorization` header inside the page
+  (wrap `window.fetch`, keep the value in a closure, never return it) and post with it there.
 - **A dialog by its name**: `node scripts/client-words.js "<client folder>" dialog:<Name>` says
   what kind it is and which parameters its title and body take. A dialog's parameters may be
   typed tuples, `(code, value[, value2])`, which the client turns to text first

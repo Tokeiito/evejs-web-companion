@@ -565,7 +565,7 @@ table marks "not started" is still to do.
 | The server's questions shown to the user | done | `agents.YesNo`: shown in the browser and answered No and Yes on the game port, the press waiting meanwhile. A research agent's choice and number boxes: seen live too (research started on the field chosen, three datacores bought, research cancelled after a No and a Yes). The customs question: seen live as well (asked at the Muvolailen gate, answered Yes in the browser, the case closed as surrendered) |
 | The scanner in space: the probes as the client's scan service keeps them, the launcher from godma | done | a recorded probe flight played through the list; in the browser on the game port: launch, reconnect after a new session, analyze, recover, and again from an empty launcher |
 | The ship's health as its own panel reads it, each module's damage, the weapon banks (`pilotDogma.js`) | done | a recording of a damaged ship with two grouped guns; each transport in turn gives the same readings field for field; the panel and the rack in the browser |
-| Rack heat | not started | |
+| Rack heat, kept as the client's heat attributes keep it (`pilotDogma.js`) | done | the formula held to the client's compiled `CalculateHeat`; a real overload on the game port, the mid rack climbing and cooling at the rack's own rate; the rack's heat bar in the browser |
 
 One thing the spike's question got wrong: the stream is not 10 Hz. The server sends an update
 when something changes and the client steps once a second on its own, so decoding load follows

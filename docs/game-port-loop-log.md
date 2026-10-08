@@ -96,6 +96,9 @@ Decisions taken in your place, and anything waiting on you. Overrule any of thes
   Three things the sub-agent found beside it are left for you, in the entry "the ship's health":
   station repair's totals, the ratios in the ship state's instance rows, and stray attributes on
   module rows.
+- **The rack's heat bars read on the game port** (`836f1ef`); on the gateway they still say
+  "heat not known". EveJS does not send `OnHeatAdded` or `OnHeatRemoved`, which the client
+  registers for; a sub-agent was set to fix that in eve.js (see the entry "rack heat").
 - **Two faults in the BFF that were there on either transport since 2026-07-28 are fixed**
   (`2451cb1`): the Scanner Center's "Reconnect to probes" never asked the server, and a ship
   boarding that failed after the server accepted it answered "kind is not defined". One branch,
@@ -2607,6 +2610,118 @@ to hundredths is left to the page.
    does; `GetMissionBriefingInfo` and `GetMissionObjectiveInfo`, which the client asks on every
    layout of the agent's window), Phase 3's hosted check and the session-less gateway calls.
 3. Rack heat from the ship's state, as the client reads it.
+4. The scanner the client's way: results kept from the server's word, a probe's destination
+   and range kept here and sent with the scan.
+5. More of a mission's words: the objectives pane, the mission's time under the agent's line,
+   messages inside messages when one turns up.
+6. Small, around dialogs: the title for a dialog's kind, the "do not ask again" box, the typed
+   codes not done.
+
+---
+
+## 2026-10-08 — rack heat, kept as the client's heat attributes keep it
+
+Commit `836f1ef`, pushed. Taken out of order (it was third on the list): it finishes the
+reading of the ship's state the last entry began, and it was small.
+
+**What the retail client does.**
+
+- **Heat is three attributes of the ship**, heatHi, heatMed and heatLow (1175, 1176, 1177),
+  one for each rack, and they are the one reading the client works out for itself as time
+  passes (`dogma/attributes/heatAttribute.py`). Each holds a value and the moment it was true.
+  With nothing heating the rack the value falls by the rack's dissipation rate, and is nothing
+  once it rounds to nothing. With heat coming in it climbs toward the rack's capacity, at what
+  is coming in times the ship's heat generation multiplier.
+- **The server sets the value.** An attribute change for one of the three is taken as true
+  from the moment it arrives (`clientDogmaLocation.OnModuleAttributeChanges`,
+  `HeatAttribute.SetBaseValue`).
+- **The server says what is heating a rack.** `OnHeatAdded(heatID, moduleID)` adds that
+  module's `heatAbsorbtionRateModifier` to what is coming in; `OnHeatRemoved` takes it off.
+- **The gauge** shows value over capacity (`shipDogmaItem.GetHeatValues`).
+- The heat states in `GetAllInfo`'s ship state, which the last entry said were "not read yet",
+  are unpacked by the client and never used. They are not read here either.
+
+How it was read: the decompiled source, and for the formula the client's own compiled
+`CalculateHeat`, run in the client's Python for 16 cases. The decompiler prints a class's list
+of notifications as numbers, so the names the dogma location registers for were read from
+the compiled class: `OnHeatAdded` and `OnHeatRemoved` are two of its nine. That reading is a
+script now, `scripts/client-notify-events.py`.
+
+**What was built.**
+
+- `pilotDogma.js`: `calculateHeat`, the three heat states of a ship that has racks, the
+  server's word and the two notifications applied as the client applies them, and `rackHeat`.
+- The game port's space snapshot says `ship.rackHeat`, `{ high, mid, low }` as fractions of
+  each rack's capacity.
+- The page: the decoder, and the rack's heat bar given the reading. The bar and its words
+  were already there, saying "heat not known" for want of one. On the gateway, whose snapshot
+  does not carry heat, they still say that.
+
+Two places where this is the client's rule to within a hair and not to the letter. The client
+leaves a rack alone when the server's number is what it already has, going by what its gauge
+last worked out; here that is the heat as of now. And the client heats its current ship; here
+it is the ship the module is fitted to.
+
+**Proof.**
+
+- Tests: 9 new, 5 changed. `calculateHeat` gives the client's own answer for all 16 cases, to
+  one part in a million million.
+- 73 ways of breaking the new code. Three slipped through at first and were closed with
+  tests. None was left untried.
+- Suite: 9077 tests, 9052 pass, 0 fail, 24 skipped, 1 todo.
+- **Live, on the game port** (server at `7d5dbb532`): Test Pilot's Reaper, given
+  Thermodynamics I, its civilian afterburner overloaded.
+
+  | | Mid rack, from the snapshot |
+  |---|---|
+  | undocked, nothing running | 0 (and high 0, low 0) |
+  | overloaded, 1 s, 10 s, 39 s | 0.038, 0.329, 0.781 |
+  | stopped, then 23.3 s later | 0.853, 0.676 |
+
+  0.853 falling to 0.676 in 23.3 seconds is the rack's own rate of 0.01 a second
+  (0.853 x e^-0.233 = 0.676).
+- **In the browser, on the game port:** the rack's line read "Mid 1% heat" a second after the
+  overload, "25% heat" at eight seconds, the bar's width with it; after the stop "32% heat"
+  falling to "30% heat" in eight seconds, the bar turning from warm to cool. High and Low read
+  "0% heat" before the overload; they were not read during it. Before this entry all three
+  read "heat not known".
+- **The staging was undone**: the store was copied with the server stopped before Test Pilot
+  was given the skill, and put back after; the store and its write-ahead log compare equal to
+  the copies.
+
+**A server defect, found by setting the model beside the live numbers.** While the afterburner
+was overloading, the reading went down between the server's words: 0.7648, then 0.7572 a
+second later, then 0.7694. The model was cooling the rack, because nothing had told it a
+module was heating it: **EveJS never sends `OnHeatAdded` or `OnHeatRemoved`.** The client
+registers for both. By its code a retail client's gauge does the same on this server. **Not
+observed** in a running retail client. A sub-agent is fixing it; the outcome is in the next
+entry.
+
+**Seen, and left.**
+
+- I let the first overload run on. The afterburner took 22.8% damage ten seconds in, still
+  read that at forty, and was burnt out by the time I stopped it. Not checked against what the
+  client's data says heat damage should be.
+- When the browser brought the pilot online that my script had been flying, the BFF made a
+  new session for it, and the mid rack that had read 0.68 read 0 for the fourteen seconds I
+  watched. A new session loads dogma afresh, which starts every rack at nothing, as the
+  client's does. Whether the server had also let the ship's heat go, or still had it and said
+  nothing, was not checked.
+- The words round and the colour does not: at 29.7% the line says "30% heat" in the cool
+  colour.
+
+**Not done.** Heat on the gateway. The page reads the rack at each snapshot and does not carry
+it on between them.
+
+### Next
+
+1. **The server's heat notices on the game port**, once the sub-agent's fix is in: the rack
+   climbing by the client's formula between the server's words, watched live.
+2. **Collisions**; **the park beside the server's movement log**; the sim clock; MISSILE,
+   FORMATION, MUSHROOM.
+3. The call ledger (`ship.Undock`, `dogmaIM.Activate` and `Deactivate` to bind as the client
+   does; `GetMissionBriefingInfo` and `GetMissionObjectiveInfo`, which the client asks on every
+   layout of the agent's window), Phase 3's hosted check and the session-less gateway calls.
 4. The scanner the client's way: results kept from the server's word, a probe's destination
    and range kept here and sent with the scan.
 5. More of a mission's words: the objectives pane, the mission's time under the agent's line,
