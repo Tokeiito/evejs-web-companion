@@ -13135,7 +13135,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         await first;
       } catch (error) {
         if (api.isContrabandWarning(error)) {
-          if (!(await askUser(`${error.message} Undock anyway?`))) {
+          // The message is the dialog's own sentence, question and all (src/server.js).
+          if (!(await askUser(error.message))) {
             return;
           }
           first = null;

@@ -265,7 +265,7 @@ test("a lost session during a movement step unwinds to offline", async () => {
 // ShipContrabandWarningUndock, it asks OK / Cancel and undocks again with
 // ignoreContraband set. The BFF answers that refusal as CONTRABAND_WARNING.
 
-const WARNING = { ok: false, error: "CONTRABAND_WARNING", message: "Your ship is carrying contraband: 10 × Slaves. The authorities here will fine you and take it if they find it." };
+const WARNING = { ok: false, error: "CONTRABAND_WARNING", message: "Your ship is carrying at least one item (Slaves) which is contraband somewhere. Are you sure you wish to undock?" };
 
 function contrabandFetch() {
   return makeFakeFetch((path, _method, body) => {
@@ -303,7 +303,8 @@ test("warned about contraband, the user is asked, and OK undocks again ignoring 
   const { fetch, requests } = contrabandFetch();
   const flow = createAppFlow(store, { fetch, confirm: async (message) => { asked.push(message); return true; } });
   await flow.undock();
-  assert.deepEqual(asked, [`${WARNING.message} Undock anyway?`]);
+  // Asked in the dialog's own words, which end in the question.
+  assert.deepEqual(asked, [WARNING.message]);
   assert.deepEqual(undocks(requests), [{ ignoreContraband: false }, { ignoreContraband: true }]);
   const flight = store.flight.get();
   assert.equal(flight.status?.inSpace, true);

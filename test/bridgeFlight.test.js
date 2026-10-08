@@ -1032,13 +1032,12 @@ function gatewayWithContraband(refuse) {
 }
 const refusal = (extra) => Object.assign(new Error(extra.message), { code: "CALL_REFUSED", statusCode: 409 }, extra);
 
-test("an undock refused for contraband is a warning, with the goods named, and the ship can still undock on a second ask", async () => {
-  // As the game-port transport hands it on: the refusal by name, with the dialog's parameters.
+test("an undock refused for contraband is a warning, with the item named, and the ship can still undock on a second ask", async () => {
+  // As the game-port transport hands it on: the refusal by name, with the dialog's one parameter, item =
+  // (UE_TYPEID, typeID). Something else first, so the item is found by name and not by place.
   const gateway = gatewayWithContraband(() => refusal({
     message: "ShipContrabandWarningUndock",
-    // The faction first, so the goods are found by name and not by place; and two entries that are not
-    // (type, quantity) stacks, which are not goods.
-    refusal: { key: "ShipContrabandWarningUndock", values: { type: "dict", entries: [["empire", [2, 500001]], ["contraband", [103, [[24, 34, 10], [9, 36, 5], [24, "x", 1], [24, 35, 1500]], "<br>"]]] } },
+    refusal: { key: "ShipContrabandWarningUndock", values: { type: "dict", entries: [["other", [4, 35]], ["item", [4, 34]]] } },
   }));
   const { baseUrl } = await startTestServer({ gateway });
   await selectOnServer(baseUrl);
@@ -1047,8 +1046,8 @@ test("an undock refused for contraband is a warning, with the goods named, and t
   assert.equal(warned.response.status, 409);
   assert.equal(warned.payload.ok, false);
   assert.equal(warned.payload.error, "CONTRABAND_WARNING");
-  // The goods by the names this server's static data gives them (the test's own: "Type <id>"), not by a bare ID.
-  assert.equal(warned.payload.message, "Your ship is carrying contraband: 10 × Type 34, 1,500 × Type 35. The authorities here will fine you and take it if they find it.");
+  // The client's own sentence, with the item by the name this server's static data gives it (the test's own: "Type <id>").
+  assert.equal(warned.payload.message, "Your ship is carrying at least one item (Type 34) which is contraband somewhere. Are you sure you wish to undock?");
 
   // Still docked, and not left half-way through an undock: the same pilot goes out when it says so.
   const status = await apiRequest(baseUrl, "/api/bridge/flight/status");
@@ -1059,7 +1058,7 @@ test("an undock refused for contraband is a warning, with the goods named, and t
   assert.deepEqual(undockCalls(gateway).map((call) => call.args[1]), [false, true]);
 });
 
-test("the warning is known by its name alone, and then names no goods; any other refusal is passed on as it is", async () => {
+test("the warning is known by its name alone, and then names no item; any other refusal is passed on as it is", async () => {
   // As the gateway words it: no values, the name in the message.
   const worded = gatewayWithContraband(() => refusal({ message: "ship.Undock was refused: ShipContrabandWarningUndock" }));
   const first = await startTestServer({ gateway: worded });
@@ -1067,17 +1066,20 @@ test("the warning is known by its name alone, and then names no goods; any other
   const warned = await apiRequest(first.baseUrl, "/api/bridge/flight/undock", { method: "POST", body: {} });
   assert.equal(warned.response.status, 409);
   assert.equal(warned.payload.error, "CONTRABAND_WARNING");
-  assert.equal(warned.payload.message, "Your ship is carrying contraband. The authorities here will fine you and take it if they find it.");
+  const UNNAMED = "Your ship is carrying at least one item which is contraband somewhere. Are you sure you wish to undock?";
+  assert.equal(warned.payload.message, UNNAMED);
 
-  // Values that are not the dialog's parameters name nothing either.
-  const odd = gatewayWithContraband(() => refusal({
-    message: "ShipContrabandWarningUndock",
-    refusal: { key: "ShipContrabandWarningUndock", values: { type: "dict", entries: [["contraband", [7, [[24, 34, 10]]]], ["other", [103, [[24, 34, 10]]]]] } },
-  }));
-  const second = await startTestServer({ gateway: odd });
-  await selectOnServer(second.baseUrl);
-  const plain = await apiRequest(second.baseUrl, "/api/bridge/flight/undock", { method: "POST", body: {} });
-  assert.equal(plain.payload.message, "Your ship is carrying contraband. The authorities here will fine you and take it if they find it.");
+  // An item that is not a type by its ID names nothing either.
+  for (const item of [[2, 34], [4, "34"], [4], 34, null]) {
+    const odd = gatewayWithContraband(() => refusal({
+      message: "ShipContrabandWarningUndock",
+      refusal: { key: "ShipContrabandWarningUndock", values: { type: "dict", entries: [["item", item]] } },
+    }));
+    const second = await startTestServer({ gateway: odd });
+    await selectOnServer(second.baseUrl);
+    const plain = await apiRequest(second.baseUrl, "/api/bridge/flight/undock", { method: "POST", body: {} });
+    assert.equal(plain.payload.message, UNNAMED, JSON.stringify(item));
+  }
 
   // Another refusal is not a warning.
   const other = gatewayWithContraband(() => refusal({ message: "ShipNotInHangar", refusal: { key: "ShipNotInHangar", values: null } }));

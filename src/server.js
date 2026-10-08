@@ -16875,21 +16875,23 @@ function isContrabandWarning(error) {
     String(error.message || "").includes(CONTRABAND_WARNING_KEY);
 }
 
-// What the warning says, in this client's words. The refusal's values are the
-// dialog's parameters, {contraband: (UE_LIST, [(UE_TYPEIDANDQUANTITY, typeID,
-// quantity), ...], sep), ...} when the transport passed them on; without them
-// the goods are not named, and nothing is made up.
+// What the warning says: the retail client's own sentence for this dialog
+// (its data: dialog 1552, body message 258952, "Your ship is carrying at least
+// one item ({item}) which is contraband somewhere. Are you sure you wish to
+// undock?"). The dialog has one parameter, item = (UE_TYPEID, typeID), which
+// the client shows as the type's name. The game-port transport passes the
+// refusal's values on; without them the item is not named, and nothing is
+// made up.
+const UE_TYPEID = 4;
+
 function contrabandWarningWords(error) {
   const entries = error && error.refusal && error.refusal.values && Array.isArray(error.refusal.values.entries)
     ? error.refusal.values.entries
     : [];
-  const listed = entries.find((entry) => Array.isArray(entry) && entry[0] === "contraband");
-  const stacks = listed && Array.isArray(listed[1]) && listed[1][0] === 103 && Array.isArray(listed[1][1]) ? listed[1][1] : [];
-  const goods = stacks
-    .filter((stack) => Array.isArray(stack) && stack[0] === 24 && Number.isSafeInteger(stack[1]) && Number.isSafeInteger(stack[2]))
-    .map((stack) => `${stack[2].toLocaleString("en-US")} × ${staticData.getTypeName(stack[1]) || `type ${stack[1]}`}`);
-  return `Your ship is carrying contraband${goods.length > 0 ? `: ${goods.join(", ")}` : ""}. ` +
-    "The authorities here will fine you and take it if they find it.";
+  const item = entries.find((entry) => Array.isArray(entry) && entry[0] === "item");
+  const typeID = item && Array.isArray(item[1]) && item[1][0] === UE_TYPEID && Number.isSafeInteger(item[1][1]) ? item[1][1] : null;
+  const named = typeID === null ? "" : ` (${staticData.getTypeName(typeID) || `type ${typeID}`})`;
+  return `Your ship is carrying at least one item${named} which is contraband somewhere. Are you sure you wish to undock?`;
 }
 
 // Undock: ship.Undock(shipID, ignoreContraband, onlineModules=[]) — a top-level
