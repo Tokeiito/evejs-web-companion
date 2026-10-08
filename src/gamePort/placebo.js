@@ -13,7 +13,7 @@
 // the set of values the handshake still has to carry.
 
 const crypto = require("node:crypto");
-const { marshalEncode } = require("../gameProtocol/marshal");
+const { encodeClient } = require("./clientMarshal");
 
 /** binascii.crc_hqx: CRC-CCITT, polynomial 0x1021, as Python 2.7 computes it. */
 function crcHqx(bytes, crc = 0) {
@@ -34,7 +34,7 @@ function crcHqx(bytes, crc = 0) {
  * two hash differently, so it matters which one the client had.
  */
 function cryptoHash(...args) {
-  return String(crcHqx(marshalEncode(args)));
+  return String(crcHqx(encodeClient(args)));
 }
 
 /** placebo.get_random_bytes(n): not random at all. */

@@ -28,7 +28,8 @@
 
 const zlib = require("node:zlib");
 const crypto = require("node:crypto");
-const { marshalDecode, marshalEncode } = require("../gameProtocol/marshal");
+const { marshalDecode } = require("../gameProtocol/marshal");
+const { encodeClient, long } = require("./clientMarshal");
 const {
   TYPE, anyAddress, buildPacket, clientAddress, dictGet, integer, nodeAddress, parsePacket, text, unwrapSubstream,
 } = require("./packets");
@@ -433,8 +434,9 @@ class GamePortSession {
 
   /** A call on a bound object, by the "N=node:id" a bind returned. */
   callBound(objectID, method, args = [], kwargs = null) {
+    // ObjectCallGPCS: MachoAddress(nodeID=long(nid)), read out of the object's ID.
     const nodeID = Number(String(objectID).slice(2).split(":")[0]);
-    return this._call({ destination: nodeAddress(nodeID), boundObject: objectID, service: null, method, args, kwargs });
+    return this._call({ destination: nodeAddress(long(nodeID)), boundObject: objectID, service: null, method, args, kwargs });
   }
 
   _call({ destination, boundObject, service, method, args, kwargs }) {
@@ -456,8 +458,9 @@ class GamePortSession {
       ? [0, { type: "substream", value: [1, method, args, keywords] }]
       : [1, { type: "substream", value: [boundObject, method, args, keywords] }];
     const packet = buildPacket(TYPE.CALL_REQ, {
-      // machoNet._BlockingCall: MachoAddress(clientID=0, callID=callID)
-      source: clientAddress(0, callID),
+      // machoNet._BlockingCall: MachoAddress(clientID=0, callID=callID). The
+      // counter starts life as 1L, so the call ID is a long however small.
+      source: clientAddress(0, long(callID)),
       destination,
       userID: this.userID,
       body: [body],
@@ -699,12 +702,12 @@ class GamePortSession {
   }
 
   _writeRaw(value) {
-    this._send(marshalEncode(value));
+    this._send(encodeClient(value));
   }
 
   _writePacket(packet) {
     this._emit("packet", parsePacket(packet), "out");
-    let pickle = marshalEncode(packet);
+    let pickle = encodeClient(packet);
     // machoNetTransport.Write: compress a packet over the threshold, and keep
     // the compressed form only when it is smaller by more than five percent.
     if (pickle.length > COMPRESSION_THRESHOLD) {

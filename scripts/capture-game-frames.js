@@ -173,4 +173,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { capture, converse, frameSplitter, recordingSessionOptions, recordingTransport };
+module.exports = { capture, converse, eveCommit, frameSplitter, recordingSessionOptions, recordingTransport };

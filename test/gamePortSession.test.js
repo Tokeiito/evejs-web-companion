@@ -328,6 +328,21 @@ test("every call is addressed, numbered and wrapped as the retail client does it
   for (const call of calls.filter((entry) => entry.packet.destination.kind === "node")) {
     assert.equal(call.packet.destination.nodeID, proxyNode, call.method);
   }
+  // On the wire, the things the client holds as Python longs are longs (0x2f),
+  // which the decoded packets above cannot show: the call ID, and a bound
+  // object's node ID. Each call's source address is the 4-tuple
+  // (2, 0, callID, None): 14 04 | 06 02 | 08 | 2f 01 <id> | 01.
+  const sent = clientFrames.slice(7).map((frame) => inflated(frame.bytes).toString("hex"));
+  for (const [index, hex] of sent.entries()) {
+    const callID = (index + 1).toString(16).padStart(2, "0");
+    assert.ok(hex.includes(`14040602082f01${callID}01`), `call ${index + 1}: its call ID is a long`);
+  }
+  // A bound call's destination is (1, long(nodeID), None, None): 14 04 | 09 |
+  // 2f 03 aa ff 00 | 01 | 01. As a long, 65450 needs a third byte for its sign.
+  assert.ok(sent[10].includes("1404092f03aaff000101"), "a bound object's node ID is a long");
+  // A proxy service's is (1, proxyNodeID, service, None), with the int the login gave us.
+  assert.ok(sent[0].includes("14040904aaff0000"), "the proxy node ID stays an int");
+
   const [resolve, bind, bound] = calls.slice(8, 11);
   assert.equal(resolve.target, 1, "a service call's first field is 1");
   assert.equal(resolve.args.length, 1, "MachoResolveObject takes the bind parameters alone");
