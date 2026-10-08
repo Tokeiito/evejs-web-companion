@@ -39,9 +39,15 @@
 //     the inventory (invCache.py). bindRetail() below is that translation,
 //     one case per shape the BFF asks for.
 //
-// Not here yet (docs/game-port-transport-plan.md, Phase 4): anything in
-// space. A pilot in space is refused at select, before the server is asked to
-// bring it online, and undocking is refused.
+//   - A pilot in space has a ballpark of its own, kept as the retail client
+//     keeps one (pilotSpace.js): made when the session enters a solar system,
+//     fed by the session, stepped once a second, and let go on docking. The
+//     space snapshot and the movement half of the flight status are read from
+//     it (spaceProjection.js), where the gateway reads the server's scene.
+//
+// Not here yet (docs/game-port-transport-plan.md, Phase 4): the scanner in
+// space, and the ship's own readings that the retail client takes from dogma
+// (capacitor, the three capacities, which modules are running).
 
 const crypto = require("node:crypto");
 const { GamePortSession } = require("./session");
@@ -49,6 +55,8 @@ const { connectTcp, gameEndpoint } = require("./tcp");
 const { notificationToBridgeJson, sessionChangeToBridgeJson, wireToBridgeJson } = require("./bridgeJson");
 const { GAME_PORT_HANDLE_PREFIX } = require("../pilotTransport");
 const { createCallLedger, retailForm } = require("./retailCalls");
+const { createPilotSpace } = require("./pilotSpace");
+const { projectFlight, projectSpace } = require("./spaceProjection");
 const contract = require("../../contracts/evejs-web-bridge-contract.json");
 
 /** The gateway's own codes and statuses (WEB_CALL_ERROR_STATUS_CODES), plus the gateway client's two. */
@@ -194,6 +202,9 @@ function createGamePortPilots({
   randomBytes = crypto.randomBytes,
   now = Date.now,
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  // A pilot's ballpark while it is in space (pilotSpace.js).
+  createSpace = (options) => createPilotSpace(options),
+  onSpaceError = () => {},
 } = {}) {
   const sessions = new Map();
   const epoch = randomBytes(12).toString("base64url");
@@ -276,6 +287,8 @@ function createGamePortPilots({
   function end(entry, reason, refusalStatus = 404) {
     if (entry.ended) return;
     entry.ended = true;
+    if (entry.space) entry.space.release();
+    entry.space = null;
     sessions.delete(entry.handle);
     entry.session.close();
     for (const subscriber of [...entry.subscribers]) {
@@ -335,6 +348,8 @@ function createGamePortPilots({
       bound: new Map(),
       /** The two inventory managers invCache keeps, by which: the "N=..." of each. */
       inventoryManagers: new Map(),
+      /** The pilot's ballpark while it is in space (pilotSpace.js), else null. */
+      space: null,
       ended: false,
     };
     session.onNotification((notification) => {
@@ -343,10 +358,14 @@ function createGamePortPilots({
         const gone = notification.args[0];
         forgetObject(entry, Buffer.isBuffer(gone) ? gone.toString("utf8") : String(gone));
       }
+      if (entry.space) entry.space.feed(notification);
       record(entry, notificationToBridgeJson(notification));
     });
     session.onSessionChange((changes) => {
-      if (LOCATION_ATTRIBUTES.some((name) => name in changes)) forgetLocationObjects(entry);
+      if (LOCATION_ATTRIBUTES.some((name) => name in changes)) {
+        forgetLocationObjects(entry);
+        if (sessions.has(entry.handle)) syncSpace(entry);
+      }
       record(entry, sessionChangeToBridgeJson(changes));
     });
 
@@ -363,12 +382,6 @@ function createGamePortPilots({
       }
       row = selectionRow(wireToBridgeJson(await session.call("charUnboundMgr", "GetCharacterSelectionData", [])), characterID);
       if (!row) throw fail("CALL_REFUSED", "That character is not on this account.");
-      if (!positive(keyValField(row, "stationID")) && !positive(keyValField(row, "structureID"))) {
-        throw fail(
-          "PILOT_TRANSPORT_UNAVAILABLE",
-          "This pilot is in space, and a pilot on the game-port transport cannot fly yet. Select it on the gateway transport.",
-        );
-      }
       const lockType = await session.call("charUnboundMgr", "GetCharacterLockType", [characterID]);
       if (lockType !== null && lockType !== undefined) {
         throw fail("CALL_REFUSED", LOCK_REFUSALS.get(Number(lockType)) ?? "CharacterLocked");
@@ -402,6 +415,8 @@ function createGamePortPilots({
 
     sessions.set(entry.handle, entry);
     session.onClose(() => end(entry, "connection_closed"));
+    // A pilot that was left in space comes back in space.
+    syncSpace(entry);
     return {
       bridgeSessionID: entry.handle,
       service: "charUnboundMgr",
@@ -492,9 +507,21 @@ function createGamePortPilots({
     };
   }
 
-  function assertNotFlying(place, what) {
-    if (place.inSpace) {
-      throw fail("PILOT_TRANSPORT_UNAVAILABLE", `${what} needs a ballpark, which a pilot on the game-port transport does not have yet.`);
+  /**
+   * michelle.UpdateBallpark: a ballpark while the session is in a solar system
+   * and not docked, and none otherwise; a new one for a new system.
+   */
+  function syncSpace(entry) {
+    const place = whereabouts(entry);
+    const wanted = place.inSpace ? attribute(entry, "solarsystemid") : null;
+    if (entry.space && entry.space.solarSystemID !== wanted) {
+      entry.space.release();
+      entry.space = null;
+    }
+    if (wanted !== null && !entry.space) {
+      entry.space = createSpace({ session: entry.session, solarSystemID: wanted, sleep, onError: (error, what) => onSpaceError(error, what, entry.characterID) });
+      // Nobody waits on this: the state arrives when the server has answered the bind.
+      Promise.resolve(entry.space.start()).catch((error) => onSpaceError(error, "start", entry.characterID));
     }
   }
 
@@ -512,9 +539,8 @@ function createGamePortPilots({
         shipID: place.shipID,
         shipTypeID: ship ? ship.typeID : null,
         shipIsCapsule: ship ? ship.isCapsule : null,
-        // Movement comes from the ballpark, which this transport does not have yet.
-        shipMode: null,
-        shipSpeedFraction: null,
+        // Movement is the pilot's own ball in its ballpark; nothing to say when docked or before the state has come.
+        ...(place.inSpace && entry.space && entry.space.park.validState ? projectFlight(entry.space.park) : { shipMode: null, shipSpeedFraction: null }),
       },
       notifications: drain(entry),
     };
@@ -523,7 +549,16 @@ function createGamePortPilots({
   async function readSpaceSnapshot(bridgeSessionID, sessionFields = {}) {
     const entry = held(bridgeSessionID, sessionFields);
     const place = whereabouts(entry);
-    assertNotFlying(place, "The space snapshot");
+    if (place.inSpace) {
+      const park = entry.space ? entry.space.park : null;
+      return {
+        // Until the server's state has arrived there is a park and nothing in it.
+        space: park && park.validState
+          ? projectSpace(park, { solarSystemID: place.solarSystemID, shipID: place.shipID })
+          : { inSpace: true, solarSystemID: place.solarSystemID, shipID: place.shipID, sampledAtMs: now(), entities: [], ship: null },
+        notifications: drain(entry),
+      };
+    }
     return {
       space: { inSpace: false, solarSystemID: place.solarSystemID, shipID: place.shipID, sampledAtMs: now(), entities: [], ship: null },
       notifications: drain(entry),
@@ -533,7 +568,9 @@ function createGamePortPilots({
   async function readScannerState(bridgeSessionID, sessionFields = {}) {
     const entry = held(bridgeSessionID, sessionFields);
     const place = whereabouts(entry);
-    assertNotFlying(place, "The scanner");
+    if (place.inSpace) {
+      throw fail("PILOT_TRANSPORT_UNAVAILABLE", "The scanner in space is not read on the game-port transport yet.");
+    }
     return {
       scanner: { inSpace: false, solarSystemID: place.solarSystemID, shipID: place.shipID, maxActiveProbes: 0, launcher: null, probes: [] },
       notifications: drain(entry),
@@ -612,6 +649,8 @@ function createGamePortPilots({
   async function bindRetail(entry, service, method, args, kwargs) {
     const { session } = entry;
     if (method === "MachoBindObject") {
+      // michelle.GetRemotePark(): the park's own bound ballpark, the one object everything is asked of.
+      if (service === "beyonce" && entry.space) return entry.space.remote();
       const params = monikerParams(entry, service, args[0]);
       if (params === undefined) return null;
       return (await session.bind(service, params)).objectID;
@@ -661,9 +700,6 @@ function createGamePortPilots({
     if (!object) throw fail("BOUND_HANDLE_NOT_FOUND", "Unknown bound-object handle for this session.");
     if (object.service !== service) throw fail("BOUND_HANDLE_NOT_FOUND", "Bound-object handle does not belong to the requested service.");
     assertAllowed(service, method);
-    if (service === "ship" && method === "Undock") {
-      throw fail("PILOT_TRANSPORT_UNAVAILABLE", "Undocking needs a ballpark, which a pilot on the game-port transport does not have yet.");
-    }
     const form = shape(service, method, args, kwargs);
     ledger.note(service, method, form);
     const result = await run(entry, service, method, async () =>

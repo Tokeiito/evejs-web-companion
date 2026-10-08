@@ -122,6 +122,13 @@ class Park {
     this.states = [];
     this.slimItems = new Map();
     this.damageState = new Map();
+    /**
+     * The tick at which each damage state arrived. The client files a state
+     * with its clock's reading (blue.os.GetSimTime()) so that the shield, which
+     * recharges by itself, can be brought forward from then; the park's tick is
+     * that clock in whole seconds.
+     */
+    this.damageSeen = new Map();
     this.destructionEffects = new Map();
     this.validState = false;
     /** The queue: [entries, waitForBubble] per tick, in tick order. */
@@ -336,9 +343,15 @@ class Park {
     }
   }
 
+  /** File a ball's damage state, with the tick it arrived at. */
+  _damage(id, state) {
+    this.damageState.set(id, state);
+    this.damageSeen.set(id, this.currentTime);
+  }
+
   /** An entry that touches nothing in the simulation. What the web client needs of these is kept. */
   _notSimulation(funcName, args) {
-    if (funcName === "OnDamageStateChange") this.damageState.set(ballId(args[0]), args[1]);
+    if (funcName === "OnDamageStateChange" || funcName === "OnFleetDamageStateChange") this._damage(ballId(args[0]), args[1]);
     if (funcName === "OnSlimItemChange") this.slimItems.set(ballId(args[0]), fieldsOf(args[1]));
   }
 
@@ -404,7 +417,9 @@ class Park {
     }
     this.validState = true;
     this.flushSimulationHistory();
-    this.damageState = new Map([...fieldsOf(fields.get("damageState"))].map(([id, damage]) => [ballId(id), damage]));
+    this.damageState = new Map();
+    this.damageSeen = new Map();
+    for (const [id, damage] of fieldsOf(fields.get("damageState"))) this._damage(ballId(id), damage);
     this.solItem = fields.get("solItem") ?? null;
   }
 
@@ -417,7 +432,7 @@ class Park {
       const itemID = ballId(slim.get("itemID"));
       if (!this.slimItems.has(itemID)) this.slimItems.set(itemID, slim);
     }
-    for (const [id, damage] of fieldsOf(damageDict)) this.damageState.set(ballId(id), damage);
+    for (const [id, damage] of fieldsOf(damageDict)) this._damage(ballId(id), damage);
   }
 
   /** Park.AddBalls2 (1256): (state, extraBallData), each of which is a slim item or a (slim item, damage) pair. */
@@ -429,7 +444,7 @@ class Park {
       const slim = fieldsOf(slimItemDict);
       const itemID = ballId(slim.get("itemID"));
       // The client files it with the time it arrived, for working out the shield since. That clock is not kept yet.
-      this.damageState.set(itemID, damageState ?? null);
+      this._damage(itemID, damageState ?? null);
       if (!this.slimItems.has(itemID)) this.slimItems.set(itemID, slim);
     }
   }
@@ -454,6 +469,7 @@ class Park {
     const id = ballId(ballID);
     this.ballpark.removeBall(id, 0);
     this.damageState.delete(id);
+    this.damageSeen.delete(id);
     this.destructionEffects.delete(id);
     const slim = this.slimItems.get(id);
     if (slim === undefined) return;
@@ -477,6 +493,7 @@ class Park {
     for (const id of leaving) this.ballpark.removeBall(id, 0);
     for (const id of ids) {
       this.damageState.delete(id);
+      this.damageSeen.delete(id);
       this.destructionEffects.delete(id);
       this.slimItems.delete(id);
     }

@@ -33,6 +33,11 @@ function main(argv = process.argv.slice(2)) {
   const pairs = Array.isArray(loaded) ? loaded : loaded.default || loaded.breakages;
   if (!Array.isArray(pairs)) throw new Error(`${listFile} does not hold a list of [find, replacement] pairs.`);
   const original = fs.readFileSync(file, "utf8");
+  // A file git has checked out on Windows ends its lines CRLF; one written by a
+  // tool ends them LF. The text to find is written with LF, so match on that.
+  const crlf = original.includes("\r\n");
+  const source = original.replace(/\r\n/g, "\n");
+  const asWritten = (text) => (crlf ? text.replace(/\n/g, "\r\n") : text);
   const backup = path.join(os.tmpdir(), `break-and-check-${process.pid}-${path.basename(file)}`);
   fs.writeFileSync(backup, original);
   console.log(`${pairs.length} breakages of ${file}; the original is also at ${backup} until this ends`);
@@ -48,13 +53,13 @@ function main(argv = process.argv.slice(2)) {
   try {
     for (const [find, replacement] of pairs) {
       const label = `${find.replace(/\s+/g, " ").slice(0, 58)} => ${replacement.replace(/\s+/g, " ").slice(0, 34)}`;
-      if (original.split(find).length !== 2) {
+      if (source.split(find).length !== 2) {
         console.log(`NOT TRIED ${label} | the text to find is missing or not unique`);
         survived += 1;
         continue;
       }
       // A function, so that "$&" and the like in the replacement are not read as instructions.
-      fs.writeFileSync(file, original.replace(find, () => replacement));
+      fs.writeFileSync(file, asWritten(source.replace(find, () => replacement)));
       const run = spawnSync(process.execPath, ["--test", "--test-timeout=20000", testFile], { encoding: "utf8", timeout: 120000 });
       const output = run.stdout || "";
       const caught = Boolean(run.error) || run.status !== 0;

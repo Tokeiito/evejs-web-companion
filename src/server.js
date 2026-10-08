@@ -165,6 +165,8 @@ const gamePortPilots = options.gamePortPilots !== undefined
     ? createGamePortPilots({
       // "Released" is said once the server itself has the character offline.
       isOnline: async (accountID, characterID) => (await accountGateway.getCharacterStatus(accountID, characterID))?.online,
+      // A pilot's ballpark runs in its own time; nobody is waiting on it to hear that something went wrong.
+      onSpaceError: (error, what, characterID) => console.warn(`[game-port] pilot ${characterID}: ballpark ${what} failed: ${error && error.message}`),
     })
     : null;
 app.locals.gamePortPilots = gamePortPilots;

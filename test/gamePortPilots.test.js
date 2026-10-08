@@ -10,6 +10,9 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { GamePortPilotError, argumentsToWire, boundObjectID, createGamePortPilots } = require("../src/gamePort/pilots");
 const { GAME_PORT_HANDLE_PREFIX, PILOT_FUNCTIONS } = require("../src/pilotTransport");
+const { createPilotSpace } = require("../src/gamePort/pilotSpace");
+const undockRecording = require("./fixtures/destinyUndock.json");
+const { notifications: recordedNotifications } = require("./helpers/destinyRecording");
 
 const ACCOUNT = 4;
 const PILOT = 140000001;
@@ -133,7 +136,7 @@ function build(sessionOptions = {}, pilotOptions = {}) {
       "ship.MachoBindObject", "ship.Undock", "ship.Board", "dogmaIM.MachoBindObject", "dogmaIM.GetAllInfo",
       "agentMgr.MachoBindObject", "agentMgr.DoAction", "planetMgr.MachoBindObject", "charMgr.MachoBindObject",
       "reprocessingSvc.MachoBindObject", "fleetObjectHandler.MachoBindObject", "fleetObjectHandler.CreateFleet",
-      "entity.MachoBindObject", "beyonce.MachoBindObject", "scanMgr.GetSystemScanMgr",
+      "entity.MachoBindObject", "beyonce.MachoBindObject", "beyonce.CmdStop", "scanMgr.GetSystemScanMgr",
     ]),
     sleep: async () => {},
     selectSettleMs: 200,
@@ -218,11 +221,90 @@ test("select refuses a character that is not on the account, before asking for i
   assert.equal(built.session.closed, true);
 });
 
-test("select refuses a pilot in space, before the server brings it online", async () => {
-  const built = build({ answers: { "charUnboundMgr.GetCharacterSelectionData": selectionData([characterRow({ stationID: null })]) } });
-  await rejects(built.pilots.selectCharacter([PILOT, null, true], null, FIELDS), "PILOT_TRANSPORT_UNAVAILABLE", /in space/);
-  assert.deepEqual(built.session.calls.map((call) => call.method), ["GetCharacterSelectionData"]);
-  assert.equal(built.session.closed, true);
+/**
+ * Pilot options under which each pilot's ballpark ticks only when the test
+ * says so, and whatever goes wrong in a park's own time is kept.
+ */
+function handTicked() {
+  const parks = [];
+  const errors = [];
+  return {
+    parks,
+    errors,
+    options: {
+      createSpace(options) {
+        const made = { tick: null, stopped: false };
+        made.space = createPilotSpace({ ...options, startTicking: (tick) => { made.tick = tick; return made; }, stopTicking: () => { made.stopped = true; } });
+        parks.push(made);
+        return made.space;
+      },
+      onSpaceError: (error, what) => errors.push([what, error.message]),
+    },
+  };
+}
+const IN_SPACE = { inSpace: true, answers: { "charUnboundMgr.GetCharacterSelectionData": selectionData([characterRow({ stationID: null })]) } };
+const WHOSE = { userid: ACCOUNT };
+/** The first updates of a real undock, as the session hands them on. */
+const recordedUpdates = recordedNotifications(undockRecording).filter((notification) => notification.method === "DoDestinyUpdate");
+
+test("a pilot left in space is selected in space and given a ballpark as the client makes one", async () => {
+  const hand = handTicked();
+  const built = build(IN_SPACE, hand.options);
+  const outcome = await built.pilots.selectCharacter([PILOT, null, true], null, FIELDS);
+  const { session } = built;
+  assert.deepEqual([outcome.session.stationID, outcome.session.solarSystemID], [null, SYSTEM]);
+  // michelle.AddBallpark: the formations are asked for, the park starts to tick, and the ballpark is bound for the system.
+  const first = await built.pilots.bindObject("beyonce", "MachoBindObject", [], null, WHOSE, outcome.bridgeSessionID);
+  assert.deepEqual(session.calls.map((call) => `${call.service}.${call.method}`), [
+    "charUnboundMgr.GetCharacterSelectionData", "charUnboundMgr.GetCharacterLockType", "charUnboundMgr.SelectCharacterID", "beyonce.GetFormations",
+  ]);
+  assert.deepEqual(session.binds, [{ service: "beyonce", params: SYSTEM }]);
+  assert.deepEqual([hand.parks.length, typeof hand.parks[0].tick, hand.parks[0].stopped], [1, "function", false]);
+  // What the BFF binds is the park's own remote ballpark, the one object everything is asked of: no second bind.
+  const second = await built.pilots.bindObject("beyonce", "MachoBindObject", [], null, WHOSE, outcome.bridgeSessionID);
+  await built.pilots.callBoundMethod("beyonce", "CmdStop", [], null, WHOSE, outcome.bridgeSessionID, first.boundHandle);
+  await built.pilots.callBoundMethod("beyonce", "CmdStop", [], null, WHOSE, outcome.bridgeSessionID, second.boundHandle);
+  assert.equal(session.binds.length, 1);
+  assert.deepEqual(session.boundCalls.map((call) => [call.objectID, call.method]), [["N=1:1", "CmdStop"], ["N=1:1", "CmdStop"]]);
+  assert.deepEqual(hand.errors, []);
+});
+
+test("the space snapshot and the flight status are read from the pilot's own ballpark", async () => {
+  const hand = handTicked();
+  const built = build(IN_SPACE, hand.options);
+  const { bridgeSessionID: handle } = await built.pilots.selectCharacter([PILOT, null, true], null, FIELDS);
+  await built.pilots.bindObject("beyonce", "MachoBindObject", [], null, WHOSE, handle);
+  // Before the server's state has come: in space, and nothing known of it.
+  const empty = await built.pilots.readSpaceSnapshot(handle);
+  assert.deepEqual([empty.space.inSpace, empty.space.entities, empty.space.ship, empty.space.shipID], [true, [], null, SHIP]);
+  assert.deepEqual([(await built.pilots.readFlightStatus(handle)).flight.shipMode], [null]);
+
+  // The server's first updates arrive, and the park ticks.
+  for (const update of recordedUpdates.slice(0, 5)) built.session.notify("DoDestinyUpdate", update.args);
+  hand.parks[0].tick();
+  const { space, notifications } = await built.pilots.readSpaceSnapshot(handle);
+  assert.deepEqual([space.inSpace, space.solarSystemID, space.shipID, space.entities.length], [true, SYSTEM, SHIP, 76]);
+  assert.deepEqual(notifications, [], "the ballpark's updates are not handed on as notifications");
+  const own = space.entities.find((row) => row.isSelf);
+  assert.deepEqual([own.itemID, own.kind, own.typeID, own.name, own.characterID, own.mode, own.maxVelocity], [SHIP, "ship", 588, "Reaper", PILOT, "GOTO", 341]);
+  assert.deepEqual([space.ship.itemID, space.ship.mode, space.ship.position, space.ship.velocity], [SHIP, "GOTO", own.position, own.velocity]);
+  const station = space.entities.find((row) => row.itemID === STATION);
+  assert.deepEqual([station.kind, station.groupID, station.categoryID, station.isSelf], ["station", 15, 3, false]);
+  assert.equal(space.sampledAtMs % 1000, 0, "the park's tick, in milliseconds");
+  const { flight } = await built.pilots.readFlightStatus(handle);
+  assert.deepEqual([flight.inSpace, flight.docked, flight.shipMode, flight.shipSpeedFraction, flight.solarSystemID], [true, false, "GOTO", 1, SYSTEM]);
+
+  // The park steps itself: a tick later the ship has moved a tick's travel, and the rest of the grid has arrived.
+  hand.parks[0].tick();
+  hand.parks[0].tick();
+  const later = (await built.pilots.readSpaceSnapshot(handle)).space;
+  assert.equal(later.entities.length, 95);
+  const moved = Math.hypot(later.ship.position.x - space.ship.position.x, later.ship.position.y - space.ship.position.y, later.ship.position.z - space.ship.position.z);
+  assert.ok(Math.abs(moved - 2 * 341) < 1e-3, `${moved} m in two ticks`);
+  assert.equal(later.sampledAtMs - space.sampledAtMs, 2000);
+  // The scanner in space is not read yet, and says so.
+  await rejects(built.pilots.readScannerState(handle), "PILOT_TRANSPORT_UNAVAILABLE", /scanner in space/);
+  assert.deepEqual(hand.errors, []);
 });
 
 test("a pilot docked in a structure is docked", async () => {
@@ -648,14 +730,55 @@ test("docked, the space snapshot and the scanner are the gateway's docked answer
   });
 });
 
-test("a pilot that reaches space is reported in space, and what needs a ballpark refuses", async () => {
-  const { pilots, session, handle } = await selected();
+test("undocking is sent; reaching space makes the ballpark, docking lets it go, and another system gets another", async () => {
+  const hand = handTicked();
+  const { pilots, session, handle } = await selected({}, hand.options);
+  const ship = await pilots.bindObject("ship", "MachoBindObject", [[STATION, 15]], null, WHOSE, handle);
+  await pilots.callBoundMethod("ship", "Undock", [SHIP, false], null, WHOSE, handle, ship.boundHandle);
+  assert.deepEqual(session.boundCalls.at(-1), { objectID: "N=1:1", method: "Undock", args: [SHIP, false], kwargs: null });
+  assert.equal(hand.parks.length, 0, "docked: no ballpark");
+
+  // The session reaches space.
   delete session.attributes.stationid;
   session.attributes.solarsystemid = SYSTEM;
+  session.change({ stationid: [STATION, null], solarsystemid: [null, SYSTEM], locationid: [STATION, SYSTEM] });
+  await pilots.bindObject("beyonce", "MachoBindObject", [], null, WHOSE, handle);
+  assert.deepEqual([hand.parks.length, hand.parks[0].space.solarSystemID, session.binds.at(-1)], [1, SYSTEM, { service: "beyonce", params: SYSTEM }]);
   const { flight } = await pilots.readFlightStatus(handle);
   assert.deepEqual([flight.inSpace, flight.docked, flight.stationID, flight.solarSystemID], [true, false, null, SYSTEM]);
-  await rejects(pilots.readSpaceSnapshot(handle), "PILOT_TRANSPORT_UNAVAILABLE", /ballpark/);
-  await rejects(pilots.readScannerState(handle), "PILOT_TRANSPORT_UNAVAILABLE", /ballpark/);
+  // A change that is not about where the pilot is leaves the ballpark alone.
+  session.change({ shipid: [SHIP, 77] });
+  assert.deepEqual([hand.parks.length, hand.parks[0].stopped], [1, false]);
+
+  // A gate jump: a new system, so the old ballpark goes and a new one is made and bound.
+  const NEXT = 30000144;
+  Object.assign(session.attributes, { solarsystemid: NEXT, solarsystemid2: NEXT });
+  session.change({ solarsystemid: [SYSTEM, NEXT], solarsystemid2: [SYSTEM, NEXT], locationid: [SYSTEM, NEXT] });
+  await pilots.bindObject("beyonce", "MachoBindObject", [], null, WHOSE, handle);
+  assert.deepEqual([hand.parks.length, hand.parks[0].stopped, hand.parks[1].space.solarSystemID, session.binds.at(-1)], [2, true, NEXT, { service: "beyonce", params: NEXT }]);
+  // An update that comes for the old park after it was let go is not applied to anything.
+  assert.equal(hand.parks[0].space.feed({ method: "DoDestinyUpdate", args: recordedUpdates[2].args }), false);
+
+  // Docking: the ballpark is let go, and the snapshot says docked.
+  session.attributes.stationid = 60000004;
+  delete session.attributes.solarsystemid;
+  session.change({ stationid: [null, 60000004], solarsystemid: [NEXT, null], locationid: [NEXT, 60000004] });
+  assert.deepEqual([hand.parks.length, hand.parks[1].stopped], [2, true]);
+  const { space } = await pilots.readSpaceSnapshot(handle);
+  assert.deepEqual([space.inSpace, space.entities, space.ship], [false, [], null]);
+  assert.deepEqual(hand.errors, []);
+});
+
+test("a pilot's ballpark ends with its session, and what goes wrong in the park's own time is reported, not thrown", async () => {
+  const hand = handTicked();
+  const built = build(IN_SPACE, hand.options);
+  const { bridgeSessionID: handle } = await built.pilots.selectCharacter([PILOT, null, true], null, FIELDS);
+  await built.pilots.bindObject("beyonce", "MachoBindObject", [], null, WHOSE, handle);
+  // An update the park cannot read at all.
+  built.session.notify("DoDestinyUpdate", [{ type: "list", items: [[7, null]] }, false]);
+  assert.deepEqual(hand.errors.map(([what]) => what), ["DoDestinyUpdate"]);
+  await built.pilots.releaseBridgeSession(handle, WHOSE);
+  assert.equal(hand.parks[0].stopped, true);
 });
 
 // ── bound objects ────────────────────────────────────────────────────────────
@@ -873,15 +996,6 @@ test("a bind that is not on the allowlist is not made", async () => {
   assert.deepEqual(session.binds, []);
 });
 
-test("undocking is refused while this transport cannot fly, and never sent", async () => {
-  const { pilots, session, handle } = await selected();
-  const { boundHandle } = await pilots.bindObject("ship", "MachoBindObject", [[STATION, 15]], null, WHO, handle);
-  await rejects(pilots.callBoundMethod("ship", "Undock", [SHIP, false], null, WHO, handle, boundHandle), "PILOT_TRANSPORT_UNAVAILABLE", /Undocking needs a ballpark/);
-  assert.deepEqual(session.boundCalls, []);
-  // Everything else on the ship's object goes through.
-  await pilots.callBoundMethod("ship", "Board", [77], null, WHO, handle, boundHandle);
-  assert.equal(session.boundCalls.at(-1).method, "Board");
-});
 
 test("when the pilot moves, what was bound for the old place is forgotten, and the rest is kept", async () => {
   const { pilots, session, handle } = await selected();
