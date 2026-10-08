@@ -1007,7 +1007,7 @@ cycle ten seconds later to the tick of the server's clock, and stops at the serv
 that a module started arrives one millisecond before its answer to `Activate`, so a route that
 re-reads straight after the call sees it.
 
-*Tests.* 7 new, 3 extended. 25 deliberate breakages of the new part: two got through at first,
+*Tests.* 5 new, 2 extended. 25 deliberate breakages of the new part: two got through at first,
 both gaps, both closed. Suite: 8869 tests, 8844 pass, 0 fail, 24 skipped, 1 todo.
 
 *Through the BFF's own routes, each transport in turn*, Test Pilot's afterburner:
