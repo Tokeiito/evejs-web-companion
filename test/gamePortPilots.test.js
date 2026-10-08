@@ -2065,3 +2065,27 @@ test("the park's clock is the pilot's: a rebase moves the park, and a pilot neve
   const { bridgeSessionID: handle } = await docked.pilots.selectCharacter([PILOT, null, true], null, FIELDS);
   assert.deepEqual(((space) => [space.inSpace, space.timeDilation])((await docked.pilots.readSpaceSnapshot(handle)).space), [false, 1]);
 });
+
+test("between two ticks a pilot's snapshot moves: the ship is where the client draws it at each reading", async () => {
+  const { state, run, snapshot, park } = await clockedPilot();
+  run(3000);
+  assert.equal(park().validState, true);
+  const tick = park().currentTime;
+  const places = [];
+  for (let reads = 0; reads < 4; reads += 1) {
+    const space = await snapshot();
+    places.push({ position: space.ship.position, speed: Math.hypot(space.ship.velocity.x, space.ship.velocity.y, space.ship.velocity.z), sampledAtMs: space.sampledAtMs });
+    state.now += 200;
+  }
+  // No step was taken in those 600 ms, and the ship moved 200 ms of travel between each reading and the next.
+  assert.equal(park().currentTime, tick);
+  const far = (a, b) => Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
+  for (let reads = 1; reads < 4; reads += 1) {
+    assert.ok(Math.abs(far(places[reads].position, places[reads - 1].position) - 341 * 0.2) < 1e-3, `${far(places[reads].position, places[reads - 1].position)} m`);
+    assert.ok(Math.abs(places[reads].speed - 341) < 1e-6);
+    assert.equal(places[reads].sampledAtMs, tick * 1000);
+  }
+  // The first reading was taken at the step: where the ship was a tick before the park's place for it.
+  const ball = park().ballpark.ball(SHIP);
+  assert.deepEqual(places[0].position, { x: ball.oldPos.x, y: ball.oldPos.y, z: ball.oldPos.z });
+});

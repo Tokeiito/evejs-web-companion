@@ -1153,3 +1153,32 @@ test("a recorded warp stepped by the clock a frame at a time is the same flight 
   assert.equal(park.currentTime, byTick.currentTime);
   assert.deepEqual([ours.newPos, ours.newVel, ours.mode], [theirs.newPos, theirs.newVel, theirs.mode]);
 });
+
+test("each step the driver takes is handed the clock's reading at the step before, and a ball keeps the last two", () => {
+  // The very first step is handed the clock's reading itself.
+  const early = new Park();
+  early.ballpark.addBall({ id: 2, isFree: true, mass: 1e6, maxVelocity: 100 });
+  early.onTick(5_000_000);
+  assert.deepEqual([early.ballpark.ball(2).oldTime, early.ballpark.ball(2).newTime], [4_999_000, 5_000_000]);
+
+  const park = new Park();
+  park.onTick(5_000_000);
+  park.ballpark.addBall({ id: 2, x: 0, y: 0, z: 0, vx: 4, vy: 0, vz: 0, isFree: true, mass: 1e6, maxVelocity: 100 });
+  const ball = park.ballpark.ball(2);
+  park.onTick(5_001_250);
+  assert.deepEqual([park.time, ball.oldTime, ball.newTime], [5_001_000, 4_999_000, 5_000_000]);
+  // Three steps at once: the last is handed the reading two steps on from the first.
+  park.onTick(5_004_300);
+  assert.deepEqual([park.time, ball.oldTime, ball.newTime], [5_004_000, 5_002_000, 5_003_000]);
+  // So at the clock's reading the ball is drawn by how far through its tick the park is.
+  assert.deepEqual(park.ballpark.drawn(ball, 5_004_300), park.ballpark.between(ball, park.fraction(5_004_300)));
+  assert.ok(Math.abs(park.fraction(5_004_300) - 0.3) < 1e-12);
+  // A rebase moves the park and its balls together: the same drawing at the moved reading.
+  const expected = park.ballpark.between(ball, 0.5);
+  park.adjustTimes(10_000);
+  assert.deepEqual([park.time, ball.oldTime, ball.newTime], [5_014_000, 5_012_000, 5_013_000]);
+  assert.deepEqual(park.ballpark.drawn(ball, 5_014_500), expected);
+  // tick(), which steps without the clock, leaves a ball's times where they were.
+  park.tick();
+  assert.deepEqual([ball.oldTime, ball.newTime], [5_012_000, 5_013_000]);
+});

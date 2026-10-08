@@ -150,10 +150,17 @@ class Park {
     this.resets = 0;
     /** Updates that held more than one tick: the client reports each to its statistics and carries on. */
     this.fatalDesyncs = 0;
-    /** Ballpark::mTime: the sim clock's reading at the park's last step, in milliseconds, less what was left over. */
-    this.time = 0;
     /** Ballpark::mFirstTime: nothing has stepped the park by the clock yet. */
     this.firstTime = true;
+  }
+
+  /** Ballpark::mTime: the sim clock's reading at the park's last step, in milliseconds, less what was left over. */
+  get time() {
+    return this.ballpark.time;
+  }
+
+  set time(value) {
+    this.ballpark.time = value;
   }
 
   get currentTime() {
@@ -216,9 +223,9 @@ class Park {
     this._step();
   }
 
-  _step() {
+  _step(timestamp = 0) {
     this.doPreTick(this.currentTime);
-    this.ballpark.evolve();
+    this.ballpark.evolve(timestamp);
     this.doPostTick(this.currentTime);
   }
 
@@ -241,13 +248,14 @@ class Park {
     if (sinceLast < interval) return 0;
     let steps = 1;
     if (this.firstTime) {
-      this.ballpark.evolve();
+      this.ballpark.evolve(simTime);
       sinceLast = 0;
       this.firstTime = false;
     } else {
       steps = Math.trunc(sinceLast / interval);
       for (let step = 0; step < steps; step += 1) {
-        this._step();
+        // Each step is handed the clock's reading at the step before it.
+        this._step(simTime - sinceLast);
         sinceLast -= interval;
       }
     }
@@ -262,7 +270,7 @@ class Park {
    * where it would have.
    */
   adjustTimes(delta) {
-    this.time += delta;
+    this.ballpark.adjustTimes(delta);
   }
 
   /**

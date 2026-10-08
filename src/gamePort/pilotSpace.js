@@ -164,6 +164,8 @@ function createPilotSpace({
   return {
     solarSystemID,
     park,
+    /** The reading of the clock the park is stepped by, in milliseconds: what a ball is drawn at (Ballpark.drawn). */
+    simTime: readClock,
     start,
     feed,
     release,

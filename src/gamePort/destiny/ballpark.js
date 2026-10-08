@@ -14,7 +14,8 @@
 //                              Gradient (2746), Potential (2789), AddBall (3303),
 //                              FollowBall (3879), Orbit (4007),
 //                              the orders (4471-4650) and the setters (4652-5090)
-//   destiny/src/Ball.cpp       ClientBall::InterpolatedPosition (1208): a ball between two ticks
+//   destiny/src/Ball.cpp       ClientBall::InterpolatedPosition (1208) and InforceContinuity (877):
+//                              a ball between two ticks, as the client draws and measures it
 //   destiny/src/Collision.cpp  CollideTwoSpheres (108), Quadratic (136)
 //   destiny/src/Partition.cpp  which balls a ball can collide with (302, 344)
 //   destiny/src/Thunkers.cpp   reading a state into the park (2083, 2463, 2897) and
@@ -158,6 +159,8 @@ class Ballpark {
     this.dt = tickInterval * 0.001;
     /** mCurrentTime: the tick counter. */
     this.currentTime = 0;
+    /** mTime: the sim clock's reading at the last step the engine's driver took, in milliseconds, less what was left over (Park.onTick). */
+    this.time = 0;
     this.balls = new Map();
     this.freeBalls = new Map();
     /** moribundBalls: removed from play, kept until their time is up. */
@@ -222,6 +225,14 @@ class Ballpark {
         lastG: vec(),
         lastC: vec(),
         collisions: [],
+        // What the client keeps for drawing the ball between ticks (Ball.h 181-182, 424-427): the clock's
+        // reading at its last two steps, and what was last drawn, when, and in which tick.
+        newTime: 0,
+        oldTime: 0,
+        posUpdateTime: 0,
+        lastPos: vec(),
+        lastVel: vec(),
+        lastTick: -1,
       };
       this.balls.set(id, ball);
     }
@@ -407,6 +418,8 @@ class Ballpark {
     ball.isFree = flag;
     if (ball.isFree) {
       this.freeBalls.set(id, ball);
+      // "Set ball time to a tick ago so that we don't snap back and forth during first tick of client interpolation"
+      ball.newTime = this.time - this.tickInterval;
     } else {
       this.stop(id);
       this.setBallVelocity(id, 0.0, 0.0, 0.0);
@@ -849,13 +862,69 @@ class Ballpark {
    * place does not depend on it. Not ported: the tick's collisions worked out
    * step by step (mCollisionLocations), which this park does not keep.
    */
-  between(ball, fraction) {
+  between(ball, fraction, from = null) {
     if (isWarping(ball)) {
       const t = ((this.currentTime - ball.effectStamp) - 1 + fraction) * this.dt;
-      const placed = this.warpDistance(ball, ball.oldPos, ball.oldVel, t, true);
+      const placed = this.warpDistance(ball, from ? from.p : ball.oldPos, from ? from.v : ball.oldVel, t, true);
       return { p: placed.p, v: placed.v };
     }
     return this.integrate(ball.oldPos, ball.oldVel, add(ball.lastG, ball.lastC), ball.mass * ball.agility, this.friction, ball.timeFactor, fraction * this.dt);
+  }
+
+  /**
+   * ClientBall::InterpolatedPosition (Ball.cpp 1208) and what GetValueDotAt
+   * reads after it (1438): where the client draws a ball, and how fast it says
+   * the ball is going, when its sim clock reads `time` (milliseconds). This is
+   * what the client measures with too: an overview row's distance and speed,
+   * the HUD's speed.
+   *
+   * The client looks two ticks back from its clock, and each step leaves on a
+   * ball the clock's reading at the step before (evolve). The two cancel: in
+   * the second after the park has stepped, a ball is drawn from where it was a
+   * tick ago to where the park now has it. What is drawn is one tick behind
+   * what the park knows.
+   *
+   * A ball no step has yet been timed for (a fixed one, or one that has just
+   * arrived) is where the park has it. Asked again for the same reading, or
+   * for an earlier one, the answer is the last one given.
+   */
+  drawn(ball, time) {
+    const shifted = time - 2 * this.tickInterval;
+    if (ball.posUpdateTime === shifted || shifted < ball.posUpdateTime) return { p: ball.lastPos, v: ball.lastVel };
+    if (ball.oldTime === ball.newTime) {
+      // "No interpolation possible. Just return the newest value"
+      ball.lastPos = { ...ball.newPos };
+      ball.posUpdateTime = shifted;
+      return { p: ball.lastPos, v: ball.lastVel };
+    }
+    // InforceContinuity (877): the first drawing of a ball begins from where it was.
+    if (ball.lastTick !== this.currentTime) {
+      if (ball.lastTick === -1) {
+        ball.lastPos = { ...ball.oldPos };
+        ball.lastVel = { ...ball.oldVel };
+      }
+      ball.lastTick = this.currentTime;
+    }
+    const fraction = (shifted - ball.oldTime) / this.tickInterval;
+    const placed = this.between(ball, fraction, { p: ball.lastPos, v: ball.lastVel });
+    ball.lastPos = placed.p;
+    ball.lastVel = placed.v;
+    ball.posUpdateTime = shifted;
+    return { p: ball.lastPos, v: ball.lastVel };
+  }
+
+  /**
+   * Ballpark::AdjustTimes (4416): every time the park keeps by the sim clock
+   * moved by `delta` milliseconds: its own, and what each ball keeps for
+   * drawing. The client does this when it is told its sim clock was rebased.
+   */
+  adjustTimes(delta) {
+    this.time += delta;
+    for (const ball of this.balls.values()) {
+      ball.posUpdateTime += delta;
+      if (ball.newTime !== 0) ball.newTime += delta;
+      if (ball.oldTime !== 0) ball.oldTime += delta;
+    }
   }
 
   /** Ballpark::EvolveWarp (915): lining up is a GOTO at the destination; once lined up the warp proper begins, in this same tick. */
@@ -1154,8 +1223,14 @@ class Ballpark {
    * Ballpark::Evolve (421): one tick. Every free ball's acceleration is found
    * first, then every ball is stepped from the same picture of the others, then
    * all of them move at once. Balls are taken in ascending id.
+   *
+   * `timestamp` is the sim clock's reading the engine's driver hands over with
+   * the step, in milliseconds: the reading at the step before this one. Each
+   * ball keeps it and the one before, for drawing (drawn). A step taken without
+   * one, as every step the park takes to catch up or go back is, leaves those
+   * times alone.
    */
-  evolve() {
+  evolve(timestamp = 0) {
     const free = [...this.freeBalls.values()].filter((ball) => !ball.isMoribund).sort((a, b) => byId(a.id, b.id));
     for (const ball of free) this._evolveBehavior(ball);
     let all = null;
@@ -1190,6 +1265,11 @@ class Ballpark {
     for (const ball of free) {
       // TrollReady (6315): its time has come.
       if (ball.mode === MODE.TROLL && !(ball.effectStamp > this.currentTime)) trolls.push(ball);
+      if (timestamp !== 0) {
+        // "Assume that we are one time step ahead of time..."
+        ball.oldTime = ball.newTime === 0 ? timestamp - this.tickInterval : ball.newTime;
+        ball.newTime = timestamp;
+      }
       if (ball.mode === MODE.MUSHROOM) throw new DestinyNotPorted("The MUSHROOM mode");
       [ball.newPos, ball.oldPos] = [ball.oldPos, ball.newPos];
       [ball.newVel, ball.oldVel] = [ball.oldVel, ball.newVel];

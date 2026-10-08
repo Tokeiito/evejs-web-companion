@@ -103,8 +103,8 @@ function healthOf(damageState, secondsSince) {
   return { shieldRatio: ratio(shield), armorRatio: ratio(damageState[damageState.length - 2]), hullRatio: ratio(damageState[damageState.length - 1]) };
 }
 
-/** One overview row: a ball with its slim item. */
-function projectEntity(park, ball, slim, ego) {
+/** One overview row: a ball with its slim item. `placed(ball)` says where the ball is shown and how fast: { p, v }. */
+function projectEntity(park, ball, slim, ego, placed) {
   const itemID = number(ball.id);
   const categoryID = positive(slim.get("categoryID"));
   const groupID = positive(slim.get("groupID"));
@@ -119,8 +119,8 @@ function projectEntity(park, ball, slim, ego) {
     name: text(slim.get("name")) || null,
     ownerID: positive(slim.get("ownerID")),
     radius: ball.radius,
-    position: vector(ball.newPos),
-    velocity: vector(ball.newVel),
+    position: vector(placed(ball).p),
+    velocity: vector(placed(ball).v),
     isSelf: ego !== null && ball.id === ego,
     ...healthOf(park.damageState.get(ball.id), seen === undefined ? 0 : park.currentTime - seen),
   };
@@ -149,6 +149,12 @@ function projectEntity(park, ball, slim, ego) {
  * and `shipID` are where the session says the pilot is and what it flies.
  * `readings` is what dogma says of the pilot's own ship (pilotDogma.js), which
  * the ballpark does not know; without it those fields are null.
+ *
+ * `simTime` is the pilot's sim clock's reading, in milliseconds. With it every
+ * ball's place and speed are the ones the client draws and measures with at
+ * that reading (Ballpark.drawn): an overview row's distance is from
+ * ball.GetVectorAt(simTime), its speed and the HUD's from GetVectorDotAt.
+ * Without it they are the park's own at its last tick.
  */
 /**
  * spaceMgr.CheckWarpDestination: does the thing the pilot asked to warp to lie where the server's warp is
@@ -179,14 +185,15 @@ function warpOf(park, egoBall, destinationID) {
   return { preparing: egoBall.effectStamp < 0, point: point ? { ...point } : null, destinationID: lies ? id : null };
 }
 
-function projectSpace(park, { solarSystemID, shipID, readings = null, warpDestination = null, alignTarget = null }) {
+function projectSpace(park, { solarSystemID, shipID, readings = null, warpDestination = null, alignTarget = null, simTime = null }) {
   const ego = park.ego;
   const entities = [];
+  const placed = simTime === null ? (ball) => ({ p: ball.newPos, v: ball.newVel }) : (ball) => park.ballpark.drawn(ball, simTime);
   for (const ball of park.ballpark.balls.values()) {
     if (ball.isMoribund) continue;
     const slim = park.slimItems.get(ball.id);
     if (!slim) continue; // a ball of the client's own, or one whose slim item has not come
-    entities.push(projectEntity(park, ball, slim, ego));
+    entities.push(projectEntity(park, ball, slim, ego, placed));
   }
   const own = ego === null ? null : entities.find((row) => row.itemID === number(ego)) ?? null;
   if (own && readings) own.capacitorRatio = readings.capacitorRatio;

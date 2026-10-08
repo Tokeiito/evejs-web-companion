@@ -275,6 +275,13 @@ test("told its clock was rebased, a park moves its own times by the difference, 
   assert.deepEqual(state.errors, []);
 });
 
+test("the clock a park is stepped by is the one its balls are drawn at", async () => {
+  const { space, state } = handTicked();
+  assert.equal(space.simTime(), 1_000_000);
+  state.sim += 123;
+  assert.equal(space.simTime(), 1_000_123);
+});
+
 test("a park given no clock keeps one of its own, with the real clock", async () => {
   const session = fakeSession();
   let frame = null;
@@ -283,6 +290,7 @@ test("a park given no clock keeps one of its own, with the real clock", async ()
   // The first frame stepped it, at the real clock's reading.
   assert.equal(space.park.firstTime, false);
   assert.ok(Math.abs(space.park.time - Date.now()) < 5_000, String(space.park.time));
+  assert.ok(Math.abs(space.simTime() - Date.now()) < 5_000);
   frame();
   assert.equal(space.park.currentTime, 1, "and no second has gone by since");
   space.release();
@@ -358,6 +366,51 @@ test("the snapshot of a real grid: every ball that has a slim item, in the gatew
   assert.deepEqual([moon.kind, moon.name, moon.radius, moon.shieldRatio, moon.armorRatio, moon.hullRatio], ["moon", "Jita III - Moon 1", 560000, null, null, null]);
   const gun = space.entities.find((entity) => entity.kind === "sentryGun");
   assert.deepEqual([gun.name, gun.categoryID, gun.groupID, gun.typeID > 0], [null, 11, 99, true]);
+});
+
+test("given the clock's reading, the snapshot has every ball where the client draws it, and how fast it says it is going", () => {
+  // The recorded undock played through a park stepped by a clock, a frame every 50 ms.
+  const park = new Park();
+  const updates = destinyUpdates(undock);
+  let clock = 9_000_000;
+  park.onTick(clock);
+  for (const update of updates.slice(0, 5)) park.doDestinyUpdate(update.entries, update.waitForBubble);
+  for (let frames = 0; frames < 60; frames += 1) park.onTick((clock += 50));
+  const ball = park.ballpark.ball(undock.shipID);
+  assert.deepEqual([park.time, ball.newTime, ball.oldTime], [9_003_000, 9_002_000, 9_001_000]);
+  const shown = (simTime) => projectSpace(park, { solarSystemID: SYSTEM, shipID: undock.shipID, ...(simTime === undefined ? {} : { simTime }) });
+  const ship = (space) => space.entities.find((row) => row.isSelf);
+  const at = (point) => [point.x, point.y, point.z];
+
+  // Without a reading: the park's own, at its last tick.
+  assert.deepEqual([at(ship(shown()).position), at(ship(shown()).velocity)], [at(ball.newPos), at(ball.newVel)]);
+  // At the reading of the step itself the ship is drawn where it was a tick ago; the ship flies straight at 341 m/s here.
+  const stepped = shown(9_003_000);
+  assert.deepEqual(at(ship(stepped).position), at(ball.oldPos));
+  assert.deepEqual([stepped.ship.position, stepped.ship.velocity], [ship(stepped).position, ship(stepped).velocity]);
+  // A quarter of a second on, a quarter of a tick's travel further; three quarters, three.
+  const far = (a, b) => Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
+  const quarter = shown(9_003_250);
+  const three = shown(9_003_750);
+  assert.ok(Math.abs(far(ship(quarter).position, ball.oldPos) - 341 / 4) < 1e-3, String(far(ship(quarter).position, ball.oldPos)));
+  assert.ok(Math.abs(far(ship(three).position, ball.oldPos) - 341 * 0.75) < 1e-3);
+  assert.ok(Math.abs(Math.hypot(...at(ship(three).velocity)) - 341) < 1e-6);
+  // The tick the snapshot names is still the park's.
+  assert.deepEqual([stepped.sampledAtMs, three.sampledAtMs], [park.currentTime * 1000, park.currentTime * 1000]);
+  // What does not move is where it is, whenever it is asked.
+  const station = (space) => space.entities.find((row) => row.kind === "station");
+  assert.deepEqual(station(three).position, station(shown()).position);
+  assert.deepEqual(at(station(three).velocity), [0, 0, 0]);
+  // Slowing down, the speed is the drawn one too: at the step, what it was a tick ago, and less as the second goes by.
+  park.ballpark.stop(undock.shipID);
+  park.onTick((clock += 1000));
+  const speed = (space) => Math.hypot(...at(ship(space).velocity));
+  const slower = Math.hypot(...at(ball.newVel));
+  assert.ok(slower < 300, String(slower));
+  assert.ok(Math.abs(speed(shown(clock)) - 341) < 1e-6);
+  const half = speed(shown(clock + 500));
+  assert.ok(half < 341 - 1 && half > slower + 1, String(half));
+  assert.equal(speed(shown()), slower);
 });
 
 test("what dogma says of the pilot's own ship goes where the ballpark has nothing to say", () => {

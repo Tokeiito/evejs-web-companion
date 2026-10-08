@@ -13,6 +13,7 @@
   import { panelErrorWords } from "../bridge/refusals.ts";
   import { INDICATION_WORD_LABELS, indicationHeader, shipIndication } from "../space/actionIndication.ts";
   import { TIDI_WORD_LABELS, tidiHint, tidiPercent } from "../space/timeDilation.ts";
+  import { SPEED_WORD_LABELS, shipSpeedText } from "../space/shipSpeed.ts";
 
   let { store, flow, isDocked }: { store: ClientStore; flow: AppFlow; isDocked: boolean } = $props();
 
@@ -60,7 +61,11 @@
   );
   $effect(() => {
     flow.requestWords(INDICATION_WORD_LABELS);
+    flow.requestWords(SPEED_WORD_LABELS);
   });
+  // The ship's speed as the client's gauge says it, from how fast the snapshot has the ship going. Only a
+  // pilot whose snapshot is read from its own park is shown one that way; otherwise the throttle's setting.
+  const speedText = $derived(shipSpeedText($space.snapshot?.ship, $words.templates));
   // Time dilation, shown as the client's indicator shows it: only while the pilot's clock runs slow.
   const tidi = $derived(isDocked ? null : tidiPercent($space.snapshot?.timeDilation));
   $effect(() => {
@@ -93,7 +98,7 @@
       {/if}
     {:else}
       <strong>{spaceSystem ?? "In space"}</strong>
-      {#if shipMode}<span class="muted">{shipMode}{#if speedPct !== null} · {speedPct}%{/if}</span>{/if}
+      {#if shipMode}<span class="muted">{shipMode}{#if speedText !== null} · <span class="ws-head-speed">{speedText}</span>{:else if speedPct !== null} · {speedPct}%{/if}</span>{/if}
     {/if}
   </div>
 

@@ -1727,3 +1727,162 @@ test("looking between ticks at a warp that is over does not end it", () => {
   }
   assert.equal(ball.mode, MODE.STOP, "the park's own step ended the warp");
 });
+
+// ── as the client draws it ───────────────────────────────────────────────────
+
+/** The engine's driver for a bare ballpark: its first step at `from`, then one a second, each handed the clock's reading at the step before. */
+function driven(park, from = 5_000_000) {
+  park.time = from;
+  park.evolve(from);
+  return () => {
+    park.evolve(park.time);
+    park.time += 1000;
+    return park.time;
+  };
+}
+
+test("a ball is drawn a tick behind the park: in the second after a step, from where it was to where the park has it", () => {
+  const park = new Ballpark();
+  const step = driven(park);
+  // The ball arrives after the driver's first step, as every ball of a real park does.
+  const ball = spaceBall(park, { maxVelocity: 200 });
+  park.gotoDirection(1, 10, 20, 30);
+  assert.deepEqual([ball.oldTime, ball.newTime, ball.posUpdateTime, ball.lastTick], [0, 4_999_000, 0, -1]);
+  for (let tick = 0; tick < 4; tick += 1) {
+    const was = { p: { ...ball.newPos }, v: { ...ball.newVel } };
+    const now = step();
+    assert.deepEqual([ball.oldTime, ball.newTime], [now - 2000, now - 1000], "each step leaves the reading at the step before, and the one before that");
+    // As the step is taken the ball is drawn where it was; a second on, where the park has it.
+    assert.deepEqual(park.drawn(ball, now), was);
+    assert.deepEqual(park.drawn(ball, now + 250), park.between(ball, 0.25));
+    assert.deepEqual(park.drawn(ball, now + 999.5), park.between(ball, 0.9995));
+    assert.ok(distance(park.drawn(ball, now + 999.5).p, ball.newPos) < 0.2);
+    assert.deepEqual([ball.posUpdateTime, ball.lastTick], [now + 999.5 - 2000, park.currentTime]);
+  }
+});
+
+test("a ball no step has been timed for is drawn where the park has it: a fixed one, and one that has only just arrived", () => {
+  const park = new Ballpark();
+  const step = driven(park);
+  step();
+  park.addBall({ id: 9, x: 700, y: 0, z: 0, radius: 50 });
+  const fixed = park.ball(9);
+  park.addBall({ id: 2, x: 5, y: 6, z: 7, vx: 3, vy: 0, vz: 0, isFree: true });
+  const fresh = park.ball(2);
+  assert.deepEqual([fresh.oldTime, fresh.newTime, fixed.oldTime, fixed.newTime], [0, 0, 0, 0]);
+  // Neither has a speed to say until a step has been timed for it.
+  assert.deepEqual(park.drawn(fresh, park.time + 300), { p: { x: 5, y: 6, z: 7 }, v: vec() });
+  assert.deepEqual(park.drawn(fixed, park.time + 300), { p: { x: 700, y: 0, z: 0 }, v: vec() });
+  // The drawing is its own copy, kept with when it was made; moved by hand, the ball is drawn at its new place next time.
+  assert.deepEqual([fixed.posUpdateTime, fixed.lastPos === fixed.newPos], [park.time + 300 - 2000, false]);
+  park.setBallPosition(9, 800, 0, 0);
+  assert.deepEqual(park.drawn(fixed, park.time + 300).p, { x: 700, y: 0, z: 0 }, "the same reading: the same drawing");
+  assert.deepEqual(park.drawn(fixed, park.time + 400).p, { x: 800, y: 0, z: 0 });
+  park.setBallPosition(9, 700, 0, 0);
+  const now = step();
+  assert.deepEqual([fresh.oldTime, fresh.newTime, fixed.oldTime, fixed.newTime], [now - 2000, now - 1000, 0, 0]);
+  assert.deepEqual(park.drawn(fresh, now).p, { x: 5, y: 6, z: 7 });
+  assert.ok(park.drawn(fresh, now + 500).p.x > 5 && park.drawn(fresh, now + 500).p.x < fresh.newPos.x);
+  assert.deepEqual(park.drawn(fixed, now + 500).p, { x: 700, y: 0, z: 0 });
+});
+
+test("a ball made free is given a time a tick back, so its first drawing does not snap", () => {
+  const park = new Ballpark();
+  const step = driven(park);
+  park.addBall({ id: 2, x: 5, y: 6, z: 7 });
+  park.setBallFree(2, true);
+  assert.equal(park.ball(2).newTime, park.time - 1000);
+  // Freed already, nothing changes; fixed again and freed later, the time is that moment's.
+  step();
+  park.setBallFree(2, true);
+  assert.equal(park.ball(2).newTime, park.time - 1000);
+  park.setBallFree(2, false);
+  step();
+  step();
+  park.setBallFree(2, true);
+  assert.equal(park.ball(2).newTime, park.time - 1000);
+});
+
+test("asked again for the same reading, or for an earlier one, the last drawing is given", () => {
+  const park = new Ballpark();
+  const step = driven(park);
+  const ball = spaceBall(park, { maxVelocity: 200 });
+  park.gotoDirection(1, 10, 20, 30);
+  const now = step();
+  const first = park.drawn(ball, now + 400);
+  assert.equal(park.drawn(ball, now + 400).p, first.p, "the same answer, not another like it");
+  assert.equal(park.drawn(ball, now + 100).p, first.p);
+  assert.notDeepEqual(park.drawn(ball, now + 600).p, first.p);
+});
+
+test("in warp a ball is drawn by the warp's clock, and its heading is taken from where it was last drawn", () => {
+  const park = new Ballpark();
+  const step = driven(park);
+  // A warp along a line five thousand kilometres off the x axis, so that a heading taken from anywhere else would show.
+  const ball = spaceBall(park, { y: 5e6, maxVelocity: 200 });
+  park.warpTo(1, 40 * AU, 5e6, 0, 15000, 3000);
+  ball.newVel = vec(160, 0, 0);
+  step(); // enters warp
+  step();
+  let now = step();
+  assert.ok(isWarping(ball));
+  // Never drawn before: the first drawing is aimed from where the ball was.
+  const at = park.drawn(ball, now + 500);
+  assert.deepEqual(at, park.between(ball, 0.5, { p: ball.oldPos, v: ball.oldVel }));
+  assert.ok(at.p.x > ball.newPos.x && at.v.x > 0 && at.p.y === 5e6 && at.v.y === 0, JSON.stringify(at));
+  // Drawn off the warp's line once (a rebuilt park, a correction), the next drawing is aimed from there.
+  now = step();
+  const last = { p: { x: ball.lastPos.x, y: 5e9, z: 0 }, v: ball.lastVel };
+  ball.lastPos = last.p;
+  const turned = park.drawn(ball, now + 500);
+  assert.ok(turned.v.y < 0, "aimed back down at the destination from above the line");
+  assert.deepEqual(turned, park.between(ball, 0.5, last));
+  // And what was drawn is kept for the next.
+  assert.deepEqual([ball.lastPos, ball.lastVel, ball.posUpdateTime], [turned.p, turned.v, now + 500 - 2000]);
+});
+
+test("the park's times moved: the drawing moves with them, and a step taken without the clock leaves them alone", () => {
+  const make = () => {
+    const park = new Ballpark();
+    const step = driven(park);
+    const ball = spaceBall(park, { maxVelocity: 200 });
+    park.gotoDirection(1, 10, 20, 30);
+    park.addBall({ id: 9, x: 700, y: 0, z: 0 });
+    return { park, step, ball };
+  };
+  const [a, b] = [make(), make()];
+  const now = a.step();
+  b.step();
+  b.park.drawn(b.ball, now + 100);
+  b.park.adjustTimes(400);
+  assert.deepEqual([b.park.time, b.ball.oldTime, b.ball.newTime, b.ball.posUpdateTime], [now + 400, now - 2000 + 400, now - 1000 + 400, now + 100 - 2000 + 400]);
+  // A ball no step has been timed for keeps its noughts; what was last drawn of it is moved all the same.
+  assert.deepEqual([b.park.ball(9).oldTime, b.park.ball(9).newTime, b.park.ball(9).posUpdateTime], [0, 0, 400]);
+  assert.deepEqual(b.park.drawn(b.ball, now + 700), a.park.drawn(a.ball, now + 300));
+  // A step to catch up or go back is taken without the clock: the times stay, and the drawing runs on between new places.
+  const times = [a.ball.oldTime, a.ball.newTime];
+  a.park.evolve();
+  assert.deepEqual([a.ball.oldTime, a.ball.newTime], times);
+  assert.deepEqual(a.park.drawn(a.ball, now + 500), a.park.between(a.ball, 0.5));
+});
+
+test("a ball that was there at the driver's very first step is drawn off its path for two ticks, as the engine has it", () => {
+  // The first step is handed the clock's reading itself, not the reading a step earlier; the next is handed the same one again.
+  const park = new Ballpark();
+  // Added free, as a state adds a ball: no time is put on it until a step is.
+  const ball = park.addBall({ id: 1, isFree: true, mass: 13000000.0, maxVelocity: 200, radius: 2, speedFraction: 0.95 });
+  park.setBallAgility(1, 0.9);
+  park.gotoDirection(1, 10, 20, 30);
+  assert.deepEqual([ball.oldTime, ball.newTime], [0, 0]);
+  const step = driven(park, 5_000_000);
+  assert.deepEqual([ball.oldTime, ball.newTime], [4_999_000, 5_000_000]);
+  // A tick late: at the step it is drawn a second before where it was.
+  assert.deepEqual(park.drawn(ball, 5_000_000), park.between(ball, -1));
+  step();
+  assert.deepEqual([ball.oldTime, ball.newTime], [5_000_000, 5_000_000]);
+  // Two equal times: nothing to draw between, so where the park has it.
+  assert.deepEqual(park.drawn(ball, 5_001_500).p, ball.newPos);
+  const now = step();
+  assert.deepEqual([ball.oldTime, ball.newTime], [now - 2000, now - 1000]);
+  assert.deepEqual(park.drawn(ball, now + 500), park.between(ball, 0.5));
+});

@@ -662,14 +662,14 @@ test("the header's word for what the ship is doing is the client's, not the ball
     return visibleText(renderHeader(store, false));
   };
   // An approach on the game port: the ball's mode is FOLLOW, and so is the flight status's word.
-  assert.match(header("FOLLOW", 50, "FOLLOW"), /Approaching · 100%/);
+  assert.match(header("FOLLOW", 50, "FOLLOW"), /Approaching · 0\.0 metres a second/);
   assert.equal(/FOLLOW/.test(header("FOLLOW", 50, "FOLLOW")), false);
   // The snapshot is the fresher of the two: orbiting by it, while the flight status still says FOLLOW.
-  assert.match(header("ORBIT", 5_000, "FOLLOW"), /Orbiting · 100%/);
-  assert.match(header("ORBIT", 5_000, "FOLLOW", { "UI/Inflight/Messages/OrbitingHeader": "In orbit" }), /In orbit · 100%/);
+  assert.match(header("ORBIT", 5_000, "FOLLOW"), /Orbiting · 0\.0 metres a second/);
+  assert.match(header("ORBIT", 5_000, "FOLLOW", { "UI/Inflight/Messages/OrbitingHeader": "In orbit" }), /In orbit · 0\.0 metres a second/);
   // With no range in the snapshot there is nothing for the rule to go on: the flight status's word, as before.
-  assert.match(header("FOLLOW", null, "FOLLOW"), /FOLLOW · 100%/);
-  assert.match(header("GOTO", null, "GOTO"), /GOTO · 100%/);
+  assert.match(header("FOLLOW", null, "FOLLOW"), /FOLLOW · 0\.0 metres a second/);
+  assert.match(header("GOTO", null, "GOTO"), /GOTO · 0\.0 metres a second/);
 });
 
 test("flying to a point, the ship's line and the header say so as the client does, and say nothing when it is close or lined up", () => {
@@ -686,19 +686,19 @@ test("flying to a point, the ship's line and the header say so as the client doe
   // Fifty kilometres off: approaching a point.
   const near = store({ x: 50_000, y: 0, z: 0 }, ahead);
   assert.equal(line(near), "Heading for a point in space");
-  assert.match(visibleText(renderHeader(near, false)), /Approaching · 100%/);
+  assert.match(visibleText(renderHeader(near, false)), /Approaching · 300 metres a second/);
   // The other side of the system, and heading across it: aligning.
   const turning = store({ x: 1e17, y: 0, z: 0 }, { x: 0, y: 300, z: 0 });
   assert.equal(line(turning), "Turning towards a point in space");
-  assert.match(visibleText(renderHeader(turning, false)), /Aligning · 100%/);
+  assert.match(visibleText(renderHeader(turning, false)), /Aligning · 300 metres a second/);
   // Lined up on it: the client says nothing, and the page says what it said before.
   const lined = store({ x: 1e17, y: 0, z: 0 }, ahead);
   assert.equal(line(lined), "Under way.");
-  assert.match(visibleText(renderHeader(lined, false)), /GOTO · 100%/);
+  assert.match(visibleText(renderHeader(lined, false)), /GOTO · 300 metres a second/);
   // In the client's words when the page holds them.
   const worded = store({ x: 50_000, y: 0, z: 0 }, ahead, { "UI/Inflight/Messages/ApproachingPointSubText": "Closing on a spot", "UI/Inflight/Messages/ApproachingHeader": "Closing" });
   assert.equal(line(worded), "Closing on a spot");
-  assert.match(visibleText(renderHeader(worded, false)), /Closing · 100%/);
+  assert.match(visibleText(renderHeader(worded, false)), /Closing · 300 metres a second/);
 });
 
 test("in warp, the ship's line and the header say so as the client's HUD does: lining up, then under way, where to and how far", () => {
@@ -717,11 +717,11 @@ test("in warp, the ship's line and the header say so as the client's HUD does: l
   // Lining up, aimed at the moon the pilot asked for.
   const lining = store({ preparing: true, point, destinationID: 40009089 });
   assert.equal(line(lining), "Lining up for warp · To Jita IV - Moon 6 · 2.00 AU to go");
-  assert.match(visibleText(renderHeader(lining, false)), /Lining up for warp · 100%/);
+  assert.match(visibleText(renderHeader(lining, false)), /Lining up for warp · \(In warp\)/);
   // Under way.
   const under = store({ preparing: false, point, destinationID: 40009089 });
   assert.equal(line(under), "In warp · To Jita IV - Moon 6 · 2.00 AU to go");
-  assert.match(visibleText(renderHeader(under, false)), /In warp · 100%/);
+  assert.match(visibleText(renderHeader(under, false)), /In warp · \(In warp\)/);
   // Aimed at nothing the page can name: how far the warp's own point is.
   assert.equal(line(store({ preparing: false, point, destinationID: null })), "In warp · 2.00 AU to go");
   // In the client's words when the page holds them.
@@ -733,11 +733,11 @@ test("in warp, the ship's line and the header say so as the client's HUD does: l
     "UI/Inflight/Messages/WarpIndicatorWithDistanceAndBubble": "{warpDestination}{distance} more",
   });
   assert.equal(line(worded), "Drive on · Bound for Jita IV - Moon 6 · Still 2.00 AU");
-  assert.match(visibleText(renderHeader(worded, false)), /Drive on · 100%/);
+  assert.match(visibleText(renderHeader(worded, false)), /Drive on · \(In warp\)/);
   // With nothing said of the warp (the gateway's snapshot), the page's own words as before.
   const bare = store(undefined);
   assert.equal(line(bare), "In warp.");
-  assert.match(visibleText(renderHeader(bare, false)), /WARP · 100%/);
+  assert.match(visibleText(renderHeader(bare, false)), /WARP · \(In warp\)/);
 });
 
 test("the header's mode word is the snapshot's, which is the fresher, and the flight status's only without one", () => {
@@ -748,10 +748,10 @@ test("the header's mode word is the snapshot's, which is the fresher, and the fl
     return visibleText(renderHeader(store, false));
   };
   // Stopped after a warp, by the snapshot; the flight status has not been read since it said GOTO.
-  assert.match(header("STOP", "GOTO"), /STOP · 100%/);
+  assert.match(header("STOP", "GOTO"), /STOP · 0\.0 metres a second/);
   assert.equal(/GOTO/.test(header("STOP", "GOTO")), false);
   // A snapshot that does not say: the flight status's word.
-  assert.match(header(null, "GOTO"), /GOTO · 100%/);
+  assert.match(header(null, "GOTO"), /GOTO · 0\.0 metres a second/);
 });
 
 test("after an align the ship's line and the header say what the ship is aligning to, as the client's HUD does", () => {
@@ -797,4 +797,29 @@ test("the header shows time dilation as the client's indicator does: only while 
   // At full pace, at 0.98, with no pace given (the gateway), and docked: nothing.
   for (const pace of [1, 0.98, null, undefined]) assert.doesNotMatch(renderHeader(slowed(pace), false), /tidi|TiDi/, String(pace));
   assert.doesNotMatch(renderHeader(slowed(0.5), true), /tidi|TiDi/);
+});
+
+// --- the ship's speed ----------------------------------------------------------
+
+test("the header says the ship's speed as the client's gauge does, and falls back to the throttle without a ship to read", () => {
+  const moving = (velocity: { x: number; y: number; z: number }, mode: string, templates: Record<string, string> = {}) => {
+    const store = inSpaceStore() as ReturnType<typeof createClientStore>;
+    store.apply({ type: "space/snapshot", snapshot: { ...SHIP_SNAPSHOT, ship: { ...SHIP_SNAPSHOT.ship!, mode, velocity } } });
+    if (Object.keys(templates).length > 0) store.apply({ type: "words/loaded", available: true, templates });
+    return store;
+  };
+  const worded = { "UI/Inflight/MetersPerSecond": "{speed} paces a beat", "UI/Inflight/WarpSpeedNotification": "[{warpingMessage}]", "UI/Inflight/Scanner/Warping": "Folding space" };
+  const fast = renderHeader(moving({ x: 300, y: 0, z: 400 }, "GOTO", worded), false);
+  assert.match(fast, /class="ws-head-speed"/);
+  assert.match(visibleText(fast), /· 500 paces a beat/);
+  assert.match(visibleText(renderHeader(moving({ x: 3, y: 4, z: 0 }, "GOTO", worded), false)), /· 5\.0 paces a beat/);
+  assert.match(visibleText(renderHeader(moving({ x: 300, y: 0, z: 400 }, "WARP", worded), false)), /· \[Folding space\]/);
+  // No throttle percentage beside a speed.
+  assert.doesNotMatch(visibleText(fast), /%/);
+  // Docked there is no speed; and in space with no ship in the snapshot yet, the flight status's throttle stands in.
+  assert.doesNotMatch(renderHeader(moving({ x: 300, y: 0, z: 400 }, "GOTO", worded), true), /ws-head-speed|paces a beat/);
+  const bare = inSpaceStore() as ReturnType<typeof createClientStore>;
+  bare.apply({ type: "space/snapshot", snapshot: { ...SHIP_SNAPSHOT, ship: null } });
+  assert.doesNotMatch(renderHeader(bare, false), /ws-head-speed/);
+  assert.match(visibleText(renderHeader(bare, false)), /STOP · 0%/);
 });
