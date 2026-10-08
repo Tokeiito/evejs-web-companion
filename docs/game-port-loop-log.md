@@ -3910,3 +3910,97 @@ online modules. Activate with no name unless the module was a launcher, and -1 f
    fills while a ship lines up for a warp; a warp ordered at a bookmark or a fleet member.
 6. In the park, if a server ever sends a ball that needs them: MISSILE, FORMATION, MUSHROOM;
    a fixed ball's collision shapes and the partition's order.
+
+---
+
+## 2026-10-08 — the call ledger: the rest of `ship` and `dogmaIM` on their monikers
+
+Commit `8619393`, pushed.
+
+**What the retail client does**, each read at its call site:
+
+| Call | Where | As the client sends it |
+|---|---|---|
+| `GetTargets` | `godma.py` 2361 | `GetDogmaLM().GetTargets()` |
+| `AddTarget`, `CancelAddTarget`, `RemoveTarget` | `targetMgr.py` 1366, 1303, 1385 | `GetDogmaLM().X(targetID)` |
+| `SetModuleOnline`, `TakeModuleOffline` | `clientDogmaLocation.py` 702, 718 | `X(the ship the module is in, moduleID)` |
+| `LoadAmmo` | `clientDogmaLocation.py` 996 | `LoadAmmo(shipID, [modules], [charges], where the charges are)`: two lists |
+| `UnloadAmmo` | `clientDogmaLocation.py` 1140, 1127 | the modules as a list; with a quantity, one module by itself |
+| `LaunchDrones` | `eveMisc.py` 29 | `GetShipAccess().LaunchDrones([(itemID, quantity), ...], whoseBehalfID, ignoreWarning)`, with None for whose behalf unless it is someone else's |
+| `ScoopDrone` | `droneFunctions.py` 195 | `GetShipAccess().ScoopDrone(droneIDs)` |
+| `LeaveShip` | `ui/station/base.py` 248 | `GetShipAccess().LeaveShip(shipID)` |
+| `GetShipConfiguration` | `shipConfigSvc.py` 51 | `GetShipAccess().GetShipConfiguration(shipID)` |
+
+Two reads the web client makes are not the client's at all. `ShipGetInfo` is nowhere in the
+client: what it knows of its ship is in `GetAllInfo`. `ShipOnlineModules` has a wrapper in
+godma that nothing calls and that throws the answer away; eve.js answers it with the online
+modules, and the BFF reads that.
+
+**What was built.**
+
+- The rule is the services', not each entry's: on the game port **everything** asked of `ship`
+  or `dogmaIM` by name is made on the moniker, read against the client or not, but the three
+  the client itself asks by name. A pair nobody has read goes there with its arguments as the
+  BFF spelt them, and is still counted unread.
+- Entries for the twelve above and the two reads. Eight are the client's arguments as they
+  stood. Reshaped: ammunition's lists, one module by itself when a quantity is named,
+  drones' list of stacks and nobody's behalf, and the ship's ID for its configuration, which
+  the BFF's route did not send.
+- A call asked by name and made on the moniker is counted as reshaped even when its
+  arguments were already the client's; on a handle the BFF bound itself it is counted as the
+  same.
+
+**Proof.**
+
+- Tests: 8 new, 2 changed. 35 ways of breaking the change, each caught.
+- Suite: 9223 tests, 9199 pass, 0 fail, 24 skipped, 0 todo.
+- **Live, in the browser, on the game port**, eve.js `10e2c22f4`: the afterburner taken
+  offline and put online while docked, the ship's configuration read, undock, a lock on the
+  station and an unlock, dock. By the server's log of what arrived in that hour:
+
+  | | by the service's name | on a bound object |
+  |---|---|---|
+  | `GetTargets` | 0 (369 in the two hours before) | 57 |
+  | `ShipOnlineModules` | 0 (12 before) | 3 |
+  | `ShipGetInfo` | 2 | 3 |
+  | `AddTarget`, `RemoveTarget` | 0 | 2, 1 |
+  | `SetModuleOnline`, `TakeModuleOffline` | 0 | 1, 1 |
+  | `GetShipConfiguration`, `Undock` | 0 | 1, 1 |
+
+  The two `ShipGetInfo` still by name are the transport's own, made when a pilot is
+  selected, and not through this path. The first lock, on a sentry gun 73 km off, was
+  refused by the server as out of range; the lock on the station held, and the unlock
+  released it.
+- **The docked routes on both transports** (`scripts/bff-parity.js`, reads only, as Test
+  Two): 12 identical, 6 tolerated, 2 moved, 2 divergent, as before.
+- **The ledger**, made again (`docs/game-port-call-ledger.md`): 78 pairs, 461 calls. 16
+  reshaped, 3 the same, 3 the web client's own, none differing, 56 unread.
+- **The staging was undone**: the module is online again as it was, the target unlocked, the
+  pilot docked.
+
+**Not checked live.** Ammunition, drones and leaving a ship: Test Pilot's Reaper has no
+charges to load and no drones, and leaving it was not tried. Those three stand on their
+tests.
+
+**Not done.** The transport's own `ShipGetInfo` at select, by name. The BFF's bound-dogma
+route asks `GetRequiredSkillLevels` on the bound object, where the client asks that one by
+the service's name. The other writes on these two services (eject, jettison, drop,
+overload and the rest) now go to the moniker with their arguments unread.
+
+### Next
+
+1. `GetMissionBriefingInfo` and `GetMissionObjectiveInfo` asked when the client asks them
+   (on every layout of the agent's window); Phase 3's hosted check; the session-less gateway
+   calls.
+2. The ledger's unread pairs, most called first: the inventory and wallet reads, then the
+   writes on `ship` and `dogmaIM`.
+3. The scanner the client's way: results kept from the server's word, a probe's destination
+   and range kept here and sent with the scan.
+4. More of a mission's words: the objectives pane, the mission's time under the agent's line,
+   messages inside messages when one turns up.
+5. Small, around dialogs: the title for a dialog's kind, the "do not ask again" box, the typed
+   codes not done.
+6. Small, in space: an overview row's speed columns the client's way; the bar the client
+   fills while a ship lines up for a warp; a warp ordered at a bookmark or a fleet member.
+7. In the park, if a server ever sends a ball that needs them: MISSILE, FORMATION, MUSHROOM;
+   a fixed ball's collision shapes and the partition's order.
