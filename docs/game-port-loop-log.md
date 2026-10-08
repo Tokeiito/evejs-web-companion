@@ -720,11 +720,12 @@ rest is checked against the equations the source states in its own comment, work
 tests from those equations rather than copied from the code, and by flying whole warps tick by
 tick: never overshooting, cruising at exactly top speed, out on the first tick under the limit.
 
-99 deliberate breakages of the warp code and the park's two new orders. Ten got through at first.
-Five were gaps and are closed. Five change nothing that can be seen, because the engine always
-stops a ball before giving it a new mode, and are left. My own expectations were wrong five times
-before the code was (which tick stops being massive, where slowing down ends, and three smaller);
-each is corrected in the tests with the reason.
+About a hundred deliberate breakages of the warp code and the park's two new orders. Ten got
+through at first. Four were gaps and are closed. Six change nothing that can be seen and are left:
+four because the engine always stops a ball before giving it a new mode, two because the
+breakage itself came to the same number. My own expectations were wrong six times before the code
+was (which tick stops being massive, where slowing down ends, and four smaller); each is
+corrected in the tests with the reason.
 
 **Flown live** (`scripts/record-warp.js`, `bf99895`). Nothing tells a client its warp is over:
 its own ballpark drops the ship out, and that is how the retail client knows. So the recorder
