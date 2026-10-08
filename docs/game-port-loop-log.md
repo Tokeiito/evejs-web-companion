@@ -123,6 +123,11 @@ the second row above, seen through a recorder that always asked at the same poin
 Judged, not a defect to hand off: the server answers None, and logs `[PKT] ERR`, whenever a handler
 or its marshaller throws. See "For the operator".
 
+Seen and left, 2026-10-08: the decline question is sent with the time of asking as its `when`,
+and the client's text reads "if you decline a mission before {when} you will lose standings", so
+a retail player is warned about the present minute. The server's own decline timer for the agent
+is the time meant. Not handed off: what a real server does with no timer running is not known.
+
 Seen and left, 2026-10-08, around the decline question (the entry "the server fix for a No to the
 decline question" has them): a research agent's No brings back its research screen and not the
 offer (measured); three more read from the code and not measured.
@@ -1994,6 +1999,83 @@ but nothing chooses.
    typed parameters (item, numeric, character, datetime) from the server's values and the page's
    names, and fall back to its own wording only where the client has none. First what agents
    say and the questions, which show raw labels or this client's guesses today.
+2. **Dialogs by ID** from the client's `dialogs.static`, so the undock warning and the customs
+   question are worded by the client too.
+3. **The scanner in space** on the game port (the one route that still answers 501 there).
+4. Module damage and weapon banks from dogma; health from godma as the panel reads it.
+5. **Collisions**; **the park beside the server's movement log**; the sim clock; MISSILE,
+   FORMATION, MUSHROOM.
+6. The call ledger (`ship.Undock`, `dogmaIM.Activate` and `Deactivate` to bind as the client
+   does), Phase 3's hosted check and the session-less gateway calls.
+
+---
+
+## 2026-10-08 — the questions and an agent's lines, in the retail client's own words
+
+Commit `c8e55ab`, pushed.
+
+**What the retail client does.** For an agent's message, `agents.ProcessMessage` (`agents.py`
+640) takes what the server sent, which is plain text, a label with its parameters, or a
+message's number; adds the mission's keywords (asked of the agent) and the agent's own IDs
+(`GetAgentArgs`, 609); and hands the label to `localization.GetByLabel`, which adds the player
+(`localizationBase.py` 175) and fills the text's tags. The tags' grammar is in the client's
+tokenizer (`localization/parser.py`): `{name}`, `{[kind]name.property}`, a choice of words
+`-> "a", "b"`, and modifiers and settings after a comma.
+
+**What was built.**
+
+- **The tokenizer's grammar, and a filler for it** (`web/src/bridge/clientWords.ts`). Items,
+  characters, organisations and places by name; numbers plain, grouped only where the text says
+  so; times as the game writes them; a word chosen by a count; the case modifiers. **The client
+  fills these in a compiled module I have not read**, so how each kind comes out is this
+  client's reading and is marked as that in the file. Not done: a list of characters, a message
+  inside a message, and a word chosen by gender (the first is taken; the page does not know
+  anyone's).
+- **The page asks for the words it needs** (`flow.requestWords`, `store.words`): batched, each
+  label once, and nothing more once the BFF says it has no client to read.
+- **The question dialog and an agent's line use the client's text first**, with the agent's IDs
+  and the player added as the client adds them. This client's own wording stays for what the
+  client has no text for, for the two dialogs that are not labels, and for a BFF with no client
+  configured.
+
+**Proof.**
+
+- Tests: 11 for the grammar and the filling, 5 for the wording choice, 1 for what an agent says,
+  1 for the store, 6 for the asking. They passed first time on new code, so they were checked by
+  breaking it: 52 ways, all caught after two cases and one test were added where three had
+  slipped through.
+- Suite: 8967 tests, 8942 pass, 0 fail, 24 skipped, 1 todo.
+- **In the browser, on the game port, with the client's folder set:**
+
+  | Where | Before | Now |
+  |---|---|---|
+  | A research agent's greeting | the label `UI/Agents/DefaultMessages/RootAgentSays/GenericGreetings` | "Greetings, Test Three." |
+  | Start Research: the box | this client's "Choose a field of research" and its own choices | the client's title and question, and its choices: "Electromagnetic Physics level 1", "Gallente Starship Engineering level 1" |
+  | After Cancel | the label `UI/Agents/Research/DatacoreInvalidInput` | the client's line for it |
+  | Decline: the question | this client's two sentences | the client's title, and its body beginning "If you decline a mission before 2026.10.08 12:39 you will lose", the server's time filled in, no tag left unfilled |
+
+  The page asked `/api/words` once for each new set of labels, and not again.
+
+**What the client's text shows about the server.** The decline question's text says the pilot
+loses standing if they decline **before** the time given. The server gives the time of asking
+(`sendAgentDeclineConfirmation(session, agentID, currentFileTime(), ...)`), so on the retail
+client the sentence reads "before" the present minute, as it did here: pressed at 12:39, warned
+about 12:39. The server keeps a decline timer for each agent (`declineTimersByAgentID`), which
+is the time that sentence is about. **Not handed off**: I do not know what a real server does
+when no timer is running (asks with some other time, or does not ask at all), and a fix that
+guesses would be the kind of claim this log has had to take back. It is in the defects list as
+seen.
+
+**Not done:** a mission's own text. An agent offering a mission says a message's number
+(Test Two's agent says "129932"), and the client fills that message with the mission's keywords,
+which it asks the agent for. The BFF keeps only texts that a label names, so numbers are not
+served yet.
+
+### Next
+
+1. **A mission's own text**: serve a message by its number, ask the agent for the mission's
+   keywords (`GetMissionKeywords`) as the client does, and word the offer, the briefing and the
+   completion with them.
 2. **Dialogs by ID** from the client's `dialogs.static`, so the undock warning and the customs
    question are worded by the client too.
 3. **The scanner in space** on the game port (the one route that still answers 501 there).
