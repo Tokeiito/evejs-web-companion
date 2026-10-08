@@ -215,7 +215,7 @@ class GamePortSession {
 
   // ── listening ──────────────────────────────────────────────────────────────
 
-  /** fn({method, idtype, narrowcast, payload, packet}) for every notification. */
+  /** fn({method, idtype, narrowcast, service, args, kwargs, packet}) for every notification. */
   onNotification(listener) { return this._listen("notification", listener); }
   /** fn(changes, attributes): changes is {name: [old, new]}. */
   onSessionChange(listener) { return this._listen("sessionChange", listener); }
