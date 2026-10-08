@@ -730,6 +730,80 @@ test("docked, the space snapshot and the scanner are the gateway's docked answer
   });
 });
 
+/** A GetAllInfo answer holding the pilot's ship: 50 of 125 capacitor at the moment T. */
+const DOGMA_T = 134359220000000000n;
+const DOGMA_T_MS = 1791448400000;
+const shipAllInfo = (charge = 50) => keyVal([["shipInfo", { type: "dict", entries: [[BigInt(SHIP), keyVal([
+  ["itemID", BigInt(SHIP)], ["time", DOGMA_T],
+  ["attributes", { type: "dict", entries: [[18, charge], [482, 125], [55, 62500], [263, 175], [265, 150], [9, 151]] }],
+])]] }]]);
+
+test("the ship's capacitor and capacities are dogma's, loaded once for a ship in a place as godma loads them", async () => {
+  const hand = handTicked();
+  let clockMs = DOGMA_T_MS;
+  const built = build({ ...IN_SPACE, answers: { ...IN_SPACE.answers, "bound:GetAllInfo": shipAllInfo() } }, { ...hand.options, now: () => clockMs });
+  const { bridgeSessionID: handle } = await built.pilots.selectCharacter([PILOT, null, true], null, FIELDS);
+  await built.pilots.bindObject("beyonce", "MachoBindObject", [], null, WHOSE, handle);
+  for (const update of recordedUpdates.slice(0, 5)) built.session.notify("DoDestinyUpdate", update.args);
+  hand.parks[0].tick();
+  const { session } = built;
+  const asked = () => session.boundCalls.filter((call) => call.method === "GetAllInfo");
+
+  const first = (await built.pilots.readSpaceSnapshot(handle)).space;
+  assert.deepEqual([first.ship.capacitorRatio, first.ship.shieldCapacity, first.ship.armorCapacity, first.ship.hullCapacity], [0.4, 175, 150, 151].map((value, index) => (index === 0 ? first.ship.capacitorRatio : value)));
+  assert.ok(Math.abs(first.ship.capacitorRatio - 0.4) < 1e-12);
+  assert.equal(first.entities.find((row) => row.isSelf).capacitorRatio, first.ship.capacitorRatio);
+  // The dogma location bound for where the pilot is, and asked as godma's Prime asks: a character, a ship, no structure.
+  assert.deepEqual(session.binds.at(-1), { service: "dogmaIM", params: [SYSTEM, 5] });
+  assert.deepEqual(asked().map((call) => [call.objectID, call.args]), [[`N=1:${session.objects}`, [true, true, null]]]);
+  assert.deepEqual(built.pilots.callLedger().find((row) => row.pair === "dogmaIM.GetAllInfo").statuses, { same: 1 });
+
+  // Ten seconds on, nothing asked again: the capacitor has recharged by itself.
+  clockMs += 10000;
+  const later = (await built.pilots.readSpaceSnapshot(handle)).space;
+  assert.equal(asked().length, 1);
+  // A recharge time of 62.5 s is a tau of 12.5 s: godma's curve from 0.4, ten seconds on.
+  assert.ok(Math.abs(later.ship.capacitorRatio - (1 + (Math.sqrt(0.4) - 1) * Math.exp(-10000 / 12500)) ** 2) < 1e-12, `${later.ship.capacitorRatio} after ten seconds`);
+  // The server reports a change: it is taken from the notification, still without asking.
+  session.notify("OnModuleAttributeChanges", [{ type: "list", items: [["OnModuleAttributeChange", PILOT, BigInt(SHIP), 18, DOGMA_T + 100000000n, 100, 50, DOGMA_T + 100000000n]] }]);
+  assert.ok(Math.abs((await built.pilots.readSpaceSnapshot(handle)).space.ship.capacitorRatio - 0.8) < 1e-12);
+  // And the dogma messages that ride with a ballpark update reach the same place.
+  session.notify("DoDestinyUpdate", [{ type: "list", items: [[hand.parks[0].space.park.currentTime, [Buffer.from("OnSpecialFX"), []]]] }, false,
+    { type: "list", items: [[["OnModuleAttributeChange", PILOT, BigInt(SHIP), 18, DOGMA_T + 100000000n, 25, 100, DOGMA_T + 100000000n], DOGMA_T + 100000000n]] }]);
+  assert.ok(Math.abs((await built.pilots.readSpaceSnapshot(handle)).space.ship.capacitorRatio - 0.2) < 1e-12);
+  assert.equal(asked().length, 1);
+
+  // Another ship: what was loaded was the old one's, so it is asked for again.
+  session.attributes.shipid = 77;
+  session.change({ shipid: [SHIP, 77] });
+  await built.pilots.readSpaceSnapshot(handle);
+  assert.equal(asked().length, 2);
+  assert.deepEqual(hand.errors, []);
+});
+
+test("if dogma cannot be asked, the snapshot still answers and the readings say unknown", async () => {
+  const hand = handTicked();
+  const built = build({ ...IN_SPACE, answers: { ...IN_SPACE.answers, "bound:GetAllInfo": () => { throw new Error("not now"); } } }, hand.options);
+  const { bridgeSessionID: handle } = await built.pilots.selectCharacter([PILOT, null, true], null, FIELDS);
+  await built.pilots.bindObject("beyonce", "MachoBindObject", [], null, WHOSE, handle);
+  for (const update of recordedUpdates.slice(0, 5)) built.session.notify("DoDestinyUpdate", update.args);
+  hand.parks[0].tick();
+  const { space } = await built.pilots.readSpaceSnapshot(handle);
+  assert.deepEqual([space.entities.length, space.ship.capacitorRatio, space.ship.shieldCapacity, space.ship.mode], [76, null, null, "GOTO"]);
+  // It is tried again the next time, not given up on.
+  await built.pilots.readSpaceSnapshot(handle);
+  assert.equal(built.session.boundCalls.filter((call) => call.method === "GetAllInfo").length, 2);
+  // A connection lost in the asking is the session ending.
+  const other = handTicked();
+  const gone = build({ ...IN_SPACE, answers: { ...IN_SPACE.answers, "bound:GetAllInfo": () => { throw sessionError("CONNECTION_LOST"); } } }, other.options);
+  const lost = await gone.pilots.selectCharacter([PILOT, null, true], null, FIELDS);
+  await gone.pilots.bindObject("beyonce", "MachoBindObject", [], null, WHOSE, lost.bridgeSessionID);
+  for (const update of recordedUpdates.slice(0, 5)) gone.session.notify("DoDestinyUpdate", update.args);
+  other.parks[0].tick();
+  await rejects(gone.pilots.readSpaceSnapshot(lost.bridgeSessionID), "SESSION_NOT_FOUND");
+  assert.deepEqual([gone.session.closed, other.parks[0].stopped], [true, true]);
+});
+
 test("undocking is sent; reaching space makes the ballpark, docking lets it go, and another system gets another", async () => {
   const hand = handTicked();
   const { pilots, session, handle } = await selected({}, hand.options);

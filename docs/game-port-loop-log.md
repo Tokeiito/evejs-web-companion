@@ -887,3 +887,89 @@ through the page's own session.
 5. **Collisions** (notes, section 5); **the park beside the server's movement log**; the sim
    clock; MISSILE, FORMATION, MUSHROOM.
 6. The call ledger, Phase 3's hosted check and the session-less gateway calls, as before.
+
+---
+
+## 2026-10-08 — the ship's own numbers, from dogma
+
+Commit: the one this entry is in, pushed.
+
+**What the retail client does.** The ship's panel does not take its numbers from the ballpark.
+It reads the godma item for the ship (`shipHud/activeShipController.py`): capacitor is `charge`
+over `capacitorCapacity`, and the three capacities are `shieldCapacity`, `armorHP` and `hp`.
+Godma (`environment/godma.py`) gets every attribute of the ship and its modules in one call,
+`GetAllInfo(primeCharacter, primeShip, primeStructure)` on the dogma location bound for where
+the pilot is, and is then told of each change (`OnModuleAttributeChanges`, and the same changes
+bundled in `OnMultiEvent` or riding with a ballpark update). The capacitor and the shield are
+not numbers that stay put: godma keeps each as a value, a time, a recharge time and a capacity,
+and works out what it is now whenever it is read.
+
+**What was built.** `src/gamePort/pilotDogma.js` is that part of godma: loading from
+`GetAllInfo`, applying a change the way `ApplyAttributeChange` does (a redundant one ignored,
+someone else's refused, an older one arriving late dropped, a capacity or recharge-time change
+carrying the charge on from what it is), `OnMultiEvent`'s ordering, and the recharge formula
+(`GetChargeValue`). A game-port pilot's transport keeps one, loads it once for a ship in a
+place the first time the snapshot wants it, and feeds it the session's notifications. The
+snapshot's ship block now carries the capacitor and the three capacities.
+
+**Proof.**
+
+*From a real server's bytes* (`scripts/record-dogma.js`, `test/fixtures/dogmaFlight.json`):
+Test Pilot undocked and ran its afterburner for twelve seconds. The server reported the
+capacitor about twice a second: 32 times in the sixteen seconds before it was last asked.
+
+| | |
+|---|---|
+| Loaded from `GetAllInfo` | capacitor 125 of 125, shield 175, armour 150, hull 150: the gateway's numbers for the same ship |
+| Reports while the capacitor was only recharging | 28 |
+| Godma's formula, from one report to the next | within 0.000001 of what the server then reported, every time (the server sends six places) |
+| The two cycle starts | 5 units gone at once, as reported |
+| The report straight after each cycle start | 0.04 and 0.06 off the curve: the server's own first step from the new value |
+| The server's last `GetAllInfo` | repeats its last report (120.440107) under a time 0.24 s later |
+
+So between the server's reports the client's own working lands on the server's next number to
+the last place it sends. The last row is why a first comparison read 0.08 apart: the server
+answered with a number a quarter of a second old.
+
+*Tests.* 9 for the dogma port, 2 for the transport, 1 for the projection. 34 deliberate
+breakages of the port: seven got through at first, six were gaps and are closed, one changes
+nothing that can be seen. Suite: 8864 tests, 8839 pass, 0 fail, 24 skipped, 1 todo.
+
+*Each transport in turn* (`scripts/space-parity.js`), same pilot, same grid: the pilot's own
+ship now differs from the gateway's in one field, the radius held as a 32-bit float. Capacitor
+and capacities agree. The kinds of difference in the whole snapshot are down from five to four.
+
+*In the browser*, on the game port: undocked Test Pilot from the web UI. The ship's panel reads
+"100% CAP" where it read a dash, with 341 m/s and shield, armour and hull at 100%. Docked again
+from the UI.
+
+**Decisions and things seen.**
+
+- `GetAllInfo` is asked as godma's first prime asks it: `(True, True, None)`. I have not traced
+  what the retail client asks on each later change of place (it has `ForcePrimeLocation` for
+  that); here it is the same call again for a new ship or a new place.
+- The clock a recharge is worked out against is this machine's, taken as the server's. On one
+  machine they are the same clock. For a server elsewhere the client's sim clock is set from the
+  server's (`DoSimClockRebase`), which is not ported.
+- Health (shield, armour, hull as fractions) still comes from the ballpark's damage states, as
+  in the last entry. The retail panel reads those from godma too. They agree here; I have not
+  seen what the server sends for either while a ship is being shot.
+- The BFF's activate route calls `dogmaIM.Activate` as a service's method; the retail client
+  calls it on the bound dogma location. The recorder uses the client's form. One for the ledger.
+- That route decides whether a module came on by reading which modules are running from the
+  snapshot, and on the game port that list is still empty. **Activating a module from the web UI
+  on the game port will report it did not start.** Next unit.
+
+### Next
+
+1. **Which modules are running** on the game port: godma's effects, from `activeEffects` in
+   `GetAllInfo` and `OnGodmaShipEffect` (three of those are in `dogmaFlight.json`). Then the
+   activate and deactivate routes work on the game port, and the panel's modules light up.
+2. **A gate jump** on the game port, recorded and played through, then live.
+3. **The scanner in space** on the game port.
+4. **Warp, in the browser, on the game port**, then a hosted bot flying a courier mission end to
+   end on it (Phase 4's "done when"). Test Two is docked with the package aboard.
+5. **Collisions**; **the park beside the server's movement log**; the sim clock; MISSILE,
+   FORMATION, MUSHROOM.
+6. The call ledger (now with `ship.Undock`, `dogmaIM.Activate` and `Deactivate` to bind as the
+   client does), Phase 3's hosted check and the session-less gateway calls.

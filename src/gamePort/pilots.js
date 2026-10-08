@@ -44,10 +44,12 @@
 //     fed by the session, stepped once a second, and let go on docking. The
 //     space snapshot and the movement half of the flight status are read from
 //     it (spaceProjection.js), where the gateway reads the server's scene.
+//   - The ship's own readings that the ballpark does not hold (capacitor, the
+//     three capacities) are dogma's, loaded and kept as the retail client's
+//     godma keeps them (pilotDogma.js).
 //
 // Not here yet (docs/game-port-transport-plan.md, Phase 4): the scanner in
-// space, and the ship's own readings that the retail client takes from dogma
-// (capacitor, the three capacities, which modules are running).
+// space, and which of the ship's modules are running, overloaded or damaged.
 
 const crypto = require("node:crypto");
 const { GamePortSession } = require("./session");
@@ -56,6 +58,7 @@ const { notificationToBridgeJson, sessionChangeToBridgeJson, wireToBridgeJson } 
 const { GAME_PORT_HANDLE_PREFIX } = require("../pilotTransport");
 const { createCallLedger, retailForm } = require("./retailCalls");
 const { createPilotSpace } = require("./pilotSpace");
+const { createPilotDogma } = require("./pilotDogma");
 const { projectFlight, projectSpace } = require("./spaceProjection");
 const contract = require("../../contracts/evejs-web-bridge-contract.json");
 
@@ -210,6 +213,9 @@ function createGamePortPilots({
   const epoch = randomBytes(12).toString("base64url");
   /** Every call made, by pair and by how it compares with the retail client's (retailCalls.js). */
   const ledger = createCallLedger();
+  const DOGMA_AS_GODMA_PRIMES = Object.freeze({ status: "same", source: "eve/client/script/environment/godma.py:2409", note: null });
+  /** The server's clock (100 ns since 1601) for a reading of this machine's, in milliseconds. */
+  const filetime = (ms) => (BigInt(Math.trunc(ms)) + 11644473600000n) * 10000n;
   const BOUND_AS_THE_CLIENT_BINDS = Object.freeze({ status: "reshaped", source: "eve/common/script/net/eveMoniker.py, eve/client/script/environment/invCache.py", note: null });
 
   // ── errors ────────────────────────────────────────────────────────────────
@@ -350,6 +356,9 @@ function createGamePortPilots({
       inventoryManagers: new Map(),
       /** The pilot's ballpark while it is in space (pilotSpace.js), else null. */
       space: null,
+      /** The pilot's ship as dogma has it (pilotDogma.js), and which ship and place that was loaded for. */
+      dogma: createPilotDogma({ characterID, now: () => filetime(now()) }),
+      dogmaLoaded: null,
       ended: false,
     };
     session.onNotification((notification) => {
@@ -359,9 +368,12 @@ function createGamePortPilots({
         forgetObject(entry, Buffer.isBuffer(gone) ? gone.toString("utf8") : String(gone));
       }
       if (entry.space) entry.space.feed(notification);
+      entry.dogma.feed(notification);
       record(entry, notificationToBridgeJson(notification));
     });
     session.onSessionChange((changes) => {
+      // A new place, or a new ship: what dogma said of the old one is not about this one.
+      if (LOCATION_ATTRIBUTES.some((name) => name in changes) || "shipid" in changes) entry.dogmaLoaded = null;
       if (LOCATION_ATTRIBUTES.some((name) => name in changes)) {
         forgetLocationObjects(entry);
         if (sessions.has(entry.handle)) syncSpace(entry);
@@ -508,6 +520,35 @@ function createGamePortPilots({
   }
 
   /**
+   * godma.Prime: the ship's items and their attributes, from the dogma location
+   * bound for where the pilot is, in one call. Asked once for a ship in a
+   * place; after that godma is told of each change. Answers what dogma says of
+   * the ship now, or null if it could not be asked.
+   */
+  async function shipReadings(entry, place) {
+    const loadedFor = `${place.shipID}@${place.stationID ?? place.structureID ?? attribute(entry, "solarsystemid")}`;
+    if (entry.dogmaLoaded !== loadedFor) {
+      try {
+        const location = (await entry.session.bind("dogmaIM", locationBindParams(entry))).objectID;
+        ledger.note("dogmaIM", "GetAllInfo", DOGMA_AS_GODMA_PRIMES);
+        // primeCharacter, primeShip, primeStructure: a character and a ship, and no structure.
+        const allInfo = await entry.session.callBound(location, "GetAllInfo", [true, true, null]);
+        entry.dogma.clear();
+        entry.dogma.loadAllInfo(allInfo);
+        entry.dogmaLoaded = loadedFor;
+      } catch (error) {
+        const mapped = toPilotError(error, "dogmaIM", "GetAllInfo");
+        if (mapped.code === "SESSION_NOT_FOUND") {
+          end(entry, "connection_closed");
+          throw mapped;
+        }
+        return null; // the snapshot is still worth having; the readings say unknown
+      }
+    }
+    return entry.dogma.shipReadings(place.shipID);
+  }
+
+  /**
    * michelle.UpdateBallpark: a ballpark while the session is in a solar system
    * and not docked, and none otherwise; a new one for a new system.
    */
@@ -520,6 +561,8 @@ function createGamePortPilots({
     }
     if (wanted !== null && !entry.space) {
       entry.space = createSpace({ session: entry.session, solarSystemID: wanted, sleep, onError: (error, what) => onSpaceError(error, what, entry.characterID) });
+      // michelle.DoDestinyUpdate: the dogma messages riding with a ballpark update are scattered as OnMultiEvent, which is godma's.
+      entry.space.park.onMultiEvent = (messages) => entry.dogma.multiEvent(messages);
       // Nobody waits on this: the state arrives when the server has answered the bind.
       Promise.resolve(entry.space.start()).catch((error) => onSpaceError(error, "start", entry.characterID));
     }
@@ -551,10 +594,11 @@ function createGamePortPilots({
     const place = whereabouts(entry);
     if (place.inSpace) {
       const park = entry.space ? entry.space.park : null;
+      const readings = park && park.validState ? await shipReadings(entry, place) : null;
       return {
         // Until the server's state has arrived there is a park and nothing in it.
         space: park && park.validState
-          ? projectSpace(park, { solarSystemID: place.solarSystemID, shipID: place.shipID })
+          ? projectSpace(park, { solarSystemID: place.solarSystemID, shipID: place.shipID, readings })
           : { inSpace: true, solarSystemID: place.solarSystemID, shipID: place.shipID, sampledAtMs: now(), entities: [], ship: null },
         notifications: drain(entry),
       };

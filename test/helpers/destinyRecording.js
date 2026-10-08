@@ -36,6 +36,33 @@ function notifications(fixture) {
   return out;
 }
 
+/** Every answer to a call in the recording, in order, with when it arrived and what was being done: { atMs, during, value }. */
+function answers(fixture) {
+  const out = [];
+  for (const frame of fixture.frames) {
+    if (frame.from !== "server") continue;
+    let payload = Buffer.from(frame.hex, "hex");
+    if (payload[0] !== 0x7e) {
+      try {
+        payload = zlib.inflateSync(payload);
+      } catch {
+        continue;
+      }
+    }
+    let packet = null;
+    try {
+      packet = parsePacket(marshalDecode(payload));
+    } catch {
+      continue;
+    }
+    if (!packet || packet.command !== TYPE.CALL_RSP) continue;
+    // The answer travels as a substream: the value is what is inside it.
+    const body = packet.body[0];
+    out.push({ atMs: frame.atMs, during: frame.during, value: body && body.type === "substream" ? body.value : body });
+  }
+  return out;
+}
+
 /** Each DoDestinyUpdate as the client receives it: { atMs, during, entries: [[stamp, [name, args]]], waitForBubble }. */
 function destinyUpdates(fixture) {
   return notifications(fixture)
@@ -76,4 +103,4 @@ function stateBlobs(fixture) {
   return blobs;
 }
 
-module.exports = { destinyEvents, destinyUpdates, keyValField, notifications, slimFields, stateBlobs, text };
+module.exports = { answers, destinyEvents, destinyUpdates, keyValField, notifications, slimFields, stateBlobs, text };

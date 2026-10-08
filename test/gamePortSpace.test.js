@@ -256,6 +256,17 @@ test("the snapshot of a real grid: every ball that has a slim item, in the gatew
   assert.deepEqual([gun.name, gun.categoryID, gun.groupID, gun.typeID > 0], [null, 11, 99, true]);
 });
 
+test("what dogma says of the pilot's own ship goes where the ballpark has nothing to say", () => {
+  const park = undockedPark();
+  const readings = { capacitorRatio: 0.625, shieldCapacity: 175, armorCapacity: 150, hullCapacity: 151 };
+  const space = projectSpace(park, { solarSystemID: SYSTEM, shipID: undock.shipID, readings });
+  assert.deepEqual([space.ship.capacitorRatio, space.ship.shieldCapacity, space.ship.armorCapacity, space.ship.hullCapacity], [0.625, 175, 150, 151]);
+  assert.equal(space.entities.find((row) => row.isSelf).capacitorRatio, 0.625);
+  // Nobody else's capacitor is known, and health is still the ballpark's.
+  assert.ok(space.entities.filter((row) => !row.isSelf).every((row) => row.capacitorRatio === undefined || row.capacitorRatio === null));
+  assert.deepEqual([space.ship.shieldRatio, space.ship.armorRatio, space.ship.hullRatio], [1, 1, 1]);
+});
+
 test("a ball with no slim item, and one on its way out, are not rows", () => {
   const park = undockedPark();
   park.ballpark.addBall({ id: -2000000001, x: 5 }); // a ball of the client's own

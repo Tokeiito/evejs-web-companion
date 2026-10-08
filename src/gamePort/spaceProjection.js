@@ -132,7 +132,7 @@ function projectEntity(park, ball, slim, ego) {
     row.mode = MODE_NAME[ball.mode] ?? null;
     // Who it is following or orbiting. The gateway reports the server's target for the ship, which a client is not sent.
     row.targetEntityID = (ball.mode === MODE.FOLLOW || ball.mode === MODE.ORBIT) && ball.followId > 0 ? number(ball.followId) : null;
-    // Another ship's capacitor is not sent to a client; the pilot's own comes from dogma, not from the park.
+    // Another ship's capacitor is not sent to a client; the pilot's own comes from dogma (projectSpace's `readings`).
     row.capacitorRatio = null;
     // A ship of the Entity category is one nobody is flying.
     row.isNpc = categoryID === CATEGORY.ENTITY;
@@ -143,10 +143,12 @@ function projectEntity(park, ball, slim, ego) {
 }
 
 /**
- * The gateway's `space` for a pilot in space, from its park. `place` is where
- * the session says the pilot is.
+ * The gateway's `space` for a pilot in space, from its park. `solarSystemID`
+ * and `shipID` are where the session says the pilot is and what it flies.
+ * `readings` is what dogma says of the pilot's own ship (pilotDogma.js), which
+ * the ballpark does not know; without it those fields are null.
  */
-function projectSpace(park, { solarSystemID, shipID }) {
+function projectSpace(park, { solarSystemID, shipID, readings = null }) {
   const ego = park.ego;
   const entities = [];
   for (const ball of park.ballpark.balls.values()) {
@@ -156,6 +158,7 @@ function projectSpace(park, { solarSystemID, shipID }) {
     entities.push(projectEntity(park, ball, slim, ego));
   }
   const own = ego === null ? null : entities.find((row) => row.itemID === number(ego)) ?? null;
+  if (own && readings) own.capacitorRatio = readings.capacitorRatio;
   return {
     inSpace: true,
     solarSystemID,
@@ -175,11 +178,12 @@ function projectSpace(park, { solarSystemID, shipID }) {
       shieldRatio: own.shieldRatio,
       armorRatio: own.armorRatio,
       hullRatio: own.hullRatio,
-      // From dogma on the retail client, not from the ballpark. Not read yet.
-      capacitorRatio: null,
-      shieldCapacity: null,
-      armorCapacity: null,
-      hullCapacity: null,
+      // From dogma on the retail client, not from the ballpark.
+      capacitorRatio: readings ? readings.capacitorRatio : null,
+      shieldCapacity: readings ? readings.shieldCapacity : null,
+      armorCapacity: readings ? readings.armorCapacity : null,
+      hullCapacity: readings ? readings.hullCapacity : null,
+      // Which modules are running, overloaded or damaged: godma's effects, not read yet.
       activeModuleIDs: [],
       overloadedModuleIDs: [],
       moduleDamage: {},
