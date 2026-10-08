@@ -231,6 +231,15 @@ Take these defaults, and list each under "For the operator" in the log so they c
   session for a pilot a script was flying on the same BFF, and the script's is gone. To stage
   from the browser's own session, catch the page's `authorization` header inside the page
   (wrap `window.fetch`, keep the value in a closure, never return it) and post with it there.
+- **This server sends every free ball not massive**, the pilot's ship among them, and a station as
+  a massive ball 100 km in radius that the ship undocks inside of. The client's collisions only
+  run when the client makes a ball massive itself: for the step or two after it drops out of
+  warp. A warp to a station at 0 is the flight that shows them.
+- **The BFF's warp route is the autopilot's warp**, which lands 10 km off. For a warp to 0 send
+  `minRange: 0` (`POST /api/bridge/flight/warp {destinationID, minRange: 0}`).
+- **Flying the pilot through the BFF's routes from the page's own session** (see "The browser
+  takes the pilot from a script") leaves the page saying "Docked" until it is reloaded. Reload,
+  then read the overview.
 - **A dialog by its name**: `node scripts/client-words.js "<client folder>" dialog:<Name>` says
   what kind it is and which parameters its title and body take. A dialog's parameters may be
   typed tuples, `(code, value[, value2])`, which the client turns to text first
