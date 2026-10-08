@@ -3724,3 +3724,89 @@ client was not looked at.
    codes not done.
 6. Small, in space: the header's speed from the snapshot; the bar the client fills while a
    ship lines up for a warp; a warp ordered at a bookmark or a fleet member.
+
+---
+
+## 2026-10-08 — the ship drawn between ticks, and its speed as the gauge says it
+
+Commit `da1dd85`, pushed.
+
+**What the retail client does.** It does not show or measure with the park's own places. Each
+ball is drawn, and an overview row's distance and speed and the HUD's speed are read, from
+where the ball is at that reading of the sim clock (`ClientBall::InterpolatedPosition`,
+`GetValueDotAt`; `ball.GetVectorAt(simTime)`, `GetVectorDotAt(simTime)` from Python).
+
+- Each step the engine's driver takes is handed the clock's reading at the step before it, and
+  a ball keeps the last two. The client looks two ticks back from its clock. The two cancel:
+  in the second after a step a ball is drawn from where it was to where the park now has it.
+  **What is drawn is one tick behind what the park knows.**
+- A ball no step has been timed for, a fixed one or one that has only just arrived, is where
+  the park has it, with no speed to say.
+- Steps taken to catch up or go back are not timed, so the drawing runs on between new places.
+- A rebase of the clock moves every one of those times with the park's own.
+- A ball that was there at the driver's very first step is drawn off its path for two ticks
+  (a second early, then where the park has it). That is the source's, and is ported as it is;
+  a real park is empty at that step.
+
+The speed gauge (`speedGauge.py`, `activeShipController.py`) reads that speed fifty times a
+second: under 100 m/s to one decimal, from 100 up in whole metres cut short, and in warp
+mode, lining up or under way, the client's word for warping in brackets and no number. The
+velocity it is handed is a single-precision vector.
+
+**What was built.**
+
+- `Ballpark.drawn(ball, simTime)`: the client's drawing of a ball, with the times a step
+  leaves on a ball (`evolve(timestamp)`), `SetBallFree`'s, and `AdjustTimes` over all of them.
+  The park's own time moved into the ballpark, where the source has it.
+- The space snapshot of a pilot on the game port places every ball, and says its speed, as
+  drawn at the reading of the clock its park is stepped by. The tick the snapshot names is
+  unchanged.
+- The header says the ship's speed the gauge's way, in the client's labels, from the
+  snapshot's velocity taken in single precision. It replaces the throttle's percentage, which
+  came from the flight status and could be minutes old; that stands in only when the snapshot
+  has no ship.
+
+**Proof.**
+
+- Tests: 17 new, 4 changed. 64 ways of breaking the change. Five got through at first: four
+  are closed with tests, and one was a guard in the header that did nothing, which is gone.
+- Suite: 9205 tests, 9181 pass, 0 fail, 24 skipped, 0 todo.
+- **In the browser, on the game port**, eve.js `10e2c22f4`:
+
+  | what was done | what was read |
+  |---|---|
+  | undocked; the snapshot read 16 times, 200 ms apart | the ship 67.5 to 69.2 m further at every read, across three changes of tick: 337 to 345 m/s by the page's own clock. The snapshot used to move once a second |
+  | the same, the header | GOTO · 341 m/s |
+  | the HUD's Stop | STOP · 337, 306, 277, 250 ... 102 m/s, then 92.7, 84.0, 76.1 ... 10.4 m/s: a new number about twice a second |
+  | "Warp to" a moon | Establishing Warp Vector · (Warping), then Warp Drive Active · (Warping) |
+  | out of warp | STOP · 65.3 m/s, falling to 2.2 |
+  | docked again | 30 calls after a reload, none failed |
+
+  Before single precision was put in, the header read 340 m/s at top speed: the park's ship
+  flies at 340.9999999999998, which cut to whole metres is 340 and in single precision is 341.
+- **Nothing was staged.** The pilot was flown out to Jita IV Moon 6 and back, and docked.
+
+**Not done.** An overview row's radial and transversal speed are worked out by the client
+from the park's own places and speeds, not the drawn ones; the snapshot carries only the
+drawn. The client's vector to a ball is single precision too (it is taken from the ship's
+drawn place), which the page's distances are not. The order the engine's own length adds the
+three squares in is not determined. On the gateway the snapshot is the server's, as before.
+A speed that rounds to a whole number under 100 is written here with its decimal ("84.0"):
+that is my choice, and what the client's own formatter writes there was not read.
+
+### Next
+
+1. **The call ledger** (`ship.Undock`, `dogmaIM.Activate` and `Deactivate` to bind as the
+   client does; `GetMissionBriefingInfo` and `GetMissionObjectiveInfo`, which the client asks
+   on every layout of the agent's window), Phase 3's hosted check and the session-less
+   gateway calls.
+2. The scanner the client's way: results kept from the server's word, a probe's destination
+   and range kept here and sent with the scan.
+3. More of a mission's words: the objectives pane, the mission's time under the agent's line,
+   messages inside messages when one turns up.
+4. Small, around dialogs: the title for a dialog's kind, the "do not ask again" box, the typed
+   codes not done.
+5. Small, in space: an overview row's speed columns the client's way; the bar the client
+   fills while a ship lines up for a warp; a warp ordered at a bookmark or a fleet member.
+6. In the park, if a server ever sends a ball that needs them: MISSILE, FORMATION, MUSHROOM;
+   a fixed ball's collision shapes and the partition's order.
