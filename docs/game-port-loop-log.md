@@ -66,12 +66,19 @@ Decisions taken in your place, and anything waiting on you. Overrule any of thes
   check either against the real client. **My recommendation:** give it to whoever owns the
   server's movement work, with the table in that entry; the first thing to settle is whether the
   server's seconds should begin on whole seconds.
+- **The server's question before a quit or a decline is answered Yes for the pilot** on the
+  game port, and the web client asks its own user first (default taken). The retail client shows
+  the server's question itself. Showing it in the browser needs a way for the BFF to ask the user
+  something, which is listed as a unit. Overrule by saying the answer should be No until then.
+- **On the gateway a mission cannot be quit.** The server refuses to commit a quit it could not
+  warn about, and the gateway gives it nobody to warn. Measured 2026-10-08. On the game port it
+  works. Not a defect of either: it goes away when the gateway does.
+- **Test Two's standing** with agent Antaken Kamola is down 0.04, and 0.0035 with the agent's
+  corporation, from the quit that proved this.
 - **A hosted courier bot stops at once on a pilot who already holds the mission**, on either
   transport: "There is no accepted mission naming cargo to load". Seen on 2026-10-08 with Test
   Two, on the gateway BFF and the game-port one alike. Not looked into further: it is the bot's
   own logic, not the transport. See the entry "a hosted bot on the game port".
-- **Test Two now has a courier mission accepted** (agent Antaken Kamola, Reports to Veisto) with
-  the package in its Badger's cargo, left that way for the flight in Phase 4.
 - **eve.js's test runner cleans the temp folder.** The first sub-agent's test run swept 32 stale
   directories (11.7 GB, none touched for 29 hours) from the OS temp folder, `evejs-web-*` among
   them. That is the runner's own housekeeping, not something asked for; nothing in use was lost.
@@ -1164,15 +1171,17 @@ game-port transport.** Pressing Quit in the agent's conversation (`agentMgr` bou
 The server asked the client a question. On the retail client that is `agents.YesNo(title, body,
 agentID, contentID, suppressID)` (`ui/station/agents/agents.py` 404): it puts up a Yes/No window
 and answers whether Yes was pressed. **The game-port session does not answer calls the server
-makes to it**, so the question hangs and the quit never happens. The gateway never sees the
-question at all: the server finds no client there to ask and goes ahead.
+makes to it**, so the question hangs and the quit never happens. ~~The gateway never sees the
+question at all: the server finds no client there to ask and goes ahead.~~ (Withdrawn the same
+day, unchecked and wrong: on the gateway the quit does not happen either. See the next entry.)
 
 Every confirmation the server asks of a client goes this way (quitting or declining a mission
 are two), so this is not a corner. It needs: the session answering an incoming call; and a
-decision about who gives the answer. On the retail client the player does. The web UI has its own
+decision about who gives the answer. On the retail client the player does. ~~The web UI has its own
 confirmation before it presses Quit, and on the gateway the server proceeds without asking, so
-answering Yes on the web client's behalf matches what the web client does today; passing the
-question to the browser is the faithful end state.
+answering Yes on the web client's behalf matches what the web client does today;~~ (withdrawn:
+neither was checked, and the web UI had no confirmation) passing the question to the browser is
+the faithful end state.
 
 **Left as it was:** Test Two is docked at Muvolailen with the mission still accepted and the
 package aboard. The hosted bots are stopped (three stopped records across the two check BFFs).
@@ -1183,6 +1192,110 @@ package aboard. The hosted bots are stopped (three stopped records across the tw
    `agents.YesNo` first. Then quitting and declining a mission work there as on the gateway.
 2. **A hosted bot's courier run end to end on the game port**, with a fresh mission (quit the old
    one once 1 is done), which closes Phase 4. Then the same trip by the browser's own autopilot.
+3. **The scanner in space** on the game port (the one route that still answers 501 there).
+4. Module damage and weapon banks from dogma; health from godma as the panel reads it.
+5. **Collisions**; **the park beside the server's movement log**; the sim clock; MISSILE,
+   FORMATION, MUSHROOM.
+6. The call ledger (`ship.Undock`, `dogmaIM.Activate` and `Deactivate` to bind as the client
+   does), Phase 3's hosted check and the session-less gateway calls.
+
+---
+
+## 2026-10-08 — the server's questions answered on the game port; a mission quit and declined there
+
+Commit `9526060`, pushed.
+
+**Two things in the entry above were written without being checked. One is wrong, and both are
+withdrawn** (they are struck through there, with a pointer here).
+
+- I wrote that on the gateway "the server finds no client there to ask and goes ahead". Measured
+  today, on the gateway BFF, with Test Two's accepted mission: pressing Quit is answered with the
+  same conversation, the Quit button still on it, and the mission stays. The server's own code
+  says why (`agentMgrService.js`, "a cancellation must never be committed when the warning could
+  not be shown"). **So on the gateway a mission cannot be quit at all.** A decline is the other
+  way round in that code: with nobody to ask it goes ahead. I have read that and not measured it.
+- I wrote that the web UI "has its own confirmation before it presses Quit". It had none: the
+  button called the action directly (`AgentsMissions.svelte`). It has one now, below.
+
+That is the third claim this loop has had to take back, and the first two since the rule against
+them went into the brief. Both were in a paragraph arguing for a design, which is where I was not
+looking for them.
+
+**What the retail client does**, from its source:
+
+- A call from the server arrives as an ordinary call packet addressed to the client, naming one
+  of the client's own services. The client runs the method and sends back what it returned, with
+  the two addresses swapped (`ServiceCallGPCS.CallUp`, `machoNetPacket.Response`).
+- Before the server asks, it answers the call that caused the question with an answer marked
+  **provisional**: (seconds, an event's name, its arguments). That is not the answer. The client
+  goes on waiting, for that many seconds from then, and raises the event meanwhile
+  (`machoNet._BlockingCall`). The real answer comes when the player has answered. This is why
+  the quit looked "answered" in the last entry: the session took the provisional answer for the
+  real one.
+- `agents.YesNo` puts up a Yes/No window and answers whether Yes was pressed. If the player has
+  ticked "do not show this again" on that message, it answers at once with no window.
+
+**What was built.**
+
+- **The session answers a call the server makes to it.** The call goes to the client's services
+  (a function the session is given); what that returns goes back as the client sends it. A call
+  nobody here answers is left unanswered and reported, with the reason. (The client would answer
+  with the exception it raised. Nothing but the server's patience waits on that.)
+- **A provisional answer is waited out.** The call keeps waiting for as long as the server says,
+  and the event the server names is raised as a notification. The BFF caps that wait at two
+  minutes, because a browser's request is behind it and the server's figure is a day.
+- **The pilot's client services**, as far as the server calls them today:
+
+  | The server calls | The retail client | Here |
+  |---|---|---|
+  | `agents.YesNo` (quit, decline, cancel research) | a Yes/No window | answered Yes |
+  | `objectCaching.InvalidateCachedMethodCall` | forgets a cached answer; returns None | None; nothing is cached to forget |
+  | `agents.SingleChoiceBox`, `agents.GetQuantity` (research) | a choice box, a quantity box | not answered |
+  | `XmppChat.AskYesNoQuestion` (customs) | a Yes/No in chat | not answered |
+
+- **The web client asks before Quit and before Decline.** Since the server's question is now
+  answered for the pilot, the user has to be asked somewhere. The words are the web client's own;
+  the server's are label IDs only the retail client can turn into text.
+
+**Proof.**
+
+- Tests, each watched to fail on the old code: seven new (five for the session, two for the
+  pilot), and one for the web client's question. 24 ways of breaking the new session code, and 3
+  of breaking the question: all caught, after one test was fixed that could not tell the call's
+  user from the session's.
+- Suite: 8880 tests, 8855 pass, 0 fail, 24 skipped, 1 todo.
+- **Live, a quit on the game port** (Test Two, through the BFF's route). The server's log:
+
+  ```
+  [PKT] OUT agents YesNo() client-call callID=610001
+  [PKT] IN  agents YesNo() response callID=610001
+  [AgentMgr] Quit confirmation char=140000002 agent=3008416 responseType=boolean confirmed=true
+             sameCharacter=true missionMatches=true atAgentLocation=true
+  ```
+
+  The route's answer was the conversation after the quit (`missionQuit: true`), with the
+  provisional event, the standings change and the mission change beside it. The journal is empty.
+- **In the browser, a decline on the game port.** Asked for a mission; pressed Decline and
+  answered No: the question was shown, nothing was sent, the offer stayed. Pressed it again and
+  answered Yes: one request, the server asked and was answered within a millisecond, the
+  conversation went back to "Request Mission" with "Mission declined." under it, and the journal
+  is empty.
+
+**Cost to the test character:** Test Two lost 0.04 standing with the agent and 0.0035 with the
+agent's corporation for the quit. The decline was the first in four hours and cost nothing.
+
+**Not done:** the three calls in the table marked "not answered" (a research agent's choice and
+quantity, and the customs question). Each needs the question shown in the browser and the answer
+brought back, which the BFF has no way to do yet. Until then a call that sets one off waits two
+minutes and fails as unanswered.
+
+### Next
+
+1. **A hosted bot's courier run end to end on the game port**, with a fresh mission, which closes
+   Phase 4. Then the same trip by the browser's own autopilot.
+2. **The server's questions shown in the browser**: a way for the BFF to put a question to the
+   user and bring back the answer, then the three unanswered calls, and `agents.YesNo` asked
+   rather than answered.
 3. **The scanner in space** on the game port (the one route that still answers 501 there).
 4. Module damage and weapon banks from dogma; health from godma as the panel reads it.
 5. **Collisions**; **the park beside the server's movement log**; the sim clock; MISSILE,
