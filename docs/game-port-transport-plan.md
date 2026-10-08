@@ -184,6 +184,23 @@ The retail protocol only sees the logged-in character. Management needs more:
   pilots, `character-control/*`.
 - **BFF app API (~115 routes):** web login, bot host, mining/PI/industry plans, pilot training,
   provisioning, and static data (map graph, types, names, icons, market reference).
+- **eve.js gateway, a call made as a pilot who is not logged in** (`callMethod` with no session
+  handle and a session the BFF makes up: the account, and for some the character and its
+  corporation). The retail protocol has no such thing, so these stay where they are. As of
+  2026-10-08 they are: the structure access and docking checks for a chosen offline pilot
+  (`structureDirectory.*`, in `dockableAccessCall` and `operationStructureAccessCall`), a
+  structure's name looked up with no pilot held (`structureDirectory.GetStructureInfo`), a
+  fleet's parking and delivery checks for each member (`structureDirectory.
+  CheckMyDockingAccessToStructures`, `officeManager.GetMyCorporationsOffices`), a training
+  pilot's corporation fittings (`corpFittingMgr.GetFittings`), the corporation reads in training
+  onboarding and settings (`corpRegistry.*`), and whatever `/api/bridge/call` is asked while
+  the web session holds no pilot.
+
+**What is not in that list** is what the retail client itself asks before a character is chosen.
+On its selection and creation screens it is logged in as the account and asks `charUnboundMgr`.
+For an account on the game port the BFF does the same (`accountCall`, the seam's tenth
+function): the creation tables, the roster, the name check and the creation itself, on one
+connection logged in as the account, closed five seconds after the last thing asked on it.
 
 ### 2.4 Authority that does not move
 
@@ -503,6 +520,9 @@ and its package loaded into the ship, in the browser on the game port, each call
 retail client's first. `src/gamePort/retailCalls.js` is now the registry of what the client sends
 for each pair, and the transport tallies every call against it
 ([`game-port-call-ledger.md`](game-port-call-ledger.md)).
+
+Since then (2026-10-08, `f50c742`): making a character. With no pilot online, the account's own
+calls go over the retail protocol as the account (2.3).
 
 Not done yet in this phase:
 

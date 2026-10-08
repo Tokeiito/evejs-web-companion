@@ -4085,3 +4085,93 @@ bot talks to agents by its own calls and was not changed.
    fills while a ship lines up for a warp; a warp ordered at a bookmark or a fleet member.
 7. In the park, if a server ever sends a ball that needs them: MISSILE, FORMATION, MUSHROOM;
    a fixed ball's collision shapes and the partition's order.
+
+---
+
+## 2026-10-08 — what the client asks before a character is chosen, asked as the account
+
+Commit `f50c742`, pushed.
+
+**What the retail client does.** On its character selection and creation screens it is logged
+in as the account and nothing more, and what those screens need it asks of `charUnboundMgr`
+by name, all on the one connection it later chooses a character on:
+
+| call | where | what is sent |
+|---|---|---|
+| `GetCharacterSelectionData` | `characterSelection.py` | nothing |
+| `ValidateNameEx` | `chooseNameSection.py:201` | `(charName, how many names the screen has checked before)` |
+| `CreateCharacterWithDoll` | `ccSvc.py:97` | ten: `(name, raceID, bloodlineID, genderID, ancestryID, charInfo, portraitInfo, schoolID, None, qaStarterSystemID)` |
+| `GetCharCreationInfo` | nowhere | the client never asks; races and bloodlines are in its own static data |
+
+**What the BFF did.** With no pilot held, those four went to the web gateway on a session
+naming the account, whatever transport the account's pilots were on. They were the last calls
+of a retail kind that a game-port account still made over HTTP.
+
+**What was built.**
+
+- The seam has a tenth function, `accountCall`: for `charUnboundMgr` and an account on the game
+  port it goes to the game port, and otherwise it is the gateway's `callMethod` exactly as
+  before. The gateway is never told the login name. With no game port nothing is in between.
+- On the game port an account has one connection, opened by the first thing asked and logged
+  in as the client logs in. What is asked in one go shares it (making a character is five
+  calls), and it is closed five seconds after the last. The server saying no leaves it open,
+  as the client stays on its screen; any other failure and it is not asked again. It will not
+  choose a character.
+- The registry: `ValidateNameEx` gets the client's second argument (0: the BFF checks the one
+  name it is about to create); `GetCharCreationInfo` is the web client's own;
+  `CreateCharacterWithDoll` differs, since the web client draws no doll and sends the
+  server's older seven.
+
+**Proof.**
+
+- Tests: 29 new. 69 ways of breaking the change, all caught but one, and the line that one
+  showed to be doing nothing was taken out.
+- Suite: 9264 tests, 9240 pass, 0 fail, 24 skipped, 0 todo.
+- **Live, on the game port**, eve.js `10e2c22f4`, the `test` account with no pilot online,
+  through the BFF's routes, read from the server's log of what arrived:
+
+  | what was done | the server's log |
+  |---|---|
+  | the creation tables, once | a new connection, `Login attempt: user="test"`, `charUnboundMgr GetCharCreationInfo()`, and the connection closed 5.0 s later |
+  | the same, three times in a row | one connection, one login, the call three times (call IDs 7, 8, 9) |
+  | the same on a gateway BFF | `[CharService] GetCharCreationInfo` with nothing arriving on the game port; the two answers identical to the byte |
+  | a character made | one connection, one login: `GetCharCreationInfo`, `GetCharacterSelectionData`, `ValidateNameEx` (2 arguments), `CreateCharacterWithDoll` (7), `GetCharacterSelectionData`; closed 5.0 s after the last |
+  | the new character selected | its own connection: `GetCharacterSelectionData`, `GetCharacterLockType`, `SelectCharacterID`; docked, in an Ibis |
+
+- **The staging was undone**: the store was copied with the server stopped before the
+  character was made and put back after, and the account again has Test Pilot and no other.
+
+**Not done.**
+
+- The client chooses its character on the connection it asked all this on. Here selecting
+  opens a second, and the account's is closed by its timer.
+- `ValidateNameEx`'s count is always 0. A name refused and another tried would be 1 on the
+  client.
+- The doll and the portrait: the web client draws neither, so the creation call is not the
+  client's.
+- The calls the BFF makes as a pilot who is not logged in stay on the web gateway. They are
+  listed in the plan (2.3); nothing checks that the list stays whole.
+- With a pilot held, the account's calls are made on that pilot's connection, as before. The
+  client cannot be on the creation screen with a character online, so there is nothing of the
+  client's to compare that with.
+
+### Next
+
+1. Phase 3's hosted check: Ready Fit's Replenish on a selected session on the game port. It
+   needs a corporation fitting and stock staged for a test character, with the store copied
+   and put back.
+2. The agent's window: laid out again on `OnAgentMissionChange` and a change of station;
+   the objectives of a mission that is not a courier; the mission's time under the agent's
+   line; messages inside messages when one turns up.
+3. The ledger's unread pairs, most called first: the inventory and wallet reads, then the
+   writes on `ship` and `dogmaIM`.
+4. The scanner the client's way: results kept from the server's word, a probe's destination
+   and range kept here and sent with the scan.
+5. Small, around dialogs: the title for a dialog's kind, the "do not ask again" box, the typed
+   codes not done.
+6. Small, in space: an overview row's speed columns the client's way; the bar the client
+   fills while a ship lines up for a warp; a warp ordered at a bookmark or a fleet member.
+7. Small, before a character is chosen: selecting on the account's own connection; the count
+   of names checked.
+8. In the park, if a server ever sends a ball that needs them: MISSILE, FORMATION, MUSHROOM;
+   a fixed ball's collision shapes and the partition's order.

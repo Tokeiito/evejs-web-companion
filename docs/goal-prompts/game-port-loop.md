@@ -254,6 +254,11 @@ Take these defaults, and list each under "For the operator" in the log so they c
   (`cfg.FormatConvert`). A list inside one must be sent as a list: the client reads a tuple there
   as one more typed value and raises. The bridge's JSON keeps the two apart (an array is a tuple,
   `{type: "list", items}` a list), so look at which one the server sent.
+- **A script that selects a pilot cannot just log out.** `POST /api/logout` answers 409
+  `DRONE_RECOVERY_PENDING` until the script has said the pilot's drones are accounted for, as
+  the page does: `POST /api/bridge/drone-recovery/ready {checkID}` with the
+  `droneRecoveryCheckID` that select answered with (`scripts/bff-parity.js` does this). A
+  script that exits without it leaves the pilot held by the BFF.
 - **The BFF runs one write per pilot at a time** (`CHARACTER_IN_USE`). Anything that must get
   through while a write is waiting on the server, as an answer to its question must, has to be
   let past that gate in `src/server.js`, and tested with a write in flight.
