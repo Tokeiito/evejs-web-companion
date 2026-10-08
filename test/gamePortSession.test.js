@@ -453,8 +453,39 @@ test("a lost connection is reported once, with the reason", { timeout: 5000 }, a
   const unanswered = session.call("config", "Never");
   transport.onClose(new Error("read ECONNRESET"));
   transport.onClose(new Error("again"));
-  await assert.rejects(unanswered, /ECONNRESET/);
+  // LOST, not CLOSED: we did not ask for this. A takeover of the character looks
+  // exactly like it; eve.js drops the old connection without a word (seen live).
+  await assert.rejects(unanswered, (error) => error.code === "CONNECTION_LOST" && /ECONNRESET/.test(error.message));
   assert.deepEqual(reasons, ["read ECONNRESET"]);
+  assert.equal(session.closeReason.code, "CONNECTION_LOST");
+});
+
+// The shape eve.js gives the notice (handshake.js buildGPSTransportClosedPayload).
+const transportClosed = (reason, reasonCode) => marshalEncode({
+  type: "objectex1",
+  header: [{ type: "token", value: "carbon.common.script.net.GPSExceptions.GPSTransportClosed" }, [reason, reasonCode, { type: "dict", entries: [] }]],
+  list: [],
+  dict: [],
+});
+
+test("the server saying why it is hanging up ends the session with its reason", { timeout: 5000 }, async (context) => {
+  const { session, transport } = await loggedIn(context);
+  const unanswered = session.call("config", "Never");
+  transport.deliver(transportClosed("The cluster is shutting down", "CLUSTER_SHUTDOWN"));
+  await assert.rejects(unanswered, (error) => error.code === "TRANSPORT_CLOSED" && /CLUSTER_SHUTDOWN/.test(error.message));
+  assert.equal(session.closed, true);
+  assert.equal(session.closeReason.detail.reason, "The cluster is shutting down");
+  assert.equal(session.counters.unknownPackets, 0, "it was understood, not skipped");
+});
+
+test("a login the server refuses with a reason fails with that reason", { timeout: 5000 }, async () => {
+  // In place of the password-version frame, as eve.js answers a refused login.
+  const transport = replayTransport({
+    rewrite: (frame) => (decoded(frame) === 2 ? transportClosed("LoginAuthFailed", "ACCOUNTBANNED") : frame.bytes),
+  });
+  const session = new GamePortSession({ transport, ...recordingSessionOptions() });
+  await assert.rejects(session.login(fixture.accountName, ""), (error) => error.code === "TRANSPORT_CLOSED" && /ACCOUNTBANNED/.test(error.message));
+  assert.equal(transport.closed, true);
 });
 
 test("after a minute with nothing sent, the session pings; activity puts it off", { timeout: 5000 }, async (context) => {

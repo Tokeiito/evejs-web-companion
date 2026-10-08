@@ -120,6 +120,21 @@ function describeError(payload) {
 }
 
 /**
+ * A GPSTransportClosed sent where a frame's value should be, or null. The server
+ * sends one to say why it is about to hang up; the client's unmarshaller raises
+ * it. It is an object with constructor arguments (reason, reasonCode, reasonArgs).
+ */
+function readTransportClosed(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value) || Buffer.isBuffer(value)) return null;
+  const header = Array.isArray(value.header) ? value.header : null;
+  const name = text(header ? header[0] : value.name);
+  if (!name || !/GPSTransportClosed$/.test(name)) return null;
+  const args = header ? header[1] : value.args;
+  const at = (index) => (Array.isArray(args) ? text(args[index]) : null);
+  return { reason: at(0) ?? "Disconnected", reasonCode: at(1) };
+}
+
+/**
  * A pickle as a packet carries one: a substream, or a byte string that is
  * itself a marshal stream. (The server sends call answers the first way and
  * notifications the second.)
@@ -210,7 +225,10 @@ class GamePortSession {
     this.backgroundTimers = new Set();
 
     transport.onFrame = (payload) => this._onFrame(payload);
-    transport.onClose = (error) => this._onClosed(error ?? new GamePortError("CONNECTION_CLOSED", "The game connection closed."));
+    // The connection went away without our closing it: the server dropped us
+    // (a takeover of the character does exactly this, with no notice) or the
+    // network did.
+    transport.onClose = (error) => this._onClosed(new GamePortError("CONNECTION_LOST", (error && error.message) || "The game connection closed.", error ?? null));
   }
 
   // ── listening ──────────────────────────────────────────────────────────────
@@ -563,6 +581,11 @@ class GamePortSession {
       value = marshalDecode(data);
     } catch (error) {
       this._onClosed(new GamePortError("BAD_FRAME", `The game server sent a frame that does not decode: ${error.message}`));
+      return;
+    }
+    const closedBy = readTransportClosed(value);
+    if (closedBy) {
+      this._onClosed(new GamePortError("TRANSPORT_CLOSED", `The game server closed the connection: ${closedBy.reasonCode ?? closedBy.reason}`, closedBy));
       return;
     }
     if (!this.loggedIn) {
