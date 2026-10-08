@@ -52,6 +52,20 @@ Decisions taken in your place, and anything waiting on you. Overrule any of thes
   the web client cannot yet do on the game port and the one with real unknowns in it; the hosted
   flow goes through the same nine functions and has no new mechanism to prove. Say so if you
   would rather the phases closed in order.
+- **I told you the server held a ship a tick behind after every undock. It does not.** That was
+  in the log and in the message of commit `e0d95fc` for about forty minutes. A sub-agent found
+  the real cause, I checked it by running, and the entry "the server question answered" is the
+  correction. It is the second time in this loop I have written down a cause before checking it
+  (the first was the status field); the brief now says not to.
+- **A server defect I am leaving for you: a movement order can reach the client a tick later than
+  the server acts on it.** The stamp and the server's one-second step come from two clocks. On a
+  system woken by an undock a fair share of `Stop` orders are affected, and the client's ship
+  ends a tick of travel from the server's (341 m for a frigate). Measured, reproduced by me, and
+  in the defects table. Not fixed: both ways of fixing it go through stamp code tuned against
+  captures of the real client or against a test that pins the present behaviour, and I cannot
+  check either against the real client. **My recommendation:** give it to whoever owns the
+  server's movement work, with the table in that entry; the first thing to settle is whether the
+  server's seconds should begin on whole seconds.
 - **Test Two now has a courier mission accepted** (agent Antaken Kamola, Reports to Veisto) with
   the package in its Badger's cargo, left that way for the flight in Phase 4.
 - **eve.js's test runner cleans the temp folder.** The first sub-agent's test run swept 32 stale
@@ -64,6 +78,12 @@ Decisions taken in your place, and anything waiting on you. Overrule any of thes
 |---|---|---|---|---|
 | 2026-10-08 | `corpRegistry.CanLeaveCurrentCorporation` returns `[0, "CrpAccessDenied", {}]`; the bare `{}` cannot be marshalled, so every client gets None | server log: `[PKT] ERR corpRegistry CanLeaveCurrentCorporation() Cannot marshal value: object {}` (7 times); the client unpacks three values (`corp_ui_home.py` 97, 532, 544) | `2e3101da4`; on `origin/main` since 01:09 (not pushed by this loop, see above) | 2026-10-08: harness reports it identical on both transports; no `[PKT] ERR` in the run |
 | 2026-10-08 | `corpRegistry.KickOutMembers` returns a bare `{kicked, notKicked}`, which cannot be marshalled either, so the client gets None after the kicks are applied | the client indexes the answer, `results['kicked']` (`base_corporation.py` 469-471); the marshaller throws on the handler's old answer (the new test, before the fix) | `22940f822`; on `origin/main` since 01:09 (not pushed by this loop, see above) | 2026-10-08: called live on the game port with an empty list as a CEO (Farmer, docked): answers `{kicked: [], notKicked: []}` as a dict of two lists; no `[PKT] ERR` |
+
+| 2026-10-08 | A movement order is stamped from one clock (the next whole second) and applied on another (the server's next one-second step, which begins where the system was woken). When they disagree the client is told one tick later than the server acts, and its ship ends a tick of travel away | my run: `CmdStop` handled 18 ms into one of the server's seconds, stamped B+12, server's ship slowing from 11 s after it first moved; a client stepping by the stamp is 199 m ahead five seconds later and gaining. Sub-agent: three placements, two of them wrong by a tick (`stopSpeedCommands.js` 225-229 against `nativeSubwarp.js` 676-721) | **not fixed**: not small, pinned by a test one way and by capture-tuned stamps the other; left for the operator | - |
+| 2026-10-08 | The state sent when a client asks for it (`UpdateStateRequest`) carries where the ships are now under the next second's stamp, not carried forward to that tick as `AddBalls2` is | probes every 3.5 s read -1.49, +0.58, -0.53, +0.58 ticks against a park stepped from the state before (my run); `dispatch/sceneRefresh.js` 216-229, `authority/destinyAuthority.js` 955-968 (sub-agent's read) | **not fixed**: same code, same reasons; matters only after a client has lost its place | - |
+
+Withdrawn the same day: "after undocking the server's ship is a tick behind". It is not; that was
+the second row above, seen through a recorder that always asked at the same point in the second.
 
 Judged, not a defect to hand off: the server answers None, and logs `[PKT] ERR`, whenever a handler
 or its marshaller throws. See "For the operator".
@@ -541,16 +561,11 @@ server's state, three ticks later the park's ship is within 15 m of the server's
 and within 1% of its speed while stopping; every state is taken at its own stamp with the ship
 put exactly where it says; nothing fails, nothing resets.
 
-What it says about the server, which is the more interesting half. eve.js does not step ships once
-a second as CCP's server does. It moves them ten times a second by the time that has passed and
-stamps what it sends with the whole second, so a fraction of a tick either way is how it is built
-and the +0.04 rows are that. The rows in bold are not. After undocking, the server's ship is a
-full tick of travel behind where its own first state, stepped by CCP's rules, puts it, and it
-stays a tick behind (the same after 3 s and after 31 s). And a `Stop` stamped +12 had been
-slowing the server's ship for only two seconds by +15. A retail client fed this stream would be
-doing exactly what the park does, so its ship sits 341 m ahead of the server's after every undock
-(more for a faster ship). **Handed to a sub-agent** to find the cause in the server and fix it if
-it is a defect and safely fixable; the outcome goes in the defects table.
+**What I wrote here about the server was wrong, and is withdrawn.** I read the rows in bold as
+the server holding the ship a tick behind after every undock and applying a `Stop` a second late,
+said a retail client would sit 341 m ahead of the server after every undock, and put that in the
+message of commit `e0d95fc`. The measurements are right. The reading was not: see the next entry.
+The rows were handed to a sub-agent to find the cause, which is how the mistake was found.
 
 The tests pin the park's side and put bounds on the rest (never more than 1.1 ticks apart, the
 difference always along the heading), so they keep passing whichever way the server question
@@ -570,3 +585,106 @@ goes, short of a re-recording.
    shield since), `DoSimClockRebase` and `OnSetTimeDilation`: the park's seconds are not always
    wall seconds.
 5. The call ledger, Phase 3's hosted check and the session-less gateway calls, as before.
+
+---
+
+## 2026-10-08 — the server question answered: the undock is fine, one thing is not
+
+No code changed in either repository for this; the corrections are to what was written.
+
+**I was wrong about the undock.** The sub-agent found the cause in the server, and I checked the
+two parts of it that a run can show.
+
+The server does step once a second, as CCP's does: once a second it fixes each ship's thrust for
+the second to come, and its ten-a-second ticks only draw the ship along that. (That is the
+sub-agent's reading of `simulation/nativeSubwarp.js`; what I ran agrees with it.) Two things
+about those seconds explain every row of the table above:
+
+- They do not begin on the stamp's whole seconds. They begin where the system was woken, and
+  undocking into an empty system wakes it. The ship is put in 10 to 25 ms later and waits for the
+  next one, so it leaves the undock point most of a second after it appears, at the start of the
+  second its first state is stamped for. Seen in the server's movement log on my own run: held
+  993 ms. A client stepping from that state is in step with it.
+- A state the client asks for in flight is where the ships are at that moment, stamped with the
+  next whole second. Depending on when in the second the question lands, it is most of a tick
+  behind the tick it names, or ahead. My recorder asked every 3 s, so it always landed at about
+  the same point: a tick behind on the first answer, close after that. **Asked every 3.5 s
+  instead, the same comparison reads -1.49, +0.58, -0.53, +0.58 ticks** (my run). The offset
+  followed the question, not the undock.
+
+So a probed recording is good to about a tick and no finer, and what it showed as a defect was
+its own blur. The sub-agent set a client stepping only from the first state and the `Stop`
+against every step in the server's movement log for three ordinary flights: never more than 7 m
+apart (the log is written a little after the step), 0.3 m at the last step, slowing included.
+The pilot's own ship is where a retail client has it.
+
+The test comments, both scripts' headers, the brief and the plan said the wrong thing and are
+corrected. The message of `e0d95fc` cannot be, and history is not rewritten; this entry is the
+correction.
+
+**One thing is wrong on the server, in the other direction, and it is not fixed.** A movement
+order is stamped from one clock and applied on another. The stamp is the next whole second of the
+server's time (`stopSpeedCommands.js` 225-229); the order takes hold at the start of the
+server's next one-second step (`nativeSubwarp.js` 676-721), and those steps begin where the
+system was woken. When the two disagree, the client is told a tick later than the server acts.
+
+My own run of the sub-agent's driver, which places the `Stop` in time and asks for no states:
+
+| | |
+|---|---|
+| Ship appears | 183.384 s |
+| First state, stamp B | sent 183.389 |
+| Ship first moves | 184.377 (the server's seconds begin at .377) |
+| `CmdStop` handled | 195.395, 18 ms into one of the server's seconds |
+| Stamp on the `Stop` the client is sent | B+12 |
+| Server's ship starts slowing | 195.375: **11** of its seconds after first moving |
+| A client stepping by the stamp | starts slowing 12 ticks after its state: one tick late |
+| Five seconds on | the client's ship is 199 m further along than the server's, and still gaining |
+
+The sub-agent placed the order three ways:
+
+| `Stop` sent | Stamp | Server starts slowing | Client beside server |
+|---|---|---|---|
+| after one of the server's seconds begins, before the whole second | B+12 | 12.000 s after first moving | identical |
+| after a whole second, before the server's next second begins | B+13 | 12.003 s | client 193 m ahead, growing |
+| within a tenth of a second after one of the server's seconds begins | B+12 | 11.000 s | client 200 m ahead, growing |
+
+The second case is open for as long as the server's seconds are offset from whole ones, which was
+between 0.09 and 0.6 of every second in these runs. So on a freshly woken system a fair share of
+orders reach a retail client a tick late: its ship ends up a tick of travel from where the server
+has it (341 m for this frigate, kilometres for something fast), until something corrects it. The
+sub-agent expects the same of every order that goes through the same path, and of an undock into
+a system already awake; those two are read from the code, not run.
+
+It is a defect by the standard this loop works to, the client's ball where the server's is. It
+was not fixed, and I agree with leaving it. Either the stamps have to come from the step the
+order will be applied in, which is stamp code tuned against captures of the real client, or the
+server's seconds have to be kept on whole seconds, which a test pins the other way
+(`destinyPhase8NativeSubwarp.test.js` 2251-2300). Neither is small, neither can be checked
+against the real client from here, and other sessions are at work in that code. It is in the
+defects table and under "For the operator".
+
+Smaller, also left: the state sent on request is the only one of the server's updates not
+carried forward to the tick it is stamped for (`AddBalls2` and corrections for other pilots'
+ships are, `projection/entityProjection.js` 103-199). A client that has just asked for its
+state is up to a tick of travel off until the next thing corrects it. A healthy client rarely
+asks.
+
+**What this changes for the port.** Nothing in the park: it does what the retail client does with
+the same bytes. What changes is how it is checked. For positions to the metre the truth is the
+server's movement log, not a state asked for in flight.
+
+### Next
+
+1. **WARP** (notes 4.8), against CCP's `test_warp.py`. `WarpTo` and `EntityWarpIn` are the
+   orders that reach it; today they are counted as failed.
+2. **Collisions** (section 5): `Gradient`, `Potential`, the partition.
+3. **The park beside the server's movement log.** A script of this repository's that steps the
+   park from a recording and sets it against each step the server logged, to the metre. The
+   sub-agent's version used a formula for the client; this one uses the park. It is the live check
+   for warp too.
+4. **A second recording** with a warp and a gate jump. Then the snapshot: `readSpaceSnapshot`,
+   flight status's ship mode and the scanner from our park, set beside the gateway's snapshot of
+   the same grid. Then undock stops refusing and the browser flies.
+5. The damage clock, `DoSimClockRebase` and `OnSetTimeDilation`.
+6. The call ledger, Phase 3's hosted check and the session-less gateway calls, as before.

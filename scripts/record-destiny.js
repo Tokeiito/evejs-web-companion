@@ -12,7 +12,8 @@
 // With probeEverySeconds, the server is also asked for its whole state again
 // every so often while in space (UpdateStateRequest, which is what the client
 // sends when it has lost its place). Each answer is the server's own account
-// of where everything is at that tick: something to hold a simulation up to.
+// of where everything is, good to about a tick: see scripts/destiny-compare.js
+// for why no finer.
 //
 // The calls are the retail client's, in its order, as a real client's session
 // shows them in eve.js's log:

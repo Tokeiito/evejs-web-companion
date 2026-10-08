@@ -12,10 +12,18 @@
 // just before the park is replaced by it.
 //
 // What a difference means: the park steps once a second by CCP's rules, from
-// the last state the server gave it. A server doing the same would differ by
-// nothing. Distances are also given in ticks of travel (metres over speed), and
-// "seconds of slowing" is how long the server's ship has been slowing compared
-// with ours, from the two speeds.
+// the last state the server gave it. Distances are also given in ticks of
+// travel (metres over speed), and "seconds of slowing" is how long the server's
+// ship has been slowing compared with ours, from the two speeds.
+//
+// How far to trust it: to about a tick, no finer. eve.js answers a request for
+// its state with where its ships are at that moment, under the stamp of the
+// next whole second, and its one-second steps do not begin on the stamp's
+// seconds. So such a state can be most of a tick behind the tick it names, or
+// ahead of it, depending on when in the second it was asked for. Velocities
+// while cruising, modes, and what the park does with each state are what this
+// shows well. For positions to the metre, the server's own record of each step
+// is eve.js/_local/logs/space-movement-debug.log.
 
 const path = require("node:path");
 const { Ballpark } = require("../src/gamePort/destiny/ballpark");

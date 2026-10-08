@@ -172,11 +172,15 @@ Take these defaults, and list each under "For the operator" in the log so they c
   a game-port one. To know which transport a pilot is on, read the server's log:
   `[EvejsWebGateway] Browser session started` is the gateway, `[PKT] IN` is the game port.
   `scripts/bff-parity.js` does this.
-- eve.js does not step ships once a second as CCP's server and the client do. It moves them ten
-  times a second by the time passed and stamps what it sends with the whole second. So a park
-  stepped by CCP's rules and the server's own state differ by a fraction of a tick of travel, and
-  that is not a bug in the port. `scripts/destiny-compare.js` on a recording made with
-  `record-destiny.js ... <probeEverySeconds>` shows by how much; a whole tick is worth a look.
+- A state asked of eve.js in flight (`UpdateStateRequest`) is not the truth to the tick. It is
+  where the ships are at that moment under the stamp of the next whole second, and the server's
+  one-second steps begin where the system was woken, not on the stamp's seconds. Through it a
+  correct park can look a tick and a half off. `scripts/destiny-compare.js` is good for modes,
+  velocities and "about a tick"; for positions to the metre use the server's own record of each
+  step, `eve.js/_local/logs/space-movement-debug.log`. This was read as a server defect once,
+  written into a commit message, and was not one.
+- Write down what was measured. Do not write down its cause until the cause has been checked. Twice
+  in this loop a cause went into a commit message and the log and had to be taken back.
 - The web client in a browser tab selects its pilot again when it loses the session. Log the tab
   out before a script selects the same character, or the two take it from each other.
 

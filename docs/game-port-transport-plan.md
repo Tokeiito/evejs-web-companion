@@ -547,7 +547,7 @@ to a pilot yet, and undock still refuses.
 | State blob reader and writer (`state.js`) | done | a real server's blobs, byte for byte |
 | Integrator, STOP, GOTO, FOLLOW, ORBIT, the setters, removal (`ballpark.js`) | done | CCP's per-tick fixtures, to the last digit |
 | The client's clock: update queue, when to step, rewind, snapshots (`park.js`) | done | CCP's merge and ticker cases; a recorded stream played through |
-| The park beside the server's own states (`scripts/destiny-compare.js`) | measured | velocities equal; positions within a fraction of a tick, except a one-tick offset after undock that is the server's (handed to a sub-agent) |
+| The park beside the server's own states (`scripts/destiny-compare.js`) | measured | velocities equal; positions agree as far as such a state can show, which is about a tick (see the loop log, 2026-10-08, "the server question answered") |
 | WARP, MISSILE, FORMATION, MUSHROOM | not ported; the step refuses, the orders are counted as failed | |
 | Collisions | not ported; counted | |
 | Sim clock rebase, time dilation, the damage clock | not ported | |

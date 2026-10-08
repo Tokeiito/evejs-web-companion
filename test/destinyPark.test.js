@@ -735,10 +735,16 @@ test("several updates in one notification are taken in turn, and their dogma mes
 // where the server has the ship at that tick, so the park can be compared with
 // it just before it is replaced by it.
 //
-// eve.js does not step its ships once a second as CCP's server does: it moves
-// them ten times a second by the time that has passed, and stamps what it sends
-// with the whole second. So its numbers are not expected to match a park
-// stepped by CCP's rules to the last digit, and they do not: see the bounds.
+// These answers are not the truth to the tick, and the bounds below are loose
+// for that reason. eve.js builds such a state from where its ships are at the
+// moment it is asked, and stamps it with the next whole second; its own
+// one-second steps begin where the system was woken, not on the stamp's
+// seconds. So the state can be most of a tick behind the tick it names, or
+// ahead of it, depending on when in the second the question lands. Asked every
+// three seconds, as here, it lands at about the same point each time: about a
+// tick behind on the first answer, and close after that. Asked every three and
+// a half it swings from -1.5 ticks to +0.6. The finer truth is the server's own
+// movement log (eve.js/_local/logs/space-movement-debug.log).
 
 const probed = require("./fixtures/destinyUndockProbed.json");
 const { keyValField } = require("./helpers/destinyRecording");
@@ -808,9 +814,8 @@ test("in flight, the park's ship has the server's velocity to the last digits, a
     assert.equal(ours.mode, MODE.GOTO);
     assert.ok(apart(ours.velocity, theirs.velocity) < 1e-9, `at ${stamp}: velocity ${apart(ours.velocity, theirs.velocity)} m/s apart`);
     assert.ok(Math.abs(size(theirs.velocity) - 341) < 1e-9);
-    // The two differ only in how far along the heading the ship has got. After
-    // undocking the server's is a tick behind: it reports the ship at speed in
-    // its first state, and has it where that state put it a second later.
+    // The two differ only in how far along the heading the ship has got, and
+    // by no more than such a state can be off from the tick it names.
     const lead = apart(ours.position, theirs.position) / 341;
     assert.ok(lead < 1.1, `at ${stamp}: ${lead} ticks of travel apart`);
     const along = { x: theirs.position.x - ours.position.x, y: theirs.position.y - ours.position.y, z: theirs.position.z - ours.position.z };
