@@ -129,7 +129,7 @@ function build(sessionOptions = {}, pilotOptions = {}) {
     },
     allowed: new Set([
       "station.GetGuests", "account.GetCashBalance", "corpRegistry.GetTitles", "dogmaIM.ShipGetInfo",
-      "invbroker.GetInventory", "invbroker.GetInventoryFromId", "invbroker.MachoBindObject", "invbroker.List", "invbroker.Add",
+      "invbroker.GetInventory", "invbroker.GetInventoryFromId", "invbroker.MachoBindObject", "invbroker.List", "invbroker.Add", "invbroker.StackAll", "invbroker.ListByFlags", "invbroker.MultiAdd", "invbroker.GetCapacity",
       "ship.MachoBindObject", "ship.Undock", "ship.Board", "dogmaIM.MachoBindObject", "dogmaIM.GetAllInfo",
       "agentMgr.MachoBindObject", "agentMgr.DoAction", "planetMgr.MachoBindObject", "charMgr.MachoBindObject",
       "reprocessingSvc.MachoBindObject", "fleetObjectHandler.MachoBindObject", "fleetObjectHandler.CreateFleet",
@@ -672,8 +672,8 @@ test("the hangar is bound as invCache binds it: the station's manager, then GetI
   assert.match(bound.boundHandle, /^[A-Za-z0-9_-]{32}$/);
 
   // A call on the handle goes to the inventory the manager handed back, not to the manager.
-  await pilots.callBoundMethod("invbroker", "List", [], null, WHO, handle, bound.boundHandle);
-  assert.deepEqual(session.boundCalls.at(-1), { objectID: "N=1:2", method: "List", args: [], kwargs: null });
+  await pilots.callBoundMethod("invbroker", "StackAll", [4], null, WHO, handle, bound.boundHandle);
+  assert.deepEqual(session.boundCalls.at(-1), { objectID: "N=1:2", method: "StackAll", args: [4], kwargs: null });
 
   // The manager is a moniker the client keeps: bound once, asked again.
   await pilots.bindObject("invbroker", "GetInventory", [STATION], null, WHO, handle);
@@ -782,15 +782,73 @@ test("a service's own method that answers with a bound object is called, and the
 });
 
 test("a call on a bound object sends the arguments, answers in the gateway's JSON and drains the backlog", async () => {
-  const { pilots, session, handle } = await selected({ answers: { "bound:List": () => ({ type: "list", items: [[SHIP, 134359051855730000n], Buffer.from("Reaper")] }) } });
+  const { pilots, session, handle } = await selected({ answers: { "bound:Add": () => ({ type: "list", items: [[SHIP, 134359051855730000n], Buffer.from("Reaper")] }) } });
   const { boundHandle } = await pilots.bindObject("invbroker", "GetInventory", [STATION], null, WHO, handle);
   session.notify("OnItemsChanged");
   const args = [4, { type: "long", value: "5" }, { type: "Buffer", data: [1, 2] }];
-  const outcome = await pilots.callBoundMethod("invbroker", "List", args, { flag: 5 }, WHO, handle, boundHandle);
+  const outcome = await pilots.callBoundMethod("invbroker", "Add", args, { flag: 5 }, WHO, handle, boundHandle);
   assert.deepEqual(outcome.result, { type: "list", items: [[SHIP, { type: "long", value: "134359051855730000" }], "Reaper"] });
-  assert.deepEqual([outcome.service, outcome.method, outcome.notifications.length], ["invbroker", "List", 1]);
+  assert.deepEqual([outcome.service, outcome.method, outcome.notifications.length], ["invbroker", "Add", 1]);
   assert.deepEqual(session.boundCalls.at(-1).args, [4, { type: "long", value: "5" }, Buffer.from([1, 2])]);
   assert.deepEqual(session.boundCalls.at(-1).kwargs, { flag: 5 });
+});
+
+test("a call goes out as the retail client sends it, on a service and on a bound object alike", async () => {
+  const { pilots, session, handle } = await selected({}, { allowed: new Set(["invbroker.GetInventory", "invbroker.List", "invbroker.ListByFlags", "invbroker.MultiAdd", "invbroker.GetCapacity", "invbroker.Add", "station.GetGuests"]) });
+  const { boundHandle } = await pilots.bindObject("invbroker", "GetInventory", [STATION], null, WHO, handle);
+  const sent = async (method, args, kwargs = null) => {
+    await pilots.callBoundMethod("invbroker", method, args, kwargs, WHO, handle, boundHandle);
+    const { args: sentArgs, kwargs: sentKwargs } = session.boundCalls.at(-1);
+    return [sentArgs, sentKwargs];
+  };
+  // invCache.py: self.moniker.List(flag=flag), self.moniker.ListByFlags(flags=[...]), self.moniker.MultiAdd(list(...), sourceID, **kw)
+  assert.deepEqual(await sent("List", [4]), [[], { flag: 4 }]);
+  assert.deepEqual(await sent("List", []), [[], { flag: null }]);
+  assert.deepEqual(await sent("ListByFlags", [[11, 12]]), [[], { flags: { type: "list", items: [11, 12] } }]);
+  assert.deepEqual(await sent("MultiAdd", [[100, 101], STATION], { flag: 5 }), [[{ type: "list", items: [100, 101] }, STATION], { flag: 5 }]);
+  // A call the client never makes, and one nobody has checked, go out as the BFF spelt them.
+  assert.deepEqual(await sent("GetCapacity", [5]), [[5], null]);
+  await pilots.callMethod("station", "GetGuests", [], null, WHO, handle);
+  assert.deepEqual(session.calls.at(-1).args, []);
+});
+
+test("a service's call is reshaped by the same registry as a bound object's", async () => {
+  const asked = [];
+  const { pilots, session, handle } = await selected({}, {
+    shape(service, method, args, kwargs) {
+      asked.push([service, method, args, kwargs]);
+      return service === "station"
+        ? { args: [{ type: "list", items: args }], kwargs: { where: 1 }, status: "reshaped", source: "x.py:1", note: null }
+        : { args, kwargs, status: "unchecked", source: null, note: null };
+    },
+  });
+  await pilots.callMethod("station", "GetGuests", [7, 8], null, WHO, handle);
+  assert.deepEqual(session.calls.at(-1), { service: "station", method: "GetGuests", args: [{ type: "list", items: [7, 8] }], kwargs: { where: 1 } });
+  assert.deepEqual(asked.at(-1), ["station", "GetGuests", [7, 8], null]);
+  assert.deepEqual(pilots.callLedger().find((row) => row.pair === "station.GetGuests").statuses, { reshaped: 1 });
+});
+
+test("the transport keeps a tally of what it called and how each compared with the retail client", async () => {
+  const { pilots, handle } = await selected();
+  const { boundHandle } = await pilots.bindObject("invbroker", "GetInventory", [STATION], null, WHO, handle);
+  await pilots.callBoundMethod("invbroker", "GetCapacity", [4], null, WHO, handle, boundHandle);
+  await pilots.callBoundMethod("invbroker", "GetCapacity", [4], null, WHO, handle, boundHandle);
+  await pilots.callBoundMethod("invbroker", "List", [4], null, WHO, handle, boundHandle);
+  await pilots.callBoundMethod("invbroker", "Add", [1, STATION], { flag: 5 }, WHO, handle, boundHandle);
+  await pilots.callMethod("station", "GetGuests", [], null, WHO, handle);
+  await rejects(pilots.callMethod("machoNet", "GetTime", [], null, WHO, handle), "CALL_NOT_ALLOWED");
+  const tally = Object.fromEntries(pilots.callLedger().map((row) => [row.pair, row.statuses]));
+  assert.deepEqual(tally, {
+    "invbroker.GetCapacity": { "web-only": 2 },
+    "charUnboundMgr.GetCharacterLockType": { same: 1 },
+    "charUnboundMgr.GetCharacterSelectionData": { same: 1 },
+    "charUnboundMgr.SelectCharacterID": { same: 1 },
+    "invbroker.Add": { differs: 1 },
+    "invbroker.GetInventory": { reshaped: 1 },
+    "invbroker.List": { reshaped: 1 },
+    "station.GetGuests": { unchecked: 1 },
+  });
+  assert.equal(pilots.callLedger()[0].pair, "invbroker.GetCapacity", "most called first");
 });
 
 test("a bound call needs a handle of this session, for this service, and a method on the allowlist", async () => {

@@ -48,6 +48,7 @@ const { GamePortSession } = require("./session");
 const { connectTcp, gameEndpoint } = require("./tcp");
 const { notificationToBridgeJson, sessionChangeToBridgeJson, wireToBridgeJson } = require("./bridgeJson");
 const { GAME_PORT_HANDLE_PREFIX } = require("../pilotTransport");
+const { createCallLedger, retailForm } = require("./retailCalls");
 const contract = require("../../contracts/evejs-web-bridge-contract.json");
 
 /** The gateway's own codes and statuses (WEB_CALL_ERROR_STATUS_CODES), plus the gateway client's two. */
@@ -178,6 +179,7 @@ function selectionRow(selection, characterID) {
  *   isOnline(accountID, characterID) -> whether the server still has the character
  *                          in game; asked after a release so "released" means it
  *   allowed             -> the "service.method" pairs a pilot may call
+ *   shape(service, method, args, kwargs) -> the call as the retail client sends it (retailCalls.js)
  */
 function createGamePortPilots({
   endpoint = gameEndpoint(),
@@ -186,6 +188,7 @@ function createGamePortPilots({
   passwordFor = () => "",
   isOnline = null,
   allowed = new Set(contract.gatewayAllowlist.pairs),
+  shape = retailForm,
   selectSettleMs = 5000,
   releaseSettleMs = 5000,
   randomBytes = crypto.randomBytes,
@@ -194,6 +197,9 @@ function createGamePortPilots({
 } = {}) {
   const sessions = new Map();
   const epoch = randomBytes(12).toString("base64url");
+  /** Every call made, by pair and by how it compares with the retail client's (retailCalls.js). */
+  const ledger = createCallLedger();
+  const BOUND_AS_THE_CLIENT_BINDS = Object.freeze({ status: "reshaped", source: "eve/common/script/net/eveMoniker.py, eve/client/script/environment/invCache.py", note: null });
 
   // ── errors ────────────────────────────────────────────────────────────────
 
@@ -345,6 +351,9 @@ function createGamePortPilots({
         throw fail("SESSION_SELECT_FAILED", "The game server logged that name in as a different account.");
       }
       // The character selection screen, as the retail client fills and leaves it.
+      for (const method of ["GetCharacterSelectionData", "GetCharacterLockType", "SelectCharacterID"]) {
+        ledger.note("charUnboundMgr", method, shape("charUnboundMgr", method, [], null));
+      }
       row = selectionRow(wireToBridgeJson(await session.call("charUnboundMgr", "GetCharacterSelectionData", [])), characterID);
       if (!row) throw fail("CALL_REFUSED", "That character is not on this account.");
       if (!positive(keyValField(row, "stationID")) && !positive(keyValField(row, "structureID"))) {
@@ -408,8 +417,10 @@ function createGamePortPilots({
   async function callMethod(service, method, args = [], kwargs = null, sessionFields = {}, bridgeSessionID = undefined) {
     const entry = held(bridgeSessionID, sessionFields);
     assertAllowed(service, method);
+    const form = shape(service, method, args, kwargs);
+    ledger.note(service, method, form);
     const result = await run(entry, service, method, async () =>
-      entry.session.call(service, method, argumentsToWire(Array.isArray(args) ? args : []), kwargs ?? null));
+      entry.session.call(service, method, argumentsToWire(form.args), form.kwargs));
     return {
       service,
       method,
@@ -612,6 +623,7 @@ function createGamePortPilots({
   async function bindObject(service, method, args = [], kwargs = null, sessionFields = {}, bridgeSessionID = undefined) {
     const entry = held(bridgeSessionID, sessionFields);
     assertAllowed(service, method);
+    ledger.note(service, method, BOUND_AS_THE_CLIENT_BINDS);
     let objectID;
     try {
       objectID = await run(entry, service, method, async () => bindRetail(entry, service, method, Array.isArray(args) ? args : [], kwargs));
@@ -635,8 +647,10 @@ function createGamePortPilots({
     if (service === "ship" && method === "Undock") {
       throw fail("PILOT_TRANSPORT_UNAVAILABLE", "Undocking needs a ballpark, which a pilot on the game-port transport does not have yet.");
     }
+    const form = shape(service, method, args, kwargs);
+    ledger.note(service, method, form);
     const result = await run(entry, service, method, async () =>
-      entry.session.callBound(object.objectID, method, argumentsToWire(Array.isArray(args) ? args : []), kwargs ?? null));
+      entry.session.callBound(object.objectID, method, argumentsToWire(form.args), form.kwargs));
     return {
       service,
       method,
@@ -724,6 +738,8 @@ function createGamePortPilots({
     readSpaceSnapshot,
     openSessionEventStream,
     shutdown,
+    /** Every pair called since this transport was made, most called first, with how each compares with the retail client's. */
+    callLedger: () => ledger.rows(),
     /** How many pilots are on the game port now. */
     get size() {
       return sessions.size;
