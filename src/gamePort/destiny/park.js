@@ -46,6 +46,11 @@ const NON_DESTINY_CRITICAL = new Set([
 const DESTRUCTION_EFFECT = { NONE: 0, EXPLOSION: 3 };
 
 const text = (value) => (Buffer.isBuffer(value) ? value.toString("utf8") : typeof value === "string" ? value : value && typeof value.value === "string" ? value.value : null);
+/** An argument the engine reads as a C int: Python 2.7 refuses a float there, and the entry fails. */
+function wholeNumber(value, funcName) {
+  if (!Number.isInteger(value)) throw new TypeError(`${funcName}: integer argument expected`);
+  return value;
+}
 /** A ball id as the simulation keys it: a number when a number holds it. */
 const ballId = (value) => (typeof value === "bigint" && value >= BigInt(Number.MIN_SAFE_INTEGER) && value <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(value) : value);
 const number = (value) => (typeof value === "bigint" ? Number(value) : value);
@@ -356,6 +361,8 @@ class Park {
         return funcName === "Orbit" ? park.orbit(id, leader, n(2, 1.0)) : park.followBall(id, leader, n(2, 1.0));
       }
       case "Stop": return park.stopOrder(id);
+      case "WarpTo": return park.warpTo(id, n(1), n(2), n(3), n(4, 20000.0), wholeNumber(n(5, 20), funcName));
+      case "EntityWarpIn": return park.entityWarpIn(id, n(1), n(2), n(3), wholeNumber(n(4), funcName));
       case "SetSpeedFraction": return park.setSpeedFraction(id, n(1));
       case "SetBallPosition": return park.setBallPosition(id, n(1), n(2), n(3));
       case "SetBallVelocity": return park.setBallVelocity(id, n(1), n(2), n(3));
@@ -373,7 +380,7 @@ class Park {
       case "CloakBall": return park.cloakBall(id, n(1));
       case "UncloakBall": return park.uncloakBall(id);
       default:
-        // WarpTo, EntityWarpIn, LaunchMissile, AddMushroom: not ported. Anything
+        // LaunchMissile, AddMushroom and the formation orders: not ported. Anything
         // else: the client has no such method. Either way the entry fails.
         throw new Error(`${funcName} cannot be applied`);
     }

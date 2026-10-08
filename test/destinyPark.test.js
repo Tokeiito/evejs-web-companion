@@ -570,9 +570,9 @@ test("an entry that is not part of the simulation neither moves the park nor mar
 
 test("an entry that fails does not stop the ones after it, and is counted by name", () => {
   const park = simplePark();
-  park.flushState([[100, ["WarpTo", [1, 1e9, 0, 0, 20000, 3]]], [100, ["NoSuchThing", [1]]], [100, ["GotoDirection", [1, 1, 0, 0]]]], false);
+  park.flushState([[100, ["LaunchMissile", [1, 2, 3, 4]]], [100, ["NoSuchThing", [1]]], [100, ["GotoDirection", [1, 1, 0, 0]]]], false);
   park.doPreTick();
-  assert.deepEqual([...park.failed].sort(), [["NoSuchThing", 1], ["WarpTo", 1]]);
+  assert.deepEqual([...park.failed].sort(), [["LaunchMissile", 1], ["NoSuchThing", 1]]);
   assert.equal(park.ballpark.ball(1).mode, MODE.GOTO);
 });
 
@@ -605,6 +605,55 @@ test("orders reach the simulation with the client's defaults and conversions", (
   // The engine refuses to follow or orbit a negative id; the entry fails and the ball carries on as it was.
   apply(["SetBallFree", [1, 1]], ["GotoDirection", [1, 1, 0, 0]], ["FollowBall", [1, -3]], ["Orbit", [1, -3]]);
   assert.deepEqual([ball(1).mode, [...park.failed].sort()], [MODE.GOTO, [["FollowBall", 1], ["Orbit", 1]]]);
+});
+
+test("the warp orders reach the simulation, with the engine's defaults and its refusal of a fractional warp factor", () => {
+  const park = simplePark();
+  const ball = (id) => park.ballpark.ball(id);
+  const apply = (...entries) => { park.flushState(entries.map((entry) => [park.currentTime, entry]), false); park.doPreTick(); };
+  apply(["WarpTo", [1n, 1e9, 2e9, 3e9, 15000.5, 3000]]);
+  assert.deepEqual([ball(1).mode, ball(1).goto, ball(1).effectStamp, ball(1).warpMinRange, ball(1).ownerId], [MODE.WARP, { x: 1e9, y: 2e9, z: 3e9 }, -1, 15000.5, 3000]);
+  apply(["WarpTo", [1, 4e9, 0, 0]]);
+  assert.deepEqual([ball(1).goto.x, ball(1).warpMinRange, ball(1).ownerId], [4e9, 20000, 20], "stopping 20 km short at warp factor 20 unless told");
+  apply(["EntityWarpIn", [2, 3e11, 4e11, 0, 4500]]);
+  assert.deepEqual([ball(2).mode, ball(2).effectStamp, ball(2).ownerId, ball(2).isMassive], [MODE.WARP, 95, 4500, false]);
+  assert.deepEqual([...park.failed], []);
+  // The engine takes the warp factor as a whole number; given anything else the entry fails and nothing changes.
+  apply(["WarpTo", [1, 5e9, 0, 0, 0, 3000.5]], ["EntityWarpIn", [2, 1e11, 0, 0, 4500.5]], ["EntityWarpIn", [2, 1e11, 0, 0]]);
+  assert.deepEqual([ball(1).goto.x, ball(2).goto.x, [...park.failed]], [4e9, 3e11, [["WarpTo", 1], ["EntityWarpIn", 2]]]);
+});
+
+test("a warp flown through the park's ticks, and gone back into", () => {
+  const park = simplePark();
+  const posted = [];
+  park.ballpark.onPost = (...event) => posted.push(event);
+  const ship = park.ballpark.ball(1);
+  park.flushState([[100, ["SetBallVelocity", [1, 90, 0, 0]]], [100, ["WarpTo", [1, 3e11, 0, 0, 10000, 3000]]]], false);
+  park.tick(); // applied at 100; lined up and fast enough, so the warp proper begins in that same step
+  assert.deepEqual([ship.mode, ship.effectStamp, ship.isMassive, posted], [MODE.WARP, 100, false, [["OnActivatingWarp", 1, 100]]]);
+  const track = new Map();
+  for (let i = 0; i < 12; i += 1) {
+    park.tick();
+    track.set(park.currentTime, { ...park.ballpark.ball(1).newPos });
+  }
+  assert.ok(track.get(113).x > 1e11, "well on its way");
+  // A late update for tick 108: the park goes back to a snapshot and steps up to it. The warp is placed by its clock, so it is where it was.
+  park.flushState([[108, ["SetBallMassive", [2, 1]]]], false);
+  park.doPreTick();
+  const again = park.ballpark.ball(1);
+  assert.deepEqual([park.currentTime, again.mode, again.effectStamp, park.resets], [108, MODE.WARP, 100, 0]);
+  assert.deepEqual(again.newPos, track.get(108));
+  // And from there it flies the same warp to its end.
+  let ticks = 0;
+  while (park.ballpark.ball(1).mode === MODE.WARP && ticks < 200) {
+    park.tick();
+    ticks += 1;
+    if (track.has(park.currentTime) && park.ballpark.ball(1).mode === MODE.WARP) assert.deepEqual(park.ballpark.ball(1).newPos, track.get(park.currentTime));
+  }
+  const out = park.ballpark.ball(1);
+  assert.deepEqual([out.mode, out.isMassive], [MODE.STOP, true]);
+  assert.ok(Math.abs(out.newPos.x - (3e11 - 10000)) < 200, `${3e11 - 10000 - out.newPos.x} m short of 10 km short`);
+  assert.deepEqual(posted.slice(-2).map(([name]) => name), ["OnDeactivatingWarp", "OnExitWarp"]);
 });
 
 test("a ball told to drift for a while turns to stone when its time comes", () => {

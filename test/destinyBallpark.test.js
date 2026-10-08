@@ -9,7 +9,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { Ballpark, DestinyNotPorted, divide, isWarping, normalize, scale, vec } = require("../src/gamePort/destiny/ballpark");
+const { AU, Ballpark, DestinyNotPorted, MAX_ALIGN_TICKS, divide, isWarping, normalize, scale, vec } = require("../src/gamePort/destiny/ballpark");
 const { MODE } = require("../src/gamePort/destiny/state");
 
 /**
@@ -327,7 +327,7 @@ test("a ball with no friction to speak of takes the series form of the step", ()
 test("what is not ported yet stops the step by name instead of being guessed at", () => {
   const park = new Ballpark();
   const ball = spaceBall(park);
-  for (const mode of [MODE.WARP, MODE.MISSILE, MODE.FORMATION]) {
+  for (const mode of [MODE.MISSILE, MODE.FORMATION]) {
     ball.mode = mode;
     assert.throws(() => park.evolve(), (error) => error instanceof DestinyNotPorted && /mode is not ported/.test(error.message));
   }
@@ -909,4 +909,441 @@ test("the Stop order leaves a stopped ball alone and stops any other", () => {
   park.setBallRigid(2);
   park.stopOrder(2);
   assert.equal(ball.mode, MODE.STOP, "a rigid ball told to stop is a stopped ball");
+});
+
+// ── warp ─────────────────────────────────────────────────────────────────────
+//
+// CCP ships one fixture for warp, and it covers lining up only. The warp proper
+// is checked here against the equations the source itself states in the comment
+// above SetupWarpConstants (Ballpark.cpp 4181-4232), worked out in the test
+// from those equations rather than copied from the code, and by flying whole
+// warps tick by tick.
+
+const warpEvents = (park) => {
+  const posted = [];
+  park.onPost = (...event) => posted.push(event);
+  return posted;
+};
+/** Vector3d::Length of the difference, as the engine works it out (Math.hypot can differ in the last place). */
+const distance = (a, b) => Math.sqrt((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y) + (a.z - b.z) * (a.z - b.z));
+const speedOf = (v) => Math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+
+test("CCP test_warpto: ten ticks lining up for a warp, to the last digit", () => {
+  const park = new Ballpark();
+  const ball = spaceBall(park);
+  ball.newVel = vec(1.0, 2.0, 3.0);
+  park.warpTo(ball.id, 100000.0, 200000.0, 300000.0);
+  const stamps = [];
+  const rows = [];
+  for (let tick = 0; tick < 10; tick += 1) {
+    park.evolve();
+    assert.equal(ball.mode, MODE.WARP);
+    stamps.push(ball.effectStamp);
+    rows.push([ball.newPos.x, ball.newPos.y, ball.newPos.z]);
+  }
+  assert.deepEqual(rows, [
+    [1.0639340706602571, 2.1278681413205143, 3.1918022119807685],
+    [2.248703156860341, 4.497406313720682, 6.746109470581021],
+    [3.544408527173739, 7.088817054347478, 10.633225581521215],
+    [4.941962348268478, 9.883924696536956, 14.825887044805434],
+    [6.433021256625409, 12.866042513250818, 19.299063769876224],
+    [8.00992537202119, 16.01985074404238, 24.029776116063566],
+    [9.665642306989863, 19.331284613979726, 28.99692692096958],
+    [11.393715762995505, 22.78743152599101, 34.18114728898651],
+    [13.188218337575332, 26.376436675150664, 39.56465501272599],
+    [15.043708197493105, 30.08741639498621, 45.13112459247932],
+  ]);
+  // The stamp counts the ticks spent lining up, downwards from -1.
+  assert.deepEqual(stamps, [-2, -3, -4, -5, -6, -7, -8, -9, -10, -11]);
+  assert.equal(ball.isMassive, true, "still massive while lining up");
+});
+
+test("WarpTo: what it sets, its defaults, and what it will not do", () => {
+  const park = new Ballpark();
+  const posted = warpEvents(park);
+  const leader = spaceBall(park, { id: 1 });
+  const ball = spaceBall(park, { id: 2, x: 1000 });
+  park.followBall(2, 1, 500);
+  park.warpTo(2, 5e8, 6e8, 7e8);
+  assert.deepEqual([ball.mode, ball.goto, ball.effectStamp, ball.followRange, ball.warpMinRange, ball.ownerId], [MODE.WARP, { x: 5e8, y: 6e8, z: 7e8 }, -1, 0, 20000, 20]);
+  assert.deepEqual([[...leader.followers], ball.followPtr], [[], null], "it lets go of what it followed");
+  assert.equal(isWarping(ball), false, "lining up, not yet warping");
+  // A negative range is none; a warp factor of nothing is 1.
+  park.warpTo(2, 5e8, 6e8, 7.5e8, -5, 0);
+  assert.deepEqual([ball.warpMinRange, ball.ownerId], [0, 1]);
+  park.warpTo(2, 5e8, 6e8, 7.5e8, 1500.5, -3);
+  assert.deepEqual([ball.warpMinRange, ball.ownerId], [0, 1], "told again to go where it is already going: left alone");
+  // Lining up for some ticks, then told the same place again: the count is kept. A new place starts it over.
+  park.evolve();
+  park.evolve();
+  assert.equal(ball.effectStamp, -3);
+  park.warpTo(2, 5e8, 6e8, 7.5e8);
+  assert.equal(ball.effectStamp, -3);
+  park.warpTo(2, 5e8, 6e8, 8e8, 1500.5, 3000);
+  assert.deepEqual([ball.effectStamp, ball.goto.z, ball.warpMinRange, ball.ownerId], [-1, 8e8, 1500.5, 3000]);
+  // Whatever range the ball was keeping from something is forgotten, in any mode.
+  park.stop(2);
+  ball.followRange = 7;
+  park.warpTo(2, 5e8, 6e8, 8e8, 1500.5, 3000);
+  assert.equal(ball.followRange, 0);
+  // Not a number, or no such ball: nothing.
+  park.warpTo(2, NaN, 0, 0);
+  park.warpTo(2, 0, Infinity, 0);
+  park.warpTo(404, 5e8, 6e8, 7e8);
+  assert.deepEqual([ball.goto.z, ball.effectStamp], [8e8, -1]);
+  // Each change of destination went by way of a stop, which is leaving warp mode, and so did the stop itself; nothing else was.
+  assert.deepEqual(posted, [["OnExitWarp", 2, 0], ["OnExitWarp", 2, 0], ["OnExitWarp", 2, 0]]);
+});
+
+test("WarpTo a place nearer than 100 km is a flight there, not a warp", () => {
+  const park = new Ballpark();
+  const posted = warpEvents(park);
+  const ball = spaceBall(park, { id: 1 });
+  park.warpTo(1, 99999.9, 0, 0);
+  assert.deepEqual([ball.mode, ball.goto], [MODE.GOTO, { x: 99999.9, y: 0, z: 0 }]);
+  assert.deepEqual(posted, [["OnExitWarp", 1, 1]]);
+  // At exactly 100 km it is a warp.
+  park.warpTo(1, 100000, 0, 0);
+  assert.equal(ball.mode, MODE.WARP);
+  // A warping ball sent somewhere near is taken out of warp mode, which is said twice: by the mode change, and by WarpTo.
+  posted.length = 0;
+  park.warpTo(1, 0, 50000, 0);
+  assert.deepEqual([ball.mode, posted], [MODE.GOTO, [["OnExitWarp", 1, 0], ["OnExitWarp", 1, 1]]]);
+});
+
+test("lined up for warp: within about eight degrees of the heading and faster than three quarters of top speed, or out of patience", () => {
+  const park = new Ballpark();
+  const ball = spaceBall(park, { id: 1, maxVelocity: 200 });
+  assert.equal(park.isAlignedForWarp(ball), false, "not in warp mode at all");
+  // Not even if it is flying fast at the place with a stamp below zero left over from something else.
+  park.gotoPoint(1, 1e9, 0, 0);
+  Object.assign(ball, { newVel: vec(200, 0, 0), effectStamp: -5 });
+  assert.equal(park.isAlignedForWarp(ball), false);
+  Object.assign(ball, { newVel: vec(), effectStamp: 0 });
+  park.warpTo(1, 1e9, 0, 0);
+  const at = (vx, vy) => {
+    ball.newVel = vec(vx, vy, 0);
+    return park.isAlignedForWarp(ball);
+  };
+  // Straight at it: the speed must be more than 150, not 150.
+  assert.deepEqual([at(150, 0), at(150.0000001, 0), at(200, 0), at(0, 0)], [false, true, true, false]);
+  // Fast enough: the cosine of the angle off the heading must be more than 0.99.
+  const off = (cosine) => at(180 * cosine, 180 * Math.sqrt(1 - cosine * cosine));
+  assert.deepEqual([off(0.9901), off(0.9899), off(-1)], [true, false, false]);
+  // The top speed is the ball's own, whatever fraction of it was asked for.
+  park.setSpeedFraction(1, 0.5);
+  assert.equal(at(149, 0), false);
+  // Patience: more than 180 ticks spent lining up.
+  ball.newVel = vec(0, 0, 0);
+  ball.effectStamp = -180;
+  assert.equal(park.isAlignedForWarp(ball), false);
+  ball.effectStamp = -181;
+  assert.equal(park.isAlignedForWarp(ball), true);
+  assert.equal(MAX_ALIGN_TICKS, 180);
+  // Already in the warp proper: no.
+  ball.effectStamp = 5;
+  ball.newVel = vec(200, 0, 0);
+  assert.equal(park.isAlignedForWarp(ball), false);
+});
+
+test("the tick a ball is lined up, the warp proper begins: the destination pulled back, the length fixed, the ball placed a metre on", () => {
+  const park = new Ballpark();
+  const posted = warpEvents(park);
+  const ball = spaceBall(park, { id: 1, x: 1000, y: 2000, z: 3000, maxVelocity: 200 });
+  const chaser = spaceBall(park, { id: 2, x: 500 });
+  park.followBall(2, 1, 100);
+  park.currentTime = 40;
+  const destination = vec(3e9, 4e9, 0);
+  park.warpTo(1, destination.x, destination.y, destination.z, 15000, 3000);
+  ball.newVel = vec(96, 128, 0); // 160 m/s, along (0.6, 0.8, 0): almost exactly at it
+  const from = { ...ball.newPos };
+  const before = park.unported.gradient;
+  park.evolve();
+  assert.deepEqual(posted, [["OnActivatingWarp", 1, 40]]);
+  assert.deepEqual([ball.mode, ball.effectStamp, ball.isMassive, isWarping(ball)], [MODE.WARP, 40, false, true]);
+  assert.deepEqual([chaser.mode, [...ball.followers]], [MODE.STOP, []], "whoever followed it is shaken off");
+  assert.deepEqual(ball.lastG, { x: 0, y: 0, z: 0 }, "and it is no longer steering");
+  // The destination moves 15 km back along the line from it to the ball.
+  const back = normalize({ x: from.x - destination.x, y: from.y - destination.y, z: from.z - destination.z });
+  const pulled = { x: destination.x + 15000 * back.x, y: destination.y + 15000 * back.y, z: destination.z + 15000 * back.z };
+  assert.deepEqual(ball.goto, pulled);
+  assert.equal(ball.lastCollision, distance(pulled, from), "the warp's whole length, from where the ball was");
+  // In the same tick it is placed by the warp's own curve at t = 0, which is one metre along, at the speed it had.
+  assert.ok(Math.abs(distance(ball.newPos, from) - 1) < 1e-3, `${distance(ball.newPos, from)} m from where it was`);
+  assert.ok(Math.abs(distance(ball.newPos, pulled) - (ball.lastCollision - 1)) < 1e-3);
+  assert.ok(Math.abs(speedOf(ball.newVel) - 160) < 1e-9, "its speed does not drop as the warp begins");
+  assert.equal(park.unported.gradient - before, 1, "only the chaser: the warping ball stopped being massive before it was stepped");
+  park.evolve();
+  assert.equal(park.unported.gradient - before, 2);
+});
+
+/** The numbers of a warp, from the equations in the source's comment: [3] [4] [6] [8] [11] [12]. */
+function warpByTheBook(warpFactor, D) {
+  const ACC = warpFactor / 1000;
+  const DEC = Math.min(warpFactor / 3000, 2);
+  const S = Math.min(warpFactor * 0.001 * AU, ((D + 1) * ACC * DEC) / (ACC + DEC));
+  return {
+    S, ACC, DEC,
+    tA: Math.log(S / ACC) / ACC,
+    dA: S / ACC,
+    tD: Math.log(S / DEC) / DEC,
+    dD: S / DEC - 1,
+    dC: D - S / ACC - S / DEC + 1,
+    tC: D / S - 1 / ACC - 1 / DEC + 1 / S,
+  };
+}
+const near = (actual, expected, relative = 1e-12) => Math.abs(actual - expected) <= Math.abs(expected) * relative;
+
+test("a warp's three stretches are the ones the source's own equations give, and add up to its length", () => {
+  const park = new Ballpark();
+  // 3 AU/s over 40 AU: a long warp with a cruise.
+  const D = 40 * AU;
+  const book = warpByTheBook(3000, D);
+  const warp = park.setupWarpConstants(3000, D);
+  assert.deepEqual([warp.warpSpeed, warp.accelRate, warp.decelRate], [3000 * 0.001 * AU, 3, 1]);
+  assert.ok(near(warp.accelDuration, book.tA) && near(warp.decelDuration, book.tD) && near(warp.cruiseDuration, book.tC));
+  assert.ok(near(warp.accelDistance, book.dA) && near(warp.decelDistance, book.dD) && near(warp.cruiseDistance, book.dC, 1e-9));
+  assert.ok(near(warp.accelDistance + warp.cruiseDistance + warp.decelDistance, D));
+  assert.ok(warp.cruiseDuration > 8 && warp.cruiseDuration < 13, `${warp.cruiseDuration} s at top speed`);
+  // Speeding up takes a third as long as slowing down takes, at this warp factor.
+  assert.ok(near(warp.decelDuration / warp.accelDuration, 3 * Math.log(warp.warpSpeed) / Math.log(warp.warpSpeed / 3), 1e-12));
+
+  // 3 AU/s over 150,000 km: too short to reach top speed. The top speed comes down until there is no cruise.
+  const short = park.setupWarpConstants(3000, 1.5e8);
+  const shortBook = warpByTheBook(3000, 1.5e8);
+  assert.equal(short.warpSpeed, (1.5e8 + 1) * 3 * 1 / (3 + 1));
+  assert.ok(short.warpSpeed < 3 * AU);
+  assert.ok(Math.abs(short.cruiseDuration) < 1e-9 && Math.abs(short.cruiseDistance) < 1, `${short.cruiseDuration} s of cruise`);
+  assert.ok(near(short.accelDuration, shortBook.tA) && near(short.decelDuration, shortBook.tD));
+  assert.ok(near(short.accelDistance + short.cruiseDistance + short.decelDistance, 1.5e8, 1e-9));
+
+  // However fast the ship, it never slows at more than 2 a second.
+  assert.deepEqual([park.setupWarpConstants(6000, D).decelRate, park.setupWarpConstants(9000, D).decelRate, park.setupWarpConstants(9000, D).accelRate], [2, 2, 9]);
+  assert.equal(park.setupWarpConstants(4500, D).decelRate, 4500 * (1.0 / 3000));
+});
+
+/** A ball lined up and at speed for a warp along x, about to enter it. */
+function readyToWarp(park, { id = 1, far, warpFactor = 3000, minRange = 15000, maxVelocity = 200 } = {}) {
+  const ball = spaceBall(park, { id, maxVelocity });
+  park.warpTo(id, far, 0, 0, minRange, warpFactor);
+  ball.newVel = vec(0.8 * maxVelocity, 0, 0);
+  return ball;
+}
+
+test("where a warping ball is, by the clock: each stretch against the source's equations", () => {
+  const park = new Ballpark();
+  const ball = readyToWarp(park, { far: 40 * AU });
+  park.evolve(); // enters warp
+  const D = ball.lastCollision;
+  assert.equal(D, 40 * AU - 15000);
+  const book = warpByTheBook(3000, D);
+  const end = ball.goto.x;
+  const where = (t) => park.warpDistance(ball, ball.newPos, vec(), t, true);
+  // Speeding up: distance exp(ACC t), speed ACC exp(ACC t).
+  for (const t of [1, 3, 6]) {
+    const { p, v, distance: gone } = where(t);
+    assert.ok(near(gone, Math.exp(3 * t)) && near(v.x, 3 * Math.exp(3 * t)) && near(end - p.x, D - Math.exp(3 * t), 1e-12), `speeding up, ${t} s`);
+    assert.deepEqual([p.y, p.z, v.y, v.z], [0, 0, 0, 0]);
+  }
+  // Cruising: top speed, and distance growing by it.
+  for (const t of [book.tA + 0.5, book.tA + book.tC / 2, book.tA + book.tC - 0.5]) {
+    const { v, distance: gone } = where(t);
+    assert.equal(v.x, 3 * AU);
+    assert.ok(near(gone, book.dA + 3 * AU * (t - book.tA), 1e-12), `cruising, ${t} s`);
+  }
+  // Slowing down: speed S exp(-DEC t), distance S/DEC (1 - exp(-DEC t)) past the cruise.
+  for (const since of [0.5, 5, 15, book.tD]) {
+    const { p, v, distance: gone } = where(book.tA + book.tC + since);
+    assert.ok(near(v.x, 3 * AU * Math.exp(-since), 1e-10), `slowing, ${since} s: speed`);
+    assert.ok(near(gone, book.dA + book.dC + 3 * AU * (1 - Math.exp(-since)), 1e-10), `slowing, ${since} s: distance`);
+    assert.ok(near(end - p.x, D - gone, 1e-6) || Math.abs(end - p.x - (D - gone)) < 1);
+  }
+  // Slowing down ends at the destination, with the speed down to the rate itself, 1 m/s.
+  // (At 6e12 m from the origin a double holds a position to about a millimetre.)
+  const last = where(book.tA + book.tC + book.tD);
+  assert.ok(Math.abs(last.v.x - 1) < 1e-9 && Math.abs(end - last.p.x) < 5e-3, `${last.v.x} m/s, ${end - last.p.x} m short`);
+  // A second before that it is still e - 1 metres short, at e m/s.
+  const secondBefore = where(book.tA + book.tC + book.tD - 1);
+  assert.ok(Math.abs(secondBefore.v.x - Math.E) < 1e-9 && Math.abs(end - secondBefore.p.x - (Math.E - 1)) < 5e-3);
+  // Asked between ticks, for drawing, nothing changes: still in warp.
+  assert.deepEqual([ball.mode, ball.isMassive], [MODE.WARP, false]);
+  // The speed never drops as the warp begins: a ball already faster than the curve keeps its speed.
+  assert.equal(park.warpDistance(ball, ball.newPos, vec(500, 0, 0), 0, true).v.x, 500);
+  assert.equal(park.warpDistance(ball, ball.newPos, vec(1, 0, 0), 0, true).v.x, 3);
+});
+
+test("a whole warp, tick by tick: it never overshoots, peaks at its top speed, and drops out stopped once it is slow", () => {
+  const park = new Ballpark();
+  const posted = warpEvents(park);
+  const ball = readyToWarp(park, { far: 10 * AU, maxVelocity: 300 });
+  park.evolve();
+  const startedAt = ball.effectStamp;
+  const D = ball.lastCollision;
+  const end = { ...ball.goto };
+  const book = warpByTheBook(3000, D);
+  let previous = distance(ball.newPos, end);
+  let peak = 0;
+  let ticks = 0;
+  const gradientBefore = park.unported.gradient;
+  let lastInWarp = null;
+  while (ball.mode === MODE.WARP) {
+    lastInWarp = { p: { ...ball.newPos }, v: { ...ball.newVel } };
+    park.evolve();
+    ticks += 1;
+    assert.ok(ticks < 200, "the warp ends");
+    const left = distance(ball.newPos, end);
+    assert.ok(left < previous && ball.newPos.x < end.x, `tick ${ticks}: ${left} m left, after ${previous}`);
+    previous = left;
+    peak = Math.max(peak, speedOf(ball.newVel));
+  }
+  assert.equal(peak, 3 * AU, "it cruises at exactly its top speed");
+  // It drops out on the first tick at which its speed is under 100 m/s (its own top speed, halved, is more).
+  const dropAfter = book.tA + book.tC + Math.log((3 * AU) / 100) / book.DEC;
+  assert.equal(ticks, Math.ceil(dropAfter), `${ticks} ticks; the curve passes 100 m/s at ${dropAfter} s`);
+  assert.deepEqual(posted, [["OnActivatingWarp", 1, startedAt], ["OnDeactivatingWarp", 1, startedAt + ticks], ["OnExitWarp", 1, 0]]);
+  assert.deepEqual([ball.mode, ball.isMassive, park.unported.gradient - gradientBefore], [MODE.STOP, true, 0]);
+  // The tick it drops out: the warp's own place and speed for that moment become where it was...
+  const t = ticks * park.dt;
+  const out = warpByTheBook(3000, D);
+  const speedOut = 3 * AU * Math.exp(-out.DEC * (t - out.tA - out.tC));
+  assert.ok(speedOut < 100 && near(speedOf(ball.oldVel), speedOut, 1e-9), `${speedOf(ball.oldVel)} m/s out of warp`);
+  assert.ok(Math.abs(distance(ball.oldPos, end) - (speedOut / out.DEC - 1)) < 0.05, "as far short of the end as its speed says");
+  // ...and one ordinary step is taken from there, as a ball that has stopped steering.
+  const stepped = park.integrate(ball.oldPos, ball.oldVel, vec(), ball.mass * ball.agility, park.friction, ball.timeFactor, park.dt);
+  assert.deepEqual([ball.newPos, ball.newVel], [stepped.p, stepped.v]);
+  // From then on it is an ordinary stopped ball, coasting down.
+  const speed = speedOf(ball.newVel);
+  park.evolve();
+  assert.ok(speedOf(ball.newVel) < speed && ball.mode === MODE.STOP);
+  assert.equal(park.unported.gradient - gradientBefore, 1, "and massive again");
+  assert.ok(lastInWarp.v.x > 100);
+});
+
+test("dropping out of warp is by speed: under 100 m/s, or under half the ship's top speed if that is less", () => {
+  const drops = (maxVelocity, speed) => {
+    const park = new Ballpark();
+    const ball = readyToWarp(park, { far: 10 * AU, maxVelocity });
+    park.evolve();
+    const warp = park.setupWarpConstants(3000, ball.lastCollision);
+    // The moment in the slowing-down stretch at which the curve's speed is `speed`.
+    const t = warp.accelDuration + warp.cruiseDuration + Math.log(warp.warpSpeed / speed) / warp.decelRate;
+    const result = park.warpDistance(ball, ball.newPos, ball.newVel, t, false);
+    assert.ok(Math.abs(speedOf(result.v) - speed) < 1e-6);
+    return ball.mode === MODE.STOP;
+  };
+  assert.deepEqual([drops(300, 120), drops(300, 100.001), drops(300, 99.999)], [false, false, true], "a fast ship: 100 m/s");
+  assert.deepEqual([drops(120, 99), drops(120, 60.001), drops(120, 59.999)], [false, false, true], "a slow ship: half of 120");
+});
+
+test("a slow ship drops out of warp at half its own top speed", () => {
+  const park = new Ballpark();
+  const ball = readyToWarp(park, { far: 2 * AU, maxVelocity: 120 });
+  park.evolve();
+  let ticks = 0;
+  let speedBefore = null;
+  while (ball.mode === MODE.WARP && ticks < 200) {
+    speedBefore = speedOf(ball.newVel);
+    park.evolve();
+    ticks += 1;
+  }
+  assert.equal(ball.mode, MODE.STOP);
+  assert.ok(speedBefore >= 60 && speedOf(ball.oldVel) < 60, `in warp at ${speedBefore} m/s, out at ${speedOf(ball.oldVel)}`);
+});
+
+test("a warp that has run past its end puts the ball there, at rest", () => {
+  const park = new Ballpark();
+  const posted = warpEvents(park);
+  const ball = readyToWarp(park, { far: 2 * AU });
+  park.evolve();
+  const warp = park.setupWarpConstants(3000, ball.lastCollision);
+  const tooLong = warp.accelDuration + warp.cruiseDuration + warp.decelDuration + 1;
+  // Asked for drawing: placed, nothing changed.
+  const drawn = park.warpDistance(ball, ball.newPos, ball.newVel, tooLong, true);
+  assert.deepEqual([drawn.p, drawn.v, drawn.distance, ball.mode], [ball.goto, { x: 0, y: 0, z: 0 }, 0, MODE.WARP]);
+  // Just inside the extra second it is still slowing down, and slow enough to drop out.
+  posted.length = 0;
+  const inside = park.warpDistance(ball, ball.newPos, ball.newVel, tooLong - 0.001, true);
+  assert.ok(inside.v.x > 0 && inside.v.x < 1);
+  // In the step: dropped out.
+  park.warpDistance(ball, ball.newPos, ball.newVel, tooLong, false);
+  assert.deepEqual([ball.mode, ball.isMassive, posted], [MODE.STOP, true, [["OnDeactivatingWarp", 1, park.currentTime], ["OnExitWarp", 1, 0]]]);
+});
+
+test("EntityWarpIn: a ball that arrives already in warp, as if it began five ticks ago", () => {
+  const park = new Ballpark();
+  const posted = warpEvents(park);
+  const ball = spaceBall(park, { id: 1, x: 1e9, y: 2e9, z: 3e9 });
+  park.currentTime = 20;
+  park.entityWarpIn(1, 3e11, 4e11, 0, 4500);
+  assert.deepEqual([ball.mode, ball.effectStamp, ball.isMassive, ball.ownerId, ball.warpMinRange], [MODE.WARP, 15, false, 4500, 0]);
+  assert.deepEqual(ball.goto, { x: 3e11, y: 4e11, z: 0 }, "no stopping short");
+  assert.equal(ball.lastCollision, distance(ball.newPos, ball.goto));
+  // Its speed is an AU a second along the destination's own coordinates (the unit vector made the engine's way).
+  assert.deepEqual(ball.newVel, scale(normalize(vec(3e11, 4e11, 0)), AU));
+  assert.ok(Math.abs(ball.newVel.x - 0.6 * AU) < 1e-3 && Math.abs(ball.newVel.y - 0.8 * AU) < 1e-3);
+  assert.deepEqual(posted, [], "the client is not told a warp is being activated");
+  // It is stepped as five seconds into its warp.
+  park.evolve();
+  const expected = park.warpDistance(ball, { x: 1e9, y: 2e9, z: 3e9 }, scale(normalize(vec(3e11, 4e11, 0)), AU), 5, true);
+  assert.deepEqual(ball.newPos, expected.p);
+  // Early in the park's life the start cannot be before tick 0.
+  const early = new Ballpark();
+  spaceBall(early, { id: 1 });
+  early.currentTime = 3;
+  early.entityWarpIn(1, 3e11, 4e11, 0, 3000);
+  assert.equal(early.ball(1).effectStamp, 0);
+  // Somewhere near: an ordinary flight, and nothing more.
+  const near100 = new Ballpark();
+  const walker = spaceBall(near100, { id: 1 });
+  near100.entityWarpIn(1, 5000, 0, 0, 3000);
+  assert.deepEqual([walker.mode, walker.isMassive, walker.newVel], [MODE.GOTO, true, { x: 0, y: 0, z: 0 }]);
+  near100.entityWarpIn(404, 3e11, 0, 0, 3000);
+});
+
+test("leaving warp mode is said once, whatever takes the ball out of it", () => {
+  const park = new Ballpark();
+  const posted = warpEvents(park);
+  const ball = spaceBall(park, { id: 1 });
+  spaceBall(park, { id: 2, x: 500 });
+  const leave = (how) => {
+    park.warpTo(1, 5e8, 0, 0);
+    posted.length = 0;
+    how();
+    return posted.splice(0);
+  };
+  assert.deepEqual(leave(() => park.stop(1)), [["OnExitWarp", 1, 0]]);
+  assert.deepEqual(leave(() => park.gotoDirection(1, 0, 1, 0)), [["OnExitWarp", 1, 0]]);
+  assert.deepEqual(leave(() => park.followBall(1, 2)), [["OnExitWarp", 1, 0]]);
+  assert.deepEqual(leave(() => park.warpTo(1, 6e8, 0, 0)), [["OnExitWarp", 1, 0]], "a new warp goes by way of a stop");
+  assert.deepEqual(leave(() => park.setBallRigid(1)), [["OnExitWarp", 1, 0]]);
+  // Other changes of mode say nothing.
+  park.stop(1);
+  posted.length = 0;
+  park.gotoDirection(1, 1, 0, 0);
+  park.stop(1);
+  park.orbit(1, 2);
+  assert.deepEqual(posted, []);
+  assert.equal(ball.mode, MODE.ORBIT);
+});
+
+test("a warp survives being written to a state and read back, lining up or under way", () => {
+  const park = new Ballpark();
+  const ball = readyToWarp(park, { far: 10 * AU, minRange: 12345.5, warpFactor: 4500 });
+  const copyOf = (source) => {
+    const copy = new Ballpark();
+    copy.readState(source.writeState(), 0);
+    return copy;
+  };
+  const lining = copyOf(park).ball(1);
+  assert.deepEqual([lining.mode, lining.effectStamp, lining.goto, lining.warpMinRange, lining.ownerId], [MODE.WARP, -1, ball.goto, 12345.5, 4500]);
+  for (let tick = 0; tick < 4; tick += 1) park.evolve();
+  const copy = copyOf(park);
+  const under = copy.ball(1);
+  assert.deepEqual([under.mode, under.effectStamp, under.goto, under.lastCollision, under.ownerId, under.isMassive], [MODE.WARP, ball.effectStamp, ball.goto, ball.lastCollision, 4500, false]);
+  // And the two then fly the same warp.
+  for (let tick = 0; tick < 6; tick += 1) {
+    park.evolve();
+    copy.evolve();
+    assert.deepEqual([under.newPos, under.newVel], [ball.newPos, ball.newVel]);
+  }
 });

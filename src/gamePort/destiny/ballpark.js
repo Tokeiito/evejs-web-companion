@@ -72,6 +72,12 @@ const f32 = Math.fround;
 
 /** Ballpark.h 31. */
 const AU = 0.1495978707e12;
+/** Ballpark.cpp 61-63: what a warp factor (thousandths of an AU a second) means for speed and for how hard the warp starts and ends. */
+const WARP_FACTOR_TO_AU_PER_SECOND = 0.001;
+const WARP_FACTOR_TO_ACCELERATION = 1.0 / 1000;
+const WARP_FACTOR_TO_DECELERATION = 1.0 / 3000;
+/** Ball.h 23: a ship that has not lined up after this many ticks warps anyway. */
+const MAX_ALIGN_TICKS = 180;
 /** Ballpark.cpp 70. */
 const ORBITAL_PRECESSION = 0.001;
 /** "(double)((int64_t)(x*10000000))/10000000": cut, not rounded, at seven decimals. */
@@ -100,9 +106,15 @@ class Ballpark {
    * `tickInterval` is in milliseconds. The client sets it to
    * const.simulationTimeStep, 1000; the library's own default is the same.
    */
-  constructor({ tickInterval = 1000, friction = 1000000.0 } = {}) {
+  constructor({ tickInterval = 1000, friction = 1000000.0, onPost = null } = {}) {
     this.tickInterval = tickInterval;
     this.friction = friction;
+    /**
+     * Told of the events the engine posts to the client's Python:
+     * ("OnActivatingWarp", id, tick), ("OnDeactivatingWarp", id, tick) and
+     * ("OnExitWarp", id, 0 or 1).
+     */
+    this.onPost = onPost;
     /** dt = mTickInterval * 0.001: the step, in seconds. */
     this.dt = tickInterval * 0.001;
     /** mCurrentTime: the tick counter. */
@@ -124,6 +136,16 @@ class Ballpark {
 
   ball(id) {
     return this.balls.get(id) ?? null;
+  }
+
+  _post(name, id, value) {
+    if (typeof this.onPost === "function") this.onPost(name, id, value);
+  }
+
+  /** Ball::SetMode (Ball.cpp 905): a ball that leaves warp mode says so. The state reader writes the mode straight in instead. */
+  _setMode(ball, mode) {
+    if (mode !== ball.mode && mode !== MODE.WARP && ball.mode === MODE.WARP) this._post("OnExitWarp", ball.id, 0);
+    ball.mode = mode;
   }
 
   // ── adding ────────────────────────────────────────────────────────────────
@@ -188,7 +210,7 @@ class Ballpark {
     this._setTimeFactor(ball);
     if (!created && !ball.isFree) this.freeBalls.delete(id);
     else if (ball.isFree) this.freeBalls.set(id, ball);
-    ball.mode = MODE.STOP;
+    this._setMode(ball, MODE.STOP);
     return ball;
   }
 
@@ -283,7 +305,7 @@ class Ballpark {
     ball.allianceID = allianceID;
     if (field) {
       this.stop(id);
-      ball.mode = MODE.FIELD;
+      this._setMode(ball, MODE.FIELD);
     } else if (ball.mode === MODE.FIELD) {
       this.stop(id);
     }
@@ -294,7 +316,7 @@ class Ballpark {
     const ball = this.balls.get(id);
     if (!ball) return;
     this.stop(id);
-    ball.mode = MODE.RIGID;
+    this._setMode(ball, MODE.RIGID);
   }
 
   /**
@@ -309,7 +331,7 @@ class Ballpark {
     this.setBallFree(id, true);
     this.setBallInteractive(id, true);
     ball.effectStamp = this.currentTime + delay;
-    ball.mode = MODE.TROLL;
+    this._setMode(ball, MODE.TROLL);
   }
 
   /** Ballpark::CloakBall (5223). */
@@ -565,7 +587,7 @@ class Ballpark {
       ball.ownerId = 0;
       ball.followRange = 0.0;
     }
-    ball.mode = MODE.STOP;
+    this._setMode(ball, MODE.STOP);
   }
 
   /**
@@ -586,7 +608,7 @@ class Ballpark {
     ball.followId = targetId;
     ball.followPtr = target;
     ball.followRange = range;
-    ball.mode = mode;
+    this._setMode(ball, mode);
     target.followers.add(id);
   }
 
@@ -607,7 +629,173 @@ class Ballpark {
     this.stop(id);
     ball.goto = p;
     if (ball.speedFraction === 0.0) ball.speedFraction = 1.0;
-    ball.mode = MODE.GOTO;
+    this._setMode(ball, MODE.GOTO);
+  }
+
+  // ── warp (Ballpark.cpp 4087-4400, Ball.cpp 1885-1925) ─────────────────────
+  //
+  // One mode, two phases. effectStamp below zero: lining up, flown as a GOTO at
+  // the destination while the stamp counts the ticks downwards. Zero or above:
+  // the warp proper, and the stamp is the tick it began. In the warp proper the
+  // ball is not stepped at all: where it is, is worked out from how long ago
+  // the warp began.
+  //
+  // The C++ keeps three of the warp's numbers in members named for other
+  // things, and so does the state blob: the distance to stop short of the
+  // destination in mFollowId (here warpMinRange), the warp factor in mOwnerId
+  // (ownerId), and the warp's whole length in mLastCollision (lastCollision).
+
+  /** Ballpark::WarpTo (4069). The Python entry point defaults minRange to 20000.0 and warpFactor to 20. */
+  warpTo(id, x, y, z, minRange = 20000.0, warpFactor = 20) {
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return;
+    if (minRange < 0.0) minRange = 0.0;
+    if (warpFactor <= 0) warpFactor = 1;
+    const ball = this.balls.get(id);
+    if (!ball) return;
+    const dst = vec(x, y, z);
+    const delta = sub(ball.newPos, dst);
+    if (lengthSq(delta) < 10000000000.0) {
+      // Nearer than 100 km: no warp, just fly there.
+      this.gotoPoint(id, x, y, z);
+      this._post("OnExitWarp", id, 1);
+      return;
+    }
+    // Already on its way there: leave it, and its count of ticks spent lining up.
+    if (ball.mode === MODE.WARP && dst.x === ball.goto.x && dst.y === ball.goto.y && dst.z === ball.goto.z) return;
+    this.stop(id);
+    ball.goto = dst;
+    ball.effectStamp = -1;
+    ball.followRange = 0.0;
+    ball.warpMinRange = minRange;
+    ball.ownerId = warpFactor;
+    this._setMode(ball, MODE.WARP);
+  }
+
+  /** Ball::IsAlignedForWarp (Ball.cpp 1900): pointing within about eight degrees at three quarters of top speed, or out of patience. */
+  isAlignedForWarp(ball) {
+    if (!(ball.mode === MODE.WARP && ball.effectStamp < 0)) return false;
+    const dir = normalize(sub(ball.goto, ball.newPos));
+    const velDir = normalize(ball.newVel);
+    if (Math.abs(1.0 - dot(velDir, dir)) < 0.01 && lengthSq(ball.newVel) > 0.5625 * ball.maxVelocity * ball.maxVelocity) return true;
+    if (Math.abs(ball.effectStamp) > MAX_ALIGN_TICKS) return true;
+    return false;
+  }
+
+  /**
+   * Ballpark::RealWarp (4142): the warp proper begins. The destination is
+   * pulled back towards the ball by minRange, and the warp's length is fixed
+   * from where the ball is now.
+   */
+  realWarp(ball) {
+    if (!ball) return;
+    this.stopAllFollowers(ball);
+    let dst = ball.goto;
+    let delta = normalize(sub(ball.newPos, dst));
+    dst = add(dst, scale(delta, ball.warpMinRange ?? 0));
+    delta = sub(dst, ball.newPos);
+    ball.goto = dst;
+    ball.effectStamp = this.currentTime;
+    ball.lastCollision = length(delta);
+    ball.isMassive = false;
+  }
+
+  /**
+   * Ballpark::EntityWarpIn (4368): a ball that arrives already in warp, as if
+   * it had begun five ticks ago. The velocity it is given points along the
+   * destination's own coordinates, not at it; the source says it does not care.
+   */
+  entityWarpIn(id, x, y, z, warpFactor) {
+    this.warpTo(id, x, y, z, 0.0, warpFactor);
+    const ball = this.balls.get(id);
+    if (!ball) return;
+    if (ball.mode === MODE.GOTO) return;
+    this.realWarp(ball);
+    ball.newVel = scale(normalize(vec(x, y, z)), AU);
+    ball.effectStamp = Math.max(this.currentTime - 5, 0);
+    ball.lastCollision = length(sub(ball.newPos, ball.goto));
+  }
+
+  /**
+   * Ballpark::SetupWarpConstants (4165). A warp is three stretches: speeding up
+   * (distance grows as exp(rate * t)), cruising, and slowing down
+   * (speed falls as exp(-rate * t)). A warp too short to reach top speed has
+   * its top speed lowered until the cruise takes no time.
+   */
+  setupWarpConstants(warpFactor, warpDistance) {
+    let warpSpeed = warpFactor * WARP_FACTOR_TO_AU_PER_SECOND * AU;
+    const accelRate = warpFactor * WARP_FACTOR_TO_ACCELERATION;
+    // Never above 2, so that a fast ship does not stop in an instant.
+    const decelRate = Math.min(warpFactor * WARP_FACTOR_TO_DECELERATION, 2.0);
+    warpSpeed = Math.min(warpSpeed, (warpDistance + 1) * accelRate * decelRate / (accelRate + decelRate));
+    const accelDuration = Math.log(warpSpeed / accelRate) / accelRate;
+    const cruiseDuration = (warpDistance / warpSpeed) - (1.0 / accelRate) - (1.0 / decelRate) + (1.0 / warpSpeed);
+    const decelDuration = Math.log(warpSpeed / decelRate) / decelRate;
+    const accelDistance = warpSpeed / accelRate;
+    const cruiseDistance = warpSpeed * cruiseDuration;
+    const decelDistance = warpSpeed / decelRate - 1;
+    return { accelDuration, cruiseDuration, decelDuration, accelDistance, cruiseDistance, decelDistance, accelRate, decelRate, warpSpeed };
+  }
+
+  /**
+   * Ballpark::WarpDistance (4259): where a warping ball is, and how fast, `t`
+   * seconds into its warp, given where it was (`p`, only for the direction)
+   * and how fast (`v`, only so the speed never drops as the warp begins).
+   * When the speed has fallen below 100 m/s, or half the ball's top speed if
+   * that is less, the ball drops out of warp: massive again, and stopped.
+   * `interpolating` is the engine asking between ticks for drawing, when
+   * nothing may change.
+   */
+  warpDistance(ball, p, v, t, interpolating = false) {
+    const { accelDuration, cruiseDuration, decelDuration, accelDistance, cruiseDistance, decelDistance, accelRate, decelRate, warpSpeed } =
+      this.setupWarpConstants(ball.ownerId, ball.lastCollision);
+    let speed;
+    let distance;
+    const dir = normalize(sub(ball.goto, p));
+    const drop = () => {
+      this._post("OnDeactivatingWarp", ball.id, this.currentTime);
+      ball.isMassive = true;
+      this.stop(ball.id);
+    };
+    if (t < accelDuration) {
+      speed = accelRate * Math.exp(accelRate * t);
+      // "Faking the speed to be continuous even though it actually isn't."
+      const currSpeed = length(v);
+      if (currSpeed > speed) speed = currSpeed;
+      v = scale(dir, speed);
+      distance = Math.exp(accelRate * t);
+      p = sub(ball.goto, scale(dir, accelDistance + cruiseDistance + decelDistance - distance));
+    } else if ((t - accelDuration) < cruiseDuration) {
+      speed = warpSpeed;
+      v = scale(dir, speed);
+      distance = warpSpeed * (t - accelDuration) + accelDistance;
+      p = sub(ball.goto, scale(dir, accelDistance + cruiseDistance + decelDistance - distance));
+    } else if ((t - cruiseDuration - accelDuration) < (decelDuration + 1)) {
+      // The extra second lets the last tick of the warp finish.
+      speed = warpSpeed * Math.exp(-decelRate * (t - cruiseDuration - accelDuration));
+      v = scale(dir, speed);
+      distance = warpSpeed / decelRate - (warpSpeed / decelRate) * Math.exp(-decelRate * (t - cruiseDuration - accelDuration)) + accelDistance + cruiseDistance;
+      p = sub(ball.goto, scale(dir, accelDistance + cruiseDistance + decelDistance - distance));
+      if (speed < Math.min(ball.maxVelocity / 2.0, 100.0) && !interpolating) drop();
+    } else {
+      // "Ship stuck in extended warp": put it at the end, at rest.
+      p = { ...ball.goto };
+      v = vec();
+      distance = 0;
+      if (!interpolating) drop();
+    }
+    return { p, v, distance };
+  }
+
+  /** Ballpark::EvolveWarp (915): lining up is a GOTO at the destination; once lined up the warp proper begins, in this same tick. */
+  _evolveWarp(ball) {
+    if (isWarping(ball)) return vec();
+    if (this.isAlignedForWarp(ball)) {
+      this._post("OnActivatingWarp", ball.id, this.currentTime);
+      this.realWarp(ball);
+      return vec();
+    }
+    ball.effectStamp -= 1;
+    return this.gotoThrust(ball, ball.goto);
   }
 
   /**
@@ -758,6 +946,8 @@ class Ballpark {
         a = this._evolveOrbit(ball, this.currentTime);
         break;
       case MODE.WARP:
+        a = this._evolveWarp(ball);
+        break;
       case MODE.MISSILE:
       case MODE.FORMATION:
         throw new DestinyNotPorted(`The ${MODE_NAME[ball.mode]} mode`);
@@ -779,7 +969,20 @@ class Ballpark {
     for (const ball of free) {
       // Gradient(ball): what a massive ball's neighbours do to it. Not ported.
       if (ball.isMassive) this.unported.gradient += 1;
-      const stepped = this.integrate(ball.newPos, ball.newVel, add(ball.lastG, ball.lastC), ball.mass * ball.agility, this.friction, ball.timeFactor, this.dt);
+      let stepped;
+      if (isWarping(ball)) {
+        // Not stepped: placed, by how long the warp has been going.
+        stepped = this.warpDistance(ball, ball.newPos, ball.newVel, (this.currentTime - ball.effectStamp) * this.dt, false);
+        if (ball.mode === MODE.STOP) {
+          // It dropped out of warp this tick. Where the warp left it becomes
+          // where it was, and one ordinary step is taken from there.
+          ball.newPos = stepped.p;
+          ball.newVel = stepped.v;
+          stepped = this.integrate(stepped.p, stepped.v, add(ball.lastG, ball.lastC), ball.mass * ball.agility, this.friction, ball.timeFactor, this.dt);
+        }
+      } else {
+        stepped = this.integrate(ball.newPos, ball.newVel, add(ball.lastG, ball.lastC), ball.mass * ball.agility, this.friction, ball.timeFactor, this.dt);
+      }
       // Kept in the "old" pair until every ball is done: the others still see where this one was.
       ball.oldPos = stepped.p;
       ball.oldVel = stepped.v;
@@ -797,10 +1000,10 @@ class Ballpark {
       if (ball.mode !== MODE.TROLL || ball.effectStamp > this.currentTime) continue;
       this.setBallFree(ball.id, false);
       this.setBallInteractive(ball.id, false);
-      ball.mode = MODE.RIGID;
+      this._setMode(ball, MODE.RIGID);
     }
     this.currentTime += 1;
   }
 }
 
-module.exports = { AU, Ballpark, DSTLOCALBALLS, DestinyNotPorted, FOLLOW_MODES, add, cross, divide, dot, isWarping, length, lengthSq, normalize, scale, sub, vec };
+module.exports = { AU, Ballpark, DSTLOCALBALLS, DestinyNotPorted, FOLLOW_MODES, MAX_ALIGN_TICKS, add, cross, divide, dot, isWarping, length, lengthSq, normalize, scale, sub, vec };
