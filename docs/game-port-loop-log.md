@@ -76,8 +76,13 @@ Decisions taken in your place, and anything waiting on you. Overrule any of thes
   works. Not a defect of either: it goes away when the gateway does.
 - **Test Two's standing** with agent Antaken Kamola went to -0.539 with the quit that proved
   this, and reads -0.434 after the courier run that followed.
-- **A third server fix is committed in eve.js and not pushed**: `624378554`, a No to the decline
-  question. It sits on `main` beside whatever else is there, as you instructed for fixes.
+- **Two more server fixes are committed in eve.js and not pushed**: `624378554` (a No to the
+  decline question) and `7282f54cc` (the contraband warning at undock). They sit on `main` beside
+  whatever else is there, as you instructed for fixes.
+- **The page's own automation undocks without asking about contraband** (default taken): the
+  autopilot and the bots send `ignoreContraband`, as the client does once its warning is
+  suppressed, so a bot carrying contraband is fined at the undock as before. Only the Undock
+  button asks. Overrule by saying automation should stop and ask.
 - **Test Two has an offer open** from Antaken Kamola (not accepted), left from the re-check.
 - **Test Two was fined and lost standing proving the customs question**: 37,500 ISK and 0.2 with
   the Caldari State at an undock with contraband aboard, and the same again for surrendering ten
@@ -105,7 +110,7 @@ Decisions taken in your place, and anything waiting on you. Overrule any of thes
 | 2026-10-08 | A movement order is stamped from one clock (the next whole second) and applied on another (the server's next one-second step, which begins where the system was woken). When they disagree the client is told one tick later than the server acts, and its ship ends a tick of travel away | my run: `CmdStop` handled 18 ms into one of the server's seconds, stamped B+12, server's ship slowing from 11 s after it first moved; a client stepping by the stamp is 199 m ahead five seconds later and gaining. Sub-agent: three placements, two of them wrong by a tick (`stopSpeedCommands.js` 225-229 against `nativeSubwarp.js` 676-721) | **not fixed**: not small, pinned by a test one way and by capture-tuned stamps the other; left for the operator | - |
 | 2026-10-08 | The state sent when a client asks for it (`UpdateStateRequest`) carries where the ships are now under the next second's stamp, not carried forward to that tick as `AddBalls2` is | probes every 3.5 s read -1.49, +0.58, -0.53, +0.58 ticks against a park stepped from the state before (my run); `dispatch/sceneRefresh.js` 216-229, `authority/destinyAuthority.js` 955-968 (sub-agent's read) | **not fixed**: same code, same reasons; matters only after a client has lost its place | - |
 | 2026-10-08 | After a No to the decline question (`agents.YesNo`), `agentMgr.DoAction` is answered with "This agent is unavailable." and no buttons, though the offer still stands | the retail client draws whatever DoAction answers (`agentDialogueWindow.py` 402); seen live on the game port: that conversation, with the offer still in the journal | `624378554` on `main`, not pushed | 2026-10-08: server restarted; Decline then No in the browser brings back the offer with Accept, Decline, Defer |
-| 2026-10-08 | Undocking with contraband aboard: the server fines and confiscates at once. It never raises `ShipContrabandWarningUndock` and ignores `ignoreContraband`, so the client's warning (OK to go on, Cancel to stay) is never shown | `ui/station/base.py` 488 to 510 catches that refusal and retries with `ignoreContraband` set; server log `[Contraband] ... fine=37500 standingLoss=0.200` at undock, the goods gone from the hold | not yet handed off: needs the web client's handling at the same time | |
+| 2026-10-08 | Undocking with contraband aboard: the server fines and confiscates at once. It never raises `ShipContrabandWarningUndock` and ignores `ignoreContraband`, so the client's warning (OK to go on, Cancel to stay) is never shown | `ui/station/base.py` 488 to 510 catches that refusal and retries with `ignoreContraband` set; server log `[Contraband] ... fine=37500 standingLoss=0.200` at undock, the goods gone from the hold | `7282f54cc` on `main`, not pushed | 2026-10-08: server restarted; in the browser, Undock with ten Slaves aboard asks, Cancel leaves ship, goods and wallet untouched, OK undocks; the gateway route warns too |
 
 Withdrawn the same day: "after undocking the server's ship is a tick behind". It is not; that was
 the second row above, seen through a recorder that always asked at the same point in the second.
@@ -1804,4 +1809,106 @@ that were never its own. It is docked at Muvolailen again.
 5. **Collisions**; **the park beside the server's movement log**; the sim clock; MISSILE,
    FORMATION, MUSHROOM.
 6. The call ledger (`ship.Undock`, `dogmaIM.Activate` and `Deactivate` to bind as the client
+   does), Phase 3's hosted check and the session-less gateway calls.
+
+---
+
+## 2026-10-08 — undocking with contraband: the warning, on the server and in the browser
+
+Commits `5911ec3` and `cba50d1` here, pushed. eve.js commit `7282f54cc` on `main`, **not
+pushed** (by a sub-agent in the same checkout: no branch, no worktree, its six files staged by
+path).
+
+**What the retail client does** (`ui/station/base.py` 488 to 510): it calls
+`ship.Undock(shipID, ignoreContraband)`. Refused with `ShipContrabandWarningUndock`, it shows an
+OK / Cancel dialog, and on OK undocks again with `ignoreContraband` set. With the dialog
+suppressed it sends the flag the first time. A structure's undock does the same.
+
+**The server** (the sub-agent's work):
+
+- `ship.Undock` and `structureDocking.Undock` without the flag, with cargo the local law acts
+  on, now raise that refusal **before anything is changed**: the pilot stays docked, with no
+  fine, no standing loss, and the goods where they were. With the flag, or with nothing the law
+  acts on, they behave as before. The two server-side callers that are not a client's undock are
+  unchanged.
+- **The dialog's parameter was read from the retail client's own data**, not guessed: dialog
+  1552, title "Undock Confirmation", body "Your ship is carrying at least one item ({item})
+  which is contraband somewhere. Are you sure you wish to undock?". One parameter, `item`. (My
+  brief had suggested the customs dialog's two; the same reading confirms those for the customs
+  dialog and not for this one.) **Not verified:** what value a real server puts in `item`. The
+  fix sends (UE_TYPEID, typeID) of the first such item, which the client shows as a type's name.
+- Its tests: nine new, three of them failing before the fix with "Missing expected exception"
+  and passing after; the six that passed before pin what must not change. It also broke the
+  order on purpose (inspect, then warn) and saw the "nothing was touched" tests fail. Sixteen
+  neighbouring files give the same counts before and after, three of them with the same
+  failures as before.
+
+**Here:**
+
+- **The BFF's undock route takes `ignoreContraband`**, and answers that refusal as
+  `CONTRABAND_WARNING` with the dialog's own sentence, the item named when the transport passed
+  the refusal's values on (the game port does; the gateway only words it). The ship is left
+  docked and free to undock on a second ask.
+- **The game-port transport keeps a refusal's name and values** beside its words.
+- **The Undock button asks**, in that sentence, and on OK undocks again ignoring the warning.
+  Cancel stays docked and reports no failure.
+- **The page's own automation** (autopilot, bots) undocks ignoring the warning, as the client
+  does once the dialog is suppressed. Decision taken in the operator's place; it is under "For
+  the operator".
+
+I first wrote the BFF's words around the customs dialog's parameters, before the sub-agent had
+read the real ones; `cba50d1` replaces that with the one real parameter and the client's own
+sentence. The first commit's guess never met a live server.
+
+**Proof.**
+
+- Tests here: 9 new (3 for the route, 1 for the transport, 5 for the page), all but one watched
+  to fail first; that one pins a refusal that is not the warning. 37 ways of breaking the code
+  across the two commits: all caught, after a fixture was strengthened where two had slipped
+  through (it could not tell a parameter found by name from one found by place).
+- Suite: 8927 tests, 8902 pass, 0 fail, 24 skipped, 1 todo.
+- **Live, in the browser on the game port** (server restarted on `7282f54cc`; Test Two docked at
+  Muvolailen with ten Slaves in the hold; the page's requests recorded):
+
+  | | Undock, then Cancel | Undock, then OK |
+  |---|---|---|
+  | Sent | `{"ignoreContraband":false}` → 409 `CONTRABAND_WARNING` | the same, then `{"ignoreContraband":true}` → 200 |
+  | Asked | "Your ship is carrying at least one item (Slaves) which is contraband somewhere. Are you sure you wish to undock?" | the same, once |
+  | The server's log | "Undock held for the contraband warning" | held, then `Undock(... ignoreContraband=true)`, then `[Contraband] ... fine=37500 standingLoss=0.200` |
+  | Afterwards | docked; ten Slaves in the hold; wallet unchanged; no error on the page | in space; the Slaves gone; wallet down 37,500 |
+
+- **Live, on the gateway** (the other check BFF, restarted on the new code): with the Slaves
+  aboard the route answers 409 `CONTRABAND_WARNING` with the sentence and no item named, and the
+  ship stays docked; with them moved back to the hangar it undocks.
+
+**Seen by the sub-agent and left alone** (all read from code or data, none measured unless said):
+
+- The dialog says "contraband somewhere", which suggests a real server warns about anything that
+  is contraband anywhere. The fix warns only where the local law acts, as I asked.
+- The client's data has a twin, `ShipContrabandWarningJump`, that the server never raises. The
+  decompiled client only mentions the name at the two undock sites.
+- The undock inspection, and so the warning, looks only in the cargo hold.
+- A warned attempt still switches on the modules the client listed, before it is refused.
+- *Measured:* three test files in eve.js fail on unchanged source and are not in its baseline
+  list (`customsInspectionLifecycle` 8, `harnessCustomsInspectionScenarios` 1,
+  `harnessMissionScenarios` 4). Not looked into.
+
+**Still true after this:** once the player says OK, the server fines and confiscates at the
+undock itself, with no customs ship having scanned anything. That is the server's own model of
+inspection and was not in scope.
+
+**Left as it is:** Test Two is docked at Muvolailen, 37,500 ISK poorer again, with ten Slaves in
+its station hangar. Both check BFFs and the server were restarted and are running.
+
+### Next
+
+1. **The retail client's words**: turn localisation labels and dialog IDs into the client's own
+   text, from the client's data. The sub-agent has shown the data can be read (the resource
+   index, `dialogs.static`, `localization_fsd_en-us.pickle`); the web client still words
+   everything else itself, and shows raw labels for what agents say.
+2. **The scanner in space** on the game port (the one route that still answers 501 there).
+3. Module damage and weapon banks from dogma; health from godma as the panel reads it.
+4. **Collisions**; **the park beside the server's movement log**; the sim clock; MISSILE,
+   FORMATION, MUSHROOM.
+5. The call ledger (`ship.Undock`, `dogmaIM.Activate` and `Deactivate` to bind as the client
    does), Phase 3's hosted check and the session-less gateway calls.
