@@ -753,3 +753,28 @@ test("a rack's heat is the ship item's: kept while that ship is loaded again, go
   assert.equal(ship.heat(40).high, 0.2);
   near(ship.heat(100).high, (20 * Math.exp(-0.6)) / 100);
 });
+
+test("the ship's online modules, by the slot each is in: fitted to this ship, with the online effect running", () => {
+  const online = [EFFECT_ONLINE, [0n, PILOT, 5001n, null, null, [], EFFECT_ONLINE, HEALTH_T, -1, 1]];
+  const lit = (row) => {
+    row[1].args.entries.find(([name]) => name.toString() === "activeEffects")[1] = attrs([online]);
+    return row;
+  };
+  const dogma = loaded([
+    shipRow(5001, HEALTHY),
+    lit(fittedModule(5003, { flagID: 27 })),
+    fittedModule(5004, { flagID: 28 }), // fitted, not online
+    lit(fittedModule(5002, { flagID: 19 })),
+    lit(fittedModule(6002, { flagID: 11, locationID: 6001 })), // online, in another ship
+  ]);
+  // In the order the server listed them: [flagID, moduleID].
+  assert.deepEqual(dogma.onlineModules(5001), [[27, 5003], [19, 5002]]);
+  assert.deepEqual(dogma.onlineModules(5001n), [[27, 5003], [19, 5002]]);
+  assert.deepEqual(dogma.onlineModules(6001), [[11, 6002]]);
+  assert.deepEqual(dogma.onlineModules(7000), []);
+  // The server says one has gone offline.
+  dogma.feed({ method: "OnGodmaShipEffect", args: [5003n, EFFECT_ONLINE, HEALTH_T, 0, 0, [5003n, PILOT, 5001n, null, null, [], EFFECT_ONLINE, null], HEALTH_T, 0, 0, null] });
+  assert.deepEqual(dogma.onlineModules(5001), [[19, 5002]]);
+  // What each is, for naming its effect.
+  assert.deepEqual([dogma.typeOf(5002), dogma.typeOf(5002n), dogma.typeOf(5001), dogma.typeOf(9999)], [3636, 3636, 588, null]);
+});

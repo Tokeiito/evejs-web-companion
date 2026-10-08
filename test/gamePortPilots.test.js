@@ -841,7 +841,8 @@ test("undocking is sent; reaching space makes the ballpark, docking lets it go, 
   const { pilots, session, handle } = await selected({}, hand.options);
   const ship = await pilots.bindObject("ship", "MachoBindObject", [[STATION, 15]], null, WHOSE, handle);
   await pilots.callBoundMethod("ship", "Undock", [SHIP, false], null, WHOSE, handle, ship.boundHandle);
-  assert.deepEqual(session.boundCalls.at(-1), { objectID: "N=1:1", method: "Undock", args: [SHIP, false], kwargs: null });
+  // With the client's keyword: its online modules by slot, of which this ship's dogma names none.
+  assert.deepEqual(session.boundCalls.at(-1), { objectID: "N=1:1", method: "Undock", args: [SHIP, false], kwargs: { onlineModules: { type: "dict", entries: [] } } });
   assert.equal(hand.parks.length, 0, "docked: no ballpark");
 
   // The session reaches space.
@@ -1583,7 +1584,7 @@ test("a question the server will wait a day for still lapses in this client's ow
 
 test("a refusal keeps the server's name for it and its values, beside the words", async () => {
   const values = { type: "dict", entries: [["contraband", [103, [[24, 3721, 10]], "<br>"]]] };
-  const { pilots } = build({ answers: { "ship.Undock": () => { throw sessionError("GAME_CALL_REFUSED", "refused", { className: "eveexceptions.UserError", key: "ShipContrabandWarningUndock", values, reason: "ShipContrabandWarningUndock" }); } } });
+  const { pilots } = build({ answers: { "bound:Undock": () => { throw sessionError("GAME_CALL_REFUSED", "refused", { className: "eveexceptions.UserError", key: "ShipContrabandWarningUndock", values, reason: "ShipContrabandWarningUndock" }); } } });
   const { bridgeSessionID: handle } = await pilots.selectCharacter([PILOT, null, true], null, FIELDS);
   await assert.rejects(pilots.callMethod("ship", "Undock", [SHIP, false], null, FIELDS, handle), (error) => {
     assert.equal(error.code, "CALL_REFUSED");
@@ -2088,4 +2089,145 @@ test("between two ticks a pilot's snapshot moves: the ship is where the client d
   // The first reading was taken at the step: where the ship was a tick before the park's place for it.
   const ball = park().ballpark.ball(SHIP);
   assert.deepEqual(places[0].position, { x: ball.oldPos.x, y: ball.oldPos.y, z: ball.oldPos.z });
+});
+
+// ── calls the client makes on a moniker ──────────────────────────────────────
+
+/** The ship of the capacitor test with its module online in the first medium slot, and what godma is told a module is. */
+function fittedAllInfo({ online = true } = {}) {
+  const allInfo = shipAllInfo();
+  const moduleRow = allInfo.args.entries.find(([name]) => name.toString() === "shipInfo")[1].entries[1][1].args.entries;
+  moduleRow.push([Buffer.from("invItem"), { type: "packedrow", fields: { itemID: FITTED_MODULE, typeID: 21857, locationID: SHIP, flagID: 19, groupID: 46, categoryID: 7 } }]);
+  // An active effect, as godma.RefreshItemEffects reads one: the effect's ID, then its environment; whether it runs is in the sixth place.
+  const line = [BigInt(FITTED_MODULE), PILOT, BigInt(SHIP), null, null, [], 16, DOGMA_T, 0, 0];
+  if (online) moduleRow.find(([name]) => name.toString() === "activeEffects")[1].entries.push([16, line]);
+  return allInfo;
+}
+/** The static data's effects for the two module types these tests fit: an afterburner, and a made-up module with two effects to switch on. */
+const TYPE_EFFECTS = {
+  21857: [
+    { effectID: 13, name: "medPower", effectCategoryID: 0, durationAttributeID: null },
+    { effectID: 16, name: "online", effectCategoryID: 1, durationAttributeID: null },
+    { effectID: 3175, name: "overloadSelfSpeedBonus", effectCategoryID: 5, durationAttributeID: null },
+    { effectID: 6731, name: "moduleBonusAfterburner", effectCategoryID: 1, durationAttributeID: 73 },
+  ],
+};
+const MODULE_PAIRS = new Set(["ship.MachoBindObject", "ship.Undock", "dogmaIM.Activate", "dogmaIM.Deactivate"]);
+const moduleOptions = (more = {}) => ({ typeEffects: (typeID) => TYPE_EFFECTS[typeID] ?? [], typeAttribute: () => null, allowed: MODULE_PAIRS, ...more });
+
+test("undock is made as the client makes it: on the ship object bound for the station, with the online modules by slot", async () => {
+  const { pilots, session, handle } = await selected({ answers: { "bound:GetAllInfo": fittedAllInfo() } }, moduleOptions());
+  // The BFF's route asks the service by name, with an empty list.
+  await pilots.callMethod("ship", "Undock", [SHIP, false], { onlineModules: [] }, FIELDS, handle);
+  assert.equal(session.calls.some((call) => call.service === "ship"), false, "nothing was asked of the service by name");
+  // godma primed first, from the dogma location bound for the station; then the ship bound for the station, and Undock on it.
+  assert.deepEqual(session.binds, [{ service: "dogmaIM", params: [STATION, 15] }, { service: "ship", params: [STATION, 15] }]);
+  assert.deepEqual(session.boundCalls.map((call) => [call.objectID, call.method]), [["N=1:1", "GetAllInfo"], ["N=1:2", "Undock"]]);
+  assert.deepEqual(session.boundCalls.at(-1), { objectID: "N=1:2", method: "Undock", args: [SHIP, false], kwargs: { onlineModules: { type: "dict", entries: [[19, FITTED_MODULE]] } } });
+  assert.deepEqual(pilots.callLedger().find((row) => row.pair === "ship.Undock").statuses, { reshaped: 1 });
+
+  // Asked again (the contraband question answered, say): the same two objects, and godma is not primed again.
+  await pilots.callMethod("ship", "Undock", [SHIP, true], { onlineModules: [] }, FIELDS, handle);
+  assert.equal(session.binds.length, 2);
+  assert.deepEqual(session.boundCalls.at(-1), { objectID: "N=1:2", method: "Undock", args: [SHIP, true], kwargs: { onlineModules: { type: "dict", entries: [[19, FITTED_MODULE]] } } });
+  assert.equal(session.boundCalls.filter((call) => call.method === "GetAllInfo").length, 1);
+
+  // The server lets the ship object go: the next call binds another.
+  session.notify("OnMachoObjectDisconnect", [Buffer.from("N=1:2"), 0, 0]);
+  await pilots.callMethod("ship", "Undock", [SHIP, false], null, FIELDS, handle);
+  assert.deepEqual([session.binds.length, session.binds.at(-1), session.boundCalls.at(-1).objectID], [3, { service: "ship", params: [STATION, 15] }, "N=1:3"]);
+});
+
+test("a module whose online effect is not running is not among the online modules, and with no dogma the tally says the call differs", async () => {
+  const offline = await selected({ answers: { "bound:GetAllInfo": fittedAllInfo({ online: false }) } }, moduleOptions());
+  await offline.pilots.callMethod("ship", "Undock", [SHIP, false], { onlineModules: [] }, FIELDS, offline.handle);
+  assert.deepEqual(offline.session.boundCalls.at(-1).kwargs, { onlineModules: { type: "dict", entries: [] } });
+  assert.deepEqual(offline.pilots.callLedger().find((row) => row.pair === "ship.Undock").statuses, { reshaped: 1 });
+  // Dogma cannot be asked: the undock is still sent, on the moniker, and counted as not the client's.
+  const blind = await selected({ answers: { "bound:GetAllInfo": () => { throw sessionError("GAME_CALL_FAILED", "no"); } } }, moduleOptions());
+  await blind.pilots.callMethod("ship", "Undock", [SHIP, false], { onlineModules: [] }, FIELDS, blind.handle);
+  assert.deepEqual(blind.session.boundCalls.at(-1), { objectID: "N=1:2", method: "Undock", args: [SHIP, false], kwargs: { onlineModules: { type: "dict", entries: [] } } });
+  const row = blind.pilots.callLedger().find((each) => each.pair === "ship.Undock");
+  assert.deepEqual(row.statuses, { differs: 1 });
+  assert.match(row.note, /online modules by slot/);
+});
+
+test("a module is switched on and off as the client does it: on the dogma location bound for where the pilot is, its effect named", async () => {
+  const hand = handTicked();
+  const built = build({ ...IN_SPACE, answers: { ...IN_SPACE.answers, "bound:GetAllInfo": fittedAllInfo() } }, { ...hand.options, ...moduleOptions() });
+  const { bridgeSessionID: handle } = await built.pilots.selectCharacter([PILOT, null, true], null, FIELDS);
+  const { session } = built;
+  const binds = () => session.binds.filter((bind) => bind.service === "dogmaIM");
+  // The BFF's route: by the service's name, no effect named, -1 for "go on".
+  await built.pilots.callMethod("dogmaIM", "Activate", [FITTED_MODULE, "", null, -1], null, WHOSE, handle);
+  assert.equal(session.calls.some((call) => call.service === "dogmaIM" && call.method === "Activate"), false);
+  assert.deepEqual(binds(), [{ service: "dogmaIM", params: [SYSTEM, 5] }]);
+  const location = session.boundCalls.find((call) => call.method === "GetAllInfo").objectID;
+  assert.deepEqual(session.boundCalls.at(-1), { objectID: location, method: "Activate", args: [FITTED_MODULE, "moduleBonusAfterburner", null, 1000], kwargs: null });
+  // With a target, and a count of the caller's.
+  await built.pilots.callMethod("dogmaIM", "Activate", [FITTED_MODULE, "moduleBonusAfterburner", 4242, 0], null, WHOSE, handle);
+  assert.deepEqual(session.boundCalls.at(-1).args, [FITTED_MODULE, "moduleBonusAfterburner", 4242, 0]);
+  await built.pilots.callMethod("dogmaIM", "Deactivate", [FITTED_MODULE, ""], null, WHOSE, handle);
+  assert.deepEqual(session.boundCalls.at(-1), { objectID: location, method: "Deactivate", args: [FITTED_MODULE, "moduleBonusAfterburner"], kwargs: null });
+  // One dogma location for all of it, godma's own.
+  assert.equal(binds().length, 1);
+  assert.equal(session.boundCalls.filter((call) => call.method === "GetAllInfo").length, 1);
+  // A module godma was never told of: sent as it came, and counted as not the client's.
+  await built.pilots.callMethod("dogmaIM", "Activate", [FITTED_MODULE + 50, "", null, -1], null, WHOSE, handle);
+  assert.deepEqual(session.boundCalls.at(-1).args, [FITTED_MODULE + 50, "", null, -1]);
+  const tally = Object.fromEntries(built.pilots.callLedger().map((row) => [row.pair, row.statuses]));
+  assert.deepEqual([tally["dogmaIM.Activate"], tally["dogmaIM.Deactivate"]], [{ reshaped: 2, differs: 1 }, { reshaped: 1 }]);
+
+  // The pilot is somewhere else: the dogma location is bound again for there.
+  session.attributes.solarsystemid = SYSTEM + 1;
+  session.attributes.solarsystemid2 = SYSTEM + 1;
+  session.change({ solarsystemid: [SYSTEM, SYSTEM + 1], solarsystemid2: [SYSTEM, SYSTEM + 1] });
+  await built.pilots.callMethod("dogmaIM", "Deactivate", [FITTED_MODULE, "moduleBonusAfterburner"], null, WHOSE, handle);
+  assert.deepEqual(binds().at(-1), { service: "dogmaIM", params: [SYSTEM + 1, 5] });
+  assert.equal(binds().length, 2);
+});
+
+test("which effect a module is switched on by, and whether it repeats, are the module button's rules on the static data", async () => {
+  const effects = {
+    ...TYPE_EFFECTS,
+    // Two effects a pilot could switch on: the client tells them apart by a flag the static data here lacks.
+    7001: [{ effectID: 10, name: "targetAttack", effectCategoryID: 2, durationAttributeID: 51 }, { effectID: 101, name: "useMissiles", effectCategoryID: 1, durationAttributeID: 51 }],
+    // A target effect with no duration, and a module that forbids repeating.
+    7002: [{ effectID: 55, name: "oneShot", effectCategoryID: 2, durationAttributeID: null }],
+    7003: [{ effectID: 101, name: "useMissiles", effectCategoryID: 1, durationAttributeID: 51 }],
+    7004: [{ effectID: 16, name: "online", effectCategoryID: 1, durationAttributeID: null }, { effectID: 12, name: "hiPower", effectCategoryID: 0, durationAttributeID: null }],
+  };
+  const fits = async (typeID, more = {}) => {
+    const allInfo = fittedAllInfo();
+    allInfo.args.entries.find(([name]) => name.toString() === "shipInfo")[1].entries[1][1].args.entries.find(([name]) => name.toString() === "invItem")[1].fields.typeID = typeID;
+    const hand = handTicked();
+    const built = build({ ...IN_SPACE, answers: { ...IN_SPACE.answers, "bound:GetAllInfo": allInfo } }, { ...hand.options, typeEffects: (id) => effects[id] ?? [], typeAttribute: () => null, allowed: MODULE_PAIRS, ...more });
+    const { bridgeSessionID: handle } = await built.pilots.selectCharacter([PILOT, null, true], null, FIELDS);
+    return async (args) => {
+      await built.pilots.callMethod("dogmaIM", "Activate", args, null, WHOSE, handle);
+      return built.session.boundCalls.at(-1).args;
+    };
+  };
+  assert.deepEqual(await (await fits(21857))([FITTED_MODULE, "", null, -1]), [FITTED_MODULE, "moduleBonusAfterburner", null, 1000]);
+  // Two candidates: unnamed. Named by the caller, it repeats by its own duration.
+  assert.deepEqual(await (await fits(7001))([FITTED_MODULE, "", null, -1]), [FITTED_MODULE, "", null, -1]);
+  assert.deepEqual(await (await fits(7001))([FITTED_MODULE, "useMissiles", null, -1]), [FITTED_MODULE, "useMissiles", null, 1000]);
+  // No duration: once.
+  assert.deepEqual(await (await fits(7002))([FITTED_MODULE, "", 9, -1]), [FITTED_MODULE, "oneShot", 9, 0]);
+  // The module forbids repeating (attribute 1014): once, though the effect has a duration.
+  const asked = [];
+  const launcher = await fits(7003, { typeAttribute: (typeID, attributeID) => { asked.push([typeID, attributeID]); return 1; } });
+  assert.deepEqual(await launcher([FITTED_MODULE, "", null, -1]), [FITTED_MODULE, "useMissiles", null, 0]);
+  assert.deepEqual(asked.at(-1), [7003, 1014]);
+  // Nothing to switch on: online is not it, and nor is a passive effect.
+  assert.deepEqual(await (await fits(7004))([FITTED_MODULE, "", null, -1]), [FITTED_MODULE, "", null, -1]);
+  // An effect that is not one of the type's: whether it repeats is not known.
+  assert.deepEqual(await (await fits(21857))([FITTED_MODULE, "somethingElse", null, -1]), [FITTED_MODULE, "somethingElse", null, -1]);
+});
+
+test("a call on a handle the BFF bound itself is shaped with what the pilot knows as well", async () => {
+  const { pilots, session, handle } = await selected({ answers: { "bound:GetAllInfo": fittedAllInfo() } }, moduleOptions());
+  const ship = await pilots.bindObject("ship", "MachoBindObject", [[STATION, 15]], null, WHOSE, handle);
+  await pilots.callBoundMethod("ship", "Undock", [SHIP, false], null, WHOSE, handle, ship.boundHandle);
+  assert.deepEqual(session.boundCalls.at(-1), { objectID: "N=1:1", method: "Undock", args: [SHIP, false], kwargs: { onlineModules: { type: "dict", entries: [[19, FITTED_MODULE]] } } });
 });

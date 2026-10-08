@@ -21,6 +21,19 @@
 //              what it does instead). The call is still sent: the web client
 //              needs its answer until that feature is rebuilt the client's way
 //
+// An entry may also say the client makes the call ON A MONIKER: not on the
+// service by name, as the BFF's routes ask, but on the object bound for where
+// the pilot is (eveMoniker.py: GetShipAccess, CharGetDogmaLocation). The pilot
+// then binds that object as the client does and calls it there. The client
+// calls nothing of `ship` or `dogmaIM` by the service's name but
+// ship.GetShipFittingInfo, dogmaIM.CreateNewbieShip and
+// dogmaIM.GetRequiredSkillLevels.
+//
+// A shape may need what only the pilot's own client would know: which of its
+// modules are online, what a module's effect is called. It is handed a
+// `context` of such answers (pilots.js makes it); each may be absent, and a
+// shape that cannot be completed says the call differs.
+//
 // A pair with no entry is "unchecked": sent as the BFF spelt it, and counted,
 // so the list of what still needs reading is measured rather than guessed.
 // `shape` may also decide the status from the arguments it is given.
@@ -39,6 +52,8 @@ const judged = (source, judge, note) => Object.freeze({
   shape: (args, kwargs) => ({ args, kwargs, ...judge(args, kwargs) }),
 });
 const webOnly = (source, note) => Object.freeze({ status: "web-only", source, note });
+/** The same entry, made on the service's moniker for where the pilot is. `needs` names what the pilot must have first: "dogma" is godma primed for the ship. */
+const onMoniker = (entry, needs = null) => Object.freeze({ ...entry, moniker: true, needs });
 
 const INV_CACHE = "eve/client/script/environment/invCache.py";
 const INV_CONTROLLERS = "eve/client/script/environment/invControllers.py";
@@ -46,6 +61,54 @@ const AGENT_WINDOW = "eve/client/script/ui/station/agents/agentDialogueWindow.py
 const AGENTS = "eve/client/script/ui/station/agents/agents.py";
 const CHAR_SELECT = "eve/client/script/ui/login/charSelection/characterSelection.py";
 const SCAN_SVC = "eve/client/script/parklife/scanSvc.py";
+const STATION_SVC = "eve/client/script/ui/station/base.py";
+const GODMA = "eve/client/script/environment/godma.py";
+const MODULE_BUTTON = "eve/client/script/ui/inflight/shipModuleButton/shipmodulebutton.py";
+/** What the module button sends for a module left to repeat: settings.char.autorepeat unset, and an effect that can repeat. */
+const REPEATS = 1000;
+
+/** A Python dict, from [key, value] pairs. */
+const dict = (entries) => ({ type: "dict", entries });
+const text = (value) => (Buffer.isBuffer(value) ? value.toString("utf8") : typeof value === "string" ? value : "");
+
+/**
+ * shipmodulebutton.ActivateEffect: the module's default effect by name, the
+ * target or None, and how often to repeat. The BFF's routes say -1 for "go on
+ * repeating" and leave the name empty when they do not know it; the client
+ * sends 1000 for a module left to repeat, 0 for an effect that cannot, and
+ * always the name.
+ */
+function activation(args, kwargs, context) {
+  const [itemID, effectName, target, repeat] = args;
+  const named = text(effectName) || (context.effectName ? context.effectName(itemID) : null) || "";
+  const canRepeat = named && context.effectRepeats ? context.effectRepeats(itemID, named) : null;
+  const asked = Number(repeat);
+  const repeats = asked >= 0 ? asked : canRepeat === null ? repeat : canRepeat ? REPEATS : 0;
+  const shaped = { args: [itemID, named, target ?? null, repeats], kwargs };
+  if (!named) return { ...shaped, status: "differs", note: "The client always names the module's default effect. This call names none, and what the module is was not known." };
+  if (asked < 0 && canRepeat === null) return { ...shaped, status: "differs", note: "The client sends 1000 or 0 for the repeats. Whether this effect can repeat was not known, so the BFF's -1 went as it was." };
+  return shaped;
+}
+
+/** godma's Deactivate(itemID, effectName): the effect is the one the client holds as running, by name. */
+function deactivation(args, kwargs, context) {
+  const [itemID, effectName] = args;
+  const named = text(effectName) || (context.effectName ? context.effectName(itemID) : null) || "";
+  const shaped = { args: [itemID, named], kwargs };
+  return named ? shaped : { ...shaped, status: "differs", note: "The client always names the effect it is stopping. This call names none, and what the module is was not known." };
+}
+
+/**
+ * station.UndockAttempt: Undock(shipID, ignoreContraband, onlineModules=...),
+ * where onlineModules is the ship's online modules by the slot each is in,
+ * {flagID: moduleID}, from the client's own dogma. The BFF's route sends an
+ * empty list.
+ */
+function undocking(args, kwargs, context) {
+  const online = context.onlineModules ? context.onlineModules() : null;
+  const shaped = { args: [args[0], args[1] === true], kwargs: { ...kwargs, onlineModules: online ? dict(online) : dict([]) } };
+  return online ? shaped : { ...shaped, status: "differs", note: "The client sends its online modules by slot. Dogma could not be asked, so none were sent." };
+}
 
 /** A util.KeyVal with these fields, in this order. */
 const keyVal = (entries) => ({ type: "object", name: "util.KeyVal", args: { type: "dict", entries } });
@@ -155,6 +218,9 @@ const RETAIL_CALLS = Object.freeze({
   "scanMgr.SetProbeRangeStep": webOnly(`${SCAN_SVC}:173`, "The client keeps a probe's range step itself and sends it with the next RequestScans."),
   "scanMgr.ConeScan": same("eve/client/script/parklife/directionalScanSvc.py:47", "ConeScan(scanAngle, scanRange, x, y, z)"),
   "dogmaIM.LaunchProbes": same(`${SCAN_SVC}:494`, "LaunchProbes(moduleID, numProbes)"),
+  "ship.Undock": onMoniker(reshaped(`${STATION_SVC}:498`, undocking, "GetShipAccess().Undock(shipID, ignoreContraband, onlineModules={flagID: moduleID}), on the ship object bound for the station"), "dogma"),
+  "dogmaIM.Activate": onMoniker(reshaped(`${MODULE_BUTTON}:1348`, activation, "godma's GetDogmaLM().Activate(itemID, effectName, target, repeats) (godma.py 2062), on the dogma location bound for where the pilot is"), "dogma"),
+  "dogmaIM.Deactivate": onMoniker(reshaped(`${GODMA}:2101`, deactivation, "GetDogmaLM().Deactivate(itemID, effectName), on the dogma location bound for where the pilot is"), "dogma"),
 });
 
 /**
@@ -163,12 +229,13 @@ const RETAIL_CALLS = Object.freeze({
  * Answers { args, kwargs, status, source, note }. `kwargs` is null when there
  * are none, as the BFF passes it. An unchecked pair comes back untouched.
  */
-function retailForm(service, method, args, kwargs) {
+function retailForm(service, method, args, kwargs, context = {}) {
   const given = { args: Array.isArray(args) ? args : [], kwargs: kwargs && Object.keys(kwargs).length > 0 ? kwargs : null };
   const entry = RETAIL_CALLS[`${service}.${method}`];
-  if (!entry) return { ...given, status: "unchecked", source: null, note: null };
-  if (typeof entry.shape !== "function") return { ...given, status: entry.status, source: entry.source, note: entry.note ?? null };
-  const shaped = entry.shape(given.args, given.kwargs ?? {});
+  if (!entry) return { ...given, status: "unchecked", source: null, note: null, moniker: false };
+  const moniker = entry.moniker === true;
+  if (typeof entry.shape !== "function") return { ...given, status: entry.status, source: entry.source, note: entry.note ?? null, moniker };
+  const shaped = entry.shape(given.args, given.kwargs ?? {}, context ?? {});
   const keywords = shaped.kwargs && Object.keys(shaped.kwargs).length > 0 ? shaped.kwargs : null;
   return {
     args: shaped.args,
@@ -176,8 +243,12 @@ function retailForm(service, method, args, kwargs) {
     status: shaped.status ?? entry.status,
     source: entry.source,
     note: shaped.note ?? entry.note ?? null,
+    moniker,
   };
 }
+
+/** What the pilot must have before this call can be shaped as the client's: "dogma", or null. */
+const retailNeeds = (service, method) => RETAIL_CALLS[`${service}.${method}`]?.needs ?? null;
 
 /**
  * A tally of the calls a process has made, by pair and by how each compared
@@ -201,4 +272,4 @@ function createCallLedger() {
   };
 }
 
-module.exports = { RETAIL_CALLS, createCallLedger, list, retailForm };
+module.exports = { REPEATS, RETAIL_CALLS, createCallLedger, list, retailForm, retailNeeds };

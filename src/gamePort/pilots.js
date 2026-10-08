@@ -56,10 +56,10 @@ const { GamePortSession } = require("./session");
 const { connectTcp, gameEndpoint } = require("./tcp");
 const { notificationToBridgeJson, sessionChangeToBridgeJson, wireToBridgeJson } = require("./bridgeJson");
 const { GAME_PORT_HANDLE_PREFIX } = require("../pilotTransport");
-const { createCallLedger, retailForm } = require("./retailCalls");
+const { createCallLedger, retailForm, retailNeeds } = require("./retailCalls");
 const { createPilotSpace } = require("./pilotSpace");
 const { createPilotClock } = require("./pilotClock");
-const { createPilotDogma } = require("./pilotDogma");
+const { EFFECT_CATEGORY, EFFECT_ONLINE, createPilotDogma } = require("./pilotDogma");
 const { MAX_PROBES, createPilotScanner } = require("./pilotScanner");
 const { projectFlight, projectSpace } = require("./spaceProjection");
 const { MODE: BALL_MODE } = require("./destiny/state");
@@ -299,6 +299,15 @@ function defaultTypeAttribute(typeID, attributeID) {
   // eslint-disable-next-line global-require
   return require("../staticData").getTypeDogmaAttribute(typeID, attributeID);
 }
+/** A type's dogma effects, each as the static data has it: { effectID, name, effectCategoryID, durationAttributeID, ... }. */
+function defaultTypeEffects(typeID) {
+  // eslint-disable-next-line global-require
+  const staticData = require("../staticData");
+  const dogma = staticData.getTypeDogma(typeID);
+  return (dogma && Array.isArray(dogma.effects) ? dogma.effects : []).map((effectID) => staticData.getEffect(effectID)).filter(Boolean);
+}
+/** const.attributeDisallowRepeatingActivation: a module that is set off once each time. */
+const ATTRIBUTE_DISALLOW_REPEATING = 1014;
 function defaultTypeGroup(typeID) {
   // eslint-disable-next-line global-require
   const type = require("../staticData").getType(typeID);
@@ -405,6 +414,8 @@ function createGamePortPilots({
   // A type's dogma attribute and its group, for the scanner: a probe's range steps, and whether a launcher's charge is a probe.
   typeAttribute = defaultTypeAttribute,
   typeGroup = defaultTypeGroup,
+  // A type's dogma effects, for naming the one a module is switched on by and saying whether it repeats.
+  typeEffects = defaultTypeEffects,
   // The client's own services, for the calls the server makes to it, and a word about each call once it is over.
   answerClientCall = defaultClientCallAnswer,
   onClientCall = () => {},
@@ -614,6 +625,8 @@ function createGamePortPilots({
       bound: new Map(),
       /** The two inventory managers invCache keeps, by which: the "N=..." of each. */
       inventoryManagers: new Map(),
+      /** The monikers the client keeps for where the pilot is, by service: the "N=..." each is bound to (monikerObject). */
+      monikers: new Map(),
       /** The pilot's sim clock (pilotClock.js): what its park steps by and its dogma measures in. */
       clock,
       /** The pilot's ballpark while it is in space (pilotSpace.js), else null. */
@@ -725,10 +738,14 @@ function createGamePortPilots({
   async function callMethod(service, method, args = [], kwargs = null, sessionFields = {}, bridgeSessionID = undefined) {
     const entry = held(bridgeSessionID, sessionFields);
     assertAllowed(service, method);
-    const form = shape(service, method, args, kwargs);
+    // What the client has to hand before it makes this call: godma primed for the ship, which it is from the moment it has one.
+    if (retailNeeds(service, method) === "dogma") await shipReadings(entry, whereabouts(entry));
+    const form = shape(service, method, args, kwargs, contextFor(entry));
     ledger.note(service, method, form);
-    const result = await run(entry, service, method, async () =>
-      entry.session.call(service, method, argumentsToWire(form.args), form.kwargs));
+    // A call the client makes on a service's moniker is made on the object bound for where the pilot is.
+    const result = await run(entry, service, method, async () => (form.moniker
+      ? entry.session.callBound(await monikerObject(entry, service), method, argumentsToWire(form.args), form.kwargs)
+      : entry.session.call(service, method, argumentsToWire(form.args), form.kwargs)));
     return {
       service,
       method,
@@ -803,7 +820,8 @@ function createGamePortPilots({
     const loadedFor = `${place.shipID}@${place.stationID ?? place.structureID ?? attribute(entry, "solarsystemid")}`;
     if (entry.dogmaLoaded !== loadedFor) {
       try {
-        const location = (await entry.session.bind("dogmaIM", locationBindParams(entry))).objectID;
+        // godma.GetDogmaLM: the dogma location bound for where the pilot is, kept and asked everything of.
+        const location = await monikerObject(entry, "dogmaIM");
         ledger.note("dogmaIM", "GetAllInfo", DOGMA_AS_GODMA_PRIMES);
         // primeCharacter, primeShip, primeStructure: a character and a ship, and no structure.
         const allInfo = await entry.session.callBound(location, "GetAllInfo", [true, true, null]);
@@ -1040,6 +1058,7 @@ function createGamePortPilots({
   /** The pilot moved: what was bound for the old place is the old place's. */
   function forgetLocationObjects(entry) {
     entry.inventoryManagers.clear();
+    entry.monikers.clear();
     for (const [handle, object] of entry.bound) {
       if (LOCATION_SERVICES.has(object.service)) entry.bound.delete(handle);
     }
@@ -1049,6 +1068,9 @@ function createGamePortPilots({
   function forgetObject(entry, objectID) {
     for (const [which, held] of entry.inventoryManagers) {
       if (held === objectID) entry.inventoryManagers.delete(which);
+    }
+    for (const [service, held] of entry.monikers) {
+      if (held === objectID) entry.monikers.delete(service);
     }
     for (const [handle, object] of entry.bound) {
       if (object.objectID === objectID) entry.bound.delete(handle);
@@ -1086,6 +1108,53 @@ function createGamePortPilots({
       default: // agentMgr (agentID), planetMgr (planetID), charMgr ((charid, containerGlobal)): as given
         return argumentsToWire(given === undefined ? null : given);
     }
+  }
+
+  /**
+   * A moniker the client keeps for where the pilot is (eveMoniker.py:
+   * GetShipAccess for `ship`, CharGetDogmaLocation for `dogmaIM`), bound on
+   * first use and kept until the pilot is somewhere else or the server lets
+   * the object go.
+   */
+  async function monikerObject(entry, service) {
+    if (!entry.monikers.has(service)) {
+      entry.monikers.set(service, (await entry.session.bind(service, monikerParams(entry, service, undefined))).objectID);
+    }
+    return entry.monikers.get(service);
+  }
+
+  /**
+   * shipmodulebutton.GetDefaultEffect, as far as the static data here can say
+   * it: the one effect of a type that a pilot switches on (an activation or a
+   * target effect, and not `online`), by name. Null when the type has none, or
+   * more than one: the client tells those apart by a flag this data lacks.
+   */
+  function defaultEffectName(typeID) {
+    if (typeID === null) return null;
+    const found = typeEffects(typeID).filter((effect) => effect.effectID !== EFFECT_ONLINE &&
+      (effect.effectCategoryID === EFFECT_CATEGORY.ACTIVATION || effect.effectCategoryID === EFFECT_CATEGORY.TARGET));
+    return found.length === 1 ? found[0].name : null;
+  }
+
+  /** shipmodulebutton.IsEffectRepeatable: the effect has a duration and the module does not forbid repeating. Null when the effect is not one of the type's. */
+  function effectRepeats(typeID, effectName) {
+    if (typeID === null) return null;
+    const effect = typeEffects(typeID).find((each) => each.name === effectName);
+    if (!effect) return null;
+    return effect.durationAttributeID !== null && effect.durationAttributeID !== undefined && !typeAttribute(typeID, ATTRIBUTE_DISALLOW_REPEATING);
+  }
+
+  /** What only the pilot's own client would know, for a call to be sent as that client sends it (retailCalls.js). */
+  function contextFor(entry) {
+    const typeOf = (itemID) => entry.dogma.typeOf(positive(itemID) ?? 0);
+    return {
+      onlineModules: () => {
+        const shipID = attribute(entry, "shipid");
+        return entry.dogmaLoaded && shipID !== null ? entry.dogma.onlineModules(shipID) : null;
+      },
+      effectName: (itemID) => defaultEffectName(typeOf(itemID)),
+      effectRepeats: (itemID, effectName) => effectRepeats(typeOf(itemID), effectName),
+    };
   }
 
   /** invCache's `inventorymgr` (where the pilot is) or `stationInventoryMgr` (its station), bound on first use. */
@@ -1158,7 +1227,8 @@ function createGamePortPilots({
     if (!object) throw fail("BOUND_HANDLE_NOT_FOUND", "Unknown bound-object handle for this session.");
     if (object.service !== service) throw fail("BOUND_HANDLE_NOT_FOUND", "Bound-object handle does not belong to the requested service.");
     assertAllowed(service, method);
-    const form = shape(service, method, args, kwargs);
+    if (retailNeeds(service, method) === "dogma") await shipReadings(entry, whereabouts(entry));
+    const form = shape(service, method, args, kwargs, contextFor(entry));
     ledger.note(service, method, form);
     const result = await run(entry, service, method, async () =>
       entry.session.callBound(object.objectID, method, argumentsToWire(form.args), form.kwargs));

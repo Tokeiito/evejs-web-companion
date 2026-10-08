@@ -661,10 +661,28 @@ function createPilotDogma({ characterID = null, now = filetimeNow, effectCategor
     return null;
   }
 
+  /**
+   * clientDogmaLocation.GetOnlineModules(shipID): the ship's fitted modules
+   * whose online effect is running, as [flagID, moduleID] in the order the
+   * server listed them. The client hands this over when it undocks.
+   */
+  function onlineModules(shipID) {
+    const ship = key(shipID);
+    const found = [];
+    for (const [itemID, item] of identity) {
+      if (typeof itemID !== "number" || item.locationID !== ship) continue;
+      if (effects.get(itemID)?.get(EFFECT_ONLINE)?.isActive) found.push([item.flagID, itemID]);
+    }
+    return found;
+  }
+
   return {
     attribute,
     applyAttributeChange,
     onlineModule,
+    onlineModules,
+    /** What a held item is: its type, or null for one godma was not told of. */
+    typeOf: (itemID) => identity.get(key(itemID))?.typeID ?? null,
     setWeaponBanks,
     unlinkModule,
     weaponBanks,

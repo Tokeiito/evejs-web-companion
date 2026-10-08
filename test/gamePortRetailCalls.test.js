@@ -8,7 +8,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
-const { RETAIL_CALLS, createCallLedger, list, retailForm } = require("../src/gamePort/retailCalls");
+const { REPEATS, RETAIL_CALLS, createCallLedger, list, retailForm, retailNeeds } = require("../src/gamePort/retailCalls");
 const contract = require("../contracts/evejs-web-bridge-contract.json");
 
 const form = (pair, args, kwargs = null) => {
@@ -20,9 +20,9 @@ test("a pair nobody has checked goes out as the BFF spelt it, and says so", () =
   const args = [1, [2, 3]];
   const kwargs = { flag: 5 };
   const answer = retailForm("someService", "SomeMethod", args, kwargs);
-  assert.deepEqual(answer, { args, kwargs, status: "unchecked", source: null, note: null });
+  assert.deepEqual(answer, { args, kwargs, status: "unchecked", source: null, note: null, moniker: false });
   assert.equal(answer.args, args, "untouched, not copied");
-  assert.deepEqual(retailForm("someService", "SomeMethod", undefined, undefined), { args: [], kwargs: null, status: "unchecked", source: null, note: null });
+  assert.deepEqual(retailForm("someService", "SomeMethod", undefined, undefined), { args: [], kwargs: null, status: "unchecked", source: null, note: null, moniker: false });
 });
 
 test("a pair that is the same as the client's is left alone", () => {
@@ -32,7 +32,7 @@ test("a pair that is the same as the client's is left alone", () => {
 });
 
 test("List goes out as List(flag=flag): a keyword, and None when there is no flag", () => {
-  assert.deepEqual(form("invbroker.List", [5]), { args: [], kwargs: { flag: 5 }, status: "reshaped", source: RETAIL_CALLS["invbroker.List"].source, note: "List(flag=flag)" });
+  assert.deepEqual(form("invbroker.List", [5]), { args: [], kwargs: { flag: 5 }, status: "reshaped", source: RETAIL_CALLS["invbroker.List"].source, note: "List(flag=flag)", moniker: false });
   assert.deepEqual(form("invbroker.List", []).kwargs, { flag: null });
   assert.deepEqual(form("invbroker.List", [], { flag: 4 }).kwargs, { flag: 4 }, "already a keyword: kept");
   assert.deepEqual(form("invbroker.List", [0]).kwargs, { flag: 0 }, "flag 0 is a flag");
@@ -202,4 +202,87 @@ test("the probes to recall and the probes to switch go out as lists; the rest of
     assert.deepEqual([shaped.status, shaped.args], ["web-only", [5, 3]], pair);
     assert.match(shaped.note, /RequestScans/);
   }
+});
+
+// ── calls the client makes on a moniker ──────────────────────────────────────
+
+const withContext = (pair, args, kwargs, context) => {
+  const [service, method] = pair.split(".");
+  return retailForm(service, method, args, kwargs, context);
+};
+
+test("undock goes to the ship's moniker with the online modules by slot, as the station service sends it", () => {
+  const online = () => [[19, 9001], [27, 9002]];
+  const answer = withContext("ship.Undock", [5000, false], { onlineModules: [] }, { onlineModules: online });
+  assert.deepEqual(answer, {
+    args: [5000, false],
+    kwargs: { onlineModules: { type: "dict", entries: [[19, 9001], [27, 9002]] } },
+    status: "reshaped",
+    source: RETAIL_CALLS["ship.Undock"].source,
+    note: RETAIL_CALLS["ship.Undock"].note,
+    moniker: true,
+  });
+  assert.match(answer.source, /ui\/station\/base\.py:498$/);
+  // The second argument is a yes or a no: only a true is a yes.
+  assert.deepEqual(withContext("ship.Undock", [5000, true], null, { onlineModules: online }).args, [5000, true]);
+  assert.deepEqual(withContext("ship.Undock", [5000, 1], null, { onlineModules: online }).args, [5000, false]);
+  assert.deepEqual(withContext("ship.Undock", [5000], null, { onlineModules: online }).args, [5000, false]);
+  // No module online is still an answer: an empty dict, and the client's call.
+  assert.deepEqual(((form) => [form.kwargs, form.status])(withContext("ship.Undock", [5000, false], null, { onlineModules: () => [] })), [{ onlineModules: { type: "dict", entries: [] } }, "reshaped"]);
+  // Dogma not to be had: an empty dict goes, and the tally says the call is not the client's.
+  for (const context of [{}, { onlineModules: () => null }, undefined]) {
+    const blind = withContext("ship.Undock", [5000, false], { onlineModules: [] }, context);
+    assert.deepEqual([blind.kwargs, blind.status, blind.moniker], [{ onlineModules: { type: "dict", entries: [] } }, "differs", true]);
+    assert.match(blind.note, /online modules by slot/);
+  }
+  // Another keyword a route sent is kept.
+  assert.deepEqual(Object.keys(withContext("ship.Undock", [5000, false], { other: 1 }, { onlineModules: online }).kwargs), ["other", "onlineModules"]);
+});
+
+test("a module is switched on with its effect named and its repeats the client's: 1000 to go on, 0 for one that cannot", () => {
+  assert.equal(REPEATS, 1000);
+  const knows = { effectName: (itemID) => (itemID === 7 ? "burn" : null), effectRepeats: (itemID, name) => (name === "burn" ? true : name === "fire" ? false : null) };
+  const on = (args, context = knows) => withContext("dogmaIM.Activate", args, null, context);
+  // The BFF's -1 is "go on repeating".
+  assert.deepEqual(on([7, "burn", undefined, -1]), { args: [7, "burn", null, 1000], kwargs: null, status: "reshaped", source: RETAIL_CALLS["dogmaIM.Activate"].source, note: RETAIL_CALLS["dogmaIM.Activate"].note, moniker: true });
+  assert.match(RETAIL_CALLS["dogmaIM.Activate"].source, /shipmodulebutton\.py:1348$/);
+  // An effect that cannot repeat is sent once, whatever was asked.
+  assert.deepEqual(on([8, "fire", 4242, -1]).args, [8, "fire", 4242, 0]);
+  // A count the caller gave is the caller's: once, or five times.
+  assert.deepEqual([on([7, "burn", null, 0]).args[3], on([7, "burn", null, 5]).args[3], on([7, "burn", null, "0"]).args[3]], [0, 5, 0]);
+  // No name given: the module's own, from what the pilot knows of it. A name on the wire may be bytes.
+  assert.deepEqual(on([7, "", null, -1]).args, [7, "burn", null, 1000]);
+  assert.deepEqual(on([9, Buffer.from("glow"), null, 0]).args, [9, "glow", null, 0]);
+  assert.deepEqual(on([7, null, null, -1]).args, [7, "burn", null, 1000]);
+  // No name to be had: it goes as it came, and the tally says so.
+  const nameless = on([9, "", null, -1]);
+  assert.deepEqual([nameless.args, nameless.status, nameless.moniker], [[9, "", null, -1], "differs", true]);
+  assert.match(nameless.note, /always names/);
+  assert.deepEqual(on([9, "", null, -1], {}).status, "differs");
+  // Named, but whether it repeats is not known: the -1 goes as it is, and that is said. A count given needs no such knowledge.
+  const unsure = on([9, "glow", null, -1]);
+  assert.deepEqual([unsure.args, unsure.status], [[9, "glow", null, -1], "differs"]);
+  assert.match(unsure.note, /1000 or 0/);
+  assert.deepEqual([on([9, "glow", null, 0]).status, on([9, "glow", null, 0]).args], ["reshaped", [9, "glow", null, 0]]);
+  assert.deepEqual(on([9, "glow", null, -1], {}).status, "differs");
+});
+
+test("a module is switched off by its effect's name, on the same moniker", () => {
+  const knows = { effectName: (itemID) => (itemID === 7 ? "burn" : null) };
+  const off = (args, context = knows) => withContext("dogmaIM.Deactivate", args, null, context);
+  assert.deepEqual(off([7, "burn"]), { args: [7, "burn"], kwargs: null, status: "reshaped", source: RETAIL_CALLS["dogmaIM.Deactivate"].source, note: RETAIL_CALLS["dogmaIM.Deactivate"].note, moniker: true });
+  assert.match(RETAIL_CALLS["dogmaIM.Deactivate"].source, /godma\.py:2101$/);
+  assert.deepEqual(off([7, ""]).args, [7, "burn"]);
+  assert.deepEqual(off([7]).args, [7, "burn"]);
+  const nameless = off([9, ""]);
+  assert.deepEqual([nameless.args, nameless.status, nameless.moniker], [[9, ""], "differs", true]);
+  assert.match(nameless.note, /always names/);
+  assert.equal(off([9, ""], {}).status, "differs");
+});
+
+test("what a call needs the pilot to have first is said by the registry: godma primed, for these three", () => {
+  assert.deepEqual(["ship.Undock", "dogmaIM.Activate", "dogmaIM.Deactivate"].map((pair) => retailNeeds(...pair.split("."))), ["dogma", "dogma", "dogma"]);
+  assert.deepEqual([retailNeeds("invbroker", "List"), retailNeeds("agentMgr", "DoAction"), retailNeeds("someService", "SomeMethod")], [null, null, null]);
+  // And only an entry made on a moniker says so.
+  for (const [pair, entry] of Object.entries(RETAIL_CALLS)) assert.equal(entry.moniker === true, ["ship.Undock", "dogmaIM.Activate", "dogmaIM.Deactivate"].includes(pair), pair);
 });
