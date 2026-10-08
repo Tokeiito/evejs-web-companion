@@ -1727,6 +1727,16 @@ export interface CompressionFacility {
  * enumerates. Ratios are remaining fractions (0-1); capacities are the max HP
  * behind each bar (null when unavailable).
  */
+/** What the retail client's HUD words a warp from. */
+export interface ShipWarp {
+  /** Still lining up: the warp proper has not begun. */
+  readonly preparing: boolean;
+  /** The point the server's warp is aimed at, or null when it has not said. */
+  readonly point: SpaceVector | null;
+  /** The thing the pilot asked to warp to, when the warp is aimed at it; else null. */
+  readonly destinationID: number | null;
+}
+
 export interface SpaceShipStatus {
   /** True only when all velocity components are measured finite values. */
   readonly motionAvailable?: boolean;
@@ -1811,6 +1821,11 @@ export interface SpaceShipStatus {
    * absent: not known, or it is doing something else.
    */
   readonly gotoPoint?: SpaceVector | null;
+  /**
+   * The ship's warp, while it is in one or lining up for one and the transport
+   * says (the game port does). Null or absent: not in warp, or not known.
+   */
+  readonly warp?: ShipWarp | null;
   /**
    * How hot each rack is running, 0 to 1 of its heat capacity, as the retail
    * client's own heat gauges read it. Null when the transport does not say

@@ -864,7 +864,7 @@ function createGamePortPilots({
       return {
         // Until the server's state has arrived there is a park and nothing in it.
         space: park && park.validState
-          ? projectSpace(park, { solarSystemID: place.solarSystemID, shipID: place.shipID, readings })
+          ? projectSpace(park, { solarSystemID: place.solarSystemID, shipID: place.shipID, readings, warpDestination: entry.warpDestination ?? null })
           : { inSpace: true, solarSystemID: place.solarSystemID, shipID: place.shipID, sampledAtMs: now(), entities: [], ship: null },
         notifications: drain(entry),
       };
@@ -958,6 +958,19 @@ function createGamePortPilots({
       entry.dogma.unlinkModule(args[0], args[1], result);
     } else if (method === "UnlinkAllModules") {
       entry.dogma.setWeaponBanks(args[0], null);
+    }
+  }
+
+  /**
+   * What the client keeps of its own movement orders. Asked to warp to a thing, it notes which
+   * (space.WarpDestination(celestialID=...), from the menu and from the autopilot), and words the warp from it
+   * if the server's warp then points there. A warp to anything else forgets it.
+   */
+  function afterMovementCall(entry, method, args) {
+    if (method === "CmdWarpToStuffAutopilot") {
+      entry.warpDestination = positive(args[0]);
+    } else if (method === "CmdWarpToStuff") {
+      entry.warpDestination = args[0] === "item" ? positive(args[1]) : null;
     }
   }
 
@@ -1110,6 +1123,7 @@ function createGamePortPilots({
       entry.session.callBound(object.objectID, method, argumentsToWire(form.args), form.kwargs));
     if (service === "scanMgr") afterScanManagerCall(entry, method, form.args, result);
     if (service === "dogmaIM") afterGroupingCall(entry, method, form.args, result);
+    if (service === "beyonce") afterMovementCall(entry, method, form.args);
     return {
       service,
       method,

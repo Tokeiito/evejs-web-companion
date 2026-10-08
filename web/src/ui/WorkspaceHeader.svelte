@@ -51,9 +51,12 @@
   const spaceSystem = $derived($flight.solarSystemName ?? null);
   // What the ship is doing. When the snapshot says enough for the client's own rule (its mode, whom it
   // follows, the range in its order) it is the client's word for it: "approaching", not the ball's FOLLOW.
-  // Otherwise the mode the flight status gives, as it comes.
+  // Otherwise the ship's mode as it comes: from the snapshot, which is read every second in space, and only
+  // failing that from the flight status, which is read when something is ordered and can be minutes old.
   const doing = $derived(shipIndication($space.snapshot));
-  const shipMode = $derived(doing !== null ? indicationHeader(doing.kind, $words.templates) : ($flight.status?.shipMode ?? null));
+  const shipMode = $derived(
+    doing !== null ? indicationHeader(doing.kind, $words.templates) : ($space.snapshot?.ship?.mode ?? $flight.status?.shipMode ?? null),
+  );
   $effect(() => {
     flow.requestWords(INDICATION_WORD_LABELS);
   });

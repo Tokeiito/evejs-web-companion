@@ -1857,3 +1857,49 @@ test("the snapshot's rack heat is dogma's: the server's word for a rack, and the
   close((await heat()).high, 0.039210560847676845 * Math.exp(-0.6));
   assert.equal(built.session.boundCalls.filter((call) => call.method === "GetAllInfo").length, 1, "all of it without asking again");
 });
+
+// ── the warp, through the snapshot ───────────────────────────────────────────
+
+test("a warp ordered at a thing is remembered as the client remembers its own order, and the snapshot says where the warp is aimed", async () => {
+  const hand = handTicked();
+  const allowed = new Set(["beyonce.MachoBindObject", "beyonce.CmdWarpToStuff", "beyonce.CmdWarpToStuffAutopilot", "beyonce.CmdStop"]);
+  const built = build(IN_SPACE, { ...hand.options, allowed });
+  const { bridgeSessionID: handle } = await built.pilots.selectCharacter([PILOT, null, true], null, FIELDS);
+  const { boundHandle } = await built.pilots.bindObject("beyonce", "MachoBindObject", [], null, WHOSE, handle);
+  for (const update of recordedUpdates.slice(0, 5)) built.session.notify("DoDestinyUpdate", update.args);
+  hand.parks[0].tick();
+  const park = hand.parks[0].space.park;
+  const ego = park.ballpark.ball(park.ego);
+  const off = (ball) => Math.hypot(ball.newPos.x - ego.newPos.x, ball.newPos.y - ego.newPos.y, ball.newPos.z - ego.newPos.z);
+  // Two things on the recorded grid a long way off, in different directions.
+  const distant = [...park.ballpark.balls.values()].filter((ball) => !ball.isFree && park.slimItems.has(ball.id) && off(ball) > 1e10);
+  const there = distant[0];
+  const elsewhere = distant.find((ball) => {
+    const cosine = ((ball.newPos.x - ego.newPos.x) * (there.newPos.x - ego.newPos.x) + (ball.newPos.y - ego.newPos.y) * (there.newPos.y - ego.newPos.y) + (ball.newPos.z - ego.newPos.z) * (there.newPos.z - ego.newPos.z)) / (off(ball) * off(there));
+    return cosine < 0.9;
+  });
+  assert.ok(there && elsewhere, "the recorded grid has two far things in different directions");
+  const warp = async () => (await built.pilots.readSpaceSnapshot(handle)).space.ship.warp;
+  const order = (method, args, kwargs = null) => built.pilots.callBoundMethod("beyonce", method, args, kwargs, WHOSE, handle, boundHandle);
+
+  // Flying, not warping: nothing is said of a warp.
+  assert.equal(await warp(), null);
+  // The pilot's own order, then the server's: a WarpTo for the ship, at the thing.
+  await order("CmdWarpToStuff", ["item", there.id], { minRange: 0 });
+  built.session.notify("DoDestinyUpdate", [{ type: "list", items: [[park.currentTime, [Buffer.from("WarpTo"), [BigInt(park.ego), there.newPos.x, there.newPos.y, there.newPos.z, 20000, 3000]]]] }, false]);
+  hand.parks[0].tick();
+  assert.deepEqual(await warp(), { preparing: true, point: { ...there.newPos }, destinationID: there.id });
+  // The autopilot's warp is remembered the same way; here it names the other thing, which the warp is not aimed at.
+  await order("CmdWarpToStuffAutopilot", [elsewhere.id]);
+  assert.deepEqual(await warp(), { preparing: true, point: { ...there.newPos }, destinationID: null });
+  await order("CmdWarpToStuffAutopilot", [there.id]);
+  assert.equal((await warp()).destinationID, there.id);
+  // A warp to something that is no thing in space (a bookmark) forgets the thing, whatever number the bookmark has.
+  await order("CmdWarpToStuff", ["bookmark", there.id], { minRange: 0 });
+  assert.equal((await warp()).destinationID, null);
+  // Another movement order leaves what was remembered alone.
+  await order("CmdWarpToStuff", ["item", there.id], { minRange: 0 });
+  await order("CmdStop", []);
+  assert.equal((await warp()).destinationID, there.id);
+  assert.deepEqual(hand.errors, []);
+});

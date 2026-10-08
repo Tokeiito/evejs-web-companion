@@ -136,6 +136,11 @@ class Park {
     this.latestSetStateTime = 0;
     this.shouldRebase = false;
     this.ego = null;
+    /**
+     * Where the pilot's own ship was last sent in warp: the point in the server's WarpTo. The client's space
+     * service keeps it from the same call (spaceMgr.OnBallparkCall) and words its warp from it.
+     */
+    this.warpPoint = null;
     this.isRunning = false;
     this.solItem = null;
     /** Entries that could not be applied, by name: an order this port does not carry out yet, or one the client has no method for. */
@@ -333,6 +338,9 @@ class Park {
             else this[funcName](...args);
           } else {
             this._order(funcName, args);
+            if (funcName === "WarpTo" && this.ego !== null && ballId(args[0]) === this.ego) {
+              this.warpPoint = { x: number(args[1]), y: number(args[2]), z: number(args[3]) };
+            }
             if (funcName === "CloakBall") {
               const eventBallID = ballId(args[0]);
               if (this.ego && this.ego !== eventBallID) this.RemoveBall(eventBallID);

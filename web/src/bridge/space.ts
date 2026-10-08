@@ -18,6 +18,7 @@ import { decodeModuleReach } from "./moduleReach.ts";
 import type {
   CompressionFacility,
   SpaceEntity,
+  ShipWarp,
   SpaceShipStatus,
   SpaceSnapshot,
   SpaceVector,
@@ -62,6 +63,18 @@ function ratioOrNull(value: JsonValue | undefined): number | null {
     return null;
   }
   return Math.min(1, Math.max(0, numeric));
+}
+
+/** The ship's warp: null unless it is an object that says whether the ship is still lining up. */
+function decodeWarp(value: JsonValue | undefined): ShipWarp | null {
+  if (typeof value !== "object" || value === null) {
+    return null;
+  }
+  const raw = value as Record<string, JsonValue>;
+  if (typeof raw.preparing !== "boolean") {
+    return null;
+  }
+  return { preparing: raw.preparing, point: pointOrNull(raw.point), destinationID: idOrNull(raw.destinationID) };
 }
 
 /** A point whose three coordinates are all real numbers, or null. */
@@ -244,6 +257,7 @@ function decodeShip(value: JsonValue | undefined): SpaceShipStatus | null {
     rackHeat: decodeRackHeat(raw.rackHeat),
     followRange: rangeOrNull(raw.followRange),
     gotoPoint: pointOrNull(raw.gotoPoint),
+    warp: decodeWarp(raw.warp),
     miningBurstServices: decodeMiningBurstServices(raw.miningBurstServices),
     coreMobilityFuel: decodeCoreMobilityFuel(raw.coreMobilityFuel),
     moduleReach: decodeModuleReach(raw.moduleReach),

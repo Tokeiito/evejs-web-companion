@@ -273,6 +273,27 @@ test("the point the ship is flying to decodes whole or not at all", () => {
   assert.equal(ship([1, 2, 3]).gotoPoint, null);
 });
 
+test("the ship's warp decodes when it says whether the ship is lining up, and is nothing otherwise", () => {
+  const ship = (warp: unknown) =>
+    decodeSpaceSnapshot({
+      inSpace: true,
+      solarSystemID: 30000142,
+      shipID: 9001,
+      entities: [],
+      ship: { itemID: 9001, typeID: 606, ...(warp === undefined ? {} : { warp }) },
+    } as unknown as JsonValue).ship!;
+  assert.deepEqual(ship({ preparing: true, point: { x: 1, y: 2, z: 3 }, destinationID: 40009089 }).warp, { preparing: true, point: { x: 1, y: 2, z: 3 }, destinationID: 40009089 });
+  assert.deepEqual(ship({ preparing: false, point: null, destinationID: null }).warp, { preparing: false, point: null, destinationID: null });
+  // A point missing a coordinate is no point; a destination that is no id is none.
+  assert.deepEqual(ship({ preparing: false, point: { x: 1, y: 2 }, destinationID: "moon" }).warp, { preparing: false, point: null, destinationID: null });
+  // Absent (the gateway's snapshot), null, or not saying whether it is lining up: nothing.
+  assert.equal(ship(undefined).warp, null);
+  assert.equal(ship(null).warp, null);
+  assert.equal(ship([true]).warp, null);
+  assert.equal(ship({ point: { x: 1, y: 2, z: 3 } }).warp, null);
+  assert.equal(ship({ preparing: 1, point: { x: 1, y: 2, z: 3 } }).warp, null);
+});
+
 test("R23: the locked-target list decodes long-aware, and empties safely", () => {
   assert.deepEqual(
     decodeTargetIDs([50001248, { type: "long", value: "50001249" }] as unknown as JsonValue),

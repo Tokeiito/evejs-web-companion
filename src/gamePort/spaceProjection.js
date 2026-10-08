@@ -150,7 +150,36 @@ function projectEntity(park, ball, slim, ego) {
  * `readings` is what dogma says of the pilot's own ship (pilotDogma.js), which
  * the ballpark does not know; without it those fields are null.
  */
-function projectSpace(park, { solarSystemID, shipID, readings = null }) {
+/**
+ * spaceMgr.CheckWarpDestination: does the thing the pilot asked to warp to lie where the server's warp is
+ * pointed? It does if, from the ship, the two are within `angularTolerance` of the same direction, or if they
+ * are within `distanceTolerance` of each other.
+ */
+function checkWarpDestination(warpPoint, destinationPoint, egoPoint, angularTolerance, distanceTolerance) {
+  const offset = Math.hypot(destinationPoint.x - warpPoint.x, destinationPoint.y - warpPoint.y, destinationPoint.z - warpPoint.z);
+  const toPoint = { x: warpPoint.x - egoPoint.x, y: warpPoint.y - egoPoint.y, z: warpPoint.z - egoPoint.z };
+  const toThing = { x: destinationPoint.x - egoPoint.x, y: destinationPoint.y - egoPoint.y, z: destinationPoint.z - egoPoint.z };
+  const cosine = (toPoint.x * toThing.x + toPoint.y * toThing.y + toPoint.z * toThing.z) / (Math.hypot(toPoint.x, toPoint.y, toPoint.z) * Math.hypot(toThing.x, toThing.y, toThing.z));
+  const angle = Math.acos(Math.min(Math.max(-1.0, cosine), 1.0));
+  return Math.abs(angle) < angularTolerance || offset < distanceTolerance;
+}
+
+/**
+ * What the client's HUD words a warp from (spaceMgr.StartWarpIndication, IndicateWarp): whether the ship is
+ * still lining up (the ball's effect stamp is negative until the warp proper begins), the point in the
+ * server's WarpTo, and the thing the pilot asked to warp to, if it is in the park and lies where the warp
+ * points (within pi/32 of the direction, or 20,000 km). The client makes that check once, as the warp is
+ * ordered; here it is made on each reading, from where the ship then is.
+ */
+function warpOf(park, egoBall, destinationID) {
+  const point = park.warpPoint ?? null;
+  const id = destinationID === null || destinationID === undefined ? null : number(destinationID);
+  const thing = id === null ? null : park.ballpark.ball(id);
+  const lies = point && thing && checkWarpDestination(point, thing.newPos, egoBall.newPos, Math.PI / 32, 20000000);
+  return { preparing: egoBall.effectStamp < 0, point: point ? { ...point } : null, destinationID: lies ? id : null };
+}
+
+function projectSpace(park, { solarSystemID, shipID, readings = null, warpDestination = null }) {
   const ego = park.ego;
   const entities = [];
   for (const ball of park.ballpark.balls.values()) {
@@ -181,6 +210,9 @@ function projectSpace(park, { solarSystemID, shipID, readings = null }) {
       // The point the ship is flying to, when that is what it is doing (the ball's GOTO): with where it is
       // and how it is moving, what the client's HUD tells an approach to a point from a turn towards one.
       gotoPoint: own.mode === "GOTO" && egoBall ? { x: egoBall.goto.x, y: egoBall.goto.y, z: egoBall.goto.z } : null,
+      // In warp, or lining up for one: what the client's HUD says of it is made from this. `warpDestination`
+      // is the thing the pilot asked to warp to, which the client remembers from its own order.
+      warp: own.mode === "WARP" && egoBall ? warpOf(park, egoBall, warpDestination) : null,
       maxVelocity: own.maxVelocity,
       radius: own.radius,
       position: own.position,
@@ -216,4 +248,4 @@ function projectFlight(park) {
   return { shipMode: MODE_NAME[ball.mode] ?? null, shipSpeedFraction: ball.speedFraction };
 }
 
-module.exports = { CATEGORY, GROUP, healthOf, kindOf, projectEntity, projectFlight, projectSpace };
+module.exports = { CATEGORY, GROUP, checkWarpDestination, healthOf, kindOf, projectEntity, projectFlight, projectSpace };

@@ -700,3 +700,56 @@ test("flying to a point, the ship's line and the header say so as the client doe
   assert.equal(line(worded), "Closing on a spot");
   assert.match(visibleText(renderHeader(worded, false)), /Closing · 100%/);
 });
+
+test("in warp, the ship's line and the header say so as the client's HUD does: lining up, then under way, where to and how far", () => {
+  const AU = 149_597_870_700;
+  const self = { itemID: SHIP_ID, isSelf: true, targetEntityID: null, name: null, typeID: SHIP_TYPE_ID, radius: 100, position: { x: 0, y: 0, z: 0 } };
+  const moon = { itemID: 40009089, isSelf: false, targetEntityID: null, name: "Jita IV - Moon 6", typeID: 14, radius: 5000, position: { x: 2 * AU, y: 0, z: 0 } };
+  const store = (warp: unknown, templates: Record<string, string> = {}) => {
+    const made = inSpaceStore() as { apply: (event: unknown) => void };
+    made.apply({ type: "flight/status", status: { inSpace: true, docked: false, solarSystemID: SYSTEM_ID, stationID: null, structureID: null, shipID: SHIP_ID, shipTypeID: null, shipIsCapsule: null, shipMode: "WARP", shipSpeedFraction: 1 } });
+    made.apply({ type: "space/snapshot", snapshot: { ...SHIP_SNAPSHOT, entities: [self, moon], ship: { ...SHIP_SNAPSHOT.ship, mode: "WARP", warp } } });
+    if (Object.keys(templates).length > 0) made.apply({ type: "words/loaded", available: true, templates });
+    return made;
+  };
+  const line = (made: unknown) => (renderHud(made).match(/class="hud-head-state[^"]*"[^>]*>([^<]*)</) ?? [])[1]?.trim();
+  const point = { x: 2 * AU, y: 0, z: 0 };
+  // Lining up, aimed at the moon the pilot asked for.
+  const lining = store({ preparing: true, point, destinationID: 40009089 });
+  assert.equal(line(lining), "Lining up for warp · To Jita IV - Moon 6 · 2.00 AU to go");
+  assert.match(visibleText(renderHeader(lining, false)), /Lining up for warp · 100%/);
+  // Under way.
+  const under = store({ preparing: false, point, destinationID: 40009089 });
+  assert.equal(line(under), "In warp · To Jita IV - Moon 6 · 2.00 AU to go");
+  assert.match(visibleText(renderHeader(under, false)), /In warp · 100%/);
+  // Aimed at nothing the page can name: how far the warp's own point is.
+  assert.equal(line(store({ preparing: false, point, destinationID: null })), "In warp · 2.00 AU to go");
+  // In the client's words when the page holds them.
+  const worded = store({ preparing: false, point, destinationID: 40009089 }, {
+    "UI/Inflight/Messages/WarpDriveActive": "Drive on",
+    "UI/Inflight/Messages/WarpDestination": "Bound for {destinationName}",
+    "UI/Inflight/ActiveItem/SelectedItemDistance": "Still {distToItem}",
+    "UI/Inflight/Messages/WarpIndicatorWithDistance": "{warpDestination}{distance}",
+    "UI/Inflight/Messages/WarpIndicatorWithDistanceAndBubble": "{warpDestination}{distance} more",
+  });
+  assert.equal(line(worded), "Drive on · Bound for Jita IV - Moon 6 · Still 2.00 AU");
+  assert.match(visibleText(renderHeader(worded, false)), /Drive on · 100%/);
+  // With nothing said of the warp (the gateway's snapshot), the page's own words as before.
+  const bare = store(undefined);
+  assert.equal(line(bare), "In warp.");
+  assert.match(visibleText(renderHeader(bare, false)), /WARP · 100%/);
+});
+
+test("the header's mode word is the snapshot's, which is the fresher, and the flight status's only without one", () => {
+  const header = (snapshotMode: string | null | undefined, flightMode: string) => {
+    const store = inSpaceStore() as { apply: (event: unknown) => void };
+    store.apply({ type: "flight/status", status: { inSpace: true, docked: false, solarSystemID: SYSTEM_ID, stationID: null, structureID: null, shipID: SHIP_ID, shipTypeID: null, shipIsCapsule: null, shipMode: flightMode, shipSpeedFraction: 1 } });
+    if (snapshotMode !== undefined) store.apply({ type: "space/snapshot", snapshot: { ...SHIP_SNAPSHOT, ship: { ...SHIP_SNAPSHOT.ship, mode: snapshotMode } } });
+    return visibleText(renderHeader(store, false));
+  };
+  // Stopped after a warp, by the snapshot; the flight status has not been read since it said GOTO.
+  assert.match(header("STOP", "GOTO"), /STOP · 100%/);
+  assert.equal(/GOTO/.test(header("STOP", "GOTO")), false);
+  // A snapshot that does not say: the flight status's word.
+  assert.match(header(null, "GOTO"), /GOTO · 100%/);
+});

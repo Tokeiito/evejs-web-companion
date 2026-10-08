@@ -18,9 +18,15 @@
 //                                        farther: "aligning to a point in space", until its
 //                                        course is within 0.26 radians of the point; then nothing
 //
+//   mode WARP (IndicateWarp)           "establishing warp vector" while the ship lines up,
+//                                      "warp drive active" once the warp proper begins; beneath,
+//                                      where to (the thing the pilot asked to warp to, when the
+//                                      server's warp is aimed at it) and how far off it still is
+//
 // Not here yet: what the pilot last aligned to, which the client remembers and
-// names in place of "a point in space"; and a warp. For those, and whenever
-// the range or the point is not known, the caller keeps its own words.
+// names in place of "a point in space"; the bar the client fills while the
+// ship lines up for a warp; and the passing "ship stopping". For those, and
+// whenever the range or the point is not known, the caller keeps its own words.
 
 import { formatTemplate, plainText } from "../bridge/clientWords.ts";
 import { fmtDist, type DistanceSay } from "./overview.ts";
@@ -50,6 +56,30 @@ export interface PointIndication {
   readonly kind: PointKind;
 }
 
+export type WarpKind = "warpPreparing" | "warpActive";
+
+export interface WarpIndication {
+  readonly kind: WarpKind;
+  /** The thing the pilot asked to warp to, when the warp is aimed at it and it is in view; else null. */
+  readonly destinationID: number | null;
+  /** How far the ship is from that thing, or failing it from the point the warp is aimed at. */
+  readonly distance: number;
+}
+
+/** The client's labels for a warp: the two headers, and what the line beneath is put together from. */
+export const WARP_LABELS = {
+  warpPreparing: "UI/Inflight/Messages/WarpDrivePreparing",
+  warpActive: "UI/Inflight/Messages/WarpDriveActive",
+  /** {destinationName} */
+  destination: "UI/Inflight/Messages/WarpDestination",
+  /** {warpDestination} {distance}: the destination's line and the distance's. */
+  withDistance: "UI/Inflight/Messages/WarpIndicatorWithDistance",
+  /** The same, for a warp that is not aimed at a thing the client can name. */
+  withDistanceAndBubble: "UI/Inflight/Messages/WarpIndicatorWithDistanceAndBubble",
+  /** {distToItem} */
+  distance: "UI/Inflight/ActiveItem/SelectedItemDistance",
+} as const;
+
 /** The client's labels: a header with no parameters, and the line beneath it. */
 export const INDICATION_LABELS: Readonly<Record<ActionKind, { readonly header: string; readonly sub: string }>> = {
   orbit: { header: "UI/Inflight/Messages/OrbitingHeader", sub: "UI/Inflight/Messages/OrbitingSubText" },
@@ -60,7 +90,26 @@ export const INDICATION_LABELS: Readonly<Record<ActionKind, { readonly header: s
 };
 
 /** Every label above, once each, to ask the BFF for. */
-export const INDICATION_WORD_LABELS: readonly string[] = [...new Set(Object.values(INDICATION_LABELS).flatMap(({ header, sub }) => [header, sub]))];
+export const INDICATION_WORD_LABELS: readonly string[] = [
+  ...new Set([...Object.values(INDICATION_LABELS).flatMap(({ header, sub }) => [header, sub]), ...Object.values(WARP_LABELS)]),
+];
+
+/**
+ * What a ship in warp, or lining up for one, is doing (spaceMgr.IndicateWarp);
+ * null when it is not in warp, or the server has not said where the warp is aimed.
+ */
+export function warpIndication(snapshot: SpaceSnapshot | null | undefined): WarpIndication | null {
+  const ship = snapshot?.ship ?? null;
+  const warp = ship?.warp ?? null;
+  if (!snapshot || !ship || !warp || (ship.mode ?? "").trim().toUpperCase() !== "WARP" || !warp.point) {
+    return null;
+  }
+  // The distance is to the thing itself when the warp is aimed at one, and to the warp's own point otherwise.
+  const thing = warp.destinationID === null ? null : (snapshot.entities.find((entity) => entity.itemID === warp.destinationID) ?? null);
+  const to = thing ? thing.position : warp.point;
+  const distance = Math.hypot(to.x - ship.position.x, to.y - ship.position.y, to.z - ship.position.z);
+  return { kind: warp.preparing ? "warpPreparing" : "warpActive", destinationID: thing ? thing.itemID : null, distance };
+}
 
 /**
  * What a ship flying to a point is doing, by how far the point is and whether
@@ -120,10 +169,14 @@ export function actionIndication(mode: string | null | undefined, followID: numb
  * from the ship's own row), or failing that what it is doing about the point
  * it is flying to.
  */
-export function shipIndication(snapshot: SpaceSnapshot | null | undefined): (ActionIndication & { readonly followID: number }) | PointIndication | null {
+export function shipIndication(snapshot: SpaceSnapshot | null | undefined): (ActionIndication & { readonly followID: number }) | PointIndication | WarpIndication | null {
   const ship = snapshot?.ship ?? null;
   if (!snapshot || !ship) {
     return null;
+  }
+  const warp = warpIndication(snapshot);
+  if (warp !== null) {
+    return warp;
   }
   const followID = snapshot.entities.find((entity) => entity.itemID === ship.itemID)?.targetEntityID ?? null;
   const indication = actionIndication(ship.mode, followID, ship.followRange);
@@ -134,13 +187,43 @@ export function shipIndication(snapshot: SpaceSnapshot | null | undefined): (Act
 }
 
 /** This page's own words, for when the client's are not to hand. */
-const OWN_HEADER: Readonly<Record<ActionKind, string>> = {
+const OWN_HEADER: Readonly<Record<ActionKind | WarpKind, string>> = {
   orbit: "Orbiting",
   approach: "Approaching",
   keepAtRange: "Holding range on",
   approachPoint: "Approaching",
   alignPoint: "Aligning",
+  warpPreparing: "Lining up for warp",
+  warpActive: "In warp",
 };
+
+/**
+ * The line beneath the header for a warp: where to, and how far off it still
+ * is. In the client's words when the page holds all four of the labels it is
+ * put together from, the page's own otherwise. Where the client breaks the
+ * line, the parts are set apart by " · ". `destinationName` is what the
+ * caller calls the thing the warp is aimed at, or null when it is aimed at none.
+ */
+export function warpText(
+  indication: WarpIndication,
+  destinationName: string | null,
+  templates: Readonly<Record<string, string | null | undefined>>,
+  say?: DistanceSay,
+): string {
+  const named = indication.destinationID !== null && destinationName !== null;
+  const far = fmtDist(indication.distance, 2, say);
+  const [destination, withDistance, withBubble, distance] = [WARP_LABELS.destination, WARP_LABELS.withDistance, WARP_LABELS.withDistanceAndBubble, WARP_LABELS.distance].map((label) => templates[label]);
+  if (typeof destination !== "string" || typeof withDistance !== "string" || typeof withBubble !== "string" || typeof distance !== "string") {
+    const parts = [named ? `To ${destinationName}` : null, indication.distance > 0 ? `${far} to go` : null];
+    return parts.filter((part) => part !== null).join(" · ");
+  }
+  const none = { nameOf: () => "" };
+  const where = named ? `${formatTemplate(destination, { destinationName }, none)}<br>` : "";
+  const text = indication.distance > 0
+    ? formatTemplate(named ? withDistance : withBubble, { warpDestination: where, distance: formatTemplate(distance, { distToItem: far }, none) }, none)
+    : where;
+  return plainText(text).split("\n").map((line) => line.trim()).filter((line) => line.length > 0).join(" · ");
+}
 const OWN_POINT: Readonly<Record<PointKind, string>> = { approachPoint: "Heading for a point in space", alignPoint: "Turning towards a point in space" };
 
 /**
@@ -159,8 +242,8 @@ export interface IndicationText {
 }
 
 /** The header alone, for where there is room for a word and no more. */
-export function indicationHeader(kind: ActionKind, templates: Readonly<Record<string, string | null | undefined>>): string {
-  const template = templates[INDICATION_LABELS[kind].header];
+export function indicationHeader(kind: ActionKind | WarpKind, templates: Readonly<Record<string, string | null | undefined>>): string {
+  const template = templates[kind === "warpPreparing" || kind === "warpActive" ? WARP_LABELS[kind] : INDICATION_LABELS[kind].header];
   return typeof template === "string" ? plainText(template).trim() : OWN_HEADER[kind];
 }
 

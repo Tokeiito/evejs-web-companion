@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 
 import {
   ALIGNED_ANGLE, APPROACH_RANGE, CLOSE_DISTANCE, INDICATION_LABELS, INDICATION_WORD_LABELS, MAX_APPROACH_DISTANCE,
-  actionIndication, indicationHeader, indicationText, pointIndication, pointText, shipIndication,
+  WARP_LABELS, actionIndication, indicationHeader, indicationText, pointIndication, pointText, shipIndication, warpIndication, warpText,
 } from "./actionIndication.ts";
 import type { SpaceSnapshot } from "../store/types.ts";
 
@@ -48,9 +48,10 @@ test("the labels asked for are a header and a line beneath for each of the five,
     approachPoint: { header: "UI/Inflight/Messages/ApproachingHeader", sub: "UI/Inflight/Messages/ApproachingPointSubText" },
     alignPoint: { header: "UI/Inflight/Messages/AligningHeader", sub: "UI/Inflight/Messages/AligningToPointSubText" },
   });
-  // Approaching a thing and approaching a point share a header: nine labels, not ten.
-  assert.equal(INDICATION_WORD_LABELS.length, 9);
-  assert.equal(new Set(INDICATION_WORD_LABELS).size, 9);
+  // Approaching a thing and approaching a point share a header: nine labels, not ten. And six for a warp.
+  assert.equal(INDICATION_WORD_LABELS.length, 15);
+  assert.equal(new Set(INDICATION_WORD_LABELS).size, 15);
+  for (const label of Object.values(WARP_LABELS)) assert.ok(INDICATION_WORD_LABELS.includes(label), label);
 });
 
 test("worded by the client's labels when the page holds them: the name, and the range in the order with no decimals", () => {
@@ -175,4 +176,88 @@ test("the snapshot's own ship: what it follows comes first, and failing that the
   assert.equal(shipIndication(snapshot({ mode: "GOTO" }, null)), null);
   // Orbiting something, with a point left over from before: it is orbiting.
   assert.deepEqual(shipIndication(snapshot({ mode: "ORBIT", followRange: 5_000, gotoPoint: along(50_000) }, 77)), { kind: "orbit", range: 5_000, followID: 77 });
+});
+
+// --- in warp -------------------------------------------------------------------
+
+const AU = 149_597_870_700;
+const warping = (warp: Record<string, unknown> | null, extra: Record<string, unknown> = {}): SpaceSnapshot => ({
+  inSpace: true, solarSystemID: 30000142, shipID: 9001, sampledAtMs: 1,
+  ship: { itemID: 9001, mode: "WARP", position: HERE, velocity: HERE, warp, ...extra },
+  entities: [
+    { itemID: 9001, isSelf: true, targetEntityID: null, position: HERE },
+    { itemID: 40009089, isSelf: false, targetEntityID: null, name: "A moon", position: along(2 * AU) },
+  ],
+}) as unknown as SpaceSnapshot;
+
+test("in warp: lining up or under way, and how far the thing the warp is aimed at still is", () => {
+  const point = along(2 * AU - 5_000_000);
+  // Aimed at the moon: the distance is to the moon itself.
+  assert.deepEqual(warpIndication(warping({ preparing: true, point, destinationID: 40009089 })), { kind: "warpPreparing", destinationID: 40009089, distance: 2 * AU });
+  assert.deepEqual(warpIndication(warping({ preparing: false, point, destinationID: 40009089 })), { kind: "warpActive", destinationID: 40009089, distance: 2 * AU });
+  // Aimed at no thing the page can name: the distance is to the warp's own point.
+  assert.deepEqual(warpIndication(warping({ preparing: false, point, destinationID: null })), { kind: "warpActive", destinationID: null, distance: 2 * AU - 5_000_000 });
+  // Aimed at a thing that is not in view: the same.
+  assert.deepEqual(warpIndication(warping({ preparing: false, point, destinationID: 777 })), { kind: "warpActive", destinationID: null, distance: 2 * AU - 5_000_000 });
+  // The distance is from where the ship is.
+  assert.equal(warpIndication(warping({ preparing: false, point, destinationID: 40009089 }, { position: along(AU) }))?.distance, AU);
+});
+
+test("nothing is said of a warp the ship is not in, or one the server has given no point for", () => {
+  const point = along(AU);
+  assert.equal(warpIndication(warping(null)), null, "the gateway's snapshot says nothing of a warp");
+  assert.equal(warpIndication(warping({ preparing: true, point: null, destinationID: 40009089 })), null);
+  assert.equal(warpIndication(warping({ preparing: false, point, destinationID: null }, { mode: "STOP" })), null, "a warp left over on a ship that has stopped");
+  assert.equal(warpIndication(warping({ preparing: false, point, destinationID: null }, { mode: "GOTO" })), null);
+  assert.equal(warpIndication(null), null);
+  // The ship's line asks about the warp before anything else.
+  assert.deepEqual(shipIndication(warping({ preparing: false, point, destinationID: null })), { kind: "warpActive", destinationID: null, distance: AU });
+});
+
+test("the warp's header is the client's word for lining up or for being under way", () => {
+  assert.equal(indicationHeader("warpPreparing", {}), "Lining up for warp");
+  assert.equal(indicationHeader("warpActive", {}), "In warp");
+  const templates = { [WARP_LABELS.warpPreparing]: "Finding the line", [WARP_LABELS.warpActive]: "Drive on" };
+  assert.equal(indicationHeader("warpPreparing", templates), "Finding the line");
+  assert.equal(indicationHeader("warpActive", templates), "Drive on");
+});
+
+test("the line beneath a warp's header: where to and how far, put together as the client puts it together", () => {
+  // Made-up templates in the client's shapes: a destination line, a distance line, and the two that join them.
+  const templates = {
+    [WARP_LABELS.destination]: "Bound for {destinationName}",
+    [WARP_LABELS.distance]: "Still {distToItem}",
+    [WARP_LABELS.withDistance]: "{warpDestination}{distance}",
+    [WARP_LABELS.withDistanceAndBubble]: "{warpDestination}{distance} to the tunnel's end",
+  };
+  // Aimed at a named thing: its line, a break, the distance (FmtDist, two decimals for AU).
+  assert.equal(warpText({ kind: "warpActive", destinationID: 40009089, distance: 2 * AU }, "A moon", templates), "Bound for A moon · Still 2.00 AU");
+  assert.equal(warpText({ kind: "warpPreparing", destinationID: 40009089, distance: 150_000_000 }, "A moon", templates), `Bound for A moon · Still ${(150000).toLocaleString()} km`);
+  // Aimed at nothing the client can name: no destination line, and the other joining label.
+  assert.equal(warpText({ kind: "warpActive", destinationID: null, distance: 2 * AU }, null, templates), "Still 2.00 AU to the tunnel's end");
+  // A name with no thing behind it is not used.
+  assert.equal(warpText({ kind: "warpActive", destinationID: null, distance: 2 * AU }, "A moon", templates), "Still 2.00 AU to the tunnel's end");
+  // A thing with no name to give is treated as no thing.
+  assert.equal(warpText({ kind: "warpActive", destinationID: 40009089, distance: 2 * AU }, null, templates), "Still 2.00 AU to the tunnel's end");
+  // No distance left: the destination's line alone, or nothing at all.
+  assert.equal(warpText({ kind: "warpActive", destinationID: 40009089, distance: 0 }, "A moon", templates), "Bound for A moon");
+  assert.equal(warpText({ kind: "warpActive", destinationID: null, distance: 0 }, null, templates), "");
+  // The unit is put on by whoever the caller gives.
+  assert.equal(warpText({ kind: "warpActive", destinationID: 40009089, distance: 2 * AU }, "A moon", templates, (unit, figure) => `${figure} of ${unit}`), "Bound for A moon · Still 2.00 of au");
+});
+
+test("without all of the client's four labels for it, the warp's line is the page's own", () => {
+  assert.equal(warpText({ kind: "warpActive", destinationID: 40009089, distance: 2 * AU }, "A moon", {}), "To A moon · 2.00 AU to go");
+  assert.equal(warpText({ kind: "warpActive", destinationID: null, distance: 2 * AU }, null, {}), "2.00 AU to go");
+  assert.equal(warpText({ kind: "warpActive", destinationID: 40009089, distance: 0 }, "A moon", {}), "To A moon");
+  assert.equal(warpText({ kind: "warpActive", destinationID: null, distance: 0 }, null, {}), "");
+  // One of the four missing is none of them: a line half in each would be neither.
+  for (const missing of [WARP_LABELS.destination, WARP_LABELS.distance, WARP_LABELS.withDistance, WARP_LABELS.withDistanceAndBubble]) {
+    const templates: Record<string, string | null> = {
+      [WARP_LABELS.destination]: "Bound for {destinationName}", [WARP_LABELS.distance]: "Still {distToItem}",
+      [WARP_LABELS.withDistance]: "{warpDestination}{distance}", [WARP_LABELS.withDistanceAndBubble]: "{warpDestination}{distance} more",
+    };
+    templates[missing] = null;
+    assert.equal(warpText({ kind: "warpActive", destinationID: 40009089, distance: 2 * AU }, "A moon", templates), "To A moon · 2.00 AU to go", missing);
+  }
 });

@@ -11,7 +11,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { BIND_TRIES, createPilotSpace } = require("../src/gamePort/pilotSpace");
-const { CATEGORY, healthOf, kindOf, projectFlight, projectSpace } = require("../src/gamePort/spaceProjection");
+const { CATEGORY, checkWarpDestination, healthOf, kindOf, projectFlight, projectSpace } = require("../src/gamePort/spaceProjection");
 const { Ballpark } = require("../src/gamePort/destiny/ballpark");
 const { Park } = require("../src/gamePort/destiny/park");
 const { MODE } = require("../src/gamePort/destiny/state");
@@ -251,7 +251,7 @@ test("the snapshot of a real grid: every ball that has a slim item, in the gatew
     targetEntityID: null, capacitorRatio: null, isNpc: false, npcEntityType: null, compressionFacility: null,
   });
   assert.deepEqual(space.ship, {
-    itemID: undock.shipID, typeID: 588, name: "Reaper", mode: "GOTO", followRange: null, gotoPoint: { ...ball.goto }, maxVelocity: 341, radius: ball.radius,
+    itemID: undock.shipID, typeID: 588, name: "Reaper", mode: "GOTO", followRange: null, gotoPoint: { ...ball.goto }, warp: null, maxVelocity: 341, radius: ball.radius,
     position: { ...ball.newPos }, velocity: { ...ball.newVel }, shieldRatio: 1, armorRatio: 1, hullRatio: 1,
     capacitorRatio: null, shieldCapacity: null, armorCapacity: null, hullCapacity: null,
     // Dogma has not been asked: what only it knows is not known, which is null and not "none".
@@ -493,4 +493,68 @@ test("the pilot's own ship says the range it was told to follow or orbit at, and
   park.ballpark.gotoDirection(undock.shipID, 1, 0, 0);
   park.ballpark.ball(undock.shipID).followRange = 900;
   assert.deepEqual([ship().mode, ship().followRange], ["GOTO", null]);
+});
+
+// ── the warp, as the client's HUD is told of it ──────────────────────────────
+
+test("CheckWarpDestination: a thing lies where the warp points if it is in the same direction, or near the point", () => {
+  const ego = { x: 0, y: 0, z: 0 };
+  const point = { x: 1e11, y: 0, z: 0 };
+  const check = (thing, angle = Math.PI / 32, reach = 20000000) => checkWarpDestination(point, thing, ego, angle, reach);
+  // The very place.
+  assert.equal(check({ x: 1e11, y: 0, z: 0 }), true);
+  // Farther along the same line: the direction is the same.
+  assert.equal(check({ x: 3e11, y: 0, z: 0 }), true);
+  // Off to one side by less than pi/32 of the direction, and by more.
+  assert.equal(check({ x: 3e11, y: 3e11 * Math.tan(Math.PI / 32 - 0.001), z: 0 }), true);
+  assert.equal(check({ x: 3e11, y: 3e11 * Math.tan(Math.PI / 32 + 0.001), z: 0 }), false);
+  // A long way round, but within 20,000 km of the point itself.
+  const beside = (metres) => ({ x: 0, y: metres, z: 0 });
+  assert.equal(checkWarpDestination(beside(1.9e7), beside(0), { x: 1e3, y: 0, z: 0 }, Math.PI / 32, 20000000), true);
+  assert.equal(checkWarpDestination(beside(2.1e7), beside(0), { x: 1e3, y: 0, z: 0 }, Math.PI / 32, 20000000), false);
+  // Behind the ship: neither.
+  assert.equal(check({ x: -1e11, y: 0, z: 0 }), false);
+  // The directions are taken from the ship, wherever it is: straight up from a ship that is itself far out.
+  const out = { x: 1e11, y: 0, z: 0 };
+  assert.equal(checkWarpDestination({ x: 1e11, y: 1e11, z: 0 }, { x: 1e11, y: 3e11, z: 0 }, out, Math.PI / 32, 20000000), true);
+  assert.equal(checkWarpDestination({ x: 1e11, y: 1e11, z: 0 }, { x: 3e11, y: 3e11, z: 0 }, out, Math.PI / 32, 20000000), false);
+  // The ship at the point itself has no direction to it: only the distance can say.
+  assert.equal(checkWarpDestination(ego, { x: 1e6, y: 0, z: 0 }, ego, Math.PI / 32, 20000000), true);
+  assert.equal(checkWarpDestination(ego, { x: 1e9, y: 0, z: 0 }, ego, Math.PI / 32, 20000000), false);
+});
+
+test("the pilot's own ship in warp: lining up or under way, the server's point, and the thing asked for if the warp is aimed at it", () => {
+  const park = undockedPark();
+  const slim = (fields) => new Map(Object.entries(fields));
+  const from = { ...park.ballpark.ball(undock.shipID).newPos };
+  // Two things a long way off: one where the warp will point, one an eighth of a turn to the side.
+  const there = { x: from.x + 4e11, y: from.y, z: from.z };
+  park.ballpark.addBall({ id: 40000001, x: there.x, y: there.y, z: there.z, radius: 5000 });
+  park.slimItems.set(40000001, slim({ itemID: 40000001, typeID: 14, groupID: 8, categoryID: 2, ownerID: 1 }));
+  park.ballpark.addBall({ id: 40000002, x: from.x + 4e11, y: from.y + 4e11, z: from.z, radius: 5000 });
+  park.slimItems.set(40000002, slim({ itemID: 40000002, typeID: 14, groupID: 8, categoryID: 2, ownerID: 1 }));
+  const ship = (warpDestination) => projectSpace(park, { solarSystemID: SYSTEM, shipID: undock.shipID, warpDestination }).ship;
+  assert.equal(ship(40000001).warp, null, "not in warp: nothing, whatever was asked for");
+
+  park.ballpark.warpTo(undock.shipID, there.x, there.y, there.z, 20000, 3000);
+  // The server has not said where the warp points (no WarpTo came through the park): no point, and no thing.
+  assert.deepEqual([ship(40000001).mode, ship(40000001).warp], ["WARP", { preparing: true, point: null, destinationID: null }]);
+  park.warpPoint = { ...there };
+  // Lining up: the effect stamp is negative until the warp proper begins.
+  assert.ok(park.ballpark.ball(undock.shipID).effectStamp < 0);
+  assert.deepEqual(ship(40000001).warp, { preparing: true, point: there, destinationID: 40000001 });
+  assert.notEqual(ship(40000001).warp.point, park.warpPoint, "a copy, not the park's own");
+  // Asked for the other thing, or nothing, or something not in the park: the warp is not aimed at it.
+  assert.deepEqual(ship(40000002).warp, { preparing: true, point: there, destinationID: null });
+  assert.deepEqual(ship(null).warp, { preparing: true, point: there, destinationID: null });
+  assert.deepEqual(ship(undefined).warp, { preparing: true, point: there, destinationID: null });
+  assert.deepEqual(ship(49999999).warp, { preparing: true, point: there, destinationID: null });
+  // The warp proper: no longer lining up.
+  park.ballpark.realWarp(park.ballpark.ball(undock.shipID));
+  assert.deepEqual(ship(40000001).warp, { preparing: false, point: there, destinationID: 40000001 });
+  // A warp that began on the very first tick has begun.
+  park.ballpark.ball(undock.shipID).effectStamp = 0;
+  assert.equal(ship(40000001).warp.preparing, false);
+  // A destination given as a long is said as a number.
+  assert.equal(ship(40000001n).warp.destinationID, 40000001);
 });

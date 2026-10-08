@@ -1037,3 +1037,19 @@ test("a recorded warp, played through: had the server's word come a tick sooner,
   assert.deepEqual(flight.filter((row) => row.touched.length), []);
   for (const { stamp, ours, theirs } of atRest) assert.ok(apart(ours.position, theirs.position) < 1, `at +${stamp}: ${apart(ours.position, theirs.position)} m apart`);
 });
+
+test("a recorded warp, played through: the park keeps where the server last sent the pilot's own ship in warp", () => {
+  const { park, updates } = replayWarp();
+  const sent = updates.flatMap((update) => update.entries).filter(([, [name]]) => name === "WarpTo").map(([, [, args]]) => args);
+  assert.equal(sent.length, 2);
+  // The point in the last WarpTo, as the client's space service keeps it from the same call.
+  assert.deepEqual(park.warpPoint, { x: Number(sent[1][1]), y: Number(sent[1][2]), z: Number(sent[1][3]) });
+  assert.notDeepEqual(park.warpPoint, { x: Number(sent[0][1]), y: Number(sent[0][2]), z: Number(sent[0][3]) });
+  // Another ball's warp is not the pilot's: it leaves the point alone.
+  const kept = { ...park.warpPoint };
+  park.ballpark.addBall({ id: 9000000000777, isFree: true, mass: 1e6, maxVelocity: 300 });
+  park.doDestinyUpdate([[park.currentTime, ["WarpTo", [9000000000777, 1e12, 0, 0, 20000, 3000]]]], false);
+  park.tick();
+  assert.equal(park.ballpark.ball(9000000000777).mode, MODE.WARP, "the other ball was sent on its way");
+  assert.deepEqual(park.warpPoint, kept);
+});

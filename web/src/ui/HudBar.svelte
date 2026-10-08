@@ -26,7 +26,16 @@
   import { shipIsStopped, shipStateSentenceFor } from "./shipHud.ts";
   import { fmtDist, surfaceDistanceMeters } from "../space/overview.ts";
   import { distanceSay } from "../space/distanceWords.ts";
-  import { INDICATION_WORD_LABELS, actionIndication, indicationText, pointIndication, pointText } from "../space/actionIndication.ts";
+  import {
+    INDICATION_WORD_LABELS,
+    actionIndication,
+    indicationHeader,
+    indicationText,
+    pointIndication,
+    pointText,
+    warpIndication,
+    warpText,
+  } from "../space/actionIndication.ts";
   import { resolvedName } from "../store/names.ts";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
@@ -162,6 +171,15 @@
   // the page's own sentence stands.
   const indication = $derived(actionIndication(ship?.mode, actedOn.id, ship?.followRange));
   const stateText = $derived.by(() => {
+    // In warp, or lining up for one: the client's header, then where to and how far.
+    const warp = warpIndication($space.snapshot);
+    if (warp !== null) {
+      const thing = warp.destinationID === null ? null : (($space.snapshot?.entities ?? []).find((e) => e.itemID === warp.destinationID) ?? null);
+      const named = thing ? (thing.name && thing.name.length > 0 ? thing.name : resolvedName($names.resolved, "type", thing.typeID, "")) : "";
+      const beneath = warpText(warp, named.length > 0 ? named : null, $words.templates, say);
+      const header = indicationHeader(warp.kind, $words.templates);
+      return beneath.length > 0 ? `${header} · ${beneath}` : header;
+    }
     if (indication !== null && actedOn.name !== null) {
       const text = indicationText(indication, actedOn.name, $words.templates, say);
       return `${text.header} ${text.sub}`;
