@@ -553,3 +553,242 @@ test("one orbit step, set beside the source's lines written out again", () => {
   // Far outside the orbit almost none of the thrust goes sideways: it flies at the tangent point.
   assert.ok(radialFactor < 1e-6 && a[0] < 0 && a[2] > 0);
 });
+
+// ── a state read into the park, and written out of it ────────────────────────
+
+const recording = require("./fixtures/destinyUndock.json");
+const { stateBlobs } = require("./helpers/destinyRecording");
+const { FLAG, PACKET, readState: readRecords, writeState: writeRecords } = require("../src/gamePort/destiny/state");
+const { DSTLOCALBALLS } = require("../src/gamePort/destiny/ballpark");
+
+/** A blob of records, for the cases the recording does not hold. */
+const blobOf = (balls, { packet = PACKET.BALLS, stamp = 500 } = {}) => writeRecords({ packet, stamp, balls });
+const record = (fields) => ({
+  mode: MODE.STOP, radius: 10, position: vec(), flags: FLAG.FREE, mass: 1000, isCloaked: 0, harmonic: -1, corporationID: -1, allianceID: -1,
+  maxVelocity: 100, velocity: vec(), agility: 1, speedFraction: 1, formationID: -1, ...fields,
+});
+
+test("the recorded states read into a park and come back out as the server's own bytes", () => {
+  const [ship, grid, later] = stateBlobs(recording);
+  const park = new Ballpark();
+
+  // The ship alone, as an addition: the park's clock becomes the blob's stamp.
+  park.readState(ship.blob, 2);
+  assert.equal(park.currentTime, ship.stamp);
+  assert.equal(park.balls.size, 1);
+  assert.ok(park.writeState([recording.shipID]).equals(ship.blob));
+
+  // The grid's state: the client clears the park, then reads.
+  park.clearAll();
+  park.readState(grid.blob, 0);
+  assert.equal(park.currentTime, grid.stamp);
+  assert.equal(park.balls.size, 76);
+  assert.deepEqual([...park.freeBalls.keys()], [recording.shipID], "one ball is stepped: the ship");
+  assert.ok(park.writeState().equals(grid.blob), "all 3,054 bytes");
+
+  // What is added after joins it.
+  const added = park.readState(later.blob, 2);
+  assert.equal(park.currentTime, later.stamp);
+  assert.equal(park.balls.size, 95);
+  assert.equal(park.freeBalls.size, 17);
+  assert.ok(park.writeState(added.map((ball) => ball.id)).equals(later.blob), "all 1,747 bytes");
+});
+
+test("the ship as the state gives it: flying at its goto point, ready to step", () => {
+  const [, grid] = stateBlobs(recording);
+  const park = new Ballpark();
+  park.readState(grid.blob, 0);
+  const ship = park.ball(recording.shipID);
+  assert.deepEqual([ship.mode, ship.isFree, ship.isInteractive, ship.isMassive, ship.maxVelocity, ship.mass], [MODE.GOTO, true, true, false, 341, 1157000]);
+  assert.equal(ship.timeFactor, Math.exp((-1000000.0 * 1.0) / (1157000 * Math.fround(4.35))));
+  // Where it was a tick ago is worked out from its velocity, since the blob does not say.
+  assert.deepEqual(ship.oldPos, { x: ship.newPos.x - 1.0 * ship.newVel.x, y: ship.newPos.y - 1.0 * ship.newVel.y, z: ship.newPos.z - 1.0 * ship.newVel.z });
+  // A tick on, it has moved along its velocity at about its speed, and nothing else has moved at all.
+  const before = { ...ship.newPos };
+  const station = { ...park.ball(recording.stationID).newPos };
+  park.evolve();
+  const moved = Math.hypot(ship.newPos.x - before.x, ship.newPos.y - before.y, ship.newPos.z - before.z);
+  // It left the station at its top speed, 341 m/s, and holds it. This far from the sun a
+  // coordinate is only good to about a tenth of a millimetre, hence the margin.
+  assert.ok(Math.abs(moved - 341) < 1e-3, `it moved ${moved} m`);
+  assert.deepEqual(park.ball(recording.stationID).newPos, station);
+  assert.equal(park.currentTime, grid.stamp + 1);
+  assert.equal(park.unported.gradient, 0, "the ship is not massive while it leaves the station");
+});
+
+test("a follower read from a state is hooked to its leader once every ball is in, whatever the order", () => {
+  const park = new Ballpark();
+  park.readState(blobOf([
+    record({ id: 2, mode: MODE.ORBIT, followId: 1, followRange: 5000 }),
+    record({ id: 3, mode: MODE.FOLLOW, followId: 99, followRange: 100 }),
+    record({ id: 1, mode: MODE.STOP }),
+  ]));
+  const [leader, orbiter, lost] = [park.ball(1), park.ball(2), park.ball(3)];
+  assert.deepEqual([orbiter.mode, orbiter.followPtr === leader, orbiter.followRange, [...leader.followers]], [MODE.ORBIT, true, 5000, [2]]);
+  // A leader that is not in the park: the follower is left flying at whatever point it had.
+  assert.deepEqual([lost.mode, lost.followPtr, lost.goto], [MODE.GOTO, null, vec()]);
+  park.evolve(); // and it can be stepped
+});
+
+test("a read sets fields without giving orders, and resets a ball it already knew", () => {
+  const park = new Ballpark();
+  const ball = spaceBall(park, { id: 7 });
+  park.gotoPoint(7, 1, 2, 3);
+  Object.assign(ball, { effectStamp: 55, ownerId: 9 });
+  park.readState(blobOf([record({ id: 7, mode: MODE.TROLL, effectStamp: 600, isCloaked: 1, harmonic: 12, corporationID: 98000001, allianceID: 99000001, formationID: 2, position: vec(5, 6, 7), velocity: vec(1, 0, 0) })]), 2);
+  assert.equal(park.ball(7), ball, "the same ball");
+  assert.deepEqual(
+    [ball.mode, ball.effectStamp, ball.ownerId, ball.isCloaked, ball.harmonic, ball.corporationID, ball.allianceID, ball.formationID, ball.newPos, ball.newVel],
+    [MODE.TROLL, 600, 0, 1, 12, 98000001, 99000001, 2, vec(5, 6, 7), vec(1, 0, 0)],
+  );
+  assert.equal(park.currentTime, 500);
+});
+
+test("a warping ball keeps its warp across a read and a write", () => {
+  const warp = record({ id: 4, mode: MODE.WARP, goto: vec(1e12, 2e12, 3e12), effectStamp: -1, totalWarpLength: 4.5e12, minRange: 15000, warpFactor: 3 });
+  const park = new Ballpark();
+  park.readState(blobOf([warp]), 2);
+  const ball = park.ball(4);
+  assert.deepEqual([ball.goto, ball.effectStamp, ball.lastCollision, ball.warpMinRange, ball.ownerId], [vec(1e12, 2e12, 3e12), -1, 4.5e12, 15000, 3]);
+  assert.ok(park.writeState([4]).equals(blobOf([warp])));
+});
+
+test("a full read empties the list of balls that are stepped and removes nothing; an addition keeps the list", () => {
+  const park = new Ballpark();
+  const old = spaceBall(park, { id: 1 });
+  park.readState(blobOf([record({ id: 2 })], { packet: PACKET.FULL_STATE }), 0);
+  assert.equal(park.ball(1), old, "still in the park");
+  assert.deepEqual([...park.freeBalls.keys()], [2], "but no longer stepped");
+  park.readState(blobOf([record({ id: 3 })]), 2);
+  assert.deepEqual([...park.freeBalls.keys()].sort(), [2, 3]);
+  assert.deepEqual(park.readState(Buffer.alloc(0)), [], "no bytes, no change");
+  assert.equal(park.currentTime, 500);
+});
+
+test("a fixed ball's collision shapes come from the record, except on a rewind, which leaves them", () => {
+  const shapes = { miniBalls: [{ center: vec(1, 2, 3), radius: 4 }], miniCapsules: [], miniBoxes: [] };
+  const fixed = (extra = {}) => record({ id: 1, mode: MODE.RIGID, flags: FLAG.GLOBAL, ...extra });
+  const park = new Ballpark();
+  park.readState(blobOf([fixed(shapes)]), 2);
+  assert.deepEqual(park.ball(1).miniBalls, shapes.miniBalls);
+  park.readState(blobOf([fixed()]), 1);
+  assert.deepEqual(park.ball(1).miniBalls, shapes.miniBalls, "a rewind leaves them");
+  park.readState(blobOf([fixed()]), 2);
+  assert.deepEqual(park.ball(1).miniBalls, [], "an addition replaces them");
+});
+
+test("a state written by the park leaves out the dead and, when it is the whole park, the client's own balls", () => {
+  const park = new Ballpark();
+  spaceBall(park, { id: 1 });
+  spaceBall(park, { id: 2 });
+  spaceBall(park, { id: DSTLOCALBALLS - 1 });
+  park.currentTime = 42;
+  park.removeBall(2, 5);
+  const ids = (bytes) => readRecords(bytes).balls.map((ball) => ball.id);
+  const full = park.writeState();
+  assert.deepEqual([full[0], full.readInt32LE(1), ids(full)], [PACKET.FULL_STATE, 42, [1]]);
+  // Asked for by id, a local ball is written; a dead one still is not.
+  const some = park.writeState([DSTLOCALBALLS - 1, 2, 999]);
+  assert.deepEqual([some[0], ids(some)], [PACKET.BALLS, [DSTLOCALBALLS - 1]]);
+});
+
+// ── removing ─────────────────────────────────────────────────────────────────
+
+test("a ball removed at once is gone; one removed with a delay stops taking part and goes when its time is up", () => {
+  const park = new Ballpark();
+  spaceBall(park, { id: 1 });
+  const dying = spaceBall(park, { id: 2 });
+  park.setBallVelocity(2, 5, 0, 0);
+  park.currentTime = 100;
+  park.removeBall(1);
+  assert.deepEqual([park.ball(1), park.freeBalls.has(1)], [null, false]);
+  park.removeBall(99); // nothing there
+
+  park.removeBall(2, 5);
+  assert.deepEqual([dying.isMoribund, dying.isMassive, dying.effectStamp, dying.mode, park.ball(2) === dying], [true, false, 105, MODE.STOP, true]);
+  const where = { ...dying.newPos };
+  park.evolve();
+  assert.deepEqual(dying.newPos, where, "not stepped");
+  // Not yet: more than two ticks to go.
+  park.bringOutDeadBalls();
+  assert.equal(park.ball(2), dying);
+  // Two whole ticks to go is still too soon; within two, it may go early.
+  park.currentTime = 103;
+  park.bringOutDeadBalls();
+  assert.equal(park.ball(2), dying);
+  park.currentTime = 104;
+  park.bringOutDeadBalls();
+  assert.equal(park.ball(2), null);
+  assert.equal(park.moribundBalls.size, 0);
+});
+
+test("only seven go early in one call; the rest wait for their time to pass", () => {
+  const park = new Ballpark();
+  for (let id = 1; id <= 10; id += 1) {
+    spaceBall(park, { id });
+    park.removeBall(id, 3);
+  }
+  park.currentTime = 2; // one tick to go: within the buffer of two
+  park.bringOutDeadBalls();
+  assert.equal(park.balls.size, 3);
+  park.bringOutDeadBalls();
+  assert.equal(park.balls.size, 0);
+  // Past its time, a ball goes whatever the count.
+  for (let id = 1; id <= 10; id += 1) {
+    spaceBall(park, { id });
+    park.removeBall(id, 1);
+  }
+  park.currentTime = 10;
+  park.bringOutDeadBalls();
+  assert.equal(park.balls.size, 0);
+});
+
+test("when a ball goes, its followers stop, except a missile or an interactive orbiter, which fly on", () => {
+  const park = new Ballpark();
+  const leader = spaceBall(park, { id: 1 });
+  const follower = spaceBall(park, { id: 2, x: 100 });
+  const orbiter = spaceBall(park, { id: 3, x: 200 });
+  const dull = spaceBall(park, { id: 4, x: 300 });
+  park.followBall(2, 1);
+  park.orbit(3, 1);
+  park.orbit(4, 1);
+  orbiter.isInteractive = true;
+  park.setBallVelocity(3, 0, 7, 0);
+  // A follower the leader lists but that no longer follows it is only struck off.
+  leader.followers.add(77);
+  park.removeBall(1);
+  assert.deepEqual([follower.mode, follower.followPtr, follower.followId], [MODE.STOP, null, 0]);
+  assert.equal(dull.mode, MODE.STOP, "an orbiter that is not interactive stops");
+  assert.equal(orbiter.mode, MODE.GOTO, "an interactive one flies on the way it was going");
+  assert.deepEqual(orbiter.goto, { x: 200 + 0 * 1.0e17, y: 0 + 1 * 1.0e17, z: 0 + 0 * 1.0e17 });
+  assert.equal(leader.followers.size, 0);
+});
+
+test("a ball that goes lets go of its own leader first", () => {
+  const park = new Ballpark();
+  const leader = spaceBall(park, { id: 1 });
+  const follower = spaceBall(park, { id: 2, x: 100 });
+  park.followBall(2, 1);
+  park.removeBall(2, 5);
+  assert.deepEqual([[...leader.followers], follower.mode, follower.followPtr, follower.followId], [[], MODE.STOP, null, 0]);
+});
+
+test("a missile whose target goes flies on, and stops being massive", () => {
+  const park = new Ballpark();
+  spaceBall(park, { id: 1 });
+  const missile = spaceBall(park, { id: 2, x: 100 });
+  Object.assign(missile, { mode: MODE.MISSILE, followId: 1, followPtr: park.ball(1), isMassive: true });
+  park.ball(1).followers.add(2);
+  park.setBallVelocity(2, -3, 0, 0);
+  park.removeBall(1);
+  assert.deepEqual([missile.mode, missile.isMassive, missile.goto.x < -1e16], [MODE.GOTO, false, true]);
+});
+
+test("clearing the park leaves nothing", () => {
+  const park = new Ballpark();
+  spaceBall(park, { id: 1 });
+  spaceBall(park, { id: 2 });
+  park.removeBall(2, 9);
+  park.clearAll();
+  assert.deepEqual([park.balls.size, park.freeBalls.size, park.moribundBalls.size], [0, 0, 0]);
+});

@@ -13,6 +13,8 @@
 //                              EvolveStop (1339), GotoThrust (1398), AddBall (3303),
 //                              FollowBall (3879), Orbit (4007),
 //                              the orders (4471-4650) and the setters (4652-5090)
+//   destiny/src/Thunkers.cpp   reading a state into the park (2083, 2463, 2897) and
+//                              writing the park out as one (2145, 2202, 3180)
 //   destiny/src/Vector3d.h     the arithmetic, which is part of the result
 //
 // docs/game-port-destiny-notes.md is the map; this file is made from the source.
@@ -29,14 +31,18 @@
 // test/destinyBallpark.test.js requires them exactly.
 //
 // PORTED SO FAR: the integrator, STOP, GOTO, FOLLOW and ORBIT (the old style,
-// which is the library's default), adding balls and the orders and setters
-// those need. NOT YET, and each stops here rather than be guessed at:
+// which is the library's default), adding and removing balls, the orders and
+// setters those need, and reading and writing the state blob.
+// NOT YET, and each stops here rather than be guessed at:
 // WARP, MISSILE, FORMATION (evolve throws), collisions (counted
 // in `unported.gradient`: a massive ball is stepped without them), orientation
 // (yaw, pitch and roll do not move a ball), the spatial partition, moribund
 // balls, trolls and mushrooms.
 
-const { MODE, MODE_NAME } = require("./state");
+const { FLAG, MODE, MODE_NAME, PACKET, readState, writeState } = require("./state");
+
+/** IDstConstants.h: ids below this are the client's own balls, and are not written into a state. */
+const DSTLOCALBALLS = -1073741824;
 
 // ── Vector3d.h ───────────────────────────────────────────────────────────────
 
@@ -100,8 +106,17 @@ class Ballpark {
     this.currentTime = 0;
     this.balls = new Map();
     this.freeBalls = new Map();
+    /** moribundBalls: removed from play, kept until their time is up. */
+    this.moribundBalls = new Set();
     /** What a step did without, because it is not ported: counted, never hidden. */
     this.unported = { gradient: 0 };
+  }
+
+  /** Ballpark::ClearAll (5896). */
+  clearAll() {
+    this.balls.clear();
+    this.freeBalls.clear();
+    this.moribundBalls.clear();
   }
 
   ball(id) {
@@ -259,6 +274,199 @@ class Ballpark {
       this.freeBalls.delete(id);
       ball.lastG = vec();
     }
+  }
+
+  // ── removing (5416-5765) ──────────────────────────────────────────────────
+
+  /**
+   * Ballpark::StopAllFollowers (5416): whoever was following this ball is told
+   * to stop, except a missile or an interactive orbiter, which flies on the way
+   * it was going.
+   */
+  stopAllFollowers(ball) {
+    if (!ball || ball.followers.size === 0) return;
+    for (const id of [...ball.followers]) {
+      const follower = this.balls.get(id);
+      if (!follower || follower.followId !== ball.id || follower.followPtr !== ball) {
+        ball.followers.delete(id);
+        continue;
+      }
+      if (follower.mode === MODE.MISSILE || (follower.isInteractive && follower.mode === MODE.ORBIT)) {
+        if (follower.mode === MODE.MISSILE) follower.isMassive = false;
+        this.gotoDirection(id, follower.newVel.x, follower.newVel.y, follower.newVel.z);
+      } else {
+        this.stop(id);
+      }
+    }
+  }
+
+  /**
+   * Ballpark::RemoveBall (5471). With a delay the ball is only marked: it stops
+   * taking part at once, and is taken out of the park when its time is up
+   * (bringOutDeadBalls).
+   */
+  removeBall(id, delay = 0) {
+    const ball = this.balls.get(id);
+    if (!ball) return;
+    this.stop(id);
+    this.stopAllFollowers(ball);
+    ball.isMoribund = true;
+    if (delay > 0) {
+      ball.isMassive = false;
+      ball.effectStamp = this.currentTime + delay;
+      this.moribundBalls.add(ball);
+      return;
+    }
+    this.moribundBalls.delete(ball);
+    if (ball.isFree) this.freeBalls.delete(id);
+    this.balls.delete(id);
+  }
+
+  /**
+   * Ballpark::BringOutDeadBalls (5708), which the engine runs every frame: a
+   * moribund ball goes once its time has passed, and up to seven a call go
+   * early once they are within two ticks of it.
+   */
+  bringOutDeadBalls() {
+    let killCounter = 0;
+    const toDelete = [];
+    for (const ball of this.moribundBalls) {
+      if (!ball.isMoribund) toDelete.push(ball);
+      else if (ball.effectStamp - this.currentTime < 0) toDelete.push(ball);
+      else if (ball.effectStamp - this.currentTime - 2 < 0 && killCounter < 7) {
+        toDelete.push(ball);
+        killCounter += 1;
+      }
+    }
+    for (const ball of toDelete) {
+      if (ball.isMoribund) this.removeBall(ball.id);
+      this.moribundBalls.delete(ball);
+    }
+  }
+
+  // ── the state blob (Thunkers.cpp) ─────────────────────────────────────────
+
+  /**
+   * ReadFullStateFromStream. `partial` is what the client passes: 0 for a
+   * SetState, 2 for an AddBalls, 1 for its own rewind. Whatever it is, the
+   * park's tick counter becomes the blob's stamp.
+   *
+   * A read never removes a ball. A full read (0) only empties the list of balls
+   * that are stepped; the caller clears the park first when it means to.
+   */
+  readState(bytes, partial = 0) {
+    const state = readState(bytes);
+    if (state.packet === null) return [];
+    if (!partial) this.freeBalls.clear();
+    this.currentTime = state.stamp;
+    const read = [];
+    for (const record of state.balls) {
+      const ball = this.addBall({
+        id: record.id,
+        mass: record.mass,
+        radius: record.radius,
+        maxVelocity: record.maxVelocity,
+        isFree: Boolean(record.flags & FLAG.FREE),
+        isGlobal: Boolean(record.flags & FLAG.GLOBAL),
+        isMassive: Boolean(record.flags & FLAG.MASSIVE),
+        isInteractive: Boolean(record.flags & FLAG.INTERACTIVE),
+        isSpaceJunk: Boolean(record.flags & FLAG.SPACE_JUNK),
+        x: record.position.x,
+        y: record.position.y,
+        z: record.position.z,
+        vx: record.velocity.x,
+        vy: record.velocity.y,
+        vz: record.velocity.z,
+        agility: record.agility,
+        speedFraction: record.speedFraction,
+      });
+      ball.formationID = record.formationID;
+      // A fixed ball's collision shapes are replaced by the record's; a rewind leaves them as they are.
+      if (partial !== 1 && !(record.flags & FLAG.FREE)) {
+        ball.miniBalls = record.miniBalls;
+        ball.miniCapsules = record.miniCapsules;
+        ball.miniBoxes = record.miniBoxes;
+      }
+      ball.harmonic = record.harmonic;
+      ball.corporationID = record.corporationID;
+      ball.allianceID = record.allianceID;
+      // The mode is written straight in: no order is given, and nothing is told.
+      ball.mode = record.mode;
+      ball.isCloaked = record.isCloaked;
+      if (record.followId !== undefined) ball.followId = record.followId;
+      if (record.followRange !== undefined) ball.followRange = record.followRange;
+      if (record.ownerId !== undefined) ball.ownerId = record.ownerId;
+      if (record.effectStamp !== undefined) ball.effectStamp = record.effectStamp;
+      if (record.goto !== undefined) ball.goto = { ...record.goto };
+      if (record.mode === MODE.WARP) {
+        // The C++ keeps these three in members named for other things.
+        ball.lastCollision = record.totalWarpLength;
+        ball.warpMinRange = record.minRange;
+        ball.ownerId = record.warpFactor;
+      }
+      if (record.mode === MODE.MUSHROOM) ball.goto = vec(record.span, ball.goto.y, ball.goto.z);
+      read.push(ball);
+    }
+    // Once every ball is in: hook each follower to its leader. One whose leader
+    // is not in the park is left flying at whatever point it had.
+    for (const ball of read) {
+      if (!FOLLOW_MODES.has(ball.mode)) continue;
+      const leader = this.balls.get(ball.followId);
+      if (!leader) {
+        ball.mode = MODE.GOTO;
+      } else {
+        ball.followPtr = leader;
+        leader.followers.add(ball.id);
+      }
+    }
+    return read;
+  }
+
+  /** A ball as a record of the state blob (WriteBallToStream reads these members). */
+  _record(ball) {
+    return {
+      id: ball.id,
+      mode: ball.mode,
+      radius: ball.radius,
+      position: ball.newPos,
+      flags: (ball.isFree ? FLAG.FREE : 0) | (ball.isGlobal ? FLAG.GLOBAL : 0) | (ball.isMassive ? FLAG.MASSIVE : 0) |
+        (ball.isInteractive ? FLAG.INTERACTIVE : 0) | (ball.isSpaceJunk ? FLAG.SPACE_JUNK : 0),
+      mass: ball.mass,
+      isCloaked: ball.isCloaked,
+      harmonic: ball.harmonic,
+      corporationID: ball.corporationID,
+      allianceID: ball.allianceID,
+      maxVelocity: ball.maxVelocity,
+      velocity: ball.newVel,
+      agility: ball.agility,
+      speedFraction: ball.speedFraction,
+      formationID: ball.formationID,
+      followId: ball.followId,
+      followRange: ball.followRange,
+      ownerId: ball.ownerId,
+      effectStamp: ball.effectStamp,
+      goto: ball.goto,
+      totalWarpLength: ball.lastCollision ?? 0,
+      minRange: ball.warpMinRange ?? 0,
+      warpFactor: ball.ownerId,
+      span: ball.goto.x,
+      miniBalls: ball.miniBalls ?? [],
+      miniCapsules: ball.miniCapsules ?? [],
+      miniBoxes: ball.miniBoxes ?? [],
+    };
+  }
+
+  /**
+   * WriteFullStateToStream (every ball) or, given ids, WriteBallsToStream. A
+   * moribund ball is left out, and so is a ball of the client's own.
+   */
+  writeState(ids = null) {
+    const chosen = ids === null ? [...this.balls.values()] : ids.map((id) => this.balls.get(id)).filter(Boolean);
+    return writeState({
+      packet: ids === null ? PACKET.FULL_STATE : PACKET.BALLS,
+      stamp: this.currentTime,
+      balls: chosen.filter((ball) => !ball.isMoribund && !(ids === null && ball.id < DSTLOCALBALLS)).map((ball) => this._record(ball)),
+    });
   }
 
   // ── orders (4471-4650) ────────────────────────────────────────────────────
@@ -505,4 +713,4 @@ class Ballpark {
   }
 }
 
-module.exports = { AU, Ballpark, DestinyNotPorted, FOLLOW_MODES, add, cross, divide, dot, length, lengthSq, normalize, scale, sub, vec };
+module.exports = { AU, Ballpark, DSTLOCALBALLS, DestinyNotPorted, FOLLOW_MODES, add, cross, divide, dot, length, lengthSq, normalize, scale, sub, vec };

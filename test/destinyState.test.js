@@ -312,3 +312,61 @@ test("what cannot be a state is refused, and says where", () => {
   // Taking bytes that are not a Buffer.
   assert.equal(readState(new Uint8Array(whole)).balls[0].id, 500);
 });
+
+// ── the writer ───────────────────────────────────────────────────────────────
+
+const { writeState } = require("../src/gamePort/destiny/state");
+
+test("writing back what was read gives the server's own bytes, for all three recorded blobs", () => {
+  const { ship, grid, later } = recordedBlobs();
+  for (const [name, { blob }] of [["ship", ship], ["grid", grid], ["later", later]]) {
+    assert.ok(writeState(readState(blob)).equals(blob), `${name}: ${blob.length} bytes, the same`);
+  }
+});
+
+test("CCP's fixtures, written: an empty balls packet and an empty full state", () => {
+  assert.deepEqual([...writeState({ packet: PACKET.BALLS, stamp: 0, balls: [] })], [0x01, 0, 0, 0, 0]);
+  assert.deepEqual([...writeState({ packet: PACKET.FULL_STATE, stamp: 0, balls: [] })], [0x00, 0, 0, 0, 0]);
+});
+
+test("every mode and every sub-shape writes as it reads", () => {
+  const tails = [
+    [MODE.GOTO, (w) => w.vec(7, 8, 9)],
+    [MODE.FOLLOW, (w) => w.i64(60003760).f32(2500)],
+    [MODE.ORBIT, (w) => w.i64(60003760).f32(7500)],
+    [MODE.STOP, (w) => w],
+    [MODE.FIELD, (w) => w],
+    [MODE.TROLL, (w) => w.i32(990)],
+    [MODE.FORMATION, (w) => w.i64(77).f32(100).i32(991)],
+    [MODE.MISSILE, (w) => w.i64(77).f32(40).i64(88).i32(992).vec(4, 5, 6)],
+    [MODE.MUSHROOM, (w) => w.f32(12).f64(34.5).i32(993).i64(88)],
+    [MODE.WARP, (w) => w.vec(1e12, 2e12, 3e12).i32(-1).f64(4.5e12).f64(15000).i64(3)],
+  ];
+  for (const [mode, tail] of tails) {
+    const bytes = tail(freeHead(header(PACKET.BALLS, 77), { mode })).bytes();
+    assert.ok(writeState(readState(bytes)).equals(bytes), MODE_NAME[mode]);
+  }
+  const flags = FLAG.GLOBAL | FLAG.HAS_MINI_BALLS | FLAG.HAS_MINI_CAPSULES | FLAG.HAS_MINI_BOXES;
+  const shaped = header().i64(9).u8(MODE.RIGID).f32(10).vec(0, 0, 0).u8(flags).i8(-1)
+    .u16(2).vec(1, 2, 3).f32(4).vec(5, 6, 7).f32(8)
+    .u16(1).vec(1, 2, 3).vec(4, 5, 6).f32(7)
+    .u16(1).vec(1, 2, 3).vec(1, 0, 0).vec(0, 1, 0).vec(0, 0, 1).bytes();
+  assert.ok(writeState(readState(shaped)).equals(shaped));
+  const rigid = header(PACKET.FULL_STATE, 7).i64(40000001).u8(MODE.RIGID).f32(1000).vec(1, 2, 3).u8(FLAG.GLOBAL | FLAG.MASSIVE).i8(-1).bytes();
+  assert.ok(writeState(readState(rigid)).equals(rigid));
+});
+
+test("the sub-shape flags are written from what the record holds, not from what it claims", () => {
+  // The writer sets a flag only when the list is non-empty, so a count of zero is never written.
+  const [ball] = readState(header().i64(9).u8(MODE.RIGID).f32(10).vec(0, 0, 0).u8(FLAG.HAS_MINI_BALLS).i8(-1).u16(1).vec(1, 2, 3).f32(4).bytes()).balls;
+  const emptied = writeState({ packet: PACKET.BALLS, stamp: 1000, balls: [{ ...ball, miniBalls: [] }] });
+  assert.equal(emptied.length, 5 + 39);
+  assert.equal(readState(emptied).balls[0].flags & FLAG.HAS_MINI_BALLS, 0);
+  const added = writeState({ packet: PACKET.BALLS, stamp: 1000, balls: [{ ...ball, flags: 0, miniBalls: ball.miniBalls }] });
+  assert.equal(readState(added).balls[0].flags, FLAG.HAS_MINI_BALLS);
+});
+
+test("a mode that has no record cannot be written", () => {
+  const [ball] = readState(freeHead(header(), { mode: MODE.STOP }).bytes()).balls;
+  assert.throws(() => writeState({ packet: PACKET.BALLS, stamp: 1, balls: [{ ...ball, mode: MODE.BOID }] }), /cannot be written/);
+});

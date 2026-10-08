@@ -23,8 +23,12 @@
 // computed from one has to be rounded back to float32 where the C++ stores a
 // float; that is the simulation's business, not this reader's.
 //
-// This module only reads bytes into records. It knows nothing of time, and
-// changes no ballpark.
+// The client also WRITES this format: it snapshots its own ballpark so that it
+// can go back to an earlier tick when an update arrives late. writeState is
+// that writer (WriteBallToStream, Thunkers.cpp 3180-3377), the reader's mirror.
+//
+// This module only turns bytes into records and records into bytes. It knows
+// nothing of time, and changes no ballpark.
 
 /** IDstConstants.h, enum DSTBALLMODE. */
 const MODE = Object.freeze({
@@ -218,6 +222,140 @@ function readState(bytes) {
   return { packet, stamp, balls };
 }
 
+/** Bytes appended field by field, as the C++ writes them. */
+function writer() {
+  const chunks = [];
+  const put = (size, write) => {
+    const bytes = Buffer.alloc(size);
+    write(bytes);
+    chunks.push(bytes);
+  };
+  const w = {
+    u8: (value) => put(1, (b) => b.writeUInt8(value)),
+    i8: (value) => put(1, (b) => b.writeInt8(value)),
+    u16: (value) => put(2, (b) => b.writeUInt16LE(value)),
+    i32: (value) => put(4, (b) => b.writeInt32LE(value)),
+    i64: (value) => put(8, (b) => b.writeBigInt64LE(BigInt(value))),
+    f32: (value) => put(4, (b) => b.writeFloatLE(value)),
+    f64: (value) => put(8, (b) => b.writeDoubleLE(value)),
+    vector(v) {
+      w.f64(v.x);
+      w.f64(v.y);
+      w.f64(v.z);
+    },
+    bytes: () => Buffer.concat(chunks),
+  };
+  return w;
+}
+
+/** One ball record (WriteBallToStream). The sub-shape flags are set from what the record holds. */
+function writeBall(w, ball) {
+  const miniBalls = ball.miniBalls ?? [];
+  const miniCapsules = ball.miniCapsules ?? [];
+  const miniBoxes = ball.miniBoxes ?? [];
+  let flags = ball.flags & (FLAG.FREE | FLAG.GLOBAL | FLAG.MASSIVE | FLAG.INTERACTIVE | FLAG.SPACE_JUNK);
+  if (miniBalls.length) flags |= FLAG.HAS_MINI_BALLS;
+  if (miniCapsules.length) flags |= FLAG.HAS_MINI_CAPSULES;
+  if (miniBoxes.length) flags |= FLAG.HAS_MINI_BOXES;
+  w.i64(ball.id);
+  w.u8(ball.mode);
+  w.f32(ball.radius);
+  w.vector(ball.position);
+  w.u8(flags);
+  if (ball.mode !== MODE.RIGID) {
+    w.f64(ball.mass);
+    w.i8(ball.isCloaked);
+    w.i64(ball.harmonic);
+    w.i32(ball.corporationID);
+    w.i32(ball.allianceID);
+  }
+  if (flags & FLAG.FREE) {
+    w.f32(ball.maxVelocity);
+    w.vector(ball.velocity);
+    w.f32(ball.agility);
+    w.f32(ball.speedFraction);
+  }
+  w.i8(ball.formationID);
+  switch (ball.mode) {
+    case MODE.FOLLOW:
+    case MODE.ORBIT:
+      w.i64(ball.followId);
+      w.f32(ball.followRange);
+      break;
+    case MODE.FORMATION:
+      w.i64(ball.followId);
+      w.f32(ball.followRange);
+      w.i32(ball.effectStamp);
+      break;
+    case MODE.MISSILE:
+      w.i64(ball.followId);
+      w.f32(ball.followRange);
+      w.i64(ball.ownerId);
+      w.i32(ball.effectStamp);
+      w.vector(ball.goto);
+      break;
+    case MODE.GOTO:
+      w.vector(ball.goto);
+      break;
+    case MODE.WARP:
+      w.vector(ball.goto);
+      w.i32(ball.effectStamp);
+      w.f64(ball.totalWarpLength);
+      w.f64(ball.minRange);
+      w.i64(ball.warpFactor);
+      break;
+    case MODE.MUSHROOM:
+      w.f32(ball.followRange);
+      w.f64(ball.span);
+      w.i32(ball.effectStamp);
+      w.i64(ball.ownerId);
+      break;
+    case MODE.TROLL:
+      w.i32(ball.effectStamp);
+      break;
+    case MODE.STOP:
+    case MODE.FIELD:
+    case MODE.RIGID:
+      break;
+    default:
+      // The C++ logs and returns here with half a record already written.
+      throw new DestinyStateError(`Unknown ball mode ${ball.mode} for ball ${ball.id}: it cannot be written.`);
+  }
+  if (miniBalls.length) {
+    w.u16(miniBalls.length);
+    for (const mini of miniBalls) {
+      w.vector(mini.center);
+      w.f32(mini.radius);
+    }
+  }
+  if (miniCapsules.length) {
+    w.u16(miniCapsules.length);
+    for (const mini of miniCapsules) {
+      w.vector(mini.a);
+      w.vector(mini.b);
+      w.f32(mini.radius);
+    }
+  }
+  if (miniBoxes.length) {
+    w.u16(miniBoxes.length);
+    for (const mini of miniBoxes) {
+      w.vector(mini.corner);
+      w.vector(mini.x);
+      w.vector(mini.y);
+      w.vector(mini.z);
+    }
+  }
+}
+
+/** A state blob from { packet, stamp, balls }: what readState reads back. */
+function writeState({ packet, stamp, balls }) {
+  const w = writer();
+  w.u8(packet);
+  w.i32(stamp);
+  for (const ball of balls) writeBall(w, ball);
+  return w.bytes();
+}
+
 /** The flags of a record, by name. */
 function flagsOf(ball) {
   return {
@@ -229,4 +367,4 @@ function flagsOf(ball) {
   };
 }
 
-module.exports = { DestinyStateError, FLAG, MODE, MODE_NAME, PACKET, flagsOf, readState };
+module.exports = { DestinyStateError, FLAG, MODE, MODE_NAME, PACKET, flagsOf, readState, writeState };
