@@ -9,7 +9,9 @@
 // client computes what the retail client computes.
 //
 //   destiny/src/Ballpark.cpp   Evolve (421), Integrate (751), EvolveBehaviorForBall (789),
+//                              EvolveFollow (1066), EvolveOldStyleOrbit (1249),
 //                              EvolveStop (1339), GotoThrust (1398), AddBall (3303),
+//                              FollowBall (3879), Orbit (4007),
 //                              the orders (4471-4650) and the setters (4652-5090)
 //   destiny/src/Vector3d.h     the arithmetic, which is part of the result
 //
@@ -26,9 +28,10 @@
 // CCP's own evolve tests give expected positions to the last digit, and
 // test/destinyBallpark.test.js requires them exactly.
 //
-// PORTED SO FAR: the integrator, STOP and GOTO, adding balls and the orders and
-// setters those need. NOT YET, and each stops here rather than be guessed at:
-// FOLLOW, ORBIT, WARP, MISSILE, FORMATION (evolve throws), collisions (counted
+// PORTED SO FAR: the integrator, STOP, GOTO, FOLLOW and ORBIT (the old style,
+// which is the library's default), adding balls and the orders and setters
+// those need. NOT YET, and each stops here rather than be guessed at:
+// WARP, MISSILE, FORMATION (evolve throws), collisions (counted
 // in `unported.gradient`: a massive ball is stepped without them), orientation
 // (yaw, pitch and roll do not move a ball), the spatial partition, moribund
 // balls, trolls and mushrooms.
@@ -55,7 +58,20 @@ function normalize(v) {
 }
 const finite = (v) => Number.isFinite(v.x) && Number.isFinite(v.y) && Number.isFinite(v.z);
 
+/** a x b, as Vector3d::Cross computes it. */
+const cross = (a, b) => ({ x: a.y * b.z - a.z * b.y, y: a.z * b.x - a.x * b.z, z: a.x * b.y - a.y * b.x });
+const dot = (a, b) => a.x * b.x + a.y * b.y + a.z * b.z;
+
 const f32 = Math.fround;
+
+/** Ballpark.h 31. */
+const AU = 0.1495978707e12;
+/** Ballpark.cpp 70. */
+const ORBITAL_PRECESSION = 0.001;
+/** "(double)((int64_t)(x*10000000))/10000000": cut, not rounded, at seven decimals. */
+const cutToSevenDecimals = (x) => Math.trunc(x * 10000000) / 10000000;
+/** The low sixteen bits of a ball's id, which give each orbiter its own plane. */
+const lowSixteenBits = (id) => Number(BigInt(id) & 0xffffn);
 
 class DestinyNotPorted extends Error {
   constructor(what) {
@@ -265,6 +281,36 @@ class Ballpark {
     ball.mode = MODE.STOP;
   }
 
+  /**
+   * Ballpark::FollowBall (3879) and Ballpark::Orbit (4007): the same order but
+   * for the mode. The Python entry points default the range to 1.0.
+   */
+  _follow(mode, id, targetId, range) {
+    range = f32(range);
+    if (!Number.isFinite(range)) return;
+    const ball = this.balls.get(id);
+    if (!ball) return;
+    if (id === targetId) return;
+    const target = this.balls.get(targetId);
+    if (!target) return;
+    if (target.isMoribund) return; // a dead ball cannot be followed
+    if (target.isCloaked) return;
+    this.stop(id);
+    ball.followId = targetId;
+    ball.followPtr = target;
+    ball.followRange = range;
+    ball.mode = mode;
+    target.followers.add(id);
+  }
+
+  followBall(id, targetId, range = 1.0) {
+    this._follow(MODE.FOLLOW, id, targetId, range);
+  }
+
+  orbit(id, targetId, range = 1.0) {
+    this._follow(MODE.ORBIT, id, targetId, range);
+  }
+
   /** Ballpark::GotoPoint (4529). */
   gotoPoint(id, x, y, z) {
     const ball = this.balls.get(id);
@@ -340,6 +386,69 @@ class Ballpark {
     return a;
   }
 
+  /**
+   * Ballpark::EvolveFollow (1066): steer at the point on the line between the
+   * two, at the range asked for measured surface to surface. Where the leader
+   * is going plays no part.
+   */
+  _evolveFollow(ball) {
+    const other = ball.followPtr;
+    const otherPos = other.newPos;
+    const delta = sub(ball.newPos, otherPos);
+    const dist = length(delta);
+    const r = ball.followRange + ball.radius + other.radius;
+    // Right on top of it: go out along x.
+    const target = dist === 0.0 ? add(otherPos, scale(vec(1.0, 0.0, 0.0), r)) : add(otherPos, divide(scale(delta, r), dist));
+    ball.goto = target;
+    return this.gotoThrust(ball, target, ball.mode === MODE.MISSILE);
+  }
+
+  /**
+   * Ballpark::EvolveOldStyleOrbit (1249). The plane of the orbit comes from the
+   * low sixteen bits of the orbiter's id and from the tick counter, so two
+   * simulations agree only if they agree on what tick it is.
+   */
+  _evolveOrbit(ball, currentTime) {
+    const cruiseVelocity = ball.speedFraction * ball.maxVelocity;
+    const k = this.friction;
+    const maxThrust = (k * cruiseVelocity) / (ball.mass * ball.agility);
+    const other = ball.followPtr;
+    const otherPos = other.newPos;
+    const r = ball.followRange + ball.radius + other.radius;
+    let toVector = sub(otherPos, ball.newPos);
+    const dist = length(toVector);
+    toVector = normalize(toVector);
+
+    let phi1 = currentTime * ORBITAL_PRECESSION;
+    const phi2 = lowSixteenBits(ball.id) + currentTime * ORBITAL_PRECESSION;
+    let radialVector = vec(
+      cutToSevenDecimals(Math.cos(phi1) * Math.cos(phi2)),
+      cutToSevenDecimals(Math.sin(phi2)),
+      cutToSevenDecimals(Math.sin(phi1) * Math.cos(phi2)),
+    );
+    // Despite its name, after this it is across the line to the other ball, not along it.
+    radialVector = normalize(cross(radialVector, toVector));
+
+    // Aim at the tangent of the orbit when outside it.
+    const toComp = dist * dist - r * r;
+    if (toComp >= 0.0) {
+      const radComp = (r * Math.sqrt(toComp)) / dist;
+      toVector = normalize(add(scale(toVector, toComp / dist), scale(radialVector, radComp)));
+    }
+
+    // How much of the thrust goes sideways. exp() is cut to seven decimals
+    // because CCP found it differed between their own platforms.
+    const radialFactor = cutToSevenDecimals(Math.exp((-(r - dist) * (r - dist)) / 40000.0));
+    phi1 = -dot(toVector, radialVector);
+    let transverseFactor = 1.0 + radialFactor * radialFactor * (phi1 * phi1 - 1.0);
+    transverseFactor = transverseFactor > 0.0 ? radialFactor * phi1 + Math.sqrt(transverseFactor) : radialFactor * phi1;
+    transverseFactor *= dist - r >= 0.0 ? 1.0 : -1.0;
+
+    const a = scale(add(scale(radialVector, radialFactor), scale(toVector, transverseFactor)), maxThrust);
+    ball.goto = add(ball.newPos, scale(a, 10.0 * AU));
+    return a;
+  }
+
   /** Ballpark::EvolveBehaviorForBall (789): this tick's acceleration, by mode. */
   _evolveBehavior(ball) {
     ball.lastG = vec();
@@ -355,11 +464,15 @@ class Ballpark {
         ball.newVel = vec(v.x, (v.y - 0.07 * v.y) * 0.9345794392523364485981308411215, v.z);
         break;
       }
+      case MODE.FOLLOW:
+        a = this._evolveFollow(ball);
+        break;
+      case MODE.ORBIT:
+        a = this._evolveOrbit(ball, this.currentTime);
+        break;
       case MODE.WARP:
       case MODE.MISSILE:
       case MODE.FORMATION:
-      case MODE.FOLLOW:
-      case MODE.ORBIT:
         throw new DestinyNotPorted(`The ${MODE_NAME[ball.mode]} mode`);
       default:
         // MUSHROOM, BOID, TROLL, MINIBALL, FIELD, RIGID: no acceleration.
@@ -392,4 +505,4 @@ class Ballpark {
   }
 }
 
-module.exports = { Ballpark, DestinyNotPorted, FOLLOW_MODES, add, divide, length, lengthSq, normalize, scale, sub, vec };
+module.exports = { AU, Ballpark, DestinyNotPorted, FOLLOW_MODES, add, cross, divide, dot, length, lengthSq, normalize, scale, sub, vec };

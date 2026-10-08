@@ -2,8 +2,8 @@
 
 // src/gamePort/destiny/ballpark.js is CCP's destiny ported to JavaScript. The
 // expected numbers here are CCP's own, from the evolve tests that ship with its
-// source (destiny/python/destiny/test/ballpark/evolve/test_goto.py and
-// test_stop.py), each a position or velocity after every tick. CCP's tests
+// source (destiny/python/destiny/test/ballpark/evolve/test_goto.py, test_stop.py,
+// test_follow.py and test_orbit.py), each a position or velocity after every tick. CCP's tests
 // accept four decimal places. These require every digit: the point of the
 // port is the same bits the retail client computes.
 
@@ -109,6 +109,65 @@ test("CCP test_stopped_ball_is_stopped: a ball at rest at the origin stays exact
   const ball = spaceBall(park);
   for (const [x, y, z] of run(park, ball, 10, "newPos")) assert.deepEqual([x, y, z], [0, 0, 0]);
   assert.equal(park.currentTime, 10);
+});
+
+test("CCP test_follow_stopped_ball: ten ticks toward a ball that is standing still", () => {
+  const park = new Ballpark();
+  const follower = spaceBall(park, { id: 1 });
+  const leader = spaceBall(park, { id: 2, x: 100, y: 200, z: 300 });
+  park.followBall(follower.id, leader.id);
+  assert.deepEqual(run(park, follower, 10, "newPos"), [
+    [0.10547716886968704, 0.21095433773937408, 0.3164315066090625],
+    [0.41030556327284373, 0.8206111265456875, 1.2309166898185306],
+    [0.8981544513244621, 1.7963089026489243, 2.694463353973384],
+    [1.5540309048233925, 3.108061809646785, 4.662092714470175],
+    [2.364170207183283, 4.728340414366566, 7.092510621549848],
+    [3.3159352390795633, 6.631870478159127, 9.94780571723868],
+    [4.397724106363411, 8.795448212726821, 13.193172319090223],
+    [5.59888533504116, 11.19777067008232, 16.796656005123477],
+    [6.909640013429743, 13.819280026859486, 20.72892004028922],
+    [8.321010312379672, 16.642020624759343, 24.963030937139006],
+  ]);
+});
+
+test("CCP test_follow_moving_ball: ten ticks after a ball that is itself under way", () => {
+  const park = new Ballpark();
+  const follower = spaceBall(park, { id: 1 });
+  const leader = spaceBall(park, { id: 2, x: 100, y: 0, z: 0 });
+  park.followBall(follower.id, leader.id);
+  park.gotoPoint(leader.id, 0, 100, 200);
+  assert.deepEqual(run(park, follower, 10, "newPos"), [
+    [0.3946594280372685, 0.0, 0.0],
+    [1.5352202516956626, 0.0006394210607791958, 0.0012788421215583917],
+    [3.360538351919784, 0.00437328037960026, 0.00874656075920052],
+    [5.814319316187089, 0.01591817574944254, 0.03183635149888508],
+    [8.844475669456193, 0.042139697272792834, 0.08427939454558567],
+    [12.402376916827746, 0.09207177010911027, 0.18414354021822055],
+    [16.441932909387862, 0.17705502464375017, 0.35411004928750034],
+    [20.918410162782422, 0.31098291710272036, 0.6219658342054407],
+    [25.786827618186656, 0.5106319284615736, 1.0212638569231471],
+    [30.99971869544917, 0.796013087027414, 1.592026174054828],
+  ]);
+});
+
+test("CCP TestOldOrbit.test_orbit_ball: ball 2 orbiting ball 1 from tick 0, its plane set by its id", () => {
+  const park = new Ballpark();
+  const orbitee = spaceBall(park, { id: 1 });
+  const orbiter = spaceBall(park, { id: 2, x: 5.0 });
+  assert.equal(park.currentTime, 0);
+  park.orbit(orbiter.id, orbitee.id, 1.0);
+  assert.deepEqual(run(park, orbiter, 10, "newPos"), [
+    [5.0, 0.0, 0.3946594280372685],
+    [4.968965087530276, -0.014060509698578017, 1.533749375235321],
+    [4.7948197558341885, -0.09342506603769896, 3.3353413772468783],
+    [4.303462228867957, -0.3182911817228117, 5.664861650309143],
+    [3.341010762290748, -0.7601346870799338, 8.325917825178466],
+    [1.826888038965309, -1.4570571575293851, 11.103680716692217],
+    [-0.25072581197636695, -2.415534207332392, 13.808614450861453],
+    [-2.860769892110699, -3.6221094985835713, 16.289471089613752],
+    [-5.948838546575331, -5.052297043579673, 18.42935795458875],
+    [-9.447930869309866, -6.675507070626672, 20.138672333159825],
+  ]);
 });
 
 // ── what the source says, beyond the fixtures ────────────────────────────────
@@ -268,7 +327,7 @@ test("a ball with no friction to speak of takes the series form of the step", ()
 test("what is not ported yet stops the step by name instead of being guessed at", () => {
   const park = new Ballpark();
   const ball = spaceBall(park);
-  for (const mode of [MODE.WARP, MODE.FOLLOW, MODE.ORBIT, MODE.MISSILE, MODE.FORMATION]) {
+  for (const mode of [MODE.WARP, MODE.MISSILE, MODE.FORMATION]) {
     ball.mode = mode;
     assert.throws(() => park.evolve(), (error) => error instanceof DestinyNotPorted && /mode is not ported/.test(error.message));
   }
@@ -365,9 +424,132 @@ test("an order to go somewhere lets go of the ball that was being followed", () 
 });
 
 // One deliberate breakage still gets through: committing each ball as it is
-// stepped, instead of all together. Nothing ported yet reads another ball's
-// position, so the two cannot be told apart. FOLLOW can, and CCP's test_follow
-// fixture (a follower behind a moving leader) will decide it.
-test("a follower is stepped from where its leader was, not where the leader has just been moved to", { todo: "needs FOLLOW ported" }, () => {
+// stepped, instead of all together. Every acceleration is found before any
+// ball moves, and a step uses only the ball's own position, so nothing ported
+// yet can tell the two apart. Collisions can: they are worked out during the
+// stepping pass, from where the neighbours still are.
+test("a ball's collisions are worked out from where its neighbours were, not where they have just been moved to", { todo: "needs collisions ported" }, () => {
   assert.fail("not yet testable");
+});
+
+// ── FOLLOW and ORBIT, beyond the fixtures ────────────────────────────────────
+
+test("an order to follow or orbit is refused for what cannot be followed, and otherwise hooks the two together", () => {
+  const park = new Ballpark();
+  const a = spaceBall(park, { id: 1 });
+  const b = spaceBall(park, { id: 2, x: 1000 });
+  for (const refuse of [
+    () => park.followBall(1, 1), // itself
+    () => park.followBall(1, 99), // nothing there
+    () => park.followBall(99, 2),
+    () => park.followBall(1, 2, NaN),
+    () => { b.isMoribund = true; park.orbit(1, 2); b.isMoribund = false; },
+    () => { b.isCloaked = 1; park.followBall(1, 2); b.isCloaked = 0; },
+  ]) {
+    refuse();
+    assert.deepEqual([a.mode, a.followId, a.followPtr, b.followers.size], [MODE.STOP, 0, null, 0]);
+  }
+  park.followBall(1, 2, 2500.4);
+  assert.deepEqual([a.mode, a.followId, a.followPtr === b, a.followRange, [...b.followers]], [MODE.FOLLOW, 2, true, Math.fround(2500.4), [1]]);
+  // A new order lets go of the old leader first.
+  const c = spaceBall(park, { id: 3, y: 1000 });
+  park.orbit(1, 3);
+  assert.deepEqual([a.mode, a.followId, a.followRange, [...b.followers], [...c.followers]], [MODE.ORBIT, 3, 1, [], [1]]);
+});
+
+test("a follower keeps its range surface to surface, and steers out along x when it sits on its leader", () => {
+  const park = new Ballpark();
+  const follower = spaceBall(park, { id: 1 });
+  const leader = spaceBall(park, { id: 2, x: 1000 });
+  park.followBall(1, 2, 100);
+  park.evolve();
+  // The goto point: on the line between them, 100 + 2 + 2 metres short of the leader's centre.
+  assert.deepEqual(follower.goto, { x: 1000 + -1000 * 104 * (1 / 1000), y: 0, z: 0 });
+  park.setBallPosition(1, 1000, 0, 0);
+  park.evolve();
+  assert.deepEqual(follower.goto, { x: 1000 + 104, y: 0, z: 0 });
+  assert.equal(leader.newPos.x, 1000);
+});
+
+test("an orbiter's plane turns with the tick counter and differs with its id", () => {
+  const first = (id, tick) => {
+    const park = new Ballpark();
+    spaceBall(park, { id: 1 });
+    // Off every axis, so that the plane is not decided by a sign alone.
+    const orbiter = spaceBall(park, { id, x: 5000, y: 3000, z: 1000 });
+    park.currentTime = tick;
+    park.orbit(id, 1, 1000);
+    park.evolve();
+    return orbiter.newPos;
+  };
+  assert.notDeepEqual(first(2, 0), first(3, 0), "another id, another plane");
+  assert.notDeepEqual(first(2, 0), first(2, 500), "a later tick, a turned plane");
+  // Only the low sixteen bits of the id count.
+  assert.deepEqual(first(2, 0), first(2 + 65536, 0));
+  assert.deepEqual(first(2, 0), first(9988400103291 - (9988400103291 % 65536) + 2, 0));
+});
+
+test("inside its orbit a ball thrusts outward, outside it inward along the tangent", () => {
+  const radial = (x) => {
+    const park = new Ballpark();
+    spaceBall(park, { id: 1 });
+    const orbiter = spaceBall(park, { id: 2, x });
+    park.orbit(2, 1, 1000); // the orbit is at 1004 m between centres
+    park.evolve();
+    return orbiter.lastG.x;
+  };
+  assert.ok(radial(5000) < 0, "outside: drawn in");
+  assert.ok(radial(200) > 0, "inside: pushed out");
+});
+
+test("the follow point is (delta * r) * (1/dist), in that order", () => {
+  const park = new Ballpark();
+  const follower = spaceBall(park, { id: 1 });
+  spaceBall(park, { id: 2, x: 1234.5 });
+  park.followBall(1, 2, 2500);
+  park.evolve();
+  const r = 2500 + 2 + 2;
+  assert.equal(follower.goto.x, 1234.5 + -1234.5 * r * (1 / 1234.5));
+  assert.notEqual(follower.goto.x, 1234.5 + -1234.5 * (r / 1234.5), "the other grouping differs in the last place here");
+});
+
+test("one orbit step, set beside the source's lines written out again", () => {
+  // Orbitee 1 at the origin, orbiter 2 at 5000 m on the x axis, tick 0, range 1000.
+  const park = new Ballpark();
+  spaceBall(park, { id: 1 });
+  const orbiter = spaceBall(park, { id: 2, x: 5000 });
+  park.orbit(2, 1, 1000);
+  park.evolve();
+
+  // EvolveOldStyleOrbit, line by line, for this case.
+  const cut = (x) => Math.trunc(x * 10000000) / 10000000;
+  const [sf, maxVel, mass, agility] = [Math.fround(0.95), 10, 13000000.0, Math.fround(0.9)];
+  const maxThrust = (1000000.0 * (sf * maxVel)) / (mass * agility);
+  const r = 1000 + 2 + 2;
+  const dist = 5000;
+  const toVector = [-1, 0, 0];
+  // phi1 = 0, phi2 = 2: radial = (cos 2, sin 2, 0) cut, then crossed with toVector and made unit.
+  const radialCut = [cut(Math.cos(0) * Math.cos(2)), cut(Math.sin(2)), cut(Math.sin(0) * Math.cos(2))];
+  const crossed = [radialCut[1] * toVector[2] - radialCut[2] * toVector[1], radialCut[2] * toVector[0] - radialCut[0] * toVector[2], radialCut[0] * toVector[1] - radialCut[1] * toVector[0]];
+  const crossedLength = 1.0 / Math.sqrt(crossed[0] * crossed[0] + crossed[1] * crossed[1] + crossed[2] * crossed[2]);
+  const radial = crossed.map((c) => c * crossedLength);
+  assert.deepEqual(radial, [0, 0, 1], "for this geometry the tangent is straight up the z axis");
+  const toComp = dist * dist - r * r;
+  const radComp = (r * Math.sqrt(toComp)) / dist;
+  assert.notEqual(radComp, r * (Math.sqrt(toComp) / dist), "the other grouping differs in the last place here");
+  const aim = toVector.map((c, i) => c * (toComp / dist) + radial[i] * radComp);
+  const aimLength = 1.0 / Math.sqrt(aim[0] * aim[0] + aim[1] * aim[1] + aim[2] * aim[2]);
+  const to = aim.map((c) => c * aimLength);
+  const radialFactor = cut(Math.exp((-(r - dist) * (r - dist)) / 40000.0));
+  const phi = -(to[0] * radial[0] + to[1] * radial[1] + to[2] * radial[2]);
+  let transverse = 1.0 + radialFactor * radialFactor * (phi * phi - 1.0);
+  transverse = transverse > 0.0 ? radialFactor * phi + Math.sqrt(transverse) : radialFactor * phi;
+  transverse *= dist - r >= 0.0 ? 1.0 : -1.0;
+  const a = to.map((c, i) => (radial[i] * radialFactor + c * transverse) * maxThrust);
+
+  assert.deepEqual(orbiter.lastG, { x: a[0], y: a[1], z: a[2] });
+  // It also leaves a goto point ten AU along that acceleration, for whoever reads the ball's heading.
+  assert.deepEqual(orbiter.goto, { x: 5000 + a[0] * (10.0 * 0.1495978707e12), y: 0 + a[1] * (10.0 * 0.1495978707e12), z: 0 + a[2] * (10.0 * 0.1495978707e12) });
+  // Far outside the orbit almost none of the thrust goes sideways: it flies at the tangent point.
+  assert.ok(radialFactor < 1e-6 && a[0] < 0 && a[2] > 0);
 });
