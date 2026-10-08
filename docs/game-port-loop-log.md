@@ -2129,7 +2129,7 @@ and fills the numbered message with them, the agent's own IDs and the player.
   2595, `objectiveLocationSystemID` 30002780, `rewardTypeID` 29, `rewardQuantity` 13800), and
   the words route has message 129932.
 - **In the browser:** the agent's line was "129932". It is now the mission's offer, 668
-  characters in three paragraphs, with "Muvolailen" where the text has
+  characters with two line breaks, with "Muvolailen" where the text has
   `{[location]objectiveLocationSystemID.name}`, no tag and no markup left showing. The page
   asked for the keywords once and for the message once.
 
