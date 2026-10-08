@@ -18,6 +18,7 @@ const { createTrainingQueueService } = require("./pilotTrainingQueue");
 const { createFactorySessions } = require("./factorySessions");
 const { createReplenishment } = require("./replenishment");
 const { createPilotMutationFence } = require("./pilotMutationFence");
+const { createPilotTransport } = require("./pilotTransport");
 const { registerProvisioningRoutes } = require("./provisioningRoutes");
 const { createFactorySkills } = require("./factorySkills");
 const { createTrainingOnboarding } = require("./trainingOnboarding");
@@ -145,7 +146,14 @@ let replenishment;
 const mutationFence = createPilotMutationFence({ heldSessions: { values: () => bridgeSessions.values() },
   assertWritable: (pilot, lease) => replenishment?.assertWritable(pilot, lease),
   enterWrite: (pilot, lease) => replenishment.enterWrite(pilot, lease) });
-const gateway = mutationFence.wrap(options.eveGatewayClient || eveGatewayClient);
+// A selected pilot is reached through this, on whichever transport holds its
+// session (src/pilotTransport.js). With no game-port transport it is the
+// gateway client itself.
+const gateway = mutationFence.wrap(createPilotTransport({
+  gateway: options.eveGatewayClient || eveGatewayClient,
+  gamePort: options.gamePortPilots || null,
+  transportFor: options.pilotTransportFor,
+}));
 const auth = options.webAuth || webAuth;
 const staticData = options.staticData || staticDataModule;
 // The game-port client the customs-export hop speaks. Injected so the route

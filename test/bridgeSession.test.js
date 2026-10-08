@@ -185,6 +185,8 @@ async function startTestServer(options = {}) {
     eveGatewayClient: options.gateway || fakeGateway(),
     webAuth: fakeAuth(),
     staticData: options.staticData || fakeStaticData(),
+    gamePortPilots: options.gamePortPilots,
+    pilotTransportFor: options.pilotTransportFor,
     errorLogger() {},
   });
   const server = app.listen(0, "127.0.0.1");
@@ -558,3 +560,80 @@ test("logout releases the held bridge session", async () => {
   assert.equal(gateway.calls.release.length, 1);
   assert.equal(gateway.calls.release[0].bridgeSessionID, BRIDGE_SESSION_ID);
 });
+
+// ── The pilot's transport (src/pilotTransport.js) ────────────────────────────
+
+const GAME_PORT_SESSION_ID = "gp:opaque-game-port-session-id";
+
+test("a pilot the setting sends to the game port is selected, called and released there, and never on the gateway", async () => {
+  const gateway = fakeGateway();
+  // The game-port transport answers as the gateway client does; only the handle differs.
+  const gamePort = fakeGateway({
+    async selectCharacter(args, kwargs, sessionFields) {
+      gamePort.calls.select.push({ args, kwargs, sessionFields });
+      return {
+        bridgeSessionID: GAME_PORT_SESSION_ID,
+        service: "charUnboundMgr",
+        method: "SelectCharacterID",
+        result: null,
+        notifications: [],
+        session: { ...SELECT_SESSION_ECHO },
+      };
+    },
+  });
+  const asked = [];
+  const { baseUrl } = await startTestServer({
+    gateway,
+    gamePortPilots: gamePort,
+    pilotTransportFor(who) {
+      asked.push(who);
+      return "gameport";
+    },
+  });
+
+  const selected = await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+  assert.equal(selected.response.status, 200);
+  assert.equal(JSON.stringify(selected.payload).includes(GAME_PORT_SESSION_ID), false, "the handle never reaches the browser");
+  assert.equal(selected.payload.character.characterID, 7);
+  assert.deepEqual(asked, [{ accountID: 4, characterID: 7, userName: "pilot" }]);
+  assert.deepEqual(gamePort.calls.select, [{ args: [7, null, true], kwargs: null, sessionFields: { userid: 4, userName: "pilot" } }]);
+
+  const called = await apiRequest(baseUrl, "/api/bridge/call", {
+    method: "POST",
+    body: { service: "station", method: "GetGuests", args: [], kwargs: null },
+  });
+  assert.equal(called.response.status, 200);
+  assert.equal(gamePort.calls.call.length, 1);
+  assert.equal(gamePort.calls.call[0].bridgeSessionID, GAME_PORT_SESSION_ID);
+
+  const ready = await apiRequest(baseUrl, "/api/bridge/drone-recovery/ready", {
+    method: "POST", body: { checkID: selected.payload.droneRecoveryCheckID },
+  });
+  assert.equal(ready.response.status, 200, JSON.stringify(ready.payload));
+  const released = await apiRequest(baseUrl, "/api/bridge/release", { method: "POST", body: {} });
+  assert.deepEqual(released.payload, { ok: true, released: true });
+  assert.deepEqual(gamePort.calls.release, [{ bridgeSessionID: GAME_PORT_SESSION_ID, sessionFields: { userid: 4 } }]);
+
+  // Nothing about this pilot went to the gateway.
+  assert.deepEqual(gateway.calls, { select: [], release: [], call: [] });
+
+  // With no pilot held, a call is an account-level one again: the gateway's.
+  await apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service: "map", method: "GetStationInfo" } });
+  assert.equal(gateway.calls.call.length, 1);
+  assert.equal(gateway.calls.call[0].bridgeSessionID, undefined);
+  assert.equal(gamePort.calls.call.length, 1);
+});
+
+test("a game-port transport that is present but not chosen is never touched", async () => {
+  const gateway = fakeGateway();
+  const gamePort = fakeGateway();
+  const { baseUrl } = await startTestServer({ gateway, gamePortPilots: gamePort, pilotTransportFor: () => "gateway" });
+
+  await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+  await apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service: "station", method: "GetGuests" } });
+
+  assert.equal(gateway.calls.select.length, 1);
+  assert.equal(gateway.calls.call[0].bridgeSessionID, BRIDGE_SESSION_ID);
+  assert.deepEqual(gamePort.calls, { select: [], release: [], call: [] });
+});
+

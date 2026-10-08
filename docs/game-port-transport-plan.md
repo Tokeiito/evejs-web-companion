@@ -144,6 +144,22 @@ PilotSession
   close()
 ```
 
+**As built (2026-10-08): the interface is the gateway client's own nine pilot functions**, not a
+new set of names. The BFF reaches a selected pilot through `selectCharacter`, `callMethod`,
+`bindObject`, `callBoundMethod`, `releaseBridgeSession`, `readFlightStatus`,
+`readSpaceSnapshot`, `readScannerState` and `openSessionEventStream`, each naming the session
+by an opaque handle. `src/pilotTransport.js` stands where the gateway client stood and sends each
+of the nine to the transport that holds the handle; a game-port handle starts `gp:`, which a
+gateway handle (base64url) cannot. The sketch above maps onto them one for one (`location` is
+`readFlightStatus`, `ballpark` is `readSpaceSnapshot`, `scanner` is `readScannerState`,
+`close` is `releaseBridgeSession`, the three `on...` are `openSessionEventStream`).
+
+Why this and not a `PilotSession` object threaded through the BFF: `src/server.js` has some 360
+places that reach a pilot, other modules have more, and every test injects a fake gateway client
+of this shape. Keeping the shape means none of them change, the suite keeps proving the gateway
+path, and a pilot's transport is still one decision made at select. When the gateway's pilot
+routes are deleted (Phase 5) the nine functions are simply the game port's.
+
 **The protocol core takes a byte transport; it never imports `node:net`.** The session, the
 packet handling and the ballpark are written against "something that sends and receives frames",
 so the same code can later run in a browser over a relay (option C) without a rewrite.
@@ -154,7 +170,8 @@ transport underneath is replaced.
 
 ### 2.2 Transport is chosen per pilot, and is reversible
 
-A setting (`EVEJS_PILOT_TRANSPORT=gateway|gameport`, with a per-account override) picks the
+A setting (`EVEJS_PILOT_TRANSPORT=gateway|gameport`, with single accounts overridden by
+`EVEJS_PILOT_TRANSPORT_OVERRIDES="test=gameport,other=gateway"`) picks the
 implementation at select time. Default stays `gateway` until Phase 5. Any pilot can be moved back
 by flipping it and re-selecting.
 
@@ -417,6 +434,26 @@ What Phase 3 inherits:
 - **Done when:** with one account flagged `gameport` and the browser unchanged: login, select,
   inventory, fitting, market, agents, skills, mail and chat all work; one hosted maintenance flow
   (Provisioning Center Apply) completes; the gateway log shows no held session for that pilot.
+
+**Status 2026-10-08: step 1 done.** `src/pilotTransport.js` is the seam, and `createApp` reaches
+every pilot through it (2.1 says what it is and why it has the gateway client's shape). With no
+game-port transport it returns the gateway client itself, so there is nothing in between and
+nothing to have changed: the suite is green at 8583. Tests drive a pilot through the real BFF
+routes onto a stand-in game-port transport and check the gateway never hears of it.
+
+Step 2 is the game-port transport itself, `src/gamePort/pilots.js`: those nine functions on a
+`GamePortSession`. What the gateway does for each, which the game port has to match, was read
+from `evejsWebGatewayRuntime.js`:
+
+| Function | The gateway | The game port |
+|---|---|---|
+| `selectCharacter` | mints a session object, runs `SelectCharacterID` on it, echoes character, station, structure, system, corporation, ship | logs in as the account (name from the BFF's signed session, never the browser), calls `SelectCharacterID`, builds the same echo from the session attributes |
+| `callMethod` | hands the JSON arguments to the handler as they are; drains the session's notification backlog onto the answer | the JSON arguments are already the marshaller's own tree, so they are encoded as they are; the answer through `bridgeJson.js`; the same backlog and drain |
+| `bindObject`, `callBoundMethod` | registers the bound object's ID under an opaque handle | the same, holding the object ID the server returned |
+| `releaseBridgeSession` | runs the disconnect a socket close runs | closes the socket |
+| `readFlightStatus` | reads the session's station, structure, system and ship; ship mode from the scene | the same from the session attributes; ship mode from our ballpark (Phase 4) |
+| `readSpaceSnapshot`, `readScannerState` | projections of the server's own scene | refuse until Phase 4 |
+| `openSessionEventStream` | a WebSocket of the same notifications, with a replay cursor | the session's own notifications, mapped by `bridgeJson.js` |
 
 ### Phase 4 — Space: a ballpark from destiny (large; spike first)
 
