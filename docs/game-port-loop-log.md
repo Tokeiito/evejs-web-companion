@@ -98,6 +98,11 @@ Decisions taken in your place, and anything waiting on you. Overrule any of thes
   module rows.
 - **The rack's heat bars read on the game port** (`836f1ef`, `21c55b5`); on the gateway they
   still say "heat not known".
+- **After a warp to a station at 0, the client's ship ends 413 m from the server's** (the entry
+  "collisions"). The client makes the ship massive as it drops out of warp, the server's
+  "not massive" comes one step late, and for that step the ship bounces off the station's
+  ball. Measured on the park, not seen in a retail client. A sub-agent was set to look at the
+  server's stamps; whether it changed anything is in the entry after.
 - **A fifth server fix is committed in eve.js**: `10e2c22f4`, the pilot told when a module
   starts and stops heating its rack. eve.js `main` is two commits ahead of its origin
   (`7d5dbb532` and this one); I have not pushed it.
@@ -2828,4 +2833,118 @@ next (`21c55b5`).
 4. More of a mission's words: the objectives pane, the mission's time under the agent's line,
    messages inside messages when one turns up.
 5. Small, around dialogs: the title for a dialog's kind, the "do not ask again" box, the typed
+   codes not done.
+
+---
+
+## 2026-10-08 — collisions: a massive ball against other balls
+
+Commit `6cb92f4`, pushed.
+
+**What the retail client does** (CCP's destiny, `src/Ballpark.cpp` 2746 to 3006,
+`src/Collision.cpp` 108 to 157, `src/Partition.cpp` 302 to 487).
+
+- Each tick, for every ball that is free and massive, the park asks which balls are near
+  (`Gradient`) and works out what each does to it (`Potential`). Both balls are carried a tick
+  ahead on their own steering. If they touch on the way, the ball bounces: off a fixed ball its
+  speed along the line between them is turned round; off a free one the two exchange it by
+  their masses. If they overlap already, the ball is pushed clear, a metre over.
+- The answer is not a new position. It is the steady acceleration that would get the ball
+  there over the whole tick, damped to 0.85, added to the ball's steering when it is stepped.
+  Of several balls touched in one tick, the one touched latest counts.
+- What can be run into: balls that are massive, not cloaked, not on their way out, not
+  missiles; a force field only by a stranger to it; wreckage only by wreckage.
+
+**What this server sends**, measured over the four recordings: every free ball is sent *not*
+massive, the pilot's ship among them. Of the 76 balls on the Jita 4-4 grid, 25 fixed ones are
+massive and none carries collision shapes of its own. The station is one of the 25, a ball
+100 km in radius; the ship undocks 34.6 km inside it. So on this server the client's
+collisions run only when the client makes a ball massive itself, which it does to a ball
+dropping out of warp (`Ballpark::WarpDistance`).
+
+**What was built.** `Gradient`, `Potential`, `CollideTwoSpheres` and `Quadratic` in
+`destiny/ballpark.js`, and the partition's filter for which balls count. Not the partition
+itself: every ball is asked, in order of id, and a ball that touches two in one tick is
+counted (`unported.collisionOrder`), since the order is the one thing the partition would
+have decided. Not a fixed ball's own collision shapes, its miniballs, capsules and boxes: a
+massive ball stepped while the park holds any is counted (`unported.minis`). Neither count
+moved on any recording.
+
+**Proof.**
+
+- **CCP's own collision tests come out to the last digit**: two balls at one point pushed
+  apart (10 ticks), two overlapping (10), two sent at each other, meeting and bouncing (20),
+  both balls each time; and two warping through each other, which pass.
+- Tests: 12 new, and the one test that had been waiting for this since the port began is now
+  a test. Where CCP has no numbers (a bounce off a fixed ball, the push out of one, the
+  exchange between unequal balls) the expected values are worked out in the test from what the
+  collision means, with the integrator, not from the collision's own formula.
+- 95 ways of breaking the new code. Eight slipped through at first and were closed with
+  tests. None was left untried. One of the 95 is the breakage recorded in the first destiny
+  entry as something "nothing can tell apart until collisions are ported" (committing each
+  ball as it is stepped): it is caught now.
+- Suite: 9090 tests, 9066 pass, 0 fail, 24 skipped, 0 todo.
+- **The recorded warp, replayed.** At rest at the moon the park's ship is 0.17 m from where
+  the server has it, as before. Back at the station it is now **413.2 m** away. See below.
+- **Live** (server at `10e2c22f4`), the same trip flown again by the park and recorded: 0.06 m
+  apart at the moon, **412.8 m** at the station.
+- **From the browser's session, on the game port**, a warp to the station at 0. The snapshot
+  the page reads, a second apart: in warp 216.4 m from the station's surface; out of warp
+  43.5 m off, doing 54 m/s inward; then 33.5 m off, doing 30.9 m/s *outward*; at rest 185.9 m
+  off. The page's own warp (the autopilot's, which lands 10 km off) touched nothing: at rest
+  9,776 m off.
+- **The staging was undone**: the store was copied with the server stopped before the
+  flights and put back after.
+
+**What the 413 m is, and a server defect.** The server keeps ships from colliding by sending
+them not massive, and after a warp it says so again, twice, because the client has just made
+the ship massive on its own. Counted from the first state, with D the tick the park posts
+`OnDeactivatingWarp` at:
+
+| landing | D | the server's "not massive" stamps |
+|---|---|---|
+| recorded earlier, at the moon | 37 | 37, 39 |
+| recorded earlier, at the station | 106 | 106, 108 |
+| today, at the moon | 37 | 38, 40 |
+| today, at the station | 107 | 107, 109 |
+
+The drop happens in the step from D to D+1, and an entry stamped S is applied before the step
+that starts at S. So a stamp of D does nothing, D+1 is in time, and D+2 is one step late. In
+three of the four landings the stamps were D and D+2: for one step the ship was a massive
+ball. At the moon nothing was near. At the station it was 43.5 m from a massive ball and
+flying at it: the park's ship touched 0.89 of the way through the step and was turned back,
+and the server's ship coasted on to 225 m inside. In the fourth landing (D+1, D+3) the two
+ended 0.06 m apart. The recorded stream replayed with the late entries stamped one tick
+sooner leaves the two within a metre at both rests; that is a test.
+
+By CCP's code a retail client does the same on this server. **Not observed** in a running
+retail client, and the park is a port of the client's library and clock, not the client. A
+sub-agent is looking at the server's side of it; the outcome is in the next entry.
+
+**Seen, and left.**
+
+- **The page's overview shows the distance between centres.** After the landing its row for
+  the station read "101 km", for a station whose surface was 186 m away. The retail overview
+  shows the distance between surfaces (`overviewNodeUtil.py` 87). Next on the list.
+- The page's own warp is the autopilot's (`CmdWarpToStuffAutopilot`), ten kilometres off.
+  What the client sends when a pilot picks "warp to" from a menu was not looked at here.
+- Driving the pilot through the BFF's routes from outside the page's own controls left the
+  page saying "Docked" until it was reloaded.
+
+### Next
+
+1. **The overview's distance, surface to surface**, as the client's overview reads it.
+2. **The server's "not massive" after a warp**, once the sub-agent is back: the trip flown
+   again, and the park's ship within a metre of the server's at the station.
+3. **The park beside the server's movement log**; the sim clock; MISSILE, FORMATION, MUSHROOM;
+   a fixed ball's collision shapes and the partition's order, if a server ever sends a ball
+   that needs them.
+4. The call ledger (`ship.Undock`, `dogmaIM.Activate` and `Deactivate` to bind as the client
+   does; `GetMissionBriefingInfo` and `GetMissionObjectiveInfo`, which the client asks on every
+   layout of the agent's window), Phase 3's hosted check and the session-less gateway calls.
+5. The scanner the client's way: results kept from the server's word, a probe's destination
+   and range kept here and sent with the scan.
+6. More of a mission's words: the objectives pane, the mission's time under the agent's line,
+   messages inside messages when one turns up.
+7. Small, around dialogs: the title for a dialog's kind, the "do not ask again" box, the typed
    codes not done.

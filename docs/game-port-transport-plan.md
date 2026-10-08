@@ -553,7 +553,8 @@ table marks "not started" is still to do.
 | The park beside the server's own states (`scripts/destiny-compare.js`) | measured | velocities equal; positions agree as far as such a state can show, which is about a tick (see the loop log, 2026-10-08, "the server question answered") |
 | WARP: lining up, the warp proper, dropping out (`ballpark.js`) | done | CCP's one fixture (lining up) to the last digit; the source's own equations; a real warp flown live, at rest 0.17 m and 0.07 m from the server's ship after 280,000 km |
 | MISSILE, FORMATION, MUSHROOM | not ported; the step refuses, the orders are counted as failed | |
-| Collisions | not ported; counted | |
+| Collisions: a massive ball against other balls (`Gradient`, `Potential`) | done | CCP's own collision tests to the last digit; the recorded warp, where the ship bounces off the station for the one tick it is massive; the same trip flown live |
+| Collisions: a fixed ball's own shapes (miniballs, capsules, boxes), and the partition's order | not ported; counted | no recording carries either |
 | Sim clock rebase, time dilation, the damage clock | not ported | |
 | A pilot's own park, kept as michelle keeps one (`pilotSpace.js`); the space snapshot and flight status from it (`spaceProjection.js`) | done | the same pilot on each transport in turn: 95 entities both ways, fixed things within 0.0001 m, five kinds of difference, each explained; two pilots at once, one per transport, see the same 96; undock, stop and dock in the browser |
 | The ship's capacitor and capacities from dogma, kept as godma keeps them (`pilotDogma.js`) | done | a real flight with a module running: the client's recharge lands on each of the server's next reports to the sixth place; the gateway's numbers for the same ship |
