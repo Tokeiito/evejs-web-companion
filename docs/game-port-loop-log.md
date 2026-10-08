@@ -30,7 +30,7 @@ Decisions taken in your place, and anything waiting on you. Overrule any of thes
 | Found | Defect | Evidence | Fix (eve.js) | Re-checked |
 |---|---|---|---|---|
 | 2026-10-08 | `corpRegistry.CanLeaveCurrentCorporation` returns `[0, "CrpAccessDenied", {}]`; the bare `{}` cannot be marshalled, so every client gets None | server log: `[PKT] ERR corpRegistry CanLeaveCurrentCorporation() Cannot marshal value: object {}` (7 times); the client unpacks three values (`corp_ui_home.py` 97, 532, 544) | `2e3101da4`, local, not pushed | 2026-10-08: harness reports it identical on both transports; no `[PKT] ERR` in the run |
-| 2026-10-08 | `corpRegistry.KickOutMembers` returns a bare `{kicked, notKicked}`, which cannot be marshalled either, so the client gets None after the kicks are applied | the client indexes the answer, `results['kicked']` (`base_corporation.py` 469-471); read in the handler, not yet seen live | handed to a sub-agent | |
+| 2026-10-08 | `corpRegistry.KickOutMembers` returns a bare `{kicked, notKicked}`, which cannot be marshalled either, so the client gets None after the kicks are applied | the client indexes the answer, `results['kicked']` (`base_corporation.py` 469-471); the marshaller throws on the handler's old answer (the new test, before the fix) | `22940f822`, local, not pushed | 2026-10-08: called live on the game port with an empty list as a CEO (Farmer, docked): answers `{kicked: [], notKicked: []}` as a dict of two lists; no `[PKT] ERR` |
 
 Judged, not a defect to hand off: the server answers None, and logs `[PKT] ERR`, whenever a handler
 or its marshaller throws. See "For the operator".
@@ -119,12 +119,60 @@ lands.
 
 ### Next
 
-1. **Finish the `KickOutMembers` defect**: read the sub-agent's diff, widen
-   `decodeCorpRegistryKickManyWriteAck` to read the dict as well as the bare object, restart,
-   make the call live with an empty list as a character that may administer its corporation.
-2. **Phase 3, step 1: the `PilotSession` seam as a pure refactor.** Start by reading how
-   `heldTopLevelCall`, the bound bind and call, select, release and the event stream reach
-   `src/eveGatewayClient.js` today, and write the interface down in the plan (2.1 has a sketch).
-   Then move one helper at a time behind it, the suite green after each.
-3. **Phase 3, step 2** and onward, as listed in the entry above this one.
+1. ~~Finish the `KickOutMembers` defect.~~ Done: next entry.
+2. ~~Phase 3, step 1.~~ Done: next entry.
+3. **Phase 3, step 2** and onward: next entry.
+
+---
+
+## 2026-10-08 — the second server fix, and the seam (Phase 3, step 1)
+
+**`KickOutMembers`: fixed and re-checked.** eve.js `22940f822`, local. The handler answers a
+dict of two lists; the sub-agent's test fails on the old handler with the marshaller's own error
+and passes on the new one, and it found and fixed a test-harness verb that read the old shape.
+I read the diff, restarted the server and made the call on the game port (table above). The web
+client's decoder for that call read only the old bare object, so it now reads both
+(`decodeCorpRegistryKickManyWriteAck`, test first). The gateway's JSON for this call changes
+shape with the fix, which is why the decoder had to move in the same breath.
+
+**Phase 3, step 1: done.** Commit `37171f5`, pushed. `src/pilotTransport.js`.
+
+- A decision taken in your place, recorded in the plan (2.1): the interface is **the gateway
+  client's own nine pilot functions**, routed by session handle, rather than a new
+  `PilotSession` object threaded through the BFF. The BFF has some 360 places that reach a
+  pilot and every test injects a fake gateway of that shape; keeping the shape means none of
+  them change. A game-port handle starts `gp:`.
+- With no game-port transport the module returns the gateway client itself, so this step changes
+  nothing that runs. The proof is the suite: 8607 tests, 8583 pass, 0 fail.
+- The tests passed first time, so I broke the code thirteen ways (ten in the module, three in the
+  BFF's wiring) and each was caught.
+- `EVEJS_PILOT_TRANSPORT` and `EVEJS_PILOT_TRANSPORT_OVERRIDES` are parsed and refuse a value
+  that is not a transport. Nothing reads them yet.
+
+**What step 2 has to match**, read from the gateway's source and written into the plan's Phase 3
+section as a table: what the gateway does for each of the nine, and what the game port does
+instead. Three things worth knowing before building it:
+
+- The gateway hands a call's JSON arguments to the handler untouched, and those arguments are
+  already the marshaller's own tree. So the game port can encode them as they are.
+- A "bind" on the gateway is not a retail bind. It calls a method as if it were a service's
+  (`invbroker.GetInventory(stationID)`) and keeps the bound object that comes back. The retail
+  client binds the broker to its location first and calls it with the container
+  (`GetInventory(containerHangar)`). Each of the BFF's fifteen bind shapes needs its retail
+  form; that is the bulk of step 2.
+- The retail client's selection is three calls, seen in a real client's log:
+  `GetCharacterSelectionData`, `GetCharacterLockType`, `SelectCharacterID`. The session
+  change arrives before the last one answers.
+
+### Next
+
+1. **`src/gamePort/pilots.js`, part one**: select (those three calls, with the account pinned to
+   the BFF's signed session), `callMethod` with today's allowlist, release, the notification
+   backlog and its drain, the event stream with the gateway's frame envelope, flight status while
+   docked, and the gateway's error codes. Then run the BFF with `test=gameport` and select the
+   Test Pilot through its HTTP routes.
+2. **Part two: binds**, as the retail client makes them (`eveMoniker.py`, `invCache.py`),
+   inventory first.
+3. **The browser, on the game port**, feature by feature while docked: fix what does not read.
+4. Phase 3's "done when", then Phase 4.
 

@@ -20,7 +20,9 @@
 //   - MoveCompanyShares / MovePrivateShares  → null
 //   - PayoutDividend                          → null (re-read the wallet)
 //   - KickOutMember                           → null
-//   - KickOutMembers                          → { kicked:[…], notKicked:[…] }
+//   - KickOutMembers                          → a dict of two lists, kicked and notKicked
+//                                               (a bare { kicked:[…], notKicked:[…] } before
+//                                               eve.js 22940f822; both are read)
 //   - ResignFromCEO                           → null
 //   - InsertApplication                       → applicationID (number)
 //   - InsertInvitation                        → invitationID (number)
@@ -40,7 +42,7 @@
 // ⚠ These are WRITES: never call a decoder to DRIVE a mutation — the confirm-gated
 // BFF route is the only path, and it refuses without `confirm: true`.
 
-import { readPlainJsonField, type JsonValue } from "./wire.ts";
+import { isListValue, readDictPairs, readPlainJsonField, type JsonValue } from "./wire.ts";
 
 function truthy(value: JsonValue | undefined): boolean {
   return value === true;
@@ -108,8 +110,15 @@ export interface CorpRegistryKickManyWriteAck {
   readonly notKicked: readonly number[];
 }
 
+/**
+ * One of the two id lists, from either shape the handler has answered with: a
+ * marshalled dict of lists (what the client reads as results['kicked']), or the
+ * bare object of arrays it returned before that could be marshalled at all.
+ */
 function readIdList(container: JsonValue | undefined, key: string): number[] {
-  const raw = container === undefined ? undefined : readPlainJsonField(container, key);
+  const pair = readDictPairs(container).find(([name]) => name === key);
+  const held = pair ? pair[1] : container === undefined ? undefined : readPlainJsonField(container, key);
+  const raw = isListValue(held) ? held.items : held;
   if (!Array.isArray(raw)) {
     return [];
   }
@@ -123,9 +132,8 @@ function readIdList(container: JsonValue | undefined, key: string): number[] {
 }
 
 /**
- * Decode KickOutMembers' ack — its handler answers a { kicked, notKicked } split.
- * FAST-MODE: read both id lists off the raw `result` (never fired live, so shape
- * is educated-guess from the handler).
+ * Decode KickOutMembers' ack — its handler answers a kicked / notKicked split.
+ * Both id lists are read off the raw `result`, in either shape (see readIdList).
  */
 export function decodeCorpRegistryKickManyWriteAck(
   response: JsonValue,

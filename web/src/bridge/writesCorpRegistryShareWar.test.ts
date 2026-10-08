@@ -58,6 +58,30 @@ test("R98 — KickOutMembers splits kicked / notKicked id lists", () => {
   assert.deepEqual(ack.notKicked, [140000009]);
 });
 
+test("KickOutMembers reads the dict of two lists the server answers since eve.js 22940f822", () => {
+  // The handler used to answer a bare { kicked, notKicked }, which the server's
+  // marshaller refuses, so the retail client got None. It now answers a dict of
+  // two lists, and the gateway prints that as the marshal tree.
+  const result = {
+    type: "dict",
+    entries: [
+      ["kicked", { type: "list", items: [140000002, 140000003] }],
+      ["notKicked", { type: "list", items: [140000009] }],
+    ],
+  } as unknown as JsonValue;
+  const ack = decodeCorpRegistryKickManyWriteAck(plainAck({ ok: true, applied: true, result }));
+  assert.deepEqual(ack.kicked, [140000002, 140000003]);
+  assert.deepEqual(ack.notKicked, [140000009]);
+  // Nobody kicked is two empty lists, not a malformed answer.
+  const none = { type: "dict", entries: [["kicked", { type: "list", items: [] }], ["notKicked", { type: "list", items: [] }]] } as unknown as JsonValue;
+  assert.deepEqual(decodeCorpRegistryKickManyWriteAck(plainAck({ ok: true, applied: true, result: none })).kicked, []);
+  // An ID that is not a number is left out, in either shape.
+  const odd = { type: "dict", entries: [["kicked", { type: "list", items: [140000002, "x", null] }], ["notKicked", [140000009]]] } as unknown as JsonValue;
+  const oddAck = decodeCorpRegistryKickManyWriteAck(plainAck({ ok: true, applied: true, result: odd }));
+  assert.deepEqual(oddAck.kicked, [140000002]);
+  assert.deepEqual(oddAck.notKicked, [140000009]);
+});
+
 test("R98 — KickOutMembers reads empty lists for an absent/malformed result", () => {
   const ack = decodeCorpRegistryKickManyWriteAck(plainAck({ ok: true, applied: false }));
   assert.deepEqual(ack.kicked, []);
