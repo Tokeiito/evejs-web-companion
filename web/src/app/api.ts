@@ -42,6 +42,7 @@ import type {
   OnlineCharacterState,
   SlotFamily,
   StationStatic,
+  QuestionAnswer,
 } from "../store/types.ts";
 import type { NameRef } from "../store/names.ts";
 import type { BotLaunchGrant, BotRiskClass } from "../bots/runPolicy.ts";
@@ -2067,7 +2068,7 @@ export async function agentAction(
  */
 export async function answerClientQuestion(
   questionID: string,
-  answer: boolean,
+  answer: QuestionAnswer,
   options: ApiOptions = {},
 ): Promise<void> {
   await postJson(`/api/bridge/questions/${encodeURIComponent(questionID)}/answer`, { answer }, options);

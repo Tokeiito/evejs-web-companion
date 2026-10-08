@@ -406,3 +406,34 @@ test("answering a question that has already closed closes it here quietly; any o
   await assert.rejects(broken.flow.answerQuestion("q-0123456789", true));
   assert.equal(broken.store.get().live.questions.length, 1, "still open: the server is still waiting");
 });
+
+test("a choice and a number are held for the user like a Yes/No, and answered in their own shapes", async () => {
+  const { store, flow, source, answers } = await questionFlow();
+  const words = (label: string) => ({ label, parameters: { type: "dict", entries: [] }, text: null });
+  source.emit(gatewayFrame({ kind: "question", question: {
+    ...DECLINE_QUESTION, id: "q-choice", method: "SingleChoiceBox", kind: "choice",
+    choices: [words("UI/Agents/Research/SkillListing"), words("UI/Agents/Research/SkillListing")],
+  } }, 5));
+  source.emit(gatewayFrame({ kind: "question", question: {
+    ...DECLINE_QUESTION, id: "q-quantity", method: "GetQuantity", kind: "quantity", agentID: null,
+    quantity: { min: 1, max: 12, initial: 12, digits: 0 },
+  } }, 6));
+  assert.deepEqual(store.get().live.questions.map((question) => [question.id, question.kind, question.choices.length, question.quantity?.max ?? null]), [
+    ["q-choice", "choice", 2, null],
+    ["q-quantity", "quantity", 0, 12],
+  ]);
+  await flow.answerQuestion("q-choice", { confirmed: true, index: 1 });
+  await flow.answerQuestion("q-quantity", 7);
+  assert.deepEqual(answers(), [
+    ["/api/bridge/questions/q-choice/answer", { answer: { confirmed: true, index: 1 } }],
+    ["/api/bridge/questions/q-quantity/answer", { answer: 7 }],
+  ]);
+  assert.deepEqual(store.get().live.questions, []);
+
+  // Cancel on a number box is null, and null is sent, not left out.
+  source.emit(gatewayFrame({ kind: "question", question: {
+    ...DECLINE_QUESTION, id: "q-again", method: "GetQuantity", kind: "quantity", quantity: { min: 1, max: 12, initial: 12, digits: 0 },
+  } }, 7));
+  await flow.answerQuestion("q-again", null);
+  assert.deepEqual(answers().at(-1), ["/api/bridge/questions/q-again/answer", { answer: null }]);
+});

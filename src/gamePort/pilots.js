@@ -156,6 +156,22 @@ const textOf = (value) => {
  *       With nobody to ask it is answered Yes: a hosted bot pressed the button,
  *       and the client answers the same way at once, with no window, when the
  *       player has ticked "do not show this again" (prompt_player's suppress_id).
+ *   agents.SingleChoiceBox(title, body, choices, agentID, contentID, suppressID)
+ *       agents.py 437: a box of radio buttons with OK and Cancel, which a
+ *       research agent raises to ask what to research. Answers (OK pressed,
+ *       the selected button's name), the name being "radioboxOption<n>Selected"
+ *       counted from 1 (radioButtonMessageBox.py 48), on Cancel too. Dismissed
+ *       when there is nobody to ask: the first button, and not OK.
+ *   agents.GetQuantity(**keywords)
+ *       agents.py 469: uix.QtyPopup(maxvalue, minvalue, setvalue, hint, caption,
+ *       label, digits), a number box with OK and Cancel, raised to ask how many
+ *       datacores to buy. Answers the number, or None on Cancel.
+ *   XmppChat.AskYesNoQuestion(question, props, defaultChoice=1)
+ *       xmppchatsvc.py 1745: a Yes/No dialog by message ID, which customs
+ *       raises over contraband. Answers whether Yes was pressed. The server
+ *       gives it a short time and then decides for itself, which is what it
+ *       does when a player is not there; so with nobody to ask, and when the
+ *       user does not answer in time, this is left unanswered.
  *   objectCaching.InvalidateCachedMethodCall(service, method, *args)
  *       carbon/common/script/net/objectCaching.py 222: forget a method's cached
  *       answer, so the next call asks the server. Nothing is kept here to
@@ -165,10 +181,10 @@ const textOf = (value) => {
  * resolves with {asked, answer}: asked is false when nobody is watching, and
  * answer is undefined when the question was shown and not answered in time.
  */
-function defaultClientCallAnswer({ service, method, args }, characterID, askUser = async () => ({ asked: false })) {
+function defaultClientCallAnswer({ service, method, args, kwargs }, characterID, askUser = async () => ({ asked: false })) {
+  const list = itemsOf(args);
   switch (`${service}.${method}`) {
-    case "agents.YesNo": {
-      const list = Array.isArray(args) ? args : [];
+    case "agents.YesNo":
       return askUser({
         kind: "yesNo",
         title: words(list[0]),
@@ -177,7 +193,46 @@ function defaultClientCallAnswer({ service, method, args }, characterID, askUser
         contentID: positive(list[3]),
         suppressID: textOf(list[4]),
       }).then((reply) => (reply.asked ? reply.answer === true : true));
+    case "agents.SingleChoiceBox":
+      return askUser({
+        kind: "choice",
+        title: words(list[0]),
+        body: words(list[1]),
+        choices: itemsOf(list[2]).map(words),
+        agentID: positive(list[3]),
+        contentID: positive(list[4]),
+        suppressID: textOf(list[5]),
+      }).then((reply) => {
+        const given = reply.asked && reply.answer ? reply.answer : { confirmed: false, index: 0 };
+        return [given.confirmed === true, `radioboxOption${given.index + 1}Selected`];
+      });
+    case "agents.GetQuantity": {
+      const keyword = (name) => dictValue(kwargs, name);
+      return askUser({
+        kind: "quantity",
+        title: words(keyword("caption") ?? null),
+        body: words(keyword("label") ?? null),
+        agentID: null,
+        contentID: null,
+        suppressID: null,
+        quantity: {
+          min: finite(keyword("minvalue")) ?? 0,
+          max: finite(keyword("maxvalue")),
+          initial: finite(keyword("setvalue")),
+          digits: finite(keyword("digits")) ?? 0,
+        },
+      }).then((reply) => (reply.asked && typeof reply.answer === "number" ? reply.answer : null));
     }
+    case "XmppChat.AskYesNoQuestion":
+      return askUser({
+        kind: "yesNo",
+        title: words(null),
+        // A dialog's message ID with its parameters, where an agent's question has a label with its.
+        body: { label: textOf(list[0]), parameters: wireToBridgeJson(list[1] ?? null), text: null },
+        agentID: null,
+        contentID: null,
+        suppressID: null,
+      }).then((reply) => (reply.asked && typeof reply.answer === "boolean" ? reply.answer : undefined));
     case "objectCaching.InvalidateCachedMethodCall":
     case "objectCaching.InvalidateCachedMethodCalls":
       return null;
@@ -186,9 +241,40 @@ function defaultClientCallAnswer({ service, method, args }, characterID, askUser
   }
 }
 
-/** Whether an answer is one the question can take. */
-function answerFits(kind, answer) {
-  return kind === "yesNo" ? typeof answer === "boolean" : false;
+/** The items of a decoded list or tuple, or none. */
+const itemsOf = (value) => (Array.isArray(value) ? value : value && Array.isArray(value.items) ? value.items : []);
+
+/** A keyword by name from a decoded dict, or undefined. */
+function dictValue(dict, name) {
+  const entries = dict && dict.type === "dict" && Array.isArray(dict.entries) ? dict.entries : [];
+  const found = entries.find(([key]) => textOf(key) === name);
+  return found ? found[1] : undefined;
+}
+
+/** A number the wire or the JSON carried, or null. */
+const finite = (value) => {
+  const number = typeof value === "number" || typeof value === "bigint" ? Number(value) : NaN;
+  return Number.isFinite(number) ? number : null;
+};
+
+/** Whether an answer is one the question can take: what its window on the retail client could give. */
+function answerFits(question, answer) {
+  switch (question.kind) {
+    case "yesNo":
+      return typeof answer === "boolean";
+    case "choice":
+      return Boolean(answer) && typeof answer === "object" && typeof answer.confirmed === "boolean" &&
+        Number.isSafeInteger(answer.index) && answer.index >= 0 && answer.index < question.choices.length;
+    case "quantity": {
+      // Cancel is None. Otherwise a number the box's field would have let through (intonly / floatonly, min to max).
+      if (answer === null) return true;
+      const { min, max, digits } = question.quantity;
+      return typeof answer === "number" && Number.isFinite(answer) && (digits > 0 || Number.isInteger(answer)) &&
+        answer >= min && (max === null || answer <= max);
+    }
+    default:
+      return false;
+  }
 }
 
 /** The kind of a dogma effect, from the static data the BFF already reads. Loaded when first asked. */
@@ -376,11 +462,14 @@ function createGamePortPilots({
       return Promise.resolve({ asked: false, answer: undefined });
     }
     const id = randomBytes(9).toString("base64url");
+    // No longer than the server itself will wait: an answer after that reaches nobody.
+    const serverWaitMs = Number.isFinite(call.timeoutSeconds) && call.timeoutSeconds > 0 ? call.timeoutSeconds * 1000 : Infinity;
+    const waitMs = Math.min(questionWaitMs, serverWaitMs);
     return new Promise((resolve) => {
       const asked = {
         id,
-        kind: question.kind,
-        timer: timers.setTimeout(() => asked.settle(undefined, "expired"), questionWaitMs),
+        question,
+        timer: timers.setTimeout(() => asked.settle(undefined, "expired"), waitMs),
         settle(answer, reason) {
           if (!entry.questions.delete(id)) return;
           timers.clearTimeout(asked.timer);
@@ -391,7 +480,7 @@ function createGamePortPilots({
       entry.questions.set(id, asked);
       publish(entry, {
         kind: "question",
-        question: { id, service: call.service, method: call.method, ...question, askedAtMs: now(), expiresAtMs: now() + questionWaitMs },
+        question: { id, service: call.service, method: call.method, ...question, askedAtMs: now(), expiresAtMs: now() + waitMs },
       });
     });
   }
@@ -401,7 +490,7 @@ function createGamePortPilots({
     const entry = held(bridgeSessionID, sessionFields);
     const asked = entry.questions.get(String(questionID || ""));
     if (!asked) throw fail("QUESTION_NOT_FOUND", "That question is no longer open.");
-    if (!answerFits(asked.kind, answer)) throw fail("CALL_INVALID", "That is not an answer this question takes.");
+    if (!answerFits(asked.question, answer)) throw fail("CALL_INVALID", "That is not an answer this question takes.");
     asked.settle(answer, "answered");
     return { answered: true, questionID: asked.id };
   }

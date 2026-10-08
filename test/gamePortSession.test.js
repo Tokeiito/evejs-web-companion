@@ -652,6 +652,8 @@ test("a call the server makes to the client is answered where it came from, with
   assert.equal(asked[0].args[2], 3008416);
   assert.equal(text(asked[0].args[4]), "AgtQuitMission");
   assert.equal(dictGet(asked[0].kwargs, "machoVersion"), 1);
+  // How long the server says it will wait, off the packet.
+  assert.equal(asked[0].timeoutSeconds, 86400);
 
   // One packet back: a call response, the two addresses swapped, so the server's call ID is the destination's.
   assert.equal(transport.sent.length, before + 1);

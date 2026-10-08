@@ -2599,7 +2599,11 @@ export interface ClientQuestion {
   readonly id: string;
   readonly service: string;
   readonly method: string;
-  readonly kind: "yesNo";
+  /**
+   * Which window the retail client would raise: a Yes/No, radio buttons with
+   * OK / Cancel, or a number box with OK / Cancel.
+   */
+  readonly kind: "yesNo" | "choice" | "quantity";
   readonly title: QuestionWords;
   readonly body: QuestionWords;
   readonly agentID: number | null;
@@ -2607,7 +2611,27 @@ export interface ClientQuestion {
   readonly suppressID: string | null;
   readonly askedAtMs: number;
   readonly expiresAtMs: number;
+  /** What there is to choose from, in the server's order; empty unless `kind` is "choice". */
+  readonly choices: readonly QuestionWords[];
+  /** The number box's limits; null unless `kind` is "quantity". */
+  readonly quantity: {
+    readonly min: number;
+    readonly max: number | null;
+    readonly initial: number | null;
+    /** Decimal places allowed; 0 asks for a whole number. */
+    readonly digits: number;
+  } | null;
 }
+
+/**
+ * An answer to a ClientQuestion, by its kind: Yes or No; which choice, and
+ * whether OK was pressed rather than Cancel; a number, or null for Cancel.
+ */
+export type QuestionAnswer =
+  | boolean
+  | { readonly confirmed: boolean; readonly index: number }
+  | number
+  | null;
 
 export interface CharacterSummary {
   readonly characterID: number;

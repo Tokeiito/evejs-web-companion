@@ -182,6 +182,8 @@ function question(id: string): ClientQuestion {
     suppressID: "AgtQuitMission",
     askedAtMs: 1,
     expiresAtMs: 2,
+    choices: [],
+    quantity: null,
   };
 }
 

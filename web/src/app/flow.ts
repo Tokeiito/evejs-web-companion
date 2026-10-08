@@ -127,6 +127,7 @@ import type {
   ActivityCalendarResponseRow,
   ActivityNotificationRow,
   AgentAction,
+  QuestionAnswer,
   ChatChannel,
   ContractDetail,
   DestinationMatch,
@@ -886,10 +887,10 @@ export interface AppFlow {
   chooseAction(agentID: number, action: AgentAction): Promise<void>;
   /**
    * Answer a question the SERVER asked (`store.live.questions`): the retail
-   * client's Yes/No window. The server is waiting on it; anything but a Yes
-   * leaves things as they were.
+   * client's Yes/No window, its radio-button box or its number box. The server
+   * is waiting on it; a No or a Cancel leaves things as they were.
    */
-  answerQuestion(questionID: string, answer: boolean): Promise<void>;
+  answerQuestion(questionID: string, answer: QuestionAnswer): Promise<void>;
   /** Load the accepted-courier briefing (bound reads on the agent). */
   loadBriefing(agentID: number): Promise<void>;
   /** Load the mission journal (agentMgr.GetMyJournalDetails). */

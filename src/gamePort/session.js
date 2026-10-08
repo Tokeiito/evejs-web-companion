@@ -902,6 +902,8 @@ class GamePortSession {
       method: Array.isArray(inner) ? text(inner[1]) : null,
       args: Array.isArray(inner) ? inner[2] ?? [] : [],
       kwargs: Array.isArray(inner) ? inner[3] ?? null : null,
+      // How long the server says it will wait for the answer (the packet's machoTimeout), when it says.
+      timeoutSeconds: integer(dictGet(packet.oob, "machoTimeout")) ?? null,
     };
     const report = (outcome) => this._emit("clientCall", { ...call, answered: false, answer: undefined, error: null, ...outcome });
     if (call.service === null || call.method === null || typeof this.clientCalls !== "function") {

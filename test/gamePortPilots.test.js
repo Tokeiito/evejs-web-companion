@@ -99,8 +99,8 @@ function fakeSession({ answers = {}, userid = ACCOUNT, loginError = null, comesO
     onClientCall(listener) { listeners.clientCall.add(listener); return () => listeners.clientCall.delete(listener); },
     clientCalls: null,
     /** The server calls one of the client's own services, as the session hands such a call on. */
-    async ask(service, method, args = [], kwargs = null) {
-      const call = { service, method, args, kwargs };
+    async ask(service, method, args = [], kwargs = null, timeoutSeconds = null) {
+      const call = { service, method, args, kwargs, timeoutSeconds };
       const answer = await session.clientCalls(call);
       for (const listener of listeners.clientCall) listener({ ...call, answered: answer !== undefined, answer, error: null });
       return answer;
@@ -1212,18 +1212,22 @@ test("with nobody watching the pilot, the server's question before a mission is 
   assert.equal(await session.ask("agents", "YesNo", [["UI/Agents/StandardMission/QuitMissionTitle", {}], ["UI/Agents/StandardMission/QuitMissionMessage", {}], 3008416, 4802, "AgtQuitMission"]), true);
   assert.equal(await session.ask("objectCaching", "InvalidateCachedMethodCall", ["charFittingMgr", "GetFittings", PILOT]), null);
   assert.equal(await session.ask("objectCaching", "InvalidateCachedMethodCalls", [[]]), null);
-  // What this client has no answer to stays unanswered: a choice among several, a number, a question in chat.
-  assert.equal(await session.ask("agents", "SingleChoiceBox", ["title", "body", []]), undefined);
-  assert.equal(await session.ask("agents", "GetQuantity", []), undefined);
-  assert.equal(await session.ask("XmppChat", "AskYesNoQuestion", []), undefined);
+  // A box nobody is there to see is dismissed, as its Cancel button would: not OK, and no number.
+  assert.deepEqual(await session.ask("agents", "SingleChoiceBox", ["title", "body", { type: "list", items: ["a", "b"] }]), [false, "radioboxOption1Selected"]);
+  assert.equal(await session.ask("agents", "GetQuantity", []), null);
+  // The customs question is left unanswered: the server decides for itself when a player is not there.
+  assert.equal(await session.ask("XmppChat", "AskYesNoQuestion", ["ChtCustomsConfiscationConfirmation2", { type: "dict", entries: [] }]), undefined);
+  // And what this client has no such service for stays unanswered.
+  assert.equal(await session.ask("agents", "RemoteNamePopup", ["caption", "label", 1]), undefined);
 
   assert.deepEqual(told, [
     [PILOT, "agents", "YesNo", true, true],
     [PILOT, "objectCaching", "InvalidateCachedMethodCall", true, null],
     [PILOT, "objectCaching", "InvalidateCachedMethodCalls", true, null],
-    [PILOT, "agents", "SingleChoiceBox", false, undefined],
-    [PILOT, "agents", "GetQuantity", false, undefined],
+    [PILOT, "agents", "SingleChoiceBox", true, [false, "radioboxOption1Selected"]],
+    [PILOT, "agents", "GetQuantity", true, null],
     [PILOT, "XmppChat", "AskYesNoQuestion", false, undefined],
+    [PILOT, "agents", "RemoteNamePopup", false, undefined],
   ]);
 });
 
@@ -1392,4 +1396,163 @@ test("when the pilot's session ends, its open questions close unanswered", async
   assert.equal(settled, false);
   assert.equal(timers.size, 0);
   await rejects(pilots.answerClientQuestion(handle, id, true, FIELDS), "SESSION_NOT_FOUND");
+});
+
+// ── a research agent's boxes, and the customs question ───────────────────────
+//
+// The arguments are the ones eve.js sends: researchRuntime.buildFieldChoicePrompt and buildDatacorePrompt through
+// researchDialogue.js, and customsInspectionPresentation.buildConfiscationDialogArguments.
+
+const label = (path, entries = []) => [path, { type: "dict", entries }];
+const FIELD_CHOICE = [
+  label("UI/Agents/Research/SelectResearchTypeTitle"),
+  label("UI/Agents/Research/SelectResearchTypeMessage"),
+  { type: "list", items: [11433, 11442, 11529].map((skillID) => label("UI/Agents/Research/SkillListing", [["skillID", skillID], ["skillLevel", 2]])) },
+  3009373,
+];
+const DATACORE_KEYWORDS = {
+  type: "dict",
+  // A keyword's name comes off the wire as bytes.
+  entries: [
+    ["maxvalue", 12], ["minvalue", 1], ["setvalue", 12],
+    ["caption", label("UI/Agents/Research/Datacores")],
+    ["label", label("UI/Agents/Research/DatacorePrice", [["datacoreTypeID", 20424], ["rpAmount", 100], ["iskAmount", 10000]])],
+    ["digits", 0],
+  ].map(([name, value]) => [Buffer.from(name), value]),
+};
+const CUSTOMS_QUESTION = [
+  "ChtCustomsConfiscationConfirmation2",
+  { type: "dict", entries: [["contraband", [103, [[24, 3721, 10]], "<br>"]], ["empire", [2, 500001]]] },
+];
+
+test("a research agent's choice of field goes to the user, and comes back as the radio button the client would name", async () => {
+  const cases = [
+    [{ confirmed: true, index: 1 }, [true, "radioboxOption2Selected"]],
+    [{ confirmed: true, index: 0 }, [true, "radioboxOption1Selected"]],
+    // Cancel keeps the button that was selected, as the client's box does.
+    [{ confirmed: false, index: 2 }, [false, "radioboxOption3Selected"]],
+  ];
+  for (const [answer, wire] of cases) {
+    const { pilots, session, handle, events } = await watched();
+    const asking = session.ask("agents", "SingleChoiceBox", FIELD_CHOICE);
+    await tick();
+    const { question } = events()[0];
+    assert.equal(question.kind, "choice");
+    assert.equal(question.method, "SingleChoiceBox");
+    assert.equal(question.title.label, "UI/Agents/Research/SelectResearchTypeTitle");
+    assert.equal(question.body.label, "UI/Agents/Research/SelectResearchTypeMessage");
+    assert.equal(question.agentID, 3009373);
+    assert.deepEqual(question.choices, [11433, 11442, 11529].map((skillID) => ({
+      label: "UI/Agents/Research/SkillListing",
+      parameters: { type: "dict", entries: [["skillID", skillID], ["skillLevel", 2]] },
+      text: null,
+    })));
+    for (const wrong of [true, null, { confirmed: true }, { confirmed: true, index: 3 }, { confirmed: true, index: -1 }, { confirmed: true, index: 1.5 }, { confirmed: "yes", index: 1 }]) {
+      await rejects(pilots.answerClientQuestion(handle, question.id, wrong, FIELDS), "CALL_INVALID");
+    }
+    await pilots.answerClientQuestion(handle, question.id, answer, FIELDS);
+    assert.deepEqual(await asking, wire);
+  }
+});
+
+test("a choice nobody makes is dismissed when its time is up: the first button, and not OK", async () => {
+  const { session, events, timers } = await watched();
+  const asking = session.ask("agents", "SingleChoiceBox", FIELD_CHOICE);
+  await tick();
+  assert.equal(events()[0].question.kind, "choice");
+  [...timers.values()][0].action();
+  assert.deepEqual(await asking, [false, "radioboxOption1Selected"]);
+});
+
+test("how many datacores goes to the user as a number box with the server's limits, and comes back as the number or None", async () => {
+  for (const [answer, wire] of [[5, 5], [1, 1], [12, 12], [null, null]]) {
+    const { pilots, session, handle, events } = await watched();
+    const asking = session.ask("agents", "GetQuantity", [], DATACORE_KEYWORDS);
+    await tick();
+    const { question } = events()[0];
+    assert.equal(question.kind, "quantity");
+    assert.equal(question.method, "GetQuantity");
+    assert.deepEqual(question.quantity, { min: 1, max: 12, initial: 12, digits: 0 });
+    assert.equal(question.title.label, "UI/Agents/Research/Datacores");
+    assert.deepEqual(question.body, {
+      label: "UI/Agents/Research/DatacorePrice",
+      parameters: { type: "dict", entries: [["datacoreTypeID", 20424], ["rpAmount", 100], ["iskAmount", 10000]] },
+      text: null,
+    });
+    // What the client's own field would not have let through: below, above, a fraction where whole numbers are asked.
+    for (const wrong of [0, 13, 2.5, "5", true, undefined, { qty: 5 }, Number.NaN]) {
+      await rejects(pilots.answerClientQuestion(handle, question.id, wrong, FIELDS), "CALL_INVALID");
+    }
+    await pilots.answerClientQuestion(handle, question.id, answer, FIELDS);
+    assert.equal(await asking, wire);
+  }
+});
+
+test("a number box takes a fraction when the server asks for digits, has no ceiling when none is given, and lapses as None", async () => {
+  const { pilots, session, handle, events, timers } = await watched();
+  const loose = { type: "dict", entries: [["digits", 2]] };
+  const asking = session.ask("agents", "GetQuantity", [], loose);
+  await tick();
+  const { question } = events()[0];
+  assert.deepEqual(question.quantity, { min: 0, max: null, initial: null, digits: 2 });
+  assert.deepEqual(question.title, { label: null, parameters: null, text: null });
+  await rejects(pilots.answerClientQuestion(handle, question.id, -1, FIELDS), "CALL_INVALID");
+  await pilots.answerClientQuestion(handle, question.id, 1234567.25, FIELDS);
+  assert.equal(await asking, 1234567.25);
+
+  const second = session.ask("agents", "GetQuantity", [], DATACORE_KEYWORDS);
+  await tick();
+  [...timers.values()][0].action();
+  assert.equal(await second, null);
+});
+
+test("the customs question goes to the user for as long as the server will wait, and no longer", async () => {
+  for (const [answer, wire] of [[true, true], [false, false]]) {
+    const { pilots, session, handle, events, timers } = await watched({ now: () => 5_000_000, questionWaitMs: 110_000 });
+    const asking = session.ask("XmppChat", "AskYesNoQuestion", CUSTOMS_QUESTION, { type: "dict", entries: [["machoVersion", 1]] }, 30);
+    await tick();
+    const { id, ...question } = events()[0].question;
+    assert.deepEqual(question, {
+      service: "XmppChat",
+      method: "AskYesNoQuestion",
+      kind: "yesNo",
+      title: { label: null, parameters: null, text: null },
+      body: {
+        label: "ChtCustomsConfiscationConfirmation2",
+        parameters: { type: "dict", entries: [["contraband", [103, [[24, 3721, 10]], "<br>"]], ["empire", [2, 500001]]] },
+        text: null,
+      },
+      agentID: null,
+      contentID: null,
+      suppressID: null,
+      askedAtMs: 5_000_000,
+      // The server's thirty seconds, not this client's hundred and ten.
+      expiresAtMs: 5_030_000,
+    });
+    assert.deepEqual([...timers.values()].map((timer) => timer.delay), [30_000]);
+    await rejects(pilots.answerClientQuestion(handle, id, "yes", FIELDS), "CALL_INVALID");
+    await pilots.answerClientQuestion(handle, id, answer, FIELDS);
+    assert.equal(await asking, wire);
+  }
+});
+
+test("a customs question nobody answers in time is left unanswered, for the server to decide as it does for an absent player", async () => {
+  const told = [];
+  const { session, events, timers } = await watched({ onClientCall: (call) => told.push([call.method, call.answered, call.answer]) });
+  const asking = session.ask("XmppChat", "AskYesNoQuestion", CUSTOMS_QUESTION, null, 30);
+  await tick();
+  const { id } = events()[0].question;
+  [...timers.values()][0].action();
+  assert.equal(await asking, undefined);
+  assert.deepEqual(events().slice(1), [{ kind: "question-closed", id, reason: "expired" }]);
+  assert.deepEqual(told, [["AskYesNoQuestion", false, undefined]]);
+});
+
+test("a question the server will wait a day for still lapses in this client's own time", async () => {
+  const { session, timers } = await watched({ questionWaitMs: 110_000 });
+  session.ask("agents", "YesNo", DECLINE_QUESTION, null, 86400);
+  session.ask("agents", "YesNo", DECLINE_QUESTION, null, 0);
+  session.ask("agents", "YesNo", DECLINE_QUESTION, null, null);
+  await tick();
+  assert.deepEqual([...timers.values()].map((timer) => timer.delay), [110_000, 110_000, 110_000]);
 });
