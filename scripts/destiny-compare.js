@@ -23,7 +23,8 @@
 // ahead of it, depending on when in the second it was asked for. Velocities
 // while cruising, modes, and what the park does with each state are what this
 // shows well. For positions to the metre, the server's own record of each step
-// is eve.js/_local/logs/space-movement-debug.log.
+// is eve.js/_local/logs/space-movement-debug.log, and
+// scripts/park-against-movement-log.js sets the park beside it.
 
 const path = require("node:path");
 const { Ballpark } = require("../src/gamePort/destiny/ballpark");

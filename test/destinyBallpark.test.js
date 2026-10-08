@@ -1627,3 +1627,103 @@ test("a fixed ball's own collision shapes are not ported, and a massive ball ste
   assert.equal(charge((p) => { const free = spaceBall(p, { id: 2, x: 50 }); free.miniBalls = [{}]; }).park.unported.minis, 0);
   assert.equal(charge((p, ball) => { wall(p, 2, 50).miniBalls = [{}]; p.setBallMassive(ball.id, false); }).park.unported.minis, 0);
 });
+
+// ── between two ticks ───────────────────────────────────────────────────────
+
+test("between two ticks a ball is stepped from where it was by the push that moved it: at 0 where it was, at 1 where it is", () => {
+  const park = new Ballpark();
+  const ball = spaceBall(park, { maxVelocity: 200 });
+  park.gotoDirection(1, 10, 20, 30);
+  for (let tick = 0; tick < 4; tick += 1) {
+    const was = { p: { ...ball.newPos }, v: { ...ball.newVel } };
+    park.evolve();
+    // The whole tick is the park's own step, to the last digit; none of it is where the ball was.
+    assert.deepEqual(park.between(ball, 1), { p: ball.newPos, v: ball.newVel });
+    assert.deepEqual(park.between(ball, 0), was);
+    // Part of the tick is the same step taken for that long, not a straight line between the two.
+    const half = park.between(ball, 0.5);
+    assert.deepEqual(half, park.integrate(was.p, was.v, ball.lastG, ball.mass * ball.agility, park.friction, ball.timeFactor, 0.5));
+    const straight = scale({ x: was.p.x + ball.newPos.x, y: was.p.y + ball.newPos.y, z: was.p.z + ball.newPos.z }, 0.5);
+    assert.ok(distance(half.p, straight) > 1e-3 && distance(half.p, straight) < distance(was.p, ball.newPos), `tick ${tick}: ${distance(half.p, straight)} m from the straight line's middle`);
+  }
+});
+
+test("between two ticks a ball lining up for a warp is stepped like any other: its warp has not begun", () => {
+  const park = new Ballpark();
+  const ball = spaceBall(park, { maxVelocity: 200 });
+  park.warpTo(1, 40 * AU, 0, 0, 15000, 3000);
+  for (let tick = 0; tick < 3; tick += 1) {
+    const was = { p: { ...ball.newPos }, v: { ...ball.newVel } };
+    park.evolve();
+    assert.ok(ball.mode === MODE.WARP && !isWarping(ball), `tick ${tick}: lining up`);
+    assert.deepEqual(park.between(ball, 1), { p: ball.newPos, v: ball.newVel });
+    assert.deepEqual(park.between(ball, 0), was);
+  }
+});
+
+test("between two ticks a ball that was pushed off something is stepped with that push too", () => {
+  const park = new Ballpark();
+  const ball = spaceBall(park, { id: 1, vx: 8 });
+  wall(park, 2, 9);
+  const was = { p: { ...ball.newPos }, v: { ...ball.newVel } };
+  park.evolve();
+  assert.ok(ball.lastC.x < 0, "the ball ran into the wall");
+  assert.deepEqual(park.between(ball, 1), { p: ball.newPos, v: ball.newVel });
+  assert.deepEqual(park.between(ball, 0), was);
+  // Without the wall's push the same step ends somewhere else.
+  assert.notDeepEqual(park.integrate(was.p, was.v, ball.lastG, ball.mass * ball.agility, park.friction, ball.timeFactor, 1.0).p, ball.newPos);
+});
+
+test("between two ticks a ball in warp is placed by the warp's clock, a tick ahead: at 0 where it is, at 1 where the next tick puts it", () => {
+  const park = new Ballpark();
+  const ball = readyToWarp(park, { far: 40 * AU });
+  park.evolve(); // enters warp
+  const posted = [];
+  park.onPost = (name) => posted.push(name);
+  let checked = 0;
+  let speeds = 0;
+  for (let tick = 0; tick < 30 && isWarping(ball); tick += 1) {
+    park.evolve();
+    if (!isWarping(ball)) break;
+    // To the last digit but one: the heading is worked out from where the ball was, and far out a double holds a place to under a millimetre.
+    const now = park.between(ball, 0);
+    assert.ok(distance(now.p, ball.newPos) < 1e-2, `tick ${tick}: ${distance(now.p, ball.newPos)} m`);
+    const ahead = park.between(ball, 1);
+    const half = park.between(ball, 0.5);
+    // The speed is the warp's at that moment, along the line.
+    assert.ok(ahead.v.x > 0 && ahead.v.y === 0 && ahead.v.z === 0, `tick ${tick}: ${ahead.v.x} m/s`);
+    if (Math.abs(ahead.v.x - now.v.x) > 1e-6 * now.v.x) speeds += 1;
+    // Half way through the tick it is between the two, on the line, by the warp's curve and not by halves.
+    assert.ok(half.p.x > ball.newPos.x && half.p.x < ahead.p.x && half.p.y === 0 && half.p.z === 0);
+    const before = { ...ball.newPos };
+    const mode = ball.mode;
+    park.evolve();
+    if (isWarping(ball)) {
+      assert.ok(distance(ahead.p, ball.newPos) < 1e-2 && distance(ahead.p, before) > 1, `tick ${tick}: ${distance(ahead.p, ball.newPos)} m`);
+      checked += 1;
+    }
+    // Looking between ticks changed nothing: the ball was not dropped out of warp by it.
+    assert.ok(mode === MODE.WARP && before.x < ball.newPos.x);
+  }
+  assert.ok(checked >= 5, `${checked} ticks of warp compared`);
+  assert.ok(speeds >= 3, `the speed changed within ${speeds} of them`);
+});
+
+test("looking between ticks at a warp that is over does not end it", () => {
+  const park = new Ballpark();
+  const posted = [];
+  const ball = readyToWarp(park, { far: 2 * AU });
+  park.onPost = (name) => posted.push(name);
+  park.evolve();
+  for (let tick = 0; tick < 200 && isWarping(ball); tick += 1) {
+    const mode = ball.mode;
+    const massive = ball.isMassive;
+    const said = posted.length;
+    // Far past the end of the warp: the place is the end, and nothing else happens.
+    const far = park.between(ball, 500);
+    assert.deepEqual(far.p, ball.goto);
+    assert.deepEqual([ball.mode, ball.isMassive, posted.length], [mode, massive, said]);
+    park.evolve();
+  }
+  assert.equal(ball.mode, MODE.STOP, "the park's own step ended the warp");
+});

@@ -14,6 +14,7 @@
 //                              Gradient (2746), Potential (2789), AddBall (3303),
 //                              FollowBall (3879), Orbit (4007),
 //                              the orders (4471-4650) and the setters (4652-5090)
+//   destiny/src/Ball.cpp       ClientBall::InterpolatedPosition (1208): a ball between two ticks
 //   destiny/src/Collision.cpp  CollideTwoSpheres (108), Quadratic (136)
 //   destiny/src/Partition.cpp  which balls a ball can collide with (302, 344)
 //   destiny/src/Thunkers.cpp   reading a state into the park (2083, 2463, 2897) and
@@ -829,6 +830,32 @@ class Ballpark {
       if (!interpolating) drop();
     }
     return { p, v, distance };
+  }
+
+  /**
+   * ClientBall::InterpolatedPosition (Ball.cpp 1208) with
+   * Ballpark::CalculateBallPositionVelocity (2715): where the client draws a
+   * ball `fraction` of a tick after the park last stepped, and how fast.
+   *
+   * A ball not in warp is stepped from where it was a tick ago by the same
+   * push that took it to where it is now, for that much of the tick: at 0 it
+   * is where it was, at 1 where the park has it. A ball in warp is placed by
+   * the warp's own clock, which runs a tick ahead of that: at 0 it is where
+   * the park has it, at 1 where the next tick will put it.
+   *
+   * The client keeps what it last drew and hands that to the warp for its
+   * heading and its least speed; here the ball of a tick ago is handed over,
+   * so the speed returned as a warp begins can differ from the client's. The
+   * place does not depend on it. Not ported: the tick's collisions worked out
+   * step by step (mCollisionLocations), which this park does not keep.
+   */
+  between(ball, fraction) {
+    if (isWarping(ball)) {
+      const t = ((this.currentTime - ball.effectStamp) - 1 + fraction) * this.dt;
+      const placed = this.warpDistance(ball, ball.oldPos, ball.oldVel, t, true);
+      return { p: placed.p, v: placed.v };
+    }
+    return this.integrate(ball.oldPos, ball.oldVel, add(ball.lastG, ball.lastC), ball.mass * ball.agility, this.friction, ball.timeFactor, fraction * this.dt);
   }
 
   /** Ballpark::EvolveWarp (915): lining up is a GOTO at the destination; once lined up the warp proper begins, in this same tick. */
