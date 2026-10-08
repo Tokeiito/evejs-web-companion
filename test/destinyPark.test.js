@@ -726,3 +726,118 @@ test("several updates in one notification are taken in turn, and their dogma mes
   assert.deepEqual(park.history.map(([entries, wait]) => [entries.length, wait]), [[2, false]]);
   assert.deepEqual(messages, [[["OnModuleAttributeChanges", []]]]);
 });
+
+// ── held up to the server's own account ──────────────────────────────────────
+//
+// test/fixtures/destinyUndockProbed.json is the same flight, but every three
+// seconds the server was asked for its whole state again (UpdateStateRequest,
+// which is what the client sends when it has lost its place). Each answer says
+// where the server has the ship at that tick, so the park can be compared with
+// it just before it is replaced by it.
+//
+// eve.js does not step its ships once a second as CCP's server does: it moves
+// them ten times a second by the time that has passed, and stamps what it sends
+// with the whole second. So its numbers are not expected to match a park
+// stepped by CCP's rules to the last digit, and they do not: see the bounds.
+
+const probed = require("./fixtures/destinyUndockProbed.json");
+const { keyValField } = require("./helpers/destinyRecording");
+const { readState } = require("../src/gamePort/destiny/state");
+
+/** Play the probed recording; at each state after the first, note the park's ship beside the server's. */
+function replayProbed() {
+  const park = new Park();
+  const updates = destinyUpdates(probed);
+  const probes = [];
+  const applied = [];
+  const setState = park.SetState.bind(park);
+  park.SetState = (...args) => {
+    setState(...args);
+    const ship = park.ballpark.ball(probed.shipID);
+    applied.push({ tick: park.currentTime, position: { ...ship.newPos }, velocity: { ...ship.newVel }, mode: ship.mode });
+  };
+  let clock = updates[0].atMs;
+  const tickTo = (atMs) => {
+    while (clock + 1000 <= atMs) {
+      park.tick();
+      clock += 1000;
+    }
+  };
+  for (const update of updates) {
+    tickTo(update.atMs);
+    const [stamp, [name, args]] = update.entries[0];
+    if (name === "SetState" && park.validState) {
+      // The park's own ship at that tick, on a copy so the park is not disturbed.
+      const copy = new Ballpark();
+      copy.readState(park.ballpark.writeState(), 0);
+      assert.ok(stamp >= copy.currentTime && stamp - copy.currentTime < 3, `the park is at ${copy.currentTime}, the state for ${stamp}`);
+      while (copy.currentTime < stamp) copy.evolve();
+      const ours = copy.ball(probed.shipID);
+      const theirs = readState(keyValField(args[0], "state")).balls.find((ball) => ball.id === probed.shipID);
+      probes.push({ stamp, ours: { position: { ...ours.newPos }, velocity: { ...ours.newVel }, mode: ours.mode }, theirs });
+    }
+    park.doDestinyUpdate(update.entries, update.waitForBubble);
+  }
+  tickTo(clock + 1000);
+  return { park, probes, applied, updates };
+}
+
+const apart = (a, b) => Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
+const size = (v) => Math.hypot(v.x, v.y, v.z);
+
+test("asked for its state again and again, the server's answers replace the park's and nothing is lost", () => {
+  const { park, probes, applied, updates } = replayProbed();
+  assert.equal(probes.length, 6);
+  assert.deepEqual([[...park.failed], park.resets, park.fatalDesyncs, park.history.length], [[], 0, 0, 0]);
+  assert.deepEqual([park.ballpark.balls.size, park.slimItems.size, park.ego], [95, 95, probed.shipID]);
+  // Each state was applied at its own stamp, and the ship put exactly where it says.
+  assert.equal(applied.length, 7);
+  const states = updates.filter((update) => update.entries[0][1][0] === "SetState");
+  for (const [index, update] of states.entries()) {
+    const theirs = readState(keyValField(update.entries[0][1][1][0], "state")).balls.find((ball) => ball.id === probed.shipID);
+    assert.deepEqual(applied[index], { tick: update.entries[0][0], position: theirs.position, velocity: theirs.velocity, mode: theirs.mode });
+  }
+  assert.equal(park.latestSetStateTime, states.at(-1).entries[0][0]);
+});
+
+test("in flight, the park's ship has the server's velocity to the last digits, and is about a tick's travel from it at most", () => {
+  const { probes } = replayProbed();
+  const flying = probes.filter((probe) => probe.theirs.mode === MODE.GOTO);
+  assert.equal(flying.length, 3);
+  for (const { stamp, ours, theirs } of flying) {
+    assert.equal(ours.mode, MODE.GOTO);
+    assert.ok(apart(ours.velocity, theirs.velocity) < 1e-9, `at ${stamp}: velocity ${apart(ours.velocity, theirs.velocity)} m/s apart`);
+    assert.ok(Math.abs(size(theirs.velocity) - 341) < 1e-9);
+    // The two differ only in how far along the heading the ship has got. After
+    // undocking the server's is a tick behind: it reports the ship at speed in
+    // its first state, and has it where that state put it a second later.
+    const lead = apart(ours.position, theirs.position) / 341;
+    assert.ok(lead < 1.1, `at ${stamp}: ${lead} ticks of travel apart`);
+    const along = { x: theirs.position.x - ours.position.x, y: theirs.position.y - ours.position.y, z: theirs.position.z - ours.position.z };
+    const cosine = (along.x * theirs.velocity.x + along.y * theirs.velocity.y + along.z * theirs.velocity.z) / (size(along) * 341);
+    assert.ok(Math.abs(cosine) > 0.999999, `at ${stamp}: the difference lies along the heading (${cosine})`);
+  }
+  // Once the park has been given the server's state, three ticks later it is within a twentieth of a tick's travel of it.
+  for (const { stamp, ours, theirs } of flying.slice(1)) {
+    assert.ok(apart(ours.position, theirs.position) < 341 / 20, `at ${stamp}: ${apart(ours.position, theirs.position)} m apart`);
+  }
+});
+
+test("stopping, the park's ship slows as the server's does, to within a tick's worth of slowing", () => {
+  const { probes } = replayProbed();
+  const stopping = probes.filter((probe) => probe.theirs.mode === MODE.STOP);
+  assert.equal(stopping.length, 3);
+  const perTick = Math.exp((-1000000.0 * 1.0) / (1157000 * Math.fround(4.35)));
+  for (const { stamp, ours, theirs } of stopping) {
+    assert.equal(ours.mode, MODE.STOP);
+    const ratio = size(ours.velocity) / size(theirs.velocity);
+    assert.ok(ratio > perTick * 0.98 && ratio < 1 / (perTick * 0.98), `at ${stamp}: ours is ${ratio} of theirs`);
+    // Same heading, to the last digits: both only ever scale the velocity.
+    const cosine = (ours.velocity.x * theirs.velocity.x + ours.velocity.y * theirs.velocity.y + ours.velocity.z * theirs.velocity.z) / (size(ours.velocity) * size(theirs.velocity));
+    assert.ok(Math.abs(cosine - 1) < 1e-12);
+  }
+  // Given the server's state while slowing, three ticks later the park's speed is within one part in a hundred of it.
+  for (const { stamp, ours, theirs } of stopping.slice(1)) {
+    assert.ok(Math.abs(size(ours.velocity) / size(theirs.velocity) - 1) < 0.01, `at ${stamp}`);
+  }
+});

@@ -7,7 +7,12 @@
 // the ballpark (docs/game-port-transport-plan.md, Phase 4) is built and tested
 // against: the real DoDestinyUpdate stream, not a description of one.
 //
-//   node scripts/record-destiny.js <accountName> <characterID> [seconds] [outputPath]
+//   node scripts/record-destiny.js <accountName> <characterID> [seconds] [outputPath] [probeEverySeconds]
+//
+// With probeEverySeconds, the server is also asked for its whole state again
+// every so often while in space (UpdateStateRequest, which is what the client
+// sends when it has lost its place). Each answer is the server's own account
+// of where everything is at that tick: something to hold a simulation up to.
 //
 // The calls are the retail client's, in its order, as a real client's session
 // shows them in eve.js's log:
@@ -67,7 +72,7 @@ async function until(test, timeoutMs, everyMs = 100) {
   return test();
 }
 
-async function record({ accountName, characterID, seconds = 20, endpoint = gameEndpoint() }) {
+async function record({ accountName, characterID, seconds = 20, probeEverySeconds = 0, endpoint = gameEndpoint() }) {
   const frames = [];
   const notifications = new Map();
   let current = "connect";
@@ -103,12 +108,24 @@ async function record({ accountName, characterID, seconds = 20, endpoint = gameE
     await session.call("beyonce", "GetFormations", []);
     const park = await session.bind("beyonce", solarSystemID);
 
-    step("in space");
-    await sleep(Math.round(seconds * 500));
+    /** Stay in space for a while, asking for the state again every so often if that was asked for. */
+    const stay = async (name, ms) => {
+      step(name);
+      if (!(probeEverySeconds > 0)) return sleep(ms);
+      const every = Math.round(probeEverySeconds * 1000);
+      let left = ms;
+      for (; left > every; left -= every) {
+        await sleep(every);
+        step("probe");
+        await session.callBound(park.objectID, "UpdateStateRequest", []);
+        step(name);
+      }
+      return sleep(left);
+    };
+    await stay("in space", Math.round(seconds * 500));
     step("stop");
     await session.callBound(park.objectID, "CmdStop", []);
-    step("in space, stopped");
-    await sleep(Math.round(seconds * 500));
+    await stay("in space, stopped", Math.round(seconds * 500));
 
     step("dock");
     await session.callBound(park.objectID, "CmdDock", [stationID, shipID]);
@@ -122,20 +139,24 @@ async function record({ accountName, characterID, seconds = 20, endpoint = gameE
 }
 
 async function main(argv = process.argv.slice(2)) {
-  const [accountName, characterText, secondsText, outputPath = DEFAULT_OUTPUT] = argv;
+  const [accountName, characterText, secondsText, outputPath = DEFAULT_OUTPUT, probeText] = argv;
   const characterID = Number(characterText);
   if (!accountName || !Number.isSafeInteger(characterID)) {
-    throw new Error("Usage: node scripts/record-destiny.js <accountName> <characterID> [seconds] [outputPath]");
+    throw new Error("Usage: node scripts/record-destiny.js <accountName> <characterID> [seconds] [outputPath] [probeEverySeconds]");
   }
   const seconds = Number(secondsText) > 0 ? Number(secondsText) : 20;
-  const { frames, notifications, outcome } = await record({ accountName, characterID, seconds });
+  const probeEverySeconds = Number(probeText) > 0 ? Number(probeText) : 0;
+  const { frames, notifications, outcome } = await record({ accountName, characterID, seconds, probeEverySeconds });
   const fixture = {
     about: "What a real eve.js server sent a client that undocked, stopped and docked again, on the game port. " +
+      (probeEverySeconds ? `Every ${probeEverySeconds} s in space it was asked for its whole state again. ` : "") +
       "Re-record with scripts/record-destiny.js; never edit by hand.",
     eveCommit: eveCommit(),
     capturedAt: new Date().toISOString(),
     accountName,
     characterID,
+    seconds,
+    probeEverySeconds,
     ...outcome,
     notifications,
     frames,
