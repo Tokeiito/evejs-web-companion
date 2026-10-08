@@ -5,7 +5,7 @@
 // rock is mined out, a ship warps off — and a control still armed with a
 // vanished id fails as a refusal for something the player can no longer see.
 
-import { formatDistance } from "../space/overview.ts";
+import { fmtDist } from "../space/overview.ts";
 import type { OverviewRow } from "../space/overview.ts";
 
 /** One thing that can be picked. `hint` is the trailing detail — a range, a system. */
@@ -61,7 +61,8 @@ export function rowOptions(
     if (label.length === 0) {
       continue;
     }
-    options.push({ id: row.itemID, label, hint: formatDistance(row.distance) });
+    // Hull to hull, by the client's FmtDist: the same figure the overview's row gives.
+    options.push({ id: row.itemID, label, hint: fmtDist(row.surfaceDistance) });
   }
   return options;
 }

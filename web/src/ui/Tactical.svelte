@@ -38,7 +38,8 @@
     type TacticalViewport,
   } from "../space/tactical.ts";
   import { drawTactical, readPalette } from "./tacticalDraw.ts";
-  import { formatDistance } from "../space/overview.ts";
+  import { fmtDist } from "../space/overview.ts";
+  import { DISTANCE_WORD_LABELS, distanceSay } from "../space/distanceWords.ts";
   import { spaceSelection } from "../space/selection.ts";
   import { showInfo } from "./showInfo.ts";
   import { overviewTabs } from "../space/overviewTabs.ts";
@@ -149,8 +150,15 @@
   const view = $derived<TacticalViewport>({ width, height });
 
   const brackets = $derived(
-    width > 0 && height > 0 ? projectBrackets(entities, origin, view) : [],
+    width > 0 && height > 0 ? projectBrackets(entities, origin, view, ship?.radius ?? 0) : [],
   );
+  // A distance's unit in the client's own words: asked for once, and used when they are to hand.
+  // svelte-ignore state_referenced_locally
+  const words = store.words;
+  const say = $derived(distanceSay($words.templates));
+  $effect(() => {
+    flow.requestWords(DISTANCE_WORD_LABELS);
+  });
   const rings = $derived(width > 0 && height > 0 ? tacticalRings() : []);
   const labelled = $derived(labelledBracketIDs(brackets, $selected));
 
@@ -187,7 +195,7 @@
     const nearest = brackets[brackets.length - 1];
     const threat = hostiles === 0 ? "" : ` ${hostiles} hostile${hostiles === 1 ? "" : "s"}.`;
     const near = nearest
-      ? ` Nearest ${bracketName(nearest)} at ${formatDistance(nearest.distance)}.`
+      ? ` Nearest ${bracketName(nearest)} at ${fmtDist(nearest.surfaceDistance, 2, say)}.`
       : "";
     return `Tactical view: ${brackets.length} object${brackets.length === 1 ? "" : "s"} on grid.${threat}${near} ${ACCESSIBLE_PATH}`;
   });
@@ -221,6 +229,7 @@
       selectedID: $selected,
       palette: readPalette(element),
       nameOf: bracketName,
+      say,
     });
   }
 

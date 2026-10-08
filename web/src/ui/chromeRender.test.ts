@@ -611,3 +611,17 @@ test("the target bracket names a locked target and shows its condition", () => {
   assert.match(text, /25%/, "its shield reading is missing");
   assert.equal(/\b7777\b/.test(text), false, "the target's itemID must never show");
 });
+
+test("the ship's line gives the distance between hulls to what it is acting on, in the client's wording", () => {
+  // Orbiting a gun 400 m in radius whose centre is 5 km off, in a ship of 100 m: 4,500 m between hulls.
+  const store = inSpaceStore() as { apply: (event: unknown) => void };
+  const self = { itemID: SHIP_ID, isSelf: true, targetEntityID: 4242, name: null, typeID: SHIP_TYPE_ID, radius: 100, position: { x: 0, y: 0, z: 0 } };
+  const gun = { itemID: 4242, isSelf: false, targetEntityID: null, name: "Caldari Sentry Gun I", typeID: 1, radius: 400, position: { x: 5_000, y: 0, z: 0 } };
+  store.apply({ type: "space/snapshot", snapshot: { ...SHIP_SNAPSHOT, entities: [self, gun], ship: { ...SHIP_SNAPSHOT.ship, mode: "ORBIT", velocity: { x: 100, y: 0, z: 0 } } } });
+  const text = visibleText(renderHud(store));
+  assert.match(text, new RegExp(`Orbiting Caldari Sentry Gun I at ${(4500).toLocaleString()} m`));
+  assert.equal(/at 5\.0 km/.test(text), false, "not the centres' five kilometres");
+  // With the client's word for the unit to hand, that is the word.
+  store.apply({ type: "words/loaded", available: true, templates: { "/Carbon/UI/Common/FormatDistance/fmtDistInMeters": "{distance} metres" } });
+  assert.match(visibleText(renderHud(store)), new RegExp(`at ${(4500).toLocaleString()} metres`));
+});

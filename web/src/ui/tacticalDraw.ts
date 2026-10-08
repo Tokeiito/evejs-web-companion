@@ -17,7 +17,7 @@
 // It draws in CSS pixels and assumes the caller has already applied the device
 // pixel ratio transform. It reads no globals and holds no state.
 
-import { formatDistance } from "../space/overview.ts";
+import { fmtDist, type DistanceSay } from "../space/overview.ts";
 import {
   plotGeometry,
   type TacticalBracket,
@@ -100,6 +100,8 @@ export interface TacticalScene {
   readonly palette: TacticalPalette;
   /** What to call a bracket. Supplied by the caller so the name cache stays out. */
   readonly nameOf: (bracket: TacticalBracket) => string;
+  /** How to put a distance's unit on: the client's own words when the caller holds them. */
+  readonly say?: DistanceSay;
 }
 
 /**
@@ -140,7 +142,7 @@ const TILT = 0.42;
 
 /** Paint the whole scene. Clears first; leaves the context's state as it found it. */
 export function drawTactical(ctx: CanvasRenderingContext2D, scene: TacticalScene): void {
-  const { view, brackets, rings, labelled, selectedID, palette, nameOf } = scene;
+  const { view, brackets, rings, labelled, selectedID, palette, nameOf, say } = scene;
   const { cx, cy, radius } = plotGeometry(view);
 
   ctx.save();
@@ -236,8 +238,11 @@ export function drawTactical(ctx: CanvasRenderingContext2D, scene: TacticalScene
       const textX = bracket.x + size / 2 + 5;
       ctx.fillStyle = isThreat ? colour : palette.ringText;
       ctx.fillText(nameOf(bracket), textX, bracket.y - 5);
-      ctx.fillStyle = palette.ringText;
-      ctx.fillText(formatDistance(bracket.distance), textX, bracket.y + 6);
+      // Hull to hull, by the client's FmtDist; and like the client's bracket, nothing at no distance.
+      if (bracket.surfaceDistance > 0) {
+        ctx.fillStyle = palette.ringText;
+        ctx.fillText(fmtDist(bracket.surfaceDistance, 2, say), textX, bracket.y + 6);
+      }
     }
     ctx.globalAlpha = 1;
   }

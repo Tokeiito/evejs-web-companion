@@ -551,6 +551,7 @@ function bracketAt(itemID: number, x: number, y: number, distance: number): Tact
     y,
     planeY: y,
     distance,
+    surfaceDistance: distance,
     radial: 0.5,
     clamped: false,
     heightMeters: 0,
@@ -588,4 +589,22 @@ test("the hit tolerance is honoured", () => {
 test("an exact tie goes to the nearer object in space", () => {
   const brackets = [bracketAt(1, 100, 100, 900_000), bracketAt(2, 100, 100, 5_000)];
   assert.equal(hitTestBrackets(brackets, 100, 100)?.itemID, 2);
+});
+
+// --- the distance a bracket's label gives ------------------------------------
+
+test("a bracket carries the distance between hulls for its label, and is still drawn by its centre", () => {
+  // A thing 100 m in radius, its centre a kilometre off, from a ship of 30 m.
+  const thing = entity({ itemID: 7, position: { x: 1_000, y: 0, z: 0 } });
+  const [plain] = projectBrackets([thing], ORIGIN, VIEW);
+  const [mine] = projectBrackets([thing], ORIGIN, VIEW, 30);
+  assert.deepEqual([plain!.distance, plain!.surfaceDistance], [1_000, 900]);
+  assert.deepEqual([mine!.distance, mine!.surfaceDistance], [1_000, 870]);
+  assert.deepEqual([mine!.x, mine!.y, mine!.radial], [plain!.x, plain!.y, plain!.radial], "where it is drawn does not move");
+  // Inside the other's ball: nothing, never less.
+  const around = entity({ itemID: 8, radius: 100_000, position: { x: 65_000, y: 0, z: 0 } });
+  assert.equal(projectBrackets([around], ORIGIN, VIEW, 30)[0]!.surfaceDistance, 0);
+  // Farthest first is still by centres: a station whose hull is nearest is not moved up the painting order for it.
+  const station = entity({ itemID: 9, radius: 100_000, position: { x: 100_200, y: 0, z: 0 } });
+  assert.deepEqual(projectBrackets([thing, station], ORIGIN, VIEW, 30).map((bracket) => bracket.itemID), [9, 7]);
 });

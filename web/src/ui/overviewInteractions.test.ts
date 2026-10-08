@@ -175,3 +175,10 @@ test("a target's card says how far its hull is, in the client's wording and the 
   const client = await panel("TargetBracket.svelte", `${locked} ${CLIENT_METRES}`);
   assert.match(client.replace(/<[^>]+>/g, " "), /\b870 metres\b/);
 });
+
+test("the tactical view's summary gives the nearest thing's distance between hulls, in the client's wording", async () => {
+  const own = await panel("Tactical.svelte");
+  assert.match(own, /Nearest [^.]* at 870 m\./);
+  const client = await panel("Tactical.svelte", CLIENT_METRES);
+  assert.match(client, /Nearest [^.]* at 870 metres\./);
+});

@@ -14,8 +14,8 @@
   import TypeIcon from "./TypeIcon.svelte";
   import { showInfoTarget, subjectTypeID, type InfoSubject } from "./showInfo.ts";
   import { moduleEffectiveStats } from "../bridge/moduleAttributes.ts";
-  import { formatDistance, hostileLabel, isHostile, ratioPercent } from "../space/overview.ts";
-  import { distanceMeters } from "../space/overview.ts";
+  import { fmtDist, hostileLabel, isHostile, ratioPercent, surfaceDistanceMeters } from "../space/overview.ts";
+  import { distanceSay } from "../space/distanceWords.ts";
   import { spaceSelection } from "../space/selection.ts";
   import { resolvedName, type NameRef } from "../store/names.ts";
   import { abbreviate } from "./fittingIcons.ts";
@@ -108,9 +108,15 @@
   const typeName = $derived(resolvedName($names.resolved, "type", typeID, ""));
 
   const shipPosition = $derived($space.snapshot?.ship?.position ?? null);
+  // Hull to hull, as the client's selected item gives it, and worded as it words it (FmtDist, one decimal).
   const distance = $derived(
-    entity && shipPosition ? distanceMeters(shipPosition, entity.position) : null,
+    entity && shipPosition
+      ? surfaceDistanceMeters(shipPosition, $space.snapshot?.ship?.radius ?? 0, entity.position, entity.radius)
+      : null,
   );
+  // svelte-ignore state_referenced_locally
+  const words = store.words;
+  const say = $derived(distanceSay($words.templates));
   const speed = $derived.by(() => {
     if (!entity) {
       return null;
@@ -202,7 +208,7 @@
         <h3>Where it is</h3>
         <dl class="kv">
           <dt>Distance</dt>
-          <dd>{distance != null ? formatDistance(distance) : "—"}</dd>
+          <dd>{distance != null ? fmtDist(distance, 1, say) : "—"}</dd>
           <dt>Speed</dt>
           <dd>{speed != null ? `${Math.round(speed)} m/s` : "—"}</dd>
           {#if isHostile(entity)}

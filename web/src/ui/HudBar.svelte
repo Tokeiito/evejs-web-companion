@@ -24,7 +24,8 @@
   import CargoBays from "./CargoBays.svelte";
   import { onMount } from "svelte";
   import { shipIsStopped, shipStateSentenceFor } from "./shipHud.ts";
-  import { distanceMeters, formatDistance } from "../space/overview.ts";
+  import { fmtDist, surfaceDistanceMeters } from "../space/overview.ts";
+  import { distanceSay } from "../space/distanceWords.ts";
   import { resolvedName } from "../store/names.ts";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
@@ -37,6 +38,10 @@
   const space = store.space;
   // svelte-ignore state_referenced_locally
   const names = store.names;
+  // A distance's unit in the client's own words, when the page holds them.
+  // svelte-ignore state_referenced_locally
+  const words = store.words;
+  const say = $derived(distanceSay($words.templates));
 
   // The module rack needs the ship's fit; Fitting is a docked-only tab, so pull
   // it once here. Fire-and-forget; $effect never runs under SSR.
@@ -145,12 +150,13 @@
     const from = ship?.position ?? null;
     return {
       name: name.length > 0 ? name : null,
-      metres: from ? distanceMeters(from, target.position) : null,
+      // Hull to hull: what the ship keeps its range from is the other's surface, not its centre.
+      metres: from ? surfaceDistanceMeters(from, ship?.radius ?? 0, target.position, target.radius) : null,
     };
   });
 
   const stateText = $derived(
-    shipStateSentenceFor(ship, actedOn.name, actedOn.metres, formatDistance),
+    shipStateSentenceFor(ship, actedOn.name, actedOn.metres, (metres) => fmtDist(metres, 2, say)),
   );
 
   /**

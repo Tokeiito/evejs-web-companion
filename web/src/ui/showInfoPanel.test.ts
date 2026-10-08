@@ -24,8 +24,8 @@ function fakeFlow(): unknown {
   return new Proxy({}, { get: () => () => {} });
 }
 
-/** A snapshot with one rock 12 km out, half its shield gone. */
-function spaceStore(): unknown {
+/** A snapshot with one rock 12 km out (or `rockX` metres), half its shield gone. */
+function spaceStore(rockX = 12_000): unknown {
   const store = createClientStore();
   store.apply({
     type: "space/snapshot",
@@ -65,7 +65,7 @@ function spaceStore(): unknown {
           name: "Dense Veldspar",
           ownerID: null,
           radius: 300,
-          position: { x: 12_000, y: 0, z: 0 },
+          position: { x: rockX, y: 0, z: 0 },
           velocity: { x: 0, y: 0, z: 0 },
           isSelf: false,
           shieldRatio: 0.5,
@@ -111,7 +111,13 @@ test("a thing on the grid shows its distance, condition and what is left of it",
   showInfoTarget.show({ kind: "spaceObject", itemID: ROCK_ID, typeID: ORE_TYPE_ID });
   const body = renderInfo(spaceStore());
   assert.match(body, /Dense Veldspar/, "its own name beats its type name");
-  assert.match(body, /12\.0 km/, "distance, computed from the ship");
+  // 300 m of rock and 50 m of ship off the 12 km between centres: 11,650 m, which the client words in whole kilometres.
+  assert.match(body, />12 km</, "the distance between hulls, as the client's selected item words it");
+  assert.equal(body.includes("12.0 km"), false);
+  // Nearer, in whole metres: 5 km between centres is 4,650 m between hulls.
+  assert.match(renderInfo(spaceStore(5_000)), new RegExp(`>${(4650).toLocaleString()} m<`));
+  // Inside the rock's ball: nothing, not less.
+  assert.match(renderInfo(spaceStore(200)), />0 m</);
   assert.match(body, /Shield/);
   assert.match(body, /50%/, "condition from the snapshot's own ratios");
   assert.match(body, /Ore left/);
@@ -136,7 +142,7 @@ test("a thing that has LEFT the grid keeps its identity and loses its numbers", 
   showInfoTarget.show({ kind: "spaceObject", itemID: 999_999, typeID: ORE_TYPE_ID });
   const body = renderInfo(spaceStore());
   assert.match(body, /no longer on your grid/);
-  assert.equal(body.includes("12.0 km"), false, "no distance may survive the object");
+  assert.equal(/>12 km</.test(body), false, "no distance may survive the object");
   assert.equal(body.includes("Ore left"), false);
 });
 

@@ -54,7 +54,7 @@
 // a `role` name, which is a styling key the caller maps to a colour.
 
 import type { SpaceEntity, SpaceVector } from "../store/types.ts";
-import { METRES_PER_AU, distanceMeters, isHostile } from "./overview.ts";
+import { METRES_PER_AU, distanceMeters, isHostile, surfaceDistanceMeters } from "./overview.ts";
 
 /** Everything the projection needs to know about the plot it is drawing into. */
 export interface TacticalViewport {
@@ -114,6 +114,12 @@ export type TacticalRole =
 
 /** One projected object, ready to draw. */
 export interface TacticalBracket extends TacticalPoint {
+  /**
+   * Hull to hull, never below nothing: the distance a bracket's label gives,
+   * as the client's brackets do (bracket.py: `ball.surfaceDist`). Where the
+   * bracket is DRAWN still goes by `distance`, centre to centre.
+   */
+  readonly surfaceDistance: number;
   readonly role: TacticalRole;
   /** The object's own name, when it has one. Never an id (R7d). */
   readonly name: string | null;
@@ -373,6 +379,8 @@ export function projectBrackets(
   entities: readonly SpaceEntity[],
   origin: SpaceVector,
   view: TacticalViewport,
+  /** The ship's own radius, which the distance between hulls leaves out. */
+  ownRadius = 0,
 ): readonly TacticalBracket[] {
   const { radius } = plotGeometry(view);
   const out: TacticalBracket[] = [];
@@ -396,6 +404,7 @@ export function projectBrackets(
     out.push({
       itemID: entity.itemID,
       ...point,
+      surfaceDistance: surfaceDistanceMeters(origin, ownRadius, entity.position, entity.radius),
       role: bracketRole(entity),
       name: entity.name,
       typeID: entity.typeID,
