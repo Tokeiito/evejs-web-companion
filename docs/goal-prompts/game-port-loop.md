@@ -284,6 +284,13 @@ Take these defaults, and list each under "For the operator" in the log so they c
   runs one to three seconds ahead of the park's, on the same path. A gap between "where the
   server has the ship" and "where the park has it" while moving is that, until shown
   otherwise; compare at rest, or read the script's `closest`.
+- Time dilation is set with the server's own chat command through the GM route:
+  `POST /api/bridge/gm/slash {"command": "/tidi 0.5", "confirm": true}`, and undone with
+  `/tidi auto` (`/tidi` alone says the state). It is the whole system's: keep it short.
+- A script of your own that opens a game-port session: `new GamePortSession({ transport })`,
+  end it with `process.exit`, give it a hard exit timer, and send its output to a file. One
+  that threw at its first line sat for seven minutes behind an open socket and a pipe that
+  showed nothing.
 - Write down what was measured. Do not write down its cause until the cause has been checked. Twice
   in this loop a cause went into a commit message and the log and had to be taken back.
 - The web client in a browser tab selects its pilot again when it loses the session. Log the tab

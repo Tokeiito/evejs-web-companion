@@ -555,7 +555,9 @@ table marks "not started" is still to do.
 | MISSILE, FORMATION, MUSHROOM | not ported; the step refuses, the orders are counted as failed | |
 | Collisions: a massive ball against other balls (`Gradient`, `Potential`) | done | CCP's own collision tests to the last digit; the recorded warp, where the ship bounces off the station for the one tick it is massive; the same trip flown live |
 | Collisions: a fixed ball's own shapes (miniballs, capsules, boxes), and the partition's order | not ported; counted | no recording carries either |
-| Sim clock rebase, time dilation, the damage clock | not ported | |
+| The sim clock, time dilation and the clock's rebase (`simClock.js`, `pilotClock.js`, `Park.onTick`) | done | CCP's blue, read; live at half pace: the park steps every two real seconds and every order still arrives one tick ahead of it |
+| A ball between two ticks (`Ballpark.between`, `Park.fraction`) | done; not yet used by the snapshot | the park's own next tick, to a hundredth of a metre in warp and to the last digit out of it |
+| The damage clock (a shield's recharge since a damage state was filed) | by the park's tick, not the sim clock's reading | |
 | A pilot's own park, kept as michelle keeps one (`pilotSpace.js`); the space snapshot and flight status from it (`spaceProjection.js`) | done | the same pilot on each transport in turn: 95 entities both ways, fixed things within 0.0001 m, five kinds of difference, each explained; two pilots at once, one per transport, see the same 96; undock, stop and dock in the browser |
 | The ship's capacitor and capacities from dogma, kept as godma keeps them (`pilotDogma.js`) | done | a real flight with a module running: the client's recharge lands on each of the server's next reports to the sixth place; the gateway's numbers for the same ship |
 | Which modules are running or overloaded, from godma's effects (`pilotDogma.js`) | done | a recorded flight; the activate and deactivate routes on each transport in turn give the same answers; the module's button in the browser |

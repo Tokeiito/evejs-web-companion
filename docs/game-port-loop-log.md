@@ -3613,3 +3613,114 @@ Seen in passing and not read: the server sent one `DoSimClockRebase` and one
 6. Small, in space: the ship drawn between ticks; the header's speed from the snapshot; the
    bar the client fills while a ship lines up for a warp; a warp ordered at a bookmark or a
    fleet member.
+
+---
+
+## 2026-10-08 — the sim clock
+
+Commit `25025be`, pushed.
+
+**What the retail client does.** It keeps two clocks. The real clock is the wall's; the sim
+clock is the one the game runs by. The ballpark is shown the sim clock every frame and steps
+once for each second of it gone by (`Ballpark::OnTick`, CCP's destiny): so under time dilation
+a client's park steps more slowly, and a client that stalled takes at once every step it
+missed. The very first frame is one bare step of the simulation, with nothing queued applied.
+Dogma measures in the same clock (`gametime.GetSimTime`): a rack's heat, a capacitor's
+recharge.
+
+The clock itself is in the client's engine, CCP's `blue`, which is open source
+(`blue/src/BlueOS.cpp`). It starts locked to the real clock. Freed
+(`blue.os.EnableSimDilation`), it sets its own pace between two bounds, and goes from one pace
+to another by a change set two real seconds ahead, so that whoever follows it can change at
+the same moment.
+
+**What the server does, which is eve.js's own and not CCP's.** A CCP server slows its clients
+over its own network layer, which nothing on the game port speaks. eve.js does it with the
+function it sends every client at login, which the client runs: that function frees the
+client's clock and installs a handler for a notice of eve.js's own,
+`OnSetTimeDilation(max, min, threshold)`, which sets the clock's bounds. The server sends the
+notice with both bounds the same when a pilot enters space and when a system's time dilation
+changes, and changes its own pace two seconds later. It also sends `DoSimClockRebase(old, new)`
+at those moments; on that the client's michelle moves the park's own times by the difference
+(`Ballpark::AdjustTimes`), and nothing else of the park's.
+
+**What the client shows** (`tidiIndicator.py`): an indicator while the pace its clock is meant to
+hold is under 0.98, with the pace as a whole percentage in its hint, cut and not rounded.
+
+**What was built.**
+
+- `src/gamePort/simClock.js`: blue's sim clock, ported: locked, freed, its bounds, the change two
+  seconds ahead, and the easing by how well the clock keeps up. Not ported: a clock following
+  a master's events over CCP's network layer, which nothing here sends.
+- `src/gamePort/pilotClock.js`: a pilot's clock. We do not run the server's login function; a
+  pilot whose session was sent the function we know, and answered as the client answers once
+  the handler is in place, gets a clock that does what that client's does with the notice. Any
+  other pilot's clock stays the real clock and the notice goes unheard.
+- `Park.onTick(simTime)`, `adjustTimes`, `fraction`: the engine's driver. A pilot's park is
+  shown its clock every 50 ms and steps by it; it is no longer stepped by a one-second timer.
+  `DoSimClockRebase` moves the park.
+- The pilot's dogma reads the same clock.
+- The space snapshot says the pace (`timeDilation`), and the page's header shows it as the
+  client's indicator does, with the client's own hint read from the install.
+
+**Proof.**
+
+- Tests: 26 new, 6 changed. 109 ways of breaking the change. Six got through at first: three
+  are closed with tests; three change nothing that can be seen and are left (the two "last
+  seen" times of the clock are only ever equal while a change is on its way; the pace a free
+  clock holds and the pace it is meant to hold are the same number; adding nothing to the
+  park's time when a rebase cannot be read).
+- My own expectations were wrong twice before the code was, both about when a clock that
+  keeps up eases back: the spell is counted from when the last change was set, not from when
+  it came. The tests now say so.
+- Suite: 9188 tests, 9164 pass, 0 fail, 24 skipped, 0 todo.
+- **Live, on the game port**, eve.js `10e2c22f4`: Test Pilot undocked and given a new heading
+  every three seconds, with two parks on the same stream, one stepped by the pilot's clock and
+  one by a one-second timer as before. The system was set to half pace for 32 s (`/tidi 0.5`)
+  and back.
+
+  | | Stepped by the clock | Stepped by the wall |
+  |---|---|---|
+  | Full pace: steps in a second | 1 | 1 |
+  | Full pace: an order's stamp, ahead of the park when it arrives | 1 tick, each time | 1 tick, each time |
+  | Pace changed after the notice | two seconds on, both ways, to the second it was sampled at | never |
+  | Half pace: the park's tick moved on, in 30 s | 15 | 16: stepped 30 times, and pulled back at each order |
+  | Half pace: an order's stamp against the park (ten orders) | 1 ahead, ten times | 0, 1, 1, 2, 1, 2, 1, 2, 1, 2 behind |
+  | Entries failed, resets | none, none | none, none |
+
+  The park stepped by the wall ran ahead of the server and was taken back to the order's tick
+  each time one came; it never lost its place outright because an order came every three
+  seconds. The server's rebases at each change carried the same reading twice: a difference of
+  nothing.
+- **In the browser**, on the game port: no badge at full pace; 2.6 s after `/tidi 0.5` the
+  header read "TiDi 50%" with the client's own hint (25 characters, read from the install);
+  2.4 s after `/tidi 1` it was gone. The page made 30 calls after a reload and none failed.
+- **The staging was undone**: `/tidi auto` after each check (the server then said factor 1.000,
+  autoscale), and the pilot docked again. Jita ran at half pace for about a minute in all.
+
+**Not done.** The page still shows the ship where the last tick put it (`Park.fraction` and
+`Ballpark.between` are both there now). The session's own timer for its next change, and
+godma's times of each module's last stop, which the client also moves on a rebase, are not
+kept here. On the gateway a pilot has no clock of its own and the page shows no indicator.
+The server's sim clock is now behind the wall's by what those spells took off it, as after any
+time dilation; a pilot's clock made after such a spell starts from the wall's, as a retail
+client's does. Whether a time the server sends in its own clock then reads late to that
+client was not looked at.
+
+### Next
+
+1. **The ship drawn between ticks** (the snapshot's places by `Park.fraction` and
+   `Ballpark.between`, so the page moves as the client draws); MISSILE, FORMATION, MUSHROOM;
+   a fixed ball's collision shapes and the partition's order, if a server ever sends a ball
+   that needs them.
+2. The call ledger (`ship.Undock`, `dogmaIM.Activate` and `Deactivate` to bind as the client
+   does; `GetMissionBriefingInfo` and `GetMissionObjectiveInfo`, which the client asks on every
+   layout of the agent's window), Phase 3's hosted check and the session-less gateway calls.
+3. The scanner the client's way: results kept from the server's word, a probe's destination
+   and range kept here and sent with the scan.
+4. More of a mission's words: the objectives pane, the mission's time under the agent's line,
+   messages inside messages when one turns up.
+5. Small, around dialogs: the title for a dialog's kind, the "do not ask again" box, the typed
+   codes not done.
+6. Small, in space: the header's speed from the snapshot; the bar the client fills while a
+   ship lines up for a warp; a warp ordered at a bookmark or a fleet member.
