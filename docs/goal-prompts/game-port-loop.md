@@ -168,6 +168,14 @@ Take these defaults, and list each under "For the operator" in the log so they c
   process holding the port.
 - A long foreground `sleep` is refused. Wait with a short loop on a condition, or in the
   background.
+- **Start a check BFF with the launcher's output sent to a file, never through a pipe.** The
+  launcher redirects the BFF's own output, which makes the BFF inherit the launcher's handles;
+  with `powershell ... | tail`, the pipe stays open for as long as the BFF lives, the shell
+  command never ends, and the harness keeps it as a running background task. On 2026-10-08 one
+  such task was open when the iteration ended, and the wakeup scheduled for 09:53 had not fired
+  at 10:32, when the operator asked why the loop had stopped. Use
+  `powershell -File start-bff-check.ps1 ... > bffgp.start.log 2>&1 < /dev/null`. Before ending
+  an iteration, make sure no command of yours is still running.
 - **The browser pane is hidden, and a hidden page stops polling space**, so the autopilot and
   anything else that decides from the space feed does nothing there. Before selecting a pilot,
   tell the page it is visible: redefine `document.visibilityState` (to `"visible"`) and
