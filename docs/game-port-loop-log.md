@@ -1579,3 +1579,81 @@ Unchanged from the entry above:
    FORMATION, MUSHROOM.
 6. The call ledger (`ship.Undock`, `dogmaIM.Activate` and `Deactivate` to bind as the client
    does), Phase 3's hosted check and the session-less gateway calls.
+
+---
+
+## 2026-10-08 — a research agent's boxes and the customs question reach the user
+
+Commit `3fe9b01`, pushed. **Built and tested; not yet seen live.** Read the last paragraph before
+relying on it.
+
+**What the retail client does**, from its source, and what the server sends, from eve.js:
+
+| The server calls | The retail client | It answers | The server reads |
+|---|---|---|---|
+| `agents.SingleChoiceBox(title, body, choices, agentID)` (which field to research) | radio buttons, OK / Cancel (`agents.py` 437, `gameui.py` 817) | (OK pressed, the selected button's name), the name being `radioboxOption<n>Selected` counted from 1 (`radioButtonMessageBox.py` 48), on Cancel too | the name back into an index; not OK means nothing was hired |
+| `agents.GetQuantity(maxvalue, minvalue, setvalue, caption, label, digits)`, keywords only (how many datacores) | a number box, OK / Cancel (`agents.py` 469, `uix.QtyPopup`) | the number, or None on Cancel | a number above 0, else "invalid input" |
+| `XmppChat.AskYesNoQuestion(messageID, props)` (customs, over contraband) | a Yes/No dialog by message ID (`xmppchatsvc.py` 1745) | whether Yes was pressed | a boolean, within its own 30 seconds |
+
+**What was built**, on the channel the last entries made:
+
+- **Each is a kind of question**: `choice` (with what there is to choose from), `quantity` (with
+  the server's limits), and the customs one as another `yesNo`. The answer goes back in the
+  client's own shape.
+- **Who answers when:**
+
+  | | A browser attached | Left unanswered | Nobody attached |
+  |---|---|---|---|
+  | `agents.YesNo` | the user | No | Yes |
+  | `agents.SingleChoiceBox` | the user | dismissed: not OK, first button | dismissed |
+  | `agents.GetQuantity` | the user | None | None |
+  | `XmppChat.AskYesNoQuestion` | the user | not answered | not answered |
+
+  The customs question is the only one left unanswered on purpose: the server gives it thirty
+  seconds and then decides for itself, which is what it does for a player who is not there.
+- **A question now lasts no longer than the server will wait.** The server says how long with
+  each call; the session passes that on, and a question expires at the sooner of that and this
+  client's own 110 seconds. For customs that is 30 seconds.
+- **An answer the question's own window could not have given is refused**, by the BFF and before
+  that by the page: a choice outside the list, a fraction where a whole number is asked, a number
+  outside the server's limits.
+- **The page** shows radio buttons with OK / Cancel, or a number field with its limits and OK /
+  Cancel. The research and customs labels are worded in this client's own words, with the names
+  of what they are about (the skill, the datacore, the contraband, the faction) taken from the
+  page's name cache.
+
+**Proof.**
+
+- Tests, built from the arguments eve.js sends (`researchRuntime.js`, `researchDialogue.js`,
+  `customsInspectionPresentation.js`): 7 new for the pilot's side and 1 changed, 7 for the
+  page's decoding, words and answers, 1 for the flow, and one more check in the session's. All
+  the pilot's and the session's were watched to fail on the old code but one, which pins what the
+  new code must keep (a question the server will wait a day for still lapses in 110 seconds).
+- 61 ways of breaking the new code (33 in the pilot's side, 27 in the page's, 1 in the
+  session's): all caught, after one fixture was given its keyword names as the wire carries them.
+- Suite: 8917 tests, 8892 pass, 0 fail, 24 skipped, 1 todo.
+- **Live, only this:** after the change, Decline then No in the browser on the game port still
+  shows the server's question and keeps the offer (the server fix from the last entry in place).
+
+**Not seen live, and why.** None of the three new questions has been raised by the running
+server in front of this code. A research agent needs to be found, a test pilot put in its
+station with the agent's field trained to the agent's level, and research started, bought and
+cancelled. Customs needs contraband in a hold and a gate where customs scans. Neither is set up
+on this server (the two stations the test pilots sit in have no research agent). **Until that
+run, what is proven is that this code answers the calls as the server's own code builds them and
+reads them, not that the server and this client agree in practice.** The last entry's live run
+found a fault the tests had missed; this one may too.
+
+### Next
+
+1. **The research agent's boxes and the customs question, live**: stage a research agent with a
+   qualifying pilot (start research, buy datacores, cancel), then contraband through a customs
+   gate. Fix what that finds.
+2. **The retail client's words**: turn localisation labels into the client's own text, from the
+   client's localisation data, for questions and for what agents say.
+3. **The scanner in space** on the game port (the one route that still answers 501 there).
+4. Module damage and weapon banks from dogma; health from godma as the panel reads it.
+5. **Collisions**; **the park beside the server's movement log**; the sim clock; MISSILE,
+   FORMATION, MUSHROOM.
+6. The call ledger (`ship.Undock`, `dogmaIM.Activate` and `Deactivate` to bind as the client
+   does), Phase 3's hosted check and the session-less gateway calls.
