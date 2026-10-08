@@ -4009,15 +4009,6 @@ app.post("/api/bridge/ship/board", requireAuth, async (req, res, next) => {
   } catch (error) {
     if (held.transition && held.transition.phase === "requested") {
       cancelHeldTransition(held);
-    } else if (kind === "reconnect") {
-      outcome = await boundCall(
-        held,
-        req.webSessionID,
-        systemScanBindSpec(),
-        "ReconnectToLostProbes",
-        [],
-        null,
-      );
     } else {
       markTransitionFailed(held, error && error.message);
     }
@@ -11419,6 +11410,17 @@ async function runAuthoritativeScannerWrite(req, res, next, kind) {
         dogmaBindSpec(),
         "LaunchProbes",
         [moduleID, launchCount],
+        null,
+      );
+    } else if (kind === "reconnect") {
+      // scanSvc.ReconnectToLostProbes: asked whether or not any probe is known here. The retail client knows of
+      // none after logging in until the server has answered this by telling of each again.
+      outcome = await boundCall(
+        held,
+        req.webSessionID,
+        systemScanBindSpec(),
+        "ReconnectToLostProbes",
+        [],
         null,
       );
     } else {

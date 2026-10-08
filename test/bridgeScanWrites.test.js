@@ -418,3 +418,44 @@ test("product analyze and recover use exact authoritative probe data, never spoo
   assert.ok(recover);
   assert.deepEqual(recover.args, [[PROBE_ID]]);
 });
+
+// --- Product reconnect: asks the scan manager, probes known or not ----------
+//
+// The retail client knows of no probes after logging in until it has asked the
+// scan manager to reconnect it to them (scanSvc.ReconnectToLostProbes), so the
+// route cannot wait for a probe to be known before it asks.
+
+test("product reconnect asks the scan manager to reconnect, whether or not a probe is known yet", async () => {
+  for (const probes of [AUTHORITATIVE_SCANNER.probes, []]) {
+    const gateway = fakeGateway();
+    gateway.readScannerState = async () => ({ scanner: { ...structuredClone(AUTHORITATIVE_SCANNER), probes: structuredClone(probes) }, notifications: [] });
+    const { baseUrl } = await startTestServer({ gateway });
+    await selectOnServer(baseUrl);
+    const { response, payload } = await apiRequest(baseUrl, "/api/bridge/scanner/reconnect", { method: "POST", body: { confirm: true, probeIDs: [666] } });
+    assert.equal(response.status, 200, JSON.stringify(payload));
+    assert.equal(payload.applied, true);
+    assert.deepEqual(payload.scanner.probes, probes);
+    const calls = gateway.calls.boundCall.map((entry) => [entry.service, entry.method, entry.args]);
+    assert.deepEqual(calls, [["scanMgr", "ReconnectToLostProbes", []]], `with ${probes.length} probes known`);
+  }
+});
+
+test("product reconnect still needs a ship in space, and passes a refusal on", async () => {
+  const docked = fakeGateway();
+  docked.readScannerState = async () => ({ scanner: { ...structuredClone(AUTHORITATIVE_SCANNER), inSpace: false, probes: [] }, notifications: [] });
+  const first = await startTestServer({ gateway: docked });
+  await selectOnServer(first.baseUrl);
+  const refused = await apiRequest(first.baseUrl, "/api/bridge/scanner/reconnect", { method: "POST", body: { confirm: true } });
+  assert.equal(refused.response.status, 409);
+  assert.equal(refused.payload.error, "SCANNER_NOT_IN_SPACE");
+  assert.equal(docked.calls.boundCall.length, 0);
+
+  const waiting = fakeGateway();
+  waiting.callBoundMethod = async () => { throw Object.assign(new Error("ScannerProbeReconnectWait"), { code: "CALL_REFUSED", statusCode: 409 }); };
+  const second = await startTestServer({ gateway: waiting });
+  await selectOnServer(second.baseUrl);
+  const told = await apiRequest(second.baseUrl, "/api/bridge/scanner/reconnect", { method: "POST", body: { confirm: true } });
+  assert.equal(told.response.status, 409);
+  assert.equal(told.payload.error, "CALL_REFUSED");
+  assert.match(told.payload.message, /ScannerProbeReconnectWait/);
+});

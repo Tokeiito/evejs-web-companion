@@ -148,7 +148,7 @@ test("a change is applied as godma applies one", () => {
   assert.equal(dogma.applyAttributeChange(5001, 4, seconds(12), 2e6), false);
 });
 
-test("a change that is someone else's, stale, or for a loaded charge is not taken", () => {
+test("a change that is someone else's, stale, or for a charge that is not held is not taken", () => {
   const dogma = small();
   dogma.feed(changes(change(5001n, 4, seconds(1), 7, { owner: 140000099 })));
   assert.equal(dogma.attribute(5001, 4), 1e6, "another character's item");

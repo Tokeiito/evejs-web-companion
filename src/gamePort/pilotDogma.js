@@ -37,10 +37,28 @@
 // active on it; it is overloaded when one of the overload kind is. Being
 // online is an effect as well, and is neither.
 //
-// Only the ship's items are kept here, and only what the panel needs.
+// What is loaded in a module is godma's as well. A charge in a fitted module
+// is not an item with an ID of its own: it is a "sublocation", keyed by the
+// tuple (shipID, flagID, typeID), and its row in GetAllInfo has no inventory
+// row, only attributes, of which `quantity` is how many are loaded. Changes to
+// it arrive like any other, under that tuple (godma.py 1351, 1550 on). The scan
+// service finds its launcher and the probes in it this way (scanSvc.py 476 to
+// 513): the first module of the launcher group that is online, and the
+// sublocation at that module's flag.
+//
+// An item that turns up after the ship was loaded is told of on its own, in
+// the same form as its row in GetAllInfo (godma.py 385, 1289):
+//
+//   OnGodmaPrimeItem(locationID, row)
+//
+// which is how a charge loaded into an empty module arrives, the probes
+// coming back to an empty launcher among them.
+//
+// Only the ship's items are kept here, and only what the panel and the scanner need.
 
 /** dogma attribute IDs (dogma/const.py). */
 const ATTRIBUTE = Object.freeze({
+  IS_ONLINE: 2,
   DAMAGE: 3,
   HP: 9,
   CHARGE: 18,
@@ -51,6 +69,7 @@ const ATTRIBUTE = Object.freeze({
   ARMOR_DAMAGE: 266,
   SHIELD_RECHARGE_RATE: 479,
   CAPACITOR_CAPACITY: 482,
+  QUANTITY: 805,
 });
 /** godma.chargedAttributeTauCaps: a recharging attribute, the attribute that is its recharge time, and the one that is its capacity. */
 const CHARGED = new Map([
@@ -75,8 +94,18 @@ const FILETIME_EPOCH_MS = 11644473600000n;
 
 const text = (value) => (Buffer.isBuffer(value) ? value.toString("utf8") : typeof value === "string" ? value : null);
 const number = (value) => (typeof value === "bigint" ? Number(value) : typeof value === "number" ? value : null);
-/** An item's ID as a key: a number when a number holds it. */
-const key = (value) => (typeof value === "bigint" && value <= BigInt(Number.MAX_SAFE_INTEGER) && value >= 0n ? Number(value) : value);
+/** An item's ID as a key: a number when a number holds it; for a charge in a module, its tuple (ship, flag, type) as "ship/flag/type". */
+const key = (value) => {
+  if (Array.isArray(value)) return value.map(String).join("/");
+  return typeof value === "bigint" && value <= BigInt(Number.MAX_SAFE_INTEGER) && value >= 0n ? Number(value) : value;
+};
+/** An inventory row's fields by name, however the codec spells the row; null when it is not a row. */
+const rowFields = (row) => {
+  if (!row || typeof row !== "object") return null;
+  if (row.fields && typeof row.fields === "object") return row.fields;
+  if (Array.isArray(row.columns) && Array.isArray(row.values)) return Object.fromEntries(row.columns.map((column, index) => [text(column[0]) ?? column[0], row.values[index]]));
+  return null;
+};
 const clock = (value) => (typeof value === "bigint" ? value : typeof value === "number" && Number.isFinite(value) ? BigInt(Math.trunc(value)) : null);
 const fieldsOf = (value) => {
   const dict = value && value.type === "object" ? value.args : value;
@@ -115,6 +144,8 @@ function createPilotDogma({ characterID = null, now = filetimeNow, effectCategor
   const lastChange = new Map();
   /** itemID -> Map(effectID -> { isActive, startTime, duration, repeat, targetID }). */
   const effects = new Map();
+  /** item key -> { typeID, groupID, flagID, locationID }: what each held item is and where. A charge in a module has no groupID. */
+  const identity = new Map();
 
   /** godma.GetAttribute. */
   function attribute(itemID, attributeID, at = now()) {
@@ -151,22 +182,47 @@ function createPilotDogma({ characterID = null, now = filetimeNow, effectCategor
     const shipInfo = fieldsOf(allInfo).get("shipInfo");
     const held = [];
     for (const [itemID, row] of shipInfo && Array.isArray(shipInfo.entries) ? shipInfo.entries : []) {
-      const fields = fieldsOf(row);
-      const values = new Map();
-      const given = fields.get("attributes");
-      for (const [attributeID, value] of given && Array.isArray(given.entries) ? given.entries : []) values.set(number(attributeID), number(value));
-      updateAttributes(itemID, values, clock(fields.get("time")) ?? now());
-      // godma.RefreshItemEffects: the effects active on the item, each with when it began, how long a cycle is and how many are left.
-      const active = new Map();
-      const listed = fields.get("activeEffects");
-      for (const [effectID, line] of listed && Array.isArray(listed.entries) ? listed.entries : []) {
-        if (!Array.isArray(line)) continue;
-        active.set(number(effectID), { isActive: true, startTime: clock(line[7]), duration: number(line[8]), repeat: number(line[9]), targetID: line[ENV_IDX_TARGET] ?? null });
-      }
-      effects.set(key(itemID), active);
+      loadRow(itemID, row);
       held.push(key(itemID));
     }
     return held;
+  }
+
+  /** godma.UpdateItem: one item's row, as GetAllInfo lists it and as OnGodmaPrimeItem sends it. */
+  function loadRow(itemID, row) {
+    const fields = fieldsOf(row);
+    const values = new Map();
+    const given = fields.get("attributes");
+    for (const [attributeID, value] of given && Array.isArray(given.entries) ? given.entries : []) values.set(number(attributeID), number(value));
+    updateAttributes(itemID, values, clock(fields.get("time")) ?? now());
+    // What the item is: its inventory row, or for a charge in a module the tuple it is keyed by.
+    const inventory = rowFields(fields.get("invItem"));
+    if (Array.isArray(itemID)) {
+      identity.set(key(itemID), { typeID: number(itemID[2]), groupID: null, flagID: number(itemID[1]), locationID: key(itemID[0]) });
+    } else if (inventory) {
+      identity.set(key(itemID), { typeID: number(inventory.typeID), groupID: number(inventory.groupID), flagID: number(inventory.flagID), locationID: key(inventory.locationID) });
+    }
+    // godma.RefreshItemEffects: the effects active on the item, each with when it began, how long a cycle is and how many are left.
+    const active = new Map();
+    const listed = fields.get("activeEffects");
+    for (const [effectID, line] of listed && Array.isArray(listed.entries) ? listed.entries : []) {
+      if (!Array.isArray(line)) continue;
+      active.set(number(effectID), { isActive: true, startTime: clock(line[7]), duration: number(line[8]), repeat: number(line[9]), targetID: line[ENV_IDX_TARGET] ?? null });
+    }
+    effects.set(key(itemID), active);
+  }
+
+  /**
+   * godma.OnGodmaPrimeItem(locationID, row): an item in a location that is
+   * held. One for a ship that is not held is left alone.
+   */
+  function primeItem(args) {
+    const [locationID, row] = args;
+    if (!attributes.has(key(locationID))) return false;
+    const itemID = fieldsOf(row).get("itemID");
+    if (itemID === undefined || itemID === null) return false;
+    loadRow(itemID, row);
+    return true;
   }
 
   /** godma.ApplyAttributeChange. */
@@ -207,8 +263,7 @@ function createPilotDogma({ characterID = null, now = filetimeNow, effectCategor
    */
   function change(each) {
     const [, ownerID, itemKey, attributeID, time, newValue, , wallclock] = each;
-    // A charge loaded in a module is keyed by a tuple; nothing here reads those.
-    if (Array.isArray(itemKey)) return false;
+    // A charge loaded in a module is keyed by a tuple, and is changed like anything else that is held.
     const id = key(itemKey);
     const attribute_ = number(attributeID);
     const stamp = clock(wallclock);
@@ -305,6 +360,10 @@ function createPilotDogma({ characterID = null, now = filetimeNow, effectCategor
       shipEffect(notification.args);
       return true;
     }
+    if (notification.method === "OnGodmaPrimeItem") {
+      primeItem(Array.isArray(notification.args) ? notification.args : []);
+      return true;
+    }
     return false;
   }
 
@@ -344,9 +403,33 @@ function createPilotDogma({ characterID = null, now = filetimeNow, effectCategor
     };
   }
 
+  /**
+   * scanSvc.GetProbeLauncher and GetChargesInProbeLauncher: the ship's first
+   * module of `groupID` that is online (godma's module.isOnline is the
+   * attribute), in the order the server listed them, and what is loaded at its
+   * flag. Null when the ship has none.
+   */
+  function onlineModule(shipID, groupID) {
+    const ship = key(shipID);
+    for (const [itemID, item] of identity) {
+      if (typeof itemID !== "number" || item.locationID !== ship || item.groupID !== groupID) continue;
+      if (!attribute(itemID, ATTRIBUTE.IS_ONLINE)) continue;
+      let charge = null;
+      for (const [chargeKey, loaded] of identity) {
+        if (typeof chargeKey !== "string" || loaded.locationID !== ship || loaded.flagID !== item.flagID) continue;
+        const quantity = attribute(chargeKey, ATTRIBUTE.QUANTITY);
+        // One that has run out is still listed until the server takes it away; it is not a charge any more.
+        if (quantity > 0) charge = { typeID: loaded.typeID, quantity };
+      }
+      return { moduleID: itemID, typeID: item.typeID, flagID: item.flagID, charge };
+    }
+    return null;
+  }
+
   return {
     attribute,
     applyAttributeChange,
+    onlineModule,
     /** What is known of one effect on one item, or null. */
     effect: (itemID, effectID) => effects.get(key(itemID))?.get(effectID) ?? null,
     feed,
@@ -359,6 +442,7 @@ function createPilotDogma({ characterID = null, now = filetimeNow, effectCategor
       charged.clear();
       lastChange.clear();
       effects.clear();
+      identity.clear();
     },
   };
 }

@@ -12,7 +12,8 @@ const { GamePortPilotError, argumentsToWire, boundObjectID, createGamePortPilots
 const { GAME_PORT_HANDLE_PREFIX, PILOT_FUNCTIONS } = require("../src/pilotTransport");
 const { createPilotSpace } = require("../src/gamePort/pilotSpace");
 const undockRecording = require("./fixtures/destinyUndock.json");
-const { notifications: recordedNotifications } = require("./helpers/destinyRecording");
+const { answers: recordedAnswers, notifications: recordedNotifications } = require("./helpers/destinyRecording");
+const probeFlight = require("./fixtures/probeFlight.json");
 
 const ACCOUNT = 4;
 const PILOT = 140000001;
@@ -311,8 +312,8 @@ test("the space snapshot and the flight status are read from the pilot's own bal
   const moved = Math.hypot(later.ship.position.x - space.ship.position.x, later.ship.position.y - space.ship.position.y, later.ship.position.z - space.ship.position.z);
   assert.ok(Math.abs(moved - 2 * 341) < 1e-3, `${moved} m in two ticks`);
   assert.equal(later.sampledAtMs - space.sampledAtMs, 2000);
-  // The scanner in space is not read yet, and says so.
-  await rejects(built.pilots.readScannerState(handle), "PILOT_TRANSPORT_UNAVAILABLE", /scanner in space/);
+  // The scanner in space answers too: this ship has no launcher that godma was told of, and no probes are out.
+  assert.deepEqual((await built.pilots.readScannerState(handle)).scanner, { inSpace: true, solarSystemID: SYSTEM, shipID: SHIP, maxActiveProbes: 8, launcher: null, probes: [] });
   assert.deepEqual(hand.errors, []);
 });
 
@@ -1581,4 +1582,193 @@ test("a refusal keeps the server's name for it and its values, beside the words"
     assert.deepEqual(error.refusal, { key: "ShipContrabandWarningUndock", values });
     return true;
   });
+});
+
+// ── the scanner in space ─────────────────────────────────────────────────────
+//
+// What the gateway's scanner state says, made as the retail client's scan
+// service knows it: the probes from what the server has told this session, the
+// launcher from godma. The answers and the notifications are a real server's
+// (test/fixtures/probeFlight.json): this same pilot and ship, a Core Probe
+// Launcher I with eight probes in it, four launched, a scan, the four recalled.
+
+const probeAnswer = (step) => recordedAnswers(probeFlight).find((answer) => answer.during === step && answer.value && answer.value.type === "object").value;
+const probeNotes = (step) => recordedNotifications(probeFlight).filter((notification) => notification.during === step);
+const PROBE_TYPE = 30013;
+const scannerStatics = {
+  typeAttribute: (typeID, attributeID) => (typeID === PROBE_TYPE ? { 1370: 0.25, 1373: 2 }[attributeID] ?? null : null),
+  typeGroup: (typeID) => ({ [PROBE_TYPE]: 479, 30488: 479, 2488: 100 })[typeID] ?? null,
+};
+async function scanning(pilotOptions = {}, getAllInfo = () => probeAnswer("GetAllInfo in space")) {
+  const hand = handTicked();
+  const built = build(
+    { ...IN_SPACE, answers: { ...IN_SPACE.answers, "bound:GetAllInfo": getAllInfo, "scanMgr.GetSystemScanMgr": boundObject("N=1:77") } },
+    { ...hand.options, ...scannerStatics, ...pilotOptions },
+  );
+  const { bridgeSessionID: handle } = await built.pilots.selectCharacter([PILOT, null, true], null, FIELDS);
+  const feed = (step) => probeNotes(step).forEach((notification) => built.session.notify(notification.method, notification.args));
+  const scanner = async () => (await built.pilots.readScannerState(handle, WHOSE)).scanner;
+  return { ...built, session: built.session, handle, feed, scanner };
+}
+
+test("in space the scanner is the launcher godma shows and the probes the server has told of", async () => {
+  const { session, feed, scanner } = await scanning();
+  const LAUNCHER = { moduleID: probeFlight.moduleID, typeID: 17938, online: true, chargeTypeID: PROBE_TYPE };
+  // Eight loaded, none out: all eight could go.
+  assert.deepEqual(await scanner(), {
+    inSpace: true, solarSystemID: SYSTEM, shipID: SHIP, maxActiveProbes: 8,
+    launcher: { ...LAUNCHER, loadedCount: 8, launchCount: 8 },
+    probes: [],
+  });
+  // godma is primed once for the ship in this place, as for the ship's panel.
+  assert.equal(session.boundCalls.filter((call) => call.method === "GetAllInfo").length, 1);
+  assert.deepEqual(session.boundCalls.find((call) => call.method === "GetAllInfo").args, [true, true, null]);
+
+  // Four launched: the server's own notifications say so, and that four are left in the launcher.
+  feed("launch");
+  const out = await scanner();
+  assert.deepEqual(out.launcher, { ...LAUNCHER, loadedCount: 4, launchCount: 4 });
+  assert.deepEqual(out.probes.map((probe) => probe.probeID), probeFlight.probeIDs);
+  assert.deepEqual(out.probes[0], {
+    probeID: 990000000001,
+    typeID: PROBE_TYPE,
+    pos: [-107303380589.52992, -18744981743.58154, 436488992639.86847],
+    destination: [-107303380589.52992, -18744981743.58154, 436488992639.86847],
+    scanRange: 2393565931200,
+    rangeStep: 7,
+    state: 1,
+    expiry: "134359490166880000",
+  });
+  assert.equal(session.boundCalls.filter((call) => call.method === "GetAllInfo").length, 1, "and godma is not asked again");
+  // What is read is plain JSON.
+  assert.deepEqual(JSON.parse(JSON.stringify(out)), out);
+});
+
+test("the launcher's count to launch never passes the eight probes a pilot may have out", async () => {
+  // Eight loaded and four out: four more. Three loaded and four out: three. Eight out: none.
+  const { session, feed, scanner } = await scanning();
+  await scanner();
+  feed("launch");
+  // Each change later than the last: an older one would be dropped as stale.
+  let stamp = 134359450900000000n;
+  const quantity = (value) => {
+    stamp += 10000000n;
+    session.notify("OnModuleAttributeChanges", [{ type: "list", items: [["OnModuleAttributeChange", PILOT, [BigInt(SHIP), 27, PROBE_TYPE], 805, stamp, value, null, stamp]] }]);
+  };
+  quantity(8);
+  assert.deepEqual([(await scanner()).launcher.loadedCount, (await scanner()).launcher.launchCount], [8, 4]);
+  quantity(3);
+  assert.deepEqual([(await scanner()).launcher.loadedCount, (await scanner()).launcher.launchCount], [3, 3]);
+  for (const probeID of [21, 22, 23, 24, 25, 26]) session.notify("OnNewProbe", [keyVal([["probeID", BigInt(probeID)], ["typeID", PROBE_TYPE], ["pos", [1, 2, 3]], ["expiry", 1n]])]);
+  const full = await scanner();
+  assert.deepEqual([full.probes.length, full.launcher.launchCount], [8, 0], "ten told of, eight shown");
+  // A probe the server sent with no step and no range has the client's: the seventh step of its type, sixteen AU.
+  assert.deepEqual([full.probes[4].probeID, full.probes[4].rangeStep, full.probes[4].scanRange], [21, 7, 16 * 149597870700]);
+  // Told to go somewhere, a probe is bound for there and still where it was.
+  session.notify("OnProbesIdle", [[keyVal([["probeID", 21n], ["pos", [9, 9, 9]], ["destination", [4, 5, 6]]])]]);
+  const sent = (await scanner()).probes[4];
+  assert.deepEqual([sent.pos, sent.destination], [[1, 2, 3], [4, 5, 6]]);
+  // The last probe gone from the launcher: still a launcher, with nothing in it.
+  quantity(0);
+  assert.deepEqual((await scanner()).launcher, { moduleID: probeFlight.moduleID, typeID: 17938, online: true, chargeTypeID: null, loadedCount: 0, launchCount: 0 });
+});
+
+test("a launcher holding something that is not a scan probe has nothing to launch, and a ship with no launcher has none", async () => {
+  const other = await scanning({ typeGroup: () => 100 });
+  assert.deepEqual((await other.scanner()).launcher, { moduleID: probeFlight.moduleID, typeID: 17938, online: true, chargeTypeID: null, loadedCount: 0, launchCount: 0 });
+  // The ship of the earlier tests: one module, no launcher.
+  const bare = await scanning({}, () => shipAllInfo());
+  assert.deepEqual(await bare.scanner(), { inSpace: true, solarSystemID: SYSTEM, shipID: SHIP, maxActiveProbes: 8, launcher: null, probes: [] });
+  // godma could not be asked: no launcher is known, and the probes the server told of are still there.
+  const unasked = await scanning({}, () => { throw new Error("not now"); });
+  unasked.feed("launch");
+  const state = await unasked.scanner();
+  assert.deepEqual([state.launcher, state.probes.length], [null, 4]);
+});
+
+test("what the scan service does after its own calls is done here: probes moving after a scan or a recall, gone when destroyed", async () => {
+  const { pilots, session, handle, feed, scanner } = await scanning({ allowed: new Set(["scanMgr.GetSystemScanMgr", "scanMgr.RequestScans", "scanMgr.RecoverProbes", "scanMgr.DestroyProbe", "scanMgr.ConeScan", "dogmaIM.MachoBindObject", "dogmaIM.GetAllInfo", "beyonce.MachoBindObject"]) });
+  feed("launch");
+  const states = async () => (await scanner()).probes.map((probe) => probe.state);
+  const [first, second, third, fourth] = probeFlight.probeIDs;
+  const { boundHandle } = await pilots.bindObject("scanMgr", "GetSystemScanMgr", [], null, WHOSE, handle);
+  const ask = (method, args, answer = null) => {
+    session.boundAnswer = answer;
+    return pilots.callBoundMethod("scanMgr", method, args, null, WHOSE, handle, boundHandle);
+  };
+
+  // RequestScans with the probes as the BFF's route sends them, keyed by ID: those are moving.
+  await ask("RequestScans", [{ [String(first)]: { typeID: PROBE_TYPE }, [String(second)]: { typeID: PROBE_TYPE } }]);
+  assert.deepEqual(await states(), [2, 2, 1, 1]);
+  // ... and as a dict, as the client sends them.
+  await ask("RequestScans", [{ type: "dict", entries: [[BigInt(third), keyVal([["probeID", BigInt(third)]])]] }]);
+  assert.deepEqual(await states(), [2, 2, 2, 1]);
+  // The server's word that the scan is over makes them idle again.
+  feed("scanning");
+  assert.deepEqual(await states(), [1, 1, 1, 1]);
+  // A scan with no probes at all (the ship's own scanner) moves nothing.
+  await ask("RequestScans", [null]);
+  await ask("ConeScan", [1, 2, 3, 4, 5]);
+  assert.deepEqual(await states(), [1, 1, 1, 1]);
+  assert.deepEqual(session.boundCalls.filter((call) => call.objectID === "N=1:77").map((call) => call.method), ["RequestScans", "RequestScans", "RequestScans", "ConeScan"]);
+});
+
+test("a recall moves the probes the server answers with, and a destroyed probe is dropped", async () => {
+  const [first, second, third, fourth] = probeFlight.probeIDs;
+  const answers = { RecoverProbes: { type: "list", items: [BigInt(first), BigInt(third)] }, DestroyProbe: null };
+  const hand = handTicked();
+  const built = build(
+    { ...IN_SPACE, answers: { ...IN_SPACE.answers, "bound:GetAllInfo": () => probeAnswer("GetAllInfo in space"), "scanMgr.GetSystemScanMgr": boundObject("N=1:77"), "bound:RecoverProbes": answers.RecoverProbes, "bound:DestroyProbe": null } },
+    { ...hand.options, ...scannerStatics, allowed: new Set(["scanMgr.GetSystemScanMgr", "scanMgr.RecoverProbes", "scanMgr.DestroyProbe", "scanMgr.SetActivityState", "scanMgr.SetProbeDestination", "scanMgr.SetProbeRangeStep", "dogmaIM.MachoBindObject", "dogmaIM.GetAllInfo"]) },
+  );
+  const { bridgeSessionID: handle } = await built.pilots.selectCharacter([PILOT, null, true], null, FIELDS);
+  probeNotes("launch").forEach((notification) => built.session.notify(notification.method, notification.args));
+  // The probes the scanner shows: the ones that are not inactive.
+  const probes = async () => (await built.pilots.readScannerState(handle, WHOSE)).scanner.probes.map((probe) => [probe.probeID, probe.state]);
+  const { boundHandle } = await built.pilots.bindObject("scanMgr", "GetSystemScanMgr", [], null, WHOSE, handle);
+  // All four asked for; the server agrees to two.
+  const recalled = await built.pilots.callBoundMethod("scanMgr", "RecoverProbes", [probeFlight.probeIDs], null, WHOSE, handle, boundHandle);
+  assert.deepEqual(recalled.result, { type: "list", items: [first, third] });
+  assert.deepEqual(await probes(), [[first, 2], [second, 1], [third, 2], [fourth, 1]]);
+  // Switched off, sent somewhere, told to look less far: the scanner's own list says so at once.
+  await built.pilots.callBoundMethod("scanMgr", "SetActivityState", [[second, first], false], null, WHOSE, handle, boundHandle);
+  assert.deepEqual(await probes(), [[first, 2], [third, 2], [fourth, 1]], "only the idle one is switched off, and an inactive probe is not shown");
+  await built.pilots.callBoundMethod("scanMgr", "SetActivityState", [[second], true], null, WHOSE, handle, boundHandle);
+  assert.deepEqual(await probes(), [[first, 2], [second, 1], [third, 2], [fourth, 1]]);
+  await built.pilots.callBoundMethod("scanMgr", "SetProbeDestination", [fourth, [7, 8, 9]], null, WHOSE, handle, boundHandle);
+  await built.pilots.callBoundMethod("scanMgr", "SetProbeRangeStep", [fourth, 2], null, WHOSE, handle, boundHandle);
+  const moved = (await built.pilots.readScannerState(handle, WHOSE)).scanner.probes.find((probe) => probe.probeID === fourth);
+  assert.deepEqual([moved.destination, moved.rangeStep, moved.scanRange], [[7, 8, 9], 2, 0.5 * 149597870700]);
+  // They went out as the client sends them: the IDs in a list.
+  assert.deepEqual(built.session.boundCalls.filter((call) => call.method === "SetActivityState").map((call) => call.args), [[{ type: "list", items: [second, first] }, false], [{ type: "list", items: [second] }, true]]);
+  assert.deepEqual(built.session.boundCalls.find((call) => call.method === "RecoverProbes").args, [{ type: "list", items: probeFlight.probeIDs }]);
+  // An idle probe destroyed is gone at once; a moving one stays until the server takes it away.
+  await built.pilots.callBoundMethod("scanMgr", "DestroyProbe", [second], null, WHOSE, handle, boundHandle);
+  await built.pilots.callBoundMethod("scanMgr", "DestroyProbe", [first], null, WHOSE, handle, boundHandle);
+  assert.deepEqual(await probes(), [[first, 2], [third, 2], [fourth, 1]]);
+  built.session.notify("OnRemoveProbe", [BigInt(first)]);
+  assert.deepEqual(await probes(), [[third, 2], [fourth, 1]]);
+});
+
+test("another system, another ship or a structure, and the scanner knows of no probes; other changes leave them", async () => {
+  for (const [changes, left] of [
+    [{ solarsystemid: [SYSTEM, 30000144] }, 0],
+    [{ shipid: [SHIP, SHIP + 5] }, 0],
+    [{ structureid: [null, 1030000000001] }, 0],
+    [{ corpid: [1000044, 98000001] }, 4],
+    [{ solarsystemid2: [SYSTEM, SYSTEM] }, 4],
+  ]) {
+    const { session, feed, scanner } = await scanning();
+    feed("launch");
+    assert.equal((await scanner()).probes.length, 4);
+    session.change(changes);
+    // Read from the scanner itself: a snapshot after a move would ask godma about the new place.
+    const state = await scanner().catch(() => null);
+    assert.equal(state ? state.probes.length : 0, left, JSON.stringify(changes));
+  }
+});
+
+test("docked, the scanner is the docked answer whatever probes were out", async () => {
+  const { pilots, handle } = await selected({}, { now: () => 1234, ...scannerStatics });
+  assert.deepEqual((await pilots.readScannerState(handle, WHOSE)).scanner, { inSpace: false, solarSystemID: SYSTEM, shipID: SHIP, maxActiveProbes: 0, launcher: null, probes: [] });
 });

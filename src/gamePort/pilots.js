@@ -59,6 +59,7 @@ const { GAME_PORT_HANDLE_PREFIX } = require("../pilotTransport");
 const { createCallLedger, retailForm } = require("./retailCalls");
 const { createPilotSpace } = require("./pilotSpace");
 const { createPilotDogma } = require("./pilotDogma");
+const { MAX_PROBES, createPilotScanner } = require("./pilotScanner");
 const { projectFlight, projectSpace } = require("./spaceProjection");
 const contract = require("../../contracts/evejs-web-bridge-contract.json");
 
@@ -101,6 +102,8 @@ const SUPPRESSED_NOTIFICATIONS = new Set(["DoDestinyUpdate"]);
 /** appConst.charLockInTransferQueue, charLockOnSale: what characterSelection.py refuses with. */
 const LOCK_REFUSALS = new Map([[1, "CharacterTransferring"], [2, "CharacterOnSale"]]);
 const GROUP_CAPSULE = 29;
+const GROUP_SCANNER_PROBE = 479;
+const GROUP_SCAN_PROBE_LAUNCHER = 481;
 /** inventorycommon/const.py */
 const GROUP_SOLAR_SYSTEM = 5;
 const GROUP_STATION = 15;
@@ -289,6 +292,17 @@ function defaultEffectCategory(effectID) {
   return effect && Number.isInteger(effect.effectCategoryID) ? effect.effectCategoryID : null;
 }
 
+/** A type's dogma attribute and its group, from the same static data (godma.GetTypeAttribute, evetypes.GetGroupID). */
+function defaultTypeAttribute(typeID, attributeID) {
+  // eslint-disable-next-line global-require
+  return require("../staticData").getTypeDogmaAttribute(typeID, attributeID);
+}
+function defaultTypeGroup(typeID) {
+  // eslint-disable-next-line global-require
+  const type = require("../staticData").getType(typeID);
+  return type && Number.isInteger(type.groupID) ? type.groupID : null;
+}
+
 /** A positive whole number, however the wire or the JSON spelled it; else null. */
 const positive = (value) => {
   const number = typeof value === "number" || typeof value === "bigint" ? Number(value) : NaN;
@@ -386,6 +400,9 @@ function createGamePortPilots({
   onSpaceError = () => {},
   // What kind a dogma effect is, from the game's static data (dogma.data.get_effect on the retail client).
   effectCategory = defaultEffectCategory,
+  // A type's dogma attribute and its group, for the scanner: a probe's range steps, and whether a launcher's charge is a probe.
+  typeAttribute = defaultTypeAttribute,
+  typeGroup = defaultTypeGroup,
   // The client's own services, for the calls the server makes to it, and a word about each call once it is over.
   answerClientCall = defaultClientCallAnswer,
   onClientCall = () => {},
@@ -599,6 +616,8 @@ function createGamePortPilots({
       /** The pilot's ship as dogma has it (pilotDogma.js), and which ship and place that was loaded for. */
       dogma: createPilotDogma({ characterID, now: () => filetime(now()), effectCategory }),
       dogmaLoaded: null,
+      /** The pilot's scan probes as the client's scan service knows them (pilotScanner.js). */
+      scanner: createPilotScanner({ typeAttribute }),
       /** Questions the server has asked and the user has not answered yet, by ID. */
       questions: new Map(),
       ended: false,
@@ -613,11 +632,14 @@ function createGamePortPilots({
       }
       if (entry.space) entry.space.feed(notification);
       entry.dogma.feed(notification);
+      entry.scanner.feed(notification);
       record(entry, notificationToBridgeJson(notification));
     });
     session.onSessionChange((changes) => {
       // A new place, or a new ship: what dogma said of the old one is not about this one.
       if (LOCATION_ATTRIBUTES.some((name) => name in changes) || "shipid" in changes) entry.dogmaLoaded = null;
+      // scanSvc.OnSessionChanged: another system, ship or structure, and the scanner knows of no probes.
+      if (["solarsystemid", "shipid", "structureid"].some((name) => name in changes)) entry.scanner.flush();
       if (LOCATION_ATTRIBUTES.some((name) => name in changes)) {
         forgetLocationObjects(entry);
         if (sessions.has(entry.handle)) syncSpace(entry);
@@ -853,16 +875,92 @@ function createGamePortPilots({
     };
   }
 
+  /**
+   * The scanner as the retail client's scan service has it: the probes it has
+   * been told of (pilotScanner.js), and the launcher godma shows on the ship
+   * (scanSvc.GetProbeLauncher, GetChargesInProbeLauncher). Nothing is asked of
+   * the server for the probes: a pilot that logs in with probes still out has
+   * none here until it reconnects to them, as on the client.
+   */
   async function readScannerState(bridgeSessionID, sessionFields = {}) {
     const entry = held(bridgeSessionID, sessionFields);
     const place = whereabouts(entry);
-    if (place.inSpace) {
-      throw fail("PILOT_TRANSPORT_UNAVAILABLE", "The scanner in space is not read on the game-port transport yet.");
+    if (!place.inSpace) {
+      return {
+        scanner: { inSpace: false, solarSystemID: place.solarSystemID, shipID: place.shipID, maxActiveProbes: 0, launcher: null, probes: [] },
+        notifications: drain(entry),
+      };
+    }
+    // godma.Prime, if the ship has not been loaded for this place yet.
+    await shipReadings(entry, place);
+    const probes = entry.scanner.activeProbes().slice(0, MAX_PROBES);
+    const fitted = entry.dogma.onlineModule(place.shipID, GROUP_SCAN_PROBE_LAUNCHER);
+    let launcher = null;
+    if (fitted) {
+      // Only scan probes count as loaded: a launcher can hold other things.
+      const charge = fitted.charge && typeGroup(fitted.charge.typeID) === GROUP_SCANNER_PROBE ? fitted.charge : null;
+      const loadedCount = charge ? Math.max(0, Math.trunc(charge.quantity)) : 0;
+      launcher = {
+        moduleID: fitted.moduleID,
+        typeID: fitted.typeID,
+        online: true,
+        chargeTypeID: charge ? charge.typeID : null,
+        loadedCount,
+        launchCount: Math.min(loadedCount, Math.max(0, MAX_PROBES - probes.length)),
+      };
     }
     return {
-      scanner: { inSpace: false, solarSystemID: place.solarSystemID, shipID: place.shipID, maxActiveProbes: 0, launcher: null, probes: [] },
+      scanner: {
+        inSpace: true,
+        solarSystemID: place.solarSystemID,
+        shipID: place.shipID,
+        maxActiveProbes: MAX_PROBES,
+        launcher,
+        probes: probes.map((probe) => ({
+          probeID: probe.probeID,
+          typeID: probe.typeID,
+          pos: probe.pos,
+          destination: probe.destination,
+          scanRange: probe.scanRange,
+          rangeStep: probe.rangeStep,
+          state: probe.state,
+          expiry: String(probe.expiry ?? "0"),
+        })),
+      },
       notifications: drain(entry),
     };
+  }
+
+  /**
+   * What the client's scan service does to its own list after a call to the
+   * scan manager has been answered (scanSvc.py, probeTracker.py):
+   *
+   *   RequestScans(probes)        the probes it sent are moving (SetProbesAsMoving)
+   *   RecoverProbes(probeIDs)     the ones the server answers with are moving
+   *   DestroyProbe(probeID)       that probe is gone
+   *   SetActivityState(ids, on)   each goes between idle and inactive
+   *
+   * and, for the two calls the web client makes where the retail client only
+   * changes its own list (SetProbeDestination, SetProbeRangeStep), that change.
+   */
+  function afterScanManagerCall(entry, method, args, result) {
+    const list = (value) => (Array.isArray(value) ? value : value && Array.isArray(value.items) ? value.items : []);
+    if (method === "RequestScans") {
+      const sent = args[0];
+      // As it went out: {probeID: probe}, or None for a scan with no probes.
+      const probeIDs = sent && sent.type === "dict" && Array.isArray(sent.entries) ? sent.entries.map(([probeID]) => probeID) : [];
+      entry.scanner.moving(probeIDs.map(Number).filter(Number.isFinite));
+    } else if (method === "RecoverProbes") {
+      entry.scanner.moving(list(result).map(Number).filter(Number.isFinite));
+    } else if (method === "DestroyProbe") {
+      entry.scanner.removed(Number(args[0]));
+    } else if (method === "SetActivityState") {
+      for (const probeID of list(args[0])) entry.scanner.setActive(Number(probeID), args[1] === true);
+    } else if (method === "SetProbeDestination") {
+      entry.scanner.setDestination(Number(args[0]), args[1]);
+    } else if (method === "SetProbeRangeStep") {
+      entry.scanner.setRangeStep(Number(args[0]), Number(args[1]));
+    }
   }
 
   // ── bound objects ─────────────────────────────────────────────────────────
@@ -992,6 +1090,7 @@ function createGamePortPilots({
     ledger.note(service, method, form);
     const result = await run(entry, service, method, async () =>
       entry.session.callBound(object.objectID, method, argumentsToWire(form.args), form.kwargs));
+    if (service === "scanMgr") afterScanManagerCall(entry, method, form.args, result);
     return {
       service,
       method,

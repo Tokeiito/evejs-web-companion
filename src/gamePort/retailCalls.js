@@ -45,6 +45,46 @@ const INV_CONTROLLERS = "eve/client/script/environment/invControllers.py";
 const AGENT_WINDOW = "eve/client/script/ui/station/agents/agentDialogueWindow.py";
 const AGENTS = "eve/client/script/ui/station/agents/agents.py";
 const CHAR_SELECT = "eve/client/script/ui/login/charSelection/characterSelection.py";
+const SCAN_SVC = "eve/client/script/parklife/scanSvc.py";
+
+/** A util.KeyVal with these fields, in this order. */
+const keyVal = (entries) => ({ type: "object", name: "util.KeyVal", args: { type: "dict", entries } });
+/** The clock's 100 ns ticks, however a route spelt them: a long. */
+const filetime = (value) => {
+  if (typeof value === "bigint") return value;
+  if (typeof value === "string" && /^-?\d+$/.test(value)) return BigInt(value);
+  if (value && typeof value === "object" && value.type === "long" && /^-?\d+$/.test(String(value.value))) return BigInt(value.value);
+  return typeof value === "number" && Number.isFinite(value) ? BigInt(Math.trunc(value)) : null;
+};
+const point = (value) => (Array.isArray(value) ? value.slice(0, 3).map(Number) : value && Array.isArray(value.items) ? value.items.slice(0, 3).map(Number) : [0, 0, 0]);
+
+/**
+ * scanSvc.RequestScans: the client's idle probes, {probeID: probe}, each the
+ * util.KeyVal the server sent with what the client has since changed on it;
+ * or None when there are no probes at all. A route gives them as a plain
+ * object keyed by the ID.
+ */
+function scanProbes(given) {
+  if (given === null || given === undefined) return null;
+  if (given.type === "dict") return given;
+  if (typeof given !== "object" || Array.isArray(given)) return given;
+  const entries = [];
+  for (const [probeID, probe] of Object.entries(given)) {
+    const id = Number(probeID);
+    if (!Number.isSafeInteger(id) || id <= 0 || !probe || typeof probe !== "object") continue;
+    entries.push([id, keyVal([
+      ["probeID", id],
+      ["typeID", Number(probe.typeID) || null],
+      ["pos", point(probe.pos)],
+      ["destination", point(probe.destination ?? probe.pos)],
+      ["scanRange", Number(probe.scanRange) || 0],
+      ["rangeStep", Number(probe.rangeStep) || 0],
+      ["state", Number(probe.state) || 0],
+      ["expiry", filetime(probe.expiry)],
+    ])]);
+  }
+  return entries.length > 0 ? { type: "dict", entries } : null;
+}
 
 const RETAIL_CALLS = Object.freeze({
   // ── character selection (made by the transport itself) ────────────────────
@@ -91,6 +131,30 @@ const RETAIL_CALLS = Object.freeze({
   "agentMgr.GetMissionObjectiveInfo": same(`${AGENT_WINDOW}:222`, "no arguments when the dialogue opens"),
   "agentMgr.GetAgentLocationWrap": same(`${AGENT_WINDOW}:276`, "no arguments"),
   "agentMgr.GetMissionJournalInfo": differs(`${AGENTS}:747`, "The client sends (charID, contentID). The BFF sends nothing."),
+
+  // ── the scanner (the scan manager a service call answers with, and the dogma location) ─────────────
+  "scanMgr.GetSystemScanMgr": same(`${SCAN_SVC}:115`, "no arguments"),
+  "scanMgr.RequestScans": reshaped(
+    `${SCAN_SVC}:195`,
+    (args, kwargs) => ({ args: [scanProbes(args[0])], kwargs }),
+    "RequestScans({probeID: probe}), each probe a util.KeyVal, or RequestScans(None). The client's probes also carry the scanBonuses the server sent; a route's do not.",
+  ),
+  "scanMgr.RecoverProbes": reshaped(
+    `${SCAN_SVC}:341`,
+    (args, kwargs) => ({ args: [list(args[0]), ...args.slice(1)], kwargs }),
+    "RecoverProbes([probeID, ...]): a list",
+  ),
+  "scanMgr.DestroyProbe": same(`${SCAN_SVC}:266`, "DestroyProbe(probeID)"),
+  "scanMgr.ReconnectToLostProbes": same(`${SCAN_SVC}:279`, "no arguments"),
+  "scanMgr.SetActivityState": reshaped(
+    `${SCAN_SVC}:426`,
+    (args, kwargs) => ({ args: [list(args[0]), ...args.slice(1)], kwargs }),
+    "SetActivityState([probeID, ...], True or False): a list",
+  ),
+  "scanMgr.SetProbeDestination": webOnly(`${SCAN_SVC}:169`, "The client keeps a probe's destination itself and sends it with the next RequestScans."),
+  "scanMgr.SetProbeRangeStep": webOnly(`${SCAN_SVC}:173`, "The client keeps a probe's range step itself and sends it with the next RequestScans."),
+  "scanMgr.ConeScan": same("eve/client/script/parklife/directionalScanSvc.py:47", "ConeScan(scanAngle, scanRange, x, y, z)"),
+  "dogmaIM.LaunchProbes": same(`${SCAN_SVC}:494`, "LaunchProbes(moduleID, numProbes)"),
 });
 
 /**

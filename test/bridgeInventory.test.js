@@ -431,6 +431,25 @@ test("board binds ship, boards, and makes the boarded ship the new active ship f
   assert.ok(gateway.calls.bind.some((b) => b.method === "GetInventoryFromId" && b.args[0] === 200));
 });
 
+test("a board that fails after the server accepted it passes that failure on, and not one of its own", async () => {
+  // The answer cannot be put together (its notifications are missing), which is found only after the
+  // boarding itself went through. From 2026-07-28 until 2026-10-08 a misplaced branch in this route's
+  // error handling threw "kind is not defined" here instead.
+  const gateway = fakeGateway();
+  const callBoundMethod = gateway.callBoundMethod.bind(gateway);
+  gateway.callBoundMethod = async (service, method, ...rest) => {
+    const outcome = await callBoundMethod(service, method, ...rest);
+    return method === "Board" ? { ...outcome, notifications: undefined } : outcome;
+  };
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/ship/board", { method: "POST", body: { shipID: 200 } });
+  assert.equal(response.status, 500);
+  assert.equal(payload.ok, false);
+  assert.doesNotMatch(JSON.stringify(payload), /kind is not defined/);
+  assert.equal(gateway.calls.boundCall.filter((call) => call.method === "Board").length, 1);
+});
+
 test("alternate hull-swap writes wait for the authoritative active ship before answering", async () => {
   const gateway = fakeGateway();
   let clockMs = 0;

@@ -150,3 +150,56 @@ test("the report lists each pair under the worst status it was seen with, and co
   assert.match(text, /\| `invbroker\.Add` \| 2 \| `eve\/client\/script\/environment\/invControllers\.py:213` \| The client always sends qty/);
   assert.equal(text.includes("## same"), false, "an empty group has no section");
 });
+
+// ── the scanner ──────────────────────────────────────────────────────────────
+
+test("RequestScans goes out as the client's {probeID: probe}, each probe a util.KeyVal, or as None", () => {
+  const route = { 990000000005: { typeID: 30013, pos: [1.5, 2, 3], destination: [4, 5, 6], scanRange: 2393565931200, rangeStep: 7, state: 1, expiry: "134359490166880000" } };
+  const shaped = form("scanMgr.RequestScans", [route]);
+  assert.equal(shaped.status, "reshaped");
+  assert.deepEqual(shaped.args, [{
+    type: "dict",
+    entries: [[990000000005, {
+      type: "object",
+      name: "util.KeyVal",
+      args: { type: "dict", entries: [["probeID", 990000000005], ["typeID", 30013], ["pos", [1.5, 2, 3]], ["destination", [4, 5, 6]], ["scanRange", 2393565931200], ["rangeStep", 7], ["state", 1], ["expiry", 134359490166880000n]] },
+    }]],
+  }]);
+  assert.equal(shaped.kwargs, null);
+  const fields = (probe) => new Map(form("scanMgr.RequestScans", [{ 7: probe }]).args[0].entries[0][1].args.entries);
+  // A position in a list wrapper, a time as a long or a number, no destination (it is where the probe is), nothing at all.
+  assert.deepEqual(fields({ pos: { type: "list", items: [1, 2, 3, 4] } }).get("pos"), [1, 2, 3]);
+  assert.deepEqual(fields({ pos: [1, 2, 3] }).get("destination"), [1, 2, 3]);
+  assert.deepEqual(fields({ pos: [1, 2, 3, 4] }).get("pos"), [1, 2, 3], "three numbers and no more");
+  assert.equal(fields({ expiry: { type: "long", value: "55" } }).get("expiry"), 55n);
+  assert.equal(fields({ expiry: 55 }).get("expiry"), 55n);
+  assert.equal(fields({ expiry: 55n }).get("expiry"), 55n);
+  assert.deepEqual([...fields({})], [["probeID", 7], ["typeID", null], ["pos", [0, 0, 0]], ["destination", [0, 0, 0]], ["scanRange", 0], ["rangeStep", 0], ["state", 0], ["expiry", null]]);
+  assert.equal(fields({ expiry: "soon" }).get("expiry"), null);
+  // No probes: None, which is the ship's own scan. What is no probe is left out.
+  for (const none of [null, undefined, {}, { x: { typeID: 1 } }, { 0: { typeID: 1 } }, { 5: null }, { "5.5": {} }]) {
+    assert.deepEqual(form("scanMgr.RequestScans", [none]).args, [null], JSON.stringify(none));
+  }
+  assert.deepEqual(form("scanMgr.RequestScans", []).args, [null]);
+  // Already a dict, as the client would hand it: left alone.
+  const dict = { type: "dict", entries: [[5, { type: "object", name: "util.KeyVal", args: { type: "dict", entries: [] } }]] };
+  assert.equal(form("scanMgr.RequestScans", [dict]).args[0], dict);
+  // Two probes keep the order they were given in.
+  assert.deepEqual(form("scanMgr.RequestScans", [{ 9: {}, 8: {} }]).args[0].entries.map(([probeID]) => probeID), [8, 9]);
+});
+
+test("the probes to recall and the probes to switch go out as lists; the rest of the scan calls are the client's as they stand", () => {
+  assert.deepEqual(form("scanMgr.RecoverProbes", [[5, 6]]).args, [{ type: "list", items: [5, 6] }]);
+  assert.deepEqual(form("scanMgr.SetActivityState", [[5, 6], true]).args, [{ type: "list", items: [5, 6] }, true]);
+  assert.deepEqual(form("scanMgr.SetActivityState", [{ type: "list", items: [5] }, false]).args, [{ type: "list", items: [5] }, false]);
+  for (const [pair, args] of [["scanMgr.GetSystemScanMgr", []], ["scanMgr.DestroyProbe", [5]], ["scanMgr.ReconnectToLostProbes", []], ["scanMgr.ConeScan", [1, 2, 0, 0, 1]], ["dogmaIM.LaunchProbes", [9988400109051, 4]]]) {
+    const shaped = form(pair, args);
+    assert.deepEqual([shaped.status, shaped.args], ["same", args], pair);
+  }
+  // Two calls the client never makes: it keeps a probe's destination and range step itself.
+  for (const pair of ["scanMgr.SetProbeDestination", "scanMgr.SetProbeRangeStep"]) {
+    const shaped = form(pair, [5, 3]);
+    assert.deepEqual([shaped.status, shaped.args], ["web-only", [5, 3]], pair);
+    assert.match(shaped.note, /RequestScans/);
+  }
+});
