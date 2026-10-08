@@ -13,6 +13,7 @@ const eveStore = require("./eveStore");
 const eveGatewayClient = require("./eveGatewayClient");
 const webAuth = require("./webAuth");
 const staticDataModule = require("./staticData");
+const { createClientWords } = require("./clientData/clientWords");
 const { readMinerPilot } = require("./pilotTrainingRead");
 const { createTrainingQueueService } = require("./pilotTrainingQueue");
 const { createFactorySessions } = require("./factorySessions");
@@ -183,6 +184,12 @@ const gateway = mutationFence.wrap(createPilotTransport({
 }));
 const auth = options.webAuth || webAuth;
 const staticData = options.staticData || staticDataModule;
+// The retail client's own text for the labels the server sends, read from the
+// player's installed client when there is one (src/clientData/clientWords.js).
+const clientWords = options.clientWords || createClientWords({
+  clientRoot: config.clientRoot,
+  onError: (error) => console.warn(`[client-words] the client's localisation could not be read: ${error && error.message}`),
+});
 // The game-port client the customs-export hop speaks. Injected so the route
 // is exercised in tests without a socket, exactly as the gateway client is.
 const gameClientFactory = options.gameClientFactory || ((endpoint) => new GameClient(endpoint));
@@ -21787,6 +21794,18 @@ async function resolveRuntimeStructureNames(req, structureIDs, options = {}) {
 // the location it found an item at, and does not know the difference); the
 // explicit "structure" kind is for callers that do.
 const STRUCTURE_NAME_KINDS = new Set(["station", "structure"]);
+
+// The retail client's text for localisation labels, as templates: the
+// {parameters} are left in, for the browser to fill with the values the
+// server sent and the names it keeps. `available` is false when no client
+// install is configured (EVEJS_CLIENT_ROOT); a label the client does not have
+// is null. Bounded: at most 200 labels a request.
+const WORDS_LABEL_LIMIT = 200;
+app.post("/api/words", requireAuth, (req, res) => {
+  const asked = Array.isArray(req.body && req.body.labels) ? req.body.labels : [];
+  const labels = asked.filter((label) => typeof label === "string" && label.length > 0 && label.length <= 200).slice(0, WORDS_LABEL_LIMIT);
+  res.json({ ok: true, available: clientWords.available(), words: clientWords.templates(labels) });
+});
 
 app.post("/api/names", requireAuth, async (req, res, next) => {
   try {

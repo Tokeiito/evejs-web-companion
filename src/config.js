@@ -48,6 +48,11 @@ module.exports = {
     process.env.EVEJS_GAMESTORE_DB ||
       path.join(eveRoot, "_local", "gameStore", "gamestore.sqlite"),
   ),
+  // Where the player's own copy of the retail client is installed (the folder
+  // holding `tq` and `ResFiles`). Its localisation data is read from there, at
+  // run time, for the text of the labels the server sends. Unset: no client's
+  // words, and the web client words what it can itself.
+  clientRoot: process.env.EVEJS_CLIENT_ROOT ? path.resolve(process.env.EVEJS_CLIENT_ROOT) : null,
   host: process.env.HOST || "127.0.0.1",
   port: Number.parseInt(process.env.PORT || "26500", 10) || 26500,
   sessionCookieName: "evejs_web_poc",

@@ -176,13 +176,14 @@ function fakeStaticData() {
   };
 }
 
-async function startTestServer() {
+async function startTestServer(options = {}) {
   const app = createApp({
     eveStore: fakeStore(),
     eveGatewayClient: {},
     webAuth: fakeAuth(),
     staticData: fakeStaticData(),
     errorLogger() {},
+    ...options,
   });
   const server = app.listen(0, "127.0.0.1");
   activeServers.add(server);
@@ -641,4 +642,66 @@ test("the structure name read is the ONLY structureDirectory call the BFF makes"
     ["GetStructureInfo"],
   );
   assert.deepEqual(structureCalls[0].args, [STRUCTURE_ID]);
+});
+
+// --- 3. POST /api/words: the retail client's text for the server's labels -----
+
+function fakeClientWords(texts, available = true) {
+  const asked = [];
+  return {
+    asked,
+    available: () => available,
+    templates(labels) {
+      asked.push(labels);
+      return Object.fromEntries(labels.map((label) => [label, available ? texts[label] ?? null : null]));
+    },
+  };
+}
+
+test("POST /api/words answers each label with the client's template, parameters left in, and null for one it has not", async () => {
+  const clientWords = fakeClientWords({
+    "UI/Agents/StandardMission/DeclineMissionTitle": "A made-up title?",
+    "UI/Agents/Research/SkillListing": "{[item]skillID.name} at {[numeric]skillLevel}",
+  });
+  const { baseUrl } = await startTestServer({ clientWords });
+  const { response, payload } = await apiRequest(baseUrl, "/api/words", {
+    method: "POST",
+    body: { labels: ["UI/Agents/StandardMission/DeclineMissionTitle", "UI/Agents/Research/SkillListing", "UI/Nope/NotALabel"] },
+  });
+  assert.equal(response.status, 200);
+  assert.deepEqual(payload, {
+    ok: true,
+    available: true,
+    words: {
+      "UI/Agents/StandardMission/DeclineMissionTitle": "A made-up title?",
+      "UI/Agents/Research/SkillListing": "{[item]skillID.name} at {[numeric]skillLevel}",
+      "UI/Nope/NotALabel": null,
+    },
+  });
+});
+
+test("POST /api/words asks the client only for labels, and for no more than two hundred of them", async () => {
+  const clientWords = fakeClientWords({});
+  const { baseUrl } = await startTestServer({ clientWords });
+  const many = Array.from({ length: 250 }, (_, index) => `UI/Label/${index}`);
+  const mixed = ["UI/Good/One", 7, null, "", { label: "x" }, "x".repeat(201), "x".repeat(200), ["UI/In/AList"]];
+  await apiRequest(baseUrl, "/api/words", { method: "POST", body: { labels: mixed } });
+  await apiRequest(baseUrl, "/api/words", { method: "POST", body: { labels: many } });
+  for (const body of [{}, { labels: "UI/Not/AList" }, { labels: null }]) {
+    const { response, payload } = await apiRequest(baseUrl, "/api/words", { method: "POST", body });
+    assert.equal(response.status, 200);
+    assert.deepEqual(payload.words, {});
+  }
+  assert.deepEqual(clientWords.asked[0], ["UI/Good/One", "x".repeat(200)]);
+  assert.equal(clientWords.asked[1].length, 200);
+  assert.deepEqual(clientWords.asked[1].slice(0, 2), ["UI/Label/0", "UI/Label/1"]);
+  assert.deepEqual(clientWords.asked.slice(2), [[], [], []]);
+});
+
+test("POST /api/words says when there is no client to read, and needs a login", async () => {
+  const { baseUrl } = await startTestServer({ clientWords: fakeClientWords({ "UI/A/B": "text" }, false) });
+  const { payload } = await apiRequest(baseUrl, "/api/words", { method: "POST", body: { labels: ["UI/A/B"] } });
+  assert.deepEqual(payload, { ok: true, available: false, words: { "UI/A/B": null } });
+  const anonymous = await apiRequest(baseUrl, "/api/words", { method: "POST", body: { labels: ["UI/A/B"] }, authenticated: false });
+  assert.equal(anonymous.response.status, 401);
 });
