@@ -299,6 +299,75 @@ bytes, because the client's marshaller shares objects by Python identity. The re
 - **Done when:** the harness report lists every pair as identical, normalised, or a named
   divergence with a decision. This number is the real size of the browser-side work.
 
+**Status 2026-10-08: done for every read that can be made without a player's input.**
+
+What exists:
+
+- `src/gamePort/bridgeJson.js` — maps a game-port value, a notification or a session change to the
+  JSON the gateway emits.
+- `scripts/parity-harness.js` and `scripts/parity-compare.js` — make each read through the gateway,
+  then the game port, and judge the pair. The list of reads comes from the BFF's own source.
+- [`game-port-parity-report.md`](game-port-parity-report.md) — the generated result, every read
+  listed. Regenerate it; do not edit it.
+- Tests feed mapped values from the recorded real server to the browser's own readers
+  (`web/src/bridge/wire.ts`, loaded directly), so "a decoder can read this" is checked, not argued.
+
+The result, as the Test Pilot docked in Jita. The gateway allows 366 reads; 176 were compared (the
+two inventory reads were each made on two inventories, which is why the rows sum to 368):
+
+| | Reads |
+|---|---|
+| Identical JSON, or the same shape with data that moved between the two reads | 142 |
+| Differ only in spellings the shared readers accept either of | 9 |
+| Refused by the server on both transports, with the same reason reported | 15 |
+| **Differ in a way a decoder could trip on** | **9** |
+| The server cannot marshal its own answer | 1 |
+| Not compared: 88 need a player's choice of argument, 104 are not top-level calls in the BFF | 192 |
+
+The 9 that differ, by kind, and what is decided for each. None can be fixed in the mapping: in
+every case the gateway prints a detail of the handler's value that marshalling erases.
+
+| Kind | Reads | Also in | Decision |
+|---|---|---|---|
+| A timestamp the gateway prints as bare digits; the game port gives `{type:"long"}` | 5 | `OnGodmaShipEffect`, `OnModuleAttributeChanges`, the session change | Teach `unwrapLong` to read a string of digits, and read these fields through it. Bare digits are the minority spelling on the gateway too (5 reads against 26 with the wrapper). |
+| A tuple the gateway prints as `{type:"tuple"}`; the game port gives an array | 2 | | A reader of a tuple accepts an array. `agents.ts` `seqItems` does not yet; `fittings.ts`'s does. |
+| A byte string the gateway prints as `{type:"bytes"}`; the game port gives `{type:"Buffer"}` | 2 | planet data (`boundPlanets.ts`) | A reader of bytes accepts both. The wire does distinguish the two (a buffer and a string are different opcodes) but the stock decoder merges them; a decoder option upstream would remove this row. |
+
+Fourteen more reads come back from the gateway inside a cached-answer envelope that the browser
+opens, where the game port returns the answer itself. The browser's `unwrapCachedResult` helpers
+already pass a bare answer through, so these compared equal once opened. Phase 3 confirms each such
+decoder goes through one.
+
+Found along the way:
+
+- **A client defect, fixed.** We sent integers above 32 bits as int64, which the server reads as a
+  BigInt. The retail client sends a Python long, which the server reads as a number. Every read on
+  a ship's inventory answered None because of it. `src/gamePort/clientMarshal.js` now encodes what
+  the client sends. This also settles the reference's open row on call-ID encoding.
+- **A server defect, reported, not ours to fix.** `corpRegistry.CanLeaveCurrentCorporation` returns
+  a bare `{}` the server's marshaller refuses, so the game port, and the retail client, get None.
+  The gateway prints it happily. More generally the server answers None when a handler or the
+  marshaller throws; the only trace is a `[PKT] ERR` line in its log.
+- **The gateway's session is not a retail session.** On character select the gateway reports a role
+  mask of `0x6000000000000000` where the game port reports `0x65fc2062a0e41800`, an extra `baseID`
+  attribute the retail session change does not carry, and old values of null where retail has 0.
+  Anything gated on roles can behave differently between the two.
+- **Refusals carry the same reason.** `error.refusal.reason` on the game port is put together the
+  way the gateway's `CALL_REFUSED` message is, and matched it in all 15 refused reads.
+- **A capability gained.** A cached answer that is a reference into the object cache is unreadable
+  through the gateway (`map.GetStationInfo`, `corporationSvc.GetAllCorpMedals`). The game port
+  fetches the object.
+
+What Phase 3 inherits:
+
+1. Three small reader changes in the browser (the table above), each a widening that leaves the
+   gateway path working.
+2. The 192 reads not compared here are compared as their feature moves, with the arguments that
+   feature really sends. The harness takes them as soon as they are top-level calls with arguments
+   it can derive.
+3. Bound-object reads beyond the inventory (agents, dogma, fleet, planets) need their retail bind
+   parameters, which `eveMoniker.py` gives.
+
 ### Phase 3 — `PilotSession` in the BFF, docked features on the game port (medium–large)
 
 - Step 1 (pure refactor): introduce the interface, implement it on the gateway, route the helpers

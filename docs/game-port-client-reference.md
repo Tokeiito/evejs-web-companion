@@ -73,7 +73,9 @@ password, which is how H10 is tied to a real client login.
 | P10 | Anything received that does not start `~` or `}` is zlib | S | matches |
 | P11 | `journeyID` is `str(uuid4)` for the current journey | S | a fixed UUID per session; **?** when the client changes it |
 | P12 | The six trace fields | S | all None; **?** whether the client ever fills them |
-| P13 | Call ID is a Python long | S | sent as a plain integer; **?** how `blue.marshal` writes a small long |
+| P13 | Call ID is a Python long, and so is a bound object's node ID (`long(nid)`) | S | matches, V |
+| P14 | A Python long is written as opcode 0x2f (blue's `WriteLong`), and on 64-bit Windows every integer above 2^31-1 is one | S, O | matches, V: `src/gamePort/clientMarshal.js`. The server reads 0x2f as a number and an int64 as a BigInt, so this is not cosmetic: sent as int64, an item ID broke every read on a ship's inventory |
+| P15 | A refused call comes back as an `ErrorResponse` carrying the exception; a game refusal is a `UserError(msg, dict)` | S, L | read into `error.refusal`, with the reason worded as the gateway words it |
 
 ## What the server pushes
 
@@ -144,9 +146,19 @@ want the same slot (the client fills it from another dict whose own order is not
 version as `machoVersion`, and the server can reply "still good" instead of the answer. We always
 send 1, so the server always answers in full. (What comes back is handled; see below.)
 
+## Reading the server's answers in the browser
+
+`src/gamePort/bridgeJson.js` maps what the game port decodes to onto the JSON the web gateway
+emits, which is what the browser's decoders were written against. How well that holds, read by
+read, is [`game-port-parity-report.md`](game-port-parity-report.md); what is decided about the
+differences is in the plan's Phase 2 section.
+
+One thing to know when a call answers None for no reason: the server answers None when a handler
+or its own marshaller throws. The only trace is a `[PKT] ERR` line in `eve.js/_local/logs/server*.log`.
+
 ## Still needs a recording of the real client
 
-The `?` rows above, and A6. `scripts/record-game-port.js` is the tool: it sits between any client
+The `?` rows above. `scripts/record-game-port.js` is the tool: it sits between any client
 and the server and writes every frame; its `describe` mode prints each frame's kind, addresses,
 call and value types, which is exactly what the `?` rows need.
 
