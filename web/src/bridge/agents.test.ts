@@ -335,11 +335,15 @@ test("what an agent says is kept as the server sent it: a label with its paramet
   assert.deepEqual(says(["UI/Agents/Bare"]).agentSaysWords, { label: "UI/Agents/Bare", parameters: null, text: null });
   // Plain text is text.
   assert.deepEqual(says("Come back later.").agentSaysWords, { label: null, parameters: null, text: "Come back later." });
-  // A mission's own text comes as its message number, which is not words yet.
+  // A mission's own text comes as its message's number, with the mission's content ID beside it.
   const numbered = says(127958);
   assert.equal(numbered.agentSays, "127958");
-  assert.equal(numbered.agentSaysWords, null);
+  assert.deepEqual(numbered.agentSaysWords, { label: null, parameters: null, text: null, messageID: 127958 });
   assert.equal(numbered.contentID, 4802);
+  // A number that cannot be a message's is not one.
+  for (const wrong of [0, -5, 1.5]) {
+    assert.equal(says(wrong).agentSaysWords, null, String(wrong));
+  }
   // Something that is neither is nothing.
   assert.equal(says([7, {}]).agentSaysWords, null);
 });

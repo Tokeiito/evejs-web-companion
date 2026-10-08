@@ -3935,18 +3935,33 @@ export async function resolveNames(
  */
 export async function loadWords(
   labels: readonly string[],
+  messageIDs: readonly number[] = [],
   options: ApiOptions = {},
-): Promise<{ available: boolean; words: Record<string, string | null> }> {
-  const data = await postJson("/api/words", { labels }, options);
-  const raw =
-    typeof data.words === "object" && data.words !== null && !Array.isArray(data.words)
-      ? (data.words as Record<string, JsonValue>)
-      : {};
-  const words: Record<string, string | null> = {};
-  for (const [label, value] of Object.entries(raw)) {
-    words[label] = typeof value === "string" ? value : null;
-  }
-  return { available: data.available === true, words };
+): Promise<{ available: boolean; words: Record<string, string | null>; messages: Record<string, string | null> }> {
+  const data = await postJson("/api/words", messageIDs.length > 0 ? { labels, messageIDs } : { labels }, options);
+  const texts = (value: JsonValue | undefined): Record<string, string | null> => {
+    const raw = typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, JsonValue>) : {};
+    const out: Record<string, string | null> = {};
+    for (const [key, text] of Object.entries(raw)) {
+      out[key] = typeof text === "string" ? text : null;
+    }
+    return out;
+  };
+  return { available: data.available === true, words: texts(data.words), messages: texts(data.messages) };
+}
+
+/**
+ * A mission's keywords from its agent (agentMgr.GetMissionKeywords on the
+ * bound agent), raw: the names and values the client adds to the arguments of
+ * everything that agent says about the mission.
+ */
+export async function loadMissionKeywords(
+  agentID: number,
+  contentID: number,
+  options: ApiOptions = {},
+): Promise<JsonValue> {
+  const data = await getJson(`/api/bridge/agents/${agentID}/keywords?contentID=${contentID}`, options);
+  return data.keywords ?? null;
 }
 
 // --- R108 slice 3: the PI Manager's read, with no character selected ---------

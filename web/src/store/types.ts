@@ -1114,9 +1114,9 @@ export interface AgentLastActionInfo {
 export interface AgentConversation {
   readonly agentSays: string;
   /**
-   * What the agent says as the server sent it, when that is words: a
-   * localisation label with its parameters, or plain text. Null when it is a
-   * message's number (a mission's own text), which is not worded yet.
+   * What the agent says as the server sent it: a localisation label with its
+   * parameters, plain text, or a message's number (a mission's own text).
+   * Null when it is none of those.
    */
   readonly agentSaysWords: QuestionWords | null;
   readonly contentID: number | null;
@@ -1172,6 +1172,12 @@ export interface AgentsState {
   readonly agents: readonly AgentRow[];
   readonly activeAgentID: number | null;
   readonly conversation: AgentConversation | null;
+  /**
+   * Each mission's keywords, by "<agentID>:<contentID>": what the agent
+   * answers to GetMissionKeywords, which the client adds to the arguments of
+   * everything that agent says about that mission (its places and its things).
+   */
+  readonly missionKeywords: Readonly<Record<string, Readonly<Record<string, unknown>>>>;
   readonly briefing: CourierBriefing | null;
   readonly journal: JournalState | null;
   /** True once the agent list has loaded. */
@@ -2589,11 +2595,16 @@ export interface LiveState {
   readonly questions: readonly ClientQuestion[];
 }
 
-/** A title or a body as the server words it: a localisation label with its parameters, or plain text. */
+/**
+ * A title, a body or an agent's line as the server words it: a localisation
+ * label with its parameters, plain text, or a message's number (a mission's
+ * own text, which the client fills with the mission's keywords).
+ */
 export interface QuestionWords {
   readonly label: string | null;
   readonly parameters: unknown;
   readonly text: string | null;
+  readonly messageID?: number | null;
 }
 
 /**

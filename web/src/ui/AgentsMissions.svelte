@@ -43,10 +43,13 @@
   const saysClient = $derived.by<ClientWording>(() => {
     const agentID = $agents.activeAgentID;
     const row = $agents.agents.find((agent) => agent.agentID === agentID) ?? null;
+    const contentID = $agents.conversation?.contentID ?? null;
     return {
       templates: $words.templates,
       playerID: $station.online?.characterID ?? null,
+      // The mission's keywords first, then the agent's own IDs over them, as the client orders them.
       extra: {
+        ...((agentID !== null && contentID !== null ? $agents.missionKeywords[`${agentID}:${contentID}`] : null) ?? {}),
         agentID: agentID ?? undefined,
         agentCorpID: row?.corporationID ?? undefined,
         agentStationID: row?.stationID ?? undefined,
@@ -61,6 +64,11 @@
       : $agents.conversation?.agentSays ?? "",
   );
   $effect(() => {
+    const agentID = $agents.activeAgentID;
+    const contentID = $agents.conversation?.contentID ?? null;
+    if (agentID !== null && contentID !== null) {
+      flow.requestMissionKeywords(agentID, contentID);
+    }
     const said = [$agents.conversation?.agentSaysWords ?? null];
     const labels = wordsLabels(said);
     if (labels.length > 0) {
@@ -286,7 +294,7 @@
 {#if $agents.conversation}
   <section>
     <h2>Conversation · {agentName($agents.activeAgentID)}</h2>
-    <p class="agent-says">{saysText}</p>
+    <p class="agent-says" style="white-space: pre-line">{saysText}</p>
     <p class="controls">
       {#each $agents.conversation.actions as action (action.actionID)}
         <button

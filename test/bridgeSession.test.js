@@ -737,3 +737,39 @@ test("a question is answered while the write that caused it is still waiting on 
   assert.equal(pressed.response.status, 200, JSON.stringify(pressed.payload));
   assert.deepEqual(pressed.payload.result, ["the conversation after"]);
 });
+
+// ── A mission's keywords (GET /api/bridge/agents/:agentID/keywords) ──────────
+
+test("a mission's keywords are asked of the bound agent, by the mission's content ID", async () => {
+  const gamePort = gamePortWithQuestions(() => ({ answered: true }));
+  const bound = [];
+  gamePort.bindObject = async (service, method, args) => { bound.push({ service, method, args }); return { boundHandle: "bound-agent", notifications: [] }; };
+  const calls = [];
+  gamePort.callBoundMethod = async (service, method, args, kwargs, sessionFields, bridgeSessionID, handle) => {
+    calls.push({ service, method, args, bridgeSessionID, handle });
+    return { service, method, result: { type: "dict", entries: [["objectiveLocationSystemID", 30000120]] }, notifications: [] };
+  };
+  const { baseUrl } = await startTestServer({ gateway: fakeGateway(), gamePortPilots: gamePort, pilotTransportFor: () => "gameport" });
+  const keywords = (agent, query) => apiRequest(baseUrl, `/api/bridge/agents/${agent}/keywords${query}`);
+
+  // No pilot, no agent to ask.
+  assert.equal((await keywords(3008416, "?contentID=4802")).response.status, 409);
+  await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+
+  const answer = await keywords(3008416, "?contentID=4802");
+  assert.equal(answer.response.status, 200, JSON.stringify(answer.payload));
+  assert.deepEqual(answer.payload, { ok: true, keywords: { type: "dict", entries: [["objectiveLocationSystemID", 30000120]] }, notifications: [] });
+  assert.deepEqual(bound, [{ service: "agentMgr", method: "MachoBindObject", args: [3008416] }]);
+  assert.deepEqual(calls, [{ service: "agentMgr", method: "GetMissionKeywords", args: [4802], bridgeSessionID: GAME_PORT_SESSION_ID, handle: "bound-agent" }]);
+
+  // What is not an agent or not a mission is refused before anything is asked.
+  for (const [agent, query, error] of [
+    [0, "?contentID=4802", "INVALID_AGENT"], ["x", "?contentID=4802", "INVALID_AGENT"],
+    [3008416, "", "INVALID_CONTENT"], [3008416, "?contentID=0", "INVALID_CONTENT"], [3008416, "?contentID=abc", "INVALID_CONTENT"], [3008416, "?contentID=1.5", "INVALID_CONTENT"],
+  ]) {
+    const refused = await keywords(agent, query);
+    assert.equal(refused.response.status, 400, `${agent} ${query}`);
+    assert.equal(refused.payload.error, error);
+  }
+  assert.equal(calls.length, 1);
+});

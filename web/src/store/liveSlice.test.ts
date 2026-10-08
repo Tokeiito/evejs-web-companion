@@ -237,3 +237,11 @@ test("the client's words are kept by label, added to and never dropped, through 
   store.apply({ type: "words/loaded", available: false, templates: { "UI/D": null } });
   assert.equal(store.get().words.available, false);
 });
+
+test("each mission's keywords are kept beside the others', by agent and mission", () => {
+  const store = createClientStore();
+  store.apply({ type: "agents/mission-keywords", key: "3008416:2156", keywords: { objectiveQuantity: 1 } });
+  store.apply({ type: "agents/mission-keywords", key: "3008416:2157", keywords: { objectiveQuantity: 2 } });
+  store.apply({ type: "agents/mission-keywords", key: "3008416:2156", keywords: { objectiveQuantity: 3 } });
+  assert.deepEqual(store.get().agents.missionKeywords, { "3008416:2156": { objectiveQuantity: 3 }, "3008416:2157": { objectiveQuantity: 2 } });
+});

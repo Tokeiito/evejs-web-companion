@@ -116,7 +116,7 @@ import { createSpacePoller, targetsReadIsDue, type SpacePoller } from "./spacePo
 import type { RequestPriority } from "./transport.ts";
 import type { CorpOfficesResult, DronesResult, FlightStepResult } from "./api.ts";
 import { BridgeCallError } from "../bridge/callMethod.ts";
-import { createBotPresses, decodeQuestion } from "../bridge/questions.ts";
+import { argumentsOf, createBotPresses, decodeQuestion } from "../bridge/questions.ts";
 import { classifyDistributionAgentConversation, selectDistributionAgent } from "../nav/distributionAgentSelection.ts";
 import { refusalWords as sayRefusalWords } from "../bridge/refusals.ts";
 import { readDictEntry, type JsonValue } from "../bridge/wire.ts";
@@ -1325,12 +1325,19 @@ export interface AppFlow {
    */
   requestNames(refs: readonly NameRef[]): void;
   /**
-   * Ask for the retail client's own text for these localisation labels, to
-   * land in `store.words`. Batched and remembered like names: a label is
-   * asked for once. Never throws. When the BFF has no client to read, every
-   * label is null and nothing more is asked.
+   * Ask for the retail client's own text for these localisation labels, or
+   * for messages by number ("#" and the number), to land in `store.words`
+   * under the same keys. Batched and remembered like names: each is asked
+   * for once. Never throws. When the BFF has no client to read, each is null
+   * and nothing more is asked.
    */
   requestWords(labels: readonly string[]): void;
+  /**
+   * Ask a mission's agent for the mission's keywords, to land in
+   * `store.agents.missionKeywords` under "<agentID>:<contentID>". Asked once
+   * for each mission, as the client does. Never throws.
+   */
+  requestMissionKeywords(agentID: number, contentID: number): void;
   /**
    * Multibox — open or close this pilot's live push channel (SSE). Browsers
    * allow only ~6 concurrent HTTP/1.1 connections per origin, and every open
@@ -12393,9 +12400,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         store.apply({ type: "words/loaded", available: false, templates: Object.fromEntries(chunk.map((label) => [label, null])) });
         continue;
       }
+      // A key is a label, or "#" and a message's number.
+      const numbered = chunk.filter((key) => /^#\d+$/.test(key));
       let result: Awaited<ReturnType<typeof api.loadWords>>;
       try {
-        result = await api.loadWords(chunk, callOptions);
+        result = await api.loadWords(chunk.filter((key) => !numbered.includes(key)), numbered.map((key) => Number(key.slice(1))), callOptions);
       } catch {
         // Not remembered: a later ask tries again.
         for (const label of chunk) {
@@ -12407,9 +12416,31 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       store.apply({
         type: "words/loaded",
         available: result.available,
-        templates: Object.fromEntries(chunk.map((label) => [label, result.words[label] ?? null])),
+        templates: Object.fromEntries(chunk.map((key) => [key, (key.startsWith("#") ? result.messages[key.slice(1)] : result.words[key]) ?? null])),
       });
     }
+  }
+
+  // A mission's keywords, asked of its agent once (agents.py PrimeMessageArguments).
+  const keywordsAsked = new Set<string>();
+  function requestMissionKeywords(agentID: number, contentID: number): void {
+    if (!Number.isSafeInteger(agentID) || agentID <= 0 || !Number.isSafeInteger(contentID) || contentID <= 0) {
+      return;
+    }
+    const key = `${agentID}:${contentID}`;
+    if (keywordsAsked.has(key)) {
+      return;
+    }
+    keywordsAsked.add(key);
+    void api.loadMissionKeywords(agentID, contentID, callOptions).then(
+      (keywords) => {
+        store.apply({ type: "agents/mission-keywords", key, keywords: argumentsOf(keywords) });
+      },
+      () => {
+        // Not remembered: a later ask tries again.
+        keywordsAsked.delete(key);
+      },
+    );
   }
 
   function requestWords(labels: readonly string[]): void {
@@ -13428,6 +13459,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
     requestNames,
     requestWords,
+    requestMissionKeywords,
 
     /**
      * R92 multibox — is this the pilot the player is LOOKING at?

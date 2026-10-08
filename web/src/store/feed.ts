@@ -471,6 +471,12 @@ export type FeedEvent =
       readonly agentID: number;
       readonly conversation: AgentConversation;
     }
+  // A mission's keywords, as its agent gave them (kept by "<agentID>:<contentID>").
+  | {
+      readonly type: "agents/mission-keywords";
+      readonly key: string;
+      readonly keywords: Readonly<Record<string, unknown>>;
+    }
   // The accepted-courier briefing (null clears it, e.g. after a decline).
   | { readonly type: "agents/briefing"; readonly briefing: CourierBriefing | null }
   // The mission journal (active + offered missions).

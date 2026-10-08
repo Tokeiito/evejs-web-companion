@@ -158,7 +158,11 @@ export function decodeConversation(result: JsonValue): AgentConversation {
     agentSays = firstSays;
     agentSaysWords = { label: null, parameters: null, text: firstSays };
   } else if (typeof firstSays === "number") {
+    // A message's number: agents.py ProcessMessage hands these to localization.GetByMessageID.
     agentSays = String(firstSays);
+    if (Number.isSafeInteger(firstSays) && firstSays > 0) {
+      agentSaysWords = { label: null, parameters: null, text: null, messageID: firstSays };
+    }
   } else {
     // (label, {parameters}): agents.py ProcessMessage hands these to localization.GetByLabel.
     const nested = seqItems(firstSays);

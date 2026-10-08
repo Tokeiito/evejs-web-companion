@@ -5,7 +5,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { answerFits, createBotPresses, decodeQuestion, questionNameRefs, questionText, wordsLabels, wordsNameRefs } from "./questions.ts";
+import { answerFits, argumentsOf, createBotPresses, decodeQuestion, questionNameRefs, questionText, wordsKey, wordsLabels, wordsNameRefs } from "./questions.ts";
 import type { JsonValue } from "./wire.ts";
 
 const DECLINE: JsonValue = {
@@ -345,4 +345,72 @@ test("the names a wording needs follow the wording: the client's template when t
   // The customs dialog is worded by this client, so its names are found this client's way.
   assert.deepEqual(key(questionNameRefs(decodeQuestion(CUSTOMS)!, withClient)), ["type:3721", "type:3713", "faction:500001"]);
   assert.deepEqual(key(wordsNameRefs([null, undefined], withClient)), []);
+});
+
+// ── a mission's own text ─────────────────────────────────────────────────────
+//
+// What an agent says when offering a mission is a message's number. The client
+// fills that message with the mission's keywords, which it asks the agent for
+// (agents.py ProcessMessage, PrimeMessageArguments). The keywords here are the
+// ones eve.js answered for a courier offer; the text is made up, with the tag
+// the client's real text for such an offer carries.
+
+const OFFER = { label: null, parameters: null, text: null, messageID: 129932 };
+const KEYWORDS = argumentsOf({ type: "dict", entries: [
+  ["objectiveLocationID", 60000004], ["objectiveDestinationID", 60000019], ["objectiveQuantity", 1],
+  ["objectiveDestinationSystemID", 30002778], ["objectiveTypeID", 2595], ["objectiveLocationSystemID", 30002780],
+  ["rewardTypeID", 29], ["rewardQuantity", 13800],
+] });
+const offerNames = (kind: string, id: number): string => ({ "system:30002780": "Muvolailen", "system:30002778": "Hirtamon", "type:2595": "Reports" } as Record<string, string>)[`${kind}:${id}`] ?? `${kind} ${id}`;
+const offerClient = {
+  templates: { "#129932": "Take {[numeric]objectiveQuantity} {[item]objectiveTypeID.name} from {[location]objectiveLocationSystemID.name} to {[location]objectiveDestinationSystemID.name}." },
+  playerID: 140000002,
+  extra: { ...KEYWORDS, agentID: 3008416 },
+};
+
+test("words are kept under their label, or under # and their message's number", () => {
+  assert.equal(wordsKey({ label: "UI/A/B", parameters: null, text: null }), "UI/A/B");
+  assert.equal(wordsKey(OFFER), "#129932");
+  // A label wins over a number, should something carry both.
+  assert.equal(wordsKey({ ...OFFER, label: "UI/A/B" }), "UI/A/B");
+  assert.equal(wordsKey({ label: null, parameters: null, text: "plain" }), null);
+  assert.equal(wordsKey({ label: null, parameters: null, text: null, messageID: null }), null);
+  assert.deepEqual(wordsLabels([OFFER, { label: "UI/A/B", parameters: null, text: null }, OFFER]), ["#129932", "UI/A/B"]);
+});
+
+test("a mission's keywords are read by name from what the agent answered", () => {
+  assert.deepEqual(KEYWORDS, {
+    objectiveLocationID: 60000004, objectiveDestinationID: 60000019, objectiveQuantity: 1, objectiveDestinationSystemID: 30002778,
+    objectiveTypeID: 2595, objectiveLocationSystemID: 30002780, rewardTypeID: 29, rewardQuantity: 13800,
+  });
+  for (const nothing of [null, undefined, 7, "x", [], { type: "dict" }]) {
+    assert.deepEqual(argumentsOf(nothing), {});
+  }
+});
+
+test("a mission's text is the client's message for its number, filled with the mission's keywords", () => {
+  assert.equal(questionText(OFFER, offerNames, offerClient), "Take 1 Reports from Muvolailen to Hirtamon.");
+  // Without the keywords the places and things are not there to name.
+  assert.equal(questionText(OFFER, offerNames, { ...offerClient, extra: {} }), "Take   from  to .");
+});
+
+test("a mission's text the page does not have is shown as its number, which is what the server sent", () => {
+  assert.equal(questionText(OFFER, offerNames, { templates: {} }), "129932");
+  assert.equal(questionText(OFFER, offerNames, { templates: { "#129932": null } }), "129932");
+  assert.equal(questionText(OFFER, offerNames, null), "129932");
+  assert.equal(questionText(OFFER), "129932");
+});
+
+test("the names a mission's text needs are the ones its keywords point at", () => {
+  const key = (refs: ReturnType<typeof wordsNameRefs>) => refs.map((ref) => `${ref.kind}:${ref.id}`);
+  assert.deepEqual(key(wordsNameRefs([OFFER], offerClient)), ["type:2595", "system:30002780", "system:30002778"]);
+  // Before the text has arrived there is nothing to say which names it needs.
+  assert.deepEqual(key(wordsNameRefs([OFFER], { templates: {}, extra: offerClient.extra })), []);
+});
+
+test("the client's own markup in a text is not shown: breaks are new lines, and tags leave their words", () => {
+  const marked = { templates: { "#129932": "Take it to <b>{[location]objectiveDestinationSystemID.name}</b>.<br><br>Be quick." }, extra: KEYWORDS };
+  assert.equal(questionText(OFFER, offerNames, marked), "Take it to Hirtamon.\n\nBe quick.");
+  // Plain text the server sent itself is shown as it came.
+  assert.equal(questionText({ label: null, parameters: null, text: "As <b>sent</b><br>by the server" }, offerNames, marked), "As <b>sent</b><br>by the server");
 });

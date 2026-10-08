@@ -144,7 +144,7 @@
 <style>
   .server-question { display: flex; gap: 0.65rem; align-items: center; flex-wrap: wrap;
     padding: 0.5rem 0.75rem; background: #14273a; color: #d6e6f7; border: 1px solid #3c6f9e; }
-  .body { flex: 1 1 20rem; }
+  .body { flex: 1 1 20rem; white-space: pre-line; }
   .choices { display: flex; flex-direction: column; gap: 0.2rem; flex-basis: 100%; }
   .quantity { width: 8rem; background: #0e1c2b; color: inherit; border: 1px solid #5b93c7; padding: 0.2rem 0.4rem; }
   .note { opacity: 0.75; }

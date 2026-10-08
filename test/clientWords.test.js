@@ -161,14 +161,14 @@ test("a label is the client's own text for it, with its parameters left in", () 
     "UI/Nope/NotALabel": null,
   });
   assert.deepEqual(words.templates("not a list"), {});
-  assert.deepEqual(words.status(), { available: true, loaded: true, labels: 4, worded: 3, messages: 3, language: "en-us", error: null });
+  assert.deepEqual(words.status(), { available: true, loaded: true, labels: 4, worded: 3, messages: 3, everyMessageKept: false, language: "en-us", error: null });
 });
 
 test("the client's files are read once, when first asked, and from where its index says", () => {
   const { readFile, reads } = fakeClient();
   const words = createClientWords({ clientRoot: CLIENT, readFile });
   assert.deepEqual(reads, [], "nothing is read until a label is asked for");
-  assert.deepEqual(words.status(), { available: true, loaded: false, labels: 0, worded: 0, messages: 0, language: "en-us", error: null });
+  assert.deepEqual(words.status(), { available: true, loaded: false, labels: 0, worded: 0, messages: 0, everyMessageKept: false, language: "en-us", error: null });
   words.template("UI/Agents/StandardMission/DeclineMissionTitle");
   words.template("UI/Agents/StandardMission/DeclineMessage");
   words.templates(["UI/Nope/NotALabel"]);
@@ -221,4 +221,84 @@ test("a client that cannot be read gives no words, says why once, and is not rea
     assert.match(words.status().error, message);
     assert.equal(words.status().loaded, false);
   }
+});
+
+// ── a text by its message ID ─────────────────────────────────────────────────
+//
+// What an agent says when offering a mission is a message's number, and the
+// client fills that message (agents.py ProcessMessage, GetByMessageID).
+
+test("a text is found by its message ID, whether or not a label names it", () => {
+  const { readFile } = fakeClient();
+  const words = createClientWords({ clientRoot: CLIENT, readFile });
+  assert.equal(words.message(99), "A text no label names");
+  assert.equal(words.message(235503), "A made-up body, until {[datetime]when}.");
+  for (const missing of [7, 0, -99, 99.5, "99", null, undefined, Number.NaN]) {
+    assert.equal(words.message(missing), null, String(missing));
+  }
+  assert.deepEqual(words.messages([99, 7, 235502, "99", 0, null]), { 99: "A text no label names", 7: null, 235502: "A made-up title?" });
+  assert.deepEqual(words.messages("not a list"), {});
+  // Labels go on answering as before.
+  assert.equal(words.template("UI/Agents/StandardMission/DeclineMissionTitle"), "A made-up title?");
+});
+
+test("every text is kept only once one is asked for by number, and the language file is read again for that once", () => {
+  const { readFile, reads } = fakeClient();
+  const words = createClientWords({ clientRoot: CLIENT, readFile });
+  words.template("UI/Agents/StandardMission/DeclineMissionTitle");
+  assert.equal(words.status().everyMessageKept, false);
+  const afterLabels = reads.length;
+  words.message(99);
+  assert.equal(words.status().everyMessageKept, true);
+  assert.deepEqual(reads.slice(afterLabels), [
+    path.join(CLIENT, "tq", "resfileindex.txt"),
+    path.join(CLIENT, "ResFiles", "2c/english-file"),
+  ]);
+  words.message(235503);
+  words.messages([99, 7]);
+  words.template("UI/Agents/StandardMission/DeclineMessage");
+  assert.equal(reads.length, afterLabels + 2, "and not again");
+});
+
+test("asked for by number first, a text is found all the same, and so are labels after it", () => {
+  const { readFile, reads } = fakeClient();
+  const words = createClientWords({ clientRoot: CLIENT, readFile });
+  // What is not a message's number is answered without reading anything.
+  for (const junk of ["99", 0, -1, 1.5, null]) {
+    assert.equal(words.message(junk), null);
+  }
+  assert.deepEqual(reads, []);
+  assert.equal(words.message(99), "A text no label names");
+  // Only the index and the language file: the label table is not needed for a number.
+  assert.deepEqual(reads, [path.join(CLIENT, "tq", "resfileindex.txt"), path.join(CLIENT, "ResFiles", "2c/english-file")]);
+  assert.equal(words.template("UI/Agents/StandardMission/DeclineMissionTitle"), "A made-up title?");
+  assert.deepEqual(words.status(), { available: true, loaded: true, labels: 4, worded: 3, messages: 3, everyMessageKept: true, language: "en-us", error: null });
+});
+
+test("with no client, or a client that cannot be read, there is no text by number either", () => {
+  const none = fakeClient();
+  const unexpected = () => assert.fail("with no client there is nothing to fail at");
+  assert.equal(createClientWords({ clientRoot: null, readFile: none.readFile, onError: unexpected }).message(99), null);
+  assert.deepEqual(createClientWords({ clientRoot: null, readFile: none.readFile, onError: unexpected }).messages([99]), { 99: null });
+  assert.deepEqual(none.reads, []);
+
+  // The language file goes bad between the first read and the second.
+  const good = fakeClient();
+  const { reads } = good;
+  let goneBad = false;
+  const readFile = (file, ...rest) => {
+    const read = good.readFile(file, ...rest);
+    return goneBad && file.endsWith("english-file") ? pickle("(dp1\n.") : read;
+  };
+  const errors = [];
+  const words = createClientWords({ clientRoot: CLIENT, readFile, onError: (error) => errors.push(error.message) });
+  assert.equal(words.template("UI/Agents/StandardMission/DeclineMissionTitle"), "A made-up title?");
+  goneBad = true;
+  assert.equal(words.message(99), null);
+  const readsAfter = reads.length;
+  assert.equal(words.message(99), null);
+  assert.equal(errors.length, 1, "told once");
+  assert.match(errors[0], /en-us texts are not where they are expected/);
+  assert.equal(reads.length, readsAfter, "and not read again");
+  assert.equal(words.status().everyMessageKept, false);
 });

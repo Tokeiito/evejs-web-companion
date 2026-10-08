@@ -23,7 +23,7 @@
 
 import type { ClientQuestion, QuestionAnswer, QuestionWords } from "../store/types.ts";
 import type { NameKind, NameRef } from "../store/names.ts";
-import { formatTemplate, templateNameRefs, type TemplateArguments } from "./clientWords.ts";
+import { formatTemplate, plainText, templateNameRefs, type TemplateArguments } from "./clientWords.ts";
 import type { JsonValue } from "./wire.ts";
 
 /**
@@ -179,6 +179,22 @@ export function decodeQuestion(value: JsonValue | undefined): ClientQuestion | n
 /** Names with no cache behind them: the ID, said plainly. */
 const nameByID: NameOf = (kind, id) => `${kind} ${id}`;
 
+/**
+ * What some words are kept under in `store.words`: their label, or "#" and
+ * their message's number. Null for plain text and for nothing.
+ */
+export function wordsKey(words: QuestionWords): string | null {
+  if (words.label !== null) {
+    return words.label;
+  }
+  return typeof words.messageID === "number" ? `#${words.messageID}` : null;
+}
+
+/** A mission's keywords, or any dict the bridge carried, by name. */
+export function argumentsOf(value: unknown): TemplateArguments {
+  return parametersOf(value);
+}
+
 /** A label's arguments: what the client adds, then what the server sent with it, which wins. */
 const argumentsFor = (words: QuestionWords, client: ClientWording): TemplateArguments =>
   ({ ...(client.extra ?? {}), ...parametersOf(words.parameters) });
@@ -193,11 +209,16 @@ export function questionText(words: QuestionWords, nameOf: NameOf = nameByID, cl
   if (words.text !== null) {
     return words.text;
   }
+  const key = wordsKey(words);
+  const template = client && key !== null ? client.templates[key] : null;
+  if (typeof template === "string") {
+    return plainText(formatTemplate(template, argumentsFor(words, client as ClientWording), { nameOf, playerID: client?.playerID ?? null }));
+  }
+  if (words.label === null && typeof words.messageID === "number") {
+    // A mission's own text that the page does not have: its number, which is what the server sent.
+    return String(words.messageID);
+  }
   if (words.label !== null) {
-    const template = client ? client.templates[words.label] : null;
-    if (typeof template === "string") {
-      return formatTemplate(template, argumentsFor(words, client as ClientWording), { nameOf, playerID: client?.playerID ?? null });
-    }
     const wording = LABEL_WORDS[words.label];
     if (wording === undefined) {
       return words.label;
@@ -207,15 +228,16 @@ export function questionText(words: QuestionWords, nameOf: NameOf = nameByID, cl
   return "";
 }
 
-/** The labels among some words, for the page to ask the client's text of. */
+/** The labels and message numbers among some words, as their keys, for the page to ask the client's text of. */
 export function wordsLabels(all: ReadonlyArray<QuestionWords | null | undefined>): string[] {
-  const labels: string[] = [];
+  const keys: string[] = [];
   for (const words of all) {
-    if (words && words.label !== null && !labels.includes(words.label)) {
-      labels.push(words.label);
+    const key = words ? wordsKey(words) : null;
+    if (key !== null && !keys.includes(key)) {
+      keys.push(key);
     }
   }
-  return labels;
+  return keys;
 }
 
 /** The names some words need, whichever way they end up worded, for the page's name cache to fetch. */
@@ -225,7 +247,8 @@ export function wordsNameRefs(all: ReadonlyArray<QuestionWords | null | undefine
     if (!words) {
       continue;
     }
-    const template = client && words.label !== null ? client.templates[words.label] : null;
+    const key = wordsKey(words);
+    const template = client && key !== null ? client.templates[key] : null;
     if (typeof template === "string") {
       refs.push(...templateNameRefs(template, argumentsFor(words, client as ClientWording), { playerID: client?.playerID ?? null }));
       continue;

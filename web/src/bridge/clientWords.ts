@@ -293,6 +293,19 @@ export function formatTemplate(template: string, args: TemplateArguments, contex
     .join("");
 }
 
+/**
+ * The client's text as plain text. Its texts carry the client's own markup
+ * (`<br>` for a new line; `<b>`, `<color=...>`, `<url=...>` and the like
+ * around words), which the client's own text renderer draws. Here a `<br>`
+ * is a line break and any other tag is dropped, leaving the words it
+ * wrapped. A "<" that does not open a tag is left alone.
+ */
+export function plainText(marked: string): string {
+  return marked
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/?[A-Za-z][^<>]*>/g, "");
+}
+
 /** The names a template's tags need for these arguments, for the page's name cache to fetch. */
 export function templateNameRefs(template: string, args: TemplateArguments, context: Pick<FormatContext, "playerID"> = {}): NameRef[] {
   const refs: NameRef[] = [];

@@ -9,7 +9,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { formatTemplate, parseTag, parseTemplate, templateNameRefs } from "./clientWords.ts";
+import { formatTemplate, parseTag, parseTemplate, plainText, templateNameRefs } from "./clientWords.ts";
 import type { NameKind } from "../store/names.ts";
 
 const NAMES: Record<string, string> = {
@@ -143,4 +143,18 @@ test("the names a template needs are asked for under the kinds they are shown by
   assert.deepEqual(key("{[character]player.name}", {}), []);
   // Nothing for a value that was not sent, is not an ID, or only chooses a word.
   assert.deepEqual(key('{[item]a.name} {[item]b.name} {[character]c.gender -> "x", "y"} {plain}', { b: "x", c: 140000002, plain: 5 }), []);
+});
+
+// ── the client's markup ──────────────────────────────────────────────────────
+
+test("the client's markup becomes plain text: a break is a new line, and other tags leave their words", () => {
+  assert.equal(plainText("First line.<br>Second line.<br><br>After a gap."), "First line.\nSecond line.\n\nAfter a gap.");
+  assert.equal(plainText("a<BR>b<br/>c<br />d"), "a\nb\nc\nd");
+  assert.equal(plainText("<b>Bold</b> and <i>slanted</i> and <color=0xff00ff00>green</color>"), "Bold and slanted and green");
+  assert.equal(plainText("Go to <url=showinfo:5//30002780>Muvolailen</url> now"), "Go to Muvolailen now");
+  assert.equal(plainText('<a href="showinfo:1373//3008416">An Agent</a>, <font size=14>big</font>'), "An Agent, big");
+  // What is not a tag is left alone.
+  assert.equal(plainText("5 < 7 and 9 > 2, <3, a<b, x <> y"), "5 < 7 and 9 > 2, <3, a<b, x <> y");
+  assert.equal(plainText("no markup at all"), "no markup at all");
+  assert.equal(plainText(""), "");
 });

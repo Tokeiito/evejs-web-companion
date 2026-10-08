@@ -646,14 +646,20 @@ test("the structure name read is the ONLY structureDirectory call the BFF makes"
 
 // --- 3. POST /api/words: the retail client's text for the server's labels -----
 
-function fakeClientWords(texts, available = true) {
+function fakeClientWords(texts, available = true, numbered = {}) {
   const asked = [];
+  const askedByNumber = [];
   return {
     asked,
+    askedByNumber,
     available: () => available,
     templates(labels) {
       asked.push(labels);
       return Object.fromEntries(labels.map((label) => [label, available ? texts[label] ?? null : null]));
+    },
+    messages(messageIDs) {
+      askedByNumber.push(messageIDs);
+      return Object.fromEntries(messageIDs.map((messageID) => [messageID, available ? numbered[messageID] ?? null : null]));
     },
   };
 }
@@ -677,7 +683,34 @@ test("POST /api/words answers each label with the client's template, parameters 
       "UI/Agents/Research/SkillListing": "{[item]skillID.name} at {[numeric]skillLevel}",
       "UI/Nope/NotALabel": null,
     },
+    messages: {},
   });
+  assert.deepEqual(clientWords.askedByNumber, [], "nothing is looked up by number unless a number is asked for");
+});
+
+test("POST /api/words answers a message by its number too, and takes only whole positive numbers, two hundred at most", async () => {
+  const clientWords = fakeClientWords({ "UI/A/B": "by label" }, true, { 129932: "Take this to {[location]objectiveLocationSystemID.name}." });
+  const { baseUrl } = await startTestServer({ clientWords });
+  const { response, payload } = await apiRequest(baseUrl, "/api/words", {
+    method: "POST",
+    body: { labels: ["UI/A/B"], messageIDs: [129932, 7, "129932", 0, -5, 1.5, null, { id: 1 }] },
+  });
+  assert.equal(response.status, 200);
+  assert.deepEqual(payload, {
+    ok: true,
+    available: true,
+    words: { "UI/A/B": "by label" },
+    messages: { 129932: "Take this to {[location]objectiveLocationSystemID.name}.", 7: null },
+  });
+  assert.deepEqual(clientWords.askedByNumber, [[129932, 7]]);
+
+  await apiRequest(baseUrl, "/api/words", { method: "POST", body: { messageIDs: Array.from({ length: 250 }, (_, index) => index + 1) } });
+  assert.equal(clientWords.askedByNumber[1].length, 200);
+  for (const body of [{ messageIDs: "129932" }, { messageIDs: null }, { messageIDs: [] }]) {
+    const answer = await apiRequest(baseUrl, "/api/words", { method: "POST", body });
+    assert.deepEqual(answer.payload.messages, {});
+  }
+  assert.equal(clientWords.askedByNumber.length, 2);
 });
 
 test("POST /api/words asks the client only for labels, and for no more than two hundred of them", async () => {
@@ -701,7 +734,7 @@ test("POST /api/words asks the client only for labels, and for no more than two 
 test("POST /api/words says when there is no client to read, and needs a login", async () => {
   const { baseUrl } = await startTestServer({ clientWords: fakeClientWords({ "UI/A/B": "text" }, false) });
   const { payload } = await apiRequest(baseUrl, "/api/words", { method: "POST", body: { labels: ["UI/A/B"] } });
-  assert.deepEqual(payload, { ok: true, available: false, words: { "UI/A/B": null } });
+  assert.deepEqual(payload, { ok: true, available: false, words: { "UI/A/B": null }, messages: {} });
   const anonymous = await apiRequest(baseUrl, "/api/words", { method: "POST", body: { labels: ["UI/A/B"] }, authenticated: false });
   assert.equal(anonymous.response.status, 401);
 });

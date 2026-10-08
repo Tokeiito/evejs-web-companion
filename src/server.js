@@ -12509,6 +12509,34 @@ app.post("/api/bridge/questions/:questionID/answer", requireAuth, async (req, re
   }
 });
 
+// A mission's keywords: agentMgr.GetMissionKeywords(contentID) on the bound
+// agent. The retail client asks for them once for each mission and adds them
+// to the arguments of everything that agent says about it (agents.py
+// PrimeMessageArguments), which is how a mission's text gets its places and
+// things. Raw; the browser reads the dict.
+app.get("/api/bridge/agents/:agentID/keywords", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const agentID = Number(req.params.agentID) || 0;
+  const contentID = Number(req.query.contentID);
+  if (agentID <= 0) {
+    res.status(400).json({ ok: false, error: "INVALID_AGENT", message: "A positive agentID is required." });
+    return;
+  }
+  if (!Number.isSafeInteger(contentID) || contentID <= 0) {
+    res.status(400).json({ ok: false, error: "INVALID_CONTENT", message: "A positive contentID is required." });
+    return;
+  }
+  try {
+    const outcome = await boundCall(held, req.webSessionID, agentBindSpec(agentID), "GetMissionKeywords", [contentID], null);
+    res.json({ ok: true, keywords: outcome.result, notifications: outcome.notifications });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // The mission briefing on the bound agent: header + objectives + agent location.
 // The three reads are INDEPENDENT (Promise.allSettled) so one failure never
 // blanks the rest; each carries its own error code. Raw results are decoded
@@ -21795,16 +21823,24 @@ async function resolveRuntimeStructureNames(req, structureIDs, options = {}) {
 // explicit "structure" kind is for callers that do.
 const STRUCTURE_NAME_KINDS = new Set(["station", "structure"]);
 
-// The retail client's text for localisation labels, as templates: the
-// {parameters} are left in, for the browser to fill with the values the
-// server sent and the names it keeps. `available` is false when no client
-// install is configured (EVEJS_CLIENT_ROOT); a label the client does not have
-// is null. Bounded: at most 200 labels a request.
+// The retail client's text for localisation labels and for messages by their
+// number, as templates: the {parameters} are left in, for the browser to fill
+// with the values the server sent and the names it keeps. `available` is
+// false when no client install is configured (EVEJS_CLIENT_ROOT); a label or
+// a number the client does not have is null. Bounded: at most 200 of each a
+// request.
 const WORDS_LABEL_LIMIT = 200;
 app.post("/api/words", requireAuth, (req, res) => {
   const asked = Array.isArray(req.body && req.body.labels) ? req.body.labels : [];
   const labels = asked.filter((label) => typeof label === "string" && label.length > 0 && label.length <= 200).slice(0, WORDS_LABEL_LIMIT);
-  res.json({ ok: true, available: clientWords.available(), words: clientWords.templates(labels) });
+  const numbered = Array.isArray(req.body && req.body.messageIDs) ? req.body.messageIDs : [];
+  const messageIDs = numbered.filter((messageID) => Number.isSafeInteger(messageID) && messageID > 0).slice(0, WORDS_LABEL_LIMIT);
+  res.json({
+    ok: true,
+    available: clientWords.available(),
+    words: clientWords.templates(labels),
+    messages: messageIDs.length > 0 ? clientWords.messages(messageIDs) : {},
+  });
 });
 
 app.post("/api/names", requireAuth, async (req, res, next) => {
