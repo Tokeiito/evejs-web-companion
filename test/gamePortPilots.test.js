@@ -449,6 +449,8 @@ test("what goes wrong in a call is reported in the gateway's terms", async () =>
     "account.GetCashBalance": () => { throw sessionError("CALL_TIMEOUT", "account.GetCashBalance got no answer"); },
     "corpRegistry.GetTitles": () => { throw new Error("Cannot marshal value: object {\"bare\":1}"); },
     "dogmaIM.ShipGetInfo": () => { throw sessionError("GAME_CALL_REFUSED", "refused: RuntimeError", null); },
+    // Asked by the service's name, a dogma call is made on the dogma location (below).
+    "bound:ShipGetInfo": () => { throw sessionError("GAME_CALL_REFUSED", "refused: RuntimeError", null); },
   } });
   const who = { userid: ACCOUNT };
   await rejects(pilots.callMethod("station", "GetGuests", [], null, who, handle), "CALL_REFUSED", /^That industry job is not ready yet\.$/);
@@ -2230,4 +2232,54 @@ test("a call on a handle the BFF bound itself is shaped with what the pilot know
   const ship = await pilots.bindObject("ship", "MachoBindObject", [[STATION, 15]], null, WHOSE, handle);
   await pilots.callBoundMethod("ship", "Undock", [SHIP, false], null, WHOSE, handle, ship.boundHandle);
   assert.deepEqual(session.boundCalls.at(-1), { objectID: "N=1:1", method: "Undock", args: [SHIP, false], kwargs: { onlineModules: { type: "dict", entries: [[19, FITTED_MODULE]] } } });
+});
+
+test("whatever is asked of ship or dogmaIM by name is made on the moniker, read against the client or not", async () => {
+  const allowed = new Set(["dogmaIM.GetTargets", "dogmaIM.AddTarget", "dogmaIM.Overload", "dogmaIM.CreateNewbieShip", "ship.LeaveShip", "ship.GetShipConfiguration", "ship.LaunchDrones", "ship.GetShipFittingInfo", "station.GetGuests"]);
+  const { pilots, session, handle } = await selected({ answers: { "bound:GetTargets": { type: "list", items: [9001] } } }, { allowed });
+  const made = () => session.boundCalls.at(-1);
+  const byName = () => session.calls.filter((call) => !call.service.startsWith("charUnboundMgr") && call.method !== "ShipGetInfo").map((call) => `${call.service}.${call.method}`);
+
+  // A read, with the server's answer handed back as any call's is.
+  const targets = await pilots.callMethod("dogmaIM", "GetTargets", [], null, FIELDS, handle);
+  assert.deepEqual([targets.service, targets.method, targets.result], ["dogmaIM", "GetTargets", { type: "list", items: [9001] }]);
+  assert.deepEqual(session.binds, [{ service: "dogmaIM", params: [STATION, 15] }]);
+  assert.deepEqual(made(), { objectID: "N=1:1", method: "GetTargets", args: [], kwargs: null });
+  await pilots.callMethod("dogmaIM", "AddTarget", [9001], null, FIELDS, handle);
+  assert.deepEqual(made(), { objectID: "N=1:1", method: "AddTarget", args: [9001], kwargs: null });
+  // One nobody has read against the client: still on the moniker, with its arguments as the BFF spelt them.
+  await pilots.callMethod("dogmaIM", "Overload", [7, 3175], null, FIELDS, handle);
+  assert.deepEqual(made(), { objectID: "N=1:1", method: "Overload", args: [7, 3175], kwargs: null });
+  // The ship's: its own moniker, and what the pilot knows filled in.
+  await pilots.callMethod("ship", "GetShipConfiguration", [], null, FIELDS, handle);
+  assert.deepEqual(session.binds.at(-1), { service: "ship", params: [STATION, 15] });
+  assert.deepEqual(made(), { objectID: "N=1:2", method: "GetShipConfiguration", args: [SHIP], kwargs: null });
+  await pilots.callMethod("ship", "LaunchDrones", [[[11, 1]], PILOT, false], null, FIELDS, handle);
+  assert.deepEqual(made(), { objectID: "N=1:2", method: "LaunchDrones", args: [{ type: "list", items: [[11, 1]] }, null, false], kwargs: null });
+  await pilots.callMethod("ship", "LeaveShip", [SHIP], null, FIELDS, handle);
+  assert.deepEqual(made(), { objectID: "N=1:2", method: "LeaveShip", args: [SHIP], kwargs: null });
+  assert.equal(session.binds.length, 2, "one object for each service");
+  assert.deepEqual(byName(), [], "nothing of either was asked by the service's name");
+
+  // The few the client asks by name are asked by name; so is everything of every other service.
+  await pilots.callMethod("dogmaIM", "CreateNewbieShip", [SHIP, STATION], null, FIELDS, handle);
+  await pilots.callMethod("ship", "GetShipFittingInfo", [77], null, FIELDS, handle);
+  await pilots.callMethod("station", "GetGuests", [], null, FIELDS, handle);
+  assert.deepEqual(byName(), ["dogmaIM.CreateNewbieShip", "ship.GetShipFittingInfo", "station.GetGuests"]);
+
+  // The tally: asked by name and made on the moniker is not the client's call as the BFF spelt it, even with the client's arguments.
+  const tally = Object.fromEntries(pilots.callLedger().map((row) => [row.pair, row.statuses]));
+  assert.deepEqual(
+    [tally["dogmaIM.GetTargets"], tally["dogmaIM.AddTarget"], tally["dogmaIM.Overload"], tally["ship.GetShipConfiguration"], tally["ship.LaunchDrones"], tally["ship.LeaveShip"], tally["dogmaIM.CreateNewbieShip"]],
+    [{ reshaped: 1 }, { reshaped: 1 }, { unchecked: 1 }, { reshaped: 1 }, { reshaped: 1 }, { reshaped: 1 }, { unchecked: 1 }],
+  );
+});
+
+test("a call on a handle the BFF bound itself, with the client's arguments, is counted as the client's call", async () => {
+  const allowed = new Set(["dogmaIM.MachoBindObject", "dogmaIM.GetTargets"]);
+  const { pilots, session, handle } = await selected({}, { allowed });
+  const bound = await pilots.bindObject("dogmaIM", "MachoBindObject", [[STATION, 15]], null, WHOSE, handle);
+  await pilots.callBoundMethod("dogmaIM", "GetTargets", [], null, WHOSE, handle, bound.boundHandle);
+  assert.deepEqual(session.boundCalls.at(-1), { objectID: "N=1:1", method: "GetTargets", args: [], kwargs: null });
+  assert.deepEqual(pilots.callLedger().find((row) => row.pair === "dogmaIM.GetTargets").statuses, { same: 1 });
 });

@@ -8,7 +8,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
-const { REPEATS, RETAIL_CALLS, createCallLedger, list, retailForm, retailNeeds } = require("../src/gamePort/retailCalls");
+const { MONIKER_SERVICES, REPEATS, RETAIL_CALLS, createCallLedger, list, madeOnMoniker, retailForm, retailNeeds } = require("../src/gamePort/retailCalls");
 const contract = require("../contracts/evejs-web-bridge-contract.json");
 
 const form = (pair, args, kwargs = null) => {
@@ -282,7 +282,94 @@ test("a module is switched off by its effect's name, on the same moniker", () =>
 
 test("what a call needs the pilot to have first is said by the registry: godma primed, for these three", () => {
   assert.deepEqual(["ship.Undock", "dogmaIM.Activate", "dogmaIM.Deactivate"].map((pair) => retailNeeds(...pair.split("."))), ["dogma", "dogma", "dogma"]);
-  assert.deepEqual([retailNeeds("invbroker", "List"), retailNeeds("agentMgr", "DoAction"), retailNeeds("someService", "SomeMethod")], [null, null, null]);
-  // And only an entry made on a moniker says so.
-  for (const [pair, entry] of Object.entries(RETAIL_CALLS)) assert.equal(entry.moniker === true, ["ship.Undock", "dogmaIM.Activate", "dogmaIM.Deactivate"].includes(pair), pair);
+  assert.deepEqual([retailNeeds("invbroker", "List"), retailNeeds("agentMgr", "DoAction"), retailNeeds("someService", "SomeMethod"), retailNeeds("dogmaIM", "GetTargets")], [null, null, null, null]);
 });
+
+test("everything of ship and dogmaIM is made on a moniker, read or not, but the three the client asks by name", () => {
+  assert.deepEqual(Object.fromEntries(Object.entries(MONIKER_SERVICES).map(([service, named]) => [service, [...named].sort()])), {
+    ship: ["GetShipFittingInfo"],
+    dogmaIM: ["CreateNewbieShip", "GetRequiredSkillLevels"],
+  });
+  assert.deepEqual([madeOnMoniker("ship", "Undock"), madeOnMoniker("dogmaIM", "GetTargets"), madeOnMoniker("ship", "SomethingNobodyRead"), madeOnMoniker("dogmaIM", "Overload")], [true, true, true, true]);
+  assert.deepEqual([madeOnMoniker("ship", "GetShipFittingInfo"), madeOnMoniker("dogmaIM", "CreateNewbieShip"), madeOnMoniker("dogmaIM", "GetRequiredSkillLevels")], [false, false, false]);
+  // Other services are asked by name, whatever their methods are called; and a bind is a bind, not a call on what it makes.
+  assert.deepEqual([madeOnMoniker("invbroker", "List"), madeOnMoniker("agentMgr", "DoAction"), madeOnMoniker("toString", "Undock"), madeOnMoniker("constructor", "x")], [false, false, false, false]);
+  assert.deepEqual([madeOnMoniker("ship", "MachoBindObject"), madeOnMoniker("dogmaIM", "MachoBindObject")], [false, false]);
+  // The form says so for a pair nobody has read, and for one that has an entry.
+  assert.deepEqual(retailForm("ship", "SomethingNobodyRead", [1], null), { args: [1], kwargs: null, status: "unchecked", source: null, note: null, moniker: true });
+  assert.equal(retailForm("dogmaIM", "CreateNewbieShip", [1, 2], null).moniker, false);
+  for (const pair of Object.keys(RETAIL_CALLS)) {
+    const [service, method] = pair.split(".");
+    assert.equal(retailForm(service, method, [], null).moniker, service === "ship" || service === "dogmaIM", pair);
+  }
+});
+
+test("targeting, onlining, scooping and leaving a ship are the client's calls as they stand", () => {
+  for (const [pair, args, where] of [
+    ["dogmaIM.GetTargets", [], /godma\.py:2361$/],
+    ["dogmaIM.AddTarget", [9001], /targetMgr\.py:1366$/],
+    ["dogmaIM.CancelAddTarget", [9001], /targetMgr\.py:1303$/],
+    ["dogmaIM.RemoveTarget", [9001], /targetMgr\.py:1385$/],
+    ["dogmaIM.SetModuleOnline", [5000, 7], /clientDogmaLocation\.py:702$/],
+    ["dogmaIM.TakeModuleOffline", [5000, 7], /clientDogmaLocation\.py:718$/],
+    ["ship.ScoopDrone", [[11, 12]], /droneFunctions\.py:195$/],
+    ["ship.LeaveShip", [5000], /ui\/station\/base\.py:248$/],
+  ]) {
+    const answer = form(pair, args);
+    assert.deepEqual([answer.args, answer.kwargs, answer.status, answer.moniker], [args, null, "same", true], pair);
+    assert.match(answer.source, where, pair);
+  }
+});
+
+test("ammunition goes in and out with its modules as a list, and one module by itself when a quantity is named", () => {
+  assert.deepEqual(form("dogmaIM.LoadAmmo", [5000, [7, 8], [31, 32], 60003760]).args, [5000, list([7, 8]), list([31, 32]), 60003760]);
+  assert.deepEqual(form("dogmaIM.LoadAmmo", [5000, list([7]), list([31]), 5000]).args, [5000, list([7]), list([31]), 5000], "already lists: kept");
+  assert.equal(form("dogmaIM.LoadAmmo", [5000, [7], [31], 5000]).status, "reshaped");
+  const hangar = [60003760, 140000001, 4];
+  // No quantity: the modules as a list, the place as it came (a tuple, which is what an array is on the wire).
+  assert.deepEqual(form("dogmaIM.UnloadAmmo", [5000, [7, 8], hangar]).args, [5000, list([7, 8]), hangar]);
+  assert.deepEqual(form("dogmaIM.UnloadAmmo", [5000, [7], hangar, null]).args, [5000, list([7]), hangar]);
+  // A quantity: the one module by itself.
+  assert.deepEqual(form("dogmaIM.UnloadAmmo", [5000, [7], hangar, 40]).args, [5000, 7, hangar, 40]);
+  assert.deepEqual(form("dogmaIM.UnloadAmmo", [5000, list([7]), hangar, 40]).args, [5000, 7, hangar, 40]);
+  assert.deepEqual(form("dogmaIM.UnloadAmmo", [5000, 7, hangar, 40]).args, [5000, 7, hangar, 40]);
+  assert.equal(form("dogmaIM.UnloadAmmo", [5000, [7], hangar, 40]).status, "reshaped");
+  // Several modules and a quantity is not a call the client has.
+  const several = form("dogmaIM.UnloadAmmo", [5000, [7, 8], hangar, 40]);
+  assert.deepEqual([several.args, several.status], [[5000, [7, 8], hangar, 40], "differs"]);
+  assert.match(several.note, /one module/);
+});
+
+test("drones are launched as a list of stacks, on nobody's behalf when it is the pilot's own", () => {
+  const stacks = [[11, 1], [12, 3]];
+  const launch = (args, context = { characterID: 140000001 }) => withContext("ship.LaunchDrones", args, null, context);
+  assert.deepEqual(launch([stacks, 140000001, false]).args, [list(stacks), null, false]);
+  assert.deepEqual(launch([stacks, 0, false]).args, [list(stacks), null, false]);
+  assert.deepEqual(launch([stacks]).args, [list(stacks), null, false]);
+  assert.deepEqual(launch([stacks, 0, false], {}).args, [list(stacks), null, false]);
+  // On another's behalf (a corporation's, say) the name stays; and without knowing who the pilot is, so does the pilot's.
+  assert.deepEqual(launch([stacks, 98000001, true]).args, [list(stacks), 98000001, true]);
+  assert.deepEqual(launch([stacks, 140000001, false], {}).args, [list(stacks), 140000001, false]);
+  // Only a true is a yes.
+  assert.deepEqual(launch([stacks, 0, 1]).args[2], false);
+  assert.match(RETAIL_CALLS["ship.LaunchDrones"].source, /eveMisc\.py:29$/);
+});
+
+test("the ship's configuration is asked for by the ship's ID, which the pilot knows", () => {
+  const asked = (args, context) => withContext("ship.GetShipConfiguration", args, null, context);
+  assert.deepEqual([asked([], { shipID: 5000 }).args, asked([], { shipID: 5000 }).status], [[5000], "reshaped"]);
+  assert.deepEqual(asked([6000], { shipID: 5000 }).args, [6000], "one named already is kept");
+  const blind = asked([], {});
+  assert.deepEqual([blind.args, blind.status], [[], "differs"]);
+  assert.match(blind.note, /names the ship/);
+  assert.equal(asked([], { shipID: null }).status, "differs");
+});
+
+test("two reads the client never makes are still sent, and said to be the web client's own", () => {
+  for (const pair of ["dogmaIM.ShipGetInfo", "dogmaIM.ShipOnlineModules"]) {
+    const answer = form(pair, []);
+    assert.deepEqual([answer.args, answer.status, answer.moniker], [[], "web-only", true], pair);
+    assert.ok(answer.note.length > 40, pair);
+  }
+});
+

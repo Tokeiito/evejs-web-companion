@@ -741,7 +741,8 @@ function createGamePortPilots({
     // What the client has to hand before it makes this call: godma primed for the ship, which it is from the moment it has one.
     if (retailNeeds(service, method) === "dogma") await shipReadings(entry, whereabouts(entry));
     const form = shape(service, method, args, kwargs, contextFor(entry));
-    ledger.note(service, method, form);
+    // Asked of the service by name and made on its moniker: the arguments may be the client's as they stand, the call was not.
+    ledger.note(service, method, form.moniker && form.status === "same" ? { ...form, status: "reshaped" } : form);
     // A call the client makes on a service's moniker is made on the object bound for where the pilot is.
     const result = await run(entry, service, method, async () => (form.moniker
       ? entry.session.callBound(await monikerObject(entry, service), method, argumentsToWire(form.args), form.kwargs)
@@ -1148,6 +1149,8 @@ function createGamePortPilots({
   function contextFor(entry) {
     const typeOf = (itemID) => entry.dogma.typeOf(positive(itemID) ?? 0);
     return {
+      shipID: attribute(entry, "shipid"),
+      characterID: entry.characterID,
       onlineModules: () => {
         const shipID = attribute(entry, "shipid");
         return entry.dogmaLoaded && shipID !== null ? entry.dogma.onlineModules(shipID) : null;

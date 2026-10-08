@@ -21,13 +21,14 @@
 //              what it does instead). The call is still sent: the web client
 //              needs its answer until that feature is rebuilt the client's way
 //
-// An entry may also say the client makes the call ON A MONIKER: not on the
-// service by name, as the BFF's routes ask, but on the object bound for where
-// the pilot is (eveMoniker.py: GetShipAccess, CharGetDogmaLocation). The pilot
-// then binds that object as the client does and calls it there. The client
-// calls nothing of `ship` or `dogmaIM` by the service's name but
-// ship.GetShipFittingInfo, dogmaIM.CreateNewbieShip and
-// dogmaIM.GetRequiredSkillLevels.
+// Two services the client asks ON A MONIKER: not by name, as the BFF's routes
+// ask, but on the object bound for where the pilot is (eveMoniker.py:
+// GetShipAccess for `ship`, CharGetDogmaLocation for `dogmaIM`). In the whole
+// client only ship.GetShipFittingInfo, dogmaIM.CreateNewbieShip and
+// dogmaIM.GetRequiredSkillLevels are asked of those two by the service's
+// name. So every other pair of theirs is made on the moniker, read or not:
+// the pilot binds that object as the client does and calls it there. An entry
+// may say the pilot must have something first (`needs`).
 //
 // A shape may need what only the pilot's own client would know: which of its
 // modules are online, what a module's effect is called. It is handed a
@@ -52,8 +53,16 @@ const judged = (source, judge, note) => Object.freeze({
   shape: (args, kwargs) => ({ args, kwargs, ...judge(args, kwargs) }),
 });
 const webOnly = (source, note) => Object.freeze({ status: "web-only", source, note });
-/** The same entry, made on the service's moniker for where the pilot is. `needs` names what the pilot must have first: "dogma" is godma primed for the ship. */
-const onMoniker = (entry, needs = null) => Object.freeze({ ...entry, moniker: true, needs });
+/** The same entry, with what the pilot must have before the call can be shaped: "dogma" is godma primed for the ship. */
+const needing = (entry, needs) => Object.freeze({ ...entry, needs });
+
+/** The services the client asks on a moniker, and the few methods of each it asks by the service's name all the same. */
+const MONIKER_SERVICES = Object.freeze({
+  ship: new Set(["GetShipFittingInfo"]),
+  dogmaIM: new Set(["CreateNewbieShip", "GetRequiredSkillLevels"]),
+});
+/** Whether the retail client makes this call on the service's moniker for where the pilot is. */
+const madeOnMoniker = (service, method) => Object.hasOwn(MONIKER_SERVICES, service) && !MONIKER_SERVICES[service].has(method) && method !== "MachoBindObject";
 
 const INV_CACHE = "eve/client/script/environment/invCache.py";
 const INV_CONTROLLERS = "eve/client/script/environment/invControllers.py";
@@ -64,6 +73,11 @@ const SCAN_SVC = "eve/client/script/parklife/scanSvc.py";
 const STATION_SVC = "eve/client/script/ui/station/base.py";
 const GODMA = "eve/client/script/environment/godma.py";
 const MODULE_BUTTON = "eve/client/script/ui/inflight/shipModuleButton/shipmodulebutton.py";
+const TARGET_MGR = "eve/client/script/parklife/targetMgr.py";
+const CLIENT_DOGMA = "eve/client/script/dogma/clientDogmaLocation.py";
+const EVE_MISC = "eve/client/script/util/eveMisc.py";
+const DRONE_FUNCTIONS = "eve/client/script/ui/services/menuSvcExtras/droneFunctions.py";
+const SHIP_CONFIG = "eve/client/script/ui/services/shipConfigSvc.py";
 /** What the module button sends for a module left to repeat: settings.char.autorepeat unset, and an effect that can repeat. */
 const REPEATS = 1000;
 
@@ -96,6 +110,39 @@ function deactivation(args, kwargs, context) {
   const named = text(effectName) || (context.effectName ? context.effectName(itemID) : null) || "";
   const shaped = { args: [itemID, named], kwargs };
   return named ? shaped : { ...shaped, status: "differs", note: "The client always names the effect it is stopping. This call names none, and what the module is was not known." };
+}
+
+/**
+ * clientDogmaLocation.UnloadAmmoFromModules and UnloadAmmoToContainer. With no
+ * quantity the client sends the modules as a list; with one it names a single
+ * module, the one the charge is in.
+ */
+function unloading(args, kwargs) {
+  const [shipID, modules, destination, quantity] = args;
+  if (quantity === undefined || quantity === null) return { args: [shipID, list(modules), destination], kwargs };
+  const several = Array.isArray(modules) ? modules : modules && Array.isArray(modules.items) ? modules.items : null;
+  if (several === null) return { args: [shipID, modules, destination, quantity], kwargs };
+  if (several.length === 1) return { args: [shipID, several[0], destination, quantity], kwargs };
+  return { args: [shipID, modules, destination, quantity], kwargs, status: "differs", note: "With a quantity the client unloads one module, the one the charge is in. This call names several." };
+}
+
+/**
+ * eveMisc.LaunchFromShip: LaunchDrones([(itemID, quantity), ...],
+ * whoseBehalfID, ignoreWarning). The stacks are a list; on whose behalf is
+ * None unless it is someone other than the pilot. The BFF's route sends the
+ * pilot's own character there.
+ */
+function launching(args, kwargs, context) {
+  const [stacks, whose, ignoreWarning] = args;
+  const own = whose === 0 || (context.characterID !== undefined && context.characterID !== null && Number(whose) === Number(context.characterID));
+  return { args: [list(stacks), whose === undefined || own ? null : whose, ignoreWarning === true], kwargs };
+}
+
+/** shipConfigSvc.GetShipConfig: GetShipConfiguration(shipID). The BFF's route sends nothing; the ship is the pilot's own. */
+function configuration(args, kwargs, context) {
+  if (args.length > 0) return { args, kwargs };
+  if (context.shipID !== undefined && context.shipID !== null) return { args: [context.shipID], kwargs };
+  return { args, kwargs, status: "differs", note: "The client names the ship. This call names none, and the pilot's ship was not known." };
 }
 
 /**
@@ -218,9 +265,23 @@ const RETAIL_CALLS = Object.freeze({
   "scanMgr.SetProbeRangeStep": webOnly(`${SCAN_SVC}:173`, "The client keeps a probe's range step itself and sends it with the next RequestScans."),
   "scanMgr.ConeScan": same("eve/client/script/parklife/directionalScanSvc.py:47", "ConeScan(scanAngle, scanRange, x, y, z)"),
   "dogmaIM.LaunchProbes": same(`${SCAN_SVC}:494`, "LaunchProbes(moduleID, numProbes)"),
-  "ship.Undock": onMoniker(reshaped(`${STATION_SVC}:498`, undocking, "GetShipAccess().Undock(shipID, ignoreContraband, onlineModules={flagID: moduleID}), on the ship object bound for the station"), "dogma"),
-  "dogmaIM.Activate": onMoniker(reshaped(`${MODULE_BUTTON}:1348`, activation, "godma's GetDogmaLM().Activate(itemID, effectName, target, repeats) (godma.py 2062), on the dogma location bound for where the pilot is"), "dogma"),
-  "dogmaIM.Deactivate": onMoniker(reshaped(`${GODMA}:2101`, deactivation, "GetDogmaLM().Deactivate(itemID, effectName), on the dogma location bound for where the pilot is"), "dogma"),
+  "ship.Undock": needing(reshaped(`${STATION_SVC}:498`, undocking, "GetShipAccess().Undock(shipID, ignoreContraband, onlineModules={flagID: moduleID}), on the ship object bound for the station"), "dogma"),
+  "dogmaIM.Activate": needing(reshaped(`${MODULE_BUTTON}:1348`, activation, "godma's GetDogmaLM().Activate(itemID, effectName, target, repeats) (godma.py 2062), on the dogma location bound for where the pilot is"), "dogma"),
+  "dogmaIM.Deactivate": needing(reshaped(`${GODMA}:2101`, deactivation, "GetDogmaLM().Deactivate(itemID, effectName), on the dogma location bound for where the pilot is"), "dogma"),
+  "dogmaIM.GetTargets": same(`${GODMA}:2361`, "GetDogmaLM().GetTargets(), no arguments"),
+  "dogmaIM.AddTarget": same(`${TARGET_MGR}:1366`, "GetDogmaLM().AddTarget(targetID)"),
+  "dogmaIM.CancelAddTarget": same(`${TARGET_MGR}:1303`, "GetDogmaLM().CancelAddTarget(targetID)"),
+  "dogmaIM.RemoveTarget": same(`${TARGET_MGR}:1385`, "GetDogmaLM().RemoveTarget(targetID)"),
+  "dogmaIM.SetModuleOnline": same(`${CLIENT_DOGMA}:702`, "SetModuleOnline(the ship the module is in, moduleID)"),
+  "dogmaIM.TakeModuleOffline": same(`${CLIENT_DOGMA}:718`, "TakeModuleOffline(the ship the module is in, moduleID)"),
+  "dogmaIM.LoadAmmo": reshaped(`${CLIENT_DOGMA}:996`, ([shipID, modules, charges, ...rest], kwargs) => ({ args: [shipID, list(modules), list(charges), ...rest], kwargs }), "LoadAmmo(shipID, [moduleID, ...], [chargeItemID, ...], ammoLocationID): the modules and the charges are lists"),
+  "dogmaIM.UnloadAmmo": reshaped(`${CLIENT_DOGMA}:1140`, unloading, "UnloadAmmo(shipID, [moduleID, ...], destination), or UnloadAmmo(shipID, moduleID, destination, quantity) for one module (1127)"),
+  "dogmaIM.ShipGetInfo": webOnly(`${GODMA}:2409`, "The client never asks this. What it knows of its ship is in GetAllInfo, which godma is primed from."),
+  "dogmaIM.ShipOnlineModules": webOnly(`${GODMA}:697`, "godma has a wrapper for this that nothing in the client calls, and throws its answer away. Which modules are online the client reads from the effects GetAllInfo lists. eve.js answers with the online modules, and the BFF reads that."),
+  "ship.LaunchDrones": reshaped(`${EVE_MISC}:29`, launching, "GetShipAccess().LaunchDrones([(itemID, quantity), ...], whoseBehalfID, ignoreWarning): a list of pairs, and None for whose behalf when it is the pilot's own"),
+  "ship.ScoopDrone": same(`${DRONE_FUNCTIONS}:195`, "GetShipAccess().ScoopDrone(droneIDs)"),
+  "ship.LeaveShip": same(`${STATION_SVC}:248`, "GetShipAccess().LeaveShip(shipID)"),
+  "ship.GetShipConfiguration": reshaped(`${SHIP_CONFIG}:51`, configuration, "GetShipAccess().GetShipConfiguration(shipID)"),
 });
 
 /**
@@ -232,8 +293,8 @@ const RETAIL_CALLS = Object.freeze({
 function retailForm(service, method, args, kwargs, context = {}) {
   const given = { args: Array.isArray(args) ? args : [], kwargs: kwargs && Object.keys(kwargs).length > 0 ? kwargs : null };
   const entry = RETAIL_CALLS[`${service}.${method}`];
-  if (!entry) return { ...given, status: "unchecked", source: null, note: null, moniker: false };
-  const moniker = entry.moniker === true;
+  const moniker = madeOnMoniker(service, method);
+  if (!entry) return { ...given, status: "unchecked", source: null, note: null, moniker };
   if (typeof entry.shape !== "function") return { ...given, status: entry.status, source: entry.source, note: entry.note ?? null, moniker };
   const shaped = entry.shape(given.args, given.kwargs ?? {}, context ?? {});
   const keywords = shaped.kwargs && Object.keys(shaped.kwargs).length > 0 ? shaped.kwargs : null;
@@ -272,4 +333,4 @@ function createCallLedger() {
   };
 }
 
-module.exports = { REPEATS, RETAIL_CALLS, createCallLedger, list, retailForm, retailNeeds };
+module.exports = { MONIKER_SERVICES, REPEATS, RETAIL_CALLS, createCallLedger, list, madeOnMoniker, retailForm, retailNeeds };
