@@ -863,5 +863,5 @@ class GamePortSession {
 
 module.exports = {
   CLOCK_SYNC_INTERVAL_MS, COMPRESSION_THRESHOLD, GamePortError, GamePortSession, KNOWN_HANDSHAKE_FUNCTIONS,
-  MAX_IDLE_SECONDS_DEFAULT, RETAIL_CLIENT, describeError,
+  MAX_IDLE_SECONDS_DEFAULT, RETAIL_CLIENT, describeError, readNotification,
 };
