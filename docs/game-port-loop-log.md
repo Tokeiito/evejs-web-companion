@@ -1365,3 +1365,54 @@ the list of things not yet read on the game port (the plan's table has them).
    FORMATION, MUSHROOM.
 6. The call ledger (`ship.Undock`, `dogmaIM.Activate` and `Deactivate` to bind as the client
    does), Phase 3's hosted check and the session-less gateway calls.
+
+---
+
+## 2026-10-08 — the browser's own autopilot flies a trip on the game port
+
+No code changed in this entry.
+
+**The trip, in the web UI.** Test Pilot (`test`, on the game port by the check BFF's setting),
+docked at Jita 4-4. In the Travel window: "Start route by ID" to Perimeter (30000144), and when
+that had arrived, to the Jita 4-4 station (60003760). The requests below are the browser's own,
+caught by wrapping the page's `fetch`; the states are what the Travel window showed.
+
+| At (mm:ss) | The browser sent | The Travel window said |
+|---|---|---|
+| 04:07 | `flight/undock` | route to Perimeter, 1 jump |
+| 04:10 | `flight/warp` to gate 50001249 at 0 | running · In warp |
+| 05:01 | `flight/jump` 50001249 to 50002185 | running · Jumping |
+| 05:05 | | **arrived · In space**, Perimeter, 0 of 1 jumps left |
+| 05:22 | `flight/approach` gate 50002185 | route to Jita IV - Moon 4, approaching, closing in |
+| 05:56 | `flight/jump` 50002185 to 50001249 | running · Jumping |
+| 06:03 | `flight/warp` to station 60003760 at 0 | running · Warping, then In warp |
+| 06:54 | `flight/dock` | running · Docking |
+| 06:58 | | **arrived · Docked**, elapsed 1m 37s |
+
+**The server's account of the same three minutes:** undocked 10:04:07, jumped 10:05:05, jumped
+back 10:06:00, docked 10:06:58. Every call came in as a packet on the game port (1 `ship.Undock`,
+2 `CmdWarpToStuff`, 2 `CmdStargateJump`, 1 `CmdFollowBall`, 1 `CmdDock`, 3 ballparks bound,
+5 `GetAllInfo`), no gateway browser session was started, and there is no error line. The BFF's
+log has no ballpark failure.
+
+**How it was driven.** The browser pane here is hidden, and a hidden page stops polling space,
+so the autopilot would have had nothing to decide on. Before selecting the pilot I told the page
+it was visible (`document.visibilityState` and `document.hidden` redefined in the page, then a
+`visibilitychange` event). That is a trick on the test's side; nothing in the product changed.
+It is now in the brief's traps, since every browser proof of something in space needs it.
+
+**What this shows:** the web client's own autopilot, deciding in the browser from the game-port
+pilot's ballpark, makes a round trip with a warp, two jumps and a dock. One trip, one jump each
+way. A hosted bot's six-jump courier run is in the entry above.
+
+### Next
+
+1. **The server's questions shown in the browser**: a way for the BFF to put a question to the
+   user and bring back the answer, then the three unanswered calls, and `agents.YesNo` asked
+   rather than answered.
+2. **The scanner in space** on the game port (the one route that still answers 501 there).
+3. Module damage and weapon banks from dogma; health from godma as the panel reads it.
+4. **Collisions**; **the park beside the server's movement log**; the sim clock; MISSILE,
+   FORMATION, MUSHROOM.
+5. The call ledger (`ship.Undock`, `dogmaIM.Activate` and `Deactivate` to bind as the client
+   does), Phase 3's hosted check and the session-less gateway calls.

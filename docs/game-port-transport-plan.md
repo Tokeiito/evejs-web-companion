@@ -561,6 +561,7 @@ table marks "not started" is still to do.
 | A gate jump: the park replaced, dogma asked again | done | a trip to the next system and back on each transport in turn: the same things seen after each jump; a recording played through a park per system; a 40 AU warp at rest 0.12 m and 0.06 m from the server's ship |
 | Calls the server makes to the client; an answer marked provisional | done | frames built as the server builds them; a mission quit by route and declined in the browser on the game port, the server logging its question and our answer |
 | A hosted bot's courier mission, end to end | done | one run: asked, accepted, loaded, three jumps out, turned in, three jumps back, docked; every call a packet on the game port by the server's log |
+| The browser's own autopilot | done | one round trip in the web UI: undock, warp, jump, jump back, warp, dock; the browser's requests, the Travel window's states and the server's log agree |
 | The server's questions shown to the user (`agents.YesNo` is answered Yes; a research agent's boxes and the customs question are not answered) | not started | |
 | Module damage, weapon banks; the scanner in space | not started | |
 

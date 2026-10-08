@@ -168,6 +168,14 @@ Take these defaults, and list each under "For the operator" in the log so they c
   process holding the port.
 - A long foreground `sleep` is refused. Wait with a short loop on a condition, or in the
   background.
+- **The browser pane is hidden, and a hidden page stops polling space**, so the autopilot and
+  anything else that decides from the space feed does nothing there. Before selecting a pilot,
+  tell the page it is visible: redefine `document.visibilityState` (to `"visible"`) and
+  `document.hidden` (to `false`) in the page and dispatch a `visibilitychange` event. Do it again
+  after every reload. Dispatch a click in one call and read the result in the next.
+- **A fact offered in support of a decision is still a claim.** Two went into the log unchecked
+  on 2026-10-08, in a paragraph arguing for a design, and both were wrong. One route call or one
+  grep would have caught each.
 - Tests that pass the first time have proved nothing yet. Break the code and watch them fail:
   `node scripts/break-and-check.js <source> <test> <list of [find, replacement]>` does it one
   breakage at a time and puts the file back. Commit a new source file, or at least let that
