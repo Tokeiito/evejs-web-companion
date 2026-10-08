@@ -3202,7 +3202,7 @@ Found on the way: `FmtDist` asked for no decimals cuts a distance under a metre 
 
 **Proof.**
 
-- Tests: 11 new, 1 changed. 46 ways of breaking the change; two slipped through at first and
+- Tests: 11 new, 2 changed. 44 ways of breaking the change; two slipped through at first and
   were closed with tests; none was left untried.
 - Suite: 9121 tests, 9097 pass, 0 fail, 24 skipped, 0 todo.
 - **In the browser, on the game port**, a sentry gun picked and the page's own buttons
