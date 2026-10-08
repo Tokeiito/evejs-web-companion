@@ -116,7 +116,7 @@ import { createSpacePoller, targetsReadIsDue, type SpacePoller } from "./spacePo
 import type { RequestPriority } from "./transport.ts";
 import type { CorpOfficesResult, DronesResult, FlightStepResult } from "./api.ts";
 import { BridgeCallError } from "../bridge/callMethod.ts";
-import { argumentsOf, createBotPresses, decodeQuestion } from "../bridge/questions.ts";
+import { argumentsOf, createBotPresses, decodeQuestion, dialogOfKey } from "../bridge/questions.ts";
 import { classifyDistributionAgentConversation, selectDistributionAgent } from "../nav/distributionAgentSelection.ts";
 import { refusalWords as sayRefusalWords } from "../bridge/refusals.ts";
 import { readDictEntry, type JsonValue } from "../bridge/wire.ts";
@@ -12400,11 +12400,18 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         store.apply({ type: "words/loaded", available: false, templates: Object.fromEntries(chunk.map((label) => [label, null])) });
         continue;
       }
-      // A key is a label, or "#" and a message's number.
+      // A key is a label, or "#" and a message's number, or a dialog's name and which of its two texts.
       const numbered = chunk.filter((key) => /^#\d+$/.test(key));
+      const named = chunk.filter((key) => dialogOfKey(key) !== null);
       let result: Awaited<ReturnType<typeof api.loadWords>>;
       try {
-        result = await api.loadWords(chunk.filter((key) => !numbered.includes(key)), numbered.map((key) => Number(key.slice(1))), callOptions);
+        result = await api.loadWords(
+          chunk.filter((key) => !numbered.includes(key) && !named.includes(key)),
+          numbered.map((key) => Number(key.slice(1))),
+          // A dialog's title and body are two keys and one dialog.
+          [...new Set(named.map((key) => (dialogOfKey(key) as { name: string }).name))],
+          callOptions,
+        );
       } catch {
         // Not remembered: a later ask tries again.
         for (const label of chunk) {
@@ -12416,7 +12423,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       store.apply({
         type: "words/loaded",
         available: result.available,
-        templates: Object.fromEntries(chunk.map((key) => [key, (key.startsWith("#") ? result.messages[key.slice(1)] : result.words[key]) ?? null])),
+        templates: Object.fromEntries(chunk.map((key) => {
+          const dialog = dialogOfKey(key);
+          if (dialog !== null) {
+            return [key, result.dialogs[dialog.name]?.[dialog.part] ?? null];
+          }
+          return [key, (key.startsWith("#") ? result.messages[key.slice(1)] : result.words[key]) ?? null];
+        })),
       });
     }
   }

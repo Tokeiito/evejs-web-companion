@@ -1843,8 +1843,10 @@ suppressed it sends the flag the first time. A structure's undock does the same.
   acts on, they behave as before. The two server-side callers that are not a client's undock are
   unchanged.
 - **The dialog's parameter was read from the retail client's own data**, not guessed: dialog
-  1552, title "Undock Confirmation", body "Your ship is carrying at least one item ({item})
-  which is contraband somewhere. Are you sure you wish to undock?". One parameter, `item`. (My
+  1552, a title of 19 characters and a body of 112, the body with one parameter, `item`. (The
+  body was quoted here until 2026-10-08, when the client's text was taken out of this
+  repository's files; `node scripts/client-words.js <client> dialog:ShipContrabandWarningUndock`
+  shows it from an install.) (My
   brief had suggested the customs dialog's two; the same reading confirms those for the customs
   dialog and not for this one.) **Not verified:** what value a real server puts in `item`. The
   fix sends (UE_TYPEID, typeID) of the first such item, which the client shows as a type's name.
@@ -1884,7 +1886,7 @@ sentence. The first commit's guess never met a live server.
   | | Undock, then Cancel | Undock, then OK |
   |---|---|---|
   | Sent | `{"ignoreContraband":false}` → 409 `CONTRABAND_WARNING` | the same, then `{"ignoreContraband":true}` → 200 |
-  | Asked | "Your ship is carrying at least one item (Slaves) which is contraband somewhere. Are you sure you wish to undock?" | the same, once |
+  | Asked | the dialog's sentence with "(Slaves)" for its item | the same, once |
   | The server's log | "Undock held for the contraband warning" | held, then `Undock(... ignoreContraband=true)`, then `[Contraband] ... fine=37500 standingLoss=0.200` |
   | Afterwards | docked; ten Slaves in the hold; wallet unchanged; no error on the page | in space; the Slaves gone; wallet down 37,500 |
 

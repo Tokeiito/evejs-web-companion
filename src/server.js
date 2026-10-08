@@ -16910,13 +16910,14 @@ function isContrabandWarning(error) {
     String(error.message || "").includes(CONTRABAND_WARNING_KEY);
 }
 
-// What the warning says: the retail client's own sentence for this dialog
-// (its data: dialog 1552, body message 258952, "Your ship is carrying at least
-// one item ({item}) which is contraband somewhere. Are you sure you wish to
-// undock?"). The dialog has one parameter, item = (UE_TYPEID, typeID), which
-// the client shows as the type's name. The game-port transport passes the
-// refusal's values on; without them the item is not named, and nothing is
-// made up.
+// What the warning says. The dialog has one parameter, item = (UE_TYPEID,
+// typeID), which the client shows as the type's name. The game-port transport
+// passes the refusal's values on; without them the item is not named, and
+// nothing is made up.
+//
+// With a client to read, the words are the client's own body for this dialog
+// (the dialog table, src/clientData/clientWords.js), its {item} filled in.
+// Without one they are this client's.
 const UE_TYPEID = 4;
 
 function contrabandWarningWords(error) {
@@ -16925,8 +16926,16 @@ function contrabandWarningWords(error) {
     : [];
   const item = entries.find((entry) => Array.isArray(entry) && entry[0] === "item");
   const typeID = item && Array.isArray(item[1]) && item[1][0] === UE_TYPEID && Number.isSafeInteger(item[1][1]) ? item[1][1] : null;
-  const named = typeID === null ? "" : ` (${staticData.getTypeName(typeID) || `type ${typeID}`})`;
-  return `Your ship is carrying at least one item${named} which is contraband somewhere. Are you sure you wish to undock?`;
+  const name = typeID === null ? null : staticData.getTypeName(typeID) || `type ${typeID}`;
+  const dialog = clientWords.dialog(CONTRABAND_WARNING_KEY);
+  const body = dialog && typeof dialog.body === "string" ? dialog.body : null;
+  // Only the one tag the dialog is known to carry is filled; a body with any other is not used half-filled.
+  // The client's markup goes first (a <br> is a new line, any other tag leaves its words), so that a name is
+  // never read as markup.
+  if (body !== null && name !== null && (body.match(/\{[^{}]*\}/g) || []).every((tag) => tag === "{item}")) {
+    return body.replace(/<br\s*\/?>/gi, "\n").replace(/<\/?[A-Za-z][^<>]*>/g, "").replace(/\{item\}/g, () => name);
+  }
+  return `Your ship is carrying contraband${name === null ? "" : ` (${name})`}. Undock anyway?`;
 }
 
 // Undock: ship.Undock(shipID, ignoreContraband, onlineModules=[]) — a top-level
@@ -21823,8 +21832,8 @@ async function resolveRuntimeStructureNames(req, structureIDs, options = {}) {
 // explicit "structure" kind is for callers that do.
 const STRUCTURE_NAME_KINDS = new Set(["station", "structure"]);
 
-// The retail client's text for localisation labels and for messages by their
-// number, as templates: the {parameters} are left in, for the browser to fill
+// The retail client's text for localisation labels, for messages by their
+// number and for dialogs by their name, as templates: the {parameters} are left in, for the browser to fill
 // with the values the server sent and the names it keeps. `available` is
 // false when no client install is configured (EVEJS_CLIENT_ROOT); a label or
 // a number the client does not have is null. Bounded: at most 200 of each a
@@ -21835,11 +21844,15 @@ app.post("/api/words", requireAuth, (req, res) => {
   const labels = asked.filter((label) => typeof label === "string" && label.length > 0 && label.length <= 200).slice(0, WORDS_LABEL_LIMIT);
   const numbered = Array.isArray(req.body && req.body.messageIDs) ? req.body.messageIDs : [];
   const messageIDs = numbered.filter((messageID) => Number.isSafeInteger(messageID) && messageID > 0).slice(0, WORDS_LABEL_LIMIT);
+  // A dialog by its name: its title and its body, and what kind of dialog it is.
+  const named = Array.isArray(req.body && req.body.dialogs) ? req.body.dialogs : [];
+  const dialogs = named.filter((name) => typeof name === "string" && /^\w{1,100}$/.test(name)).slice(0, WORDS_LABEL_LIMIT);
   res.json({
     ok: true,
     available: clientWords.available(),
     words: clientWords.templates(labels),
     messages: messageIDs.length > 0 ? clientWords.messages(messageIDs) : {},
+    dialogs: dialogs.length > 0 ? clientWords.dialogs(dialogs) : {},
   });
 });
 

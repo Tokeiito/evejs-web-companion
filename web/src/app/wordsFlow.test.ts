@@ -193,3 +193,65 @@ test("what is not an agent or not a mission is not asked about, and a failed ask
   assert.equal(asked.length, 2);
   assert.deepEqual(Object.keys(store.get().agents.missionKeywords), ["3008416:2156"]);
 });
+
+// ── a dialog by its name ─────────────────────────────────────────────────────
+
+test("a dialog's title and body are two keys and one dialog asked for, and each is kept under its own key", async () => {
+  const store = createClientStore();
+  const bodies: unknown[] = [];
+  const fetch = (async (input: unknown, init?: { body?: string }) => {
+    if (String(input) === "/api/words") {
+      const body = JSON.parse(init?.body ?? "{}") as { dialogs?: string[] };
+      bodies.push(body);
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return {
+            ok: true,
+            available: true,
+            words: { "UI/A/Title": "A made-up title?" },
+            messages: {},
+            dialogs: Object.fromEntries((body.dialogs ?? []).map((name) => [name, ({
+              MadeUpQuestion: { type: "question", suppressable: true, title: "A made-up dialog title", body: "Hand over {contraband} to {empire}?" },
+              OnlyABody: { type: "notify", suppressable: false, title: null, body: "Only a body." },
+              Malformed: "not a dialog",
+              OddTexts: { type: "question", title: 7, body: ["not", "text"] },
+            } as Record<string, unknown>)[name] ?? null])),
+          };
+        },
+      };
+    }
+    return { ok: true, status: 200, async json() { return { ok: true }; } };
+  }) as unknown as typeof globalThis.fetch;
+  const flow = createAppFlow(store, { fetch });
+  flow.requestWords(["dialog:MadeUpQuestion/title", "UI/A/Title", "dialog:MadeUpQuestion/body", "dialog:OnlyABody/title", "dialog:OnlyABody/body", "dialog:NoSuchDialog/body", "dialog:Malformed/body", "dialog:OddTexts/title", "dialog:OddTexts/body", "dialog:not a key"]);
+  await settle();
+  // The dialogs by name, each once; what only looks like a dialog's key is a label like any other.
+  assert.deepEqual(bodies, [{ labels: ["UI/A/Title", "dialog:not a key"], dialogs: ["MadeUpQuestion", "OnlyABody", "NoSuchDialog", "Malformed", "OddTexts"] }]);
+  assert.deepEqual(store.get().words.templates, {
+    "dialog:MadeUpQuestion/title": "A made-up dialog title",
+    "UI/A/Title": "A made-up title?",
+    "dialog:MadeUpQuestion/body": "Hand over {contraband} to {empire}?",
+    "dialog:OnlyABody/title": null,
+    "dialog:OnlyABody/body": "Only a body.",
+    "dialog:NoSuchDialog/body": null,
+    "dialog:Malformed/body": null,
+    "dialog:OddTexts/title": null,
+    "dialog:OddTexts/body": null,
+    "dialog:not a key": null,
+  });
+  // Asked once: the same keys again make no request, and with no dialog asked for the request names none.
+  flow.requestWords(["dialog:MadeUpQuestion/title", "dialog:OnlyABody/body", "UI/A/Body"]);
+  await settle();
+  assert.deepEqual(bodies[1], { labels: ["UI/A/Body"] });
+});
+
+test("a BFF that answers no dialogs at all leaves a dialog's words as ones the client has not", async () => {
+  const store = createClientStore();
+  const { fetch } = wordsFetch((labels) => fromClient(labels));
+  const flow = createAppFlow(store, { fetch });
+  flow.requestWords(["dialog:MadeUpQuestion/body"]);
+  await settle();
+  assert.deepEqual(store.get().words.templates, { "dialog:MadeUpQuestion/body": null });
+});

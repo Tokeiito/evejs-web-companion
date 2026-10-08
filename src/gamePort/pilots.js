@@ -223,16 +223,21 @@ function defaultClientCallAnswer({ service, method, args, kwargs }, characterID,
         },
       }).then((reply) => (reply.asked && typeof reply.answer === "number" ? reply.answer : null));
     }
-    case "XmppChat.AskYesNoQuestion":
+    case "XmppChat.AskYesNoQuestion": {
+      // A dialog by its name with its parameters, where an agent's question has a label with its. The
+      // dialog's title and body are both the client's (its dialog table, by that name), filled from the same
+      // parameters. The name stays as the body's label for a page with no client's words to go by.
+      const dialog = textOf(list[0]);
+      const parameters = wireToBridgeJson(list[1] ?? null);
       return askUser({
         kind: "yesNo",
-        title: words(null),
-        // A dialog's message ID with its parameters, where an agent's question has a label with its.
-        body: { label: textOf(list[0]), parameters: wireToBridgeJson(list[1] ?? null), text: null },
+        title: { label: null, dialog, part: "title", parameters, text: null },
+        body: { label: dialog, dialog, part: "body", parameters, text: null },
         agentID: null,
         contentID: null,
         suppressID: null,
       }).then((reply) => (reply.asked && typeof reply.answer === "boolean" ? reply.answer : undefined));
+    }
     case "objectCaching.InvalidateCachedMethodCall":
     case "objectCaching.InvalidateCachedMethodCalls":
       return null;

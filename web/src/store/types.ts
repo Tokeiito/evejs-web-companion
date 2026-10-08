@@ -2605,6 +2605,13 @@ export interface QuestionWords {
   readonly parameters: unknown;
   readonly text: string | null;
   readonly messageID?: number | null;
+  /**
+   * A dialog by its name (the key the server gives the client's eve.Message),
+   * and which of the dialog's two texts these words are. The parameters are
+   * the dialog's, some of them typed values the client turns to text first.
+   */
+  readonly dialog?: string | null;
+  readonly part?: "title" | "body";
 }
 
 /**

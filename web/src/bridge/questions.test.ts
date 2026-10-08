@@ -5,7 +5,18 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { answerFits, argumentsOf, createBotPresses, decodeQuestion, questionNameRefs, questionText, wordsKey, wordsLabels, wordsNameRefs } from "./questions.ts";
+import {
+  answerFits,
+  argumentsOf,
+  createBotPresses,
+  decodeQuestion,
+  dialogOfKey,
+  questionNameRefs,
+  questionText,
+  wordsKey,
+  wordsLabels,
+  wordsNameRefs,
+} from "./questions.ts";
 import type { JsonValue } from "./wire.ts";
 
 const DECLINE: JsonValue = {
@@ -413,4 +424,120 @@ test("the client's own markup in a text is not shown: breaks are new lines, and 
   assert.equal(questionText(OFFER, offerNames, marked), "Take it to Hirtamon.\n\nBe quick.");
   // Plain text the server sent itself is shown as it came.
   assert.equal(questionText({ label: null, parameters: null, text: "As <b>sent</b><br>by the server" }, offerNames, marked), "As <b>sent</b><br>by the server");
+});
+
+// ── a dialog by its name ─────────────────────────────────────────────────────
+//
+// The customs question as the BFF publishes it now (src/gamePort/pilots.js;
+// test/gamePortPilots.test.js builds the same one from the server's call): the
+// dialog's name on the title and on the body, and the contraband's entries in
+// a list. CUSTOMS above is the same question from before the dialog's name was
+// passed on, its entries in a tuple.
+
+const CUSTOMS_PARAMETERS: JsonValue = {
+  type: "dict",
+  entries: [["contraband", [103, { type: "list", items: [[24, 3721, 10], [24, 3713, 1500]] }, "<br>"]], ["empire", [2, 500001]]],
+};
+const CUSTOMS_DIALOG: JsonValue = {
+  ...(CUSTOMS as object),
+  title: { label: null, dialog: "ChtCustomsConfiscationConfirmation2", part: "title", parameters: CUSTOMS_PARAMETERS, text: null },
+  body: { label: "ChtCustomsConfiscationConfirmation2", dialog: "ChtCustomsConfiscationConfirmation2", part: "body", parameters: CUSTOMS_PARAMETERS, text: null },
+};
+// Made up, with the two parameters the client's own body for this dialog carries.
+const DIALOG_TEMPLATES: Record<string, string | null> = {
+  "dialog:ChtCustomsConfiscationConfirmation2/title": "A made-up customs title",
+  "dialog:ChtCustomsConfiscationConfirmation2/body": "<b>{empire}</b> has found:<br>{contraband}<br><br>Hand it over?",
+  "UI/Common/QuantityAndItem": "{[numeric]quantity, useGrouping} of {[item]item.name}",
+};
+const dialogNames = (kind: string, id: number): string => (kind === "owner" && id === 500001 ? "Caldari State" : names(kind, id));
+
+test("a dialog's title and body decode with the dialog's name and which of the two they are", () => {
+  const question = decodeQuestion(CUSTOMS_DIALOG)!;
+  assert.deepEqual(question.title, { label: null, dialog: "ChtCustomsConfiscationConfirmation2", part: "title", parameters: CUSTOMS_PARAMETERS, text: null });
+  assert.deepEqual(question.body, { label: "ChtCustomsConfiscationConfirmation2", dialog: "ChtCustomsConfiscationConfirmation2", part: "body", parameters: CUSTOMS_PARAMETERS, text: null });
+  // Words with no dialog decode as they did, with nothing added.
+  assert.deepEqual(Object.keys(decodeQuestion(DECLINE)!.title), ["label", "parameters", "text"]);
+  // A name without a part, a part without a name, or either not as the BFF sends it, is no dialog.
+  const odds: Array<Record<string, unknown>> = [{ dialog: "SomeDialog" }, { part: "body" }, { dialog: "SomeDialog", part: "footer" }, { dialog: "not a name", part: "body" }, { dialog: "", part: "body" }, { dialog: 7, part: "title" }, { dialog: "x".repeat(101), part: "title" }];
+  for (const odd of odds) {
+    const decoded: NonNullable<ReturnType<typeof decodeQuestion>> = decodeQuestion({ ...(CUSTOMS as object), body: { label: "L", parameters: null, text: null, ...odd } } as unknown as JsonValue)!;
+    assert.deepEqual(decoded.body, { label: "L", parameters: null, text: null }, JSON.stringify(odd));
+  }
+});
+
+test("a dialog's words are kept under the dialog's name and the part, before any label", () => {
+  const question = decodeQuestion(CUSTOMS_DIALOG)!;
+  assert.equal(wordsKey(question.title), "dialog:ChtCustomsConfiscationConfirmation2/title");
+  assert.equal(wordsKey(question.body), "dialog:ChtCustomsConfiscationConfirmation2/body");
+  assert.equal(wordsKey({ label: "UI/A/B", parameters: null, text: null, dialog: "D", part: "title" }), "dialog:D/title");
+  // Half a dialog is not one: the label, or nothing.
+  assert.equal(wordsKey({ label: "UI/A/B", parameters: null, text: null, dialog: "D" }), "UI/A/B");
+  assert.equal(wordsKey({ label: null, parameters: null, text: null, dialog: null, part: "body" }), null);
+
+  assert.deepEqual(dialogOfKey("dialog:ChtCustomsConfiscationConfirmation2/title"), { name: "ChtCustomsConfiscationConfirmation2", part: "title" });
+  assert.deepEqual(dialogOfKey("dialog:D_1/body"), { name: "D_1", part: "body" });
+  for (const other of ["UI/A/B", "#129932", "dialog:D", "dialog:D/footer", "dialog:/title", "dialog:not a name/title", "xdialog:D/title", "dialog:D/title/more", ""]) {
+    assert.equal(dialogOfKey(other), null, other);
+  }
+});
+
+test("the customs question is worded by the client's own dialog: the faction by name, each load on its own line", () => {
+  const question = decodeQuestion(CUSTOMS_DIALOG)!;
+  const client = { templates: DIALOG_TEMPLATES, playerID: 140000002 };
+  assert.equal(questionText(question.title, dialogNames, client), "A made-up customs title");
+  assert.equal(questionText(question.body, dialogNames, client), "Caldari State has found:\n10 of Slaves\n1,500 of Soma\n\nHand it over?");
+  // Before the page has the client's quantity label, the loads are said this client's way.
+  const { "UI/Common/QuantityAndItem": _left, ...without } = DIALOG_TEMPLATES;
+  assert.equal(questionText(question.body, dialogNames, { templates: without }), "Caldari State has found:\n10 × Slaves\n1,500 × Soma\n\nHand it over?");
+});
+
+test("without the client's dialog, the customs question is in this client's words, and its title is nothing", () => {
+  const question = decodeQuestion(CUSTOMS_DIALOG)!;
+  const OWN = "Caldari State customs has found contraband in your cargo: 10 × Slaves, 1,500 × Soma. Hand it over?";
+  const clients: Array<Parameters<typeof questionText>[2]> = [null, { templates: {} }, { templates: { "dialog:ChtCustomsConfiscationConfirmation2/title": null, "dialog:ChtCustomsConfiscationConfirmation2/body": null } }];
+  for (const client of clients) {
+    assert.equal(questionText(question.body, names, client), OWN);
+    assert.equal(questionText(question.title, names, client), "");
+  }
+  // The client's text kept under the dialog's name as a LABEL is not the dialog's text.
+  assert.equal(questionText(question.body, names, { templates: { ChtCustomsConfiscationConfirmation2: "not this" } }), OWN);
+});
+
+test("only a dialog's arguments are prepared: a label's tuple is left as the server sent it", () => {
+  const templates = { "UI/Some/Label": "About {thing}.", "dialog:SomeDialog/body": "About {thing}." };
+  const parameters = { type: "dict", entries: [["thing", [4, 3721]]] };
+  assert.equal(questionText({ label: "UI/Some/Label", parameters, text: null }, names, { templates }), "About .");
+  assert.equal(questionText({ label: null, dialog: "SomeDialog", part: "body", parameters, text: null }, names, { templates }), "About Slaves.");
+  // And so a label's tuple names nothing to look up, where a dialog's does.
+  assert.deepEqual(wordsNameRefs([{ label: "UI/Some/Label", parameters, text: null }], { templates }), []);
+  assert.deepEqual(wordsNameRefs([{ label: null, dialog: "SomeDialog", part: "body", parameters, text: null }], { templates }), [{ kind: "type", id: 3721 }]);
+});
+
+test("a dialog's words ask for the dialog by name, and for the client's labels its typed values are worded with", () => {
+  const question = decodeQuestion(CUSTOMS_DIALOG)!;
+  assert.deepEqual(wordsLabels([question.title, question.body]), [
+    "dialog:ChtCustomsConfiscationConfirmation2/title",
+    "UI/Common/QuantityAndItem",
+    "dialog:ChtCustomsConfiscationConfirmation2/body",
+  ]);
+  // A list with no separator is joined by the client's delimiter, which is asked for too.
+  const loose = { label: null, dialog: "SomeDialog", part: "body" as const, parameters: { type: "dict", entries: [["things", [103, { type: "list", items: [[4, 34]] }]]] }, text: null };
+  assert.deepEqual(wordsLabels([loose]), ["dialog:SomeDialog/body", "UI/Common/Formatting/ListGenericDelimiter"]);
+  // A label's words ask for the label alone, whatever their parameters hold.
+  assert.deepEqual(wordsLabels([{ label: "UI/Some/Label", parameters: loose.parameters, text: null }]), ["UI/Some/Label"]);
+});
+
+test("the names a dialog's words need are the ones its typed values name, whichever way it ends up worded", () => {
+  const question = decodeQuestion(CUSTOMS_DIALOG)!;
+  const keys = (client: Parameters<typeof questionNameRefs>[1]) => [...new Set(questionNameRefs(question, client).map((ref) => `${ref.kind}:${ref.id}`))];
+  // By the client's dialog: an owner and two types (the title and the body carry the same parameters).
+  assert.deepEqual(keys({ templates: DIALOG_TEMPLATES }), ["type:3721", "type:3713", "owner:500001"]);
+  // By this client's own words: the faction and the types, the entries read out of their list.
+  assert.deepEqual(keys(null), ["type:3721", "type:3713", "faction:500001"]);
+  // A dialog whose template has typed tags of its own asks for those too.
+  const mixed = { label: null, dialog: "SomeDialog", part: "body" as const, parameters: { type: "dict", entries: [["who", [2, 500001]], ["where", 30002780]] }, text: null };
+  assert.deepEqual(
+    wordsNameRefs([mixed], { templates: { "dialog:SomeDialog/body": "{who} in {[location]where.name}" } }).map((ref) => `${ref.kind}:${ref.id}`),
+    ["system:30002780", "owner:500001"],
+  );
 });

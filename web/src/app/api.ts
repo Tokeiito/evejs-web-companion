@@ -3936,9 +3936,20 @@ export async function resolveNames(
 export async function loadWords(
   labels: readonly string[],
   messageIDs: readonly number[] = [],
+  dialogs: readonly string[] = [],
   options: ApiOptions = {},
-): Promise<{ available: boolean; words: Record<string, string | null>; messages: Record<string, string | null> }> {
-  const data = await postJson("/api/words", messageIDs.length > 0 ? { labels, messageIDs } : { labels }, options);
+): Promise<{
+  available: boolean;
+  words: Record<string, string | null>;
+  messages: Record<string, string | null>;
+  /** A dialog by its name: its title and its body, each the client's text or null. Null for a dialog it has not. */
+  dialogs: Record<string, { title: string | null; body: string | null } | null>;
+}> {
+  const data = await postJson(
+    "/api/words",
+    { labels, ...(messageIDs.length > 0 ? { messageIDs } : {}), ...(dialogs.length > 0 ? { dialogs } : {}) },
+    options,
+  );
   const texts = (value: JsonValue | undefined): Record<string, string | null> => {
     const raw = typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, JsonValue>) : {};
     const out: Record<string, string | null> = {};
@@ -3947,7 +3958,18 @@ export async function loadWords(
     }
     return out;
   };
-  return { available: data.available === true, words: texts(data.words), messages: texts(data.messages) };
+  const named: Record<string, { title: string | null; body: string | null } | null> = {};
+  const rawDialogs = typeof data.dialogs === "object" && data.dialogs !== null && !Array.isArray(data.dialogs)
+    ? (data.dialogs as Record<string, JsonValue>)
+    : {};
+  for (const [name, dialog] of Object.entries(rawDialogs)) {
+    // Anything that is not a dialog has neither text, which the checks below find for themselves.
+    const record = dialog as Record<string, JsonValue> | null;
+    named[name] = record === null
+      ? null
+      : { title: typeof record.title === "string" ? record.title : null, body: typeof record.body === "string" ? record.body : null };
+  }
+  return { available: data.available === true, words: texts(data.words), messages: texts(data.messages), dialogs: named };
 }
 
 /**

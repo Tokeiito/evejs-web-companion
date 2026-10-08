@@ -265,7 +265,7 @@ test("a lost session during a movement step unwinds to offline", async () => {
 // ShipContrabandWarningUndock, it asks OK / Cancel and undocks again with
 // ignoreContraband set. The BFF answers that refusal as CONTRABAND_WARNING.
 
-const WARNING = { ok: false, error: "CONTRABAND_WARNING", message: "Your ship is carrying at least one item (Slaves) which is contraband somewhere. Are you sure you wish to undock?" };
+const WARNING = { ok: false, error: "CONTRABAND_WARNING", message: "A made-up warning about Slaves. Undock anyway?" };
 
 function contrabandFetch() {
   return makeFakeFetch((path, _method, body) => {

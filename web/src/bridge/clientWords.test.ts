@@ -9,13 +9,27 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { formatTemplate, parseTag, parseTemplate, plainText, templateNameRefs } from "./clientWords.ts";
+import {
+  LIST_DELIMITER,
+  QUANTITY_AND_ITEM,
+  convertTyped,
+  formatTemplate,
+  parseTag,
+  parseTemplate,
+  plainText,
+  prepareArguments,
+  templateNameRefs,
+  typedLabels,
+  typedNameRefs,
+} from "./clientWords.ts";
 import type { NameKind } from "../store/names.ts";
 
 const NAMES: Record<string, string> = {
   "type:11448": "Electromagnetic Physics",
   "type:20424": "Datacore - Electronic Engineering",
   "type:34": "Tritanium",
+  // A name that reads as a number, for a typed value inside a typed value.
+  "type:99": "34",
   "owner:140000002": "Test Two",
   "owner:1000043": "Corporate Police Force",
   "station:60000004": "Muvolailen X - Moon 3 - CBD Corporation Storage",
@@ -157,4 +171,118 @@ test("the client's markup becomes plain text: a break is a new line, and other t
   assert.equal(plainText("5 < 7 and 9 > 2, <3, a<b, x <> y"), "5 < 7 and 9 > 2, <3, a<b, x <> y");
   assert.equal(plainText("no markup at all"), "no markup at all");
   assert.equal(plainText(""), "");
+});
+
+// ── a dialog's typed values ──────────────────────────────────────────────────
+//
+// (code, value[, value2]) as the client's cfg.FormatConvert turns them to
+// text. A tuple is an array here and a list is {type: "list", items}, as the
+// bridge spells them. The two templates are made up, with the tags the
+// client's own carry for those labels (scripts/client-words.js shows them).
+
+const TYPED_TEMPLATES = { [QUANTITY_AND_ITEM]: "{[numeric]quantity, useGrouping} of {[item]item.name}", [LIST_DELIMITER]: "; " };
+const typed = { ...context, templates: TYPED_TEMPLATES };
+const list = (...items: unknown[]) => ({ type: "list", items });
+const convert = (tuple: unknown[], with_: Parameters<typeof convertTyped>[3] = typed) =>
+  convertTyped(tuple[0] as never, tuple[1] as never, (tuple.length >= 3 ? tuple[2] : null) as never, with_);
+
+test("an owner, a place and a type by their codes are their names", () => {
+  assert.equal(convert([2, 1000043]), "Corporate Police Force");
+  assert.equal(convert([4, 34]), "Tritanium");
+  assert.equal(convert([3, 30002780]), "Muvolailen");
+  assert.equal(convert([3, 60000004]), "Muvolailen X - Moon 3 - CBD Corporation Storage");
+  assert.equal(convert([3, 10000002]), "The Forge");
+  assert.equal(convert([3, 1030000000001]), "A Citadel");
+  // What is not an ID names nothing.
+  for (const tuple of [[2, null], [2, "Somebody"], [3, 0], [4, -34], [4, 1.5], [4]]) {
+    assert.equal(convert(tuple), "", JSON.stringify(tuple));
+  }
+});
+
+test("a quantity of a type is the client's own label for it, filled with both", () => {
+  assert.equal(convert([24, 34, 1500]), "1,500 of Tritanium");
+  // Without the client's label, this client's own way of saying it; without a quantity, the name.
+  assert.equal(convert([24, 34, 1500], context), "1,500 × Tritanium");
+  assert.equal(convert([24, 34, 1500], { ...context, templates: { [QUANTITY_AND_ITEM]: null } }), "1,500 × Tritanium");
+  assert.equal(convert([24, 34], context), "Tritanium");
+  assert.equal(convert([24, null, 5]), "");
+});
+
+test("a list is its entries converted and joined by the separator it came with, or by the client's own", () => {
+  const entries = list([24, 34, 10], [4, 20424], [2, 1000043]);
+  assert.equal(convert([103, entries, "<br>"]), "10 of Tritanium<br>Datacore - Electronic Engineering<br>Corporate Police Force");
+  assert.equal(convert([103, entries, ""]), "10 of TritaniumDatacore - Electronic EngineeringCorporate Police Force");
+  // No separator: the client's list delimiter; and this client's, when the page has not the client's.
+  assert.equal(convert([103, entries]), "10 of Tritanium; Datacore - Electronic Engineering; Corporate Police Force");
+  assert.equal(convert([103, entries, null]), "10 of Tritanium; Datacore - Electronic Engineering; Corporate Police Force");
+  assert.equal(convert([103, entries], context), "10 × Tritanium, Datacore - Electronic Engineering, Corporate Police Force");
+  assert.equal(convert([103, list()]), "");
+  assert.equal(convert([103, null, "<br>"]), "");
+  // An entry that is not a typed value is nothing, and still has its place.
+  assert.equal(convert([103, list([4, 34], 34, "x", [4, 20424]), "|"]), "Tritanium|||Datacore - Electronic Engineering");
+  // A tuple of entries, which the client cannot word, is read as the list it was meant to be.
+  assert.equal(convert([103, [[24, 34, 10], [4, 20424]], "<br>"]), "10 of Tritanium<br>Datacore - Electronic Engineering");
+});
+
+test("a typed value given as a value is converted first, and its own third member takes the second value's place", () => {
+  // (24, (4, 34), 7): the inner value has no third member, so the quantity is gone, as in the client.
+  assert.equal(convert([24, [4, 34], 7], context), "");
+  // The inner value is converted before the outer code is applied to it: a type whose name reads as a number
+  // names the type of that number, and the 7 is gone with it.
+  assert.equal(convert([24, [4, 99], 7], context), "Tritanium");
+  assert.equal(convert([24, [4, 99, 3], 7], context), "3 × Tritanium");
+  // An owner whose value is a type's name is no owner.
+  assert.equal(convert([2, [4, 34]]), "");
+  // A list whose value is one typed value has nothing to list.
+  assert.equal(convert([103, [24, 34, 10], "<br>"]), "");
+});
+
+test("a code that is not done is nothing", () => {
+  for (const tuple of [[14, 134359400000000000], [28, 1500], [999, "x"], ["4", 34], [null, 34], [undefined, 34]]) {
+    assert.equal(convert(tuple), "", JSON.stringify(tuple));
+  }
+});
+
+test("a dialog's arguments are prepared as the client prepares them: every tuple to its text, the rest left alone", () => {
+  const given = {
+    empire: [2, 1000043],
+    contraband: [103, list([24, 34, 10], [24, 20424, 2]), "<br>"],
+    count: 3,
+    note: "as written",
+    when: { type: "long", value: "134359400000000000" },
+    listed: list(1, 2),
+    nothing: null,
+    empty: [],
+  };
+  assert.deepEqual(prepareArguments(given as never, typed), {
+    empire: "Corporate Police Force",
+    contraband: "10 of Tritanium<br>2 of Datacore - Electronic Engineering",
+    count: 3,
+    note: "as written",
+    when: { type: "long", value: "134359400000000000" },
+    listed: list(1, 2),
+    nothing: null,
+    empty: "",
+  });
+});
+
+test("the names and the client's labels a dialog's typed arguments need are found, through lists and typed values inside values", () => {
+  const args = {
+    empire: [2, 500001],
+    contraband: [103, list([24, 3721, 10], [24, 3713, 5], [4, 34], "stray"), "<br>"],
+    place: [3, 30002780],
+    nested: [2, [3, 60000004]],
+    plain: 34,
+    undone: [14, 1],
+    bad: [4, "34x"],
+  };
+  assert.deepEqual(typedNameRefs(args as never).map((ref) => `${ref.kind}:${ref.id}`), ["owner:500001", "type:3721", "type:3713", "type:34", "system:30002780", "station:60000004"]);
+  assert.deepEqual(typedLabels(args as never), [QUANTITY_AND_ITEM]);
+  // A list with no separator needs the client's delimiter; one label is asked for once.
+  assert.deepEqual(typedLabels({ a: [103, list([24, 34, 1], [24, 35, 2])], b: [103, [[4, 34]], null] } as never), [QUANTITY_AND_ITEM, LIST_DELIMITER]);
+  assert.deepEqual(typedLabels({ a: [4, 34], b: 7 } as never), []);
+  assert.deepEqual(typedNameRefs({ a: 34, b: "x", c: null } as never), []);
+  // A quantity of something that is no type still needs its label, and names nothing.
+  assert.deepEqual(typedLabels({ a: [24, null, 5] } as never), [QUANTITY_AND_ITEM]);
+  assert.deepEqual(typedNameRefs({ a: [24, null, 5] } as never), []);
 });

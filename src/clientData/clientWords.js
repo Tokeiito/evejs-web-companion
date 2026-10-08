@@ -28,12 +28,23 @@
 // number, and agents.py ProcessMessage hands it to GetByMessageID). Those are
 // among the 300,000 texts no label names, so the whole language file is kept
 // from the first time one is asked for, and not before: it is about 90 MB.
+//
+// And by a dialog's name: the server sends some questions as a dialog's ID
+// with its parameters ("ShipContrabandWarningUndock", the customs question),
+// and the client's dialog table says which two messages are its title and its
+// body. Those texts are kept beside the labelled ones, so a dialog does not
+// need the whole language file.
 
 const fs = require("node:fs");
 const path = require("node:path");
 const { unpickle } = require("./pickle0");
+const { readFsd } = require("./fsd");
 
 const MAIN = "res:/localizationfsd/localization_fsd_main.pickle";
+// The client's dialogs by name (eve.Message, prompt_player_fsd_dialog): for each its kind, whether it can be
+// suppressed, and the message IDs of its title and its body. FSD data, with its schema beside it (./fsd.js).
+const DIALOGS = "res:/staticdata/dialogs.static";
+const DIALOGS_SCHEMA = "res:/staticdata/dialogs.schema";
 const languageResource = (language) => `res:/localizationfsd/localization_fsd_${language}.pickle`;
 
 /** The client's resource index: resource name (lower case) -> path under ResFiles. */
@@ -57,7 +68,9 @@ function readResourceIndex(text) {
  *   templates(labels)  {label: text | null}
  *   message(id)        the client's text for a message ID, parameters unfilled, or null
  *   messages(ids)      {id: text | null}
- *   status()           {available, loaded, labels, worded, messages, everyMessageKept, language, error}
+ *   dialog(name)       a dialog's {type, suppressable, title, body}, texts unfilled, or null
+ *   dialogs(names)     {name: dialog | null}
+ *   status()           {available, loaded, labels, worded, messages, everyMessageKept, dialogs, language, error}
  */
 function createClientWords({ clientRoot = null, language = "en-us", readFile = fs.readFileSync, onError = () => {} } = {}) {
   let loaded = null;
@@ -70,6 +83,7 @@ function createClientWords({ clientRoot = null, language = "en-us", readFile = f
   };
 
   let every = null;
+  let dialogFailure = null;
 
   const readIndex = () => readResourceIndex(readFile(path.join(clientRoot, "tq", "resfileindex.txt"), "utf8"));
   /** The language file: messageID -> (text, metaData, tokens). */
@@ -98,6 +112,27 @@ function createClientWords({ clientRoot = null, language = "en-us", readFile = f
     return every;
   }
 
+  /** The dialog table, each dialog with its two texts. A table that cannot be read costs the dialogs, not the labels. */
+  function readDialogs(index, messages) {
+    const dialogs = new Map();
+    try {
+      const table = readFsd(resource(index, DIALOGS), resource(index, DIALOGS_SCHEMA).toString("utf8"));
+      for (const [name, dialog] of table) {
+        dialogs.set(name, {
+          type: dialog.dialogType ?? null,
+          // The schema's default is false; set, it is one of the enum's names.
+          suppressable: dialog.suppressable !== false && dialog.suppressable !== "false" && dialog.suppressable !== null,
+          title: textOf(messages.get(dialog.titleID)),
+          body: textOf(messages.get(dialog.bodyID)),
+        });
+      }
+    } catch (error) {
+      dialogFailure = error;
+      onError(error);
+    }
+    return dialogs;
+  }
+
   function load() {
     if (loaded || failure) return loaded;
     try {
@@ -117,7 +152,7 @@ function createClientWords({ clientRoot = null, language = "en-us", readFile = f
         const text = textOf(messages.get(entry.get("messageID") ?? messageID));
         if (text !== null) texts.set(`${folder}/${name}`, text);
       }
-      loaded = { texts, labels: labels.size, messages: messages.size };
+      loaded = { texts, labels: labels.size, messages: messages.size, dialogs: readDialogs(index, messages) };
     } catch (error) {
       failure = error;
       onError(error);
@@ -140,10 +175,27 @@ function createClientWords({ clientRoot = null, language = "en-us", readFile = f
     return all ? all.get(messageID) ?? null : null;
   }
 
+  /** A dialog by its name: {type, suppressable, title, body}, the two texts with their parameters unfilled; or null. */
+  function dialog(name) {
+    if (!available() || typeof name !== "string") return null;
+    const data = load();
+    const found = data ? data.dialogs.get(name) : undefined;
+    return found ? { ...found } : null;
+  }
+
   return {
     available,
     template,
     message,
+    dialog,
+    /** {name: dialog | null} */
+    dialogs(names) {
+      const out = {};
+      for (const name of Array.isArray(names) ? names : []) {
+        if (typeof name === "string") out[name] = dialog(name);
+      }
+      return out;
+    },
     templates(labels) {
       const out = {};
       for (const label of Array.isArray(labels) ? labels : []) {
@@ -169,8 +221,9 @@ function createClientWords({ clientRoot = null, language = "en-us", readFile = f
         messages: loaded ? loaded.messages : 0,
         /** Whether every text is being kept, which is so once one has been asked for by number. */
         everyMessageKept: Boolean(every),
+        dialogs: loaded ? loaded.dialogs.size : 0,
         language,
-        error: failure ? String(failure.message || failure) : null,
+        error: failure || dialogFailure ? String((failure || dialogFailure).message || failure || dialogFailure) : null,
       };
     },
   };

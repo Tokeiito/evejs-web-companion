@@ -646,12 +646,19 @@ test("the structure name read is the ONLY structureDirectory call the BFF makes"
 
 // --- 3. POST /api/words: the retail client's text for the server's labels -----
 
-function fakeClientWords(texts, available = true, numbered = {}) {
+function fakeClientWords(texts, available = true, numbered = {}, named = {}) {
   const asked = [];
   const askedByNumber = [];
+  const askedByName = [];
   return {
     asked,
     askedByNumber,
+    askedByName,
+    dialog: (name) => (available ? named[name] ?? null : null),
+    dialogs(names) {
+      askedByName.push(names);
+      return Object.fromEntries(names.map((name) => [name, available ? named[name] ?? null : null]));
+    },
     available: () => available,
     templates(labels) {
       asked.push(labels);
@@ -684,8 +691,10 @@ test("POST /api/words answers each label with the client's template, parameters 
       "UI/Nope/NotALabel": null,
     },
     messages: {},
+    dialogs: {},
   });
   assert.deepEqual(clientWords.askedByNumber, [], "nothing is looked up by number unless a number is asked for");
+  assert.deepEqual(clientWords.askedByName, [], "nor by name unless a dialog is asked for");
 });
 
 test("POST /api/words answers a message by its number too, and takes only whole positive numbers, two hundred at most", async () => {
@@ -701,6 +710,7 @@ test("POST /api/words answers a message by its number too, and takes only whole 
     available: true,
     words: { "UI/A/B": "by label" },
     messages: { 129932: "Take this to {[location]objectiveLocationSystemID.name}.", 7: null },
+    dialogs: {},
   });
   assert.deepEqual(clientWords.askedByNumber, [[129932, 7]]);
 
@@ -711,6 +721,38 @@ test("POST /api/words answers a message by its number too, and takes only whole 
     assert.deepEqual(answer.payload.messages, {});
   }
   assert.equal(clientWords.askedByNumber.length, 2);
+});
+
+test("POST /api/words answers a dialog by its name: its kind, whether it can be suppressed, its title and its body", async () => {
+  const question = { type: "question", suppressable: true, title: "A made-up title?", body: "Hand over {contraband} to {empire}?" };
+  const clientWords = fakeClientWords({ "UI/A/B": "by label" }, true, {}, { MadeUpQuestion: question });
+  const { baseUrl } = await startTestServer({ clientWords });
+  const { response, payload } = await apiRequest(baseUrl, "/api/words", {
+    method: "POST",
+    // A name is letters, digits and underscores, a hundred at most; anything else is not asked for.
+    body: { labels: ["UI/A/B"], dialogs: ["MadeUpQuestion", "NoSuchDialog", "not a name", "a/b", "", "x".repeat(101), "x".repeat(100), 7, null, ["MadeUpQuestion"]] },
+  });
+  assert.equal(response.status, 200);
+  assert.deepEqual(payload, {
+    ok: true,
+    available: true,
+    words: { "UI/A/B": "by label" },
+    messages: {},
+    dialogs: { MadeUpQuestion: question, NoSuchDialog: null, ["x".repeat(100)]: null },
+  });
+  assert.deepEqual(clientWords.askedByName, [["MadeUpQuestion", "NoSuchDialog", "x".repeat(100)]]);
+
+  await apiRequest(baseUrl, "/api/words", { method: "POST", body: { dialogs: Array.from({ length: 250 }, (_, index) => `Dialog${index}`) } });
+  assert.equal(clientWords.askedByName[1].length, 200);
+  for (const body of [{ dialogs: "MadeUpQuestion" }, { dialogs: null }, { dialogs: [] }]) {
+    const answer = await apiRequest(baseUrl, "/api/words", { method: "POST", body });
+    assert.deepEqual(answer.payload.dialogs, {});
+  }
+  assert.equal(clientWords.askedByName.length, 2);
+
+  const none = await startTestServer({ clientWords: fakeClientWords({}, false, {}, { MadeUpQuestion: question }) });
+  const unavailable = await apiRequest(none.baseUrl, "/api/words", { method: "POST", body: { dialogs: ["MadeUpQuestion"] } });
+  assert.deepEqual(unavailable.payload, { ok: true, available: false, words: {}, messages: {}, dialogs: { MadeUpQuestion: null } });
 });
 
 test("POST /api/words asks the client only for labels, and for no more than two hundred of them", async () => {
@@ -734,7 +776,7 @@ test("POST /api/words asks the client only for labels, and for no more than two 
 test("POST /api/words says when there is no client to read, and needs a login", async () => {
   const { baseUrl } = await startTestServer({ clientWords: fakeClientWords({ "UI/A/B": "text" }, false) });
   const { payload } = await apiRequest(baseUrl, "/api/words", { method: "POST", body: { labels: ["UI/A/B"] } });
-  assert.deepEqual(payload, { ok: true, available: false, words: { "UI/A/B": null }, messages: {} });
+  assert.deepEqual(payload, { ok: true, available: false, words: { "UI/A/B": null }, messages: {}, dialogs: {} });
   const anonymous = await apiRequest(baseUrl, "/api/words", { method: "POST", body: { labels: ["UI/A/B"] }, authenticated: false });
   assert.equal(anonymous.response.status, 401);
 });

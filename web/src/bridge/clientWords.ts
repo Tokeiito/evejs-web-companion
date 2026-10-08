@@ -293,6 +293,171 @@ export function formatTemplate(template: string, args: TemplateArguments, contex
     .join("");
 }
 
+// ── a dialog's typed values ──────────────────────────────────────────────────
+//
+// A dialog's parameters may be TYPED: a tuple (code, value[, value2]) that the
+// client turns into text before it fills the dialog's words (cfg.__prepdict
+// and FormatConvert, carbon/common/script/sys/cfg.py 324 and 370; what each
+// code means, eveCfg.py 165 on). The codes done here:
+//
+//     2  UE_OWNERID            an owner's name
+//     3  UE_LOCID              a place's name
+//     4  UE_TYPEID             a type's name
+//    24  UE_TYPEIDANDQUANTITY  (24, typeID, quantity): the client's label
+//                              UI/Common/QuantityAndItem, filled with both
+//   103  UE_LIST               (103, [entries], separator): each entry
+//                              converted, and joined by the separator, or by
+//                              the client's list delimiter when there is none
+//
+// The client has more (dates, amounts, ISK, distances, group names, a message
+// inside a message). Those are not done, and come out as nothing.
+//
+// The bridge keeps a tuple as an array and a list as {type: "list", items},
+// and the client tells them apart: FormatConvert reads a tuple given as a
+// VALUE as one more typed value, to be converted first. So a list's entries
+// have to arrive in a list. (A tuple of entries, which the client cannot word
+// at all, is read here as the list it was meant to be.)
+
+/** The label the client words a quantity of an item with (eveCfg.__FormatTypeIDAndQuantity). */
+export const QUANTITY_AND_ITEM = "UI/Common/QuantityAndItem";
+/** The label of what the client joins a list with when it is given no separator (FormatGenericList). */
+export const LIST_DELIMITER = "UI/Common/Formatting/ListGenericDelimiter";
+
+const UE_OWNERID = 2;
+const UE_LOCID = 3;
+const UE_TYPEID = 4;
+const UE_TYPEIDANDQUANTITY = 24;
+const UE_LIST = 103;
+
+export interface TypedContext extends FormatContext {
+  /** The client's templates by label, for the two the conversion words with. */
+  readonly templates?: Readonly<Record<string, string | null | undefined>>;
+}
+
+/** A typed value given as a value: a tuple that starts with a code. */
+const nestedTyped = (value: JsonValue | undefined): value is JsonValue[] => Array.isArray(value) && typeof value[0] === "number";
+
+/** A list's entries: a list as the bridge spells one, or a tuple of entries. */
+function listEntries(value: JsonValue | undefined): readonly JsonValue[] {
+  if (Array.isArray(value)) {
+    return value;
+  }
+  if (value && typeof value === "object") {
+    const record = value as Record<string, JsonValue>;
+    if (record.type === "list" && Array.isArray(record.items)) {
+      return record.items;
+    }
+  }
+  return [];
+}
+
+const third = (tuple: readonly JsonValue[]): JsonValue => (tuple.length >= 3 ? tuple[2] ?? null : null);
+
+/** One typed value as the text the client makes of it; nothing for a code that is not done. */
+export function convertTyped(code: JsonValue | undefined, value: JsonValue | undefined, value2: JsonValue | undefined, context: TypedContext): string {
+  let inner: JsonValue | undefined = value;
+  let second: JsonValue | undefined = value2;
+  if (nestedTyped(inner)) {
+    // The client converts it first, and its third member (or nothing) takes value2's place.
+    second = third(inner);
+    inner = convertTyped(inner[0], inner[1], second, context);
+  }
+  switch (code) {
+    case UE_OWNERID: {
+      const id = idOf(inner);
+      return id === null ? "" : context.nameOf("owner", id);
+    }
+    case UE_LOCID: {
+      const id = idOf(inner);
+      return id === null ? "" : context.nameOf(locationKind(id), id);
+    }
+    case UE_TYPEID: {
+      const id = idOf(inner);
+      return id === null ? "" : context.nameOf("type", id);
+    }
+    case UE_TYPEIDANDQUANTITY: {
+      const typeID = idOf(inner);
+      if (typeID === null) {
+        return "";
+      }
+      const quantity = numberOf(second);
+      const template = context.templates?.[QUANTITY_AND_ITEM];
+      if (typeof template === "string") {
+        return formatTemplate(template, { quantity, item: typeID }, context);
+      }
+      const name = context.nameOf("type", typeID);
+      return quantity === null ? name : `${quantity.toLocaleString("en-US")} × ${name}`;
+    }
+    case UE_LIST: {
+      const texts = listEntries(inner).map((entry) => (Array.isArray(entry) ? convertTyped(entry[0], entry[1], third(entry), context) : ""));
+      const separator = typeof second === "string" ? second : context.templates?.[LIST_DELIMITER] ?? ", ";
+      return texts.join(separator);
+    }
+    default:
+      return "";
+  }
+}
+
+/** A dialog's arguments as the client prepares them: every tuple among them turned to its text. */
+export function prepareArguments(args: TemplateArguments, context: TypedContext): TemplateArguments {
+  const out: Record<string, JsonValue | undefined> = {};
+  for (const [name, value] of Object.entries(args)) {
+    out[name] = Array.isArray(value) ? convertTyped(value[0], value[1], third(value), context) : value;
+  }
+  return out;
+}
+
+/** What a typed value needs before it can be worded: the names, and the client's labels. */
+function typedNeeds(tuple: readonly JsonValue[], refs: NameRef[], labels: string[]): void {
+  const [code, value] = tuple;
+  if (nestedTyped(value)) {
+    typedNeeds(value, refs, labels);
+    return;
+  }
+  const id = idOf(value);
+  if (code === UE_LIST) {
+    for (const entry of listEntries(value)) {
+      if (Array.isArray(entry)) {
+        typedNeeds(entry, refs, labels);
+      }
+    }
+    if (typeof third(tuple) !== "string") {
+      labels.push(LIST_DELIMITER);
+    }
+  } else if (code === UE_TYPEIDANDQUANTITY) {
+    labels.push(QUANTITY_AND_ITEM);
+    if (id !== null) refs.push({ kind: "type", id });
+  } else if (id !== null && code === UE_TYPEID) {
+    refs.push({ kind: "type", id });
+  } else if (id !== null && code === UE_OWNERID) {
+    refs.push({ kind: "owner", id });
+  } else if (id !== null && code === UE_LOCID) {
+    refs.push({ kind: locationKind(id), id });
+  }
+}
+
+/** The names a dialog's typed arguments need, for the page's name cache to fetch. */
+export function typedNameRefs(args: TemplateArguments): NameRef[] {
+  const refs: NameRef[] = [];
+  for (const value of Object.values(args)) {
+    if (Array.isArray(value)) {
+      typedNeeds(value, refs, []);
+    }
+  }
+  return refs;
+}
+
+/** The client's labels a dialog's typed arguments are worded with, each once. */
+export function typedLabels(args: TemplateArguments): string[] {
+  const labels: string[] = [];
+  for (const value of Object.values(args)) {
+    if (Array.isArray(value)) {
+      typedNeeds(value, [], labels);
+    }
+  }
+  return [...new Set(labels)];
+}
+
 /**
  * The client's text as plain text. Its texts carry the client's own markup
  * (`<br>` for a new line; `<b>`, `<color=...>`, `<url=...>` and the like

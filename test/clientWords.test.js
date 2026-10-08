@@ -20,6 +20,7 @@ const assert = require("node:assert/strict");
 const path = require("node:path");
 const { PickleError, unpickle } = require("../src/clientData/pickle0");
 const { createClientWords, readResourceIndex } = require("../src/clientData/clientWords");
+const { DIALOG_SCHEMA, dialogTable } = require("./helpers/fsdDialogs");
 
 const pickle = (text) => Buffer.from(text, "latin1");
 
@@ -115,7 +116,19 @@ const INDEX = [
   "res:/localizationfsd/localization_fsd_main.pickle,79/main-file,x,1,1",
   "res:/localizationfsd/localization_fsd_en-us.pickle,2c/english-file,x,1,1",
   "res:/localizationfsd/localization_fsd_de.pickle,de/german-file,x,1,1",
+  "res:/staticdata/dialogs.static,d1/dialogs-file,x,1,1",
+  "res:/staticdata/dialogs.schema,d2/dialogs-schema,x,1,1",
 ].join("\n");
+// The client's dialog table: made-up dialogs, their titles and bodies among the made-up texts below.
+const DIALOGS = dialogTable({
+  MadeUpQuestion: { dialogID: 1, type: "question", titleID: 235502, bodyID: 99, suppressable: true },
+  OnlyABody: { dialogID: 2, type: "notify", bodyID: 235503 },
+  NoWords: { dialogID: 3, type: "warning", titleID: 12345, bodyID: 7 },
+  AnsweredYes: { dialogID: 4, type: "question", bodyID: 99, suppressable: "ID_YES" },
+  NotSuppressed: { dialogID: 5, type: "question", bodyID: 99, suppressable: false },
+  // A value the enum has no name for.
+  OddlySuppressed: { dialogID: 6, type: "question", bodyID: 99, suppressable: 5 },
+});
 const MAIN =
   "(dp1\nS'labels'\np2\n(dp3\n" +
   "I235502\n(dp4\nS'FullPath'\np5\nS'UI/Agents/StandardMission'\np6\nsS'messageID'\np7\nI235502\nsS'label'\np8\nS'DeclineMissionTitle'\np9\nss" +
@@ -134,6 +147,8 @@ function fakeClient(files = {}) {
     [path.join(CLIENT, "ResFiles", "79/main-file")]: pickle(MAIN),
     [path.join(CLIENT, "ResFiles", "2c/english-file")]: pickle(ENGLISH),
     [path.join(CLIENT, "ResFiles", "de/german-file")]: pickle(GERMAN),
+    [path.join(CLIENT, "ResFiles", "d1/dialogs-file")]: DIALOGS,
+    [path.join(CLIENT, "ResFiles", "d2/dialogs-schema")]: Buffer.from(DIALOG_SCHEMA, "utf8"),
     ...files,
   };
   const readFile = (file) => {
@@ -161,21 +176,25 @@ test("a label is the client's own text for it, with its parameters left in", () 
     "UI/Nope/NotALabel": null,
   });
   assert.deepEqual(words.templates("not a list"), {});
-  assert.deepEqual(words.status(), { available: true, loaded: true, labels: 4, worded: 3, messages: 3, everyMessageKept: false, language: "en-us", error: null });
+  assert.deepEqual(words.status(), { available: true, loaded: true, labels: 4, worded: 3, messages: 3, everyMessageKept: false, dialogs: 6, language: "en-us", error: null });
 });
 
 test("the client's files are read once, when first asked, and from where its index says", () => {
   const { readFile, reads } = fakeClient();
   const words = createClientWords({ clientRoot: CLIENT, readFile });
   assert.deepEqual(reads, [], "nothing is read until a label is asked for");
-  assert.deepEqual(words.status(), { available: true, loaded: false, labels: 0, worded: 0, messages: 0, everyMessageKept: false, language: "en-us", error: null });
+  assert.deepEqual(words.status(), { available: true, loaded: false, labels: 0, worded: 0, messages: 0, everyMessageKept: false, dialogs: 0, language: "en-us", error: null });
   words.template("UI/Agents/StandardMission/DeclineMissionTitle");
   words.template("UI/Agents/StandardMission/DeclineMessage");
   words.templates(["UI/Nope/NotALabel"]);
+  words.dialog("MadeUpQuestion");
+  words.dialogs(["OnlyABody", "NoSuchDialog"]);
   assert.deepEqual(reads, [
     path.join(CLIENT, "tq", "resfileindex.txt"),
     path.join(CLIENT, "ResFiles", "79/main-file"),
     path.join(CLIENT, "ResFiles", "2c/english-file"),
+    path.join(CLIENT, "ResFiles", "d1/dialogs-file"),
+    path.join(CLIENT, "ResFiles", "d2/dialogs-schema"),
   ]);
 });
 
@@ -272,7 +291,7 @@ test("asked for by number first, a text is found all the same, and so are labels
   // Only the index and the language file: the label table is not needed for a number.
   assert.deepEqual(reads, [path.join(CLIENT, "tq", "resfileindex.txt"), path.join(CLIENT, "ResFiles", "2c/english-file")]);
   assert.equal(words.template("UI/Agents/StandardMission/DeclineMissionTitle"), "A made-up title?");
-  assert.deepEqual(words.status(), { available: true, loaded: true, labels: 4, worded: 3, messages: 3, everyMessageKept: true, language: "en-us", error: null });
+  assert.deepEqual(words.status(), { available: true, loaded: true, labels: 4, worded: 3, messages: 3, everyMessageKept: true, dialogs: 6, language: "en-us", error: null });
 });
 
 test("with no client, or a client that cannot be read, there is no text by number either", () => {
@@ -301,4 +320,93 @@ test("with no client, or a client that cannot be read, there is no text by numbe
   assert.match(errors[0], /en-us texts are not where they are expected/);
   assert.equal(reads.length, readsAfter, "and not read again");
   assert.equal(words.status().everyMessageKept, false);
+});
+
+// ── a dialog by its name ─────────────────────────────────────────────────────
+//
+// The server names some of what it asks or refuses with as a dialog
+// ("ShipContrabandWarningUndock", the customs question), and the client's
+// dialog table says which two messages are that dialog's title and body
+// (eveCfg.GetMessage: msg.titleID, msg.bodyID, msg.dialogType, msg.suppressable).
+
+test("a dialog is its kind, whether it can be suppressed, and the client's title and body with their parameters left in", () => {
+  const { readFile } = fakeClient();
+  const words = createClientWords({ clientRoot: CLIENT, readFile });
+  // The body is a text no label names: a dialog's texts are kept without the whole language file.
+  assert.deepEqual(words.dialog("MadeUpQuestion"), { type: "question", suppressable: true, title: "A made-up title?", body: "A text no label names" });
+  assert.equal(words.status().everyMessageKept, false);
+  assert.deepEqual(words.dialog("OnlyABody"), { type: "notify", suppressable: false, title: null, body: "A made-up body, until {[datetime]when}." });
+  // A title and a body the language has no text for.
+  assert.deepEqual(words.dialog("NoWords"), { type: "warning", suppressable: false, title: null, body: null });
+  // Suppressed as an answer (ID_YES, ID_NO) is suppressable; false is not, whether said or left out.
+  assert.equal(words.dialog("AnsweredYes").suppressable, true);
+  assert.equal(words.dialog("NotSuppressed").suppressable, false);
+  assert.equal(words.dialog("OddlySuppressed").suppressable, false);
+  for (const missing of ["NoSuchDialog", "madeupquestion", "", 1, null, undefined, ["MadeUpQuestion"]]) {
+    assert.equal(words.dialog(missing), null, String(missing));
+  }
+  assert.deepEqual(words.dialogs(["OnlyABody", "NoSuchDialog", 7, null]), {
+    OnlyABody: { type: "notify", suppressable: false, title: null, body: "A made-up body, until {[datetime]when}." },
+    NoSuchDialog: null,
+  });
+  assert.deepEqual(words.dialogs("not a list"), {});
+  // What comes back is the caller's own: changing it changes nothing here.
+  words.dialog("MadeUpQuestion").title = "changed";
+  assert.equal(words.dialog("MadeUpQuestion").title, "A made-up title?");
+});
+
+test("a dialog asked for first is found, in the language asked for, and labels are found after it", () => {
+  const { readFile } = fakeClient();
+  const german = createClientWords({ clientRoot: CLIENT, language: "de", readFile });
+  assert.deepEqual(german.dialog("MadeUpQuestion"), { type: "question", suppressable: true, title: "Ein erfundener Titel?", body: null });
+  assert.equal(german.template("UI/Agents/StandardMission/DeclineMissionTitle"), "Ein erfundener Titel?");
+  assert.equal(german.status().dialogs, 6);
+});
+
+test("with no client there are no dialogs, and nothing is read", () => {
+  const { readFile, reads } = fakeClient();
+  const words = createClientWords({ clientRoot: null, readFile, onError: () => assert.fail("with no client there is nothing to fail at") });
+  assert.equal(words.dialog("MadeUpQuestion"), null);
+  assert.deepEqual(words.dialogs(["MadeUpQuestion"]), { MadeUpQuestion: null });
+  assert.deepEqual(reads, []);
+});
+
+test("a dialog table that cannot be read costs the dialogs and not the labels, and says why once", () => {
+  const broken = [
+    [{ [path.join(CLIENT, "tq", "resfileindex.txt")]: INDEX.split("\n").filter((line) => !line.includes("dialogs.static")).join("\n") }, /index has no res:\/staticdata\/dialogs\.static/],
+    [{ [path.join(CLIENT, "tq", "resfileindex.txt")]: INDEX.split("\n").filter((line) => !line.includes("dialogs.schema")).join("\n") }, /index has no res:\/staticdata\/dialogs\.schema/],
+    [{ [path.join(CLIENT, "ResFiles", "d1/dialogs-file")]: null }, /ENOENT/],
+    [{ [path.join(CLIENT, "ResFiles", "d1/dialogs-file")]: DIALOGS.subarray(0, DIALOGS.length - 3) }, /ends before a dict's footer size/],
+    [{ [path.join(CLIENT, "ResFiles", "d2/dialogs-schema")]: Buffer.from("type: vector3\n") }, /"vector3" node is not one this reader knows/],
+  ];
+  for (const [files, message] of broken) {
+    const { readFile, reads } = fakeClient(files);
+    const errors = [];
+    const words = createClientWords({ clientRoot: CLIENT, readFile, onError: (error) => errors.push(error.message) });
+    assert.equal(words.dialog("MadeUpQuestion"), null);
+    assert.deepEqual(words.dialogs(["OnlyABody"]), { OnlyABody: null });
+    // The labels and the numbered texts are there all the same.
+    assert.equal(words.template("UI/Agents/StandardMission/DeclineMissionTitle"), "A made-up title?");
+    const readsAfter = reads.length;
+    assert.equal(words.dialog("OnlyABody"), null);
+    assert.equal(errors.length, 1, "told once");
+    assert.match(errors[0], message);
+    assert.equal(reads.length, readsAfter, "and not read again");
+    const status = words.status();
+    assert.equal(status.loaded, true);
+    assert.equal(status.dialogs, 0);
+    assert.equal(status.worded, 3);
+    assert.match(status.error, message);
+    assert.equal(words.message(99), "A text no label names");
+  }
+});
+
+test("a client whose labels cannot be read has no dialogs either", () => {
+  const { readFile } = fakeClient({ [path.join(CLIENT, "ResFiles", "79/main-file")]: pickle("(dp1\nS'other'\np2\nI1\ns.") });
+  const errors = [];
+  const words = createClientWords({ clientRoot: CLIENT, readFile, onError: (error) => errors.push(error.message) });
+  assert.equal(words.dialog("MadeUpQuestion"), null);
+  assert.deepEqual(words.dialogs(["MadeUpQuestion"]), { MadeUpQuestion: null });
+  assert.equal(errors.length, 1);
+  assert.equal(words.status().dialogs, 0);
 });

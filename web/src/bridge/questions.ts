@@ -17,13 +17,23 @@
 // through POST /api/bridge/questions/:id/answer (src/gamePort/pilots.js).
 //
 // The server words a question with localisation labels, (labelID, parameters),
-// or a dialog's message ID, which only the retail client's own data turns into
-// text. The few it sends today are worded here, in this client's words; any
-// other label is shown as the label, which is at least true.
+// or a dialog's name with its parameters, which only the retail client's own
+// data turns into text. When the BFF has a client to read, the page has that
+// text and fills it in. The few the server sends today are also worded here,
+// in this client's words, for when it has not; any other label is shown as
+// the label, which is at least true.
 
 import type { ClientQuestion, QuestionAnswer, QuestionWords } from "../store/types.ts";
 import type { NameKind, NameRef } from "../store/names.ts";
-import { formatTemplate, plainText, templateNameRefs, type TemplateArguments } from "./clientWords.ts";
+import {
+  formatTemplate,
+  plainText,
+  prepareArguments,
+  templateNameRefs,
+  typedLabels,
+  typedNameRefs,
+  type TemplateArguments,
+} from "./clientWords.ts";
 import type { JsonValue } from "./wire.ts";
 
 /**
@@ -65,9 +75,13 @@ const finiteNumber = (value: JsonValue | undefined): number | null =>
 /**
  * The contraband list as customs sends it: (UE_LIST, [(UE_TYPEIDANDQUANTITY,
  * typeID, quantity), ...], separator). eveCfg.__prepdict's codes: 103 and 24.
+ * The entries come in a list ({type: "list", items}); a tuple of them is read
+ * too.
  */
 function contrabandOf(value: JsonValue | undefined): Array<{ typeID: number; quantity: number }> {
-  const list = Array.isArray(value) && value[0] === 103 && Array.isArray(value[1]) ? value[1] : [];
+  const given = Array.isArray(value) && value[0] === 103 ? value[1] : null;
+  const listed = given && typeof given === "object" && !Array.isArray(given) && given.type === "list" ? given.items : given;
+  const list = Array.isArray(listed) ? listed : [];
   const out: Array<{ typeID: number; quantity: number }> = [];
   for (const entry of list) {
     if (Array.isArray(entry) && entry[0] === 24) {
@@ -127,11 +141,16 @@ const LABEL_WORDS: Readonly<Record<string, Wording>> = Object.freeze({
 
 function decodeWords(value: JsonValue | undefined): QuestionWords {
   const record = (value && typeof value === "object" && !Array.isArray(value) ? value : {}) as Record<string, JsonValue>;
-  return {
+  const words = {
     label: typeof record.label === "string" ? record.label : null,
     parameters: record.parameters ?? null,
     text: typeof record.text === "string" ? record.text : null,
   };
+  // A dialog's title or body: both the name and which of the two, or neither.
+  const part = record.part === "title" || record.part === "body" ? record.part : null;
+  return typeof record.dialog === "string" && DIALOG_NAME.test(record.dialog) && part !== null
+    ? { ...words, dialog: record.dialog, part }
+    : words;
 }
 
 /** A `question` event off the pilot's stream, or null when it is not one this client can show. */
@@ -179,11 +198,24 @@ export function decodeQuestion(value: JsonValue | undefined): ClientQuestion | n
 /** Names with no cache behind them: the ID, said plainly. */
 const nameByID: NameOf = (kind, id) => `${kind} ${id}`;
 
+/** A dialog's name as the BFF takes one: letters, digits and underscores. */
+const DIALOG_NAME = /^\w{1,100}$/;
+
+/** The dialog and the part a words key names, or null when the key is a label or a message's number. */
+export function dialogOfKey(key: string): { name: string; part: "title" | "body" } | null {
+  const match = /^dialog:(\w{1,100})\/(title|body)$/.exec(key);
+  return match ? { name: match[1] as string, part: match[2] as "title" | "body" } : null;
+}
+
 /**
- * What some words are kept under in `store.words`: their label, or "#" and
- * their message's number. Null for plain text and for nothing.
+ * What some words are kept under in `store.words`: "dialog:", their dialog's
+ * name, a slash and "title" or "body"; or their label; or "#" and their
+ * message's number. Null for plain text and for nothing.
  */
 export function wordsKey(words: QuestionWords): string | null {
+  if (typeof words.dialog === "string" && (words.part === "title" || words.part === "body")) {
+    return `dialog:${words.dialog}/${words.part}`;
+  }
   if (words.label !== null) {
     return words.label;
   }
@@ -195,9 +227,18 @@ export function argumentsOf(value: unknown): TemplateArguments {
   return parametersOf(value);
 }
 
-/** A label's arguments: what the client adds, then what the server sent with it, which wins. */
-const argumentsFor = (words: QuestionWords, client: ClientWording): TemplateArguments =>
-  ({ ...(client.extra ?? {}), ...parametersOf(words.parameters) });
+/**
+ * A label's arguments: what the client adds, then what the server sent with
+ * it, which wins. A dialog's are prepared first as the client prepares them,
+ * its typed values turned to text (cfg.__prepdict).
+ */
+function argumentsFor(words: QuestionWords, client: ClientWording, nameOf: NameOf): TemplateArguments {
+  const given = parametersOf(words.parameters);
+  const sent = typeof words.dialog === "string"
+    ? prepareArguments(given, { nameOf, playerID: client.playerID ?? null, templates: client.templates })
+    : given;
+  return { ...(client.extra ?? {}), ...sent };
+}
 
 /**
  * What to show for a title, a body, a choice or an agent's line: its text;
@@ -212,7 +253,7 @@ export function questionText(words: QuestionWords, nameOf: NameOf = nameByID, cl
   const key = wordsKey(words);
   const template = client && key !== null ? client.templates[key] : null;
   if (typeof template === "string") {
-    return plainText(formatTemplate(template, argumentsFor(words, client as ClientWording), { nameOf, playerID: client?.playerID ?? null }));
+    return plainText(formatTemplate(template, argumentsFor(words, client as ClientWording, nameOf), { nameOf, playerID: client?.playerID ?? null }));
   }
   if (words.label === null && typeof words.messageID === "number") {
     // A mission's own text that the page does not have: its number, which is what the server sent.
@@ -228,13 +269,20 @@ export function questionText(words: QuestionWords, nameOf: NameOf = nameByID, cl
   return "";
 }
 
-/** The labels and message numbers among some words, as their keys, for the page to ask the client's text of. */
+/**
+ * The labels, message numbers and dialogs among some words, as their keys,
+ * for the page to ask the client's text of; and with a dialog, the labels its
+ * typed values are worded with.
+ */
 export function wordsLabels(all: ReadonlyArray<QuestionWords | null | undefined>): string[] {
   const keys: string[] = [];
   for (const words of all) {
     const key = words ? wordsKey(words) : null;
-    if (key !== null && !keys.includes(key)) {
-      keys.push(key);
+    const more = words && typeof words.dialog === "string" ? typedLabels(parametersOf(words.parameters)) : [];
+    for (const each of key === null ? more : [key, ...more]) {
+      if (!keys.includes(each)) {
+        keys.push(each);
+      }
     }
   }
   return keys;
@@ -250,7 +298,11 @@ export function wordsNameRefs(all: ReadonlyArray<QuestionWords | null | undefine
     const key = wordsKey(words);
     const template = client && key !== null ? client.templates[key] : null;
     if (typeof template === "string") {
-      refs.push(...templateNameRefs(template, argumentsFor(words, client as ClientWording), { playerID: client?.playerID ?? null }));
+      refs.push(...templateNameRefs(template, argumentsFor(words, client as ClientWording, nameByID), { playerID: client?.playerID ?? null }));
+      if (typeof words.dialog === "string") {
+        // What the dialog's typed values name: they are text by the time the template is filled.
+        refs.push(...typedNameRefs(parametersOf(words.parameters)));
+      }
       continue;
     }
     const parameters = parametersOf(words.parameters);

@@ -1420,9 +1420,11 @@ const DATACORE_KEYWORDS = {
     ["digits", 0],
   ].map(([name, value]) => [Buffer.from(name), value]),
 };
+// The contraband is (UE_LIST, a LIST of (UE_TYPEIDANDQUANTITY, typeID, quantity), separator): the client's
+// FormatConvert reads a tuple there as one more typed value, so only a list of entries can be worded.
 const CUSTOMS_QUESTION = [
   "ChtCustomsConfiscationConfirmation2",
-  { type: "dict", entries: [["contraband", [103, [[24, 3721, 10]], "<br>"]], ["empire", [2, 500001]]] },
+  { type: "dict", entries: [["contraband", [103, { type: "list", items: [[24, 3721, 10]] }, "<br>"]], ["empire", [2, 500001]]] },
 ];
 
 test("a research agent's choice of field goes to the user, and comes back as the radio button the client would name", async () => {
@@ -1516,10 +1518,20 @@ test("the customs question goes to the user for as long as the server will wait,
       service: "XmppChat",
       method: "AskYesNoQuestion",
       kind: "yesNo",
-      title: { label: null, parameters: null, text: null },
+      // The dialog by its name, for its title and for its body, each with the dialog's parameters. The
+      // name is the body's label too, for a page that has no client's words.
+      title: {
+        label: null,
+        dialog: "ChtCustomsConfiscationConfirmation2",
+        part: "title",
+        parameters: { type: "dict", entries: [["contraband", [103, { type: "list", items: [[24, 3721, 10]] }, "<br>"]], ["empire", [2, 500001]]] },
+        text: null,
+      },
       body: {
         label: "ChtCustomsConfiscationConfirmation2",
-        parameters: { type: "dict", entries: [["contraband", [103, [[24, 3721, 10]], "<br>"]], ["empire", [2, 500001]]] },
+        dialog: "ChtCustomsConfiscationConfirmation2",
+        part: "body",
+        parameters: { type: "dict", entries: [["contraband", [103, { type: "list", items: [[24, 3721, 10]] }, "<br>"]], ["empire", [2, 500001]]] },
         text: null,
       },
       agentID: null,

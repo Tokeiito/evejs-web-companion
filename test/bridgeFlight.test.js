@@ -173,6 +173,8 @@ async function startTestServer(options = {}) {
     eveGatewayClient: options.gateway || fakeGateway(),
     webAuth: fakeAuth(),
     staticData: fakeStaticData(),
+    // No retail client to read, whatever this machine has: the words are this client's own unless a test says otherwise.
+    clientWords: options.clientWords || { available: () => false, dialog: () => null },
     errorLogger() {},
     transitionReadyTimeoutMs: options.transitionReadyTimeoutMs,
     transitionPollMs: options.transitionPollMs,
@@ -1000,6 +1002,56 @@ test("a re-park is not retried into a session that no longer exists", async () =
 });
 
 // ── undocking with contraband aboard ─────────────────────────────────────────
+
+/** A retail client whose dialog table has the undock warning, with `body` for its text. */
+const clientWithWarning = (body) => {
+  const asked = [];
+  return {
+    asked,
+    available: () => true,
+    dialog(name) {
+      asked.push(name);
+      return name === "ShipContrabandWarningUndock" ? { type: "question", suppressable: true, title: "A made-up title", body } : null;
+    },
+  };
+};
+const namedRefusal = () => refusal({
+  message: "ShipContrabandWarningUndock",
+  refusal: { key: "ShipContrabandWarningUndock", values: { type: "dict", entries: [["item", [4, 34]]] } },
+});
+
+test("with a retail client to read, the warning is that client's own dialog, its item filled in and its markup taken out", async () => {
+  // A made-up body in the dialog's shape: one parameter, {item}, here twice, and the client's markup.
+  const clientWords = clientWithWarning("A made-up warning about <b>{item}</b>.<br><color=0xffff0000>Leave with {item}?</color>");
+  const { baseUrl } = await startTestServer({ gateway: gatewayWithContraband(namedRefusal), clientWords });
+  await selectOnServer(baseUrl);
+  const warned = await apiRequest(baseUrl, "/api/bridge/flight/undock", { method: "POST", body: {} });
+  assert.equal(warned.response.status, 409);
+  assert.equal(warned.payload.error, "CONTRABAND_WARNING");
+  assert.equal(warned.payload.message, "A made-up warning about Type 34.\nLeave with Type 34?");
+  assert.deepEqual(clientWords.asked, ["ShipContrabandWarningUndock"]);
+});
+
+test("a client's dialog that cannot be filled whole is not used: this client's own words stand in", async () => {
+  const OWN = "Your ship is carrying contraband (Type 34). Undock anyway?";
+  // Another parameter than the one the dialog is known to carry; a typed one; no body at all.
+  for (const body of ["About {item}, says {empire}.", "About {[item]item.name}.", null, 7]) {
+    const { baseUrl } = await startTestServer({ gateway: gatewayWithContraband(namedRefusal), clientWords: clientWithWarning(body) });
+    await selectOnServer(baseUrl);
+    const warned = await apiRequest(baseUrl, "/api/bridge/flight/undock", { method: "POST", body: {} });
+    assert.equal(warned.payload.message, OWN, String(body));
+  }
+  // The item is not known (the gateway's wording carries no values): the client's sentence has nothing to name.
+  const unnamed = gatewayWithContraband(() => refusal({ message: "ship.Undock was refused: ShipContrabandWarningUndock" }));
+  const { baseUrl } = await startTestServer({ gateway: unnamed, clientWords: clientWithWarning("About {item}.") });
+  await selectOnServer(baseUrl);
+  const warned = await apiRequest(baseUrl, "/api/bridge/flight/undock", { method: "POST", body: {} });
+  assert.equal(warned.payload.message, "Your ship is carrying contraband. Undock anyway?");
+  // A body with nothing to fill is the client's all the same.
+  const plain = await startTestServer({ gateway: gatewayWithContraband(namedRefusal), clientWords: clientWithWarning("A made-up warning.") });
+  await selectOnServer(plain.baseUrl);
+  assert.equal((await apiRequest(plain.baseUrl, "/api/bridge/flight/undock", { method: "POST", body: {} })).payload.message, "A made-up warning.");
+});
 //
 // The retail client's undock catches a refusal named ShipContrabandWarningUndock, asks OK / Cancel, and undocks
 // again with ignoreContraband set (eve/client/script/ui/station/base.py, _DoUndockAttempt).
@@ -1046,8 +1098,9 @@ test("an undock refused for contraband is a warning, with the item named, and th
   assert.equal(warned.response.status, 409);
   assert.equal(warned.payload.ok, false);
   assert.equal(warned.payload.error, "CONTRABAND_WARNING");
-  // The client's own sentence, with the item by the name this server's static data gives it (the test's own: "Type <id>").
-  assert.equal(warned.payload.message, "Your ship is carrying at least one item (Type 34) which is contraband somewhere. Are you sure you wish to undock?");
+  // With no retail client to read, this client's own words, the item by the name the static data gives it
+  // (the test's own: "Type <id>").
+  assert.equal(warned.payload.message, "Your ship is carrying contraband (Type 34). Undock anyway?");
 
   // Still docked, and not left half-way through an undock: the same pilot goes out when it says so.
   const status = await apiRequest(baseUrl, "/api/bridge/flight/status");
@@ -1066,7 +1119,7 @@ test("the warning is known by its name alone, and then names no item; any other 
   const warned = await apiRequest(first.baseUrl, "/api/bridge/flight/undock", { method: "POST", body: {} });
   assert.equal(warned.response.status, 409);
   assert.equal(warned.payload.error, "CONTRABAND_WARNING");
-  const UNNAMED = "Your ship is carrying at least one item which is contraband somewhere. Are you sure you wish to undock?";
+  const UNNAMED = "Your ship is carrying contraband. Undock anyway?";
   assert.equal(warned.payload.message, UNNAMED);
 
   // An item that is not a type by its ID names nothing either.
