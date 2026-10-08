@@ -79,6 +79,11 @@ Decisions taken in your place, and anything waiting on you. Overrule any of thes
 - **A third server fix is committed in eve.js and not pushed**: `624378554`, a No to the decline
   question. It sits on `main` beside whatever else is there, as you instructed for fixes.
 - **Test Two has an offer open** from Antaken Kamola (not accepted), left from the re-check.
+- **Test Three was moved and changed to prove the research questions**: it is docked at
+  Iyen-Oursta III - Roden Shipyards Factory (it was at Jita 4-4), has Science V and two research
+  skills at level 1, and three datacores. To get research points I edited the game store with
+  the server stopped (one project's start moved back 300 days; the project has since been
+  cancelled). The store as it was is kept in the scratchpad.
 - **A hosted courier bot stops at once on a pilot who already holds the mission**, on either
   transport: "There is no accepted mission naming cargo to load". Seen on 2026-10-08 with Test
   Two, on the gateway BFF and the game-port one alike. Not looked into further: it is the bot's
@@ -1651,6 +1656,73 @@ found a fault the tests had missed; this one may too.
    gate. Fix what that finds.
 2. **The retail client's words**: turn localisation labels into the client's own text, from the
    client's localisation data, for questions and for what agents say.
+3. **The scanner in space** on the game port (the one route that still answers 501 there).
+4. Module damage and weapon banks from dogma; health from godma as the panel reads it.
+5. **Collisions**; **the park beside the server's movement log**; the sim clock; MISSILE,
+   FORMATION, MUSHROOM.
+6. The call ledger (`ship.Undock`, `dogmaIM.Activate` and `Deactivate` to bind as the client
+   does), Phase 3's hosted check and the session-less gateway calls.
+
+---
+
+## 2026-10-08 — a research agent's boxes, seen live
+
+Commit `92dd023`, pushed (names for the agent buttons the page did not know). The questions'
+own code is unchanged from the entry above: **this run found no fault in it.**
+
+**Staging** (GM commands through the page's own session, and one edit of the game store):
+
+- Test Three, on the game port, moved to Iyen-Oursta III - Roden Shipyards Factory (`/tr me
+  60010387`), where Harcarin Angamuere (3009373) is a level 1 research agent with two fields.
+- Skills: both fields at level 1, and Science at level 5, which the server asks for before it
+  offers research at all (`/giveskill me <typeID> <level>`; without Science the agent says
+  "CharacterSkillsNotSufficient" and no box is raised).
+- Research points: a datacore costs 100 and a new project earns 4.8 a day, so to see the number
+  box I stopped the server, copied the game store aside (with its write-ahead log), moved the
+  project's start back 300 days in `researchRuntimeState`, and started the server again.
+
+**The run, in the browser** (the page's own requests recorded; the BFF's log beside them):
+
+| Pressed | The server asked | On the page | Answered | The BFF told the server | Then |
+|---|---|---|---|---|---|
+| Start Research | `agents.SingleChoiceBox` | "Choose a field of research", two radio buttons with the skills' names and level, the first selected, OK / Cancel | the second, OK | `[true,"radioboxOption2Selected"]` | "ResearchStarted"; the project in the game store is on the second field (11450) |
+| Buy Datacores | `agents.GetQuantity` | "Buy datacores", the datacore's name and price, a number field 1 to 14 showing 14, OK / Cancel | 15, then 2.5: refused on the page, nothing sent. Then 3, OK | `3` | "BoughtDatacores"; three datacores in the item hangar |
+| Cancel Research | `agents.YesNo` | "Cancel research" and its warning, Yes / No | No | `false` | research still running |
+| Cancel Research | `agents.YesNo` | the same | Yes | `true` | "ResearchCancelled"; Start Research offered again |
+
+Each press stayed in flight until its answer. The two that were timed finished 13 ms and 29 ms
+after their answers were sent.
+
+**Seen on the way, and what was done:**
+
+- **The page called a research agent's buttons "Action 12", "Action 13", "Action 14".** It knew
+  9 of the client's 19 button kinds. All 19 are named now (`appConst.agentDialogueButton*`),
+  with a test that was watched to fail.
+- **After a No to cancelling research the agent says "DatacoreInvalidInput".** That is the
+  server's choice of line for a No there (`researchDialogue.js`). I do not know what the retail
+  server says, so it is recorded and not called a defect.
+- **The server's log stamps the number box's call 1.95 s after the press**, and the answer was
+  sent twelve seconds after that. I did not record when the box reached the page in this run, so
+  I cannot say whether that stamp is late, as the Yes/No's was two entries ago, or true. The
+  brief's trap stands as written: do not time by that line.
+
+Suite: 8918 tests, 8893 pass, 0 fail, 24 skipped, 1 todo.
+
+**Not done:** the customs question is still unseen live. It needs a ship with a hold (Test Three
+is in a capsule), contraband in it, and a gate where customs scans.
+
+**Left as it is:** Test Three is docked at Iyen-Oursta III with Science V and two level 1
+research skills it did not have, three datacores, and no research project. The game store as it
+was before the edit is in the scratchpad (`gamestore.before-research-backdate.sqlite` with its
+`-wal` and `-shm`). The server is running, restarted twice this session.
+
+### Next
+
+1. **The customs question, live**: a ship with contraband through a gate customs scans. Fix what
+   that finds.
+2. **The retail client's words**: turn localisation labels into the client's own text, from the
+   client's localisation data, for questions and for what agents say (the conversation shows raw
+   labels such as "UI/Agents/Research/ResearchStarted" today).
 3. **The scanner in space** on the game port (the one route that still answers 501 there).
 4. Module damage and weapon banks from dogma; health from godma as the panel reads it.
 5. **Collisions**; **the park beside the server's movement log**; the sim clock; MISSILE,

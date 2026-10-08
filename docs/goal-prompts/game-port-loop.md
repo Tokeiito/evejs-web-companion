@@ -176,6 +176,14 @@ Take these defaults, and list each under "For the operator" in the log so they c
 - **The server's log stamps an outgoing client call late.** `[PKT] OUT agents YesNo()
   client-call` carried the time the answer arrived, seconds after the question was on the page.
   Do not time the server by that line; time what the client saw.
+- **Staging a pilot.** GM commands go through `POST /api/bridge/gm/slash {command, confirm:
+  true}` with a pilot selected: `/tr me <stationID>` moves it, `/giveskill me <typeID> <level>`
+  trains it, `/help` lists the rest. From the browser, send them with the page's own token
+  (`sessionStorage.evejs_web_poc_session`), or a script's login takes the pilot away from the
+  page. Server state the commands do not reach is in `_local/gameStore/gamestore.sqlite`, one
+  table per store with `key` and `json` columns: stop the server, copy the file **and its
+  `-wal` and `-shm`** aside (the server leaves the log unmerged when it stops), edit with
+  `node:sqlite`, start it again.
 - **The BFF runs one write per pilot at a time** (`CHARACTER_IN_USE`). Anything that must get
   through while a write is waiting on the server, as an answer to its question must, has to be
   let past that gate in `src/server.js`, and tested with a write in flight.
