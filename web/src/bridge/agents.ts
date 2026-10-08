@@ -278,13 +278,17 @@ export function decodeBriefing(
 // --- journal ---------------------------------------------------------------
 
 function decodeJournalRow(row: JsonValue): JournalMission {
-  // [missionState, ?, missionTypeLabel, missionTitleID, agentID, expiry(long),
-  //  bookmarks, ?, ?, missionID]
+  // As the client unpacks it (journal.py 686): [missionState, importantMission,
+  //  missionTypeLabel, missionNameID, agentID, expirationTime, bookmarks,
+  //  remoteOfferable, remoteCompletable, contentID]. The name is a message's
+  //  number, or text.
   const items = seqItems(row);
   return {
     missionState: toNumber(items[0]),
+    importantMission: items[1] === true || items[1] === 1,
     missionTypeLabel: typeof items[2] === "string" ? items[2] : null,
-    missionTitleID: toNumber(items[3]),
+    missionTitleID: typeof items[3] === "string" ? null : toNumber(items[3]),
+    missionTitle: typeof items[3] === "string" ? items[3] : null,
     agentID: toNumber(items[4]),
     expirationTime: toDecimalString(items[5]),
     missionID: toNumber(items[9]),

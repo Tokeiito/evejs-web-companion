@@ -271,6 +271,38 @@ test("decodeJournal buckets an OFFERED row (state 1) under offered, not active",
   assert.equal(journal.active[0]!.missionID, 666);
 });
 
+test("decodeJournal reads a row as the client unpacks it: whether it is important, and a name sent as text", () => {
+  // journal.py 686: missionState, importantMission, missionTypeLabel, missionNameID, agentID, expirationTime,
+  // bookmarks, remoteOfferable, remoteCompletable, contentID. The name is a message's number or text.
+  const row = (important: JsonValue, name: JsonValue): JsonValue => ({
+    type: "tuple",
+    items: [2, important, "UI/Agents/MissionTypes/Courier", name, 222, { type: "long", value: "135" }, { type: "list", items: [] }, 0, 0, 666],
+  });
+  const decoded = (important: JsonValue, name: JsonValue) =>
+    decodeJournal({ type: "tuple", items: [{ type: "list", items: [row(important, name)] }, { type: "list", items: [] }] }).active[0]!;
+  assert.deepEqual(decoded(0, 58607), {
+    missionState: 2,
+    importantMission: false,
+    missionTypeLabel: "UI/Agents/MissionTypes/Courier",
+    missionTitleID: 58607,
+    missionTitle: null,
+    agentID: 222,
+    expirationTime: "135",
+    missionID: 666,
+  });
+  assert.equal(decoded(1, 58607).importantMission, true);
+  assert.equal(decoded(true, 58607).importantMission, true);
+  for (const not of [false, null, 2, "1"] as JsonValue[]) {
+    assert.equal(decoded(not, 58607).importantMission, false, JSON.stringify(not));
+  }
+  const named = decoded(0, "A name as text");
+  assert.equal(named.missionTitle, "A name as text");
+  assert.equal(named.missionTitleID, null);
+  // Text that reads as a number is still text, not a message's number.
+  assert.equal(decoded(0, "58607").missionTitleID, null);
+  assert.equal(decoded(0, "58607").missionTitle, "58607");
+});
+
 test("decodeJournal reads tuples the game port gives as bare arrays", () => {
   // The gateway prints a tuple as {type:"tuple", items}; a decoded marshal
   // stream has no such wrapper, so the game port gives an array. Lists keep

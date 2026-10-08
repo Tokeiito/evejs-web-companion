@@ -1,0 +1,137 @@
+// The Agents & Missions panel, drawn with and without the retail client's own
+// words: the journal's lines and the mission's title above what the agent says.
+//
+// Rendered with Svelte's server generator, as panelFirstMount.test.ts does.
+// `$effect` does not run there, so what is asked of the BFF is tested where it
+// is decided (bridge/journalWords.test.ts); this pins what is DRAWN from what
+// the store holds. The templates are made up.
+
+import test from "node:test";
+import assert from "node:assert/strict";
+import { register } from "node:module";
+
+register("./svelteSsrHook.ts", import.meta.url);
+
+const { render } = await import("svelte/server");
+const { createClientStore } = await import("../store/clientStore.ts");
+const { filetimeOf } = await import("../bridge/journalWords.ts");
+const { default: Panel } = (await import("./AgentsMissions.svelte")) as { default: unknown };
+
+const NOW_MS = Date.UTC(2026, 9, 8, 14, 0, 0);
+const HOUR_TICKS = 36_000_000_000n;
+const AGENT = 3008416;
+const FOLDER = "UI/Journal/JournalWindow/Agents/";
+
+/** Runs `body` with the browser's clock stopped, since a journal line says how long is left. */
+function atFrozenClock<T>(body: () => T): T {
+  const realNow = Date.now;
+  Date.now = () => NOW_MS;
+  try {
+    return body();
+  } finally {
+    Date.now = realNow;
+  }
+}
+
+function fakeFlow(): unknown {
+  return new Proxy({}, { get: () => async () => {} });
+}
+
+const TEMPLATES: Record<string, string | null> = {
+  [`${FOLDER}StateOffered`]: "On offer",
+  [`${FOLDER}StateAccepted`]: "Taken",
+  [`${FOLDER}OfferExpiresIn`]: "Goes in {[timeinterval]expirationTime.shortWrittenForm}",
+  [`${FOLDER}MissionExpiresAtExact`]: "Ends at {[datetime]expirationTime, date=short, time=short}",
+  "UI/Agents/MissionTypes/Courier": "Carrying",
+  "#58607": "A Made-Up Errand to {[location]objectiveLocationSystemID.name}",
+  "#58700": "Another Errand",
+  "#129932": "Take it to {[location]objectiveLocationSystemID.name}.",
+};
+
+function panel(options: { words: boolean | "none of them"; talking: boolean }): string {
+  const store = createClientStore();
+  store.apply({ type: "names/resolved", entries: { [`agent:${AGENT}`]: "Antaken Kamola", "agent:3009999": "Some Other Agent", "system:30002780": "Muvolailen" } });
+  store.apply({
+    type: "agents/journal",
+    journal: {
+      offered: [{ missionState: 1, missionTypeLabel: "UI/Agents/MissionTypes/Courier", missionTitleID: 58607, agentID: AGENT, missionID: 2156, expirationTime: String(filetimeOf(NOW_MS) + 5n * HOUR_TICKS) }],
+      active: [{ missionState: 2, missionTypeLabel: "UI/Agents/MissionTypes/Courier", missionTitleID: 58700, agentID: 3009999, missionID: 2200, expirationTime: String(filetimeOf(Date.UTC(2026, 9, 10, 15, 30))) }],
+    },
+  });
+  if (options.talking) {
+    store.apply({
+      type: "agents/conversation",
+      agentID: AGENT,
+      conversation: {
+        agentSays: "129932",
+        agentSaysWords: { label: null, parameters: null, text: null, messageID: 129932 },
+        contentID: 2156,
+        actions: [],
+        lastActionInfo: { missionCompleted: null, missionDeclined: null, missionQuit: null, loyaltyPoints: null },
+      },
+    });
+    store.apply({ type: "agents/mission-keywords", key: `${AGENT}:2156`, keywords: { objectiveLocationSystemID: 30002780 } });
+  }
+  if (options.words === true) {
+    store.apply({ type: "words/loaded", available: true, templates: TEMPLATES });
+  } else if (options.words === "none of them") {
+    // Asked for, and the client has no text for any of it.
+    store.apply({ type: "words/loaded", available: true, templates: Object.fromEntries(Object.keys(TEMPLATES).map((key) => [key, null])) });
+  }
+  return atFrozenClock(() => render(Panel as never, { props: { store, flow: fakeFlow() } } as never).body);
+}
+
+/** The text of each journal line, in order. */
+const journalLines = (body: string): string[] =>
+  [...body.matchAll(/<li[^>]*>([^<]*)<\/li>/g)].map((match) => (match[1] as string).trim()).filter((line) => line.includes(" · "));
+
+test("with the client's words the journal's lines are the client's: state, agent, name, type, expiry", () => {
+  const body = panel({ words: true, talking: false });
+  assert.deepEqual(journalLines(body), [
+    "Taken · Some Other Agent · Another Errand · Carrying · Ends at 2026.10.10 15:30",
+    // A journal line's name is filled with nothing, as the client fills it: its tag shows nothing.
+    "On offer · Antaken Kamola · A Made-Up Errand to  · Carrying · Goes in 5h",
+  ]);
+});
+
+test("without the client's words the journal's lines are this client's, and no message number is shown", () => {
+  for (const words of [false, "none of them"] as const) {
+    const body = panel({ words, talking: false });
+    assert.deepEqual(journalLines(body), [
+      "Accepted · Some Other Agent · Courier · due by 2026.10.10 15:30",
+      "Offered · Antaken Kamola · Courier · open for another 5h",
+    ], String(words));
+    assert.doesNotMatch(body, /58607|58700/);
+  }
+  assert.doesNotMatch(panel({ words: "none of them", talking: true }), /mission-title/);
+});
+
+test("the mission's title stands above what the agent says, filled as the agent's own lines are", () => {
+  const body = panel({ words: true, talking: true });
+  const title = /<h3 class="mission-title[^"]*">([^<]*)<\/h3>/.exec(body);
+  assert.ok(title, "there is a title");
+  assert.equal(title[1], "A Made-Up Errand to Muvolailen");
+  // And it comes before the agent's line.
+  assert.ok(body.indexOf("mission-title") < body.indexOf("Take it to Muvolailen."));
+  // The same mission's line in the journal is still filled with nothing, conversation or no: the journal
+  // does not know the mission's keywords.
+  assert.ok(journalLines(body).includes("On offer · Antaken Kamola · A Made-Up Errand to  · Carrying · Goes in 5h"));
+});
+
+test("there is no title without the client's text for it, without a conversation, or for an agent with no mission", () => {
+  assert.doesNotMatch(panel({ words: false, talking: true }), /mission-title/);
+  assert.doesNotMatch(panel({ words: true, talking: false }), /mission-title/);
+
+  const store = createClientStore();
+  store.apply({ type: "words/loaded", available: true, templates: TEMPLATES });
+  store.apply({ type: "agents/journal", journal: { offered: [], active: [{ missionState: 2, missionTypeLabel: null, missionTitleID: 58700, agentID: 3009999, missionID: 2200, expirationTime: null }] } });
+  store.apply({
+    type: "agents/conversation",
+    agentID: AGENT,
+    conversation: { agentSays: "Hello.", agentSaysWords: { label: null, parameters: null, text: "Hello." }, contentID: null, actions: [], lastActionInfo: { missionCompleted: null, missionDeclined: null, missionQuit: null, loyaltyPoints: null } },
+  });
+  const body = atFrozenClock(() => render(Panel as never, { props: { store, flow: fakeFlow() } } as never).body);
+  assert.doesNotMatch(body, /mission-title/);
+  // That other agent's mission is in the journal all the same, with "Mission" where it has no type.
+  assert.match(body, /Taken · [^<]* · Another Errand · Mission · /);
+});

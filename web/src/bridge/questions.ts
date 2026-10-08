@@ -99,7 +99,31 @@ function contrabandOf(value: JsonValue | undefined): Array<{ typeID: number; qua
 const ownerOf = (value: JsonValue | undefined): number | null =>
   Array.isArray(value) && value[0] === 2 ? wholeNumber(value[1]) : null;
 
+/** This client's own words for a label, written as a template and filled the same way the client's are. */
+const own = (template: string): Wording => (parameters, nameOf) => formatTemplate(template, parameters, { nameOf });
+
+const JOURNAL = "UI/Journal/JournalWindow/Agents/";
+
 const LABEL_WORDS: Readonly<Record<string, Wording>> = Object.freeze({
+  // A mission's line in the journal (bridge/journalWords.ts says which the client picks).
+  [`${JOURNAL}StateOffered`]: "Offered",
+  [`${JOURNAL}StateAccepted`]: "Accepted",
+  [`${JOURNAL}StateFailed`]: "Failed",
+  [`${JOURNAL}StateOfferExpired`]: "Offer lapsed",
+  [`${JOURNAL}StateMissionExpired`]: "Overdue",
+  [`${JOURNAL}OfferExpiresAt`]: own("open until {[datetime]expirationTime, time=none}"),
+  [`${JOURNAL}OfferExpiresAtExact`]: own("open until {[datetime]expirationTime}"),
+  [`${JOURNAL}OfferExpiresIn`]: own("open for another {[timeinterval]expirationTime}"),
+  [`${JOURNAL}OfferDoesNotExpire`]: "open with no end",
+  [`${JOURNAL}OfferUndefinedExpiration`]: "no end given",
+  [`${JOURNAL}OfferExpired`]: "no longer open",
+  [`${JOURNAL}MissionExpiresAt`]: own("due by {[datetime]expirationTime, time=none}"),
+  [`${JOURNAL}MissionExpiresAtExact`]: own("due by {[datetime]expirationTime}"),
+  [`${JOURNAL}MissionExpiresIn`]: own("due in {[timeinterval]expirationTime}"),
+  [`${JOURNAL}MissionDoesNotExpire`]: "no deadline",
+  [`${JOURNAL}MissionUndefinedExpiration`]: "no deadline given",
+  [`${JOURNAL}MissionExpired`]: "past its deadline",
+  [`${JOURNAL}ImportantMission`]: own("{missionType} (important)"),
   "UI/Agents/StandardMission/DeclineMissionTitle": "Decline mission",
   "UI/Agents/StandardMission/DeclineMessage":
     "Decline this mission? Declining a second one from the same agent within four hours costs standing with them.",

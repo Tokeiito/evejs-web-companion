@@ -1149,8 +1149,12 @@ export interface CourierBriefing {
 /** One journal mission row (active or offered) from GetMyJournalDetails. */
 export interface JournalMission {
   readonly missionState: number | null;
+  /** Whether the server marks the mission important (the client then says so beside its type). */
+  readonly importantMission?: boolean;
   readonly missionTypeLabel: string | null;
   readonly missionTitleID: number | null;
+  /** The mission's name when the server sent text and not a message's number. */
+  readonly missionTitle?: string | null;
   readonly agentID: number | null;
   readonly missionID: number | null;
   readonly expirationTime: string | null;

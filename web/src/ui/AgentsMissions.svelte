@@ -19,6 +19,7 @@
   import MissionBot from "./MissionBot.svelte";
   import { panelErrorWords } from "../bridge/refusals.ts";
   import { questionText, wordsLabels, wordsNameRefs, type ClientWording } from "../bridge/questions.ts";
+  import { filetimeOf, journalRowAsks, journalRowText, journalRowWords } from "../bridge/journalWords.ts";
 
   let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
 
@@ -212,12 +213,55 @@
     return resolvedName($names.resolved, "system", id, "—");
   }
 
+  // A journal line as the retail client's journal words it: state, agent, the mission's name, its type, when
+  // it expires (bridge/journalWords.ts). The name and the type are the client's own text when the BFF has a
+  // client to read; without one the name is left out (it is only a message's number) and the type is the last
+  // part of its label. The time is this browser's clock, read when the line is drawn.
+  const journalClient = $derived<ClientWording>({ templates: $words.templates, playerID: $station.online?.characterID ?? null });
+  const hasWords = (key: string): boolean => typeof $words.templates[key] === "string";
   function missionLabel(mission: JournalMission): string {
-    const type = mission.missionTypeLabel ? mission.missionTypeLabel.split("/").pop() : "Mission";
-    // missionTitleID is a localization message id with no static name and no
-    // player value, so it is not rendered (R7d: drop nameless IDs).
-    return `${type} · ${agentName(mission.agentID)}`;
+    const row = journalRowWords(mission, filetimeOf(Date.now()));
+    const text = journalRowText(row, (words) => questionText(words, saysName, journalClient), hasWords);
+    return [text.state, agentName(mission.agentID), text.name, text.type || "Mission", text.expiration].filter((part) => part !== "").join(" · ");
   }
+  $effect(() => {
+    const journal = $agents.journal;
+    if (!journal) {
+      return;
+    }
+    const now = filetimeOf(Date.now());
+    const asks = [...journal.active, ...journal.offered].flatMap((mission) => journalRowAsks(journalRowWords(mission, now)));
+    const labels = wordsLabels(asks);
+    if (labels.length > 0) {
+      flow.requestWords(labels);
+    }
+  });
+
+  // The mission's title, which the client's agent window shows above what the agent says whenever there is a
+  // mission between the two (agentDialogueWindow.py _GetMissionTitleHTML): the title's message, filled like
+  // everything else the agent says about the mission. Its number comes with the mission's line in the journal
+  // (an agent has one mission with a pilot at a time). Shown only when the page has the client's text for it.
+  const talkTitleID = $derived.by<number | null>(() => {
+    const agentID = $agents.activeAgentID;
+    const journal = $agents.journal;
+    if (agentID === null || !journal) {
+      return null;
+    }
+    const row = [...journal.active, ...journal.offered].find((mission) => mission.agentID === agentID);
+    return row?.missionTitleID ?? null;
+  });
+  const titleText = (titleID: number | null, client: ClientWording): string =>
+    titleID !== null && titleID > 0 && hasWords(`#${titleID}`)
+      ? questionText({ label: null, parameters: null, text: null, messageID: titleID }, saysName, client)
+      : "";
+  const talkTitle = $derived(titleText(talkTitleID, saysClient));
+  const briefingTitle = $derived(titleText($agents.briefing?.missionTitleID ?? null, saysClient));
+  $effect(() => {
+    const ids = [talkTitleID, $agents.briefing?.missionTitleID ?? null].filter((id): id is number => id !== null && id > 0);
+    if (ids.length > 0) {
+      flow.requestWords(ids.map((id) => `#${id}`));
+    }
+  });
 </script>
 
 <section class="panel">
@@ -294,6 +338,9 @@
 {#if $agents.conversation}
   <section>
     <h2>Conversation · {agentName($agents.activeAgentID)}</h2>
+    {#if talkTitle}
+      <h3 class="mission-title">{talkTitle}</h3>
+    {/if}
     <p class="agent-says" style="white-space: pre-line">{saysText}</p>
     <p class="controls">
       {#each $agents.conversation.actions as action (action.actionID)}
@@ -320,7 +367,7 @@
 
 {#if $agents.briefing}
   <section>
-    <h2>Courier briefing</h2>
+    <h2>Courier briefing{briefingTitle ? ` · ${briefingTitle}` : ""}</h2>
     <table class="guests">
       <tbody>
         <tr><th>Cargo type</th><td>{resolvedName($names.resolved, "type", $agents.briefing.cargoTypeID, "—")}</td></tr>
