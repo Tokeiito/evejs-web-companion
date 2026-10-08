@@ -11,6 +11,7 @@
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
   import { panelErrorWords } from "../bridge/refusals.ts";
+  import { INDICATION_WORD_LABELS, indicationHeader, shipIndication } from "../space/actionIndication.ts";
 
   let { store, flow, isDocked }: { store: ClientStore; flow: AppFlow; isDocked: boolean } = $props();
 
@@ -22,6 +23,8 @@
   const space = store.space;
   // svelte-ignore state_referenced_locally
   const names = store.names;
+  // svelte-ignore state_referenced_locally
+  const words = store.words;
 
   let busy = $state(false);
   let error = $state("");
@@ -46,7 +49,14 @@
   const systemName = $derived($station.station?.solarSystemName ?? $flight.solarSystemName ?? null);
   const regionName = $derived($station.station?.regionName ?? null);
   const spaceSystem = $derived($flight.solarSystemName ?? null);
-  const shipMode = $derived($flight.status?.shipMode ?? null);
+  // What the ship is doing. When the snapshot says enough for the client's own rule (its mode, whom it
+  // follows, the range in its order) it is the client's word for it: "approaching", not the ball's FOLLOW.
+  // Otherwise the mode the flight status gives, as it comes.
+  const doing = $derived(shipIndication($space.snapshot));
+  const shipMode = $derived(doing !== null ? indicationHeader(doing.kind, $words.templates) : ($flight.status?.shipMode ?? null));
+  $effect(() => {
+    flow.requestWords(INDICATION_WORD_LABELS);
+  });
   const speedPct = $derived(
     $flight.status?.shipSpeedFraction != null ? Math.round($flight.status.shipSpeedFraction * 100) : null,
   );

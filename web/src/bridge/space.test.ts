@@ -236,6 +236,25 @@ test("rack heat decodes rack by rack, and what is not said is not known", () => 
   assert.deepEqual(ship({ high: 1.4, mid: -0.2, rig: 0.5 }).rackHeat, { high: 1, mid: 0 });
 });
 
+test("the range the ship was told to keep decodes as a distance, and is not known when it is not said", () => {
+  const ship = (followRange: unknown) =>
+    decodeSpaceSnapshot({
+      inSpace: true,
+      solarSystemID: 30000142,
+      shipID: 9001,
+      entities: [],
+      ship: { itemID: 9001, typeID: 606, ...(followRange === undefined ? {} : { followRange }) },
+    } as unknown as JsonValue).ship!;
+  assert.equal(ship(7500).followRange, 7500);
+  assert.equal(ship(0).followRange, 0);
+  assert.equal(ship(50.5).followRange, 50.5);
+  // Absent (the gateway's snapshot), null, less than nothing, or no number at all: not known.
+  assert.equal(ship(undefined).followRange, null);
+  assert.equal(ship(null).followRange, null);
+  assert.equal(ship(-1).followRange, null);
+  assert.equal(ship("far").followRange, null);
+});
+
 test("R23: the locked-target list decodes long-aware, and empties safely", () => {
   assert.deepEqual(
     decodeTargetIDs([50001248, { type: "long", value: "50001249" }] as unknown as JsonValue),

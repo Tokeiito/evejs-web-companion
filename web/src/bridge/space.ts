@@ -64,6 +64,12 @@ function ratioOrNull(value: JsonValue | undefined): number | null {
   return Math.min(1, Math.max(0, numeric));
 }
 
+/** A distance in metres that is a real number and not less than nothing, or null. */
+function rangeOrNull(value: JsonValue | undefined): number | null {
+  const numeric = floatOrNull(value);
+  return numeric === null || numeric < 0 ? null : numeric;
+}
+
 function stringOrNull(value: JsonValue | undefined): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
 }
@@ -229,6 +235,7 @@ function decodeShip(value: JsonValue | undefined): SpaceShipStatus | null {
     moduleDamage: decodeModuleDamage(raw.moduleDamage),
     weaponBanks: decodeWeaponBanks(raw.weaponBanks),
     rackHeat: decodeRackHeat(raw.rackHeat),
+    followRange: rangeOrNull(raw.followRange),
     miningBurstServices: decodeMiningBurstServices(raw.miningBurstServices),
     coreMobilityFuel: decodeCoreMobilityFuel(raw.coreMobilityFuel),
     moduleReach: decodeModuleReach(raw.moduleReach),

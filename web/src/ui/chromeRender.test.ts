@@ -625,3 +625,49 @@ test("the ship's line gives the distance between hulls to what it is acting on, 
   store.apply({ type: "words/loaded", available: true, templates: { "/Carbon/UI/Common/FormatDistance/fmtDistInMeters": "{distance} metres" } });
   assert.match(visibleText(renderHud(store)), new RegExp(`at ${(4500).toLocaleString()} metres`));
 });
+
+test("the ship's line says what the ship is doing as the client's HUD does: from its mode, whom it follows and the range in its order", () => {
+  const self = { itemID: SHIP_ID, isSelf: true, targetEntityID: 4242, name: null, typeID: SHIP_TYPE_ID, radius: 100, position: { x: 0, y: 0, z: 0 } };
+  const gun = { itemID: 4242, isSelf: false, targetEntityID: null, name: "Caldari Sentry Gun I", typeID: 1, radius: 400, position: { x: 44_000, y: 0, z: 0 } };
+  const line = (mode: string, followRange: number | null, templates: Record<string, string> = {}) => {
+    const store = inSpaceStore() as { apply: (event: unknown) => void };
+    store.apply({ type: "space/snapshot", snapshot: { ...SHIP_SNAPSHOT, entities: [self, gun], ship: { ...SHIP_SNAPSHOT.ship, mode, followRange, velocity: { x: 100, y: 0, z: 0 } } } });
+    if (Object.keys(templates).length > 0) store.apply({ type: "words/loaded", available: true, templates });
+    return (renderHud(store).match(/class="hud-head-state[^"]*"[^>]*>([^<]*)</) ?? [])[1]?.trim();
+  };
+  const grouped = (value: number) => value.toLocaleString();
+  // The game port's ship: an approach is the park's FOLLOW at 50 m, which used to read "Under way."
+  assert.equal(line("FOLLOW", 50), "Approaching Caldari Sentry Gun I");
+  assert.equal(line("FOLLOW", 2_500), `Holding range on Caldari Sentry Gun I, at ${grouped(2500)} m`);
+  // The range is the one in the order, not the 43.5 km the gun is off.
+  assert.equal(line("ORBIT", 5_000), `Orbiting Caldari Sentry Gun I, at ${grouped(5000)} m`);
+  // In the client's words when the page holds them.
+  assert.equal(
+    line("ORBIT", 5_000, { "UI/Inflight/Messages/OrbitingHeader": "In orbit", "UI/Inflight/Messages/OrbitingSubText": "{targetName} / {rangeText}" }),
+    `In orbit Caldari Sentry Gun I / ${grouped(5000)} m`,
+  );
+  // With no range in the snapshot (the gateway's), the line is the page's own as before.
+  assert.equal(line("ORBIT", null), "Orbiting Caldari Sentry Gun I at 44 km");
+  assert.equal(line("FOLLOW", null), "Under way.");
+});
+
+test("the header's word for what the ship is doing is the client's, not the ball's mode", () => {
+  const self = { itemID: SHIP_ID, isSelf: true, targetEntityID: 4242, name: null, typeID: SHIP_TYPE_ID, radius: 100, position: { x: 0, y: 0, z: 0 } };
+  const gun = { itemID: 4242, isSelf: false, targetEntityID: null, name: "Caldari Sentry Gun I", typeID: 1, radius: 400, position: { x: 44_000, y: 0, z: 0 } };
+  const header = (mode: string, followRange: number | null, flightMode: string, templates: Record<string, string> = {}) => {
+    const store = inSpaceStore() as { apply: (event: unknown) => void };
+    store.apply({ type: "flight/status", status: { inSpace: true, docked: false, solarSystemID: SYSTEM_ID, stationID: null, structureID: null, shipID: SHIP_ID, shipTypeID: null, shipIsCapsule: null, shipMode: flightMode, shipSpeedFraction: 1 } });
+    store.apply({ type: "space/snapshot", snapshot: { ...SHIP_SNAPSHOT, entities: [self, gun], ship: { ...SHIP_SNAPSHOT.ship, mode, followRange } } });
+    if (Object.keys(templates).length > 0) store.apply({ type: "words/loaded", available: true, templates });
+    return visibleText(renderHeader(store, false));
+  };
+  // An approach on the game port: the ball's mode is FOLLOW, and so is the flight status's word.
+  assert.match(header("FOLLOW", 50, "FOLLOW"), /Approaching · 100%/);
+  assert.equal(/FOLLOW/.test(header("FOLLOW", 50, "FOLLOW")), false);
+  // The snapshot is the fresher of the two: orbiting by it, while the flight status still says FOLLOW.
+  assert.match(header("ORBIT", 5_000, "FOLLOW"), /Orbiting · 100%/);
+  assert.match(header("ORBIT", 5_000, "FOLLOW", { "UI/Inflight/Messages/OrbitingHeader": "In orbit" }), /In orbit · 100%/);
+  // With no range in the snapshot there is nothing for the rule to go on: the flight status's word, as before.
+  assert.match(header("FOLLOW", null, "FOLLOW"), /FOLLOW · 100%/);
+  assert.match(header("GOTO", null, "GOTO"), /GOTO · 100%/);
+});

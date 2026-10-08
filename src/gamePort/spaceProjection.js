@@ -161,6 +161,7 @@ function projectSpace(park, { solarSystemID, shipID, readings = null }) {
   }
   const own = ego === null ? null : entities.find((row) => row.itemID === number(ego)) ?? null;
   if (own && readings) own.capacitorRatio = readings.capacitorRatio;
+  const egoBall = ego === null ? null : park.ballpark.ball(ego) ?? null;
   return {
     inSpace: true,
     solarSystemID,
@@ -173,6 +174,10 @@ function projectSpace(park, { solarSystemID, shipID, readings = null }) {
       typeID: own.typeID,
       name: own.name,
       mode: own.mode,
+      // The range the ship was told to follow or orbit at: with its mode and whom it follows, what the
+      // client's HUD says the ship is doing from (spaceMgr.GetHeaderAndSubtextForActionIndication). Null
+      // when it follows nothing.
+      followRange: own.targetEntityID !== null && egoBall ? egoBall.followRange : null,
       maxVelocity: own.maxVelocity,
       radius: own.radius,
       position: own.position,

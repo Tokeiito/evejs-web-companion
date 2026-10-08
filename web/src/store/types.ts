@@ -1799,6 +1799,13 @@ export interface SpaceShipStatus {
    */
   readonly weaponBanks: Readonly<Record<number, readonly number[]>> | null;
   /**
+   * The range the ship was told to follow or orbit at, in metres, when the
+   * transport says (the game port does: it is the ball's own). With the mode
+   * and whom the ship follows it is what the retail client's HUD words the
+   * ship's action from. Null or absent: not known, or it follows nothing.
+   */
+  readonly followRange?: number | null;
+  /**
    * How hot each rack is running, 0 to 1 of its heat capacity, as the retail
    * client's own heat gauges read it. Null when the transport does not say
    * (the gateway does not), which is not the same as cold.

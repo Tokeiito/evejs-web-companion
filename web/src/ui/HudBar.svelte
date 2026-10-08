@@ -26,6 +26,7 @@
   import { shipIsStopped, shipStateSentenceFor } from "./shipHud.ts";
   import { fmtDist, surfaceDistanceMeters } from "../space/overview.ts";
   import { distanceSay } from "../space/distanceWords.ts";
+  import { INDICATION_WORD_LABELS, actionIndication, indicationText } from "../space/actionIndication.ts";
   import { resolvedName } from "../store/names.ts";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
@@ -137,11 +138,11 @@
     const selfRow = ($space.snapshot?.entities ?? []).find((e) => e.itemID === ship?.itemID) ?? null;
     const targetID = selfRow?.targetEntityID ?? null;
     if (targetID === null) {
-      return { name: null as string | null, metres: null as number | null };
+      return { id: null as number | null, name: null as string | null, metres: null as number | null };
     }
     const target = ($space.snapshot?.entities ?? []).find((e) => e.itemID === targetID) ?? null;
     if (!target) {
-      return { name: null as string | null, metres: null as number | null };
+      return { id: targetID as number | null, name: null as string | null, metres: null as number | null };
     }
     const name =
       target.name && target.name.length > 0
@@ -149,15 +150,27 @@
         : resolvedName($names.resolved, "type", target.typeID, "");
     const from = ship?.position ?? null;
     return {
+      id: targetID as number | null,
       name: name.length > 0 ? name : null,
       // Hull to hull: what the ship keeps its range from is the other's surface, not its centre.
       metres: from ? surfaceDistanceMeters(from, ship?.radius ?? 0, target.position, target.radius) : null,
     };
   });
 
-  const stateText = $derived(
-    shipStateSentenceFor(ship, actedOn.name, actedOn.metres, (metres) => fmtDist(metres, 2, say)),
-  );
+  // What the ship is doing as the retail client's HUD says it: from the ship's own mode, whom it follows and
+  // the range it was told to keep. Only when the snapshot gives that range (the game port's does); otherwise
+  // the page's own sentence stands.
+  const indication = $derived(actionIndication(ship?.mode, actedOn.id, ship?.followRange));
+  const stateText = $derived.by(() => {
+    if (indication !== null && actedOn.name !== null) {
+      const text = indicationText(indication, actedOn.name, $words.templates, say);
+      return `${text.header} ${text.sub}`;
+    }
+    return shipStateSentenceFor(ship, actedOn.name, actedOn.metres, (metres) => fmtDist(metres, 2, say));
+  });
+  $effect(() => {
+    flow.requestWords(INDICATION_WORD_LABELS);
+  });
 
   /**
    * The refusal from the LAST press of Stop — "" when nothing went wrong.

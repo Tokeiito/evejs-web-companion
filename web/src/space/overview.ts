@@ -134,7 +134,8 @@ export function fmtDist(meters: number, maxDecimals = 2, say: DistanceSay = ownD
   }
   const dist = Math.max(0, meters);
   if (dist < 10_000) {
-    return say("m", dist === 0 || dist >= 1 ? figure(Math.round(dist)) : figure(dist, maxDecimals));
+    // Under a metre the decimals are kept; asked for none, the client cuts it to a whole number, which is nothing.
+    return say("m", dist === 0 || dist >= 1 ? figure(Math.round(dist)) : figure(maxDecimals === 0 ? Math.trunc(dist) : dist, maxDecimals));
   }
   if (dist < 10_000_000_000) {
     return say("km", figure(Math.round(dist / 1_000)));

@@ -475,6 +475,7 @@ test("FmtDist: whole metres under 10 km, whole kilometres under 10,000,000 km, A
   // Under a metre and not nothing, the decimals are kept; that is where it parts from the overview's column.
   assert.equal(fmtDist(0.5), "0.50 m");
   assert.equal(fmtDist(0.25, 1), "0.3 m");
+  assert.equal(fmtDist(0.9, 0), "0 m", "asked for no decimals, under a metre is cut to nothing, not rounded up");
   assert.equal(formatOverviewDistance(0.5), "1 m");
   assert.equal(fmtDist(1), "1 m");
   // Less than nothing is nothing; what is no number is not worded.
