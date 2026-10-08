@@ -4175,3 +4175,101 @@ of a retail kind that a game-port account still made over HTTP.
    of names checked.
 8. In the park, if a server ever sends a ball that needs them: MISSILE, FORMATION, MUSHROOM;
    a fixed ball's collision shapes and the partition's order.
+
+---
+
+## 2026-10-08 — Phase 3's hosted check: Ready Fit's Replenish on the game port
+
+Commits `9c6f087` and the one this entry is in, pushed.
+
+**What the check is.** The plan's last line for Phase 3: one hosted maintenance flow completes
+for a pilot on the game port, with nothing of that pilot's on the web gateway. The flow is
+Ready Fit's Replenish (the engine Provisioning Center Apply also runs): read a corporation
+fitting, look at the ship and at a source of stock, and move what is missing into the ship.
+
+**Staged**, with the store copied aside first: a corporation fitting for Test Pilot's
+corporation (its Reaper as fitted, and 200 rounds of ammunition in the cargo) and 500 rounds
+in its hangar.
+
+**What it showed, first run.** It worked: reviewed, replenished, complete. But the server's log
+had eight calls on the web gateway, all `corpFittingMgr.GetFittings`, asked on a session made
+up for a pilot who is not logged in, when the pilot was logged in on the game port and its
+client would ask that itself. And the hangar's roster, with no pilot held, was still asked of
+the gateway for an account on the game port: the last entry sent the creation screens'
+calls to the game port and missed the route the roster takes.
+
+**What the retail client does** (`fittingSvc.py` 420 to 431). It asks the manager for the
+owner, with the owner: `GetFittingMgr(ownerID).GetFittings(ownerID)`, where the owner is the
+session's character, corporation or alliance, and keeps the answer.
+
+**What was built.**
+
+- When the fitting provider is the pilot that is held, its corporation's fittings are asked
+  on its own session, with the owner. A provider nobody is flying is read as before. Its
+  session going during the read surfaces as for every held call.
+- The registry has `GetFittings` for the three managers: the owner is filled in from the
+  session where the BFF leaves it out, and a pilot in no alliance is marked as asking what
+  its client would not.
+- `/api/bridge/call` with no pilot held goes through the seam's `accountCall`:
+  `charUnboundMgr` for an account on the game port is asked there; everything else reaches
+  the gateway exactly as it did.
+
+**Proof.**
+
+- Tests: 12 new, 2 changed to say where each read is made. 56 ways of breaking the change,
+  all caught.
+- Suite: 9276 tests, 9252 pass, 0 fail, 24 skipped, 0 todo.
+- **In the browser, on the game port**, eve.js `10e2c22f4`, as Test Pilot in the page's Ready
+  Fit window: the fitting chosen, Review ("Equipment: VERIFIED · Supplies: MISSING", 0 of 200
+  aboard, 500 at the source), Replenish Consumables ("Replenishment: COMPLETE", 200 of 200,
+  300 at the source).
+- **The same flow by script on each transport, from the same staged store**, read from the
+  server's log of what arrived:
+
+  | | on the game port | on the web gateway |
+  |---|---|---|
+  | pilot on the game port | `List` 15, `corpFittingMgr GetFittings` 8 (1 argument), `ListByFlags` 6, `GetCapacity` 4, `Add` 1, the binds | the account-level reads of the plan's 2.3 and nothing else: no call, no bound call, no session |
+  | pilot on the gateway | nothing | 8 calls, 28 bound calls, 24 session reads |
+
+  The routes' answers (options, review, replenish, review again, hangar, cargo) were the same
+  on both, byte for byte, once the review's own name, deadline and session fingerprint were
+  masked.
+- **The roster, live**, with no pilot held: on the game-port BFF a connection, a login as
+  `test` and `charUnboundMgr GetCharacterSelectionData()`; on the gateway BFF a gateway call.
+  The two answers are the same once the two known differences of form are opened (a long as
+  text or as a number, a real wrapped or bare).
+- **The staging was undone**: the store was put back, and Test Pilot again has no fitting to
+  choose and only its ship in the hangar.
+
+**Not done.**
+
+- The client asks for a library once and keeps it, told of changes by `OnFittingAdded` and
+  `OnFittingDeleted`. The engine asks afresh at every step (eight times here), on purpose:
+  it will not move anything on a definition it has not just read.
+- A provider who is another character of the account is still read through the gateway, as
+  a pilot who is not logged in.
+- `invbroker.GetCapacity` is asked four times in the flow, and the client never asks it.
+- The corporation-hangar source and Provision Ship were not run on the game port.
+- The page's Ready Fit window had to be told "Refresh sources" after the pilot was switched.
+
+### Next
+
+1. The agent's window: laid out again on `OnAgentMissionChange` and a change of station;
+   the objectives of a mission that is not a courier; the mission's time under the agent's
+   line; messages inside messages when one turns up.
+2. The ledger's unread pairs, most called first: the inventory and wallet reads, then the
+   writes on `ship` and `dogmaIM`.
+3. The scanner the client's way: results kept from the server's word, a probe's destination
+   and range kept here and sent with the scan.
+4. Phase 3's writes, feature by feature, each set beside what the client sends (the plan's
+   last open line for the phase). The ledger says which are called most.
+5. Small, around dialogs: the title for a dialog's kind, the "do not ask again" box, the typed
+   codes not done.
+6. Small, in space: an overview row's speed columns the client's way; the bar the client
+   fills while a ship lines up for a warp; a warp ordered at a bookmark or a fleet member.
+7. Small, before a character is chosen: selecting on the account's own connection; the count
+   of names checked.
+8. Small, in Ready Fit: the capacity the client never asks for; the window following a change
+   of pilot.
+9. In the park, if a server ever sends a ball that needs them: MISSILE, FORMATION, MUSHROOM;
+   a fixed ball's collision shapes and the partition's order.

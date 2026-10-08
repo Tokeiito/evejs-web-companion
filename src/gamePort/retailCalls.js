@@ -169,7 +169,8 @@ function undocking(args, kwargs, context) {
 const fittingsOf = (owner, whose) => ([ownerID, ...rest], kwargs, context) => {
   const known = ownerID ?? context[owner] ?? null;
   if (known === null) return { args: [], kwargs, status: "differs", note: `The client asks only for an owner it has: this pilot has no ${whose}.` };
-  return { args: [known, ...rest], kwargs };
+  // With the owner named already, the call is the client's as it stands.
+  return { args: [known, ...rest], kwargs, status: ownerID === known ? "same" : "reshaped" };
 };
 
 const keyVal = (entries) => ({ type: "object", name: "util.KeyVal", args: { type: "dict", entries } });

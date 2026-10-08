@@ -192,15 +192,18 @@ The retail protocol only sees the logged-in character. Management needs more:
   structure's name looked up with no pilot held (`structureDirectory.GetStructureInfo`), a
   fleet's parking and delivery checks for each member (`structureDirectory.
   CheckMyDockingAccessToStructures`, `officeManager.GetMyCorporationsOffices`), a training
-  pilot's corporation fittings (`corpFittingMgr.GetFittings`), the corporation reads in training
-  onboarding and settings (`corpRegistry.*`), and whatever `/api/bridge/call` is asked while
-  the web session holds no pilot.
+  pilot's corporation fittings (`corpFittingMgr.GetFittings`), a fitting provider's when the
+  provider is not the pilot that is held, the corporation reads in training onboarding and
+  settings (`corpRegistry.*`), and whatever but `charUnboundMgr` `/api/bridge/call` is asked
+  while the web session holds no pilot.
 
 **What is not in that list** is what the retail client itself asks before a character is chosen.
 On its selection and creation screens it is logged in as the account and asks `charUnboundMgr`.
 For an account on the game port the BFF does the same (`accountCall`, the seam's tenth
 function): the creation tables, the roster, the name check and the creation itself, on one
-connection logged in as the account, closed five seconds after the last thing asked on it.
+connection logged in as the account, closed five seconds after the last thing asked on it. The
+hangar's roster (`GetCharacterSelectionData` through `/api/bridge/call` with no pilot held) goes
+the same way.
 
 ### 2.4 Authority that does not move
 
@@ -526,9 +529,12 @@ calls go over the retail protocol as the account (2.3).
 
 Not done yet in this phase:
 
-- One hosted maintenance flow on the game port. The flow this plan named, Provisioning Center
-  Apply, is deliberately unavailable on stock EveJS (`provisioning-center-apply.md`); Ready Fit's
-  Replenish on a selected session is the supported one and takes its place.
+- ~~One hosted maintenance flow on the game port.~~ Done 2026-10-08 (`9c6f087`). The flow this
+  plan named, Provisioning Center Apply, is deliberately unavailable on stock EveJS
+  (`provisioning-center-apply.md`); Ready Fit's Replenish on a selected session took its place.
+  It completed in the browser on the game port, and its answers were the gateway's to the byte;
+  the server's log showed nothing of that pilot's on the web gateway but the account-level reads
+  of 2.3.
 - The BFF's writes. Every write route goes through the same two functions, but what each sends
   has not been set beside what the retail client sends for it (list or tuple, text as str or
   unicode, keyword or positional). That is per feature, and is where the remaining fidelity work is.

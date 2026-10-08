@@ -419,8 +419,11 @@ test("saved fittings are asked of the owner's manager with the owner, as fitting
     assert.deepEqual(filled.args, [owner], service);
     assert.equal(filled.kwargs, null);
     assert.equal(filled.moniker, false);
-    // An owner that is given is the caller's to give.
-    assert.deepEqual(retailForm(service, "GetFittings", [7, "more"], { a: 1 }, context).args, [7, "more"]);
+    // An owner that is given is the caller's to give, and the call is then the client's as it stands.
+    const given = retailForm(service, "GetFittings", [7, "more"], { a: 1 }, context);
+    assert.deepEqual(given.args, [7, "more"]);
+    assert.equal(given.status, "same", service);
+    assert.equal(retailForm(service, "GetFittings", [null], null, context).status, "reshaped", "an owner of nothing is no owner");
     assert.deepEqual(retailForm(service, "GetFittings", [7], { a: 1 }, context).kwargs, { a: 1 });
   }
   // A pilot in no alliance: the client does not ask, and the BFF's call goes as it was.

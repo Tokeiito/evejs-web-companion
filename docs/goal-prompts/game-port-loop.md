@@ -254,6 +254,17 @@ Take these defaults, and list each under "For the operator" in the log so they c
   (`cfg.FormatConvert`). A list inside one must be sent as a list: the client reads a tuple there
   as one more typed value and raises. The bridge's JSON keeps the two apart (an array is a tuple,
   `{type: "list", items}` a list), so look at which one the server sent.
+- **Copying the store aside and putting it back** is one command in the loop's scratch folder:
+  `store.sh save <label>` and `store.sh restore <label>` stop EveJS, copy the three store
+  files, start it and wait for the gateway. It waits on the gateway BFF (26511), so that one
+  must be running. To set two transports side by side, save the staged state too, and restore
+  it before each run.
+- **A corporation fitting for a test pilot** (none manages its corporation's fittings):
+  `corpFittingMgr.SaveManyFittings` straight to the web gateway with `corprole` in the call's
+  session, which the gateway takes as given. Stock comes from `/giveitem <typeID> <amount>` on
+  the BFF's GM route, into the station hangar.
+- **The page's Ready Fit window keeps the pilot it was opened for.** After switching pilots,
+  press "Refresh sources" before looking for a fitting in it.
 - **A script that selects a pilot cannot just log out.** `POST /api/logout` answers 409
   `DRONE_RECOVERY_PENDING` until the script has said the pilot's drones are accounted for, as
   the page does: `POST /api/bridge/drone-recovery/ready {checkID}` with the
