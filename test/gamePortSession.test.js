@@ -414,6 +414,23 @@ test("a refusal rejects its own call with the server's words, and no other", { t
   assert.equal(session.pending.size, 0);
 });
 
+test("a call's keywords go out in the client's order, which differs between a service and a bound object", { timeout: 5000 }, async (context) => {
+  const { session, transport } = await loggedIn(context);
+  // A case the client's own interpreter orders differently on its two call paths.
+  const sample = oracle.keywords.find(({ written, viaFunction, viaObject }) => written.length <= 3 && viaFunction.join() !== viaObject[0].join());
+  assert.ok(sample, "the oracle holds such a case");
+  const kwargs = Object.fromEntries(sample.written.map((name, index) => [name, index + 10]));
+  const sentKeywords = () => lastCall(transport).kwargs.entries.map(([name, value]) => [text(name), value]);
+  const expected = (order) => order.map((name) => [name, name === "machoVersion" ? 1 : kwargs[name]]);
+
+  session.call("config", "WithKeywords", [], kwargs).catch(() => {});
+  assert.deepEqual(sentKeywords(), expected(sample.viaFunction), "a service's method is a plain function");
+  session.callBound("N=65450:9", "WithKeywords", [], kwargs).catch(() => {});
+  assert.deepEqual(sentKeywords(), expected(sample.viaObject[0]), "a bound object's method is an object with __call__");
+  session.proxyCall("machoNet", "WithKeywords", [], { type: "dict", entries: Object.entries(kwargs) }).catch(() => {});
+  assert.deepEqual(sentKeywords(), expected(sample.viaFunction), "keywords given as a dict are treated the same");
+});
+
 test("closing rejects every unanswered call and stops the background work", { timeout: 5000 }, async (context) => {
   const time = manualTime();
   const { session, transport } = await loggedIn(context, { session: { now: time.now, timers: time.timers } });

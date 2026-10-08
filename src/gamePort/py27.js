@@ -1,11 +1,11 @@
 "use strict";
 
-// The parts of CPython 2.7 that decide what the retail client's bytes look like.
+// The parts of CPython 2.7 that decide what the retail client's packets hold.
 //
 // The retail client is Python (Stackless 2.7.1, 64-bit Windows). When it sends a
 // dict, the entries go out in the dict's own iteration order, and that order is
 // a product of CPython's string hash and its open-addressing table. To send the
-// same bytes we have to reproduce both.
+// same entries in the same order we have to reproduce both.
 //
 // Everything here is checked against the client's own python27.dll: see
 // scripts/py27-oracle.py and test/gamePortPy27.test.js.
@@ -69,58 +69,106 @@ function hashKey(key) {
   throw new TypeError(`No Python 2.7 hash is implemented for a ${typeof key} key.`);
 }
 
-/** The slot CPython's lookdict settles on for a hash in a table with no deletions. */
-function findSlot(table, hash) {
+/** Two keys are the same dict key: 5 and 5L are, 5 and "5" are not. */
+const sameKey = (a, b) => (typeof a === "string" || typeof b === "string" ? a === b : BigInt(a) === BigInt(b));
+
+/** lookdict: the slot holding `key`, or the empty slot it would go in. No deletions. */
+function findSlot(table, hash, key) {
   const mask = BigInt(table.length - 1);
   // `perturb` is a size_t: a negative hash is sign-extended to 64 bits, then unsigned.
   let perturb = BigInt.asUintN(64, BigInt(hash));
   let index = perturb & mask;
-  while (table[Number(index)] !== undefined) {
-    index = BigInt.asUintN(64, index * 5n + perturb + 1n);
+  for (;;) {
+    const entry = table[Number(index)];
+    if (entry === undefined || (entry.hash === hash && sameKey(entry.key, key))) return Number(index);
+    index = BigInt.asUintN(64, index * 5n + perturb + 1n) & mask;
     perturb >>= PERTURB_SHIFT;
-    index &= mask;
   }
-  return Number(index);
 }
 
+/** dictresize: the smallest power of two above `minimumUsed`, refilled in slot order. */
 function resized(table, minimumUsed) {
   let size = MIN_TABLE_SIZE;
   while (size <= minimumUsed) size *= 2;
   const next = new Array(size);
   for (const entry of table) {
-    if (entry !== undefined) next[findSlot(next, entry.hash)] = entry;
+    if (entry !== undefined) next[findSlot(next, entry.hash, entry.key)] = entry;
   }
   return next;
 }
 
 /**
+ * A CPython 2.7 dict, as far as its key order goes. Keys only; no deletions.
+ */
+class Dict {
+  constructor() {
+    this.table = new Array(MIN_TABLE_SIZE);
+    this.used = 0;
+  }
+
+  /**
+   * A dict display, `{k1: v, k2: v, ...}`: BUILD_MAP allocates the table for
+   * the number of entries written when there are more than five.
+   */
+  static literal(keys) {
+    const dict = new Dict();
+    if (keys.length > 5) dict.table = resized(dict.table, keys.length);
+    for (const key of keys) dict.set(key);
+    return dict;
+  }
+
+  _insert(key, hash) {
+    const slot = findSlot(this.table, hash, key);
+    if (this.table[slot] === undefined) this.used += 1;
+    this.table[slot] = { key, hash };
+  }
+
+  /** d[key] = value: PyDict_SetItem, which grows the table when it is two-thirds full. */
+  set(key) {
+    const before = this.used;
+    this._insert(key, hashKey(key));
+    if (this.used > before && this.used * 3 >= this.table.length * 2) {
+      this.table = resized(this.table, (this.used > 50000 ? 2 : 4) * this.used);
+    }
+    return this;
+  }
+
+  /**
+   * d.copy(), and so copy.copy(d): PyDict_Merge into a new dict. One resize up
+   * front if it will be needed, then the entries in the source's slot order,
+   * with no growth check as they go in.
+   *
+   * ⚠ The resize is to FOUR times the entry count in the client's interpreter
+   * (measured: a 6-entry copy has 32 slots, an 8-entry one 64). Reading the
+   * CPython source from memory says two; the interpreter says four.
+   */
+  copy() {
+    const copy = new Dict();
+    if (this.used === 0) return copy;
+    if (this.used * 3 >= copy.table.length * 2) copy.table = resized(copy.table, this.used * 4);
+    for (const entry of this.table) {
+      if (entry !== undefined) copy._insert(entry.key, entry.hash);
+    }
+    return copy;
+  }
+
+  /** The keys in iteration order: slot order. */
+  keys() {
+    return this.table.filter((entry) => entry !== undefined).map((entry) => entry.key);
+  }
+}
+
+/**
  * The order CPython 2.7 iterates a dict built by inserting `keys` in order.
  *
- * `presized` is the number of entries a dict LITERAL was written with: a
- * `{...}` display of more than five entries allocates its table up front
- * (BUILD_MAP), which changes where entries land. Pass 0 for a dict that began
- * empty (`{}`, `dict()`, keyword arguments).
- *
- * Covers insertion only. A dict that had entries deleted, or was built by
- * copy() or update() from another dict, lays itself out differently.
+ * `presized` is the number of entries a dict LITERAL was written with. Pass 0
+ * for a dict that began empty (`{}`, `dict()`).
  */
 function dictOrder(keys, { presized = 0 } = {}) {
-  let table = new Array(MIN_TABLE_SIZE);
-  if (presized > 5) table = resized(table, presized);
-  let used = 0;
-  const seen = new Set();
-  for (const key of keys) {
-    const identity = `${typeof key === "string" ? "s" : "i"}:${key}`;
-    if (seen.has(identity)) continue;
-    seen.add(identity);
-    const hash = hashKey(key);
-    table[findSlot(table, hash)] = { key, hash };
-    used += 1;
-    if (used * 3 >= table.length * 2) {
-      table = resized(table, (used > 50000 ? 2 : 4) * used);
-    }
-  }
-  return table.filter((entry) => entry !== undefined).map((entry) => entry.key);
+  if (presized > 5) return Dict.literal(keys).keys();
+  const dict = new Dict();
+  for (const key of keys) dict.set(key);
+  return dict.keys();
 }
 
 /** `entries` ([key, value] pairs in insertion order) in CPython 2.7 iteration order. */
@@ -129,4 +177,42 @@ function orderEntries(entries, options) {
   return dictOrder(entries.map(([key]) => key), options).map((key) => byKey.get(key));
 }
 
-module.exports = { dictOrder, hashKey, hashLong, hashString, orderEntries };
+/**
+ * The order a remote call's keywords go out in, given the order they were
+ * written at the call site: `thing.Method(a, first=1, second=2)`.
+ *
+ * Every step below makes a new dict, and a new dict can order two keys that
+ * want the same slot differently, so the steps have to be the client's own:
+ *
+ *   via "function"  A remote SERVICE's method is a plain function
+ *                   (MachoServiceConnection.__getattr__ returns a closure). The
+ *                   interpreter fills its **kwargs in the order written.
+ *   via "object"    A BOUND OBJECT's method is an object with __call__
+ *                   (MachoObjectCallWrapper). The interpreter first collects
+ *                   the keywords by popping its stack, LAST one first, and then
+ *                   fills __call__'s **kwargs from that dict's order.
+ *
+ * Either way the GPCS layer then copies the dict (copy.copy) and adds
+ * machoVersion. `hops` is for a path with further **keywords functions in it;
+ * the client's own two paths have none.
+ */
+function keywordOrder(written, { via = "function", hops = 0, added = ["machoVersion"] } = {}) {
+  let dict = new Dict();
+  if (via === "object") {
+    const collected = new Dict();
+    for (const key of [...written].reverse()) collected.set(key);
+    for (const key of collected.keys()) dict.set(key);
+  } else {
+    for (const key of written) dict.set(key);
+  }
+  for (let hop = 0; hop < hops; hop += 1) {
+    const next = new Dict();
+    for (const key of dict.keys()) next.set(key);
+    dict = next;
+  }
+  const sent = dict.copy();
+  for (const key of added) sent.set(key);
+  return sent.keys();
+}
+
+module.exports = { Dict, dictOrder, hashKey, hashLong, hashString, keywordOrder, orderEntries };

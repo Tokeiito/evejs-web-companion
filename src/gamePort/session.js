@@ -33,7 +33,7 @@ const {
   TYPE, anyAddress, buildPacket, clientAddress, dictGet, integer, nodeAddress, parsePacket, text, unwrapSubstream,
 } = require("./packets");
 const { caseFold, cryptoHash, passwordHash, randomBytes } = require("./placebo");
-const { orderEntries } = require("./py27");
+const { keywordOrder, orderEntries } = require("./py27");
 
 /** What the client says it is. From the client's start.ini and GPS.py. */
 const RETAIL_CLIENT = Object.freeze({
@@ -407,8 +407,13 @@ class GamePortSession {
     }
     const callID = this.nextCallID;
     this.nextCallID += 1;
-    // Every call's keywords carry machoVersion, 1 unless a cached answer says otherwise.
-    const keywords = dict([...(kwargs && kwargs.type === "dict" ? kwargs.entries : Object.entries(kwargs ?? {})), ["machoVersion", 1]]);
+    // Every call's keywords carry machoVersion, 1 unless a cached answer says
+    // otherwise, and go out in the order the client's own dict would hold them:
+    // a service's method and a bound object's method build that dict differently.
+    const written = new Map(kwargs && kwargs.type === "dict" ? kwargs.entries : Object.entries(kwargs ?? {}));
+    written.set("machoVersion", 1);
+    const names = [...written.keys()].filter((name) => name !== "machoVersion");
+    const keywords = dict(keywordOrder(names, { via: boundObject === null ? "function" : "object" }).map((name) => [name, written.get(name)]));
     // ObjectCallGPCS: (0, pickle((1, method, args, kw))) for a service,
     // (1, pickle((objectID, method, args, kw))) for a bound object.
     const body = boundObject === null

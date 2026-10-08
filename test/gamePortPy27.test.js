@@ -8,7 +8,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { dictOrder, hashKey } = require("../src/gamePort/py27");
+const { Dict, dictOrder, hashKey, keywordOrder } = require("../src/gamePort/py27");
 const oracle = require("./fixtures/py27Oracle.json");
 
 /** "s:name" -> "name"; "i:123" -> 123, or a BigInt when a number would lose digits. */
@@ -52,6 +52,39 @@ test("the two ways of building a dict really do differ, so both are being tested
   assert.ok(differing.length > 5, `only ${differing.length} of ${oracle.dicts.length} cases tell them apart`);
   // The login dict is one of them: getting this wrong reorders the login packet.
   assert.notDeepEqual(oracle.dicts[0].literal, oracle.dicts[0].inserted);
+});
+
+test("a call's keywords go out in the client's order, by either of its two call paths", () => {
+  assert.ok(oracle.keywords.length > 400);
+  for (const { written, viaFunction, viaObject } of oracle.keywords) {
+    // A remote service's method is a plain function; a bound object's is an object with __call__.
+    assert.deepEqual(keywordOrder(written, { via: "function" }), viaFunction, `function: ${written}`);
+    assert.deepEqual(keywordOrder(written, { via: "object" }), viaObject[0], `object: ${written}`);
+    // And with one or two more **keywords functions on the way down.
+    assert.deepEqual(keywordOrder(written, { via: "object", hops: 1 }), viaObject[1], `object+1: ${written}`);
+    assert.deepEqual(keywordOrder(written, { via: "object", hops: 2 }), viaObject[2], `object+2: ${written}`);
+  }
+});
+
+test("the two call paths, and the number of layers, really do change the order", () => {
+  const pathsDiffer = oracle.keywords.filter(({ viaFunction, viaObject }) => viaFunction.join() !== viaObject[0].join());
+  const layersDiffer = oracle.keywords.filter(({ viaObject }) => viaObject[0].join() !== viaObject[1].join());
+  assert.ok(pathsDiffer.length > 20, `paths differ in ${pathsDiffer.length}`);
+  assert.ok(layersDiffer.length > 20, `layers differ in ${layersDiffer.length}`);
+  // And most calls with keywords do not go out in the order they were written.
+  const reordered = oracle.keywords.filter(({ written, viaFunction }) => [...written, "machoVersion"].join() !== viaFunction.join());
+  assert.ok(reordered.length > oracle.keywords.length / 2);
+});
+
+test("a copied dict has the table size the client's interpreter gives it", () => {
+  // Measured in the client's python27.dll with sys.getsizeof: copying n entries
+  // gives 8 slots up to five, then 32, 64, 128.
+  const slots = (count) => {
+    const dict = new Dict();
+    for (let key = 0; key < count; key += 1) dict.set(key);
+    return dict.copy().table.length;
+  };
+  assert.deepEqual([0, 1, 5, 6, 7, 8, 15, 16, 31, 32].map(slots), [8, 8, 8, 32, 32, 64, 64, 128, 128, 256]);
 });
 
 test("a key with no Python 2.7 hash here is refused, not guessed", () => {

@@ -37,6 +37,7 @@ const {
   dictValue,
   numberOf,
 } = require("./gameClient");
+const { orderEntries } = require("./gamePort/py27");
 
 /** invGroups 1025, Planetary Customs Offices - both InterBus and anchored. */
 const GROUP_PLANETARY_CUSTOMS_OFFICES = 1025;
@@ -198,9 +199,11 @@ async function exportPlannedColonies(client, plan, { log = () => {} } = {}) {
       }
       const office = await client.bind("invbroker", [officeID]);
       for (const pad of entry.pads) {
+        // The retail client builds this dict with a comprehension and sends it
+        // in its own dict order, which is not ascending type ID.
         const commodities = {
           type: "dict",
-          entries: Object.entries(pad.commodities).map(([typeID, quantity]) => [Number(typeID), quantity]),
+          entries: orderEntries(Object.entries(pad.commodities).map(([typeID, quantity]) => [Number(typeID), quantity])),
         };
         // (spaceportPinID, import, export, taxRate) - import stays empty: this
         // hop only ever sends goods UP.

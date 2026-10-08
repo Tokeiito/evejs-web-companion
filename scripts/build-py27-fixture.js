@@ -83,6 +83,25 @@ const FOLD_INPUTS = ["RRFarmer", "test2", "MiXeD_Case-99"];
 /** A string as a Python 2.7 unicode literal, ASCII only in the source. */
 const pyUnicode = (value) => `u'${[...value].map((char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`).join("")}'`;
 
+/**
+ * Keyword sets for a remote call, in the order written at the call site. Small
+ * sets from a small alphabet, so that keys often want the same slot.
+ */
+function keywordCases() {
+  const next = generator(8675309);
+  const real = ["passive", "machoTimeout", "flag", "qty", "locationID", "ownerID", "itemID", "typeID", "force", "name"];
+  const sets = [["passive"], ["machoTimeout"], ["flag", "qty"], ["passive", "machoTimeout"], real.slice(0, 5), real];
+  for (let index = 0; index < 400; index += 1) {
+    const count = 1 + next(7);
+    const keys = new Set();
+    while (keys.size < count) {
+      keys.add(next(3) === 0 ? real[next(real.length)] : `k${"abcdefgh"[next(8)]}${next(40)}`);
+    }
+    sets.push([...keys]);
+  }
+  return sets;
+}
+
 /** A key as Python 2.7 source. */
 const literal = (key) => (typeof key === "string" ? JSON.stringify(key) : String(key));
 /** A key as the fixture writes it: "s:name" or "i:123", exact for any integer. */
@@ -131,6 +150,40 @@ function snippet(sets) {
     "        return casefold(s2)",
     "    return s2",
   );
+  // A remote call's keywords, through the same kind of layers the client's
+  // call wrappers put them through: an object with __call__, then zero, one or
+  // two functions taking **keywords, then a copy with machoVersion added.
+  lines.push(
+    "def bottom(keywords):",
+    "    if keywords:",
+    "        kw2 = keywords.copy()",
+    "    else:",
+    "        kw2 = {}",
+    "    if kw2.get('machoVersion', None) is None:",
+    "        kw2['machoVersion'] = 1",
+    "    return chr(31).join(kw2.keys())",
+    "def hop1(*args, **keywords):",
+    "    return bottom(keywords)",
+    "def hop2(*args, **keywords):",
+    "    return hop1(*args, **keywords)",
+    "class Wrapper0:",
+    "    def __call__(self, *args, **keywords):",
+    "        return bottom(keywords)",
+    "class Wrapper1:",
+    "    def __call__(self, *args, **keywords):",
+    "        return hop1(*args, **keywords)",
+    "class Wrapper2(object):",
+    "    def __call__(self, *args, **keywords):",
+    "        return hop2(*args, **keywords)",
+    "w0 = Wrapper0(); w1 = Wrapper1(); w2 = Wrapper2()",
+    // A plain function, which is what a remote SERVICE's method is in the client.
+    "def function0(*args, **keywords):",
+    "    return bottom(keywords)",
+  );
+  for (const keys of keywordCases()) {
+    const call = `(1, ${keys.map((key) => `${key}=0`).join(", ")})`;
+    lines.push(`out('kw ' + w0${call} + chr(30) + w1${call} + chr(30) + w2${call} + chr(30) + function0${call})`);
+  }
   for (const hex of CRC_INPUTS) {
     lines.push(`out('crc ${hex} %d' % binascii.crc_hqx(binascii.unhexlify('${hex}'), 0))`);
   }
@@ -167,8 +220,10 @@ function main(argv = process.argv.slice(2)) {
     crc: [],
     passwordHashes: [],
     caseFolds: [],
+    keywords: [],
   };
   const orders = { literal: [], inserted: [] };
+  const keywordSets = keywordCases();
   for (const raw of output.split("\n")) {
     const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
     const space = line.indexOf(" ");
@@ -185,6 +240,11 @@ function main(argv = process.argv.slice(2)) {
     } else if (kind === "pw") {
       // [userName, password] as UTF-16LE hex, then the 20-byte digest as hex.
       fixture.passwordHashes.push(rest.split(" "));
+    } else if (kind === "kw") {
+      // The same call made on an object with __call__ whose keywords then pass
+      // through no, one and two more functions, and made on a plain function.
+      const [object0, object1, object2, viaFunction] = rest.split(String.fromCharCode(30)).map((order) => order.split(SEPARATOR));
+      fixture.keywords.push({ written: keywordSets[fixture.keywords.length], viaObject: [object0, object1, object2], viaFunction });
     } else if (kind === "fold") {
       fixture.caseFolds.push(rest.split(" "));
     } else if (kind === "literal" || kind === "inserted") {
@@ -200,12 +260,12 @@ function main(argv = process.argv.slice(2)) {
     inserted: orders.inserted[index],
   }));
   fs.writeFileSync(OUTPUT, `${JSON.stringify(fixture)}\n`, "utf8");
-  if (fixture.crc.length !== CRC_INPUTS.length || fixture.passwordHashes.length !== PASSWORD_INPUTS.length) {
+  if (fixture.crc.length !== CRC_INPUTS.length || fixture.passwordHashes.length !== PASSWORD_INPUTS.length || fixture.keywords.length !== keywordSets.length) {
     throw new Error("The oracle did not answer every CRC and password case.");
   }
   console.log(
     `Recorded ${fixture.hashes.length} hashes, ${fixture.dicts.length} dicts, ${fixture.crc.length} CRCs and ` +
-      `${fixture.passwordHashes.length} password hashes from ${fixture.interpreter}`,
+      `${fixture.passwordHashes.length} password hashes, plus ${fixture.keywords.length} keyword calls, from ${fixture.interpreter}`,
   );
 }
 

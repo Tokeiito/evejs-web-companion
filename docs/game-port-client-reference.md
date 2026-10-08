@@ -66,6 +66,7 @@ password, which is how H10 is tied to a real client login.
 | P4 | A bound object's call goes to `node(nodeID)` with no service; body is `(1, pickle((objectID, method, args, kw)))` | S, L | matches, V |
 | P5 | A service call's body is `(0, pickle((1, method, args, kw)))` | S | matches, V |
 | P6 | Every call's keywords carry `machoVersion`, 1 unless a cached answer supplies another | S | matches (always 1; no answer cache yet) |
+| P6a | Keywords go out in the order of the client's own dict, which a service call and a bound-object call build differently (below) | S, O | matches |
 | P7 | A Moniker resolves first (`MachoResolveObject(bindParams)` to any node), then binds on the node that names (`MachoBindObject(bindParams, call)`) | S, L | matches, V |
 | P8 | `oob` is None unless set; `contextKey` is never set by a client | S | matches |
 | P9 | Packets over 200 bytes are compressed with zlib level 1 when that saves more than 5% | S | matches, V; **?** which of the client's two compression paths is live (below) |
@@ -91,8 +92,21 @@ password, which is how H10 is tied to a real client login.
 table of CPython 2.7. `test/fixtures/py27Oracle.json` holds what the client's own interpreter
 answered for 1,303 keys and 44 dicts, built two ways each; the test requires an exact match.
 
-It covers a dict built by a literal or by inserting into an empty dict. A dict made by `copy()` or
-`update()` from another dict is laid out differently and is **not covered yet**.
+It covers a dict built by a literal, by inserting into an empty dict, and by `copy()`.
+
+**Keyword order (P6a).** A call's keywords pass through several dicts before they are sent, and two
+keys that want the same slot can come out either way round depending on the route:
+
+- A remote **service's** method is a plain function, so its keywords are collected in the order
+  written. (`MachoServiceConnection.__getattr__` returns a closure.)
+- A **bound object's** method is an object with `__call__`, so the interpreter collects them last
+  first and then refills them. (`MachoObjectCallWrapper`.)
+- Either way the dict is then copied and `machoVersion` added.
+
+The oracle was asked 406 keyword sets by both routes. The two routes disagree in 78 of them, and
+`keywordOrder` matches the interpreter in all of them. One thing the interpreter corrected: a
+copied dict's table is four times its entry count, not the two that the CPython source suggests
+from memory.
 
 ## Not done
 
@@ -101,8 +115,11 @@ makes roughly ninety calls as its services start. The recorded real session
 (`eve.js/_local/logs/direct-tcp-real-client-20260809-163920.stdout.log`) names them in order but
 not their arguments. Emulating them needs the arguments, so it waits on a recording.
 
-**Dicts we send elsewhere.** `src/piCustomsExport.js` sends its commodity dict in ascending key
-order. The client would send it in Python's order. `orderEntries` is there to use.
+**The customs export's call shape.** `src/piCustomsExport.js` binds `invbroker` with the office ID
+and calls `ImportExportWithPlanet` on that. The client goes through `invCache`: it binds the
+broker for a location, asks it for the office's inventory, and calls that. eve.js accepts both.
+Its commodity dict now goes out in the client's dict order, which is exact unless two type IDs
+want the same slot (the client fills it from another dict whose own order is not reproduced).
 
 **Cached answers.** The client caches some call answers (`objectCaching`) and sends their version
 back as `machoVersion`. We always send 1 and never cache.
