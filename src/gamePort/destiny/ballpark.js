@@ -86,6 +86,9 @@ class DestinyNotPorted extends Error {
   }
 }
 
+/** Ball::IsWarping (Ball.cpp 1895): in warp proper, not still aligning for it. */
+const isWarping = (ball) => ball.mode === MODE.WARP && !(ball.effectStamp < 0);
+
 /** The modes whose ball follows another (Ballpark.cpp 68). */
 const FOLLOW_MODES = new Set([MODE.FOLLOW, MODE.ORBIT, MODE.MISSILE, MODE.FORMATION]);
 
@@ -257,6 +260,74 @@ class Ballpark {
     const ball = this.balls.get(id);
     if (!ball) return;
     ball.isMassive = Boolean(flag);
+  }
+
+  setBallGlobal(id, flag) {
+    const ball = this.balls.get(id);
+    if (!ball) return;
+    ball.isGlobal = Boolean(flag);
+  }
+
+  setBallInteractive(id, flag) {
+    const ball = this.balls.get(id);
+    if (!ball) return;
+    ball.isInteractive = Boolean(flag);
+  }
+
+  /** Ballpark::SetBallHarmonic (4852): a ball made a field stops, and stays put as one. */
+  setBallHarmonic(id, harmonic, corporationID, allianceID, field) {
+    const ball = this.balls.get(id);
+    if (!ball) return;
+    ball.harmonic = harmonic;
+    ball.corporationID = corporationID;
+    ball.allianceID = allianceID;
+    if (field) {
+      this.stop(id);
+      ball.mode = MODE.FIELD;
+    } else if (ball.mode === MODE.FIELD) {
+      this.stop(id);
+    }
+  }
+
+  /** Ballpark::SetBallRigid (6278). */
+  setBallRigid(id) {
+    const ball = this.balls.get(id);
+    if (!ball) return;
+    this.stop(id);
+    ball.mode = MODE.RIGID;
+  }
+
+  /**
+   * Ballpark::SetBallTroll (6290): free and coasting for `delay` ticks, after
+   * which the step turns it to stone (a wreck drifting to a halt).
+   */
+  setBallTroll(id, delay) {
+    const ball = this.balls.get(id);
+    if (!ball) return;
+    if (delay < 1) delay = 1;
+    this.stop(id);
+    this.setBallFree(id, true);
+    this.setBallInteractive(id, true);
+    ball.effectStamp = this.currentTime + delay;
+    ball.mode = MODE.TROLL;
+  }
+
+  /** Ballpark::CloakBall (5223). */
+  cloakBall(id, cloakMode) {
+    const ball = this.balls.get(id);
+    if (!ball) return;
+    if (cloakMode <= 0) return;
+    this.stopAllFollowers(ball);
+    ball.isCloaked = cloakMode;
+    ball.isMassive = false;
+  }
+
+  /** Ballpark::UncloakBall (5257): massive again, unless it is in warp proper. */
+  uncloakBall(id) {
+    const ball = this.balls.get(id);
+    if (!ball) return;
+    ball.isCloaked = 0;
+    if (!isWarping(ball)) ball.isMassive = true;
   }
 
   /** Ballpark::SetBallFree (4887). A ball made unfree is stopped where it is. */
@@ -471,7 +542,15 @@ class Ballpark {
 
   // ── orders (4471-4650) ────────────────────────────────────────────────────
 
-  /** Ballpark::Stop (4578): leave whoever was being followed, and stop steering. */
+  /** Ballpark::Stop(const ID&) (4556), which is what the Stop order reaches: nothing to do for a ball already stopped. */
+  stopOrder(id) {
+    const ball = this.balls.get(id);
+    if (!ball) return;
+    if (ball.mode === MODE.STOP) return;
+    this.stop(id);
+  }
+
+  /** Ballpark::Stop(Ball*) (4578): leave whoever was being followed, and stop steering. */
   stop(id) {
     const ball = this.balls.get(id);
     if (!ball) return;
@@ -705,12 +784,23 @@ class Ballpark {
       ball.oldPos = stepped.p;
       ball.oldVel = stepped.v;
     }
+    const trolls = [];
     for (const ball of free) {
+      // TrollReady (6315): its time has come.
+      if (ball.mode === MODE.TROLL && !(ball.effectStamp > this.currentTime)) trolls.push(ball);
+      if (ball.mode === MODE.MUSHROOM) throw new DestinyNotPorted("The MUSHROOM mode");
       [ball.newPos, ball.oldPos] = [ball.oldPos, ball.newPos];
       [ball.newVel, ball.oldVel] = [ball.oldVel, ball.newVel];
+    }
+    // PetrifyTroll (6325): stopped dead, fixed, and no longer anyone's business.
+    for (const ball of trolls) {
+      if (ball.mode !== MODE.TROLL || ball.effectStamp > this.currentTime) continue;
+      this.setBallFree(ball.id, false);
+      this.setBallInteractive(ball.id, false);
+      ball.mode = MODE.RIGID;
     }
     this.currentTime += 1;
   }
 }
 
-module.exports = { AU, Ballpark, DSTLOCALBALLS, DestinyNotPorted, FOLLOW_MODES, add, cross, divide, dot, length, lengthSq, normalize, scale, sub, vec };
+module.exports = { AU, Ballpark, DSTLOCALBALLS, DestinyNotPorted, FOLLOW_MODES, add, cross, divide, dot, isWarping, length, lengthSq, normalize, scale, sub, vec };

@@ -9,7 +9,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { Ballpark, DestinyNotPorted, divide, normalize, scale, vec } = require("../src/gamePort/destiny/ballpark");
+const { Ballpark, DestinyNotPorted, divide, isWarping, normalize, scale, vec } = require("../src/gamePort/destiny/ballpark");
 const { MODE } = require("../src/gamePort/destiny/state");
 
 /**
@@ -791,4 +791,122 @@ test("clearing the park leaves nothing", () => {
   park.removeBall(2, 9);
   park.clearAll();
   assert.deepEqual([park.balls.size, park.freeBalls.size, park.moribundBalls.size], [0, 0, 0]);
+});
+
+// ── the small setters, and the balls that are not ships ──────────────────────
+
+test("global and interactive are plain flags", () => {
+  const park = new Ballpark();
+  const ball = spaceBall(park, { id: 1 });
+  park.setBallGlobal(1, 1);
+  park.setBallInteractive(1, 1);
+  assert.deepEqual([ball.isGlobal, ball.isInteractive], [true, true]);
+  park.setBallGlobal(1, 0);
+  park.setBallInteractive(1, 0);
+  assert.deepEqual([ball.isGlobal, ball.isInteractive], [false, false]);
+  park.setBallGlobal(404, 1); // a ball that is not there is nothing
+  park.setBallInteractive(404, 1);
+});
+
+test("a ball made a field lets go of what it followed and stays put as one; unmade, it is stopped", () => {
+  const park = new Ballpark();
+  const leader = spaceBall(park, { id: 1 });
+  const tower = spaceBall(park, { id: 2, x: 5000 });
+  park.orbit(2, 1, 1000);
+  park.setBallHarmonic(2, 77, 98000001, 99000001, 1);
+  assert.deepEqual([tower.mode, tower.harmonic, tower.corporationID, tower.allianceID, tower.followId, [...leader.followers]], [MODE.FIELD, 77, 98000001, 99000001, 0, []]);
+  // Only the numbers change while it stays a field.
+  park.setBallHarmonic(2, 78, 98000002, 99000002, 1);
+  assert.deepEqual([tower.mode, tower.harmonic, tower.corporationID, tower.allianceID], [MODE.FIELD, 78, 98000002, 99000002]);
+  park.setBallHarmonic(2, -1, -1, -1, 0);
+  assert.deepEqual([tower.mode, tower.harmonic], [MODE.STOP, -1]);
+  // A ball that was never a field keeps doing what it was doing.
+  park.orbit(2, 1, 1000);
+  park.setBallHarmonic(2, 5, 1, 2, 0);
+  assert.deepEqual([tower.mode, tower.harmonic, tower.followId], [MODE.ORBIT, 5, 1]);
+});
+
+test("a ball made rigid lets go of what it followed", () => {
+  const park = new Ballpark();
+  const leader = spaceBall(park, { id: 1 });
+  const ball = spaceBall(park, { id: 2, x: 5000 });
+  park.followBall(2, 1, 100);
+  park.setBallRigid(2);
+  assert.deepEqual([ball.mode, ball.followId, [...leader.followers]], [MODE.RIGID, 0, []]);
+});
+
+test("a troll is made free and interactive, given at least a tick, and petrified when its stamp is no longer ahead", () => {
+  const park = new Ballpark();
+  const leader = spaceBall(park, { id: 1 });
+  park.addBall({ id: 2, x: 5000 }); // fixed, as a wreck's ball arrives
+  park.addBall({ id: 3, x: 9000 });
+  const wreck = park.ball(2);
+  park.currentTime = 40;
+  park.setBallTroll(2, 0);
+  assert.deepEqual([wreck.mode, wreck.effectStamp, wreck.isFree, wreck.isInteractive, park.freeBalls.has(2)], [MODE.TROLL, 41, true, true, true], "no delay is one tick");
+  park.setBallTroll(3, 2);
+  assert.equal(park.ball(3).effectStamp, 42);
+  park.evolve(); // the step taken at 40: 41 is still ahead
+  assert.deepEqual([wreck.mode, park.ball(3).mode], [MODE.TROLL, MODE.TROLL]);
+  park.evolve(); // at 41: no longer ahead
+  assert.deepEqual([wreck.mode, wreck.isFree, wreck.isInteractive, park.freeBalls.has(2), park.ball(3).mode], [MODE.RIGID, false, false, false, MODE.TROLL]);
+  park.evolve();
+  assert.equal(park.ball(3).mode, MODE.RIGID);
+  // A ball that was following something lets go when it is made a troll.
+  const drone = spaceBall(park, { id: 4, x: 100 });
+  park.followBall(4, 1, 50);
+  park.setBallTroll(4, 5);
+  assert.deepEqual([drone.mode, drone.followId, [...leader.followers]], [MODE.TROLL, 0, []]);
+});
+
+test("a free mushroom is not stepped: the park says so rather than leave it standing", () => {
+  const park = new Ballpark();
+  const ball = spaceBall(park, { id: 1 });
+  ball.mode = MODE.MUSHROOM;
+  assert.throws(() => park.evolve(), DestinyNotPorted);
+});
+
+test("a ball that cloaks shakes off its followers and stops being massive; uncloaked, it is massive again", () => {
+  const park = new Ballpark();
+  const ship = spaceBall(park, { id: 1 });
+  const hunter = spaceBall(park, { id: 2, x: 3000 });
+  park.followBall(2, 1, 500);
+  park.cloakBall(1, 0); // a cloak mode of nothing is no cloak
+  assert.deepEqual([ship.isCloaked, ship.isMassive, hunter.mode], [0, true, MODE.FOLLOW]);
+  park.cloakBall(1, 2);
+  assert.deepEqual([ship.isCloaked, ship.isMassive, hunter.mode, hunter.followId, [...ship.followers]], [2, false, MODE.STOP, 0, []]);
+  park.uncloakBall(1);
+  assert.deepEqual([ship.isCloaked, ship.isMassive], [0, true]);
+});
+
+test("a ball uncloaked in warp proper stays unmassive; one still lining up for it does not", () => {
+  const park = new Ballpark();
+  const ship = spaceBall(park, { id: 1 });
+  park.cloakBall(1, 1);
+  Object.assign(ship, { mode: MODE.WARP, effectStamp: 12 });
+  assert.equal(isWarping(ship), true);
+  park.uncloakBall(1);
+  assert.deepEqual([ship.isCloaked, ship.isMassive], [0, false]);
+  // effectStamp below zero: the warp has been ordered but the ship is still turning to it.
+  Object.assign(ship, { effectStamp: -1 });
+  assert.equal(isWarping(ship), false);
+  park.uncloakBall(1);
+  assert.equal(ship.isMassive, true);
+  assert.equal(isWarping({ mode: MODE.GOTO, effectStamp: 12 }), false);
+  assert.equal(isWarping({ mode: MODE.WARP, effectStamp: 0 }), true);
+});
+
+test("the Stop order leaves a stopped ball alone and stops any other", () => {
+  const park = new Ballpark();
+  const leader = spaceBall(park, { id: 1 });
+  const ball = spaceBall(park, { id: 2, x: 100 });
+  park.followBall(2, 1, 50);
+  park.stopOrder(2);
+  assert.deepEqual([ball.mode, ball.followId, [...leader.followers]], [MODE.STOP, 0, []]);
+  park.stopOrder(2);
+  park.stopOrder(404);
+  assert.equal(ball.mode, MODE.STOP);
+  park.setBallRigid(2);
+  park.stopOrder(2);
+  assert.equal(ball.mode, MODE.STOP, "a rigid ball told to stop is a stopped ball");
 });
