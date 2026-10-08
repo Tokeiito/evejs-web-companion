@@ -3810,3 +3810,103 @@ that is my choice, and what the client's own formatter writes there was not read
    fills while a ship lines up for a warp; a warp ordered at a bookmark or a fleet member.
 6. In the park, if a server ever sends a ball that needs them: MISSILE, FORMATION, MUSHROOM;
    a fixed ball's collision shapes and the partition's order.
+
+---
+
+## 2026-10-08 — the call ledger: undock and a module's switch, made where the client makes them
+
+Commit `d7d6c1d`, pushed.
+
+**What the retail client does.** It asks almost nothing of `ship` or `dogmaIM` by the
+service's name: in the whole client only `ship.GetShipFittingInfo`,
+`dogmaIM.CreateNewbieShip` and `dogmaIM.GetRequiredSkillLevels` are. Everything else goes to
+a moniker, an object bound for where the pilot is (`eveMoniker.py`): `GetShipAccess()` is
+`ship` bound for the station or the solar system, `CharGetDogmaLocation()` is `dogmaIM`
+bound the same way, and godma keeps that one and asks everything of it.
+
+- **Undock** (`ui/station/base.py` 485 to 521):
+  `GetShipAccess().Undock(shipID, ignoreContraband, onlineModules=...)`, where
+  `onlineModules` is the ship's fitted modules whose online effect is running, by the slot
+  each is in, `{flagID: moduleID}`, from the client's own dogma.
+- **A module switched on** (`shipmodulebutton.py` 1309 to 1352, `godma.py` 2049 to 2071):
+  `GetDogmaLM().Activate(itemID, effectName, target, repeats)`. The name is the module's
+  default effect's, always. The repeats are 1000 for a module left to repeat, the pilot's own
+  count if one was set, and 0 for an effect that cannot repeat: one with no duration, or on a
+  module that forbids it.
+- **Switched off**: `GetDogmaLM().Deactivate(itemID, effectName)`.
+
+**What the BFF sent.** All three by the service's name. Undock with an empty list for the
+online modules. Activate with no name unless the module was a launcher, and -1 for "go on".
+
+**What was built.**
+
+- The registry (`retailCalls.js`) can now say a call is made **on a moniker**, and that the
+  pilot must have godma primed first. A call's shape is handed what only the pilot's own
+  client would know: which modules are online, what a module's effect is called, whether it
+  repeats. A call that cannot be completed that way is still sent, and counted as differing.
+- A pilot keeps the monikers the client keeps, one for each service, bound on first use and
+  let go when the pilot is somewhere else or the server lets the object go. Godma's own
+  priming uses the same dogma location, where it used to bind one each time.
+- The three calls go where the client sends them, on the game port, whichever way the BFF's
+  route asked. Nothing changes on the gateway.
+- The effect's name, when the route gives none, is the one effect of the module's type that a
+  pilot switches on. Whether it repeats is the module button's rule.
+
+**Proof.**
+
+- Tests: 10 new, 4 changed. 53 ways of breaking the change; two got through at first and are
+  closed with tests.
+- Suite: 9215 tests, 9191 pass, 0 fail, 24 skipped, 0 todo.
+- **Live, in the browser, on the game port**, eve.js `10e2c22f4`, read from the server's own
+  log of what arrived:
+
+  | | before | now |
+  |---|---|---|
+  | undock | `ship Undock()` | `ship MachoBindObject()` with `[60003760, 15]`, then `N=65450:66 Undock()` |
+  | the afterburner switched on | by the service's name | `N=65450:65 Activate()`: effect `moduleBonusAfterburner`, target null, repeat 1000 |
+  | switched off | by the service's name | `N=65450:65 Deactivate()`: effect `moduleBonusAfterburner` |
+
+  `N=65450:65` is the dogma location godma was primed from a moment before. On the page the
+  module lit half a second after the click, the header's speed climbed from 341 to over 443
+  m/s, and fell back after the second click. The "before" for the two module calls is from
+  the route's code and its test, not from a log line; the undock's is from the log.
+- **The docked routes on both transports** (`scripts/bff-parity.js`, reads only, as Test
+  Two): 12 identical, 6 tolerated, 2 moved, 2 divergent. The two divergent are the two there
+  were before, the mission journal and the industry facilities, in the tuple spelling their
+  readers take.
+- **The ledger**, made again from that pass and the flight
+  (`docs/game-port-call-ledger.md`): 74 pairs, 476 calls. 11 reshaped, 3 the same, 1 the web
+  client's own, none differing, 59 not yet read against the client.
+- **Nothing was staged.** Test Pilot undocked, ran the afterburner, and docked again.
+
+**Not done.**
+
+- The rest of `ship` and `dogmaIM`. By the server's log of the last two hours, three more
+  still arrive by the service's name: `dogmaIM GetTargets()` (369 times),
+  `ShipGetInfo()` (21) and `ShipOnlineModules()` (12). The routes for targeting,
+  ammunition, onlining, drones, boarding and leaving a ship ask by name too and were not
+  run. Each wants its call site read; then it goes to the moniker the same way. The other
+  `dogmaIM` pairs in the ledger (`ItemGetInfo`, `GetTargeters`, the attribute queries) are
+  already made on a bound object and are unread only as to their arguments.
+- A module type with two effects a pilot could switch on is sent unnamed and counted as
+  differing: the client tells them apart by a flag the BFF's static data does not carry.
+- The pilot's own repeat count for a module (the client keeps one per module) is not kept.
+- Undocking from a structure is another call (`structureDocking.Undock`) and was not read.
+- `GetMissionBriefingInfo` and `GetMissionObjectiveInfo`, which the client asks on every
+  layout of the agent's window, are as they were.
+
+### Next
+
+1. **The rest of the ledger's `ship` and `dogmaIM`**, as above; then
+   `GetMissionBriefingInfo` and `GetMissionObjectiveInfo` asked when the client asks them;
+   Phase 3's hosted check and the session-less gateway calls.
+2. The scanner the client's way: results kept from the server's word, a probe's destination
+   and range kept here and sent with the scan.
+3. More of a mission's words: the objectives pane, the mission's time under the agent's line,
+   messages inside messages when one turns up.
+4. Small, around dialogs: the title for a dialog's kind, the "do not ask again" box, the typed
+   codes not done.
+5. Small, in space: an overview row's speed columns the client's way; the bar the client
+   fills while a ship lines up for a warp; a warp ordered at a bookmark or a fleet member.
+6. In the park, if a server ever sends a ball that needs them: MISSILE, FORMATION, MUSHROOM;
+   a fixed ball's collision shapes and the partition's order.
