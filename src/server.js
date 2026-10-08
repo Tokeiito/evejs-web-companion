@@ -18,7 +18,7 @@ const { createTrainingQueueService } = require("./pilotTrainingQueue");
 const { createFactorySessions } = require("./factorySessions");
 const { createReplenishment } = require("./replenishment");
 const { createPilotMutationFence } = require("./pilotMutationFence");
-const { createPilotTransport, pilotTransportSetting } = require("./pilotTransport");
+const { createPilotTransport, isGamePortHandle, pilotTransportSetting } = require("./pilotTransport");
 const { createGamePortPilots } = require("./gamePort/pilots");
 const { registerProvisioningRoutes } = require("./provisioningRoutes");
 const { createFactorySkills } = require("./factorySkills");
@@ -167,7 +167,7 @@ const gamePortPilots = options.gamePortPilots !== undefined
       isOnline: async (accountID, characterID) => (await accountGateway.getCharacterStatus(accountID, characterID))?.online,
       // A pilot's ballpark runs in its own time; nobody is waiting on it to hear that something went wrong.
       onSpaceError: (error, what, characterID) => console.warn(`[game-port] pilot ${characterID}: ballpark ${what} failed: ${error && error.message}`),
-      // The server asked the client something. Say what, and what it was told, since no user saw the question.
+      // The server asked the client something. Say what, and what it was told.
       onClientCall: (call, characterID) => {
         const asked = `[game-port] pilot ${characterID}: the server called ${call.service}.${call.method} on the client`;
         if (call.answered) console.log(`${asked}, and was answered ${JSON.stringify(call.answer)}`);
@@ -593,7 +593,10 @@ app.use("/api/bridge", (req, res, next) => {
   return authenticate(req, res, next);
 }, (req, res, next) => {
   try {
-    if (req.method === "POST" && !["/call", "/provisioning/review", "/provisioning/ship-review", "/provisioning/provision-ship", "/provisioning/reconcile", "/drone-recovery/ready"].includes(req.path)) {
+    // An answer to the server's question is the rest of the write that caused the question, which is still in
+    // flight and holding the pilot: it must get through, or that write can never finish.
+    const answersAQuestion = /^\/questions\/[^/]+\/answer\/?$/.test(req.path);
+    if (req.method === "POST" && !answersAQuestion && !["/call", "/provisioning/review", "/provisioning/ship-review", "/provisioning/provision-ship", "/provisioning/reconcile", "/drone-recovery/ready"].includes(req.path)) {
       const held = bridgeSessions.get(req.webSessionID);
       if (req.path === "/select") {
         const target = Number(req.body?.characterID);
@@ -12462,6 +12465,38 @@ app.post("/api/bridge/agents/:agentID/action", requireAuth, async (req, res, nex
       null,
     );
     res.json({ ok: true, result: outcome.result, notifications: outcome.notifications });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// The user's answer to a question the SERVER asked. The server calls the
+// client's own services and waits (agents.YesNo before a mission is quit or
+// declined); on the game port the question reaches the browser on the pilot's
+// event stream as a `question` event, and its answer comes back here. The
+// gateway is never asked anything, so a gateway pilot has no question open.
+app.post("/api/bridge/questions/:questionID/answer", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const answer = req.body ? req.body.answer : undefined;
+  if (answer === undefined) {
+    res.status(400).json({ ok: false, error: "INVALID_ANSWER", message: "An answer is required." });
+    return;
+  }
+  if (!gamePortPilots || !isGamePortHandle(held.bridgeSessionID)) {
+    res.status(404).json({ ok: false, error: "QUESTION_NOT_FOUND", message: "That question is no longer open." });
+    return;
+  }
+  try {
+    const outcome = await gamePortPilots.answerClientQuestion(
+      held.bridgeSessionID,
+      String(req.params.questionID || ""),
+      answer,
+      { userid: Number(held.accountID) },
+    );
+    res.json({ ok: true, answered: outcome.answered });
   } catch (error) {
     next(error);
   }

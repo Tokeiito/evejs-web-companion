@@ -22,6 +22,7 @@
   import Toasts from "./Toasts.svelte";
   import NoticeBridge from "./NoticeBridge.svelte";
   import DroneRecoveryNotice from "./DroneRecoveryNotice.svelte";
+  import ServerQuestion from "./ServerQuestion.svelte";
   import { showInfoTarget } from "./showInfo.ts";
   import TargetsPanel from "./TargetsPanel.svelte";
   import CustomBotReadout from "./CustomBotReadout.svelte";
@@ -342,6 +343,7 @@
   <DockWipe {isDocked} />
   <NoticeBridge {store} />
   <DroneRecoveryNotice {flow} />
+  <ServerQuestion {store} {flow} />
   <Toasts />
   <MobileWorkspace {store} {flow} {isDocked} {sessions} openRequest={mobileOpenRequest} />
 {:else}
@@ -352,6 +354,7 @@
        came from — that is the entire point — so neither can live in a panel. -->
   <NoticeBridge {store} />
   <DroneRecoveryNotice {flow} />
+  <ServerQuestion {store} {flow} />
   <Toasts />
   <div class="workspace" class:in-space={!isDocked}>
     <!-- Every piece of always-on chrome gets its own boundary. These are mounted

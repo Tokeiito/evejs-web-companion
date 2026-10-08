@@ -2579,6 +2579,34 @@ export interface LiveState {
   readonly sequence: number;
   readonly notifications: readonly LiveNotification[];
   readonly lastEventAtMs: number | null;
+  /** Questions the server has asked and is waiting on, oldest first. */
+  readonly questions: readonly ClientQuestion[];
+}
+
+/** A title or a body as the server words it: a localisation label with its parameters, or plain text. */
+export interface QuestionWords {
+  readonly label: string | null;
+  readonly parameters: unknown;
+  readonly text: string | null;
+}
+
+/**
+ * A question the SERVER has asked the player and is waiting on. The retail
+ * client shows a window for it; here it arrives on the live channel (game-port
+ * pilots only) and is answered through the BFF. See web/src/bridge/questions.ts.
+ */
+export interface ClientQuestion {
+  readonly id: string;
+  readonly service: string;
+  readonly method: string;
+  readonly kind: "yesNo";
+  readonly title: QuestionWords;
+  readonly body: QuestionWords;
+  readonly agentID: number | null;
+  readonly contentID: number | null;
+  readonly suppressID: string | null;
+  readonly askedAtMs: number;
+  readonly expiresAtMs: number;
 }
 
 export interface CharacterSummary {

@@ -314,3 +314,95 @@ test("with no EventSource available the page stays on its polls", async () => {
     "an unavailable channel must be reported, not silently treated as live",
   );
 });
+
+// ── the server's questions ───────────────────────────────────────────────────
+//
+// The event is the one src/gamePort/pilots.js publishes when the server calls
+// agents.YesNo before a decline (test/gamePortPilots.test.js).
+
+const DECLINE_QUESTION = {
+  id: "q-0123456789",
+  service: "agents",
+  method: "YesNo",
+  kind: "yesNo",
+  title: { label: "UI/Agents/StandardMission/DeclineMissionTitle", parameters: { type: "dict", entries: [] }, text: null },
+  body: { label: "UI/Agents/StandardMission/DeclineMessage", parameters: { type: "dict", entries: [] }, text: null },
+  agentID: 3008416,
+  contentID: 4802,
+  suppressID: "AgtDeclineMission",
+  askedAtMs: 1_000_000,
+  expiresAtMs: 1_110_000,
+};
+
+/** An online flow whose requests are recorded with their bodies, and whose answer route answers as told. */
+async function questionFlow(answerStatus = 200) {
+  const store = createClientStore();
+  const requests: Array<[string, unknown]> = [];
+  const fetch = (async (input: unknown, init?: { body?: string }) => {
+    const path = String(input);
+    requests.push([path, init?.body === undefined ? undefined : JSON.parse(init.body)]);
+    if (path.startsWith("/api/bridge/questions/") && answerStatus !== 200) {
+      const error = answerStatus === 404 ? "QUESTION_NOT_FOUND" : "CALL_FAILED";
+      return { ok: false, status: answerStatus, async json() { return { ok: false, error, message: "no" }; } };
+    }
+    const body = path === "/api/bridge/select" ? SELECT_RESPONSE
+      : path === "/api/bridge/chat/local" ? { ok: true, chat: LOCAL_CHAT, notifications: [] }
+        : { ok: true, answered: true };
+    return { ok: true, status: 200, async json() { return body; } };
+  }) as unknown as typeof globalThis.fetch;
+  const { factory, sources } = makeFakeEventSource();
+  const flow = createAppFlow(store, { fetch, eventSource: factory });
+  await flow.selectCharacter(7);
+  const answers = () => requests.filter(([path]) => path.startsWith("/api/bridge/questions/"));
+  return { store, flow, source: sources[0]!, answers };
+}
+
+test("a question the server asks is held for the user, and nothing is answered until the user answers", async () => {
+  const { store, source, answers } = await questionFlow();
+  source.emit(gatewayFrame({ kind: "question", question: DECLINE_QUESTION }, 5));
+  const live = store.get().live;
+  assert.deepEqual(live.questions.map((question) => [question.id, question.kind, question.agentID, question.body.label]), [
+    ["q-0123456789", "yesNo", 3008416, "UI/Agents/StandardMission/DeclineMessage"],
+  ]);
+  assert.equal(live.sequence, 5);
+  assert.deepEqual(answers(), [], "the user pressed the button; the question is theirs");
+
+  // Something that is not a question this client can show is not held, and not answered.
+  source.emit(gatewayFrame({ kind: "question", question: { ...DECLINE_QUESTION, id: "q2", kind: "choice" } }, 6));
+  assert.equal(store.get().live.questions.length, 1);
+  assert.deepEqual(answers(), []);
+});
+
+test("the user's answer is posted as given, and the question closes", async () => {
+  for (const answer of [true, false]) {
+    const { store, flow, source, answers } = await questionFlow();
+    source.emit(gatewayFrame({ kind: "question", question: DECLINE_QUESTION }, 5));
+    await flow.answerQuestion("q-0123456789", answer);
+    assert.deepEqual(answers(), [["/api/bridge/questions/q-0123456789/answer", { answer }]]);
+    assert.deepEqual(store.get().live.questions, []);
+  }
+});
+
+test("the server closing a question takes it off the page", async () => {
+  const { store, source } = await questionFlow();
+  source.emit(gatewayFrame({ kind: "question", question: DECLINE_QUESTION }, 5));
+  source.emit(gatewayFrame({ kind: "question-closed", id: "q-0123456789", reason: "expired" }, 6));
+  assert.deepEqual(store.get().live.questions, []);
+  assert.equal(store.get().live.sequence, 6);
+  // A close with no ID closes nothing.
+  source.emit(gatewayFrame({ kind: "question", question: DECLINE_QUESTION }, 7));
+  source.emit(gatewayFrame({ kind: "question-closed" }, 8));
+  assert.equal(store.get().live.questions.length, 1);
+});
+
+test("answering a question that has already closed closes it here quietly; any other failure leaves it open and is raised", async () => {
+  const gone = await questionFlow(404);
+  gone.source.emit(gatewayFrame({ kind: "question", question: DECLINE_QUESTION }, 5));
+  await gone.flow.answerQuestion("q-0123456789", true);
+  assert.deepEqual(gone.store.get().live.questions, []);
+
+  const broken = await questionFlow(502);
+  broken.source.emit(gatewayFrame({ kind: "question", question: DECLINE_QUESTION }, 5));
+  await assert.rejects(broken.flow.answerQuestion("q-0123456789", true));
+  assert.equal(broken.store.get().live.questions.length, 1, "still open: the server is still waiting");
+});

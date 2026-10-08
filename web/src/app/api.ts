@@ -2061,6 +2061,18 @@ export async function agentAction(
   return data.result ?? null;
 }
 
+/**
+ * Answer a question the SERVER asked (a `question` event on the live channel).
+ * The BFF hands the answer to the game server, which has been waiting for it.
+ */
+export async function answerClientQuestion(
+  questionID: string,
+  answer: boolean,
+  options: ApiOptions = {},
+): Promise<void> {
+  await postJson(`/api/bridge/questions/${encodeURIComponent(questionID)}/answer`, { answer }, options);
+}
+
 export interface RawBriefingReads {
   readonly briefing: JsonValue;
   readonly objective: JsonValue;

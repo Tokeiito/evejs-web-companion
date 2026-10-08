@@ -774,6 +774,7 @@ const INITIAL_LIVE: LiveState = Object.freeze({
   sequence: 0,
   notifications: Object.freeze([]) as LiveState["notifications"],
   lastEventAtMs: null,
+  questions: Object.freeze([]) as LiveState["questions"],
 });
 
 const INITIAL_FEED: FeedSlice = Object.freeze({
@@ -2532,6 +2533,30 @@ export function createClientStore(): ClientStore {
           epoch: event.epoch ?? current.epoch,
           sequence: event.sequence,
           notifications: Object.freeze([]) as LiveState["notifications"],
+          // A question may have closed in the gap; one that did not is asked again by nobody,
+          // so it is dropped here and its answer route would say it was gone.
+          questions: Object.freeze([]) as LiveState["questions"],
+        });
+        break;
+      }
+      case "live/question": {
+        const current = live.get();
+        live.set({
+          ...current,
+          status: "live",
+          epoch: event.epoch ?? current.epoch,
+          sequence: event.sequence,
+          questions: [...current.questions.filter((question) => question.id !== event.question.id), event.question],
+        });
+        break;
+      }
+      case "live/question-closed": {
+        const current = live.get();
+        live.set({
+          ...current,
+          epoch: event.epoch ?? current.epoch,
+          sequence: event.sequence ?? current.sequence,
+          questions: current.questions.filter((question) => question.id !== event.id),
         });
         break;
       }

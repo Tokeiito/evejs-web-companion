@@ -49,27 +49,6 @@ export function agentButtonLabel(buttonType: number): string {
   return BUTTON_LABELS[buttonType] ?? `Action ${buttonType}`;
 }
 
-/**
- * What to ask before an agent's button is pressed, or null when the button
- * needs no question.
- *
- * On the retail client the question comes from the SERVER: it answers a Quit
- * or a Decline by calling the client's agents.YesNo, a Yes/No window, and
- * goes ahead only on Yes. On the game-port transport the BFF answers that call
- * Yes for the pilot (src/gamePort/pilots.js), so the question has to be put
- * here, before the press. The words are this client's own: the server's are
- * label IDs that only the retail client can turn into text.
- */
-export function agentActionQuestion(buttonType: number): string | null {
-  switch (buttonType) {
-    case AGENT_BUTTON.QUIT:
-      return "Quit this mission? It cannot be taken up again, and it costs standing with this agent and their corporation.";
-    case AGENT_BUTTON.DECLINE:
-      return "Decline this mission? Declining a second one from the same agent within four hours costs standing with them.";
-    default:
-      return null;
-  }
-}
 
 // --- marshaled-value helpers ----------------------------------------------
 

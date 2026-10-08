@@ -68,6 +68,7 @@ const STATUS = Object.freeze({
   CALL_NOT_ALLOWED: 403,
   CALL_FAILED: 502,
   CALL_REFUSED: 409,
+  QUESTION_NOT_FOUND: 404,
   SESSION_NOT_FOUND: 404,
   SESSION_SELECT_FAILED: 502,
   BOUND_HANDLE_NOT_FOUND: 404,
@@ -121,6 +122,28 @@ const LOCATION_ATTRIBUTES = ["stationid", "structureid", "solarsystemid", "locat
 const PROVISIONAL_WAIT_LIMIT_MS = 120_000;
 
 /**
+ * How long a question waits for the user. Shorter than the wait above, so
+ * that a question nobody answers is closed, and the call behind it finished,
+ * before whoever made that call gives up on it.
+ */
+const QUESTION_WAIT_MS = 110_000;
+
+/** A localisation label as the server sends one, (labelID, {parameters}), or plain text. */
+function words(value) {
+  if (Array.isArray(value)) {
+    return { label: textOf(value[0]), parameters: wireToBridgeJson(value[1] ?? null), text: null };
+  }
+  return { label: null, parameters: null, text: textOf(value) };
+}
+
+const textOf = (value) => {
+  if (typeof value === "string") return value;
+  if (Buffer.isBuffer(value)) return value.toString("utf8");
+  if (value && typeof value === "object" && typeof value.value === "string") return value.value;
+  return null;
+};
+
+/**
  * What this client's own services answer when the server calls them, or
  * undefined for a call it has no answer to. The server makes these calls and
  * waits; on the retail client most of them put a window in front of the player.
@@ -128,25 +151,44 @@ const PROVISIONAL_WAIT_LIMIT_MS = 120_000;
  *   agents.YesNo(title, body, agentID, contentID, suppressID)
  *       ui/station/agents/agents.py 404: a Yes/No window, answered with whether
  *       Yes was pressed. The server asks it before a mission is quit or
- *       declined and before research is cancelled. Answered Yes, which is what
- *       the client answers at once, with no window, when the player has ticked
- *       "do not show this again" on that message (prompt_player's suppress_id).
- *       ⚠ The web client does not yet put the question to its own user.
+ *       declined and before research is cancelled. The question goes to the
+ *       user (`askUser`), and anything but Yes is No, as closing the window is.
+ *       With nobody to ask it is answered Yes: a hosted bot pressed the button,
+ *       and the client answers the same way at once, with no window, when the
+ *       player has ticked "do not show this again" (prompt_player's suppress_id).
  *   objectCaching.InvalidateCachedMethodCall(service, method, *args)
  *       carbon/common/script/net/objectCaching.py 222: forget a method's cached
  *       answer, so the next call asks the server. Nothing is kept here to
  *       forget (every call is sent), and the method returns None.
+ *
+ * `askUser(question)` puts a question to whoever is watching this pilot and
+ * resolves with {asked, answer}: asked is false when nobody is watching, and
+ * answer is undefined when the question was shown and not answered in time.
  */
-function defaultClientCallAnswer({ service, method }) {
+function defaultClientCallAnswer({ service, method, args }, characterID, askUser = async () => ({ asked: false })) {
   switch (`${service}.${method}`) {
-    case "agents.YesNo":
-      return true;
+    case "agents.YesNo": {
+      const list = Array.isArray(args) ? args : [];
+      return askUser({
+        kind: "yesNo",
+        title: words(list[0]),
+        body: words(list[1]),
+        agentID: positive(list[2]),
+        contentID: positive(list[3]),
+        suppressID: textOf(list[4]),
+      }).then((reply) => (reply.asked ? reply.answer === true : true));
+    }
     case "objectCaching.InvalidateCachedMethodCall":
     case "objectCaching.InvalidateCachedMethodCalls":
       return null;
     default:
       return undefined;
   }
+}
+
+/** Whether an answer is one the question can take. */
+function answerFits(kind, answer) {
+  return kind === "yesNo" ? typeof answer === "boolean" : false;
 }
 
 /** The kind of a dogma effect, from the static data the BFF already reads. Loaded when first asked. */
@@ -256,6 +298,9 @@ function createGamePortPilots({
   // The client's own services, for the calls the server makes to it, and a word about each call once it is over.
   answerClientCall = defaultClientCallAnswer,
   onClientCall = () => {},
+  // How long a question put to the user waits for an answer, and the timers that count it.
+  questionWaitMs = QUESTION_WAIT_MS,
+  timers = { setTimeout, clearTimeout },
 } = {}) {
   const sessions = new Map();
   const epoch = randomBytes(12).toString("base64url");
@@ -300,6 +345,11 @@ function createGamePortPilots({
     if (SUPPRESSED_NOTIFICATIONS.has(notification.method)) return;
     entry.backlog.push(notification);
     if (entry.backlog.length > BACKLOG_LIMIT) entry.backlog.splice(0, entry.backlog.length - BACKLOG_LIMIT);
+    publish(entry, { kind: "notification", notification });
+  }
+
+  /** One event on the pilot's stream, for whoever is listening now and whoever resumes from before it. */
+  function publish(entry, event) {
     entry.sequence += 1;
     const frame = Object.freeze({
       source: STREAM_SOURCE,
@@ -307,11 +357,53 @@ function createGamePortPilots({
       streamVersion: 1,
       type: "event",
       cursor: Object.freeze({ epoch, sequence: entry.sequence }),
-      event: { kind: "notification", notification },
+      event,
     });
     entry.history.push(frame);
     if (entry.history.length > STREAM_HISTORY_LIMIT) entry.history.shift();
     for (const subscriber of [...entry.subscribers]) deliver(subscriber, frame);
+  }
+
+  // ── what the server asks the user ─────────────────────────────────────────
+  //
+  // The retail client puts a window up and the server waits for it. Here the
+  // question goes out on the pilot's stream, to the browser showing that pilot,
+  // and the answer comes back by answerClientQuestion. A stream is only open
+  // while a browser is attached, so "nobody is listening" is "nobody to ask".
+
+  function askUser(entry, call, question) {
+    if (entry.ended || ![...entry.subscribers].some((subscriber) => !subscriber.closed)) {
+      return Promise.resolve({ asked: false, answer: undefined });
+    }
+    const id = randomBytes(9).toString("base64url");
+    return new Promise((resolve) => {
+      const asked = {
+        id,
+        kind: question.kind,
+        timer: timers.setTimeout(() => asked.settle(undefined, "expired"), questionWaitMs),
+        settle(answer, reason) {
+          if (!entry.questions.delete(id)) return;
+          timers.clearTimeout(asked.timer);
+          if (!entry.ended) publish(entry, { kind: "question-closed", id, reason });
+          resolve({ asked: true, answer });
+        },
+      };
+      entry.questions.set(id, asked);
+      publish(entry, {
+        kind: "question",
+        question: { id, service: call.service, method: call.method, ...question, askedAtMs: now(), expiresAtMs: now() + questionWaitMs },
+      });
+    });
+  }
+
+  /** The user's answer to a question the server asked. */
+  async function answerClientQuestion(bridgeSessionID, questionID, answer, sessionFields = {}) {
+    const entry = held(bridgeSessionID, sessionFields);
+    const asked = entry.questions.get(String(questionID || ""));
+    if (!asked) throw fail("QUESTION_NOT_FOUND", "That question is no longer open.");
+    if (!answerFits(asked.kind, answer)) throw fail("CALL_INVALID", "That is not an answer this question takes.");
+    asked.settle(answer, "answered");
+    return { answered: true, questionID: asked.id };
   }
 
   function deliver(subscriber, frame) {
@@ -341,6 +433,8 @@ function createGamePortPilots({
   function end(entry, reason, refusalStatus = 404) {
     if (entry.ended) return;
     entry.ended = true;
+    // Nobody is left to answer: each question closes unanswered, as its window would with the client.
+    for (const asked of [...entry.questions.values()]) asked.settle(undefined, "session_ended");
     if (entry.space) entry.space.release();
     entry.space = null;
     sessions.delete(entry.handle);
@@ -407,9 +501,11 @@ function createGamePortPilots({
       /** The pilot's ship as dogma has it (pilotDogma.js), and which ship and place that was loaded for. */
       dogma: createPilotDogma({ characterID, now: () => filetime(now()), effectCategory }),
       dogmaLoaded: null,
+      /** Questions the server has asked and the user has not answered yet, by ID. */
+      questions: new Map(),
       ended: false,
     };
-    session.clientCalls = (call) => answerClientCall(call, characterID);
+    session.clientCalls = (call) => answerClientCall(call, characterID, (question) => askUser(entry, call, question));
     session.onClientCall((call) => onClientCall(call, characterID));
     session.onNotification((notification) => {
       // machoNet.OnMachoObjectDisconnect(objectID, clientID, refID): the server has let a bound object go.
@@ -884,6 +980,7 @@ function createGamePortPilots({
     readScannerState,
     readSpaceSnapshot,
     openSessionEventStream,
+    answerClientQuestion,
     shutdown,
     /** Every pair called since this transport was made, most called first, with how each compares with the retail client's. */
     callLedger: () => ledger.rows(),

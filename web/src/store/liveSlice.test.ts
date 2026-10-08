@@ -8,7 +8,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { createClientStore } from "./clientStore.ts";
-import type { ChatMessage } from "./types.ts";
+import type { ChatMessage, ClientQuestion } from "./types.ts";
 
 function message(overrides: Partial<ChatMessage> = {}): ChatMessage {
   return {
@@ -165,4 +165,56 @@ test("whole-store subscribers see one notification per live event", () => {
   store.apply({ type: "chat/message", channel: "local", message: message() });
   assert.equal(notifications, 2);
   unsubscribe();
+});
+
+// ── the server's questions ───────────────────────────────────────────────────
+
+function question(id: string): ClientQuestion {
+  return {
+    id,
+    service: "agents",
+    method: "YesNo",
+    kind: "yesNo",
+    title: { label: "UI/Agents/StandardMission/QuitMissionTitle", parameters: null, text: null },
+    body: { label: "UI/Agents/StandardMission/QuitMissionMessage", parameters: null, text: null },
+    agentID: 3008416,
+    contentID: 4802,
+    suppressID: "AgtQuitMission",
+    askedAtMs: 1,
+    expiresAtMs: 2,
+  };
+}
+
+test("a question the server asks is held until it closes, oldest first, and moves the cursor", () => {
+  const store = createClientStore();
+  assert.deepEqual(store.get().live.questions, []);
+  store.apply({ type: "live/question", question: question("a"), epoch: "e1", sequence: 3 });
+  store.apply({ type: "live/question", question: question("b"), epoch: "e1", sequence: 4 });
+  // The same question arriving again (a replay after a reconnect) is one question, not two.
+  store.apply({ type: "live/question", question: question("a"), epoch: "e1", sequence: 5 });
+  assert.deepEqual(store.get().live.questions.map((each) => each.id), ["b", "a"]);
+  assert.equal(store.get().live.status, "live");
+  assert.equal(store.get().live.sequence, 5);
+
+  store.apply({ type: "live/question-closed", id: "b", epoch: "e1", sequence: 6 });
+  assert.deepEqual(store.get().live.questions.map((each) => each.id), ["a"]);
+  assert.equal(store.get().live.sequence, 6);
+  // Closed by the page itself, having answered: no cursor comes with that, and none is lost.
+  store.apply({ type: "live/question-closed", id: "a" });
+  assert.deepEqual(store.get().live.questions, []);
+  assert.equal(store.get().live.sequence, 6);
+  assert.equal(store.get().live.epoch, "e1");
+  // Closing what is not open changes nothing.
+  store.apply({ type: "live/question-closed", id: "never" });
+  assert.deepEqual(store.get().live.questions, []);
+});
+
+test("open questions do not outlive a break in the stream or the end of the session", () => {
+  const store = createClientStore();
+  store.apply({ type: "live/question", question: question("a"), epoch: "e1", sequence: 3 });
+  store.apply({ type: "live/resynchronize", epoch: "e2", sequence: 40 });
+  assert.deepEqual(store.get().live.questions, []);
+  store.apply({ type: "live/question", question: question("b"), epoch: "e2", sequence: 41 });
+  store.apply({ type: "live/cleared" });
+  assert.deepEqual(store.get().live.questions, []);
 });

@@ -68,6 +68,7 @@ import type {
   AssetStationRow,
   InventoryContainerState,
   JournalState,
+  ClientQuestion,
   LiveNotification,
   LiveStreamStatus,
   MutationOutcome,
@@ -987,6 +988,21 @@ export type FeedEvent =
       readonly type: "live/resynchronize";
       readonly epoch: string | null;
       readonly sequence: number;
+    }
+  // The server asked the player something and is waiting (game-port pilots).
+  | {
+      readonly type: "live/question";
+      readonly question: ClientQuestion;
+      readonly epoch: string | null;
+      readonly sequence: number;
+    }
+  // A question was answered, ran out of time, or its session ended. Without a
+  // cursor when the page closes it itself, having just answered it.
+  | {
+      readonly type: "live/question-closed";
+      readonly id: string;
+      readonly epoch?: string | null;
+      readonly sequence?: number;
     }
   // Drop the live-channel state (character offline / logged out).
   | { readonly type: "live/cleared" }

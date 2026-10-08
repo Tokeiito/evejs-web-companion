@@ -1203,7 +1203,7 @@ test("JSON arguments become what the client's marshaller takes, and nothing else
 
 // ── what the server asks the client ──────────────────────────────────────────
 
-test("the server's question before a mission is quit is answered Yes, and a cache it wants forgotten is None", async () => {
+test("with nobody watching the pilot, the server's question before a mission is quit is answered Yes, and a cache it wants forgotten is None", async () => {
   const told = [];
   const { pilots, made } = build({}, { onClientCall: (call, characterID) => told.push([characterID, call.service, call.method, call.answered, call.answer]) });
   await pilots.selectCharacter([PILOT, null, true], null, FIELDS);
@@ -1233,4 +1233,163 @@ test("who answers the server's questions can be put in from outside, and is told
   await pilots.selectCharacter([PILOT, null, true], null, FIELDS);
   assert.equal(await made[0].ask("agents", "YesNo", []), false);
   assert.deepEqual(asked, [[PILOT, "YesNo"]]);
+});
+
+// ── the server's questions, put to the user ──────────────────────────────────
+
+const DECLINE_QUESTION = [
+  ["UI/Agents/StandardMission/DeclineMissionTitle", { type: "dict", entries: [] }],
+  ["UI/Agents/StandardMission/DeclineMessage", { type: "dict", entries: [["when", 134359400000000000n]] }],
+  3008416,
+  4802,
+  "AgtDeclineMission",
+];
+
+/** A selected pilot with a browser on its stream: the frames it is sent, and timers that fire only when told to. */
+async function watched(pilotOptions = {}) {
+  const pending = new Map();
+  let sequence = 0;
+  const timers = {
+    setTimeout: (action, delay) => { sequence += 1; pending.set(sequence, { action, delay }); return sequence; },
+    clearTimeout: (id) => pending.delete(id),
+  };
+  const built = build({}, { timers, ...pilotOptions });
+  const { bridgeSessionID: handle } = await built.pilots.selectCharacter([PILOT, null, true], null, FIELDS);
+  const frames = [];
+  const stream = built.pilots.openSessionEventStream({ bridgeSessionID: handle, userid: ACCOUNT, onFrame: (frame) => frames.push(frame) });
+  await tick();
+  frames.length = 0;
+  const events = () => frames.filter((frame) => frame.type === "event").map((frame) => frame.event);
+  return { ...built, handle, stream, frames, events, timers: pending };
+}
+
+test("with a browser on the pilot's stream, the server's question goes to it, and the user's answer goes back to the server", async () => {
+  for (const answer of [false, true]) {
+    const { pilots, session, handle, events } = await watched({ now: () => 1_000_000, questionWaitMs: 110_000 });
+    let settled;
+    const asking = session.ask("agents", "YesNo", DECLINE_QUESTION).then((value) => { settled = value; });
+    await tick();
+    assert.equal(settled, undefined, "the server is kept waiting until the user has answered");
+
+    const [asked] = events();
+    assert.equal(asked.kind, "question");
+    const { id, ...question } = asked.question;
+    assert.match(id, /^[\w-]{12}$/);
+    assert.deepEqual(question, {
+      service: "agents",
+      method: "YesNo",
+      kind: "yesNo",
+      title: { label: "UI/Agents/StandardMission/DeclineMissionTitle", parameters: { type: "dict", entries: [] }, text: null },
+      body: { label: "UI/Agents/StandardMission/DeclineMessage", parameters: { type: "dict", entries: [["when", { type: "long", value: "134359400000000000" }]] }, text: null },
+      agentID: 3008416,
+      contentID: 4802,
+      suppressID: "AgtDeclineMission",
+      askedAtMs: 1_000_000,
+      expiresAtMs: 1_110_000,
+    });
+
+    assert.deepEqual(await pilots.answerClientQuestion(handle, id, answer, FIELDS), { answered: true, questionID: id });
+    await asking;
+    assert.equal(settled, answer);
+    assert.deepEqual(events().slice(1), [{ kind: "question-closed", id, reason: "answered" }]);
+    // Answered once: it is no longer open.
+    await rejects(pilots.answerClientQuestion(handle, id, true, FIELDS), "QUESTION_NOT_FOUND", /no longer open/);
+  }
+});
+
+test("a question takes plain text as well as a label, and is never mixed in with the notifications", async () => {
+  const { pilots, session, handle, events } = await watched();
+  const asking = session.ask("agents", "YesNo", ["Cancel research?", Buffer.from("You will lose the points."), 3008416]);
+  await tick();
+  const { question } = events()[0];
+  assert.deepEqual(question.title, { label: null, parameters: null, text: "Cancel research?" });
+  assert.deepEqual(question.body, { label: null, parameters: null, text: "You will lose the points." });
+  assert.equal(question.contentID, null);
+  assert.equal(question.suppressID, null);
+  // What a call returns beside its answer is the server's notifications, and a question is not one.
+  const called = await pilots.callMethod("station", "GetGuests", [], null, FIELDS, handle);
+  assert.deepEqual(called.notifications, []);
+  await pilots.answerClientQuestion(handle, question.id, true, FIELDS);
+  assert.equal(await asking, true);
+});
+
+test("an answer the question cannot take is refused, the question stays open, and only the pilot's own account answers it", async () => {
+  const { pilots, session, handle, events } = await watched();
+  let settled;
+  const asking = session.ask("agents", "YesNo", DECLINE_QUESTION).then((value) => { settled = value; });
+  await tick();
+  const { id } = events()[0].question;
+  for (const wrong of ["yes", 1, null, undefined, {}]) {
+    await rejects(pilots.answerClientQuestion(handle, id, wrong, FIELDS), "CALL_INVALID", /not an answer/);
+  }
+  await rejects(pilots.answerClientQuestion(handle, id, true, { userid: ACCOUNT + 1 }), "SESSION_NOT_FOUND");
+  await rejects(pilots.answerClientQuestion(handle, "", true, FIELDS), "QUESTION_NOT_FOUND");
+  await tick();
+  assert.equal(settled, undefined, "still open");
+  await pilots.answerClientQuestion(handle, id, true, FIELDS);
+  await asking;
+  assert.equal(settled, true);
+});
+
+test("a question the user leaves unanswered closes as No when its time is up, as closing the window does", async () => {
+  const { pilots, session, handle, events, timers } = await watched({ questionWaitMs: 110_000 });
+  let settled;
+  const asking = session.ask("agents", "YesNo", DECLINE_QUESTION).then((value) => { settled = value; });
+  await tick();
+  const { id } = events()[0].question;
+  assert.deepEqual([...timers.values()].map((timer) => timer.delay), [110_000]);
+  [...timers.values()][0].action();
+  await asking;
+  assert.equal(settled, false);
+  assert.deepEqual(events().slice(1), [{ kind: "question-closed", id, reason: "expired" }]);
+  await rejects(pilots.answerClientQuestion(handle, id, true, FIELDS), "QUESTION_NOT_FOUND");
+});
+
+test("an answered question's clock is stopped, and two questions are two", async () => {
+  const { pilots, session, handle, events, timers } = await watched();
+  const first = session.ask("agents", "YesNo", DECLINE_QUESTION);
+  const second = session.ask("agents", "YesNo", DECLINE_QUESTION);
+  await tick();
+  const ids = events().map((event) => event.question.id);
+  assert.equal(new Set(ids).size, 2);
+  assert.equal(timers.size, 2);
+  const clocks = [...timers.values()];
+  await pilots.answerClientQuestion(handle, ids[1], true, FIELDS);
+  assert.equal(await second, true);
+  assert.equal(timers.size, 1, "the answered question's timer is gone, the other's is running");
+  await pilots.answerClientQuestion(handle, ids[0], false, FIELDS);
+  assert.equal(await first, false);
+  assert.equal(timers.size, 0);
+  // A clock that fires late, after its question was answered, closes nothing a second time.
+  const before = events().length;
+  for (const clock of clocks) clock.action();
+  assert.equal(events().length, before);
+});
+
+test("once the browser has gone, the next question is answered as with nobody watching; one already open stays open", async () => {
+  const { pilots, session, handle, stream, events } = await watched();
+  let settled;
+  const open = session.ask("agents", "YesNo", DECLINE_QUESTION).then((value) => { settled = value; });
+  await tick();
+  const { id } = events()[0].question;
+  stream.close();
+  assert.equal(await session.ask("agents", "YesNo", DECLINE_QUESTION), true);
+  await tick();
+  assert.equal(settled, undefined);
+  await pilots.answerClientQuestion(handle, id, false, FIELDS);
+  await open;
+  assert.equal(settled, false);
+});
+
+test("when the pilot's session ends, its open questions close unanswered", async () => {
+  const { pilots, session, handle, events, timers } = await watched();
+  let settled;
+  const asking = session.ask("agents", "YesNo", DECLINE_QUESTION).then((value) => { settled = value; });
+  await tick();
+  const { id } = events()[0].question;
+  await pilots.releaseBridgeSession(handle, FIELDS);
+  await asking;
+  assert.equal(settled, false);
+  assert.equal(timers.size, 0);
+  await rejects(pilots.answerClientQuestion(handle, id, true, FIELDS), "SESSION_NOT_FOUND");
 });

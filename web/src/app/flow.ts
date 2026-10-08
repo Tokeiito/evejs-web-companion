@@ -116,6 +116,7 @@ import { createSpacePoller, targetsReadIsDue, type SpacePoller } from "./spacePo
 import type { RequestPriority } from "./transport.ts";
 import type { CorpOfficesResult, DronesResult, FlightStepResult } from "./api.ts";
 import { BridgeCallError } from "../bridge/callMethod.ts";
+import { createBotPresses, decodeQuestion } from "../bridge/questions.ts";
 import { classifyDistributionAgentConversation, selectDistributionAgent } from "../nav/distributionAgentSelection.ts";
 import { refusalWords as sayRefusalWords } from "../bridge/refusals.ts";
 import { readDictEntry, type JsonValue } from "../bridge/wire.ts";
@@ -883,6 +884,12 @@ export interface AppFlow {
    * clears the briefing and refreshes the journal.
    */
   chooseAction(agentID: number, action: AgentAction): Promise<void>;
+  /**
+   * Answer a question the SERVER asked (`store.live.questions`): the retail
+   * client's Yes/No window. The server is waiting on it; anything but a Yes
+   * leaves things as they were.
+   */
+  answerQuestion(questionID: string, answer: boolean): Promise<void>;
   /** Load the accepted-courier briefing (bound reads on the agent). */
   loadBriefing(agentID: number): Promise<void>;
   /** Load the mission journal (agentMgr.GetMyJournalDetails). */
@@ -1604,6 +1611,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // notification drain, so a channel that never opens costs latency, not data.
   let liveStream: api.BridgeEventSubscription | null = null;
 
+  // Agents whose buttons one of this page's own bots is pressing right now.
+  // The server's "are you sure" about such a press is answered Yes without
+  // being shown (applyLiveFrame).
+  const botPresses = createBotPresses();
+
   function applyLiveFrame(frame: unknown): void {
     if (typeof frame !== "object" || frame === null) {
       return;
@@ -1650,6 +1662,28 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       const message = decodeMessageEntry(event.entry);
       if (message) {
         store.apply({ type: "chat/message", channel, message });
+      }
+      return;
+    }
+    // The server has asked the player something and is waiting (game-port
+    // pilots; web/src/bridge/questions.ts).
+    if (event.kind === "question") {
+      const question = decodeQuestion(event.question);
+      if (!question) {
+        return;
+      }
+      // A button one of this page's own bots pressed is not put to the user:
+      // the bot pressed it, and meant it.
+      if (botPresses.answers(question)) {
+        void api.answerClientQuestion(question.id, true, callOptions).catch(() => {});
+        return;
+      }
+      store.apply({ type: "live/question", question, epoch, sequence });
+      return;
+    }
+    if (event.kind === "question-closed") {
+      if (typeof event.id === "string") {
+        store.apply({ type: "live/question-closed", id: event.id, epoch, sequence });
       }
       return;
     }
@@ -7448,7 +7482,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // caller must be able to read `lastActionInfo.missionCompleted` itself —
       // and the loop tests it with `=== true`, because a refusal carries null.
       doAgentAction: async (agentID, actionID) => {
-        const result = await api.agentAction(agentID, actionID, callOptions);
+        const result = await botPresses.during(agentID, () => api.agentAction(agentID, actionID, callOptions));
         const conversation = decodeConversation(result);
         store.apply({ type: "agents/conversation", agentID, conversation });
         return conversation;
@@ -11568,7 +11602,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           case "agentButton": {
             // The same call the mission bot presses buttons with; the fresh
             // conversation it answers with lands in the store for the panel.
-            const result = await api.agentAction(action.agentID, action.actionID, callOptions);
+            const result = await botPresses.during(action.agentID, () =>
+              api.agentAction(action.agentID, action.actionID, callOptions));
             store.apply({
               type: "agents/conversation",
               agentID: action.agentID,
@@ -12928,6 +12963,18 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         // Opening a conversation clears any stale briefing from a prior agent.
         store.apply({ type: "agents/briefing", briefing: null });
       });
+    },
+
+    async answerQuestion(questionID, answer) {
+      try {
+        await api.answerClientQuestion(questionID, answer, callOptions);
+      } catch (cause) {
+        // Already closed (answered elsewhere, or out of time): there is nothing left to answer.
+        if (!(cause instanceof BridgeCallError && cause.status === 404)) {
+          throw cause;
+        }
+      }
+      store.apply({ type: "live/question-closed", id: questionID });
     },
 
     async chooseAction(agentID, action) {

@@ -14,7 +14,6 @@ import {
   decodeJournal,
   findAcceptAction,
 } from "./agents.ts";
-import * as agentsModule from "./agents.ts";
 import type { JsonValue } from "./wire.ts";
 
 // An offered courier conversation: agentSays (briefingID, contentID) and the
@@ -309,15 +308,4 @@ test("agentButtonLabel names the retail dialogue buttons", () => {
   assert.equal(agentButtonLabel(AGENT_BUTTON.DECLINE), "Decline");
   assert.equal(agentButtonLabel(AGENT_BUTTON.COMPLETE), "Complete Mission");
   assert.equal(agentButtonLabel(999), "Action 999");
-});
-
-test("Quit and Decline are asked about before they are pressed, and no other button is", () => {
-  const { agentActionQuestion } = agentsModule;
-  assert.match(agentActionQuestion(AGENT_BUTTON.QUIT) ?? "", /^Quit this mission\?.*standing/);
-  assert.match(agentActionQuestion(AGENT_BUTTON.DECLINE) ?? "", /^Decline this mission\?.*four hours.*standing/);
-  for (const [name, buttonType] of Object.entries(AGENT_BUTTON)) {
-    if (name === "QUIT" || name === "DECLINE") continue;
-    assert.equal(agentActionQuestion(buttonType), null, `${name} needs no question`);
-  }
-  assert.equal(agentActionQuestion(999), null);
 });

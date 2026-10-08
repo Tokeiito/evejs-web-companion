@@ -637,3 +637,103 @@ test("a game-port transport that is present but not chosen is never touched", as
   assert.deepEqual(gamePort.calls, { select: [], release: [], call: [] });
 });
 
+
+// ── The server's questions (POST /api/bridge/questions/:id/answer) ───────────
+
+function gamePortWithQuestions(answer) {
+  const gamePort = fakeGateway({
+    async selectCharacter() {
+      return {
+        bridgeSessionID: GAME_PORT_SESSION_ID,
+        service: "charUnboundMgr",
+        method: "SelectCharacterID",
+        result: null,
+        notifications: [],
+        session: { ...SELECT_SESSION_ECHO },
+      };
+    },
+    answers: [],
+    async answerClientQuestion(bridgeSessionID, questionID, given, sessionFields) {
+      gamePort.answers.push({ bridgeSessionID, questionID, given, sessionFields });
+      return answer(questionID);
+    },
+  });
+  return gamePort;
+}
+
+test("the user's answer to a question the server asked goes to the game-port pilot it was asked of", async () => {
+  const gamePort = gamePortWithQuestions((questionID) => {
+    if (questionID === "gone") {
+      throw Object.assign(new Error("That question is no longer open."), { code: "QUESTION_NOT_FOUND", statusCode: 404 });
+    }
+    return { answered: true, questionID };
+  });
+  const { baseUrl } = await startTestServer({ gateway: fakeGateway(), gamePortPilots: gamePort, pilotTransportFor: () => "gameport" });
+  const answer = (id, body) => apiRequest(baseUrl, `/api/bridge/questions/${id}/answer`, { method: "POST", body });
+
+  // Before a pilot is selected there is nobody a question could have been asked of.
+  assert.equal((await answer("q1", { answer: true })).response.status, 409);
+
+  await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+  const no = await answer("q1", { answer: false });
+  assert.equal(no.response.status, 200, JSON.stringify(no.payload));
+  assert.deepEqual(no.payload, { ok: true, answered: true });
+  // The answer as given, false and all, to the pilot's own session and under the pilot's own account.
+  assert.deepEqual(gamePort.answers, [{ bridgeSessionID: GAME_PORT_SESSION_ID, questionID: "q1", given: false, sessionFields: { userid: 4 } }]);
+
+  // No answer at all is not an answer; nothing is passed on.
+  const empty = await answer("q1", {});
+  assert.equal(empty.response.status, 400);
+  assert.equal(empty.payload.error, "INVALID_ANSWER");
+  assert.equal(gamePort.answers.length, 1);
+
+  // A question that has closed says so.
+  const gone = await answer("gone", { answer: true });
+  assert.equal(gone.response.status, 404);
+  assert.equal(gone.payload.error, "QUESTION_NOT_FOUND");
+});
+
+test("a gateway pilot has no question open, and the game port is not asked about one", async () => {
+  const gamePort = gamePortWithQuestions((questionID) => ({ answered: true, questionID }));
+  const { baseUrl } = await startTestServer({ gateway: fakeGateway(), gamePortPilots: gamePort, pilotTransportFor: () => "gateway" });
+  await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+  const answered = await apiRequest(baseUrl, "/api/bridge/questions/q1/answer", { method: "POST", body: { answer: true } });
+  assert.equal(answered.response.status, 404);
+  assert.equal(answered.payload.error, "QUESTION_NOT_FOUND");
+  assert.deepEqual(gamePort.answers, []);
+});
+
+test("a question is answered while the write that caused it is still waiting on the server", async () => {
+  // What happens live: the browser presses Decline, the server asks "are you sure" before it answers that press,
+  // and the answer has to get through while the press is still in flight. One write per pilot at a time is the
+  // rule for everything else; an answer is the rest of the write in flight, not a second one.
+  let finishPress;
+  const gamePort = gamePortWithQuestions((questionID) => {
+    finishPress({ service: "agentMgr", method: "DoAction", result: ["the conversation after"], notifications: [] });
+    return { answered: true, questionID };
+  });
+  gamePort.bindObject = async () => ({ boundHandle: "bound-agent", notifications: [] });
+  gamePort.callBoundMethod = () => new Promise((resolve) => { finishPress = resolve; });
+  const { baseUrl } = await startTestServer({ gateway: fakeGateway(), gamePortPilots: gamePort, pilotTransportFor: () => "gameport" });
+  await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+
+  const press = apiRequest(baseUrl, "/api/bridge/agents/3008416/action", { method: "POST", body: { actionID: 378 } });
+  for (let waited = 0; finishPress === undefined && waited < 200; waited += 1) await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(typeof finishPress, "function", "the press reached the pilot and is waiting");
+
+  // Another write for the same pilot is turned away while the press is in flight...
+  const other = await apiRequest(baseUrl, "/api/bridge/flight/stop", { method: "POST", body: {} });
+  assert.equal(other.response.status, 409);
+  assert.equal(other.payload.error, "CHARACTER_IN_USE");
+  // ...and the answer is not.
+  const answered = await apiRequest(baseUrl, "/api/bridge/questions/q1/answer", { method: "POST", body: { answer: true } });
+  if (answered.response.status !== 200) {
+    // Let the press go before failing, or the server this test started never closes.
+    finishPress({ service: "agentMgr", method: "DoAction", result: null, notifications: [] });
+    await press;
+  }
+  assert.equal(answered.response.status, 200, JSON.stringify(answered.payload));
+  const pressed = await press;
+  assert.equal(pressed.response.status, 200, JSON.stringify(pressed.payload));
+  assert.deepEqual(pressed.payload.result, ["the conversation after"]);
+});
