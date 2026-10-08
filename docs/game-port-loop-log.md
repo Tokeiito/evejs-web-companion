@@ -8,7 +8,14 @@ says what was done, how it was proved, what was committed, and what is next.
 
 Decisions taken in your place, and anything waiting on you. Overrule any of these by saying so.
 
-- *(none yet)*
+- **Pushing.** You started the loop with "commit as you go and push". I push `evejs-web-poc` after
+  each commit. I do **not** push `eve.js`: your instruction there was to commit the fix, and its
+  `main` is what others pull. Server fixes are local commits in `eve.js`, listed in the table
+  below, waiting for you to push or to tell me to.
+- **A BFF restart drops every game-port pilot** (default taken: accept it, as a retail client
+  closing would).
+- **The generic call path** keeps today's list of pairs as the BFF's own allowlist once the
+  gateway's is gone (default taken).
 
 ## Server defects
 
