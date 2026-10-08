@@ -103,6 +103,15 @@ async function converse(session, { accountName, characterID = null, step = () =>
     results.broker = await session.bind("invbroker", [session.attributes.stationid, GROUP_STATION]);
     step("GetInventory");
     results.hangar = await session.callBound(results.broker.objectID, "GetInventory", [CONTAINER_HANGAR]);
+    // The two ways the server hands back a cached answer: carried inline, and
+    // as a reference the client fetches from objectCaching. The second one is
+    // asked twice; the client fetches it once.
+    step("account.GetKeyMap");
+    results.keyMap = await session.call("account", "GetKeyMap");
+    step("corporationSvc.GetAllCorpMedals");
+    results.medals = await session.call("corporationSvc", "GetAllCorpMedals", [session.attributes.corpid]);
+    step("corporationSvc.GetAllCorpMedals again");
+    results.medalsAgain = await session.call("corporationSvc", "GetAllCorpMedals", [session.attributes.corpid]);
     step("pingService.Ping");
     results.ping = await session.proxyCall("pingService", "Ping");
   }

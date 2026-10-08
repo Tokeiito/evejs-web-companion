@@ -234,7 +234,7 @@ server's `network/` code, and the recorded real-client session.
   (18), `PingReq`/`PingRsp` (20/21), `TransportClosed` (8).
 - Keep a session mirror updated from session changes (`charid`, `stationid`, `solarsystemid2`, …).
 - Inflate compressed inbound frames if the server sends them; match retail's outbound threshold.
-- Decode cached-object replies.
+- Decode cached-object replies. (Done: see the reference, "Cached answers".)
 - Socket loss is session loss. No silent reconnect; report it upward like retail does.
 - **Done when:** a docked pilot stays connected for 60 minutes with every pushed packet logged and
   typed (zero "unknown packet" lines), and the two handshake unknowns in 1.5 are written down.

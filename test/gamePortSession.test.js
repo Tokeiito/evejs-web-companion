@@ -145,7 +145,7 @@ test("the recording is one whole docked session", () => {
   assert.equal(typeof fixture.accountName, "string");
   assert.ok(Number.isSafeInteger(fixture.characterID), "it selected a character");
   assert.ok(serverFrames.length >= 20 && clientFrames.length >= 15);
-  for (const step of ["login", "charUnboundMgr.SelectCharacterID", "invbroker bind", "GetInventory", "pingService.Ping"]) {
+  for (const step of ["login", "charUnboundMgr.SelectCharacterID", "invbroker bind", "GetInventory", "account.GetKeyMap", "corporationSvc.GetAllCorpMedals", "pingService.Ping"]) {
     assert.ok(frames.some((frame) => frame.during === step), step);
   }
 });
@@ -203,6 +203,15 @@ test("replayed against the real server's half, the session sends its own half ag
   assert.match(results.broker.objectID, /^N=\d+:\d+$/);
   assert.equal(results.broker.nodeID, session.proxyNodeID);
   assert.equal(results.hangar.type, "substruct", "GetInventory answers a bound inventory");
+
+  // Cached answers come back as the answer, not as the wrapper around it.
+  // GetKeyMap's is carried inline. GetAllCorpMedals' is a reference: the session
+  // fetched it from objectCaching the first time and reused it the second.
+  assert.equal(results.keyMap.type, "list", "an inline cached answer, unwrapped");
+  assert.ok(results.keyMap.items.length > 0);
+  assert.ok(Array.isArray(results.medals) && results.medals.length === 2, "a fetched cached answer: the medals and their graphics");
+  assert.equal(results.medalsAgain, results.medals, "the second answer is the object already held");
+  assert.equal(session.cachedObjects.size, 1);
 
   // What the server pushed: the session change of a character select, and its
   // notification. Both arrive on their own, between calls.
@@ -303,8 +312,19 @@ test("every call is addressed, numbered and wrapped as the retail client does it
     ["MachoBindObject", "node", "invbroker", 0],
     // A bound object's call: to its node, no service, flag 1, the object's ID first.
     ["GetInventory", "node", null, 1],
+    ["GetKeyMap", "any", "account", 0],
+    // A cached answer that is a reference: the client fetches it from
+    // objectCaching through its proxy node, once.
+    ["GetAllCorpMedals", "any", "corporationSvc", 0],
+    ["GetCachableObject", "node", "objectCaching", 0],
+    ["GetAllCorpMedals", "any", "corporationSvc", 0],
     ["Ping", "node", "pingService", 0],
   ]);
+  const fetch = calls.find((call) => call.method === "GetCachableObject");
+  // (shared, objectID, objectVersion, nodeID)
+  assert.equal(fetch.args.length, 4);
+  assert.equal(fetch.args[0], 1, "a shared object");
+  assert.equal(fetch.args[3], proxyNode);
   for (const call of calls.filter((entry) => entry.packet.destination.kind === "node")) {
     assert.equal(call.packet.destination.nodeID, proxyNode, call.method);
   }
@@ -429,6 +449,40 @@ test("a call's keywords go out in the client's order, which differs between a se
   assert.deepEqual(sentKeywords(), expected(sample.viaObject[0]), "a bound object's method is an object with __call__");
   session.proxyCall("machoNet", "WithKeywords", [], { type: "dict", entries: Object.entries(kwargs) }).catch(() => {});
   assert.deepEqual(sentKeywords(), expected(sample.viaFunction), "keywords given as a dict are treated the same");
+});
+
+test("a cached object is fetched again only when its checksum changed and ours is older", { timeout: 5000 }, async (context) => {
+  // The recorded answer to GetAllCorpMedals: a CachedMethodCallResult holding a
+  // reference whose version is (timestamp, checksum).
+  const recorded = serverFrames.filter((frame) => frame.during === "corporationSvc.GetAllCorpMedals").map(decoded);
+  const [referenceAnswer, objectAnswer] = recorded;
+  const reference = referenceAnswer.args[4][0].value;
+  const [stamp, checksum] = reference.args[1].args[2];
+  const withVersion = (callID, newStamp, newChecksum) => {
+    const cachedObject = { ...reference.args[1], args: [reference.args[1].args[0], reference.args[1].args[1], [newStamp, newChecksum]] };
+    return callResponse(callID, { ...reference, args: [reference.args[0], cachedObject, reference.args[2]] });
+  };
+  const fetched = (callID) => callResponse(callID, objectAnswer.args[4][0].value);
+  const later = BigInt(stamp) + 600_000_000n;
+  const earlier = BigInt(stamp) - 600_000_000n;
+
+  const { session, transport } = await loggedIn(context);
+  const ask = async (answerStamp, answerChecksum) => {
+    const before = transport.sent.length;
+    const answer = session.call("corporationSvc", "GetAllCorpMedals", [1000035]);
+    transport.deliver(withVersion(lastCall(transport).packet.source.callID, answerStamp, answerChecksum));
+    await settle();
+    const asked = lastCall(transport);
+    const fetchedAgain = asked.method === "GetCachableObject";
+    if (fetchedAgain) transport.deliver(fetched(asked.packet.source.callID));
+    await answer;
+    return { fetchedAgain, sent: transport.sent.length - before };
+  };
+
+  assert.deepEqual(await ask(stamp, checksum), { fetchedAgain: true, sent: 2 }, "nothing held yet");
+  assert.deepEqual(await ask(later, checksum), { fetchedAgain: false, sent: 1 }, "a new timestamp alone is not a new version");
+  assert.deepEqual(await ask(earlier, Number(checksum) + 1), { fetchedAgain: false, sent: 1 }, "a different checksum that is OLDER than ours is not fetched");
+  assert.deepEqual(await ask(later, Number(checksum) + 1), { fetchedAgain: true, sent: 2 }, "a different checksum that is newer is");
 });
 
 test("closing rejects every unanswered call and stops the background work", { timeout: 5000 }, async (context) => {

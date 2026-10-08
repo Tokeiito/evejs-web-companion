@@ -145,6 +145,22 @@ function unpickle(value) {
   return inner;
 }
 
+/** The state of a decoded object of the class whose dotted name ends `suffix`, or null. */
+function stateOfClass(value, suffix) {
+  if (!value || typeof value !== "object" || value.type !== "object" || !Array.isArray(value.args)) return null;
+  const name = text(value.name);
+  return name && name.endsWith(suffix) ? value.args : null;
+}
+
+/** A value as a string that is the same for equal values: a cache key. */
+function keyOf(value) {
+  return JSON.stringify(value, (key, entry) => {
+    if (typeof entry === "bigint") return `${entry}n`;
+    if (entry && entry.type === "Buffer" && Array.isArray(entry.data)) return Buffer.from(entry.data).toString("latin1");
+    return entry;
+  });
+}
+
 /**
  * A notification, read the way the client's layers peel it:
  *   ObjectCallGPCS   body is (flag, pickle)
@@ -205,6 +221,8 @@ class GamePortSession {
     this.handshakeWaiters = [];
     this.pending = new Map();
     this.nextCallID = 1;
+    /** Cached objects fetched so far, by object ID: {stamp, checksum, value}. */
+    this.cachedObjects = new Map();
 
     /** What the server told us at login (GPS.py's `response`). */
     this.loginResponse = null;
@@ -445,7 +463,7 @@ class GamePortSession {
       body: [body],
       journeyID: this.journeyID,
     });
-    return new Promise((resolve, reject) => {
+    const answered = new Promise((resolve, reject) => {
       const timer = this.timers.setTimeout(() => {
         this.pending.delete(callID);
         reject(new GamePortError("CALL_TIMEOUT", `${service ?? boundObject}.${method} got no answer from the game server.`));
@@ -459,6 +477,72 @@ class GamePortSession {
         reject(error);
       }
     });
+    return answered.then((result) => this._unwrapCachedResult(result));
+  }
+
+  // ── cached answers: objectCaching ──────────────────────────────────────────
+
+  /**
+   * What the caller of a remote call gets when the server answers with a
+   * CachedMethodCallResult, which is the answer itself and not the wrapper
+   * (ServiceCallGPCS: `ret = ret.GetResult()`). Its state is
+   * (details, result, version), and `result` is one of two things:
+   *
+   *   a marshal string      the answer, inline
+   *   a util.CachedObject   a reference; the object is fetched from
+   *                         objectCaching on first use
+   *
+   * Anything else is returned as it came.
+   */
+  async _unwrapCachedResult(value) {
+    const state = stateOfClass(value, "objectCaching.CachedMethodCallResult");
+    if (!state) return value;
+    const reference = stateOfClass(state[1], "cachedObject.CachedObject");
+    return reference ? this.fetchCachedObject(state[1]) : unpickle(state[1]);
+  }
+
+  /**
+   * The object a util.CachedObject refers to. Its state is
+   * (objectID, nodeID, objectVersion[, shared]); `shared` is left out when true.
+   *
+   * objectCaching.GetCachableObject: a shared object is asked for through our
+   * proxy node, any other from the node that holds it. The answer is an
+   * objectCaching.CachedObject, state (version, object, nodeID, shared, pickle,
+   * compressed, objectID), whose pickle is zlib when `compressed` is set.
+   *
+   * Like the client, we keep what we fetched. A version is (timestamp,
+   * checksum), and the client asks again only when the checksum differs AND
+   * what it holds is older (objectCaching.__OlderVersion). The timestamp alone
+   * changing, which it does on every answer, is not a new version.
+   */
+  async fetchCachedObject(reference) {
+    const state = stateOfClass(reference, "cachedObject.CachedObject");
+    if (!state) throw new GamePortError("NOT_A_CACHED_OBJECT", "That value is not a cached object reference.");
+    const [objectID, nodeID, objectVersion, sharedField] = state;
+    const shared = state.length < 4 ? 1 : sharedField;
+    const key = keyOf(objectID);
+    const [stamp, checksum] = Array.isArray(objectVersion) ? objectVersion.map((part) => BigInt(integer(part) ?? 0)) : [0n, 0n];
+    const kept = this.cachedObjects.get(key);
+    if (kept && !(kept.checksum !== checksum && kept.stamp < stamp)) return kept.value;
+
+    const remote = await this._call({
+      destination: nodeAddress(shared ? this.proxyNodeID : integer(nodeID), "objectCaching"),
+      boundObject: null,
+      service: "objectCaching",
+      method: "GetCachableObject",
+      args: [shared, objectID, objectVersion, nodeID],
+      kwargs: null,
+    });
+    const container = stateOfClass(remote, "objectCaching.CachedObject");
+    if (!container) throw new GamePortError("BAD_CACHED_OBJECT", "objectCaching did not answer with a cached object.", remote);
+    const [, object, , , pickle, compressed] = container;
+    let value = object;
+    if (value === null || value === undefined) {
+      if (!Buffer.isBuffer(pickle)) throw new GamePortError("BAD_CACHED_OBJECT", "Getting cached object contents, but both the object and the pickle are none");
+      value = marshalDecode(compressed ? zlib.inflateSync(pickle) : pickle);
+    }
+    this.cachedObjects.set(key, { stamp, checksum, value });
+    return value;
   }
 
   // ── clock and keep-alive: connectionService ────────────────────────────────

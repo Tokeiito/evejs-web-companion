@@ -86,6 +86,19 @@ password, which is how H10 is tied to a real client login.
 | `CallRsp`, `ErrorResponse`, `PingRsp` | Matched to the waiting call by the call ID in the destination address |
 | `TransportClosed` | Closes the session |
 
+## Cached answers (`objectCaching.py`, `cachedObject.py`)
+
+Some calls answer with a `CachedMethodCallResult` instead of the answer. The caller of a remote
+call in the client never sees that wrapper, and neither does a caller of `session.call`.
+
+| # | The retail client | How known | Ours |
+|---|---|---|---|
+| C1 | Unwraps a `CachedMethodCallResult` before returning (`ret = ret.GetResult()`) | S | matches, V |
+| C2 | Its result is either the answer as a marshal string, carried inline... | S | matches, V (`account.GetKeyMap`) |
+| C3 | ...or a `util.CachedObject` reference, fetched with `objectCaching.GetCachableObject(shared, objectID, objectVersion, nodeID)` through the proxy node when shared | S, L | matches, V (`map.GetStationInfo`, `corporationSvc.GetAllCorpMedals`) |
+| C4 | The fetched object's pickle is zlib when its `compressed` flag is set | S | matches, V |
+| C5 | Keeps what it fetched; fetches again only when the checksum differs and its copy is older | S | matches, V (asked twice, fetched once) |
+
 ## Python 2.7 behaviour that reaches the wire
 
 `src/gamePort/py27.js` reproduces, for 64-bit Windows, the string, int and long hashes and the dict
@@ -121,8 +134,9 @@ broker for a location, asks it for the office's inventory, and calls that. eve.j
 Its commodity dict now goes out in the client's dict order, which is exact unless two type IDs
 want the same slot (the client fills it from another dict whose own order is not reproduced).
 
-**Cached answers.** The client caches some call answers (`objectCaching`) and sends their version
-back as `machoVersion`. We always send 1 and never cache.
+**Asking with a cached version.** When the client already holds an answer, it sends that answer's
+version as `machoVersion`, and the server can reply "still good" instead of the answer. We always
+send 1, so the server always answers in full. (What comes back is handled; see below.)
 
 ## Still needs a recording of the real client
 
