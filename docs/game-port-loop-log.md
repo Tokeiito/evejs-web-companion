@@ -329,3 +329,57 @@ Phase 5 has to account for one by one.
    remove.
 4. **Phase 3's hosted check** (Ready Fit's Replenish, staged), and the twenty session-less
    gateway calls, before Phase 5.
+
+---
+
+## 2026-10-08 — Phase 4 begins: a real destiny stream, recorded
+
+Commits `6347dc8`, `869086b`, pushed.
+
+**A recording.** `scripts/record-destiny.js` undocks a docked character on the game port the way
+a real client's session shows it in the server's log (`ship.Undock`, `beyonce.GetFormations`,
+then the `beyonce` bind, which is what makes the server send the ballpark), stops it, docks it
+again, and keeps every frame with its arrival time. `test/fixtures/destinyUndock.json` is one run
+as the Test Pilot at Jita 4-4, who ended docked where it started. Seven tests pin its contents.
+
+What the server sends a client in space, as recorded:
+
+- `DoDestinyUpdate(events, waitForBubble)`, where `events` is a list of `(stamp, (name, args))`
+  and a stamp is whole seconds of the server's clock.
+- State arrives as binary blobs: `AddBalls2((blob, [slim items]))` for the ship (129 bytes),
+  `SetState(KeyVal{stamp, state, ego, damageState, slims, droneState, ...})` for the grid (3,054
+  bytes), and another `AddBalls2` (1,747 bytes, 19 items) for what is added after.
+- Movement is commands, not positions: `SetBallPosition`, `SetBallVelocity`, `SetBallMass`,
+  `SetBallMassive`, `SetBallAgility`, `SetMaxSpeed`, `GotoDirection`, `Stop`. After the first
+  second the client is told what the ship was ordered to do and has to work out where it is.
+- Around them: `DoSimClockRebase`, `OnSetTimeDilation`, `OnSpecialFX`, `OnDockingAccepted`,
+  `OnDockingFinished`, and `OnMachoObjectDisconnect` each time the pilot changes place.
+
+**A fix that fell out of it.** The server announces each bound object it lets go
+(`OnMachoObjectDisconnect`); the retail client unregisters the object. The transport now forgets
+any handle that names it. Test first; four breakages caught.
+
+**In progress when this entry was written.** A sub-agent is reading CCP's `destiny` source and
+the client's `michelle` and writing `docs/game-port-destiny-notes.md`: the state blob's layout,
+the tick, each movement mode's equations, every update event, all with file and line. It writes
+one file and commits nothing. The port is done from the source with those notes as the map; each
+part is checked against the code it cites as it is ported.
+
+Retail's undock also sends an `onlineModules` keyword (`station/base.py`), which the recorder
+does not. It goes in the call registry when undock stops being refused.
+
+### Next
+
+1. **Read the notes when they land, and check the state-blob section against `Ballpark.cpp`.**
+   Then the first port unit: decode the three blobs in the recording into balls (id, position,
+   velocity, radius, mass, mode and each mode's fields). The test is the recording: the ship's
+   ball in the first blob must sit where `SetBallPosition` then puts it, and the 19 added items
+   must match their slim items one for one.
+2. **The event applier and the tick**: apply the recorded events at their stamps and step the
+   ballpark; the ship must leave the station along `GotoDirection` at no more than
+   `SetMaxSpeed`, and come to rest after `Stop`.
+3. **A second recording with a warp and a gate jump in it**, then those modes.
+4. **`readSpaceSnapshot`, flight status's ship mode, the scanner** from the ballpark, compared
+   with the gateway's snapshot of the same grid; then undock stops refusing.
+5. The call ledger, Phase 3's hosted check and the session-less gateway calls, as listed above.
+
