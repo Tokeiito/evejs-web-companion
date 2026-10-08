@@ -14,9 +14,15 @@ browser ── one WebSocket (calls + pushed notifications) ──> BFF ── T
                                                              └── HTTP :26002 gateway, ACCOUNT-LEVEL routes only
 ```
 
-⚠ **This needs no eve.js change.** It moves Web Companion further onto "the published stock EveJS
-interfaces and original game protocol" (`docs/stock-evejs-integration-policy.md`). If any phase
-appears to need a server change, stop and raise it; do not patch.
+⚠ **This needs no eve.js feature.** It moves Web Companion further onto "the published stock EveJS
+interfaces and original game protocol" (`docs/stock-evejs-integration-policy.md`). The web client
+conforms to the server; nothing is added to the server for the web client's sake.
+
+A **server defect** is different, and since 2026-10-08 it gets fixed: something the retail client
+would suffer too is handed to a sub-agent to fix and commit in `eve.js`. The procedure, and the
+unattended loop that now works this plan, are in
+[`goal-prompts/game-port-loop.md`](goal-prompts/game-port-loop.md); its journal is
+[`game-port-loop-log.md`](game-port-loop-log.md).
 
 ---
 
@@ -35,11 +41,14 @@ Sources of truth, in the order to consult them:
 
 1. **The decompiled client**, `eve.js/tools/ClientCodeGrabber/Latest` — what the client does.
    Decompile further with `eve.js/tools/ClientCodeGrabber` (and its V2) when a module is missing.
-2. **The legacy client install**, `D:\EVE Online - 3396210 - Copy` — the binaries the Python
-   calls into (`blue.dll`, `_destiny.dll`, `code.ccp`). Decompile them when the Python does not
-   answer the question.
-3. **The eve.js server source** — what the server accepts and sends.
-4. **A recorded real-client session** settles any disagreement between the three. One exists:
+2. **CCP's own source**, in `C:\Users\ryanf\Documents\GitHub`: `destiny` (the ballpark
+   simulation the client runs), `blue` (the marshaller and the Python runtime glue), `io`, `core`,
+   `fsd`, `trinity`. Where one of these covers the question it outranks decompiling a binary.
+3. **The legacy client install**, `D:\EVE Online - 3396210 - Copy` — the binaries the Python
+   calls into (`blue.dll`, `_destiny.dll`, `code.ccp`). Decompile them when neither of the above
+   answers the question. Its `python27.dll` answers questions about Python itself.
+4. **The eve.js server source** — what the server accepts and sends.
+5. **A recorded real-client session** settles any disagreement between the others. One exists:
    `eve.js/_local/logs/direct-tcp-real-client-20260809-163920.stdout.log` (login, character
    select, in station). Record more when a phase needs them.
 
@@ -391,9 +400,11 @@ the app uses (overview distance, in-range checks, arrival detection) to stay cor
 Then build, in this order:
 
 1. Destiny decoder with recorded-stream tests.
-2. Ball simulation for the modes the spike says are needed. Sources: the server's own
-   `eve.js/server/src/space/destiny/simulation/`, the client's `michelle.py`, and `_destiny.dll`
-   decompiled where those two disagree or are silent. The client's numbers win.
+2. Ball simulation. **CCP's own source for it is on this machine**
+   (`C:\Users\ryanf\Documents\GitHub\destiny`: `Ball.cpp`, `Ballpark.cpp`), so this is a port of
+   the client's simulation, not an approximation sized by the spike. The server's
+   `eve.js/server/src/space/destiny/simulation/` and the client's `michelle.py` show how it is
+   driven. The client's numbers win.
 3. `ballpark()` producing today's `/space/snapshot` JSON; ship HUD from dogma reads and
    notifications, as retail does.
 4. `location()` from the session mirror plus ballpark; `scanner()` from scan notifications.
@@ -447,7 +458,7 @@ Can run in parallel with the phases above; it touches a different hop.
 
 ## 6. Out of scope
 
-- Any eve.js change.
+- Any eve.js change made for the web client's sake. (Server defects are fixed; see the top.)
 - The gRPC public gateway (`publicGatewayLocal.js`). Node can speak it if a feature needs it; none
   in this plan does.
 - Option C (browser as the machoNet client). Phase 6b keeps it possible.
