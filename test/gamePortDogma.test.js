@@ -65,6 +65,8 @@ test("GetAllInfo from a real server: the ship and its module are held, and the s
   assert.deepEqual(dogma.shipReadings(SHIP), {
     capacitorRatio: 1, shieldRatio: 1, armorRatio: 1, hullRatio: 1, shieldCapacity: 175, armorCapacity: 150, hullCapacity: 150,
     activeModuleIDs: [], overloadedModuleIDs: [], moduleDamage: {}, weaponBanks: {},
+    // A real ship's row carries its racks' heat capacities, so its racks are known, and cold.
+    rackHeat: { high: 0, mid: 0, low: 0 },
   });
   assert.deepEqual([dogma.attribute(SHIP, ATTRIBUTE.CHARGE), dogma.attribute(SHIP, ATTRIBUTE.SHIELD_CHARGE)], [125, 175]);
   assert.equal(dogma.attribute(SHIP, 999999), null);
@@ -194,7 +196,7 @@ test("when the capacity or the recharge time changes, the charge carries on from
   // What was never said (no armour damage, no hull damage, no ship state) is not known, and is not made up.
   assert.deepEqual(small().shipReadings(5001), {
     capacitorRatio: 1, shieldRatio: 1, armorRatio: null, hullRatio: null, shieldCapacity: 200, armorCapacity: 300, hullCapacity: 400,
-    activeModuleIDs: [], overloadedModuleIDs: [], moduleDamage: {}, weaponBanks: null,
+    activeModuleIDs: [], overloadedModuleIDs: [], moduleDamage: {}, weaponBanks: null, rackHeat: null,
   });
   assert.ok(Math.abs(small({ charge: 25 }).shipReadings(5001, T0).capacitorRatio - 0.25) < 1e-12);
 });
@@ -526,4 +528,207 @@ test("a real damaged ship: each fitted module's damage, and the two guns in one 
   docked.loadAllInfo(damagedInfo("GetAllInfo docked"));
   assert.deepEqual(docked.shipReadings(damaged.shipID).weaponBanks, readings.weaponBanks);
   assert.deepEqual(Object.keys(docked.shipReadings(damaged.shipID).moduleDamage).map(Number).sort((a, b) => a - b), modules);
+});
+
+// ── rack heat ────────────────────────────────────────────────────────────────
+
+const { HEAT, calculateHeat } = require("../src/gamePort/pilotDogma");
+
+// What the client's own compiled CalculateHeat (dogma/attributes/heatAttribute) gave, run in the client's own
+// Python: currentHeat, timeDiff in ms, incomingHeat, dissipationRate, heatGenerationMul, heatCap, and the answer.
+const CLIENT_HEAT = [
+  [0, 0, 0, 0.01, 1, 100, 0],
+  [50, 1000, 0, 0.01, 1, 100, 49.5024916874584],
+  [50, 60000, 0, 0.01, 1, 100, 27.440581804701324],
+  [0.6, 1000, 0, 0.01, 1, 100, 0.5940299002495009],
+  [0.5, 1000, 0, 0.01, 1, 100, 0],
+  [0.4, 0, 0, 0.01, 1, 100, 0],
+  [100, 600000, 0, 0.01, 1, 100, 0],
+  [0, 1000, 0.04, 0.01, 1, 100, 3.9210560847676845],
+  [0, 10000, 0.04, 0.01, 1, 100, 32.967995396436066],
+  [30, 5000, 0.04, 0.01, 1, 100, 42.68884728454127],
+  [30, 5000, 0.08, 0.01, 1.5, 100, 61.583185473418155],
+  [30, 5000, 0.01, 0.01, 1, 120, 34.389351794935735],
+  [99, 600000, 0.02, 0.01, 1, 100, 99.99999385578765],
+  [30, 5000, 5e-8, 0.01, 1, 100, 30.000017499997806],
+  [30, 5000, 4.9e-8, 0.01, 1, 100, 28.536882735021422],
+  [30, 0, 0.04, 0.01, 1, 100, 30],
+];
+
+test("calculateHeat is the client's own CalculateHeat, case for case", () => {
+  for (const [currentHeat, timeDiff, incomingHeat, dissipationRate, heatGenerationMul, heatCap, expected] of CLIENT_HEAT) {
+    const got = calculateHeat(currentHeat, timeDiff, incomingHeat, dissipationRate, heatGenerationMul, heatCap);
+    const told = `(${[currentHeat, timeDiff, incomingHeat, dissipationRate, heatGenerationMul, heatCap].join(", ")}) gave ${got}, the client ${expected}`;
+    if (expected === 0) assert.equal(got, 0, told);
+    else assert.ok(Math.abs(got - expected) <= 1e-12 * expected, told);
+  }
+});
+
+const HEAT_HI = 1175;
+const HEAT_MED = 1176;
+const HEAT_LOW = 1177;
+const RACKS = [[1178, 100], [1199, 100], [1200, 100], [1179, 0.01], [1196, 0.01], [1198, 0.01], [1224, 1]];
+/** A module that heats: its heatAbsorbtionRateModifier, fitted to a ship. */
+const heater = (itemID, rate = 0.04, locationID = 5001) =>
+  [BigInt(itemID), kv({ itemID: BigInt(itemID), invItem: row7({ itemID, typeID: 21857, locationID, flagID: 19, groupID: 46, categoryID: 7 }), time: HEALTH_T, attributes: attrs([[1180, rate], [ATTRIBUTE.HP, 40]]), activeEffects: attrs([]) })];
+/** A ship with racks and its heaters, on a clock that can be moved: `at(seconds)` is that long after the load. */
+function heated({ racks = RACKS, rows = [heater(101), heater(102), heater(103, 0.02)] } = {}) {
+  const at = (s) => HEALTH_T + BigInt(Math.round(s * 1000)) * MS;
+  const clock = { now: HEALTH_T };
+  const dogma = createPilotDogma({ characterID: PILOT, now: () => clock.now });
+  dogma.loadAllInfo(kv({ shipInfo: attrs([shipRow(5001, [...HEALTHY, ...racks]), ...rows]) }));
+  const told = (seconds, notification) => {
+    clock.now = at(seconds);
+    return dogma.feed(notification);
+  };
+  const heat = (seconds, shipID = 5001) => dogma.rackHeat(shipID, at(seconds));
+  return { dogma, clock, at, told, heat };
+}
+const heatAdded = (heatID, moduleID) => ({ method: "OnHeatAdded", args: [heatID, BigInt(moduleID)] });
+const heatRemoved = (heatID, moduleID) => ({ method: "OnHeatRemoved", args: [heatID, BigInt(moduleID)] });
+const withRacks = (changes) => RACKS.map(([id, value]) => [id, id in changes ? changes[id] : value]);
+
+test("a ship with racks starts with what its row says of their heat, and a ship that names none has no heat reading", () => {
+  assert.deepEqual([...HEAT].map(([heatID, { family }]) => [heatID, family]), [[HEAT_HI, "high"], [HEAT_MED, "mid"], [HEAT_LOW, "low"]]);
+  const cold = heated();
+  assert.deepEqual(cold.heat(0), { high: 0, mid: 0, low: 0 });
+  assert.deepEqual(cold.heat(3600), { high: 0, mid: 0, low: 0 }, "and stays cold");
+  assert.deepEqual(cold.dogma.shipReadings(5001).rackHeat, { high: 0, mid: 0, low: 0 });
+  // No capacities in the row: nothing is known of its racks, which is not the same as cold.
+  const bare = loaded([shipRow(5001, HEALTHY)]);
+  assert.equal(bare.rackHeat(5001), null);
+  assert.equal(bare.shipReadings(5001).rackHeat, null);
+  assert.equal(cold.dogma.rackHeat(6001), null, "a ship that was never loaded");
+  assert.equal(cold.dogma.rackHeat(101), null, "a module has no racks");
+  // HeatAttribute.__init__: the row's value, no more than the capacity, true from the load.
+  const warm = heated({ racks: [...RACKS, [HEAT_HI, 250], [HEAT_MED, 50]] });
+  assert.deepEqual(warm.heat(0), { high: 1, mid: 0.5, low: 0 });
+  near(warm.heat(60).mid, 27.440581804701324 / 100);
+  // Each rack has its own capacity and its own rate of cooling.
+  const each = heated({ racks: [...withRacks({ 1178: 100, 1199: 80, 1200: 120, 1179: 0.01, 1196: 0.02, 1198: 0.03 }), [HEAT_HI, 40], [HEAT_MED, 40], [HEAT_LOW, 40]] });
+  assert.deepEqual(each.heat(0), { high: 0.4, mid: 0.5, low: 40 / 120 });
+  const minute = each.heat(60);
+  near(minute.high, (40 * Math.exp(-0.6)) / 100);
+  near(minute.mid, (40 * Math.exp(-1.2)) / 80);
+  near(minute.low, (40 * Math.exp(-1.8)) / 120);
+  // One capacity is enough to say the ship has racks; a rack whose capacity is nothing reads nothing.
+  const one = heated({ racks: [[1178, 100], [1179, 0.01], [1224, 1], [HEAT_HI, 50], [HEAT_LOW, 50]] });
+  assert.deepEqual(one.heat(0), { high: 0.5, mid: 0, low: 0 });
+});
+
+test("the server's word for a rack's heat stands from the moment it arrives, and cools from there as the client reckons", () => {
+  const ship = heated();
+  // Stamped three seconds in, arriving ten seconds in: SetBaseValue takes the moment it arrives.
+  assert.equal(ship.told(10, changes(change(5001n, HEAT_HI, ship.at(3), 50))), true);
+  assert.deepEqual(ship.heat(10), { high: 0.5, mid: 0, low: 0 });
+  near(ship.heat(11).high, 49.5024916874584 / 100);
+  near(ship.heat(70).high, 27.440581804701324 / 100);
+  near(ship.dogma.shipReadings(5001, ship.at(70)).rackHeat.high, 27.440581804701324 / 100);
+  assert.equal(ship.heat(610).high, 0, "cooled to what rounds to nothing, it is nothing");
+  // The same number again a minute on is news: by then the gauge had it at 27.
+  ship.told(70, changes(change(5001n, HEAT_HI, ship.at(70), 50)));
+  assert.equal(ship.heat(70).high, 0.5);
+  near(ship.heat(71).high, 49.5024916874584 / 100);
+  // A new number replaces the old, and each rack is its own.
+  ship.told(80, changes(change(5001n, HEAT_HI, ship.at(80), 12), change(5001n, HEAT_LOW, ship.at(80), 0.6)));
+  assert.equal(ship.heat(80).high, 0.12);
+  near(ship.heat(81).low, 0.5940299002495009 / 100);
+  assert.equal(ship.heat(80).mid, 0);
+  // Half a point, a second on, rounds to nothing.
+  ship.told(90, changes(change(5001n, HEAT_MED, ship.at(90), 0.5)));
+  assert.equal(ship.heat(91).mid, 0);
+  // Someone else's change is not taken; nor one that carries no number.
+  ship.told(100, changes(change(5001n, HEAT_HI, ship.at(100), 90, { owner: PILOT + 1 })));
+  assert.ok(ship.heat(100).high < 0.12);
+  ship.told(101, changes(change(5001n, HEAT_HI, ship.at(101), null)));
+  assert.ok(ship.heat(101).high < 0.12 && ship.heat(101).high > 0);
+  // A heat change for something with no racks is an attribute change like any other.
+  assert.doesNotThrow(() => ship.told(102, changes(change(101n, HEAT_HI, ship.at(102), 5))));
+  assert.equal(ship.dogma.attribute(101, HEAT_HI), 5);
+  assert.equal(ship.dogma.rackHeat(101), null);
+  // The ship's own rates changing: what went before is reckoned at the old rate, what comes after at the new.
+  const faster = heated();
+  faster.told(10, changes(change(5001n, HEAT_HI, faster.at(10), 50)));
+  faster.told(70, changes(change(5001n, 1179, faster.at(70), 0.02)));
+  near(faster.heat(70).high, 27.440581804701324 / 100);
+  near(faster.heat(130).high, (27.440581804701324 * Math.exp(-1.2)) / 100);
+  // A capacity of nothing reads nothing, whatever the heat is said to be.
+  const none = heated({ racks: withRacks({ 1178: 0 }) });
+  none.told(0, changes(change(5001n, HEAT_HI, none.at(0), 30)));
+  assert.equal(none.heat(0).high, 0);
+});
+
+test("a module the server says is heating a rack adds its absorption rate, and the rack climbs toward its capacity", () => {
+  // From cold, one module of 0.04.
+  const cold = heated();
+  assert.equal(cold.told(0, heatAdded(HEAT_HI, 101)), true);
+  near(cold.heat(1).high, 3.9210560847676845 / 100);
+  near(cold.heat(10).high, 32.967995396436066 / 100);
+  assert.deepEqual([cold.heat(10).mid, cold.heat(10).low], [0, 0], "the other racks are not heated");
+  // From 30, five seconds: one module, then two with a generation multiplier of 1.5, then a slow one under a capacity of 120.
+  const one = heated();
+  one.told(0, changes(change(5001n, HEAT_HI, one.at(0), 30)));
+  one.told(0, heatAdded(HEAT_HI, 101));
+  assert.equal(one.heat(0).high, 0.3);
+  near(one.heat(5).high, 42.68884728454127 / 100);
+  const two = heated({ racks: withRacks({ 1224: 1.5 }) });
+  two.told(0, changes(change(5001n, HEAT_MED, two.at(0), 30)));
+  two.told(0, heatAdded(HEAT_MED, 101));
+  two.told(0, heatAdded(HEAT_MED, 102));
+  near(two.heat(5).mid, 61.583185473418155 / 100);
+  const slow = heated({ racks: withRacks({ 1200: 120 }), rows: [heater(101, 0.01)] });
+  slow.told(0, changes(change(5001n, HEAT_LOW, slow.at(0), 30)));
+  slow.told(0, heatAdded(HEAT_LOW, 101));
+  near(slow.heat(5).low, 34.389351794935735 / 120);
+  // A module joining later: the rack is brought to that moment at the old rate, and goes on at the new.
+  cold.told(10, heatAdded(HEAT_HI, 103));
+  near(cold.heat(10).high, 32.967995396436066 / 100);
+  near(cold.heat(15).high, calculateHeat(32.967995396436066, 5000, 0.06, 0.01, 1, 100) / 100);
+  // The same module said twice is one module.
+  cold.told(15, heatAdded(HEAT_HI, 103));
+  near(cold.heat(20).high, calculateHeat(32.967995396436066, 10000, 0.06, 0.01, 1, 100) / 100);
+});
+
+test("a module that stops heating is taken off, and the rack cools from where it had got to", () => {
+  const ship = heated();
+  ship.told(0, changes(change(5001n, HEAT_HI, ship.at(0), 30)));
+  ship.told(0, heatAdded(HEAT_HI, 101));
+  assert.equal(ship.told(5, heatRemoved(HEAT_HI, 101)), true);
+  near(ship.heat(5).high, 42.68884728454127 / 100);
+  near(ship.heat(65).high, (42.68884728454127 * Math.exp(-0.6)) / 100);
+  // Two heating, one stops: the other still heats.
+  const pair = heated();
+  pair.told(0, heatAdded(HEAT_HI, 101));
+  pair.told(0, heatAdded(HEAT_HI, 103));
+  pair.told(10, heatRemoved(HEAT_HI, 103));
+  const atTen = calculateHeat(0, 10000, 0.06, 0.01, 1, 100);
+  near(pair.heat(10).high, atTen / 100);
+  near(pair.heat(20).high, calculateHeat(atTen, 10000, 0.04, 0.01, 1, 100) / 100);
+  // What cannot be placed changes nothing and breaks nothing: a module not held, a rack that is no rack,
+  // a module fitted to a ship that was not loaded, a notification with nothing in it.
+  const before = pair.heat(20);
+  for (const notification of [heatAdded(HEAT_HI, 999), heatAdded(9999, 101), heatRemoved(HEAT_MED, 999), { method: "OnHeatAdded", args: null }, { method: "OnHeatRemoved", args: [] }]) {
+    assert.equal(pair.told(10, notification), true);
+  }
+  const elsewhere = heated({ rows: [heater(201, 0.04, 6001)] });
+  elsewhere.told(0, heatAdded(HEAT_HI, 201));
+  assert.deepEqual(elsewhere.heat(10), { high: 0, mid: 0, low: 0 });
+  assert.deepEqual(pair.heat(20), before);
+  // The rate is the module's as it is at the time: a module told of later, with a rate changed since.
+  pair.told(20, changes(change(101n, 1180, pair.at(20), 0.08)));
+  near(pair.heat(21).high, calculateHeat(before.high * 100, 1000, 0.08, 0.01, 1, 100) / 100);
+});
+
+test("heat is forgotten with everything else, and a ship loaded again starts from its row", () => {
+  const ship = heated();
+  ship.told(0, changes(change(5001n, HEAT_HI, ship.at(0), 60)));
+  ship.told(0, heatAdded(HEAT_HI, 101));
+  near(ship.heat(5).high, calculateHeat(60, 5000, 0.04, 0.01, 1, 100) / 100);
+  // The ship loaded again: a new item, with the row's heat and nothing heating it.
+  ship.clock.now = ship.at(5);
+  ship.dogma.loadAllInfo(kv({ shipInfo: attrs([shipRow(5001, [...HEALTHY, ...RACKS, [HEAT_HI, 20]])]) }));
+  assert.equal(ship.heat(5).high, 0.2);
+  near(ship.heat(65).high, (20 * Math.exp(-0.6)) / 100);
+  ship.dogma.clear();
+  assert.equal(ship.dogma.rackHeat(5001), null);
 });

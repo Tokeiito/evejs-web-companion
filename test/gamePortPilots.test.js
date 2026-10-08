@@ -1815,7 +1815,45 @@ test("the snapshot's weapon banks and module damage are dogma's, and the banks f
   assert.deepEqual((await ship()).weaponBanks, { [SHIP + 2]: [SHIP + 3] });
   built.session.notify("OnWeaponBanksChanged", [BigInt(SHIP), { type: "dict", entries: [] }]);
   assert.deepEqual((await ship()).weaponBanks, {});
+  // This ship's row names no heat capacities: nothing is known of its racks.
+  assert.equal((await ship()).rackHeat, null);
   // The module's damage follows the server's changes: burnt out is 1.
   built.session.notify("OnModuleAttributeChanges", [{ type: "list", items: [["OnModuleAttributeChange", PILOT, BigInt(FITTED_MODULE), 3, DOGMA_T + 10000000n, 40, 10, DOGMA_T + 10000000n]] }]);
   assert.deepEqual((await ship()).moduleDamage, { [FITTED_MODULE]: 1 });
+});
+
+// ── rack heat, through the snapshot ──────────────────────────────────────────
+
+test("the snapshot's rack heat is dogma's: the server's word for a rack, and the client's reckoning from there", async () => {
+  // The ship of the capacitor test with its racks' capacities and rates, and its module one that heats.
+  const allInfo = shipAllInfo();
+  const [shipRow, moduleRow] = allInfo.args.entries.find(([name]) => name.toString() === "shipInfo")[1].entries.map(([, row]) => row.args.entries);
+  shipRow.find(([name]) => name.toString() === "attributes")[1].entries.push([1178, 100], [1199, 100], [1200, 100], [1179, 0.01], [1196, 0.01], [1198, 0.01], [1224, 1]);
+  moduleRow.push([Buffer.from("invItem"), { type: "packedrow", fields: { itemID: FITTED_MODULE, typeID: 21857, locationID: SHIP, flagID: 19, groupID: 46, categoryID: 7 } }]);
+  moduleRow.find(([name]) => name.toString() === "attributes")[1].entries.push([1180, 0.04]);
+
+  const hand = handTicked();
+  let clockMs = DOGMA_T_MS;
+  const built = build({ ...IN_SPACE, answers: { ...IN_SPACE.answers, "bound:GetAllInfo": allInfo } }, { ...hand.options, now: () => clockMs });
+  const { bridgeSessionID: handle } = await built.pilots.selectCharacter([PILOT, null, true], null, FIELDS);
+  await built.pilots.bindObject("beyonce", "MachoBindObject", [], null, WHOSE, handle);
+  for (const update of recordedUpdates.slice(0, 5)) built.session.notify("DoDestinyUpdate", update.args);
+  hand.parks[0].tick();
+  const heat = async () => (await built.pilots.readSpaceSnapshot(handle)).space.ship.rackHeat;
+  const close = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e-9, `${actual} is not ${expected}`);
+
+  assert.deepEqual(await heat(), { high: 0, mid: 0, low: 0 });
+  // The server says the mid rack is at 50 of its 100: that, and a minute on what the client's formula makes of it.
+  built.session.notify("OnModuleAttributeChanges", [{ type: "list", items: [["OnModuleAttributeChange", PILOT, BigInt(SHIP), 1176, DOGMA_T, 50, 0, DOGMA_T]] }]);
+  assert.deepEqual(await heat(), { high: 0, mid: 0.5, low: 0 });
+  clockMs += 60000;
+  close((await heat()).mid, 0.27440581804701324);
+  // The server says the module is heating the high rack: a second on, the client's number for 0.04 from cold.
+  built.session.notify("OnHeatAdded", [1175, BigInt(FITTED_MODULE)]);
+  clockMs += 1000;
+  close((await heat()).high, 0.039210560847676845);
+  built.session.notify("OnHeatRemoved", [1175, BigInt(FITTED_MODULE)]);
+  clockMs += 60000;
+  close((await heat()).high, 0.039210560847676845 * Math.exp(-0.6));
+  assert.equal(built.session.boundCalls.filter((call) => call.method === "GetAllInfo").length, 1, "all of it without asking again");
 });

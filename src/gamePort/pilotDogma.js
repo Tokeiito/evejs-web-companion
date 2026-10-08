@@ -67,6 +67,25 @@
 //   OnWeaponBanksChanged(shipID, banks)     the whole set, anew
 //   OnWeaponGroupDestroyed(shipID, itemID)  that master's bank is gone
 //
+// How hot each rack is running is the dogma location's too, and it is the one
+// reading the client works out for itself as time passes
+// (dogma/attributes/heatAttribute.py). Each of the ship's three heat
+// attributes (heatHi, heatMed, heatLow) holds a value and when it was true,
+// and at any later moment is
+//
+//   with nothing heating it    value x e^(-seconds x dissipationRate), and
+//                              nothing once that rounds to nothing
+//   with heat coming in        cap - cap x k + value x k,
+//                              k = e^(-seconds x incomingHeat x heatGenerationMultiplier)
+//
+// The server sets the value (an attribute change for one of the three,
+// clientDogmaLocation.OnModuleAttributeChanges: SetBaseValue, true from the
+// moment it arrives). What is coming in is the sum of the
+// heatAbsorbtionRateModifier of each module the client has been told is
+// heating that rack (OnHeatAdded(heatID, moduleID), OnHeatRemoved). The panel
+// shows value / capacity (shipDogmaItem.GetHeatValues). The heat states in
+// GetAllInfo's ship state are unpacked by the client and never used.
+//
 // An item that turns up after the ship was loaded is told of on its own, in
 // the same form as its row in GetAllInfo (godma.py 385, 1289):
 //
@@ -92,6 +111,30 @@ const ATTRIBUTE = Object.freeze({
   CAPACITOR_CAPACITY: 482,
   QUANTITY: 805,
 });
+/** dogma/const.py heatAttributes: each rack's heat, with its capacity and its dissipation rate; and the family the snapshot names it by. */
+const HEAT = new Map([
+  [1175, { capacity: 1178, dissipation: 1179, family: "high" }],
+  [1176, { capacity: 1199, dissipation: 1196, family: "mid" }],
+  [1177, { capacity: 1200, dissipation: 1198, family: "low" }],
+]);
+const ATTRIBUTE_HEAT_ABSORBTION_RATE_MODIFIER = 1180;
+const ATTRIBUTE_HEAT_GENERATION_MULTIPLIER = 1224;
+/** The attributes a rack's heat is worked out from, besides the heat itself. */
+const HEAT_INPUTS = new Set([ATTRIBUTE_HEAT_ABSORBTION_RATE_MODIFIER, ATTRIBUTE_HEAT_GENERATION_MULTIPLIER, ...[...HEAT.values()].flatMap(({ capacity, dissipation }) => [capacity, dissipation])]);
+
+/**
+ * heatAttribute.CalculateHeat: a rack's heat after `timeDiff` milliseconds.
+ * Held to the client's own compiled function in test/gamePortDogma.test.js.
+ */
+function calculateHeat(currentHeat, timeDiff, incomingHeat, dissipationRate, heatGenerationMul, heatCap) {
+  if (incomingHeat < 5e-8) {
+    const cooled = currentHeat * Math.exp((-timeDiff / 1000) * dissipationRate);
+    return Math.round(cooled) <= 0 ? 0 : cooled;
+  }
+  const kept = Math.exp((-timeDiff / 1000) * incomingHeat * heatGenerationMul);
+  return heatCap - heatCap * kept + currentHeat * kept;
+}
+
 /** inventorycommon/const.py categoryModule. */
 const CATEGORY_MODULE = 7;
 /** godma.chargedAttributeTauCaps: a recharging attribute, the attribute that is its recharge time, and the one that is its capacity. */
@@ -171,6 +214,8 @@ function createPilotDogma({ characterID = null, now = filetimeNow, effectCategor
   const identity = new Map();
   /** ship key -> Map(masterID -> Set(slaveID)): baseDogmaLocation.slaveModulesByMasterModule. */
   const banks = new Map();
+  /** item key -> Map(heatID -> { value, at, sources: Set(moduleID) }): the item's HeatAttributes. */
+  const heat = new Map();
 
   /** godma.GetAttribute. */
   function attribute(itemID, attributeID, at = now()) {
@@ -239,6 +284,30 @@ function createPilotDogma({ characterID = null, now = filetimeNow, effectCategor
     if (slaves.size === 0) held.delete(key(masterID));
   }
 
+  /** What is heating one of an item's racks: the sum of its sources' heatAbsorbtionRateModifier. */
+  const incomingHeat = (state, at) => [...state.sources].reduce((sum, moduleID) => sum + (attribute(moduleID, ATTRIBUTE_HEAT_ABSORBTION_RATE_MODIFIER, at) ?? 0), 0);
+
+  /** HeatAttribute.Update: bring a rack's heat to the moment `at`. */
+  function updateHeat(id, heatID, at) {
+    const state = heat.get(id)?.get(heatID);
+    if (!state) return null;
+    const { capacity, dissipation } = HEAT.get(heatID);
+    const elapsed = Number(at - state.at) / DGM_TAU_CONSTANT;
+    state.value = calculateHeat(state.value, elapsed, incomingHeat(state, at), attribute(id, dissipation, at) ?? 0, attribute(id, ATTRIBUTE_HEAT_GENERATION_MULTIPLIER, at) ?? 0, attribute(id, capacity, at) ?? 0);
+    state.at = at;
+    return state;
+  }
+
+  /**
+   * Something a rack's heat is worked out from is about to change on this item: bring to `at` the racks it
+   * enters, a ship's own three or the ones a module is heating. The client's gauges have them there already,
+   * so what went before the change is reckoned by what was true before it.
+   */
+  function settleHeat(id, at) {
+    const shipID = heat.has(id) ? id : identity.get(id)?.locationID;
+    for (const [heatID, state] of heat.get(shipID) ?? []) if (shipID === id || state.sources.has(id)) updateHeat(shipID, heatID, at);
+  }
+
   /** godma.UpdateItem: one item's row, as GetAllInfo lists it and as OnGodmaPrimeItem sends it. */
   function loadRow(itemID, row) {
     const fields = fieldsOf(row);
@@ -246,6 +315,13 @@ function createPilotDogma({ characterID = null, now = filetimeNow, effectCategor
     const given = fields.get("attributes");
     for (const [attributeID, value] of given && Array.isArray(given.entries) ? given.entries : []) values.set(number(attributeID), number(value));
     updateAttributes(itemID, values, clock(fields.get("time")) ?? now());
+    // HeatAttribute.__init__, for an item that has racks to heat: what the row says of each, no more than its
+    // capacity, true from now, with nothing coming in.
+    if ([...HEAT.values()].some(({ capacity }) => values.has(capacity))) {
+      const racks = new Map();
+      for (const [heatID, { capacity }] of HEAT) racks.set(heatID, { value: Math.min(values.get(capacity) ?? 0, values.get(heatID) ?? 0), at: now(), sources: new Set() });
+      heat.set(key(itemID), racks);
+    }
     // What the item is: its inventory row, or for a charge in a module the tuple it is keyed by.
     const inventory = rowFields(fields.get("invItem"));
     if (Array.isArray(itemID)) {
@@ -323,6 +399,15 @@ function createPilotDogma({ characterID = null, now = filetimeNow, effectCategor
     if (stamp && last !== undefined && last > stamp) return false;
     if (stamp) lastChange.set(`${id}:${attribute_}`, stamp);
     if (characterID !== null && number(ownerID) !== characterID && id !== characterID) return false; // not mine
+    // clientDogmaLocation.OnModuleAttributeChanges: a rack's heat is set to what the server says, as of now
+    // (HeatAttribute.SetBaseValue). The client leaves it alone when it is that already, going by the value its
+    // gauges last worked out; here that is the heat as of now, which in space is the same to within a gauge's
+    // refresh. So the same number sent again later is news: the rack had cooled, or climbed, since.
+    if (HEAT.has(attribute_) && number(newValue) !== null) {
+      const rack = updateHeat(id, attribute_, now());
+      if (rack) rack.value = number(newValue);
+    }
+    if (HEAT_INPUTS.has(attribute_)) settleHeat(id, now());
     return applyAttributeChange(id, attribute_, clock(time) ?? now(), number(newValue));
   }
 
@@ -411,6 +496,16 @@ function createPilotDogma({ characterID = null, now = filetimeNow, effectCategor
       shipEffect(notification.args);
       return true;
     }
+    if (notification.method === "OnHeatAdded" || notification.method === "OnHeatRemoved") {
+      // clientDogmaLocation.OnHeatAdded, OnHeatRemoved(heatID, moduleID). The client's ship is its current one;
+      // here it is the ship the module is fitted to, which for a module that can heat a rack is the same ship.
+      const [heatID, moduleID] = Array.isArray(notification.args) ? notification.args : [];
+      const module = identity.get(key(moduleID));
+      const state = module ? updateHeat(module.locationID, number(heatID), now()) : null;
+      if (state && notification.method === "OnHeatAdded") state.sources.add(key(moduleID));
+      else if (state) state.sources.delete(key(moduleID));
+      return true;
+    }
     if (notification.method === "OnWeaponBanksChanged") {
       if (Array.isArray(notification.args) && notification.args.length >= 1) setWeaponBanks(notification.args[0], notification.args[1]);
       return true;
@@ -476,6 +571,29 @@ function createPilotDogma({ characterID = null, now = filetimeNow, effectCategor
   }
 
   /**
+   * shipDogmaItem.GetHeatValues: how hot each rack is at `at`, as a fraction of its capacity,
+   * { high, mid, low }; null for an item that has no racks or was never loaded.
+   */
+  function rackHeat(shipID, at = now()) {
+    const id = key(shipID);
+    const racks = heat.get(id);
+    if (!racks) return null;
+    const out = {};
+    for (const [heatID, { capacity, dissipation, family }] of HEAT) {
+      const state = racks.get(heatID);
+      const maxHeat = attribute(id, capacity, at) ?? 0;
+      const incoming = incomingHeat(state, at);
+      if (maxHeat === 0 || (state.value === 0 && incoming === 0)) {
+        out[family] = 0;
+        continue;
+      }
+      const elapsed = Number(at - state.at) / DGM_TAU_CONSTANT;
+      out[family] = calculateHeat(state.value, elapsed, incoming, attribute(id, dissipation, at) ?? 0, attribute(id, ATTRIBUTE_HEAT_GENERATION_MULTIPLIER, at) ?? 0, maxHeat) / maxHeat;
+    }
+    return out;
+  }
+
+  /**
    * What the ship's panel shows that the ballpark does not know: the capacitor
    * and the three kinds of health as fractions, the three capacities, and what
    * its modules are doing. Null until the ship is loaded.
@@ -503,6 +621,7 @@ function createPilotDogma({ characterID = null, now = filetimeNow, effectCategor
       overloadedModuleIDs: modulesWith(id, new Set([EFFECT_CATEGORY.OVERLOAD])),
       moduleDamage: moduleDamage(id, at),
       weaponBanks: weaponBanks(id),
+      rackHeat: rackHeat(id, at),
     };
   }
 
@@ -536,6 +655,7 @@ function createPilotDogma({ characterID = null, now = filetimeNow, effectCategor
     setWeaponBanks,
     unlinkModule,
     weaponBanks,
+    rackHeat,
     /** What is known of one effect on one item, or null. */
     effect: (itemID, effectID) => effects.get(key(itemID))?.get(effectID) ?? null,
     feed,
@@ -550,8 +670,9 @@ function createPilotDogma({ characterID = null, now = filetimeNow, effectCategor
       effects.clear();
       identity.clear();
       banks.clear();
+      heat.clear();
     },
   };
 }
 
-module.exports = { ATTRIBUTE, CHARGED, DGM_TAU_CONSTANT, EFFECT_CATEGORY, EFFECT_ONLINE, chargeValue, createPilotDogma, filetimeNow };
+module.exports = { ATTRIBUTE, CHARGED, DGM_TAU_CONSTANT, EFFECT_CATEGORY, EFFECT_ONLINE, HEAT, calculateHeat, chargeValue, createPilotDogma, filetimeNow };

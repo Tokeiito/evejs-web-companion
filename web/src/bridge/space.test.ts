@@ -214,6 +214,28 @@ test("R23: an ABSENT activeModuleIDs decodes to null — 'unknown', not 'nothing
   assert.deepEqual(idle.ship?.activeModuleIDs, []);
 });
 
+test("rack heat decodes rack by rack, and what is not said is not known", () => {
+  const ship = (rackHeat: unknown) =>
+    decodeSpaceSnapshot({
+      inSpace: true,
+      solarSystemID: 30000142,
+      shipID: 9001,
+      entities: [],
+      ship: { itemID: 9001, typeID: 606, ...(rackHeat === undefined ? {} : { rackHeat }) },
+    } as unknown as JsonValue).ship!;
+  assert.deepEqual(ship({ high: 0.42, mid: 0, low: 1 }).rackHeat, { high: 0.42, mid: 0, low: 1 });
+  // Absent (the gateway's snapshot), null, or not an object at all: not known, which is not cold.
+  assert.equal(ship(undefined).rackHeat, null);
+  assert.equal(ship(null).rackHeat, null);
+  assert.equal(ship([0.1, 0.2, 0.3]).rackHeat, null);
+  assert.equal(ship(0.5).rackHeat, null);
+  // A rack left out, or given as something that is no number, is not known for that rack alone.
+  assert.deepEqual(ship({ high: 0.25, mid: "hot", low: null }).rackHeat, { high: 0.25 });
+  assert.deepEqual(ship({}).rackHeat, {});
+  // A fraction is held to 0 to 1, and a name that is no rack is dropped.
+  assert.deepEqual(ship({ high: 1.4, mid: -0.2, rig: 0.5 }).rackHeat, { high: 1, mid: 0 });
+});
+
 test("R23: the locked-target list decodes long-aware, and empties safely", () => {
   assert.deepEqual(
     decodeTargetIDs([50001248, { type: "long", value: "50001249" }] as unknown as JsonValue),

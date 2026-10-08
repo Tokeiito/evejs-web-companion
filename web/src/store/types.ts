@@ -1798,6 +1798,12 @@ export interface SpaceShipStatus {
    * many times it is clicked. `{}` is "nothing banked"; `null` is "unknown".
    */
   readonly weaponBanks: Readonly<Record<number, readonly number[]>> | null;
+  /**
+   * How hot each rack is running, 0 to 1 of its heat capacity, as the retail
+   * client's own heat gauges read it. Null when the transport does not say
+   * (the gateway does not), which is not the same as cold.
+   */
+  readonly rackHeat?: Readonly<Partial<Record<"high" | "mid" | "low", number>>> | null;
 }
 
 /** One decoded space snapshot: everything visible plus the active ship. */

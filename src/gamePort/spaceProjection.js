@@ -194,6 +194,9 @@ function projectSpace(park, { solarSystemID, shipID, readings = null }) {
       // dogma's as well. Null, not empty, when dogma could not be asked: empty means "none".
       moduleDamage: readings && readings.moduleDamage ? readings.moduleDamage : null,
       weaponBanks: readings && readings.weaponBanks ? readings.weaponBanks : null,
+      // How hot each rack is running, { high, mid, low } as fractions of its capacity: the dogma location's own
+      // reckoning (pilotDogma.js). Null when dogma could not be asked.
+      rackHeat: readings && readings.rackHeat ? readings.rackHeat : null,
     } : null,
   };
 }

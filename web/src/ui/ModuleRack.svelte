@@ -78,6 +78,7 @@
       $space.snapshot?.ship?.overloadedModuleIDs ?? null,
       $space.snapshot?.ship?.moduleDamage ?? null,
       $space.snapshot?.ship?.weaponBanks ?? null,
+      $space.snapshot?.ship?.rackHeat ?? null,
     ),
   );
   /**
@@ -796,23 +797,23 @@
       <span
         class="rack-row-label"
         title={row.heat === null
-          ? `${row.label} rack heat is not something this client can read yet.`
+          ? `${row.label} rack heat is not known on this connection.`
           : `${row.label} rack heat ${Math.round(row.heat * 100)}% — overloaded modules heat the whole rack`}
       >
         <span class="rack-name">{row.label}</span>
         <!--
-          RACK HEAT — a stub, and it says so.
+          RACK HEAT — the snapshot's reading, or "not known" when it has none.
 
-          ⚠ THE TRACK IS EMPTY AND THE WORDS READ "heat not known". It must
-          NEVER be drawn as 0, and NEVER filled from the modules' damage: an
-          empty bar reads as COLD, which is the single most dangerous thing this
-          instrument could say wrongly, and accumulated damage is the SCAR heat
-          left behind, not the heat in the rack now. A player overloading on the
-          strength of the wrong one burns modules out.
+          ⚠ WITH NO READING THE TRACK IS EMPTY AND THE WORDS READ "heat not
+          known". It must NEVER be drawn as 0 then, and NEVER filled from the
+          modules' damage: an empty bar reads as COLD, which is the single most
+          dangerous thing this instrument could say wrongly, and accumulated
+          damage is the SCAR heat left behind, not the heat in the rack now. A
+          player overloading on the strength of the wrong one burns modules out.
 
-          `row.heat` is typed `number | null` and is null for every row today;
-          the rendering is already correct for the day a real reading arrives,
-          which is why it is here rather than commented out.
+          `row.heat` is the snapshot's `ship.rackHeat` for this rack: a number
+          on the game port, where the BFF keeps heat as the retail client does,
+          and null on the gateway, whose snapshot does not carry it.
         -->
         <span class="rack-heat-track" aria-hidden="true">
           {#if row.heat !== null}

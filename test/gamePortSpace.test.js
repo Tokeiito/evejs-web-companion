@@ -255,7 +255,7 @@ test("the snapshot of a real grid: every ball that has a slim item, in the gatew
     position: { ...ball.newPos }, velocity: { ...ball.newVel }, shieldRatio: 1, armorRatio: 1, hullRatio: 1,
     capacitorRatio: null, shieldCapacity: null, armorCapacity: null, hullCapacity: null,
     // Dogma has not been asked: what only it knows is not known, which is null and not "none".
-    activeModuleIDs: [], overloadedModuleIDs: [], moduleDamage: null, weaponBanks: null,
+    activeModuleIDs: [], overloadedModuleIDs: [], moduleDamage: null, weaponBanks: null, rackHeat: null,
   });
   // A station: no ship's fields, and the health the server sent for it.
   const station = row(60003760);
@@ -280,6 +280,11 @@ test("what dogma says of the pilot's own ship goes where the ballpark has nothin
   const stripped = projectSpace(park, { solarSystemID: SYSTEM, shipID: undock.shipID, readings: { ...readings, shieldRatio: 0, armorRatio: 0, hullRatio: 0.5 } }).ship;
   assert.deepEqual([stripped.shieldRatio, stripped.armorRatio, stripped.hullRatio], [0, 0, 0.5], "and so are a shield and an armour with none left");
   assert.deepEqual([hurt.moduleDamage, hurt.weaponBanks], [{ 9988400103292: 0.18 }, { 9988400103292: [9988400103293] }]);
+  // How hot the racks are is dogma's too: said as it says it, and not known when it does not say.
+  assert.equal(space.ship.rackHeat, null);
+  assert.equal(hurt.rackHeat, null, "readings that carry no heat");
+  const hot = projectSpace(park, { solarSystemID: SYSTEM, shipID: undock.shipID, readings: { ...readings, rackHeat: { high: 0.42, mid: 0, low: 0 } } }).ship;
+  assert.deepEqual(hot.rackHeat, { high: 0.42, mid: 0, low: 0 });
   const partly = projectSpace(park, { solarSystemID: SYSTEM, shipID: undock.shipID, readings: { ...readings, shieldRatio: null, armorRatio: 0.5, moduleDamage: {}, weaponBanks: {} } }).ship;
   assert.deepEqual([partly.shieldRatio, partly.armorRatio, partly.hullRatio, partly.moduleDamage, partly.weaponBanks], [1, 0.5, 1, {}, {}]);
   // The row everyone sees of the ship keeps the ballpark's health: that is what another pilot is shown.

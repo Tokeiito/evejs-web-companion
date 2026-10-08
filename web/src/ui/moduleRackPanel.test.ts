@@ -36,7 +36,9 @@ const MINER_TYPE = 483;
 const HARDENER_ID = 7100003;
 const HARDENER_TYPE = 11642;
 
-function loadedStore(options: { activeModuleIDs?: number[] } = {}) {
+function loadedStore(
+  options: { activeModuleIDs?: number[]; rackHeat?: Partial<Record<"high" | "mid" | "low", number>> | null } = {},
+) {
   const store = createClientStore();
   store.apply({
     type: "space/snapshot",
@@ -66,6 +68,7 @@ function loadedStore(options: { activeModuleIDs?: number[] } = {}) {
         overloadedModuleIDs: [],
         moduleDamage: {},
         weaponBanks: {},
+        ...(options.rackHeat === undefined ? {} : { rackHeat: options.rackHeat }),
       },
     },
   });
@@ -119,7 +122,13 @@ function fakeFlow(): unknown {
   return new Proxy({}, { get: () => async () => {} });
 }
 
-function renderRack(options: { flow?: unknown | null; activeModuleIDs?: number[] } = {}): string {
+function renderRack(
+  options: {
+    flow?: unknown | null;
+    activeModuleIDs?: number[];
+    rackHeat?: Partial<Record<"high" | "mid" | "low", number>> | null;
+  } = {},
+): string {
   return render(ModuleRack, {
     props: {
       store: loadedStore(options),
@@ -347,6 +356,24 @@ test("⚠ the heat bar says NOT KNOWN, and is never filled from damage", () => {
     "a heat fill was drawn from a reading this client does not have",
   );
   assert.equal(/Heat 0/.test(visibleText(body)), false, "not known must never render as 0");
+});
+
+test("a rack the snapshot gives a heat for shows it; a rack it leaves out still says NOT KNOWN", () => {
+  // The game port's snapshot: the high rack at 42%, the low rack known to be cold, the mid rack not said.
+  const body = renderRack({ rackHeat: { high: 0.42, low: 0 } });
+  const text = visibleText(body);
+  assert.match(text, /42% heat/);
+  assert.match(text, / 0% heat/, "a rack known to be cold says so");
+  assert.equal((text.match(/heat not known/g) ?? []).length, 1, "only the rack the snapshot left out");
+  assert.match(body, /class="rack-heat-fill warm"[^>]*style="width:42%"/);
+  assert.match(body, /class="rack-heat-fill cool"[^>]*style="width:0%"/);
+  assert.equal((body.match(/rack-heat-fill/g) ?? []).length, 2, "and no fill is drawn for the one not known");
+  assert.match(body, /rack heat 42%/);
+  // The gateway's snapshot says nothing of heat: every rack is not known, and nothing is filled.
+  for (const none of [renderRack({ rackHeat: null }), renderRack()]) {
+    assert.equal((visibleText(none).match(/heat not known/g) ?? []).length, 3);
+    assert.equal(/rack-heat-fill/.test(none), false);
+  }
 });
 
 test("⚠ THE HEAT READING IS PART OF THE ROW HEADER, on one line with the name", () => {

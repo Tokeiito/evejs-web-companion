@@ -65,14 +65,13 @@ export interface RackRow {
   readonly label: string;
   readonly slots: readonly RackSlotVM[];
   /**
-   * ⚠ HOW HOT THIS RACK IS RUNNING, 0..1 — AND IT IS ALWAYS `null` TODAY.
+   * ⚠ HOW HOT THIS RACK IS RUNNING, 0..1 — OR `null`, WHICH IS "NOT KNOWN".
    *
-   * There is no heat model anywhere in this client: not in the store, not in
-   * the bridge, not on the BFF. Greps for heatState / heatLevel / rackHeat /
-   * heatCapacity / heatAttenuation across web/src and src/server.js find
-   * nothing. The in-space handoff draws a per-rack heat bar, so the bar is
-   * built and wired — to this, which reads UNKNOWN until a real reading
-   * arrives (a separate piece of work).
+   * The reading is the snapshot's `ship.rackHeat`. On the game port the BFF
+   * keeps it as the retail client's dogma does (src/gamePort/pilotDogma.js:
+   * the server's word for each rack, cooled or heated since by the client's
+   * own formula). The gateway's snapshot does not carry it, and there every
+   * rack reads UNKNOWN.
    *
    * ⚠ IT MUST NEVER BE FILLED IN FROM MODULE DAMAGE. Damage is what heat DID;
    * it is not how hot the rack is now, and averaging it into this field would
@@ -95,9 +94,8 @@ export function buildModuleRack(
   moduleDamage: Readonly<Record<number, number>> | null | undefined = null,
   weaponBanks: Readonly<Record<number, readonly number[]>> | null | undefined = null,
   /**
-   * ⚠ HOW HOT EACH RACK IS RUNNING, and nothing passes it yet — see RackRow.heat.
-   * It is a parameter rather than a hardcoded null so the day a heat reading
-   * exists, wiring it up is one call site and no UI change at all.
+   * ⚠ HOW HOT EACH RACK IS RUNNING — the snapshot's `ship.rackHeat`, see
+   * RackRow.heat. Null, absent, or a rack it does not name, is not known.
    */
   rackHeat: Readonly<Partial<Record<RackFamily, number>>> | null | undefined = null,
 ): readonly RackRow[] {

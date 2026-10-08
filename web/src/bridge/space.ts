@@ -228,6 +228,7 @@ function decodeShip(value: JsonValue | undefined): SpaceShipStatus | null {
     overloadedModuleIDs: decodeIDList(raw.overloadedModuleIDs),
     moduleDamage: decodeModuleDamage(raw.moduleDamage),
     weaponBanks: decodeWeaponBanks(raw.weaponBanks),
+    rackHeat: decodeRackHeat(raw.rackHeat),
     miningBurstServices: decodeMiningBurstServices(raw.miningBurstServices),
     coreMobilityFuel: decodeCoreMobilityFuel(raw.coreMobilityFuel),
     moduleReach: decodeModuleReach(raw.moduleReach),
@@ -235,6 +236,27 @@ function decodeShip(value: JsonValue | undefined): SpaceShipStatus | null {
     characterID: idOrNull(raw.characterID),
     ownerID: idOrNull(raw.ownerID),
   };
+}
+
+/**
+ * How hot each rack is, { high, mid, low } as fractions. An absent field, or
+ * one that is not an object, is null: not known. A rack the answer leaves out,
+ * or gives as something that is no number, is left out here too, and reads as
+ * not known for that rack alone.
+ */
+function decodeRackHeat(value: JsonValue | undefined): Readonly<Partial<Record<"high" | "mid" | "low", number>>> | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return null;
+  }
+  const record = value as Record<string, JsonValue>;
+  const out: Partial<Record<"high" | "mid" | "low", number>> = {};
+  for (const family of ["high", "mid", "low"] as const) {
+    const heat = ratioOrNull(record[family]);
+    if (heat !== null) {
+      out[family] = heat;
+    }
+  }
+  return out;
 }
 
 /**
