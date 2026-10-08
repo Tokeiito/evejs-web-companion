@@ -193,6 +193,22 @@ Take these defaults, and list each under "For the operator" in the log so they c
   table per store with `key` and `json` columns: stop the server, copy the file **and its
   `-wal` and `-shm`** aside (the server leaves the log unmerged when it stops), edit with
   `node:sqlite`, start it again.
+- **A live check that stages anything is undone afterwards.** The eve.js test harness copies the
+  LIVE store (`_local/gameStore`) as every test file's baseline, and its fixture pilots are the
+  characters used here: Test Three (140000003) is its default pilot, Test Two (140000002) its
+  second, Test Pilot (140000001) its other-account one. On 2026-10-08 a stack of Slaves, fourteen
+  customs cases, three notifications and a moved character, all left by this loop's live checks,
+  had 27 of its tests red, and I had logged them as the server's. So: stop the server, copy
+  `gamestore.sqlite` with its `-wal` and `-shm`, start it, do the check, stop it, copy the three
+  files back, start it (a restart is about twenty seconds). Run eve.js's own tests with the live
+  server stopped, and before calling one "red on unchanged source", read what its failing
+  assertion found and look for that in the live store.
+- **A dialog by its name**: `node scripts/client-words.js "<client folder>" dialog:<Name>` says
+  what kind it is and which parameters its title and body take. A dialog's parameters may be
+  typed tuples, `(code, value[, value2])`, which the client turns to text first
+  (`cfg.FormatConvert`). A list inside one must be sent as a list: the client reads a tuple there
+  as one more typed value and raises. The bridge's JSON keeps the two apart (an array is a tuple,
+  `{type: "list", items}` a list), so look at which one the server sent.
 - **The BFF runs one write per pilot at a time** (`CHARACTER_IN_USE`). Anything that must get
   through while a write is waiting on the server, as an answer to its question must, has to be
   let past that gate in `src/server.js`, and tested with a write in flight.

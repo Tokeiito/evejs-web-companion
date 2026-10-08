@@ -76,9 +76,20 @@ Decisions taken in your place, and anything waiting on you. Overrule any of thes
   works. Not a defect of either: it goes away when the gateway does.
 - **Test Two's standing** with agent Antaken Kamola went to -0.539 with the quit that proved
   this, and reads -0.434 after the courier run that followed.
-- **Two more server fixes are committed in eve.js and not pushed**: `624378554` (a No to the
-  decline question) and `7282f54cc` (the contraband warning at undock). They sit on `main` beside
-  whatever else is there, as you instructed for fixes.
+- **Three more server fixes are committed in eve.js and not pushed**: `624378554` (a No to the
+  decline question), `7282f54cc` (the contraband warning at undock) and `85042bbce` (the customs
+  question's contraband sent as a list, which the retail client needs to word it). They sit on
+  `main` beside whatever else is there, as you instructed for fixes.
+- **My live checks had turned eve.js's own tests red, and I had told you they were red on their
+  own.** Its test runner copies the live store as its baseline and flies Test Two and Test
+  Three, so what I left on them (a stack of Slaves, fourteen customs cases, three notifications,
+  Test Three moved to another system) failed 27 of its tests. I have taken those out, and both
+  files pass again. From now on the store is copied before a live check that stages anything
+  and put back after it. **If you ran eve.js's tests on 2026-10-08 and saw customs or mission
+  scenarios fail, that was this.**
+- **The undock warning's sentence, which is the client's text, was written out in this
+  repository** from commit `cba50d1` until `81f2c33` took it out of the files. It is still in
+  the history. I do not rewrite history; say if you want it rewritten.
 - **The retail client's text is read from your installed client, not kept in the repository.**
   Set `EVEJS_CLIENT_ROOT` to the client's folder (the one holding `tq` and `ResFiles`) for the
   BFF to serve the client's own words for the server's labels. Unset, which is how the BFF runs
@@ -92,9 +103,12 @@ Decisions taken in your place, and anything waiting on you. Overrule any of thes
 - **Test Two has an offer open** from Antaken Kamola (not accepted), left from the re-check.
 - **Test Two was fined and lost standing proving the customs question**: 37,500 ISK and 0.2 with
   the Caldari State at an undock with contraband aboard, and the same again for surrendering ten
-  Slaves at the gate. The Slaves were given by GM command and are all confiscated.
-- **Test Three was moved and changed to prove the research questions**: it is docked at
-  Iyen-Oursta III - Roden Shipyards Factory (it was at Jita 4-4), has Science V and two research
+  Slaves at the gate. The Slaves were given by GM command and are all confiscated. The customs
+  cases, the penalty and the notifications those runs left in the store have since been removed
+  (see the entry "dialogs by name"); the wallet and the standing are as the fines left them.
+- **Test Three was moved and changed to prove the research questions**: it was docked at
+  Iyen-Oursta III - Roden Shipyards Factory until later on 2026-10-08, when I moved it back to
+  Jita 4-4, where it had been. It still has Science V and two research
   skills at level 1, and three datacores. To get research points I edited the game store with
   the server stopped (one project's start moved back 300 days; the project has since been
   cancelled). The store as it was is kept in the scratchpad.
@@ -117,6 +131,7 @@ Decisions taken in your place, and anything waiting on you. Overrule any of thes
 | 2026-10-08 | The state sent when a client asks for it (`UpdateStateRequest`) carries where the ships are now under the next second's stamp, not carried forward to that tick as `AddBalls2` is | probes every 3.5 s read -1.49, +0.58, -0.53, +0.58 ticks against a park stepped from the state before (my run); `dispatch/sceneRefresh.js` 216-229, `authority/destinyAuthority.js` 955-968 (sub-agent's read) | **not fixed**: same code, same reasons; matters only after a client has lost its place | - |
 | 2026-10-08 | After a No to the decline question (`agents.YesNo`), `agentMgr.DoAction` is answered with "This agent is unavailable." and no buttons, though the offer still stands | the retail client draws whatever DoAction answers (`agentDialogueWindow.py` 402); seen live on the game port: that conversation, with the offer still in the journal | `624378554` on `main`, not pushed | 2026-10-08: server restarted; Decline then No in the browser brings back the offer with Accept, Decline, Defer |
 | 2026-10-08 | Undocking with contraband aboard: the server fines and confiscates at once. It never raises `ShipContrabandWarningUndock` and ignores `ignoreContraband`, so the client's warning (OK to go on, Cancel to stay) is never shown | `ui/station/base.py` 488 to 510 catches that refusal and retries with `ignoreContraband` set; server log `[Contraband] ... fine=37500 standingLoss=0.200` at undock, the goods gone from the hold | `7282f54cc` on `main`, not pushed | 2026-10-08: server restarted; in the browser, Undock with ten Slaves aboard asks, Cancel leaves ship, goods and wallet untouched, OK undocks; the gateway route warns too |
+| 2026-10-08 | The customs question (`XmppChat.AskYesNoQuestion`, dialog `ChtCustomsConfiscationConfirmation2`) sends its contraband entries in a tuple. The client's `cfg.FormatConvert` reads a tuple given as a value as one more typed value, so it raises instead of wording the dialog | the server's bytes (one entry: opcode `0x25`, a one-tuple); the conversion's shape run in the client's own `python27.dll` raises `IndexError` on a tuple of entries and words a list; the client's own caller builds a list (`eveCfg.py` 170). Not observed on a running retail client | `85042bbce`, by a sub-agent: the entries go as a list | the fix's test decodes the bytes (watched to fail first); in the browser on the game port the question was asked, worded and answered with the server on that commit |
 
 Withdrawn the same day: "after undocking the server's ship is a tick behind". It is not; that was
 the second row above, seen through a recorder that always asked at the same point in the second.
@@ -1902,9 +1917,12 @@ sentence. The first commit's guess never met a live server.
   decompiled client only mentions the name at the two undock sites.
 - The undock inspection, and so the warning, looks only in the cargo hold.
 - A warned attempt still switches on the modules the client listed, before it is refused.
-- *Measured:* three test files in eve.js fail on unchanged source and are not in its baseline
+- ~~*Measured:* three test files in eve.js fail on unchanged source and are not in its baseline
   list (`customsInspectionLifecycle` 8, `harnessCustomsInspectionScenarios` 1,
-  `harnessMissionScenarios` 4). Not looked into.
+  `harnessMissionScenarios` 4). Not looked into.~~ **Withdrawn later the same day:** the 8 and
+  the 4 were what this loop's own live checks had left in the live store, which is those tests'
+  baseline. See the entry "dialogs by name, and what my live checks had done to the server's
+  tests".
 
 **Still true after this:** once the player says OK, the server fines and confiscates at the
 undock itself, with no customs ship having scanned anything. That is the server's own model of
@@ -2153,3 +2171,134 @@ briefing panel and the journal still show what they showed.
    FORMATION, MUSHROOM.
 6. The call ledger (`ship.Undock`, `dogmaIM.Activate` and `Deactivate` to bind as the client
    does), Phase 3's hosted check and the session-less gateway calls.
+
+---
+
+## 2026-10-08 — dialogs by name, and what my live checks had done to the server's tests
+
+Commit `81f2c33`, pushed. In eve.js, by a sub-agent: `85042bbce`, not pushed.
+
+**What the retail client does.** Some of what the server asks or refuses with is a **dialog by
+its name**: `ShipContrabandWarningUndock`, and the customs question
+`ChtCustomsConfiscationConfirmation2`. The client looks the name up in its dialog table
+(`eveCfg.GetMessage`: `res:/staticdata/dialogs.static`, 4,221 dialogs), which gives the dialog's
+kind, whether it can be suppressed, and the message IDs of its title and its body. Before it
+fills those two texts it prepares the parameters (`cfg.__prepdict`, `FormatConvert`): every
+value that is a tuple `(code, value[, value2])` is turned to text by its code. An owner (2), a
+place (3) and a type (4) become their names; a quantity of a type (24) becomes the label
+`UI/Common/QuantityAndItem` filled with both; a list (103) becomes its entries, each converted,
+joined by the separator it came with.
+
+**What was built.**
+
+- **A reader for the client's FSD data** (`src/clientData/fsd.js`): the schema that ships beside
+  a binary, and the binary read by it, for the node kinds the dialog table uses. Written from the
+  client's own loaders (`fsd/schemas/loaders`). The real table reads in 15 ms.
+- **A dialog by name** in the BFF's reader, and `POST /api/words` takes `dialogs`. A dialog's two
+  texts are kept beside the labelled ones, so a dialog does not cost the 90 MB language file.
+- **The undock warning** is the client's own body with its item filled in when the BFF has a
+  client to read, and this client's own words when it has not.
+- **The customs question** carries its dialog's name for its title and its body, and the page
+  fills both from the parameters as the client prepares them. It had no title before.
+- `scripts/client-words.js <client> dialog:<Name>` says what a dialog is and what its two texts
+  take.
+
+**The client's sentence is out of this repository's files.** The undock warning's sentence had
+been written out in `src/server.js`, in two tests and twice in this log since commit `cba50d1`.
+It is the client's text, and the rule here is that it is read from the install and not copied.
+It is gone from the files; it is still in the history, which I do not rewrite.
+
+**A server defect, found by reading and fixed by a sub-agent.** The customs question sent its
+contraband as `(103, entries, "<br>")` with the entries in a **tuple** (a JavaScript array, which
+the server's marshaller always sends as a tuple). The client's `FormatConvert` reads a tuple
+given as a value as one more typed value to convert first, so it cannot word that:
+
+- the bytes, encoded with the server's own marshaller: one entry goes out as opcode `0x25`, a
+  one-tuple;
+- the shape of the client's conversion, run in the client's own `python27.dll`: a tuple of one
+  entry raises `IndexError`, of two or three raises `IndexError` further in, and a **list** of
+  entries gives the text;
+- the client's own caller builds a list (`eveCfg.py` 170).
+
+So by the client's code the question raises inside the client and is never shown. **Not
+observed:** I have not watched a running retail client do it. The fix (`85042bbce`) sends the
+entries as a list; its test decodes the bytes and was watched to fail first. Nothing else in the
+server builds such a list. The page reads either shape.
+
+**Proof.**
+
+- Tests: 31 new (15 in the BFF, 16 in the page) and ten changed. The BFF's were watched to fail
+  on the code from before, all but the FSD reader's, which had no code before; those and the
+  page's were checked by breaking the code.
+- 118 ways of breaking the new code. 116 were caught, one more once a test was added for it,
+  and the last was a guard that did nothing and was removed. None was left untried.
+- Suite: 9016 tests, 8991 pass, 0 fail, 24 skipped, 1 todo. (32 more than last time: the runner
+  counts the new helper file as one.)
+- **In the browser, the undock warning.** Test Two docked with ten Slaves in the hold, Undock
+  pressed: one request, 409 `CONTRABAND_WARNING`, and the page asked with a sentence of 112
+  characters, the dialog's body with "Slaves" where its `{item}` is, no tag left in it. Answered
+  Cancel: still docked.
+- **In the browser, the customs question**, with the server on `85042bbce`:
+
+  | When (UTC) | What |
+  |---|---|
+  | 13:44:19 | first arrival at the Muvolailen gate with ten Slaves aboard: not selected for a scan |
+  | 13:47:39 | second arrival: selected, one stack detected |
+  | 13:47:46.335 | the page asks `/api/words` for `dialogs: ["ChtCustomsConfiscationConfirmation2"]` and `labels: ["UI/Common/QuantityAndItem"]`; it gets a question with a title of 21 characters and a body of 330, and a label of 52 |
+  | 13:47:46.989 | the question is on the page: the client's title, the client's body with "Caldari State" where its `{empire}` is, a blank line, and "10 x Slaves" where its `{contraband}` is; Yes and No; no brace and no markup left |
+  | 13:47:50.984 | Yes pressed; `{"answer":true}`, 200 |
+  | 13:47:51 | the server's case: surrendered, answer true |
+
+  Before this entry the same question read, in this client's own words, "Caldari State customs
+  has found contraband in your cargo: 10 × Slaves. Hand it over?", with no title.
+
+**Not done:** a dialog with no title gets the client's title for its kind
+(`TITLE_BY_DIALOG_TYPE`), and a suppressable one gets a "do not ask again" box; neither is here.
+The other typed codes (dates, amounts, ISK, distances, group names, a message inside a message)
+come out as nothing. The undock warning's own title is not shown (the page asks with a plain
+confirm).
+
+### A finding of mine, withdrawn: the server's red tests were my own doing
+
+The entry "contraband at undock" lists, as measured, "three test files in eve.js fail on
+unchanged source". That was true and it pointed the wrong way. eve.js's test runner copies the
+**live** store as every test file's baseline, and its fixture pilots are the characters this
+loop flies: Test Three is its default pilot, Test Two its second. What my live checks left in
+the store is what those tests started from.
+
+Measured today, each row a re-run of the file with the live server stopped:
+
+| File | Then | What the failures found | After removing it |
+|---|---|---|---|
+| `customsInspectionLifecycle` | 22 of 23 failed (the sub-agent's run, with the live server running) | Test Two's hangar already held a stack of Slaves, mine, and the test's own grant merged into it ("granted nothing", in all 22) | 8 failed, none of them with that message |
+| the same | 8 failed | 7 or 8 customs cases where 0 or 1 were expected; the store held 14, all from my runs today | 3 failed |
+| the same | 3 failed | a customs notification already in Test Two's inbox, from my surrendered case | **0 failed** |
+| `harnessMissionScenarios` | 4 failed, 6 skipped | "agent 3009373 offered nothing": the pilot's nearest level 1 agent was the research agent at Iyen-Oursta, where I had moved Test Three | **17 of 17 pass** with it back at Jita 4-4 |
+| `customsInspectionRestart` | 2 of 3 failed (the sub-agent's run) | "persistence owner scheduler is active in another instance": the live server was running | 3 of 3 pass with it stopped |
+| `harnessCustomsInspectionScenarios` | 1 of 4 failed | a different test on different runs, on the old source and the new alike | still 1; **not explained** |
+
+**What I took out of the live store**, with the server stopped and the store copied first: the
+stack of ten Slaves (trashed in the game), the 14 customs cases and the one contraband penalty
+of today, three notifications of today in Test Two's inbox (two "standings lost", one customs),
+and Test Three went back to Jita 4-4 by GM command.
+
+**What I could not put back:** Test Two's wallet and its standing with the Caldari State after
+two fines; Test Three's Science V, its two research skills and three datacores; Test Two's open
+offer from Antaken Kamola. None of those made a test fail today.
+
+**From now on a live check that stages anything is undone:** the store is copied with the
+server stopped, the check is run, and the copy is put back. Today's customs check above was the
+first done that way: the store is as it was before it. The brief says so.
+
+### Next
+
+1. **The rest of a mission's words**: the briefing panel and the journal, and messages inside
+   messages when one turns up.
+2. **The scanner in space** on the game port (the one route that still answers 501 there).
+3. Module damage and weapon banks from dogma; health from godma as the panel reads it.
+4. **Collisions**; **the park beside the server's movement log**; the sim clock; MISSILE,
+   FORMATION, MUSHROOM.
+5. The call ledger (`ship.Undock`, `dogmaIM.Activate` and `Deactivate` to bind as the client
+   does), Phase 3's hosted check and the session-less gateway calls.
+6. Small, around dialogs: the title for a dialog's kind, the "do not ask again" box, the typed
+   codes not done.
