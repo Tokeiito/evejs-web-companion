@@ -107,8 +107,8 @@ The three "none" rows are web-only projections. They are the real work.
 
 | Unknown | Answered in |
 |---|---|
-| Does eve.js compress outbound packets? (Retail compresses ≥200 bytes.) | Phase 1 |
-| Does the patched retail client send "placebo" or a real AES session key? | Phase 1 |
+| ~~Does eve.js compress outbound packets?~~ **No.** Nothing it sent in any recording was compressed. It does inflate what the client compresses. | answered, Phase 1 |
+| ~~Does the retail client send "placebo" or a real AES session key?~~ **Placebo, no key, nothing encrypted.** The eve.js client setup sets `cryptoPack = Placebo`, and the server's constant `challenge_responsehash` only verifies under Placebo. | answered, Phase 1 |
 | Do wire-decoded values match the gateway's JSON closely enough for the 142 browser decoders? | Phase 2 |
 | How much of a ballpark simulation do overview, targeting and autopilot actually need? | Phase 4 spike |
 | BFF CPU cost of decoding 10 Hz destiny updates for N pilots | Phase 4 |
@@ -238,6 +238,42 @@ server's `network/` code, and the recorded real-client session.
 - Socket loss is session loss. No silent reconnect; report it upward like retail does.
 - **Done when:** a docked pilot stays connected for 60 minutes with every pushed packet logged and
   typed (zero "unknown packet" lines), and the two handshake unknowns in 1.5 are written down.
+
+**Status 2026-10-08: the session is built and verified live; two items remain.**
+
+What exists (`src/gamePort/`, checklist in
+[`game-port-client-reference.md`](game-port-client-reference.md)):
+
+- `session.js` — `GamePortSession`: the retail handshake, calls, binds, session mirror,
+  notifications, ping answers, clock sync and idle keep-alive. Takes a frame transport.
+- `tcp.js` — the socket binding. `packets.js`, `placebo.js`, `py27.js` — packet layout, the
+  Placebo crypto pack, and CPython 2.7's dict ordering.
+- `src/gameClient.js` is now a thin wrapper over the session, so the customs export logs in the
+  retail way too. It was re-run live after the change and exported 80 units.
+- Tools: `scripts/py27-oracle.py` (asks the client's own `python27.dll`),
+  `scripts/capture-game-frames.js` (records a conversation as a fixture),
+  `scripts/soak-game-session.js`, `scripts/record-game-port.js` (records any client).
+
+How it was checked:
+
+- The server's own probe log records what a client answers at login. For the real client it reads
+  `Buffer(5), Buffer(75), null`. The old `GameClient` gave `Buffer(0), Buffer(0), null`; the
+  session gives the real client's line.
+- The gateway reports a session's pilot as `controlState: "retail_client"`, `transport: "tcp"`.
+- The server log shows the real client's addressing pattern for our calls: resolve to any node,
+  bind to the named node, bound calls to that node, proxy services to the proxy node.
+- Tests replay a recorded real-server conversation and require the session to send its own half
+  again byte for byte; nine deliberate breakages were each caught.
+
+Remaining:
+
+1. **The startup call sequence.** The roughly ninety calls the client makes as its services start
+   are named in the recorded session but their arguments are not. Needs a real-client recording.
+2. **Six `?` rows in the reference** (call-ID encoding, journey ID, trace fields, which compression
+   path is live). Same recording settles them.
+
+Decision taken while building it: "identical" is defined at the level of decoded values, not
+bytes, because the client's marshaller shares objects by Python identity. The reference explains.
 
 ### Phase 2 — Normaliser and parity harness (medium)
 

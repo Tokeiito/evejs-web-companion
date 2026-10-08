@@ -1,0 +1,121 @@
+# Game-port client reference: what the retail client does, and where we match
+
+Written 2026-10-08 against retail client build 3396210 and eve.js `7603a2966`. It is the checklist
+`src/gamePort/` is held to. The plan it serves is
+[`game-port-transport-plan.md`](game-port-transport-plan.md).
+
+## What "identical" means here
+
+**The server must decode the same values, in the same order, from our packets as from the retail
+client's.** Field for field, dict entry for dict entry, address for address.
+
+It does **not** mean the same bytes. The client's marshaller (`blue.marshal`) shares repeated
+objects inside one stream, and which objects it shares depends on Python object identity at the
+moment of the call. That cannot be reproduced from outside the client, and no receiver can tell
+the difference once the stream is decoded. Compression is in the same category: whether a packet
+is compressed depends on its encoded size.
+
+## How each fact was established
+
+| Mark | Meaning |
+|---|---|
+| **S** | Read in the client's own source (`eve.js/tools/ClientCodeGrabber/Latest`) |
+| **O** | Answered by the client's own Python 2.7 (`python27.dll`, via `scripts/py27-oracle.py`) |
+| **L** | Seen in an eve.js log of a real client session |
+| **V** | Confirmed live: a real server accepted it and answered as it answers the real client |
+| **?** | Not settled. Needs a recording of the real client (last section) |
+
+## Handshake (`GPS.py` `Authenticate`)
+
+| # | The retail client | How known | Ours |
+|---|---|---|---|
+| H1 | Before login, on the same connection: version reply, then `(None, 'QC')`; reads its queue position; the server restarts the handshake | S, L | matches, V |
+| H2 | Version reply is `(170472, 496, 0, 24.01, 3396210, 'V24.01@ccp')`: the third field is 0, not the server's user count | S | matches, V |
+| H3 | Refuses the server on a region, codename, version or protocol mismatch, or a newer build, before sending anything | S | matches |
+| H4 | `(None, 'VK', CryptoHash(CaseFold(username)))` | S | matches, V |
+| H5 | Crypto pack is Placebo: request is `('placebo', {})`, nothing is encrypted | S, L | matches, V |
+| H6 | `CryptoHash(x)` is `str(crc_hqx(blue.marshal.Save((x,)), 0))`, a decimal string | S, O | matches |
+| H7 | Client challenge is 64 NUL bytes; its hash is `55087`, which the server sends back and the client checks | S, O, L | matches, V |
+| H8 | Credentials dict has eleven keys, in the order Python 2.7 iterates that dict literal | S, O | matches, V |
+| H9 | `user_name` is a unicode object (it comes from an edit box); the other strings are byte strings | S | matches, V |
+| H10 | `user_password_hash` is SHA-1 chained 1000 times over UTF-16LE, salted with the name lowered bytewise | S, O, L | matches, V |
+| H11 | Answers the server's challenge with `(CryptoHash(serverChallenge), stdout of the server's login function, its result)`; eve.js logged this as a 5-byte string, a 75-byte string and None | S, L | matches, V |
+| H12 | Runs the Python function the server sends | S | **emulated**: answered from a table of known functions; an unknown one gets an empty answer and `unknownHandshakeFunction` is set |
+
+The stored password hashes of three accounts in the dev database equal H10's result for their
+password, which is how H10 is tied to a real client login.
+
+## After login (`machoNet.ConnectToServer`, `connectionService`)
+
+| # | The retail client | How known | Ours |
+|---|---|---|---|
+| A1 | First call is `machoNet.GetServiceInfo`, addressed to the proxy node from `proxy_nodeid` | S, L | matches, V |
+| A2 | `SynchronizeClock`: up to five `machoNet.GetTime`, ending early after three readings that each beat the last | S, L | matches, V |
+| A3 | Re-syncs every three minutes with five `GetTime` calls | S | matches (interval and count; the client's drift smoothing is not reproduced) |
+| A4 | After 60 s with nothing sent, calls `pingService.Ping` | S, L | matches, V |
+| A5 | Answers a server `PingReq` with its times plus a `client::turnaround` entry | S | matches |
+| A6 | Dozens of further calls as its services start (login screen, character select, station) | L | **not done**: see "Startup call sequence" |
+
+## Packets and addresses (`machoNetPacket.py`, `machoNetAddress.py`, `*GPCS.py`)
+
+| # | The retail client | How known | Ours |
+|---|---|---|---|
+| P1 | A packet's state is 14 fields: command, source, destination, userID, body, oob, contextKey, journeyID, six trace fields | S | matches |
+| P2 | Call source is `client(clientID=0, callID)`; call IDs count from 1 | S, L | matches, V |
+| P3 | `sm.ProxySvc` calls go to `node(proxyNodeID, service)`; `sm.RemoteSvc` calls go to `any(service)` | S, L | matches, V |
+| P4 | A bound object's call goes to `node(nodeID)` with no service; body is `(1, pickle((objectID, method, args, kw)))` | S, L | matches, V |
+| P5 | A service call's body is `(0, pickle((1, method, args, kw)))` | S | matches, V |
+| P6 | Every call's keywords carry `machoVersion`, 1 unless a cached answer supplies another | S | matches (always 1; no answer cache yet) |
+| P7 | A Moniker resolves first (`MachoResolveObject(bindParams)` to any node), then binds on the node that names (`MachoBindObject(bindParams, call)`) | S, L | matches, V |
+| P8 | `oob` is None unless set; `contextKey` is never set by a client | S | matches |
+| P9 | Packets over 200 bytes are compressed with zlib level 1 when that saves more than 5% | S | matches, V; **?** which of the client's two compression paths is live (below) |
+| P10 | Anything received that does not start `~` or `}` is zlib | S | matches |
+| P11 | `journeyID` is `str(uuid4)` for the current journey | S | a fixed UUID per session; **?** when the client changes it |
+| P12 | The six trace fields | S | all None; **?** whether the client ever fills them |
+| P13 | Call ID is a Python long | S | sent as a plain integer; **?** how `blue.marshal` writes a small long |
+
+## What the server pushes
+
+| Packet | Handling |
+|---|---|
+| `SessionChangeNotification` | Applied to `session.attributes`; listeners told what changed |
+| `SessionInitialStateNotification` | Same |
+| `Notification` | Peeled as the client's three layers peel it: object-call flag and pickle, service-or-broadcast, then the broadcast's `(1, args)` |
+| `PingReq` | Answered (A5) |
+| `CallRsp`, `ErrorResponse`, `PingRsp` | Matched to the waiting call by the call ID in the destination address |
+| `TransportClosed` | Closes the session |
+
+## Python 2.7 behaviour that reaches the wire
+
+`src/gamePort/py27.js` reproduces, for 64-bit Windows, the string, int and long hashes and the dict
+table of CPython 2.7. `test/fixtures/py27Oracle.json` holds what the client's own interpreter
+answered for 1,303 keys and 44 dicts, built two ways each; the test requires an exact match.
+
+It covers a dict built by a literal or by inserting into an empty dict. A dict made by `copy()` or
+`update()` from another dict is laid out differently and is **not covered yet**.
+
+## Not done
+
+**Startup call sequence (A6).** At login, at character select and on entering a station the client
+makes roughly ninety calls as its services start. The recorded real session
+(`eve.js/_local/logs/direct-tcp-real-client-20260809-163920.stdout.log`) names them in order but
+not their arguments. Emulating them needs the arguments, so it waits on a recording.
+
+**Dicts we send elsewhere.** `src/piCustomsExport.js` sends its commodity dict in ascending key
+order. The client would send it in Python's order. `orderEntries` is there to use.
+
+**Cached answers.** The client caches some call answers (`objectCaching`) and sends their version
+back as `machoVersion`. We always send 1 and never cache.
+
+## Still needs a recording of the real client
+
+The `?` rows above, and A6. `scripts/record-game-port.js` is the tool: it sits between any client
+and the server and writes every frame; its `describe` mode prints each frame's kind, addresses,
+call and value types, which is exactly what the `?` rows need.
+
+To record without touching the client or its launcher, start eve.js with `EVEJS_SERVER_PORT=26005`
+(a stock setting) and run the recorder on 26000 forwarding to 26005.
+
+This has not been done. The client must be started through the eve.js launcher, whose checks keep
+it from reaching CCP's servers, and on 2026-10-07 its `start.ini` pointed at a server other than
+this machine, so a local recorder would not have seen it.
