@@ -69,10 +69,43 @@ export function formatDistance(meters: number): string {
   return `${Math.round(meters)} m`;
 }
 
-/** An overview row: a visible object plus the distance the client computed. */
+/**
+ * A distance as the retail overview's own column words it
+ * (overviewScrollEntry._GetColumnValueDistance): whole metres under 10 km,
+ * whole kilometres under 10,000,000 km, and AU to one decimal beyond that.
+ * The figures are grouped, as the client groups them.
+ */
+export function formatOverviewDistance(meters: number): string {
+  if (!Number.isFinite(meters) || meters < 0) {
+    return "—";
+  }
+  if (meters < 10_000) {
+    return `${Math.round(meters).toLocaleString()} m`;
+  }
+  if (meters < 10_000_000_000) {
+    return `${Math.round(meters / 1_000).toLocaleString()} km`;
+  }
+  const au = Math.round((meters / METRES_PER_AU) * 10) / 10;
+  return `${au.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} AU`;
+}
+
+/** The radius of the player's own ship, as the snapshot gives it; 0 when it gives none. */
+export function ownRadius(snapshot: SpaceSnapshot | null): number {
+  const radius = snapshot?.ship?.radius ?? snapshot?.entities.find((entity) => entity.isSelf)?.radius;
+  return typeof radius === "number" && Number.isFinite(radius) ? radius : 0;
+}
+
+/** An overview row: a visible object plus the distances the client computed. */
 export interface OverviewRow extends SpaceEntity {
-  /** Distance from the player's ship, in metres. */
+  /** Distance from the player's ship, centre to centre, in metres. */
   readonly distance: number;
+  /**
+   * Distance from the ship's surface to the object's, in metres, and never
+   * below 0: the centres' distance less both radii. It is what the retail
+   * overview shows and sorts by (overviewScrollEntry._GetSurfaceDistance,
+   * overviewNodeUtil). A station's radius is kilometres, so the two are far apart.
+   */
+  readonly surfaceDistance: number;
 }
 
 export type OverviewSort = "distance" | "name";
@@ -137,6 +170,7 @@ export function buildOverviewRows(
   const lookup = options.names ?? (() => NO_NAMES);
   const needle = (filter.text ?? "").trim().toLowerCase();
 
+  const radius = ownRadius(snapshot);
   const matched: OverviewRow[] = [];
   for (const entity of snapshot.entities) {
     if (entity.isSelf) {
@@ -159,7 +193,11 @@ export function buildOverviewRows(
     if (needle.length > 0 && !matchesText(entity, lookup(entity), needle)) {
       continue;
     }
-    matched.push({ ...entity, distance: distanceMeters(origin, entity.position) });
+    matched.push({
+      ...entity,
+      distance: distanceMeters(origin, entity.position),
+      surfaceDistance: surfaceDistanceMeters(origin, radius, entity.position, entity.radius),
+    });
   }
 
   const sort = options.sort ?? "distance";
@@ -171,8 +209,10 @@ export function buildOverviewRows(
       }
     }
     // Distance is the tiebreaker for name sort and the primary key otherwise —
-    // nearest first, as an overview always reads.
-    return left.distance - right.distance;
+    // nearest first, as an overview always reads. Nearest by SURFACE, which is
+    // what the client sorts its overview by; things the ship is inside of are
+    // all at 0, and among those the nearer centre comes first.
+    return left.surfaceDistance - right.surfaceDistance || left.distance - right.distance;
   });
 
   const cap = options.cap;
@@ -335,9 +375,14 @@ export function hostileRows(
   if (!snapshot) {
     return [];
   }
+  const radius = ownRadius(snapshot);
   return snapshot.entities
     .filter((entity) => isHostile(entity))
-    .map((entity) => ({ ...entity, distance: distanceMeters(origin, entity.position) }))
+    .map((entity) => ({
+      ...entity,
+      distance: distanceMeters(origin, entity.position),
+      surfaceDistance: surfaceDistanceMeters(origin, radius, entity.position, entity.radius),
+    }))
     .sort((left, right) => left.distance - right.distance);
 }
 

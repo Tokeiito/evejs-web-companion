@@ -141,3 +141,17 @@ test("deleting a tab also retires its combat toggle state", async () => {
   assert.equal(overviewTabs.tabs.get().some(candidate => candidate.id === tab.id), false);
   assert.equal(combatToggleMap.get().has(tab.id), false);
 });
+
+test("each row's distance is between hulls, in the client's wording: 870 m for a ship whose centre is a kilometre off", async () => {
+  // The fixture's ship is 30 m in radius; each thing on grid is 100 m in radius with its centre 1,000 m away.
+  const html = await panel();
+  const ranges = [...html.matchAll(/class="spc-cell-range[^"]*"[^>]*>([^<]*)</g)].map((match) => match[1]!.trim());
+  assert.ok(ranges.length >= 3, `${ranges.length} rows`);
+  assert.deepEqual([...new Set(ranges)], ["870 m"]);
+  // The threat strip says the same of the rat, and nothing on the panel still reads the centres' kilometre.
+  assert.match(html, /class="spc-threat-range[^"]*"[^>]*>\s*870 m\s*</);
+  assert.equal(/1\.0 km/.test(html), false);
+  // A row picked: the line about it says the same distance.
+  const picked = await panel("SpaceOverview.svelte", "pick(11);");
+  assert.match(picked, /class="spc-selected-name"[\s\S]*?· 870 m\s*</);
+});

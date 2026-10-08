@@ -56,7 +56,7 @@
   } from "../space/hideCategory.ts";
   import {
     buildOverviewRows,
-    formatDistance,
+    formatOverviewDistance,
     hostileLabel,
     hostileRows,
     isHostile,
@@ -1226,7 +1226,7 @@
               {rowName(threat)}
             </button>
             <span class="spc-threat-kind">{hostileLabel(threat) ?? "hostile"}</span>
-            <span class="spc-threat-range">{formatDistance(threat.distance)}</span>
+            <span class="spc-threat-range">{formatOverviewDistance(threat.surfaceDistance)}</span>
             <!--
               ⚠ LOCK, ON THE ROW — the other control the cockpit had here and
               this panel had dropped. Locking is what you do FIRST when
@@ -1290,7 +1290,7 @@
         <span class="spc-selected-name">
           <span class="spc-name" class:hostile={isHostile(selectedRow)}>{rowName(selectedRow)}</span>
           <span class="spc-meta">
-            {typeName(selectedRow)} · {groupName(selectedRow)} · {formatDistance(selectedRow.distance)}
+            {typeName(selectedRow)} · {groupName(selectedRow)} · {formatOverviewDistance(selectedRow.surfaceDistance)}
           </span>
         </span>
         {#if lockedIDs.has(selectedRow.itemID)}
@@ -1647,8 +1647,8 @@
               </span>
               <span class="spc-cell-type">{typeName(row)}</span>
               <span class="spc-cell-group">{groupName(row)}</span>
-              <span class="spc-cell-range" class:far={row.distance >= 100_000}>
-                {formatDistance(row.distance)}
+              <span class="spc-cell-range" class:far={row.surfaceDistance >= 100_000}>
+                {formatOverviewDistance(row.surfaceDistance)}
               </span>
             </button>
             <!--

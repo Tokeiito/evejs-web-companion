@@ -2875,7 +2875,7 @@ moved on any recording.
 - **CCP's own collision tests come out to the last digit**: two balls at one point pushed
   apart (10 ticks), two overlapping (10), two sent at each other, meeting and bouncing (20),
   both balls each time; and two warping through each other, which pass.
-- Tests: 12 new, and the one test that had been waiting for this since the port began is now
+- Tests: 13 new, and the one test that had been waiting for this since the port began is now
   a test. Where CCP has no numbers (a bounce off a fixed ball, the push out of one, the
   exchange between unequal balls) the expected values are worked out in the test from what the
   collision means, with the integrator, not from the collision's own formula.

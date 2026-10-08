@@ -11,6 +11,7 @@ import {
   buildOverviewRows,
   distanceMeters,
   formatDistance,
+  formatOverviewDistance,
   healthIsDropping,
   hostileLabel,
   hostileRows,
@@ -18,6 +19,7 @@ import {
   isMyDrone,
   newlyArrivedHostiles,
   overviewFilterIDs,
+  ownRadius,
   ratioPercent,
 } from "./overview.ts";
 import type { SpaceEntity, SpaceSnapshot, SpaceVector } from "../store/types.ts";
@@ -363,4 +365,84 @@ test("an unknown health layer is never reported as damage", () => {
   // And nothing to compare against is nothing to claim.
   assert.equal(healthIsDropping(null, { shieldRatio: 0.1, armorRatio: null, hullRatio: null }), false);
   assert.equal(healthIsDropping({ shieldRatio: 1, armorRatio: null, hullRatio: null }, null), false);
+});
+
+// --- surface distance: what the retail overview shows and sorts by ----------
+
+/** The Reaper's radius, as the server sends it. */
+const REAPER = 38.400001525878906;
+const withShip = (entities: SpaceEntity[], radius: number | null = REAPER): SpaceSnapshot => ({
+  ...snapshotOf(entities),
+  ship: radius === null ? null : ({ itemID: 9001, radius, position: ORIGIN } as SpaceSnapshot["ship"]),
+});
+const STATION = entity({ itemID: 60003760, name: "A station", groupID: 15, categoryID: 3, radius: 100_000, position: { x: 100_224.3, y: 0, z: 0 } });
+const grouped = (value: number) => value.toLocaleString();
+
+test("the overview's distance is worded as the client's overview words it", () => {
+  // Whole metres under 10 km.
+  assert.equal(formatOverviewDistance(0), "0 m");
+  assert.equal(formatOverviewDistance(185.9), "186 m");
+  assert.equal(formatOverviewDistance(1_500), `${grouped(1500)} m`, "not 1.5 km: the client does not turn to kilometres until 10");
+  assert.equal(formatOverviewDistance(9_776.4), `${grouped(9776)} m`);
+  assert.equal(formatOverviewDistance(9_999.9), `${grouped(10000)} m`);
+  // Whole kilometres from there to 10,000,000 km.
+  assert.equal(formatOverviewDistance(10_000), "10 km");
+  assert.equal(formatOverviewDistance(10_499), "10 km");
+  assert.equal(formatOverviewDistance(10_500), "11 km");
+  assert.equal(formatOverviewDistance(280_752_457), `${grouped(280752)} km`);
+  assert.equal(formatOverviewDistance(9_999_999_499), `${grouped(9999999)} km`);
+  assert.notEqual(formatOverviewDistance(280_752_457), "280752 km", "grouped, to be read down a column");
+  // AU, to one decimal, beyond.
+  assert.equal(formatOverviewDistance(10_000_000_000), "0.1 AU");
+  assert.equal(formatOverviewDistance(3 * METRES_PER_AU), "3.0 AU");
+  assert.equal(formatOverviewDistance(12.34 * METRES_PER_AU), "12.3 AU");
+  assert.equal(formatOverviewDistance(12.35 * METRES_PER_AU + 1e6), "12.4 AU");
+  // What is not a distance is not worded as one.
+  assert.equal(formatOverviewDistance(Number.NaN), "—");
+  assert.equal(formatOverviewDistance(-1), "—");
+  assert.equal(formatOverviewDistance(Number.POSITIVE_INFINITY), "—");
+});
+
+test("a row's surface distance is the centres' distance less both radii, and never below nothing", () => {
+  // A station 100 km in radius whose centre is 100,224.3 m off, from a ship of 38.4 m: 185.9 m between hulls.
+  const { rows } = buildOverviewRows(withShip([SELF, STATION]), ORIGIN);
+  assert.equal(rows[0]?.distance, 100_224.3, "the centres' distance is kept as it was");
+  assert.ok(Math.abs(Number(rows[0]?.surfaceDistance) - (100_224.3 - 100_000 - REAPER)) < 1e-9, `${rows[0]?.surfaceDistance}`);
+  assert.equal(formatOverviewDistance(Number(rows[0]?.surfaceDistance)), "186 m");
+  assert.equal(formatDistance(Number(rows[0]?.distance)), "100 km", "which is what the row said before");
+  // Inside the station's ball: nothing, not a negative distance.
+  const inside = entity({ ...STATION, position: { x: 65_000, y: 0, z: 0 } });
+  assert.equal(buildOverviewRows(withShip([SELF, inside]), ORIGIN).rows[0]?.surfaceDistance, 0);
+  // The ship's own radius comes from the snapshot's ship; failing that from its own row; failing that it is 0.
+  assert.equal(ownRadius(withShip([SELF])), REAPER);
+  assert.equal(ownRadius(withShip([entity({ ...SELF, radius: 25 })], null)), 25);
+  assert.equal(ownRadius(withShip([STATION], null)), 0);
+  assert.equal(ownRadius(null), 0);
+  assert.equal(ownRadius(withShip([SELF], Number.NaN)), 0);
+  const noShip = buildOverviewRows(withShip([entity({ ...SELF, radius: 25 }), STATION], null), ORIGIN).rows[0];
+  assert.ok(Math.abs(Number(noShip?.surfaceDistance) - 199.3) < 1e-6, `${noShip?.surfaceDistance}`);
+});
+
+test("the overview sorts by surface: a station whose hull is near comes before a ship whose centre is nearer", () => {
+  const ship = entity({ itemID: 70001, name: "A ship", kind: "ship", radius: 50, position: { x: 0, y: 5_000, z: 0 } });
+  const { rows } = buildOverviewRows(withShip([SELF, ship, STATION]), ORIGIN);
+  assert.deepEqual(rows.map((row) => row.itemID), [60003760, 70001]);
+  assert.ok(rows[0]!.distance > rows[1]!.distance && rows[0]!.surfaceDistance < rows[1]!.surfaceDistance);
+  // Two the ship is inside of are both at nothing: the nearer centre first.
+  const around = entity({ ...STATION, itemID: 60000001, position: { x: 0, y: 0, z: 40_000 } });
+  const farther = entity({ ...STATION, itemID: 60000002, position: { x: 0, y: 0, z: 70_000 } });
+  assert.deepEqual(buildOverviewRows(withShip([SELF, farther, around]), ORIGIN).rows.map((row) => [row.itemID, row.surfaceDistance]), [[60000001, 0], [60000002, 0]]);
+  // By name, ties still go to the nearer surface.
+  const twin = entity({ ...ship, itemID: 70002, name: "A station" });
+  assert.deepEqual(buildOverviewRows(withShip([SELF, twin, STATION]), ORIGIN, { sort: "name" }).rows.map((row) => row.itemID), [60003760, 70002]);
+  // The cap keeps the nearest by surface.
+  assert.deepEqual(buildOverviewRows(withShip([SELF, ship, STATION]), ORIGIN, { cap: 1 }).rows.map((row) => row.itemID), [60003760]);
+});
+
+test("a threat carries its surface distance too, and threats stay ordered by their centres", () => {
+  const big = entity({ itemID: 80001, kind: "ship", isNpc: true, npcEntityType: "npc", radius: 4_000, position: { x: 10_000, y: 0, z: 0 } });
+  const small = entity({ itemID: 80002, kind: "ship", isNpc: true, npcEntityType: "npc", radius: 20, position: { x: 8_000, y: 0, z: 0 } });
+  const rows = hostileRows(withShip([SELF, big, small]), ORIGIN);
+  assert.deepEqual(rows.map((row) => row.itemID), [80002, 80001]);
+  assert.deepEqual(rows.map((row) => Math.round(row.surfaceDistance * 10) / 10), [7_941.6, 5_961.6]);
 });
