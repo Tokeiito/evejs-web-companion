@@ -66,6 +66,18 @@ Decisions taken in your place, and anything waiting on you. Overrule any of thes
   check either against the real client. **My recommendation:** give it to whoever owns the
   server's movement work, with the table in that entry; the first thing to settle is whether the
   server's seconds should begin on whole seconds.
+- **Measured, and left for you: in a warp the server's own ship runs one to three seconds ahead
+  of what it sends its clients.** The same path, to the decimetre; not the same time, and not
+  by the same amount from warp to warp. The entry "the park beside the server's movement log"
+  has the tables, and `scripts/park-against-movement-log.js` measures it from any recording.
+  The web client shows what a retail client fed the same stream would compute, so nothing here
+  is wrong on the client's side. Not handed to a sub-agent: it is how the server moves ships
+  and stamps its orders, not a handler answering wrongly, and the last attempt at the stamps
+  after a warp found them pinned by the server's own tests. **My recommendation:** read it
+  with the item above and with the "not massive" after a warp. Stepping piloted ships on the
+  server by CCP's rules, on the stamps it sends, is the one change I can see that could remove
+  all three; this repository's port of those rules is exact against CCP's fixtures. I have not
+  tried it.
 - **The server's question before a quit or a decline is shown in the browser** on the game port
   and the user answers it. With no browser attached (a hosted bot) it is answered Yes; left
   unanswered for 110 seconds it lapses as a No. The web client's own question before the press is
@@ -3462,3 +3474,142 @@ from the flight status and read 100% over a stopped ship.
    codes not done.
 6. Small, in space: the header's speed from the snapshot; the bar the client fills while a
    ship lines up for a warp; a warp ordered at a bookmark or a fleet member.
+
+---
+
+## 2026-10-08 — the park beside the server's movement log
+
+Commit `6a7230e`, pushed.
+
+**What the retail client does** between two ticks (CCP's destiny, `ClientBall::InterpolatedPosition`,
+`Ball.cpp` 1208). It does not draw a straight line between two places. A ball not in warp is
+stepped again from where it was a tick ago, by the push that took it to where it is now, for
+that much of the tick. A ball in warp is placed by the warp's own clock, which runs a tick
+ahead of that: part way through a tick it is already on its way to where the next tick will put
+it. The client also draws everything two ticks behind its own clock (`GetShiftedTime`).
+
+**What was built.**
+
+- `Ballpark.between(ball, fraction)`: that rule. Looking between ticks changes nothing in the
+  park; in particular it does not end a warp.
+- `scripts/park-against-movement-log.js <recording> <the server's movement log…>`. It plays a
+  recording through the park and, for every row the server wrote of where it had the ship, says
+  where the park's ship is at that instant: metres **apart**; how much **later** the park's
+  ship is where the server's was, in seconds, found by moving the park's ship along its own
+  path; and the metres between them at that **closest** moment, which is what is left once the
+  clocks are made to agree. `--restamp=WarpTo:-1` plays the same recording as if the server
+  had stamped its warp order a tick sooner.
+- The two clocks are tied by the stamps alone: the server's stamp is its clock's whole
+  seconds, and each row says how far into its second it was written.
+
+**Proof.**
+
+- Tests: 15 new. The script's are built on the recorded warp: rows made from where the park
+  itself has the ship, displaced by known amounts, so what the script should say of each is
+  known beforehand. 43 ways of breaking the change. Four got through at first: two are closed
+  with tests, and two were one check written twice, the second copy of which is gone.
+- Suite: 9162 tests, 9138 pass, 0 fail, 24 skipped, 0 todo.
+- My own expectation was wrong once before the code was: in warp the place half a tick on is
+  good to a hundredth of a metre against the next tick's, not to the last digit, because the
+  heading is worked out from a different point on the line.
+
+**Measured live.** Two round trips by Test Pilot on the game port, eve.js `10e2c22f4`, each
+recorded with `scripts/record-warp.js` and set beside that hour's movement log. Trip A is the
+recording of the collisions entry (Jita 4-4, Jita IV Moon 6 and back, 280,000 km each way, too
+short to cruise). Trip B is new: Jita V and back, 11 AU each way, **cruising at 3 AU a second**
+on the server and in the park alike. No entry failed and the park was never reset.
+
+What the server's rows show of the server itself:
+
+- Out of warp it steps a ship about nine times a second.
+- **In warp it moves the ship once a second** and leaves it standing between. The speeds it
+  wrote at those steps are the warp curve's at whole seconds (1,210.3, 24,309.3, 488,264.4,
+  9,807,052.1 m/s: three times e to the 6, 9, 12, 15).
+
+The park beside it:
+
+| | Trip A | Trip B |
+|---|---|---|
+| Flying straight at 341 m/s: apart | 193 to 196 m | 18 to 21 m |
+| the same: later | -0.57 s | -0.05 s |
+| the same: closest | 0.0 m | 0.0 m |
+| Lining up from rest (the way back): closest | 0.0 to 0.1 m | 0.0 to 0.1 m |
+| the same: later | 1.4 to 1.7 s | 1.5 to 1.8 s |
+| In warp, out: later | 0.9 to 1.0 s | 2.0 to 3.0 s |
+| In warp, out: closest, first row to last | 616 m to 0.0 m | 123 m to 0.0 m |
+| In warp, back: later | 1.8 to 2.0 s | 1.8 to 2.0 s |
+| In warp, back: closest | 0.0 m | 0.0 to 0.1 m |
+| Docked again, at rest: apart | 0.0 m | 0.1 m |
+
+(In each trip two of the thirty-odd rows of the lining up from rest read about -2.2 s
+instead: the park's ship had only just begun to move, and on so short a path the nearest
+moment is not marked. They are left out of the row above.)
+
+Read as: **the two ships fly the same path, and not at the same time.** On a straight course and
+from rest the paths agree to the decimetre the server writes its places to. In every warp the
+server's ship ran ahead of the park's, by one to three seconds. Where a warp was ordered with
+the ship already under way (both trips, out), the two turned at different places and their
+tracks ran 123 m and 616 m apart at the start of the warp, closing to nothing at its end.
+
+The times of each warp, in seconds from the first state's stamp, the server's from its log and
+the park's from the recording:
+
+| Warp | Server: asked | Order's stamp | Server: warp began | Park: entered | Server: warp over | Park: left |
+|---|---|---|---|---|---|---|
+| A out | 4.76 | 6 | 15.19 | 16 | 36.02 | 37 |
+| A back | 77.30 | 79 | 84.24 | 86 | 105.06 | 107 |
+| B out | 4.24 | 6 | 4.53 | 7 | 38.05 | 41 |
+| B back | 78.10 | 80 | 85.14 | 87 | 119.01 | 121 |
+
+In B out the ship was already on course for Jita V when the warp was asked for: the server's
+warp began 0.29 s later, and the order reached the park stamped 1.76 s after the asking.
+
+**The measurement varied.** The same recordings played with the warp order stamped sooner:
+
+| Warp, later in warp | As sent | 1 tick sooner | 2 sooner | 3 sooner |
+|---|---|---|---|---|
+| A out | 0.9 to 1.0 s | -0.09 to 0.0 | -1.1 to -1.0 | |
+| A back | 1.8 to 2.0 s | 0.8 to 1.0 | -0.18 to -0.01 | |
+| B out | 2.0 to 3.0 s | 1.9 to 2.0 | 0.9 to 1.0 | -0.11 to -0.03 |
+| B back | 1.8 to 2.0 s | 0.8 to 1.0 | -0.19 to -0.01 | -1.2 to -1.0 |
+
+Each tick sooner moves the park's ship one second on, and nothing else. So the park's ship
+would have been where the server's was, to within two tenths of a second, had the order been
+stamped one, two, three and two ticks sooner: not the same number from warp to warp. The track
+of B out came 123 m, 73 m, 22 m and 28 m from the server's as the stamp went back; of A out,
+616 m, 277 m and 63 m.
+
+**What this does and does not say.** It does not say the park is wrong: the park is CCP's rules,
+and a retail client fed the same stream steps the same way. It says the server's own ship and
+the stream it sends its clients are one to three seconds apart in a warp, differently each
+time, and that a ship turning into a warp does so on the server before the order's stamp lets
+a client begin. I have not looked for why in the server's code. Two things already in this log
+sit beside it and may be the same thing seen from elsewhere: the state stamped with the next
+whole second, and the "not massive" after a warp that comes one step late in three landings of
+four. It is under "For the operator".
+
+**Not done.** The page still shows the ship where the last tick put it; `Ballpark.between` is
+there for drawing it between ticks. The tick's collisions worked out step by step
+(`mCollisionLocations`) are not ported, so a ball that bounced within the tick is placed
+between ticks by one push and not by the two halves of its bounce. The recorder does not write
+down what time it was when it began, so "apart" rests on the stamps, as said in the script.
+Seen in passing and not read: the server sent one `DoSimClockRebase` and one
+`OnSetTimeDilation` in each trip. That is the sim clock, next.
+
+### Next
+
+1. **The sim clock** (`DoSimClockRebase`, `OnSetTimeDilation`: what the client does with them,
+   and when its park steps); MISSILE, FORMATION, MUSHROOM; a fixed ball's collision shapes
+   and the partition's order, if a server ever sends a ball that needs them.
+2. The call ledger (`ship.Undock`, `dogmaIM.Activate` and `Deactivate` to bind as the client
+   does; `GetMissionBriefingInfo` and `GetMissionObjectiveInfo`, which the client asks on every
+   layout of the agent's window), Phase 3's hosted check and the session-less gateway calls.
+3. The scanner the client's way: results kept from the server's word, a probe's destination
+   and range kept here and sent with the scan.
+4. More of a mission's words: the objectives pane, the mission's time under the agent's line,
+   messages inside messages when one turns up.
+5. Small, around dialogs: the title for a dialog's kind, the "do not ask again" box, the typed
+   codes not done.
+6. Small, in space: the ship drawn between ticks; the header's speed from the snapshot; the
+   bar the client fills while a ship lines up for a warp; a warp ordered at a bookmark or a
+   fleet member.

@@ -277,8 +277,13 @@ Take these defaults, and list each under "For the operator" in the log so they c
   one-second steps begin where the system was woken, not on the stamp's seconds. Through it a
   correct park can look a tick and a half off. `scripts/destiny-compare.js` is good for modes,
   velocities and "about a tick"; for positions to the metre use the server's own record of each
-  step, `eve.js/_local/logs/space-movement-debug.log`. This was read as a server defect once,
-  written into a commit message, and was not one.
+  step, `eve.js/_local/logs/space-movement-debug.log` (one file an hour, named by the hour in
+  UTC), with `scripts/park-against-movement-log.js <recording> <log>`. This was read as a
+  server defect once, written into a commit message, and was not one.
+- The server's own ship and the stream it sends are not at the same time: in a warp its ship
+  runs one to three seconds ahead of the park's, on the same path. A gap between "where the
+  server has the ship" and "where the park has it" while moving is that, until shown
+  otherwise; compare at rest, or read the script's `closest`.
 - Write down what was measured. Do not write down its cause until the cause has been checked. Twice
   in this loop a cause went into a commit message and the log and had to be taken back.
 - The web client in a browser tab selects its pilot again when it loses the session. Log the tab
