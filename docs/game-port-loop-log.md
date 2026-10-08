@@ -3241,3 +3241,68 @@ shows the header and the line beneath as two lines; here they are one.
    messages inside messages when one turns up.
 6. Small, around dialogs: the title for a dialog's kind, the "do not ask again" box, the typed
    codes not done.
+
+---
+
+## 2026-10-08 — a ship flying to a point says so as the client's HUD does
+
+Commit `d408ce4`, pushed.
+
+**What the retail client does.** For a ship whose ball is in GOTO, with nothing the pilot last
+aligned to, the HUD goes by how far the point is (`spaceMgr.py`, `GetBallApproachType`, and
+the GOTO branch of `GetHeaderAndSubtextForActionIndication`):
+
+- under a kilometre: nothing;
+- up to 10,000 km (`appConst.maxApproachDistance`): "approaching", and beneath it
+  "approaching a point in space";
+- farther: "aligning", and beneath it "aligning to a point in space", for as long as the
+  ship's course is more than 0.26 radians off the point; lined up, nothing.
+
+**What was built.** The game port's snapshot gives the point the own ship is flying to (null
+when it is doing anything else). `pointIndication` in `actionIndication.ts` is that rule. The
+workspace header takes the client's header word. The ship's line takes the client's line
+beneath, which says the whole of it, since the page has one line where the client has two.
+With no point in the snapshot (the gateway's) both say what they said before.
+
+**Proof.**
+
+- Tests: 6 new, 3 changed. 30 ways of breaking the change, all caught but one that no input
+  can tell apart: asking about the point before asking what the ship follows, which cannot
+  differ because the two rules go by different modes of the ball.
+- Suite: 9127 tests, 9103 pass, 0 fail, 24 skipped, 0 todo.
+- **In the browser, on the game port**, read every 0.3 to 0.4 seconds and noted when it
+  changed:
+
+  | what was done | the header | the ship's line |
+  |---|---|---|
+  | undocked, flying straight out | GOTO · 100% | Under way. |
+  | Align to a moon 2.1 radians off the course (the page's button), 1.6 s on | Aligning · 100% | Aligning to a point in space |
+  | the same, 8.4 s on, lined up | GOTO · 100% | Under way. |
+  | sent to a point 3 km to one side, 1.2 s on | Approaching · 100% | Approaching a point in space |
+  | the same, 14.9 s on, within a kilometre of it | GOTO · 100% | Under way. |
+
+  The words are the client's. A first try, aligning to a stargate, showed nothing: when I
+  looked the ship's course was 0.002 radians off it, and I had read only every 1.5 seconds.
+- **The staging was undone**: the store was copied with the server stopped before the check
+  and put back after.
+
+**Not done.** What the pilot last aligned to: the client remembers it (its menu service) and
+names it in place of "a point in space"; here an align to a thing reads as an align to a
+point. A warp, and the passing "ship stopping".
+
+### Next
+
+1. **The rest of the ship's action line**: what was last aligned to, by name; the warp
+   (preparing, then active, with where to and how far); stopping.
+2. **The park beside the server's movement log**; the sim clock; MISSILE, FORMATION, MUSHROOM;
+   a fixed ball's collision shapes and the partition's order, if a server ever sends a ball
+   that needs them.
+3. The call ledger (`ship.Undock`, `dogmaIM.Activate` and `Deactivate` to bind as the client
+   does; `GetMissionBriefingInfo` and `GetMissionObjectiveInfo`, which the client asks on every
+   layout of the agent's window), Phase 3's hosted check and the session-less gateway calls.
+4. The scanner the client's way: results kept from the server's word, a probe's destination
+   and range kept here and sent with the scan.
+5. More of a mission's words: the objectives pane, the mission's time under the agent's line,
+   messages inside messages when one turns up.
+6. Small, around dialogs: the title for a dialog's kind, the "do not ask again" box, the typed
+   codes not done.
