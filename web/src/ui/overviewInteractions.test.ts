@@ -155,3 +155,23 @@ test("each row's distance is between hulls, in the client's wording: 870 m for a
   const picked = await panel("SpaceOverview.svelte", "pick(11);");
   assert.match(picked, /class="spc-selected-name"[\s\S]*?· 870 m\s*</);
 });
+
+const CLIENT_METRES = 'store.apply({ type: "words/loaded", available: true, templates: { "/Carbon/UI/Common/FormatDistance/fmtDistInMeters": "{distance} metres" } });';
+
+test("the unit is the client's own word when the page holds it: rows, the threat strip and the picked row", async () => {
+  const html = await panel("SpaceOverview.svelte", `${CLIENT_METRES} pick(12);`);
+  const ranges = [...html.matchAll(/class="spc-cell-range[^"]*"[^>]*>([^<]*)</g)].map((match) => match[1]!.trim());
+  assert.deepEqual([...new Set(ranges)], ["870 metres"]);
+  assert.match(html, /class="spc-threat-range[^"]*"[^>]*>\s*870 metres\s*</);
+  assert.match(html, /class="spc-selected-name"[\s\S]*?· 870 metres\s*</);
+});
+
+test("a target's card says how far its hull is, in the client's wording and the client's word for the unit", async () => {
+  const locked = 'store.apply({ type: "targeting/targets", targetIDs: [13] });';
+  const own = await panel("TargetBracket.svelte", locked);
+  assert.match(own.replace(/<[^>]+>/g, " "), /\b870 m\b/);
+  assert.match(own, /, 870 m away/, "and says so to a screen reader");
+  assert.equal(/1\.0 km/.test(own), false, "not the kilometre between centres");
+  const client = await panel("TargetBracket.svelte", `${locked} ${CLIENT_METRES}`);
+  assert.match(client.replace(/<[^>]+>/g, " "), /\b870 metres\b/);
+});

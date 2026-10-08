@@ -28,6 +28,7 @@
   import TypeIcon from "./TypeIcon.svelte";
   import { SELECTION_GONE, selectionHasVanished, spaceSelection } from "../space/selection.ts";
   import { overviewTabs } from "../space/overviewTabs.ts";
+  import { DISTANCE_WORD_LABELS, distanceSay } from "../space/distanceWords.ts";
   import {
     OVERVIEW_RECIPES,
     recipeByID,
@@ -56,6 +57,7 @@
   } from "../space/hideCategory.ts";
   import {
     buildOverviewRows,
+    fmtDist,
     formatOverviewDistance,
     hostileLabel,
     hostileRows,
@@ -116,6 +118,13 @@
   const space = store.space;
   // svelte-ignore state_referenced_locally
   const names = store.names;
+  // svelte-ignore state_referenced_locally
+  const words = store.words;
+  // A distance's unit in the client's own words: asked for once, and used when they are to hand.
+  const say = $derived(distanceSay($words.templates));
+  $effect(() => {
+    flow.requestWords(DISTANCE_WORD_LABELS);
+  });
   // svelte-ignore state_referenced_locally
   const targeting = store.targeting;
   // svelte-ignore state_referenced_locally
@@ -1226,7 +1235,7 @@
               {rowName(threat)}
             </button>
             <span class="spc-threat-kind">{hostileLabel(threat) ?? "hostile"}</span>
-            <span class="spc-threat-range">{formatOverviewDistance(threat.surfaceDistance)}</span>
+            <span class="spc-threat-range">{formatOverviewDistance(threat.surfaceDistance, say)}</span>
             <!--
               ⚠ LOCK, ON THE ROW — the other control the cockpit had here and
               this panel had dropped. Locking is what you do FIRST when
@@ -1290,7 +1299,7 @@
         <span class="spc-selected-name">
           <span class="spc-name" class:hostile={isHostile(selectedRow)}>{rowName(selectedRow)}</span>
           <span class="spc-meta">
-            {typeName(selectedRow)} · {groupName(selectedRow)} · {formatOverviewDistance(selectedRow.surfaceDistance)}
+            {typeName(selectedRow)} · {groupName(selectedRow)} · {fmtDist(selectedRow.surfaceDistance, 1, say)}
           </span>
         </span>
         {#if lockedIDs.has(selectedRow.itemID)}
@@ -1648,7 +1657,7 @@
               <span class="spc-cell-type">{typeName(row)}</span>
               <span class="spc-cell-group">{groupName(row)}</span>
               <span class="spc-cell-range" class:far={row.surfaceDistance >= 100_000}>
-                {formatOverviewDistance(row.surfaceDistance)}
+                {formatOverviewDistance(row.surfaceDistance, say)}
               </span>
             </button>
             <!--

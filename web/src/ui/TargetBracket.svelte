@@ -21,7 +21,8 @@
   import TypeIcon from "./TypeIcon.svelte";
   import { buildTargets, type TargetVM } from "./targetBracket.ts";
   import { gaugeArc, gaugeTrack } from "./shipHudArcs.ts";
-  import { formatDistance } from "../space/overview.ts";
+  import { fmtDist } from "../space/overview.ts";
+  import { distanceSay } from "../space/distanceWords.ts";
   import { spaceSelection } from "../space/selection.ts";
   import { resolvedName } from "../store/names.ts";
   import { abbreviate } from "./fittingIcons.ts";
@@ -35,7 +36,11 @@
   const space = store.space;
   // svelte-ignore state_referenced_locally
   const names = store.names;
+  // svelte-ignore state_referenced_locally
+  const words = store.words;
   const selected = spaceSelection.selected;
+  // The distance's unit in the client's own words, when the page holds them.
+  const say = $derived(distanceSay($words.templates));
 
   const targets = $derived(
     buildTargets(
@@ -43,6 +48,7 @@
       $targeting.acquiringTargetIDs,
       $space.snapshot?.entities ?? null,
       $space.snapshot?.ship?.position ?? null,
+      $space.snapshot?.ship?.radius ?? 0,
     ),
   );
 
@@ -82,7 +88,7 @@
       return `${name} — the lock is lost`;
     }
     const condition = LAYERS.map((layer) => `${layer.label} ${pct(ratioFor(target, layer.key))}`).join(", ");
-    const range = target.distance != null ? `, ${formatDistance(target.distance)} away` : "";
+    const range = target.surfaceDistance != null ? `, ${fmtDist(target.surfaceDistance, 2, say)} away` : "";
     return `${name} — ${condition}${range}. Select.`;
   }
 </script>
@@ -141,7 +147,7 @@
             {/each}
           </span>
           <span class="target-range">
-            {target.distance != null ? formatDistance(target.distance) : "—"}
+            {target.surfaceDistance != null ? fmtDist(target.surfaceDistance, 2, say) : "—"}
           </span>
         {/if}
       </button>

@@ -9,9 +9,12 @@ import assert from "node:assert/strict";
 import {
   METRES_PER_AU,
   buildOverviewRows,
+  DISTANCE_LABELS,
   distanceMeters,
+  fmtDist,
   formatDistance,
   formatOverviewDistance,
+  ownDistanceWords,
   healthIsDropping,
   hostileLabel,
   hostileRows,
@@ -445,4 +448,51 @@ test("a threat carries its surface distance too, and threats stay ordered by the
   const rows = hostileRows(withShip([SELF, big, small]), ORIGIN);
   assert.deepEqual(rows.map((row) => row.itemID), [80002, 80001]);
   assert.deepEqual(rows.map((row) => Math.round(row.surfaceDistance * 10) / 10), [7_941.6, 5_961.6]);
+});
+
+// --- FmtDist: how the client words a distance everywhere but the overview's column ---
+
+test("FmtDist: whole metres under 10 km, whole kilometres under 10,000,000 km, AU to the decimals asked for", () => {
+  assert.equal(fmtDist(0), "0 m");
+  assert.equal(fmtDist(185.9), "186 m");
+  assert.equal(fmtDist(1.4), "1 m");
+  assert.equal(fmtDist(9_776.4), `${grouped(9776)} m`);
+  assert.equal(fmtDist(9_999.9), `${grouped(10000)} m`);
+  assert.equal(fmtDist(10_000), "10 km");
+  assert.equal(fmtDist(10_500), "11 km");
+  assert.equal(fmtDist(280_752_457), `${grouped(280752)} km`);
+  assert.equal(fmtDist(9_999_999_499), `${grouped(9999999)} km`);
+  // AU: two decimals unless told otherwise; the selected item asks for one.
+  assert.equal(fmtDist(10_000_000_000), "0.07 AU");
+  assert.equal(fmtDist(2.8 * METRES_PER_AU), "2.80 AU");
+  assert.equal(fmtDist(12.345 * METRES_PER_AU + 1e6), "12.35 AU");
+  assert.equal(fmtDist(2.84 * METRES_PER_AU, 1), "2.8 AU");
+  assert.equal(fmtDist(2.86 * METRES_PER_AU, 1), "2.9 AU");
+  assert.equal(fmtDist(2.86 * METRES_PER_AU, 0), "3 AU");
+  // Rounded once, to the decimals asked for: not to two and then again.
+  assert.equal(fmtDist(2.846 * METRES_PER_AU, 1), "2.8 AU");
+  assert.equal(fmtDist(2.496 * METRES_PER_AU, 0), "2 AU");
+  // Under a metre and not nothing, the decimals are kept; that is where it parts from the overview's column.
+  assert.equal(fmtDist(0.5), "0.50 m");
+  assert.equal(fmtDist(0.25, 1), "0.3 m");
+  assert.equal(formatOverviewDistance(0.5), "1 m");
+  assert.equal(fmtDist(1), "1 m");
+  // Less than nothing is nothing; what is no number is not worded.
+  assert.equal(fmtDist(-40), "0 m");
+  assert.equal(fmtDist(Number.NaN), "—");
+  assert.equal(fmtDist(Number.POSITIVE_INFINITY), "—");
+});
+
+test("the unit is put on by whoever words it: the page's own by default, the client's labels by name", () => {
+  assert.deepEqual(DISTANCE_LABELS, {
+    m: "/Carbon/UI/Common/FormatDistance/fmtDistInMeters",
+    km: "/Carbon/UI/Common/FormatDistance/fmtDistInKiloMeters",
+    au: "/Carbon/UI/Common/FormatDistance/fmtDistInAU",
+  });
+  assert.deepEqual([ownDistanceWords("m", "5"), ownDistanceWords("km", "5"), ownDistanceWords("au", "5.0")], ["5 m", "5 km", "5.0 AU"]);
+  const said: string[] = [];
+  const say = (unit: string, figure: string) => { said.push(`${unit}:${figure}`); return `<${figure}|${unit}>`; };
+  assert.deepEqual([fmtDist(186, 2, say), fmtDist(12_000, 2, say), fmtDist(3 * METRES_PER_AU, 1, say)], ["<186|m>", "<12|km>", "<3.0|au>"]);
+  assert.deepEqual([formatOverviewDistance(186, say), formatOverviewDistance(12_000, say), formatOverviewDistance(3 * METRES_PER_AU, say)], ["<186|m>", "<12|km>", "<3.0|au>"]);
+  assert.deepEqual(said, ["m:186", "km:12", "au:3.0", "m:186", "km:12", "au:3.0"]);
 });

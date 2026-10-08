@@ -10,7 +10,7 @@
 // grid should read as lost, not silently vanish.
 
 import type { SpaceEntity, SpaceVector } from "../store/types.ts";
-import { distanceMeters } from "../space/overview.ts";
+import { distanceMeters, surfaceDistanceMeters } from "../space/overview.ts";
 
 export interface TargetVM {
   readonly itemID: number;
@@ -33,6 +33,11 @@ export interface TargetVM {
    * the one reading a pilot would act on immediately. R71 renders null as a dash.
    */
   readonly distance: number | null;
+  /**
+   * Hull to hull, never below nothing: what the retail target bar shows
+   * (targetInBar.py: `ball.surfaceDist`). Null on the same terms as `distance`.
+   */
+  readonly surfaceDistance: number | null;
 }
 
 export function buildTargets(
@@ -41,6 +46,8 @@ export function buildTargets(
   entities: readonly SpaceEntity[] | null | undefined,
   /** The ship's position, so a card can say how far away its target is. */
   origin?: SpaceVector | null,
+  /** The ship's own radius, which the distance between hulls leaves out. */
+  ownRadius = 0,
 ): readonly TargetVM[] {
   const byID = new Map<number, SpaceEntity>();
   for (const entity of entities ?? []) {
@@ -61,6 +68,10 @@ export function buildTargets(
       distance:
         entity !== undefined && origin != null
           ? distanceMeters(origin, entity.position)
+          : null,
+      surfaceDistance:
+        entity !== undefined && origin != null
+          ? surfaceDistanceMeters(origin, ownRadius, entity.position, entity.radius)
           : null,
     };
   });

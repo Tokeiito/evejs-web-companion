@@ -77,6 +77,21 @@ test("a card knows how far away its target is", () => {
   assert.equal(vm!.distance, 5_000);
 });
 
+test("a card's distance between hulls leaves out both radii, and is never below nothing", () => {
+  // A target 100 m in radius, its centre 5 km off, from a ship of 30 m: 4,870 m between hulls.
+  const ents = [entity({ itemID: 5, radius: 100, position: { x: 3_000, y: 4_000, z: 0 } })];
+  const [vm] = buildTargets([5], [], ents, { x: 0, y: 0, z: 0 }, 30);
+  assert.deepEqual([vm!.distance, vm!.surfaceDistance], [5_000, 4_870]);
+  // With no radius given for the ship, only the target's is left out.
+  assert.equal(buildTargets([5], [], ents, { x: 0, y: 0, z: 0 })[0]!.surfaceDistance, 4_900);
+  // Inside the target's ball: nothing.
+  assert.equal(buildTargets([5], [], [entity({ itemID: 5, radius: 9_000, position: { x: 3_000, y: 4_000, z: 0 } })], { x: 0, y: 0, z: 0 }, 30)[0]!.surfaceDistance, 0);
+  // Unknown on the same terms as the centres' distance: no ship position, or the target gone from view.
+  assert.equal(buildTargets([5], [], ents)[0]!.surfaceDistance, null);
+  assert.equal(buildTargets([5], [], ents, null, 30)[0]!.surfaceDistance, null);
+  assert.equal(buildTargets([6], [], ents, { x: 0, y: 0, z: 0 }, 30)[0]!.surfaceDistance, null);
+});
+
 test("distance is measured from the SHIP, not from the origin of space", () => {
   const ents = [entity({ itemID: 5, position: { x: 1_000_000, y: 0, z: 0 } })];
   const [vm] = buildTargets([5], [], ents, { x: 1_000_000, y: 0, z: 0 });

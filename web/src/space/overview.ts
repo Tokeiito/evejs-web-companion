@@ -70,23 +70,77 @@ export function formatDistance(meters: number): string {
 }
 
 /**
+ * The client's labels for a distance in each unit. Each has one parameter,
+ * {distance}, the figure (carbon/common/script/util/format.py FmtDist;
+ * overviewScrollEntry.get_distance_in_meters and its two neighbours).
+ */
+export const DISTANCE_LABELS = {
+  m: "/Carbon/UI/Common/FormatDistance/fmtDistInMeters",
+  km: "/Carbon/UI/Common/FormatDistance/fmtDistInKiloMeters",
+  au: "/Carbon/UI/Common/FormatDistance/fmtDistInAU",
+} as const;
+
+export type DistanceUnit = keyof typeof DISTANCE_LABELS;
+
+/** Puts a figure with its unit. `distanceSay` (distanceWords.ts) makes one from the client's words. */
+export type DistanceSay = (unit: DistanceUnit, figure: string) => string;
+
+const OWN_UNITS: Readonly<Record<DistanceUnit, string>> = { m: "m", km: "km", au: "AU" };
+
+/** This page's own words for a distance, for when the client's are not to hand. */
+export const ownDistanceWords: DistanceSay = (unit, figure) => `${figure} ${OWN_UNITS[unit]}`;
+
+/** A number grouped, with exactly `places` decimals. */
+function figure(value: number, places = 0): string {
+  return value.toLocaleString(undefined, { minimumFractionDigits: places, maximumFractionDigits: places });
+}
+
+/**
  * A distance as the retail overview's own column words it
  * (overviewScrollEntry._GetColumnValueDistance): whole metres under 10 km,
  * whole kilometres under 10,000,000 km, and AU to one decimal beyond that.
  * The figures are grouped, as the client groups them.
  */
-export function formatOverviewDistance(meters: number): string {
+export function formatOverviewDistance(meters: number, say: DistanceSay = ownDistanceWords): string {
   if (!Number.isFinite(meters) || meters < 0) {
     return "—";
   }
   if (meters < 10_000) {
-    return `${Math.round(meters).toLocaleString()} m`;
+    return say("m", figure(Math.round(meters)));
   }
   if (meters < 10_000_000_000) {
-    return `${Math.round(meters / 1_000).toLocaleString()} km`;
+    return say("km", figure(Math.round(meters / 1_000)));
   }
-  const au = Math.round((meters / METRES_PER_AU) * 10) / 10;
-  return `${au.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} AU`;
+  return say("au", figure(Math.round((meters / METRES_PER_AU) * 10) / 10, 1));
+}
+
+/**
+ * A distance as the client words one everywhere but the overview's column:
+ * its FmtDist (carbon/common/script/util/format.py 192). The target bar and
+ * the brackets call it as it is; the selected item asks for one decimal.
+ *
+ * The same three steps as the overview's column. Under 10 km, whole metres,
+ * except that a distance under one metre and not nothing keeps its decimals.
+ * Under 10,000,000 km, whole kilometres. Beyond, AU to `maxDecimals`. Less
+ * than nothing is nothing.
+ *
+ * ⚠ The decimals are written out in full ("2.80 AU"), which is how this page
+ * reads the client's number formatter being handed a count of places. That
+ * formatter is native code and was not run; see the log.
+ */
+export function fmtDist(meters: number, maxDecimals = 2, say: DistanceSay = ownDistanceWords): string {
+  if (!Number.isFinite(meters)) {
+    return "—";
+  }
+  const dist = Math.max(0, meters);
+  if (dist < 10_000) {
+    return say("m", dist === 0 || dist >= 1 ? figure(Math.round(dist)) : figure(dist, maxDecimals));
+  }
+  if (dist < 10_000_000_000) {
+    return say("km", figure(Math.round(dist / 1_000)));
+  }
+  const scale = 10 ** maxDecimals;
+  return say("au", figure(Math.round((dist / METRES_PER_AU) * scale) / scale, maxDecimals));
 }
 
 /** The radius of the player's own ship, as the snapshot gives it; 0 when it gives none. */
