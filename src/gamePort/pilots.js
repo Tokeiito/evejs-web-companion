@@ -405,7 +405,11 @@ function createGamePortPilots({
     const code = error && error.code;
     const detail = String((error && error.message) || error).slice(0, 300);
     if (code === "GAME_CALL_REFUSED" && error.refusal && error.refusal.reason) {
-      return fail("CALL_REFUSED", String(error.refusal.reason));
+      // What the server refused with, by name and with its values: the client acts on some of them
+      // (ShipContrabandWarningUndock is a question, not a failure), and the words alone do not say which.
+      return Object.assign(fail("CALL_REFUSED", String(error.refusal.reason)), {
+        refusal: { key: String(error.refusal.key || ""), values: error.refusal.values ?? null },
+      });
     }
     if (["CONNECTION_LOST", "CONNECTION_CLOSED", "TRANSPORT_CLOSED", "NOT_CONNECTED", "BAD_FRAME"].includes(code)) {
       return fail("SESSION_NOT_FOUND", SESSION_GONE);

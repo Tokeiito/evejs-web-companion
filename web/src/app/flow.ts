@@ -377,6 +377,12 @@ export interface AppFlowOptions {
    */
   readonly eventSource?: (url: string) => api.EventSourceLike;
   /**
+   * How this client asks its user an OK / Cancel question of its own (the
+   * warning before undocking with contraband). Defaults to the browser's
+   * confirm; with no browser nobody is asked and the answer is Cancel.
+   */
+  readonly confirm?: (message: string) => boolean | Promise<boolean>;
+  /**
    * R107 multibox — when true, this flow carries its OWN session token on every
    * call (via `callOptions.token`) instead of the per-tab global in
    * sessionToken.ts, so several flows can be live in ONE browser tab without
@@ -1504,6 +1510,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   let sessionCloseGeneration = 0;
   let requestGeneration = 0;
   let sessionClosing = false;
+  // An OK / Cancel question of this client's own. With no browser there is
+  // nobody to ask, and the answer is Cancel.
+  const askUser = async (message: string): Promise<boolean> => {
+    if (options.confirm) {
+      return (await options.confirm(message)) === true;
+    }
+    return typeof window !== "undefined" && typeof window.confirm === "function" ? window.confirm(message) : false;
+  };
   // R107 — in per-session mode the `token` key is present (starting null) so
   // every api.ts / callMethod.ts call authenticates with THIS flow's token and
   // never the per-tab global; the login handler fills it in and logout clears
@@ -5848,7 +5862,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         }
       },
       undock: async () => {
-        await api.undock(callOptions);
+        await api.undock(callOptions, true);
       },
       warp: async (destinationID) => {
         // R24 slice A — retail's `WarpToItem(warpRange=0)`, NOT the autopilot
@@ -7141,7 +7155,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           // only call this loop makes that deliberately re-enters danger, which
           // is why `recoverAndReturn` does all its checking above it.
           case "undock":
-            await api.undock(callOptions);
+            await api.undock(callOptions, true);
             return;
           // ⚠ NO FAR-SIDE GATE, AND THAT IS THE POINT. The server resolves the
           // destination from the gate we are sitting on (`sourceGate.destinationID`);
@@ -7387,7 +7401,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         return state;
       },
       undock: async () => {
-        await api.undock(callOptions);
+        await api.undock(callOptions, true);
       },
       // R24 slice A — retail's `WarpToItem(warpRange=0)`, not the autopilot
       // call's hardcoded 10 km. Same correction, same reason.
@@ -11380,7 +11394,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           case "wait":
             return;
           case "undock":
-            await api.undock(callOptions);
+            await api.undock(callOptions, true);
             return;
           case "warp":
             await api.warpTo(action.targetID, AUTOPILOT_WARP_MIN_RANGE_M, callOptions);
@@ -13111,7 +13125,24 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     loadFlightStatus,
 
     async undock() {
-      await runFlightStep("Undock", () => api.undock(callOptions));
+      // The retail client's _DoUndockAttempt (ui/station/base.py 488): undock
+      // with the contraband warning armed; if the server answers with the
+      // warning, ask, and on OK undock again ignoring it. On Cancel the ship
+      // stays docked and nothing is reported as having failed.
+      requireAutomationReady();
+      let first: Promise<FlightStepResult> | null = api.undock(callOptions, false);
+      try {
+        await first;
+      } catch (error) {
+        if (api.isContrabandWarning(error)) {
+          if (!(await askUser(`${error.message} Undock anyway?`))) {
+            return;
+          }
+          first = null;
+        }
+        // Any other refusal is reported by runFlightStep below, from the same promise.
+      }
+      await runFlightStep("Undock", () => first ?? api.undock(callOptions, true));
     },
 
     async warpTo(destinationID, minRange = null) {

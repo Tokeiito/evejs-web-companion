@@ -16861,9 +16861,44 @@ app.get("/api/bridge/flight/status", requireAuth, async (req, res, next) => {
   }
 });
 
+// The refusal the retail client's undock catches and turns into a question
+// (ui/station/base.py _DoUndockAttempt): the ship is carrying what the local
+// law forbids. OK there undocks again with ignoreContraband set.
+const CONTRABAND_WARNING_KEY = "ShipContrabandWarningUndock";
+
+function isContrabandWarning(error) {
+  if (!error || error.code !== "CALL_REFUSED") {
+    return false;
+  }
+  // The game-port transport hands the refusal on by name; the gateway only words it.
+  return (error.refusal && error.refusal.key === CONTRABAND_WARNING_KEY) ||
+    String(error.message || "").includes(CONTRABAND_WARNING_KEY);
+}
+
+// What the warning says, in this client's words. The refusal's values are the
+// dialog's parameters, {contraband: (UE_LIST, [(UE_TYPEIDANDQUANTITY, typeID,
+// quantity), ...], sep), ...} when the transport passed them on; without them
+// the goods are not named, and nothing is made up.
+function contrabandWarningWords(error) {
+  const entries = error && error.refusal && error.refusal.values && Array.isArray(error.refusal.values.entries)
+    ? error.refusal.values.entries
+    : [];
+  const listed = entries.find((entry) => Array.isArray(entry) && entry[0] === "contraband");
+  const stacks = listed && Array.isArray(listed[1]) && listed[1][0] === 103 && Array.isArray(listed[1][1]) ? listed[1][1] : [];
+  const goods = stacks
+    .filter((stack) => Array.isArray(stack) && stack[0] === 24 && Number.isSafeInteger(stack[1]) && Number.isSafeInteger(stack[2]))
+    .map((stack) => `${stack[2].toLocaleString("en-US")} × ${staticData.getTypeName(stack[1]) || `type ${stack[1]}`}`);
+  return `Your ship is carrying contraband${goods.length > 0 ? `: ${goods.join(", ")}` : ""}. ` +
+    "The authorities here will fine you and take it if they find it.";
+}
+
 // Undock: ship.Undock(shipID, ignoreContraband, onlineModules=[]) — a top-level
 // call on the docked session (Handle_Undock resolves the ship + attaches the
 // session to space). onlineModules is a kwarg (never positional).
+//
+// `ignoreContraband` in the body is the retail call's second argument. Without
+// it a ship carrying contraband is refused with CONTRABAND_WARNING and stays
+// docked; the caller asks its user and sends it again with the flag set.
 app.post("/api/bridge/flight/undock", requireAuth, async (req, res, next) => {
   const held = requireHeldBridgeSession(req, res);
   if (!held) {
@@ -16892,7 +16927,7 @@ app.post("/api/bridge/flight/undock", requireAuth, async (req, res, next) => {
       req.webSessionID,
       "ship",
       "Undock",
-      [shipID, false],
+      [shipID, req.body ? req.body.ignoreContraband === true : false],
       { onlineModules: [] },
     );
     markTransitionAccepted(held);
@@ -16914,6 +16949,10 @@ app.post("/api/bridge/flight/undock", requireAuth, async (req, res, next) => {
       } else if (held.transition.phase !== "failed") {
         markTransitionFailed(held, error && error.message);
       }
+    }
+    if (isContrabandWarning(error)) {
+      res.status(409).json({ ok: false, error: "CONTRABAND_WARNING", message: contrabandWarningWords(error) });
+      return;
     }
     next(error);
   }

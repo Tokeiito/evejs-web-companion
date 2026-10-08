@@ -1556,3 +1556,17 @@ test("a question the server will wait a day for still lapses in this client's ow
   await tick();
   assert.deepEqual([...timers.values()].map((timer) => timer.delay), [110_000, 110_000, 110_000]);
 });
+
+// ── a refusal, by name ───────────────────────────────────────────────────────
+
+test("a refusal keeps the server's name for it and its values, beside the words", async () => {
+  const values = { type: "dict", entries: [["contraband", [103, [[24, 3721, 10]], "<br>"]]] };
+  const { pilots } = build({ answers: { "ship.Undock": () => { throw sessionError("GAME_CALL_REFUSED", "refused", { className: "eveexceptions.UserError", key: "ShipContrabandWarningUndock", values, reason: "ShipContrabandWarningUndock" }); } } });
+  const { bridgeSessionID: handle } = await pilots.selectCharacter([PILOT, null, true], null, FIELDS);
+  await assert.rejects(pilots.callMethod("ship", "Undock", [SHIP, false], null, FIELDS, handle), (error) => {
+    assert.equal(error.code, "CALL_REFUSED");
+    assert.equal(error.message, "ShipContrabandWarningUndock");
+    assert.deepEqual(error.refusal, { key: "ShipContrabandWarningUndock", values });
+    return true;
+  });
+});

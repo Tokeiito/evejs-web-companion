@@ -7,6 +7,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { createAppFlow } from "./flow.ts";
+import * as api from "./api.ts";
 import { createClientStore } from "../store/clientStore.ts";
 
 interface Recorded {
@@ -256,4 +257,101 @@ test("a lost session during a movement step unwinds to offline", async () => {
   );
   // The station slice was cleared (character/offline), unwinding to select.
   assert.equal(store.station.get().online, null);
+});
+
+// ── undocking with contraband aboard ─────────────────────────────────────────
+//
+// The retail client's _DoUndockAttempt (ui/station/base.py 488): refused with
+// ShipContrabandWarningUndock, it asks OK / Cancel and undocks again with
+// ignoreContraband set. The BFF answers that refusal as CONTRABAND_WARNING.
+
+const WARNING = { ok: false, error: "CONTRABAND_WARNING", message: "Your ship is carrying contraband: 10 × Slaves. The authorities here will fine you and take it if they find it." };
+
+function contrabandFetch() {
+  return makeFakeFetch((path, _method, body) => {
+    if (path === "/api/bridge/flight/undock") {
+      return body.ignoreContraband === true
+        ? { status: 200, body: { ok: true, flight: IN_SPACE, notifications: [] } }
+        : { status: 409, body: WARNING };
+    }
+    // Arriving in space, the page looks up where it is; that is not what is being tested.
+    return { status: 200, body: { ok: true } };
+  });
+}
+/** What was sent to the undock route, in order. */
+const undocks = (requests: Recorded[]) => requests.filter((request) => request.path === "/api/bridge/flight/undock").map((request) => request.body);
+
+test("an undock sends the warning armed, and one that is not warned about asks nothing", async () => {
+  const store = createClientStore();
+  const asked: string[] = [];
+  const { fetch, requests } = makeFakeFetch((path) => {
+    if (path === "/api/bridge/flight/undock") {
+      return { status: 200, body: { ok: true, flight: IN_SPACE, notifications: [] } };
+    }
+    return { status: 200, body: { ok: true } };
+  });
+  const flow = createAppFlow(store, { fetch, confirm: (message) => { asked.push(message); return true; } });
+  await flow.undock();
+  assert.deepEqual(undocks(requests), [{ ignoreContraband: false }]);
+  assert.deepEqual(asked, []);
+  assert.equal(store.flight.get().lastAction, "Undock");
+});
+
+test("warned about contraband, the user is asked, and OK undocks again ignoring it", async () => {
+  const store = createClientStore();
+  const asked: string[] = [];
+  const { fetch, requests } = contrabandFetch();
+  const flow = createAppFlow(store, { fetch, confirm: async (message) => { asked.push(message); return true; } });
+  await flow.undock();
+  assert.deepEqual(asked, [`${WARNING.message} Undock anyway?`]);
+  assert.deepEqual(undocks(requests), [{ ignoreContraband: false }, { ignoreContraband: true }]);
+  const flight = store.flight.get();
+  assert.equal(flight.status?.inSpace, true);
+  assert.equal(flight.lastAction, "Undock");
+  assert.equal(flight.actionError, null);
+});
+
+test("Cancel leaves the ship docked, sends nothing more, and reports no failure", async () => {
+  for (const confirm of [() => false, async () => false, undefined]) {
+    const store = createClientStore();
+    const { fetch, requests } = contrabandFetch();
+    // With no way to ask (no browser), nobody is asked and the answer is Cancel.
+    const flow = createAppFlow(store, confirm ? { fetch, confirm } : { fetch });
+    await flow.undock();
+    // One request in all: nothing is re-read and nothing else is sent.
+    assert.deepEqual(requests.map((request) => [request.path, request.body]), [["/api/bridge/flight/undock", { ignoreContraband: false }]]);
+    const flight = store.flight.get();
+    assert.equal(flight.actionError, null);
+    assert.notEqual(flight.lastAction, "Undock");
+    assert.notEqual(flight.status?.inSpace, true);
+  }
+});
+
+test("any other refusal of an undock is reported as before, and nobody is asked", async () => {
+  const store = createClientStore();
+  const asked: string[] = [];
+  const { fetch, requests } = makeFakeFetch((path) => {
+    if (path === "/api/bridge/flight/undock") {
+      return { status: 409, body: { ok: false, error: "CALL_REFUSED", message: "ShipNotInHangar" } };
+    }
+    if (path === "/api/bridge/flight/status") {
+      return { status: 200, body: { ok: true, flight: DOCKED, notifications: [] } };
+    }
+    throw new Error(`unexpected ${path}`);
+  });
+  const flow = createAppFlow(store, { fetch, confirm: (message) => { asked.push(message); return true; } });
+  await flow.undock();
+  assert.deepEqual(asked, []);
+  assert.equal(requests.filter((request) => request.path === "/api/bridge/flight/undock").length, 1);
+  assert.match(store.flight.get().actionError ?? "", /^Undock refused: /);
+});
+
+test("the page's own automation undocks ignoring the warning, as the client does once it is suppressed", async () => {
+  const { fetch, requests } = contrabandFetch();
+  const result = await api.undock({ fetch }, true);
+  assert.equal(result.flight !== undefined, true);
+  assert.deepEqual(undocks(requests), [{ ignoreContraband: true }]);
+  // And the warning is told from any other refusal by its code.
+  await assert.rejects(api.undock({ fetch }, false), (error) => api.isContrabandWarning(error));
+  assert.equal(api.isContrabandWarning(new Error("CONTRABAND_WARNING")), false);
 });
