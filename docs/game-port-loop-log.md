@@ -80,6 +80,9 @@ Decisions taken in your place, and anything waiting on you. Overrule any of thes
   decline question), `7282f54cc` (the contraband warning at undock) and `85042bbce` (the customs
   question's contraband sent as a list, which the retail client needs to word it). They sit on
   `main` beside whatever else is there, as you instructed for fixes.
+  **Later the same day they were on `origin/main` too, and again I did not put them there:**
+  eve.js's reflog records a push of `main` at 2026-10-08 10:30:00 local, while this loop was
+  stalled and running nothing. It is the same thing as the push at 01:09 described above.
 - **My live checks had turned eve.js's own tests red, and I had told you they were red on their
   own.** Its test runner copies the live store as its baseline and flies Test Two and Test
   Three, so what I left on them (a stack of Slaves, fourteen customs cases, three notifications,
