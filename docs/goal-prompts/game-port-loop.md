@@ -160,7 +160,11 @@ Take these defaults, and list each under "For the operator" in the log so they c
   the file tools and run it.
 - A long foreground `sleep` is refused. Wait with a short loop on a condition, or in the
   background.
-- Tests that pass the first time have proved nothing yet. Break the code and watch them fail.
+- Tests that pass the first time have proved nothing yet. Break the code and watch them fail:
+  `node scripts/break-and-check.js <source> <test> <list of [find, replacement]>` does it one
+  breakage at a time and puts the file back. Commit a new source file, or at least let that
+  script finish, before killing anything: a breakage that makes the tests hang once left an
+  untracked file broken with its only good copy in a running process.
 - In a patch script, `text.replace(find, replacement)` reads `$&`, `$1`, a dollar and a backtick,
   and a dollar and a quote inside the replacement as instructions. Pass a function:
   `text.replace(find, () => replacement)`.
@@ -168,6 +172,11 @@ Take these defaults, and list each under "For the operator" in the log so they c
   a game-port one. To know which transport a pilot is on, read the server's log:
   `[EvejsWebGateway] Browser session started` is the gateway, `[PKT] IN` is the game port.
   `scripts/bff-parity.js` does this.
+- eve.js does not step ships once a second as CCP's server and the client do. It moves them ten
+  times a second by the time passed and stamps what it sends with the whole second. So a park
+  stepped by CCP's rules and the server's own state differ by a fraction of a tick of travel, and
+  that is not a bug in the port. `scripts/destiny-compare.js` on a recording made with
+  `record-destiny.js ... <probeEverySeconds>` shows by how much; a whole tick is worth a look.
 - The web client in a browser tab selects its pilot again when it loses the session. Log the tab
   out before a script selects the same character, or the two take it from each other.
 
