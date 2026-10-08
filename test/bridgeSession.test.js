@@ -773,3 +773,35 @@ test("a mission's keywords are asked of the bound agent, by the mission's conten
   }
   assert.equal(calls.length, 1);
 });
+
+// ── The agent's window, read as it is laid out (GET /api/bridge/agents/:agentID/briefing) ──
+
+test("the briefing's three reads are asked of the bound agent in the order the client's window asks them", async () => {
+  const gamePort = gamePortWithQuestions(() => ({ answered: true }));
+  gamePort.bindObject = async () => ({ boundHandle: "bound-agent", notifications: [] });
+  const calls = [];
+  gamePort.callBoundMethod = async (service, method, args) => {
+    calls.push([service, method, args]);
+    if (method === "GetMissionObjectiveInfo") throw Object.assign(new Error("no mission"), { code: "CALL_FAILED" });
+    return { service, method, result: method, notifications: [] };
+  };
+  const { baseUrl } = await startTestServer({ gateway: fakeGateway(), gamePortPilots: gamePort, pilotTransportFor: () => "gameport" });
+  await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+  const answer = await apiRequest(baseUrl, "/api/bridge/agents/3008416/briefing");
+  assert.equal(answer.response.status, 200, JSON.stringify(answer.payload));
+  // agentDialogueWindow.ReconstructLayout: the agent's place for the header, the briefing, then the objectives.
+  assert.deepEqual(calls, [
+    ["agentMgr", "GetAgentLocationWrap", []],
+    ["agentMgr", "GetMissionBriefingInfo", []],
+    ["agentMgr", "GetMissionObjectiveInfo", []],
+  ]);
+  // Each answer under its own name, and a read that failed says so without blanking the others.
+  assert.deepEqual(answer.payload, {
+    ok: true,
+    agentID: 3008416,
+    briefing: "GetMissionBriefingInfo",
+    objective: null,
+    location: "GetAgentLocationWrap",
+    errors: { briefing: null, objective: "CALL_FAILED", location: null },
+  });
+});

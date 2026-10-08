@@ -18,6 +18,7 @@
   // R36 — the mission bot sits with the agents it works for.
   import MissionBot from "./MissionBot.svelte";
   import { panelErrorWords } from "../bridge/refusals.ts";
+  import { offerOpen } from "../bridge/agents.ts";
   import { questionText, wordsLabels, wordsNameRefs, type ClientWording } from "../bridge/questions.ts";
   import { filetimeOf, journalRowAsks, journalRowText, journalRowWords } from "../bridge/journalWords.ts";
 
@@ -239,10 +240,16 @@
 
   // The mission's title, which the client's agent window shows above what the agent says whenever there is a
   // mission between the two (agentDialogueWindow.py _GetMissionTitleHTML): the title's message, filled like
-  // everything else the agent says about the mission. Its number comes with the mission's line in the journal
-  // (an agent has one mission with a pilot at a time). Shown only when the page has the client's text for it.
+  // everything else the agent says about the mission. The client takes its number from the briefing it reads
+  // for the layout, and so does this when a briefing is held; otherwise it comes with the mission's line in
+  // the journal (an agent has one mission with a pilot at a time). Shown only when the page has the
+  // client's text for it.
   const talkTitleID = $derived.by<number | null>(() => {
     const agentID = $agents.activeAgentID;
+    const briefed = $agents.briefing?.missionTitleID ?? null;
+    if (agentID !== null && briefed !== null && briefed > 0) {
+      return briefed;
+    }
     const journal = $agents.journal;
     if (agentID === null || !journal) {
       return null;
@@ -380,6 +387,10 @@
         <tr><th>Loyalty points</th><td class="num">{$agents.briefing.loyaltyPoints ?? "—"}</td></tr>
       </tbody>
     </table>
+    {#if offerOpen($agents.conversation)}
+      <!-- The client's window shows an offer's objectives before it is taken. The package is handed over on accepting. -->
+      <p class="note mission-offered">This is the offer. Accept it in the conversation to be given the package.</p>
+    {:else}
     <p class="controls">
       <button
         type="button"
@@ -406,6 +417,7 @@
       Load the package into the active ship, autopilot to the dropoff station,
       dock, then Complete Mission in the agent conversation.
     </p>
+    {/if}
   </section>
 {/if}
 

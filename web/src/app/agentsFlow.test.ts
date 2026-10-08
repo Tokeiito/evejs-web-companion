@@ -143,7 +143,15 @@ function makeFakeFetch(
     const method = (init && init.method) || "GET";
     const body = init && typeof init.body === "string" ? JSON.parse(init.body) : {};
     requests.push({ path, method, body });
-    const outcome = responder(path, method, body);
+    let outcome: { status: number; body: unknown };
+    try {
+      outcome = responder(path, method, body);
+    } catch (cause) {
+      // The window reads the mission's briefing for every layout. A test that is not about that read is
+      // given the standing one.
+      if (!/\/briefing$/.test(path)) throw cause;
+      outcome = { status: 200, body: BRIEFING_RESPONSE };
+    }
     return {
       ok: outcome.status >= 200 && outcome.status < 300,
       status: outcome.status,
@@ -187,13 +195,17 @@ test("openConversation decodes the agent dialogue into the store", async () => {
 
   await flow.openConversation(3008416);
 
-  // DoAction(None) opens the conversation.
+  // DoAction(None) opens the conversation; an offer is on the table, so nothing is pressed for the pilot.
   assert.deepEqual(requests[0]!.body, { actionID: null });
+  // Then the layout: the briefing reads, and nothing else.
+  assert.deepEqual(requests.map((request) => request.path), ["/api/bridge/agents/3008416/action", "/api/bridge/agents/3008416/briefing"]);
   const agents = store.agents.get();
   assert.equal(agents.activeAgentID, 3008416);
   assert.equal(agents.conversation!.actions.length, 2);
   assert.equal(agents.conversation!.actions[0]!.buttonType, 3);
   assert.equal(agents.actionError, null);
+  // The offer's objectives are on show before it is accepted, as in the client's window.
+  assert.equal(agents.briefing!.cargoTypeID, 3814);
 });
 
 test("accepting a courier posts DoAction(accept) then pulls the briefing and journal", async () => {
@@ -580,11 +592,10 @@ test("R35 predicate 1: a REFUSED Complete keeps the briefing and pulls no reward
     "a refused Complete must not pull the payout reads — there was no payout",
   );
   const agents = store.agents.get();
-  assert.deepEqual(
-    agents.briefing,
-    { ...LIVE_BRIEFING },
-    "the mission is still accepted, so its briefing must survive a refusal",
-  );
+  // Read again for this layout, and still shown: the last action ended nothing.
+  assert.ok(requests.some((r) => r.path === "/api/bridge/agents/3008416/briefing"));
+  assert.equal(agents.briefing!.cargoTypeID, LIVE_BRIEFING.cargoTypeID, "the mission is still accepted, so its briefing must survive a refusal");
+  assert.equal(agents.briefing!.destinationLocationID, LIVE_BRIEFING.destinationLocationID);
   // The journal still refreshes: the accepted row is genuinely still there.
   assert.equal(agents.journal!.active.length, 1, "the mission is still in the journal");
 });
@@ -730,4 +741,139 @@ test("R35 predicate 3: a SILENTLY DECLINED package move is reported, not passed 
     /did not move|could not be loaded|refused/i,
     "a silent decline must reach the player, not be reported as a successful load",
   );
+});
+
+// --- the window as the client lays it out ------------------------------------
+
+/** A conversation with these (actionID, buttonType) on offer and this said of the last action. */
+function conversationWith(actions: readonly (readonly [number, number])[], info: readonly (readonly [string, unknown])[] = [["loyaltyPoints", 0]]) {
+  return {
+    ok: true,
+    result: {
+      type: "tuple",
+      items: [
+        {
+          type: "tuple",
+          items: [
+            { type: "tuple", items: [127958, 1382] },
+            { type: "list", items: actions.map(([actionID, buttonType]) => ({ type: "tuple", items: [actionID, buttonType] })) },
+          ],
+        },
+        { type: "dict", entries: info.map(([name, value]) => [name, value]) },
+      ],
+    },
+    notifications: [],
+  };
+}
+
+/** A flow whose agent answers each DoAction from `answers`, by the action pressed (null for the opening). */
+async function talking(answers: Record<string, ReturnType<typeof conversationWith>>, agentTypeID: number | null = 2) {
+  const store = createClientStore();
+  const { fetch, requests } = makeFakeFetch((path, _method, body) => {
+    if (path === "/api/bridge/agents") {
+      return { status: 200, body: { ...AGENTS_RESPONSE, agents: agentTypeID === null ? [] : [{ ...AGENTS_RESPONSE.agents[0]!, agentTypeID }] } };
+    }
+    if (path === "/api/bridge/agents/3008416/action") {
+      const answer = answers[String(body.actionID)];
+      if (!answer) throw new Error(`no answer for action ${String(body.actionID)}`);
+      return { status: 200, body: answer };
+    }
+    if (path === "/api/bridge/journal") {
+      return { status: 200, body: journalResponse([]) };
+    }
+    throw new Error(`unexpected ${path}`);
+  });
+  const flow = createAppFlow(store, { fetch });
+  await flow.loadAgents();
+  requests.length = 0;
+  const pressed = () => requests.filter((request) => request.path.endsWith("/action")).map((request) => request.body.actionID);
+  return { store, flow, requests, pressed };
+}
+
+test("opening an agent's window presses Request Mission at once, as the client's window does", async () => {
+  const { store, flow, requests, pressed } = await talking({
+    null: conversationWith([[821, 2]]),
+    821: conversationWith([[816, 3], [817, 9]]),
+  });
+  await flow.openConversation(3008416);
+  assert.deepEqual(pressed(), [null, 821]);
+  // One layout, of what came of the press: the briefing read once, after both. Then the journal, which the press changed.
+  assert.deepEqual(requests.map((request) => request.path.split("/").at(-1)), ["action", "action", "briefing", "journal"]);
+  assert.notEqual(store.agents.get().journal, null);
+  const agents = store.agents.get();
+  assert.deepEqual(agents.conversation!.actions.map((action) => action.buttonType), [3, 9]);
+  assert.equal(agents.briefing!.cargoTypeID, 3814);
+  assert.equal(agents.actionError, null);
+});
+
+test("the opening press is for an agent with nothing else to do: not a locator, not a research agent, unless it is all there is", async () => {
+  const offer = conversationWith([[816, 3], [817, 9]]);
+  // View Mission first, with more on offer, from an ordinary agent: pressed.
+  const ordinary = await talking({ null: conversationWith([[900, 1], [901, 10]]), 900: offer });
+  await ordinary.flow.openConversation(3008416);
+  assert.deepEqual(ordinary.pressed(), [null, 900]);
+  // The same from a research agent: left for the pilot.
+  const research = await talking({ null: conversationWith([[900, 1], [901, 13], [902, 14]]) }, 4);
+  await research.flow.openConversation(3008416);
+  assert.deepEqual(research.pressed(), [null]);
+  assert.deepEqual(research.store.agents.get().conversation!.actions.map((action) => action.buttonType), [1, 13, 14]);
+  // And from an agent that also locates characters.
+  const locator = await talking({ null: conversationWith([[900, 2], [903, 15]]) });
+  await locator.flow.openConversation(3008416);
+  assert.deepEqual(locator.pressed(), [null]);
+  // A research agent with only the mission on offer: pressed.
+  const only = await talking({ null: conversationWith([[900, 2]]), 900: offer }, 4);
+  await only.flow.openConversation(3008416);
+  assert.deepEqual(only.pressed(), [null, 900]);
+  // Something other than a mission first: nothing is pressed.
+  const other = await talking({ null: conversationWith([[816, 3], [900, 2]]) });
+  await other.flow.openConversation(3008416);
+  assert.deepEqual(other.pressed(), [null]);
+  // An agent the roster does not have: only when it is all there is.
+  const unknown = await talking({ null: conversationWith([[900, 2], [901, 10]]) }, null);
+  await unknown.flow.openConversation(3008416);
+  assert.deepEqual(unknown.pressed(), [null]);
+  // Nothing on offer at all.
+  const silent = await talking({ null: conversationWith([]) });
+  await silent.flow.openConversation(3008416);
+  assert.deepEqual(silent.pressed(), [null]);
+  // With nothing pressed, nothing changed, and the journal is not read again.
+  assert.equal(silent.requests.some((request) => request.path === "/api/bridge/journal"), false);
+});
+
+test("the briefing and the objectives are read for every layout, whatever was pressed", async () => {
+  const { store, flow, requests } = await talking({ 818: conversationWith([[816, 3], [817, 9]]) });
+  // Defer: not an accept, a decline or a completion.
+  await flow.chooseAction(3008416, { actionID: 818, buttonType: 10, label: "Defer" });
+  assert.deepEqual(requests.map((request) => request.path.split("/").at(-1)), ["action", "briefing", "journal"]);
+  assert.equal(store.agents.get().briefing!.cargoTypeID, 3814);
+});
+
+test("the objectives are not shown when the last action ended the mission, or the agent said not yet", async () => {
+  for (const [name, value] of [["missionCompleted", true], ["missionDeclined", true], ["missionQuit", true], ["missionCantReplay", 3_600_000]] as const) {
+    const { store, flow, requests } = await talking({ 820: conversationWith([[821, 2]], [[name, value], ["loyaltyPoints", 0]]) });
+    await flow.chooseAction(3008416, { actionID: 820, buttonType: 11, label: "Quit" });
+    // Read all the same, as the client reads it; it is the showing that the rule decides.
+    assert.ok(requests.some((request) => request.path.endsWith("/briefing")), name);
+    assert.equal(store.agents.get().briefing, null, name);
+  }
+  // None of them said: shown.
+  const still = await talking({ 820: conversationWith([[819, 6]], [["missionCompleted", false], ["missionDeclined", null], ["missionCantReplay", 0]]) });
+  await still.flow.chooseAction(3008416, { actionID: 820, buttonType: 8, label: "Continue" });
+  assert.equal(still.store.agents.get().briefing!.cargoTypeID, 3814);
+});
+
+test("a briefing that cannot be read leaves the conversation on show and says what went wrong", async () => {
+  const store = createClientStore();
+  const { fetch } = makeFakeFetch((path) => {
+    if (path === "/api/bridge/agents/3008416/action") return { status: 200, body: offeredConversation() };
+    if (path === "/api/bridge/agents/3008416/briefing") return { status: 502, body: { ok: false, error: "CALL_FAILED", message: "no" } };
+    throw new Error(`unexpected ${path}`);
+  });
+  const flow = createAppFlow(store, { fetch });
+  await flow.openConversation(3008416);
+  const agents = store.agents.get();
+  assert.equal(agents.conversation!.actions.length, 2);
+  assert.equal(agents.briefing, null);
+  assert.notEqual(agents.actionError, null);
 });

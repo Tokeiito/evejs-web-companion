@@ -12543,6 +12543,10 @@ app.get("/api/bridge/agents/:agentID/keywords", requireAuth, async (req, res, ne
 // The three reads are INDEPENDENT (Promise.allSettled) so one failure never
 // blanks the rest; each carries its own error code. Raw results are decoded
 // browser side.
+//
+// They are asked in the order the retail client's window asks them as it lays
+// itself out (agentDialogueWindow.ReconstructLayout): where the agent is, for
+// its header; the briefing; then the objectives.
 app.get("/api/bridge/agents/:agentID/briefing", requireAuth, async (req, res, next) => {
   const held = requireHeldBridgeSession(req, res);
   if (!held) {
@@ -12555,10 +12559,10 @@ app.get("/api/bridge/agents/:agentID/briefing", requireAuth, async (req, res, ne
   }
   try {
     const spec = agentBindSpec(agentID);
-    const [briefing, objective, location] = await Promise.allSettled([
+    const [location, briefing, objective] = await Promise.allSettled([
+      boundCall(held, req.webSessionID, spec, "GetAgentLocationWrap", [], null),
       boundCall(held, req.webSessionID, spec, "GetMissionBriefingInfo", [], null),
       boundCall(held, req.webSessionID, spec, "GetMissionObjectiveInfo", [], null),
-      boundCall(held, req.webSessionID, spec, "GetAgentLocationWrap", [], null),
     ]);
     for (const settled of [briefing, objective, location]) {
       if (settled.status === "rejected" && settled.reason && settled.reason.code === "SESSION_NOT_FOUND") {

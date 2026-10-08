@@ -67,6 +67,8 @@ import {
   decodeBriefing,
   decodeConversation,
   decodeJournal,
+  objectivesShown,
+  openingAction,
 } from "../bridge/agents.ts";
 import {
   decodeCashBalance,
@@ -127,6 +129,7 @@ import type {
   ActivityCalendarResponseRow,
   ActivityNotificationRow,
   AgentAction,
+  AgentConversation,
   QuestionAnswer,
   ChatChannel,
   ContractDetail,
@@ -4019,6 +4022,21 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     store.apply({
       type: "agents/briefing",
       briefing: decodeBriefing(reads.briefing, reads.objective),
+    });
+  }
+
+  /**
+   * agentDialogueWindow.ReconstructLayout: what the agent says, and beside it the mission. The client
+   * reads the agent's place, the mission's briefing and its objectives afresh for EVERY layout, whatever
+   * was pressed, and shows the objectives unless the last action ended the mission or was answered with
+   * "not yet" (objectivesShown). So an offer's objectives are on show before it is accepted.
+   */
+  async function layOutConversation(agentID: number, conversation: AgentConversation): Promise<void> {
+    store.apply({ type: "agents/conversation", agentID, conversation });
+    const reads = await api.loadBriefing(agentID, callOptions);
+    store.apply({
+      type: "agents/briefing",
+      briefing: objectivesShown(conversation.lastActionInfo) ? decodeBriefing(reads.briefing, reads.objective) : null,
     });
   }
 
@@ -13076,14 +13094,19 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
     async openConversation(agentID) {
       await runAgentAction(async () => {
-        const result = await api.agentAction(agentID, null, callOptions);
-        store.apply({
-          type: "agents/conversation",
-          agentID,
-          conversation: decodeConversation(result),
-        });
-        // Opening a conversation clears any stale briefing from a prior agent.
-        store.apply({ type: "agents/briefing", briefing: null });
+        // agentDialogueWindow._GetConversation: the window opens on what the agent says, and if the first
+        // thing on offer is to request a mission or view one, it presses that at once.
+        let conversation = decodeConversation(await api.agentAction(agentID, null, callOptions));
+        const agent = store.agents.get().agents.find((row) => row.agentID === agentID);
+        const first = openingAction(conversation, agent ? agent.agentTypeID : null);
+        if (first !== null) {
+          conversation = decodeConversation(await api.agentAction(agentID, first.actionID, callOptions));
+        }
+        await layOutConversation(agentID, conversation);
+        // A press changes what there is between the pilot and the agent: a mission requested is an offer in the journal.
+        if (first !== null) {
+          await loadJournal();
+        }
       });
     },
 
@@ -13103,16 +13126,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       await runAgentAction(async () => {
         const result = await api.agentAction(agentID, action.actionID, callOptions);
         const decoded = decodeConversation(result);
-        store.apply({
-          type: "agents/conversation",
-          agentID,
-          conversation: decoded,
-        });
-        // Accepting a courier stages the mission: pull its briefing + journal
-        // entry. Completing it pays out: clear the briefing and pull the Step-12
-        // reward reads (wallet / LP / standings) alongside the journal.
-        // Declining clears the briefing; the journal always refreshes so the
+        // The briefing and the objectives are read again for this layout, as for every one, and shown
+        // by the client's rule (layOutConversation). Completing a mission pays out: pull the Step-12
+        // reward reads (wallet / LP / standings). The journal always refreshes so the
         // offered/accepted/cleared state stays truthful.
+        await layOutConversation(agentID, decoded);
         //
         // ⚠ PRESSING COMPLETE IS NOT COMPLETING. agentMgr.DoAction answers 200
         // with a conversation on EVERY branch, refusals included. Measured live
@@ -13128,21 +13146,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         // journal row, and quit / decline / expire delete it identically, so a
         // missing row proves nothing. Only this flag does.
         const completed = decoded.lastActionInfo.missionCompleted === true;
-        if (action.buttonType === AGENT_BUTTON.ACCEPT || action.buttonType === AGENT_BUTTON.ACCEPT_REMOTELY) {
-          await loadBriefing(agentID);
-        } else if (
-          action.buttonType === AGENT_BUTTON.COMPLETE ||
-          action.buttonType === AGENT_BUTTON.COMPLETE_REMOTELY
+        if (
+          (action.buttonType === AGENT_BUTTON.COMPLETE || action.buttonType === AGENT_BUTTON.COMPLETE_REMOTELY) &&
+          completed
         ) {
-          // Only a mission that actually completed may clear its briefing and
-          // pull the payout reads. A refused Complete leaves the mission exactly
-          // as it was, and the panel must keep showing it that way.
-          if (completed) {
-            store.apply({ type: "agents/briefing", briefing: null });
-            await loadRewards();
-          }
-        } else if (action.buttonType === AGENT_BUTTON.DECLINE) {
-          store.apply({ type: "agents/briefing", briefing: null });
+          // Only a mission that actually completed pulls the payout reads. A refused Complete leaves the
+          // mission exactly as it was, and the layout above has read it again and keeps showing it.
+          await loadRewards();
         }
         await loadJournal();
       });

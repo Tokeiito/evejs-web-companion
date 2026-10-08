@@ -13,6 +13,7 @@ import { unwrapLong, type DictEntry, type JsonValue } from "./wire.ts";
 import type {
   AgentAction,
   AgentConversation,
+  AgentLastActionInfo,
   CourierBriefing,
   JournalMission,
   JournalState,
@@ -187,9 +188,56 @@ export function decodeConversation(result: JsonValue): AgentConversation {
       missionCompleted: toBoolOrNull(readDict(lastActionInfo, "missionCompleted")),
       missionDeclined: toBoolOrNull(readDict(lastActionInfo, "missionDeclined")),
       missionQuit: toBoolOrNull(readDict(lastActionInfo, "missionQuit")),
+      missionCantReplay: toNumber(readDict(lastActionInfo, "missionCantReplay")),
       loyaltyPoints: toNumber(readDict(lastActionInfo, "loyaltyPoints")),
     },
   };
+}
+
+/**
+ * Whether the conversation is offering a mission that has not been taken: one of the accept buttons is
+ * among what the agent offers.
+ */
+export function offerOpen(conversation: AgentConversation | null): boolean {
+  return (conversation?.actions ?? []).some(
+    (action) =>
+      action.buttonType === AGENT_BUTTON.ACCEPT ||
+      action.buttonType === AGENT_BUTTON.ACCEPT_CHOICE ||
+      action.buttonType === AGENT_BUTTON.ACCEPT_REMOTELY,
+  );
+}
+
+/** appConst.agentTypeResearchAgent. */
+export const AGENT_TYPE_RESEARCH = 4;
+
+/**
+ * agentDialogueWindow._GetConversation: what the client's window does by itself as it opens. If the
+ * first thing the agent offers is to request a mission or to view one, the window presses that at once
+ * and shows what comes of it, unless the agent has other business as well: a locator agent (it offers
+ * to locate a character) or a research agent, with more than that one thing on offer.
+ *
+ * Returns the action to press, or null. The client always knows what kind of agent it is talking to;
+ * where that is not known here, the action is pressed only when it is the only one.
+ */
+export function openingAction(conversation: AgentConversation, agentTypeID: number | null): AgentAction | null {
+  const first = conversation.actions[0];
+  if (!first || (first.buttonType !== AGENT_BUTTON.REQUEST_MISSION && first.buttonType !== AGENT_BUTTON.VIEW_MISSION)) {
+    return null;
+  }
+  if (conversation.actions.length === 1) {
+    return first;
+  }
+  const locator = conversation.actions.some((action) => action.buttonType === AGENT_BUTTON.LOCATE_CHARACTER);
+  return !locator && agentTypeID !== null && agentTypeID !== AGENT_TYPE_RESEARCH ? first : null;
+}
+
+/**
+ * agentDialogueWindow.GetObjectiveHTML: whether the mission's objectives are shown beside what the agent
+ * says. They are read for every layout, and shown unless the last action completed the mission, declined
+ * it, quit it, or was answered with "not yet".
+ */
+export function objectivesShown(info: AgentLastActionInfo): boolean {
+  return !(info.missionCompleted || info.missionDeclined || info.missionQuit || info.missionCantReplay);
 }
 
 /** The Accept button in a conversation, if the agent is offering one. */

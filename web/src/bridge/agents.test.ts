@@ -13,7 +13,12 @@ import {
   decodeConversation,
   decodeJournal,
   findAcceptAction,
+  AGENT_TYPE_RESEARCH,
+  objectivesShown,
+  offerOpen,
+  openingAction,
 } from "./agents.ts";
+import type { AgentConversation } from "../store/types.ts";
 import type { JsonValue } from "./wire.ts";
 
 // An offered courier conversation: agentSays (briefingID, contentID) and the
@@ -378,4 +383,62 @@ test("what an agent says is kept as the server sent it: a label with its paramet
   }
   // Something that is neither is nothing.
   assert.equal(says([7, {}]).agentSaysWords, null);
+});
+
+// --- the window's own rules --------------------------------------------------
+
+const talk = (buttons: readonly number[]): AgentConversation => ({
+  agentSays: "",
+  agentSaysWords: null,
+  contentID: null,
+  actions: buttons.map((buttonType, index) => ({ actionID: 900 + index, buttonType, label: agentButtonLabel(buttonType) })),
+  lastActionInfo: { missionCompleted: null, missionDeclined: null, missionQuit: null, loyaltyPoints: null },
+});
+
+test("the action the window presses by itself on opening: a mission to request or view, first, from an agent with nothing else to do", () => {
+  assert.equal(AGENT_TYPE_RESEARCH, 4);
+  const pressed = (buttons: readonly number[], agentTypeID: number | null = 2) => openingAction(talk(buttons), agentTypeID)?.actionID ?? null;
+  // The only thing on offer: pressed, whoever the agent is.
+  assert.deepEqual([pressed([AGENT_BUTTON.REQUEST_MISSION]), pressed([AGENT_BUTTON.VIEW_MISSION]), pressed([AGENT_BUTTON.REQUEST_MISSION], 4), pressed([AGENT_BUTTON.VIEW_MISSION], null)], [900, 900, 900, 900]);
+  // First of several: pressed for an ordinary agent, not for a research agent or one that locates characters.
+  assert.equal(pressed([AGENT_BUTTON.VIEW_MISSION, AGENT_BUTTON.DEFER]), 900);
+  assert.equal(pressed([AGENT_BUTTON.VIEW_MISSION, AGENT_BUTTON.CANCEL_RESEARCH], AGENT_TYPE_RESEARCH), null);
+  assert.equal(pressed([AGENT_BUTTON.REQUEST_MISSION, AGENT_BUTTON.LOCATE_CHARACTER]), null);
+  assert.equal(pressed([AGENT_BUTTON.REQUEST_MISSION, AGENT_BUTTON.DEFER], null), null, "an agent of unknown kind");
+  // Not first, or not a mission: nothing.
+  assert.deepEqual([pressed([AGENT_BUTTON.ACCEPT, AGENT_BUTTON.REQUEST_MISSION]), pressed([AGENT_BUTTON.ACCEPT]), pressed([AGENT_BUTTON.LOCATE_CHARACTER]), pressed([])], [null, null, null, null]);
+});
+
+test("the objectives are shown unless the last action completed, declined or quit the mission, or was told not yet", () => {
+  const info = (more: Record<string, unknown>) => ({ missionCompleted: null, missionDeclined: null, missionQuit: null, loyaltyPoints: 0, ...more });
+  assert.equal(objectivesShown(info({})), true);
+  assert.equal(objectivesShown(info({ missionCompleted: false, missionDeclined: false, missionQuit: false, missionCantReplay: 0 })), true);
+  for (const ended of [{ missionCompleted: true }, { missionDeclined: true }, { missionQuit: true }, { missionCantReplay: 600_000 }]) {
+    assert.equal(objectivesShown(info(ended)), false, JSON.stringify(ended));
+  }
+});
+
+test("a conversation says how long until the agent will offer the mission again, when that is the answer", () => {
+  const said = (entries: unknown[]) => decodeConversation({
+    type: "tuple",
+    items: [
+      { type: "tuple", items: [{ type: "tuple", items: ["x", { type: "dict", entries: [] }] }, { type: "list", items: [] }] },
+      { type: "dict", entries },
+    ],
+  } as unknown as JsonValue).lastActionInfo;
+  assert.equal(said([["missionCantReplay", 86_400_000]]).missionCantReplay, 86_400_000);
+  assert.equal(said([["missionCantReplay", null]]).missionCantReplay, null);
+  assert.equal(said([]).missionCantReplay, null);
+});
+
+test("a mission is still on offer while the agent offers a way to accept it", () => {
+  assert.deepEqual(
+    [[AGENT_BUTTON.ACCEPT, AGENT_BUTTON.DECLINE], [AGENT_BUTTON.DEFER, AGENT_BUTTON.ACCEPT_REMOTELY], [AGENT_BUTTON.ACCEPT_CHOICE]].map((buttons) => offerOpen(talk(buttons))),
+    [true, true, true],
+  );
+  assert.deepEqual(
+    [[AGENT_BUTTON.COMPLETE, AGENT_BUTTON.QUIT], [AGENT_BUTTON.REQUEST_MISSION], [AGENT_BUTTON.DECLINE], []].map((buttons) => offerOpen(talk(buttons))),
+    [false, false, false, false],
+  );
+  assert.equal(offerOpen(null), false);
 });

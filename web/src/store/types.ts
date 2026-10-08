@@ -1107,6 +1107,8 @@ export interface AgentLastActionInfo {
   readonly missionCompleted: boolean | null;
   readonly missionDeclined: boolean | null;
   readonly missionQuit: boolean | null;
+  /** How long until the agent will offer the mission again, when that is why there is none: any amount means "not yet". */
+  readonly missionCantReplay?: number | null;
   readonly loyaltyPoints: number | null;
 }
 
