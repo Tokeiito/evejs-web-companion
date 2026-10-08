@@ -251,7 +251,7 @@ test("the snapshot of a real grid: every ball that has a slim item, in the gatew
     targetEntityID: null, capacitorRatio: null, isNpc: false, npcEntityType: null, compressionFacility: null,
   });
   assert.deepEqual(space.ship, {
-    itemID: undock.shipID, typeID: 588, name: "Reaper", mode: "GOTO", followRange: null, maxVelocity: 341, radius: ball.radius,
+    itemID: undock.shipID, typeID: 588, name: "Reaper", mode: "GOTO", followRange: null, gotoPoint: { ...ball.goto }, maxVelocity: 341, radius: ball.radius,
     position: { ...ball.newPos }, velocity: { ...ball.newVel }, shieldRatio: 1, armorRatio: 1, hullRatio: 1,
     capacitorRatio: null, shieldCapacity: null, armorCapacity: null, hullCapacity: null,
     // Dogma has not been asked: what only it knows is not known, which is null and not "none".
@@ -474,11 +474,13 @@ test("the pilot's own ship says the range it was told to follow or orbit at, and
   park.ballpark.addBall({ id: 9000000000001, isFree: true, mass: 1e6, x: 1e4, maxVelocity: 250 });
   park.slimItems.set(9000000000001, slim({ itemID: 9000000000001, typeID: 23707, groupID: 550, categoryID: 11, ownerID: 500010 }));
   const ship = () => projectSpace(park, { solarSystemID: SYSTEM, shipID: undock.shipID }).ship;
-  // Flying to a point: it follows nothing.
+  // Flying to a point: it follows nothing, and says the point.
   assert.deepEqual([ship().mode, ship().followRange], ["GOTO", null]);
+  assert.deepEqual(ship().gotoPoint, { ...park.ballpark.ball(undock.shipID).goto });
+  assert.ok(Number.isFinite(ship().gotoPoint.x) && Math.hypot(ship().gotoPoint.x, ship().gotoPoint.y, ship().gotoPoint.z) > 1e9);
   // Told to orbit at 7.5 km: the range in the order, not how far off the thing is.
   park.ballpark.orbit(undock.shipID, 9000000000001, 7500);
-  assert.deepEqual([ship().mode, ship().followRange], ["ORBIT", 7500]);
+  assert.deepEqual([ship().mode, ship().followRange, ship().gotoPoint], ["ORBIT", 7500, null], "and it is flying to no point");
   // An approach is a follow at 50 m; keeping at range is a follow at the range.
   park.ballpark.followBall(undock.shipID, 9000000000001, 50);
   assert.deepEqual([ship().mode, ship().followRange], ["FOLLOW", 50]);
@@ -486,7 +488,7 @@ test("the pilot's own ship says the range it was told to follow or orbit at, and
   assert.deepEqual([ship().mode, ship().followRange], ["FOLLOW", 2500]);
   // Stopped: it follows nothing, and says no range.
   park.ballpark.stop(undock.shipID);
-  assert.deepEqual([ship().mode, ship().followRange], ["STOP", null]);
+  assert.deepEqual([ship().mode, ship().followRange, ship().gotoPoint], ["STOP", null, null]);
   // A ball that is only flying, with a range left on it from before, still says none.
   park.ballpark.gotoDirection(undock.shipID, 1, 0, 0);
   park.ballpark.ball(undock.shipID).followRange = 900;

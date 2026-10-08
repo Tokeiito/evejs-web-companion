@@ -26,7 +26,7 @@
   import { shipIsStopped, shipStateSentenceFor } from "./shipHud.ts";
   import { fmtDist, surfaceDistanceMeters } from "../space/overview.ts";
   import { distanceSay } from "../space/distanceWords.ts";
-  import { INDICATION_WORD_LABELS, actionIndication, indicationText } from "../space/actionIndication.ts";
+  import { INDICATION_WORD_LABELS, actionIndication, indicationText, pointIndication, pointText } from "../space/actionIndication.ts";
   import { resolvedName } from "../store/names.ts";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
@@ -165,6 +165,11 @@
     if (indication !== null && actedOn.name !== null) {
       const text = indicationText(indication, actedOn.name, $words.templates, say);
       return `${text.header} ${text.sub}`;
+    }
+    // Flying to a point: the client's line beneath its header says the whole of it.
+    const point = indication === null ? pointIndication(ship?.mode, ship?.position, ship?.velocity, ship?.gotoPoint) : null;
+    if (point !== null) {
+      return pointText(point.kind, $words.templates);
     }
     return shipStateSentenceFor(ship, actedOn.name, actedOn.metres, (metres) => fmtDist(metres, 2, say));
   });

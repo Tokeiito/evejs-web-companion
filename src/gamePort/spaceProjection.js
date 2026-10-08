@@ -178,6 +178,9 @@ function projectSpace(park, { solarSystemID, shipID, readings = null }) {
       // client's HUD says the ship is doing from (spaceMgr.GetHeaderAndSubtextForActionIndication). Null
       // when it follows nothing.
       followRange: own.targetEntityID !== null && egoBall ? egoBall.followRange : null,
+      // The point the ship is flying to, when that is what it is doing (the ball's GOTO): with where it is
+      // and how it is moving, what the client's HUD tells an approach to a point from a turn towards one.
+      gotoPoint: own.mode === "GOTO" && egoBall ? { x: egoBall.goto.x, y: egoBall.goto.y, z: egoBall.goto.z } : null,
       maxVelocity: own.maxVelocity,
       radius: own.radius,
       position: own.position,

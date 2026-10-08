@@ -1806,6 +1806,12 @@ export interface SpaceShipStatus {
    */
   readonly followRange?: number | null;
   /**
+   * The point the ship is flying to, when it is flying to one and the
+   * transport says (the game port does: the ball's goto point). Null or
+   * absent: not known, or it is doing something else.
+   */
+  readonly gotoPoint?: SpaceVector | null;
+  /**
    * How hot each rack is running, 0 to 1 of its heat capacity, as the retail
    * client's own heat gauges read it. Null when the transport does not say
    * (the gateway does not), which is not the same as cold.

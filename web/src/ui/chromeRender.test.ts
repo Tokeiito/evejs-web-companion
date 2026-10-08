@@ -671,3 +671,32 @@ test("the header's word for what the ship is doing is the client's, not the ball
   assert.match(header("FOLLOW", null, "FOLLOW"), /FOLLOW · 100%/);
   assert.match(header("GOTO", null, "GOTO"), /GOTO · 100%/);
 });
+
+test("flying to a point, the ship's line and the header say so as the client does, and say nothing when it is close or lined up", () => {
+  const self = { itemID: SHIP_ID, isSelf: true, targetEntityID: null, name: null, typeID: SHIP_TYPE_ID, radius: 100, position: { x: 0, y: 0, z: 0 } };
+  const store = (gotoPoint: unknown, velocity: unknown, templates: Record<string, string> = {}) => {
+    const made = inSpaceStore() as { apply: (event: unknown) => void };
+    made.apply({ type: "flight/status", status: { inSpace: true, docked: false, solarSystemID: SYSTEM_ID, stationID: null, structureID: null, shipID: SHIP_ID, shipTypeID: null, shipIsCapsule: null, shipMode: "GOTO", shipSpeedFraction: 1 } });
+    made.apply({ type: "space/snapshot", snapshot: { ...SHIP_SNAPSHOT, entities: [self], ship: { ...SHIP_SNAPSHOT.ship, mode: "GOTO", gotoPoint, velocity } } });
+    if (Object.keys(templates).length > 0) made.apply({ type: "words/loaded", available: true, templates });
+    return made;
+  };
+  const line = (made: unknown) => (renderHud(made).match(/class="hud-head-state[^"]*"[^>]*>([^<]*)</) ?? [])[1]?.trim();
+  const ahead = { x: 300, y: 0, z: 0 };
+  // Fifty kilometres off: approaching a point.
+  const near = store({ x: 50_000, y: 0, z: 0 }, ahead);
+  assert.equal(line(near), "Heading for a point in space");
+  assert.match(visibleText(renderHeader(near, false)), /Approaching · 100%/);
+  // The other side of the system, and heading across it: aligning.
+  const turning = store({ x: 1e17, y: 0, z: 0 }, { x: 0, y: 300, z: 0 });
+  assert.equal(line(turning), "Turning towards a point in space");
+  assert.match(visibleText(renderHeader(turning, false)), /Aligning · 100%/);
+  // Lined up on it: the client says nothing, and the page says what it said before.
+  const lined = store({ x: 1e17, y: 0, z: 0 }, ahead);
+  assert.equal(line(lined), "Under way.");
+  assert.match(visibleText(renderHeader(lined, false)), /GOTO · 100%/);
+  // In the client's words when the page holds them.
+  const worded = store({ x: 50_000, y: 0, z: 0 }, ahead, { "UI/Inflight/Messages/ApproachingPointSubText": "Closing on a spot", "UI/Inflight/Messages/ApproachingHeader": "Closing" });
+  assert.equal(line(worded), "Closing on a spot");
+  assert.match(visibleText(renderHeader(worded, false)), /Closing · 100%/);
+});

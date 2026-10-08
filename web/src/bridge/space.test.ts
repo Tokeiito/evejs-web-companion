@@ -255,6 +255,24 @@ test("the range the ship was told to keep decodes as a distance, and is not know
   assert.equal(ship("far").followRange, null);
 });
 
+test("the point the ship is flying to decodes whole or not at all", () => {
+  const ship = (gotoPoint: unknown) =>
+    decodeSpaceSnapshot({
+      inSpace: true,
+      solarSystemID: 30000142,
+      shipID: 9001,
+      entities: [],
+      ship: { itemID: 9001, typeID: 606, ...(gotoPoint === undefined ? {} : { gotoPoint }) },
+    } as unknown as JsonValue).ship!;
+  assert.deepEqual(ship({ x: 1e17, y: -2.5, z: 0 }).gotoPoint, { x: 1e17, y: -2.5, z: 0 });
+  // Absent (the gateway's snapshot), null, or missing a coordinate: not known. Never a point at the origin.
+  assert.equal(ship(undefined).gotoPoint, null);
+  assert.equal(ship(null).gotoPoint, null);
+  assert.equal(ship({ x: 1, y: 2 }).gotoPoint, null);
+  assert.equal(ship({ x: 1, y: "2", z: 3 }).gotoPoint, null);
+  assert.equal(ship([1, 2, 3]).gotoPoint, null);
+});
+
 test("R23: the locked-target list decodes long-aware, and empties safely", () => {
   assert.deepEqual(
     decodeTargetIDs([50001248, { type: "long", value: "50001249" }] as unknown as JsonValue),

@@ -64,6 +64,13 @@ function ratioOrNull(value: JsonValue | undefined): number | null {
   return Math.min(1, Math.max(0, numeric));
 }
 
+/** A point whose three coordinates are all real numbers, or null. */
+function pointOrNull(value: JsonValue | undefined): SpaceVector | null {
+  const raw = asObject(value);
+  const [x, y, z] = [floatOrNull(raw.x), floatOrNull(raw.y), floatOrNull(raw.z)];
+  return x === null || y === null || z === null ? null : { x, y, z };
+}
+
 /** A distance in metres that is a real number and not less than nothing, or null. */
 function rangeOrNull(value: JsonValue | undefined): number | null {
   const numeric = floatOrNull(value);
@@ -236,6 +243,7 @@ function decodeShip(value: JsonValue | undefined): SpaceShipStatus | null {
     weaponBanks: decodeWeaponBanks(raw.weaponBanks),
     rackHeat: decodeRackHeat(raw.rackHeat),
     followRange: rangeOrNull(raw.followRange),
+    gotoPoint: pointOrNull(raw.gotoPoint),
     miningBurstServices: decodeMiningBurstServices(raw.miningBurstServices),
     coreMobilityFuel: decodeCoreMobilityFuel(raw.coreMobilityFuel),
     moduleReach: decodeModuleReach(raw.moduleReach),
