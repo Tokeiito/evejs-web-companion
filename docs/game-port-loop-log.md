@@ -3306,3 +3306,83 @@ point. A warp, and the passing "ship stopping".
    messages inside messages when one turns up.
 6. Small, around dialogs: the title for a dialog's kind, the "do not ask again" box, the typed
    codes not done.
+
+---
+
+## 2026-10-08 — a warp, said as the client's HUD says it
+
+Commit `31854db`, pushed.
+
+**What the retail client does** (`spaceMgr.py`: `IndicateWarp`, `StartWarpIndication`,
+`CheckWarpDestination`, `OnBallparkCall`).
+
+- The header is one of two: one while the ship lines up, which is while the ball's effect
+  stamp is negative, and one once the warp proper has begun.
+- Beneath it: where to, and how far. Three things go into that. The point in the server's
+  `WarpTo`, which the space service keeps from the call. The thing the pilot asked to warp
+  to, which the client notes from its own order before it sends it
+  (`space.WarpDestination(celestialID=...)`, from the menu and from the autopilot). And a
+  check that the two agree: the thing is named only if, from the ship, it lies within pi/32
+  of the direction of the server's point, or within 20,000 km of it.
+- The distance is to the thing when it is named and to the server's point when not, by
+  `FmtDist`. With no point from the server the client says nothing at all.
+- The client makes the check once, as the warp is ordered.
+
+**What was built.**
+
+- The park keeps the point of its own ship's `WarpTo` (`park.warpPoint`).
+- The pilot on the game port remembers the thing its warp was ordered at, from
+  `CmdWarpToStuff("item", …)` and `CmdWarpToStuffAutopilot`; a warp to anything else forgets it.
+- The snapshot's ship says `warp`: lining up or not, the point, and the thing if the check
+  passes. The check is made on each reading here, from where the ship then is.
+- The page words it: the client's header, its destination line and its distance line, joined
+  as the client joins them. Where the client breaks the line the page puts " · ".
+- The header's mode word, when the client's rule has nothing to say, now comes from the
+  snapshot before the flight status (see below).
+
+**Proof.**
+
+- Tests: 12 new, 2 changed. 59 ways of breaking the change. Seven slipped through at first:
+  six were closed with tests, and one showed a check in the decoder that could never matter,
+  which was taken out. None was left untried.
+- Suite: 9139 tests, 9115 pass, 0 fail, 24 skipped, 0 todo.
+- **In the browser, on the game port**, Jita IV - Moon 6 picked and the page's own "Warp to"
+  pressed, read every 0.4 seconds:
+
+  | seconds on | the header | the ship's line |
+  |---|---|---|
+  | 0.4 | GOTO · 100% | Under way. |
+  | 2.8 | Establishing Warp Vector · 100% | Establishing Warp Vector · Destination: Jita IV - Moon 6 · Distance: 275,092 km |
+  | 12.9 | Warp Drive Active · 100% | Warp Drive Active · Destination: Jita IV - Moon 6 · Distance: 275,090 km |
+  | 26.2 | Warp Drive Active · 100% | … · Distance: 5,724 km |
+  | at rest | STOP | Engines stopped. |
+
+  The words are the client's, read from its install through the BFF.
+- **The staging was undone**: the store was copied with the server stopped before the check
+  and put back after.
+
+**Found on the screen, and fixed.** At rest after the warp the header still said "GOTO" over
+"Engines stopped.". The header took its word from the flight status, which the page reads
+when something is ordered, not as the ship flies. It now takes the snapshot's first. The
+"100%" beside it comes from the same flight status and was not touched.
+
+**Not done.** The bar the client fills while the ship lines up. A warp ordered at a bookmark
+or a fleet member, which the client names from the bookmark or not at all. What the pilot
+last aligned to, by name. The passing "ship stopping".
+
+### Next
+
+1. **What the pilot last aligned to**, by name, as the client's menu remembers it; and the
+   passing "ship stopping".
+2. **The park beside the server's movement log**; the sim clock; MISSILE, FORMATION, MUSHROOM;
+   a fixed ball's collision shapes and the partition's order, if a server ever sends a ball
+   that needs them.
+3. The call ledger (`ship.Undock`, `dogmaIM.Activate` and `Deactivate` to bind as the client
+   does; `GetMissionBriefingInfo` and `GetMissionObjectiveInfo`, which the client asks on every
+   layout of the agent's window), Phase 3's hosted check and the session-less gateway calls.
+4. The scanner the client's way: results kept from the server's word, a probe's destination
+   and range kept here and sent with the scan.
+5. More of a mission's words: the objectives pane, the mission's time under the agent's line,
+   messages inside messages when one turns up.
+6. Small, around dialogs: the title for a dialog's kind, the "do not ask again" box, the typed
+   codes not done.
