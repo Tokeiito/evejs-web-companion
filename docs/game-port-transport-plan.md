@@ -227,8 +227,8 @@ does (section 0). Spec is the decompiled client
 server's `network/` code, and the recorded real-client session.
 
 - Handshake exactly as the retail client sends it, including its crypto request.
-- The retail client's own call sequence at login and at character select, read from the recorded
-  session and the decompiled services that issue each call.
+- The retail client's own call sequence, feature by feature (decided 2026-10-08), read from the
+  recorded session and the decompiled services that issue each call.
 
 - Dispatch `Notification` (12), `SessionChangeNotification` (16), `SessionInitialStateNotification`
   (18), `PingReq`/`PingRsp` (20/21), `TransportClosed` (8).
@@ -280,8 +280,9 @@ How it was checked:
 
 Remaining:
 
-1. **The startup call sequence.** The roughly ninety calls the client makes as its services start
-   are named in the recorded session but their arguments are not. Needs a real-client recording.
+1. ~~The startup call sequence.~~ **Decided 2026-10-08: per feature.** Each browser feature makes
+   the calls its retail counterpart makes, same arguments and order; the roughly ninety startup
+   calls are not replayed wholesale. Phase 3 applies this as each feature moves.
 2. **Six `?` rows in the reference** (call-ID encoding, journey ID, trace fields, which compression
    path is live). Same recording settles them.
 

@@ -54,7 +54,7 @@ password, which is how H10 is tied to a real client login.
 | A3 | Re-syncs every three minutes with five `GetTime` calls | S | matches (interval and count; the client's drift smoothing is not reproduced) |
 | A4 | After 60 s with nothing sent, calls `pingService.Ping` | S, L | matches, V |
 | A5 | Answers a server `PingReq` with its times plus a `client::turnaround` entry | S | matches |
-| A6 | Dozens of further calls as its services start (login screen, character select, station) | L | **not done**: see "Startup call sequence" |
+| A6 | Dozens of further calls as its services start (login screen, character select, station) | L | **per feature, by decision**: see "Startup call sequence" |
 
 ## Packets and addresses (`machoNetPacket.py`, `machoNetAddress.py`, `*GPCS.py`)
 
@@ -123,10 +123,16 @@ from memory.
 
 ## Not done
 
-**Startup call sequence (A6).** At login, at character select and on entering a station the client
-makes roughly ninety calls as its services start. The recorded real session
-(`eve.js/_local/logs/direct-tcp-real-client-20260809-163920.stdout.log`) names them in order but
-not their arguments. Emulating them needs the arguments, so it waits on a recording.
+**Startup call sequence (A6): per feature, decided 2026-10-08.** At login, at character select and
+on entering a station the client makes roughly ninety calls as its services start. We do not replay
+them wholesale. Each browser feature makes the calls its retail counterpart makes, with the same
+arguments in the same order, when that feature is built on the game port. Many of the ninety serve
+screens we will not have (paper dolls, login campaigns).
+
+What this accepts: a server-side observer can tell our login from a retail one by which calls are
+absent. The recorded real session
+(`eve.js/_local/logs/direct-tcp-real-client-20260809-163920.stdout.log`) names the calls in order,
+and the decompiled service that issues each one gives its arguments.
 
 **The customs export's call shape.** `src/piCustomsExport.js` binds `invbroker` with the office ID
 and calls `ImportExportWithPlanet` on that. The client goes through `invCache`: it binds the
