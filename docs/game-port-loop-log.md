@@ -688,3 +688,89 @@ server's movement log, not a state asked for in flight.
    the same grid. Then undock stops refusing and the browser flies.
 5. The damage clock, `DoSimClockRebase` and `OnSetTimeDilation`.
 6. The call ledger, Phase 3's hosted check and the session-less gateway calls, as before.
+
+---
+
+## 2026-10-08 — WARP, and the first flight by the park
+
+Commits `e6fd02b`, `bf99895`, pushed.
+
+**The port** (`src/gamePort/destiny/ballpark.js`), from `Ballpark.cpp` (`WarpTo`, `EvolveWarp`,
+`RealWarp`, `SetupWarpConstants`, `WarpDistance`, `EntityWarpIn`) and `Ball.cpp`
+(`IsAlignedForWarp`, `SetMode`). One mode, two phases:
+
+- **Lining up.** The ship is flown as an ordinary GOTO at the destination while a counter runs.
+  It is lined up when its heading is within about eight degrees (the cosine above 0.99) and its
+  speed above three quarters of its top speed, or after 180 ticks whatever it is doing. A
+  destination nearer than 100 km is not a warp at all, just a flight there.
+- **The warp proper.** From then on the ship is not stepped. Where it is, is worked out from how
+  long ago the warp began: distance growing as `exp(rate x t)`, a cruise at top speed, then speed
+  falling as `exp(-rate x t)`. A warp too short to reach top speed has its top speed lowered
+  until there is no cruise. Once under 100 m/s, or half the ship's top speed if that is less, the
+  ship drops out: massive again, stopped, and one ordinary step taken from there.
+
+The engine posts three events to the client's Python on the way (`OnActivatingWarp`,
+`OnDeactivatingWarp`, `OnExitWarp`); the port hands them to a hook. The park now applies
+`WarpTo` and `EntityWarpIn` instead of counting them as failed, and refuses a fractional warp
+factor as the engine's argument parsing does.
+
+**Checked against CCP.** `test_warpto`, ten ticks of lining up, matched to the last digit on the
+first run. That is the only warp fixture CCP ships, and it never reaches the warp proper. So the
+rest is checked against the equations the source states in its own comment, worked out in the
+tests from those equations rather than copied from the code, and by flying whole warps tick by
+tick: never overshooting, cruising at exactly top speed, out on the first tick under the limit.
+
+99 deliberate breakages of the warp code and the park's two new orders. Ten got through at first.
+Five were gaps and are closed. Five change nothing that can be seen, because the engine always
+stops a ball before giving it a new mode, and are left. My own expectations were wrong five times
+before the code was (which tick stops being massive, where slowing down ends, and three smaller);
+each is corrected in the tests with the reason.
+
+**Flown live** (`scripts/record-warp.js`, `bf99895`). Nothing tells a client its warp is over:
+its own ballpark drops the ship out, and that is how the retail client knows. So the recorder
+runs the park on the live stream, one tick a second, and waits on what the park says. It is the
+first thing to fly by the park. Test Pilot, Jita 4-4 to Jita IV Moon 6 and back, some 280,000 km
+each way:
+
+| | Out | Back |
+|---|---|---|
+| `WarpTo` from the server | stamp +6, no stopping short, warp factor 3000 | +78, 100,076.8 m short, 3000 |
+| Park's ship enters warp | +16, ten ticks after it began lining up | +85 |
+| Park's ship leaves warp | +37, twenty-one ticks later | +106 |
+| Entries failed, resets | none, none | none, none |
+| **At rest: park's ship from the server's** | **0.17 m** | **0.07 m** |
+
+The last row is the one that matters. At rest there is no "which part of the second" to blur a
+state asked of the server, so that state is where the server has the ship. Between the order to
+warp and that state the server sent the pilot's ship nothing about its position: the `WarpTo`,
+the old grid's nineteen balls removed (inside a packaged action, so that path has now run on real
+bytes), the new grid's twenty-four added, and a flag. The lining up, the warp, the drop-out and
+the coast to rest are the park's, and they end within a hand's width of the server's after
+280,000 km.
+
+The recording is `test/fixtures/destinyWarp.json`. Played back, the park enters and leaves warp
+at the same ticks the live park wrote down, and the three tests on it fail under each of four
+deliberate breaks, the smallest being a slowing-down rate wrong by one part in a thousand.
+Suite: 8838 tests, 8813 pass, 0 fail, 24 skipped, 1 todo.
+
+**Seen, not chased.** The pilot's ship is not massive from the moment it undocks, and the server
+sets it not massive again two ticks after the park, dropping out of warp, has made it massive.
+The park applies what it is sent, as the client does. Whether that is the server's undock and
+warp-exit protection or something it should not be sending is a server question, noted here only.
+
+**Not done for warp:** a warp long enough to cruise at top speed against the server (this one was
+capped); another pilot's ship arriving (`EntityWarpIn` has only its unit tests); a gate jump.
+
+### Next
+
+1. **The snapshot.** `readSpaceSnapshot`, flight status's ship mode and the scanner from our
+   park, set beside the gateway's snapshot of the same grid. The park can now follow a pilot
+   through undock, flight, warp and stop, which is what those reads need. Then a pilot's
+   game-port transport gets a park of its own, undock stops refusing, and the browser flies.
+2. **A gate jump** recorded and played through (the session changes system; the park is replaced).
+3. **Collisions** (notes, section 5): `Gradient`, `Potential`, the partition. What makes a
+   massive ball's step right near a station, and what the todo test waits for.
+4. **The park beside the server's movement log**, to the metre and tick by tick, for flight and
+   for a warp long enough to cruise.
+5. The damage clock, `DoSimClockRebase` and `OnSetTimeDilation`; MISSILE, FORMATION, MUSHROOM.
+6. The call ledger, Phase 3's hosted check and the session-less gateway calls, as before.

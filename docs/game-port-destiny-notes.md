@@ -18,6 +18,11 @@ ported. Checked so far:
   stream played through (`src/gamePort/destiny/park.js`, `test/destinyPark.test.js`). The small setters
   (global, interactive, harmonic, rigid, troll, cloak) with them.
 
+- 4.8 (WARP), against the source, CCP's `test_warpto` to the last digit, the equations in the
+  source's own comment, and a real warp flown live and held up to the server at rest
+  (`test/destinyBallpark.test.js`, `test/fixtures/destinyWarp.json`). One thing 4.8 does not say:
+  slowing down ends at the destination with the speed down to the rate itself, not a metre short.
+
 One correction found on the way: the note in 4.2 about evaluation order holds, but committing balls
 one at a time instead of together cannot be told apart by FOLLOW, since every acceleration is found
 before any ball moves. Only collisions (section 5), worked out during the stepping pass, can tell.
