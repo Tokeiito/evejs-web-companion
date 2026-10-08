@@ -43,6 +43,17 @@ Decisions taken in your place, and anything waiting on you. Overrule any of thes
 - **I logged in as Farmer once**, docked, to call `KickOutMembers` with an empty list, because
   that call needs a CEO or director and no test character is one. Nobody was kicked; Farmer was
   logged straight off again.
+- **Phase 3's last check names a flow that no longer exists.** The plan asks for "one hosted
+  maintenance flow (Provisioning Center Apply)". `docs/provisioning-center-apply.md` says Center
+  Apply is deliberately unavailable on stock EveJS. I will use the supported one in its place,
+  Ready Fit's Replenish on a selected session, which runs the same provisioning engine. It needs a
+  corporation fitting and stock staged for a test character first.
+- **I am taking Phase 4 before that check**, out of the plan's order. Flying is the largest thing
+  the web client cannot yet do on the game port and the one with real unknowns in it; the hosted
+  flow goes through the same nine functions and has no new mechanism to prove. Say so if you
+  would rather the phases closed in order.
+- **Test Two now has a courier mission accepted** (agent Antaken Kamola, Reports to Veisto) with
+  the package in its Badger's cargo, left that way for the flight in Phase 4.
 - **eve.js's test runner cleans the temp folder.** The first sub-agent's test run swept 32 stale
   directories (11.7 GB, none touched for 29 hours) from the OS temp folder, `evejs-web-*` among
   them. That is the runner's own housekeeping, not something asked for; nothing in use was lost.
@@ -251,3 +262,70 @@ it is where "the same calls, the same arguments" is still unproven.
    the unit test is our ballpark's positions against the server's snapshot of the same grid.
    Then `readSpaceSnapshot`, `readScannerState` and flight status's ship mode from it, and
    undock stops refusing.
+
+---
+
+## 2026-10-08 — the first writes on the game port, and a ledger of every call
+
+Commit `e3a407f`, pushed.
+
+**Writes, in the browser, on the game port.** As Test Two, docked where a courier agent is: opened
+the conversation, asked for a mission, accepted it, and loaded the package into the ship. The
+briefing drew (Reports ×1, Muvolailen to Veisto, 13,800 ISK, 49 LP), the journal went to one
+active mission, and after the load the cargo hold read 0.1 of 3,900 m³ with the Reports in it. No
+failed request, no script error, no `[PKT] ERR`. The server's log shows `DoAction` and `Add`
+arriving on bound objects over the game port.
+
+**Each checked against the retail client first.** `DoAction(actionID)` and the three briefing
+reads are the client's own calls (`agentDialogueWindow.py`, `agents.py`). The load is
+`Add(itemID, sourceLocationID, qty=, flag=)` on the ship's inventory, as in
+`invControllers.py`. The same move through each transport delivers the same notification
+(`OnItemChange`) on the same answer.
+
+**What reading the inventory code turned up.** The BFF was free to spell a call any way the
+handler would take, and it did:
+
+- The client lists an inventory as `List(flag=flag)` and `ListByFlags(flags=[...])`. The BFF
+  sent the flag by position and the flags as a tuple.
+- `MultiAdd`'s item IDs are a list in the client. The BFF's array went out as a tuple.
+- The client **never asks the server for a capacity**. It works it out from dogma and the
+  listing. The web client asked 29 times in one pass over the docked panels, and 246 times in the
+  hour before. That is the most frequent thing we send, and the retail client does not send it.
+- `Add` always carries `qty`. The BFF leaves it out when a whole stack moves on one route.
+
+**So there is now a registry, and a count.** `src/gamePort/retailCalls.js` holds each pair
+checked against the decompiled client, with the file and line, as one of: same, reshaped (the
+transport sends the client's form), differs (the route must change), web-only (the client never
+makes the call). The transport reshapes what it can and tallies every call it makes.
+`docs/game-port-call-ledger.md` is that tally for one pass over the docked routes: **65 pairs,
+3 the same, 7 reshaped, 1 web-only, 54 not yet read.** With the reshaping in, the BFF's answers on
+all 22 docked routes still match the gateway's.
+
+This is what criterion 4 of "done" costs: one entry per pair, a few minutes each to read, and
+for the web-only ones a piece of the client's own logic to rebuild. The ledger is how to see it
+shrink.
+
+Proof: 16 new tests, each watched fail or broken on purpose (22 breakages, three of which first
+survived and showed real gaps in the tests, now closed). Suite: 8690 tests, 8666 pass, 0 fail.
+
+**Also found.** Twenty call sites in the BFF reach the gateway with no held session
+(`accountLevelCall`, the structure directory reads, corporation fittings). Some of those act
+for a pilot. They do not pass through the pilot's transport, so they are gateway traffic that
+Phase 5 has to account for one by one.
+
+### Next
+
+1. **Phase 4, first unit: read `destiny`.** `C:\Users\ryanf\Documents\GitHub\destiny`
+   (`Ball.cpp`, `Ballpark.cpp`) and the client's `michelle.py` / `ballpark` Python that
+   feeds it. Write down, in the plan, what a ballpark is made of, what `DoDestinyUpdate` carries,
+   and what the port has to compute for the overview, flight status and autopilot. Then record a
+   real `DoDestinyUpdate` stream (undock Test Two on the gateway BFF is not a recording: use
+   `scripts/record-game-port.js` or the session's own packet listener on a game-port session
+   that undocks).
+2. **Phase 4, the port**, in units the first one defines. The test is our ballpark's positions
+   against the server's snapshot of the same grid at the same time.
+3. **The call ledger, as it goes**: the pairs each new feature uses get their entries when the
+   feature is touched. `GetCapacity` computed the client's way is the first web-only one to
+   remove.
+4. **Phase 3's hosted check** (Ready Fit's Replenish, staged), and the twenty session-less
+   gateway calls, before Phase 5.

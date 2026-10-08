@@ -498,9 +498,17 @@ How it was checked, with the test accounts on the game port and the browser unch
   wrote one gateway session and no game-port call; the game-port pass wrote no gateway session
   and 230 game-port calls.
 
+Since then (2026-10-08, `e3a407f`): the first writes. A courier mission requested and accepted
+and its package loaded into the ship, in the browser on the game port, each call read against the
+retail client's first. `src/gamePort/retailCalls.js` is now the registry of what the client sends
+for each pair, and the transport tallies every call against it
+([`game-port-call-ledger.md`](game-port-call-ledger.md)).
+
 Not done yet in this phase:
 
-- One hosted maintenance flow (Provisioning Center Apply) on the game port.
+- One hosted maintenance flow on the game port. The flow this plan named, Provisioning Center
+  Apply, is deliberately unavailable on stock EveJS (`provisioning-center-apply.md`); Ready Fit's
+  Replenish on a selected session is the supported one and takes its place.
 - The BFF's writes. Every write route goes through the same two functions, but what each sends
   has not been set beside what the retail client sends for it (list or tuple, text as str or
   unicode, keyword or positional). That is per feature, and is where the remaining fidelity work is.
