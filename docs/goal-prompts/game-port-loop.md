@@ -218,6 +218,13 @@ Take these defaults, and list each under "For the operator" in the log so they c
   file (outside the repository: it is the client's code), and a snippet for
   `scripts/py27-oracle.py` loads it with `marshal`, picks the function out of `co_consts` and
   calls it with stand-ins for what it reaches for. The script's header shows how.
+- **A route written for the gateway may hand a call something the game port cannot send.** The
+  gateway took JSON; the game port marshals, and a plain object is not a Python value. When a
+  route's call fails with "Cannot marshal value", give the pair an entry in
+  `src/gamePort/retailCalls.js` that turns the route's arguments into what the client sends.
+- **Recording what the server really sends**: `scripts/record-dogma.js`, `record-probes.js` and
+  `record-destiny.js` log a character in on the game port, do one thing, and keep every frame
+  for a fixture. Stage the character first and undo it after (the store copy above).
 - **A dialog by its name**: `node scripts/client-words.js "<client folder>" dialog:<Name>` says
   what kind it is and which parameters its title and body take. A dialog's parameters may be
   typed tuples, `(code, value[, value2])`, which the client turns to text first

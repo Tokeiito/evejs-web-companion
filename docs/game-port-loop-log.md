@@ -2399,3 +2399,120 @@ decompiled function looks odd.
    messages inside messages when one turns up.
 6. Small, around dialogs: the title for a dialog's kind, the "do not ask again" box, the typed
    codes not done.
+
+---
+
+## 2026-10-08 — the scanner in space on the game port
+
+Commit `2451cb1`, pushed.
+
+**What the retail client does.** It is never handed a list of its scan probes. Its scan service
+(`scanSvc.py`, with `probescanning/probeTracker.py`) keeps one from what the server tells it as
+things happen, and from what it does itself:
+
+| Told by the server | What the client does |
+|---|---|
+| `OnNewProbe(probe)` | holds it: idle, where it is, on the range step used last (7 to begin with) and that step's range |
+| `OnRemoveProbe(probeID)` | drops it |
+| `OnProbesIdle([probe, ...])` | each is idle and bound for where the server says |
+| `OnProbeStateChanged(probeID, state)` | that state |
+| `OnSystemScanStarted(start, ms, {id: probe})` | each is scanning, and is where the server says |
+| `OnSystemScanStopped(probeIDs, results, absent)` | each is idle again |
+| a change of system, ship or structure | no probes |
+
+After its own `RequestScans` the probes it sent are "moving", and so are the ones a
+`RecoverProbes` was answered with. A pilot that logs in with probes still out knows of none
+until it asks to be reconnected to them. The launcher is godma's: the first online module of the
+launcher group, and the charge at that module's flag, which is not an item with an ID but a
+"sublocation" keyed by (ship, flag, type) whose `quantity` is how many are loaded.
+
+**What was built.**
+
+- `src/gamePort/pilotScanner.js`: that list.
+- The pilot's dogma now keeps what each item is (its inventory row) and the charges in modules,
+  takes the server's changes to a charge's count, and takes a single item told of after the ship
+  was loaded (`OnGodmaPrimeItem`), which is how probes coming back to an empty launcher arrive.
+- `readScannerState` on the game port answers the JSON the gateway answers, made from those
+  two. It was the last pilot read that answered 501 there.
+- **The scan calls go out as the client sends them** (`retailCalls.js`): `RequestScans` with
+  `{probeID: probe}`, each a `util.KeyVal`, and the IDs to recall or to switch in a list.
+- `scripts/record-probes.js` records a real probe flight; `test/fixtures/probeFlight.json` is
+  one (a Reaper with a Core Probe Launcher I and eight probes: four launched, a scan, the four
+  recalled).
+
+**Three faults found by running it live.**
+
+1. **Analyze could not be sent at all on the game port.** The route hands `RequestScans` a
+   plain object keyed by probe ID, which the gateway took as JSON and the game port cannot
+   marshal: 400, "Cannot marshal value". It now goes out in the client's form.
+2. **"Reconnect to probes" never asked the server, on either transport, since 2026-07-28.** The
+   branch that calls `ReconnectToLostProbes` had been put in the wrong function (commit
+   `503b214`): the route refused with "no active probes" when none were known, which on the
+   game port is always the case before a reconnect, and when some were known it fell through
+   with nothing called.
+3. **The wrong function was the board route's error handling**, where that branch made a board
+   that failed after the server accepted it answer "kind is not defined" instead of its failure.
+   Reproduced in a test, then fixed.
+
+**Proof.**
+
+- Tests: 31 new, all against the real recording where there is one. The ones for existing
+  routes and files were watched to fail on the code from before (11, 2 and 1 of them); the
+  rest were checked by breaking the code.
+- 118 ways of breaking the new code. 109 were caught at once and 5 more once tests were added
+  for them. One was a piece of code that could be written more simply, and was. Three make no
+  difference: `>=` for `>` exactly at the edge of a probe's reach (the scale there is 1),
+  not emptying a table whose rows nothing can reach any more, and treating `ConeScan`'s
+  arguments as probes (they are numbers). None was left untried.
+- Suite: 9060 tests, 9035 pass, 0 fail, 24 skipped, 1 todo.
+- **The recorder against the real server**, on the game port: four probes launched (the
+  server sent `OnNewProbe` four times, and the count in the launcher went 8 to 4), a scan (the
+  server said started, then stopped with its results), four recalled (`OnRemoveProbe` four
+  times, the count back to 8). What the list held at each step is in the script's output.
+- **In the browser**, Scanner Center, Test Pilot on the game port:
+
+  | Step | The route | The scanner afterwards |
+  |---|---|---|
+  | open the panel in space | `GET scanner/state` 200 (it was 501) | launcher: Core Probe Launcher I, 8 loaded, 8 to launch; no probes |
+  | Launch probes | `POST scanner/launch` 200 | 8 probes, each idle, step 7, 16 AU; 0 loaded |
+  | the BFF restarted (a new session) | | no probes known, as on the client after logging in |
+  | Reconnect to probes | `POST scanner/reconnect` 200 | the 8 probes again, idle |
+  | Analyze signatures | `POST scanner/analyze` 200 | 8 moving; idle again when the scan was over |
+  | Recover probes | `POST scanner/recover` 200 | 8 moving, then none; 8 loaded again |
+  | Launch, then Recover, again | 200, 200 | the same |
+
+  The second launch is the check on the empty launcher: the first build showed nothing loaded
+  after the probes came back, because the charge was new to godma and its changes were dropped.
+- **The staging was undone**: the store was copied with the server stopped before Test Pilot
+  was given the skill, the launcher and the probes, and put back after the last check.
+
+**A difference from the gateway, on purpose.** The gateway's scanner state lists the probes
+the server has stored for the pilot, so it shows them straight after logging in. The game
+port's shows what the client would know: none until a reconnect.
+
+**Not done.**
+
+- Scan results are still read through the web client's own calls, not kept from
+  `OnSystemScanStopped` as the client keeps them.
+- Moving a probe and changing its range still go to the server (`SetProbeDestination`,
+  `SetProbeRangeStep`), which the retail client never calls: it keeps both itself and sends
+  them with the next scan. The list here is changed as the client changes its own, so what is
+  shown is right; the calls are counted as the web client's own.
+- A route's probes do not carry the `scanBonuses` the server sent, which the client sends back.
+- The 5-minute wait between reconnects and the capsule's refusals are the server's to enforce
+  here; the client checks both before asking.
+
+### Next
+
+1. Module damage and weapon banks from dogma; health from godma as the panel reads it.
+2. **Collisions**; **the park beside the server's movement log**; the sim clock; MISSILE,
+   FORMATION, MUSHROOM.
+3. The call ledger (`ship.Undock`, `dogmaIM.Activate` and `Deactivate` to bind as the client
+   does; `GetMissionBriefingInfo` and `GetMissionObjectiveInfo`, which the client asks on every
+   layout of the agent's window), Phase 3's hosted check and the session-less gateway calls.
+4. The scanner the client's way: results kept from the server's word, a probe's destination
+   and range kept here and sent with the scan.
+5. More of a mission's words: the objectives pane, the mission's time under the agent's line,
+   messages inside messages when one turns up.
+6. Small, around dialogs: the title for a dialog's kind, the "do not ask again" box, the typed
+   codes not done.
