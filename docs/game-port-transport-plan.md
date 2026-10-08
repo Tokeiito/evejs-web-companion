@@ -539,6 +539,24 @@ Then build, in this order:
   distances within an agreed tolerance across a warp/jump/dock route; then a hosted bot flies a
   courier mission end to end on the game port.
 
+**Status, 2026-10-08.** Steps 1 and 2 are under way in `src/gamePort/destiny/`; nothing is wired
+to a pilot yet, and undock still refuses.
+
+| Part | State | Checked against |
+|---|---|---|
+| State blob reader and writer (`state.js`) | done | a real server's blobs, byte for byte |
+| Integrator, STOP, GOTO, FOLLOW, ORBIT, the setters, removal (`ballpark.js`) | done | CCP's per-tick fixtures, to the last digit |
+| The client's clock: update queue, when to step, rewind, snapshots (`park.js`) | done | CCP's merge and ticker cases; a recorded stream played through |
+| The park beside the server's own states (`scripts/destiny-compare.js`) | measured | velocities equal; positions within a fraction of a tick, except a one-tick offset after undock that is the server's (handed to a sub-agent) |
+| WARP, MISSILE, FORMATION, MUSHROOM | not ported; the step refuses, the orders are counted as failed | |
+| Collisions | not ported; counted | |
+| Sim clock rebase, time dilation, the damage clock | not ported | |
+| Snapshot, flight status, scanner from the park; a pilot wired to it | not started | |
+
+One thing the spike's question got wrong: the stream is not 10 Hz. The server sends an update
+when something changes and the client steps once a second on its own, so decoding load follows
+events, not frames.
+
 ### Phase 5 — Cutover (small)
 
 - Default the setting to `gameport`. Keep `gateway` selectable for one release as the way back.

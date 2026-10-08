@@ -13,6 +13,11 @@ ported. Checked so far:
   setters they use, against the source and against CCP's own per-tick fixtures to the last digit
   (`src/gamePort/destiny/ballpark.js`, `test/destinyBallpark.test.js`).
 
+- Sections 3 and 6 (the update events, the history queue, when the client steps, the rewind, the
+  snapshots), against `michelle.py`, CCP's `net/client` package and its tests, and a real server's
+  stream played through (`src/gamePort/destiny/park.js`, `test/destinyPark.test.js`). The small setters
+  (global, interactive, harmonic, rigid, troll, cloak) with them.
+
 One correction found on the way: the note in 4.2 about evaluation order holds, but committing balls
 one at a time instead of together cannot be told apart by FOLLOW, since every acceleration is found
 before any ball moves. Only collisions (section 5), worked out during the stepping pass, can tell.

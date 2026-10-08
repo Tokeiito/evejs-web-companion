@@ -452,3 +452,121 @@ or the future.
    of the same grid. Then undock stops refusing and the browser flies.
 5. The call ledger, Phase 3's hosted check and the session-less gateway calls, as before.
 
+---
+
+## 2026-10-08 — the client's clock, and the park held up to the server
+
+Commits `484668c`, `01c74ac`, `e0d95fc`, pushed.
+
+**A state read into the park and written back** (`484668c`): `Ballpark.readState` and
+`writeState`, and removing balls (at once, or kept for an explosion's length and let go by the
+tick). A park written and read back is the same park, byte for byte, for all three of the
+recording's blobs.
+
+**The client's clock** (`src/gamePort/destiny/park.js`, `01c74ac`). This is `Park` from the retail
+client's `michelle.py`, with the copy of the same logic that ships with CCP's `destiny` beside it
+for its tests. There is no clock exchange between client and server. The park's tick is whatever
+the last state it read said, plus one for each second of its own, and every update is placed
+against that:
+
+| The update is for | What the client does |
+|---|---|
+| the tick the park is at | applies it |
+| one or two ticks ahead | leaves it queued; the park's own ticking gets there |
+| three or more ahead | steps the park up to it, then applies it |
+| a tick already past | goes back to a snapshot of itself at or before that tick, steps forward to it, applies it, **and stays there** |
+| a past tick with no snapshot that old | gives up its state and asks the server for the whole thing again (`UpdateStateRequest`) |
+
+Other rules that turned out to matter: a `SetState` drops everything queued for before it and
+anything older that arrives later; a group marked "wait for bubble" blocks the whole queue until
+the second half of its tick arrives; entries that are not the simulation's (`OnSpecialFX`,
+`OnDamageStateChange` and eight more) are applied without moving the park at all; an entry that
+throws is logged and the rest of its group still applied. The snapshots: one whenever a state is
+read, one in the middle of any tick that changed something, a fresh base after it, one every
+eleventh quiet tick, never more than the oldest and the newest five. The step after an order
+throws away every older snapshot, so an update from before the last order applied cannot be
+reached and costs a full state.
+
+One thing came from the bytecode, as the notes warned: the decompiled `RealFlushState` reads as if
+any group beginning with a special effect reset the park. It does not, and the recording has such
+a group.
+
+Also from `michelle.py` rather than CCP's copy: packaged actions (a marshalled list of entries
+inside one entry) are unpacked where they stand; an update holding two different ticks is counted
+as the client counts it and still applied; balls that leave are reported with whether they blew
+up, which the client works out from a `TerminalPlayDestructionEffect` anywhere in the same group.
+
+`ballpark.js` gained the orders those updates reach and had not needed before: global,
+interactive, harmonic (a ball made a force field), rigid, troll (a wreck that drifts for a set
+time and then turns to stone, in the step), cloak and uncloak.
+
+**Proof.** 49 tests in `test/destinyPark.test.js`:
+
+- CCP's own cases for the merge (eleven) and the ticker (ten), carried over case for case.
+- The recording played through as it arrived, a tick of the park's for every second between: the
+  ship-only group at stamp -1 is dropped unapplied when the state for stamp 0 lands, the grid
+  fills to 95 balls with 95 slim items, nothing fails and nothing resets; the ship flies along
+  `GotoDirection` at 341 m/s to within a micrometre per second for eight ticks, covers 341 m a
+  tick along that heading, takes `Stop` at the tick it is stamped for and then loses the same
+  share of its speed every tick, `exp(-1e6 / (mass x agility))`.
+- The rest are the rules above, each with a case.
+
+About a hundred deliberate breakages of `park.js` and the new setters. Seven got through at first, each a gap
+now closed (a tick's housekeeping, which snapshot survives a new base, `AddBalls` against
+`AddBalls2`, what is cleared when a ball goes). One hung the tests rather than failing them, which
+counts, and the breakage script now has a timeout. Two are equivalent and left: `Stop` on a ball
+already stopped, and a troll checked twice. Suite: 8819 tests, 8794 pass, 0 fail, 24 skipped,
+1 todo.
+
+**Held up to the server** (`e0d95fc`). `scripts/record-destiny.js` can now ask the server for its
+whole state again every few seconds while in space. That is the client's own recovery call, and
+each answer is the server's account of where everything is at that tick. `scripts/destiny-compare.js`
+plays such a recording through the park and, at each of those states, sets the park's ship beside
+the server's just before the park is replaced by it. `test/fixtures/destinyUndockProbed.json` is
+one such flight (probes every 3 s); a second, with one probe after 31 s, was looked at and not
+kept.
+
+| Stamp | Mode | Apart | Server ahead of the park | Speeds, server / park |
+|---|---|---|---|---|
+| +3 | GOTO | 357.7 m | **-1.05 ticks** | 341 / 341 |
+| +6 | GOTO | 14.3 m | +0.042 ticks | 341 / 341 |
+| +9 | GOTO | 14.0 m | +0.041 ticks | 341 / 341 |
+| +15 | STOP (ordered at +12) | 125.4 m | slowing for **0.98 s less** | 228.4 / 187.9 |
+| +18 | STOP | 5.3 m | slowing for 0.042 s more | 124.8 / 125.8 |
+| +21 | STOP | 2.9 m | slowing for 0.043 s more | 68.2 / 68.8 |
+| +31 (other flight, first probe) | GOTO | 335.2 m | **-0.98 ticks** | 341 / 341 |
+
+What this says about the park: velocities agree with the server's to 1e-13 m/s; given the
+server's state, three ticks later the park's ship is within 15 m of the server's while flying
+and within 1% of its speed while stopping; every state is taken at its own stamp with the ship
+put exactly where it says; nothing fails, nothing resets.
+
+What it says about the server, which is the more interesting half. eve.js does not step ships once
+a second as CCP's server does. It moves them ten times a second by the time that has passed and
+stamps what it sends with the whole second, so a fraction of a tick either way is how it is built
+and the +0.04 rows are that. The rows in bold are not. After undocking, the server's ship is a
+full tick of travel behind where its own first state, stepped by CCP's rules, puts it, and it
+stays a tick behind (the same after 3 s and after 31 s). And a `Stop` stamped +12 had been
+slowing the server's ship for only two seconds by +15. A retail client fed this stream would be
+doing exactly what the park does, so its ship sits 341 m ahead of the server's after every undock
+(more for a faster ship). **Handed to a sub-agent** to find the cause in the server and fix it if
+it is a defect and safely fixable; the outcome goes in the defects table.
+
+The tests pin the park's side and put bounds on the rest (never more than 1.1 ticks apart, the
+difference always along the heading), so they keep passing whichever way the server question
+goes, short of a re-recording.
+
+### Next
+
+1. **WARP** (notes 4.8), against CCP's `test_warp.py`. The notes say only the alignment phase was
+   checked by calculation; cruise and deceleration need the fixture. `WarpTo` and `EntityWarpIn`
+   are the orders that reach it; today they are counted as failed.
+2. **Collisions** (section 5): `Gradient`, `Potential`, the partition. What the todo test waits
+   for, and what makes a massive ball's step right near a station.
+3. **A second recording** with a warp and a gate jump, probed the same way. Then the snapshot:
+   `readSpaceSnapshot`, flight status's ship mode and the scanner from our park, set beside the
+   gateway's snapshot of the same grid. Then undock stops refusing and the browser flies.
+4. The damage clock (the client files each damage state with the time it arrived, to work out the
+   shield since), `DoSimClockRebase` and `OnSetTimeDilation`: the park's seconds are not always
+   wall seconds.
+5. The call ledger, Phase 3's hosted check and the session-less gateway calls, as before.
