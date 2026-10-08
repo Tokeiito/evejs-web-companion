@@ -3,13 +3,13 @@
 // src/gamePort/destiny/ballpark.js is CCP's destiny ported to JavaScript. The
 // expected numbers here are CCP's own, from the evolve tests that ship with its
 // source (destiny/python/destiny/test/ballpark/evolve/test_goto.py, test_stop.py,
-// test_follow.py and test_orbit.py), each a position or velocity after every tick. CCP's tests
+// test_follow.py, test_orbit.py and test_simple_collision.py), each a position or velocity after every tick. CCP's tests
 // accept four decimal places. These require every digit: the point of the
 // port is the same bits the retail client computes.
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { AU, Ballpark, DestinyNotPorted, MAX_ALIGN_TICKS, divide, isWarping, normalize, scale, vec } = require("../src/gamePort/destiny/ballpark");
+const { AU, Ballpark, DestinyNotPorted, MAX_ALIGN_TICKS, collideTwoSpheres, divide, isWarping, normalize, quadratic, scale, vec } = require("../src/gamePort/destiny/ballpark");
 const { MODE } = require("../src/gamePort/destiny/state");
 
 /**
@@ -336,11 +336,12 @@ test("what is not ported yet stops the step by name instead of being guessed at"
   park.setBallVelocity(ball.id, 5, 0, 0);
   park.evolve();
   assert.ok(ball.newPos.x > 0 && ball.newVel.x < 5);
-  // A massive ball is stepped without its collisions for now, and that is counted.
-  assert.equal(park.unported.gradient, 1);
+  // A massive ball's neighbours are looked at each tick; one that is not massive collides with nothing.
+  assert.equal(park.gradients, 1);
   park.setBallMassive(ball.id, false);
   park.evolve();
-  assert.equal(park.unported.gradient, 1);
+  assert.equal(park.gradients, 1);
+  assert.deepEqual(park.unported, { minis: 0, collisionOrder: 0 });
 });
 
 test("a moribund ball is not stepped", () => {
@@ -423,13 +424,77 @@ test("an order to go somewhere lets go of the ball that was being followed", () 
   assert.deepEqual([leader.followers.has(2), other.followers.has(2), follower.mode], [true, true, MODE.STOP]);
 });
 
-// One deliberate breakage still gets through: committing each ball as it is
-// stepped, instead of all together. Every acceleration is found before any
-// ball moves, and a step uses only the ball's own position, so nothing ported
-// yet can tell the two apart. Collisions can: they are worked out during the
-// stepping pass, from where the neighbours still are.
-test("a ball's collisions are worked out from where its neighbours were, not where they have just been moved to", { todo: "needs collisions ported" }, () => {
-  assert.fail("not yet testable");
+// Committing each ball as it is stepped, instead of all together, is told
+// apart by collisions alone: they are worked out during the stepping pass,
+// from where the neighbours still are.
+test("a ball's collisions are worked out from where its neighbours were, not where they have just been moved to", () => {
+  // Two alike, overlapping, at rest: each is pushed by where the other was, so they part by the same amount.
+  const park = new Ballpark();
+  const a = spaceBall(park, { id: 1, y: 1.9 });
+  const b = spaceBall(park, { id: 2 });
+  park.evolve();
+  assert.ok(Math.abs(a.newPos.y - 1.9 + b.newPos.y) < 1e-12, "the second was pushed from where the first had been");
+  assert.deepEqual([a.newPos.x, a.newPos.z, b.newPos.x, b.newPos.z], [0, 0, 0, 0]);
+});
+
+// ── CCP's collision fixtures (test_simple_collision.py) ──────────────────────
+
+/** Evolve `ticks` times, reading both balls' positions after each. */
+function runTwo(park, a, b, ticks) {
+  const rows = { a: [], b: [] };
+  for (let tick = 0; tick < ticks; tick += 1) {
+    park.evolve();
+    rows.a.push([a.newPos.x, a.newPos.y, a.newPos.z]);
+    rows.b.push([b.newPos.x, b.newPos.y, b.newPos.z]);
+  }
+  return rows;
+}
+
+test("CCP test_stopped_balls_with_same_location: two balls at one point are pushed apart along x, to the last digit", () => {
+  const park = new Ballpark();
+  const a = spaceBall(park, { id: 1 });
+  const b = spaceBall(park, { id: 2 });
+  const rows = runTwo(park, a, b, 10);
+  const x = [1.121144335565424, 3.2401005010556143, 5.185473058408457, 6.9714818718687654, 8.61118192299853, 10.116558737162107, 11.498615992731432, 12.76745595339809, 13.93235331151902, 15.001822982259961];
+  // The lower id goes up the axis, the higher down it.
+  assert.deepEqual(rows.a, x.map((each) => [each, 0, 0]));
+  assert.deepEqual(rows.b, x.map((each) => [-each, 0, 0]));
+});
+
+test("CCP test_stopped_balls_intersecting: two overlapping balls are pushed clear along the line between them", () => {
+  const park = new Ballpark();
+  const a = spaceBall(park, { id: 1, y: 1.9 });
+  const b = spaceBall(park, { id: 2 });
+  const rows = runTwo(park, a, b, 10);
+  assert.deepEqual(rows.a.map(([, y]) => y), [2.5951094880505643, 3.736969417977334, 4.648125579572035, 5.375189844683108, 5.955356525086511, 6.418305116018683, 6.787718605426691, 7.082495020842102, 7.317714192790605, 7.505409191300473]);
+  assert.deepEqual(rows.b.map(([, y]) => y), [-0.6951094880505645, -1.836969417977334, -2.7481255795720347, -3.4751898446831078, -4.055356525086512, -4.5183051160186825, -4.8877186054266915, -5.182495020842103, -5.417714192790607, -5.605409191300473]);
+  assert.ok([...rows.a, ...rows.b].every(([x, , z]) => x === 0 && z === 0));
+});
+
+test("CCP test_goto_collision: two balls sent at each other meet, bounce, and close again, twenty ticks to the last digit", () => {
+  const park = new Ballpark();
+  const a = spaceBall(park, { id: 1 });
+  const b = spaceBall(park, { id: 2, x: 10, y: 10, z: 10 });
+  park.gotoPoint(1, 10, 10, 10);
+  park.gotoPoint(2, 0, 0, 0);
+  const rows = runTwo(park, a, b, 20);
+  const expectedA = [0.22785672701553972, 0.8863613208951594, 1.9402353687182086, 3.3570904438241858, 3.745389410116848, 3.2276392358401793, 3.2016165950513056, 3.627039465463305, 3.8640182292625984, 3.9449236847646176,
+    4.014836947038442, 4.087400730922078, 4.152795682608074, 4.2242631173879985, 4.289057014884843, 4.360366727534607, 4.425074016382081, 4.496360773851808, 4.561055454563248, 4.624809527703686];
+  const expectedB = [9.772143272984462, 9.113638679104842, 8.059764631281793, 6.642909556175815, 6.254610589883153, 6.772360764159822, 6.7983834049486935, 6.372960534536694, 6.1359817707374, 6.055076315235381,
+    5.985163052961557, 5.912599269077921, 5.847204317391924, 5.775736882612, 5.710942985115155, 5.639633272465392, 5.574925983617919, 5.503639226148192, 5.438944545436752, 5.375190472296313];
+  assert.deepEqual(rows.a, expectedA.map((each) => [each, each, each]));
+  assert.deepEqual(rows.b, expectedB.map((each) => [each, each, each]));
+});
+
+test("CCP test_balls_in_warp_should_not_collide: two balls warping through each other pass", () => {
+  const park = new Ballpark();
+  const a = spaceBall(park, { id: 1, x: -4, vx: 1000.0, maxVelocity: 1000.0, mass: 1.0 });
+  const b = spaceBall(park, { id: 2, x: 4, vx: -1000.0, maxVelocity: 1000.0, mass: 1.0 });
+  park.warpTo(1, 100000.0, 0, 0);
+  park.warpTo(2, -100000.0, 0, 0);
+  for (let tick = 0; tick < 80; tick += 1) park.evolve();
+  assert.ok(a.newPos.x > b.newPos.x);
+  assert.deepEqual([a.newPos.y, a.newPos.z, b.newPos.y, b.newPos.z], [0, 0, 0, 0]);
 });
 
 // ── FOLLOW and ORBIT, beyond the fixtures ────────────────────────────────────
@@ -613,7 +678,7 @@ test("the ship as the state gives it: flying at its goto point, ready to step", 
   assert.ok(Math.abs(moved - 341) < 1e-3, `it moved ${moved} m`);
   assert.deepEqual(park.ball(recording.stationID).newPos, station);
   assert.equal(park.currentTime, grid.stamp + 1);
-  assert.equal(park.unported.gradient, 0, "the ship is not massive while it leaves the station");
+  assert.equal(park.gradients, 0, "the ship is not massive while it leaves the station");
 });
 
 test("a follower read from a state is hooked to its leader once every ball is in, whatever the order", () => {
@@ -1057,7 +1122,7 @@ test("the tick a ball is lined up, the warp proper begins: the destination pulle
   park.warpTo(1, destination.x, destination.y, destination.z, 15000, 3000);
   ball.newVel = vec(96, 128, 0); // 160 m/s, along (0.6, 0.8, 0): almost exactly at it
   const from = { ...ball.newPos };
-  const before = park.unported.gradient;
+  const before = park.gradients;
   park.evolve();
   assert.deepEqual(posted, [["OnActivatingWarp", 1, 40]]);
   assert.deepEqual([ball.mode, ball.effectStamp, ball.isMassive, isWarping(ball)], [MODE.WARP, 40, false, true]);
@@ -1072,9 +1137,9 @@ test("the tick a ball is lined up, the warp proper begins: the destination pulle
   assert.ok(Math.abs(distance(ball.newPos, from) - 1) < 1e-3, `${distance(ball.newPos, from)} m from where it was`);
   assert.ok(Math.abs(distance(ball.newPos, pulled) - (ball.lastCollision - 1)) < 1e-3);
   assert.ok(Math.abs(speedOf(ball.newVel) - 160) < 1e-9, "its speed does not drop as the warp begins");
-  assert.equal(park.unported.gradient - before, 1, "only the chaser: the warping ball stopped being massive before it was stepped");
+  assert.equal(park.gradients - before, 1, "only the chaser: the warping ball stopped being massive before it was stepped");
   park.evolve();
-  assert.equal(park.unported.gradient - before, 2);
+  assert.equal(park.gradients - before, 2);
 });
 
 /** The numbers of a warp, from the equations in the source's comment: [3] [4] [6] [8] [11] [12]. */
@@ -1184,7 +1249,7 @@ test("a whole warp, tick by tick: it never overshoots, peaks at its top speed, a
   let previous = distance(ball.newPos, end);
   let peak = 0;
   let ticks = 0;
-  const gradientBefore = park.unported.gradient;
+  const gradientBefore = park.gradients;
   let lastInWarp = null;
   while (ball.mode === MODE.WARP) {
     lastInWarp = { p: { ...ball.newPos }, v: { ...ball.newVel } };
@@ -1201,7 +1266,7 @@ test("a whole warp, tick by tick: it never overshoots, peaks at its top speed, a
   const dropAfter = book.tA + book.tC + Math.log((3 * AU) / 100) / book.DEC;
   assert.equal(ticks, Math.ceil(dropAfter), `${ticks} ticks; the curve passes 100 m/s at ${dropAfter} s`);
   assert.deepEqual(posted, [["OnActivatingWarp", 1, startedAt], ["OnDeactivatingWarp", 1, startedAt + ticks], ["OnExitWarp", 1, 0]]);
-  assert.deepEqual([ball.mode, ball.isMassive, park.unported.gradient - gradientBefore], [MODE.STOP, true, 0]);
+  assert.deepEqual([ball.mode, ball.isMassive, park.gradients - gradientBefore], [MODE.STOP, true, 0]);
   // The tick it drops out: the warp's own place and speed for that moment become where it was...
   const t = ticks * park.dt;
   const out = warpByTheBook(3000, D);
@@ -1215,7 +1280,7 @@ test("a whole warp, tick by tick: it never overshoots, peaks at its top speed, a
   const speed = speedOf(ball.newVel);
   park.evolve();
   assert.ok(speedOf(ball.newVel) < speed && ball.mode === MODE.STOP);
-  assert.equal(park.unported.gradient - gradientBefore, 1, "and massive again");
+  assert.equal(park.gradients - gradientBefore, 1, "and massive again");
   assert.ok(lastInWarp.v.x > 100);
 });
 
@@ -1346,4 +1411,219 @@ test("a warp survives being written to a state and read back, lining up or under
     copy.evolve();
     assert.deepEqual([under.newPos, under.newVel], [ball.newPos, ball.newVel]);
   }
+});
+
+// ── collisions, beyond the fixtures ──────────────────────────────────────────
+
+const closeTo = (actual, expected, margin = 1e-9) => assert.ok(Math.abs(actual - expected) <= margin * Math.max(1, Math.abs(expected)), `${actual} is not ${expected}`);
+/** A fixed, massive ball of radius 2: something to run into. */
+const wall = (park, id, x, y = 0, z = 0) => park.addBall({ id, x, y, z, radius: 2, isMassive: true });
+/** The standard ball at the origin doing 8 m/s along x, with whatever `build` puts in its way; stepped once. */
+function charge(build = () => {}) {
+  const park = new Ballpark();
+  const ball = spaceBall(park, { id: 1, vx: 8 });
+  build(park, ball);
+  park.evolve();
+  return { park, ball, at: [{ ...ball.newPos }, { ...ball.newVel }] };
+}
+
+test("Quadratic and CollideTwoSpheres: when two spheres moving in straight lines first touch", () => {
+  assert.deepEqual(quadratic(1, -3, 2), [2, 1]);
+  assert.equal(quadratic(1, 0, 1), null, "no roots");
+  assert.equal(quadratic(0, 0, 5), null, "not an equation");
+  assert.deepEqual(quadratic(1, 0, 0), [0, -0]);
+  // No s^2 term: the source goes on to divide by it, and nothing usable comes out.
+  assert.ok(quadratic(0, 2, 1).every((root) => !Number.isFinite(root)));
+  const still = vec(8, 0, 0);
+  // Ten metres along x at a sphere 8 m off, radii adding up to 2: they touch when the gap is 2, 6 m in.
+  closeTo(collideTwoSpheres(vec(), vec(10, 0, 0), still, still, 2), 0.6);
+  // Both moving: closing at 20 m a tick, 6 m to close.
+  closeTo(collideTwoSpheres(vec(), vec(10, 0, 0), still, vec(-2, 0, 0), 2), 0.3);
+  assert.equal(collideTwoSpheres(vec(), vec(10, 0, 0), vec(1.5, 0, 0), still, 2), 0, "overlapping already");
+  assert.equal(collideTwoSpheres(vec(), vec(10, 0, 0), vec(2, 0, 0), still, 2), 0, "touching counts as overlapping");
+  assert.equal(collideTwoSpheres(vec(), vec(), vec(2, 0, 0), vec(2, 0, 0), 2), 0, "and does so with neither of them moving");
+  assert.equal(collideTwoSpheres(vec(), vec(5, 0, 0), still, still, 2), -1, "it stops short this tick");
+  assert.equal(collideTwoSpheres(vec(), vec(-10, 0, 0), still, still, 2), -1, "going the other way");
+  assert.equal(collideTwoSpheres(vec(), vec(10, 0, 0), vec(8, 3, 0), vec(8, 3, 0), 2), -1, "passing wide");
+  assert.equal(collideTwoSpheres(vec(), vec(10, 0, 0), still, vec(18, 0, 0), 2), -1, "moving together, never closing");
+  assert.equal(collideTwoSpheres(vec(), vec(6, 0, 0), still, still, 2), 1, "touching at the very end of the tick");
+});
+
+test("a ball that runs into a fixed one bounces: its speed along the line between them is turned round, damped to 0.85", () => {
+  const { park, ball } = charge((p) => wall(p, 2, 9));
+  // Worked out here from what the collision means, not from its formula: the ball's own step with nothing in
+  // the way; the moment it touches, 5 m in; its speed there turned round; the rest of the tick from there.
+  const m = ball.mass * ball.agility;
+  const k = park.friction;
+  const tf = ball.timeFactor;
+  const free = park.integrate(vec(), vec(8, 0, 0), vec(), m, k, tf, park.dt);
+  const s = 5 / free.p.x;
+  const touch = park.integrate(vec(), vec(8, 0, 0), vec(), m, k, tf, s * park.dt);
+  const bounced = park.integrate(touch.p, vec(-touch.v.x, 0, 0), vec(), m, k, tf, (1 - s) * park.dt);
+  // The steady push that would have brought it to that speed over the whole tick; 0.85 of it is applied.
+  const push = (bounced.v.x * k - 8 * k * tf) / (m * (1 - tf));
+  const stepped = park.integrate(vec(), vec(8, 0, 0), vec(0.85 * push, 0, 0), m, k, tf, park.dt);
+  assert.ok(s > 0.6 && s < 0.7 && bounced.v.x < 0);
+  closeTo(ball.lastCollision, s);
+  closeTo(ball.lastC.x, 0.85 * push);
+  closeTo(ball.newVel.x, stepped.v.x);
+  closeTo(ball.newPos.x, stepped.p.x);
+  closeTo(ball.newVel.x, free.v.x + 0.85 * (bounced.v.x - free.v.x));
+  assert.ok(ball.newVel.x < 0 && ball.newPos.x < 5, "it is coming back, and never got inside");
+  assert.deepEqual([ball.newPos.y, ball.newPos.z, ball.lastC.y, ball.lastC.z, ball.collisions], [0, 0, 0, 0, [2]]);
+  assert.deepEqual(park.ball(2).newPos, { x: 9, y: 0, z: 0 }, "the fixed one does not move");
+  // What is fixed is a wall whatever it weighs.
+  const lightWall = charge((p) => p.addBall({ id: 2, x: 9, radius: 2, isMassive: true, mass: 1000 }));
+  assert.deepEqual(lightWall.at, [{ ...ball.newPos }, { ...ball.newVel }]);
+  // With nothing in the way the tick leaves no mark; with something there but out of reach, none either.
+  const clear = charge();
+  assert.deepEqual([clear.at, clear.ball.lastCollision, clear.ball.collisions, clear.ball.lastC], [[free.p, free.v], -1, [], vec()]);
+  const far = charge((p) => wall(p, 2, 20));
+  assert.deepEqual([far.at, far.ball.lastCollision, far.ball.collisions], [[free.p, free.v], -1, []]);
+  // The mark is this tick's only: the next tick, clear of everything, starts again.
+  park.evolve();
+  assert.deepEqual([ball.lastCollision, ball.collisions, ball.lastC], [-1, [], vec()]);
+});
+
+test("a ball already inside a fixed one is pushed out along the line between them, a metre clear", () => {
+  // At rest, its centre 3 m from a fixed ball's: a metre inside, so two to clear with the metre over.
+  const park = new Ballpark();
+  const ball = spaceBall(park, { id: 1 });
+  wall(park, 2, 3);
+  park.evolve();
+  const m = ball.mass * ball.agility;
+  const k = park.friction;
+  // The push is the one that would move a ball at rest the whole distance in a tick; 0.85 of it is applied.
+  const push = -2 / (park.dt * (1 / (m + park.dt * k)) * m) / park.dt;
+  closeTo(ball.lastC.x, 0.85 * push);
+  assert.deepEqual([ball.lastCollision, ball.collisions], [0, [2]]);
+  assert.ok(ball.newPos.x < -0.5 && ball.newPos.x > -2, `it moved ${ball.newPos.x} m`);
+  // The same whatever the fixed ball weighs.
+  const light = new Ballpark();
+  const inLight = spaceBall(light, { id: 1 });
+  light.addBall({ id: 2, x: 3, radius: 2, isMassive: true, mass: 1000 });
+  light.evolve();
+  assert.deepEqual(inLight.newPos, ball.newPos);
+  // Moving, the push also takes off the speed it has: it is to end the tick clear, not to arrive there coasting.
+  const moving = new Ballpark();
+  const mover = spaceBall(moving, { id: 1, vx: 5 });
+  wall(moving, 2, 3);
+  moving.evolve();
+  closeTo(mover.lastC.x, 0.85 * (push - 5 / moving.dt));
+  // Steering into it, the push takes off that steering too.
+  const steering = new Ballpark();
+  const helm = spaceBall(steering, { id: 1 });
+  wall(steering, 2, 3);
+  steering.gotoPoint(1, 1000, 0, 0);
+  steering.evolve();
+  assert.ok(helm.lastG.x > 0.1, `steering at ${helm.lastG.x} m/s2`);
+  closeTo(helm.lastC.x, 0.85 * (push - helm.lastG.x));
+});
+
+test("what a ball can run into: the massive, the uncloaked and the living, and a force field only if it is not its own", () => {
+  const hit = charge((p) => wall(p, 2, 9)).at;
+  const miss = charge().at;
+  assert.notDeepEqual(hit, miss);
+  const through = (change) => charge((p, ball) => change(wall(p, 2, 9), ball, p)).at;
+  // Not massive, cloaked, on its way out, a missile: the ball goes through.
+  assert.deepEqual(through((w) => { w.isMassive = false; }), miss);
+  assert.deepEqual(through((w) => { w.isCloaked = 1; }), miss);
+  assert.deepEqual(through((w) => { w.isMoribund = true; }), miss);
+  assert.deepEqual(through((w) => { w.mode = MODE.MISSILE; }), miss);
+  // Wreckage does not trouble a ship, but does trouble wreckage.
+  assert.deepEqual(through((w) => { w.isSpaceJunk = true; }), miss);
+  assert.deepEqual(through((w, ball) => { w.isSpaceJunk = true; ball.isSpaceJunk = true; }), hit);
+  assert.deepEqual(through((w, ball) => { ball.isSpaceJunk = true; }), hit);
+  // A mushroom is no obstacle to the ball it came from.
+  assert.deepEqual(through((w) => { w.mode = MODE.MUSHROOM; w.ownerId = 1; }), miss);
+  assert.deepEqual(through((w) => { w.mode = MODE.MUSHROOM; w.ownerId = 7; }), hit);
+  // A force field stops a stranger, and lets through its own: by harmonic, corporation or alliance, or the pass.
+  const field = (set) => through((w, ball) => { w.mode = MODE.FIELD; set(w, ball); });
+  assert.deepEqual(field(() => {}), hit, "nothing in common, and nothing set on either");
+  assert.deepEqual(field((w, ball) => { ball.harmonic = -2; }), miss);
+  assert.deepEqual(field((w, ball) => { w.harmonic = 5; ball.harmonic = 5; }), miss);
+  assert.deepEqual(field((w, ball) => { w.harmonic = 5; ball.harmonic = 6; }), hit);
+  assert.deepEqual(field((w, ball) => { w.corporationID = 98; ball.corporationID = 98; }), miss);
+  assert.deepEqual(field((w, ball) => { w.corporationID = 98; ball.corporationID = 99; }), hit);
+  assert.deepEqual(field((w, ball) => { w.allianceID = 77; ball.allianceID = 77; }), miss);
+  assert.deepEqual(field((w, ball) => { w.allianceID = 77; ball.allianceID = 78; }), hit);
+  // The same harmonic means nothing on a ball that is not a field.
+  assert.deepEqual(through((w, ball) => { w.harmonic = 5; ball.harmonic = 5; }), hit);
+  // A ball that is not massive itself runs into nothing, and nothing is looked for.
+  const ghost = charge((p, ball) => { wall(p, 2, 9); p.setBallMassive(ball.id, false); });
+  assert.deepEqual([ghost.at, ghost.park.gradients], [miss, 0]);
+});
+
+test("of several touched in one tick the latest counts, and of two touched at the same moment the stronger", () => {
+  const far = charge((p) => wall(p, 2, 9));
+  // A nearer one in the same line is touched earlier in the tick; the farther is still the one that counts,
+  // whichever comes first by id. That a ball touched two at once is counted: the order here is by id.
+  for (const [nearID, farID] of [[2, 3], [3, 2]]) {
+    const both = charge((p) => { wall(p, farID, 9); wall(p, nearID, 7); });
+    assert.deepEqual(both.at, far.at);
+    // Taken in order of id, whichever was put in the park first.
+    assert.deepEqual([both.ball.collisions, both.park.unported.collisionOrder, far.park.unported.collisionOrder], [[2, 3], 1, 0]);
+    closeTo(both.ball.lastCollision, far.ball.lastCollision);
+  }
+  // Two in the same place, one fixed and one free and light: both are touched at the same moment. The fixed
+  // one turns the ball right round and the light one barely slows it, so the fixed one's answer is kept.
+  for (const [fixedID, lightID] of [[2, 3], [3, 2]]) {
+    const pair = charge((p) => { wall(p, fixedID, 9); spaceBall(p, { id: lightID, x: 9, mass: 1000 }); });
+    assert.deepEqual(pair.at, far.at);
+  }
+  const light = charge((p) => spaceBall(p, { id: 2, x: 9, mass: 1000 }));
+  assert.ok(light.ball.newVel.x > 0 && light.ball.newVel.x < charge().ball.newVel.x, "off something light it only slows");
+});
+
+test("two free balls exchange speed by their masses, and a light one inside a heavy one is pushed back by the whole way out", () => {
+  // Head on into a ball of the same mass at rest: the two exchange their speed along the line, less the damping.
+  const even = charge((p) => spaceBall(p, { id: 2, x: 9 }));
+  const other = even.park.ball(2);
+  assert.ok(even.ball.newVel.x < charge().ball.newVel.x && other.newVel.x > 0, "the one slows and the other is set moving");
+  // It is the masses themselves that are exchanged by, not mass times agility. Into one of the same mass and
+  // half the agility, at rest: the ball's speed along the line at the touch becomes the other's, nothing.
+  const sluggish = charge((p) => { spaceBall(p, { id: 2, x: 9 }); p.setBallAgility(2, 0.45); });
+  {
+    const { park, ball } = sluggish;
+    const m = ball.mass * ball.agility;
+    const k = park.friction;
+    const tf = ball.timeFactor;
+    const free = park.integrate(vec(), vec(8, 0, 0), vec(), m, k, tf, park.dt);
+    const s = 5 / free.p.x;
+    closeTo(ball.lastCollision, s);
+    closeTo(ball.lastC.x, 0.85 * ((0 * k - 8 * k * tf) / (m * (1 - tf))));
+  }
+  // Head on into one a thousand times heavier: all but a bounce off a wall.
+  const heavy = charge((p) => spaceBall(p, { id: 2, x: 9, mass: 13e9 }));
+  assert.ok(heavy.ball.newVel.x < 0 && heavy.park.ball(2).newVel.x > 0 && heavy.park.ball(2).newVel.x < 0.1);
+  // A light ball a metre inside a heavy one, and moving into it: its answer is stretched to the whole way out,
+  // two metres here, as an acceleration. (In one tick that only slows it: it does not come back out.) The
+  // heavy one's is not stretched; nor is either's between equals.
+  const park = new Ballpark();
+  const small = spaceBall(park, { id: 1, vx: 5, mass: 13e6 });
+  const big = spaceBall(park, { id: 2, x: 3, mass: 13e9 });
+  park.evolve();
+  const size = (v) => Math.hypot(v.x, v.y, v.z);
+  closeTo(size(small.lastC), 2);
+  assert.ok(small.lastC.x < 0 && small.newVel.x > 0 && small.newVel.x < 3, "pushed back the way it came, and slowed by it");
+  assert.ok(size(big.lastC) > 0 && Math.abs(size(big.lastC) - 2) > 0.1);
+  const equals = new Ballpark();
+  const one = spaceBall(equals, { id: 1, vx: 5 });
+  spaceBall(equals, { id: 2, x: 3 });
+  equals.evolve();
+  assert.ok(size(one.lastC) > 0 && Math.abs(size(one.lastC) - 2) > 0.1);
+});
+
+test("a fixed ball's own collision shapes are not ported, and a massive ball stepped beside one is counted", () => {
+  const plain = charge((p) => wall(p, 2, 50));
+  assert.equal(plain.park.unported.minis, 0);
+  for (const shape of ["miniBalls", "miniCapsules", "miniBoxes"]) {
+    const shaped = charge((p) => { wall(p, 2, 50)[shape] = [{}]; });
+    assert.equal(shaped.park.unported.minis, 1, shape);
+    shaped.park.evolve();
+    assert.equal(shaped.park.unported.minis, 2);
+  }
+  // A free ball's shapes are not in the park, and a ball that is not massive is not stepped against any.
+  assert.equal(charge((p) => { const free = spaceBall(p, { id: 2, x: 50 }); free.miniBalls = [{}]; }).park.unported.minis, 0);
+  assert.equal(charge((p, ball) => { wall(p, 2, 50).miniBalls = [{}]; p.setBallMassive(ball.id, false); }).park.unported.minis, 0);
 });

@@ -10,9 +10,12 @@
 //
 //   destiny/src/Ballpark.cpp   Evolve (421), Integrate (751), EvolveBehaviorForBall (789),
 //                              EvolveFollow (1066), EvolveOldStyleOrbit (1249),
-//                              EvolveStop (1339), GotoThrust (1398), AddBall (3303),
+//                              EvolveStop (1339), GotoThrust (1398),
+//                              Gradient (2746), Potential (2789), AddBall (3303),
 //                              FollowBall (3879), Orbit (4007),
 //                              the orders (4471-4650) and the setters (4652-5090)
+//   destiny/src/Collision.cpp  CollideTwoSpheres (108), Quadratic (136)
+//   destiny/src/Partition.cpp  which balls a ball can collide with (302, 344)
 //   destiny/src/Thunkers.cpp   reading a state into the park (2083, 2463, 2897) and
 //                              writing the park out as one (2145, 2202, 3180)
 //   destiny/src/Vector3d.h     the arithmetic, which is part of the result
@@ -31,15 +34,50 @@
 // test/destinyBallpark.test.js requires them exactly.
 //
 // PORTED SO FAR: the integrator, STOP, GOTO, FOLLOW and ORBIT (the old style,
-// which is the library's default), adding and removing balls, the orders and
-// setters those need, and reading and writing the state blob.
-// NOT YET, and each stops here rather than be guessed at:
-// WARP, MISSILE, FORMATION (evolve throws), collisions (counted
-// in `unported.gradient`: a massive ball is stepped without them), orientation
-// (yaw, pitch and roll do not move a ball), the spatial partition, moribund
-// balls, trolls and mushrooms.
+// which is the library's default), WARP, a massive ball's collisions with
+// other balls, adding and removing balls, the orders and setters those need,
+// and reading and writing the state blob.
+// NOT YET, and each stops here or is counted rather than be guessed at:
+// MISSILE, FORMATION, MUSHROOM (evolve throws); a fixed ball's collision
+// shapes, its miniballs, capsules and boxes (counted in `unported.minis`: a
+// massive ball is stepped without them); the spatial partition, which here
+// only decides the order a ball's neighbours are taken in (counted in
+// `unported.collisionOrder` whenever a ball touches two at once);
+// orientation (yaw, pitch and roll do not move a ball); moribund balls.
 
 const { FLAG, MODE, MODE_NAME, PACKET, readState, writeState } = require("./state");
+
+/**
+ * Collision.cpp Quadratic (136): the roots of a s^2 + b s + c, the larger
+ * first, or null when there are none. With no s^2 term the source sets both
+ * roots and then goes on to divide by a all the same; so does this.
+ */
+function quadratic(a, b, c) {
+  if (a === 0.0 && b === 0.0) return null;
+  let det = b * b - 4.0 * a * c;
+  if (det < 0.0) return null;
+  det = Math.sqrt(det);
+  return [((-b + det) * 0.5) / a, ((-b - det) * 0.5) / a];
+}
+
+/**
+ * Collision.cpp CollideTwoSpheres (108): two spheres, each going in a straight
+ * line through the tick (p0 to p1, q0 to q1), radii adding up to collRadius.
+ * When in the tick they first touch, from 0 to 1; 0 if they overlap already;
+ * -1 if they do not touch.
+ */
+function collideTwoSpheres(p0, p1, q0, q1, collRadius) {
+  const p0q0 = { x: p0.x - q0.x, y: p0.y - q0.y, z: p0.z - q0.z };
+  const p0q0_2 = p0q0.x * p0q0.x + p0q0.y * p0q0.y + p0q0.z * p0q0.z;
+  if (p0q0_2 <= collRadius * collRadius) return 0.0;
+  const dpq = { x: p1.x - p0.x - (q1.x - q0.x), y: p1.y - p0.y - (q1.y - q0.y), z: p1.z - p0.z - (q1.z - q0.z) };
+  const dpq_2 = dpq.x * dpq.x + dpq.y * dpq.y + dpq.z * dpq.z;
+  const p0q0dpq = p0q0.x * dpq.x + p0q0.y * dpq.y + p0q0.z * dpq.z;
+  const roots = quadratic(dpq_2, 2.0 * p0q0dpq, p0q0_2 - collRadius * collRadius);
+  // The smaller root is the first touch. Not overlapping at the start, both are ahead or both behind.
+  if (roots && roots[1] >= 0.0 && roots[1] <= 1.0) return roots[1];
+  return -1.0;
+}
 
 /** IDstConstants.h: ids below this are the client's own balls, and are not written into a state. */
 const DSTLOCALBALLS = -1073741824;
@@ -123,8 +161,14 @@ class Ballpark {
     this.freeBalls = new Map();
     /** moribundBalls: removed from play, kept until their time is up. */
     this.moribundBalls = new Set();
-    /** What a step did without, because it is not ported: counted, never hidden. */
-    this.unported = { gradient: 0 };
+    /** How many times a massive ball's neighbours were looked at for collisions (Gradient). */
+    this.gradients = 0;
+    /**
+     * What a step did without, because it is not ported: counted, never hidden.
+     * `minis`: a massive ball stepped while a fixed ball in the park had collision shapes of its own.
+     * `collisionOrder`: a ball that touched two others in one tick, taken here in order of id.
+     */
+    this.unported = { minis: 0, collisionOrder: 0 };
   }
 
   /** Ballpark::ClearAll (5896). */
@@ -176,6 +220,7 @@ class Ballpark {
         goto: vec(),
         lastG: vec(),
         lastC: vec(),
+        collisions: [],
       };
       this.balls.set(id, ball);
     }
@@ -928,6 +973,7 @@ class Ballpark {
   _evolveBehavior(ball) {
     ball.lastG = vec();
     ball.lastC = vec();
+    ball.collisions = [];
     let a = vec();
     switch (ball.mode) {
       case MODE.GOTO:
@@ -959,6 +1005,125 @@ class Ballpark {
   }
 
   /**
+   * Ballpark::Gradient (2746), with Partition::GetCollisionCandidates (302)
+   * for a ball that is not a missile: what a massive ball's neighbours do to it
+   * this tick, left in its lastC. `all` is every ball in the park in order of id.
+   *
+   * The source asks its partition for the balls near enough to matter; this
+   * asks every ball, and Potential answers "no contact" for the far ones. What
+   * the partition also decides is the order, which is its boxes' and then id.
+   * Here it is id alone.
+   */
+  _gradient(ball, all) {
+    this.gradients += 1;
+    for (const neighbor of all) {
+      // Partition::GetNearbyBalls (344): not itself, not the dead, not the cloaked or the massless, not a
+      // missile; and a force field is no obstacle to its own.
+      if (neighbor === ball || neighbor.isMoribund) continue;
+      if (neighbor.isCloaked || !neighbor.isMassive) continue;
+      if (neighbor.mode === MODE.FIELD) {
+        if (ball.harmonic === -2) continue;
+        if (neighbor.harmonic !== -1 && neighbor.harmonic === ball.harmonic) continue;
+        if (neighbor.corporationID !== -1 && neighbor.corporationID === ball.corporationID) continue;
+        if (neighbor.allianceID !== -1 && neighbor.allianceID === ball.allianceID) continue;
+      }
+      if (neighbor.mode === MODE.MISSILE) continue;
+      // Gradient itself: not a mushroom of the ball's own, and wreckage only troubles wreckage. (Its lines
+      // about missiles are for a ball that is one, or a neighbour that is one: neither gets this far.)
+      if (neighbor.mode === MODE.MUSHROOM && byId(ball.id, neighbor.ownerId) === 0) continue;
+      if (neighbor.isSpaceJunk && !ball.isSpaceJunk) continue;
+      this._potential(ball, neighbor, 0);
+    }
+    if (new Set(ball.collisions).size > 1) this.unported.collisionOrder += 1;
+  }
+
+  /**
+   * Ballpark::Potential (2789): what one neighbour does to a ball this tick.
+   * Both are carried a tick ahead on their own steering alone. If they touch
+   * on the way, the ball bounces: off a fixed neighbour its speed along the
+   * line between them is turned round, off a free one the two exchange it as
+   * their masses say. If they overlap already, the ball is pushed clear. Either
+   * way the answer is the steady acceleration that gets the ball there over the
+   * whole tick, damped to 0.85, and of several neighbours the one touched
+   * latest in the tick is kept. Only `me` is changed.
+   */
+  _potential(me, other, recursionDepth) {
+    const k = this.friction;
+    const dt = this.dt;
+    const collRadius = me.radius + other.radius;
+    const m1 = me.isFree ? me.mass * me.agility : 1.0e34;
+    const m2 = other.isFree ? other.mass * other.agility : 1.0e34;
+    const p0 = me.newPos;
+    const q0 = other.newPos;
+    const p1 = this.integrate(p0, me.newVel, me.lastG, m1, k, me.timeFactor, dt).p;
+    const q1 = this.integrate(q0, other.newVel, other.lastG, m2, k, other.timeFactor, dt).p;
+    const s = collideTwoSpheres(p0, p1, q0, q1, collRadius);
+    if (s === -1.0) return;
+
+    let a1;
+    if (s > 0.0) {
+      // They touch later in the tick: both to that moment, and the line between them there.
+      const mine = this.integrate(p0, me.newVel, me.lastG, m1, k, me.timeFactor, s * dt);
+      const theirs = this.integrate(q0, other.newVel, other.lastG, m2, k, other.timeFactor, s * dt);
+      const normal = normalize(sub(theirs.p, mine.p));
+      const v1 = dot(mine.v, normal);
+      const v2 = dot(theirs.v, normal);
+      let vp1;
+      if (!other.isFree) {
+        vp1 = sub(mine.v, scale(normal, 2.0 * v1));
+      } else {
+        // The exchange uses the masses themselves, not mass times agility.
+        const mm1 = me.mass;
+        const mm2 = other.mass;
+        const v1p = (mm1 * v1 - mm2 * v1 + 2.0 * mm2 * v2) / (mm1 + mm2);
+        vp1 = add(mine.v, scale(normal, v1p - v1));
+      }
+      vp1 = this.integrate(mine.p, vp1, me.lastG, m1, k, me.timeFactor, (1.0 - s) * dt).v;
+      // a1 = -(-m1 * G + tf * m1 * G - tf * v * k + vp1 * k) / m1 / (tf - 1.0)
+      const tf = me.timeFactor;
+      const sum = add(sub(add(scale(me.lastG, -m1), scale(me.lastG, tf * m1)), scale(scale(me.newVel, tf), k)), scale(vp1, k));
+      a1 = divide(divide(vec(-sum.x, -sum.y, -sum.z), m1), tf - 1.0);
+    } else {
+      // They overlap already. The line between them; for two at the very same point, along x by whose id is greater.
+      const p0q0 = sub(q0, p0);
+      const p0q0_2 = dot(p0q0, p0q0);
+      const normal = p0q0_2 === 0.0 ? (byId(me.id, other.id) > 0 ? vec(1.0, 0.0, 0.0) : vec(-1.0, 0.0, 0.0)) : normalize(sub(q0, p0));
+      // How far apart they must come to be clear, and a metre over; shared out by the other's weight.
+      const dist = collRadius - Math.sqrt(p0q0_2) + 1;
+      const d1 = (m2 / (m1 + m2)) * dist;
+      const d2 = (m1 / (m1 + m2)) * dist;
+      if (me.isFree && other.isFree && recursionDepth < 2) {
+        // Both can move: set them apart, work the collision out from there, and put them back.
+        me.newPos = sub(p0, scale(normal, d1));
+        other.newPos = add(q0, scale(normal, d2));
+        this._potential(me, other, recursionDepth + 1);
+        me.newPos = p0;
+        other.newPos = q0;
+        // Much the lighter of the two: its answer is stretched to the whole distance, to get it out.
+        if (m2 / m1 > 25.0) me.lastC = scale(normalize(me.lastC), dist);
+        if (lengthSq(sub(me.newVel, other.newVel)) > 0.0001) return;
+      }
+      // A fixed neighbour, or two moving as one: the ball is simply pushed out.
+      const normalComp = dot(me.lastG, normal);
+      const tmp = 1.0 / (m1 + dt * k);
+      a1 = sub(divide(sub(scale(normal, -d1 / (dt * tmp * m1)), me.newVel), dt), scale(normal, normalComp));
+    }
+
+    // A missile is not turned aside by what it is aimed at. Otherwise the neighbour touched latest in the
+    // tick is the one that counts, and of two touched at the same moment, the stronger.
+    if ((me.mode !== MODE.MISSILE || byId(other.id, me.followId) !== 0) && s >= me.lastCollision) {
+      const lastC = scale(a1, 0.85);
+      if (s === me.lastCollision) {
+        if (lengthSq(lastC) > lengthSq(me.lastC)) me.lastC = lastC;
+      } else {
+        me.lastC = lastC;
+        me.lastCollision = s;
+      }
+    }
+    me.collisions.push(other.id);
+  }
+
+  /**
    * Ballpark::Evolve (421): one tick. Every free ball's acceleration is found
    * first, then every ball is stepped from the same picture of the others, then
    * all of them move at once. Balls are taken in ascending id.
@@ -966,9 +1131,16 @@ class Ballpark {
   evolve() {
     const free = [...this.freeBalls.values()].filter((ball) => !ball.isMoribund).sort((a, b) => byId(a.id, b.id));
     for (const ball of free) this._evolveBehavior(ball);
+    let all = null;
     for (const ball of free) {
-      // Gradient(ball): what a massive ball's neighbours do to it. Not ported.
-      if (ball.isMassive) this.unported.gradient += 1;
+      if (ball.isMassive) {
+        // What its neighbours do to it, from where they all are before anyone has moved. mLastCollision
+        // is when in the tick it last touched something: nothing yet.
+        all ??= [...this.balls.values()].sort((a, b) => byId(a.id, b.id));
+        if (all.some((each) => !each.isFree && (each.miniBalls?.length || each.miniCapsules?.length || each.miniBoxes?.length))) this.unported.minis += 1;
+        ball.lastCollision = -1.0;
+        this._gradient(ball, all);
+      }
       let stepped;
       if (isWarping(ball)) {
         // Not stepped: placed, by how long the warp has been going.
@@ -1006,4 +1178,4 @@ class Ballpark {
   }
 }
 
-module.exports = { AU, Ballpark, DSTLOCALBALLS, DestinyNotPorted, FOLLOW_MODES, MAX_ALIGN_TICKS, add, cross, divide, dot, isWarping, length, lengthSq, normalize, scale, sub, vec };
+module.exports = { AU, Ballpark, DSTLOCALBALLS, DestinyNotPorted, FOLLOW_MODES, MAX_ALIGN_TICKS, add, collideTwoSpheres, cross, divide, dot, isWarping, length, lengthSq, normalize, quadratic, scale, sub, vec };

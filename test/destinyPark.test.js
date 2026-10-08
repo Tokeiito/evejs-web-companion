@@ -918,11 +918,13 @@ test("stopping, the park's ship slows as the server's does, to within a tick's w
 
 const warped = require("./fixtures/destinyWarp.json");
 
-function replayWarp() {
+function replayWarp(rewrite = (stamp) => stamp) {
   const posted = [];
   const park = new Park({ ballpark: new Ballpark({ onPost: (name, id, value) => posted.push({ name, id, value, tick: park.currentTime }) }) });
   const updates = destinyUpdates(warped);
   const first = updates.find((update) => update.entries[0][1][0] === "SetState").entries[0][0];
+  // `rewrite` may give an entry another stamp: (stamp counted from the first state, name) -> the same.
+  for (const update of updates) update.entries = update.entries.map(([stamp, [name, args]]) => [first + rewrite(stamp - first, name), [name, args]]);
   const atRest = [];
   const grid = [];
   const flight = [];
@@ -932,7 +934,7 @@ function replayWarp() {
       park.tick();
       clock += 1000;
       const ship = park.ballpark.ball(warped.shipID);
-      if (ship) flight.push({ tick: park.currentTime - first, mode: ship.mode, warping: ship.mode === MODE.WARP && ship.effectStamp >= 0, speed: Math.hypot(ship.newVel.x, ship.newVel.y, ship.newVel.z), position: { ...ship.newPos } });
+      if (ship) flight.push({ tick: park.currentTime - first, mode: ship.mode, warping: ship.mode === MODE.WARP && ship.effectStamp >= 0, speed: Math.hypot(ship.newVel.x, ship.newVel.y, ship.newVel.z), position: { ...ship.newPos }, massive: ship.isMassive, touched: [...ship.collisions], touchedAt: ship.lastCollision });
       if (grid.at(-1) !== park.ballpark.balls.size) grid.push(park.ballpark.balls.size);
     }
   };
@@ -993,14 +995,45 @@ test("a recorded warp, played through: the ship lines up, warps and drops out at
   assert.ok(after[0].speed < 100 && after.every((row, index) => row.mode === MODE.STOP && (index === 0 || row.speed < after[index - 1].speed)));
 });
 
-test("a recorded warp, played through: at rest after each warp the park's ship is within a metre of where the server has it", () => {
+test("a recorded warp, played through: at rest after the warp out the park's ship is within a metre of where the server has it", () => {
   const { atRest } = replayWarp();
   assert.equal(atRest.length, 2);
   for (const { stamp, ours, theirs } of atRest) {
     assert.deepEqual([ours.mode, theirs.mode], [MODE.STOP, MODE.STOP]);
     assert.ok(size(ours.velocity) < 0.1 && size(theirs.velocity) < 0.1, `at +${stamp}: both all but still`);
-    assert.ok(apart(ours.position, theirs.position) < 1, `at +${stamp}: ${apart(ours.position, theirs.position)} m apart after 275,000 km`);
   }
+  // At the moon there is nothing to run into.
+  assert.ok(apart(atRest[0].ours.position, atRest[0].theirs.position) < 1, `${apart(atRest[0].ours.position, atRest[0].theirs.position)} m apart after 275,000 km`);
   // The two rests are 275,000 km apart, so "within a metre" is one part in 3e8.
   assert.ok(apart(atRest[0].theirs.position, atRest[1].theirs.position) > 2.7e8);
+});
+
+// The warp back ends beside the station, which the server sends as a fixed,
+// massive ball 100 km across the radius. A ball dropping out of warp makes
+// itself massive (Ballpark::WarpDistance), and the server's word that the ship
+// is not massive is stamped two ticks after the one it drops out in. For the
+// tick between, the ship is a massive ball flying at a massive ball.
+test("a recorded warp, played through: landing beside the station, the park's ship bounces off it for the one tick it is massive", () => {
+  const { atRest, flight, updates, first } = replayWarp();
+  const demotions = updates.flatMap((update) => update.entries).filter(([, [name]]) => name === "SetBallMassive").map(([stamp, [, args]]) => [stamp - first, args[1]]);
+  assert.deepEqual(demotions.filter(([stamp]) => stamp > 0 && stamp < 144), [[37, 0], [39, 0], [106, 0], [108, 0]]);
+  // Massive after the tick it drops out in and the one after, at each landing; and at the station it touches.
+  assert.deepEqual(flight.filter((row) => row.massive).map((row) => row.tick), [38, 39, 107, 108]);
+  assert.deepEqual(flight.filter((row) => row.touched.length).map((row) => [row.tick, row.touched]), [[108, [warped.stationID]]]);
+  const bounce = flight.find((row) => row.tick === 108);
+  assert.ok(bounce.touchedAt > 0.85 && bounce.touchedAt < 0.95, `touched ${bounce.touchedAt} of the way through the tick`);
+  // The server's ship coasts on inside the station's ball; the park's has been turned back. They rest 413 m apart.
+  const station = replayWarp().park.ballpark.ball(warped.stationID);
+  const gap = (position) => apart(position, station.newPos) - station.radius - 38.400001525878906;
+  assert.ok(gap(atRest[1].theirs.position) < -200 && gap(atRest[1].ours.position) > 150, `the server's ${gap(atRest[1].theirs.position)} m, the park's ${gap(atRest[1].ours.position)} m from the station's surface`);
+  const between = apart(atRest[1].ours.position, atRest[1].theirs.position);
+  assert.ok(between > 413 && between < 413.5, `${between} m apart`);
+});
+
+test("a recorded warp, played through: had the server's word come a tick sooner, the ship would have touched nothing", () => {
+  // The same stream, with the two late "not massive" entries stamped one tick earlier: the tick after the drop.
+  const { atRest, flight } = replayWarp((stamp, name) => (name === "SetBallMassive" && (stamp === 39 || stamp === 108) ? stamp - 1 : stamp));
+  assert.deepEqual(flight.filter((row) => row.massive).map((row) => row.tick), [38, 107], "massive only as the tick it dropped out in ends");
+  assert.deepEqual(flight.filter((row) => row.touched.length), []);
+  for (const { stamp, ours, theirs } of atRest) assert.ok(apart(ours.position, theirs.position) < 1, `at +${stamp}: ${apart(ours.position, theirs.position)} m apart`);
 });
