@@ -895,3 +895,106 @@ test("stopping, the park's ship slows as the server's does, to within a tick's w
     assert.ok(Math.abs(size(ours.velocity) / size(theirs.velocity) - 1) < 0.01, `at ${stamp}`);
   }
 });
+
+// ── a real warp ──────────────────────────────────────────────────────────────
+//
+// test/fixtures/destinyWarp.json: the pilot undocks at Jita 4-4, warps to
+// Moon 6 (some 280,000 km of warp), comes to rest, warps back, and docks
+// (scripts/record-warp.js). The recorder flew by this same park, live, and
+// wrote down the ticks at which it saw the ship enter and leave warp. At rest
+// after each warp it asked the server for its state; at rest there is no
+// "which part of the second" to blur the answer, so that state is where the
+// server has the ship.
+//
+// Between the order to warp and that state the server sends the pilot's ship
+// nothing about where it is: a WarpTo, the old grid's balls removed (in a
+// packaged action), the new grid's added, and a flag. The flying is the park's.
+
+const warped = require("./fixtures/destinyWarp.json");
+
+function replayWarp() {
+  const posted = [];
+  const park = new Park({ ballpark: new Ballpark({ onPost: (name, id, value) => posted.push({ name, id, value, tick: park.currentTime }) }) });
+  const updates = destinyUpdates(warped);
+  const first = updates.find((update) => update.entries[0][1][0] === "SetState").entries[0][0];
+  const atRest = [];
+  const grid = [];
+  const flight = [];
+  let clock = updates[0].atMs;
+  const tickTo = (atMs) => {
+    while (clock + 1000 <= atMs) {
+      park.tick();
+      clock += 1000;
+      const ship = park.ballpark.ball(warped.shipID);
+      if (ship) flight.push({ tick: park.currentTime - first, mode: ship.mode, warping: ship.mode === MODE.WARP && ship.effectStamp >= 0, speed: Math.hypot(ship.newVel.x, ship.newVel.y, ship.newVel.z), position: { ...ship.newPos } });
+      if (grid.at(-1) !== park.ballpark.balls.size) grid.push(park.ballpark.balls.size);
+    }
+  };
+  for (const update of updates) {
+    tickTo(update.atMs);
+    const [stamp, [name, args]] = update.entries[0];
+    if (name === "SetState" && park.validState) {
+      assert.equal(park.currentTime, stamp, "at rest the park and the state are at the same tick");
+      const ours = park.ballpark.ball(warped.shipID);
+      const theirs = readState(keyValField(args[0], "state")).balls.find((ball) => ball.id === warped.shipID);
+      atRest.push({ stamp: stamp - first, ours: { position: { ...ours.newPos }, velocity: { ...ours.newVel }, mode: ours.mode }, theirs });
+    }
+    park.doDestinyUpdate(update.entries, update.waitForBubble);
+  }
+  tickTo(clock + 1000);
+  return { park, posted: posted.map((event) => ({ ...event, tick: event.tick - first, value: event.value > first - 1e6 ? event.value - first : event.value })), atRest, grid, flight, first, updates };
+}
+
+test("a recorded warp, played through: the server's orders are the client's, and none fails", () => {
+  const { park, updates, first, grid } = replayWarp();
+  assert.deepEqual([[...park.failed], park.resets, park.fatalDesyncs, park.history.length], [[], 0, 0, 0]);
+  // What the server sent the ship for the warp out: where to, no stopping short, and a warp factor of 3000 (3 AU a second).
+  const orders = updates.flatMap((update) => update.entries).filter(([, [name]]) => name === "WarpTo").map(([stamp, [, args]]) => [stamp - first, args.length, args[4], args[5]]);
+  assert.deepEqual(orders, [[6, 6, 0, 3000], [78, 6, 100076.8, 3000]]);
+  // One update is a packaged action, holding the old grid's removal. Unpacked, the grid goes 95 -> 76 -> 100 on the way out.
+  const names = updates.flatMap((update) => update.entries.map(([, [name]]) => name));
+  assert.equal(names.filter((name) => name === "PackagedAction").length, 2);
+  assert.deepEqual(grid, [76, 95, 76, 100, 76, 95]);
+});
+
+test("a recorded warp, played through: the ship lines up, warps and drops out at the ticks the live park saw", () => {
+  const { posted, flight } = replayWarp();
+  assert.deepEqual(posted.map(({ name, id, value, tick }) => [name, id === warped.shipID, value, tick]), [
+    ["OnActivatingWarp", true, 16, 16],
+    ["OnDeactivatingWarp", true, 37, 37],
+    ["OnExitWarp", true, 0, 37],
+    ["OnActivatingWarp", true, 85, 85],
+    ["OnDeactivatingWarp", true, 106, 106],
+    ["OnExitWarp", true, 0, 106],
+  ]);
+  // The recorder flew by a park of its own, ticked by a timer, and wrote down the same ticks.
+  const first = replayWarp().first;
+  assert.deepEqual(warped.warps.map((warp) => [warp.name, warp.enteredWarpAt - first, warp.leftWarpAt - first, warp.atRest]), [["out", 16, 37, true], ["back", 85, 106, true]]);
+  assert.deepEqual([warped.parkFailed, warped.parkResets, warped.parkErrors], [[], 0, []]);
+  // Ordered at +6: ten ticks lining up as an ordinary flight, never faster than its top speed.
+  const liningUp = flight.filter((row) => row.mode === MODE.WARP && !row.warping && row.tick < 40);
+  assert.deepEqual([liningUp.length, liningUp[0].tick, liningUp.at(-1).tick], [10, 7, 16]);
+  assert.ok(liningUp.every((row) => row.speed <= 375.1 + 1e-9));
+  // Twenty-one ticks in warp. 275,000 km is too short to reach 3 AU a second: the top speed is the capped one.
+  const inWarp = flight.filter((row) => row.warping && row.tick < 40);
+  assert.equal(inWarp.length, 21);
+  const length = Math.hypot(inWarp.at(-1).position.x - inWarp[0].position.x, inWarp.at(-1).position.y - inWarp[0].position.y, inWarp.at(-1).position.z - inWarp[0].position.z);
+  assert.ok(length > 2.7e8 && length < 2.9e8, `${length} m in warp`);
+  const peak = Math.max(...inWarp.map((row) => row.speed));
+  assert.ok(peak > 1e7 && peak < (length + 1e6) * 3 / 4, `peak ${peak} m/s`);
+  // Out of warp under 100 m/s, and slowing from there.
+  const after = flight.filter((row) => row.tick >= 38 && row.tick <= 44);
+  assert.ok(after[0].speed < 100 && after.every((row, index) => row.mode === MODE.STOP && (index === 0 || row.speed < after[index - 1].speed)));
+});
+
+test("a recorded warp, played through: at rest after each warp the park's ship is within a metre of where the server has it", () => {
+  const { atRest } = replayWarp();
+  assert.equal(atRest.length, 2);
+  for (const { stamp, ours, theirs } of atRest) {
+    assert.deepEqual([ours.mode, theirs.mode], [MODE.STOP, MODE.STOP]);
+    assert.ok(size(ours.velocity) < 0.1 && size(theirs.velocity) < 0.1, `at +${stamp}: both all but still`);
+    assert.ok(apart(ours.position, theirs.position) < 1, `at +${stamp}: ${apart(ours.position, theirs.position)} m apart after 275,000 km`);
+  }
+  // The two rests are 275,000 km apart, so "within a metre" is one part in 3e8.
+  assert.ok(apart(atRest[0].theirs.position, atRest[1].theirs.position) > 2.7e8);
+});
