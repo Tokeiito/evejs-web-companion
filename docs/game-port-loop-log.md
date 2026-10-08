@@ -66,6 +66,10 @@ Decisions taken in your place, and anything waiting on you. Overrule any of thes
   check either against the real client. **My recommendation:** give it to whoever owns the
   server's movement work, with the table in that entry; the first thing to settle is whether the
   server's seconds should begin on whole seconds.
+- **A hosted courier bot stops at once on a pilot who already holds the mission**, on either
+  transport: "There is no accepted mission naming cargo to load". Seen on 2026-10-08 with Test
+  Two, on the gateway BFF and the game-port one alike. Not looked into further: it is the bot's
+  own logic, not the transport. See the entry "a hosted bot on the game port".
 - **Test Two now has a courier mission accepted** (agent Antaken Kamola, Reports to Veisto) with
   the package in its Badger's cargo, left that way for the flight in Phase 4.
 - **eve.js's test runner cleans the temp folder.** The first sub-agent's test run swept 32 stale
@@ -1123,4 +1127,65 @@ the ones flown here, by a script), and a hosted bot's courier run. The scanner i
 4. **Collisions**; **the park beside the server's movement log**; the sim clock; MISSILE,
    FORMATION, MUSHROOM.
 5. The call ledger (`ship.Undock`, `dogmaIM.Activate` and `Deactivate` to bind as the client
+   does), Phase 3's hosted check and the session-less gateway calls.
+
+---
+
+## 2026-10-08 — a hosted bot on the game port, and a call the server makes to the client
+
+No code changed in this entry. It records a run that stopped short, why, and a gap it exposed.
+
+**The aim** was Phase 4's last line: a hosted bot flying a courier mission end to end on the
+game port. Test Two has had a courier mission accepted, with the package in its Badger, since
+Phase 3.
+
+**The bot ran on the game port, as far as it runs on the gateway.** I saved a script made of the
+courier blocks (ask the agent, accept, load, fly the delivery, turn in, fly back), approved a run
+of it the way the web UI's review step does, and started it with `POST /api/bots/start`. On the
+game-port BFF and on the gateway BFF alike it took the pilot over, passed the first two blocks,
+and paused at the third within five seconds, with the same words: "There is no accepted mission
+naming cargo to load — accept one first." Putting a find-an-agent block first changed nothing.
+
+So this is not a difference between the transports. It is how a hosted script behaves when the
+mission was accepted before the run began: the accept block is satisfied by the journal and
+moves on without the briefing that says what the cargo is, and the load block then has nothing
+to go on. I did not chase it further; it is the bot's own logic, the same on both transports,
+and outside what this loop is for. **It is worth the operator knowing**: a courier bot started
+on a pilot who already holds the mission stops at once. It is under "For the operator".
+
+**To get a clean run I tried to quit the old mission, and that found a real gap in the
+game-port transport.** Pressing Quit in the agent's conversation (`agentMgr` bound,
+`DoAction(<the Quit action>)`) was answered, and the mission stayed. The server's log says why:
+
+```
+[PKT] OUT agents YesNo() client-call callID=610001
+```
+
+The server asked the client a question. On the retail client that is `agents.YesNo(title, body,
+agentID, contentID, suppressID)` (`ui/station/agents/agents.py` 404): it puts up a Yes/No window
+and answers whether Yes was pressed. **The game-port session does not answer calls the server
+makes to it**, so the question hangs and the quit never happens. The gateway never sees the
+question at all: the server finds no client there to ask and goes ahead.
+
+Every confirmation the server asks of a client goes this way (quitting or declining a mission
+are two), so this is not a corner. It needs: the session answering an incoming call; and a
+decision about who gives the answer. On the retail client the player does. The web UI has its own
+confirmation before it presses Quit, and on the gateway the server proceeds without asking, so
+answering Yes on the web client's behalf matches what the web client does today; passing the
+question to the browser is the faithful end state.
+
+**Left as it was:** Test Two is docked at Muvolailen with the mission still accepted and the
+package aboard. The hosted bots are stopped (three stopped records across the two check BFFs).
+
+### Next
+
+1. **Calls the server makes to the client**, on the game port: answer them in the session, with
+   `agents.YesNo` first. Then quitting and declining a mission work there as on the gateway.
+2. **A hosted bot's courier run end to end on the game port**, with a fresh mission (quit the old
+   one once 1 is done), which closes Phase 4. Then the same trip by the browser's own autopilot.
+3. **The scanner in space** on the game port (the one route that still answers 501 there).
+4. Module damage and weapon banks from dogma; health from godma as the panel reads it.
+5. **Collisions**; **the park beside the server's movement log**; the sim clock; MISSILE,
+   FORMATION, MUSHROOM.
+6. The call ledger (`ship.Undock`, `dogmaIM.Activate` and `Deactivate` to bind as the client
    does), Phase 3's hosted check and the session-less gateway calls.
