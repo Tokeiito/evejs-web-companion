@@ -904,6 +904,30 @@ test("when the pilot moves, what was bound for the old place is forgotten, and t
   assert.deepEqual(session.binds.slice(binds), [{ service: "invbroker", params: [60000004, 15] }]);
 });
 
+test("when the server says a bound object is gone, its handle is forgotten, as the client forgets the object", async () => {
+  // machoNet.OnMachoObjectDisconnect(objectID, clientID, refID) -> session.UnregisterMachoObject(objectID, refID)
+  const { pilots, session, handle } = await selected();
+  const hangar = (await pilots.bindObject("invbroker", "GetInventory", [STATION], null, WHO, handle)).boundHandle;
+  const ship = (await pilots.bindObject("ship", "MachoBindObject", [[STATION, 15]], null, WHO, handle)).boundHandle;
+  // The hangar is "N=1:2" (the manager that made it is "N=1:1"); the ship object is "N=1:3".
+  session.notify("OnMachoObjectDisconnect", [Buffer.from("N=1:3"), 1065450, null]);
+  await rejects(pilots.callBoundMethod("ship", "Board", [1], null, WHO, handle, ship), "BOUND_HANDLE_NOT_FOUND");
+  await pilots.callBoundMethod("invbroker", "StackAll", [4], null, WHO, handle, hangar);
+
+  // The inventory manager going takes nothing else with it, but the next hangar bind makes a new one.
+  session.notify("OnMachoObjectDisconnect", [Buffer.from("N=1:1"), 1065450, null]);
+  await pilots.callBoundMethod("invbroker", "StackAll", [4], null, WHO, handle, hangar);
+  const binds = session.binds.length;
+  await pilots.bindObject("invbroker", "GetInventory", [STATION], null, WHO, handle);
+  assert.equal(session.binds.length, binds + 1, "the manager is bound afresh");
+
+  // The notice still reaches the browser, as on the gateway, and an object nobody holds is no trouble.
+  session.notify("OnMachoObjectDisconnect", [Buffer.from("N=9:9"), 1065450, null]);
+  const { notifications } = await pilots.callMethod("station", "GetGuests", [], null, WHO, handle);
+  // (The two before it went out on the answers above, which drained them.)
+  assert.deepEqual(notifications.map((n) => [n.method, n.args[0]]), [["OnMachoObjectDisconnect", "N=9:9"]]);
+});
+
 test("a bind's failures are the gateway's: no object, a refusal, a lost session", async () => {
   const noObject = await selected({ answers: { "bind:agentMgr": () => { throw sessionError("BIND_FAILED", "agentMgr did not return a bound object."); } } });
   await rejects(noObject.pilots.bindObject("agentMgr", "MachoBindObject", [1], null, WHO, noObject.handle), "BOUND_NO_OBJECT", /^agentMgr\.MachoBindObject did not return a bound object\.$/);

@@ -337,7 +337,14 @@ function createGamePortPilots({
       inventoryManagers: new Map(),
       ended: false,
     };
-    session.onNotification((notification) => record(entry, notificationToBridgeJson(notification)));
+    session.onNotification((notification) => {
+      // machoNet.OnMachoObjectDisconnect(objectID, clientID, refID): the server has let a bound object go.
+      if (notification.method === "OnMachoObjectDisconnect" && Array.isArray(notification.args)) {
+        const gone = notification.args[0];
+        forgetObject(entry, Buffer.isBuffer(gone) ? gone.toString("utf8") : String(gone));
+      }
+      record(entry, notificationToBridgeJson(notification));
+    });
     session.onSessionChange((changes) => {
       if (LOCATION_ATTRIBUTES.some((name) => name in changes)) forgetLocationObjects(entry);
       record(entry, sessionChangeToBridgeJson(changes));
@@ -540,6 +547,16 @@ function createGamePortPilots({
     entry.inventoryManagers.clear();
     for (const [handle, object] of entry.bound) {
       if (LOCATION_SERVICES.has(object.service)) entry.bound.delete(handle);
+    }
+  }
+
+  /** The server has let one bound object go: whatever names it here is forgotten, as the client forgets the object. */
+  function forgetObject(entry, objectID) {
+    for (const [which, held] of entry.inventoryManagers) {
+      if (held === objectID) entry.inventoryManagers.delete(which);
+    }
+    for (const [handle, object] of entry.bound) {
+      if (object.objectID === objectID) entry.bound.delete(handle);
     }
   }
 
