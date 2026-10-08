@@ -775,3 +775,115 @@ capped); another pilot's ship arriving (`EntityWarpIn` has only its unit tests);
    for a warp long enough to cruise.
 5. The damage clock, `DoSimClockRebase` and `OnSetTimeDilation`; MISSILE, FORMATION, MUSHROOM.
 6. The call ledger, Phase 3's hosted check and the session-less gateway calls, as before.
+
+---
+
+## 2026-10-08 — a game-port pilot flies: its own ballpark, and the space snapshot from it
+
+Commits `c8cc6cf` and the one this entry is in, pushed.
+
+**What changed.** A pilot on the game-port transport can be selected in space, undock, fly and
+dock. Until now it was refused at each of those.
+
+- **`src/gamePort/pilotSpace.js`** is what the retail client's `michelle` does for a pilot in
+  space (`UpdateBallpark`, `AddBallpark`, `RemoveBallpark`, and the park's
+  `InitializeRemoteBallpark`). When the session enters a solar system: ask
+  `beyonce.GetFormations()`, start a park ticking once a second, bind the system's ballpark
+  (ten tries, a second apart). The server answers the bind with its state and the park steps
+  itself from there. Docking lets the park go; another system gets another. What the BFF's routes
+  bind as `beyonce` is that one bound object, as `michelle.GetRemotePark()` is. A park that
+  loses its place asks it for the whole state, as the client does.
+- **`src/gamePort/spaceProjection.js`** reads the gateway's two answers out of that park, in the
+  gateway's shape, so no route and nothing in the browser changed: the space snapshot (one row
+  per ball that has a slim item, and the pilot's own ship) and the movement half of the flight
+  status. What a thing is (`station`, `moon`, `sentryGun`...) is told from the slim item's
+  category and group, which is all a client has. Health is the damage state the server sent, with
+  the shield brought forward by its own recharge as the client's
+  `CalculateCurrentDamageStateValues` does; the park now keeps the tick each state arrived at.
+
+**Proof, in order.**
+
+*Tests.* 17 new or replaced, across the park's keeping (`test/gamePortSpace.test.js`) and the
+transport (`test/gamePortPilots.test.js`, where three tests that asserted the refusals are
+replaced by tests of the flying). 49 deliberate breakages of the two new modules: nine got
+through at first, six were gaps and are closed, two were code that did nothing and is removed,
+one changes nothing that can be seen. Suite: 8852 tests, 8827 pass, 0 fail, 24 skipped, 1 todo.
+
+*The same pilot on each transport in turn* (`scripts/space-parity.js`, new): Test Pilot
+undocked at Jita 4-4 through the BFF's ordinary routes, on the gateway BFF and then on the
+game-port one. The server's log shows the second pass as real client calls
+(`[PKT] IN ship Undock()`, `beyonce GetFormations()`, `N=65450:10 CmdDock()`).
+
+| | Gateway | Game port |
+|---|---|---|
+| Entities in the snapshot | 95 | 95, none missing either way |
+| Rows identical in every field | | 57 |
+| The 94 fixed things, largest difference in position | | 0.00006 m |
+| Flight status | in space, GOTO, speed fraction 1 | the same |
+| Ship moved between two reads | 668.0 m in 2.019 s | 682.0 m in 2 ticks, at 341 m/s |
+| Docked again | yes | yes |
+
+Every difference, and there are five kinds:
+
+| Count | Field | Game port | Gateway | Why |
+|---|---|---|---|---|
+| 18 x 3 | a station's shield, armour, hull | 1 | null | the server sends the client a damage state for stations; the gateway leaves out what cannot be damaged |
+| 16 | a sentry gun's name | null | its type's name | the slim item carries no name; the browser names a row by its type when there is none |
+| 3 | kind of scenery the server placed | `celestial` | `authoredSpaceProp` | the server's own word; to a client they are ordinary celestials |
+| 1 | the ship's radius | 38.400001525878906 | 38.4 | the client's ball holds a radius as a 32-bit float |
+| own ship | capacitor, the three capacities | null | 1; 175, 150, 150 | the client takes these from dogma, not from the ballpark. **Not read yet.** |
+
+*Two pilots at once, one per transport* (`space-parity.js --together`): Test Pilot on the
+gateway and Test Three on the game port, both undocked at Jita 4-4. Each sees 96 entities, the
+same 96, and each sees the other's ship. Read ten times over seven seconds, each ship's position
+in the two views, as seconds of its own travel:
+
+| | Game-port view against the gateway's |
+|---|---|
+| The gateway pilot's Reaper, as the game-port pilot's park has it | within 0.1 s of where the gateway has it, once the two clocks' readings are allowed for (the park holds whole seconds) |
+| The game-port pilot's own Capsule, as its park has it | a steady 0.38 s further on than the Reaper is, in all ten reads: about 0.45 s ahead of where the gateway has it |
+| Velocities | identical |
+
+So another pilot's ship is where the server has it, and the pilot's own is under half a second
+of travel ahead (65 to 80 m for a capsule). I have not established why. It is what the defect
+already recorded would give (the server starts a ship moving at the start of its own second,
+which is not the stamp's second, while the first state says it is moving from the stamp), and
+the size fits the offsets the sub-agent measured, but that is a fit, not a finding.
+
+*In the browser.* On the game-port BFF: opened Test Pilot from the pilot list, pressed
+**Undock**. The page went to "IN SPACE · Jita · GOTO · 100%", with the ship's panel (341 m/s,
+shield, armour and hull 100%, capacitor a dash) and the overview listing the grid by distance
+("Jita IV - Moon 4 - Caldari Navy Assembly Plant · Station · 65.7 km" first). Pressed **Stop**:
+the route answered 200 and the ship was at 0.15 m/s in STOP a few seconds on. Pressed **Dock**:
+the page went back to "DOCKED · Jita IV - Moon 4 - Caldari Navy Assembly Plant". Every route the
+space view called answered 200 (snapshot, targets, drones, ore hold, flight status). One thing
+about the check itself: the browser pane is hidden here, so the page pauses its own polling;
+what was on the page after each press is what it drew then, and the later numbers were read
+through the page's own session.
+
+**Not done.**
+
+- **The scanner in space** still answers 501 on the game port.
+- **The ship's readings from dogma**: capacitor, the capacities, which modules are running or
+  overloaded, their damage. The panel shows a dash for capacitor.
+- **The park's seconds against the server's** when time is slowed (`DoSimClockRebase`,
+  `OnSetTimeDilation`), and a pilot docked in a structure, who is given a view of space too.
+- Seen: the BFF's undock route calls `ship.Undock` as a service's method; the retail client
+  calls it on the ship object bound for the station. It works, and it is one for the call ledger.
+- Seen: asking to dock from far off answers `DockingApproach` and the ship flies in; the route
+  has to be asked again on arrival. The retail client's own docking does that asking. Not looked
+  into whether the web client's does.
+
+### Next
+
+1. **The ship's readings from dogma**, as the retail client takes them: what it reads on
+   entering space and which notifications keep it current. Then the panel's capacitor and
+   capacities, and the modules' state, on the game port.
+2. **A gate jump** on the game port, recorded and played through, then live: the session changes
+   system, the park is replaced.
+3. **The scanner in space** on the game port.
+4. **Warp, in the browser, on the game port**, and then a hosted bot flying a courier mission
+   end to end on it, which is Phase 4's "done when". Test Two is docked with the package aboard.
+5. **Collisions** (notes, section 5); **the park beside the server's movement log**; the sim
+   clock; MISSILE, FORMATION, MUSHROOM.
+6. The call ledger, Phase 3's hosted check and the session-less gateway calls, as before.

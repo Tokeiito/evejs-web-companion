@@ -158,6 +158,14 @@ Take these defaults, and list each under "For the operator" in the log so they c
   treat the gateway's answer as the correct one when the two disagree; find out which is right.
 - Large inline patches through a shell heredoc get mangled on this machine. Write the file with
   the file tools and run it.
+- A file git has checked out on this machine ends its lines CRLF (`core.autocrlf` is on); one
+  a tool has just written ends them LF. A patch script that looks for several lines at once
+  stops matching after a `git checkout` of the file. Normalise to LF before matching and put
+  the endings back; `scripts/break-and-check.js` does.
+- `taskkill //PID n` works in this shell only while path conversion is on. With
+  `MSYS_NO_PATHCONV=1` set (which the BFF helper scripts need for their `/api/...` arguments)
+  it must be `taskkill /PID n`, and the wrong one fails quietly enough to leave the old
+  process holding the port.
 - A long foreground `sleep` is refused. Wait with a short loop on a condition, or in the
   background.
 - Tests that pass the first time have proved nothing yet. Break the code and watch them fail:

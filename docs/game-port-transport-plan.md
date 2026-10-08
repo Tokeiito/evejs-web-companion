@@ -512,7 +512,8 @@ Not done yet in this phase:
 - The BFF's writes. Every write route goes through the same two functions, but what each sends
   has not been set beside what the retail client sends for it (list or tuple, text as str or
   unicode, keyword or positional). That is per feature, and is where the remaining fidelity work is.
-- Undocking is refused and a pilot in space is refused at select, until Phase 4.
+- ~~Undocking is refused and a pilot in space is refused at select, until Phase 4.~~ Both are
+  allowed since 2026-10-08: the pilot has a ballpark.
 
 ### Phase 4 — Space: a ballpark from destiny (large; spike first)
 
@@ -539,8 +540,8 @@ Then build, in this order:
   distances within an agreed tolerance across a warp/jump/dock route; then a hosted bot flies a
   courier mission end to end on the game port.
 
-**Status, 2026-10-08.** Steps 1 and 2 are under way in `src/gamePort/destiny/`; nothing is wired
-to a pilot yet, and undock still refuses.
+**Status, 2026-10-08.** Steps 1 to 3 are under way. A pilot on the game port undocks, flies, warps
+(by the park, not yet through the browser) and docks; its view of space is its own ballpark.
 
 | Part | State | Checked against |
 |---|---|---|
@@ -552,7 +553,8 @@ to a pilot yet, and undock still refuses.
 | MISSILE, FORMATION, MUSHROOM | not ported; the step refuses, the orders are counted as failed | |
 | Collisions | not ported; counted | |
 | Sim clock rebase, time dilation, the damage clock | not ported | |
-| Snapshot, flight status, scanner from the park; a pilot wired to it | not started | |
+| A pilot's own park, kept as michelle keeps one (`pilotSpace.js`); the space snapshot and flight status from it (`spaceProjection.js`) | done | the same pilot on each transport in turn: 95 entities both ways, fixed things within 0.0001 m, five kinds of difference, each explained; two pilots at once, one per transport, see the same 96; undock, stop and dock in the browser |
+| The ship's own readings (capacitor, capacities, modules) from dogma; the scanner in space | not started | |
 
 One thing the spike's question got wrong: the stream is not 10 Hz. The server sends an update
 when something changes and the client steps once a second on its own, so decoding load follows

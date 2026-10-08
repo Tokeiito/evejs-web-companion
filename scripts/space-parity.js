@@ -20,6 +20,13 @@
 // The pilot's own ship is in a different place on each pass, so it is compared
 // by what it is, not where. Everything fixed in space is compared to the metre.
 //
+//   node scripts/space-parity.js --together <gatewayBffUrl> <account> <characterID> <gamePortBffUrl> <account> <characterID>
+//
+// Two pilots docked in the same station, one on each transport, in space at
+// the same time: each should see the other, and the two views of the grid are
+// read back to back. Here the ships are compared by where they are too: each
+// ship as its own transport has it against how the other transport sees it.
+//
 // ⚠ It UNDOCKS A REAL CHARACTER, twice, on the server the BFFs are pointed at,
 // and docks it again each time. If docking does not finish the character is
 // left in space and the script says so.
@@ -87,6 +94,73 @@ async function fly(base, account, characterID, { waitMs = 5000, log = console.lo
 
 const apart = (a, b) => Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
 
+/** A pilot held on one BFF, step by step. */
+async function hold(base, account, characterID) {
+  const request = client(base);
+  const must = async (method, route, body) => {
+    const out = await request(method, route, body);
+    if (out.status !== 200) throw new Error(`${base} ${method} ${route} answered ${out.status}: ${JSON.stringify(out.payload).slice(0, 200)}`);
+    return out.payload;
+  };
+  await must("POST", "/api/login", { username: account });
+  const selected = await must("POST", "/api/bridge/select", { characterID });
+  if (selected.droneRecoveryCheckID) await request("POST", "/api/bridge/drone-recovery/ready", { checkID: selected.droneRecoveryCheckID });
+  const before = (await must("GET", "/api/bridge/flight/status")).flight;
+  return {
+    base,
+    before,
+    undock: () => must("POST", "/api/bridge/flight/undock", {}),
+    snapshot: async () => (await must("GET", "/api/bridge/space/snapshot")).space,
+    async dock(stationID) {
+      for (let tries = 0; tries < 40; tries += 1) {
+        const dock = await request("POST", "/api/bridge/flight/dock", { stationID });
+        if (dock.status === 200) return true;
+        if (dock.status !== 409) throw new Error(`dock answered ${dock.status}: ${JSON.stringify(dock.payload).slice(0, 200)}`);
+        await sleep(3000); // "DockingApproach": on its way; ask again
+      }
+      return false;
+    },
+    logout: () => request("POST", "/api/logout", {}),
+  };
+}
+
+/** Two pilots in space at once, one per transport: each one's view of the grid, read back to back. */
+async function together(gatewaySide, gamePortSide, { waitMs = 6000, log = console.log } = {}) {
+  const gateway = await hold(gatewaySide.base, gatewaySide.account, gatewaySide.characterID);
+  let gamePort = null;
+  const result = { docked: {} };
+  try {
+    gamePort = await hold(gamePortSide.base, gamePortSide.account, gamePortSide.characterID);
+    for (const pilot of [gateway, gamePort]) {
+      if (!pilot.before.docked || !pilot.before.stationID) throw new Error(`The pilot on ${pilot.base} is not docked in a station; dock it first.`);
+    }
+    if (gateway.before.stationID !== gamePort.before.stationID) throw new Error("The two pilots are not docked in the same station.");
+    log(`  both undocking from ${gateway.before.stationID}`);
+    await Promise.all([gateway.undock(), gamePort.undock()]);
+    await sleep(waitMs);
+    [result.gateway, result.gamePort] = await Promise.all([gateway.snapshot(), gamePort.snapshot()]);
+    log(`  gateway sees ${result.gateway.entities.length} entities, game port ${result.gamePort.entities.length}; docking`);
+    result.docked.gateway = await gateway.dock(gateway.before.stationID);
+    result.docked.gamePort = await gamePort.dock(gamePort.before.stationID);
+  } finally {
+    await gateway.logout();
+    if (gamePort) await gamePort.logout();
+  }
+  return result;
+}
+
+/** One ship as each of two snapshots has it: how far apart, in metres and in seconds of its own travel. */
+function shipBothWays(itemID, gateway, gamePort) {
+  const [theirs, ours] = [gateway.entities.find((row) => row.itemID === itemID), gamePort.entities.find((row) => row.itemID === itemID)];
+  if (!theirs || !ours) return { itemID, seenByGateway: Boolean(theirs), seenByGamePort: Boolean(ours) };
+  const speed = Math.hypot(theirs.velocity.x, theirs.velocity.y, theirs.velocity.z);
+  const metres = apart(theirs.position, ours.position);
+  const fields = [...new Set([...Object.keys(theirs), ...Object.keys(ours)])]
+    .filter((field) => !["position", "velocity", "isSelf"].includes(field) && JSON.stringify(theirs[field]) !== JSON.stringify(ours[field]))
+    .map((field) => `${field}: game port ${JSON.stringify(ours[field])} / gateway ${JSON.stringify(theirs[field])}`);
+  return { itemID, name: theirs.name, seenByGateway: true, seenByGamePort: true, metresApart: metres, speed, secondsOfTravelApart: speed > 0 ? metres / speed : null, velocityApart: apart(theirs.velocity, ours.velocity), fields };
+}
+
 /** Every way two snapshots of the same grid differ, grouped. */
 function compare(gateway, gamePort) {
   const theirs = new Map(gateway.entities.map((row) => [row.itemID, row]));
@@ -145,7 +219,39 @@ function movement(pass) {
   return { metres: apart(a.position, b.position), seconds: (pass.later.sampledAtMs - pass.space.sampledAtMs) / 1000, speed: Math.hypot(a.velocity.x, a.velocity.y, a.velocity.z), mode: a.mode };
 }
 
+async function mainTogether(argv) {
+  const [gatewayBase, gatewayAccount, gatewayCharacter, gamePortBase, gamePortAccount, gamePortCharacter] = argv;
+  if (!gatewayBase || !gamePortBase || !Number.isSafeInteger(Number(gatewayCharacter)) || !Number.isSafeInteger(Number(gamePortCharacter))) {
+    throw new Error("Usage: node scripts/space-parity.js --together <gatewayBffUrl> <account> <characterID> <gamePortBffUrl> <account> <characterID>");
+  }
+  console.log("two pilots, one per transport, in space at once");
+  const seen = await together(
+    { base: gatewayBase, account: gatewayAccount, characterID: Number(gatewayCharacter) },
+    { base: gamePortBase, account: gamePortAccount, characterID: Number(gamePortCharacter) },
+  );
+  const report = compare(seen.gateway, seen.gamePort);
+  console.log(`\nentities: gateway ${report.entities.gateway}, game port ${report.entities.gamePort}; ${report.identicalRows} rows identical in every field`);
+  console.log(`only on the gateway: ${JSON.stringify(report.onlyOnGateway)}`);
+  console.log(`only on the game port: ${JSON.stringify(report.onlyOnGamePort)}`);
+  console.log(`fixed things: ${report.fixedThings}; largest difference in position ${report.largestFixedPositionDifference} m`);
+  console.log("differences, by kind:");
+  for (const { count, what } of report.differences) console.log(`  ${String(count).padStart(3)} x ${what}`);
+  console.log(`the two reads were ${Math.abs(seen.gateway.sampledAtMs - seen.gamePort.sampledAtMs)} ms apart by their own clocks (the game port's is whole seconds)`);
+  for (const [whose, itemID] of [["the gateway pilot's ship", seen.gateway.shipID], ["the game-port pilot's ship", seen.gamePort.shipID]]) {
+    const both = shipBothWays(itemID, seen.gateway, seen.gamePort);
+    if (!both.seenByGateway || !both.seenByGamePort) {
+      console.log(`${whose} (${itemID}): seen by the gateway ${both.seenByGateway}, by the game port ${both.seenByGamePort}`);
+      continue;
+    }
+    console.log(`${whose} (${both.name}): the two views have it ${both.metresApart.toFixed(1)} m apart at ${both.speed.toFixed(1)} m/s` +
+      (both.secondsOfTravelApart === null ? "" : `, ${both.secondsOfTravelApart.toFixed(2)} s of its travel`) + `; velocities ${both.velocityApart.toExponential(2)} m/s apart`);
+    for (const field of both.fields) console.log(`    ${field}`);
+  }
+  console.log(seen.docked.gateway && seen.docked.gamePort ? "Both pilots are docked again." : `⚠ Docked again: gateway ${seen.docked.gateway}, game port ${seen.docked.gamePort}. A pilot is in space.`);
+}
+
 async function main(argv = process.argv.slice(2)) {
+  if (argv[0] === "--together") return mainTogether(argv.slice(1));
   const [gatewayBase, gamePortBase, account, characterText, reportPath] = argv;
   const characterID = Number(characterText);
   if (!gatewayBase || !gamePortBase || !account || !Number.isSafeInteger(characterID)) {
@@ -189,4 +295,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { compare, fly, movement };
+module.exports = { compare, fly, hold, movement, shipBothWays, together };
