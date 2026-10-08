@@ -21,6 +21,18 @@ Decisions taken in your place, and anything waiting on you. Overrule any of thes
   `ErrorResponse`); EveJS answers None on purpose (`packetDispatcher.js` ~757). Changing that
   would turn every unfinished handler into an error dialog for anyone playing on the real client,
   which is your call, not a defect for a sub-agent. Handlers that throw are fixed one at a time.
+- **Something I told you earlier was not evidence.** I wrote, in Phase 1 and again in a commit
+  message today, that the server reporting a pilot as `retail_client` on `tcp` showed it was on
+  the game port. The server says exactly that for a gateway session too. Nothing built on it was
+  wrong, but the claim was. What does tell the transports apart is the server's log, and the plan
+  and `scripts/bff-parity.js` now use that.
+- **What the loop has left running** between iterations: the EveJS server (started detached, its
+  process ID in the loop's scratch folder) and two check BFFs on ports 26510 and 26511, each with
+  its own data folder so yours is untouched and with hosted bots not resumed. Stop any of them
+  with `taskkill /PID`. Your own BFF on 26500 is not running and was not started.
+- **I logged in as Farmer once**, docked, to call `KickOutMembers` with an empty list, because
+  that call needs a CEO or director and no test character is one. Nobody was kicked; Farmer was
+  logged straight off again.
 - **eve.js's test runner cleans the temp folder.** The first sub-agent's test run swept 32 stale
   directories (11.7 GB, none touched for 29 hours) from the OS temp folder, `evejs-web-*` among
   them. That is the runner's own housekeeping, not something asked for; nothing in use was lost.
@@ -166,13 +178,66 @@ instead. Three things worth knowing before building it:
 
 ### Next
 
-1. **`src/gamePort/pilots.js`, part one**: select (those three calls, with the account pinned to
-   the BFF's signed session), `callMethod` with today's allowlist, release, the notification
-   backlog and its drain, the event stream with the gateway's frame envelope, flight status while
-   docked, and the gateway's error codes. Then run the BFF with `test=gameport` and select the
-   Test Pilot through its HTTP routes.
-2. **Part two: binds**, as the retail client makes them (`eveMoniker.py`, `invCache.py`),
-   inventory first.
-3. **The browser, on the game port**, feature by feature while docked: fix what does not read.
-4. Phase 3's "done when", then Phase 4.
+1. ~~`src/gamePort/pilots.js`, part one.~~ 2. ~~Part two: binds.~~ 3. ~~The browser, on the game
+   port, while docked.~~ All done: next entry.
+4. Phase 3's "done when", then Phase 4: next entry.
 
+---
+
+## 2026-10-08 — a pilot on the game port, in the browser (Phase 3, step 2)
+
+Commits `59236d2`, `8e49c3e`, `12db272`, all pushed.
+
+**The transport.** `src/gamePort/pilots.js` implements the pilot's nine functions on a game-port
+session, to the gateway client's contract. With `EVEJS_PILOT_TRANSPORT_OVERRIDES="test=gameport"`
+the BFF selects that account's pilots on the retail protocol; unset, nothing changes.
+
+- Selecting is the retail client's three calls. The login name comes from the BFF's signed
+  session and the server's account is checked against the BFF's before anything else is asked.
+- A pilot in space is refused at select, before the server brings it online, and undocking is
+  refused and never sent. Both wait for Phase 4.
+- Release closes the connection and says "released" once the server itself has the character
+  offline (measured: 3 ms).
+- Binds are made the retail way; the plan's Phase 3 section has the table, with the client file
+  each came from.
+
+**Proof, in the order the brief asks for.**
+
+1. Tests that fail: 59 in `test/gamePortPilots.test.js`. They passed first time, so I broke the
+   code 80 ways across the two halves; every one was caught.
+2. The suite: 8675 tests, 8651 pass, 0 fail, 24 skipped. `tsc` clean.
+3. The real thing, in the browser: logged in as `test` on a BFF with that account on the game
+   port, selected the Test Pilot, and opened all nineteen docked panels. Each drew its content.
+   No failed request, no script error, nothing in the BFF's error log, no `[PKT] ERR`. During
+   the walk the server logged 280 game-port calls and no gateway session for the pilot.
+4. Against the gateway: `scripts/bff-parity.js` compares the JSON of the 22 routes those panels
+   fetch, one BFF per transport. Test Pilot: 13 identical, 5 tolerated, 2 moved, 2 tuple
+   spellings whose readers take both. Test Two: 11, 6, 3, 2.
+
+**Two mistakes of mine, both caught here.**
+
+- The status-field claim, above under "For the operator".
+- A patch script of mine used `String.replace` with a replacement that contained a dollar sign
+  and a backtick together, which JavaScript reads as "insert everything before the match". It
+  pasted a test file's head into its middle. Repaired at once (the file was not yet committed);
+  the scripts now pass a function as the replacement, and the brief lists the trap.
+
+**What this does not show yet.** Every panel was read; nothing was written. The BFF's writes go
+through the same two functions and will reach the server, but what each one sends has not been set
+beside what the retail client sends for the same action. That is the remaining Phase 3 work, and
+it is where "the same calls, the same arguments" is still unproven.
+
+### Next
+
+1. **A write, end to end, on the game port, checked against the retail client's call**: start
+   with the ones the acceptance run needs while docked. Accepting a courier mission
+   (`agentMgr` `DoAction`), moving an item between hangar and cargo (`invbroker` `Add`),
+   queueing a skill, sending a mail. For each: what the decompiled client sends, what the BFF
+   sends, the difference fixed in the game-port transport or the route, then done live.
+2. **One hosted maintenance flow** (Provisioning Center Apply) with its account on the game port.
+   That closes Phase 3's "done when".
+3. **Phase 4.** Read `C:\Users\ryanf\Documents\GitHub\destiny` (`Ball.cpp`, `Ballpark.cpp`),
+   record a `DoDestinyUpdate` stream with `scripts/record-game-port.js`, and port the ballpark:
+   the unit test is our ballpark's positions against the server's snapshot of the same grid.
+   Then `readSpaceSnapshot`, `readScannerState` and flight status's ship mode from it, and
+   undock stops refusing.

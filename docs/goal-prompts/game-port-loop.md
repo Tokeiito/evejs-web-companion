@@ -157,6 +157,15 @@ Take these defaults, and list each under "For the operator" in the log so they c
 - A long foreground `sleep` is refused. Wait with a short loop on a condition, or in the
   background.
 - Tests that pass the first time have proved nothing yet. Break the code and watch them fail.
+- In a patch script, `text.replace(find, replacement)` reads `$&`, `$1`, a dollar and a backtick,
+  and a dollar and a quote inside the replacement as instructions. Pass a function:
+  `text.replace(find, () => replacement)`.
+- The server's character status says `retail_client` on `tcp` for a gateway session as well as
+  a game-port one. To know which transport a pilot is on, read the server's log:
+  `[EvejsWebGateway] Browser session started` is the gateway, `[PKT] IN` is the game port.
+  `scripts/bff-parity.js` does this.
+- The web client in a browser tab selects its pilot again when it loses the session. Log the tab
+  out before a script selects the same character, or the two take it from each other.
 
 ## When to stop
 
