@@ -32,9 +32,16 @@
 //     BFF's account ID before anything else is asked of it.
 //   - The connection closing is the session ending. There is no time-to-live.
 //
-// Not here yet (docs/game-port-transport-plan.md, Phases 3 and 4): bound
-// objects, and anything in space. A pilot in space is refused at select,
-// before the server is asked to bring it online.
+//   - A bound object is bound as the retail client binds it. The gateway's
+//     "bind" calls a method as though it were a service's and keeps whatever
+//     bound object comes back; the retail client first binds a service's
+//     object for where the pilot is (eveMoniker.py) and then asks that for
+//     the inventory (invCache.py). bindRetail() below is that translation,
+//     one case per shape the BFF asks for.
+//
+// Not here yet (docs/game-port-transport-plan.md, Phase 4): anything in
+// space. A pilot in space is refused at select, before the server is asked to
+// bring it online, and undocking is refused.
 
 const crypto = require("node:crypto");
 const { GamePortSession } = require("./session");
@@ -81,6 +88,18 @@ const SUPPRESSED_NOTIFICATIONS = new Set(["DoDestinyUpdate"]);
 /** appConst.charLockInTransferQueue, charLockOnSale: what characterSelection.py refuses with. */
 const LOCK_REFUSALS = new Map([[1, "CharacterTransferring"], [2, "CharacterOnSale"]]);
 const GROUP_CAPSULE = 29;
+/** inventorycommon/const.py */
+const GROUP_SOLAR_SYSTEM = 5;
+const GROUP_STATION = 15;
+const CONTAINER_HANGAR = 10004;
+const CONTAINER_STRUCTURE = 10014;
+/**
+ * Services whose object is bound for where the pilot is. The retail client's
+ * moniker for one carries a session check, and is bound afresh when the pilot
+ * moves; here the handle is dropped, and the BFF binds again.
+ */
+const LOCATION_SERVICES = new Set(["invbroker", "ship", "dogmaIM", "crimewatch", "reprocessingSvc", "entity", "beyonce", "scanMgr"]);
+const LOCATION_ATTRIBUTES = ["stationid", "structureid", "solarsystemid", "locationid"];
 
 /** A positive whole number, however the wire or the JSON spelled it; else null. */
 const positive = (value) => {
@@ -107,6 +126,33 @@ function argumentsToWire(value) {
     default:
       return value;
   }
+}
+
+/**
+ * The "N=node:id" of the first bound object in an answer, or null. A bound
+ * object arrives as a substruct holding a substream of (id, timestamp), alone
+ * or inside the (object, result) pair a bind answers with.
+ */
+function boundObjectID(value, depth = 0) {
+  if (depth > 8 || value === null || typeof value !== "object" || Buffer.isBuffer(value)) return null;
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = boundObjectID(item, depth + 1);
+      if (found) return found;
+    }
+    return null;
+  }
+  if (value.type === "substruct" && value.value) {
+    const pair = value.value.type === "substream" ? value.value.value : value.value;
+    const id = Array.isArray(pair) ? pair[0] : null;
+    const name = Buffer.isBuffer(id) ? id.toString("utf8") : typeof id === "string" ? id : "";
+    if (name.startsWith("N=")) return name;
+  }
+  for (const inner of [value.value, value.items, value.args]) {
+    const found = boundObjectID(inner, depth + 1);
+    if (found) return found;
+  }
+  return null;
 }
 
 /** One field of a util.KeyVal, in bridge JSON. */
@@ -279,10 +325,17 @@ function createGamePortPilots({
       history: [],
       subscribers: new Set(),
       ship: null,
+      /** boundHandle -> { objectID, service }: what the BFF holds, and what it names here. */
+      bound: new Map(),
+      /** The two inventory managers invCache keeps, by which: the "N=..." of each. */
+      inventoryManagers: new Map(),
       ended: false,
     };
     session.onNotification((notification) => record(entry, notificationToBridgeJson(notification)));
-    session.onSessionChange((changes) => record(entry, sessionChangeToBridgeJson(changes)));
+    session.onSessionChange((changes) => {
+      if (LOCATION_ATTRIBUTES.some((name) => name in changes)) forgetLocationObjects(entry);
+      record(entry, sessionChangeToBridgeJson(changes));
+    });
 
     let result;
     let row;
@@ -469,12 +522,127 @@ function createGamePortPilots({
     };
   }
 
-  async function bindObject(service, method) {
-    throw fail("PILOT_TRANSPORT_UNAVAILABLE", `${service}.${method}: bound objects are not on the game-port transport yet.`);
+  // ── bound objects ─────────────────────────────────────────────────────────
+
+  /** The pilot moved: what was bound for the old place is the old place's. */
+  function forgetLocationObjects(entry) {
+    entry.inventoryManagers.clear();
+    for (const [handle, object] of entry.bound) {
+      if (LOCATION_SERVICES.has(object.service)) entry.bound.delete(handle);
+    }
   }
 
-  async function callBoundMethod(service, method) {
-    throw fail("PILOT_TRANSPORT_UNAVAILABLE", `${service}.${method}: bound objects are not on the game-port transport yet.`);
+  /** eveMoniker.GetLocationBindParams: the solar system when the session has one, else the station. */
+  function locationBindParams(entry) {
+    const solarSystemID = attribute(entry, "solarsystemid");
+    if (solarSystemID !== null) return [solarSystemID, GROUP_SOLAR_SYSTEM];
+    const stationID = attribute(entry, "stationid");
+    if (stationID !== null) return [stationID, GROUP_STATION];
+    throw fail("CALL_FAILED", "You have no place to go");
+  }
+
+  /**
+   * What a service's Moniker is made with (eveMoniker.py), or undefined where the
+   * retail client makes none. `given` is what the BFF passed, for the ones that take it.
+   */
+  function monikerParams(entry, service, given) {
+    switch (service) {
+      case "ship": // GetShipAccess
+      case "invbroker": // GetInventoryMgr
+      case "dogmaIM": // CharGetDogmaLocation
+      case "crimewatch": // CharGetCrimewatchLocation
+        return locationBindParams(entry);
+      case "entity": // GetEntityAccess: only with session.solarsystemid
+        return attribute(entry, "solarsystemid") === null ? undefined : attribute(entry, "solarsystemid2");
+      case "beyonce": // GetBallPark
+        return attribute(entry, "solarsystemid") ?? undefined;
+      case "reprocessingSvc": // GetReprocessingManager
+        return attribute(entry, "structureid") ?? attribute(entry, "stationid") ?? undefined;
+      case "fleetObjectHandler": // GetFleet: Moniker(fleetID or session.fleetid), which is None outside a fleet
+        return positive(Array.isArray(given) ? given[0] : given) ?? attribute(entry, "fleetid");
+      default: // agentMgr (agentID), planetMgr (planetID), charMgr ((charid, containerGlobal)): as given
+        return argumentsToWire(given === undefined ? null : given);
+    }
+  }
+
+  /** invCache's `inventorymgr` (where the pilot is) or `stationInventoryMgr` (its station), bound on first use. */
+  async function inventoryManager(entry, which) {
+    if (!entry.inventoryManagers.has(which)) {
+      const stationID = attribute(entry, "stationid");
+      if (which === "station" && stationID === null) throw fail("CALL_FAILED", "CharacterNotAtStation");
+      const params = which === "station" ? [stationID, GROUP_STATION] : locationBindParams(entry);
+      entry.inventoryManagers.set(which, (await entry.session.bind("invbroker", params)).objectID);
+    }
+    return entry.inventoryManagers.get(which);
+  }
+
+  /**
+   * Make the bind the BFF asked the gateway for, as the retail client makes
+   * it. Answers the bound object's "N=...", or null when the server handed
+   * none back.
+   */
+  async function bindRetail(entry, service, method, args, kwargs) {
+    const { session } = entry;
+    if (method === "MachoBindObject") {
+      const params = monikerParams(entry, service, args[0]);
+      if (params === undefined) return null;
+      return (await session.bind(service, params)).objectID;
+    }
+    if (service === "invbroker" && method === "GetInventory") {
+      // invCache.GetInventory(const.containerHangar): the station's hangar from
+      // the station's manager, or the structure's from the location's.
+      const asked = positive(args[0]);
+      const structureID = attribute(entry, "structureid");
+      if (asked !== (structureID ?? attribute(entry, "stationid"))) {
+        throw fail("CALL_REFUSED", "The pilot is not docked there.");
+      }
+      const manager = await inventoryManager(entry, structureID === null ? "station" : "location");
+      return boundObjectID(await session.callBound(manager, "GetInventory", [structureID === null ? CONTAINER_HANGAR : CONTAINER_STRUCTURE, null]));
+    }
+    if (service === "invbroker" && method === "GetInventoryFromId") {
+      // invCache.GetInventoryFromId(itemid, passive=0): both positional.
+      const passive = kwargs && kwargs.passive !== undefined ? kwargs.passive : args[1] ?? 0;
+      return boundObjectID(await session.callBound(await inventoryManager(entry, "location"), "GetInventoryFromId", [argumentsToWire(args[0]), passive]));
+    }
+    // A service's own method that answers with a bound object:
+    // sm.RemoteSvc('scanMgr').GetSystemScanMgr(), sm.RemoteSvc('fleetObjectHandler').CreateFleet().
+    return boundObjectID(await session.call(service, method, argumentsToWire(args), kwargs ?? null));
+  }
+
+  async function bindObject(service, method, args = [], kwargs = null, sessionFields = {}, bridgeSessionID = undefined) {
+    const entry = held(bridgeSessionID, sessionFields);
+    assertAllowed(service, method);
+    let objectID;
+    try {
+      objectID = await run(entry, service, method, async () => bindRetail(entry, service, method, Array.isArray(args) ? args : [], kwargs));
+    } catch (error) {
+      // The session's own word for a bind the server answered without an object.
+      if (error.code === "CALL_FAILED" && / did not return a bound object\.| could not say where its object lives\./.test(error.message)) objectID = null;
+      else throw error;
+    }
+    if (!objectID) throw fail("BOUND_NO_OBJECT", `${service}.${method} did not return a bound object.`);
+    const boundHandle = randomBytes(24).toString("base64url");
+    entry.bound.set(boundHandle, { objectID, service });
+    return { boundHandle, service, method, notifications: drain(entry) };
+  }
+
+  async function callBoundMethod(service, method, args = [], kwargs = null, sessionFields = {}, bridgeSessionID = undefined, boundHandle = undefined) {
+    const entry = held(bridgeSessionID, sessionFields);
+    const object = entry.bound.get(String(boundHandle || ""));
+    if (!object) throw fail("BOUND_HANDLE_NOT_FOUND", "Unknown bound-object handle for this session.");
+    if (object.service !== service) throw fail("BOUND_HANDLE_NOT_FOUND", "Bound-object handle does not belong to the requested service.");
+    assertAllowed(service, method);
+    if (service === "ship" && method === "Undock") {
+      throw fail("PILOT_TRANSPORT_UNAVAILABLE", "Undocking needs a ballpark, which a pilot on the game-port transport does not have yet.");
+    }
+    const result = await run(entry, service, method, async () =>
+      entry.session.callBound(object.objectID, method, argumentsToWire(Array.isArray(args) ? args : []), kwargs ?? null));
+    return {
+      service,
+      method,
+      result: wireToBridgeJson(result === undefined ? null : result),
+      notifications: drain(entry),
+    };
   }
 
   /**
@@ -563,4 +731,4 @@ function createGamePortPilots({
   };
 }
 
-module.exports = { GamePortPilotError, argumentsToWire, createGamePortPilots };
+module.exports = { GamePortPilotError, argumentsToWire, boundObjectID, createGamePortPilots };

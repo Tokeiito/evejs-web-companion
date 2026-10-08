@@ -8,7 +8,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { GamePortPilotError, argumentsToWire, createGamePortPilots } = require("../src/gamePort/pilots");
+const { GamePortPilotError, argumentsToWire, boundObjectID, createGamePortPilots } = require("../src/gamePort/pilots");
 const { GAME_PORT_HANDLE_PREFIX, PILOT_FUNCTIONS } = require("../src/pilotTransport");
 
 const ACCOUNT = 4;
@@ -25,6 +25,9 @@ const characterRow = (overrides = {}) => keyVal(Object.entries({
 /** GetCharacterSelectionData: (userDetails, trainingDetails, characterDetails, wars), as the wire decodes it. */
 const selectionData = (rows = [characterRow()]) => [{ type: "list", items: [] }, [null, null], { type: "list", items: rows }, { type: "list", items: [] }];
 const shipInfo = (typeID = 588, groupID = 237) => ({ type: "dict", entries: [[SHIP, keyVal([["itemID", SHIP], ["invItem", { type: "packedrow", header: null, columns: [], fields: { itemID: SHIP, typeID, groupID }, values: [] }]])]] });
+
+/** A bound object as the wire carries one: a substruct of a substream of (id, timestamp). */
+const boundObject = (id) => ({ type: "substruct", value: { type: "substream", value: [Buffer.from(id), 134359051855730000n] } });
 
 /** The error a GamePortSession raises, by code. */
 const sessionError = (code, message = code, refusal = null) => Object.assign(new Error(message), { code, refusal });
@@ -63,6 +66,30 @@ function fakeSession({ answers = {}, userid = ACCOUNT, loginError = null, comesO
       const answer = key in answers ? answers[key] : null;
       return typeof answer === "function" ? answer(args, kwargs) : answer;
     },
+    /** A Moniker's bind: answers "N=1:<n>", counting up. */
+    async bind(service, params) {
+      if (session.closed) throw sessionError("CONNECTION_CLOSED");
+      session.binds.push({ service, params });
+      const answer = answers[`bind:${service}`];
+      if (typeof answer === "function") return answer(params);
+      session.objects += 1;
+      return { objectID: `N=1:${session.objects}`, nodeID: 1, result: null };
+    },
+    /** A call on a bound object. The inventory managers hand back another bound object. */
+    async callBound(objectID, method, args = [], kwargs = null) {
+      if (session.closed) throw sessionError("CONNECTION_CLOSED");
+      session.boundCalls.push({ objectID, method, args, kwargs });
+      const key = `bound:${method}`;
+      if (key in answers) return typeof answers[key] === "function" ? answers[key](args, kwargs, objectID) : answers[key];
+      if (method === "GetInventory" || method === "GetInventoryFromId") {
+        session.objects += 1;
+        return boundObject(`N=1:${session.objects}`);
+      }
+      return null;
+    },
+    binds: [],
+    boundCalls: [],
+    objects: 0,
     onNotification(listener) { listeners.notification.add(listener); return () => listeners.notification.delete(listener); },
     onSessionChange(listener) { listeners.sessionChange.add(listener); return () => listeners.sessionChange.delete(listener); },
     onClose(listener) { listeners.close.add(listener); return () => listeners.close.delete(listener); },
@@ -100,7 +127,14 @@ function build(sessionOptions = {}, pilotOptions = {}) {
       made.push(session);
       return session;
     },
-    allowed: new Set(["station.GetGuests", "account.GetCashBalance", "corpRegistry.GetTitles", "dogmaIM.ShipGetInfo"]),
+    allowed: new Set([
+      "station.GetGuests", "account.GetCashBalance", "corpRegistry.GetTitles", "dogmaIM.ShipGetInfo",
+      "invbroker.GetInventory", "invbroker.GetInventoryFromId", "invbroker.MachoBindObject", "invbroker.List", "invbroker.Add",
+      "ship.MachoBindObject", "ship.Undock", "ship.Board", "dogmaIM.MachoBindObject", "dogmaIM.GetAllInfo",
+      "agentMgr.MachoBindObject", "agentMgr.DoAction", "planetMgr.MachoBindObject", "charMgr.MachoBindObject",
+      "reprocessingSvc.MachoBindObject", "fleetObjectHandler.MachoBindObject", "fleetObjectHandler.CreateFleet",
+      "entity.MachoBindObject", "beyonce.MachoBindObject", "scanMgr.GetSystemScanMgr",
+    ]),
     sleep: async () => {},
     selectSettleMs: 200,
     releaseSettleMs: 300,
@@ -624,10 +658,228 @@ test("a pilot that reaches space is reported in space, and what needs a ballpark
   await rejects(pilots.readScannerState(handle), "PILOT_TRANSPORT_UNAVAILABLE", /ballpark/);
 });
 
-test("bound objects are refused for now, by name", async () => {
-  const { pilots, handle } = await selected();
-  await rejects(pilots.bindObject("invbroker", "GetInventory", [STATION], null, { userid: ACCOUNT }, handle), "PILOT_TRANSPORT_UNAVAILABLE", /invbroker\.GetInventory/);
-  await rejects(pilots.callBoundMethod("invbroker", "List", [], null, { userid: ACCOUNT }, handle, "h"), "PILOT_TRANSPORT_UNAVAILABLE");
+// ── bound objects ────────────────────────────────────────────────────────────
+
+const WHO = { userid: ACCOUNT };
+const STRUCTURE = 1030000000001;
+
+test("the hangar is bound as invCache binds it: the station's manager, then GetInventory(containerHangar, None)", async () => {
+  const { pilots, session, handle } = await selected();
+  const bound = await pilots.bindObject("invbroker", "GetInventory", [STATION], null, WHO, handle);
+  assert.deepEqual(session.binds, [{ service: "invbroker", params: [STATION, 15] }]);
+  assert.deepEqual(session.boundCalls, [{ objectID: "N=1:1", method: "GetInventory", args: [10004, null], kwargs: null }]);
+  assert.deepEqual({ ...bound, boundHandle: "h" }, { boundHandle: "h", service: "invbroker", method: "GetInventory", notifications: [] });
+  assert.match(bound.boundHandle, /^[A-Za-z0-9_-]{32}$/);
+
+  // A call on the handle goes to the inventory the manager handed back, not to the manager.
+  await pilots.callBoundMethod("invbroker", "List", [], null, WHO, handle, bound.boundHandle);
+  assert.deepEqual(session.boundCalls.at(-1), { objectID: "N=1:2", method: "List", args: [], kwargs: null });
+
+  // The manager is a moniker the client keeps: bound once, asked again.
+  await pilots.bindObject("invbroker", "GetInventory", [STATION], null, WHO, handle);
+  assert.equal(session.binds.length, 1);
+  assert.equal(session.boundCalls.filter((call) => call.method === "GetInventory").length, 2);
+});
+
+test("in a structure the hangar is containerStructure, from the manager for where the pilot is", async () => {
+  const { pilots, session, handle } = await selected();
+  delete session.attributes.stationid;
+  Object.assign(session.attributes, { structureid: STRUCTURE, solarsystemid: SYSTEM });
+  await pilots.bindObject("invbroker", "GetInventory", [STRUCTURE], null, WHO, handle);
+  assert.deepEqual(session.binds, [{ service: "invbroker", params: [SYSTEM, 5] }]);
+  assert.deepEqual(session.boundCalls[0].args, [10014, null]);
+});
+
+test("a hangar somewhere the pilot is not docked is refused before anything is sent", async () => {
+  const { pilots, session, handle } = await selected();
+  await rejects(pilots.bindObject("invbroker", "GetInventory", [60000004], null, WHO, handle), "CALL_REFUSED", /not docked there/);
+  await rejects(pilots.bindObject("invbroker", "GetInventory", [], null, WHO, handle), "CALL_REFUSED");
+  assert.deepEqual([session.binds, session.boundCalls], [[], []]);
+});
+
+test("an item's inventory is GetInventoryFromId(itemID, passive), both positional, on the manager for where the pilot is", async () => {
+  const { pilots, session, handle } = await selected();
+  await pilots.bindObject("invbroker", "GetInventoryFromId", [SHIP], { passive: 0 }, WHO, handle);
+  await pilots.bindObject("invbroker", "GetInventoryFromId", [77], { passive: 1 }, WHO, handle);
+  await pilots.bindObject("invbroker", "GetInventoryFromId", [78], null, WHO, handle);
+  assert.deepEqual(session.binds, [{ service: "invbroker", params: [STATION, 15] }]);
+  assert.deepEqual(session.boundCalls.map((call) => [call.method, call.args, call.kwargs]), [
+    ["GetInventoryFromId", [SHIP, 0], null],
+    ["GetInventoryFromId", [77, 1], null],
+    ["GetInventoryFromId", [78, 0], null],
+  ]);
+});
+
+test("the two inventory managers are two monikers, as invCache keeps them", async () => {
+  const { pilots, session, handle } = await selected();
+  await pilots.bindObject("invbroker", "GetInventory", [STATION], null, WHO, handle);
+  await pilots.bindObject("invbroker", "GetInventoryFromId", [SHIP], { passive: 0 }, WHO, handle);
+  assert.deepEqual(session.binds, [{ service: "invbroker", params: [STATION, 15] }, { service: "invbroker", params: [STATION, 15] }]);
+  assert.deepEqual(session.boundCalls.map((call) => call.objectID), ["N=1:1", "N=1:3"]);
+});
+
+test("a service's object is bound with what the retail client's moniker for it carries", async () => {
+  const docked = await selected();
+  const bind = (service, args) => docked.pilots.bindObject(service, "MachoBindObject", args, null, WHO, docked.handle);
+  // Bound for where the pilot is, whatever the BFF passed.
+  await bind("ship", [[STATION, 15]]);
+  await bind("invbroker", [[STRUCTURE, 15]]);
+  await bind("dogmaIM", []);
+  // Bound for what they are asked for.
+  await bind("agentMgr", [3008416]);
+  await bind("planetMgr", [40176368]);
+  await bind("charMgr", [[PILOT, 10002]]);
+  await bind("reprocessingSvc", [STATION]);
+  // A fleet by its ID alone, not the one-tuple the BFF wraps it in; none is None, as session.fleetid is.
+  await bind("fleetObjectHandler", [[1099511627776]]);
+  await bind("fleetObjectHandler", []);
+  assert.deepEqual(docked.session.binds, [
+    { service: "ship", params: [STATION, 15] },
+    { service: "invbroker", params: [STATION, 15] },
+    { service: "dogmaIM", params: [STATION, 15] },
+    { service: "agentMgr", params: 3008416 },
+    { service: "planetMgr", params: 40176368 },
+    { service: "charMgr", params: [PILOT, 10002] },
+    { service: "reprocessingSvc", params: STATION },
+    { service: "fleetObjectHandler", params: 1099511627776 },
+    { service: "fleetObjectHandler", params: null },
+  ]);
+
+  docked.session.attributes.fleetid = 1099511627777;
+  await bind("fleetObjectHandler", []);
+  assert.equal(docked.session.binds.at(-1).params, 1099511627777);
+});
+
+test("what only exists in space has no moniker while docked, and its own once there", async () => {
+  const { pilots, session, handle } = await selected();
+  await rejects(pilots.bindObject("entity", "MachoBindObject", [], null, WHO, handle), "BOUND_NO_OBJECT", /entity\.MachoBindObject did not return a bound object/);
+  await rejects(pilots.bindObject("beyonce", "MachoBindObject", [[SYSTEM, 5]], null, WHO, handle), "BOUND_NO_OBJECT");
+  assert.deepEqual(session.binds, []);
+
+  delete session.attributes.stationid;
+  session.attributes.solarsystemid = SYSTEM;
+  await pilots.bindObject("entity", "MachoBindObject", [], null, WHO, handle);
+  await pilots.bindObject("beyonce", "MachoBindObject", [[SYSTEM, 5]], null, WHO, handle);
+  await pilots.bindObject("ship", "MachoBindObject", [[STATION, 15]], null, WHO, handle);
+  assert.deepEqual(session.binds, [
+    { service: "entity", params: SYSTEM },
+    { service: "beyonce", params: SYSTEM },
+    { service: "ship", params: [SYSTEM, 5] },
+  ]);
+});
+
+test("a service's own method that answers with a bound object is called, and the object kept", async () => {
+  const { pilots, session, handle } = await selected({ answers: {
+    "fleetObjectHandler.CreateFleet": () => boundObject("N=1:900"),
+    "scanMgr.GetSystemScanMgr": () => null,
+  } });
+  const bound = await pilots.bindObject("fleetObjectHandler", "CreateFleet", [], null, WHO, handle);
+  assert.deepEqual(session.calls.at(-1), { service: "fleetObjectHandler", method: "CreateFleet", args: [], kwargs: null });
+  assert.deepEqual(session.binds, []);
+  await pilots.callBoundMethod("fleetObjectHandler", "CreateFleet", [], null, WHO, handle, bound.boundHandle);
+  assert.equal(session.boundCalls.at(-1).objectID, "N=1:900");
+  await rejects(pilots.bindObject("scanMgr", "GetSystemScanMgr", [], null, WHO, handle), "BOUND_NO_OBJECT", /scanMgr\.GetSystemScanMgr/);
+});
+
+test("a call on a bound object sends the arguments, answers in the gateway's JSON and drains the backlog", async () => {
+  const { pilots, session, handle } = await selected({ answers: { "bound:List": () => ({ type: "list", items: [[SHIP, 134359051855730000n], Buffer.from("Reaper")] }) } });
+  const { boundHandle } = await pilots.bindObject("invbroker", "GetInventory", [STATION], null, WHO, handle);
+  session.notify("OnItemsChanged");
+  const args = [4, { type: "long", value: "5" }, { type: "Buffer", data: [1, 2] }];
+  const outcome = await pilots.callBoundMethod("invbroker", "List", args, { flag: 5 }, WHO, handle, boundHandle);
+  assert.deepEqual(outcome.result, { type: "list", items: [[SHIP, { type: "long", value: "134359051855730000" }], "Reaper"] });
+  assert.deepEqual([outcome.service, outcome.method, outcome.notifications.length], ["invbroker", "List", 1]);
+  assert.deepEqual(session.boundCalls.at(-1).args, [4, { type: "long", value: "5" }, Buffer.from([1, 2])]);
+  assert.deepEqual(session.boundCalls.at(-1).kwargs, { flag: 5 });
+});
+
+test("a bound call needs a handle of this session, for this service, and a method on the allowlist", async () => {
+  const one = await selected();
+  const other = await selected();
+  const { boundHandle } = await one.pilots.bindObject("invbroker", "GetInventory", [STATION], null, WHO, one.handle);
+  const sent = one.session.boundCalls.length;
+  await rejects(one.pilots.callBoundMethod("invbroker", "List", [], null, WHO, one.handle, "not-a-handle"), "BOUND_HANDLE_NOT_FOUND", /Unknown bound-object handle/);
+  await rejects(one.pilots.callBoundMethod("invbroker", "List", [], null, WHO, one.handle, undefined), "BOUND_HANDLE_NOT_FOUND");
+  await rejects(one.pilots.callBoundMethod("ship", "Board", [], null, WHO, one.handle, boundHandle), "BOUND_HANDLE_NOT_FOUND", /does not belong to the requested service/);
+  await rejects(one.pilots.callBoundMethod("invbroker", "TrashItems", [], null, WHO, one.handle, boundHandle), "CALL_NOT_ALLOWED");
+  await rejects(one.pilots.callBoundMethod("invbroker", "List", [], null, { userid: 9 }, one.handle, boundHandle), "SESSION_NOT_FOUND");
+  // Another pilot's session does not know this one's handle.
+  await rejects(other.pilots.callBoundMethod("invbroker", "List", [], null, WHO, other.handle, boundHandle), "BOUND_HANDLE_NOT_FOUND");
+  assert.equal(one.session.boundCalls.length, sent);
+  assert.equal(other.session.boundCalls.length, 0);
+});
+
+test("a bind that is not on the allowlist is not made", async () => {
+  const { pilots, session, handle } = await selected();
+  await rejects(pilots.bindObject("corpRegistry", "MachoBindObject", [98000001], null, WHO, handle), "CALL_NOT_ALLOWED");
+  assert.deepEqual(session.binds, []);
+});
+
+test("undocking is refused while this transport cannot fly, and never sent", async () => {
+  const { pilots, session, handle } = await selected();
+  const { boundHandle } = await pilots.bindObject("ship", "MachoBindObject", [[STATION, 15]], null, WHO, handle);
+  await rejects(pilots.callBoundMethod("ship", "Undock", [SHIP, false], null, WHO, handle, boundHandle), "PILOT_TRANSPORT_UNAVAILABLE", /Undocking needs a ballpark/);
+  assert.deepEqual(session.boundCalls, []);
+  // Everything else on the ship's object goes through.
+  await pilots.callBoundMethod("ship", "Board", [77], null, WHO, handle, boundHandle);
+  assert.equal(session.boundCalls.at(-1).method, "Board");
+});
+
+test("when the pilot moves, what was bound for the old place is forgotten, and the rest is kept", async () => {
+  const { pilots, session, handle } = await selected();
+  const hangar = (await pilots.bindObject("invbroker", "GetInventory", [STATION], null, WHO, handle)).boundHandle;
+  const ship = (await pilots.bindObject("ship", "MachoBindObject", [[STATION, 15]], null, WHO, handle)).boundHandle;
+  const agent = (await pilots.bindObject("agentMgr", "MachoBindObject", [3008416], null, WHO, handle)).boundHandle;
+  // Something that is not about where the pilot is changes nothing.
+  session.change({ shipid: [SHIP, 77] });
+  await pilots.callBoundMethod("invbroker", "List", [], null, WHO, handle, hangar);
+
+  session.attributes.stationid = 60000004;
+  session.change({ stationid: [STATION, 60000004], locationid: [STATION, 60000004] });
+  await rejects(pilots.callBoundMethod("invbroker", "List", [], null, WHO, handle, hangar), "BOUND_HANDLE_NOT_FOUND");
+  await rejects(pilots.callBoundMethod("ship", "Board", [1], null, WHO, handle, ship), "BOUND_HANDLE_NOT_FOUND");
+  await pilots.callBoundMethod("agentMgr", "DoAction", [], null, WHO, handle, agent);
+
+  // Bound again, it is the new place's manager, bound afresh.
+  const binds = session.binds.length;
+  await pilots.bindObject("invbroker", "GetInventory", [60000004], null, WHO, handle);
+  assert.deepEqual(session.binds.slice(binds), [{ service: "invbroker", params: [60000004, 15] }]);
+});
+
+test("a bind's failures are the gateway's: no object, a refusal, a lost session", async () => {
+  const noObject = await selected({ answers: { "bind:agentMgr": () => { throw sessionError("BIND_FAILED", "agentMgr did not return a bound object."); } } });
+  await rejects(noObject.pilots.bindObject("agentMgr", "MachoBindObject", [1], null, WHO, noObject.handle), "BOUND_NO_OBJECT", /^agentMgr\.MachoBindObject did not return a bound object\.$/);
+  const nowhere = await selected({ answers: { "bind:agentMgr": () => { throw sessionError("RESOLVE_FAILED", "agentMgr could not say where its object lives."); } } });
+  await rejects(nowhere.pilots.bindObject("agentMgr", "MachoBindObject", [1], null, WHO, nowhere.handle), "BOUND_NO_OBJECT");
+  const empty = await selected({ answers: { "bound:GetInventoryFromId": () => null } });
+  await rejects(empty.pilots.bindObject("invbroker", "GetInventoryFromId", [5], null, WHO, empty.handle), "BOUND_NO_OBJECT");
+
+  const refused = await selected({ answers: { "bound:GetInventoryFromId": () => { throw refusedBy("FakeItemNotFound"); } } });
+  await rejects(refused.pilots.bindObject("invbroker", "GetInventoryFromId", [5], null, WHO, refused.handle), "CALL_REFUSED", /^FakeItemNotFound$/);
+  // A failed bind leaves no handle behind, and the manager it did bind is still the manager.
+  assert.equal(refused.session.binds.length, 1);
+
+  const lost = await selected({ answers: { "bind:ship": () => { throw sessionError("CONNECTION_LOST"); } } });
+  await rejects(lost.pilots.bindObject("ship", "MachoBindObject", [[STATION, 15]], null, WHO, lost.handle), "SESSION_NOT_FOUND");
+  assert.equal(lost.pilots.size, 0);
+
+  const failing = await selected({ answers: { "bound:List": () => { throw refusedBy("CustomNotify", "That container is locked."); } } });
+  const { boundHandle } = await failing.pilots.bindObject("invbroker", "GetInventory", [STATION], null, WHO, failing.handle);
+  await rejects(failing.pilots.callBoundMethod("invbroker", "List", [], null, WHO, failing.handle, boundHandle), "CALL_REFUSED", /^That container is locked\.$/);
+});
+
+test("a bound object is found wherever an answer carries it", () => {
+  assert.equal(boundObjectID(boundObject("N=65450:12")), "N=65450:12");
+  // The (object, result) pair a bind answers with, and one nested in a list.
+  assert.equal(boundObjectID([boundObject("N=1:2"), null]), "N=1:2");
+  assert.equal(boundObjectID({ type: "list", items: [1, [boundObject("N=1:3")]] }), "N=1:3");
+  // A substruct given without its substream, and an ID that is already text.
+  assert.equal(boundObjectID({ type: "substruct", value: ["N=1:4", 0n] }), "N=1:4");
+  // The first one found is the one.
+  assert.equal(boundObjectID([boundObject("N=1:5"), boundObject("N=1:6")]), "N=1:5");
+  for (const nothing of [null, undefined, 7, "N=1:2", Buffer.from("N=1:2"), [], { type: "list", items: [] }, { type: "substruct", value: { type: "substream", value: [Buffer.from("not an object"), 0n] } }]) {
+    assert.equal(boundObjectID(nothing), null);
+  }
 });
 
 // ── arguments ────────────────────────────────────────────────────────────────
