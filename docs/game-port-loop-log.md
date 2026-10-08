@@ -66,10 +66,11 @@ Decisions taken in your place, and anything waiting on you. Overrule any of thes
   check either against the real client. **My recommendation:** give it to whoever owns the
   server's movement work, with the table in that entry; the first thing to settle is whether the
   server's seconds should begin on whole seconds.
-- **The server's question before a quit or a decline is answered Yes for the pilot** on the
-  game port, and the web client asks its own user first (default taken). The retail client shows
-  the server's question itself. Showing it in the browser needs a way for the BFF to ask the user
-  something, which is listed as a unit. Overrule by saying the answer should be No until then.
+- **The server's question before a quit or a decline is shown in the browser** on the game port
+  and the user answers it. With no browser attached (a hosted bot) it is answered Yes; left
+  unanswered for 110 seconds it lapses as a No. The web client's own question before the press is
+  gone again, so on the gateway a decline is asked about by nobody, as it was before 2026-10-08
+  (default taken). Overrule either by saying so.
 - **On the gateway a mission cannot be quit.** The server refuses to commit a quit it could not
   warn about, and the gateway gives it nobody to warn. Measured 2026-10-08. On the game port it
   works. Not a defect of either: it goes away when the gateway does.
@@ -1415,4 +1416,98 @@ way. A hosted bot's six-jump courier run is in the entry above.
 4. **Collisions**; **the park beside the server's movement log**; the sim clock; MISSILE,
    FORMATION, MUSHROOM.
 5. The call ledger (`ship.Undock`, `dogmaIM.Activate` and `Deactivate` to bind as the client
+   does), Phase 3's hosted check and the session-less gateway calls.
+
+---
+
+## 2026-10-08 — the server's question shown in the browser, and answered by the user
+
+Commit `1e324cd`, pushed.
+
+**What the retail client does.** The server calls the client's `agents.YesNo` and waits; the
+client puts up a Yes/No window; closing it is not a Yes (`agents.py` 404). The call that caused
+the question stays open the whole time, held by the provisional answer.
+
+**What was built.**
+
+- **The BFF holds the question for the user.** When the server asks, and a browser is on that
+  pilot's event stream, the question goes out on the stream as an event of its own kind
+  (`question`: the service and method, the title and body as the server worded them, the agent,
+  when it lapses) and the server is kept waiting. The user's answer comes back by
+  `POST /api/bridge/questions/:id/answer`. When it is answered, lapses or the session ends, a
+  `question-closed` event says so.
+- **Who answers when.** A browser attached: the user, and anything but Yes is No. Nobody
+  attached (a hosted bot): Yes at once, as before. A question nobody answers lapses after 110
+  seconds as a No, ten seconds before the call behind it would give up.
+- **The page shows it.** A bar across the workspace with the title, the body and Yes / No. The
+  web client's own question before the press, added two entries ago, is gone again: the user is
+  now asked once, by the server, after the press, as on the retail client.
+- **A bot in the page answers for itself.** While one of the page's own bots is pressing an
+  agent's button, the server's question about that agent is answered Yes and not shown.
+- **The words.** The server words a question with localisation labels that only the retail
+  client's data turns into text. The four it sends for quit and decline are worded in this
+  client's own words; any other label is shown as the label.
+
+**The live run found what the tests had not.** The first time, the answer was refused: the BFF
+lets one write per pilot run at a time, the press was the write in flight, and the answer was
+turned away as a second one (`CHARACTER_IN_USE`), so the press could never finish. My route
+test had no write in flight. There is one now, which hung on the old code and passes: an answer
+is the rest of the write that caused the question, and goes through. (The refused question then
+did what an unanswered one should: it lapsed, the server was told No, and the offer stayed.)
+
+**Proof.**
+
+- Tests, each watched to fail or checked by breaking the code: 7 for the pilot's side, 3 for the
+  route, 2 for the store, 6 for the question's decoding and words and the bot's presses, 4 for
+  the flow. 57 ways of breaking the new code, all caught after one test was added.
+- Suite: 8902 tests, 8877 pass, 0 fail, 24 skipped, 1 todo.
+- **In the browser, on the game port** (Test Two, an offered mission, the page's own requests
+  recorded):
+
+  | | Pressed Decline, answered No | Pressed Decline, answered Yes |
+  |---|---|---|
+  | The question on the page | "Decline mission" and its body, Yes / No, about 0.1 s after the press | the same |
+  | While it was open | the press still waiting; the conversation's buttons disabled | the same |
+  | The answer | `{"answer":false}`, 200 in 7 ms | `{"answer":true}`, 200 in 4 ms |
+  | The press, after the answer | finished 10 ms later | finished 34 ms later |
+  | The BFF's log | "the server called agents.YesNo on the client, and was answered false" | "... answered true" |
+  | Afterwards | the offer still in the journal | "Mission declined.", "Request Mission", nothing on offer |
+
+**A server defect, found by answering No.** After a No to the decline question the server
+answers the press with "This agent is unavailable." and no buttons. The retail client shows
+whatever that answer holds (`agentDialogueWindow.py` 402), so a player who presses Decline and
+then No is left with a dead-looking window while the offer still stands. The quit question's No
+is handled properly in the same function. The fix is with a sub-agent as this is written (same checkout, no branch, no push); its result and the live re-check are in the next entry.
+
+**A trap in the server's log, measured.** The line `[PKT] OUT agents YesNo() client-call` is not
+stamped when the question is sent. In the second run above the question was on the page 0.1 s
+after the press (28:48.5), and that line is stamped 28:54.214, the moment the answer arrived.
+In the first run it is stamped 12.6 s after the press. I had begun to wonder what the server
+was doing for 12.6 seconds; it was doing nothing, and I have not looked into why the line is
+stamped late. It is in the brief's traps.
+
+**Decisions taken in the operator's place** (both under "For the operator"):
+
+- The web client no longer asks before Quit and Decline. On the game port the server asks; on
+  the gateway nobody does, which is how it was before yesterday.
+- A second decline inside four hours was spent on Test Two to prove the Yes.
+
+**Not done:** a question that is open when a browser first connects is not shown to it (it has
+110 seconds to live, and the stream only replays to a browser that was already connected). The
+wiring of a page bot's press to its automatic Yes is covered by the helper's tests and by
+reading; no test drives a bot through the flow. Research's choice and quantity boxes and the
+customs question are still unanswered. The server's own words for a label.
+
+### Next
+
+1. **The three calls still unanswered**, on the same channel: `agents.SingleChoiceBox` and
+   `agents.GetQuantity` (a research agent), `XmppChat.AskYesNoQuestion` (customs).
+2. **The retail client's words**: turn localisation labels into the client's own text, from the
+   client's localisation data, for questions and for what agents say (the conversation shows a
+   raw label today).
+3. **The scanner in space** on the game port (the one route that still answers 501 there).
+4. Module damage and weapon banks from dogma; health from godma as the panel reads it.
+5. **Collisions**; **the park beside the server's movement log**; the sim clock; MISSILE,
+   FORMATION, MUSHROOM.
+6. The call ledger (`ship.Undock`, `dogmaIM.Activate` and `Deactivate` to bind as the client
    does), Phase 3's hosted check and the session-less gateway calls.

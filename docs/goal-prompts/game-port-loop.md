@@ -173,6 +173,12 @@ Take these defaults, and list each under "For the operator" in the log so they c
   tell the page it is visible: redefine `document.visibilityState` (to `"visible"`) and
   `document.hidden` (to `false`) in the page and dispatch a `visibilitychange` event. Do it again
   after every reload. Dispatch a click in one call and read the result in the next.
+- **The server's log stamps an outgoing client call late.** `[PKT] OUT agents YesNo()
+  client-call` carried the time the answer arrived, seconds after the question was on the page.
+  Do not time the server by that line; time what the client saw.
+- **The BFF runs one write per pilot at a time** (`CHARACTER_IN_USE`). Anything that must get
+  through while a write is waiting on the server, as an answer to its question must, has to be
+  let past that gate in `src/server.js`, and tested with a write in flight.
 - **A fact offered in support of a decision is still a claim.** Two went into the log unchecked
   on 2026-10-08, in a paragraph arguing for a design, and both were wrong. One route call or one
   grep would have caught each.

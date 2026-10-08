@@ -562,7 +562,7 @@ table marks "not started" is still to do.
 | Calls the server makes to the client; an answer marked provisional | done | frames built as the server builds them; a mission quit by route and declined in the browser on the game port, the server logging its question and our answer |
 | A hosted bot's courier mission, end to end | done | one run: asked, accepted, loaded, three jumps out, turned in, three jumps back, docked; every call a packet on the game port by the server's log |
 | The browser's own autopilot | done | one round trip in the web UI: undock, warp, jump, jump back, warp, dock; the browser's requests, the Travel window's states and the server's log agree |
-| The server's questions shown to the user (`agents.YesNo` is answered Yes; a research agent's boxes and the customs question are not answered) | not started | |
+| The server's questions shown to the user | under way | `agents.YesNo`: shown in the browser and answered No and Yes on the game port, the press waiting meanwhile. A research agent's boxes and the customs question are not answered yet |
 | Module damage, weapon banks; the scanner in space | not started | |
 
 One thing the spike's question got wrong: the stream is not 10 Hz. The server sends an update
