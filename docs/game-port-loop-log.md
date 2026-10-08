@@ -90,6 +90,11 @@ Decisions taken in your place, and anything waiting on you. Overrule any of thes
   files pass again. From now on the store is copied before a live check that stages anything
   and put back after it. **If you ran eve.js's tests on 2026-10-08 and saw customs or mission
   scenarios fail, that was this.**
+- **Two faults in the BFF that were there on either transport since 2026-07-28 are fixed**
+  (`2451cb1`): the Scanner Center's "Reconnect to probes" never asked the server, and a ship
+  boarding that failed after the server accepted it answered "kind is not defined". One branch,
+  put in the wrong function by commit `503b214`, caused both. Your own BFF on 26500 has the fix
+  when it is next started from this checkout.
 - **The undock warning's sentence, which is the client's text, was written out in this
   repository** from commit `cba50d1` until `81f2c33` took it out of the files. It is still in
   the history. I do not rewrite history; say if you want it rewritten.
