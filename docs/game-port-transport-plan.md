@@ -180,7 +180,7 @@ phase's tests alone where a live check is named.
 - **Done when:** existing `gameClient` / `piCustomsExport` tests pass, a round-trip test over
   frames captured from a real server passes, and one live PI customs export succeeds.
 
-**Status 2026-10-07: done except the live export, which this database cannot run.**
+**Status 2026-10-08: done.**
 
 - Codec re-copied from eve.js `65f759873`; `npm run vendor:marshal` reports no drift.
 - `test/gameProtocolMarshal.test.js` pins the three fixes. All four wire tests were watched
@@ -192,8 +192,17 @@ phase's tests alone where a live check is named.
 - Run live as Test Two (docked): login → `SelectCharacterID` → `map.GetSolarsystemItems`
   (92 rows, 11 customs offices) → `GetTaxRate` → `invbroker` bind. That is the PI export's whole
   hop except `ImportExportWithPlanet`. The pilot was offline again after the socket closed.
-- **Not done:** the export call itself. `planetRuntimeState.coloniesByKey` is empty, so no pilot
-  has a colony to export from. It needs a staged colony or a database that has one.
+- Run live as Test Two: the real `runCustomsExport` exported 80 Biofuels from a launchpad on
+  Muvolailen I into customs office 1200040176368. The server answered `ImportExportWithPlanet`
+  and pushed `OnAccountChange`, `OnMajorPlanetStateUpdate`, `OnRefreshPins` and `OnItemsChanged`;
+  the pad read back empty and the pilot was offline again afterwards.
+  **Staged for this:** one colony row for Test Two, `40176368:140000002` (a command center and a
+  launchpad holding 80 of type 2396), plus `nextIDs.pinID` moved on by two.
+
+> Correction: an earlier version of this status said no pilot had a colony. That was a misreading
+> of the store. `planetRuntimeState` keeps one row per colony under the key
+> `coloniesByKey` + U+001F + `planetID:ownerID`; the bare `coloniesByKey` row is an empty
+> skeleton. Farmer has three colonies in Jita, untouched by this work.
 
 Found along the way, for later phases:
 
