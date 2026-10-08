@@ -240,6 +240,14 @@ Take these defaults, and list each under "For the operator" in the log so they c
 - **Flying the pilot through the BFF's routes from the page's own session** (see "The browser
   takes the pilot from a script") leaves the page saying "Docked" until it is reloaded. Reload,
   then read the overview.
+- **The hidden browser pane is 0 pixels wide**, so the page lays itself out for a phone
+  (`MobileWorkspace`: one panel at a time, the ship's line in `HudBar`). For the desktop
+  layout (the floating windows over the tactical view) set a size with `resize_window`
+  (1280 by 860 worked) and reload the page; put it back with the "desktop" preset after.
+- **Show-info for a thing on grid opens from the tactical view**: a right click on its
+  bracket, then "Show info". The brackets are on a canvas; send `contextmenu` events across
+  it a few pixels apart until the menu appears, and read which thing was picked from the
+  overview's picked line.
 - **A dialog by its name**: `node scripts/client-words.js "<client folder>" dialog:<Name>` says
   what kind it is and which parameters its title and body take. A dialog's parameters may be
   typed tuples, `(code, value[, value2])`, which the client turns to text first

@@ -3108,3 +3108,67 @@ target.
    messages inside messages when one turns up.
 6. Small, around dialogs: the title for a dialog's kind, the "do not ask again" box, the typed
    codes not done.
+
+---
+
+## 2026-10-08 — the rest of the distances: the tactical view, show-info, the ship's line, the pickers
+
+Commit `1ce00fd`, pushed.
+
+**What the retail client does.** As in the last entry: a bracket, the selected item and the
+rest give the ball's surface distance through `FmtDist`. A bracket says nothing at no
+distance (`bracket.py` 814 to 816: `if distance:`).
+
+**What was built.** The four places that still gave the distance between centres, in the
+page's own steps, now give the one between hulls by `FmtDist`, with the client's word for
+the unit when the page holds it:
+
+- a bracket's label in the tactical view, and nothing at no distance (where the bracket is
+  *drawn* still goes by its centre), and the view's spoken summary;
+- the show-info window's "Distance", at one decimal as the selected item asks;
+- the ship's line about what it is acting on ("Orbiting … at …");
+- the hint beside each thing in a picker.
+
+**Proof.**
+
+- Tests: 7 new, 2 changed. The bracket's label is read off a stand-in canvas. 23 ways of
+  breaking the change, all caught, none left untried.
+- Suite: 9110 tests, 9086 pass, 0 fail, 24 skipped, 0 todo.
+- **In the browser, on the game port**, with the ship orbiting a sentry gun:
+  - the tactical view's summary: "94 objects on grid. Nearest Caldari Sentry Gun I at 33 km."
+  - show-info, opened from the tactical view's own menu on a bracket: "Distance: 2.8 AU" for a
+    customs office, "Distance: 114 km" for a gun, each the same figure as the picked row's;
+  - the ship's line, in the phone layout where it lives: "Orbiting Caldari Sentry Gun I at
+    44 km", then "at 43 km".
+- Not read in the browser: the label drawn beside a bracket (it is on a canvas), and a
+  picker's hint (no picker was opened). Both rest on their tests.
+- **The staging was undone**: the store was copied with the server stopped before the check
+  and put back after.
+
+**Seen, and left.**
+
+- **An approach reads "Under way."** on the game port. The ship's line names what the ship is
+  acting on only for the modes it has words for (approach, orbit, keep at range, and so on),
+  and the game port's ship says its mode as the park has it: an approach is FOLLOW. Pressed
+  Approach, the line said "Under way."; pressed Orbit, "Orbiting … at 44 km".
+- After Orbit the workspace's header still read "FOLLOW" while the ship's line read
+  "Orbiting". Not looked into.
+- The tactical view's "Nearest" goes by centres: it named the gun at 33 km while the
+  station's hull was nearer.
+
+### Next
+
+1. **The ship's mode on the game port, in the words the page has**: an approach and a keep at
+   range are the park's FOLLOW, and the ship's line and the header should say which.
+2. **The park beside the server's movement log**; the sim clock; MISSILE, FORMATION, MUSHROOM;
+   a fixed ball's collision shapes and the partition's order, if a server ever sends a ball
+   that needs them.
+3. The call ledger (`ship.Undock`, `dogmaIM.Activate` and `Deactivate` to bind as the client
+   does; `GetMissionBriefingInfo` and `GetMissionObjectiveInfo`, which the client asks on every
+   layout of the agent's window), Phase 3's hosted check and the session-less gateway calls.
+4. The scanner the client's way: results kept from the server's word, a probe's destination
+   and range kept here and sent with the scan.
+5. More of a mission's words: the objectives pane, the mission's time under the agent's line,
+   messages inside messages when one turns up.
+6. Small, around dialogs: the title for a dialog's kind, the "do not ask again" box, the typed
+   codes not done.
