@@ -3041,3 +3041,70 @@ found and not fixed.
    messages inside messages when one turns up.
 6. Small, around dialogs: the title for a dialog's kind, the "do not ask again" box, the typed
    codes not done.
+
+---
+
+## 2026-10-08 — a target's distance and the picked item's, in the client's wording and words
+
+Commit `8eb1268`, pushed.
+
+**What the retail client does.**
+
+- Everywhere but the overview's column it words a distance with one function, `FmtDist`
+  (`carbon/common/script/util/format.py` 192): whole metres under 10 km, except that a
+  distance under a metre and not nothing keeps its decimals; whole kilometres under
+  10,000,000 km; AU beyond, to the number of decimals the caller asks for, two by default.
+- The target bar gives it `ball.surfaceDist` and takes the default
+  (`bracketsAndTargets/targetInBar.py` 668 to 674). The selected item gives it the same
+  distance and asks for one decimal (`selectedItemWnd.py` 587 to 592). The brackets take the
+  default and say nothing at no distance (`bracket.py` 814 to 816).
+- The unit is a label: `/Carbon/UI/Common/FormatDistance/fmtDistInMeters`,
+  `fmtDistInKiloMeters`, `fmtDistInAU`, each with one parameter, the figure. The overview's
+  column uses the same three.
+
+**What was built.** `fmtDist` in `web/src/space/overview.ts`. A target's card now carries
+the distance between hulls beside the one between centres and shows it by that rule; the line
+about the picked row does too, at one decimal. The unit is put on by the client's own label
+when the page holds it (`distanceWords.ts`; the overview asks the BFF for the three), and by
+the page's own words when it does not.
+
+**Proof.**
+
+- Tests: 8 new. 45 ways of breaking the change; one slipped through and was closed with a
+  test; none was left untried.
+- Suite: 9103 tests, 9079 pass, 0 fail, 24 skipped, 0 todo.
+- **In the browser, on the game port**, undocked by the page's own button. The page asked the
+  BFF for the three labels and was answered from the client's install. The station's row,
+  picked: "… · Station · 0 m". Locked with the panel's Lock button: its card reads "0 m", and
+  to a screen reader "…, 0 m away". The ship was inside the station's ball; the card would
+  have given the distance to its centre before.
+- **The staging was undone**: the store was copied with the server stopped before the check
+  and put back after.
+
+**Not determined.** Whether the client writes a distance's decimals out in full ("2.80 AU")
+or drops a trailing nought ("2.8 AU"). That is decided inside its number formatter,
+`_evelocalization.FormatNumeric`, which is native code. It would not load into the client's
+Python on its own: it needs `blue.dll`, the client's runtime. This page writes them in full,
+here and in the overview's column. A target is never AU away, so the target bar is not
+touched by it; the picked row and the overview's far rows are.
+
+**Not done.** The brackets in the tactical view still give the distance between centres, in
+the page's own steps. So do the show-info window, the pickers and the ship's readout of its
+target.
+
+### Next
+
+1. **The tactical view's brackets**, the show-info window and the ship's readout of its
+   target: the distance between hulls, by `FmtDist`.
+2. **The park beside the server's movement log**; the sim clock; MISSILE, FORMATION, MUSHROOM;
+   a fixed ball's collision shapes and the partition's order, if a server ever sends a ball
+   that needs them.
+3. The call ledger (`ship.Undock`, `dogmaIM.Activate` and `Deactivate` to bind as the client
+   does; `GetMissionBriefingInfo` and `GetMissionObjectiveInfo`, which the client asks on every
+   layout of the agent's window), Phase 3's hosted check and the session-less gateway calls.
+4. The scanner the client's way: results kept from the server's word, a probe's destination
+   and range kept here and sent with the scan.
+5. More of a mission's words: the objectives pane, the mission's time under the agent's line,
+   messages inside messages when one turns up.
+6. Small, around dialogs: the title for a dialog's kind, the "do not ask again" box, the typed
+   codes not done.
