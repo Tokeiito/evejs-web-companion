@@ -443,6 +443,7 @@ const INITIAL_AGENTS: AgentsState = Object.freeze({
   missionTimes: null,
   missionPage: null,
   agentRecords: Object.freeze({}) as AgentsState["agentRecords"],
+  agentSolarSystems: Object.freeze({}) as AgentsState["agentSolarSystems"],
   journal: null,
   loaded: false,
   actionError: null,
@@ -1745,6 +1746,11 @@ export function createClientStore(): ClientStore {
       case "agents/record": {
         const current = agents.get();
         agents.set({ ...current, agentRecords: { ...current.agentRecords, [event.agentID]: event.record } });
+        break;
+      }
+      case "agents/solar-system": {
+        const current = agents.get();
+        agents.set({ ...current, agentSolarSystems: { ...current.agentSolarSystems, [event.agentID]: event.solarSystemID } });
         break;
       }
       case "agents/journal":

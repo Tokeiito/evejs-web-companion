@@ -5,8 +5,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
-  PAGE_LABELS, PAGE_MESSAGES, PAGE_WORD_LABELS, decodeClientMission, fixText, missionPage, pageMessageIDs, pageMissionState, pageNameRefs, pageObjectives,
-  pageOnMissionChange, type ClientMission, type MissionPageInput, type PageContext,
+  PAGE_LABELS, PAGE_MESSAGES, PAGE_WORD_LABELS, decodeClientMission, fixText, missionPage, pageAgentToLocate, pageMessageIDs, pageMissionState, pageNameRefs, pageObjectives,
+  pageOnMissionChange, pageSystemIDs, type ClientMission, type MissionPageInput, type PageContext,
 } from "./missionPage.ts";
 import { decodeObjectives, type MissionObjectives } from "./missionObjectives.ts";
 import { COURIER_OFFERED_GATEWAY, ENCOUNTER_ACCEPTED_GATEWAY, ENCOUNTER_OFFERED_GATEWAY } from "./missionObjectives.fixtures.ts";
@@ -47,6 +47,7 @@ const TEMPLATES: Record<string, string> = {
   [L.grantedText]: "Yours on accepting:",
   [L.rewardsTitle]: "Pay",
   [L.bonusTitle]: "Extra",
+  [L.securityTax]: "<b>Less is paid</b> hereabouts",
   [L.loyaltyPointsShort]: "{[numeric]lpAmount, useGrouping} pts",
   [L.researchPoints]: "{[numeric]rpAmount, useGrouping} research",
   [L.referral]: "A word to {[character]agentID.name}",
@@ -83,6 +84,7 @@ const input = (overrides: Partial<MissionPageInput> = {}): MissionPageInput => (
   objectives: null,
   record: null,
   agent: null,
+  agentSolarSystemID: null,
   standings: null,
   skillLevel: null,
   ...overrides,
@@ -138,6 +140,7 @@ test("every label the page uses is asked for", () => {
   assert.ok(PAGE_WORD_LABELS.includes("UI/Agents/Dialogue/EffectiveStanding"));
   assert.ok(PAGE_WORD_LABELS.includes("UI/Agents/Dialogue/EffectiveStandingLow"));
   assert.ok(PAGE_WORD_LABELS.includes("UI/Journal/JournalWindow/Agents/OfferExpiresIn"));
+  assert.ok(PAGE_WORD_LABELS.includes("UI/Agents/StandardMission/SecurityTaxMessage"));
 });
 
 test("an answer about this mission is kept; one about another mission, or none, changes nothing", () => {
@@ -208,6 +211,8 @@ test("an offered courier: the offer's words, cargo then pick-up then drop-off, a
     granted: null,
     rewards: { title: "Pay", rewards: ["13,800.00 ISK", "49 pts"] },
     bonusRewards: { title: "Extra", rewards: ["17,000.00 ISK"] },
+    // No agent is known here, so there is nowhere to be safe in.
+    reducedRewards: null,
     extra: { title: "Message 900956", text: "Message 900957" },
     talk: "Talk",
   });
@@ -234,7 +239,7 @@ test("an accepted mission to fight: the briefing itself, the dungeon in the agen
 
 test("a page with nothing read yet has its name and its state from the journal, and no more", () => {
   assert.deepEqual(missionPage(input({ missionState: 2, missionTitle: "Told as text" }), context()), {
-    title: "Told as text", state: null, expires: null, important: null, agent: null, corporation: null, briefing: null, objectives: null, collateral: null, granted: null, rewards: null, bonusRewards: null, extra: null, talk: "Talk",
+    title: "Told as text", state: null, expires: null, important: null, agent: null, corporation: null, briefing: null, objectives: null, collateral: null, granted: null, rewards: null, bonusRewards: null, reducedRewards: null, extra: null, talk: "Talk",
   });
   assert.equal(missionPage(input({ missionTitleID: null }), context()).title, null);
   // A name the client has no text for is no name.
@@ -497,6 +502,59 @@ test("what is paid: points by their own labels, a referral by the agent's name, 
   // Pay with no bonus has none drawn.
   assert.deepEqual(paid([["normalRewards", list(tuple(29, 5, null))], ["bonusRewards", list(tuple(HOUR.toString(), 29, 0, null, 60))]]), [["5.00 ISK"], null]);
   assert.deepEqual(paid([["normalRewards", list(tuple(29, 5, null))]]), [["5.00 ISK"], null]);
+});
+
+test("the banner about reduced rewards: an agent that is no career agent, in a system of the safest class, paying ISK", () => {
+  const SAFEST = 30000142;
+  const NEARLY = 30000144;
+  const security: Record<number, number> = { [SAFEST]: 0.95, [NEARLY]: 0.9499 };
+  const asked: number[] = [];
+  const securityOf = (id: number): number | null => { asked.push(id); return security[id] ?? null; };
+  const isk: Array<[string, unknown]> = [["normalRewards", list(tuple(29, 1000, null))]];
+  const banner = (parts: Array<[string, unknown]>, overrides: Partial<MissionPageInput> = {}, templates = TEMPLATES) =>
+    missionPage(input({ objectives: answer(parts), agent: AGENT, agentSolarSystemID: SAFEST, ...overrides }), context({ templates, securityOf })).reducedRewards;
+  // In the client's words, shown plain.
+  assert.equal(banner(isk), "Less is paid hereabouts");
+  // A bonus in ISK will do alone, though no bonus is drawn where nothing else is paid.
+  const bonusAlone = missionPage(input({ objectives: answer([["bonusRewards", list(tuple(HOUR.toString(), 29, 500, null, 60))]]), agent: AGENT, agentSolarSystemID: SAFEST }), context({ securityOf }));
+  assert.equal(bonusAlone.reducedRewards, "Less is paid hereabouts");
+  assert.equal(bonusAlone.bonusRewards, null);
+  // Nothing in ISK: points and things are not ISK, and ISK of nought is none.
+  assert.equal(banner([["normalRewards", list(tuple(34, 20, null))], ["loyaltyPoints", 12], ["researchPoints", 3], ["bonusRewards", list(tuple(HOUR.toString(), 34, 5, null, 60))]]), null);
+  assert.equal(banner([["normalRewards", list(tuple(29, 0, null))], ["bonusRewards", list(tuple(HOUR.toString(), 29, 0, null, 60))]]), null);
+  assert.equal(banner([]), null);
+  // A system just short of the safest class.
+  assert.equal(banner(isk, { agentSolarSystemID: NEARLY }), null);
+  // What is not known yet: the agent, where it is, how safe that is, and what the mission pays.
+  assert.equal(banner(isk, { agent: null }), null);
+  assert.equal(banner(isk, { agentSolarSystemID: null }), null);
+  assert.equal(banner(isk, { agentSolarSystemID: 30009999 }), null);
+  assert.equal(missionPage(input({ agent: AGENT, agentSolarSystemID: SAFEST }), context({ securityOf })).reducedRewards, null);
+  // A career agent has none, and its system's security is not looked at.
+  asked.length = 0;
+  assert.equal(banner(isk, { agent: { ...AGENT, agentTypeID: 12 } }), null);
+  assert.deepEqual(asked.filter((id) => id === SAFEST), []);
+  // An agent whose type the server did not say is not a career agent.
+  assert.equal(banner(isk, { agent: { ...AGENT, agentTypeID: null } }), "Less is paid hereabouts");
+  // Without the client's words for it, nothing is put in their place.
+  const { [L.securityTax]: _none, ...wordless } = TEMPLATES;
+  assert.equal(banner(isk, {}, wordless), null);
+});
+
+test("the agent the page asks the server to place, and the systems the page is drawn with", () => {
+  assert.equal(pageAgentToLocate(input({ agent: AGENT })), 3008416);
+  assert.equal(pageAgentToLocate(input({ agent: { ...AGENT, agentTypeID: null } })), 3008416);
+  assert.equal(pageAgentToLocate(input({ agent: { ...AGENT, agentTypeID: 12 } })), null);
+  assert.equal(pageAgentToLocate(input()), null);
+  const courier = mission(COURIER_OFFERED_GATEWAY);
+  // The places' systems first, then the agent's; each once.
+  assert.deepEqual(pageSystemIDs(input({ objectives: courier, agent: AGENT, agentSolarSystemID: 30000142 })), [30002780, 30002778, 30000142]);
+  assert.deepEqual(pageSystemIDs(input({ objectives: courier, agent: AGENT, agentSolarSystemID: 30002778 })), [30002780, 30002778]);
+  assert.deepEqual(pageSystemIDs(input({ objectives: courier, agent: AGENT })), [30002780, 30002778]);
+  assert.deepEqual(pageSystemIDs(input({ agent: AGENT, agentSolarSystemID: 30000142 })), [30000142]);
+  // A career agent's system is not wanted, nor one held for an agent the client does not know.
+  assert.deepEqual(pageSystemIDs(input({ agent: { ...AGENT, agentTypeID: 12 }, agentSolarSystemID: 30000142 })), []);
+  assert.deepEqual(pageSystemIDs(input({ agentSolarSystemID: 30000142 })), []);
 });
 
 test("what is handed over and what is held: one line of all that is given; the collateral for an offer only, and its first amount", () => {

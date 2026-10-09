@@ -961,6 +961,48 @@ test("an agent's record is its row of the agents table, with its corporation's f
   assert.equal(calls.filter((call) => call.method === "GetAgents").length, 1);
 });
 
+// ── Where an agent is (GET /api/bridge/agents/:agentID/solar-system) ─────────
+
+test("which solar system an agent is in is asked of the server as the client asks it, and passed on as it came", async () => {
+  const calls = [];
+  let reply = () => 30002780;
+  const gamePort = gamePortWithQuestions(() => ({ answered: true }));
+  gamePort.callMethod = async (service, method, args, kwargs) => {
+    calls.push({ service, method, args, kwargs });
+    return { service, method, result: method === "GetSolarSystemOfAgent" ? reply() : null, notifications: [] };
+  };
+  const { baseUrl } = await startTestServer({ gateway: fakeGateway(), gamePortPilots: gamePort, pilotTransportFor: () => "gameport" });
+  const read = (agent) => apiRequest(baseUrl, `/api/bridge/agents/${agent}/solar-system`);
+
+  // No pilot, nobody to ask through.
+  assert.equal((await read(3008416)).response.status, 409);
+  await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+  for (const agent of [0, "x", -5, "1.5"]) {
+    const refused = await read(agent);
+    assert.equal(refused.response.status, 400, String(agent));
+    assert.equal(refused.payload.error, "INVALID_AGENT");
+  }
+  calls.length = 0;
+
+  const found = await read(3008416);
+  assert.equal(found.response.status, 200, JSON.stringify(found.payload));
+  assert.deepEqual(found.payload, { ok: true, agentID: 3008416, solarSystemID: 30002780, notifications: [] });
+  assert.deepEqual(calls, [{ service: "agentMgr", method: "GetSolarSystemOfAgent", args: [3008416], kwargs: null }]);
+
+  // An agent the server places nowhere: null, whether it said None or nothing at all.
+  reply = () => null;
+  assert.deepEqual((await read(3011895)).payload, { ok: true, agentID: 3011895, solarSystemID: null, notifications: [] });
+  reply = () => undefined;
+  assert.deepEqual((await read(3011895)).payload, { ok: true, agentID: 3011895, solarSystemID: null, notifications: [] });
+  // Each ask goes to the server: it is the page that keeps the answer, as the client's service does.
+  assert.equal(calls.length, 3);
+  // A server that does not answer is an error, not an agent with no system.
+  reply = () => { throw Object.assign(new Error("The game server did not answer in time."), { code: "EVE_GATEWAY_TIMEOUT", statusCode: 504 }); };
+  const failed = await read(3008416);
+  assert.equal(failed.response.status >= 500, true, JSON.stringify(failed.payload));
+  assert.equal(failed.payload.ok, false);
+});
+
 test("an agent's record without a client to read has its row and nothing of the client's; a table that could not be read is read again", async () => {
   let fails = true;
   let reads = 0;

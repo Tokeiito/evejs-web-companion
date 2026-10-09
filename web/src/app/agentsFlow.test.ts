@@ -1953,3 +1953,102 @@ test("names resolved after a system's security has been read leave it where it i
   store.apply({ type: "names/system-security", security: { 30002778: 0.830855 } });
   assert.deepEqual(store.names.get(), { resolved: { "system:30002780": "Muvolailen", "system:30002778": "Tasabeshi" }, systemSecurity: { 30002780: 0.708087, 30002778: 0.830855 } });
 });
+
+// --- what is asked once, after the pilot is selected again ------------------------------
+
+test("selecting the pilot again empties what the store held of agents, and what the page asks once is asked again", async () => {
+  const { store, flow, requests } = await withMissionPage();
+  const count = (part: RegExp) => requests.filter((request) => part.test(request.path)).length;
+  const answered = () => store.agents.get().agentRecords[3008416] !== undefined && Object.keys(store.agents.get().missionKeywords).length === 1;
+  await flow.openMissionDetails(3008416);
+  await until(answered);
+  await flow.selectCharacter(LISTENING_PILOT);
+  assert.deepEqual(store.agents.get().agentRecords, {});
+  assert.deepEqual(store.agents.get().missionKeywords, {});
+  await flow.loadJournal();
+  await flow.openMissionDetails(3008416);
+  await until(answered);
+  assert.equal(count(/\/record$/), 2);
+  assert.equal(count(/\/keywords\?/), 2);
+  // And still once only while the pilot stays.
+  flow.closeMissionDetails();
+  await flow.openMissionDetails(3008416);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(count(/\/record$/), 2);
+  assert.equal(count(/\/keywords\?/), 2);
+});
+
+// --- where an agent is ------------------------------------------------------------------
+
+test("where an agent is, is asked of the server once for each agent, and again only if it could not be had", async () => {
+  let fails = false;
+  const { store, flow, requests } = await listening({ null: ACCEPTED }, {
+    routes: (path) => {
+      const asked = /^\/api\/bridge\/agents\/(\d+)\/solar-system$/.exec(path);
+      if (asked === null) return undefined;
+      if (fails) return [502, { ok: false, error: "UNREACHABLE", message: "No answer." }];
+      const agentID = Number(asked[1]);
+      return [200, { ok: true, agentID, solarSystemID: agentID === OTHER_AGENT ? null : 30000000 + (agentID % 1000), notifications: [] }];
+    },
+  });
+  const asked = () => requests.filter((request) => request.path.endsWith("/solar-system")).map((request) => request.path);
+  const held = () => store.agents.get().agentSolarSystems;
+  const agentsListed = store.agents.get().agents.length;
+  assert.ok(agentsListed > 0);
+  flow.requestAgentSolarSystem(3008416);
+  flow.requestAgentSolarSystem(3008416);
+  await until(() => held()[3008416] !== undefined);
+  // What else the store holds of agents is as it was.
+  assert.equal(store.agents.get().agents.length, agentsListed);
+  flow.requestAgentSolarSystem(3008416);
+  assert.deepEqual(asked(), ["/api/bridge/agents/3008416/solar-system"]);
+  assert.deepEqual(held(), { 3008416: 30000416 });
+
+  // An agent the server places nowhere is kept as none, and not asked about again.
+  flow.requestAgentSolarSystem(OTHER_AGENT);
+  await until(() => held()[OTHER_AGENT] !== undefined);
+  flow.requestAgentSolarSystem(OTHER_AGENT);
+  assert.deepEqual(held(), { 3008416: 30000416, [OTHER_AGENT]: null });
+  assert.equal(asked().length, 2);
+
+  // One that could not be asked for is asked for again.
+  fails = true;
+  flow.requestAgentSolarSystem(3009123);
+  await until(() => asked().length === 3);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(held()[3009123], undefined);
+  fails = false;
+  flow.requestAgentSolarSystem(3009123);
+  await until(() => held()[3009123] !== undefined);
+  assert.equal(held()[3009123], 30000123);
+  // Nothing is asked for what is not an agent.
+  for (const not of [0, -1, 1.5, Number.NaN]) flow.requestAgentSolarSystem(not);
+  assert.equal(asked().length, 4);
+  // Where an agent is and what the client knows of it are two asks: one on its way does not stand for the other.
+  flow.requestAgentSolarSystem(3008777);
+  flow.requestAgentRecord(3008777);
+  await until(() => held()[3008777] !== undefined);
+  assert.equal(requests.filter((request) => request.path === "/api/bridge/agents/3008777/record").length, 1);
+  assert.equal(asked().length, 5);
+
+  // Selecting the pilot again empties what was kept, and then it is asked again.
+  await flow.selectCharacter(LISTENING_PILOT);
+  assert.deepEqual(held(), {});
+  flow.requestAgentSolarSystem(3008416);
+  await until(() => held()[3008416] !== undefined);
+  assert.equal(asked().length, 6);
+});
+
+test("an answer that is not a solar system's ID is kept as none", async () => {
+  let answer: unknown = "30002780";
+  const { store, flow } = await listening({ null: ACCEPTED }, {
+    routes: (path) => (path.endsWith("/solar-system") ? [200, { ok: true, solarSystemID: answer, notifications: [] }] : undefined),
+  });
+  const agents = [3008001, 3008002, 3008003, 3008004, 3008005];
+  for (const [index, each] of ["30002780", 0, -5, 1.5, undefined].entries()) {
+    answer = each;
+    flow.requestAgentSolarSystem(agents[index]!);
+    await until(() => store.agents.get().agentSolarSystems[agents[index]!] !== undefined);
+    assert.equal(store.agents.get().agentSolarSystems[agents[index]!], null, String(each));
+  }
+});

@@ -1364,14 +1364,22 @@ export interface AppFlow {
   /**
    * Ask a mission's agent for the mission's keywords, to land in
    * `store.agents.missionKeywords` under "<agentID>:<contentID>". Asked once
-   * for each mission, as the client does. Never throws.
+   * for each mission, as the client does, for as long as the store keeps the
+   * answer (selecting a pilot empties it). Never throws.
    */
   requestMissionKeywords(agentID: number, contentID: number): void;
   /**
    * Ask what the client's agents service knows of an agent (its level, division, corporation and
-   * faction), to land in `store.agents.agentRecords` under its ID. Asked once for each agent. Never throws.
+   * faction), to land in `store.agents.agentRecords` under its ID. Asked once for each agent, for as long
+   * as the store keeps the answer. Never throws.
    */
   requestAgentRecord(agentID: number): void;
+  /**
+   * Ask the server which solar system an agent is in (agentMgr.GetSolarSystemOfAgent), to land in
+   * `store.agents.agentSolarSystems` under the agent's ID. Asked once for each agent, as the client's
+   * agents service does, for as long as the store keeps the answer. Never throws.
+   */
+  requestAgentSolarSystem(agentID: number): void;
   /**
    * Ask for the security of these solar systems, to land in `store.names.systemSecurity` under their IDs.
    * Batched and remembered like names: each is asked for once. Never throws.
@@ -12778,26 +12786,28 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
   }
 
+  // What the store keeps of agents is asked for once: not while an ask for it is on its way, and not
+  // while the store holds an answer. Selecting a pilot empties what the store holds of agents, and then
+  // it is asked for again; an ask that fails leaves nothing held, so a later one tries again.
+  function askOnce<Key extends string | number>(asking: Set<Key>, key: Key, held: boolean, ask: () => Promise<void>): void {
+    if (held || asking.has(key)) {
+      return;
+    }
+    asking.add(key);
+    void ask().catch(() => {}).finally(() => asking.delete(key));
+  }
+
   // A mission's keywords, asked of its agent once (agents.py PrimeMessageArguments).
-  const keywordsAsked = new Set<string>();
+  const keywordsAsking = new Set<string>();
   function requestMissionKeywords(agentID: number, contentID: number): void {
     if (!Number.isSafeInteger(agentID) || agentID <= 0 || !Number.isSafeInteger(contentID) || contentID <= 0) {
       return;
     }
     const key = `${agentID}:${contentID}`;
-    if (keywordsAsked.has(key)) {
-      return;
-    }
-    keywordsAsked.add(key);
-    void api.loadMissionKeywords(agentID, contentID, callOptions).then(
-      (keywords) => {
-        store.apply({ type: "agents/mission-keywords", key, keywords: argumentsOf(keywords) });
-      },
-      () => {
-        // Not remembered: a later ask tries again.
-        keywordsAsked.delete(key);
-      },
-    );
+    askOnce(keywordsAsking, key, key in store.agents.get().missionKeywords, async () => {
+      const keywords = await api.loadMissionKeywords(agentID, contentID, callOptions);
+      store.apply({ type: "agents/mission-keywords", key, keywords: argumentsOf(keywords) });
+    });
   }
 
   // A system's security is static, like a name: asked for once, in one request for all that are wanted at once.
@@ -12835,21 +12845,28 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
   // What the client's agents service knows of an agent, asked for once (agents.GetAgentByID reads a table
   // the client keeps for the session).
-  const agentRecordsAsked = new Set<number>();
+  const agentRecordsAsking = new Set<number>();
   function requestAgentRecord(agentID: number): void {
-    if (!Number.isSafeInteger(agentID) || agentID <= 0 || agentRecordsAsked.has(agentID)) {
+    if (!Number.isSafeInteger(agentID) || agentID <= 0) {
       return;
     }
-    agentRecordsAsked.add(agentID);
-    void api.loadAgentRecord(agentID, callOptions).then(
-      (record) => {
-        store.apply({ type: "agents/record", agentID, record: decodeAgentRecord(record) });
-      },
-      () => {
-        // Not remembered: a later ask tries again.
-        agentRecordsAsked.delete(agentID);
-      },
-    );
+    askOnce(agentRecordsAsking, agentID, agentID in store.agents.get().agentRecords, async () => {
+      const record = await api.loadAgentRecord(agentID, callOptions);
+      store.apply({ type: "agents/record", agentID, record: decodeAgentRecord(record) });
+    });
+  }
+
+  // Which solar system an agent is in, asked of the server once for each agent
+  // (agents.GetSolarSystemOfAgent keeps what agentMgr.GetSolarSystemOfAgent answered).
+  const agentSystemsAsking = new Set<number>();
+  function requestAgentSolarSystem(agentID: number): void {
+    if (!Number.isSafeInteger(agentID) || agentID <= 0) {
+      return;
+    }
+    askOnce(agentSystemsAsking, agentID, agentID in store.agents.get().agentSolarSystems, async () => {
+      const solarSystemID = await api.loadAgentSolarSystem(agentID, callOptions);
+      store.apply({ type: "agents/solar-system", agentID, solarSystemID });
+    });
   }
 
   function requestWords(labels: readonly string[]): void {
@@ -13863,6 +13880,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     requestWords,
     requestMissionKeywords,
     requestAgentRecord,
+    requestAgentSolarSystem,
     requestSystemSecurity,
 
     /**

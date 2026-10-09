@@ -12545,6 +12545,28 @@ app.get("/api/bridge/agents/:agentID/record", requireAuth, async (req, res, next
   }
 });
 
+// Which solar system an agent is in, as the client's agents service asks the server
+// (agents.GetSolarSystemOfAgent: one agentMgr.GetSolarSystemOfAgent for each agent, kept from then
+// on). The mission's page asks it for any agent that is not a career agent, to decide on its banner
+// about reduced rewards. The answer is passed on as it came: a solar system's ID, or nothing.
+app.get("/api/bridge/agents/:agentID/solar-system", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const agentID = Number(req.params.agentID) || 0;
+  if (!Number.isSafeInteger(agentID) || agentID <= 0) {
+    res.status(400).json({ ok: false, error: "INVALID_AGENT", message: "A positive agentID is required." });
+    return;
+  }
+  try {
+    const outcome = await heldTopLevelCall(held, req.webSessionID, "agentMgr", "GetSolarSystemOfAgent", [agentID], null);
+    res.json({ ok: true, agentID, solarSystemID: outcome.result ?? null, notifications: outcome.notifications });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // Drive the agent conversation: DoAction(actionID). actionID null opens the
 // conversation; a server-assigned action token (from availableActions) requests
 // / accepts / declines. The in-person accept is synchronous; a decline is a

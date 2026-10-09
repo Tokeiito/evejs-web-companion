@@ -80,8 +80,9 @@ function panel(options: {
   locationWords?: boolean;
   /** Whether the client's words for a short written interval are to hand. */
   intervalWords?: boolean;
-  /** What the client's agents service knows of the page's agent. */
+  /** What the client's agents service knows of the page's agent, and the solar system the server says it is in. */
   agentRecord?: Record<string, unknown> | null;
+  agentSystem?: number | null;
   /** The pilot's standings and skills as read, each as [id, value] pairs. */
   standings?: ReadonlyArray<readonly [number, number]>;
   skillLevels?: ReadonlyArray<readonly [number, number]>;
@@ -148,6 +149,9 @@ function panel(options: {
   if (options.agentRecord !== undefined) {
     store.apply({ type: "agents/record", agentID: AGENT, record: options.agentRecord as never });
     store.apply({ type: "names/resolved", entries: { "corporation:1000002": "A Made-Up Company", "faction:500001": "A Made-Up State" } });
+  }
+  if (options.agentSystem !== undefined) {
+    store.apply({ type: "agents/solar-system", agentID: AGENT, solarSystemID: options.agentSystem });
   }
   if (options.standings !== undefined) {
     store.apply({ type: "standings/loaded", char: options.standings.map(([fromID, standing]) => ({ fromID, standing })), charError: null, corp: null, corpError: null });
@@ -334,6 +338,7 @@ const PAGE_TEMPLATES: Record<string, string> = {
   [PAGE_LABELS.cargoWithSize]: "{cargoDescription} ({[numeric]size, decimalPlaces=1} m3)",
   [PAGE_LABELS.rewardsTitle]: "Pay",
   [PAGE_LABELS.bonusTitle]: "Extra",
+  [PAGE_LABELS.securityTax]: "<b>Less is paid</b> hereabouts.",
   [PAGE_LABELS.loyaltyPointsShort]: "{[numeric]lpAmount, useGrouping} pts",
   [PAGE_LABELS.isk]: "{[numeric]amount, useGrouping, decimalPlaces=2} ISK",
   [PAGE_LABELS.quantityAndItem]: "{[numeric]quantity, useGrouping} x {[item]item.name}",
@@ -635,4 +640,28 @@ test("a place is drawn with its system's security rating, on the page and on the
   // Before it is read, the name alone.
   const before = pageOf(panel({ words: true, pageWords: true, locationWords: true, talking: false, page: { missionState: 2, expirationTime: null, objectives: decodeObjectives(COURIER_OFFERED_GATEWAY) } })) as string;
   assert.match(text(before), /○ From station 60000004 ○ To station 60000019/);
+});
+
+// --- the banner about reduced rewards ---------------------------------------------------
+
+test("the banner about reduced rewards is drawn after the rewards and before the extra information, for an agent in the safest space", () => {
+  const record = { agentID: AGENT, agentTypeID: 2, divisionID: 22, level: 1, stationID: 60000004, corporationID: 1000002, factionID: 500001, divisionNameID: null };
+  const held = { objectives: decodeObjectives(COURIER_OFFERED_GATEWAY), record: PAGE_RECORD };
+  const drawn = (options: Partial<Parameters<typeof panel>[0]>) => pageOf(panel({ words: true, pageWords: true, talking: false, agentRecord: record, page: held, ...options })) as string;
+  const page = drawn({ agentSystem: 30000142, security: { 30000142: 1 } });
+  assert.match(text(page), /Extra 17,000\.00 ISK Less is paid hereabouts\. One more thing Mind the gate\./);
+  assert.match(page, /<p class="note mission-page-banner" role="note">Less is paid hereabouts\.<\/p>/);
+  // None where the agent's system is less safe, where it is not known, or for a career agent.
+  for (const options of [
+    { agentSystem: 30000142, security: { 30000142: 0.9 } },
+    { agentSystem: 30000142 },
+    { security: { 30000142: 1 } },
+    { agentSystem: null, security: { 30000142: 1 } },
+    { agentSystem: 30000142, security: { 30000142: 1 }, agentRecord: { ...record, agentTypeID: 12 } },
+    { agentSystem: 30000142, security: { 30000142: 1 }, agentRecord: null },
+  ]) {
+    const none = drawn(options);
+    assert.doesNotMatch(none, /mission-page-banner/, JSON.stringify(options));
+    assert.match(text(none), /Extra 17,000\.00 ISK One more thing Mind the gate\./);
+  }
 });

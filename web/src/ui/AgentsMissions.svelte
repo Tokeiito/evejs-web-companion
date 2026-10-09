@@ -27,7 +27,7 @@
   import { questionMarkup, questionText, wordsLabels, wordsNameRefs, type ClientWording } from "../bridge/questions.ts";
   import { sessionPlace } from "../bridge/sessionPlace.ts";
   import { objectiveSystemIDs } from "../bridge/locationWrapper.ts";
-  import { PAGE_WORD_LABELS, missionPage, pageMessageIDs, pageNameRefs, type MissionPage, type MissionPageInput, type PagePanel, type PageRewards, type PageSteps, type StepState } from "../bridge/missionPage.ts";
+  import { PAGE_WORD_LABELS, missionPage, pageAgentToLocate, pageMessageIDs, pageNameRefs, pageSystemIDs, type MissionPage, type MissionPageInput, type PagePanel, type PageRewards, type PageSteps, type StepState } from "../bridge/missionPage.ts";
   import { filetimeOf, journalRowAsks, journalRowText, journalRowWords } from "../bridge/journalWords.ts";
 
   let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
@@ -374,6 +374,7 @@
       objectives: held.objectives,
       record: held.record,
       agent: $agents.agentRecords[held.agentID] ?? null,
+      agentSolarSystemID: $agents.agentSolarSystems[held.agentID] ?? null,
       standings: $standings.char === null ? null : new Map($standings.char.map((row) => [row.fromID, row.standing])),
       skillLevel: $skills.skills === null ? null : ((levels) => (typeID: number) => levels.get(typeID) ?? 0)(new Map($skills.skills.map((skill) => [skill.typeID, skill.level]))),
     };
@@ -451,9 +452,12 @@
     const refs = [{ kind: "agent" as const, id: held.agentID }, ...pageNameRefs(pageInput), ...wordsNameRefs(said, pageClient(held.agentID, held.contentID))]
       .map((ref) => (ref.kind === "owner" && isAgentID(ref.id) ? { kind: "agent" as const, id: ref.id } : ref));
     flow.requestNames(refs);
-    if (held.objectives !== null) {
-      flow.requestSystemSecurity(objectiveSystemIDs(held.objectives));
+    // The banner about reduced rewards turns on where the agent is, which the client asks the server.
+    const agentToLocate = pageAgentToLocate(pageInput);
+    if (agentToLocate !== null) {
+      flow.requestAgentSolarSystem(agentToLocate);
     }
+    flow.requestSystemSecurity(pageSystemIDs(pageInput));
   });
   const STEP_MARKS: Readonly<Record<StepState, readonly [string, string]>> = { done: ["✓", "done"], open: ["○", "not yet"], failed: ["✕", "failed"] };
 
@@ -811,6 +815,9 @@
     {@render pagePanel("granted", page.granted)}
     {@render pageRewards("rewards", page.rewards)}
     {@render pageRewards("bonus", page.bonusRewards)}
+    {#if page.reducedRewards}
+      <p class="note mission-page-banner" role="note">{page.reducedRewards}</p>
+    {/if}
     {#if page.extra}
       {#if page.extra.title}<h3 class="mission-block-title">{page.extra.title}</h3>{/if}
       <p class="mission-block-text mission-page-extra" style="white-space: pre-line">{page.extra.text}</p>

@@ -23,14 +23,15 @@
 // Not done: how many jumps away a place is (the client plots the route), which leaves a place's distance
 // blank unless the pilot is there; "Objectives Complete" as the state (the client
 // has it from its own tracker); a ship's packaged size as cargo; the ship restrictions panel; the
-// reduced-rewards banner; the bonus's countdown; a blueprint's properties; what an alpha clone is paid.
+// bonus's countdown; a blueprint's properties; what an alpha clone is paid.
 // The bonus's countdown is the one time on the client's page that is not written here.
 
 import { formatTemplate, plainText, QUANTITY_AND_ITEM } from "./clientWords.ts";
-import type { AgentRecord } from "./agents.ts";
+import { AGENT_TYPE_CAREER, type AgentRecord } from "./agents.ts";
+import { SECURITY_CLASS, securityClass } from "./systemSecurity.ts";
 import { effectiveStandingWithAgent } from "./effectiveStanding.ts";
 import { SHORT_INTERVAL_WORD_LABELS, shortIntervalWriter } from "./timeInterval.ts";
-import { LOCATION_WORD_LABELS, wrapLocation } from "./locationWrapper.ts";
+import { LOCATION_WORD_LABELS, objectiveSystemIDs, wrapLocation } from "./locationWrapper.ts";
 import { AGENT_MISSION_STATE_FAILED, TYPE_CREDITS, type MissionCargo, type MissionItem, type MissionLocation, type MissionMessage, type MissionObjectives } from "./missionObjectives.ts";
 import type { NameKind } from "../store/names.ts";
 
@@ -74,6 +75,8 @@ export const PAGE_LABELS = Object.freeze({
   grantedText: `${FOLDER}GrantedItemText`,
   rewardsTitle: `${FOLDER}RewardsTitle`,
   bonusTitle: `${FOLDER}BonusRewardsTitle`,
+  /** The banner about reduced rewards where the agent's system is of the safest class. */
+  securityTax: `${FOLDER}SecurityTaxMessage`,
   /** Takes lpAmount. */
   loyaltyPointsShort: `${FOLDER}NumLoyaltyPointsShort`,
   /** Takes rpAmount. */
@@ -192,6 +195,8 @@ export interface MissionPage {
   readonly granted: PagePanel | null;
   readonly rewards: PageRewards | null;
   readonly bonusRewards: PageRewards | null;
+  /** The banner about reduced rewards, in the client's words; null when the client shows none. */
+  readonly reducedRewards: string | null;
   readonly extra: { readonly title: string; readonly text: string } | null;
   /** The words of the button that opens the agent's window. */
   readonly talk: string | null;
@@ -210,6 +215,8 @@ export interface MissionPageInput {
   readonly objectives: MissionObjectives | null;
   /** What the client's agents service knows of the mission's agent; null before it has answered, or when it does not know it. */
   readonly agent: AgentRecord | null;
+  /** The solar system the server says the agent is in; null before it has answered, or when it names none. */
+  readonly agentSolarSystemID: number | null;
   /** The standings the server lists towards the pilot, by owner; null before they have been read. */
   readonly standings: ReadonlyMap<number, number> | null;
   /** The level the pilot has in a skill, nought for one it has not; null before its skills have been read. */
@@ -303,6 +310,20 @@ export function pageOnMissionChange(action: string): "close" | { readonly missio
  */
 export function pageMissionState(input: MissionPageInput): number | null {
   return input.objectives !== null ? input.objectives.missionState : input.missionState;
+}
+
+/**
+ * The agent whose solar system the page asks the server for: any agent the client knows that is not a
+ * career agent, whatever the mission pays (page.py 63 to 65). Null when it asks for none.
+ */
+export function pageAgentToLocate(input: MissionPageInput): number | null {
+  return input.agent !== null && input.agent.agentTypeID !== AGENT_TYPE_CAREER ? input.agent.agentID : null;
+}
+
+/** The solar systems whose security the page is drawn with: those its places are in, and the agent's once the server has said which that is. */
+export function pageSystemIDs(input: MissionPageInput): number[] {
+  const agentSystem = pageAgentToLocate(input) === null ? null : input.agentSolarSystemID;
+  return [...new Set([...(input.objectives === null ? [] : objectiveSystemIDs(input.objectives)), ...(agentSystem === null ? [] : [agentSystem])])];
 }
 
 /** The names the page will ask for, so they can be fetched before it is drawn. */
@@ -506,6 +527,15 @@ export function missionPage(input: MissionPageInput, context: PageContext): Miss
   const collateralFirst = objectives?.collateral[0];
   const collateralAmount = collateralFirst === undefined ? null : words(PAGE_LABELS.isk, { amount: collateralFirst.quantity });
 
+  // page.py 63 to 71: for an agent that is not a career agent, in a system of the safest class, with a
+  // reward or a bonus in ISK. The class is the one the system was made with, not one the server has
+  // changed. An amount of nought is not kept when the answer is read, so any ISK listed is some ISK.
+  const agentSystem = pageAgentToLocate(input) === null ? null : input.agentSolarSystemID;
+  const agentSecurity = agentSystem === null ? null : context.securityOf(agentSystem);
+  const paysIsk = (items: readonly MissionItem[]): boolean => items.some((item) => item.typeID === TYPE_CREDITS);
+  const taxed = agentSecurity !== null && securityClass(agentSecurity) === SECURITY_CLASS.safe && objectives !== null
+    && (paysIsk(objectives.normalRewards) || paysIsk(objectives.bonusRewards));
+
   // AgentMissionJob.extra_information: only with a body, and then under its own heading.
   const extraBody = message(PAGE_MESSAGES.extraBody);
 
@@ -527,6 +557,7 @@ export function missionPage(input: MissionPageInput, context: PageContext): Miss
     granted: grantedTexts.length === 0 ? null : { title: words(PAGE_LABELS.grantedItems), text: words(PAGE_LABELS.grantedText), items: grantedTexts.join(", ") },
     rewards: paid && normal.length > 0 ? { title: words(PAGE_LABELS.rewardsTitle), rewards: normal } : null,
     bonusRewards: bonus.length > 0 ? { title: words(PAGE_LABELS.bonusTitle), rewards: bonus } : null,
+    reducedRewards: taxed ? words(PAGE_LABELS.securityTax) : null,
     extra: extraBody === "" ? null : { title: message(PAGE_MESSAGES.extraHeader), text: extraBody },
     talk: words(PAGE_LABELS.startConversation),
   };

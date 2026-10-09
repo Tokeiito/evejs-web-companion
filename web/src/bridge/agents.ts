@@ -300,6 +300,8 @@ export function windowOnMissionChange(change: MissionChange, openAgentID: number
 
 /** appConst.agentTypeResearchAgent. */
 export const AGENT_TYPE_RESEARCH = 4;
+/** appConst.agentTypeCareerAgent. */
+export const AGENT_TYPE_CAREER = 12;
 
 /**
  * agentDialogueWindow._GetConversation: what the client's window does by itself as it opens. If the

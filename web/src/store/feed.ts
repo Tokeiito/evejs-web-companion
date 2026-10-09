@@ -487,6 +487,8 @@ export type FeedEvent =
   | { readonly type: "agents/mission-times"; readonly times: import("../bridge/missionTime.ts").MissionTimes | null }
   /** What the client's agents service knows of one agent, as answered (null: the server lists no such agent). */
   | { readonly type: "agents/record"; readonly agentID: number; readonly record: import("../bridge/agents.ts").AgentRecord | null }
+  /** The solar system the server says an agent is in (null: none). */
+  | { readonly type: "agents/solar-system"; readonly agentID: number; readonly solarSystemID: number | null }
   /** The mission's page on show: opened, read again, or (null) closed. */
   | { readonly type: "agents/mission-page"; readonly page: import("./types.ts").MissionPageState | null }
   // The mission journal (active + offered missions).

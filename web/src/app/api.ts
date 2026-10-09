@@ -2085,6 +2085,13 @@ export async function loadAgentRecord(agentID: number, options: ApiOptions = {})
   return data.agent ?? null;
 }
 
+/** The solar system an agent is in, as the server answers agentMgr.GetSolarSystemOfAgent: its ID, or null for none. */
+export async function loadAgentSolarSystem(agentID: number, options: ApiOptions = {}): Promise<number | null> {
+  const data = await getJson(`/api/bridge/agents/${agentID}/solar-system`, options);
+  const id = data.solarSystemID;
+  return typeof id === "number" && Number.isSafeInteger(id) && id > 0 ? id : null;
+}
+
 /** A mission's objectives as the job board's page of it reads them (raw; decoded in the flow). */
 export async function loadMissionObjectives(agentID: number, options: ApiOptions = {}): Promise<JsonValue> {
   const data = await getJson(`/api/bridge/agents/${agentID}/mission-objectives`, options);

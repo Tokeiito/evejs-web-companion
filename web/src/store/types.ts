@@ -1224,6 +1224,11 @@ export interface AgentsState {
    * server does not list, and no entry at all for one not yet answered.
    */
   readonly agentRecords: Readonly<Record<number, import("../bridge/agents.ts").AgentRecord | null>>;
+  /**
+   * The solar system each agent asked about is in, by the agent's ID, as the server answers
+   * agentMgr.GetSolarSystemOfAgent: null for none, and no entry at all for one not yet answered.
+   */
+  readonly agentSolarSystems: Readonly<Record<number, number | null>>;
   readonly journal: JournalState | null;
   /** True once the agent list has loaded. */
   readonly loaded: boolean;
