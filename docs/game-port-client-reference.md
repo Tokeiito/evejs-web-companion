@@ -339,10 +339,14 @@ service's method with a `CachedMethodCallResult`, the client's object cache keep
 | `utcmidnight`, `utcmidnight_or_3hours` | until it is as old as is left to the first UTC midnight after the run began, or three hours if that is less |
 | `always`, or None | never |
 
-The client's log says "returning a cached result" where the cache answered. Across the
-Tranquility recordings that is `agentMgr.GetMessagesForEpicArcMissions` 800 times,
-`shipKillCounter.GetItemKillCountPlayer` 61, `fwWarzoneSolarsystem.GetAllWarzonesOccupationStates`
-55, `beyonce.GetFormations` 43, `structureDirectory.GetStructureMapData` 42, and a dozen more.
+The client's log says "returning a cached result" where the cache answered outright, and
+"returning a cached result that requires version checking" where it held an answer that was due
+a check with the server. Across the Tranquility recordings the cache answered outright 978
+times: `agentMgr.GetMessagesForEpicArcMissions` 800,
+`fwWarzoneSolarsystem.GetAllWarzonesOccupationStates` 53, `beyonce.GetFormations` 43,
+`shipKillCounter.GetItemKillCountPlayer` 34, `structureDirectory.GetStructureMapData` 17, and
+nine more. (This paragraph first gave 61, 55 and 42 for three of these. That counted both kinds
+of line as one. The checks are counted in the paragraph after this one.)
 The server tells the client when an answer has changed by calling
 `objectCaching.InvalidateCachedMethodCall(service, method, *args)` or
 `InvalidateCachedMethodCalls` on it.
@@ -356,12 +360,56 @@ marks some three dozen methods as cached. Read twice in one session, a docked pi
 
 Not as the client does it:
 
-- **A check with the server.** When an answer is due one, the client sends the call with the
-  version it holds (`machoVersion`) and may be told `CacheOK`. Here the call is sent afresh.
 - **One of the pilot's own writes forgets every answer kept.** The client's own code names the
   cached calls a write of its changes, and the server names the rest.
 - A bound object's cached answers, and the server's naming of several calls by a part of their
   arguments, are not kept or matched.
+
+**The object cache's check with the server, 2026-10-09.** When an answer held is due a check,
+the client sends the call all the same, with the version it holds where every other call
+carries a `1`: `machoVersion=[when, checksum]`, a list (`ServiceCallGPCS.py`
+`RemoteServiceCallWithoutTheStars`). The server answers with a new `CachedMethodCallResult`,
+which is kept in place of the old one, or with the exception `objectCaching.CacheOK`. Then the
+copy held is the answer, and it is good from that moment (`UpdateVersionCheckPeriod`).
+
+The version is `CachedMethodCallResult.GetVersion()`. An answer held inline has a version of
+its own. An answer that is a reference to a cached object has none (`version=None`), and its
+version is the object's.
+
+Across the Tranquility recordings the client made 64 such checks and the server answered 61 of
+them `CacheOK`:
+
+| Service | Checks | Answered `CacheOK` |
+|---|---|---|
+| `shipKillCounter` | 27 | 25 |
+| `structureDirectory` | 25 | 24 |
+| `standingMgr` | 7 | 7 |
+| `fwWarzoneSolarsystem` | 2 | 2 |
+| `agentMgr` | 2 | 2 |
+| `map` | 1 | 1 |
+
+Tranquility answers so for a reference too. `fwWarzoneSolarsystem.GetAllWarzonesOccupationStates`
+came first as a reference with no version of its own, good for a minute; its object's checksum
+was 42023. The check went out with the object's stamp and 42023, and `CacheOK` came back. The
+standings come with a version check of three words, the client's own first
+(`('always', None, None)`), and are checked at every asking.
+
+The game-port session now makes the check (`session.js` `_serviceCall`), and keeps no answer
+it has no version for. Seen live, on a session whose clock the script moves:
+
+| Call | Good for | Inside that time | Past it |
+|---|---|---|---|
+| `standingMgr.GetStandingCompositions`, held inline | 5 minutes | at 4 minutes, nothing sent | at 6, sent with the version; `CacheOK`; nothing sent after |
+| `corporationSvc.GetAllCorpMedals`, a reference | 1 hour | at 59 minutes, nothing sent | at 61, sent with the object's version; `CacheOK`; nothing sent after |
+
+The second row is so since a fix to EveJS (`eve.js` `342a366a6`). Before it the server
+answered that check with a whole new answer of the same checksum: it compared against the
+result's own version, and a reference has none.
+
+The first build here made the same mistake from the other side. It read the result's own
+version, and for a reference sent `[0, None]` at the very next asking. Every test passed, each
+on an answer I had made up with a version of its own. Recording the frames again from the real
+server showed it, and there is now a test on the server's own recorded bytes.
 
 **The formations, asked for once, 2026-10-09.** `michelle.AddBallpark` asks
 `sm.RemoteSvc('beyonce').GetFormations()` each time it makes a ballpark (`michelle.py` 324). The

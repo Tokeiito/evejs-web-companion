@@ -300,6 +300,13 @@ Take these defaults, and list each under "For the operator" in the log so they c
   run the pass again. And the first route of a pass, `/api/bridge/flight/status`, now and then
   reads "moved" with a count of notices: a notice that reached the game port's session at login
   (`OnModuleAttributeChanges`, seen 2026-10-09) goes out with the first answer.
+- **Print the whole of a pass, and make the first pass after a restart one of the two.** A pass
+  read "1 moved" straight after the game-port BFF was restarted, and I had printed its last
+  line only. It was `searchTime`, which the tool was meant to leave out and did not: the
+  server's answer keeps it as a dict's entry (`{type: "dict", entries: [...]}`), and the test
+  that said it was left out had it as an object's own field, a shape no answer has. Send the
+  tool's output to a file and `grep -vE "^(identical|tolerated) "` it. And take a fixture's
+  shape from an answer printed off the running BFF, not from the path the tool prints.
 - **A test that puts a pilot in space must use the park that moves by hand.** In
   `test/gamePortPilots.test.js`, `selected({ inSpace: true })` makes a real park with a real
   timer, and the test process then never ends: a run sat until its own time limit killed it
