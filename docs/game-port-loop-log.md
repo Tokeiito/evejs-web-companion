@@ -7730,7 +7730,9 @@ After the server was restarted on it, both transports found none.
 2. Around the contracts: "Offered to you" from the owner's list; the corporation's lists;
    a rowset read where a server answers one; the search with something staged for each of
    its filters, on both transports; what the sub-agent left in the server (the operator's
-   section).
+   section). And the same fault elsewhere in the server: a search of its services for a
+   keyword read as a plain property, with no helper in the file, names two more
+   (`seasonManagerService.js`, `dungeonService.js`). Neither was read.
 3. Around a fitted module: the recording read past `SetModuleOnline`'s answer, and this
    server's fit set beside it; the recording of ammunition loaded while docked, and charges
    in slots as godma holds them; the Fitting panel's cargo figure after a module's state
