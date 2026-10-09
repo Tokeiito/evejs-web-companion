@@ -213,6 +213,14 @@ Decisions taken in your place, and anything waiting on you. Overrule any of thes
 - **eve.js's test runner cleans the temp folder.** The first sub-agent's test run swept 32 stale
   directories (11.7 GB, none touched for 29 hours) from the OS temp folder, `evejs-web-*` among
   them. That is the runner's own housekeeping, not something asked for; nothing in use was lost.
+- **Three routes ask the server for less than they did** (2026-10-09), because the retail client
+  does not make the calls and the page read none of the answers. The Fitting window's dogma
+  route asks `GetAllInfo` alone, where the plumbing sweep had it ask eleven reads; the calendar
+  route asks for an event's details and responses only when an event is named; a corporation's
+  assets are searched only when a request names a filter. Nothing was taken off the allowlist
+  and no decoder was removed. To have the dogma reads asked again, add them back to
+  `DOGMA_BOUND_READS` in `src/server.js`. See the entries "the ledger from a walk" and "the
+  proxy's services".
 
 ## Server defects
 
