@@ -67,6 +67,7 @@ const { createPilotSkills } = require("./pilotSkills");
 const { createPilotJournal } = require("./pilotJournal");
 const { createKeptReads } = require("./keptReads");
 const { isBridgeWritePair } = require("../bridgeCallPolicy");
+const { namedAfterCall, namedOnNotice, namedOnSessionChange } = require("./cachedCallsNamed");
 const { TARGETS, TARGETERS, createPilotTargets } = require("./pilotTargets");
 const { buildSkillSheet } = require("./skillSheet");
 const { projectFlight, projectSpace } = require("./spaceProjection");
@@ -1007,12 +1008,16 @@ function createGamePortPilots({
       entry.targets.feed(notification);
       // invCache.OnItemChange: an item changed, and what a container lists may not be so any more.
       if (ITEM_NOTICES.has(notification.method)) entry.listings.forget();
+      // What the client's own services tell its object cache to forget on this notice.
+      forgetNamed(entry, namedOnNotice(notification.method, notification.args, entry.session.attributes));
       for (const [service, keeper] of Object.entries(KEPT_UNTIL_CHANGED)) if (keeper.notices.has(notification.method)) entry.kept[service].forget();
       // A mission changed: what the client shows of its missions is drawn again from the journal, which reads it again.
       if (entry.journal.feed(notification)) journalUpToDate(entry);
       record(entry, notificationToBridgeJson(notification));
     });
     session.onSessionChange((changes) => {
+      // What the client's own services tell its object cache to forget on this change.
+      forgetNamed(entry, namedOnSessionChange(changes, entry.session.attributes));
       // A new place, or a new ship: what dogma said of the old one is not about this one, and nor is what a container listed.
       if (LOCATION_ATTRIBUTES.some((name) => name in changes) || "shipid" in changes) {
         entry.dogmaLoaded = null;
@@ -1219,8 +1224,10 @@ function createGamePortPilots({
       for (const [reads, keeper] of Object.entries(KEPT_UNTIL_CHANGED)) {
         if (Object.hasOwn(keeper.writes, service) && keeper.writes[service].has(method)) entry.kept[reads].forget();
       }
-      if (mayChangeContents(service, method)) forgetWhatAWriteMayChange(entry);
+      if (mayChangeContents(service, method)) entry.listings.forget();
     });
+    // What the client's own code names beside this call, which it does once the call is done (a refusal threw above).
+    forgetNamed(entry, namedAfterCall(service, method, argumentsToWire(form.args), entry.session.attributes));
     // targetMgr._LockTarget: (flag, targets) with no flag set says the lock is made already, and the client adds the target itself.
     if (service === "dogmaIM" && method === "AddTarget" && itemsOf(result).length > 0 && !itemsOf(result)[0]) entry.targets.added(form.args[0]);
     return {
@@ -1246,15 +1253,12 @@ function createGamePortPilots({
   }
 
   /**
-   * One of the pilot's own writes, done or refused, may have changed what a container lists and what the server
-   * marked as cached: the listings kept are forgotten, and so is every answer the session's object cache holds
-   * (session.js cachedMethodCall). The client forgets less: its own code names the cached calls a write of its
-   * own changes, and the server names the rest. Forgetting them all asks again for what had not changed, and
-   * never answers with what had.
+   * The session's object cache is told to forget the calls named, as the client's own code tells its cache
+   * (objectCaching.InvalidateCachedMethodCalls): what cachedCallsNamed.js answers for a notice, for a change to
+   * the session, and for one of the pilot's own calls. What the server names itself is the session's to hear.
    */
-  function forgetWhatAWriteMayChange(entry) {
-    entry.listings.forget();
-    if (typeof entry.session.forgetCachedMethodCalls === "function") entry.session.forgetCachedMethodCalls();
+  function forgetNamed(entry, named) {
+    if (named.length > 0 && typeof entry.session.invalidateCachedMethodCalls === "function") entry.session.invalidateCachedMethodCalls(named);
   }
 
   // ── what the ship has locked, as it is kept ──────────────────────────────
@@ -2550,14 +2554,14 @@ function createGamePortPilots({
     try {
       result = await run(entry, service, method, () => (listing ? entry.listings.read(listingKeptAs(boundHandle, form), sent) : sent()));
     } catch (error) {
-      if (mayChangeContents(service, method)) forgetWhatAWriteMayChange(entry);
+      if (mayChangeContents(service, method)) entry.listings.forget();
       // The session's own word for a bind the server answered without an object: the gateway's, for a bind.
       if (/ did not return a bound object\.| could not say where its object lives\./.test(error.message)) {
         throw fail("BOUND_NO_OBJECT", `${service}.MachoBindObject did not return a bound object.`);
       }
       throw error;
     }
-    if (mayChangeContents(service, method)) forgetWhatAWriteMayChange(entry);
+    if (mayChangeContents(service, method)) entry.listings.forget();
     if (service === "scanMgr") afterScanManagerCall(entry, method, form.args, result);
     if (service === "dogmaIM") afterGroupingCall(entry, method, form.args, result);
     if (service === "beyonce") afterMovementCall(entry, method, form.args, kwargs);

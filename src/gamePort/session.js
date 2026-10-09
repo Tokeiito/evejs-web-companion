@@ -221,9 +221,15 @@ function stateOfClass(value, suffix) {
   return name && name.endsWith(suffix) ? value.args : null;
 }
 
-/** A value with each whole number spelt one way, so that 5 and 5n make one key. */
-const canonical = (value) => (Array.isArray(value) ? value.map(canonical)
-  : typeof value === "bigint" && value >= BigInt(Number.MIN_SAFE_INTEGER) && value <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(value) : value);
+/**
+ * A value with each whole number spelt one way, so that 5, 5n and the BFF's own {type: "long", value: "5"} make
+ * one key: to the client's cache they are one number, whichever a call or a name was given.
+ */
+function canonical(value) {
+  if (Array.isArray(value)) return value.map(canonical);
+  const long = value && typeof value === "object" && value.type === "long" && /^-?\d+$/.test(String(value.value)) ? BigInt(value.value) : value;
+  return typeof long === "bigint" && long >= BigInt(Number.MIN_SAFE_INTEGER) && long <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(long) : long;
+}
 
 /** A tuple's or a list's items, however the codec spells it; none for anything else. */
 const itemsOfSequence = (value) => (Array.isArray(value) ? value : value && Array.isArray(value.items) ? value.items : []);
@@ -771,18 +777,14 @@ class GamePortSession {
 
   /**
    * objectCaching.InvalidateCachedMethodCalls: each of [service, method, args] is forgotten, so that it is asked
-   * for when next wanted. The server calls this on the client when it knows an answer has changed.
+   * for when next wanted. The server calls this on the client when it knows an answer has changed, and the
+   * client's own code calls it too (cachedCallsNamed.js). What the server said of the method's answers stands.
    */
   invalidateCachedMethodCalls(calls) {
     for (const [service, method, args] of calls) {
       const said = this.methodCallDetails.get(`${text(service)}.${text(method)}`);
       if (said) this.cachedMethodCalls.delete(this._methodCallKey(text(service), text(method), itemsOfSequence(args), said));
     }
-  }
-
-  /** Every answer kept is forgotten. What the server said of each method's answers is not. */
-  forgetCachedMethodCalls() {
-    this.cachedMethodCalls.clear();
   }
 
   /**

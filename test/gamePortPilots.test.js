@@ -5646,15 +5646,27 @@ test("formations the server refused are not kept: the park goes on without them,
 // ── beside the session's object cache ────────────────────────────────────────
 //
 // The session keeps what the server marks as cached, as the client's object cache does (session.js
-// cachedMethodCall). A call it answers is not sent, so the transport does not count it; and what the pilot
-// writes may have changed any of it, so a write forgets it all.
+// cachedMethodCall). A call it answers is not sent, so the transport does not count it. An answer kept is
+// forgotten when the server names it, which is the session's own to hear, and when the client's own code
+// would name it (cachedCallsNamed.js): on a notice, on a change to the session, and beside one of the pilot's
+// own calls. A write the client names nothing beside forgets nothing: the first build of this forgot every
+// answer at every write, and asked again for what no client would.
 
-test("a call the session's object cache answers is not sent and not counted; one of the pilot's own writes forgets what the cache holds", async () => {
-  const { pilots, session, handle, hangar } = await withContainers();
-  const cached = new Map([["stationSvc.GetStation.[60003760]", { type: "list", items: [7] }]]);
-  let forgotten = 0;
-  session.cachedMethodCall = (service, method, args) => { const kept = cached.get(`${service}.${method}.${JSON.stringify(args)}`); return kept === undefined ? null : { result: kept }; };
-  session.forgetCachedMethodCalls = () => { forgotten += 1; cached.clear(); };
+/** The stand-in session with an object cache of its own: what it holds by call, and each call it was told to forget. */
+function withObjectCache(session, held = {}) {
+  const cached = new Map(Object.entries(held));
+  const named = [];
+  const keyOf = (service, method, args) => `${service}.${method}.${JSON.stringify(args, (key, value) => (typeof value === "bigint" ? Number(value) : value))}`;
+  session.cachedMethodCall = (service, method, args) => { const kept = cached.get(keyOf(service, method, args)); return kept === undefined ? null : { result: kept }; };
+  session.invalidateCachedMethodCalls = (calls) => { for (const call of calls) { named.push(call); cached.delete(keyOf(...call)); } };
+  // The first build's way: there to show that nothing calls it any more.
+  session.forgetCachedMethodCalls = () => { named.push("everything"); cached.clear(); };
+  return { cached, named };
+}
+
+test("a call the session's object cache answers is not sent and not counted; a write the client names nothing beside forgets none of it", async () => {
+  const { pilots, session, handle, hangar, list } = await withContainers();
+  const { named } = withObjectCache(session, { "stationSvc.GetStation.[60003760]": { type: "list", items: [7] } });
   const sent = () => session.calls.filter((call) => call.service === "stationSvc").length;
   const station = (...args) => pilots.callMethod("stationSvc", "GetStation", args, null, WHO, handle);
   // Answered by the cache: as the server answered it, with nothing sent and nothing counted.
@@ -5662,16 +5674,74 @@ test("a call the session's object cache answers is not sent and not counted; one
   // Not in the cache: sent, and counted.
   await station(60000004);
   assert.deepEqual([sent(), pilots.callLedger().find((row) => row.pair === "stationSvc.GetStation").calls], [1, 1]);
-  // A read, an order to the engines and a lock forget nothing; a write does, by name or on an object, done or refused.
+  // A read, an order to the engines, a lock, and a write by name or on an object: the client's code names nothing beside any of them.
+  const listed = await list(hangar);
   await pilots.callMethod("station", "GetGuests", [], null, WHO, handle);
   await pilots.callMethod("beyonce", "CmdStop", [], null, WHO, handle);
   await pilots.callMethod("dogmaIM", "AddTarget", [9001], null, WHO, handle);
-  assert.equal(forgotten, 0);
   await pilots.callMethod("slash", "SlashCmd", ["/giveitem 34 1"], null, WHO, handle);
-  assert.equal(forgotten, 1);
   await pilots.callBoundMethod("invbroker", "Add", [1, STATION], { flag: 5 }, WHO, handle, hangar);
-  assert.equal(forgotten, 2);
-  // What was cached is asked of the server now.
+  assert.deepEqual(named, []);
+  // What was cached is still the cache's to answer; what a container lists is asked for again, as before.
   await station(60003760);
-  assert.equal(sent(), 2);
+  assert.equal(sent(), 1);
+  assert.notEqual(await list(hangar), listed);
+});
+
+test("on a notice the client's code names cached calls on, the session forgets those; on any other notice, none", async () => {
+  const { pilots, session, handle } = await withContainers();
+  const { named } = withObjectCache(session, { "stationSvc.GetStation.[60003760]": 1, "stationSvc.GetStation.[60000004]": 2 });
+  const sent = () => session.calls.filter((call) => call.service === "stationSvc").length;
+  const station = (...args) => pilots.callMethod("stationSvc", "GetStation", args, null, WHO, handle);
+  session.notify("OnItemChange", [1, 2]);
+  session.notify("OnSomethingElse", [60003760]);
+  assert.deepEqual(named, []);
+  // station/base.py OnStationInformationUpdated(stationID): that station's, and no other's.
+  session.notify("OnStationInformationUpdated", [60003760n]);
+  assert.deepEqual(named, [["stationSvc", "GetStation", [60003760n]]]);
+  await station(60000004);
+  assert.equal(sent(), 0, "the other station's answer is kept still");
+  await station(60003760);
+  assert.equal(sent(), 1, "the one named is asked of the server");
+  // The pilot's own orders changed (marketsvc.py OnOwnOrdersChanged), as the server sends it: read with the session's own attributes.
+  named.length = 0;
+  session.notify("OnOwnOrdersChanged", [{ type: "list", items: [{ type: "object", name: Buffer.from("util.KeyVal"), args: { type: "dict", entries: [[Buffer.from("orderID"), 77], [Buffer.from("typeID"), 34]] } }] }, Buffer.from("Created"), 0]);
+  assert.deepEqual(named.map(([service, method, args]) => `${service}.${method}(${args.join(",")})`),
+    ["marketProxy.GetCharOrders()", "marketProxy.GetOrders(34)", "marketProxy.GetPlexOrders()", "marketProxy.GetSystemAsks()", "marketProxy.GetStationAsks()", "marketProxy.GetMarketOrderHistory()", "marketProxy.GetPlexBest()"]);
+  named.length = 0;
+  session.notify("OnMedalIssued", []);
+  assert.deepEqual(named, [["corporationSvc", "GetMedalsReceived", [session.attributes.charid]]]);
+});
+
+test("beside one of the pilot's own calls the client's code names cached calls after, the session forgets those once it is done, and nothing if it is refused", async () => {
+  let refuse = false;
+  const built = await selected({ answers: { "bountyProxy.AddToBounty": () => { if (refuse) throw refusedBy("NotEnoughMoney"); return null; } } }, { allowed: new Set(["bountyProxy.AddToBounty", "charMgr.GetPublicInfo3", "calendarMgr.UpdateEventParticipants"]) });
+  const { pilots, session, handle } = built;
+  const { named } = withObjectCache(session, { "charMgr.GetPublicInfo3.[140000009]": { type: "list", items: [1] } });
+  const asked = () => session.calls.filter((call) => call.method === "GetPublicInfo3").length;
+  const info = () => pilots.callMethod("charMgr", "GetPublicInfo3", [140000009], null, WHO, handle);
+  await info();
+  assert.equal(asked(), 0);
+  // bountyWindow.py PlaceBounty: refused, the window's code after the call is not reached.
+  refuse = true;
+  await rejects(pilots.callMethod("bountyProxy", "AddToBounty", [140000009, 100000], null, WHO, handle), "CALL_REFUSED");
+  assert.deepEqual(named, []);
+  refuse = false;
+  await pilots.callMethod("bountyProxy", "AddToBounty", [140000009, 100000], null, WHO, handle);
+  assert.deepEqual(named, [["charMgr", "GetPublicInfo3", [140000009]]]);
+  await info();
+  assert.equal(asked(), 1, "the one it was put on is asked of the server again");
+  // eveCalendarsvc.py UpdateEventParticipants: named with the session's own character, and the arguments as they went to the wire.
+  named.length = 0;
+  await pilots.callMethod("calendarMgr", "UpdateEventParticipants", [{ type: "long", value: "9001" }, [140000009], []], null, WHO, handle);
+  assert.deepEqual(named, [["calendarMgr", "GetResponsesToEvent", [{ type: "long", value: "9001" }, session.attributes.charid]]]);
+});
+
+test("another corporation: the session forgets the pilot's employment record, as the client's corporation window has it", async () => {
+  const { session } = await withContainers();
+  const { named } = withObjectCache(session);
+  session.change({ stationid: [60003760, null] });
+  assert.deepEqual(named, []);
+  session.change({ corpid: [1000044, 98000000] });
+  assert.deepEqual(named, [["corporationSvc", "GetEmploymentRecord", [session.attributes.charid]]]);
 });

@@ -501,7 +501,7 @@ test("a cached object is fetched again only when its checksum changed and ours i
   const { session, transport } = await loggedIn(context);
   const ask = async (answerStamp, answerChecksum) => {
     // The method's own answer is kept by the object cache too (below); forgotten here, so that each asking is sent.
-    session.forgetCachedMethodCalls();
+    session.invalidateCachedMethodCalls([["corporationSvc", "GetAllCorpMedals", [1000035]]]);
     const before = transport.sent.length;
     const answer = session.call("corporationSvc", "GetAllCorpMedals", [1000035]);
     transport.deliver(withVersion(lastCall(transport).packet.source.callID, answerStamp, answerChecksum));
@@ -1203,7 +1203,7 @@ test("an answer the server says to keep by something of the session's is kept by
   assert.deepEqual(await ask("call", "corpmgr", "GetAssetInventory", [4], byCorporation(4)), [1, 0], "back in the first, its answer is still held");
 });
 
-test("the server's word that a cached answer has changed forgets that one; forgetting them all forgets only the answers", { timeout: 5000 }, async (context) => {
+test("the server's word that a cached answer has changed forgets that one; what it said of the method's answers stands", { timeout: 5000 }, async (context) => {
   const { session, transport, ask } = await cachingSession(context);
   const prime = async () => [await ask("call", "stationSvc", "GetStation", [60003760], cachedResult(1)), await ask("call", "stationSvc", "GetStation", [60000004], cachedResult(2)), await ask("call", "beyonce", "GetFormations", [], cachedResult(3))];
   await prime();
@@ -1215,12 +1215,18 @@ test("the server's word that a cached answer has changed forgets that one; forge
   transport.deliver(serverCall("objectCaching", "InvalidateCachedMethodCalls", [{ type: "list", items: [[Buffer.from("stationSvc"), Buffer.from("GetStation"), [60000004]], [Buffer.from("beyonce"), Buffer.from("GetFormations"), []], [Buffer.from("never"), Buffer.from("Heard"), []]] }]));
   await settle();
   assert.deepEqual([await ask("call", "stationSvc", "GetStation", [60003760], cachedResult(7)), await ask("call", "stationSvc", "GetStation", [60000004], cachedResult(8)), await ask("call", "beyonce", "GetFormations", [], cachedResult(9))], [[4, 0], [8, 1], [9, 1]]);
-  // By hand, for a session's own keeper: by the same three, or all at once.
+  // By hand, as the client's own code names one: by the same three. Whole numbers are one however they are spelt, and so is text.
   session.invalidateCachedMethodCalls([["beyonce", "GetFormations", []]]);
   assert.deepEqual(await ask("call", "beyonce", "GetFormations", [], cachedResult(10)), [10, 1]);
   // What the server first said of a method's answers outlives the forgetting: one it said to check always is not kept because a later answer says never.
   await ask("call", "svc", "Checked", [], cachedResult(1, { versionCheck: "always" }));
-  session.forgetCachedMethodCalls();
+  session.invalidateCachedMethodCalls([[Buffer.from("svc"), "Checked", []], ["stationSvc", Buffer.from("GetStation"), [60003760n]]]);
+  // A long spelt as the BFF's own JSON spells one is the same number too, in a call and in a name.
+  assert.deepEqual([await ask("call", "stationSvc", "GetStation", [{ type: "long", value: "60000004" }], cachedResult(20)), await ask("call", "stationSvc", "GetStation", [60000004], cachedResult(21))], [[8, 0], [8, 0]]);
+  session.invalidateCachedMethodCalls([["stationSvc", "GetStation", [{ type: "long", value: "60000004" }]]]);
+  assert.deepEqual(await ask("call", "stationSvc", "GetStation", [60000004n], cachedResult(22)), [22, 1]);
+  await ask("call", "stationSvc", "GetStation", [{ type: "long", value: "9007199254740993" }], cachedResult(23));
+  assert.deepEqual(await ask("call", "stationSvc", "GetStation", [9007199254740993n], cachedResult(24)), [23, 0], "and one past what a number holds exactly");
   assert.deepEqual([await ask("call", "stationSvc", "GetStation", [60003760], cachedResult(11)), await ask("call", "stationSvc", "GetStation", [60003760], cachedResult(12))], [[11, 1], [11, 0]], "asked again, and kept again as the server first said");
   assert.deepEqual([await ask("call", "svc", "Checked", [], cachedResult(2, { versionCheck: "never" })), await ask("call", "svc", "Checked", [], cachedResult(3, { versionCheck: "never" }))], [[2, 1], [3, 1]]);
 });
