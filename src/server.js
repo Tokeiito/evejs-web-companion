@@ -13801,10 +13801,11 @@ app.get("/api/bridge/notifications", requireAuth, async (req, res, next) => {
 //   • calendarMgr.GetResponsesToEvent(eventID[, ownerID]) -> {type:"list"} of
 //     util.KeyVal{characterID, status} — the responses to one event.
 //   • calendarProxy.GetEventDetails(eventID, ownerID) -> util.KeyVal{eventText,
-//     creatorID} — one event's body. ⚠ GetEventDetails/GetResponsesToEvent need a
-//     real eventID; with the default 0 (Farmer has no events) the handler rejects
-//     ("no such event") — a legitimate outcome captured as this read's error code,
-//     NOT a route failure. eventID from ?eventID=, ownerID from ?ownerID=.
+//     creatorID} — one event's body. eventID from ?eventID=, ownerID from ?ownerID=.
+//     ⚠ GetEventDetails/GetResponsesToEvent are asked ONLY for an event that is
+//     named, as the retail client asks them when the pilot opens one
+//     (eveCalendarsvc.py 261, 415). With no eventID neither goes out, and each
+//     arm answers null with no error: not asked is not a failure.
 // ⚠ ownerID/eventID/characterID/creatorID stay as data for later resolution
 // (R7d). Decoded browser-side (web/src/bridge/calendar.ts).
 app.get("/api/bridge/calendar", requireAuth, async (req, res, next) => {
@@ -13817,13 +13818,14 @@ app.get("/api/bridge/calendar", requireAuth, async (req, res, next) => {
   const year = nonNegativeIntQuery(req.query.year, now.getUTCFullYear());
   const eventID = nonNegativeIntQuery(req.query.eventID, 0);
   const ownerID = nonNegativeIntQuery(req.query.ownerID, 0);
+  const notAsked = Promise.resolve({ result: null });
   try {
     const [responsesForCharacter, eventList, responsesToEvent, eventDetails] =
       await Promise.allSettled([
         heldTopLevelCall(held, req.webSessionID, "calendarMgr", "GetResponsesForCharacter", [], null),
         heldTopLevelCall(held, req.webSessionID, "calendarProxy", "GetEventList", [month, year], null),
-        heldTopLevelCall(held, req.webSessionID, "calendarMgr", "GetResponsesToEvent", [eventID, ownerID || null], null),
-        heldTopLevelCall(held, req.webSessionID, "calendarProxy", "GetEventDetails", [eventID, ownerID || null], null),
+        eventID > 0 ? heldTopLevelCall(held, req.webSessionID, "calendarMgr", "GetResponsesToEvent", [eventID, ownerID || null], null) : notAsked,
+        eventID > 0 ? heldTopLevelCall(held, req.webSessionID, "calendarProxy", "GetEventDetails", [eventID, ownerID || null], null) : notAsked,
       ]);
     const settled = [responsesForCharacter, eventList, responsesToEvent, eventDetails];
     for (const outcome of settled) {

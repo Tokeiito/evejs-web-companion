@@ -756,6 +756,11 @@ function createGamePortPilots({
     };
   }
 
+  /** A service's own method: at the proxy node for a service the client reaches with sm.ProxySvc, by the name alone for any other. */
+  const byName = (session, service, method, form) => (form.proxy
+    ? session.proxyCall(service, method, argumentsToWire(form.args), form.kwargs)
+    : session.call(service, method, argumentsToWire(form.args), form.kwargs));
+
   async function callMethod(service, method, args = [], kwargs = null, sessionFields = {}, bridgeSessionID = undefined) {
     const entry = held(bridgeSessionID, sessionFields);
     assertAllowed(service, method);
@@ -767,7 +772,7 @@ function createGamePortPilots({
     // A call the client makes on a service's moniker is made on the object bound for where the pilot is.
     const result = await run(entry, service, method, async () => (form.moniker
       ? entry.session.callBound(await monikerObject(entry, service), method, argumentsToWire(form.args), form.kwargs)
-      : entry.session.call(service, method, argumentsToWire(form.args), form.kwargs)));
+      : byName(entry.session, service, method, form)));
     return {
       service,
       method,
@@ -858,7 +863,7 @@ function createGamePortPilots({
       try {
         const form = shape(service, method, args, kwargs, {});
         ledger.note(service, method, form);
-        const result = await session.call(service, method, argumentsToWire(form.args), form.kwargs);
+        const result = await byName(session, service, method, form);
         return { service, method, result: wireToBridgeJson(result), notifications: [] };
       } catch (error) {
         // The server saying no is an answer, and the client stays on its screen. Anything else, and the connection is not asked again.

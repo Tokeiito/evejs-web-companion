@@ -6,18 +6,19 @@ Every call the game-port transport made, by pair, and how each compares with wha
 
 | Status | Pairs | Calls | Meaning |
 |---|---|---|---|
-| web-only | 9 | 37 | The retail client does not make this call at all. |
+| web-only | 10 | 39 | The retail client does not make this call at all. |
 | differs | 2 | 2 | A known difference from the retail client's call that is not yet repaired. |
-| unchecked | 31 | 32 | Not yet read against the decompiled client. Sent as the BFF spells it. |
-| reshaped | 9 | 15 | Sent as the retail client sends it; the BFF spells it another way. |
-| same | 14 | 15 | The BFF's call is the retail client's. |
-| **total** | **65** | **101** | 68 pairs have an entry in the registry. |
+| unchecked | 19 | 19 | Not yet read against the decompiled client. Sent as the BFF spells it. |
+| reshaped | 11 | 17 | Sent as the retail client sends it; the BFF spells it another way. |
+| same | 21 | 22 | The BFF's call is the retail client's. |
+| **total** | **63** | **99** | 80 pairs have an entry in the registry. |
 
-## web-only (9)
+## web-only (10)
 
 | Pair | Calls | Read from | Note |
 |---|---|---|---|
 | `invbroker.GetCapacity` | 29 | `eve/client/script/environment/invCache.py:1224` | The client works a capacity out itself: the attribute from dogma or the type, and the volume of what List returned. It never asks the server. |
+| `contractProxy.GetMyCurrentContractList` | 2 | `eve/client/script/ui/shared/neocom/contracts/contracts.py:784` | The client's contracts service has a wrapper for this that nothing in the client calls. Its My Contracts panel lists with GetContractListForOwner(ownerID, status, contractType, issuedBy, num=100, startContractID=...) (contractPanels.py 419). |
 | `dogmaIM.GetCharacterAttributes` | 1 | `eve/client/script/ui/services/skillsvc.py:224` | The client never asks dogma for these: its skills service asks the skill handler (GetSkillHandler().GetAttributes()). |
 | `dogmaIM.GetDroneSettingAttributes` | 1 | `eve/client/script/environment/godma.py:2357` | The client never asks this: godma keeps the drone settings that GetAllInfo brought, and answers from those. |
 | `dogmaIM.GetLocationInfo` | 1 | `dogma/items/baseDogmaItem.py:58` | The client never asks the server this. Its own dogma items know their owner, place and flag. |
@@ -34,11 +35,11 @@ Every call the game-port transport made, by pair, and how each compares with wha
 | `dogmaIM.GetLayerDamageValuesByItems` | 1 | `eveDrones/droneDamageTracker.py:38` | The client sends a set of the drones in the bay whose damage it does not know, and does not ask at all when there are none. The BFF sends a list, and sends it empty. |
 | `dogmaIM.ItemGetInfo` | 1 | `eve/client/script/environment/godma.py:1649` | The client always names the item: ItemGetInfo(itemID). Asked with none, the server answers for the ship; the client never asks so. |
 
-## unchecked (31)
+## unchecked (19)
 
-`contractProxy.GetMyCurrentContractList` ×2, `blueprintManager.GetBlueprintDataByOwner`, `calendarMgr.GetResponsesForCharacter`, `calendarMgr.GetResponsesToEvent`, `calendarProxy.GetEventDetails`, `calendarProxy.GetEventList`, `charMgr.GetCharacterDescription`, `charMgr.GetCloneInfo`, `charMgr.GetHomeStation`, `charMgr.GetPublicInfo3`, `charMgr.ListStations`, `contractProxy.GetLoginInfo`, `contractProxy.GetMyExpiredContractList`, `contractProxy.SearchContracts`, `facilityManager.GetFacilities`, `facilityManager.GetMaxActivityModifiers`, `fleetObjectHandler.GetFleetComposition`, `fleetObjectHandler.GetInitState`, `fleetObjectHandler.GetJoinRequests`, `fleetObjectHandler.GetMotd`, `fleetObjectHandler.GetWings`, `industryManager.GetJobCounts`, `industryManager.GetJobsByOwner`, `mailMgr.SyncMail`, `marketProxy.CharGetTransactions`, `marketProxy.GetCharEscrow`, `marketProxy.GetCharOrders`, `marketProxy.GetMarketOrderHistory`, `notificationMgr.GetAllNotifications`, `notificationMgr.GetByGroupID`, `notificationMgr.GetUnprocessed`
+`blueprintManager.GetBlueprintDataByOwner`, `charMgr.GetCharacterDescription`, `charMgr.GetCloneInfo`, `charMgr.GetHomeStation`, `charMgr.GetPublicInfo3`, `charMgr.ListStations`, `facilityManager.GetFacilities`, `facilityManager.GetMaxActivityModifiers`, `fleetObjectHandler.GetFleetComposition`, `fleetObjectHandler.GetInitState`, `fleetObjectHandler.GetJoinRequests`, `fleetObjectHandler.GetMotd`, `fleetObjectHandler.GetWings`, `industryManager.GetJobCounts`, `industryManager.GetJobsByOwner`, `mailMgr.SyncMail`, `notificationMgr.GetAllNotifications`, `notificationMgr.GetByGroupID`, `notificationMgr.GetUnprocessed`
 
-## reshaped (9)
+## reshaped (11)
 
 | Pair | Calls | Read from | Note |
 |---|---|---|---|
@@ -47,12 +48,14 @@ Every call the game-port transport made, by pair, and how each compares with wha
 | `invbroker.GetInventoryFromId` | 2 | `eve/common/script/net/eveMoniker.py, eve/client/script/environment/invCache.py` |  |
 | `invbroker.ListByFlags` | 2 | `eve/client/script/environment/invCache.py:1174` | ListByFlags(flags=[...]) |
 | `charMgr.MachoBindObject` | 1 | `eve/common/script/net/eveMoniker.py, eve/client/script/environment/invCache.py` |  |
+| `contractProxy.SearchContracts` | 1 | `eve/client/script/ui/shared/neocom/contracts/contractsearch.py:1367` | ProxySvc('contractProxy').SearchContracts(itemTypes=..., ..., startNum=...): twenty-six keywords, every one every time, None for a filter not set, and no positional arguments. The sort is the choice of the panel's list, which starts on date created, oldest first (on price, lowest first, for auctions and exchanges together). The client's panel starts on the current region; a search with no locationID is its All Regions. For a search that is not for couriers the client sends the 'exclude multiple' tick as a bool: nothing here searches those yet. |
 | `dogmaIM.GetAllInfo` | 1 | `eve/client/script/environment/godma.py:2409` | GetDogmaLM().GetAllInfo(primeCharacter, primeShip, primeStructure): three positional, each saying whether that one is to be primed. Asked with fewer, it goes out as godma's first priming does: (True, True, None) |
 | `dogmaIM.MachoBindObject` | 1 | `eve/common/script/net/eveMoniker.py, eve/client/script/environment/invCache.py` |  |
 | `fleetObjectHandler.MachoBindObject` | 1 | `eve/common/script/net/eveMoniker.py, eve/client/script/environment/invCache.py` |  |
 | `invbroker.GetInventory` | 1 | `eve/common/script/net/eveMoniker.py, eve/client/script/environment/invCache.py` |  |
+| `marketProxy.CharGetTransactions` | 1 | `eve/client/script/ui/shared/marketSvc.py:23` | GetMarketProxy().CharGetTransactions(fromDate), and the date is None wherever the client asks (marketTransactionsPanel.py 161, transactionOverviewController.py 99): all of them. Nought or nothing goes out as None. |
 
-## same (14)
+## same (21)
 
 | Pair | Calls | Read from | Note |
 |---|---|---|---|
@@ -62,11 +65,18 @@ Every call the game-port transport made, by pair, and how each compares with wha
 | `account.GetWalletDivisionsInfo` | 1 | `eve/client/script/ui/services/accountsvc.py:135` | GetAccountMgr().GetWalletDivisionsInfo(), no arguments, kept five minutes |
 | `agentMgr.GetAgents` | 1 | `eve/client/script/ui/station/agents/agents.py:92` | RemoteSvc('agentMgr').GetAgents(), no arguments: the whole table, kept for the session |
 | `agentMgr.GetMyJournalDetails` | 1 | `eve/client/script/ui/shared/neocom/journal.py:312` | RemoteSvc('agentMgr').GetMyJournalDetails(), no arguments |
+| `calendarMgr.GetResponsesForCharacter` | 1 | `eve/client/script/ui/services/eveCalendarsvc.py:252` | RemoteSvc('calendarMgr').GetResponsesForCharacter(), no arguments, asked once and kept |
+| `calendarProxy.GetEventList` | 1 | `eve/client/script/ui/services/eveCalendarsvc.py:239` | GetCalendarProxy().GetEventList(month, year), kept by month for the session |
 | `charUnboundMgr.GetCharacterLockType` | 1 | `eve/client/script/ui/login/charSelection/characterSelection.py:695` | GetCharacterLockType(charID) |
 | `charUnboundMgr.GetCharacterSelectionData` | 1 | `eve/client/script/ui/login/charSelection/characterSelection.py` | no arguments |
 | `charUnboundMgr.SelectCharacterID` | 1 | `eve/client/script/ui/login/charSelection/characterSelection.py:713` | SelectCharacterID(charID, secondChoiceID, skipTutorial) |
+| `contractProxy.GetLoginInfo` | 1 | `eve/client/script/ui/shared/neocom/contracts/contracts.py:191` | GetContractProxySvc().GetLoginInfo(), no arguments. The client asks once, when its notifications are ready, for the Neocom's blink; the page asks with every opening of its panel. |
+| `contractProxy.GetMyExpiredContractList` | 1 | `eve/client/script/ui/shared/neocom/contracts/contracts.py:748` | ProxySvc('contractProxy').GetMyExpiredContractList(False), and (True) for the corporation's straight after: the client asks the two together and keeps them. |
 | `corpFittingMgr.GetFittings` | 1 | `eve/client/script/environment/fittingSvc.py:430` | GetFittingMgr(session.corpid).GetFittings(session.corpid) |
 | `dogmaIM.GetTargeters` | 1 | `eve/client/script/environment/godma.py:2364` | GetDogmaLM().GetTargeters(), no arguments |
+| `marketProxy.GetCharEscrow` | 1 | `eve/client/script/ui/services/marketsvc.py:401` | GetMarketProxy().GetCharEscrow(), no arguments |
+| `marketProxy.GetCharOrders` | 1 | `eve/client/script/ui/services/marketsvc.py:389` | GetMarketProxy().GetCharOrders(), no arguments |
+| `marketProxy.GetMarketOrderHistory` | 1 | `eve/client/script/ui/services/marketsvc.py:395` | GetMarketProxy().GetMarketOrderHistory(), no arguments |
 | `officeManager.GetMyCorporationsOffices` | 1 | `eve/client/script/ui/services/corporation/officeManager.py:41` | RemoteSvc('officeManager').GetMyCorporationsOffices(), no arguments |
 | `standingMgr.GetCharStandings` | 1 | `eve/client/script/ui/services/standingsvc.py:119` | RemoteSvc('standingMgr').GetCharStandings(), no arguments |
 | `standingMgr.GetCorpStandings` | 1 | `eve/client/script/ui/services/standingsvc.py:126` | RemoteSvc('standingMgr').GetCorpStandings(), no arguments, and only for a pilot whose corporation is not an NPC one (118) |

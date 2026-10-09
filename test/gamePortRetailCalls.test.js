@@ -8,7 +8,8 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
-const { MONIKER_SERVICES, REPEATS, RETAIL_CALLS, createCallLedger, list, madeOnMoniker, retailForm, retailNeeds } = require("../src/gamePort/retailCalls");
+const { CONTRACT_SEARCH_KEYWORDS, MONIKER_SERVICES, PROXY_SERVICES, REPEATS, RETAIL_CALLS, createCallLedger, list, madeOnMoniker, retailForm, retailNeeds } = require("../src/gamePort/retailCalls");
+const { keywordOrder } = require("../src/gamePort/py27");
 const contract = require("../contracts/evejs-web-bridge-contract.json");
 
 const form = (pair, args, kwargs = null) => {
@@ -20,9 +21,9 @@ test("a pair nobody has checked goes out as the BFF spelt it, and says so", () =
   const args = [1, [2, 3]];
   const kwargs = { flag: 5 };
   const answer = retailForm("someService", "SomeMethod", args, kwargs);
-  assert.deepEqual(answer, { args, kwargs, status: "unchecked", source: null, note: null, moniker: false });
+  assert.deepEqual(answer, { args, kwargs, status: "unchecked", source: null, note: null, moniker: false, proxy: false });
   assert.equal(answer.args, args, "untouched, not copied");
-  assert.deepEqual(retailForm("someService", "SomeMethod", undefined, undefined), { args: [], kwargs: null, status: "unchecked", source: null, note: null, moniker: false });
+  assert.deepEqual(retailForm("someService", "SomeMethod", undefined, undefined), { args: [], kwargs: null, status: "unchecked", source: null, note: null, moniker: false, proxy: false });
 });
 
 test("a pair that is the same as the client's is left alone", () => {
@@ -32,7 +33,7 @@ test("a pair that is the same as the client's is left alone", () => {
 });
 
 test("List goes out as List(flag=flag): a keyword, and None when there is no flag", () => {
-  assert.deepEqual(form("invbroker.List", [5]), { args: [], kwargs: { flag: 5 }, status: "reshaped", source: RETAIL_CALLS["invbroker.List"].source, note: "List(flag=flag)", moniker: false });
+  assert.deepEqual(form("invbroker.List", [5]), { args: [], kwargs: { flag: 5 }, status: "reshaped", source: RETAIL_CALLS["invbroker.List"].source, note: "List(flag=flag)", moniker: false, proxy: false });
   assert.deepEqual(form("invbroker.List", []).kwargs, { flag: null });
   assert.deepEqual(form("invbroker.List", [], { flag: 4 }).kwargs, { flag: 4 }, "already a keyword: kept");
   assert.deepEqual(form("invbroker.List", [0]).kwargs, { flag: 0 }, "flag 0 is a flag");
@@ -221,6 +222,7 @@ test("undock goes to the ship's moniker with the online modules by slot, as the 
     source: RETAIL_CALLS["ship.Undock"].source,
     note: RETAIL_CALLS["ship.Undock"].note,
     moniker: true,
+    proxy: false,
   });
   assert.match(answer.source, /ui\/station\/base\.py:498$/);
   // The second argument is a yes or a no: only a true is a yes.
@@ -244,7 +246,7 @@ test("a module is switched on with its effect named and its repeats the client's
   const knows = { effectName: (itemID) => (itemID === 7 ? "burn" : null), effectRepeats: (itemID, name) => (name === "burn" ? true : name === "fire" ? false : null) };
   const on = (args, context = knows) => withContext("dogmaIM.Activate", args, null, context);
   // The BFF's -1 is "go on repeating".
-  assert.deepEqual(on([7, "burn", undefined, -1]), { args: [7, "burn", null, 1000], kwargs: null, status: "reshaped", source: RETAIL_CALLS["dogmaIM.Activate"].source, note: RETAIL_CALLS["dogmaIM.Activate"].note, moniker: true });
+  assert.deepEqual(on([7, "burn", undefined, -1]), { args: [7, "burn", null, 1000], kwargs: null, status: "reshaped", source: RETAIL_CALLS["dogmaIM.Activate"].source, note: RETAIL_CALLS["dogmaIM.Activate"].note, moniker: true, proxy: false });
   assert.match(RETAIL_CALLS["dogmaIM.Activate"].source, /shipmodulebutton\.py:1348$/);
   // An effect that cannot repeat is sent once, whatever was asked.
   assert.deepEqual(on([8, "fire", 4242, -1]).args, [8, "fire", 4242, 0]);
@@ -270,7 +272,7 @@ test("a module is switched on with its effect named and its repeats the client's
 test("a module is switched off by its effect's name, on the same moniker", () => {
   const knows = { effectName: (itemID) => (itemID === 7 ? "burn" : null) };
   const off = (args, context = knows) => withContext("dogmaIM.Deactivate", args, null, context);
-  assert.deepEqual(off([7, "burn"]), { args: [7, "burn"], kwargs: null, status: "reshaped", source: RETAIL_CALLS["dogmaIM.Deactivate"].source, note: RETAIL_CALLS["dogmaIM.Deactivate"].note, moniker: true });
+  assert.deepEqual(off([7, "burn"]), { args: [7, "burn"], kwargs: null, status: "reshaped", source: RETAIL_CALLS["dogmaIM.Deactivate"].source, note: RETAIL_CALLS["dogmaIM.Deactivate"].note, moniker: true, proxy: false });
   assert.match(RETAIL_CALLS["dogmaIM.Deactivate"].source, /godma\.py:2101$/);
   assert.deepEqual(off([7, ""]).args, [7, "burn"]);
   assert.deepEqual(off([7]).args, [7, "burn"]);
@@ -299,7 +301,7 @@ test("everything of ship, dogmaIM and corpRegistry is made on a moniker, read or
   assert.deepEqual([madeOnMoniker("invbroker", "List"), madeOnMoniker("agentMgr", "DoAction"), madeOnMoniker("toString", "Undock"), madeOnMoniker("constructor", "x")], [false, false, false, false]);
   assert.deepEqual([madeOnMoniker("ship", "MachoBindObject"), madeOnMoniker("dogmaIM", "MachoBindObject")], [false, false]);
   // The form says so for a pair nobody has read, and for one that has an entry.
-  assert.deepEqual(retailForm("ship", "SomethingNobodyRead", [1], null), { args: [1], kwargs: null, status: "unchecked", source: null, note: null, moniker: true });
+  assert.deepEqual(retailForm("ship", "SomethingNobodyRead", [1], null), { args: [1], kwargs: null, status: "unchecked", source: null, note: null, moniker: true, proxy: false });
   assert.equal(retailForm("dogmaIM", "CreateNewbieShip", [1, 2], null).moniker, false);
   for (const pair of Object.keys(RETAIL_CALLS)) {
     const [service, method] = pair.split(".");
@@ -510,4 +512,105 @@ test("the agents' table and journal, and the standings, are asked with nothing, 
     const form = retailForm(...pair.split("."), [], null);
     assert.deepEqual([form.status, form.args, form.kwargs, form.moniker], ["same", [], null, false], pair);
   }
+});
+
+test("the services the client reaches with sm.ProxySvc are called at its proxy node, and no others", () => {
+  // Every sm.ProxySvc('<name>') of the decompiled client. A service among them is asked no other way.
+  assert.deepEqual([...PROXY_SERVICES].sort(), ["XmppChatMgr", "alert", "bountyProxy", "calendarProxy", "clientStatLogger", "contractProxy", "corpRecProxy", "eventLog", "fleetProxy", "machoNet", "marketProxy", "pingService", "raffleProxy", "search"]);
+  for (const service of PROXY_SERVICES) assert.equal(retailForm(service, "AnyMethod", [], null).proxy, true, service);
+  // A service's name ending in Proxy or Mgr says nothing: the calendar has one of each kind.
+  for (const service of ["account", "calendarMgr", "contractMgr", "standingMgr", "dogmaIM", "corpRegistry", "ship", "charMgr", "notificationMgr", "someService"]) {
+    assert.equal(retailForm(service, "AnyMethod", [], null).proxy, false, service);
+  }
+  // With an entry of its own or without, shaped or not.
+  assert.equal(form("contractProxy.GetLoginInfo", []).proxy, true);
+  assert.equal(form("contractProxy.SearchContracts", [], { contractType: 3 }).proxy, true);
+  assert.equal(form("account.GetTransactions", [1000, null, null, 0]).proxy, false);
+  // No service is both the proxy's and a moniker's.
+  for (const service of PROXY_SERVICES) assert.equal(Object.hasOwn(MONIKER_SERVICES, service), false, service);
+});
+
+test("a contract search goes out with the client's twenty-six keywords, in the order its call writes them", () => {
+  const nothing = Object.fromEntries(CONTRACT_SEARCH_KEYWORDS.map((name) => [name, null]));
+  // The order the client's call writes them in (contractsearch.py 1367). The order on the wire comes of it
+  // wherever two names want the same slot of the dict, so it is kept as written.
+  assert.deepEqual([...CONTRACT_SEARCH_KEYWORDS], [
+    "itemTypes", "itemTypeName", "itemCategoryID", "itemGroupID", "contractType", "securityClasses", "locationID", "endLocationID", "issuerID",
+    "minPrice", "maxPrice", "minReward", "maxReward", "minCollateral", "maxCollateral", "minVolume", "maxVolume",
+    "excludeTrade", "excludeMultiple", "excludeNoBuyout", "availability", "description", "searchHint", "sortBy", "sortDir", "startNum",
+  ]);
+
+  // What the page gives, None for the rest, and the sort the panel's list starts on: by date created, oldest first.
+  const asked = form("contractProxy.SearchContracts", [], { contractType: 3, availability: 0, startNum: 100 });
+  assert.equal(asked.status, "reshaped");
+  assert.deepEqual(asked.args, []);
+  assert.deepEqual(Object.keys(asked.kwargs), [...CONTRACT_SEARCH_KEYWORDS]);
+  assert.deepEqual(asked.kwargs, { ...nothing, contractType: 3, availability: 0, sortBy: 0, sortDir: 0, startNum: 100 });
+
+  // For auctions and exchanges together the panel starts sorted by price; the first page starts at nought.
+  const items = form("contractProxy.SearchContracts", [], { contractType: 10 });
+  assert.deepEqual([items.kwargs.sortBy, items.kwargs.sortDir, items.kwargs.startNum], [1, 0, 0]);
+  // A sort and a filter the page chose are kept.
+  const chosen = form("contractProxy.SearchContracts", [], { contractType: 3, sortBy: 8, sortDir: 1, locationID: 10000033, minReward: 5000000 });
+  assert.deepEqual([chosen.kwargs.sortBy, chosen.kwargs.sortDir, chosen.kwargs.locationID, chosen.kwargs.minReward], [8, 1, 10000033, 5000000]);
+  // None is no sort: the panel's list always has one.
+  assert.deepEqual([form("contractProxy.SearchContracts", [], { contractType: 3, sortBy: null, sortDir: null }).kwargs.sortBy, form("contractProxy.SearchContracts", [], { contractType: 3, sortBy: null, sortDir: null }).kwargs.sortDir], [0, 0]);
+
+  // Given whole, in whatever order, it is the client's, and goes out in the call's order.
+  const whole = form("contractProxy.SearchContracts", [], Object.fromEntries([...CONTRACT_SEARCH_KEYWORDS].reverse().map((name) => [name, name === "contractType" ? 3 : 0])));
+  assert.equal(whole.status, "same");
+  assert.deepEqual(Object.keys(whole.kwargs), [...CONTRACT_SEARCH_KEYWORDS]);
+  assert.equal(whole.kwargs.contractType, 3);
+  // The client's call has no positional arguments, no other keyword, and a sort every time: each of those is put right.
+  const everything = { ...nothing, contractType: 3, sortBy: 0, sortDir: 0, startNum: 0 };
+  assert.equal(form("contractProxy.SearchContracts", [], everything).status, "same");
+  for (const [args, kwargs] of [[[3], everything], [[], { ...everything, somethingElse: 1 }], [[], { ...everything, sortBy: null }], [[], { ...everything, startNum: null }]]) {
+    const odd = form("contractProxy.SearchContracts", args, kwargs);
+    assert.deepEqual([odd.status, odd.args, odd.kwargs], ["reshaped", [], everything], JSON.stringify([args, Object.keys(kwargs).length]));
+    assert.deepEqual(Object.keys(odd.kwargs), [...CONTRACT_SEARCH_KEYWORDS]);
+  }
+
+  // On the wire: the order the client's own Python gives these keywords and machoVersion
+  // (a service's method, the dict copied, machoVersion added), asked of the client's python27.dll.
+  assert.deepEqual(keywordOrder(Object.keys(asked.kwargs)), ["itemTypeName", "itemCategoryID", "issuerID", "excludeNoBuyout", "securityClasses", "endLocationID", "availability", "machoVersion", "maxReward", "minVolume", "startNum", "itemTypes", "itemGroupID", "excludeTrade", "maxCollateral", "description", "excludeMultiple", "sortBy", "maxVolume", "contractType", "minPrice", "minReward", "sortDir", "searchHint", "maxPrice", "minCollateral", "locationID"]);
+});
+
+test("the contracts' own lists, the market's and the calendar's reads, set beside the client's", () => {
+  for (const [pair, args] of [
+    ["contractProxy.GetLoginInfo", []],
+    ["contractProxy.GetMyExpiredContractList", [false]],
+    ["contractProxy.GetMyExpiredContractList", [true]],
+    ["marketProxy.GetCharOrders", []],
+    ["marketProxy.GetMarketOrderHistory", []],
+    ["marketProxy.GetCharEscrow", []],
+    ["marketProxy.CharGetTransactions", [null]],
+    ["calendarProxy.GetEventList", [10, 2026]],
+    ["calendarProxy.GetEventDetails", [77, 140000002]],
+    ["calendarMgr.GetResponsesForCharacter", []],
+    ["calendarMgr.GetResponsesToEvent", [77, 140000002]],
+  ]) {
+    const answer = form(pair, args);
+    assert.deepEqual([answer.status, answer.args, answer.kwargs], ["same", args, null], pair);
+    assert.match(answer.source, /\.py:\d+$/, pair);
+  }
+  // An event is asked about by its ID and its owner's, for an event the pilot opened: never event nought, never without the owner.
+  for (const pair of ["calendarProxy.GetEventDetails", "calendarMgr.GetResponsesToEvent"]) {
+    for (const given of [[0, null], [77, null], [0, 140000002], [77], []]) {
+      const answer = form(pair, given);
+      assert.deepEqual([answer.status, answer.args], ["differs", given], `${pair} ${JSON.stringify(given)}`);
+      assert.match(answer.note, /an event the pilot has opened/, pair);
+    }
+  }
+  // The client's contracts service has a wrapper for this that nothing calls.
+  const current = form("contractProxy.GetMyCurrentContractList", [false, false]);
+  assert.equal(current.status, "web-only");
+  assert.match(current.note, /GetContractListForOwner/);
+  // The market's transactions are asked for with no date: all of them.
+  for (const given of [[0], []]) {
+    const answer = form("marketProxy.CharGetTransactions", given);
+    assert.deepEqual([answer.status, answer.args], ["reshaped", [null]], JSON.stringify(given));
+  }
+  // A date is not the client's, and is not thrown away either.
+  const dated = form("marketProxy.CharGetTransactions", [134359051855730000]);
+  assert.deepEqual([dated.status, dated.args], ["differs", [134359051855730000]]);
 });

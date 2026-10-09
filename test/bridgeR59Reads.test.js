@@ -331,7 +331,7 @@ test("GET /api/bridge/calendar dispatches the four calendar reads across both se
   assert.deepEqual(callFor(gateway, "GetEventDetails").args, [980000000006, 1]);
 });
 
-test("calendar defaults month/year to the current UTC month and eventID/ownerID to 0/null", async () => {
+test("calendar defaults month/year to the current UTC month, and asks nothing of an event when none is named", async () => {
   const gateway = fakeGateway();
   const { baseUrl } = await startTestServer({ gateway });
   await selectOnServer(baseUrl);
@@ -343,9 +343,20 @@ test("calendar defaults month/year to the current UTC month and eventID/ownerID 
   const { payload } = await apiRequest(baseUrl, "/api/bridge/calendar");
   assert.deepEqual(payload.requested, { month, year, eventID: 0, ownerID: 0 });
   assert.deepEqual(callFor(gateway, "GetEventList").args, [month, year]);
-  // ownerID 0 collapses to null so the handler's owner check is not spuriously pinned.
-  assert.deepEqual(callFor(gateway, "GetResponsesToEvent").args, [0, null]);
-  assert.deepEqual(callFor(gateway, "GetEventDetails").args, [0, null]);
+  // eveCalendarsvc.py 261, 415: the client asks for an event's details and its responses when the
+  // pilot opens that event, never without one. Not asked is not a failure: no value and no error.
+  assert.deepEqual(gateway.calls.call.filter((c) => c.service.startsWith("calendar")).map((c) => c.method).sort(), ["GetEventList", "GetResponsesForCharacter"]);
+  assert.deepEqual([payload.responsesToEvent, payload.eventDetails], [null, null]);
+  assert.deepEqual(payload.errors, { responsesForCharacter: null, eventList: null, responsesToEvent: null, eventDetails: null });
+});
+
+test("an event named without its owner is asked for with None for the owner", async () => {
+  const gateway = fakeGateway();
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+  await apiRequest(baseUrl, "/api/bridge/calendar?month=7&year=2026&eventID=980000000006");
+  assert.deepEqual(callFor(gateway, "GetResponsesToEvent").args, [980000000006, null]);
+  assert.deepEqual(callFor(gateway, "GetEventDetails").args, [980000000006, null]);
 });
 
 test("one failed read carries its own error code; the rest still return (empty ≠ failed)", async () => {

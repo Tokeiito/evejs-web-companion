@@ -74,6 +74,14 @@ function fakeSession({ answers = {}, userid = ACCOUNT, loginError = null, comesO
       const answer = key in answers ? answers[key] : null;
       return typeof answer === "function" ? answer(args, kwargs) : answer;
     },
+    /** sm.ProxySvc(service).method(...): the same call, addressed to the proxy node. */
+    async proxyCall(service, method, args = [], kwargs = null) {
+      if (session.closed) throw sessionError("CONNECTION_CLOSED");
+      session.proxyCalls.push({ service, method, args, kwargs });
+      const key = `${service}.${method}`;
+      const answer = key in answers ? answers[key] : null;
+      return typeof answer === "function" ? answer(args, kwargs) : answer;
+    },
     /** A Moniker's bind: answers "N=1:<n>", counting up. */
     async bind(service, params) {
       if (session.closed) throw sessionError("CONNECTION_CLOSED");
@@ -96,6 +104,7 @@ function fakeSession({ answers = {}, userid = ACCOUNT, loginError = null, comesO
       return null;
     },
     binds: [],
+    proxyCalls: [],
     boundCalls: [],
     objects: 0,
     onNotification(listener) { listeners.notification.add(listener); return () => listeners.notification.delete(listener); },
@@ -2674,4 +2683,34 @@ test("the wallet's transactions go out with a bool for whose they are, however t
   await pilots.callMethod("account", "GetTransactions", [1000, null, null, false], null, FIELDS, handle);
   assert.deepEqual(session.calls.filter((call) => call.method === "GetTransactions").map((call) => call.args), [[1000, null, null, false], [1000, null, null, false]]);
   assert.deepEqual(pilots.callLedger().find((row) => row.pair === "account.GetTransactions").statuses, { reshaped: 1, same: 1 });
+});
+
+test("a service the client reaches through its proxy is called at the proxy node, and any other by its name alone", async () => {
+  const pairs = { allowed: new Set(["contractProxy.GetLoginInfo", "contractProxy.SearchContracts", "marketProxy.GetCharOrders", "account.GetCashBalance", "calendarMgr.GetResponsesForCharacter", "calendarProxy.GetEventList"]) };
+  const { pilots, session, handle } = await selected({ answers: { "contractProxy.GetLoginInfo": 41, "account.GetCashBalance": 42 } }, pairs);
+  session.calls.length = 0;
+  const viaProxy = await pilots.callMethod("contractProxy", "GetLoginInfo", [], null, FIELDS, handle);
+  await pilots.callMethod("marketProxy", "GetCharOrders", [], null, FIELDS, handle);
+  const byName = await pilots.callMethod("account", "GetCashBalance", [0], null, FIELDS, handle);
+  await pilots.callMethod("calendarMgr", "GetResponsesForCharacter", [], null, FIELDS, handle);
+  await pilots.callMethod("calendarProxy", "GetEventList", [10, 2026], null, FIELDS, handle);
+  await pilots.callMethod("contractProxy", "SearchContracts", [], { contractType: 3, availability: 0, startNum: 0 }, FIELDS, handle);
+  const named = (calls) => calls.map((call) => `${call.service}.${call.method}`);
+  assert.deepEqual(named(session.proxyCalls), ["contractProxy.GetLoginInfo", "marketProxy.GetCharOrders", "calendarProxy.GetEventList", "contractProxy.SearchContracts"]);
+  assert.deepEqual(named(session.calls), ["account.GetCashBalance", "calendarMgr.GetResponsesForCharacter"]);
+  // The answer comes back the same either way, and the arguments go as they were shaped.
+  assert.deepEqual([viaProxy.result, byName.result], [41, 42]);
+  assert.deepEqual(session.proxyCalls[2].args, [10, 2026]);
+  assert.equal(Object.keys(session.proxyCalls[3].kwargs).length, 26);
+  // Addressing a call is the transport's own business: the ledger counts the call as it was spelt.
+  assert.deepEqual(pilots.callLedger().find((row) => row.pair === "contractProxy.GetLoginInfo").statuses, { same: 1 });
+});
+
+test("the account's own connection addresses a call the same way: the proxy's services at the proxy node", async () => {
+  const { pilots, made } = accountBuild({ answers: { "search.QuickQuery": 7 } }, { allowed: new Set(["search.QuickQuery", "charUnboundMgr.GetCharCreationInfo"]) });
+  const found = await pilots.accountCall("search", "QuickQuery", ["zaph", [2]], null, FIELDS);
+  await creationInfo(pilots);
+  assert.equal(found.result, 7);
+  assert.deepEqual(made[0].proxyCalls.map((call) => [call.service, call.method, call.args]), [["search", "QuickQuery", ["zaph", [2]]]]);
+  assert.deepEqual(made[0].calls.map((call) => call.method), ["GetCharCreationInfo"]);
 });

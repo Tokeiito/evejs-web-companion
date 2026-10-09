@@ -68,6 +68,18 @@ const MONIKER_SERVICES = Object.freeze({
   dogmaIM: new Set(["CreateNewbieShip", "GetRequiredSkillLevels"]),
   corpRegistry: new Set(),
 });
+/**
+ * The services the client reaches with sm.ProxySvc(name): every one in the decompiled client, and none
+ * of them is asked any other way. Such a call is addressed to the client's proxy node
+ * (serviceManager.py 558: session.ConnectToRemoteService(name, machoNet.myProxyNodeID)); a
+ * sm.RemoteSvc call names no node. The server's own log of a retail client shows the two apart
+ * ("dst=node", "dst=any").
+ */
+const PROXY_SERVICES = Object.freeze(new Set([
+  "XmppChatMgr", "alert", "bountyProxy", "calendarProxy", "clientStatLogger", "contractProxy", "corpRecProxy",
+  "eventLog", "fleetProxy", "machoNet", "marketProxy", "pingService", "raffleProxy", "search",
+]));
+
 /** Whether the retail client makes this call on the service's moniker for where the pilot is. */
 const madeOnMoniker = (service, method) => Object.hasOwn(MONIKER_SERVICES, service) && !MONIKER_SERVICES[service].has(method) && method !== "MachoBindObject";
 
@@ -91,6 +103,25 @@ const CC_STEPS = "eve/client/script/ui/login/charcreation/steps";
 const ACCOUNT_SVC = "eve/client/script/ui/services/accountsvc.py";
 const WALLET_SVC = "eve/client/script/ui/shared/neocom/wallet/walletSvc.py";
 const CORP_SVC = "eve/client/script/ui/services/corporation";
+const CONTRACTS_SVC = "eve/client/script/ui/shared/neocom/contracts/contracts.py";
+const CONTRACT_SEARCH = "eve/client/script/ui/shared/neocom/contracts/contractsearch.py";
+const MARKET_QUOTE = "eve/client/script/ui/services/marketsvc.py";
+const CALENDAR_SVC = "eve/client/script/ui/services/eveCalendarsvc.py";
+/** The keywords of the client's one contract search, in the order its call writes them (contractsearch.py 1367). */
+const CONTRACT_SEARCH_KEYWORDS = Object.freeze([
+  "itemTypes", "itemTypeName", "itemCategoryID", "itemGroupID", "contractType", "securityClasses", "locationID",
+  "endLocationID", "issuerID", "minPrice", "maxPrice", "minReward", "maxReward", "minCollateral", "maxCollateral",
+  "minVolume", "maxVolume", "excludeTrade", "excludeMultiple", "excludeNoBuyout", "availability", "description",
+  "searchHint", "sortBy", "sortDir", "startNum",
+]);
+/** The calendar's two reads of one event: the client has the event's row to hand, so its ID and its owner's both. */
+const ofAnOpenedEvent = (args) => (args[0] > 0 && args[1] !== null && args[1] !== undefined
+  ? { status: "same" }
+  : { status: "differs", note: "The client asks this of an event the pilot has opened, by the event's ID and its owner's (eventInfo.eventID, eventInfo.ownerID). It never asks of no event, nor without the owner." });
+/** contractscommon.py: auctions and item exchanges searched together, and the sorts by date created and by price. */
+const CONTYPE_AUCTION_AND_ITEM_EXCHANGE = 10;
+const CONTRACT_SORT_ID = 0;
+const CONTRACT_SORT_PRICE = 1;
 const DRONE_DAMAGE = "eveDrones/droneDamageTracker.py";
 const SKILL_SVC = "eve/client/script/ui/services/skillsvc.py";
 const STANDING_SVC = "eve/client/script/ui/services/standingsvc.py";
@@ -336,6 +367,41 @@ const RETAIL_CALLS = Object.freeze({
   "agentMgr.GetMyJournalDetails": same(`${JOURNAL_WINDOW}:312`, "RemoteSvc('agentMgr').GetMyJournalDetails(), no arguments"),
   "standingMgr.GetCharStandings": same(`${STANDING_SVC}:119`, "RemoteSvc('standingMgr').GetCharStandings(), no arguments"),
   "standingMgr.GetCorpStandings": same(`${STANDING_SVC}:126`, "RemoteSvc('standingMgr').GetCorpStandings(), no arguments, and only for a pilot whose corporation is not an NPC one (118)"),
+  // ── contracts, the market and the calendar: the proxy's services ──────────
+  "contractProxy.SearchContracts": Object.freeze({
+    status: "same",
+    source: `${CONTRACT_SEARCH}:1367`,
+    note: "ProxySvc('contractProxy').SearchContracts(itemTypes=..., ..., startNum=...): twenty-six keywords, every one every time, None for a filter not set, and no positional arguments. The sort is the choice of the panel's list, which starts on date created, oldest first (on price, lowest first, for auctions and exchanges together). The client's panel starts on the current region; a search with no locationID is its All Regions. For a search that is not for couriers the client sends the 'exclude multiple' tick as a bool: nothing here searches those yet.",
+    shape: (args, kwargs) => {
+      // PopulateSortCombo (267): the saved choice, or the list's first; (SORT_PRICE, 0) for auctions and exchanges together.
+      const startsOn = kwargs.contractType === CONTYPE_AUCTION_AND_ITEM_EXCHANGE ? CONTRACT_SORT_PRICE : CONTRACT_SORT_ID;
+      const unset = { sortBy: startsOn, sortDir: 0, startNum: 0 };
+      const sent = {};
+      for (const name of CONTRACT_SEARCH_KEYWORDS) sent[name] = kwargs[name] ?? unset[name] ?? null;
+      const whole = args.length === 0 && Object.keys(kwargs).length === CONTRACT_SEARCH_KEYWORDS.length && CONTRACT_SEARCH_KEYWORDS.every((name) => kwargs[name] === sent[name]);
+      return whole ? { args: [], kwargs: sent } : { args: [], kwargs: sent, status: "reshaped" };
+    },
+  }),
+  "contractProxy.GetLoginInfo": same(`${CONTRACTS_SVC}:191`, "GetContractProxySvc().GetLoginInfo(), no arguments. The client asks once, when its notifications are ready, for the Neocom's blink; the page asks with every opening of its panel."),
+  "contractProxy.GetMyExpiredContractList": same(`${CONTRACTS_SVC}:748`, "ProxySvc('contractProxy').GetMyExpiredContractList(False), and (True) for the corporation's straight after: the client asks the two together and keeps them."),
+  "contractProxy.GetMyCurrentContractList": webOnly(`${CONTRACTS_SVC}:784`, "The client's contracts service has a wrapper for this that nothing in the client calls. Its My Contracts panel lists with GetContractListForOwner(ownerID, status, contractType, issuedBy, num=100, startContractID=...) (contractPanels.py 419)."),
+  "marketProxy.GetCharOrders": same(`${MARKET_QUOTE}:389`, "GetMarketProxy().GetCharOrders(), no arguments"),
+  "marketProxy.GetMarketOrderHistory": same(`${MARKET_QUOTE}:395`, "GetMarketProxy().GetMarketOrderHistory(), no arguments"),
+  "marketProxy.GetCharEscrow": same(`${MARKET_QUOTE}:401`, "GetMarketProxy().GetCharEscrow(), no arguments"),
+  "marketProxy.CharGetTransactions": Object.freeze({
+    status: "same",
+    source: "eve/client/script/ui/shared/marketSvc.py:23",
+    note: "GetMarketProxy().CharGetTransactions(fromDate), and the date is None wherever the client asks (marketTransactionsPanel.py 161, transactionOverviewController.py 99): all of them. Nought or nothing goes out as None.",
+    shape: (args, kwargs) => {
+      if (args.length === 1 && args[0] === null) return { args, kwargs };
+      if (args.length === 0 || args[0] === 0) return { args: [null], kwargs, status: "reshaped" };
+      return { args, kwargs, status: "differs", note: "The client asks for all of the market's transactions, with None for the date. A date is the web client's own." };
+    },
+  }),
+  "calendarProxy.GetEventList": same(`${CALENDAR_SVC}:239`, "GetCalendarProxy().GetEventList(month, year), kept by month for the session"),
+  "calendarProxy.GetEventDetails": judged(`${CALENDAR_SVC}:261`, ofAnOpenedEvent, "GetCalendarProxy().GetEventDetails(eventID, ownerID), kept by event"),
+  "calendarMgr.GetResponsesForCharacter": same(`${CALENDAR_SVC}:252`, "RemoteSvc('calendarMgr').GetResponsesForCharacter(), no arguments, asked once and kept"),
+  "calendarMgr.GetResponsesToEvent": judged(`${CALENDAR_SVC}:415`, ofAnOpenedEvent, "RemoteSvc('calendarMgr').GetResponsesToEvent(eventID, ownerID)"),
   "account.GetCashBalance": same(`${WALLET_SVC}:41`, "RemoteSvc('account').GetCashBalance(0): nought for the pilot's own wallet"),
   "account.GetEntryTypes": same(`${ACCOUNT_SVC}:101`, "GetAccountMgr().GetEntryTypes(), no arguments, once for the session"),
   "account.GetWalletDivisionsInfo": same(`${ACCOUNT_SVC}:135`, "GetAccountMgr().GetWalletDivisionsInfo(), no arguments, kept five minutes"),
@@ -380,8 +446,9 @@ function retailForm(service, method, args, kwargs, context = {}) {
   const given = { args: Array.isArray(args) ? args : [], kwargs: kwargs && Object.keys(kwargs).length > 0 ? kwargs : null };
   const entry = RETAIL_CALLS[`${service}.${method}`];
   const moniker = madeOnMoniker(service, method);
-  if (!entry) return { ...given, status: "unchecked", source: null, note: null, moniker };
-  if (typeof entry.shape !== "function") return { ...given, status: entry.status, source: entry.source, note: entry.note ?? null, moniker };
+  const proxy = PROXY_SERVICES.has(service);
+  if (!entry) return { ...given, status: "unchecked", source: null, note: null, moniker, proxy };
+  if (typeof entry.shape !== "function") return { ...given, status: entry.status, source: entry.source, note: entry.note ?? null, moniker, proxy };
   const shaped = entry.shape(given.args, given.kwargs ?? {}, context ?? {});
   const keywords = shaped.kwargs && Object.keys(shaped.kwargs).length > 0 ? shaped.kwargs : null;
   return {
@@ -391,6 +458,7 @@ function retailForm(service, method, args, kwargs, context = {}) {
     source: entry.source,
     note: shaped.note ?? entry.note ?? null,
     moniker,
+    proxy,
   };
 }
 
@@ -419,4 +487,4 @@ function createCallLedger() {
   };
 }
 
-module.exports = { MONIKER_SERVICES, REPEATS, RETAIL_CALLS, createCallLedger, list, madeOnMoniker, retailForm, retailNeeds };
+module.exports = { CONTRACT_SEARCH_KEYWORDS, MONIKER_SERVICES, PROXY_SERVICES, REPEATS, RETAIL_CALLS, createCallLedger, list, madeOnMoniker, retailForm, retailNeeds };
