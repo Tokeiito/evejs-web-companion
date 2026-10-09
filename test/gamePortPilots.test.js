@@ -5529,3 +5529,52 @@ test("a whole stack is moved with its quantity, from what the pilot's listings h
   const tally = pilots.callLedger().find((row) => row.pair === "invbroker.Add").statuses;
   assert.deepEqual(tally, { differs: 5, reshaped: 4, same: 1 });
 });
+
+// ── an attribute's value, from what godma holds ──────────────────────────────
+//
+// The client never asks the server for an attribute's value: its own dogma location works it out from what
+// GetAllInfo and the server's notices brought (baseDogmaLocation.GetAttributeValue). The BFF asks the server
+// (QueryAttributeValue) for a module's cycle each time one is switched off.
+
+test("an attribute of an item godma holds is answered from what it holds, and the server is asked only of what godma was not told of", async () => {
+  let asked = 0;
+  const { pilots, session, handle } = await selected(
+    { answers: { "bound:GetAllInfo": shipAllInfo(), "bound:QueryAttributeValue": () => { asked += 1; return 777; } } },
+    { allowed: new Set(["dogmaIM.QueryAttributeValue", "dogmaIM.MachoBindObject", "dogmaIM.Overload"]) },
+  );
+  const value = async (...args) => (await pilots.callMethod("dogmaIM", "QueryAttributeValue", args, null, FIELDS, handle)).result;
+  // godma is primed first, as the client's is from the moment it has a ship: one GetAllInfo, and nothing else.
+  assert.equal(await value(FITTED_MODULE, 9), 40);
+  assert.deepEqual(session.boundCalls.map((call) => call.method), ["GetAllInfo"]);
+  assert.deepEqual([await value(SHIP, 482), await value(SHIP, 9), await value(BigInt(SHIP), 265)], [125, 151, 150]);
+  assert.equal(asked, 0);
+  // The server's word of a change is what is answered after it.
+  session.notify("OnModuleAttributeChanges", [{ type: "list", items: [["OnModuleAttributeChange", PILOT, BigInt(FITTED_MODULE), 9, DOGMA_T + 10000000n, 55, 40, DOGMA_T + 10000000n]] }]);
+  assert.deepEqual([await value(FITTED_MODULE, 9), asked], [55, 0]);
+  // An attribute godma holds nothing of for the item, an item it was not told of, and no item named: the server is asked.
+  assert.deepEqual([await value(FITTED_MODULE, 73), await value(SHIP + 99, 9), await value(0, 4)], [777, 777, 777]);
+  assert.equal(asked, 3);
+  assert.deepEqual(session.boundCalls.at(-1), { objectID: "N=1:1", method: "QueryAttributeValue", args: [0, 4], kwargs: null });
+  // The same through a handle the BFF bound.
+  const bound = (await pilots.bindObject("dogmaIM", "MachoBindObject", [[STATION, 15]], null, WHO, handle)).boundHandle;
+  const through = async (...args) => (await pilots.callBoundMethod("dogmaIM", "QueryAttributeValue", args, null, WHO, handle, bound)).result;
+  assert.deepEqual([await through(FITTED_MODULE, 9), asked], [55, 3]);
+  assert.deepEqual([await through(FITTED_MODULE, 73), asked], [777, 4]);
+  // Another call of the dogma location's that names the same two numbers is no question of an attribute: it is sent.
+  await pilots.callMethod("dogmaIM", "Overload", [FITTED_MODULE, 9], null, FIELDS, handle);
+  await pilots.callBoundMethod("dogmaIM", "Overload", [FITTED_MODULE, 9], null, WHO, handle, bound);
+  assert.deepEqual(session.boundCalls.slice(-2).map((call) => [call.method, call.args]), [["Overload", [FITTED_MODULE, 9]], ["Overload", [FITTED_MODULE, 9]]]);
+  // What was sent is counted, as the web's alone; what godma answered is not a call, and is not counted.
+  const row = pilots.callLedger().find((each) => each.pair === "dogmaIM.QueryAttributeValue");
+  assert.deepEqual([row.calls, row.statuses], [4, { "web-only": 4 }]);
+  assert.equal(session.boundCalls.filter((call) => call.method === "GetAllInfo").length, 1);
+});
+
+test("where godma cannot be primed an attribute's value is asked of the server, as it was", async () => {
+  const { pilots, session, handle } = await selected(
+    { answers: { "bound:GetAllInfo": () => { throw refusedBy("NotNow"); }, "bound:QueryAttributeValue": () => 8500 } },
+    { allowed: new Set(["dogmaIM.QueryAttributeValue"]) },
+  );
+  assert.equal((await pilots.callMethod("dogmaIM", "QueryAttributeValue", [FITTED_MODULE, 73], null, FIELDS, handle)).result, 8500);
+  assert.deepEqual(session.boundCalls.at(-1).args, [FITTED_MODULE, 73]);
+});

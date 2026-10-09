@@ -323,6 +323,19 @@ holds again when the server says an item changed, and a mining laser's cycle is 
 The client asks nothing there. To match it the notices have to be worked into what is kept, as
 its cache does, and that is not done.
 
+**An attribute's value, 2026-10-09.** The client never asks the server for an attribute's
+value: its own dogma location answers (`baseDogmaLocation.GetAttributeValue`), from what
+`GetAllInfo` brought and each change the server has told of since. The BFF asked the server
+(`dogmaIM.QueryAttributeValue(itemID, 73)`) for a module's cycle each time a module that was
+still running out its cycle was switched off: one call the client never makes, each time.
+
+On the game port the transport now answers from what godma holds of the item
+(`pilots.js` `attributeHeld`), priming godma first as the client's is primed, and asks the
+server only for an item, or an attribute of one, that godma holds nothing of. What godma holds
+is the server's own figure: for a fitted Venture and its three modules, all 195 attributes
+`GetAllInfo` gave were what the server answered for the same items when asked attribute by
+attribute, the afterburner's cycle of 8,500 ms among them.
+
 **A whole stack moved, 2026-10-09.** The client adds an item to a container with
 `Add(itemID, sourceLocationID, qty=quantity, flag=self.locationFlag)` (`invControllers.py` 213),
 and the quantity is the stack's size when the whole stack moves (`_AddItem`: `quantity =

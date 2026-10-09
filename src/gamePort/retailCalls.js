@@ -521,7 +521,7 @@ const RETAIL_CALLS = Object.freeze({
   "dogmaIM.GetCharacterAttributes": webOnly(`${SKILL_SVC}:224`, "The client never asks dogma for these: its skills service asks the skill handler (GetSkillHandler().GetAttributes())."),
   "dogmaIM.GetRequiredSkillLevels": webOnly(`${DEV_TOOLS}/dna.py:584`, "Only a developer's tool in the client asks this (RemoteSvc('dogmaIM').GetRequiredSkillLevels(typeID), by the service's name). The client proper has a type's required skills in its own static data."),
   "dogmaIM.QueryAllAttributesForItem": webOnly(`${DEV_TOOLS}/svc_dgmattr.py:220`, "Only a developer's tool in the client asks this (GetServerDogmaLM().QueryAllAttributesForItem(itemID))."),
-  "dogmaIM.QueryAttributeValue": webOnly(`${CLIENT_OWN_DOGMA}:1722`, "The client never asks the server this. Its own dogma location works an attribute's value out, from what GetAllInfo and the server's notices brought."),
+  "dogmaIM.QueryAttributeValue": needing(webOnly(`${CLIENT_OWN_DOGMA}:1722`, "The client never asks the server this. Its own dogma location works an attribute's value out, from what GetAllInfo and the server's notices brought. The transport answers from what godma holds of an item it was told of, and asks the server only of one it was not."), "dogma"),
   "dogmaIM.GetLocationInfo": webOnly("dogma/items/baseDogmaItem.py:58", "The client never asks the server this. Its own dogma items know their owner, place and flag."),
   "agentMgr.GetAgents": same(`${AGENTS}:92`, "RemoteSvc('agentMgr').GetAgents(), no arguments: the whole table, kept for the session"),
   "agentMgr.GetMyJournalDetails": same(`${JOURNAL_WINDOW}:312`, "RemoteSvc('agentMgr').GetMyJournalDetails(), no arguments"),

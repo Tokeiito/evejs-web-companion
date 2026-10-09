@@ -1176,6 +1176,11 @@ function createGamePortPilots({
       const kept = await run(entry, service, method, () => keptRead(entry, service, method, form));
       return { service, method, result: wireToBridgeJson(kept === undefined ? null : kept), notifications: drain(entry) };
     }
+    // An attribute's value is the client's own dogma location's to answer, where godma holds the item.
+    if (service === "dogmaIM" && method === "QueryAttributeValue") {
+      const held = attributeHeld(entry, form.args);
+      if (held !== undefined) return { service, method, result: held, notifications: drain(entry) };
+    }
     // What the ship has locked, and what has it locked, are the client's target service's to answer.
     if (service === "dogmaIM" && Object.hasOwn(TARGETS_KEPT, method)) {
       const kept = await run(entry, service, method, async () => {
@@ -1211,6 +1216,20 @@ function createGamePortPilots({
       result: wireToBridgeJson(result === undefined ? null : result),
       notifications: drain(entry),
     };
+  }
+
+  // ── an attribute's value, from what godma holds ──────────────────────────
+
+  /**
+   * baseDogmaLocation.GetAttributeValue (1722): the client asks its own dogma location for an attribute's value,
+   * never the server. Here godma answers for an item it was told of, with the value as it stands now (what
+   * GetAllInfo brought, and each change the server has told of since). Undefined for an item, or an attribute of
+   * one, that godma holds nothing of: that is the server's to answer.
+   */
+  function attributeHeld(entry, args) {
+    // Null from godma is "nothing held": of the item, or of that attribute of it.
+    const value = entry.dogma.attribute(args[0], args[1]);
+    return typeof value === "number" ? value : undefined;
   }
 
   // ── what the ship has locked, as it is kept ──────────────────────────────
@@ -2472,6 +2491,10 @@ function createGamePortPilots({
     assertAllowed(service, method);
     if (retailNeeds(service, method) === "dogma") await shipReadings(entry, whereabouts(entry));
     const form = shape(service, method, args, kwargs, contextFor(entry));
+    if (service === "dogmaIM" && method === "QueryAttributeValue") {
+      const held = attributeHeld(entry, form.args);
+      if (held !== undefined) return { service, method, result: held, notifications: drain(entry) };
+    }
     /** The call itself, noted as it is sent. */
     const sent = async () => {
       ledger.note(service, method, form);

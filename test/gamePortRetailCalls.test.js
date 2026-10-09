@@ -1005,3 +1005,13 @@ test("a fleet's writes, set beside the client's", () => {
     assert.match(answer.note, /keeps/);
   }
 });
+
+test("an attribute's value is the web's alone to ask, and is answered from godma where godma holds the item: so godma is primed for it first", () => {
+  const entry = RETAIL_CALLS["dogmaIM.QueryAttributeValue"];
+  assert.deepEqual([entry.status, retailNeeds("dogmaIM", "QueryAttributeValue")], ["web-only", "dogma"]);
+  assert.match(entry.source, /baseDogmaLocation\.py:1722$/);
+  assert.match(entry.note, /answers from what godma holds of an item it was told of, and asks the server only of one it was not/);
+  // Sent as it came where it is sent at all.
+  const sent = form("dogmaIM.QueryAttributeValue", [9001, 73]);
+  assert.deepEqual([sent.args, sent.kwargs, sent.status, sent.moniker], [[9001, 73], null, "web-only", true]);
+});
