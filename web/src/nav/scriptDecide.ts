@@ -217,6 +217,8 @@ export type ScriptAction =
   | { readonly kind: "warpScan"; readonly target: string }
   /** Warp to a saved bookmark (the server resolves site/point + mission scope). */
   | { readonly kind: "warpBookmark"; readonly bookmarkID: number }
+  /** Warp to one of the pilot's planetary launches, by the launch's own ID. */
+  | { readonly kind: "warpLaunch"; readonly launchID: number }
   /** Board a ship in the station hangar (it becomes the active ship). */
   | { readonly kind: "boardShip"; readonly shipID: number }
   /** Apply a saved fitting to the active ship (modules from this hangar). */

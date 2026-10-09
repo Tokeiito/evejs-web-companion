@@ -106,10 +106,32 @@ test("collect-launches: no launch in this system is done, and says how many wait
   assert.match(t.why, /1 more in other systems/);
 });
 
-test("collect-launches: an off-grid container is warped to by its OWN id, not the planet's", () => {
+// journal.py 453: the client's "warp to" on a launch is CmdWarpToStuff('launch', launchID). The container is on no
+// grid the pilot is on, and the launch's own ID is the one thing of the client's that names where it is.
+test("collect-launches: an off-grid container is warped to as the launch it is, by the launch's ID", () => {
   const t = collect(collectStep, obs({ piLaunches: [launch()] }), {}, NB);
+  assert.deepEqual(t.action, { kind: "warpLaunch", launchID: 7 });
+  // Remembered by the container's own ID, which is what shows on the grid once the ship lands.
+  assert.equal(t.nextMem["warpingTo"], 80001);
+});
+
+test("collect-launches: a launch whose row has no launch ID is warped to as the item its container is", () => {
+  const t = collect(collectStep, obs({ piLaunches: [launch({ launchID: 0 })] }), {}, NB);
   assert.deepEqual(t.action, { kind: "warp", targetID: 80001 });
   assert.equal(t.nextMem["warpingTo"], 80001);
+});
+
+test("collect-launches: a launch list that stays unreadable is waited on, then the block says so and stops", () => {
+  let mem: Record<string, unknown> = {};
+  const outcomes: string[] = [];
+  for (let tickNumber = 0; tickNumber < 11; tickNumber += 1) {
+    const t = collect(collectStep, obs({ piLaunches: null }), mem, NB);
+    assert.equal(t.action.kind, "wait");
+    outcomes.push(t.outcome.kind);
+    if (t.outcome.kind === "blocked") assert.match(t.outcome.reason, /could not be read/);
+    mem = t.nextMem;
+  }
+  assert.deepEqual(outcomes, [...Array(10).fill("acting"), "blocked"]);
 });
 
 test("collect-launches: drones out are called home before the warp", () => {
@@ -122,7 +144,8 @@ test("collect-launches: the nearest launch goes first", () => {
   const far = launch({ launchID: 1, itemID: 80001, x: 90_000_000 });
   const near = launch({ launchID: 2, itemID: 80002, x: 11_000_000 });
   const t = collect(collectStep, obs({ piLaunches: [far, near] }), {}, NB);
-  assert.deepEqual(t.action, { kind: "warp", targetID: 80002 });
+  assert.deepEqual(t.action, { kind: "warpLaunch", launchID: 2 });
+  assert.equal(t.nextMem["warpingTo"], 80002);
 });
 
 test("collect-launches: on grid but outside loot range -> approach the container", () => {

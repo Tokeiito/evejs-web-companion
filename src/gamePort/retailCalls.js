@@ -168,6 +168,8 @@ const ownOrderRow = (context, orderID) => (context && typeof context.ownOrder ==
 const sameValues = (one, other) => one.length === other.length && one.every((value, at) => value === other[at]);
 
 const same = (source, note) => Object.freeze({ status: "same", source, note });
+/** A judge for a call the client sends with nothing. */
+const sentWithNothing = (args) => (args.length === 0 ? {} : { status: "differs", note: "The client sends nothing with this call." });
 const reshaped = (source, shape, note) => Object.freeze({ status: "reshaped", source, shape, note });
 const differs = (source, note) => Object.freeze({ status: "differs", source, note });
 /** Same or differs, depending on what the call carries: `judge` answers { status, note }. */
@@ -563,6 +565,11 @@ const RETAIL_CALLS = Object.freeze({
     `${INV_CACHE}:1224`,
     "The client works a capacity out itself: the attribute from dogma or the type, and the volume of what List returned. It never asks the server.",
   ),
+  "planetMgr.GetPlanetsForChar": judged("eve/client/script/environment/planetSvc.py:67", sentWithNothing,
+    "sm.RemoteSvc('planetMgr').GetPlanetsForChar(), by name and with nothing: recorded on Tranquility so. The client asks once and keeps the answer, changing it itself as a colony's pins change; the BFF asks at every read."),
+  "planetMgr.GetMyLaunchesDetails": judged("eve/client/script/ui/shared/planet/planetUISvc.py:172", sentWithNothing,
+    "sm.RemoteSvc('planetMgr').GetMyLaunchesDetails(), by name and with nothing: recorded on Tranquility so. The client asks once and keeps the answer until the server says the launches changed (OnPILaunchesChange) or its window asks afresh; the BFF asks at every read."),
+  "planetMgr.DeleteLaunch": same("eve/client/script/ui/shared/neocom/journal.py:464", "sm.RemoteSvc('planetMgr').DeleteLaunch(launchID), by name: Remove on a launch in the journal's list, which the client then asks for afresh. No recording has one."),
   "planetMgr.UserLaunchCommodities": Object.freeze({
     status: "same",
     source: `${CLIENT_PLANET}:412`,
@@ -633,7 +640,7 @@ const RETAIL_CALLS = Object.freeze({
   // ── the scanner (the scan manager a service call answers with, and the dogma location) ─────────────
   "beyonce.GetFormations": same("eve/client/script/remote/michelle.py:324", "RemoteSvc('beyonce').GetFormations(), no arguments, by name, as the ballpark is made. Recorded on Tranquility so."),
   "beyonce.CmdWarpToStuffAutopilot": same("eve/client/script/parklife/autopilot.py:465", "GetRemotePark().CmdWarpToStuffAutopilot(destinationID): the autopilot's warp, on the ballpark's object. Recorded on Tranquility with the one ID."),
-  "beyonce.CmdWarpToStuff": same("eve/client/script/remote/michelle.py:737", "bp.CmdWarpToStuff(subject, subjectID, minRange=...), on the ballpark's object: 'item' and the thing's ID from the menu (movementFunctions.py 452), 'char' for a fleet member, 'bookmark' for a bookmark. Recorded on Tranquility as ('item', itemID, minRange=0)."),
+  "beyonce.CmdWarpToStuff": same("eve/client/script/remote/michelle.py:737", "bp.CmdWarpToStuff(subject, subjectID, minRange=...), on the ballpark's object: 'item' and the thing's ID from the menu (movementFunctions.py 452), 'char' for a fleet member, 'bookmark' for a bookmark, 'launch' and a launch's ID with no range for a planetary launch (journal.py 453). Recorded on Tranquility as ('item', itemID, minRange=0)."),
   "beyonce.CmdDock": same("eve/client/script/ui/services/menuSvcExtras/movementFunctions.py:517", "bp.CmdDock(itemID, session.shipid), on the ballpark's object, through sessionMgr.PerformSessionChange('dock', ...). Recorded on Tranquility with the two IDs."),
   "beyonce.CmdFollowBall": same("eve/client/script/ui/services/menuSvcExtras/movementFunctions.py:302", "bp.CmdFollowBall(targetID, range), on the ballpark's object: the menu's approach with const.approachRange, keep at range with the pilot's distance (229), the autopilot's with 0.0 (autopilot.py 437). Recorded on Tranquility as (itemID, 50)."),
   "beyonce.CmdOrbit": same("eve/client/script/ui/services/menuSvcExtras/movementFunctions.py:260", "bp.CmdOrbit(targetID, range), on the ballpark's object: the range a float under 10 m and a whole number from there (243). Recorded on Tranquility as (itemID, 1000) and (itemID, 5000), with nothing before it."),

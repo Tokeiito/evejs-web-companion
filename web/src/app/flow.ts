@@ -12307,6 +12307,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           case "warpBookmark":
             await api.warpToBookmark(action.bookmarkID, 0, callOptions);
             return;
+          case "warpLaunch":
+            await api.warpToLaunch(action.launchID, callOptions);
+            return;
           case "restartExtractor":
             await api.restartExtractorProgram(
               action.planetID,

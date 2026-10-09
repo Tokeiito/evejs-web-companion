@@ -4841,6 +4841,11 @@ export async function getPiLaunches(options: ApiOptions = {}): Promise<readonly 
   if (typeof launchError === "string") {
     throw new Error(`Your planet launches could not be read (${launchError}).`);
   }
+  // The list is a rowset even when it is empty. A server that could not put its
+  // answer on the wire answers with nothing at all, and that is not "no launches".
+  if (data.launches === null || data.launches === undefined) {
+    throw new Error("Your planet launches could not be read (the server answered with nothing).");
+  }
   return decodeLaunchDetails(data.launches);
 }
 
@@ -5225,6 +5230,15 @@ export async function warpToBookmark(
 export async function bookmarkMiningSiteLocation(shipID: number, folderID: number, name: string, comment: string,
   options: ApiOptions = {}): Promise<void> {
   await postJson("/api/bridge/flight/bookmark-location", { itemID: shipID, folderID, name, comment, expiryMode: 2, confirm: true }, options);
+}
+
+/**
+ * Warp to one of the pilot's planetary launches (CmdWarpToStuff("launch",
+ * launchID)), as the retail journal's "warp to" on a launch does. The launch's
+ * own ID, not its container's: the container is on no grid the pilot is on.
+ */
+export async function warpToLaunch(launchID: number, options: ApiOptions = {}): Promise<FlightStepResult> {
+  return readFlightStep(await postJson("/api/bridge/flight/warp-launch", { launchID }, options));
 }
 
 /** Warp to a scanned site by its scan-signature label ("QEE-288"). */

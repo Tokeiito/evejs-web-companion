@@ -1148,3 +1148,51 @@ test("the warning is known by its name alone, and then names no item; any other 
   await selectOnServer(fourth.baseUrl);
   assert.equal((await apiRequest(fourth.baseUrl, "/api/bridge/flight/undock", { method: "POST", body: {} })).payload.error, "CALL_FAILED");
 });
+
+// journal.py 453: the client warps to a launch with michelle.CmdWarpToStuff('launch', launchID), naming the launch
+// and no range. A launch's container is on no grid the pilot is on, so nothing else of the client's reaches it.
+test("POST /api/bridge/flight/warp-launch dispatches CmdWarpToStuff(\"launch\", launchID) and nothing more", async () => {
+  const gateway = fakeGateway();
+  gateway.state.inSpace = true;
+  gateway.state.shipMode = "STOP";
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+
+  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/flight/warp-launch", {
+    method: "POST",
+    body: { launchID: 1000001 },
+  });
+  assert.equal(response.status, 200);
+  assert.equal(payload.ok, true);
+  assert.equal(JSON.stringify(payload).includes("handle:"), false, "bound handle must never reach the browser");
+
+  const warp = gateway.calls.boundCall.find((c) => c.method === "CmdWarpToStuff");
+  assert.ok(warp, "CmdWarpToStuff dispatched");
+  assert.deepEqual(warp.args, ["launch", 1000001]);
+  assert.equal(warp.kwargs ?? null, null, "the client names no range for a launch");
+  assert.equal(warp.bridgeSessionID, BRIDGE_SESSION_ID);
+  assert.match(warp.boundHandle, /^handle:beyonce:MachoBindObject/);
+  // The answer carries the flight as it was read after the order.
+  assert.equal(payload.flight.solarSystemID, ORIGIN_SYSTEM_ID);
+});
+
+test("warp-launch refuses a missing launch (INVALID_TARGET) and a docked pilot (NOT_IN_SPACE)", async () => {
+  const inSpace = fakeGateway();
+  inSpace.state.inSpace = true;
+  const first = await startTestServer({ gateway: inSpace });
+  await selectOnServer(first.baseUrl);
+  for (const body of [{}, { launchID: 0 }, { launchID: "x" }, { launchID: -4 }]) {
+    const { response, payload } = await apiRequest(first.baseUrl, "/api/bridge/flight/warp-launch", { method: "POST", body });
+    assert.equal(response.status, 400, JSON.stringify(body));
+    assert.equal(payload.error, "INVALID_TARGET", JSON.stringify(body));
+  }
+  assert.equal(inSpace.calls.boundCall.length, 0, "nothing dispatched without a launch");
+
+  const dockedGateway = fakeGateway();
+  const second = await startTestServer({ gateway: dockedGateway });
+  await selectOnServer(second.baseUrl);
+  const { response, payload } = await apiRequest(second.baseUrl, "/api/bridge/flight/warp-launch", { method: "POST", body: { launchID: 1000001 } });
+  assert.equal(response.status, 409);
+  assert.equal(payload.error, "NOT_IN_SPACE");
+  assert.equal(dockedGateway.calls.boundCall.length, 0, "no movement dispatched when docked");
+});

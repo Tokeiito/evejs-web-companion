@@ -5642,7 +5642,14 @@ const collectLaunches: MacroDecider = (step, obs, mem) => {
   }
   const launches = obs.piLaunches ?? null;
   if (launches === null) {
-    return tick(WAIT, "Reading your planet launches.", phase, ACTING, false, mem);
+    const blindChecks = (num(mem, "blindChecks") ?? 0) + 1;
+    if (blindChecks > MAX_BLOCK_ATTEMPTS * 2) {
+      return tick(WAIT, "Your planet launches could not be read.", phase, {
+        kind: "blocked",
+        reason: "Your planet launches could not be read, so the bot cannot tell what there is to collect.",
+      });
+    }
+    return tick(WAIT, "Reading your planet launches.", phase, ACTING, false, { ...mem, blindChecks });
   }
   const here = snapshot.solarSystemID;
   const now = Date.now();
@@ -5704,8 +5711,10 @@ const collectLaunches: MacroDecider = (step, obs, mem) => {
     if (recall !== null) {
       return recall;
     }
+    // As the client's journal warps to a launch: by the launch's own ID. A row
+    // with no launch ID has only its container to name.
     return tick(
-      { kind: "warp", targetID: target.itemID },
+      target.launchID > 0 ? { kind: "warpLaunch", launchID: target.launchID } : { kind: "warp", targetID: target.itemID },
       "Warping to a launch container.",
       phase,
       ACTING,

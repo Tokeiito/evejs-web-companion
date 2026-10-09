@@ -1365,3 +1365,24 @@ test("what is no quantity of a type is left out of a colony's commodities, and a
   // A path that is no list of pins is sent as it came, with the commodities made a dict all the same.
   assert.deepEqual(form("planetMgr.UserTransferCommodities", ["x", { 2268: 5 }]).args, ["x", fitDict([2268, 5])]);
 });
+
+// planetSvc.py 67 and planetUISvc.py 172: sm.RemoteSvc('planetMgr').GetPlanetsForChar() and
+// .GetMyLaunchesDetails(), each by name and with nothing. Tranquility's recordings have both so. The page's
+// Planetary Industry window and its haul read both, and the ledger had them unchecked.
+
+test("a pilot's colonies and launches are asked of the planet manager by name, with nothing", () => {
+  for (const [method, file, line] of [["GetPlanetsForChar", "planetSvc", 67], ["GetMyLaunchesDetails", "planetUISvc", 172]]) {
+    const asked = form(`planetMgr.${method}`, []);
+    assert.deepEqual([asked.status, asked.args, asked.kwargs], ["same", [], null], method);
+    assert.match(asked.source, new RegExp(`${file}\\.py:${line}$`), method);
+    assert.match(asked.note, /Tranquility/, method);
+    // Something sent with it is not the client's call.
+    const withMore = form(`planetMgr.${method}`, [140000002]);
+    assert.deepEqual([withMore.status, withMore.args], ["differs", [140000002]], method);
+    assert.match(withMore.note, /nothing/, method);
+  }
+  // journal.py 464: a launch taken off the list, by its ID. No recording has one.
+  const removed = form("planetMgr.DeleteLaunch", [1000001]);
+  assert.deepEqual([removed.status, removed.args, removed.kwargs], ["same", [1000001], null]);
+  assert.match(removed.source, /journal.py:464$/);
+});

@@ -17792,6 +17792,46 @@ app.post("/api/bridge/flight/warp-bookmark", requireAuth, async (req, res, next)
   }
 });
 
+// Warp to a PLANETARY LAUNCH - beyonce.CmdWarpToStuff("launch", launchID), as the
+// client's journal does for a launch's "warp to" (journal.py 453), naming the
+// launch and no range. A launch's container is on no grid the pilot is on: the
+// server looks the launch up among the session character's own, so this cannot
+// be aimed at anybody else's.
+app.post("/api/bridge/flight/warp-launch", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) {
+    return;
+  }
+  const launchID = Number(req.body && req.body.launchID);
+  if (!Number.isSafeInteger(launchID) || launchID <= 0) {
+    res.status(400).json({ ok: false, error: "INVALID_TARGET", message: "A launch is required." });
+    return;
+  }
+  try {
+    const before = await readHeldFlight(held, req.webSessionID);
+    if (!requireInSpace(res, before.flight)) {
+      return;
+    }
+    const outcome = await boundCall(
+      held,
+      req.webSessionID,
+      parkBindSpec(before.flight.solarSystemID),
+      "CmdWarpToStuff",
+      ["launch", launchID],
+      null,
+    );
+    const after = await readHeldFlightAfterCommand(held, req.webSessionID, before);
+    res.json({
+      ok: true,
+      result: outcome.result,
+      flight: after.flight,
+      notifications: [...outcome.notifications, ...after.notifications],
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // Jump through an NPC stargate: beyonce.CmdStargateJump(fromGateID, toGateID,
 // shipID). The system transition completes after a short handoff delay; the
 // page polls flight status to see the new system.

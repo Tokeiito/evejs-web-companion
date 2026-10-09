@@ -1,0 +1,34 @@
+// Every action a bot can decide on has a case where the page carries actions
+// out. An action with a sentence in the log (nav/botLog.test.ts holds that) and
+// no case here would be logged as issued and do nothing: a launch's own warp
+// was added on 2026-10-09 with no test that would have noticed it missing.
+
+import test from "node:test";
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
+/** The action kinds the union itself declares, read out of the source. */
+function unionKinds(): readonly string[] {
+  const source = readFileSync(fileURLToPath(new URL("../nav/scriptDecide.ts", import.meta.url)), "utf8");
+  const start = source.indexOf("export type ScriptAction =");
+  assert.ok(start >= 0, "the action union moved");
+  const end = source.indexOf("\nexport ", start + 1);
+  const body = source.slice(start, end < 0 ? undefined : end);
+  return [...new Set([...body.matchAll(/readonly kind: "([a-zA-Z]+)"/g)].map((match) => match[1] as string))];
+}
+
+test("every action the union declares has a case where the page carries actions out", () => {
+  const flow = readFileSync(fileURLToPath(new URL("./flow.ts", import.meta.url)), "utf8");
+  const kinds = unionKinds();
+  assert.ok(kinds.length > 60, `the union read as ${kinds.length} kinds, which is too few to be it`);
+  const missing = kinds.filter((kind) => !flow.includes(`case "${kind}":`));
+  assert.deepEqual(missing, [], "these actions are decided on and never carried out");
+});
+
+test("a launch's warp is carried out as the launch's own warp", () => {
+  const flow = readFileSync(fileURLToPath(new URL("./flow.ts", import.meta.url)), "utf8");
+  const at = flow.indexOf('case "warpLaunch":');
+  assert.ok(at >= 0);
+  assert.match(flow.slice(at, at + 160), /^case "warpLaunch":\s+await api\.warpToLaunch\(action\.launchID, callOptions\);\s+return;/);
+});
