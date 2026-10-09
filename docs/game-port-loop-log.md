@@ -5476,3 +5476,81 @@ not show these changes until it reads again.
     for ship restrictions).
 15. When there is a recording of it: a courier's agent talked to again where the pilot
     accepted, before the package has gone anywhere (the operator's section).
+
+---
+
+## 2026-10-09 — an interval's short written form
+
+Commit `7e18bfb`, pushed. Item 1 of the last list.
+
+**What the retail client does.** A label's `{[timeinterval]x.shortWrittenForm}` is
+`FormatTimeIntervalShortWritten` (`timeIntervalFormatters.py` 153 to 166, by way of
+`timeIntervalPropertyHandler.py`):
+
+- the interval is rounded **up** to a whole number of the last unit shown;
+- it is divided over years of 365 days, months of 30, days, hours, minutes, seconds and
+  milliseconds, from the tag's `from` (years unless it says) down to its `to` (seconds unless
+  it says);
+- each unit that is not nought is written with the client's short label for it
+  (`/Carbon/UI/Common/WrittenDateTimeQuantityShort/<Unit>`); if every unit is nought, the last
+  one is written, at nought;
+- one stands alone, and more are set side by side by the label for that many
+  (`DateTimeShortWritten2Elements` to `7Elements`).
+
+The journal's "expires in" and the mission page's time left are both labels of this kind.
+
+**What the page did.** Its own short form: days, hours, minutes and seconds, cut down not
+rounded up, with its own letters for the units, whatever the tag's `from` and `to`.
+
+**What was built.** `shortWrittenInterval` beside the written form in
+`web/src/bridge/timeInterval.ts`, and a second writer in the label formatter for a tag that
+asks for it. Every label worded through the page's one function for the client's words now
+has both writers, so an interval in any of them is the client's when its words for one are to
+hand. Without them the page's own short form stands, as before.
+
+**Proof.**
+
+- Tests: 9 new. 36 ways of breaking it, all caught.
+- Suite: 9474 tests, 9450 pass, 0 fail, 24 skipped, 0 todo.
+- **In the browser, on the game port**, eve.js `e066a81e9`, as Test Two: the page asked the
+  BFF for all 13 short labels and the client has a text for each; the mission's page said
+  "Expires in 6d 7h 44m 53s". Nothing was staged.
+- **What the browser does not show.** In English the client's short labels come out as the
+  page's own letters did, so the line read the same before. That the client's are the ones
+  being used is from the tests, whose made-up labels differ from the page's own, and from
+  the request for them above.
+
+**Not done.** The other two forms a tag can ask for: `shortForm`, which is also what a tag
+with no form gets, and `writtenFormTwoPart`. The bonus's countdown on the mission's page,
+which is this same short form from days to seconds: when the client shows it depends on an
+accepted time it takes from its own tracker, not followed through.
+
+### Next
+
+1. Around a place's name: the security rating before it, the low-security warning, how many
+   jumps away it is (the page has no route of its own yet), and the reduced-rewards banner.
+2. The page's own read of the journal after an agent's button: gone, if nothing of the page's
+   own counts on it, with the push doing the work as it does for Remove Offer.
+3. The agent's cards above its own window, where the client's window has its own header.
+4. The ledger's unread pairs, most called first: the inventory and wallet reads, then the
+   writes on `ship` and `dogmaIM`.
+5. The scanner the client's way: results kept from the server's word, a probe's destination
+   and range kept here and sent with the scan.
+6. Phase 3's writes, feature by feature, each set beside what the client sends.
+7. Small, around dialogs: the title for a dialog's kind, the "do not ask again" box, the typed
+   codes not done.
+8. Small, in space: an overview row's speed columns the client's way; the bar the client
+   fills while a ship lines up for a warp; a warp ordered at a bookmark or a fleet member.
+9. Small, before a character is chosen: selecting on the account's own connection; the count
+   of names checked.
+10. Small, in Ready Fit: the capacity the client never asks for; the window following a change
+    of pilot.
+11. Small, in words: an interval's `shortForm` and `writtenFormTwoPart`; the bonus's countdown.
+12. In the park, if a server ever sends a ball that needs them: MISSILE, FORMATION, MUSHROOM;
+    a fixed ball's collision shapes and the partition's order.
+13. If a server ever sends one: a special interaction drawn as the client draws one; messages
+    inside messages.
+14. More of the client's built data as it is needed: one line in `TABLES` for each (dungeons
+    for ship restrictions).
+15. When there is a recording of it: a courier's agent talked to again where the pilot
+    accepted, before the package has gone anywhere (the operator's section).
