@@ -908,9 +908,10 @@ async function listening(answers: Record<string, ReturnType<typeof conversationW
     failAction: boolean;
     sessionGone: boolean;
     failJournal: boolean;
-    /** How many more DoActions the BFF refuses because the pilot is busy with a write. */
+    /** How many more DoActions the BFF refuses because the pilot is busy, and with which of its two refusals. */
     busyFor: number;
-  } = { hold: null, holdAction: null, journalHold: null, failAction: false, sessionGone: false, failJournal: false, busyFor: 0 };
+    busyCode: "SESSION_CHANGE_IN_PROGRESS" | "CHARACTER_IN_USE";
+  } = { hold: null, holdAction: null, journalHold: null, failAction: false, sessionGone: false, failJournal: false, busyFor: 0, busyCode: "SESSION_CHANGE_IN_PROGRESS" };
   const fetchImpl = (async (input: unknown, init?: { method?: string; body?: unknown }) => {
     const path = String(input);
     const body = init && typeof init.body === "string" ? JSON.parse(init.body) : {};
@@ -935,7 +936,7 @@ async function listening(answers: Record<string, ReturnType<typeof conversationW
       if (state.busyFor > 0) {
         state.busyFor -= 1;
         status = 409;
-        answer = { ok: false, error: "CHARACTER_IN_USE", message: "This pilot is busy with another action." };
+        answer = { ok: false, error: state.busyCode, message: "This pilot is busy with another action." };
       } else if (state.sessionGone) {
         status = 404;
         answer = { ok: false, error: "SESSION_NOT_FOUND", message: "The game session is gone." };
@@ -1271,17 +1272,21 @@ test("one agent's window closed under its question leaves another's answer to be
   assert.notEqual(store.agents.get().conversation, null);
 });
 
-test("told to talk again while the pilot's own write is out, the window asks until the pilot is free", async () => {
-  const { store, flow, requests, push, asked, state } = await listening({ null: ACCEPTED });
-  await flow.openConversation(3008416);
-  requests.length = 0;
-  // The undock that changed the station is still out: the BFF refuses twice, then answers.
-  state.busyFor = 2;
-  await push("OnSessionChanged", [{ stationid: [60000004, null] }], "sessionchange");
-  await until(() => asked().includes("briefing"));
-  assert.deepEqual(asked(), ["3008416:action:null", "3008416:action:null", "3008416:action:null", "briefing"]);
-  assert.equal(store.agents.get().actionError, null);
-  assert.equal(store.agents.get().activeAgentID, 3008416);
+test("told to talk again while the pilot's own action is out, the window asks until the pilot is free", async () => {
+  // The session is changing place (seen live on an undock), or another write of the pilot's is out.
+  for (const code of ["SESSION_CHANGE_IN_PROGRESS", "CHARACTER_IN_USE"] as const) {
+    const { store, flow, requests, push, asked, state } = await listening({ null: ACCEPTED });
+    await flow.openConversation(3008416);
+    requests.length = 0;
+    // The BFF refuses twice, then answers.
+    state.busyCode = code;
+    state.busyFor = 2;
+    await push("OnSessionChanged", [{ stationid: [60000004, null] }], "sessionchange");
+    await until(() => asked().includes("briefing"));
+    assert.deepEqual(asked(), ["3008416:action:null", "3008416:action:null", "3008416:action:null", "briefing"], code);
+    assert.equal(store.agents.get().actionError, null, code);
+    assert.equal(store.agents.get().activeAgentID, 3008416, code);
+  }
 });
 
 test("a pilot that stays busy is given up on after fifteen tries, and the window says why", async () => {
@@ -1292,7 +1297,8 @@ test("a pilot that stays busy is given up on after fifteen tries, and the window
   await push("OnAgentMissionChange", ["modified", 3008416]);
   await until(() => store.agents.get().actionError !== null);
   assert.equal(asked().filter((word) => word === "3008416:action:null").length, 15);
-  assert.match(store.agents.get().actionError ?? "", /busy with another action/);
+  // In the page's own words for a session that is changing place.
+  assert.match(store.agents.get().actionError ?? "", /still settling/);
 });
 
 test("an agent clicked while the pilot is busy is refused at once, as any click is", async () => {
@@ -1300,7 +1306,7 @@ test("an agent clicked while the pilot is busy is refused at once, as any click 
   state.busyFor = 1;
   await flow.openConversation(3008416);
   assert.deepEqual(asked(), ["3008416:action:null"]);
-  assert.match(store.agents.get().actionError ?? "", /busy with another action/);
+  assert.match(store.agents.get().actionError ?? "", /still settling/);
   assert.equal(store.agents.get().activeAgentID, null);
   void requests;
 });

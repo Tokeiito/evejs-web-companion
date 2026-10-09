@@ -4038,12 +4038,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   }
 
   /**
-   * A push that makes the window talk again is often the echo of the pilot's own write (an undock, a
-   * package loaded) and comes while that write is still out. The client's window just asks. The BFF runs
-   * one write for a pilot at a time and refuses a second (CHARACTER_IN_USE), and talking to an agent
-   * counts as one. So what the window asks of its own accord is asked again until the write has finished,
+   * A push that makes the window talk again is often the echo of the pilot's own action (an undock, a
+   * package loaded) and comes while that action is still out. The client's window just asks. The BFF
+   * does not let a second action through: while the session is changing place it refuses every one
+   * (SESSION_CHANGE_IN_PROGRESS, seen live on an undock), and it runs one write for a pilot at a time
+   * (CHARACTER_IN_USE). So what the window asks of its own accord is asked again until the pilot is free,
    * for a few seconds at most.
    */
+  const PILOT_BUSY: ReadonlySet<string> = new Set(["SESSION_CHANGE_IN_PROGRESS", "CHARACTER_IN_USE"]);
   const AGENT_TALK_AGAIN_WAIT_MS = 200;
   const AGENT_TALK_AGAIN_TRIES = 15;
   const agentTalkAgainWaitMs = options.agentTalkAgainWaitMs ?? AGENT_TALK_AGAIN_WAIT_MS;
@@ -4052,7 +4054,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       try {
         return await ask();
       } catch (error) {
-        if (!(error instanceof BridgeCallError && error.code === "CHARACTER_IN_USE") || tries >= AGENT_TALK_AGAIN_TRIES) {
+        if (!(error instanceof BridgeCallError && PILOT_BUSY.has(error.code)) || tries >= AGENT_TALK_AGAIN_TRIES) {
           throw error;
         }
         await new Promise((resolve) => setTimeout(resolve, agentTalkAgainWaitMs));
