@@ -540,8 +540,40 @@ once.
 
 The BFF's route gave an item as a plain object. The wire has no such value, and nothing could
 be sold on the game port. The registry now makes each item the client's KeyVal. A route has no
-`delta` and no fee rate, and they are not made up: the item goes out with six fields and the
-call is noted as differing.
+`delta` and no fee rate. The fee rate is worked out since the next paragraph's work; `delta`
+is not made up, so the item goes out with seven fields and the call is noted as differing.
+
+**The broker's fee rate, 2026-10-09.** The client names it with an order: a buy order's ninth
+argument (`buyThisTypeWindow.py` 701), a sale's fourth for an order that stands
+(`sellMulti.py` 444) and each sale item's `rawBrokerFeePercentage`. The server works the rate
+out for itself and refuses an order whose named rate is not its own
+(`MktBrokersFeeUnexpected2`, which says the server's rate). For an NPC station
+(`marketsvc.py` 161 `GetBrokersFeeCommissionFromStationID`):
+
+| Step | Client |
+|---|---|
+| The base, 3 percent, less 0.3 of a percent for each level of Broker Relations in effect | `skilllimits.py` 25 |
+| A tenth off for each level a warzone system is upgraded to | `facwarCommon.py` 200 |
+| Less 0.0003 for each point of standing the owner's faction has to the pilot, and 0.0002 for each point the owner has | `brokerFee.py` 67 |
+
+The level in effect is the larger of the level trained and the level lent
+(`CharacterSkillEntry.effectiveSkillLevel`). A standing is the one the client's standing
+service keeps of that NPC to the character, or nought (`standingsvc.py` 154). An owner that
+is no NPC has none that counts (`marketsvc.py` 745). The buy window names the station's rate
+whatever the order's length; the sale names it for an order that stands, and None for a sale
+at once.
+
+`brokerFee.js` has the sums in the client's order, and is held to the client's own Python to
+the last digit. The transport works the rate out from the skills and standings it keeps and
+the station's owner from the game's static data (`pilots.js` `brokersFeeAt`), and the registry
+names it. Asked first, this server refused a buy order naming 0.5 and said its own rate was
+2.96 percent; the rate worked out for that pilot and station is 0.0295803, and orders naming
+it are taken.
+
+Not done: a structure, whose base the client asks of the server
+(`structureSettings.CharacterGetService`) and where no skill applies; and the upgrade level
+of a warzone system, which the client asks of the war's manager. This server lowers its own
+rate for neither.
 
 **The order of a KeyVal's fields on the wire.** `utillib.KeyVal(a=1, b=2)` keeps its keywords
 as the instance's own dict, so its fields go out in that dict's order. That is not the order
