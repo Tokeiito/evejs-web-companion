@@ -874,3 +874,67 @@ test("forming, joining and leaving a fleet, set beside the client's", () => {
     assert.match(answer.source, new RegExp(`fleetSvc\\.py:${line}$`), pair);
   }
 });
+
+test("a fleet's writes, set beside the client's", () => {
+  // As the BFF spells them, each of these is the client's call.
+  for (const [pair, args, line] of [
+    ["fleetObjectHandler.CreateWing", [], 577],
+    ["fleetObjectHandler.CreateSquad", [654500030002], 589],
+    ["fleetObjectHandler.MoveMember", [140000002, 654500030002, 654500040002, 4], 518],
+    ["fleetObjectHandler.MakeLeader", [140000002], 604],
+    ["fleetObjectHandler.SetMotdEx", ["Fly safe"], 1961],
+  ]) {
+    const answer = withContext(pair, args, null, {});
+    assert.deepEqual([answer.status, answer.args, answer.kwargs], ["same", args, null], pair);
+    assert.match(answer.source, new RegExp(`fleetSvc\\.py:${line}$`), pair);
+  }
+
+  // fleetSvc.KickMember (607): the pilot's own number is not kicked. The client leaves the fleet instead.
+  const me = { characterID: 140000001 };
+  const kicked = withContext("fleetObjectHandler.KickMember", [140000002], null, me);
+  assert.deepEqual([kicked.status, kicked.args], ["same", [140000002]]);
+  assert.match(kicked.source, /fleetSvc\.py:611$/);
+  for (const own of [140000001, 140000001n, "140000001"]) {
+    const self = withContext("fleetObjectHandler.KickMember", [own], null, me);
+    assert.deepEqual([self.status, self.args], ["differs", [own]], String(own));
+    assert.match(self.note, /LeaveFleet/);
+  }
+  // Nobody to say who the pilot is: it goes as it was spelt, and is not said to differ.
+  assert.equal(withContext("fleetObjectHandler.KickMember", [140000001], null, {}).status, "same");
+
+  // fleetSvc.DisbandFleet (614): unless the pilot is the boss the client refuses it itself, and sends nothing.
+  const disbanded = withContext("fleetObjectHandler.DisbandFleet", [], null, { fleetBoss: true });
+  assert.deepEqual([disbanded.status, disbanded.args, disbanded.kwargs], ["same", [], null]);
+  assert.match(disbanded.source, /fleetSvc\.py:617$/);
+  for (const context of [{ fleetBoss: false }, {}, { fleetBoss: null }, { fleetBoss: 1 }]) {
+    const refused = withContext("fleetObjectHandler.DisbandFleet", [], null, context);
+    assert.equal(refused.status, "differs", JSON.stringify(context));
+    assert.match(refused.note, /boss/);
+  }
+
+  // fleetSvc.SetOptions (444): a copy of the options the client keeps, with free move as it was asked for, and
+  // nothing else of them changed. The copy is a KeyVal, as what the server sent is.
+  const kept = { type: "object", name: Buffer.from("util.KeyVal"), args: { type: "dict", entries: [[Buffer.from("isFreeMove"), false], [Buffer.from("isRegistered"), true], ["autoJoinSquadID", 5n]] } };
+  const context = { fleetOptions: () => kept };
+  const with_ = (isFreeMove) => ({ ...kept, args: { type: "dict", entries: [[Buffer.from("isFreeMove"), isFreeMove], [Buffer.from("isRegistered"), true], ["autoJoinSquadID", 5n]] } });
+  for (const [given, sent] of [[{ isFreeMove: true }, with_(true)], [{ isFreeMove: false }, with_(false)], [{}, with_(false)]]) {
+    const answer = withContext("fleetObjectHandler.SetOptions", [given], null, context);
+    assert.deepEqual([answer.status, answer.args, answer.kwargs], ["reshaped", [sent], null], JSON.stringify(given));
+    assert.match(answer.source, /fleetSvc\.py:449$/);
+    // What is kept is not what is changed: it is a copy that is sent.
+    assert.equal(kept.args.entries[0][1], false, JSON.stringify(given));
+    assert.notEqual(answer.args[0], kept);
+  }
+  // Anything but free move is not changed this way by the client, and is not sent as if it were.
+  for (const given of [{ isRegistered: true }, { isFreeMove: true, autoJoinSquadID: 6 }, { isFreeMove: 1 }, { isFreeMove: null }, null, "free", [true], kept]) {
+    const answer = withContext("fleetObjectHandler.SetOptions", [given], null, context);
+    assert.deepEqual([answer.status, answer.args], ["differs", [given]], JSON.stringify(given, (key, value) => (typeof value === "bigint" ? String(value) : value)));
+    assert.match(answer.note, /free move/);
+  }
+  // With no options kept there is nothing to copy.
+  for (const none of [{}, { fleetOptions: () => null }, { fleetOptions: () => ({ type: "dict", entries: [] }) }]) {
+    const answer = withContext("fleetObjectHandler.SetOptions", [{ isFreeMove: true }], null, none);
+    assert.deepEqual([answer.status, answer.args], ["differs", [{ isFreeMove: true }]]);
+    assert.match(answer.note, /keeps/);
+  }
+});

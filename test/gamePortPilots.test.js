@@ -3127,6 +3127,7 @@ const FLEET = 654500010000;
 const FLEET_PAIRS = { allowed: new Set([
   "fleetObjectHandler.CreateFleet", "fleetObjectHandler.MachoBindObject", "fleetObjectHandler.Init", "fleetObjectHandler.GetInitState", "fleetObjectHandler.GetWings",
   "fleetObjectHandler.LeaveFleet", "fleetObjectHandler.AcceptInvite", "fleetObjectHandler.RejectInvite", "fleetObjectHandler.UpdateMemberInfo",
+  "fleetObjectHandler.CreateWing", "fleetObjectHandler.SetOptions", "fleetObjectHandler.KickMember", "fleetObjectHandler.DisbandFleet",
   "dogmaIM.MachoBindObject", "dogmaIM.GetAllInfo",
 ]) };
 /** The binds made for a fleet, each with the call it carried; and the calls made on bound objects, by object. */
@@ -3394,6 +3395,7 @@ test("out of the fleet nothing is kept: by the pilot's own leaving, the server's
     const before = asked();
     built.session.notify("OnFleetWingAdded", [5n]);
     built.session.notify("OnFleetJoin", [keyVal([["charID", PILOT]])]);
+    built.session.notify("OnFleetMove", []);
     await built.pilots.fleetKept(WHO, built.handle);
     assert.deepEqual(asked(), before, name);
     // A fleet formed after that whose state cannot be read is not the old fleet: nothing is kept of either.
@@ -3476,6 +3478,92 @@ test("what the client asks of its fleet of its own accord is asked at once, and 
   leaving = () => intoFleet(gone.session, null);
   gone.session.notify("OnFleetJoin", [keyVal([["charID", PILOT]])]);
   assert.deepEqual([await gone.pilots.fleetKept(WHO, gone.handle), gone.pilots.fleet(FIELDS, gone.handle).holdsObject], [null, false]);
+});
+
+// ── what the client does about its fleet of its own accord, beside reading it ──
+
+const ledgerOf = (pilots, pair) => { const row = pilots.callLedger().find((each) => each.pair === pair); return row ? [row.statuses, row.source] : null; };
+
+test("a pilot who is moved finishes the move, and a wing the pilot makes is given a squad, as the client does both", async () => {
+  let wing = 654500030002n;
+  let squadRefused = false;
+  const built = await formed({ "bound:GetInitState": FOUNDED, "bound:CreateWing": () => wing, "bound:CreateSquad": () => { if (squadRefused) throw refusedBy("FleetError"); return 654500040002n; } });
+  const { pilots, session, handle } = built;
+  const asked = () => fleetCalls(session).slice(3);
+  // fleetSvc.OnFleetMove (1813): self.fleet.FinishMove(), on the fleet's object. The session's wing and squad change by it.
+  session.notify("OnFleetMove", []);
+  await pilots.fleetKept(WHO, handle);
+  assert.deepEqual([asked(), session.boundCalls.at(-1).args, session.boundCalls.at(-1).kwargs], [["N=1:500 FinishMove"], [], null]);
+  assert.deepEqual(ledgerOf(pilots, "fleetObjectHandler.FinishMove"), [{ same: 1 }, "eve/client/script/parklife/fleetSvc.py:1816"]);
+
+  // fleetSvc.CreateWing (575): wingID = self.fleet.CreateWing(); if wingID: self.CreateSquad(wingID). Both before it is over.
+  const own = await pilots.bindObject("fleetObjectHandler", "MachoBindObject", [], null, WHO, handle);
+  const makeWing = (handleOf = own) => pilots.callBoundMethod("fleetObjectHandler", "CreateWing", [], null, WHO, handle, handleOf.boundHandle);
+  const made = await makeWing();
+  assert.equal(made.result, 654500030002);
+  assert.deepEqual([asked().slice(1), session.boundCalls.at(-1).args, session.boundCalls.at(-1).kwargs], [["N=1:500 CreateWing", "N=1:500 CreateSquad"], [654500030002n], null]);
+  assert.deepEqual(ledgerOf(pilots, "fleetObjectHandler.CreateSquad")[0], { same: 1 });
+  // No wing, no squad: the server answered none, or nothing.
+  for (const none of [null, 0, 0n]) {
+    wing = none;
+    const before = asked().length;
+    await makeWing();
+    assert.deepEqual(asked().slice(before), ["N=1:500 CreateWing"], String(none));
+  }
+  // A squad the server will not make leaves the wing made, and the call's answer the wing's.
+  wing = 654500030003n;
+  squadRefused = true;
+  assert.equal((await makeWing()).result, 654500030003);
+  assert.deepEqual(asked().slice(-2), ["N=1:500 CreateWing", "N=1:500 CreateSquad"]);
+  // The wing is not made, as far as its maker is told, until its squad has been asked for and answered.
+  squadRefused = false;
+  let squadAnswers = null;
+  const slow = await formed({ "bound:GetInitState": FOUNDED, "bound:CreateWing": 654500030009n, "bound:CreateSquad": () => new Promise((resolve) => { squadAnswers = resolve; }) });
+  const slowOwn = await slow.pilots.bindObject("fleetObjectHandler", "MachoBindObject", [], null, WHO, slow.handle);
+  let wingMade = false;
+  const making = slow.pilots.callBoundMethod("fleetObjectHandler", "CreateWing", [], null, WHO, slow.handle, slowOwn.boundHandle).then(() => { wingMade = true; });
+  for (let turn = 0; turn < 3; turn += 1) await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual([wingMade, typeof squadAnswers], [false, "function"]);
+  squadAnswers(654500040009n);
+  await making;
+  // A wing asked of another fleet's Moniker is not the client's own doing, and nothing follows it.
+  const other = await pilots.bindObject("fleetObjectHandler", "MachoBindObject", [[FLEET + 1]], null, WHO, handle);
+  await makeWing(other);
+  assert.deepEqual(fleetCalls(session).slice(-1).map((call) => call.split(" ")[1]), ["CreateWing"]);
+  assert.notEqual(fleetCalls(session).at(-1).split(" ")[0], "N=1:500");
+});
+
+test("the fleet's writes are judged and shaped by what is kept: who its boss is, its options, and who the pilot is", async () => {
+  const built = await formed({ "bound:GetInitState": WITH_TWO });
+  const { pilots, session, handle } = built;
+  const own = await pilots.bindObject("fleetObjectHandler", "MachoBindObject", [], null, WHO, handle);
+  const write = (method, args) => pilots.callBoundMethod("fleetObjectHandler", method, args, null, WHO, handle, own.boundHandle);
+  const statuses = (method) => ledgerOf(pilots, `fleetObjectHandler.${method}`)[0];
+  const optionsOf = (keyValue) => Object.fromEntries(keyValue.args.entries.map(([name, value]) => [String(name), value]));
+  // fleetSvc.SetOptions: a copy of the kept options, a KeyVal as the server's is, with free move changed.
+  await write("SetOptions", [{ isFreeMove: true }]);
+  const sent = session.boundCalls.at(-1).args[0];
+  assert.deepEqual([sent.type, String(sent.name), optionsOf(sent)], ["object", "util.KeyVal", { isFreeMove: true, isRegistered: false, autoJoinSquadID: null }]);
+  assert.deepEqual(statuses("SetOptions"), { reshaped: 1 });
+  // The options the server then says are the ones a later copy is of.
+  session.notify("OnFleetOptionsChanged", [sent, keyVal([["isFreeMove", true], ["isRegistered", true], ["autoJoinSquadID", 7n]])]);
+  await write("SetOptions", [{ isFreeMove: false }]);
+  assert.deepEqual(optionsOf(session.boundCalls.at(-1).args[0]), { isFreeMove: false, isRegistered: true, autoJoinSquadID: 7n });
+  // The pilot is the boss of the recording's fleet: it may disband it, and kick the other. Its own number is not kicked.
+  await write("KickMember", [OTHER]);
+  await write("KickMember", [PILOT]);
+  assert.deepEqual(statuses("KickMember"), { same: 1, differs: 1 });
+  await write("DisbandFleet", []);
+  assert.deepEqual(statuses("DisbandFleet"), { same: 1 });
+  // The boss is another now: the client would refuse to disband, itself.
+  session.notify("OnFleetMemberChanged", [PILOT, 1n, -1, -1, 1, 2, null, -1, -1, 1, 0, null, false]);
+  await write("DisbandFleet", []);
+  assert.deepEqual(statuses("DisbandFleet"), { same: 1, differs: 1 });
+  // Out of the fleet nothing is kept to copy: the options go as they were spelt, and are said to differ.
+  intoFleet(session, null);
+  const gone = await pilots.bindObject("fleetObjectHandler", "MachoBindObject", [[FLEET]], null, WHO, handle);
+  await pilots.callBoundMethod("fleetObjectHandler", "SetOptions", [{ isFreeMove: true }], null, WHO, handle, gone.boundHandle);
+  assert.deepEqual([session.boundCalls.at(-1).args, statuses("SetOptions")], [[{ isFreeMove: true }], { reshaped: 2, differs: 1 }]);
 });
 
 // ── the monikers the BFF asks for ────────────────────────────────────────────

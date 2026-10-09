@@ -130,7 +130,8 @@ test("each notice has the client do what it does: read the state again, ask for 
     ["OnFleetSquadAdded", ["wings"]],
     ["OnFleetWingNameChanged", ["wings"]],
     ["OnFleetMemberChanged", []],
-    ["OnFleetMove", []],
+    // The pilot has been moved: FinishMove.
+    ["OnFleetMove", ["move"]],
     ["OnFleetMotdChanged", []],
   ]);
   // The three the recording has none of.
@@ -264,4 +265,33 @@ test("notices that come before any state is kept are taken all the same, and the
   const [state] = answersOf(joiner, "GetInitState");
   fleet.init(state);
   assert.deepEqual(fleet.read(), state);
+});
+
+test("the options as they are kept, and whether the pilot is the fleet's boss, are what the client would go by", () => {
+  const { founder, joiner } = recording;
+  // fleetSvc.IsBoss: the pilot's own record's job has the creator's bit (evefleet.fleetJobCreator, 2).
+  const boss = createPilotFleet({ characterID: founder.characterID });
+  const member = createPilotFleet({ characterID: joiner.characterID });
+  assert.deepEqual([boss.isBoss(), boss.options(), member.isBoss()], [false, null, false]);
+  boss.init(answersOf(founder, "GetInitState")[1]);
+  member.init(answersOf(joiner, "GetInitState")[0]);
+  assert.deepEqual([boss.isBoss(), member.isBoss()], [true, false]);
+  assert.deepEqual(boss.options(), field(answersOf(founder, "GetInitState")[1], "options"));
+  // The boss hands the fleet over: each record is changed by its own notice, and the job is what is read.
+  const handed = (charID, job) => ({ method: "OnFleetMemberChanged", args: [charID, 1n, -1, -1, 1, 2 - job, null, -1, -1, 1, job, null, false] });
+  for (const fleet of [boss, member]) fleet.feed({ method: "__MultiEvent", args: [["OnFleetMemberChanged", handed(joiner.characterID, 2).args], ["OnFleetMemberChanged", handed(founder.characterID, 0).args]] });
+  assert.deepEqual([boss.isBoss(), member.isBoss()], [false, true]);
+  // A job with other bits beside the creator's is the boss's still; one without it is not.
+  member.feed(handed(joiner.characterID, 3));
+  assert.equal(member.isBoss(), true);
+  member.feed(handed(joiner.characterID, 1));
+  assert.equal(member.isBoss(), false);
+  // The options the server sends afterwards are the ones kept.
+  const options = keyVal([["isFreeMove", true], ["isRegistered", false], ["autoJoinSquadID", null]]);
+  boss.feed({ method: "OnFleetOptionsChanged", args: [boss.options(), options] });
+  assert.deepEqual(boss.options(), options);
+  // Out of the fleet there are none, and nobody is its boss.
+  member.feed(handed(joiner.characterID, 2));
+  member.clear();
+  assert.deepEqual([member.isBoss(), member.options()], [false, null]);
 });

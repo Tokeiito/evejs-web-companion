@@ -22,6 +22,9 @@
 //   OnFleetSquadAdded, OnFleetSquadDeleted, OnFleetSquadNameChanged
 //                              the wings are asked for again
 //                              (self.wings = self.fleet.GetWings())
+//   OnFleetMove()              the pilot has been moved: FinishMove is asked,
+//                              which is where the session's wing and squad
+//                              change
 //
 // A session whose fleet changes has no members until the state is read again
 // (ProcessSessionChange). Several of these can come in one notification,
@@ -48,6 +51,8 @@ const WINGS_ASKED_AGAIN = new Set([
   "OnFleetWingAdded", "OnFleetWingDeleted", "OnFleetWingNameChanged",
   "OnFleetSquadAdded", "OnFleetSquadDeleted", "OnFleetSquadNameChanged",
 ]);
+/** evefleet/const.py: the bit of a member's job that says it is the fleet's boss. */
+const FLEET_JOB_CREATOR = 2;
 /** What a member's record is made of after OnFleetMemberChanged, with where each comes in the notice. */
 const CHANGED_FIELDS = Object.freeze([["wingID", 7], ["squadID", 8], ["role", 9], ["job", 10], ["memberOptOuts", 11]]);
 
@@ -114,14 +119,16 @@ function createPilotFleet({ characterID }) {
       motd = args[0] ?? null;
     } else if (WINGS_ASKED_AGAIN.has(method)) {
       return "wings";
+    } else if (method === "OnFleetMove") {
+      return "move";
     }
     return null;
   }
 
   /**
    * The server pushes a notification. Answers what the client's fleet service then does of its own accord, in
-   * order and each once: "init" (InitFleet), "wings" (GetWings asked again), "left" (the pilot is out of the
-   * fleet, and nothing is kept).
+   * order and each once: "init" (InitFleet), "wings" (GetWings asked again), "move" (FinishMove), "left" (the
+   * pilot is out of the fleet, and nothing is kept).
    */
   function feed(notification) {
     const args = Array.isArray(notification.args) ? notification.args : [];
@@ -151,6 +158,10 @@ function createPilotFleet({ characterID }) {
     /** self.motd: None until the server has said one. */
     motd: () => motd,
     setMotd(answer) { motd = answer ?? null; },
+    /** self.options, as the server last said them: null with none kept. */
+    options: () => options,
+    /** fleetSvc.IsBoss: the pilot's own record's job has the creator's bit. */
+    isBoss: () => ((number(field((members.get(characterID) ?? [])[1], "job")) ?? 0) & FLEET_JOB_CREATOR) !== 0,
   };
 }
 

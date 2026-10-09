@@ -199,6 +199,34 @@ const leavingByName = (args, kwargs, context) => (context.holdsFleet === false &
   note: "The client asks this only where it holds no object for a fleet the session is in. With the object it asks LeaveFleet of that, and in no fleet it asks nothing.",
 });
 
+/** fleetSvc.KickMember (607): the pilot's own number is not kicked. The client leaves the fleet itself instead. */
+const kickingAnother = (args, kwargs, context) => (String(args[0]) === String(context.characterID) ? {
+  status: "differs",
+  note: "The client does not kick the pilot's own character: it leaves the fleet instead (LeaveFleet, on the fleet's object).",
+} : {});
+/** fleetSvc.DisbandFleet (614): unless the pilot is the fleet's boss the client refuses it itself, and nothing is sent. */
+const disbandingAsBoss = (args, kwargs, context) => (context.fleetBoss === true ? {} : {
+  status: "differs",
+  note: "The client disbands a fleet only for its boss, and refuses anyone else itself (CannotDisbandFleetIfNotBoss) with nothing sent. The pilot is not the boss of a fleet kept here.",
+});
+/**
+ * fleetSvc.SetOptions (444): options = copy.copy(self.options), free move set where one was asked for, and that
+ * copy sent. It is a KeyVal, as what the server sent is, and nothing else of it is changed this way.
+ * `context.fleetOptions()` is the options as they are kept.
+ */
+function fleetOptionsCopy(args, kwargs, context) {
+  const given = args[0];
+  const kept = context.fleetOptions ? context.fleetOptions() : null;
+  const asked = given !== null && typeof given === "object" ? Object.keys(given) : null;
+  if (asked === null || asked.some((name) => name !== "isFreeMove") || (asked.length === 1 && typeof given.isFreeMove !== "boolean")) {
+    return { args, kwargs, status: "differs", note: "The client changes a fleet's free move this way and nothing else, on a copy of the options it keeps. This call asks for something else, and went as the BFF spelt it." };
+  }
+  if (!Array.isArray(kept?.args?.entries)) {
+    return { args, kwargs, status: "differs", note: "The client sends a copy of the options it keeps. None are kept here, so the call went as the BFF spelt it." };
+  }
+  const entries = kept.args.entries.map(([name, value]) => [name, asked.length === 1 && text(name) === "isFreeMove" ? given.isFreeMove : value]);
+  return { args: [{ ...kept, args: { ...kept.args, entries } }], kwargs };
+}
 /** contractscommon.py: auctions and item exchanges searched together, and the sorts by date created and by price. */
 const CONTYPE_AUCTION_AND_ITEM_EXCHANGE = 10;
 const CONTRACT_SORT_ID = 0;
@@ -522,6 +550,15 @@ const RETAIL_CALLS = Object.freeze({
   "fleetObjectHandler.UpdateMemberInfo": needing(reshaped(`${FLEET_SVC}:1807`, withOwnShipType, "self.fleet.UpdateMemberInfo(self.GetMyShipTypeID())"), "dogma"),
   "fleetObjectHandler.RejectInvite": same(`${FLEET_SVC}:1198`, "GetFleet(fleetID).RejectInvite(), and RejectInvite(True) from a pilot already in a fleet (1180), RejectInvite(False) where invitations are turned away unasked (1184)"),
   "fleetObjectHandler.Invite": same(`${FLEET_SVC}:362`, "CSPAChargedAction('CSPAFleetCheck', self.fleet, 'Invite', charID, wingID, squadID, role): self.fleet.Invite(...) on the fleet's object, None for a wing, squad or role not named; asked again with approvedCost= where the server says the contact costs and the user agrees. A pilot in no fleet forms one first (352)"),
+  // Its writes.
+  "fleetObjectHandler.CreateWing": same(`${FLEET_SVC}:577`, "self.fleet.CreateWing(), no arguments; a wing that was made is given a squad at once (CreateSquad(wingID), 579)"),
+  "fleetObjectHandler.CreateSquad": same(`${FLEET_SVC}:589`, "self.fleet.CreateSquad(wingID)"),
+  "fleetObjectHandler.MoveMember": same(`${FLEET_SVC}:518`, "self.fleet.MoveMember(charID, wingID, squadID, role)"),
+  "fleetObjectHandler.MakeLeader": same(`${FLEET_SVC}:604`, "self.fleet.MakeLeader(charID), once the user has agreed"),
+  "fleetObjectHandler.SetMotdEx": same(`${FLEET_SVC}:1961`, "self.fleet.SetMotdEx(motd)"),
+  "fleetObjectHandler.KickMember": judged(`${FLEET_SVC}:611`, kickingAnother, "self.fleet.KickMember(charID), for any member but the pilot's own"),
+  "fleetObjectHandler.DisbandFleet": judged(`${FLEET_SVC}:617`, disbandingAsBoss, "self.fleet.DisbandFleet(), no arguments, for the fleet's boss"),
+  "fleetObjectHandler.SetOptions": reshaped(`${FLEET_SVC}:449`, fleetOptionsCopy, "self.fleet.SetOptions(options): a copy of the options the client keeps, free move changed"),
   "fleetObjectHandler.Reconnect": same(`${FLEET_SVC}:1714`, "GetFleet(fleetID).Reconnect(), no arguments, on a Moniker for the fleet the connection was lost in"),
   "fleetObjectHandler.LeaveFleet": judged(`${FLEET_SVC}:369`, leavingOnTheObject, "self.fleet.LeaveFleet(), no arguments, on the fleet's object"),
   "fleetMgr.ForceLeaveFleet": judged(`${FLEET_SVC}:367`, leavingByName, "sm.RemoteSvc('fleetMgr').ForceLeaveFleet(), no arguments: asked only where the client holds no object for a fleet the session is in"),

@@ -463,8 +463,13 @@ function createGamePortPilots({
   const DOGMA_AS_GODMA_PRIMES = Object.freeze({ status: "same", source: "eve/client/script/environment/godma.py:2409", note: null });
   /** The server's clock (100 ns since 1601) for a reading of this machine's, in milliseconds. */
   const filetime = (ms) => (BigInt(Math.trunc(ms)) + 11644473600000n) * 10000n;
-  /** fleetSvc.CreateFleet: self.fleet.GetFleetID(), once the fleet it formed has been read. The web client never asks it. */
-  const FLEET_ID_AS_THE_CLIENT_ASKS = Object.freeze({ status: "same", source: "eve/client/script/parklife/fleetSvc.py:338", note: null });
+  /** What the client's fleet service asks of its own accord that the web client never asks, and where each is asked. */
+  const FLEET_OWN = Object.freeze({
+    // CreateFleet: self.fleet.GetFleetID(), once the fleet it formed has been read.
+    GetFleetID: Object.freeze({ status: "same", source: "eve/client/script/parklife/fleetSvc.py:338", note: null }),
+    // OnFleetMove: self.fleet.FinishMove().
+    FinishMove: Object.freeze({ status: "same", source: "eve/client/script/parklife/fleetSvc.py:1816", note: null }),
+  });
   const BOUND_AS_THE_CLIENT_BINDS = Object.freeze({ status: "reshaped", source: "eve/common/script/net/eveMoniker.py, eve/client/script/environment/invCache.py", note: null });
 
   // ── errors ────────────────────────────────────────────────────────────────
@@ -1487,6 +1492,9 @@ function createGamePortPilots({
       shipTypeID: () => typeOf(attribute(entry, "shipid")),
       fleetID: attribute(entry, "fleetid"),
       holdsFleet: entry.fleet !== null,
+      // fleetSvc.IsBoss and self.options, as the fleet is kept (pilotFleet.js).
+      fleetBoss: entry.fleetKept.isBoss(),
+      fleetOptions: () => entry.fleetKept.options(),
     };
   }
 
@@ -1538,9 +1546,9 @@ function createGamePortPilots({
   }
 
   /** One call the client makes of its own accord on the fleet's object, in the client's form and in the ledger. */
-  function ownFleetCall(entry, object, method) {
-    ledger.note("fleetObjectHandler", method, method === "GetFleetID" ? FLEET_ID_AS_THE_CLIENT_ASKS : shape("fleetObjectHandler", method, [], null, contextFor(entry)));
-    return entry.session.callBound(object.objectID, method, [], null);
+  function ownFleetCall(entry, object, method, args = []) {
+    ledger.note("fleetObjectHandler", method, FLEET_OWN[method] ?? shape("fleetObjectHandler", method, args, null, contextFor(entry)));
+    return entry.session.callBound(object.objectID, method, args, null);
   }
 
   /** fleetSvc.InitFleet: the fleet's state asked of its object, and kept where that is the fleet's object still. */
@@ -1570,6 +1578,9 @@ function createGamePortPilots({
       } else if (object && what === "init") {
         // OnFleetJoin, the pilot's own: InitFleet.
         fleetDoes(entry, () => initFleet(entry, object));
+      } else if (object && what === "move") {
+        // OnFleetMove: self.fleet.FinishMove(), by which the session's wing and squad change.
+        fleetDoes(entry, () => ownFleetCall(entry, object, "FinishMove"));
       } else if (object) {
         // A wing or squad's notice: self.wings = self.fleet.GetWings().
         fleetDoes(entry, async () => {
@@ -1584,15 +1595,17 @@ function createGamePortPilots({
    * fleetSvc keeps one object for the pilot's fleet, self.fleet, and reads the fleet's state from it as soon as
    * it has it. CreateFleet (331): after Init, InitFleet and then self.fleet.GetFleetID(). OnFleetInvite (1194):
    * the Moniker that accepted is the object from then on, and InitFleet. LeaveFleet (365): once it has answered
-   * there is no object and nothing kept (self.Clear()).
+   * there is no object and nothing kept (self.Clear()). CreateWing (575): a wing that was made is given a squad at
+   * once, CreateSquad(wingID). `result` is what the call answered.
    */
-  function afterFleetCall(entry, object, method) {
+  function afterFleetCall(entry, object, method, result) {
     if (method === "AcceptInvite") {
       entry.fleet = object;
       return fleetDoes(entry, () => initFleet(entry, object));
     }
     if (entry.fleet !== object) return null;
     if (method === "LeaveFleet") outOfFleet(entry);
+    if (method === "CreateWing" && positive(result) !== null) return fleetDoes(entry, () => ownFleetCall(entry, object, "CreateSquad", [result]));
     if (method !== "Init") return null;
     return fleetDoes(entry, async () => {
       await initFleet(entry, object);
@@ -1700,7 +1713,7 @@ function createGamePortPilots({
     if (service === "scanMgr") afterScanManagerCall(entry, method, form.args, result);
     if (service === "dogmaIM") afterGroupingCall(entry, method, form.args, result);
     if (service === "beyonce") afterMovementCall(entry, method, form.args, kwargs);
-    if (service === "fleetObjectHandler") await afterFleetCall(entry, object, method);
+    if (service === "fleetObjectHandler") await afterFleetCall(entry, object, method, result);
     return {
       service,
       method,
