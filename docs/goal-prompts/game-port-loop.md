@@ -448,6 +448,13 @@ Take these defaults, and list each under "For the operator" in the log so they c
 - **A change to the page is in the browser only after `npm run build:web`**: the BFF serves the built
   page (`public/dist`, which git ignores). The build checks the page's types, its tests' too, and
   `npm test` does not: a test that passes can still fail the build.
+- **Sort a walk's ledger by its calls.** A pair's status says its form is the client's. It does
+  not say the client sends it that often: the page read the locked targets once a second, each
+  reading a `GetTargets` the client sends once in a flight, and the ledger had it as "same",
+  395 times. The count column is where that shows.
+- **In the page's space windows:** a rack button takes a pointer going down and up, not a
+  `.click()` (it tells a click from a hold); and a locked thing's row carries a mark after its
+  name, so find a row with `includes`, not `startsWith`.
 - **What asks a call may be the page, not the BFF.** The page's own code makes some calls through
   `/api/bridge/call`, by name (`web/src/bridge/stationPanel.ts` asks the station's three so). A
   search of `src/` alone said nothing of ours asked them, and that went into the log and had to
