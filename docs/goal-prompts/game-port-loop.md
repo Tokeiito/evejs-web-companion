@@ -456,6 +456,12 @@ Take these defaults, and list each under "For the operator" in the log so they c
   route answers 409 until the page's check for lost drones is acknowledged
   (`/api/bridge/drone-recovery/ready`), and that check reads the space snapshot. Print the
   answer's body before believing a failure.
+- **A count is not a rate, and not a cause.** 62 `List` in a flight read as the page asking over
+  and over. Set beside the server's log, nearly every one followed the server's own notice that
+  an item had changed: the page asks when it is told. Before calling something polling, put
+  each call beside what came just before it: `scripts/server-log-rounds.js <server log> <from>
+  <to>` does that. The server's logs of earlier hours are kept beside the current one
+  (`eve.js/_local/logs/server.<date>_<hour>.log`), so a "before" can be read after the fact.
 - **Sort a walk's ledger by its calls.** A pair's status says its form is the client's. It does
   not say the client sends it that often: the page read the locked targets once a second, each
   reading a `GetTargets` the client sends once in a flight, and the ledger had it as "same",
