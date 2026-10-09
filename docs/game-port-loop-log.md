@@ -22,6 +22,18 @@ Decisions taken in your place, and anything waiting on you. Overrule any of thes
   are rather than rewrite a shared branch. **If you want server fixes held back until you have
   looked, they need somewhere other than `main` to sit, and I will not make a branch unasked.**
   Until you say, I carry on committing them to `main` as you instructed, and report each here.
+- **Two more server fixes are on eve.js's local `main`, not pushed by me** (2026-10-08, late):
+  `c6e7e6672` (a declined mission is pushed as `'declined'`, not `'reset'`) and `e066a81e9`
+  (a briefing's "Decline Time" is the time left, not the moment it ends). Both were settled by
+  recordings of the retail client on Tranquility that a sub-agent found on this machine
+  (`D:\SSDSync\EveBadStuff\LOGS`), not by inference, and both have a test in the server's suite
+  that was watched to fail first. `main` is four commits ahead of `origin/main` now, counting
+  the two from earlier that are still unpushed.
+- **Four more things in those recordings differ from EveJS and I have left them** (the entry
+  "the agent's window listens" lists them): the order of the `accepted` and `declined` pushes
+  against the call's answer, the decline question's `when`, a chain's next part before it is
+  asked for, and `GetReplayTimestamp`. None is known to change what a player sees; say if you
+  want any of them fixed.
 - **A BFF restart drops every game-port pilot** (default taken: accept it, as a retail client
   closing would).
 - **The generic call path** keeps today's list of pairs as the BFF's own allowlist once the
@@ -190,6 +202,8 @@ Decisions taken in your place, and anything waiting on you. Overrule any of thes
 | 2026-10-08 | The server never sends `OnHeatAdded` or `OnHeatRemoved`. The client's dogma location registers for both (read from its compiled class) and only carries a rack's heat upward for modules it has been told are heating it (`clientDogmaLocation.py` 1340 to 1356, `heatAttribute.py`), so between the server's heat changes it cools a rack that is being heated | a model that follows the client's code, fed by the live server: the mid rack read 0.7648, then 0.7572 a second later, then 0.7694, while its module was overloading. Not observed on a running retail client | `10e2c22f4`, by a sub-agent: one add when a module starts counting toward its rack's incoming heat, one remove when it stops | the fix's nine scenarios (watched to fail first, by the sub-agent); live on the game port: sixteen readings half a second apart, none lower than the one before, each within 0.002 of the client's formula; the same in the browser's rack |
 
 | 2026-10-08 | After a warp the server's second `SetBallMassive(ship, 0)` is stamped two ticks after the first. A ball dropping out of warp makes itself massive (`Ballpark::WarpDistance`), and when the drop is on the first stamp's tick the second arrives one step late: for that step the ship is massive, and beside a station (sent as a massive ball 100 km in radius) it bounces off it (`Ballpark::Potential`) | two recordings, four landings: stamps (D, D+2) in three, (D+1, D+3) in one; replayed through the park the ship rests 413.2 m and 412.8 m from the server's at the station, 0.06 m in the fourth. Not observed on a running retail client | **not fixed**: a third entry cannot go out under the server's own ceiling and would make the client's park double-step; left for the operator | the recording replayed with the stamps one tick apart: within a metre at both rests (a test) |
+| 2026-10-08 | Declining a mission pushes `OnAgentMissionChange('reset', agentID)`. The client closes the agent's window on `reset` (`agents.py` 688 to 696), so the agent's answer to the decline is never laid out | recordings of the retail client on Tranquility (`D:\SSDSync\EveBadStuff\LOGS`): both declines arrive as `'declined'`, and `reset` is nowhere in the tree | `c6e7e6672`, by a sub-agent: `'declined'` is pushed; a test in the server's suite watched to fail first | live in the browser on the game port: the window stays, with the agent's greeting, Request Mission and "Mission declined." |
+| 2026-10-08 | A briefing's "Decline Time" is the absolute time the decline cooldown ends. The client writes it out as an interval (`agentDialogueWindow.py` 326 to 337, `FmtTimeInterval`), which for a timestamp is about 425 years | the same recordings: None 110 times, -1 13 times, and otherwise the time remaining, never more than four hours of ticks | `e066a81e9`, by the same sub-agent | not yet seen in the page: the mission's time is the next unit |
 
 Withdrawn the same day: "after undocking the server's ship is a tick behind". It is not; that was
 the second row above, seen through a recorder that always asked at the same point in the second.
@@ -201,6 +215,11 @@ Seen and left, 2026-10-08: the decline question is sent with the time of asking 
 and the client's text reads "if you decline a mission before {when} you will lose standings", so
 a retail player is warned about the present minute. The server's own decline timer for the agent
 is the time meant. Not handed off: what a real server does with no timer running is not known.
+The Tranquility recordings (found later the same day) have two decline questions, asked four
+seconds apart. In both `when` is hours in the future, not the time of asking: the second
+names 2026-05-27T01:58:15Z, which is three hours and a second after the first decline by the
+log's own clock (four hours, the game's decline window, if that clock is an hour ahead of UTC;
+not checked). Still not known: whether the question is asked at all with no timer running.
 
 Seen and left, 2026-10-08, around the decline question (the entry "the server fix for a No to the
 decline question" has them): a research agent's No brings back its research screen and not the
@@ -4273,3 +4292,136 @@ session's character, corporation or alliance, and keeps the answer.
    of pilot.
 9. In the park, if a server ever sends a ball that needs them: MISSILE, FORMATION, MUSHROOM;
    a fixed ball's collision shapes and the partition's order.
+
+---
+
+## 2026-10-08 — the agent's window listens: a mission changed, a change of station
+
+Commits `f56a19a` and `ada92da`, pushed. In eve.js, by a sub-agent, not pushed:
+`c6e7e6672` and `e066a81e9`.
+
+**What the retail client does.** `agentDialogueWindow` has two notify events
+(`agentDialogueWindow.py` 31 to 33).
+
+- **`OnAgentMissionChange(action, agentID)`.** For `modified` about its own agent, the window
+  talks to the agent again from the top: `InteractWithAgent()` with no action, which is the
+  whole opening (86 to 90). The agents service closes the window on that agent for
+  `offer_removed`, `reset` and `talk_to_completed` (`agents.py` 688 to 696). The journal
+  takes every change, of any agent, as its contents being out of date (`journal.py` 168).
+- **`OnSessionChanged`.** With `stationid` among what changed, the window talks to its agent
+  again (78 to 84): what an agent will do depends on where the pilot is.
+- **One conversation at a time.** `InteractWithAgent` does nothing while the window is loading,
+  and lays nothing out for a window that was closed while its question was out (183 to 197).
+
+**What the page did.** Nothing with either push. A conversation stayed as it was laid out until
+something was pressed.
+
+**What was built.** The page's window does each of those. The journal is read again on every
+mission change, wherever it has been read, one read answering all that came while it was out.
+
+**Two things the live run showed.**
+
+- **The first try at talking again is refused.** An undock pushes the change of station while
+  the undock itself is still out, and the BFF refuses every action for a session that is
+  changing place (409 `SESSION_CHANGE_IN_PROGRESS`). I had expected, and written the wait for,
+  its other refusal (`CHARACTER_IN_USE`), without having seen either. What the window asks of
+  its own accord is now asked again on both, every 0.2 s for 3 s at most.
+- **A push caused by the pilot's own call reaches the page twice**, on the stream and again with
+  the call's answer. It was the second copy that got the window through on that first undock.
+  Nothing here depends on it now; it costs one journal read too many per press.
+
+**A server defect found, and fixed by a sub-agent** (eve.js `c6e7e6672`). EveJS pushed
+`OnAgentMissionChange('reset', agentID)` when a mission was declined. By the client's code a
+`reset` closes the agent's window, so the agent's answer to the decline and its Request
+Mission button would never be seen. The sub-agent found recordings of the retail client on
+Tranquility on this machine (`D:\SSDSync\EveBadStuff\LOGS`, now in the brief as a source):
+both declines in them arrive as `'declined'`, and `reset` is nowhere in the tree. EveJS now
+sends `'declined'`; a test in its suite was watched to fail first.
+
+**A second, from the same recordings** (eve.js `e066a81e9`). A briefing's "Decline Time" is
+the time REMAINING on Tranquility (None, -1, or up to four hours of ticks). EveJS sent the
+absolute time the cooldown ends, which the client would write out as about 425 years.
+
+**Proof.**
+
+- Tests: 26 new. 68 ways of breaking the change caught. Six got through at first: five are
+  closed (a line that did nothing was taken out, and tests were added), and one is left, an
+  option that only shortens the tests' own waiting.
+- Suite: 9317 tests, 9293 pass, 0 fail, 24 skipped, 0 todo.
+- **In the browser, on the game port**, eve.js `c6e7e6672`, as Test Two with its courier
+  agent, read from the page, from the page's own requests, and from the server's log:
+
+  | what was done | the page | the server |
+  |---|---|---|
+  | Decline, and Yes to the server's question | the window stays: the agent's greeting, Request Mission, "Mission declined."; the journal empties | `DoAction`; the push; the journal; the three layout reads |
+  | Request Mission, then Accept | the offer, then Complete Mission and Quit; the journal has it | for each: `DoAction`, the push, the journal, the three reads |
+  | `/missioncomplete` in the page's GM console, nothing touched in the window | what the agent says changes, and the buttons become what the server now offers | `SlashCmd`; the push 2 ms later; `DoAction` 5 ms after that, then the journal and the three reads |
+  | Undock, the window open (before the fix above) | the window's question refused at 0.3 s (`SESSION_CHANGE_IN_PROGRESS`); the undock answered at 1.62 s; the second copy of the push asked again and was answered | `Undock` 23:55:51.083; `DoAction` 23:55:52.683 and the three reads |
+  | Dock, the window open (after it) | refused once, asked again 0.2 s later and answered, 25 ms after the dock itself was; the buttons are the station's again | `CmdDock` 00:01:31.043; `DoAction` 00:01:35.275 and the three reads |
+
+  One `DoAction` reached the server for each change; a refused question never leaves the BFF.
+- **Not seen live: the window closing.** Nothing I can do makes the server send `offer_removed`,
+  `reset` or `talk_to_completed`. The BFF's route for removing an offer asks
+  `agentMgr.RemoveOfferFromJournal` of the service by name with no agent, where the client
+  asks the agent's bound object (`agents.py` 782), so it removes nothing. Closing is proven by
+  tests only.
+- **The staging was undone**: the store was copied with the server stopped before the check and
+  put back after.
+
+**Not done.**
+
+- The page still takes a push twice when its own call caused it. Told apart, a press would
+  read the journal twice, not three times.
+- The BFF's remove-offer route is not the client's call (above).
+- After `/missioncomplete` the server's conversation offers Quit and no Complete. Not looked
+  into: the window shows what the server says.
+
+**Also in this stretch, while the sub-agent worked** (`76a99ee`, `adcd794`): the first two
+pieces of the next unit. `FmtTimeInterval` as the client writes an interval (8 tests, 24
+breakages caught), and the line `GetMissionTimeText` writes from a briefing's two times (7
+tests, 16 of 17 breakages caught; the one left writes the same words either way, at exactly
+one minute). Neither is read into the store or shown yet.
+
+**What else the recordings say, read by the sub-agent and not acted on.**
+
+- **The order of a push and the answer to the call that caused it.** On Tranquility `accepted`
+  (23 of 23), `declined` (2 of 2) and `quit` come after the `DoAction` answer, `offered` before
+  it (24 of 24), and `completed` either way (15 before, 7 after). EveJS sends every one before
+  the answer but `quit`. So `accepted` and `declined` differ. Whether the client behaves
+  differently for it is not known; the page copes with either.
+- **The decline question's `when`** is the end of the running decline timer on Tranquility
+  (both recorded declines). EveJS passes the time of asking. No recording has a decline with no
+  timer running.
+- **A chain's next part, offered at completion**, has "Decline Time" None on Tranquility until
+  the pilot asks for it (three samples, one chain). EveJS would answer -1 or the time left.
+- **`GetReplayTimestamp`** answered None on Tranquility with a decline timer running; EveJS
+  returns the timer's end.
+- The sub-agent's decoders are in the loop's scratch folder: `decode-lines.js` (any line range
+  of a recording), `decline-time-scan.js`, `push-order-scan.js`.
+
+### Next
+
+1. The mission's time under what the agent says: the line is worded (`missionTime.ts`). Read
+   it into the store with each layout, ask for its labels, and show it, but not with a replay
+   timer or a special interaction. See it live on the fixed server with a decline timer
+   running. Then the replay timer itself, and the agent's header.
+2. The objectives of a mission that is not a courier; messages inside messages when one
+   turns up.
+3. A push the page's own call caused, taken once: the stream's copy and the answer's told
+   apart.
+4. `agentMgr.RemoveOfferFromJournal` on the agent's bound object, and a way to press it.
+5. The ledger's unread pairs, most called first: the inventory and wallet reads, then the
+   writes on `ship` and `dogmaIM`.
+6. The scanner the client's way: results kept from the server's word, a probe's destination
+   and range kept here and sent with the scan.
+7. Phase 3's writes, feature by feature, each set beside what the client sends.
+8. Small, around dialogs: the title for a dialog's kind, the "do not ask again" box, the typed
+   codes not done.
+9. Small, in space: an overview row's speed columns the client's way; the bar the client
+   fills while a ship lines up for a warp; a warp ordered at a bookmark or a fleet member.
+10. Small, before a character is chosen: selecting on the account's own connection; the count
+    of names checked.
+11. Small, in Ready Fit: the capacity the client never asks for; the window following a change
+    of pilot.
+12. In the park, if a server ever sends a ball that needs them: MISSILE, FORMATION, MUSHROOM;
+    a fixed ball's collision shapes and the partition's order.

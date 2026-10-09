@@ -73,6 +73,13 @@ Consult in this order. When two disagree, a recording of the real thing settles 
 4. **The EveJS server source**, `eve.js/server/src`: what the server accepts and sends.
 5. **The server's logs**, `eve.js/_local/logs`: real client sessions by call name, handshake
    details, and `[PKT] ERR` lines, which are the only trace when a call answers None.
+6. **Recordings of the retail client on Tranquility**: `D:\SSDSync\EveBadStuff\LOGS` (index in
+   `LOG_MANIFEST.md`, missions under `Missions/`). The client's own log of sessions against CCP's
+   server, every packet printed as a `MarshalStream` repr. This is what CCP's server really
+   sends, and it settles what the decompiled client only implies: grep it for a call or a
+   notification by name before calling anything EveJS does right or wrong. Reading the bytes:
+   a dict entry's value is written BEFORE its key; `\x01` is None, `\x07` is -1, `/\x05`
+   and five bytes is a long.
 
 Tools already built for this: `scripts/capture-game-frames.js` (record a conversation as a
 fixture), `scripts/record-game-port.js` (record any client), `scripts/parity-harness.js`,
@@ -270,6 +277,14 @@ Take these defaults, and list each under "For the operator" in the log so they c
   the page does: `POST /api/bridge/drone-recovery/ready {checkID}` with the
   `droneRecoveryCheckID` that select answered with (`scripts/bff-parity.js` does this). A
   script that exits without it leaves the pilot held by the BFF.
+- **While a session is changing place the BFF refuses every action** (409
+  `SESSION_CHANGE_IN_PROGRESS`, from the gate near the top of `src/server.js`), from the moment
+  an undock, dock or jump is sent until it has settled. The server's pushes about the change
+  reach the page before that. Anything the page does on such a push has to wait the refusal
+  out, as the agent's window does (`whenThePilotIsFree` in `web/src/app/flow.ts`).
+- **A push caused by the pilot's own call reaches the page twice**: on the live stream as it
+  happens, and again with the call's answer (both transports keep the notification for the
+  answer as well as streaming it). Whatever acts on a push has to be harmless done twice.
 - **The BFF runs one write per pilot at a time** (`CHARACTER_IN_USE`). Anything that must get
   through while a write is waiting on the server, as an answer to its question must, has to be
   let past that gate in `src/server.js`, and tested with a write in flight.
