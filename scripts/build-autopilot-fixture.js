@@ -9,7 +9,10 @@
 // bin64/_pyevepathfinder.dll). This writes a Python 2.7 snippet that loads that
 // module inside the client's python27.dll (scripts/py27-oracle.py), gives it each
 // map below the way the client's own script does (evePathfinder/eveMapWrapper.py,
-// core.py), and saves its jump counts to test/fixtures/autopilotRoute.json.
+// core.py), and saves, for each pair of systems, how many jumps its route has and
+// how many of the systems on it are low-security and how many null-security, to
+// test/fixtures/autopilotRoute.json. (Which systems a route goes through is not
+// kept: among routes that cost it the same, that goes by the order of the map.)
 //
 // Nothing in the fixture is the client's or the game's: the maps are made up here,
 // and every count is the module's own answer. Where two routes cost the module the
@@ -178,6 +181,7 @@ function snippet(dll, list) {
     "    goal = pf.EveStandardFloodFillGoal()",
     "    cache = pf.EveMapPathfinderCache()",
     "    cache.Initialize(m)",
+    "    level_of = dict(systems)",
     "    counts = []",
     "    for a, b in pairs:",
     // The "safe" route type's limits, and the penalty as AutopilotPathfinderInterface.GetSecurityPenalty works it out.
@@ -191,7 +195,11 @@ function snippet(dll, list) {
     "            goal.AddAvoidSystem(m, each)",
     "        cache.Clear()",
     "        pf.FindRoute(m, goal, cache)",
-    "        counts.append(str(cache.GetJumpCountTo(m, b)))",
+    // The systems the route enters: every one on it but the first.
+    "        entered = list(cache.GetRouteTo(m, b))[1:]",
+    "        lows = len([1 for each in entered if 0 < level_of[each] < 0.45])",
+    "        nulls = len([1 for each in entered if level_of[each] <= 0])",
+    "        counts.append('%d:%d:%d' % (cache.GetJumpCountTo(m, b), lows, nulls))",
     "    return ' '.join(counts)",
   ];
   for (const each of list) {
@@ -228,7 +236,7 @@ function main(argv = process.argv.slice(2)) {
     console.error(`The client's pathfinder could not be run:\n${ran.stderr}`);
     return 1;
   }
-  const answered = ran.stdout.split(/\r?\n/).filter((line) => line.trim() !== "").map((line) => line.trim().split(" ").map(Number));
+  const answered = ran.stdout.split(/\r?\n/).filter((line) => line.trim() !== "").map((line) => line.trim().split(" "));
   if (answered.length !== list.length * ORDERS) {
     console.error(`Expected ${list.length * ORDERS} lines of answers and read ${answered.length}.`);
     return 1;
@@ -246,12 +254,13 @@ function main(argv = process.argv.slice(2)) {
       }
       kept += 1;
       // The module answers -1 where there is no route.
-      pairs.push([from, to, asWritten[at] === -1 ? null : asWritten[at]]);
+      const [count, lows, nulls] = asWritten[at].split(":").map(Number);
+      pairs.push(count === -1 ? [from, to, null, 0, 0] : [from, to, count, lows, nulls]);
     });
     return { name: each.name, penalty: each.penalty, avoid: each.avoid, systems: Object.entries(each.systems).map(([id, level]) => [Number(id), level]), jumps: each.jumps, pairs };
   });
   const fixture = {
-    source: "The retail client's own pathfinder (pyEvePathfinder) run over made-up maps by scripts/build-autopilot-fixture.js. Every count is its answer; null is no route.",
+    source: "The retail client's own pathfinder (pyEvePathfinder) run over made-up maps by scripts/build-autopilot-fixture.js. A pair is [from, to, jumps, low-security systems entered, null-security systems entered], each from its answer; jumps null is no route.",
     routeType: "safe",
     ordersEachMapWasPutIn: ORDERS,
     leftOutForChangingWithTheOrderOfTheMap: leftOut,

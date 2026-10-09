@@ -25,7 +25,9 @@
 //     that: the answer is then one of the module's own, and which one is not promised;
 //   - an avoided system is never entered, unless it is where the route is going. A route that starts in
 //     one leaves it as any other;
-//   - the answer is the number of jumps on the route found, and none at all where there is no route.
+//   - the answer is the route found, or the number of jumps on it, and none at all where there is no
+//     route. Among routes that cost the same and are as long, which one the module gives goes by the
+//     order of the map too; the one given here costs what the module's does and is as long.
 //
 // The level a system is given is the one the client works with (pseudoSecurity, bridge/systemSecurity.ts).
 //
@@ -152,6 +154,7 @@ export function autopilotJumpCounts(map: AutopilotMap, fromID: number, toIDs: re
   const counts = new Map<number, number | null>();
   const avoided = new Set(settings.avoid);
   let open: Map<number, number> | null = null;
+  const jumpsOf = (path: readonly number[] | null): number | null => (path === null ? null : path.length - 1);
   for (const toID of toIDs) {
     if (toID === fromID) {
       counts.set(toID, 0);
@@ -159,13 +162,42 @@ export function autopilotJumpCounts(map: AutopilotMap, fromID: number, toIDs: re
       counts.set(toID, null);
     } else if (avoided.has(toID)) {
       // A route may end in an avoided system, and only that one's flood may enter it.
-      counts.set(toID, flood(map, fromID, settings, avoided, toID).get(toID) ?? null);
+      counts.set(toID, jumpsOf(pathBack(flood(map, fromID, settings, avoided, toID), fromID, toID)));
     } else {
       open ??= flood(map, fromID, settings, avoided, null);
-      counts.set(toID, open.get(toID) ?? null);
+      counts.set(toID, jumpsOf(pathBack(open, fromID, toID)));
     }
   }
   return counts;
+}
+
+/**
+ * The systems on the autopilot's route from one system to another, both ends with them
+ * (clientPathfinderService.GetAutopilotPathBetween); null where there is no route. A route from a system to
+ * itself is that system alone.
+ */
+export function autopilotPath(map: AutopilotMap, fromID: number, toID: number, settings: AutopilotSettings = DEFAULT_AUTOPILOT_SETTINGS): number[] | null {
+  if (toID === fromID) {
+    return [fromID];
+  }
+  if (!isKnownSpaceSystem(fromID) || !isKnownSpaceSystem(toID)) {
+    return null;
+  }
+  const avoided = new Set(settings.avoid);
+  return pathBack(flood(map, fromID, settings, avoided, avoided.has(toID) ? toID : null), fromID, toID);
+}
+
+/** The way from the start to another system, read back along the systems each was entered from; null for one the flood did not enter. */
+function pathBack(reachedFrom: ReadonlyMap<number, number>, fromID: number, toID: number): number[] | null {
+  if (!reachedFrom.has(toID)) {
+    return null;
+  }
+  const path = [toID];
+  for (let at = toID; at !== fromID; ) {
+    at = reachedFrom.get(at)!;
+    path.push(at);
+  }
+  return path.reverse();
 }
 
 /** The jumps on the autopilot's route between two systems; null where there is no route. */
@@ -173,7 +205,7 @@ export function autopilotJumpCount(map: AutopilotMap, fromID: number, toID: numb
   return autopilotJumpCounts(map, fromID, [toID], settings).get(toID) ?? null;
 }
 
-/** The jumps to every system the flood reaches from the start. */
+/** Every system the flood enters, each with the system it was entered from. */
 function flood(map: AutopilotMap, fromID: number, settings: AutopilotSettings, avoided: ReadonlySet<number>, goalID: number | null): Map<number, number> {
   const penalty = Math.fround(Math.exp(SECURITY_PENALTY_FACTOR * settings.penalty));
   const costOf = (systemID: number): number | null => {
@@ -182,7 +214,7 @@ function flood(map: AutopilotMap, fromID: number, settings: AutopilotSettings, a
     if (security >= SAFE_MINIMUM_SECURITY) return COST_INSIDE;
     return security > 0 ? penalty : 2 * penalty;
   };
-  const jumps = new Map<number, number>([[fromID, 0]]);
+  const reachedFrom = new Map<number, number>();
   const frontier = new Frontier();
   frontier.push(0, fromID);
   while (frontier.size > 0) {
@@ -190,16 +222,16 @@ function flood(map: AutopilotMap, fromID: number, settings: AutopilotSettings, a
     for (const next of map.neighbors(system)) {
       // A system costs the same to enter from anywhere, and the cheapest reached are followed first: the
       // first way found into a system is a cheapest one, and is the one kept.
-      if (jumps.has(next) || (avoided.has(next) && next !== goalID)) {
+      if (reachedFrom.has(next) || (avoided.has(next) && next !== goalID)) {
         continue;
       }
       const entering = costOf(next);
       if (entering === null) {
         continue;
       }
-      jumps.set(next, jumps.get(system)! + 1);
+      reachedFrom.set(next, system);
       frontier.push(Math.fround(reached + entering), next);
     }
   }
-  return jumps;
+  return reachedFrom;
 }

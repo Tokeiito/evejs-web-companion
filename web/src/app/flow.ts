@@ -183,10 +183,10 @@ import type { BotLogDraft, BotLogSink } from "../nav/botLog.ts";
 import {
   buildSystemGraph,
   distancesFrom,
-  solveRoute,
+  routeAlong,
   type SystemGraph,
 } from "../nav/routeSolver.ts";
-import { autopilotJumpCounts, autopilotMap } from "../nav/autopilotRoute.ts";
+import { autopilotJumpCounts, autopilotMap, autopilotPath } from "../nav/autopilotRoute.ts";
 // R30 slice A — reading the already-cached gate graph as "what is on this grid
 // and where does it go", so a stargate row can offer a jump.
 import { buildGateLinks, type GateLink } from "../space/gateLinks.ts";
@@ -6395,9 +6395,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
     const targetSystemID = structure?.solarSystemID ?? destination.solarSystemID;
 
-    // 4. Solve the route (fewest jumps).
-    const route = solveRoute(graph, originSystem, targetSystemID);
-    if (!route.reachable) {
+    // 4. Solve the route: the one the client's autopilot plots with its settings as they come, the safe
+    //    way and round the systems it avoids (nav/autopilotRoute.ts), not the fewest jumps.
+    const way = autopilotPath(autopilotMap(graph), originSystem, targetSystemID);
+    // The way is through this same map, so each of its jumps has a gate.
+    const route = way === null ? null : routeAlong(graph, way);
+    if (route === null) {
       return planFailed(
         `No gate route from ${graph.systemName(originSystem) ?? originSystem} to ${structure?.solarSystemName ?? destination.systemName ?? targetSystemID}.`,
       );

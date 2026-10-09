@@ -13,20 +13,26 @@ import { createClientStore } from "../store/clientStore.ts";
 
 // A 3-system line: Alpha(1) <-> Bravo(2) <-> Charlie(3). The origin is Alpha
 // (from flight-status), the destination station 60000003 is in Charlie.
+// The systems are numbered as known space is, and each has a security: the route is the client's
+// autopilot's, which plots only through known space and goes by security (nav/autopilotRoute.ts).
+const ALPHA = 30000001;
+const BRAVO = 30000002;
+const CHARLIE = 30000003;
 const GRAPH = {
   ok: true,
-  systems: { "1": "Alpha", "2": "Bravo", "3": "Charlie" },
+  systems: { [ALPHA]: "Alpha", [BRAVO]: "Bravo", [CHARLIE]: "Charlie" },
+  security: { [ALPHA]: 1, [BRAVO]: 0.9, [CHARLIE]: 0.8 },
   edges: [
-    [1, 2, 112, 211],
-    [2, 1, 211, 112],
-    [2, 3, 223, 322],
-    [3, 2, 322, 223],
+    [ALPHA, BRAVO, 112, 211],
+    [BRAVO, ALPHA, 211, 112],
+    [BRAVO, CHARLIE, 223, 322],
+    [CHARLIE, BRAVO, 322, 223],
   ],
 };
 const DOCKED_ALPHA = {
   inSpace: false,
   docked: true,
-  solarSystemID: 1,
+  solarSystemID: ALPHA,
   stationID: 60000001,
   structureID: null,
   shipID: 9001,
@@ -62,10 +68,10 @@ function defaultResponder(path: string): { status: number; body: unknown } {
     const id = Number(path.split("/").pop());
     if (id === 60000001) {
       return { status: 200, body: { ok: true, id, kind: "station", stationID: id,
-        stationName: "Alpha Station", solarSystemID: 1, systemName: "Alpha" } };
+        stationName: "Alpha Station", solarSystemID: ALPHA, systemName: "Alpha" } };
     }
     if (id === 60000003) {
-      return { status: 200, body: { ok: true, id, kind: "station", stationID: id, stationName: "Charlie Station", solarSystemID: 3, systemName: "Charlie" } };
+      return { status: 200, body: { ok: true, id, kind: "station", stationID: id, stationName: "Charlie Station", solarSystemID: CHARLIE, systemName: "Charlie" } };
     }
     if (id === 99999999) {
       return { status: 200, body: { ok: true, id, kind: "unknown", solarSystemID: null } };
@@ -93,15 +99,15 @@ test("startRoute solves a multi-hop route and applies travel/planned", async () 
 
   assert.equal(outcome.started, true, "a plan that reached the autopilot reports started");
   const travel = store.travel.get();
-  assert.equal(travel.destinationSystemID, 3);
+  assert.equal(travel.destinationSystemID, CHARLIE);
   assert.equal(travel.destinationStationID, 60000003);
   assert.equal(travel.destinationName, "Charlie Station");
   assert.equal(travel.totalJumps, 2);
   assert.deepEqual(
     travel.route.map((h) => [h.fromSystemID, h.toSystemID, h.gateToWarpID, h.jumpToGateID]),
     [
-      [1, 2, 112, 211],
-      [2, 3, 223, 322],
+      [ALPHA, BRAVO, 112, 211],
+      [BRAVO, CHARLIE, 223, 322],
     ],
   );
   assert.equal(travel.route[0]?.fromSystemName, "Alpha");
@@ -116,12 +122,12 @@ test("accessible structure routes through its authoritative system and access lo
     paths.push(path);
     if (path === `/api/map/resolve/${structureID}`) {
       return { status: 200, body: { ok: true, id: structureID, kind: "structure", structureID,
-        solarSystemID: 3, systemName: "Charlie", structureName: "QA Astrahus" } };
+        solarSystemID: CHARLIE, systemName: "Charlie", structureName: "QA Astrahus" } };
     }
     if (path === `/api/dockable-structures/${structureID}`) {
       return access
         ? { status: 200, body: { ok: true, location: { kind: "structure", id: structureID,
-          name: "QA Astrahus", solarSystemID: 3, solarSystemName: "Charlie" } } }
+          name: "QA Astrahus", solarSystemID: CHARLIE, solarSystemName: "Charlie" } } }
         : { status: 409, body: { ok: false, error: "STRUCTURE_DOCK_ACCESS_DENIED" } };
     }
     return defaultResponder(path);
@@ -132,7 +138,7 @@ test("accessible structure routes through its authoritative system and access lo
   flow.abortRoute();
   assert.equal(first.started, true);
   assert.equal(store.travel.get().destinationStationID, structureID);
-  assert.equal(store.travel.get().destinationSystemID, 3);
+  assert.equal(store.travel.get().destinationSystemID, CHARLIE);
   assert.equal(store.travel.get().destinationName, "QA Astrahus");
   access = false;
   const second = await flow.startRoute(structureID);
@@ -145,26 +151,26 @@ test("startRoute to a same-system destination plans zero jumps", async () => {
   const store = createClientStore();
   const flow = createAppFlow(store, { fetch: makeFakeFetch(defaultResponder) });
 
-  await flow.startRoute(1); // Alpha, our current system
+  await flow.startRoute(ALPHA); // Alpha, our current system
   flow.abortRoute();
 
   const travel = store.travel.get();
   assert.equal(travel.totalJumps, 0);
-  assert.equal(travel.destinationSystemID, 1);
+  assert.equal(travel.destinationSystemID, ALPHA);
   assert.equal(travel.route.length, 0);
 });
 
 test("startRoute surfaces an unreachable destination as a plan error", async () => {
   const store = createClientStore();
   const responder = (path: string) => {
-    if (path === "/api/map/resolve/50") {
-      return { status: 200, body: { ok: true, id: 50, kind: "system", solarSystemID: 50, systemName: "Island" } };
+    if (path === "/api/map/resolve/30000050") {
+      return { status: 200, body: { ok: true, id: 30000050, kind: "system", solarSystemID: 30000050, systemName: "Island" } };
     }
     return defaultResponder(path);
   };
   const flow = createAppFlow(store, { fetch: makeFakeFetch(responder) });
 
-  const outcome = await flow.startRoute(50); // system not in the graph
+  const outcome = await flow.startRoute(30000050); // a system in known space that the map has no jump to
 
   const travel = store.travel.get();
   assert.equal(travel.status, "idle");
@@ -192,7 +198,7 @@ test("searchDestinations finds systems/stations by name, annotated with jumps (R
   // The player is docked in Alpha(1), so jumps are measured from system 1.
   store.apply({
     type: "character/online",
-    character: { characterID: 140000003, characterName: "Test", stationID: 60000001, structureID: null, solarSystemID: 1, corporationID: 98000000 },
+    character: { characterID: 140000003, characterName: "Test", stationID: 60000001, structureID: null, solarSystemID: ALPHA, corporationID: 98000000 },
     station: null,
   });
   const responder = (path: string) => {
@@ -207,8 +213,8 @@ test("searchDestinations finds systems/stations by name, annotated with jumps (R
           total: 2,
           capped: false,
           matches: [
-            { id: 3, name: "Charlie", kind: "system", solarSystemID: 3, solarSystemName: "Charlie" },
-            { id: 60000003, name: "Charlie Station", kind: "station", solarSystemID: 3, solarSystemName: "Charlie" },
+            { id: CHARLIE, name: "Charlie", kind: "system", solarSystemID: CHARLIE, solarSystemName: "Charlie" },
+            { id: 60000003, name: "Charlie Station", kind: "station", solarSystemID: CHARLIE, solarSystemName: "Charlie" },
           ],
         },
       };
@@ -222,7 +228,7 @@ test("searchDestinations finds systems/stations by name, annotated with jumps (R
   assert.equal(results.length, 2);
   const system = results.find((r) => r.kind === "system");
   const station = results.find((r) => r.kind === "station");
-  assert.equal(system?.id, 3);
+  assert.equal(system?.id, CHARLIE);
   assert.equal(system?.solarSystemName, "Charlie");
   // Charlie is 2 jumps from Alpha over the 3-system line; both are in Charlie(3).
   assert.equal(system?.jumps, 2);
@@ -269,7 +275,7 @@ test("abortRoute after start marks the travel state aborted", async () => {
 const IN_SPACE_ALPHA = {
   inSpace: true,
   docked: false,
-  solarSystemID: 1,
+  solarSystemID: ALPHA,
   stationID: null,
   structureID: null,
   shipID: 9001,
@@ -300,7 +306,7 @@ test("dockAt hands the SAME decide-loop a zero-hop plan for the station (no seco
 
   const travel = store.travel.get();
   assert.equal(travel.destinationStationID, 60000001, "the station is the destination");
-  assert.equal(travel.destinationSystemID, 1, "in the system we are already in");
+  assert.equal(travel.destinationSystemID, ALPHA, "in the system we are already in");
   assert.equal(travel.totalJumps, 0);
   assert.equal(travel.route.length, 0, "no hops: Dock never routes between systems");
   // R7d — the readout carries a NAME, never the id.
@@ -359,10 +365,10 @@ test("nearbyGates reads the SAME cached graph the autopilot uses — no new serv
     }),
   });
 
-  const fromBravo = await flow.nearbyGates(2);
+  const fromBravo = await flow.nearbyGates(BRAVO);
   assert.deepEqual(fromBravo, [
-    { gateID: 211, toSystemID: 1, toSystemName: "Alpha", destinationGateID: 112 },
-    { gateID: 223, toSystemID: 3, toSystemName: "Charlie", destinationGateID: 322 },
+    { gateID: 211, toSystemID: ALPHA, toSystemName: "Alpha", destinationGateID: 112 },
+    { gateID: 223, toSystemID: CHARLIE, toSystemName: "Charlie", destinationGateID: 322 },
   ]);
 
   // The ONLY route it touches is the static map graph the route solver already
@@ -370,7 +376,7 @@ test("nearbyGates reads the SAME cached graph the autopilot uses — no new serv
   assert.deepEqual(paths, ["/api/map/graph"]);
 
   // Cached: a second system's gates cost no second fetch.
-  const fromAlpha = await flow.nearbyGates(1);
+  const fromAlpha = await flow.nearbyGates(ALPHA);
   assert.equal(fromAlpha.length, 1);
   assert.equal(fromAlpha[0]?.toSystemName, "Bravo");
   assert.deepEqual(paths, ["/api/map/graph"], "the graph is fetched once, then cached");
@@ -399,5 +405,36 @@ test("nearbyGates surfaces a failed graph read instead of pretending there are n
 
   // "No gates here" and "I could not read the star map" are different facts and
   // the panel renders them differently — so this must reject, not return [].
-  await assert.rejects(() => flow.nearbyGates(2));
+  await assert.rejects(() => flow.nearbyGates(BRAVO));
+});
+
+// --- the route is the client's autopilot's ----------------------------------
+
+test("startRoute plots the way the client's autopilot does: the safe way, and round Jita, not the fewest jumps", async () => {
+  // Alpha to Delta: two jumps through a low-security system, two through Jita, or three through safe ones.
+  const DELTA = 30000004;
+  const LOW = 30000006;
+  const JITA = 30000142;
+  const graph = {
+    ok: true,
+    systems: { [ALPHA]: "Alpha", [BRAVO]: "Bravo", [CHARLIE]: "Charlie", [DELTA]: "Delta", [LOW]: "Low", [JITA]: "Jita" },
+    security: { [ALPHA]: 1, [BRAVO]: 0.9, [CHARLIE]: 0.8, [DELTA]: 0.7, [LOW]: 0.3, [JITA]: 0.9 },
+    edges: [[ALPHA, LOW], [LOW, DELTA], [ALPHA, JITA], [JITA, DELTA], [ALPHA, BRAVO], [BRAVO, CHARLIE], [CHARLIE, DELTA]]
+      .flatMap(([a, b], at) => [[a, b, 700 + at * 2, 701 + at * 2], [b, a, 701 + at * 2, 700 + at * 2]]),
+  };
+  const routeTo = async (destination: number) => {
+    const store = createClientStore();
+    const flow = createAppFlow(store, { fetch: makeFakeFetch((path) => (path === "/api/map/graph" ? { status: 200, body: graph } : defaultResponder(path))) });
+    const outcome = await flow.startRoute(destination);
+    const travel = store.travel.get();
+    flow.abortRoute();
+    return { outcome, systems: travel.route.map((hop) => hop.toSystemID), jumps: travel.totalJumps };
+  };
+  const toDelta = await routeTo(DELTA);
+  assert.equal(toDelta.outcome.started, true, JSON.stringify(toDelta.outcome));
+  assert.deepEqual(toDelta.systems, [BRAVO, CHARLIE, DELTA]);
+  assert.equal(toDelta.jumps, 3);
+  // Jita itself, and a low-security system, can be gone to.
+  assert.deepEqual((await routeTo(JITA)).systems, [JITA]);
+  assert.deepEqual((await routeTo(LOW)).systems, [LOW]);
 });

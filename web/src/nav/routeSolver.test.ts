@@ -9,6 +9,7 @@ import assert from "node:assert/strict";
 import {
   buildSystemGraph,
   distancesFrom,
+  routeAlong,
   solveRoute,
   type SystemGraphData,
 } from "./routeSolver.ts";
@@ -41,6 +42,31 @@ test("buildSystemGraph indexes systems and directed edges", () => {
   assert.equal(graph.systemName(3), "Charlie");
   const fromB = graph.neighbors(2).map((e) => e.toSystemID).sort();
   assert.deepEqual(fromB, [1, 3]);
+});
+
+test("routeAlong gives the hops of a way already chosen, each by the first gate the map has between the two", () => {
+  const graph = buildSystemGraph({ ...FIXTURE, edges: [...FIXTURE.edges, [2, 3, 2903, 3902]] });
+  const route = routeAlong(graph, [1, 2, 3, 5]);
+  assert.equal(route.reachable, true);
+  assert.equal(route.jumps, 3);
+  assert.deepEqual(route.systems, [1, 2, 3, 5]);
+  assert.deepEqual(route.hops, [
+    { fromSystemID: 1, toSystemID: 2, gateToWarpID: 102, jumpToGateID: 201 },
+    // Two gates join Bravo and Charlie here: the first is the one.
+    { fromSystemID: 2, toSystemID: 3, gateToWarpID: 203, jumpToGateID: 302 },
+    { fromSystemID: 3, toSystemID: 5, gateToWarpID: 305, jumpToGateID: 503 },
+  ]);
+  // A way of one system is there already.
+  assert.deepEqual(routeAlong(graph, [4]), { reachable: true, hops: [], systems: [4], jumps: 0 });
+  // No way at all, and a way with two systems that no gate joins, are not ways.
+  assert.equal(routeAlong(graph, []).reachable, false);
+  const broken = routeAlong(graph, [1, 2, 4]);
+  assert.deepEqual([broken.reachable, broken.hops, broken.jumps], [false, [], 0]);
+  // The way given is not the one kept: changing it after changes nothing.
+  const way = [1, 2];
+  const kept = routeAlong(graph, way);
+  way.push(3);
+  assert.deepEqual(kept.systems, [1, 2]);
 });
 
 test("solveRoute finds a known multi-hop route with the right gates per hop", () => {

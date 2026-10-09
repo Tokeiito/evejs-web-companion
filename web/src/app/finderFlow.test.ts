@@ -12,15 +12,22 @@ import { createAppFlow } from "./flow.ts";
 import { createClientStore } from "../store/clientStore.ts";
 import type { OnlineCharacterState } from "../store/types.ts";
 
-// A 3-system line: Alpha(1) <-> Bravo(2) <-> Charlie(3). System 50 is isolated.
+// A 3-system line: Alpha <-> Bravo <-> Charlie. The Island is isolated. The systems are numbered as known
+// space is, and each has a security: the route is the client's autopilot's, which plots only through known
+// space and goes by security (nav/autopilotRoute.ts).
+const ALPHA = 30000001;
+const BRAVO = 30000002;
+const CHARLIE = 30000003;
+const ISLAND = 30000050;
 const GRAPH = {
   ok: true,
-  systems: { "1": "Alpha", "2": "Bravo", "3": "Charlie" },
+  systems: { [ALPHA]: "Alpha", [BRAVO]: "Bravo", [CHARLIE]: "Charlie" },
+  security: { [ALPHA]: 1, [BRAVO]: 0.9, [CHARLIE]: 0.8 },
   edges: [
-    [1, 2, 112, 211],
-    [2, 1, 211, 112],
-    [2, 3, 223, 322],
-    [3, 2, 322, 223],
+    [ALPHA, BRAVO, 112, 211],
+    [BRAVO, ALPHA, 211, 112],
+    [BRAVO, CHARLIE, 223, 322],
+    [CHARLIE, BRAVO, 322, 223],
   ],
 };
 
@@ -28,16 +35,16 @@ const GRAPH = {
 // an unreachable system 50 (jumps null). Returned in a NON-sorted order so the
 // flow's nearest-first sort is actually exercised.
 const AGENTS = [
-  { agentID: 3003, name: "Charlie Agent", level: 2, missionKind: "courier", missionTypeLabel: "x", corporationID: 1000003, factionID: 500003, stationID: 60000003, stationName: "Charlie Station", solarSystemID: 3, solarSystemName: "Charlie" },
-  { agentID: 3050, name: "Island Agent", level: 1, missionKind: "courier", missionTypeLabel: "x", corporationID: 1000050, factionID: 500050, stationID: 60000050, stationName: "Island Station", solarSystemID: 50, solarSystemName: "Island" },
-  { agentID: 3001, name: "Alpha Agent", level: 1, missionKind: "courier", missionTypeLabel: "x", corporationID: 1000001, factionID: 500001, stationID: 60000001, stationName: "Alpha Station", solarSystemID: 1, solarSystemName: "Alpha" },
-  { agentID: 3002, name: "Bravo Agent", level: 1, missionKind: "courier", missionTypeLabel: "x", corporationID: 1000002, factionID: 500002, stationID: 60000002, stationName: "Bravo Station", solarSystemID: 2, solarSystemName: "Bravo" },
+  { agentID: 3003, name: "Charlie Agent", level: 2, missionKind: "courier", missionTypeLabel: "x", corporationID: 1000003, factionID: 500003, stationID: 60000003, stationName: "Charlie Station", solarSystemID: CHARLIE, solarSystemName: "Charlie" },
+  { agentID: 3050, name: "Island Agent", level: 1, missionKind: "courier", missionTypeLabel: "x", corporationID: 1000050, factionID: 500050, stationID: 60000050, stationName: "Island Station", solarSystemID: ISLAND, solarSystemName: "Island" },
+  { agentID: 3001, name: "Alpha Agent", level: 1, missionKind: "courier", missionTypeLabel: "x", corporationID: 1000001, factionID: 500001, stationID: 60000001, stationName: "Alpha Station", solarSystemID: ALPHA, solarSystemName: "Alpha" },
+  { agentID: 3002, name: "Bravo Agent", level: 1, missionKind: "courier", missionTypeLabel: "x", corporationID: 1000002, factionID: 500002, stationID: 60000002, stationName: "Bravo Station", solarSystemID: BRAVO, solarSystemName: "Bravo" },
 ];
 
 const DOCKED_ALPHA = {
   inSpace: false,
   docked: true,
-  solarSystemID: 1,
+  solarSystemID: ALPHA,
   stationID: 60000001,
   structureID: null,
   shipID: 9001,
@@ -50,7 +57,7 @@ const ONLINE_IN_ALPHA: OnlineCharacterState = {
   characterName: "Pilot",
   stationID: 60000001,
   structureID: null,
-  solarSystemID: 1, // the finder's distance origin
+  solarSystemID: ALPHA, // the finder's distance origin
   corporationID: 1000001,
 };
 
@@ -82,7 +89,7 @@ function defaultResponder(path: string): { status: number; body: unknown } {
   if (path.startsWith("/api/map/resolve/")) {
     const id = Number(path.split("/").pop());
     if (id === 60000003) {
-      return { status: 200, body: { ok: true, id, kind: "station", stationID: id, stationName: "Charlie Station", solarSystemID: 3, systemName: "Charlie" } };
+      return { status: 200, body: { ok: true, id, kind: "station", stationID: id, stationName: "Charlie Station", solarSystemID: CHARLIE, systemName: "Charlie" } };
     }
     return { status: 200, body: { ok: true, id, kind: "system", solarSystemID: id, systemName: `System ${id}` } };
   }
@@ -111,7 +118,7 @@ test("findAgents annotates jumps and sorts nearest-first, unreachable last", asy
   assert.equal(finder.loaded, true);
   assert.equal(finder.total, 4);
   assert.equal(finder.capped, false);
-  assert.equal(finder.originSystemID, 1);
+  assert.equal(finder.originSystemID, ALPHA);
   // Sorted by jumps: Alpha(0), Bravo(1), Charlie(2), Island(null -> last).
   assert.deepEqual(
     finder.agents.map((a) => [a.agentID, a.jumps]),
@@ -171,7 +178,7 @@ test("setDestinationToAgent records the target and starts the autopilot route", 
 
   const travel = store.travel.get();
   assert.equal(travel.destinationStationID, 60000003);
-  assert.equal(travel.destinationSystemID, 3);
+  assert.equal(travel.destinationSystemID, CHARLIE);
   assert.equal(travel.totalJumps, 2);
 });
 

@@ -414,6 +414,8 @@ test("setting a destination from an asset location plans a real route", async ()
       [30000140, 30000141, 50001, 50002],
       [30000141, SYSTEM_ID, 50003, 50004],
     ],
+    // Each system's security, as the map is served: the route is the client's autopilot's, which goes by it.
+    security: { 30000140: 0.9, 30000141: 0.9, [SYSTEM_ID]: 0.9 },
   };
 
   const { store, flow } = makeFlow((path: string) => {

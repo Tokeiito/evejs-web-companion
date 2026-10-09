@@ -210,6 +210,29 @@ export function solveRoute(
 }
 
 /**
+ * The hops along a way already chosen: the systems in order, each a jump from the one before. The gate
+ * for a hop is the first the map has between the two. Not reachable where the way is empty or two of its
+ * systems have no jump between them.
+ */
+export function routeAlong(graph: SystemGraph, systems: readonly number[]): RouteResult {
+  const first = systems[0];
+  if (first === undefined) {
+    return UNREACHABLE(0);
+  }
+  const hops: RouteHop[] = [];
+  for (let at = 1; at < systems.length; at += 1) {
+    const fromSystemID = systems[at - 1]!;
+    const toSystemID = systems[at]!;
+    const edge = graph.neighbors(fromSystemID).find((each) => each.toSystemID === toSystemID);
+    if (edge === undefined) {
+      return UNREACHABLE(first);
+    }
+    hops.push({ fromSystemID, toSystemID, gateToWarpID: edge.gateID, jumpToGateID: edge.destinationGateID });
+  }
+  return Object.freeze({ reachable: true, hops, systems: [...systems], jumps: hops.length });
+}
+
+/**
  * Jump distance (fewest hops) from `originSystemID` to every reachable system,
  * computed in a SINGLE breadth-first sweep over the gate graph (goal R6a). The
  * Agent Finder sorts agents by their system's distance from the player's

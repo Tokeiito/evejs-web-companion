@@ -8,7 +8,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
-  DEFAULT_AUTOPILOT_SETTINGS, SOLAR_SYSTEM_JITA, SOLAR_SYSTEM_ZARZAKH, autopilotJumpCount, autopilotJumpCounts, autopilotMap, isKnownSpaceSystem,
+  DEFAULT_AUTOPILOT_SETTINGS, SOLAR_SYSTEM_JITA, SOLAR_SYSTEM_ZARZAKH, autopilotJumpCount, autopilotJumpCounts, autopilotMap, autopilotPath, isKnownSpaceSystem,
   type AutopilotMap, type AutopilotSettings,
 } from "./autopilotRoute.ts";
 import { buildSystemGraph } from "./routeSolver.ts";
@@ -19,7 +19,8 @@ interface RecordedCase {
   readonly avoid: readonly number[];
   readonly systems: ReadonlyArray<readonly [number, number]>;
   readonly jumps: ReadonlyArray<readonly [number, number]>;
-  readonly pairs: ReadonlyArray<readonly [number, number, number | null]>;
+  /** From, to, the jumps on the client's route (null: none), and how many low and null-security systems it enters. */
+  readonly pairs: ReadonlyArray<readonly [number, number, number | null, number, number]>;
 }
 const FIXTURE = JSON.parse(fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "../../../test/fixtures/autopilotRoute.json"), "utf8")) as {
   readonly routeType: string;
@@ -131,4 +132,49 @@ test("the pathfinder's map is the page's own: every jump, and each system at the
   // And a map served without any security has none for any system.
   assert.equal(buildSystemGraph({ systems: { 30000001: "A" }, edges: [] }).security(30000001), null);
   assert.equal(buildSystemGraph({ systems: { 30000001: "A" }, edges: [], security: { 30000001: "0.5" as never } }).security(30000001), null);
+});
+
+test("the route itself is a way through the map that costs what the client's does: as long, with as many low and null-security systems, and through nothing avoided", () => {
+  let checked = 0;
+  for (const recorded of FIXTURE.cases) {
+    const security = new Map(recorded.systems);
+    const joined = new Set(recorded.jumps.flatMap(([a, b]) => [`${a}:${b}`, `${b}:${a}`]));
+    const map = mapOf(recorded.systems, recorded.jumps);
+    for (const [from, to, count, lows, nulls] of recorded.pairs) {
+      const said = `${recorded.name}: ${from} to ${to}`;
+      const path = autopilotPath(map, from, to, settingsOf(recorded));
+      if (count === null) {
+        assert.equal(path, null, said);
+        continue;
+      }
+      assert.ok(path !== null, said);
+      assert.equal(path[0], from, said);
+      assert.equal(path[path.length - 1], to, said);
+      assert.equal(path.length - 1, count, said);
+      assert.equal(new Set(path).size, path.length, said);
+      for (let at = 1; at < path.length; at += 1) assert.ok(joined.has(`${path[at - 1]}:${path[at]}`), said);
+      const entered = path.slice(1);
+      assert.equal(entered.filter((id) => security.get(id)! > 0 && security.get(id)! < 0.45).length, lows, said);
+      assert.equal(entered.filter((id) => security.get(id)! <= 0).length, nulls, said);
+      // Only where it ends may it be in an avoided system.
+      assert.ok(entered.slice(0, -1).every((id) => !recorded.avoid.includes(id)), said);
+      checked += 1;
+    }
+  }
+  assert.ok(checked >= 2000);
+});
+
+test("a route from a system to itself is that system alone, and there is none to or from outside known space", () => {
+  const map = mapOf([[30000001, 1], [30000002, 1], [31000005, 1]], [[30000001, 30000002], [30000002, 31000005]]);
+  assert.deepEqual(autopilotPath(map, 30000001, 30000001), [30000001]);
+  assert.deepEqual(autopilotPath(map, 31000005, 31000005), [31000005]);
+  assert.deepEqual(autopilotPath(map, 30000001, 30000002), [30000001, 30000002]);
+  assert.equal(autopilotPath(map, 30000001, 31000005), null);
+  assert.equal(autopilotPath(map, 31000005, 30000001), null);
+  assert.equal(autopilotPath(map, 30000001, 30000009), null);
+  // Round Jita, as the settings come; into it, where it is where the route ends.
+  const round = mapOf([[30000140, 1], [SOLAR_SYSTEM_JITA, 1], [30000141, 1], [30000143, 1], [30000144, 1]], [[30000140, SOLAR_SYSTEM_JITA], [SOLAR_SYSTEM_JITA, 30000141], [30000140, 30000143], [30000143, 30000144], [30000144, 30000141]]);
+  assert.deepEqual(autopilotPath(round, 30000140, 30000141), [30000140, 30000143, 30000144, 30000141]);
+  assert.deepEqual(autopilotPath(round, 30000140, SOLAR_SYSTEM_JITA), [30000140, SOLAR_SYSTEM_JITA]);
+  assert.deepEqual(autopilotPath(round, 30000140, 30000141, { penalty: 50, avoid: [] }), [30000140, SOLAR_SYSTEM_JITA, 30000141]);
 });
