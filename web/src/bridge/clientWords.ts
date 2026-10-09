@@ -44,6 +44,12 @@ export interface FormatContext {
   readonly nameOf: (kind: NameKind, id: number) => string;
   /** The character the page is flying: the client's `player` in every message. */
   readonly playerID?: number | null;
+  /**
+   * An interval of the game's time written out in the client's own words (timeInterval.ts), for a tag
+   * that asks for an interval's written form. `from` and `to` are the tag's settings, null where it
+   * names none. Without it, or when it answers null, such a tag is written in this page's short form.
+   */
+  readonly writeInterval?: (ticks: bigint, from: string | null, to: string | null) => string | null;
 }
 
 /** A message's arguments by name: what the server sent with the label, and what the client adds. */
@@ -271,7 +277,11 @@ function renderToken(token: TemplateToken, args: TemplateArguments, context: For
     }
     case "timeinterval": {
       const value = numberOf(given);
-      text = value === null ? "" : formatInterval(value);
+      // timeIntervalPropertyHandler: writtenForm is FormatTimeIntervalWritten, from and to as the tag sets them.
+      const written = value !== null && token.property === "writtenForm" && context.writeInterval
+        ? context.writeInterval(BigInt(Math.trunc(value)), token.settings.from ?? null, token.settings.to ?? null)
+        : null;
+      text = value === null ? "" : written ?? formatInterval(value);
       break;
     }
     case "generic": {

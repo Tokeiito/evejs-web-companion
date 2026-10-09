@@ -286,3 +286,24 @@ test("the names and the client's labels a dialog's typed arguments need are foun
   assert.deepEqual(typedLabels({ a: [24, null, 5] } as never), [QUANTITY_AND_ITEM]);
   assert.deepEqual(typedNameRefs({ a: [24, null, 5] } as never), []);
 });
+
+test("an interval's written form is the caller's to write, from and to as the tag sets them", () => {
+  const asked: Array<[bigint, string | null, string | null]> = [];
+  const context = { nameOf: () => "", writeInterval: (ticks: bigint, from: string | null, to: string | null) => { asked.push([ticks, from, to]); return "three hours"; } };
+  const HOUR = 36_000_000_000;
+  assert.equal(formatTemplate("In {[timeinterval]t.writtenForm, to=minute}.", { t: 3 * HOUR }, context), "In three hours.");
+  assert.equal(formatTemplate("{[timeinterval]t.writtenForm, from=day, to=hour}", { t: 3 * HOUR + 0.5 }, context), "three hours");
+  assert.equal(formatTemplate("{[timeinterval]t.writtenForm}", { t: { type: "long", value: String(3 * HOUR) } }, context), "three hours");
+  assert.deepEqual(asked, [[BigInt(3 * HOUR), null, "minute"], [BigInt(3 * HOUR), "day", "hour"], [BigInt(3 * HOUR), null, null]]);
+  // Any other form of an interval, and an interval with no form named, is not the written form.
+  asked.length = 0;
+  assert.equal(formatTemplate("{[timeinterval]t.shortWrittenForm}", { t: 3 * HOUR }, context), "3h");
+  assert.equal(formatTemplate("{[timeinterval]t}", { t: 3 * HOUR }, context), "3h");
+  assert.deepEqual(asked, []);
+  // With nobody to write it, or when it cannot be written, the page's short form stands in.
+  assert.equal(formatTemplate("{[timeinterval]t.writtenForm, to=minute}", { t: 3 * HOUR }, { nameOf: () => "" }), "3h");
+  assert.equal(formatTemplate("{[timeinterval]t.writtenForm, to=minute}", { t: 3 * HOUR }, { nameOf: () => "", writeInterval: () => null }), "3h");
+  // No interval given: nothing, and nothing is asked.
+  assert.equal(formatTemplate("[{[timeinterval]t.writtenForm}]", {}, context), "[]");
+  assert.deepEqual(asked, []);
+});

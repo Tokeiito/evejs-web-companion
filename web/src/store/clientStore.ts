@@ -439,6 +439,7 @@ const INITIAL_AGENTS: AgentsState = Object.freeze({
   conversation: null,
   missionKeywords: Object.freeze({}) as AgentsState["missionKeywords"],
   briefing: null,
+  objectives: null,
   missionTimes: null,
   journal: null,
   loaded: false,
@@ -1719,7 +1720,7 @@ export function createClientStore(): ClientStore {
         });
         break;
       case "agents/conversation-closed":
-        agents.set({ ...agents.get(), activeAgentID: null, conversation: null, briefing: null, missionTimes: null });
+        agents.set({ ...agents.get(), activeAgentID: null, conversation: null, briefing: null, objectives: null, missionTimes: null });
         break;
       case "agents/mission-keywords": {
         const current = agents.get();
@@ -1728,6 +1729,9 @@ export function createClientStore(): ClientStore {
       }
       case "agents/briefing":
         agents.set({ ...agents.get(), briefing: event.briefing });
+        break;
+      case "agents/objectives":
+        agents.set({ ...agents.get(), objectives: event.objectives });
         break;
       case "agents/mission-times":
         agents.set({ ...agents.get(), missionTimes: event.times });

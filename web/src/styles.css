@@ -9425,3 +9425,14 @@
   }
 
 }
+
+/* The agent window's objectives pane (ui/AgentsMissions.svelte). */
+.mission-objectives-title.complete { color: var(--ok, #5aba56); }
+.mission-objectives-title.failed { color: var(--danger, #e3170d); }
+.mission-rows { list-style: none; padding: 0; margin: 0.25rem 0 0.75rem; }
+.mission-rows li { display: flex; gap: 0.5rem; align-items: baseline; }
+.mission-mark { width: 1rem; text-align: center; }
+.mission-mark.done { color: var(--ok, #5aba56); }
+.mission-mark.failed { color: var(--danger, #e3170d); }
+.mission-row-label { opacity: 0.7; }
+.mission-outcome { font-weight: 600; }

@@ -15,6 +15,9 @@ register("./svelteSsrHook.ts", import.meta.url);
 const { render } = await import("svelte/server");
 const { createClientStore } = await import("../store/clientStore.ts");
 const { filetimeOf } = await import("../bridge/journalWords.ts");
+const { decodeObjectives } = await import("../bridge/missionObjectives.ts");
+const { PANE_LABELS } = await import("../bridge/missionObjectivePane.ts");
+const { COURIER_OFFERED_GATEWAY, ENCOUNTER_OFFERED_GATEWAY } = await import("../bridge/missionObjectives.fixtures.ts");
 const { default: Panel } = (await import("./AgentsMissions.svelte")) as { default: unknown };
 
 const NOW_MS = Date.UTC(2026, 9, 8, 14, 0, 0);
@@ -61,6 +64,10 @@ function panel(options: {
   buttons?: readonly number[];
   briefed?: boolean;
   briefedTitleID?: number | null;
+  /** The mission's objectives as read for the layout, whether the client's words for the pane are to hand, and any of them that are not. */
+  objectives?: unknown;
+  paneWords?: boolean;
+  without?: readonly string[];
   /** What the briefing says of time, the last action's "not yet", and whether a special interaction is on offer. */
   times?: { declineTime: bigint | null; expirationTime: bigint | null } | null;
   cantReplay?: number | null;
@@ -91,6 +98,7 @@ function panel(options: {
     if (options.times !== undefined) {
       store.apply({ type: "agents/mission-times", times: options.times });
     }
+
     store.apply({ type: "agents/mission-keywords", key: `${AGENT}:2156`, keywords: { objectiveLocationSystemID: 30002780 } });
   }
   if (options.briefed) {
@@ -102,8 +110,13 @@ function panel(options: {
       },
     });
   }
+  // Kept by the store whether or not a window is open: the page must not draw them without one.
+  if (options.objectives !== undefined) {
+    store.apply({ type: "agents/objectives", objectives: options.objectives as never });
+  }
   if (options.words === true) {
-    store.apply({ type: "words/loaded", available: true, templates: TEMPLATES });
+    const templates = options.paneWords ? { ...TEMPLATES, ...PANE_TEMPLATES } : TEMPLATES;
+    store.apply({ type: "words/loaded", available: true, templates: Object.fromEntries(Object.entries(templates).filter(([key]) => !(options.without ?? []).includes(key))) });
   } else if (options.words === "none of them") {
     // Asked for, and the client has no text for any of it.
     store.apply({ type: "words/loaded", available: true, templates: Object.fromEntries(Object.keys(TEMPLATES).map((key) => [key, null])) });
@@ -113,7 +126,7 @@ function panel(options: {
 
 /** The text of each journal line, in order. */
 const journalLines = (body: string): string[] =>
-  [...body.matchAll(/<li[^>]*>([^<]*)<\/li>/g)].map((match) => (match[1] as string).trim()).filter((line) => line.includes(" · "));
+  [...body.matchAll(/<span class="journal-line">([^<]*)<\/span>/g)].map((match) => (match[1] as string).trim()).filter((line) => line.includes(" · "));
 
 test("with the client's words the journal's lines are the client's: state, agent, name, type, expiry", () => {
   const body = panel({ words: true, talking: false });
@@ -224,4 +237,115 @@ test("no line for a mission's time where the client shows none", () => {
   // Without the client's words for it, nothing is written in their place.
   assert.equal(drawn({ words: false, talking: true, times }), false);
   assert.equal(drawn({ words: "none of them", talking: true, times }), false);
+});
+
+// --- the objectives pane -------------------------------------------------------
+
+const PANE_TEMPLATES: Record<string, string> = {
+  "UI/Agents/Commands/StartConversationWith": "Speak with {[character]agentID.name}",
+  [PANE_LABELS.heading.open]: "{missionName}: to do",
+  [PANE_LABELS.heading.complete]: "{missionName}: done",
+  [PANE_LABELS.overview]: "Do all of these.",
+  [PANE_LABELS.transportHeader]: "Carry",
+  [PANE_LABELS.transportBlurb]: "Carry these:",
+  [PANE_LABELS.transportPickup]: "From",
+  [PANE_LABELS.transportDropOff]: "To",
+  [PANE_LABELS.transportCargo]: "Load",
+  [PANE_LABELS.objectiveHeader]: "Target",
+  [PANE_LABELS.dungeonBody]: "Destroy them.",
+  [PANE_LABELS.dungeonCompleted]: "Won",
+  [PANE_LABELS.objectiveLocation]: "Place",
+  [PANE_LABELS.rewardsTitle]: "Pay",
+  [PANE_LABELS.rewardsHeader]: "Yours when it is done:",
+  [PANE_LABELS.loyaltyPoints]: "{[numeric]lpAmount, useGrouping} points",
+  [PANE_LABELS.isk]: "{[numeric]amount, useGrouping, decimalPlaces=2} ISK",
+  [PANE_LABELS.quantityAndItem]: "{[numeric]quantity, useGrouping} x {[item]item.name}",
+  "#57959": "A Carrying Job",
+  "#57212": "A Fight",
+  "#115502": "Go to {[location]dungeonLocationID.name} and end it.",
+};
+const text = (html: string): string => html.replace(/<!--[^>]*-->/g, "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+const paneOf = (body: string): string | null => body.match(/<section class="mission-objectives">([\s\S]*?)<\/section>/)?.[1] ?? null;
+
+test("with the client's words the objectives pane is drawn, in its order, with the marks beside its rows", () => {
+  // The courier's briefing is held too, as it is after any layout: the pane takes the place of the page's own table.
+  const body = panel({ words: true, paneWords: true, talking: true, buttons: [3, 9], briefed: true, objectives: decodeObjectives(COURIER_OFFERED_GATEWAY) });
+  const pane = paneOf(body);
+  assert.notEqual(pane, null);
+  assert.match(pane as string, /<h2 class="mission-objectives-title open">A Carrying Job: to do<\/h2>/);
+  assert.equal(
+    text(pane as string),
+    // The heading, the overview, the transport with its three rows, the offer's note, then the pay.
+    "A Carrying Job: to do Do all of these. Carry Carry these: ○ From station 60000004 ○ To station 60000019 ○ Load 1 x type 2595 " +
+      "This is the offer. Accept it in the conversation to be given the package. Pay Yours when it is done: 13,800.00 ISK 49 points",
+  );
+  // The page's own courier table is not drawn beside it.
+  assert.doesNotMatch(body, /Courier briefing/);
+});
+
+test("an accepted courier has its package's buttons beside the transport; an offer has none", () => {
+  const accepted = paneOf(panel({ words: true, paneWords: true, talking: true, buttons: [6, 11], objectives: decodeObjectives(COURIER_OFFERED_GATEWAY) })) as string;
+  assert.match(accepted, /Load package into ship/);
+  assert.match(accepted, /Set autopilot to dropoff/);
+  assert.doesNotMatch(accepted, /mission-offered/);
+  const offered = paneOf(panel({ words: true, paneWords: true, talking: true, buttons: [3, 9], objectives: decodeObjectives(COURIER_OFFERED_GATEWAY) })) as string;
+  assert.doesNotMatch(offered, /Load package into ship|Set autopilot to dropoff/);
+  // A mission with nothing to carry has neither.
+  const fight = paneOf(panel({ words: true, paneWords: true, talking: true, buttons: [6, 11], objectives: decodeObjectives(ENCOUNTER_OFFERED_GATEWAY) })) as string;
+  assert.doesNotMatch(fight, /Load package|autopilot|mission-offered/);
+});
+
+test("a mission that is not a courier has its pane too: the dungeon in the agent's words, and what it pays", () => {
+  const pane = paneOf(panel({ words: true, paneWords: true, talking: true, buttons: [3, 9], objectives: decodeObjectives(ENCOUNTER_OFFERED_GATEWAY) })) as string;
+  // The agent's words for the dungeon are filled as its other words are; the place it names is not known to this page yet.
+  assert.equal(text(pane), "A Fight: to do Do all of these. Target Go to and end it. ○ Place system 30002779 Pay Yours when it is done: 65,000.00 ISK 87 points");
+});
+
+test("a dungeon that is over is struck through, with what became of it; a mission finished by a game master says so", () => {
+  const fight = decodeObjectives(ENCOUNTER_OFFERED_GATEWAY) as NonNullable<ReturnType<typeof decodeObjectives>>;
+  const over = { ...fight, completionStatus: 2, dungeons: [{ ...fight.dungeons[0], completionStatus: 1, objectiveCompleted: 1, briefingMessage: null }] };
+  const pane = paneOf(panel({ words: true, paneWords: true, talking: true, buttons: [6], objectives: over })) as string;
+  assert.match(pane, /<p class="note mission-cheated">[^<]+<\/p>/);
+  assert.match(pane, /<h2 class="mission-objectives-title complete">A Fight: done<\/h2>/);
+  assert.match(pane, /<s>Destroy them\.<\/s>\s*<span class="mission-outcome">Won<\/span>/);
+  assert.match(pane, /<span class="mission-mark done" title="done">✓<\/span>/);
+  // Not over: no strike, no note.
+  const open = paneOf(panel({ words: true, paneWords: true, talking: true, buttons: [6], objectives: decodeObjectives(ENCOUNTER_OFFERED_GATEWAY) })) as string;
+  assert.doesNotMatch(open, /<s>|mission-cheated|mission-outcome/);
+});
+
+test("without the client's words for the pane, a courier keeps this page's own table, and nothing else has a pane", () => {
+  // The words store has the journal's words but not the pane's.
+  const courier = panel({ words: true, talking: true, buttons: [6, 11], briefed: true, objectives: decodeObjectives(COURIER_OFFERED_GATEWAY) });
+  assert.equal(paneOf(courier), null);
+  assert.match(courier, /Courier briefing/);
+  assert.match(courier, /Load package into ship/);
+  const fight = panel({ words: false, talking: true, buttons: [6, 11], objectives: decodeObjectives(ENCOUNTER_OFFERED_GATEWAY) });
+  assert.equal(paneOf(fight), null);
+  assert.doesNotMatch(fight, /Courier briefing/);
+  // No objectives, or no window: no pane.
+  assert.equal(paneOf(panel({ words: true, paneWords: true, talking: true })), null);
+  assert.equal(paneOf(panel({ words: true, paneWords: true, talking: false, objectives: decodeObjectives(COURIER_OFFERED_GATEWAY) })), null);
+});
+
+test("a pane is only as good as its words: no name for the mission, no pane; no words of the agent's for a dungeon, the stock ones", () => {
+  const courier = decodeObjectives(COURIER_OFFERED_GATEWAY);
+  // The mission's own name is not to hand: nothing is put in its place.
+  const nameless = panel({ words: true, paneWords: true, without: ["#57959"], talking: true, buttons: [6, 11], briefed: true, objectives: courier });
+  assert.equal(paneOf(nameless), null);
+  assert.match(nameless, /Courier briefing/);
+  // The agent's words for the dungeon are not to hand: the client's stock words for one.
+  const fight = paneOf(panel({ words: true, paneWords: true, without: ["#115502"], talking: true, buttons: [3, 9], objectives: decodeObjectives(ENCOUNTER_OFFERED_GATEWAY) })) as string;
+  assert.match(text(fight), /Target Destroy them\. ○ Place system 30002779/);
+});
+
+test("each journal line can start a conversation with its agent, in the client's words for it or this page's", () => {
+  const buttons = (body: string): string[] => [...body.matchAll(/<button[^>]*class="link journal-talk"[^>]*>([\s\S]*?)<\/button>/g)].map((match) => text(match[1] as string));
+  // The client's menu words, filled with the agent's name.
+  const client = panel({ words: true, paneWords: true, talking: false });
+  assert.deepEqual(buttons(client), ["Speak with Some Other Agent", "Speak with Antaken Kamola"]);
+  // Without them, this page's own.
+  assert.deepEqual(buttons(panel({ words: false, talking: false })), ["Start conversation with Some Other Agent", "Start conversation with Antaken Kamola"]);
+  // The button sits on its line, after the line's words.
+  assert.match(client, /<li><span class="journal-line">[^<]*<\/span>\s*(<!--[^>]*-->\s*)*<button[^>]*class="link journal-talk"/);
 });

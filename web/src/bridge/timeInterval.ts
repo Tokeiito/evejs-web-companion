@@ -92,8 +92,8 @@ export function intervalParts(value: bigint, showFrom: TimePart, showTo: TimePar
  * FormatTimeIntervalWritten(value, showFrom="year", showTo): the interval in the client's words, or null
  * when the client would refuse the interval or its words for it are not to hand.
  */
-export function writtenInterval(value: bigint, showTo: TimePart, templates: Templates): string | null {
-  const parts = intervalParts(value, "year", showTo);
+export function writtenInterval(value: bigint, showTo: TimePart, templates: Templates, showFrom: TimePart = "year"): string | null {
+  const parts = intervalParts(value, showFrom, showTo);
   if (parts === null) {
     return null;
   }
@@ -122,6 +122,21 @@ export function writtenInterval(value: bigint, showTo: TimePart, templates: Temp
     return null;
   }
   return words(INTERVAL_LABELS.listForm, { firstPart: written.slice(0, -1).join(delimiter), secondPart: written[written.length - 1]! });
+}
+
+/**
+ * For a label's {[timeinterval]x.writtenForm, from=…, to=…} (timeIntervalPropertyHandler._GetWrittenForm):
+ * the interval written from `from` (years, unless the tag says) down to `to` (seconds, unless it says).
+ * Null for a unit the client does not have, as for words that are not to hand.
+ */
+export function intervalWriter(templates: Templates): (ticks: bigint, from: string | null, to: string | null) => string | null {
+  const part = (name: string | null, otherwise: TimePart): TimePart | null =>
+    name === null ? otherwise : (TIME_PARTS as readonly string[]).includes(name) ? (name as TimePart) : null;
+  return (ticks, from, to) => {
+    const showFrom = part(from, "year");
+    const showTo = part(to, "second");
+    return showFrom === null || showTo === null ? null : writtenInterval(ticks, showTo, templates, showFrom);
+  };
 }
 
 /** How far down FmtTimeInterval writes: its `breakAt`. */

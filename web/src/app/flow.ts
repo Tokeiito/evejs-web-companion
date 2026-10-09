@@ -75,6 +75,7 @@ import {
 } from "../bridge/agents.ts";
 import { sessionChangeNames } from "../bridge/sessionChange.ts";
 import { decodeMissionTimes } from "../bridge/missionTime.ts";
+import { decodeObjectives } from "../bridge/missionObjectives.ts";
 import {
   decodeCashBalance,
   decodeCharStandings,
@@ -4197,6 +4198,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       type: "agents/briefing",
       briefing: objectivesShown(conversation.lastActionInfo) ? decodeBriefing(reads.briefing, reads.objective) : null,
     });
+    // The pane itself, for a mission of any kind, by the same rule as the courier's table above.
+    store.apply({ type: "agents/objectives", objectives: objectivesShown(conversation.lastActionInfo) ? decodeObjectives(reads.objective ?? undefined) : null });
     // The briefing's two times belong to what the agent says, not to the objectives: they are kept whatever the last action was.
     store.apply({ type: "agents/mission-times", times: decodeMissionTimes(reads.briefing) });
   }

@@ -11,6 +11,7 @@ import {
   TIME_PARTS,
   fmtTimeInterval,
   intervalParts,
+  intervalWriter,
   writtenInterval,
 } from "./timeInterval.ts";
 
@@ -116,4 +117,19 @@ test("the labels are the client's, and all of them are asked for", () => {
   assert.equal(INTERVAL_WORD_LABELS.length, 7 + 7 + 3);
   assert.equal(new Set(INTERVAL_WORD_LABELS).size, INTERVAL_WORD_LABELS.length);
   for (const label of Object.keys(TEMPLATES)) assert.ok(INTERVAL_WORD_LABELS.includes(label), label);
+});
+
+test("a label's written interval: from years down to seconds unless the tag says otherwise", () => {
+  const write = intervalWriter(TEMPLATES);
+  const value = 2n * DAY + 3n * HOUR + 4n * MIN + 5n * SEC;
+  assert.equal(write(value, null, null), "2 dys; 3 hrs; 4 mns plus 5 scs");
+  assert.equal(write(value, null, "minute"), "2 dys; 3 hrs plus 4 mns");
+  assert.equal(write(value, "hour", "minute"), "51 hrs plus 4 mns");
+  assert.equal(write(value, "hour", null), "51 hrs; 4 mns plus 5 scs");
+  // A unit the client does not have, or the wrong way round.
+  assert.equal(write(value, null, "week"), null);
+  assert.equal(write(value, "fortnight", null), null);
+  assert.equal(write(value, "minute", "hour"), null);
+  // Without the words for it.
+  assert.equal(intervalWriter({})(value, null, "minute"), null);
 });

@@ -4,6 +4,7 @@
 
 import type { BoundDogmaAllInfo } from "../bridge/boundDogma.ts";
 import type { MissionTimes } from "../bridge/missionTime.ts";
+import type { MissionObjectives } from "../bridge/missionObjectives.ts";
 import type { MiningBurstServices, CompressionServiceObservation } from "../bridge/miningSupportServices.ts";
 import type { CoreMobilityFuelObservation } from "../bridge/miningSupportCore.ts";
 import type { ModuleReachObservation } from "../bridge/moduleReach.ts";
@@ -1192,6 +1193,11 @@ export interface AgentsState {
    */
   readonly missionKeywords: Readonly<Record<string, Readonly<Record<string, unknown>>>>;
   readonly briefing: CourierBriefing | null;
+  /**
+   * The mission's objectives as read for the layout on show (the window's right-hand pane); null with
+   * no mission, and after an action that ended it.
+   */
+  readonly objectives: MissionObjectives | null;
   /** What the mission's briefing says of time, as read for the layout on show; null with no briefing. */
   readonly missionTimes: MissionTimes | null;
   readonly journal: JournalState | null;

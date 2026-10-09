@@ -21,6 +21,9 @@
   import { offerOpen } from "../bridge/agents.ts";
   import { MISSION_TIME_WORD_LABELS, missionTimeShown, missionTimeText } from "../bridge/missionTime.ts";
   import { INTERVAL_WORD_LABELS } from "../bridge/timeInterval.ts";
+  import { PANE_WORD_LABELS, objectivePane, paneMessageIDs, paneNameRefs, type PaneBlock, type PaneMark } from "../bridge/missionObjectivePane.ts";
+  import type { MissionMessage } from "../bridge/missionObjectives.ts";
+  import { formatTemplate, plainText } from "../bridge/clientWords.ts";
   import { questionText, wordsLabels, wordsNameRefs, type ClientWording } from "../bridge/questions.ts";
   import { filetimeOf, journalRowAsks, journalRowText, journalRowWords } from "../bridge/journalWords.ts";
 
@@ -280,7 +283,97 @@
       flow.requestWords(ids.map((id) => `#${id}`));
     }
   });
+
+  // The client's words name an agent as a character ({[character]agentID.name}); this page keeps agents'
+  // names under their own kind, and has them for every agent it shows.
+  const isAgentID = (id: number): boolean => id >= 3_000_000 && id < 4_000_000;
+  const nameWithAgents = (kind: NameRef["kind"], id: number): string => (kind === "owner" && isAgentID(id) ? agentName(id) : saysName(kind, id));
+
+  // The window's right-hand pane: the mission's objectives, in the client's order and words
+  // (bridge/missionObjectivePane.ts). Drawn only when the client's words for it are to hand; without
+  // them a courier keeps this page's own table below.
+  const pane = $derived.by<PaneBlock[]>(() => {
+    const objectives = $agents.objectives;
+    const agentID = $agents.activeAgentID;
+    if (objectives === null || agentID === null) {
+      return [];
+    }
+    const online = $station.online;
+    return objectivePane(objectives, {
+      templates: $words.templates,
+      nameOf: nameWithAgents,
+      // session.locationid: the station (or structure) the pilot is in, or the solar system it is flying in.
+      locationID: online?.stationID ?? online?.structureID ?? online?.solarSystemID ?? null,
+      // The mission's name is its message with nothing filled in, as the pane's own GetByMessageID has it.
+      messageText: (messageID) => (hasWords(`#${messageID}`) ? questionText({ label: null, parameters: null, text: null, messageID }, saysName, { templates: $words.templates }) : null),
+      say: (message) => sayOfMission(agentID, message),
+    });
+  });
+  // What an agent says of a dungeon, filled as everything it says of that mission is: the mission's
+  // keywords, then the agent's own IDs (agents.py ProcessMessage).
+  function sayOfMission(agentID: number, message: MissionMessage): string | null {
+    if (message.text !== null) {
+      return message.text;
+    }
+    const key = message.label ?? (message.messageID === null ? null : `#${message.messageID}`);
+    if (key === null || !hasWords(key)) {
+      return null;
+    }
+    const keywords = message.contentID === null ? null : $agents.missionKeywords[`${agentID}:${message.contentID}`];
+    return questionText({ label: message.label, parameters: message.parameters, text: null, messageID: message.messageID ?? undefined }, saysName, { ...saysClient, extra: { ...((keywords ?? {}) as NonNullable<ClientWording["extra"]>), ...saysClient.extra } });
+  }
+  $effect(() => {
+    const objectives = $agents.objectives;
+    const agentID = $agents.activeAgentID;
+    if (objectives === null || agentID === null) {
+      return;
+    }
+    const messages = objectives.dungeons.map((dungeon) => dungeon.briefingMessage).filter((message): message is MissionMessage => message !== null);
+    flow.requestWords([
+      ...PANE_WORD_LABELS,
+      ...paneMessageIDs(objectives).map((id) => `#${id}`),
+      ...messages.map((message) => message.label ?? (message.messageID === null ? null : `#${message.messageID}`)).filter((key): key is string => key !== null),
+    ]);
+    for (const message of messages) {
+      if (message.contentID !== null) {
+        flow.requestMissionKeywords(agentID, message.contentID);
+      }
+    }
+    const refs = paneNameRefs(objectives).map((ref) => (ref.kind === "owner" && isAgentID(ref.id) ? { kind: "agent" as const, id: ref.id } : ref));
+    if (refs.length > 0) {
+      flow.requestNames(refs);
+    }
+  });
+  const MARKS: Readonly<Record<PaneMark, readonly [string, string]>> = { done: ["✓", "done"], open: ["○", "not yet"], failed: ["✕", "failed"] };
+
+  // A mission's line in the client's journal has "Start Conversation with <agent>" in its menu
+  // (missionentry.py 64, agents.OpenDialogueWindow), wherever the agent is. Here it is a button on the line.
+  const START_CONVERSATION = "UI/Agents/Commands/StartConversationWith";
+  const startConversationWords = (agentID: number): string => {
+    const template = $words.templates[START_CONVERSATION];
+    return typeof template === "string"
+      ? plainText(formatTemplate(template, { agentID }, { nameOf: nameWithAgents }))
+      : `Start conversation with ${agentName(agentID)}`;
+  };
+  $effect(() => {
+    const journal = $agents.journal;
+    if (journal && journal.active.length + journal.offered.length > 0) {
+      flow.requestWords([START_CONVERSATION]);
+    }
+  });
 </script>
+
+{#snippet journalLine(mission: JournalMission)}
+  <li>
+    <span class="journal-line">{missionLabel(mission)}</span>
+    {#if mission.agentID}
+      {@const agentID = mission.agentID}
+      <button type="button" class="link journal-talk" disabled={busy} onclick={() => run(() => flow.openConversation(agentID))}>
+        {startConversationWords(agentID)}
+      </button>
+    {/if}
+  </li>
+{/snippet}
 
 <section class="panel">
   <header class="panel-head">
@@ -386,7 +479,64 @@
   </section>
 {/if}
 
-{#if $agents.briefing}
+{#if pane.length > 0}
+  <section class="mission-objectives">
+    {#each pane as block}
+      {#if block.kind === "warning"}
+        <p class="note mission-warning">{block.text}</p>
+      {:else if block.kind === "heading"}
+        {#if block.cheated}
+          <p class="note mission-cheated">Marked complete by a game master.</p>
+        {/if}
+        <h2 class="mission-objectives-title {block.state}">{block.title}</h2>
+      {:else if block.kind === "overview"}
+        <p class="note">{block.text}</p>
+      {:else}
+        <h3 class="mission-block-title">{block.title}</h3>
+        {#if block.text}
+          <p class="mission-block-text" style="white-space: pre-line">
+            {#if block.outcome}<s>{block.text}</s> <span class="mission-outcome">{block.outcome}</span>{:else}{block.text}{/if}
+          </p>
+        {/if}
+        {#if block.rows.length > 0}
+          <ul class="mission-rows">
+            {#each block.rows as row}
+              <li>
+                {#if row.mark}<span class="mission-mark {row.mark}" title={MARKS[row.mark][1]}>{MARKS[row.mark][0]}</span>{/if}
+                {#if row.label}<span class="mission-row-label">{row.label}</span>{/if}
+                <span class="mission-row-text">{row.text}</span>
+              </li>
+            {/each}
+          </ul>
+        {/if}
+        {#if block.objective?.kind === "transport"}
+          {@const transport = block.objective}
+          {#if offerOpen($agents.conversation)}
+            <!-- The client's window shows an offer's objectives before it is taken. The package is handed over on accepting. -->
+            <p class="note mission-offered">This is the offer. Accept it in the conversation to be given the package.</p>
+          {:else}
+            <p class="controls">
+              <button
+                type="button"
+                disabled={busy || transport.cargo?.typeID == null}
+                onclick={() => run(() => flow.loadPackageIntoShip(transport.cargo!.typeID as number, transport.cargo!.quantity ?? 1))}
+              >
+                Load package into ship
+              </button>
+              <button
+                type="button"
+                disabled={busy || transport.dropoff?.locationID == null}
+                onclick={() => run(() => flow.setAutopilotToDropoff(transport.dropoff!.locationID as number))}
+              >
+                Set autopilot to dropoff
+              </button>
+            </p>
+          {/if}
+        {/if}
+      {/if}
+    {/each}
+  </section>
+{:else if $agents.briefing}
   <section>
     <h2>Courier briefing{briefingTitle ? ` · ${briefingTitle}` : ""}</h2>
     <table class="guests">
@@ -480,7 +630,7 @@
     {:else}
       <ul class="journal">
         {#each $agents.journal.active as mission (mission.missionID)}
-          <li>{missionLabel(mission)}</li>
+          {@render journalLine(mission)}
         {/each}
       </ul>
     {/if}
@@ -490,7 +640,7 @@
     {:else}
       <ul class="journal">
         {#each $agents.journal.offered as mission (mission.missionID)}
-          <li>{missionLabel(mission)}</li>
+          {@render journalLine(mission)}
         {/each}
       </ul>
     {/if}

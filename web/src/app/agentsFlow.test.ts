@@ -1378,3 +1378,55 @@ test("a window that closes takes its mission's time with it", async () => {
   await push("OnAgentMissionChange", ["reset", 3008416]);
   assert.equal(store.agents.get().missionTimes, null);
 });
+
+// --- the objectives, kept with every layout -----------------------------------
+
+test("each layout keeps the mission's objectives, and an action that ends the mission clears them", async () => {
+  const store = createClientStore();
+  let reads: unknown = BRIEFING_RESPONSE;
+  const answers: Record<string, ReturnType<typeof conversationWith>> = {
+    null: conversationWith([[816, 3], [817, 9]]),
+    816: conversationWith([[819, 6], [822, 11]]),
+    822: conversationWith([[821, 2]], [["missionQuit", true]]),
+  };
+  const { fetch } = makeFakeFetch((path, _method, body) => {
+    if (path === "/api/bridge/agents") return { status: 200, body: AGENTS_RESPONSE };
+    if (path === "/api/bridge/agents/3008416/action") return { status: 200, body: answers[String(body.actionID)]! };
+    if (path === "/api/bridge/agents/3008416/briefing") return { status: 200, body: reads };
+    if (path === "/api/bridge/journal") return { status: 200, body: journalResponse([]) };
+    throw new Error(`unexpected ${path}`);
+  });
+  const flow = createAppFlow(store, { fetch });
+  await flow.loadAgents();
+  assert.equal(store.agents.get().objectives, null);
+
+  // An offer: its objectives are on show before it is taken.
+  await flow.openConversation(3008416);
+  const offered = store.agents.get().objectives;
+  assert.equal(offered?.objectives[0]?.kind, "transport");
+  assert.equal(offered?.loyaltyPoints, 213);
+  assert.equal(offered?.missionTitleID, 58607);
+
+  // Accepted: read again for the new layout.
+  reads = { ...BRIEFING_RESPONSE, objective: { type: "dict", entries: [["missionState", 2], ["missionTitleID", 58607], ["loyaltyPoints", 5]] } };
+  await flow.chooseAction(3008416, { actionID: 816, buttonType: 3, label: "Accept" });
+  assert.equal(store.agents.get().objectives?.missionState, 2);
+  assert.equal(store.agents.get().objectives?.loyaltyPoints, 5);
+
+  // Quit: the client shows no objectives after an action that ended the mission, whatever the read says.
+  await flow.chooseAction(3008416, { actionID: 822, buttonType: 11, label: "Quit" });
+  assert.equal(store.agents.get().objectives, null);
+
+  // No mission: the read has no objectives.
+  reads = { ...BRIEFING_RESPONSE, objective: null };
+  await flow.openConversation(3008416);
+  assert.equal(store.agents.get().objectives, null);
+});
+
+test("a window that closes takes its objectives with it", async () => {
+  const { store, flow, push } = await listening({ null: ACCEPTED });
+  await flow.openConversation(3008416);
+  assert.notEqual(store.agents.get().objectives, null);
+  await push("OnAgentMissionChange", ["reset", 3008416]);
+  assert.equal(store.agents.get().objectives, null);
+});
