@@ -622,6 +622,37 @@ the order's value at the rate, and the smallest fee there is where that comes to
 offer to buy 1000 Tritanium at 50 ISK showed 1,479.02 ISK, and the server charged 51,479.02:
 the 50,000.00 set aside and that fee.
 
+**A saved fitting applied, 2026-10-09.** `fittingSvc.LoadFitting` (554):
+
+```
+shipInv = invCache.GetInventoryFromId(activeShip)
+shipInv.FitFitting(activeShip, shipTypeID, itemsToFit, session.stationid or session.structureid,
+                   fittingObjKeyVal, cargoItemsByType, fitRigs)
+```
+
+| Argument | What it is |
+|---|---|
+| `shipTypeID` | the type of the ship's own item |
+| `itemsToFit` | a `defaultdict(set)`: for each type the fitting wants, the hangar's items of it to take from |
+| `fittingObjKeyVal` | `KeyVal(chargesByType, dronesByType, fightersByTypeID, iceByType, modulesByFlag, implantsByTypeID)`, six dicts (`shipfitting/fitting.py` 119) |
+| `cargoItemsByType` | a dict: the rigs to put in the cargo where they are not to be fitted |
+
+The call is made on the ship's own inventory, which the inventory cache asks the location's
+manager for once and keeps (`invCache.py` 533).
+
+How a `defaultdict` and a `set` go to the wire is in no recording. The client's own Python
+reduces a `defaultdict` to a call of `collections.defaultdict` with `set`, its items after,
+and a `set` to a call of `set` with a list. This server sends a set in that form and reads
+that form of both. So here: an object made by `collections.defaultdict` whose dict part is
+the types, each to an object made by `__builtin__.set` with a list of the items. The KeyVal's
+fields go in the order `fightersByTypeID, dronesByType, modulesByFlag, iceByType, chargesByType,
+implantsByTypeID`, which is the client's Python's for those six.
+
+The BFF's route gave plain objects for the three, which the wire has no form for, and made
+the call on the manager. No saved fitting could be applied on the game port. The registry
+makes the three, the ship's type is godma's, and the transport makes the call on the ship's
+inventory.
+
 **The order of a KeyVal's fields on the wire.** `utillib.KeyVal(a=1, b=2)` keeps its keywords
 as the instance's own dict, so its fields go out in that dict's order. That is not the order
 written, and not the order a plain function's keywords are in. A class is not a plain

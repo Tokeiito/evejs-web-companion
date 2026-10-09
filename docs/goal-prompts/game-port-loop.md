@@ -316,6 +316,16 @@ Take these defaults, and list each under "For the operator" in the log so they c
   "Offer to buy…", the two number inputs and the select in `section.bulk`, "Check this order…",
   "Yes, place this buy order"; then "Your orders", "Take it down…", "Yes, take this order
   down". The pilot's "GO TO FIRST PILOT" dialog has to be answered first.
+- **A plain object in a call's arguments cannot be put on the wire.** The gateway hands one on
+  as it is, and the server's handlers read it. On the game port the call is refused before it
+  is sent: "was given an argument that cannot be sent: Cannot marshal value". A sale and a
+  saved fitting were both so, and nothing had tried either. `plain-args.js` in the scratchpad
+  finds the calls that write one out; the routes that take one from the page's request are
+  found with `grep -n 'typeof body\.[a-zA-Z]* === "object"' src/server.js`. Each needs the
+  client's own form in the registry, and a try on the game port.
+- **A pilot with no skills cannot show that a module fits.** Test Pilot has none: the server
+  answers that the module failed to load, through either transport. Test Two has the skills
+  for an afterburner and a mining laser.
 - **Both BFFs run the code they were started on.** A change to a route's answer shows through
   the game-port BFF once that is restarted, and through the gateway BFF only when that is
   restarted too: a field I had added read as nothing through it, where the new code says
