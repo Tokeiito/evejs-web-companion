@@ -1015,3 +1015,49 @@ test("an attribute's value is the web's alone to ask, and is answered from godma
   const sent = form("dogmaIM.QueryAttributeValue", [9001, 73]);
   assert.deepEqual([sent.args, sent.kwargs, sent.status, sent.moniker], [[9001, 73], null, "web-only", true]);
 });
+
+// marketsvc.py 281, CancelOrder(orderID, regionID), and 285, ModifyOrder(order, newPrice): the client has the order's
+// ID off the order's own row, where it is a number. The BFF's routes have it as the text the page sent, and on the
+// wire text is a string: this server read it as order 0, and no order could be taken down on the game port.
+
+test("an order taken down or repriced is named by its number, as the client has it off the order's own row", () => {
+  const cancelled = form("marketProxy.CancelCharOrder", ["1129", 10000002]);
+  assert.deepEqual([cancelled.status, cancelled.args, cancelled.kwargs], ["reshaped", [1129, 10000002], null]);
+  assert.match(cancelled.source, /marketsvc\.py:282$/);
+  // Named by its number already: the client's call as it stands.
+  assert.deepEqual([form("marketProxy.CancelCharOrder", [1129, 10000002]).status, form("marketProxy.CancelCharOrder", [1129, 10000002]).args], ["same", [1129, 10000002]]);
+  // An ID past what a number holds exactly is a long, to the digit.
+  assert.deepEqual(form("marketProxy.CancelCharOrder", ["9007199254740993", 10000002]).args, [9007199254740993n, 10000002]);
+  // The BFF's route names no region, and the client names the one the order is in.
+  for (const region of [0, null, undefined, "10000002"]) {
+    const none = form("marketProxy.CancelCharOrder", region === undefined ? ["1129"] : ["1129", region]);
+    assert.deepEqual([none.status, none.args[0]], ["differs", 1129], String(region));
+    assert.match(none.note, /region/);
+  }
+  // What is no order's ID is not made into one.
+  for (const given of ["", "12a", "-5", " 7", null, 1.5, {}]) {
+    const answer = form("marketProxy.CancelCharOrder", [given, 10000002]);
+    assert.deepEqual([answer.status, answer.args], ["differs", [given, 10000002]], JSON.stringify(given));
+    assert.match(answer.note, /order/);
+  }
+});
+
+test("an order repriced goes out with the order's number first and the rest as the client's nine, and says so where the route made one up", () => {
+  const nine = (orderID, issueDate = 134360504783110000n) => [orderID, 5.5, true, 60003760, 30000142, 5, -1, 1, issueDate];
+  const repriced = form("marketProxy.ModifyCharOrder", nine("1129"));
+  assert.deepEqual([repriced.status, repriced.args], ["reshaped", nine(1129)]);
+  assert.match(repriced.source, /marketsvc\.py:288$/);
+  assert.deepEqual([form("marketProxy.ModifyCharOrder", nine(1129)).status, form("marketProxy.ModifyCharOrder", nine(1129)).args], ["same", nine(1129)]);
+  // The BFF's route has no date of issue to send, and sends nought: the client sends the order's own.
+  const dateless = form("marketProxy.ModifyCharOrder", nine("1129", 0));
+  assert.deepEqual([dateless.status, dateless.args], ["differs", nine(1129, 0)]);
+  assert.match(dateless.note, /issue/);
+  // Fewer than the nine, more than the nine, or no order's ID: sent as it came, and not the client's call.
+  const short = form("marketProxy.ModifyCharOrder", ["1129", 5.5]);
+  assert.deepEqual([short.status, short.args], ["differs", [1129, 5.5]]);
+  assert.match(short.note, /nine/);
+  const long = form("marketProxy.ModifyCharOrder", [...nine(1129), 7]);
+  assert.deepEqual([long.status, long.args], ["differs", [...nine(1129), 7]]);
+  assert.match(long.note, /nine/);
+  assert.deepEqual([form("marketProxy.ModifyCharOrder", nine("x")).status, form("marketProxy.ModifyCharOrder", nine("x")).args], ["differs", nine("x")]);
+});
