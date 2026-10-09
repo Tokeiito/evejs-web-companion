@@ -6635,3 +6635,134 @@ started detached, and how to read a BFF's wire this way.
 23. The pathfinder's ties: how the order of the map's jumps settles them, and the order the
     client's own map is in.
 24. Jumps in the assets and contracts lists, the autopilot's way, where the page lists them.
+
+## 2026-10-09 — the ledger's last unread pairs, and the character sheet's reads
+
+Commit `e1df11b`, pushed. Item 1 of the last list: `charMgr`, industry's three services, the
+fleet's object, mail and notifications. With them the ledger's pass has no pair unread.
+
+**What the retail client does.**
+
+- **A read of one character names the character.** `charMgr.GetPublicInfo3(itemID)` is asked
+  by the window that shows a character (`characterInfoWindow.py` 194), and
+  `charMgr.GetCharacterDescription(session.charid)` by the sheet's bio (`bioPanel.py` 28). The
+  BFF asked both with nothing, and the server took the session's.
+- **The home station is `charMgr.GetHomeStationRow()`**, asked once by the character sheet's
+  service and kept until the session is reset (`charactersheet.py` 59). The client never asks
+  `GetHomeStation`; this server answers both with the same row.
+- **`charMgr.GetCloneInfo` is a call the client never makes.** Its jump clones, their
+  implants and the time of the last jump come from `GetCloneState()` on the `jumpCloneSvc`
+  moniker for where the pilot is (`clonejumpsvc.py` 65 to 80: bound for the solar system in
+  space or in a structure, for the station otherwise). The implants in the pilot's own head
+  are godma's, from `GetAllInfo`.
+- **All of a pilot's notifications are asked for with a keyword**:
+  `notificationMgr.GetAllNotifications(fromID=fromID)` (`notificationSvc.py` 93). The BFF
+  sent the number positionally.
+- Asked as the BFF asks them: `charMgr`'s `ListStations()` on invCache's global container;
+  `blueprintManager.GetBlueprintDataByOwner(ownerID, None)`;
+  `industryManager.GetJobsByOwner(ownerID, includeCompleted)` and
+  `GetJobCounts(session.charid)`; `facilityManager.GetFacilities()` and
+  `GetMaxActivityModifiers()`; `mailMgr.SyncMail(firstID, lastID)`, which is `(None, 0)`
+  for a client that holds no mail; `notificationMgr.GetByGroupID(groupID)` and
+  `GetUnprocessed()`; and on a fleet's own object `GetInitState()`, `GetWings()`,
+  `GetMotd()`, `GetJoinRequests()` and `GetFleetComposition()`.
+
+**What was built.**
+
+- Twenty more pairs have entries in `src/gamePort/retailCalls.js`. The two reads of a
+  character go out naming the pilot's own when a route names none, and another character's
+  as given. The notifications' read goes out with its keyword.
+- The character sheet's route asks `GetHomeStationRow` where it asked `GetHomeStation`. Its
+  answer keeps its place in the route's own.
+- `charMgr.GetHomeStation` and `charMgr.GetCloneInfo` are marked as the web client's own.
+- `docs/game-port-call-ledger.md` made again from one pass: 63 pairs in 99 calls. 36 the
+  client's own, 14 reshaped to it, 11 the web client's own, 2 known differences, **none
+  unread** (19 before this entry). 100 pairs have an entry.
+
+**Proof.**
+
+- Tests: 5 new, among them the first the BFF has of the character sheet's route. 27 ways of
+  breaking it tried, all caught. A length check that would have swapped a named character
+  for the pilot's own when a route gave two arguments was taken out before the pass.
+- Suite: 9552 tests, 9528 pass, 0 fail, 24 skipped, 0 todo. No test process left behind.
+- **The server's own log of the game-port pass** (eve.js `e066a81e9`, with another session's
+  uncommitted edits in the checkout), as Test Two: `charMgr GetPublicInfo3` and
+  `GetCharacterDescription` each with one argument, the server's own line reading
+  `GetPublicInfo3(140000002)`; `GetHomeStationRow` with none; `notificationMgr
+  GetAllNotifications` with no positional argument.
+- **On both transports, by script** (`scripts/bff-parity.js`): 12 identical, 6 tolerated,
+  2 moved, 2 divergent, as before; the character sheet, industry, mail, notifications,
+  assets and the fleet's reads each as they were.
+- **In the browser, on the game port:** the Character Sheet drew the pilot's name, the home
+  station by its name, the bio and "Your active clone has no implants."; Activity drew
+  twenty notifications and one event. Nothing failed.
+
+**Not seen working.**
+
+- The fleet's five reads for a pilot in a fleet: Test Two is in none, and the route that
+  asks them is a probe of the BFF's own, which asks whether or not there is a fleet. The
+  client has a fleet's object only while it is in one.
+- A named character's public info through the game port (another pilot's, as the info
+  window asks): no route of the page's asks it.
+
+**Not done.**
+
+- The clones the client's way: `jumpCloneSvc` on its moniker, `GetCloneState()`, and the
+  implants read from what `GetAllInfo` brought. The sheet still asks the call the client
+  never makes.
+- What the client's own character sheet asks when it opens, set beside the route's four:
+  the sheet's corporation, alliance and security status are not from `GetPublicInfo3` in
+  the client.
+- The ledger is of one pass by script over the docked routes. Pairs the page asks only on a
+  click, and everything in space, are not in it: "none unread" is of that pass and no more.
+- The gateway transport sends what a route spells; only the game port is set beside the
+  client.
+
+### Next
+
+1. The ledger from a walk: every panel of the page opened in the browser on the game port,
+   docked and then in space, and its unread pairs read, most called first.
+2. The web client's own calls, one at a time, each replaced by what the client asks:
+   `invbroker.GetCapacity` (29 a pass), `contractProxy.GetMyCurrentContractList`
+   (`GetContractListForOwner`), `charMgr.GetCloneInfo` (`jumpCloneSvc.GetCloneState` on
+   its moniker, and godma's implants), the dogma reads.
+3. The probe route's two differing calls: repaired or the route gone, by what the page uses.
+4. The standings the client's way: `GetNPCNPCStandings`, and asked once at the session's
+   change and kept, with the server's notices keeping them right.
+5. Two couriers staged, for the contract search's sort and filters; the corporation's
+   expired list beside the pilot's own; the summary asked once and kept.
+6. The corporation registry's other calls, each set beside the client's.
+7. Phase 3's writes, feature by feature, each set beside what the client sends.
+8. The wallet's "Market Transactions", and the lines the client derives from a transaction.
+9. The avoidance list's own window, and a route plotted again when a setting changes under it.
+10. Around a place's name, the last of it: the outlaw's warning (the pilot's own security
+    status). The agent's own window's steps, if the client's say how far.
+11. The page's own read of the journal after an agent's button: gone, if nothing of the page's
+    own counts on it, with the push doing the work as it does for Remove Offer.
+12. The agent's cards above its own window, where the client's window has its own header.
+13. The scanner the client's way: results kept from the server's word, a probe's destination
+    and range kept here and sent with the scan.
+14. Small, around dialogs: the title for a dialog's kind, the "do not ask again" box, the typed
+    codes not done.
+15. Small, in space: an overview row's speed columns the client's way; the bar the client
+    fills while a ship lines up for a warp; a warp ordered at a bookmark or a fleet member.
+16. Small, before a character is chosen: selecting on the account's own connection; the count
+    of names checked.
+17. Small, in Ready Fit: the capacity the client never asks for; the window following a change
+    of pilot.
+18. Small, in words: an interval's `shortForm` and `writtenFormTwoPart`; the bonus's
+    countdown; a place's rating in its colour and its name as a link.
+19. In the park, if a server ever sends a ball that needs them: MISSILE, FORMATION, MUSHROOM;
+    a fixed ball's collision shapes and the partition's order.
+20. If a server ever sends one: a special interaction drawn as the client draws one; messages
+    inside messages.
+21. More of the client's built data as it is needed: one line in `TABLES` for each (dungeons
+    for ship restrictions); the client's own map, to set beside this server's.
+22. When there is a recording of it: a courier's agent talked to again where the pilot
+    accepted, before the package has gone anywhere (the operator's section); and a mission
+    paid in a system of the safest class, for whether its ISK is reduced.
+23. Other things asked once beside the store, and other panels' effects, looked at for the
+    faults of earlier entries.
+24. The pathfinder's ties: how the order of the map's jumps settles them, and the order the
+    client's own map is in.
+25. Jumps in the assets and contracts lists, the autopilot's way, where the page lists them.
