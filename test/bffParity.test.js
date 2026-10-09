@@ -121,3 +121,31 @@ test("where the two transports answer the sheet's clone in two forms, what the p
   // On another route the two forms are two different answers.
   assert.notEqual(judge(whole(byItem), listed([[1, implant(9899, 1)], [2, implant(9941, 2)]]), "/api/bridge/assets").verdict, "identical");
 });
+
+test("a pilot in no fleet is the same answer on both transports, however each comes to say it", () => {
+  const names = ["GetInitState", "GetWings", "GetMotd", "GetJoinRequests", "GetFleetComposition"];
+  const reads = (cell) => Object.fromEntries(names.map((name) => [name, cell]));
+  // The gateway asks and is refused five times; the game port takes the session's word and asks nothing.
+  const refused = (message) => ok({ ok: true, characterID: 7, fleetID: null, reads: reads({ error: "CALL_REFUSED", message }), notifications: [] });
+  const notAsked = ok({ ok: true, characterID: 7, fleetID: null, membership: "none", reads: reads({ error: "NOT_ASKED", message: null }), notifications: [] });
+  for (const message of ["FleetNotInFleet", "FleetNotFound"]) {
+    assert.deepEqual([judge(refused(message), notAsked, "/api/bridge/bound-fleet").verdict, judge(refused(message), notAsked, "/api/bridge/bound-fleet").detail], ["identical", ""], message);
+  }
+  // A read that failed for another reason is not "no fleet", and reads that were not asked with nobody saying why are not either.
+  assert.notEqual(judge(refused("Gateway unavailable"), notAsked, "/api/bridge/bound-fleet").verdict, "identical");
+  const unsaid = ok({ ok: true, characterID: 7, fleetID: null, reads: reads({ error: "NOT_ASKED", message: null }), notifications: [] });
+  assert.notEqual(judge(refused("FleetNotInFleet"), unsaid, "/api/bridge/bound-fleet").verdict, "identical");
+  // Nor is an answer with no reads in it, or the fleetless word on a read that failed some other way.
+  assert.notEqual(judge(ok({ ok: true, characterID: 7, fleetID: null, reads: {}, notifications: [] }), notAsked, "/api/bridge/bound-fleet").verdict, "identical");
+  const otherwise = ok({ ok: true, characterID: 7, fleetID: null, reads: reads({ error: "READ_FAILED", message: "FleetNotInFleet" }), notifications: [] });
+  assert.notEqual(judge(otherwise, notAsked, "/api/bridge/bound-fleet").verdict, "identical");
+  // One refusal among answers is not "no fleet" either.
+  const partly = ok({ ok: true, characterID: 7, fleetID: null, reads: { ...reads({ error: "CALL_REFUSED", message: "FleetNotInFleet" }), GetMotd: { result: "hello" } }, notifications: [] });
+  assert.notEqual(judge(partly, notAsked, "/api/bridge/bound-fleet").verdict, "identical");
+  // A pilot in a fleet is compared read by read, as before; and so is this answer on any other route.
+  const inFleet = (motd) => ok({ ok: true, characterID: 7, fleetID: "654500010000", reads: { ...reads({ result: null }), GetMotd: { result: motd } }, notifications: [] });
+  assert.equal(judge(inFleet("hello"), inFleet("hello"), "/api/bridge/bound-fleet").verdict, "identical");
+  assert.notEqual(judge(inFleet("hello"), inFleet("goodbye"), "/api/bridge/bound-fleet").verdict, "identical");
+  assert.notEqual(judge(inFleet("hello"), notAsked, "/api/bridge/bound-fleet").verdict, "identical");
+  assert.notEqual(judge(refused("FleetNotInFleet"), notAsked, "/api/bridge/assets").verdict, "identical");
+});

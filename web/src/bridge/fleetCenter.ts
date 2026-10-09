@@ -2,7 +2,9 @@
 // read and the existing live notification channel. It deliberately keeps the
 // three player-relevant states separate:
 //   • ready          — GetInitState named a real fleet;
-//   • not-in-fleet   — every bound read explicitly refused as fleetless;
+//   • not-in-fleet   — the pilot's own session has no fleet, where the route
+//                      knows the session's; or every bound read explicitly
+//                      refused as fleetless;
 //   • unavailable    — the read failed or was partial in any other way.
 // A null fleetID alone is not enough to call somebody fleetless: the cached
 // session field is allowed to be stale, and a transport failure also decodes to
@@ -58,6 +60,10 @@ export function fleetAvailability(fleet: BoundFleet): FleetAvailability {
     positiveFleetID(fleet.initState.value.fleetID)
   ) {
     return "ready";
+  }
+  // The session's own word, where the route has it: the client's fleet service goes by the same.
+  if (fleet.sessionHasNoFleet) {
+    return "not-in-fleet";
   }
   if (
     !positiveFleetID(fleet.initState.value.fleetID) &&

@@ -2890,6 +2890,9 @@ app.get("/api/bridge/scan-full-state", requireAuth, async (req, res, next) => {
 // the populated envelopes. Each read carries its own {result} or {error, message}.
 // Returns the raw result envelopes for web/src/bridge/boundFleet.ts; NO UI consumes
 // this yet.
+/** The five things the route reads of a fleet. */
+const FLEET_READ_METHODS = Object.freeze(["GetInitState", "GetWings", "GetMotd", "GetJoinRequests", "GetFleetComposition"]);
+
 app.get("/api/bridge/bound-fleet", requireAuth, async (req, res, next) => {
   const held = requireHeldBridgeSession(req, res);
   if (!held) {
@@ -2898,6 +2901,30 @@ app.get("/api/bridge/bound-fleet", requireAuth, async (req, res, next) => {
   // Re-resolve the session's current membership on every panel refresh. A fleet OID
   // is membership-scoped, not valid for the full lifetime of the selected character.
   invalidateFleetBoundHandles(held);
+  // fleetSvc.py 254, 366: the client asks nothing of a fleet unless session.fleetid says the pilot is in one.
+  // On the game port the session is the server's own, so its word is taken and nothing is asked.
+  if (gamePortPilots && isGamePortHandle(held.bridgeSessionID) && typeof gamePortPilots.fleet === "function") {
+    let own;
+    try {
+      own = gamePortPilots.fleet({ userid: held.accountID }, held.bridgeSessionID);
+    } catch (error) {
+      if (error && error.code === "SESSION_NOT_FOUND") forgetBridgeSession(req.webSessionID, held);
+      next(error);
+      return;
+    }
+    if (own.fleetID === null) {
+      held.fleetID = null;
+      res.json({
+        ok: true,
+        characterID: held.characterID,
+        fleetID: null,
+        membership: "none",
+        reads: Object.fromEntries(FLEET_READ_METHODS.map((method) => [method, { error: "NOT_ASKED", message: null }])),
+        notifications: [],
+      });
+      return;
+    }
+  }
   const spec = fleetBindSpec();
   const FLEET_READS = [
     // GetInitState() — the full fleet KeyVal {motd, options, fleetID, members(dict),

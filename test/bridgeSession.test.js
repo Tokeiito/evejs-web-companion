@@ -1802,3 +1802,67 @@ test("on the gateway the Character Sheet's clone is asked of the server as befor
   assert.deepEqual(clone, [["charMgr.GetCloneInfo", [], null]]);
   assert.deepEqual([payload.cloneInfo, payload.errors.cloneInfo], [FROM_CLONE_INFO, null]);
 });
+
+// ── The pilot's fleet on the Fleet route ─────────────────────────────────────
+//
+// The client's fleet service asks nothing of a fleet unless session.fleetid says the pilot is in one
+// (fleetSvc.py 254, 366): with none there is no fleet moniker to call. The route asked five things of the
+// session's fleet whatever the session said, and took five refusals for "not in a fleet".
+
+const FLEET_READ_NAMES = ["GetInitState", "GetWings", "GetMotd", "GetJoinRequests", "GetFleetComposition"];
+const fleetState = (fleetID) => ({ type: "object", name: "util.KeyVal", args: { type: "dict", entries: [["fleetID", fleetID], ["members", { type: "dict", entries: [] }], ["wings", { type: "dict", entries: [] }]] } });
+
+/** A pilot opening the Fleet panel; on the game port unless told otherwise. Says what was asked of the fleet's service and what the route answered. */
+async function fleetRoute({ transport = "gameport", own = { fleetID: null }, knows = true } = {}) {
+  const gamePort = gamePortWithQuestions(() => ({ answered: true }));
+  const gateway = fakeGateway();
+  const backend = transport === "gameport" ? gamePort : gateway;
+  const asked = [];
+  backend.bindObject = async (service, method, args) => { asked.push(`bind ${service}`); return { boundHandle: `${service}:${method}`, notifications: [] }; };
+  backend.callBoundMethod = async (service, method) => {
+    asked.push(`${service}.${method}`);
+    if (own.fleetID === null) throw Object.assign(new Error("FleetNotInFleet"), { code: "CALL_REFUSED" });
+    return { service, method, result: method === "GetInitState" ? fleetState(own.fleetID) : null, notifications: [] };
+  };
+  const given = [];
+  if (knows) gamePort.fleet = (sessionFields, bridgeSessionID) => { given.push({ sessionFields, bridgeSessionID }); return own; };
+  const { baseUrl } = await startTestServer({ gateway, gamePortPilots: gamePort, pilotTransportFor: () => transport });
+  await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+  asked.length = 0;
+  const answer = await apiRequest(baseUrl, "/api/bridge/bound-fleet");
+  assert.equal(answer.response.status, 200, JSON.stringify(answer.payload));
+  return { payload: answer.payload, asked, given, baseUrl };
+}
+const ALL_FIVE = ["bind fleetObjectHandler", ...FLEET_READ_NAMES.map((name) => `fleetObjectHandler.${name}`)];
+
+test("on the game port a pilot whose session has no fleet is asked nothing of one, and the route says the session has none", async () => {
+  const { payload, asked, given } = await fleetRoute();
+  assert.deepEqual(asked, []);
+  assert.deepEqual(given, [{ sessionFields: { userid: 4 }, bridgeSessionID: GAME_PORT_SESSION_ID }]);
+  assert.deepEqual([payload.membership, payload.fleetID, payload.notifications], ["none", null, []]);
+  // Each read is said not to have been asked: not an answer, and not a refusal.
+  assert.deepEqual(payload.reads, Object.fromEntries(FLEET_READ_NAMES.map((name) => [name, { error: "NOT_ASKED", message: null }])));
+});
+
+test("with a fleet in the session, and on the gateway, the fleet is asked as before", async () => {
+  // In a fleet: the five reads, on the fleet's object, and nothing said of the session having none.
+  const member = await fleetRoute({ own: { fleetID: 654500010000 } });
+  assert.deepEqual([member.asked.slice().sort(), member.payload.membership, member.payload.fleetID], [ALL_FIVE.slice().sort(), undefined, "654500010000"]);
+  assert.deepEqual(member.payload.reads.GetInitState, { result: fleetState(654500010000) });
+  // A transport that cannot say, and the gateway, whose held session does not know: asked, and refused five times.
+  for (const options of [{ knows: false }, { transport: "gateway" }]) {
+    const unknowing = await fleetRoute(options);
+    assert.deepEqual([unknowing.asked.slice().sort(), unknowing.payload.membership, unknowing.given], [ALL_FIVE.slice().sort(), undefined, []], JSON.stringify(options));
+    assert.deepEqual(unknowing.payload.reads.GetWings, { error: "CALL_REFUSED", message: "FleetNotInFleet" });
+  }
+});
+
+test("on the game port a fleet the session has left is a fleet the BFF has forgotten", async () => {
+  // The squad board goes by the fleet the BFF holds for the session, which only this route sets.
+  const own = { fleetID: 654500010000 };
+  const { baseUrl } = await fleetRoute({ own });
+  assert.equal((await apiRequest(baseUrl, "/api/bots/squad-board")).payload.fleetID, "654500010000");
+  own.fleetID = null;
+  assert.equal((await apiRequest(baseUrl, "/api/bridge/bound-fleet")).payload.membership, "none");
+  assert.equal((await apiRequest(baseUrl, "/api/bots/squad-board")).payload.error, "FLEET_UNKNOWN");
+});

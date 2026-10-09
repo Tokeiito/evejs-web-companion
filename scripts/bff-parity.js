@@ -200,8 +200,24 @@ function implantsShown(cloneInfo) {
  * port's Character Sheet has the implants the client's skill handler lists, keyed by slot; the gateway's has the
  * server's whole clone answer, with its implants keyed by item. The page shows the implants and nothing else of it.
  */
+/** The server's two refusals that mean the pilot has no fleet (web/src/bridge/fleetCenter.ts goes by the same two). */
+const FLEETLESS_REFUSALS = new Set(["FleetNotFound", "FleetNotInFleet"]);
+
+/**
+ * The Fleet route's answer for a pilot in no fleet, as the page reads it: the gateway asks five things and is
+ * refused each as fleetless, and the game port takes the session's word and asks nothing. Either is "not in a
+ * fleet" to the page. Anything else is left as it came.
+ */
+function fleetShown(payload) {
+  const reads = payload && payload.reads && typeof payload.reads === "object" ? Object.values(payload.reads) : [];
+  const saysNone = payload && payload.membership === "none";
+  const refusedAsFleetless = reads.length > 0 && reads.every((read) => read && read.error === "CALL_REFUSED" && FLEETLESS_REFUSALS.has(read.message));
+  return saysNone || refusedAsFleetless ? { ok: payload.ok, characterID: payload.characterID, fleet: "not in a fleet" } : payload;
+}
+
 const AS_THE_PAGE_READS = Object.freeze({
   "/api/bridge/character-sheet": (payload) => (payload && typeof payload === "object" ? { ...payload, cloneInfo: implantsShown(payload.cloneInfo) } : payload),
+  "/api/bridge/bound-fleet": fleetShown,
 });
 
 function judge(gatewayAnswer, gamePortAnswer, route = null) {

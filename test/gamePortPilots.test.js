@@ -3099,6 +3099,24 @@ test("in space the ship's Moniker is kept while the ship is the same, and shipCo
   assert.deepEqual([ships(), session.carried.at(-1)], [4, "LaunchDrones"]);
 });
 
+// ── the session's own fleet ──────────────────────────────────────────────────
+
+test("the fleet the pilot is in is the session's own word, as the client's fleet service goes by it", async () => {
+  // fleetSvc.py: everything it asks of a fleet is behind session.fleetid, which the server sets with a session change.
+  const { pilots, session, handle } = await selected();
+  session.calls.length = 0;
+  assert.deepEqual(await pilots.fleet(FIELDS, handle), { fleetID: null });
+  session.attributes.fleetid = 1099511627776n;
+  session.change({ fleetid: [null, 1099511627776n] });
+  assert.deepEqual(await pilots.fleet(FIELDS, handle), { fleetID: 1099511627776 });
+  session.attributes.fleetid = null;
+  session.change({ fleetid: [1099511627776n, null] });
+  assert.deepEqual(await pilots.fleet(FIELDS, handle), { fleetID: null });
+  // Nothing is asked of the server for it, and a session is its account's own.
+  assert.deepEqual([session.calls, session.binds], [[], []]);
+  assert.throws(() => pilots.fleet({ userid: 9 }, handle), (error) => error.code === "SESSION_NOT_FOUND");
+});
+
 // ── the monikers the BFF asks for ────────────────────────────────────────────
 //
 // The BFF binds an object and then calls it, in two steps (its gateway's way). The client has no such first step:

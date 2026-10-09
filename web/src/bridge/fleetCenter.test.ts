@@ -128,3 +128,23 @@ test("fleet invite notification retains the authoritative fleet and inviter IDs"
   assert.equal(decodeFleetInviteNotification("OnFleetJoin", [1, 2], 1234), null);
   assert.equal(decodeFleetInviteNotification("OnFleetInvite", [0, 2], 1234), null);
 });
+
+test("Fleet Center takes the session's own word that there is no fleet, and nothing less", () => {
+  // On the game port the route asks nothing of a fleet the session is not in, and says so.
+  const notAsked = Object.fromEntries(READS.map((name) => [name, { error: "NOT_ASKED", message: null }]));
+  const none = decodeFleetCenter({ ok: true, characterID: 140000002, fleetID: null, membership: "none", reads: notAsked } as never);
+  assert.equal(none.availability, "not-in-fleet");
+  assert.equal(none.fleet.sessionHasNoFleet, true);
+  assert.deepEqual(authoritativeFleetMemberCharacterIDs(none), []);
+  // Reads that were not asked, with nobody saying the session has no fleet, are not an answer.
+  for (const membership of [undefined, null, "asked", "NONE", true]) {
+    const unsaid = decodeFleetCenter({ ok: true, characterID: 140000002, fleetID: null, membership, reads: notAsked } as never);
+    assert.deepEqual([unsaid.availability, unsaid.fleet.sessionHasNoFleet], ["unavailable", false], String(membership));
+  }
+  // A fleet that answers for itself outranks it.
+  const ready = decodeFleetCenter({
+    ok: true, characterID: 140000002, fleetID: null, membership: "none",
+    reads: { ...notAsked, GetInitState: { result: { type: "object", name: "util.KeyVal", args: { type: "dict", entries: [["fleetID", 654500010000], ["members", { type: "dict", entries: [] }]] } } } },
+  } as never);
+  assert.equal(ready.availability, "ready");
+});

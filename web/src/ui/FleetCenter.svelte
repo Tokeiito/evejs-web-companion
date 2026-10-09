@@ -246,7 +246,7 @@
   {:else if $fleet.availability === "not-in-fleet"}
     <section class="state-card empty-state">
       <h3>You are not in a fleet</h3>
-      <p>The fleet service explicitly reported no membership for this character.</p>
+      <p>The server reports no fleet membership for this character.</p>
       <div class="action-row">
         <button type="button" class="primary" disabled={busy} onclick={() => void formFleet()}>
           Form fleet

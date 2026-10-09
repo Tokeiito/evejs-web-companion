@@ -384,6 +384,11 @@ export interface BoundFleetResult<T> {
 export interface BoundFleet {
   readonly characterID: number | null;
   readonly fleetID: number | null;
+  /**
+   * The route's word that the pilot's own session has no fleet, where it knows the session's (the game port): then
+   * nothing was asked of a fleet, as the client asks nothing. False where the route did not say.
+   */
+  readonly sessionHasNoFleet: boolean;
   readonly initState: BoundFleetResult<FleetInitState>;
   readonly wings: BoundFleetResult<readonly FleetWing[]>;
   readonly motd: BoundFleetResult<string>;
@@ -426,6 +431,7 @@ export function decodeBoundFleet(raw: JsonValue | null | undefined): BoundFleet 
     // GetInitState is the fleet answering for itself, so it wins; the cached field
     // stays as the fallback for when that read failed.
     fleetID: numberOrNull(initState.value.fleetID) ?? numberOrNull(root.fleetID),
+    sessionHasNoFleet: root.membership === "none",
     initState,
     wings: map("GetWings", decodeFleetWings),
     motd: map("GetMotd", decodeFleetMotd),

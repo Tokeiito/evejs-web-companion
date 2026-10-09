@@ -55,6 +55,7 @@ function readySnapshot(members: readonly FleetMember[]): FleetCenterSnapshot {
     fleet: {
       characterID: null,
       fleetID: 999000001,
+      sessionHasNoFleet: false,
       initState: ok({ ...EMPTY_INIT_STATE, fleetID: 999000001, members }),
       wings: ok([]),
       motd: ok(""),
@@ -70,6 +71,7 @@ function notInFleetSnapshot(): FleetCenterSnapshot {
     fleet: {
       characterID: null,
       fleetID: null,
+      sessionHasNoFleet: false,
       initState: ok(EMPTY_INIT_STATE),
       wings: ok([]),
       motd: ok(""),

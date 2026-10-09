@@ -628,6 +628,14 @@ function createGamePortPilots({
   }
 
   /**
+   * The fleet the pilot is in, as the session says: session.fleetid, which the server sets with a session change
+   * and the client's fleet service goes by for everything it asks of a fleet (fleetSvc.py). Null in none.
+   */
+  function fleet(sessionFields = {}, bridgeSessionID = undefined) {
+    return { fleetID: attribute(held(bridgeSessionID, sessionFields), "fleetid") };
+  }
+
+  /**
    * The pilot's own ship as dogma has it, without asking: the ship's row from godma's priming, with its
    * attributes as godma holds them now, and the modules fitted in it that are online. It is what the server
    * answers to ShipGetInfo and ShipOnlineModules, which the client never asks (godma.py 2409, 697). The row
@@ -1652,6 +1660,7 @@ function createGamePortPilots({
     accountCall,
     answerClientQuestion,
     ship,
+    fleet,
     shipInfo,
     shipAttribute,
     shutdown,
