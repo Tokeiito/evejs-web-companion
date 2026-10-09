@@ -1151,6 +1151,11 @@ const BAY_TYPES = {
   77003: { groupID: 902, volume: 92000, capacity: 900, attributes: { 3805: 899, 3701: 1, 3890: 1000000, 3702: 1, 3955: 10000 } },
   // A ship built of parts: no drone capacity of its own, and no capacity among its type's fields.
   77004: { groupID: 963001, volume: 5000, capacity: null, attributes: { 3805: 111 } },
+  // A container, with a capacity among its type's fields; and one whose type has none.
+  77020: { groupID: 340, volume: 3000, capacity: 1200, attributes: {} },
+  77021: { groupID: 340, volume: 3000, capacity: null, attributes: {} },
+  // A plastic wrap (the type the tables below name as one): it is as big as what is in it.
+  77099: { groupID: 5, volume: 0, capacity: 0, attributes: {} },
   // A hull whose type has no size for anything, its cargo included.
   77006: { groupID: 901, volume: 16500, capacity: null, attributes: {} },
   // A hull that says it has a ship maintenance bay and whose type has no size for one.
@@ -1358,6 +1363,74 @@ test("a mining hold that cannot be reckoned is asked about by itself, and where 
   assert.deepEqual(asIs(await miningHoldsOnGamePort({ flying: null })), fromServer);
   const onGateway = await miningHoldsOnGamePort({ transport: "gateway" });
   assert.deepEqual([asIs(onGateway), onGateway.attributes], [fromServer, []]);
+});
+
+// ── A container (GET /api/bridge/inventory/container/:itemID) ────────────────
+
+const CONTAINER_ROWS = [
+  holdRow({ itemID: 9201, flagID: 0, quantity: 1000, stacksize: 1000 }),                                        // 10
+  holdRow({ itemID: 9202, flagID: 0, typeID: 77011, quantity: 40, stacksize: 40 }),                             // 80
+  holdRow({ itemID: 9203, flagID: 0, typeID: 77002, groupID: 901, categoryID: 6, quantity: 2, stacksize: 2 }),  // two packaged: 5000
+  holdRow({ itemID: 9204, flagID: 64, quantity: 500, stacksize: 500 }),                                         // in another flag: 5
+];
+
+/** A pilot opening container 9200, on the game port unless told otherwise. */
+async function containerOnGamePort(query, { constants = holdConstants(), contents = CONTAINER_ROWS, transport = "gameport", statics = bayStatics() } = {}) {
+  const gamePort = gamePortWithQuestions(() => ({ answered: true }));
+  const gateway = fakeGateway();
+  const backend = transport === "gameport" ? gamePort : gateway;
+  backend.bindObject = async (service, method, args) => ({ boundHandle: `${method}:${args[0]}`, notifications: [] });
+  const calls = [];
+  backend.callBoundMethod = async (service, method, args, kwargs, sessionFields, bridgeSessionID, handle) => {
+    calls.push([method, args, handle]);
+    if (method === "List") return { service, method, result: { type: "list", items: contents }, notifications: [] };
+    return { service, method, result: { type: "object", name: "util.KeyVal", args: { type: "dict", entries: [["capacity", 777], ["used", 7]] } }, notifications: [] };
+  };
+  const { baseUrl } = await startTestServer({ gateway, gamePortPilots: gamePort, pilotTransportFor: () => transport, staticData: statics, clientConstants: constants });
+  await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+  const answer = await apiRequest(baseUrl, `/api/bridge/inventory/container/9200${query}`);
+  assert.equal(answer.response.status, 200, JSON.stringify(answer.payload));
+  return { payload: answer.payload, calls, methods: calls.map(([method]) => method).sort(), capacity: answer.payload.capacity === null ? null : Object.fromEntries(answer.payload.capacity.args.entries) };
+}
+
+test("on the game port a container's capacity is its type's, and what is in it is summed, with the server asked for its List alone", async () => {
+  // invCache.py 1224 on, for a container: evetypes.GetCapacity of its type, and the volume of everything it lists.
+  const { payload, calls, capacity } = await containerOnGamePort("?typeID=77020");
+  assert.deepEqual(calls, [["List", [], "GetInventoryFromId:9200"]]);
+  assert.deepEqual(capacity, { capacity: 1200, used: 10 + 80 + 5000 + 5 });
+  assert.deepEqual([payload.containerID, payload.list.items.length, payload.volumes], [9200, 4, { 77002: 16500, 77010: 0.01, 77011: 2 }]);
+  // A plastic wrap is as big as what is in it.
+  assert.deepEqual((await containerOnGamePort("?typeID=77099")).capacity, { capacity: 5095, used: 5095 });
+  // The type is read as this file reads every whole number of a query: its leading digits.
+  assert.deepEqual((await containerOnGamePort("?typeID=77020.9")).capacity, { capacity: 1200, used: 5095 });
+  // An empty container: its type's capacity, and nothing used.
+  assert.deepEqual((await containerOnGamePort("?typeID=77020", { contents: [] })).capacity, { capacity: 1200, used: 0 });
+});
+
+test("a caller that does not say what the container is wants its contents: no capacity is reckoned, and none is asked for", async () => {
+  // The bots open cans and offices for what is in them. The client knows the type of what it opens; a caller
+  // that wants the capacity says it.
+  for (const query of ["", "?typeID=", "?typeID=abc", "?typeID=0", "?typeID=-5"]) {
+    const { payload, methods, capacity } = await containerOnGamePort(query);
+    assert.deepEqual([methods, capacity, payload.list.items.length], [["List"], null, 4], query);
+  }
+});
+
+test("where a container's capacity cannot be reckoned it is asked of the server, and on the gateway it always is", async () => {
+  const fromServer = { capacity: 777, used: 7 };
+  const asked = async (query, options) => { const reading = await containerOnGamePort(query, options); return [reading.methods, reading.capacity]; };
+  // A type the static tables have not, or one with no capacity among its fields.
+  assert.deepEqual(await asked("?typeID=77998"), [["GetCapacity", "List"], fromServer]);
+  assert.deepEqual(await asked("?typeID=77021"), [["GetCapacity", "List"], fromServer]);
+  // Something in it whose volume nobody here knows, or something that is not a row.
+  assert.deepEqual(await asked("?typeID=77020", { contents: [...CONTAINER_ROWS, holdRow({ itemID: 9205, flagID: 0, typeID: 77999 })] }), [["GetCapacity", "List"], fromServer]);
+  assert.deepEqual(await asked("?typeID=77020", { contents: [...CONTAINER_ROWS, { type: "list", items: [] }] }), [["GetCapacity", "List"], fromServer]);
+  // No client to read the packaged volumes from, or static tables that know no type.
+  assert.deepEqual(await asked("?typeID=77020", { constants: { packagedVolumes: async () => null } }), [["GetCapacity", "List"], fromServer]);
+  assert.deepEqual(await asked("?typeID=77020", { statics: fakeStaticData() }), [["GetCapacity", "List"], fromServer]);
+  // The gateway: asked, whether or not the caller says what the container is.
+  assert.deepEqual(await asked("?typeID=77020", { transport: "gateway" }), [["GetCapacity", "List"], fromServer]);
+  assert.deepEqual(await asked("", { transport: "gateway" }), [["GetCapacity", "List"], fromServer]);
 });
 
 // ── The Fitting window's dogma (GET /api/bridge/bound-dogma) ─────────────────

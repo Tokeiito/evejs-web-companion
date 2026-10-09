@@ -290,9 +290,12 @@ test("openContainer reads the contents into the store and closing clears them", 
   await flow.loadInventory();
   await flow.openContainer(CONTAINER_ID);
 
-  assert.ok(
-    requests.some((r) => r.path === `/api/bridge/inventory/container/${CONTAINER_ID}`),
-    "the container was read by its own itemID",
+  // The retail client knows the type of what it opens, and works the container's capacity out from that. The
+  // page says the type its row has, so that the bridge can do the same and not ask the server.
+  assert.deepEqual(
+    requests.filter((r) => r.path.startsWith("/api/bridge/inventory/container/")).map((r) => r.path),
+    [`/api/bridge/inventory/container/${CONTAINER_ID}?typeID=3297`],
+    "the container was read by its own itemID, and said to be what its row says it is",
   );
   const container = store.inventory.get().container;
   assert.equal(container?.itemID, CONTAINER_ID);
@@ -532,6 +535,45 @@ test("after a mutation every open place is re-read, not just the hangar", async 
   // A move out of the hangar into cargo can change what a container or a
   // division shows too, so every open view is refreshed rather than guessed at.
   assert.ok(after.some((r) => r.path === "/api/bridge/inventory"));
-  assert.ok(after.some((r) => r.path === `/api/bridge/inventory/container/${CONTAINER_ID}`));
+  assert.ok(after.some((r) => r.path === `/api/bridge/inventory/container/${CONTAINER_ID}?typeID=3297`));
   assert.ok(after.some((r) => r.path === "/api/bridge/inventory/corp"));
+});
+
+test("a container that is in no list the page holds is opened by its ID alone, and one open already keeps its type", async () => {
+  const store = createClientStore();
+  const { fetch, requests } = standardFetch();
+  const flow = createAppFlow(store, { fetch });
+  const opened = () => requests.filter((r) => r.path.startsWith("/api/bridge/inventory/container/")).map((r) => r.path);
+
+  // Nothing loaded: the page has no row for it, and does not guess a type.
+  await flow.openContainer(CONTAINER_ID);
+  assert.deepEqual(opened(), [`/api/bridge/inventory/container/${CONTAINER_ID}`]);
+  // Another container altogether, with that one open: its type is not the open one's.
+  await flow.loadInventory();
+  await flow.openContainer(CONTAINER_ID);
+  await flow.openContainer(8200);
+  assert.deepEqual(opened().slice(1), [`/api/bridge/inventory/container/${CONTAINER_ID}?typeID=3297`, "/api/bridge/inventory/container/8200"]);
+});
+
+test("a container read again after its row has gone from the lists is still said to be what it was opened as", async () => {
+  const store = createClientStore();
+  let gone = false;
+  const { fetch, requests } = makeFakeFetch((path) => {
+    if (path === "/api/bridge/inventory") {
+      const panel = inventoryPanel();
+      if (gone) panel.hangar.list.items = panel.hangar.list.items.slice(0, 2);
+      return { status: 200, body: panel };
+    }
+    if (path.startsWith("/api/bridge/inventory/container/")) return { status: 200, body: containerReads([]) };
+    return { status: 200, body: corpHangar() };
+  });
+  const flow = createAppFlow(store, { fetch });
+  await flow.loadInventory();
+  await flow.openContainer(CONTAINER_ID);
+  // The container is put into another: the hangar no longer lists it, and it is open still.
+  gone = true;
+  await flow.loadInventory();
+  await flow.openContainer(CONTAINER_ID);
+  assert.deepEqual(requests.filter((r) => r.path.startsWith("/api/bridge/inventory/container/")).map((r) => r.path),
+    [`/api/bridge/inventory/container/${CONTAINER_ID}?typeID=3297`, `/api/bridge/inventory/container/${CONTAINER_ID}?typeID=3297`]);
 });

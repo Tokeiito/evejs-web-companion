@@ -3393,6 +3393,27 @@ function sendPlaceError(res, error) {
   return false;
 }
 
+/**
+ * A container's capacity as the retail client reckons it (invCache.py 1224 on,
+ * asked with no flag): the capacity of the container's TYPE
+ * (evetypes.GetCapacity), and the volume of everything its List answered,
+ * summed flag by flag over the flags the List has. A plastic wrap is as big as
+ * what is in it. Null where it cannot be reckoned: a type the static tables
+ * have not or that has no capacity, or a List that cannot be summed.
+ */
+function reckonedContainerCapacity(listResult, typeID, packaged) {
+  const type = typeof staticData.getType === "function" ? staticData.getType(typeID) : null;
+  const capacity = type && type.capacity !== null && type.capacity !== undefined ? Number(type.capacity) : NaN;
+  if (!Number.isFinite(capacity)) return null;
+  let used = 0;
+  for (const flag of new Set(inventoryListItems(listResult).map((item) => Number(item && item.fields && item.fields.flagID)))) {
+    const inFlag = usedOfListed(listResult, flag, packaged);
+    if (inFlag === null) return null;
+    used += inFlag;
+  }
+  return capacityAnswer(typeID === packaged.plasticWrapTypeID ? used : capacity, used);
+}
+
 // Open a container and list its contents. THE RULE: a container binding is
 // listed with NO flag — its contents carry flagID 0, so a flag-scoped List
 // would answer empty and the container would look wrongly empty.
@@ -3407,10 +3428,29 @@ app.get("/api/bridge/inventory/container/:itemID", requireAuth, async (req, res,
     return;
   }
   const spec = containerBindSpec(containerID);
+  // ?typeID= — what the container IS, from the row the caller opened it by.
+  //
+  // ⚠ THE RETAIL CLIENT NEVER ASKS THE SERVER HOW FULL A CONTAINER IS. It
+  // knows the type of what it opens and reckons the capacity from that
+  // (reckonedContainerCapacity). On the game port this route does the same for
+  // a caller that says the type, and for one that does not (a bot after the
+  // contents) reckons nothing and asks nothing: the capacity is null. Where it
+  // cannot be reckoned, and on the gateway, GetCapacity is asked as before.
+  const containerTypeID = nonNegativeIntQuery(req.query.typeID, 0);
+  const onGamePort = Boolean(gamePortPilots) && isGamePortHandle(held.bridgeSessionID);
   try {
+    const asked = () => boundCall(held, req.webSessionID, spec, "GetCapacity", [], null);
+    const listed = boundCall(held, req.webSessionID, spec, "List", [], null);
+    const reckoned = async () => {
+      const packaged = await clientConstants.packagedVolumes();
+      if (!packaged) return asked();
+      // A List that fails is the route's answer by itself, below; no capacity goes with it.
+      const own = reckonedContainerCapacity((await listed).result, containerTypeID, packaged);
+      return own === null ? asked() : { result: own };
+    };
     const [list, capacity] = await Promise.allSettled([
-      boundCall(held, req.webSessionID, spec, "List", [], null),
-      boundCall(held, req.webSessionID, spec, "GetCapacity", [], null),
+      listed,
+      !onGamePort ? asked() : containerTypeID > 0 ? reckoned() : { result: null },
     ]);
     for (const settled of [list, capacity]) {
       if (settled.status === "rejected" && settled.reason && settled.reason.code === "SESSION_NOT_FOUND") {

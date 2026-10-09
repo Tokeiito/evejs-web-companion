@@ -2605,9 +2605,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       current.hangar.rows.find((row) => row.itemID === containerID) ??
       current.cargo.rows.find((row) => row.itemID === containerID) ??
       null;
+    // What the container is, for the bridge to work its capacity out by: its row's type, or the type it was
+    // opened with if it is the one open already (its row may have moved since). Never another container's.
+    const knownTypeID = owningRow
+      ? owningRow.typeID
+      : current.container && current.container.itemID === containerID ? current.container.typeID : 0;
     let reads: Awaited<ReturnType<typeof api.openContainer>>;
     try {
-      reads = await api.openContainer(containerID, callOptions);
+      reads = await api.openContainer(containerID, callOptions, knownTypeID);
     } catch (error) {
       if (isSessionLost(error)) {
         stopLiveStream();

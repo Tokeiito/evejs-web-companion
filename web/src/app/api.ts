@@ -709,12 +709,22 @@ export interface RawContainerReads {
   readonly volumes: Readonly<Record<string, number>>;
 }
 
-/** Open a container and read its contents. */
+/**
+ * Open a container and read its contents.
+ *
+ * `typeID` is what the container IS, from the row it was opened by. The retail
+ * client knows the type of what it opens and works the container's capacity out
+ * from that, without a word to the server; said here, the bridge can do the
+ * same. A caller after the contents alone leaves it out, and on the game port
+ * gets no capacity and costs the server none.
+ */
 export async function openContainer(
   containerID: number,
   options: ApiOptions = {},
+  typeID: number | null = null,
 ): Promise<RawContainerReads> {
-  const data = await getJson(`/api/bridge/inventory/container/${containerID}`, options);
+  const said = typeID !== null && typeID > 0 ? `?typeID=${typeID}` : "";
+  const data = await getJson(`/api/bridge/inventory/container/${containerID}${said}`, options);
   return {
     containerID: asNumberOrNull(data.containerID) ?? containerID,
     list: data.list ?? null,
