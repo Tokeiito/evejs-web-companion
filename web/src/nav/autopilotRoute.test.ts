@@ -8,7 +8,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
-  DEFAULT_AUTOPILOT_SETTINGS, SOLAR_SYSTEM_JITA, SOLAR_SYSTEM_ZARZAKH, autopilotJumpCount, autopilotJumpCounts, autopilotMap, autopilotPath, isKnownSpaceSystem,
+  DEFAULT_AUTOPILOT_SETTINGS, SOLAR_SYSTEM_JITA, SOLAR_SYSTEM_ZARZAKH, autopilotDistances, autopilotJumpCount, autopilotJumpCounts, autopilotMap, autopilotPath, isKnownSpaceSystem,
   type AutopilotMap, type AutopilotRouteType, type AutopilotSettings,
 } from "./autopilotRoute.ts";
 import { buildSystemGraph } from "./routeSolver.ts";
@@ -185,4 +185,45 @@ test("a route from a system to itself is that system alone, and there is none to
   assert.deepEqual(autopilotPath(round, 30000140, 30000141), [30000140, 30000143, 30000144, 30000141]);
   assert.deepEqual(autopilotPath(round, 30000140, SOLAR_SYSTEM_JITA), [30000140, SOLAR_SYSTEM_JITA]);
   assert.deepEqual(autopilotPath(round, 30000140, 30000141, { routeType: "safe", penalty: 50, avoid: [] }), [30000140, SOLAR_SYSTEM_JITA, 30000141]);
+});
+
+test("the jumps to everywhere at once are the jumps to each place asked for alone, for every pair the client's pathfinder answered", () => {
+  let checked = 0;
+  for (const recorded of FIXTURE.cases) {
+    const map = mapOf(recorded.systems, recorded.jumps);
+    const starts = new Set(recorded.pairs.map(([from]) => from));
+    for (const start of starts) {
+      const distances = autopilotDistances(map, start, settingsOf(recorded));
+      for (const [from, to, count] of recorded.pairs) {
+        if (from !== start) continue;
+        assert.equal(distances.get(to) ?? null, count, `${recorded.name}: ${from} to ${to}`);
+        checked += 1;
+      }
+    }
+  }
+  assert.ok(checked >= 6000);
+});
+
+test("the jumps to everywhere: itself at nought, an avoided system where a route may end in it, and nothing outside known space", () => {
+  const A = 30000140;
+  const B = 30000141;
+  const C = 30000143;
+  const D = 30000144;
+  const APART = 30000150;
+  const OUTSIDE = 31000005;
+  const map = mapOf(
+    [[A, 1], [SOLAR_SYSTEM_JITA, 1], [B, 1], [C, 1], [D, 1], [APART, 1], [OUTSIDE, 1]],
+    [[A, SOLAR_SYSTEM_JITA], [SOLAR_SYSTEM_JITA, B], [A, C], [C, D], [D, B], [B, OUTSIDE]],
+  );
+  // Round Jita to B, and into Jita itself in one. Nothing for the system apart, nor for the one outside known space.
+  assert.deepEqual([...autopilotDistances(map, A)].sort((x, y) => x[0] - y[0]), [[A, 0], [B, 3], [SOLAR_SYSTEM_JITA, 1], [C, 1], [D, 2]]);
+  // Not avoiding, Jita is on the way like any other.
+  assert.deepEqual([...autopilotDistances(map, A, { routeType: "safe", penalty: 50, avoid: [] })].sort((x, y) => x[0] - y[0]), [[A, 0], [B, 2], [SOLAR_SYSTEM_JITA, 1], [C, 1], [D, 2]]);
+  // From an avoided system, as from any other; and the start is not counted twice for being avoided.
+  assert.deepEqual([...autopilotDistances(map, SOLAR_SYSTEM_JITA)].sort((x, y) => x[0] - y[0]), [[A, 1], [B, 1], [SOLAR_SYSTEM_JITA, 0], [C, 2], [D, 2]]);
+  // From outside known space, or from a system the map does not hold, there is only where one is.
+  assert.deepEqual([...autopilotDistances(map, OUTSIDE)], [[OUTSIDE, 0]]);
+  assert.deepEqual([...autopilotDistances(map, 30000999)], [[30000999, 0]]);
+  // An avoided system that cannot be reached, or is outside known space, is not there.
+  assert.deepEqual([...autopilotDistances(map, A, { routeType: "safe", penalty: 50, avoid: [APART, OUTSIDE, D] })].sort((x, y) => x[0] - y[0]), [[A, 0], [B, 2], [SOLAR_SYSTEM_JITA, 1], [C, 1], [D, 2]]);
 });

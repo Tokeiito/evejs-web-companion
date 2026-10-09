@@ -207,3 +207,26 @@ test("the finder slice is cleared when the character goes offline", async () => 
   assert.equal(finder.agents.length, 0);
   assert.equal(finder.target, null);
 });
+
+// --- the finder's jumps are the autopilot's -----------------------------------
+
+test("an agent's jumps are the autopilot's with the pilot's settings: the safe way round, until the pilot prefers shorter", async () => {
+  // Alpha to Charlie: two jumps through a low-security system, or three through Bravo and one more safe system.
+  const LOW = 30000006;
+  const FURTHER = 30000007;
+  const graph = {
+    ok: true,
+    systems: { [ALPHA]: "Alpha", [BRAVO]: "Bravo", [CHARLIE]: "Charlie", [LOW]: "Low", [FURTHER]: "Further" },
+    security: { [ALPHA]: 1, [BRAVO]: 0.9, [CHARLIE]: 0.8, [LOW]: 0.3, [FURTHER]: 0.9 },
+    edges: [[ALPHA, BRAVO], [BRAVO, FURTHER], [FURTHER, CHARLIE], [ALPHA, LOW], [LOW, CHARLIE]].flatMap(([a, b], at) => [[a, b, 800 + at * 2, 801 + at * 2], [b, a, 801 + at * 2, 800 + at * 2]]),
+  };
+  const store = onlineStore();
+  const flow = createAppFlow(store, { storage: null, fetch: makeFakeFetch((path) => (path === "/api/map/graph" ? { status: 200, body: graph } : defaultResponder(path))) });
+  const jumpsOf = () => Object.fromEntries(store.finder.get().agents.map((agent) => [agent.agentID, agent.jumps]));
+  await flow.findAgents({});
+  // The agent in Alpha is here; Bravo's a jump off; Charlie's three the safe way; the Island's has no route.
+  assert.deepEqual(jumpsOf(), { 3001: 0, 3002: 1, 3003: 3, 3050: null });
+  flow.setAutopilotRouteType("shortest");
+  await flow.findAgents({});
+  assert.deepEqual(jumpsOf(), { 3001: 0, 3002: 1, 3003: 2, 3050: null });
+});

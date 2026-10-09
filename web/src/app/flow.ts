@@ -182,11 +182,10 @@ import { voteTankLayer } from "../bots/tankLayer.ts";
 import type { BotLogDraft, BotLogSink } from "../nav/botLog.ts";
 import {
   buildSystemGraph,
-  distancesFrom,
   routeAlong,
   type SystemGraph,
 } from "../nav/routeSolver.ts";
-import { autopilotJumpCounts, autopilotMap, autopilotPath, type AutopilotRouteType } from "../nav/autopilotRoute.ts";
+import { autopilotDistances, autopilotJumpCounts, autopilotMap, autopilotPath, type AutopilotRouteType } from "../nav/autopilotRoute.ts";
 import {
   autopilotSettingsFrom,
   loadAutopilotSettings,
@@ -6261,6 +6260,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     return stored;
   }
 
+  // The jumps on the autopilot's route from a system to every system it reaches, with the pilot's settings: what
+  // the client's own lists count (GetAutopilotJumpCount), and what a bot would have to fly.
+  async function autopilotDistancesFrom(fromSystemID: number): Promise<Map<number, number>> {
+    const settings = autopilotSettingsFrom(autopilotSettings());
+    return autopilotDistances(autopilotMap(await loadRouteGraph()), fromSystemID, settings);
+  }
+
   // The jumps on the autopilot's route, worked out here as the client works them out
   // (clientPathfinderService.GetAutopilotJumpCount): nothing is asked of the server.
   function requestAutopilotJumps(fromSystemID: number, toSystemIDs: readonly number[]): void {
@@ -8062,15 +8068,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         autopilot?.abort();
       },
       // The jump gate's number, from the SAME client-side graph the autopilot
-      // routes on — so the number the bot refuses on is the number it would
-      // have had to fly.
-      getJumps: async (fromSystemID, toSystemID) => {
-        if (fromSystemID === toSystemID) {
-          return 0;
-        }
-        const graph = await loadRouteGraph();
-        return distancesFrom(graph, fromSystemID).get(toSystemID) ?? null;
-      },
+      // routes on, plotted the same way — so the number the bot refuses on is
+      // the number it would have had to fly.
+      getJumps: async (fromSystemID, toSystemID) => (await autopilotDistancesFrom(fromSystemID)).get(toSystemID) ?? null,
       // ⚠ THE PAYOUT IS A BALANCE DIFFERENCE, NOT A FIELD. R35 watched
       // `lastActionInfo.loyaltyPoints` read 0 on a completion that paid 213 LP,
       // so the bot reads the ACCOUNTS either side of the Complete instead.
@@ -11605,11 +11605,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             try {
               const origin = status.solarSystemID;
               if (origin !== null) {
-                const graph = await loadRouteGraph();
-                jumpsToDropoff =
-                  origin === briefing.destinationSystemID
-                    ? 0
-                    : (distancesFrom(graph, origin).get(briefing.destinationSystemID) ?? null);
+                jumpsToDropoff = (await autopilotDistancesFrom(origin)).get(briefing.destinationSystemID) ?? null;
               }
             } catch {
               jumpsToDropoff = null;
@@ -11627,8 +11623,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
                 const maxJumps =
                   typeof hint.board["findMaxJumps"] === "number" ? (hint.board["findMaxJumps"] as number) : null;
                 const origin = status.solarSystemID;
-                const graph = origin !== null ? await loadRouteGraph() : null;
-                const distances = graph !== null && origin !== null ? distancesFrom(graph, origin) : null;
+                const distances = origin !== null ? await autopilotDistancesFrom(origin) : null;
                 const kind = typeof hint.board["findKind"] === "string" ? (hint.board["findKind"] as string) : "courier";
                 const preferredLevel = hint.board["findLevel"] as number;
                 if (macro === "find-distribution-agent") {
@@ -12793,7 +12788,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       ? await api.findAccessibleStructures(trimmed, callOptions) : [];
 
     // The origin is the live location if known (in space or docked), else the
-    // docked character's system. Distances come from ONE BFS over the map graph.
+    // docked character's system. The jumps are the autopilot's, as the client's
+    // own search results count them (entries/universe.py), from one flood.
     const origin =
       store.flight.get().status?.solarSystemID ??
       store.station.get().online?.solarSystemID ??
@@ -12801,7 +12797,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     let distances: Map<number, number> | null = null;
     if (origin !== null) {
       try {
-        distances = distancesFrom(await loadRouteGraph(), origin);
+        distances = await autopilotDistancesFrom(origin);
       } catch {
         distances = null;
       }
@@ -13096,14 +13092,15 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
 
     // The player's current system is the docked character's system (the finder
-    // is a docked-station tool). Distances come from ONE BFS over the map graph
-    // (client-side, like the route solver) — never a solveRoute per agent.
+    // is a docked-station tool). The jumps are the autopilot's, as the client
+    // counts them to an agent (agencyUtil.py), from one flood over the map
+    // graph — never a route solved per agent.
     const origin = store.station.get().online?.solarSystemID ?? null;
     let distances: Map<number, number> | null = null;
     let distanceNote: string | null = null;
     if (origin !== null) {
       try {
-        distances = distancesFrom(await loadRouteGraph(), origin);
+        distances = await autopilotDistancesFrom(origin);
       } catch (error) {
         // The map graph is the same read-only static data the route solver
         // uses; if it can't load, still list the agents (jumps null) and note

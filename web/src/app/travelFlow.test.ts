@@ -540,3 +540,27 @@ test("the jumps worked out are by the settings too, and are forgotten when a set
   assert.equal(await worked(), 3);
   assert.deepEqual(flow.autopilotSettings(), {});
 });
+
+// --- jumps in the search's results are the autopilot's ----------------------
+
+test("a searched place's jumps are the autopilot's with the pilot's settings, as the client's own search counts them", async () => {
+  const store = createClientStore();
+  store.apply({ type: "character/online", character: { characterID: 140000003, characterName: "Test", stationID: 60000001, structureID: null, solarSystemID: ALPHA, corporationID: 98000000 }, station: null });
+  const found = { ok: true, query: "de", total: 2, capped: false, matches: [
+    { id: SETTINGS_DELTA, name: "Delta", kind: "system", solarSystemID: SETTINGS_DELTA, solarSystemName: "Delta" },
+    { id: SETTINGS_JITA, name: "Jita", kind: "system", solarSystemID: SETTINGS_JITA, solarSystemName: "Jita" },
+  ] };
+  const flow = createAppFlow(store, {
+    storage: null,
+    fetch: makeFakeFetch((path) => {
+      if (path === "/api/map/graph") return { status: 200, body: SETTINGS_GRAPH };
+      if (path.startsWith("/api/map/find")) return { status: 200, body: found };
+      return defaultResponder(path);
+    }),
+  });
+  const jumps = async () => Object.fromEntries((await flow.searchDestinations("de", "system")).map((match) => [match.name, match.jumps]));
+  // Round the low-security system and round Jita to Delta; into Jita itself in one.
+  assert.deepEqual(await jumps(), { Delta: 3, Jita: 1 });
+  flow.setAutopilotRouteType("shortest");
+  assert.deepEqual(await jumps(), { Delta: 2, Jita: 1 });
+});

@@ -234,6 +234,32 @@ function pathBack(reachedFrom: ReadonlyMap<number, number>, fromID: number, toID
   return path.reverse();
 }
 
+/**
+ * The jumps on the autopilot's route from one system to every system it can reach, itself among them at
+ * nought. A system that is not there has no route. An avoided system is there when a route may end in it.
+ */
+export function autopilotDistances(map: AutopilotMap, fromID: number, settings: AutopilotSettings = DEFAULT_AUTOPILOT_SETTINGS): Map<number, number> {
+  const distances = new Map<number, number>([[fromID, 0]]);
+  if (!isKnownSpaceSystem(fromID)) {
+    return distances;
+  }
+  const avoided = new Set(settings.avoid);
+  const open = flood(map, fromID, settings, avoided, null);
+  for (const toID of open.keys()) {
+    if (isKnownSpaceSystem(toID)) {
+      distances.set(toID, pathBack(open, fromID, toID)!.length - 1);
+    }
+  }
+  // Each avoided system is gone to by a flood of its own: only that one may enter it.
+  for (const toID of avoided) {
+    const path = !isKnownSpaceSystem(toID) ? null : pathBack(flood(map, fromID, settings, avoided, toID), fromID, toID);
+    if (path !== null) {
+      distances.set(toID, path.length - 1);
+    }
+  }
+  return distances;
+}
+
 /** The jumps on the autopilot's route between two systems; null where there is no route. */
 export function autopilotJumpCount(map: AutopilotMap, fromID: number, toID: number, settings: AutopilotSettings = DEFAULT_AUTOPILOT_SETTINGS): number | null {
   return autopilotJumpCounts(map, fromID, [toID], settings).get(toID) ?? null;
