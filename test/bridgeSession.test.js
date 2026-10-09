@@ -2075,7 +2075,7 @@ const SHEET_KEPT = sheetNamed("from what is kept");
 const SHEET_GATEWAY = sheetNamed("the gateway's");
 
 /** A pilot reading its skill sheet, or saving a queue, on the game port unless told otherwise. Says whose sheet answered and what was asked on the way. */
-async function skillsRoute({ transport = "gameport", sheet, save } = {}) {
+async function skillsRoute({ transport = "gameport", sheet, save, saving } = {}) {
   const gamePort = gamePortWithQuestions(() => ({ answered: true }));
   const gateway = fakeGateway();
   const backend = transport === "gameport" ? gamePort : gateway;
@@ -2088,23 +2088,50 @@ async function skillsRoute({ transport = "gameport", sheet, save } = {}) {
   gateway.getSkills = async (accountID, characterID) => { gatewayRead.push([accountID, characterID]); return SHEET_GATEWAY; };
   const sheetAsked = [];
   if (sheet !== undefined) gamePort.skillSheet = async (sessionFields, bridgeSessionID) => { sheetAsked.push({ sessionFields, bridgeSessionID }); return sheet(); };
+  const saves = [];
+  gamePort.saveSkillQueue = async (entries, sessionFields, bridgeSessionID) => {
+    saves.push({ entries, sessionFields, bridgeSessionID });
+    if (saving) return saving();
+    return { service: "skillHandler", method: "SaveNewQueue", result: null, notifications: ["the save's notice"] };
+  };
   const { baseUrl } = await startTestServer({ gateway, gamePortPilots: gamePort, pilotTransportFor: () => transport });
   await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
   asked.length = 0;
   const answer = save === undefined ? await apiRequest(baseUrl, "/api/bridge/skills") : await apiRequest(baseUrl, "/api/bridge/skills/queue", { method: "POST", body: save });
-  return { answer, payload: answer.payload, asked, gatewayRead, sheetAsked, baseUrl };
+  return { answer, payload: answer.payload, asked, gatewayRead, sheetAsked, saves, baseUrl };
 }
 
 test("on the game port the Skills sheet is the transport's own, made from what is kept, and the gateway's snapshot is not read", async () => {
   const read = await skillsRoute({ sheet: () => SHEET_KEPT });
   assert.deepEqual([read.answer.response.status, read.payload, read.asked, read.gatewayRead], [200, { ok: true, skills: SHEET_KEPT }, [], []]);
   assert.deepEqual(read.sheetAsked, [{ sessionFields: { userid: 4 }, bridgeSessionID: GAME_PORT_SESSION_ID }]);
-  // A queue saved: the write is made, and what answers is the kept sheet with what the write pushed.
+  // A queue saved: the transport saves it as the client's queue panel does, and what answers is the kept sheet with
+  // what the save pushed. Nothing is asked by name.
   const saved = await skillsRoute({ sheet: () => SHEET_KEPT, save: { entries: [{ typeID: 3300, toLevel: 5 }, { typeID: 3327, toLevel: 4 }] } });
-  assert.deepEqual(saved.asked, [["skillMgr.SaveNewQueue", [[[3300, 5], [3327, 4]]], { activate: true }]]);
-  assert.deepEqual([saved.payload, saved.gatewayRead, saved.sheetAsked.length], [{ ok: true, notifications: ["a notice"], skills: SHEET_KEPT }, [], 1]);
+  assert.deepEqual([saved.saves, saved.asked], [[{ entries: [[3300, 5], [3327, 4]], sessionFields: { userid: 4 }, bridgeSessionID: GAME_PORT_SESSION_ID }], []]);
+  assert.deepEqual([saved.payload, saved.gatewayRead, saved.sheetAsked.length], [{ ok: true, notifications: ["the save's notice"], skills: SHEET_KEPT }, [], 1]);
   const emptied = await skillsRoute({ sheet: () => SHEET_KEPT, save: { entries: [] } });
-  assert.deepEqual([emptied.asked, emptied.payload.skills], [[["skillMgr.SaveNewQueue", [[]], { activate: false }]], SHEET_KEPT]);
+  assert.deepEqual([emptied.saves.map((each) => each.entries), emptied.asked, emptied.payload.skills], [[[]], [], SHEET_KEPT]);
+  // A queue that is no queue is refused before anything is asked of the transport.
+  for (const body of [{}, { entries: "3300" }, { entries: [{ typeID: 3300, toLevel: 6 }] }, { entries: [{ typeID: 0, toLevel: 1 }] }]) {
+    const bad = await skillsRoute({ sheet: () => SHEET_KEPT, save: body });
+    assert.deepEqual([bad.answer.response.status, bad.saves, bad.sheetAsked], [400, [], []], JSON.stringify(body));
+  }
+  // What the server refuses is the route's refusal, in the server's own word, and no sheet is made for it.
+  const refused = await skillsRoute({ sheet: () => SHEET_KEPT, save: { entries: [{ typeID: 3300, toLevel: 5 }] }, saving: () => { throw Object.assign(new Error("QueueTooLong"), { code: "CALL_REFUSED", statusCode: 409 }); } });
+  assert.deepEqual([refused.answer.response.status, refused.payload.error, refused.payload.message, refused.sheetAsked], [409, "CALL_REFUSED", "QueueTooLong", []]);
+  // A session lost under the save is forgotten.
+  const lost = await skillsRoute({ sheet: () => SHEET_KEPT, save: { entries: [] }, saving: () => { throw Object.assign(new Error("gone"), { code: "SESSION_NOT_FOUND", statusCode: 404 }); } });
+  assert.equal(lost.answer.response.status, 404);
+  const next = await apiRequest(lost.baseUrl, "/api/bridge/skills");
+  assert.equal(next.response.status >= 400 && next.response.status !== 404, true);
+});
+
+test("on the gateway a queue is saved by name, as before: started unless it is empty", async () => {
+  const saved = await skillsRoute({ transport: "gateway", save: { entries: [{ typeID: 3300, toLevel: 5 }, { typeID: 3327, toLevel: 4 }] } });
+  assert.deepEqual([saved.asked, saved.saves, saved.payload], [[["skillMgr.SaveNewQueue", [[[3300, 5], [3327, 4]]], { activate: true }]], [], { ok: true, notifications: ["a notice"], skills: SHEET_GATEWAY }]);
+  const emptied = await skillsRoute({ transport: "gateway", save: { entries: [] } });
+  assert.deepEqual([emptied.asked, emptied.saves], [[["skillMgr.SaveNewQueue", [[]], { activate: false }]], []]);
 });
 
 test("where the transport cannot make a sheet, and on the gateway, the sheet is the gateway's as before", async () => {
@@ -2116,7 +2143,8 @@ test("where the transport cannot make a sheet, and on the gateway, the sheet is 
     const read = await skillsRoute(options);
     assert.deepEqual([read.answer.response.status, read.payload, read.gatewayRead, read.sheetAsked.length], [200, { ok: true, skills: SHEET_GATEWAY }, [[4, 7]], sheetTimes], why);
     const saved = await skillsRoute({ ...options, save: { entries: [{ typeID: 3300, toLevel: 5 }] } });
-    assert.deepEqual([saved.payload.skills, saved.payload.notifications, saved.asked.length, saved.gatewayRead], [SHEET_GATEWAY, ["a notice"], 1, [[4, 7]]], why);
+    const onGateway = options.transport === "gateway";
+    assert.deepEqual([saved.payload.skills, saved.payload.notifications, saved.asked.length, saved.saves.length, saved.gatewayRead], [SHEET_GATEWAY, [onGateway ? "a notice" : "the save's notice"], onGateway ? 1 : 0, onGateway ? 0 : 1, [[4, 7]]], why);
   }
   // A session the game port has lost while the sheet is made is forgotten, and the route says so. The gateway's is not read in its place.
   const lost = await skillsRoute({ sheet: () => { throw Object.assign(new Error("gone"), { code: "SESSION_NOT_FOUND", statusCode: 404 }); } });

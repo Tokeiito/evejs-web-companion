@@ -4233,6 +4233,79 @@ test("a sheet for a pilot whose reads at the choosing could not be made asks for
   assert.equal(lost.pilots.size, 0);
 });
 
+test("a queue is saved as the client's queue panel saves one: on the handler, each entry by its place, started, and the queue asked for again", async () => {
+  let queue = [{ type: "list", items: [] }, 0];
+  let tell = () => {};
+  // The server says the queue was saved before it answers the save, as this server and Tranquility do.
+  const answers = handlerAnswers({ "bound:GetSkillQueueAndFreePoints": () => queue, "bound:SaveNewQueue": () => { queue = TRAINING["bound:GetSkillQueueAndFreePoints"]; tell(); return null; } });
+  const { pilots, session, handle } = await selected({ answers, serverNow: QUEUE_START_MS + 60_000 }, SHEET);
+  tell = () => session.notify("OnNewSkillQueueSaved", [queue[0]]);
+  const asked = session.boundCalls.length;
+  const saved = await pilots.saveSkillQueue([[3300, 5], [3327, 4]], WHO, handle);
+  // What the save answered, and what the server pushed while it was made, as any call's answer has them.
+  assert.deepEqual([saved.service, saved.method, saved.result, saved.notifications.map((notice) => notice.method)], ["skillHandler", "SaveNewQueue", null, ["OnNewSkillQueueSaved"]]);
+  // skillQueueSvc.TrimQueue reckons each entry's training time, which reads the attributes (the boosters and the implants
+  // before them). Then the save, and the panel's new transaction.
+  assert.deepEqual(session.boundCalls.slice(asked).map((call) => call.method), ["GetBoosters", "GetImplants", "GetAttributes", "SaveNewQueue", "GetSkillQueueAndFreePoints"]);
+  const save = session.boundCalls.find((call) => call.method === "SaveNewQueue");
+  // SaveNewQueue({0: (3300, 5), 1: (3327, 4)}, activate=True), on the handler's own object.
+  assert.deepEqual([save.objectID, save.args, save.kwargs], ["N=1:1", [{ type: "dict", entries: [[0, [3300, 5]], [1, [3327, 4]]] }], { activate: true }]);
+  assert.deepEqual(session.calls.filter((call) => call.method === "SaveNewQueue"), [], "not by name, on any service");
+  assert.deepEqual([ledgerOf(pilots, "skillHandler.SaveNewQueue"), ledgerOf(pilots, "skillMgr.SaveNewQueue")], [[{ same: 1 }, "eve/client/script/ui/services/skillQueueSvc.py:153"], null]);
+  // The queue the new transaction was answered is the queue kept: the sheet has it, with nothing more asked.
+  const then = session.boundCalls.length;
+  const sheet = await pilots.skillSheet(WHO, handle);
+  assert.deepEqual([sheet.queue.active, sheet.queue.entries.map((entry) => [entry.typeID, entry.toLevel]), handlerCalls(session, then)], [true, [[3300, 5]], ["GetFreeSkillPoints"]]);
+  // Saved again: the attributes are kept, and are not asked for.
+  await pilots.saveSkillQueue([[3300, 5]], WHO, handle);
+  assert.deepEqual(handlerCalls(session, then).slice(1), [["SaveNewQueue", [{ type: "dict", entries: [[0, [3300, 5]]] }]], "GetSkillQueueAndFreePoints"]);
+  // An empty queue has nothing to reckon: saved as it is, started as the client always says, and asked for again.
+  const empty = await selected({ answers: handlerAnswers() }, SHEET);
+  const from = empty.session.boundCalls.length;
+  await empty.pilots.saveSkillQueue([], WHO, empty.handle);
+  assert.deepEqual(empty.session.boundCalls.slice(from).map((call) => [call.method, call.args, call.kwargs]), [["SaveNewQueue", [{ type: "dict", entries: [] }], { activate: true }], ["GetSkillQueueAndFreePoints", [], null]]);
+  // Another account's session saves nothing.
+  await assert.rejects(pilots.saveSkillQueue([[3300, 5]], { userid: 9 }, handle), (error) => error.code === "SESSION_NOT_FOUND");
+});
+
+test("a queue the server refuses is refused with the server's word, and the queue is asked for again unless the client would not", async () => {
+  let refusal = "QueueTooLong";
+  const answers = handlerAnswers({ "bound:SaveNewQueue": () => { throw refusedBy(refusal); }, "bound:GetAttributes": { type: "dict", entries: [[164, 20], [165, 21]] } });
+  const { pilots, session, handle } = await selected({ answers }, SHEET);
+  await skillRead(pilots, handle, "GetAttributes");
+  const asked = session.boundCalls.length;
+  const refused = await pilots.saveSkillQueue([[3300, 5]], WHO, handle).then(() => null, (error) => error);
+  assert.deepEqual([refused.code, refused.message, refused.refusal.key], ["CALL_REFUSED", "QueueTooLong", "QueueTooLong"]);
+  // The panel rolls its change back and opens a new transaction: the queue is asked for.
+  assert.deepEqual(handlerCalls(session, asked).map((call) => (Array.isArray(call) ? call[0] : call)), ["SaveNewQueue", "GetSkillQueueAndFreePoints"]);
+  // After these two it opens none, and asks for nothing.
+  for (const key of ["UserAlreadyHasSkillInTraining", "SkillInQueueRequiresOmegaCloneState"]) {
+    refusal = key;
+    const from = session.boundCalls.length;
+    await rejects(pilots.saveSkillQueue([[3300, 5]], WHO, handle), "CALL_REFUSED");
+    assert.deepEqual(session.boundCalls.slice(from).map((call) => call.method), ["SaveNewQueue"], key);
+  }
+  // Every save sent is in the ledger, refused or not.
+  assert.deepEqual(ledgerOf(pilots, "skillHandler.SaveNewQueue")[0], { same: 3 });
+  // The asking after a save failing is no failure of the save.
+  const flaky = await selected({ answers: handlerAnswers({ "bound:SaveNewQueue": null }) }, SHEET);
+  let asks = 0;
+  flaky.session.callBound = ((original) => async (objectID, method, args, kwargs) => {
+    if (method === "GetSkillQueueAndFreePoints" && (asks += 1)) throw refusedBy("NotNow");
+    return original(objectID, method, args, kwargs);
+  })(flaky.session.callBound);
+  assert.equal((await flaky.pilots.saveSkillQueue([], WHO, flaky.handle)).result, null);
+  assert.equal(asks, 1);
+  // With no handler to save on there is no save, and none in the ledger.
+  const none = await selected({ answers: {} }, SHEET);
+  await rejects(none.pilots.saveSkillQueue([], WHO, none.handle), "CALL_FAILED", /skill handler/);
+  assert.deepEqual([none.session.boundCalls, ledgerOf(none.pilots, "skillHandler.SaveNewQueue")], [[], null]);
+  // A connection lost under the save ends the session, as anywhere.
+  const lost = await selected({ answers: handlerAnswers({ "bound:SaveNewQueue": () => { throw sessionError("CONNECTION_LOST"); } }) }, SHEET);
+  await rejects(lost.pilots.saveSkillQueue([], WHO, lost.handle), "SESSION_NOT_FOUND");
+  assert.equal(lost.pilots.size, 0);
+});
+
 test("with godma not primed there is no entry to give, and the ship is still said", async () => {
   const { pilots, handle } = await selected({ answers: { "bound:GetAllInfo": () => { throw new Error("not now"); } } });
   assert.deepEqual(await pilots.shipInfo(FIELDS, handle), { shipID: SHIP, row: null, online: [] });

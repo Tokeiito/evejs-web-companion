@@ -517,7 +517,14 @@ function createGamePortPilots({
   const SKILL_OWN = Object.freeze({
     GetSkillQueueAndFreePoints: Object.freeze({ status: "same", source: "eve/client/script/ui/services/skillQueueSvc.py:117", note: null }),
     CheckAndSendNotifications: Object.freeze({ status: "same", source: "notifications/client/development/skillHistoryProvider.py:26", note: null }),
+    // CommitTransaction: skillHandler.SaveNewQueue(queueInfo, activate=activate). The web client's pair for it is skillMgr's, by name.
+    SaveNewQueue: Object.freeze({ status: "same", source: "eve/client/script/ui/services/skillQueueSvc.py:153", note: null }),
   });
+  /**
+   * The refusals of a queue's saving after which the client's queue panel opens no new transaction, and so does
+   * not ask for the queue again (skillQueuePanelNew.ApplySkillQueue).
+   */
+  const NO_NEW_QUEUE_TRANSACTION = new Set(["UserAlreadyHasSkillInTraining", "SkillInQueueRequiresOmegaCloneState"]);
   /** What the client's fleet service asks of its own accord that the web client never asks, and where each is asked. */
   const FLEET_OWN = Object.freeze({
     // CreateFleet: self.fleet.GetFleetID(), once the fleet it formed has been read.
@@ -1617,6 +1624,42 @@ function createGamePortPilots({
     }));
   }
 
+  /**
+   * A queue saved as the client's queue panel saves one (skillQueuePanelNew.ApplySkillQueue, activate=True).
+   * `entries` is the whole queue wanted, each [typeID, toLevel], in order.
+   *
+   *   skillQueueSvc.TrimQueue          each entry's training time is reckoned first, which reads the character's
+   *                                    attributes where they are not kept; an empty queue has nothing to reckon
+   *   skillQueueSvc.CommitTransaction  SaveNewQueue({position: (typeID, toLevel)}, activate=True), on the handler
+   *   ApplySkillQueue's finally        a new transaction, which asks for the queue afresh
+   *                                    (GetSkillQueueAndFreePoints): after a refusal too, but for two refusals
+   *
+   * Recorded on Tranquility as those two calls one after the other (Archive/Apply Skill Points Flow). The queue
+   * kept is right from the server's own notice of the save, and then from the asking. Not done, which the client
+   * does: the queue cut where it would train for longer than a queue may (TrimQueue), an alpha clone's levels
+   * refused before anything is sent, and the save made again unstarted where the server refuses an alpha's queue
+   * for its size.
+   */
+  async function saveSkillQueue(entries, sessionFields = {}, bridgeSessionID = undefined) {
+    const entry = held(bridgeSessionID, sessionFields);
+    return run(entry, SKILL_HANDLER, "SaveNewQueue", () => skillsDoes(entry, async () => {
+      if (entries.length > 0) await skillRead(entry, "GetAttributes", []);
+      const queueInfo = { type: "dict", entries: entries.map(([typeID, toLevel], position) => [position, [typeID, toLevel]]) };
+      await skillHandlerMoniker(entry);
+      ledger.note(SKILL_HANDLER, "SaveNewQueue", SKILL_OWN.SaveNewQueue);
+      let asksAgain = true;
+      try {
+        const result = await onSkillHandler(entry, "SaveNewQueue", [queueInfo], { activate: true });
+        return { service: SKILL_HANDLER, method: "SaveNewQueue", result: wireToBridgeJson(result === undefined ? null : result), notifications: drain(entry) };
+      } catch (error) {
+        asksAgain = !NO_NEW_QUEUE_TRANSACTION.has(String(error && error.refusal && error.refusal.key));
+        throw error;
+      } finally {
+        if (asksAgain) await skillAsk(entry, "GetSkillQueueAndFreePoints").catch(() => {});
+      }
+    }));
+  }
+
   /** What the client's skill service does after a notice that only the transport can do (pilotSkills.js feed). */
   function afterSkillNotice(entry, next) {
     for (const what of next) {
@@ -2043,6 +2086,7 @@ function createGamePortPilots({
     fleetKept,
     standingsKept,
     skillSheet,
+    saveSkillQueue,
     shipInfo,
     shipAttribute,
     shutdown,

@@ -167,6 +167,15 @@ list to hold the points a training skill had when the queue's first entry began:
 entry "the Skills window from what is kept" for what this server answered there and what
 Tranquility's recordings say.
 
+**A queue saved, 2026-10-09.** On the game port the page's save is the client's queue panel's
+(`skillQueuePanelNew.ApplySkillQueue`): the attributes read where they are not kept and the queue
+is not empty (the trimming reckons each entry's time), then
+`SaveNewQueue({position: (typeID, toLevel)}, activate=True)` on the skill handler, then the queue
+asked for again (`GetSkillQueueAndFreePoints`, the panel's new transaction), after a refusal too
+but for two. Tranquility's recording has the last two one after the other. The gateway transport
+saves by name on `skillMgr` with a list, as before. The page's "Stop training" saves an empty
+queue; the client's Pause is `AbortTraining` and keeps the queue.
+
 **The customs export's call shape.** `src/piCustomsExport.js` binds `invbroker` with the office ID
 and calls `ImportExportWithPlanet` on that. The client goes through `invCache`: it binds the
 broker for a location, asks it for the office's inventory, and calls that. eve.js accepts both.

@@ -12632,22 +12632,30 @@ function readIndustryJobStatus(row) {
 // Dispatch a top-level (non-bound) call on the held live session. A lost
 // persistent session drops the whole held session (as /api/bridge/call).
 async function heldTopLevelCall(held, webSessionID, service, method, args, kwargs) {
+  return heldRequest(held, webSessionID, isBridgeWritePair(service, method), () => gateway.callMethod(
+    service,
+    method,
+    args,
+    kwargs,
+    { userid: held.accountID },
+    held.bridgeSessionID,
+  ));
+}
+
+/**
+ * Something asked on a held pilot's session, under the checks every held call is under: `request` makes it.
+ * `isWrite` says whether it changes anything.
+ */
+async function heldRequest(held, webSessionID, isWrite, request) {
   try {
     // A command can have entered its readiness read before the export hold.
     // Check again at the write boundary so that command cannot dispatch late.
-    if (isBridgeWritePair(service, method) && heldOnGamePort(webSessionID)) {
+    if (isWrite && heldOnGamePort(webSessionID)) {
       throw Object.assign(new Error("This pilot is exporting from its colonies. Try again once the pilot is returned."),
         { code: "CHARACTER_IN_USE", statusCode: 409 });
     }
     assertCurrentHeldSession(held, webSessionID);
-    return await gateway.callMethod(
-      service,
-      method,
-      args,
-      kwargs,
-      { userid: held.accountID },
-      held.bridgeSessionID,
-    );
+    return await request();
   } catch (error) {
     if (error && error.code === "SESSION_NOT_FOUND") {
       forgetBridgeSession(webSessionID, held);
@@ -20767,16 +20775,20 @@ app.post("/api/bridge/skills/queue", requireAuth, async (req, res, next) => {
     entries.push([typeID, toLevel]);
   }
   try {
-    const outcome = await heldTopLevelCall(
-      held,
-      req.webSessionID,
-      "skillMgr",
-      "SaveNewQueue",
-      [entries],
-      // An empty queue is a PAUSE, not a start: activating nothing would ask
-      // the server to begin training a queue that does not exist.
-      { activate: entries.length > 0 },
-    );
+    // On the game port the queue is saved as the client's own queue panel saves one: on the skill handler, with
+    // each entry by its place, started, and the queue asked for again after (pilots.js saveSkillQueue).
+    const outcome = gamePortPilots && isGamePortHandle(held.bridgeSessionID)
+      ? await heldRequest(held, req.webSessionID, true, () => gamePortPilots.saveSkillQueue(entries, { userid: held.accountID }, held.bridgeSessionID))
+      : await heldTopLevelCall(
+        held,
+        req.webSessionID,
+        "skillMgr",
+        "SaveNewQueue",
+        [entries],
+        // An empty queue is a PAUSE, not a start: activating nothing would ask
+        // the server to begin training a queue that does not exist.
+        { activate: entries.length > 0 },
+      );
     await answerWithSkillSheet(res, req.account, held.characterID, {
       notifications: outcome.notifications,
     }, held, req.webSessionID);
