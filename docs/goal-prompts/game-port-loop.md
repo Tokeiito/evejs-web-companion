@@ -437,6 +437,12 @@ Take these defaults, and list each under "For the operator" in the log so they c
   (`N=2:<n>`) and `build()` takes the choosing's bind and calls of the registry out of the
   session's lists into `session.registryAtChoosing`. Do the same for the next service a
   choosing binds.
+- **Before keeping an answer at the transport, find every reader of it in `src/`.** What the
+  client keeps and corrects by notices is right for a page, and wrong for a BFF flow that
+  checks one pilot's write by reading another pilot's state at once: the notice and the answer
+  travel on different connections, and the kept copy can be a notice behind.
+  `src/trainingOnboarding.js` reads a trainee's applications that way, so they are asked for
+  each time.
 - **A fact offered in support of a decision is still a claim.** Two went into the log unchecked
   on 2026-10-08, in a paragraph arguing for a design, and both were wrong. One route call or one
   grep would have caught each.

@@ -427,6 +427,18 @@ Decisions taken in your place, and anything waiting on you. Overrule any of thes
   about 10 MB, which for a BFF hosting many pilots is the difference between 10 MB and 10 MB a
   pilot. The server sees what it would see of retail clients either way. See the entry "the
   agents' table, asked at login, one copy kept".
+- **One more server fix is on eve.js's local `main`, not pushed by me** (2026-10-09):
+  `3ccbcef51`, a change of a corporation's friendly-fire setting is sent to its members'
+  clients (`OnCorpAggressionSettingsChange`), which the server never sent. No recording holds
+  the notice, so **its address type is a choice**: `corpid`, as two sibling notices use. The
+  client does not read it. Local `main` is three commits ahead of `origin/main`
+  (`16d95626a`, `59d2ac81e` and this).
+- **On the game port a pilot's applications to corporations are asked for at login and not
+  kept, though its client keeps them** (2026-10-09). The pilot-training onboarding reads a
+  trainee's applications straight after an officer's change to them, on another connection,
+  and a kept list could be a notice behind. Say if you would rather have the client's way and
+  the onboarding changed to wait for the server's word. See the entry "the corporation's
+  registry, bound and asked its three at login".
 - **My scratch folder holds 33 older copies of the store, 1.9 GB**, from the checks of
   8 October, before I took to deleting each copy once the store was back. I have not
   deleted them: some are named "before-..." and I cannot say now that none is wanted. They
@@ -454,6 +466,7 @@ Decisions taken in your place, and anything waiting on you. Overrule any of thes
 | 2026-10-09 | `skillHandler.GetSkillHistory(maxresults)` never read its count and answered every row of the history. The client always passes one (50 by default, 10 from its notifications at login, which make a notification of each row they get) | three Tranquility recordings of a login, decoded: `GetSkillHistory(10)` answered exactly 10 rows, newest first, each time. Here, asked for 2, the server answered Test Two's 5 | `6e2162cc5`, by a sub-agent, test first (6 of its 7 new cases watched to fail): at most the count, newest first by date, 50 where no count is given. The row's form is left as it was | live on a real game-port session after a restart: asked for 2, 2 rows; asked for 10, for none and for 0, the pilot's 5 |
 | 2026-10-09 | `skillHandler.GetSkills` and `GetAllSkills` answer the skill in training with the points trained so far, beside a queue whose first entry keeps its first start. The client adds the time since that start to the points in its entry, so a client that logs in while a skill trains counts the time before its login twice | here, 34 s into a level trained from none at 30 a minute, a session that logged in about 32 s after the start was answered 16 points beside an entry starting at none: the client's sum of the two is 33 where the skill had 17. On Tranquility a client that logged in at 18:01:05 was answered a first entry begun at 15:44:33 from 79,791 points (the entry is not moved at login); the list beside it is too large to be in the recording, so what it holds is worked out from the client's sum | `16d95626a`, by a sub-agent, test first (4 of 4 new cases watched to fail): the two calls answer that skill with the entry's own starting points, at the level below the one it trains to. The queue, the live total, the notices and the gateway's sheet are as they were | live on both transports after a restart: 25 s in, a fresh login's sheet said 12 points through the gateway and 13 through the game port 1.65 s later, the totals the same; in the browser on the game port, 28 of 750 points 57 s in |
 | 2026-10-09 | A level's points are worked two ways: rounded up for the skill queue, rounded to the nearest for a level given outright (a GM's `/giveskill`, starter skills). A rank 1 skill given level 2 is stored with 1414 points and a rank 2 skill with 2828, a point short of what the level takes, and the client's own sum of a level from points puts such a skill a level lower | 18 rows of skill history in four Tranquility recordings of a login, each a level finishing: every one is a level's points rounded up, and the four where the two ways differ have 1415 and 2829. For a level given outright the evidence is the game's shared sum (`characterskills/util.py` `GetSPForLevelRaw`), which rounds up. Here, Test Two has four rank 2 skills at level 2 with 2828 | `59d2ac81e`, by a sub-agent, test first (3 of 3 new cases watched to fail): one sum, rounded up. A record already stored with exactly the old figure keeps it (the plain fix would have rewritten 46 records on one read of every character) | live after a restart: a rank 1 skill given level 2 has 1415 points; a rank 2 skill stored before still has 2828 |
+| 2026-10-09 | The server never sends `OnCorpAggressionSettingsChange`. A director's change of the friendly-fire setting (`corpRegistry.RegisterNewAggressionSettings`) is stored and answered to the caller, and no client's kept settings change, the caller's own included, until it changes corporation or logs in again | the name was nowhere in the server's source. The client's `crimewatchSvc` keeps the settings, asks again only on a change of corporation, replaces them only at this notice (`crimewatchSvc.py:623`), and decides from them whether shooting a corporation mate is legal (`:457`); the corporation window uses the call's answer for its own text only (`corp_ui_home.py:634`). No recording holds the notice or the call | `3ccbcef51`, by a sub-agent, test first (watched to fail: the caller's session was sent none): the notice, with the settings the call answers, to every session of the corporation, as `corpid`. A denied call sends nothing | live after a restart: Test Three changed the setting on the game port, the server's log has the notice sent, and the BFF's kept settings were the new ones with nothing asked, the same as the gateway's read after |
 
 Withdrawn the same day: "after undocking the server's ship is a tick behind". It is not; that was
 the second row above, seen through a recorder that always asked at the same point in the second.
@@ -10831,5 +10844,249 @@ to ask and read, 1.46 MB in the gateway's form, about 10 MB of memory a copy.
 37. Waiting on a recording: no skill sent when an implant or a booster moves a training skill's points (a
     server's, to be measured against Tranquility first).
 38. Waiting on the operator's word: the skill history in Tranquility's form (a `CRowset` of `(logDate,
+    eventTypeID, skillTypeID, relativePoints, absolutePoints)`), by a sub-agent, and this repository's reading of
+    it.
+
+## 2026-10-09 — the corporation's registry, bound and asked its three at login
+
+Commit `5639b72`, pushed. The next of item 1 of the last list.
+
+**What the retail client does** (the Tranquility recordings, searched first: `GetAggressionSettings`
+is in 7 files, `GetEveOwners` in 7, `GetMyApplications` in 4; then `crimewatchSvc.py`,
+`bco_members.py`, `bco_applications.py` and `corp_ui_home.py`).
+
+- In a recorded login it binds `corpRegistry` for its corporation, with no call, and asks what it
+  bound `GetAggressionSettings()`, `GetEveOwners()` and `GetMyApplications()`, in that order,
+  each with nothing.
+- `crimewatchSvc` keeps the aggression settings. It asks again when the session's corporation
+  changes, and takes the server's `OnCorpAggressionSettingsChange(settings)` for what it keeps.
+  It decides from the kept copy whether shooting a corporation mate is legal.
+- A director's change, `RegisterNewAggressionSettings(bool)`, answers the new settings to the
+  window that asked and to nothing else. What `crimewatchSvc` keeps changes by the notice.
+- The members' `GetEveOwners()` primes the client's names and is kept by nothing else. It is asked
+  again when the corporation changes.
+- The applications are asked for once and kept, and the client works its list over itself at
+  each `OnCorporationApplicationChanged`.
+
+**What the BFF did.** On the game port nothing was asked of the registry at login. It was bound
+by the first route that wanted it, and every read of a route asked the server again.
+
+**What was built.**
+
+- As a pilot is chosen the transport binds the registry and asks the three, and the choosing
+  waits for them. It asks the first two again when the pilot's corporation changes.
+- The aggression settings are kept. A read of them through the BFF is answered from what is
+  kept, and the server's notice replaces it. A director's own change answers the caller and
+  leaves what is kept to the notice, as in the client.
+- The applications are asked for at the choosing and not kept (see the decisions below).
+- The three are asked before the table of agents, not after it.
+- `corpRegistry.RegisterNewAggressionSettings` is in the registry of the client's calls, read
+  against `corp_ui_home.py`.
+- The parity tool reads three more routes: the corporation's settings, applications and members.
+
+**Proof.**
+
+- Tests: 5 more, and five older ones brought up to a registry bound at the choosing. 30 ways of
+  breaking it were tried, and all 30 are caught. (A first design that also kept the applications
+  had 28 of 28 caught before I withdrew it.)
+- Suite: 9759 tests, 9735 pass, 0 fail, 0 cancelled, 24 skipped. No test process left behind.
+- **Through the BFF, on the game port, by script, as Test Two, with the server's log for it:** at
+  login one resolve, one bind and the three calls, once each, 6 ms from the resolve reaching the
+  server to the last answer leaving it. Then the three routes read three times each: the
+  settings were asked of the server no more, the names three times, the applications three times.
+- **A director's change, by script, as Test Three (the CEO of Test Two's corporation), on the game
+  port, after the server fix below:**
+
+  | Step | Settings (enable after, disable after) | Asked of the server |
+  |---|---|---|
+  | kept at login | 0, none | once, at login |
+  | the change answered | 0, 134361203988960000 | the change itself |
+  | read after, twice | 0, 134361203988960000 | nothing of the settings |
+  | the gateway's own read, after | 0, 134361203988960000 | asked |
+
+  The server's log has `OnCorpAggressionSettingsChange` sent as the change was made, and no
+  `GetAggressionSettings` after the login's.
+- **In the browser, on the game port, as Test Two:** chosen, 25 windows open, no failure shown;
+  Skills read 385,914 points in 52 skills, and the wallet and the station's agent were listed.
+  Logged out with the page's own button. The server's log has the registry bound and the three
+  asked once for that session.
+- **On both transports, by script:** the settings and the applications read the same but for
+  the form of a long number. Four passes of the parity tool, all 13 identical, 8 tolerated,
+  2 moved, 3 divergent: the two more tolerated are those two routes, and the third divergent is
+  the members route (below).
+- `docs/game-port-login-calls.md`, made again: 24 kinds of the client's 100 are asked at login
+  now (19 before), 14 by a feature, 12 by a route only, 50 by nothing of ours.
+- The ledger: 80 pairs, none differing, 14 unchecked. 11 of the 14 are the other calls of the
+  three corporation routes, which the parity tool now reads.
+- Staged and undone: the director's change. The store was copied with the server stopped and
+  put back after, the settings read 0 and none again, and the copy is deleted.
+
+**A server defect, fixed by a sub-agent** (eve.js `3ccbcef51`, on its local `main`, not pushed).
+The server never sent `OnCorpAggressionSettingsChange`: the name was nowhere in its source. A
+director's change was stored and answered to the caller, and no client's kept settings changed,
+the caller's own included, until it changed corporation or logged in again. The fix sends the
+notice, with the settings the call answers, to every session of that corporation. The sub-agent
+wrote the test first and watched it fail (the caller's session was sent none), then broke the
+fix two ways to see the test's "sends nothing" halves fail. I read the diff, restarted the
+server and ran the director's change above.
+
+**Decisions taken in the operator's place.**
+
+- **The pilot's applications are not kept, though the client keeps them.** The BFF's
+  pilot-training onboarding has an officer change a trainee's application and then reads the
+  trainee's applications at once, on the trainee's own connection. The server's notice to the
+  trainee and its answer to the officer travel on different connections, so a kept list could
+  be a notice behind and the onboarding would say the offer was not made. I had built it kept,
+  and withdrew that before committing.
+- **The notice's address type is a choice.** No recording holds the notice, and the client does
+  not read the address type. The sub-agent sent it as `corpid`, as two sibling notices are sent.
+- **The choosing waits for the three.** It costs 6 ms and means a pilot handed to the page has
+  its settings kept already.
+- **The transport tests' stand-in sets the choosing's registry bind and calls aside** and counts
+  registries apart from other objects. Without that, about thirty older tests that list what was
+  bound, or name an object by its number, each needed changing, and would again for the next
+  service a choosing binds. What is set aside is kept on the session and the new tests read it.
+
+**Seen and not repaired.**
+
+- **The members route differs between the transports in shape.** Member tracking comes as a
+  cached call's wrapper through the gateway and as the rows themselves on the game port, and a
+  packed row's 64-bit columns come as strings on one and as numbers on the other. No window of
+  the page reads the route yet.
+- **A call sent right behind the table of agents is answered late**: the registry's resolve
+  82 ms after it reached the server when sent behind `GetAgents`, 1 ms when sent before it, and
+  under 1 ms two seconds after login. In an earlier run the dogma location's resolve came in
+  right behind the table, and the call after it came in 52 ms later. I did not look into why.
+  What the choosing waits for is now asked first.
+- **eve.js's `testStoreIsolationGuard.test.js` was red for the sub-agent while the live server
+  ran**: 15 of 34 failed with "live gameStore changed", the store's write-ahead file the only
+  thing changed. It scans none of the files the fix touched. Not run again with the server
+  stopped.
+- An older assertion in eve.js's friendly-fire test, that a denied call sends nothing, is made
+  on a session no broadcast could reach. The sub-agent's new test covers the case with sessions
+  that are registered.
+
+**Not seen working.**
+
+- A pilot's corporation changing under its session, with the settings and names read again:
+  tests only.
+- Another member's client getting the notice. The test corporation's two members are on one
+  account, so only the caller's own session was seen to get it live. The server's test has two
+  members' sessions and one of another corporation.
+- The settings shown in the browser: no window of the page shows them.
+
+**Not done.**
+
+- The client's own keeping of its applications (above).
+- The 11 other calls of the three corporation routes, read against the client.
+
+### Next
+
+1. The login's calls, service by service, each done as the fleet, the standings, the skills, the journal, the
+   agents' table and the corporation's registry were. Next: contacts; notifications; the calendar; the
+   contracts' login figures; the station's guests and services; the hangar's and the ship's lists. Each looked
+   for in every folder of the recordings first, then read in the decompiled service.
+2. The skills' rest: the page's "Stop training" as the client's Pause (`AbortTraining`, the queue
+   kept and shown stopped, started again by a save); the queue trimmed and an alpha's levels
+   refused as the client does both; a skill lent by an expert system shown at its lent level; a
+   booster running out while a skill trains, and an alpha clone's rate; the attributes' three at
+   login, for what makes a client ask them then; an implant plugged and a booster taken, for the
+   readings after them seen live; a level finishing by itself; `bound-skills`' three probes that
+   are not the client's calls as they stand.
+3. The checks on a held call that no test I ran would miss: a read let through while a pilot's
+   colonies are exported, and the session still being the one held. Each given a test, or found
+   in the suite.
+4. The standings' rest: the character's own race's faction at 0.0; one owner's history
+   kept and forgotten as the client does, and its two reads set beside the client's;
+   `OnStandingsModified` seen live.
+5. The same login report for a login in space, and for the game port with the page's
+   panels open.
+6. Around the fleet, what is left: `SendBroadcast` and `MassInvite`; `fleetMgr`'s
+   watchlist and broadcasts (the watchlist's second argument first); `fleetProxy`'s
+   adverts and `GetAvailableFleetAds`, and with them a pilot applying to a fleet, for the
+   join requests seen live; an invite from a pilot in no fleet forming one first; the cost
+   of contacting; the pilot's own kicking as a leaving, and a disbanding refused here as
+   the client refuses it.
+7. What becomes of a bound object the client has done with (`moniker.py`
+   `__ClearBoundObject`: `DisconnectObject` after a delay): read in the client, looked for
+   in the recordings, and done so. The handles the BFF asks for and drops are among them.
+8. A player's corporation and alliance named on the Character Sheet (Test Two's read "Unknown").
+9. The corporation routes' other calls read against the client: the ledger has 11 unchecked
+   (`GetStructureReinforceDefault`, `DoesMyCorpAcceptStructures`, `DoesCorpRestrictCorpMails`,
+   `GetApplications`, `GetOldApplications`, `GetMyOldApplications`, `GetAllianceApplications`,
+   `GetCorpWelcomeMail`, `GetMembersPaged`, `GetMemberTrackingInfo`, `GetMemberTrackingInfoSimple`).
+10. The members route made the same on both transports: member tracking is a cached call's wrapper
+    through the gateway and rows on the game port, and a packed row's 64-bit columns are strings on
+    one and numbers on the other. Before a window of the page reads it.
+11. A pilot's applications kept as its client keeps them, once the pilot-training onboarding no
+    longer reads a trainee's list straight after an officer's change to it (it could wait for the
+    server's word, or ask afresh).
+12. Around the contracts: "Offered to you" from the owner's list; the corporation's lists;
+    a rowset read where a server answers one; the search with something staged for each of
+    its filters, on both transports; what the sub-agent left in the server (the operator's
+    section). And the same fault elsewhere in the server: a search of its services for a
+    keyword read as a plain property, with no helper in the file, names two more
+    (`seasonManagerService.js`, `dungeonService.js`). Neither was read.
+13. Around a fitted module: the recording read past `SetModuleOnline`'s answer, and this
+    server's fit set beside it; the recording of ammunition loaded while docked, and charges
+    in slots as godma holds them; the Fitting panel's cargo figure after a module's state
+    changes; a refusal to put one online shown as the client shows it; the dogma route
+    answered from godma's priming instead of its own `GetAllInfo`.
+14. Something staged for every list route that has only been compared empty (the market's
+    orders, the mail, the calendar, the corporation's hangars), and the parity pass read
+    again.
+15. A ship with several modules fitted and a hold with a packaged ship in it, staged: the
+    Fitting window's figures and the client's sums, each set beside the server's.
+16. The walk in space: undocked, every panel and the space view, the store put aside first
+    and put back after; its unread pairs read; the ship's moniker seen kept, and the skill
+    handler's; an agent talked to and a ship boarded for the monikers the BFF asks for; a
+    fleet formed there.
+17. The ledger counting what was sent, not what the BFF asked for: where a moniker is made
+    and not bound, and where a call is shared. (The skill handler's kept reads are counted as
+    sent already.)
+18. The parity tool taking a duration the server measures for what it is (`searchTime`), as
+    it takes a clock, and a read that takes what it reads (`GetSkillChangesForISIS`). And the third route it now and then reads as moved, caught and named.
+19. The routes that answer from the store or the gateway's snapshot, listed, and each set
+    beside what the client asks. The pages for pilots who are not signed in are among them.
+20. Phase 3's writes, feature by feature, each set beside what the client sends, each
+    looked for in every folder of the recordings first.
+21. The wallet's "Market Transactions", and the lines the client derives from a transaction.
+22. The avoidance list's own window, and a route plotted again when a setting changes under it.
+23. Around a place's name, the last of it: the outlaw's warning (the pilot's own security
+    status). The agent's own window's steps, if the client's say how far.
+24. The page's own read of the journal after an agent's button: gone, if nothing of the page's
+    own counts on it, with the push doing the work as it does for Remove Offer.
+25. The agent's cards above its own window, where the client's window has its own header.
+26. The scanner the client's way: results kept from the server's word, a probe's destination
+    and range kept here and sent with the scan.
+27. Small, around dialogs: the title for a dialog's kind, the "do not ask again" box, the typed
+    codes not done.
+28. Small, in space: an overview row's speed columns the client's way; the bar the client
+    fills while a ship lines up for a warp; a warp ordered at a bookmark or a fleet member.
+29. Small, before a character is chosen: selecting on the account's own connection; the count
+    of names checked.
+30. Small, in Ready Fit: the window following a change of pilot.
+31. Small, in words: an interval's `shortForm` and `writtenFormTwoPart`; the bonus's
+    countdown; a place's rating in its colour and its name as a link.
+32. In the park, if a server ever sends a ball that needs them: MISSILE, FORMATION, MUSHROOM;
+    a fixed ball's collision shapes and the partition's order.
+33. If a server ever sends one: a special interaction drawn as the client draws one; messages
+    inside messages.
+34. More of the client's built data as it is needed: one line in `TABLES` for each (dungeons
+    for ship restrictions); the client's own map, to set beside this server's.
+35. When there is a recording of it: a courier's agent talked to again where the pilot
+    accepted, before the package has gone anywhere (the operator's section); and a mission
+    paid in a system of the safest class, for whether its ISK is reduced.
+36. Other things asked once beside the store, and other panels' effects, looked at for the
+    faults of earlier entries.
+37. The pathfinder's ties: how the order of the map's jumps settles them, and the order the
+    client's own map is in.
+38. Jumps in the assets and contracts lists, the autopilot's way, where the page lists them.
+39. A wreck opened with its type said: no capacity, as the client has none for one.
+40. Why a call sent right behind the table of agents is answered 50 to 80 ms late, and whether
+    the table should wait until the pilot's first readings are in.
+41. Waiting on a recording: no skill sent when an implant or a booster moves a training skill's points (a
+    server's, to be measured against Tranquility first).
+42. Waiting on the operator's word: the skill history in Tranquility's form (a `CRowset` of `(logDate,
     eventTypeID, skillTypeID, relativePoints, absolutePoints)`), by a sub-agent, and this repository's reading of
     it.
