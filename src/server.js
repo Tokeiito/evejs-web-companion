@@ -4201,6 +4201,26 @@ function resolveSlotFlag(family, index) {
   return flags[numericIndex];
 }
 
+/**
+ * The pilot's own ship as dogma has it, in the shapes ShipGetInfo and
+ * ShipOnlineModules answer in.
+ *
+ * ⚠ THE RETAIL CLIENT SENDS NEITHER (godma.py 2409, 697). What it knows of
+ * its ship it was primed with by GetAllInfo, and has been told of since. On
+ * the game port the transport keeps that godma and answers from it, so nothing
+ * is asked. Null where it cannot: off the game port, with godma not primed, or
+ * while the ship godma holds is not the one this session has as its own.
+ */
+async function shipAsGodmaHoldsIt(held) {
+  if (!gamePortPilots || !isGamePortHandle(held.bridgeSessionID) || typeof gamePortPilots.shipInfo !== "function") return null;
+  const own = await gamePortPilots.shipInfo({ userid: held.accountID }, held.bridgeSessionID);
+  if (!own.row || Number(own.shipID) !== Number(held.activeShipID)) return null;
+  return {
+    shipInfo: { result: { type: "dict", entries: [[own.shipID, own.row]] }, notifications: [] },
+    online: { result: { type: "list", items: own.online }, notifications: [] },
+  };
+}
+
 // The whole fitting panel: what is in every slot, the ship's resource
 // attributes, and which modules are online. The three reads are INDEPENDENT
 // (Promise.allSettled) so one failed read never blanks the rest — R2's rule,
@@ -4217,16 +4237,13 @@ app.get("/api/bridge/fitting", requireAuth, async (req, res, next) => {
     const shipID = held.activeShipID;
     const noShip = () =>
       Promise.reject(Object.assign(new Error("No active ship."), { code: "NO_ACTIVE_SHIP" }));
+    const godma = shipID ? await shipAsGodmaHoldsIt(held) : null;
     const [slots, shipInfo, online] = await Promise.allSettled([
       shipID
         ? boundCall(held, req.webSessionID, cargoBindSpec(held, shipID), "ListByFlags", [ALL_SLOT_FLAGS], null)
         : noShip(),
-      shipID
-        ? heldTopLevelCall(held, req.webSessionID, "dogmaIM", "ShipGetInfo", [], null)
-        : noShip(),
-      shipID
-        ? heldTopLevelCall(held, req.webSessionID, "dogmaIM", "ShipOnlineModules", [], null)
-        : noShip(),
+      !shipID ? noShip() : godma ? godma.shipInfo : heldTopLevelCall(held, req.webSessionID, "dogmaIM", "ShipGetInfo", [], null),
+      !shipID ? noShip() : godma ? godma.online : heldTopLevelCall(held, req.webSessionID, "dogmaIM", "ShipOnlineModules", [], null),
     ]);
 
     for (const settled of [slots, shipInfo, online]) {
@@ -19836,6 +19853,7 @@ app.get(["/api/bridge/drones", "/api/bridge/script/observation"], requireAuth, a
         notifications: outcome.notifications ?? [],
       };
     };
+    const godma = await shipAsGodmaHoldsIt(held);
     const [bay, shipInfo, inSpace] = await Promise.allSettled([
       boundCall(
         held,
@@ -19846,7 +19864,7 @@ app.get(["/api/bridge/drones", "/api/bridge/script/observation"], requireAuth, a
         null,
         notifications,
       ),
-      heldTopLevelCall(held, req.webSessionID, "dogmaIM", "ShipGetInfo", [], null),
+      godma ? godma.shipInfo : heldTopLevelCall(held, req.webSessionID, "dogmaIM", "ShipGetInfo", [], null),
       shipID ? (observation ? readObservation() : readDronesInSpace(held)) : noShip(),
     ]);
     for (const settled of [bay, shipInfo, inSpace]) {

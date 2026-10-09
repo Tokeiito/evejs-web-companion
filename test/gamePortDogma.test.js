@@ -167,7 +167,8 @@ test("a change that is someone else's, stale, or for a charge that is not held i
   // The single form of the notification.
   assert.equal(dogma.feed({ method: "OnModuleAttributeChange", args: [PILOT, 5001n, 4, seconds(8), 12, 11, seconds(8)] }), true);
   assert.equal(dogma.attribute(5001, 4), 12);
-  assert.equal(dogma.feed({ method: "OnItemsChanged", args: [] }), false);
+  // What is not dogma's is not taken at all.
+  assert.equal(dogma.feed({ method: "OnSkillsChanged", args: [] }), false);
 });
 
 test("when the capacity or the recharge time changes, the charge carries on from what it is", () => {
@@ -777,4 +778,116 @@ test("the ship's online modules, by the slot each is in: fitted to this ship, wi
   assert.deepEqual(dogma.onlineModules(5001), [[19, 5002]]);
   // What each is, for naming its effect.
   assert.deepEqual([dogma.typeOf(5002), dogma.typeOf(5002n), dogma.typeOf(5001), dogma.typeOf(9999)], [3636, 3636, 588, null]);
+});
+
+// ── an item fitted, moved or taken out while the ship is held ────────────────
+//
+// The server tells of an item that has moved with OnItemsChanged(items, change, location), each item its
+// inventory row as it is now, and of one alone with OnItemChange(item, change, location). The client's dogma
+// location takes the ones in its ship, or that were (clientDogmaIM.GodmaItemChanged), and goes by the row
+// (clientDogmaLocation.OnItemChange): an item it did not hold that is now in a slot is fitted, one it held that
+// is no longer in a slot is let go of, and one that is in a slot still is where the row says.
+
+const HANGAR = 60000004;
+const movedRow = (fields) => row7({ ownerID: Number(PILOT), quantity: -1, stacksize: 1, singleton: 1, customInfo: "", ...fields });
+const itemsChanged = (rows, was = [[3, HANGAR], [4, 4]]) => ({ method: "OnItemsChanged", args: [{ type: "list", items: rows }, attrs(was), null] });
+const EXPANDER = Object.freeze({ itemID: 7001, typeID: 1317, locationID: 5001, flagID: 11, groupID: 765, categoryID: 7 });
+const onlineNow = (itemID, active) => ({ method: "OnGodmaShipEffect", args: [BigInt(itemID), EFFECT_ONLINE, HEALTH_T, active, active, [BigInt(itemID), PILOT, 5001n, null, null, [], EFFECT_ONLINE, null], HEALTH_T, -1, 1, null] });
+function holding(rows = [shipRow(5001, HEALTHY)]) {
+  const fitted = [];
+  const dogma = createPilotDogma({ characterID: PILOT, now: () => HEALTH_T, onFitted: (item) => fitted.push(item) });
+  dogma.loadAllInfo(kv({ shipInfo: attrs(rows) }));
+  return { dogma, fitted };
+}
+
+test("a module fitted while the ship is held is the ship's from then on: what it is, where, and what the server says of it after", () => {
+  const { dogma, fitted } = holding();
+  // Before it is told of, what the server says of the module is about nothing that is held.
+  assert.equal(dogma.feed(onlineNow(7001, 1)), true);
+  assert.deepEqual([dogma.item(7001), dogma.onlineModules(5001)], [null, []]);
+  assert.equal(dogma.feed(itemsChanged([movedRow(EXPANDER)])), true);
+  assert.deepEqual(dogma.item(7001), { typeID: 1317, groupID: 765, categoryID: 7, flagID: 11, locationID: 5001 });
+  assert.deepEqual(fitted, [{ itemID: 7001, typeID: 1317, flagID: 11, locationID: 5001 }]);
+  // Held, with nothing known of it yet: not online until something says so.
+  assert.deepEqual([dogma.has(7001), dogma.attributesOf(7001), dogma.onlineModules(5001)], [true, [], []]);
+  dogma.feed(onlineNow(7001, 1));
+  dogma.feed(changes(change(7001n, ATTRIBUTE.IS_ONLINE, HEALTH_T, 1)));
+  assert.deepEqual([dogma.onlineModules(5001), dogma.attribute(7001, ATTRIBUTE.IS_ONLINE)], [[[11, 7001]], 1]);
+  // The ship itself is as it was.
+  assert.equal(dogma.attribute(5001, ATTRIBUTE.HP), 150);
+});
+
+test("a module moved to another slot is in that slot, and is not fitted anew; one taken out is forgotten with all that was known of it", () => {
+  const { dogma, fitted } = holding();
+  dogma.feed(itemsChanged([movedRow(EXPANDER)]));
+  dogma.feed(onlineNow(7001, 1));
+  dogma.feed(itemsChanged([movedRow({ ...EXPANDER, flagID: 12 })], [[4, 11]]));
+  assert.deepEqual([dogma.onlineModules(5001), fitted.length], [[[12, 7001]], 1]);
+  // Out to the hangar: nothing of it is left, and what the server says of it after is about nothing held.
+  dogma.feed(itemsChanged([movedRow({ ...EXPANDER, locationID: HANGAR, flagID: 4 })], [[3, 5001], [4, 12]]));
+  assert.deepEqual([dogma.item(7001), dogma.has(7001), dogma.effect(7001, EFFECT_ONLINE), dogma.onlineModules(5001), fitted.length], [null, false, null, [], 1]);
+  dogma.feed(onlineNow(7001, 1));
+  assert.deepEqual(dogma.onlineModules(5001), []);
+  // And back in: fitted anew.
+  dogma.feed(itemsChanged([movedRow({ ...EXPANDER, flagID: 13 })]));
+  assert.deepEqual([dogma.item(7001).flagID, fitted.map((item) => item.flagID)], [13, [11, 13]]);
+});
+
+test("a module godma was primed with is one of the ship's already: moved, it is not fitted anew; taken out, it is gone", () => {
+  const online = [EFFECT_ONLINE, [0n, PILOT, 5001n, null, null, [], EFFECT_ONLINE, HEALTH_T, -1, 1]];
+  const lit = fittedModule(5003, { flagID: 27 });
+  lit[1].args.entries.find(([name]) => name.toString() === "activeEffects")[1] = attrs([online]);
+  const { dogma, fitted } = holding([shipRow(5001, HEALTHY), lit]);
+  const own = { itemID: 5003, typeID: 3636, locationID: 5001, groupID: 53, categoryID: 7 };
+  dogma.feed(itemsChanged([movedRow({ ...own, flagID: 28 })], [[4, 27]]));
+  assert.deepEqual([dogma.onlineModules(5001), fitted, dogma.attribute(5003, ATTRIBUTE.HP)], [[[28, 5003]], [], 40]);
+  dogma.feed({ method: "OnItemChange", args: [movedRow({ ...own, locationID: HANGAR, flagID: 4 }), attrs([[3, 5001], [4, 28]]), null] });
+  assert.deepEqual([dogma.item(5003), dogma.has(5003), dogma.onlineModules(5001)], [null, false, []]);
+});
+
+test("an item alone is told of with OnItemChange, and is taken the same way", () => {
+  const { dogma, fitted } = holding();
+  // Its IDs as the wire carries a row's, 64-bit: the same item, in the same ship.
+  assert.equal(dogma.feed({ method: "OnItemChange", args: [movedRow({ ...EXPANDER, itemID: 7001n, locationID: 5001n }), attrs([[3, HANGAR], [4, 4]]), null] }), true);
+  assert.deepEqual([dogma.item(7001), fitted], [{ typeID: 1317, groupID: 765, categoryID: 7, flagID: 11, locationID: 5001 }, [{ itemID: 7001, typeID: 1317, flagID: 11, locationID: 5001 }]]);
+});
+
+test("where on a ship an item is fitted: its slots, its hidden modifiers, its drone bay and its fighter tubes, and nowhere else", () => {
+  const at = (flagID, more = {}) => {
+    const { dogma } = holding();
+    dogma.feed(itemsChanged([movedRow({ ...EXPANDER, flagID, ...more })]));
+    return dogma.item(7001) !== null;
+  };
+  // inventorycommon.const: fittingFlags, flagHiddenModifers, flagDroneBay and the fighter tubes, each range by its ends.
+  assert.deepEqual([11, 34, 92, 94, 125, 128, 164, 171, 156, 87, 159, 163].filter((flagID) => !at(flagID)), []);
+  // The ship's hold, its hangar's flag, and what lies either side of each range.
+  assert.deepEqual([0, 4, 5, 10, 35, 86, 88, 91, 95, 124, 129, 155, 157, 158, 172].filter((flagID) => at(flagID)), []);
+  // A stack of none is not fitted, and a ship that is not held has nothing fitted to it here.
+  assert.deepEqual([at(11, { stacksize: 0 }), at(11, { locationID: 6001 })], [false, false]);
+});
+
+test("what is not the ship's is left alone: the ship's own row, the pilot's, something moved about in the hangar, and what is not a row", () => {
+  const { dogma, fitted } = holding();
+  const before = JSON.stringify([dogma.item(5001), dogma.attributesOf(5001)]);
+  // The ship itself, moved or renamed: it is not fitted to anything, and it is not let go of.
+  dogma.feed(itemsChanged([movedRow({ itemID: 5001, typeID: 588, locationID: HANGAR, flagID: 4, groupID: 237, categoryID: 6 })], [[4, 0]]));
+  assert.equal(JSON.stringify([dogma.item(5001), dogma.attributesOf(5001)]), before);
+  // The pilot: godma's own, not the ship's.
+  dogma.feed(itemsChanged([movedRow({ itemID: Number(PILOT), typeID: 1373, locationID: 5001, flagID: 57, groupID: 1, categoryID: 3 })]));
+  // Something from one place in the hangar to another, something that is no row, a row that names no item, and a notice with nothing in it.
+  dogma.feed(itemsChanged([movedRow({ ...EXPANDER, locationID: HANGAR, flagID: 4 }), null, "x", movedRow({ ...EXPANDER, itemID: undefined })]));
+  assert.equal(dogma.feed({ method: "OnItemsChanged", args: null }), true);
+  assert.equal(dogma.feed({ method: "OnItemChange", args: [] }), true);
+  assert.deepEqual([fitted, dogma.item(7001), dogma.item(Number(PILOT)), dogma.has(5001)], [[], null, null, true]);
+});
+
+test("an effect the client starts or stops itself is running or not from then on, for an item that is held", () => {
+  const { dogma } = holding();
+  dogma.feed(itemsChanged([movedRow(EXPANDER)]));
+  assert.equal(dogma.setEffect(7001, EFFECT_ONLINE, true), true);
+  assert.deepEqual([dogma.onlineModules(5001), dogma.effect(7001, EFFECT_ONLINE).isActive], [[[11, 7001]], true]);
+  assert.equal(dogma.setEffect(7001n, EFFECT_ONLINE, false), true);
+  assert.deepEqual([dogma.onlineModules(5001), dogma.effect(7001, EFFECT_ONLINE).isActive], [[], false]);
+  // One that is not held has no effects to start.
+  assert.deepEqual([dogma.setEffect(9999, EFFECT_ONLINE, true), dogma.effect(9999, EFFECT_ONLINE)], [false, null]);
 });

@@ -30,6 +30,9 @@ const characterRow = (overrides = {}) => keyVal(Object.entries({
 const selectionData = (rows = [characterRow()]) => [{ type: "list", items: [] }, [null, null], { type: "list", items: rows }, { type: "list", items: [] }];
 const shipInfo = (typeID = 588, groupID = 237) => ({ type: "dict", entries: [[SHIP, keyVal([["itemID", SHIP], ["invItem", { type: "packedrow", header: null, columns: [], fields: { itemID: SHIP, typeID, groupID }, values: [] }]])]] });
 
+/** What GetAllInfo answers with those rows for the ship's items: godma's priming. */
+const godmaOf = (rows) => keyVal([["shipInfo", rows]]);
+
 /** A bound object as the wire carries one: a substruct of a substream of (id, timestamp). */
 const boundObject = (id) => ({ type: "substruct", value: { type: "substream", value: [Buffer.from(id), 134359051855730000n] } });
 
@@ -144,6 +147,7 @@ function build(sessionOptions = {}, pilotOptions = {}) {
     "charUnboundMgr.GetCharacterSelectionData": selectionData(),
     "charUnboundMgr.GetCharacterLockType": null,
     "dogmaIM.ShipGetInfo": shipInfo(),
+    "bound:GetAllInfo": godmaOf(shipInfo()),
     ...(sessionOptions.answers || {}),
   };
   const pilots = createGamePortPilots({
@@ -742,34 +746,39 @@ test("shutdown closes every pilot's connection", async () => {
 
 // ── where the pilot is ───────────────────────────────────────────────────────
 
-test("flight status while docked is the gateway's, with the ship's type from the server's own row", async () => {
+test("flight status while docked is the gateway's, with the ship's type as godma holds it", async () => {
   const { pilots, session, handle } = await selected();
+  session.calls.length = 0;
   const { flight, notifications } = await pilots.readFlightStatus(handle, { userid: ACCOUNT });
   assert.deepEqual(flight, {
     inSpace: false, docked: true, solarSystemID: SYSTEM, stationID: STATION, structureID: null,
     shipID: SHIP, shipTypeID: 588, shipIsCapsule: false, shipMode: null, shipSpeedFraction: null,
   });
   assert.deepEqual(notifications, []);
-  // Asked once per ship, not once per poll.
+  // Godma is primed once for a ship in a place, as the client primes it, not once per poll; and the ship is
+  // never asked about by ShipGetInfo, which the client does not send.
   await pilots.readFlightStatus(handle, { userid: ACCOUNT });
   await pilots.readFlightStatus(handle, { userid: ACCOUNT });
-  assert.equal(session.calls.filter((call) => call.method === "ShipGetInfo").length, 1);
+  assert.deepEqual(session.boundCalls.filter((call) => call.method === "GetAllInfo").map((call) => call.args), [[true, true, null]]);
+  assert.deepEqual(session.calls, []);
 });
 
 test("a capsule is a capsule by its group, and a new ship is asked about again", async () => {
   let info = shipInfo(670, 29);
-  const { pilots, session, handle } = await selected({ answers: { "dogmaIM.ShipGetInfo": () => info } });
+  const { pilots, session, handle } = await selected({ answers: { "bound:GetAllInfo": () => godmaOf(info) } });
   assert.equal((await pilots.readFlightStatus(handle)).flight.shipIsCapsule, true);
   session.attributes.shipid = 555;
-  info = { type: "dict", entries: [[555, keyVal([["invItem", { type: "packedrow", header: null, columns: [], fields: { typeID: 603, groupID: 25 }, values: [] }]])]] };
+  info = { type: "dict", entries: [[555, keyVal([["invItem", { type: "packedrow", header: null, columns: [], fields: { itemID: 555, typeID: 603, groupID: 25 }, values: [] }]])]] };
   const { flight } = await pilots.readFlightStatus(handle);
   assert.deepEqual([flight.shipID, flight.shipTypeID, flight.shipIsCapsule], [555, 603, false]);
-  assert.equal(session.calls.filter((call) => call.method === "ShipGetInfo").length, 2);
+  // Godma primed again for the new ship; ShipGetInfo for neither.
+  assert.equal(session.boundCalls.filter((call) => call.method === "GetAllInfo").length, 2);
+  assert.equal(session.calls.filter((call) => call.method === "ShipGetInfo").length, 0);
 });
 
 test("a ship the server will not describe is reported unknown, never guessed, and asked about next time", async () => {
   let fails = true;
-  const { pilots, handle } = await selected({ answers: { "dogmaIM.ShipGetInfo": () => { if (fails) throw sessionError("CALL_TIMEOUT"); return shipInfo(); } } });
+  const { pilots, handle } = await selected({ answers: { "bound:GetAllInfo": () => { if (fails) throw sessionError("CALL_TIMEOUT"); return godmaOf(shipInfo()); } } });
   const { flight } = await pilots.readFlightStatus(handle);
   assert.deepEqual([flight.docked, flight.shipID, flight.shipTypeID, flight.shipIsCapsule], [true, SHIP, null, null]);
   fails = false;
@@ -777,7 +786,7 @@ test("a ship the server will not describe is reported unknown, never guessed, an
 });
 
 test("flight status for a lost connection finds no session", async () => {
-  const { pilots, handle } = await selected({ answers: { "dogmaIM.ShipGetInfo": () => { throw sessionError("CONNECTION_LOST"); } } });
+  const { pilots, handle } = await selected({ answers: { "bound:GetAllInfo": () => { throw sessionError("CONNECTION_LOST"); } } });
   await rejects(pilots.readFlightStatus(handle), "SESSION_NOT_FOUND");
   assert.equal(pilots.size, 0);
 });
@@ -2760,4 +2769,134 @@ test("the pilot's ship and its type are what the session and godma already hold"
   // With godma not answering, the ship is still the session's; its type is not known.
   const dark = await selected({ answers: { "bound:GetAllInfo": () => { throw new Error("not now"); } } });
   assert.deepEqual(await dark.pilots.ship(FIELDS, dark.handle), { shipID: SHIP, typeID: null });
+});
+
+// ── the ship's own dogma, as godma holds it ──────────────────────────────────
+
+const EFFECT_OF_BEING_ONLINE = 16;
+const ownShipAllInfo = () => keyVal([["shipInfo", { type: "dict", entries: [
+  [BigInt(SHIP + 3), keyVal([["itemID", BigInt(SHIP + 3)], ["invItem", { type: "packedrow", header: null, columns: [], fields: { itemID: SHIP + 3, typeID: 3003, groupID: 53, categoryID: 7, flagID: 29, locationID: SHIP }, values: [] }], ["time", DOGMA_T], ["attributes", { type: "dict", entries: [[50, 7]] }], ["activeEffects", { type: "dict", entries: [] }]])],
+  [BigInt(SHIP), keyVal([
+    ["itemID", BigInt(SHIP)],
+    ["invItem", { type: "packedrow", header: null, columns: [], fields: { itemID: SHIP, typeID: 588, groupID: 237, categoryID: 6 }, values: [] }],
+    ["activeEffects", { type: "dict", entries: [] }],
+    ["time", DOGMA_T],
+    ["attributes", { type: "dict", entries: [[48, 130], [11, 40], [38, 120]] }],
+    ["wallclockTime", DOGMA_T],
+  ])],
+  // Two modules fitted in the ship: one online, one not.
+  [BigInt(SHIP + 1), keyVal([["itemID", BigInt(SHIP + 1)], ["invItem", { type: "packedrow", header: null, columns: [], fields: { itemID: SHIP + 1, typeID: 3001, groupID: 53, categoryID: 7, flagID: 27, locationID: SHIP }, values: [] }], ["time", DOGMA_T], ["attributes", { type: "dict", entries: [[50, 12]] }], ["activeEffects", { type: "dict", entries: [[EFFECT_OF_BEING_ONLINE, [SHIP + 1, EFFECT_OF_BEING_ONLINE, null, null, null, null, null, DOGMA_T, -1, 0]]] }]])],
+  [BigInt(SHIP + 2), keyVal([["itemID", BigInt(SHIP + 2)], ["invItem", { type: "packedrow", header: null, columns: [], fields: { itemID: SHIP + 2, typeID: 3002, groupID: 53, categoryID: 7, flagID: 28, locationID: SHIP }, values: [] }], ["time", DOGMA_T], ["attributes", { type: "dict", entries: [[50, 9]] }], ["activeEffects", { type: "dict", entries: [] }]])],
+] }]]);
+
+test("the ship's own dogma entry is the row godma was primed with, its attributes as godma holds them now, and the modules that are online", async () => {
+  const { pilots, session, handle } = await selected({ answers: { "bound:GetAllInfo": ownShipAllInfo() } });
+  session.calls.length = 0;
+  const own = await pilots.shipInfo(FIELDS, handle);
+  assert.equal(own.shipID, SHIP);
+  // The server's own row for the ship: the fields ShipGetInfo answers, as the page reads them.
+  const fields = new Map(own.row.args.entries);
+  assert.deepEqual([own.row.name, [...fields.keys()]], ["util.KeyVal", ["itemID", "invItem", "activeEffects", "time", "attributes", "wallclockTime"]]);
+  assert.equal(fields.get("invItem").fields.typeID, 588);
+  assert.deepEqual(fields.get("attributes"), { type: "dict", entries: [[48, 130], [11, 40], [38, 120]] });
+  // Which modules are online is godma's too: the one with the online effect on it.
+  assert.deepEqual(own.online, [SHIP + 1]);
+  // A change the server tells of is in the entry the next time it is read: nothing is asked again.
+  session.notify("OnModuleAttributeChanges", [{ type: "list", items: [["OnModuleAttributeChange", PILOT, BigInt(SHIP), 48, DOGMA_T + 10000000n, 150, 130, DOGMA_T + 10000000n]] }]);
+  const later = await pilots.shipInfo(FIELDS, handle);
+  assert.deepEqual(new Map(later.row.args.entries).get("attributes"), { type: "dict", entries: [[48, 150], [11, 40], [38, 120]] });
+  assert.deepEqual([session.calls, session.boundCalls.filter((call) => call.method === "GetAllInfo").length], [[], 1]);
+  // A session is its account's own.
+  await rejects(pilots.shipInfo({ userid: 9 }, handle), "SESSION_NOT_FOUND");
+});
+
+// A module fitted while the ship is held is told of by its inventory row (OnItemsChanged), and the client then
+// puts it online itself where its type can be: clientDogmaLocation._OnlineModuleIfApplicable and OnlineModule.
+
+const CAN_BE_ONLINE = 3009;
+const fittedNow = (itemID, { typeID = CAN_BE_ONLINE, flagID = 30, locationID = SHIP } = {}) => [
+  { type: "list", items: [{ type: "packedrow", header: null, columns: [], fields: { itemID, typeID, ownerID: PILOT, locationID, flagID, quantity: -1, groupID: 53, categoryID: 7, customInfo: "", stacksize: 1, singleton: 1 }, values: [] }] },
+  { type: "dict", entries: [[3, STATION], [4, 4]] },
+  null,
+];
+const onlineByType = { typeEffects: (typeID) => (typeID === CAN_BE_ONLINE ? [{ effectID: 11 }, { effectID: EFFECT_OF_BEING_ONLINE }] : [{ effectID: 11 }]) };
+const toldOnline = (session) => session.boundCalls.filter((call) => call.method === "SetModuleOnline");
+
+test("a module fitted while the ship is held is put online by the client itself: the server is told, and it is online from the moment it is fitted", async () => {
+  const { pilots, session, handle } = await selected({ answers: { "bound:GetAllInfo": ownShipAllInfo() } }, onlineByType);
+  assert.deepEqual((await pilots.shipInfo(FIELDS, handle)).online, [SHIP + 1]);
+  session.calls.length = 0;
+  session.notify("OnItemsChanged", fittedNow(SHIP + 9));
+  assert.deepEqual((await pilots.shipInfo(FIELDS, handle)).online, [SHIP + 1, SHIP + 9]);
+  // SetModuleOnline(the ship the module is in, the module), on the dogma location godma was primed from; nothing else was asked.
+  const primedFrom = session.boundCalls.find((call) => call.method === "GetAllInfo").objectID;
+  assert.deepEqual(toldOnline(session), [{ objectID: primedFrom, method: "SetModuleOnline", args: [SHIP, SHIP + 9], kwargs: null }]);
+  assert.deepEqual([session.calls, session.boundCalls.filter((call) => call.method === "GetAllInfo").length], [[], 1]);
+  assert.deepEqual(pilots.callLedger().find((row) => row.pair === "dogmaIM.SetModuleOnline").statuses, { same: 1 });
+  // A module whose type cannot be online is fitted and no more: nothing is told, and it is not online.
+  session.notify("OnItemsChanged", fittedNow(SHIP + 10, { typeID: 3010, flagID: 31 }));
+  assert.deepEqual([(await pilots.shipInfo(FIELDS, handle)).online, toldOnline(session).length], [[SHIP + 1, SHIP + 9], 1]);
+  // One godma holds already that moves to another slot is not fitted anew.
+  session.notify("OnItemsChanged", fittedNow(SHIP + 9, { flagID: 32 }));
+  session.notify("OnItemsChanged", fittedNow(SHIP + 2, { typeID: CAN_BE_ONLINE, flagID: 33 }));
+  assert.deepEqual([(await pilots.shipInfo(FIELDS, handle)).online, toldOnline(session).length], [[SHIP + 1, SHIP + 9], 1]);
+});
+
+test("a server that has the module online already says so, and it is online; refused for any other reason, or not answered, it is not online after all", async () => {
+  const outcome = async (answer) => {
+    const { pilots, session, handle } = await selected({ answers: { "bound:GetAllInfo": ownShipAllInfo(), "bound:SetModuleOnline": answer } }, onlineByType);
+    await pilots.shipInfo(FIELDS, handle);
+    session.notify("OnItemsChanged", fittedNow(SHIP + 9));
+    return [(await pilots.shipInfo(FIELDS, handle)).online, toldOnline(session).length];
+  };
+  assert.deepEqual(await outcome(() => { throw refusedBy("EffectAlreadyActive2"); }), [[SHIP + 1, SHIP + 9], 1]);
+  assert.deepEqual(await outcome(() => { throw refusedBy("NotEnoughCpu"); }), [[SHIP + 1], 1]);
+  assert.deepEqual(await outcome(() => { throw new Error("no answer"); }), [[SHIP + 1], 1]);
+});
+
+test("a module is put online while the answer is awaited, and several fitted at once are told of one after another, in order", async () => {
+  let answer;
+  const waiting = new Promise((resolve) => { answer = resolve; });
+  const { pilots, session, handle } = await selected({ answers: { "bound:GetAllInfo": ownShipAllInfo(), "bound:SetModuleOnline": () => waiting } }, onlineByType);
+  await pilots.shipInfo(FIELDS, handle);
+  session.notify("OnItemsChanged", [{ type: "list", items: [...fittedNow(SHIP + 9)[0].items, ...fittedNow(SHIP + 8, { flagID: 31 })[0].items] }, { type: "dict", entries: [[3, STATION], [4, 4]] }, null]);
+  // What the undock hands over is read as it stands: both are online now, with the server yet to answer for the first.
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(toldOnline(session).map((call) => call.args), [[SHIP, SHIP + 9]]);
+  const reading = pilots.shipInfo(FIELDS, handle);
+  answer(null);
+  assert.deepEqual((await reading).online, [SHIP + 1, SHIP + 9, SHIP + 8]);
+  assert.deepEqual(toldOnline(session).map((call) => call.args), [[SHIP, SHIP + 9], [SHIP, SHIP + 8]]);
+});
+
+test("a module fitted to a ship the pilot is no longer in is not put online", async () => {
+  const { pilots, session, handle } = await selected({ answers: { "bound:GetAllInfo": ownShipAllInfo() } }, onlineByType);
+  await pilots.shipInfo(FIELDS, handle);
+  // The session is in another ship; godma still holds the one before, until it is next read.
+  session.attributes.shipid = 555;
+  session.notify("OnItemsChanged", fittedNow(SHIP + 9));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(toldOnline(session), []);
+});
+
+test("with godma not primed there is no entry to give, and the ship is still said", async () => {
+  const { pilots, handle } = await selected({ answers: { "bound:GetAllInfo": () => { throw new Error("not now"); } } });
+  assert.deepEqual(await pilots.shipInfo(FIELDS, handle), { shipID: SHIP, row: null, online: [] });
+});
+
+test("the ship's entry has its capacitor as it has recharged to, as godma reckons it, and no entry at all for a ship godma could not be primed for", async () => {
+  let clockMs = DOGMA_T_MS;
+  let answers = true;
+  const { pilots, session, handle } = await selected({ answers: { "bound:GetAllInfo": () => { if (!answers) throw new Error("not now"); return shipAllInfo(); } } }, { now: () => clockMs });
+  const charge = async () => new Map(new Map((await pilots.shipInfo(FIELDS, handle)).row.args.entries).get("attributes").entries).get(18);
+  assert.equal(await charge(), 50);
+  // Ten seconds on, nothing asked: 50 of 125 has recharged by itself, and the entry says what it is now.
+  clockMs += 10000;
+  const later = await charge();
+  assert.ok(later > 50 && later < 125, String(later));
+  assert.equal(session.boundCalls.filter((call) => call.method === "GetAllInfo").length, 1);
+  // Another ship, and dogma not answering for it: there is no entry, and the last ship's is not handed over in its place.
+  session.attributes.shipid = 555;
+  answers = false;
+  assert.deepEqual(await pilots.shipInfo(FIELDS, handle), { shipID: 555, row: null, online: [] });
 });

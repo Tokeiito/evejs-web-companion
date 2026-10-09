@@ -101,6 +101,18 @@
 // which is how a charge loaded into an empty module arrives, the probes
 // coming back to an empty launcher among them.
 //
+// A module fitted, moved to another slot or taken out is told of as any item
+// that moves is, by its inventory row as it is now:
+//
+//   OnItemsChanged(items, change, location)   invCache hands each on as
+//   OnItemChange(item, change, location)      one item's
+//
+// and the client's dogma location takes the ones in its ship, or that were
+// (clientDogmaIM.GodmaItemChanged, clientDogmaLocation.OnItemChange): one it
+// did not hold that is now in a slot is fitted, one it held that no longer is
+// is unloaded, and one that is in a slot still is where its row says. A module
+// newly fitted the client then puts online itself (see pilots.js).
+//
 // Only the ship's items are kept here, and only what the panel and the scanner need.
 
 /** dogma attribute IDs (dogma/const.py). */
@@ -144,6 +156,13 @@ function calculateHeat(currentHeat, timeDiff, incomingHeat, dissipationRate, hea
 
 /** inventorycommon/const.py categoryModule. */
 const CATEGORY_MODULE = 7;
+/**
+ * inventorycommon/const.py: where on a ship an item is fitted (fittingFlags and flagHiddenModifers) and where a
+ * drone or a fighter is kept ready (flagDroneBay, the fighter tubes), each range by its two ends. It is what
+ * clientDogmaLocation.IsFitted goes by.
+ */
+const FITTED_AT = Object.freeze([[11, 34], [92, 94], [125, 128], [164, 171], [156, 156], [87, 87], [159, 163]]);
+const isFittedAt = (flagID) => FITTED_AT.some(([first, last]) => flagID >= first && flagID <= last);
 /** godma.chargedAttributeTauCaps: a recharging attribute, the attribute that is its recharge time, and the one that is its capacity. */
 const CHARGED = new Map([
   [ATTRIBUTE.CHARGE, [ATTRIBUTE.RECHARGE_RATE, ATTRIBUTE.CAPACITOR_CAPACITY]],
@@ -206,9 +225,10 @@ function chargeValue(oldVal, oldTime, tau, Ec, newTime) {
  * `characterID` is whose items these are: a change for anyone else's is
  * refused, as godma refuses it. `now()` reads the clock. `effectCategory(effectID)`
  * says what kind an effect is, from the game's static data; without it no
- * module can be told to be running.
+ * module can be told to be running. `onFitted({ itemID, typeID, flagID, locationID })`
+ * is told of each item that is fitted while its ship is held.
  */
-function createPilotDogma({ characterID = null, now = filetimeNow, effectCategory = () => null } = {}) {
+function createPilotDogma({ characterID = null, now = filetimeNow, effectCategory = () => null, onFitted = () => {} } = {}) {
   /** itemID -> Map(attributeID -> value). */
   const attributes = new Map();
   /** itemID -> Map(attributeID -> [value, time, tau, capacity]). */
@@ -230,6 +250,12 @@ function createPilotDogma({ characterID = null, now = filetimeNow, effectCategor
     const recharging = charged.get(id)?.get(attributeID);
     if (recharging) return chargeValue(...recharging, at);
     return attributes.get(id)?.get(attributeID) ?? null;
+  }
+
+  /** Every attribute held of an item, each as it is now (godma.GetAttribute of each), in the order the item's row gave them. */
+  function attributesOf(itemID, at = now()) {
+    const held = attributes.get(key(itemID));
+    return held ? [...held.keys()].map((attributeID) => [attributeID, attribute(itemID, attributeID, at)]) : [];
   }
 
   /** godma.CreateChargedAttribute. */
@@ -362,6 +388,44 @@ function createPilotDogma({ characterID = null, now = filetimeNow, effectCategor
     const itemID = fieldsOf(row).get("itemID");
     if (itemID === undefined || itemID === null) return false;
     loadRow(itemID, row);
+    return true;
+  }
+
+  /**
+   * clientDogmaLocation.OnItemChange, for one item by its inventory row as it is now. Fitted is in one of the
+   * places above, in something that is held, with something in the stack; the only things held that anything
+   * is in are ships. The ship's own row is neither: what it is in is not held.
+   */
+  function itemChanged(row) {
+    const item = rowFields(row);
+    const id = item ? key(item.itemID) : null;
+    if (typeof id !== "number") return;
+    const location = key(item.locationID);
+    const known = identity.get(id);
+    const was = known !== undefined && attributes.has(known.locationID);
+    const is = attributes.has(location) && isFittedAt(number(item.flagID)) && number(item.stacksize) > 0;
+    if (was && !is) {
+      // UnfitItem: unloaded, and nothing the server says of it after is about anything held.
+      identity.delete(id);
+      attributes.delete(id);
+      effects.delete(id);
+      return;
+    }
+    if (!is) return;
+    identity.set(id, { typeID: number(item.typeID), groupID: number(item.groupID), categoryID: number(item.categoryID), flagID: number(item.flagID), locationID: location });
+    if (was) return;
+    // FitItem. The client works the item's attributes out from its type; here nothing is known of them until the
+    // server says, and what it says from now on is taken.
+    attributes.set(id, new Map());
+    effects.set(id, new Map());
+    onFitted({ itemID: id, typeID: number(item.typeID), flagID: number(item.flagID), locationID: location });
+  }
+
+  /** clientDogmaLocation.Activate and StopEffect: an effect the client starts or stops itself, on an item that is held. */
+  function setEffect(itemID, effectID, isActive) {
+    const held = effects.get(key(itemID));
+    if (!held) return false;
+    held.set(effectID, { isActive, startTime: now(), duration: null, repeat: null, targetID: null });
     return true;
   }
 
@@ -533,6 +597,11 @@ function createPilotDogma({ characterID = null, now = filetimeNow, effectCategor
       primeItem(Array.isArray(notification.args) ? notification.args : []);
       return true;
     }
+    if (notification.method === "OnItemsChanged" || notification.method === "OnItemChange") {
+      const first = Array.isArray(notification.args) ? notification.args[0] : null;
+      for (const row of notification.method === "OnItemsChanged" ? items(first) : [first]) itemChanged(row);
+      return true;
+    }
     return false;
   }
 
@@ -683,6 +752,10 @@ function createPilotDogma({ characterID = null, now = filetimeNow, effectCategor
     onlineModules,
     /** What a held item is: its type, or null for one godma was not told of. */
     typeOf: (itemID) => identity.get(key(itemID))?.typeID ?? null,
+    /** What a held item is and where: { typeID, groupID, categoryID, flagID, locationID }, or null for one godma was not told of. */
+    item: (itemID) => identity.get(key(itemID)) ?? null,
+    attributesOf,
+    setEffect,
     setWeaponBanks,
     unlinkModule,
     weaponBanks,

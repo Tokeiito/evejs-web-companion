@@ -565,6 +565,51 @@ function createGamePortPilots({
     return { shipID: place.shipID, typeID: entry.dogma.typeOf(place.shipID) };
   }
 
+  /**
+   * clientDogmaLocation._OnlineModuleIfApplicable and OnlineModule: a module newly fitted to the pilot's ship is
+   * put online by the client itself, where its type can be online at all. The effect is running from that moment
+   * and the server is told, SetModuleOnline(the ship, the module). A server that has it online already says so
+   * (EffectAlreadyActive2), and that is no failure; refused for any other reason, or not answered, the effect is
+   * not running after all.
+   */
+  function onlineIfApplicable(entry, item) {
+    // clientDogmaIM.GodmaItemChanged: only what is in the ship the pilot is in now.
+    if (item.locationID !== attribute(entry, "shipid")) return;
+    if (!typeEffects(item.typeID).some((effect) => effect.effectID === EFFECT_ONLINE)) return;
+    entry.dogma.setEffect(item.itemID, EFFECT_ONLINE, true);
+    entry.onlining = entry.onlining.then(async () => {
+      try {
+        const location = await monikerObject(entry, "dogmaIM");
+        const form = shape("dogmaIM", "SetModuleOnline", [item.locationID, item.itemID], null, contextFor(entry));
+        ledger.note("dogmaIM", "SetModuleOnline", form);
+        await entry.session.callBound(location, "SetModuleOnline", argumentsToWire(form.args), form.kwargs);
+      } catch (error) {
+        if (!error.refusal || error.refusal.key !== "EffectAlreadyActive2") entry.dogma.setEffect(item.itemID, EFFECT_ONLINE, false);
+      }
+    });
+  }
+
+  /**
+   * The pilot's own ship as dogma has it, without asking: the ship's row from godma's priming, with its
+   * attributes as godma holds them now, and the modules fitted in it that are online. It is what the server
+   * answers to ShipGetInfo and ShipOnlineModules, which the client never asks (godma.py 2409, 697). The row
+   * is null where godma is not primed for the ship where it is.
+   */
+  async function shipInfo(sessionFields = {}, bridgeSessionID = undefined) {
+    const entry = held(bridgeSessionID, sessionFields);
+    const place = whereabouts(entry);
+    await shipReadings(entry, place);
+    // A module the client is putting online is one or it is not, once the server has answered.
+    await entry.onlining;
+    // Only the row godma was primed with for this ship where it is now: never an earlier ship's, or this one's from
+    // somewhere it has left, when the priming for here did not come.
+    const kept = entry.dogmaLoaded === primedFor(entry, place) ? entry.shipRow : null;
+    if (!kept) return { shipID: place.shipID, row: null, online: [] };
+    const now = { type: "dict", entries: entry.dogma.attributesOf(place.shipID) };
+    const entries = kept.args.entries.map(([name, value]) => [name, name === "attributes" ? now : value]);
+    return { shipID: place.shipID, row: { ...kept, args: { ...kept.args, entries } }, online: entry.dogma.onlineModules(place.shipID).map(([, moduleID]) => moduleID) };
+  }
+
   /** The user's answer to a question the server asked. */
   async function answerClientQuestion(bridgeSessionID, questionID, answer, sessionFields = {}) {
     const entry = held(bridgeSessionID, sessionFields);
@@ -673,8 +718,10 @@ function createGamePortPilots({
       /** The pilot's ballpark while it is in space (pilotSpace.js), else null. */
       space: null,
       /** The pilot's ship as dogma has it (pilotDogma.js), and which ship and place that was loaded for. */
-      dogma: createPilotDogma({ characterID, now: () => filetime(clock.simTime()), effectCategory }),
+      dogma: createPilotDogma({ characterID, now: () => filetime(clock.simTime()), effectCategory, onFitted: (item) => onlineIfApplicable(entry, item) }),
       dogmaLoaded: null,
+      /** The modules the client is putting online itself, one after another: over when the server has answered for each. */
+      onlining: Promise.resolve(),
       /** The pilot's scan probes as the client's scan service knows them (pilotScanner.js). */
       scanner: createPilotScanner({ typeAttribute }),
       /** Questions the server has asked and the user has not answered yet, by ID. */
@@ -921,29 +968,17 @@ function createGamePortPilots({
     return { released: true, characterID: entry.characterID };
   }
 
-  /** The active ship's type and whether it is a capsule, from the server's own row for it. */
-  async function shipFacts(entry, shipID) {
-    if (entry.ship && entry.ship.shipID === shipID) return entry.ship;
-    let typeID = null;
-    let groupID = null;
-    try {
-      const info = wireToBridgeJson(await entry.session.call("dogmaIM", "ShipGetInfo", []));
-      const pair = info && Array.isArray(info.entries) ? info.entries.find(([key]) => positive(key) === shipID) : null;
-      const item = pair ? keyValField(pair[1], "invItem") : null;
-      const fields = item && item.fields ? item.fields : {};
-      typeID = positive(fields.typeID);
-      groupID = positive(fields.groupID);
-    } catch (error) {
-      const mapped = toPilotError(error, "dogmaIM", "ShipGetInfo");
-      if (mapped.code === "SESSION_NOT_FOUND") {
-        end(entry, "connection_closed");
-        throw mapped;
-      }
-      // Location is still worth reporting. An unknown type says so; it is never guessed.
-    }
-    const facts = { shipID, typeID, isCapsule: typeID === null || groupID === null ? null : groupID === GROUP_CAPSULE };
-    if (typeID !== null) entry.ship = facts;
-    return facts;
+  /**
+   * The active ship's type and whether it is a capsule, from the ship's own row as godma holds it: primed with
+   * GetAllInfo once for a ship in a place, as the client is. The client never asks ShipGetInfo.
+   * Location is still worth reporting where godma could not be primed: an unknown type says so, and is never guessed.
+   */
+  async function shipFacts(entry, place) {
+    await shipReadings(entry, place);
+    const item = entry.dogma.item(place.shipID);
+    const typeID = item ? positive(item.typeID) : null;
+    const groupID = item ? positive(item.groupID) : null;
+    return { shipID: place.shipID, typeID, isCapsule: typeID === null || groupID === null ? null : groupID === GROUP_CAPSULE };
   }
 
   /** Where the session says the pilot is. In space is `solarsystemid` set, as on any retail session. */
@@ -966,8 +1001,11 @@ function createGamePortPilots({
    * place; after that godma is told of each change. Answers what dogma says of
    * the ship now, or null if it could not be asked.
    */
+  /** What godma is primed for: a ship in a place. It is primed again for another ship, or the same one somewhere else. */
+  const primedFor = (entry, place) => `${place.shipID}@${place.stationID ?? place.structureID ?? attribute(entry, "solarsystemid")}`;
+
   async function shipReadings(entry, place) {
-    const loadedFor = `${place.shipID}@${place.stationID ?? place.structureID ?? attribute(entry, "solarsystemid")}`;
+    const loadedFor = primedFor(entry, place);
     if (entry.dogmaLoaded !== loadedFor) {
       try {
         // godma.GetDogmaLM: the dogma location bound for where the pilot is, kept and asked everything of.
@@ -978,6 +1016,10 @@ function createGamePortPilots({
         entry.dogma.clear();
         entry.dogma.loadAllInfo(allInfo);
         entry.dogmaLoaded = loadedFor;
+        // The ship's own row, as the server gave it: what ShipGetInfo would answer, were it asked.
+        const rows = keyValField(wireToBridgeJson(allInfo), "shipInfo");
+        const own = rows && Array.isArray(rows.entries) ? rows.entries.find(([itemID]) => positive(itemID) === place.shipID) : null;
+        entry.shipRow = own ? own[1] : null;
       } catch (error) {
         const mapped = toPilotError(error, "dogmaIM", "GetAllInfo");
         if (mapped.code === "SESSION_NOT_FOUND") {
@@ -1013,7 +1055,7 @@ function createGamePortPilots({
   async function readFlightStatus(bridgeSessionID, sessionFields = {}) {
     const entry = held(bridgeSessionID, sessionFields);
     const place = whereabouts(entry);
-    const ship = place.shipID ? await shipFacts(entry, place.shipID) : null;
+    const ship = place.shipID ? await shipFacts(entry, place) : null;
     return {
       flight: {
         inSpace: place.inSpace,
@@ -1483,6 +1525,7 @@ function createGamePortPilots({
     accountCall,
     answerClientQuestion,
     ship,
+    shipInfo,
     shipAttribute,
     shutdown,
     /** Every pair called since this transport was made, most called first, with how each compares with the retail client's. */
