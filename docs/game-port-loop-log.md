@@ -5052,3 +5052,122 @@ line.
     inside messages.
 14. More of the client's built data as it is needed: one line in `TABLES` for each (dungeons
     for ship restrictions, divisions for an agent's card).
+
+---
+
+## 2026-10-09 — what the server says once is acted on once; and where the pilot is now
+
+Commits `6ccd508` and `4f1efec`, pushed. Item 1 of the last list, and a defect seen while
+checking it.
+
+### A push taken once
+
+**What the retail client does.** It hears a notification once, on its one connection, and
+acts on it once.
+
+**What the page did.** It could hear one twice: on the pilot's live stream as it arrived, and
+again with the next answer, because the BFF keeps a copy for a reader with no stream (a pilot
+that is not the one on screen has none). Both copies went to the same handler, so the journal
+was read twice for every change to a mission, the agent's window talked twice, and since the
+last entry the mission's page read its agent twice.
+
+**What was built.**
+
+- On the game port, the copy kept for the answer carries the cursor of the stream event it
+  also went out in: the BFF process's epoch and the event's number in the pilot's session
+  (`src/gamePort/pilots.js`, `record`). The stream's own frames are as they were.
+- The page remembers the cursors it has acted on, 8192 of them, twice what an answer can
+  bring (`web/src/bridge/pushOnce.ts`), and acts on a push the first time it sees its
+  cursor, whichever way it came. A copy with no cursor is always acted on. Selecting a pilot
+  starts the memory afresh, since a new session numbers its events from one again.
+- The stream still records what came on it and where it has read to, news or not.
+
+**Proof.**
+
+- Tests: 11 new, and 2 changed to the new shape of an answer's push. 29 ways of breaking it;
+  one got through, a line that did nothing, and it was taken out.
+- **In the browser, on the game port**, eve.js `e066a81e9`, as Test Two, the agent's window
+  and the mission's page both open:
+
+  | what was done | before | now |
+  |---|---|---|
+  | Accept | `mission-objectives` twice, `journal` three times | once, and twice |
+  | Remove Offer on a journal line | `journal` twice | once |
+  | Undock | | `mission-objectives` once; the window's talk refused 409 eight times while the session changed, then answered once, and its layout read |
+  | Dock | | `mission-objectives` once; the talk refused once, then answered once |
+
+  The server's log for the Accept: one `OnAgentMissionChange`, then `GetMissionObjectiveInfo`
+  (the page), `GetMyJournalDetails` (the push), the window's three reads for its layout, and
+  `GetMyJournalDetails` again.
+- **The two transports, by script**: the game port's answer to a Remove Offer brings its push
+  with a cursor (sequence 3 in that session); the gateway's brings the same push with none.
+- **The staging was undone.**
+
+**What is still read twice.**
+
+- **The journal after an agent's button is pressed**: once for the push, and once because the
+  page's own `chooseAction` ends by reading it. The client makes no such read. The page's bots
+  press buttons through the same function and may count on the journal being fresh when it
+  answers, so it was left; it is on the list below.
+- **Everything on the gateway**, where the answer's copy cannot be told from the stream's.
+  The server's web gateway would have to number what it keeps for an answer. Not asked for:
+  the retail client is not affected, so it is no server defect by this loop's rule.
+
+### Where the pilot is now
+
+**Seen live** during the check above: after undocking, the mission's page still said the
+pick-up was "This station" and ticked it, and so did the agent window's pane.
+
+**Why.** Both took the pilot's place from where it was when it was selected. That record does
+not follow an undock, a dock or a jump; the flight status does.
+
+**What the client does**: it reads its session (`session.stationid`, `session.solarsystemid2`,
+`session.locationid`) each time it marks an objective (`mission.py` 249,
+`objectivesteps.py` 150).
+
+**What was built.** `web/src/bridge/sessionPlace.ts`: the three, from the flight status once
+it has been read, and from the selection before that. The pane and the page both go by it.
+
+**Proof.** 6 new tests; 15 ways of breaking it, all caught. Suite: 9439 tests, 9415 pass,
+0 fail, 24 skipped. **In the browser, on the game port**: docked, "✓ Pickup Location" with
+"This station"; undocked, "○ Pickup Location" with "This solar system", and the pane's tick
+gone too; docked again, the tick and "This station" back.
+
+**Seen on the way, and not looked into.** After Accept the agent's window offered Complete
+Mission and Quit. After an undock and a dock, when the window talked to the agent again, it
+offered only Quit. Both are the server's answers. Which the client would be given on a fresh
+talk about an accepted mission the Tranquility recordings would say.
+
+### Next
+
+1. What an agent offers on a fresh talk about a mission already accepted: this server said
+   Quit alone, where straight after Accept it said Complete Mission and Quit. Settle it from
+   the Tranquility recordings; a server defect goes to a sub-agent.
+2. The agent's cards: its level, its division's name (the client's built data), its
+   corporation and faction, the pilot's effective standing with it. They belong on the
+   mission's page and above the agent's window both.
+3. The client's short written interval (`FormatTimeIntervalShortWritten`), for the journal's
+   line, the page's time left and the bonus's countdown.
+4. Around a place's name: the security rating before it, the low-security warning, how many
+   jumps away it is (the page has no route of its own yet), and the reduced-rewards banner.
+5. The page's own read of the journal after an agent's button: gone, if nothing of the page's
+   own counts on it, with the push doing the work as it does for Remove Offer.
+6. The ledger's unread pairs, most called first: the inventory and wallet reads, then the
+   writes on `ship` and `dogmaIM`.
+7. The scanner the client's way: results kept from the server's word, a probe's destination
+   and range kept here and sent with the scan.
+8. Phase 3's writes, feature by feature, each set beside what the client sends.
+9. Small, around dialogs: the title for a dialog's kind, the "do not ask again" box, the typed
+   codes not done.
+10. Small, in space: an overview row's speed columns the client's way; the bar the client
+    fills while a ship lines up for a warp; a warp ordered at a bookmark or a fleet member.
+11. Small, before a character is chosen: selecting on the account's own connection; the count
+    of names checked.
+12. Small, in Ready Fit: the capacity the client never asks for; the window following a change
+    of pilot.
+13. In the park, if a server ever sends a ball that needs them: MISSILE, FORMATION, MUSHROOM;
+    a fixed ball's collision shapes and the partition's order.
+14. If a server ever sends one: a special interaction drawn as the client draws one; messages
+    inside messages.
+15. More of the client's built data as it is needed: one line in `TABLES` for each (dungeons
+    for ship restrictions, divisions for an agent's card).
