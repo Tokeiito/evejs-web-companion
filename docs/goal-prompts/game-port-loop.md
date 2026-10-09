@@ -290,8 +290,8 @@ Take these defaults, and list each under "For the operator" in the log so they c
   `/api/bridge/contracts/create` and `accept` through the gateway BFF), a search differed and
   a server defect was behind it. Stage what a list route lists before trusting a pass of it.
 - **What a pass of the parity tool reads when nothing is wrong** (since 2026-10-09, as Test Two,
-  docked): 21 identical, 12 tolerated, 1 divergent, and no "moved" at all. The one divergent
-  is the corporation's members route. Anything else is news: read it.
+  docked): 21 identical, 13 tolerated, nothing moved, nothing divergent, and the tool exits 0.
+  Anything else is news: read it.
 - **What the parity tool calls moved is a reading, not a fact.** It prints a `moved?` line for
   each value it puts down to time passing between its two reads, with both values: read them.
   A clock is a clock, and the tool leaves the server's own (`serverNowMs`) and a search's own
