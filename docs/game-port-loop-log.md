@@ -11953,3 +11953,237 @@ for the figures each time it opens.
 49. Waiting on the operator's word: the skill history in Tranquility's form (a `CRowset` of `(logDate,
     eventTypeID, skillTypeID, relativePoints, absolutePoints)`), by a sub-agent, and this repository's reading of
     it.
+
+## 2026-10-09 — a player's corporation, alliance or character, named as the client names it
+
+Commit `061e089`, pushed. Item 8 of the last list, taken ahead of the rest of item 1 (see the
+decisions).
+
+**What the retail client does** (the Tranquility recordings, searched first: `GetMultiOwnersEx` is
+in 29 files; then `carbon/common/script/sys/cfg.py` and `eveCfg.py`).
+
+- It names an owner from `cfg.eveowners`. NPCs' owners are in its own built data. Any other it
+  asks the server for: `config.GetMultiOwnersEx(a list of IDs)`, by name, every owner it does
+  not have yet in one call.
+- It keeps each row answered, `(ownerID, ownerName, typeID, gender, ownerNameID)`, and does not
+  ask again about an owner it got no row for.
+- The recorded Tranquility login has the call 53 times with one ID each, and at least once with
+  a long list.
+
+**What the BFF did.** Its names route answered from its static tables. Those did not have Test
+Two's corporation or alliance, and the Character Sheet read "Unknown corporation" and "Unknown
+alliance". Nothing of ours asked the game server for a name.
+
+**What was built.**
+
+- On the game port the transport asks as the client does, one call for the owners it does not
+  know, and keeps every row for as long as the pilot is on.
+- The names route asks it for a corporation, alliance or character that the static tables cannot
+  name and whose ID is a player owner's.
+- A row names an owner only as the kind of thing its type says it is. With no pilot online the
+  route says it does not know, so the page asks again.
+
+**Proof.**
+
+- Tests: 5 more (2 of the transport, 3 of the route). 33 ways of breaking it were tried. One
+  survived at first, the lowest ID taken for a player's, and led to cases at that edge. All are
+  caught now.
+- Suite: 9782 tests, 9758 pass, 0 fail, 0 cancelled, 24 skipped. No test process left behind.
+- **What the server really answers**, read off a game-port session first: the columns and a row
+  for every ID asked about, each name a raw string; for an ID that is no owner a row of type
+  nought named "Item" and the ID.
+- **Through the BFF, by script, as Test Two:**
+
+  | Asked about | On the game port | On the gateway |
+  |---|---|---|
+  | its corporation | Elysian Industries | unknown, as before |
+  | its alliance | Elysian | unknown, as before |
+  | another pilot of its corporation | named by the static tables | the same |
+  | an NPC corporation | named by the static tables | the same |
+  | a corporation's ID nobody has | unknown | unknown |
+  | its corporation's ID, as an alliance | unknown | unknown |
+
+  The server's log has one `GetMultiOwnersEx` for it, with the three IDs the static tables could
+  not name. Asked the same again, the route asked the server nothing.
+- **In the browser, on the game port, as Test Two:** the Character Sheet reads "Corporation
+  Elysian Industries" and "Alliance Elysian". No window reads "Unknown corporation" or "Unknown
+  alliance". The server's log has one asking, for the two, for that session. Logged out with
+  the page's own button.
+- **On both transports, by script:** two passes of the parity tool, both 19 identical, 10
+  tolerated, 2 moved, 3 divergent, as it was. The names route is not one of its routes, and on
+  it the two transports now differ, as the table says.
+- `docs/game-port-login-calls.md`, made again: 48 kinds of the client's 100 are asked by nothing
+  of ours now (50 before), 13 by a feature, 29 at login.
+- The ledger: 100 pairs, none differing, 20 unchecked, one the web's alone.
+- Nothing was staged: the checks only read.
+
+**Decisions taken in the operator's place.**
+
+- **I took this ahead of the station's login calls.** It was a wrong word on a window anyone
+  opens, and the station's three calls feed nothing the page shows.
+- **A row of type nought names nothing.** This server answers "Item 98999999" for an ID that is
+  no owner. A client would show that. The page says it does not know the owner.
+- **The gateway is left as it was.** It has no such call, so the two transports answer this
+  route differently for a player's owner.
+- **The call is the transport's own.** It is not on the BFF's list of calls, so no route can ask
+  it by name and the registry's table has no entry for it. A short list beside the table names
+  it for the login report.
+
+**Seen and not repaired.**
+
+- **The login report's "by a feature" does not mean a feature asks.** It means the call has an
+  entry in the registry. `station.GetGuests`, `stationSvc.GetStationItemBits` and
+  `map.GetStationInfo` are so marked, and nothing of ours asks any of them but the route that
+  passes on any call. I had read the column as its words say.
+- **The static tables name Test Two's corporation mate and not its corporation or alliance.**
+  Where they read a player's owner from, and why one is there and the other not, I did not look
+  into.
+- The client's other names are asked for by nothing of ours: corporations' tickers, alliances'
+  short names and places (`GetMultiCorpTickerNamesEx` in 18 recordings,
+  `GetMultiAllianceShortNamesEx` in 9, `GetMultiLocationsEx` in 23).
+
+**Not seen working.**
+
+- A name asked for before a pilot is online and learned once one is, and an asking refused:
+  tests only.
+
+**Not done.**
+
+- The station's guests and services at login, which this iteration set out to do.
+
+### Next
+
+1. The login's calls, service by service, each done as the fleet, the standings, the skills, the journal, the
+   agents' table, the corporation's registry, the address book, the alliance's registry, the notifications, the
+   calendar and the contracts' figures were. Next: the station's guests and services (`station.GetGuests`,
+   `stationSvc.GetStationItemBits`, `map.GetStationInfo`, `officeManager.GetMyCorporationsOffices`), with
+   something of the page to show them; the hangar's and the ship's lists; then what of the 48 kinds nothing of
+   ours asks is worth asking. Each looked for in every folder of the recordings first, then read in the
+   decompiled service.
+2. The skills' rest: the page's "Stop training" as the client's Pause (`AbortTraining`, the queue
+   kept and shown stopped, started again by a save); the queue trimmed and an alpha's levels
+   refused as the client does both; a skill lent by an expert system shown at its lent level; a
+   booster running out while a skill trains, and an alpha clone's rate; the attributes' three at
+   login, for what makes a client ask them then; an implant plugged and a booster taken, for the
+   readings after them seen live; a level finishing by itself; `bound-skills`' three probes that
+   are not the client's calls as they stand.
+3. The checks on a held call that no test I ran would miss: a read let through while a pilot's
+   colonies are exported, and the session still being the one held. Each given a test, or found
+   in the suite.
+4. The standings' rest: the character's own race's faction at 0.0; one owner's history
+   kept and forgotten as the client does, and its two reads set beside the client's;
+   `OnStandingsModified` seen live.
+5. The same login report for a login in space, and for the game port with the page's
+   panels open.
+6. Around the fleet, what is left: `SendBroadcast` and `MassInvite`; `fleetMgr`'s
+   watchlist and broadcasts (the watchlist's second argument first); `fleetProxy`'s
+   adverts and `GetAvailableFleetAds`, and with them a pilot applying to a fleet, for the
+   join requests seen live; an invite from a pilot in no fleet forming one first; the cost
+   of contacting; the pilot's own kicking as a leaving, and a disbanding refused here as
+   the client refuses it.
+7. What becomes of a bound object the client has done with (`moniker.py`
+   `__ClearBoundObject`: `DisconnectObject` after a delay): read in the client, looked for
+   in the recordings, and done so. The handles the BFF asks for and drops are among them.
+8. The client's other names, asked of the server as it asks them: corporations' tickers, alliances' short
+   names and places (`GetMultiCorpTickerNamesEx`, `GetMultiAllianceShortNamesEx`, `GetMultiLocationsEx`).
+9. The login report's "by a feature" made to say what is so: it marks a call that has an entry in the
+   registry, whether or not anything of ours asks it.
+10. The corporation routes' other calls read against the client: the ledger has 11 unchecked
+    (`GetStructureReinforceDefault`, `DoesMyCorpAcceptStructures`, `DoesCorpRestrictCorpMails`,
+    `GetApplications`, `GetOldApplications`, `GetMyOldApplications`, `GetAllianceApplications`,
+    `GetCorpWelcomeMail`, `GetMembersPaged`, `GetMemberTrackingInfo`, `GetMemberTrackingInfoSimple`).
+11. The members route made the same on both transports: member tracking is a cached call's wrapper
+    through the gateway and rows on the game port, and a packed row's 64-bit columns are strings on
+    one and numbers on the other. Before a window of the page reads it.
+12. The alliance's other pairs read against the client: the five asked by name (`GetAlliancePublicInfo`,
+    `GetAllianceMembers`, `GetAllianceMembersOlderThan`, `GetDaysInAlliance`, `GetEmploymentRecord`),
+    `GetBillBalance` (the BFF asks it with nothing, the client with a bill's ID), and the ten writes.
+13. A bind in flight when the session's corporation or alliance changes: what is asked next waits for it and
+    takes its object for the new one's. Forget a bind with the moniker it was for.
+14. A pilot's applications kept as its client keeps them, once the pilot-training onboarding no
+    longer reads a trainee's list straight after an officer's change to it (it could wait for the
+    server's word, or ask afresh).
+15. A Contacts window, and with it the address book kept as the client keeps it: the pilot's contacts, its
+    corporation's and alliance's, and who is online, each worked over at the server's notices
+    (`OnPersonalContactsUpdated`, `OnPersonalContactsAdded`, `OnPersonalContactsDeleted`,
+    `OnOrganizationContactsUpdated`, `OnContactNoLongerContact`, `OnContactSlashCommand`,
+    `OnContactLoggedOn`, `OnContactLoggedOff`).
+16. The notifications' rest: one of the server's three notices seen reaching a pilot who is online; the six
+    writes read against the client (a list of IDs goes out as a plain array); the page's read of group 0,
+    which is no group; and a new notification worked into the kept lists in place, as the client does.
+17. The calendar's rest: the pilot's answers to invitations asked for once and kept
+    (`GetResponsesForCharacter`, asked at every read of the route now), an opened event's details kept, and one
+    of the three notices seen reaching a pilot.
+18. The contracts' login figures used as the client uses them, for notices of contracts that want attention,
+    and asked once in a session (the page's Contracts window asks again as it opens).
+19. The presence route's `Prime` taken out: the client never asks the server for it.
+20. Around the contracts: "Offered to you" from the owner's list; the corporation's lists;
+    a rowset read where a server answers one; the search with something staged for each of
+    its filters, on both transports; what the sub-agent left in the server (the operator's
+    section). And the same fault elsewhere in the server: a search of its services for a
+    keyword read as a plain property, with no helper in the file, names two more
+    (`seasonManagerService.js`, `dungeonService.js`). Neither was read.
+21. Around a fitted module: the recording read past `SetModuleOnline`'s answer, and this
+    server's fit set beside it; the recording of ammunition loaded while docked, and charges
+    in slots as godma holds them; the Fitting panel's cargo figure after a module's state
+    changes; a refusal to put one online shown as the client shows it; the dogma route
+    answered from godma's priming instead of its own `GetAllInfo`.
+22. Something staged for every list route that has only been compared empty (the market's
+    orders, the mail, the calendar, the corporation's hangars), and the parity pass read
+    again.
+23. A ship with several modules fitted and a hold with a packaged ship in it, staged: the
+    Fitting window's figures and the client's sums, each set beside the server's.
+24. The walk in space: undocked, every panel and the space view, the store put aside first
+    and put back after; its unread pairs read; the ship's moniker seen kept, and the skill
+    handler's; an agent talked to and a ship boarded for the monikers the BFF asks for; a
+    fleet formed there.
+25. The ledger counting what was sent, not what the BFF asked for: where a moniker is made
+    and not bound, and where a call is shared. (The skill handler's kept reads are counted as
+    sent already.)
+26. The parity tool taking a duration the server measures for what it is (`searchTime`), as
+    it takes a clock, and a read that takes what it reads (`GetSkillChangesForISIS`). And the notices a session got at login kept out of the first route's reading
+    (`/api/bridge/flight/status` reads moved by them).
+27. The routes that answer from the store or the gateway's snapshot, listed, and each set
+    beside what the client asks. The pages for pilots who are not signed in are among them.
+28. Phase 3's writes, feature by feature, each set beside what the client sends, each
+    looked for in every folder of the recordings first.
+29. The wallet's "Market Transactions", and the lines the client derives from a transaction.
+30. The avoidance list's own window, and a route plotted again when a setting changes under it.
+31. Around a place's name, the last of it: the outlaw's warning (the pilot's own security
+    status). The agent's own window's steps, if the client's say how far.
+32. The page's own read of the journal after an agent's button: gone, if nothing of the page's
+    own counts on it, with the push doing the work as it does for Remove Offer.
+33. The agent's cards above its own window, where the client's window has its own header.
+34. The scanner the client's way: results kept from the server's word, a probe's destination
+    and range kept here and sent with the scan.
+35. Small, around dialogs: the title for a dialog's kind, the "do not ask again" box, the typed
+    codes not done.
+36. Small, in space: an overview row's speed columns the client's way; the bar the client
+    fills while a ship lines up for a warp; a warp ordered at a bookmark or a fleet member.
+37. Small, before a character is chosen: selecting on the account's own connection; the count
+    of names checked.
+38. Small, in Ready Fit: the window following a change of pilot.
+39. Small, in words: an interval's `shortForm` and `writtenFormTwoPart`; the bonus's
+    countdown; a place's rating in its colour and its name as a link.
+40. In the park, if a server ever sends a ball that needs them: MISSILE, FORMATION, MUSHROOM;
+    a fixed ball's collision shapes and the partition's order.
+41. If a server ever sends one: a special interaction drawn as the client draws one; messages
+    inside messages.
+42. More of the client's built data as it is needed: one line in `TABLES` for each (dungeons
+    for ship restrictions); the client's own map, to set beside this server's.
+43. When there is a recording of it: a courier's agent talked to again where the pilot
+    accepted, before the package has gone anywhere (the operator's section); and a mission
+    paid in a system of the safest class, for whether its ISK is reduced.
+44. Other things asked once beside the store, and other panels' effects, looked at for the
+    faults of earlier entries.
+45. The pathfinder's ties: how the order of the map's jumps settles them, and the order the
+    client's own map is in.
+46. Jumps in the assets and contracts lists, the autopilot's way, where the page lists them.
+47. A wreck opened with its type said: no capacity, as the client has none for one.
+48. Why a call sent right behind the table of agents is answered 50 to 80 ms late, and whether
+    the table should wait until the pilot's first readings are in.
+49. Waiting on a recording: no skill sent when an implant or a booster moves a training skill's points (a
+    server's, to be measured against Tranquility first).
+50. Waiting on the operator's word: the skill history in Tranquility's form (a `CRowset` of `(logDate,
+    eventTypeID, skillTypeID, relativePoints, absolutePoints)`), by a sub-agent, and this repository's reading of
+    it.
