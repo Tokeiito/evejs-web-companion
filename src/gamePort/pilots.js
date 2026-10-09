@@ -472,11 +472,15 @@ function createGamePortPilots({
 
   // ── what the server pushes ────────────────────────────────────────────────
 
+  // The retail client is told a thing once, on its one connection. Here a notification goes out twice: on
+  // the pilot's stream as it arrives, and with the next answer, which is what a reader with no stream has.
+  // So the copy kept for the answer names the stream frame it also went out in (its cursor), and a reader
+  // that has both can tell they are one.
   function record(entry, notification) {
     if (SUPPRESSED_NOTIFICATIONS.has(notification.method)) return;
-    entry.backlog.push(notification);
+    const frame = publish(entry, { kind: "notification", notification });
+    entry.backlog.push(Object.freeze({ ...notification, cursor: frame.cursor }));
     if (entry.backlog.length > BACKLOG_LIMIT) entry.backlog.splice(0, entry.backlog.length - BACKLOG_LIMIT);
-    publish(entry, { kind: "notification", notification });
   }
 
   /** One event on the pilot's stream, for whoever is listening now and whoever resumes from before it. */
@@ -493,6 +497,7 @@ function createGamePortPilots({
     entry.history.push(frame);
     if (entry.history.length > STREAM_HISTORY_LIMIT) entry.history.shift();
     for (const subscriber of [...entry.subscribers]) deliver(subscriber, frame);
+    return frame;
   }
 
   // ── what the server asks the user ─────────────────────────────────────────

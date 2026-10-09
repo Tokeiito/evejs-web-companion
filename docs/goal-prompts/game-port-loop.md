@@ -297,9 +297,11 @@ Take these defaults, and list each under "For the operator" in the log so they c
   an undock, dock or jump is sent until it has settled. The server's pushes about the change
   reach the page before that. Anything the page does on such a push has to wait the refusal
   out, as the agent's window does (`whenThePilotIsFree` in `web/src/app/flow.ts`).
-- **A push caused by the pilot's own call reaches the page twice**: on the live stream as it
-  happens, and again with the call's answer (both transports keep the notification for the
-  answer as well as streaming it). Whatever acts on a push has to be harmless done twice.
+- **A push reaches the page on the live stream and again with the next answer** (both
+  transports keep a copy for the answer as well as streaming it). On the game port the
+  answer's copy carries the cursor of its stream event, and the page acts on a push once
+  (`web/src/bridge/pushOnce.ts`). On the gateway the answer's copy carries none, so there
+  both are still acted on: whatever acts on a push has to be harmless done twice.
 - **The BFF runs one write per pilot at a time** (`CHARACTER_IN_USE`). Anything that must get
   through while a write is waiting on the server, as an answer to its question must, has to be
   let past that gate in `src/server.js`, and tested with a write in flight.

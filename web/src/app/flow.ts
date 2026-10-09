@@ -74,6 +74,7 @@ import {
   type MissionChange,
 } from "../bridge/agents.ts";
 import { sessionChangeNames } from "../bridge/sessionChange.ts";
+import { createPushLedger } from "../bridge/pushOnce.ts";
 import { decodeMissionTimes } from "../bridge/missionTime.ts";
 import { decodeObjectives } from "../bridge/missionObjectives.ts";
 import { decodeClientMission, pageObjectives, pageOnMissionChange, type ClientMission } from "../bridge/missionPage.ts";
@@ -1747,6 +1748,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       const method = typeof notification.method === "string" ? notification.method : null;
       const args = Array.isArray(notification.args) ? (notification.args as unknown[]) : [];
       const receivedAtMs = Date.now();
+      // The stream's own record of what came on it, and where it has read to, whether or not the push is news.
       store.apply({
         type: "live/notification",
         epoch,
@@ -1759,9 +1761,16 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           args,
         },
       });
-      applyPushedNotification(method, args, receivedAtMs);
+      // An answer may have brought this push already (bridge/pushOnce.ts).
+      if (pushesTaken.take(record.cursor)) {
+        applyPushedNotification(method, args, receivedAtMs);
+      }
     }
   }
+
+  // Which of the server's pushes have been acted on. The client hears each once; this page can hear one on
+  // the stream and again with an answer.
+  const pushesTaken = createPushLedger();
 
   // --- R24 slices C + D: acting on what the push channel carries -------------
   //
@@ -1835,6 +1844,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       const row = entry as Record<string, JsonValue>;
       const method = typeof row.method === "string" ? row.method : null;
       if (method === null) {
+        continue;
+      }
+      // The stream may have brought this push already (bridge/pushOnce.ts).
+      if (!pushesTaken.take(row.cursor)) {
         continue;
       }
       applyPushedNotification(method, Array.isArray(row.args) ? row.args : [], receivedAtMs);
@@ -13038,6 +13051,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       confirmedRecoveryIDs.clear();
       recoveryCheckID = null;
       recoverySignal.set({ phase: pilotRecoveryEnabled ? "checking" : "ready", reason: null });
+      // A new session numbers its events from the start again.
+      pushesTaken.clear();
       store.apply({ type: "character/selected", characterID });
       recoveryCheckID = result.droneRecoveryCheckID;
       store.apply({

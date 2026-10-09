@@ -1704,3 +1704,82 @@ test("an answer for one agent's mission is not written to another agent's page, 
   assert.equal(store.agents.get().missionPage?.agentID, OTHER_AGENT);
   assert.equal(store.agents.get().missionPage?.objectives?.missionState, 2);
 });
+
+// --- what the server says once, taken once ---------------------------------------------
+//
+// The stream's frames in these tests are numbered from 1 in epoch "epoch-1" (the helper's push). An answer
+// that brings the same push says so by carrying the same cursor, as the game port's answers do.
+
+/** A pilot whose "Remove Offer" is answered with the push it caused, numbered as given (or not numbered). */
+async function withAnsweredPush(cursor: { epoch: string; sequence: number } | null) {
+  const drained = { kind: "service", service: "agentMgr", method: "OnAgentMissionChange", idType: null, args: ["offer_removed", 3008416], kwargs: null, ...(cursor === null ? {} : { cursor }) };
+  const made = await listening({ null: ACCEPTED }, {
+    routes: (path) => (/\/remove-offer$/.test(path) ? [200, { ok: true, result: null, notifications: [drained] }] : undefined),
+  });
+  /** How often the journal has been read since the page loaded: once for each push acted on. */
+  const journalReads = () => made.requests.filter((request) => request.path === "/api/bridge/journal").length;
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 25));
+  return { ...made, journalReads, settle };
+}
+
+test("a push that came on the stream is not acted on again when an answer brings it", async () => {
+  const { store, flow, push, journalReads, settle } = await withAnsweredPush({ epoch: "epoch-1", sequence: 1 });
+  await flow.openConversation(3008416);
+  await push("OnAgentMissionChange", ["offer_removed", 3008416]);
+  assert.equal(journalReads(), 1);
+  assert.equal(store.agents.get().activeAgentID, null);
+  await flow.removeOffer(3008416);
+  await settle();
+  assert.equal(journalReads(), 1);
+});
+
+test("a push an answer brought is not acted on again when the stream brings it, and the stream still records it", async () => {
+  const { store, flow, push, journalReads, settle } = await withAnsweredPush({ epoch: "epoch-1", sequence: 1 });
+  await flow.removeOffer(3008416);
+  await settle();
+  assert.equal(journalReads(), 1);
+  await push("OnAgentMissionChange", ["offer_removed", 3008416]);
+  assert.equal(journalReads(), 1);
+  // What came on the stream is kept as what came on the stream, and where it has read to.
+  const live = store.live.get();
+  assert.equal(live.sequence, 1);
+  assert.deepEqual(live.notifications.map((notification) => notification.method), ["OnAgentMissionChange"]);
+});
+
+test("two pushes that say the same thing are two pushes: each is acted on", async () => {
+  // The answer's is the stream's second event, not its first.
+  const { flow, push, journalReads, settle } = await withAnsweredPush({ epoch: "epoch-1", sequence: 2 });
+  await push("OnAgentMissionChange", ["offer_removed", 3008416]);
+  assert.equal(journalReads(), 1);
+  await flow.removeOffer(3008416);
+  await settle();
+  assert.equal(journalReads(), 2);
+  // And then that second event comes on the stream too.
+  await push("OnAgentMissionChange", ["offer_removed", 3008416]);
+  assert.equal(journalReads(), 2);
+});
+
+test("an answer's push that is not numbered cannot be told from the stream's, and both are acted on", async () => {
+  // The web gateway's answers: nothing says which stream event a drained push is.
+  const { flow, push, journalReads, settle } = await withAnsweredPush(null);
+  await push("OnAgentMissionChange", ["offer_removed", 3008416]);
+  await flow.removeOffer(3008416);
+  await settle();
+  assert.equal(journalReads(), 2);
+});
+
+test("the same answer twice is one push; after the pilot is selected again its numbers are new ones", async () => {
+  const { flow, requests, journalReads, settle } = await withAnsweredPush({ epoch: "epoch-1", sequence: 1 });
+  await flow.removeOffer(3008416);
+  await settle();
+  await flow.removeOffer(3008416);
+  await settle();
+  assert.equal(journalReads(), 1);
+
+  await flow.selectCharacter(LISTENING_PILOT);
+  await flow.loadJournal();
+  requests.length = 0;
+  await flow.removeOffer(3008416);
+  await settle();
+  assert.equal(journalReads(), 1);
+});

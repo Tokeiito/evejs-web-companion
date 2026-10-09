@@ -213,11 +213,16 @@ test("select answers as the gateway's does: the call, the session echo, and what
     corporationID: 1000044,
     shipID: SHIP,
   });
-  // The character's session change, and not the account's from the login before it.
-  assert.deepEqual(outcome.notifications, [{
+  // The character's session change, and not the account's from the login before it. It is the session's
+  // first event, and says so: its cursor is the one its frame on the stream has.
+  assert.equal(outcome.notifications.length, 1);
+  const { cursor, ...change } = outcome.notifications[0];
+  assert.deepEqual(change, {
     kind: "sessionchange", service: null, method: "OnSessionChanged",
     args: [{ charid: [null, PILOT], stationid: [null, STATION] }], kwargs: null,
-  }]);
+  });
+  assert.equal(cursor.sequence, 1);
+  assert.equal(typeof cursor.epoch === "string" && cursor.epoch.length > 0, true);
 });
 
 test("select is refused, and the connection closed, when the server's account is not the BFF's", async () => {
@@ -495,10 +500,12 @@ test("every answer drains what the server pushed since the last one", async () =
   session.notify("OnItemsChanged", [1, 2]);
   session.notify("OnAgentMissionChange", [Buffer.from("offered"), 3008416], "agentMgr");
   const first = await pilots.callMethod("station", "GetGuests", [], null, { userid: ACCOUNT }, handle);
-  assert.deepEqual(first.notifications, [
+  assert.deepEqual(first.notifications.map(({ cursor, ...notification }) => notification), [
     { kind: "client", service: null, method: "OnItemsChanged", idType: "charid", args: [1, 2], kwargs: null },
     { kind: "service", service: "agentMgr", method: "OnAgentMissionChange", idType: null, args: ["offered", 3008416], kwargs: null },
   ]);
+  // Numbered after the session change that selecting drained.
+  assert.deepEqual(first.notifications.map((notification) => notification.cursor.sequence), [2, 3]);
   assert.deepEqual((await pilots.callMethod("station", "GetGuests", [], null, { userid: ACCOUNT }, handle)).notifications, []);
   session.change({ shipid: [SHIP, 77] });
   assert.equal((await pilots.readFlightStatus(handle, { userid: ACCOUNT })).notifications[0].method, "OnSessionChanged");
@@ -506,6 +513,29 @@ test("every answer drains what the server pushed since the last one", async () =
   assert.equal((await pilots.readSpaceSnapshot(handle, { userid: ACCOUNT })).notifications.length, 1);
   session.notify("OnY");
   assert.equal((await pilots.readScannerState(handle, { userid: ACCOUNT })).notifications.length, 1);
+});
+
+test("what an answer drains names the stream frame it also went out in, so a reader with both can tell they are one", async () => {
+  const { pilots, session, handle } = await selected();
+  const frames = [];
+  pilots.openSessionEventStream({ bridgeSessionID: handle, userid: ACCOUNT, onFrame: (frame) => frames.push(frame) });
+  await Promise.resolve();
+  session.notify("OnItemsChanged", [1, 2]);
+  // What is not kept takes no number.
+  session.notify("DoDestinyUpdate", [[1, 2, 3]]);
+  session.notify("OnAgentMissionChange", [Buffer.from("offered"), 3008416], "agentMgr");
+  const drained = (await pilots.callMethod("station", "GetGuests", [], null, { userid: ACCOUNT }, handle)).notifications;
+  const streamed = frames.filter((frame) => frame.type === "event");
+  assert.deepEqual(streamed.map((frame) => frame.cursor.sequence), [2, 3]);
+  assert.deepEqual(drained.map((notification) => notification.cursor), streamed.map((frame) => frame.cursor));
+  // The stream's own copy is as it was: the frame carries the cursor, and the notification inside it does not.
+  assert.deepEqual(streamed.map((frame) => Object.keys(frame.event.notification).includes("cursor")), [false, false]);
+  assert.deepEqual(streamed.map((frame) => frame.event.notification.method), drained.map((notification) => notification.method));
+  // With nobody on the stream the answer's copy is numbered all the same: a reader may attach later and be replayed to.
+  const alone = await selected();
+  alone.session.notify("OnItemsChanged");
+  const kept = (await alone.pilots.callMethod("station", "GetGuests", [], null, { userid: ACCOUNT }, alone.handle)).notifications;
+  assert.deepEqual(kept.map((notification) => notification.cursor.sequence), [2]);
 });
 
 test("destiny updates are not kept, as on the gateway", async () => {
