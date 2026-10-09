@@ -344,6 +344,16 @@ Take these defaults, and list each under "For the operator" in the log so they c
   ended before the store is put back. `haul-stage.sh` stages a colony's two pins with the
   server stopped, and `gm-run.js` gives the pilot the hauler (`/giveskill me 3340 1`,
   `/giveitem 655 1`).
+- **A byte in a recording's marshal is an opcode before it is a number.** `` is the integer
+  nought, `	` one, `` minus one, `` None, `$` an empty tuple, `,` a tuple of two,
+  `/` a long with its length after it, `
+` a float of eight bytes, `` a dict with its
+  count after it (each entry its value first), `` a name out of the string table. A note
+  beside one recording had `GetInventoryFromId(officeID, 8)` where the wire has nought. Read
+  the bytes, not the note.
+- **A pair added to the BFF's write list changes a generated file.** `node
+  scripts/build-bridge-contract.js --write` rewrites `contracts/evejs-web-bridge-contract.json`,
+  and a test holds the two together. Read the diff: it should be the pair and nothing else.
 - **eve.js's tests run through its own runner**, from that repository's root:
   `npm run test:isolated -- server/tests/<file>.test.js`. A bare `node --test` of one refuses
   to open the store and reads as one failed test.

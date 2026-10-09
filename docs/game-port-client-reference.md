@@ -884,11 +884,34 @@ kind of thing its type says it is, and a row of type nought names nothing. With 
 the route says it does not know, so that the page asks again. On the gateway nothing changed.
 The call is the transport's own: no route of the BFF's can ask it by name.
 
-**The customs export's call shape.** `src/piCustomsExport.js` binds `invbroker` with the office ID
-and calls `ImportExportWithPlanet` on that. The client goes through `invCache`: it binds the
-broker for a location, asks it for the office's inventory, and calls that. eve.js accepts both.
-Its commodity dict now goes out in the client's dict order, which is exact unless two type IDs
-want the same slot (the client fills it from another dict whose own order is not reproduced).
+**At a customs office, 2026-10-09.** What the client's window sends (`importExportUI.py` 383 and
+549), as Tranquility's recording of an export has it on the wire:
+
+| Step | The call | Recorded |
+|---|---|---|
+| The office's inventory | `GetInventoryFromId(officeID, 0)` on the inventory manager for where the pilot is | on the manager's bound object, both positional |
+| What it holds | `List(flag=4)`, `GetSelfInvItem()`, `List(flag=None)`, `List(flag=0)` on the office's inventory | in that order, before the transfer |
+| Its tax rate | `eveMoniker.GetPlanetOrbitalRegistry(session.solarsystemid).GetTaxRate(officeID)` | `MachoResolveObject(systemID)`, then `MachoBindObject(systemID, ('GetTaxRate', (officeID,), {}))`: a Moniker made for the call, three times in one export |
+| The transfer | `ImportExportWithPlanet(spaceportPinID, importData, exportData, taxRate)` on the office's inventory | `(pinID, {}, {2398: 100.0}, 0.20000000149011612)`, all positional |
+
+What comes down is a dict of quantities by the item in the office, what goes up a dict of
+quantities by type, and the rate is the one the registry answered. Tranquility's quantity is a
+float because its colony's pins hold floats. This server's pins hold whole numbers, so a client
+of it sends whole numbers. A note beside that recording reads the second argument of
+`GetInventoryFromId` as 8: the byte is ``, which is the marshal's code for the integer
+nought.
+
+The BFF has a route that makes the rate's call and the transfer on the pilot's own session
+(`/api/bridge/planet/customs/export`), in space only, as the window is. The game port carries
+the transfer and the web gateway's list has not got it, so the transport has a short list of
+its own beside the gateway's (`GAME_PORT_ONLY_CALLS`). Through the gateway the route is
+refused.
+
+Not the client's yet: the page's haul does not use that route. It sends the launchpads up
+before its bot starts, docked, through `src/piCustomsExport.js`, which logs a second game-port
+client in for it, asks the rate by the service's name, and binds `invbroker` with the office's
+ID. This server takes both. And the page reads an office as it reads any container, with one
+`List`, not the window's four reads.
 
 **Asking with a cached version.** When the client already holds an answer, it sends that answer's
 version as `machoVersion`, and the server can reply "still good" instead of the answer. We always
