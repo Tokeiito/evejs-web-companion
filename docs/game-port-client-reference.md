@@ -68,6 +68,7 @@ password, which is how H10 is tied to a real client login.
 | P6 | Every call's keywords carry `machoVersion`, 1 unless a cached answer supplies another | S | matches (always 1; no answer cache yet) |
 | P6a | Keywords go out in the order of the client's own dict, which a service call and a bound-object call build differently (below) | S, O | matches |
 | P7 | A Moniker resolves first (`MachoResolveObject(bindParams)` to any node), then binds on the node that names (`MachoBindObject(bindParams, call)`) | S, L | matches, V |
+| P7a | One call at a time of any one thing (`machobase.ThrottledCall`, from `ServiceCallGPCS` 697 and `ObjectCallGPCS` 616): the same call made again while it is out (the same service or object, method, `str(args)`, `str(kwargs)`) is not sent, waits, and takes the first one's answer. A call that failed is no answer: the first of those waiting asks for itself. No client call opts out (`noCallThrottling` is passed nowhere outside the net code) | S, and a Tranquility recording ("Sharing result for call ('N=...', 'GetInitState', '()', '{}') ... for 1 waiting threads") | matches, V: three of one call at once were one packet, and two binds of one address with the same call in each were one bind |
 | P8 | `oob` is None unless set; `contextKey` is never set by a client | S | matches |
 | P9 | Packets over 200 bytes are compressed with zlib level 1 when that saves more than 5% | S | matches, V; **?** which of the client's two compression paths is live (below) |
 | P10 | Anything received that does not start `~` or `}` is zlib | S | matches |

@@ -83,6 +83,15 @@ const KNOWN_HANDSHAKE_FUNCTIONS = new Map([
 ]);
 
 const dict = (entries) => ({ type: "dict", entries });
+/**
+ * What makes a call the same call as another (machobase.ThrottledCall's key): whom it is asked of, the method, and
+ * str(args) and str(kwargs). str() tells an int from a long and a str from a unicode, and so does this; a dict's
+ * order is its own affair, so the keywords are taken by name.
+ */
+function callKey(target, method, args, written) {
+  const keywords = [...written].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return JSON.stringify([target, method, args, keywords], (name, value) => (typeof value === "bigint" ? { long: String(value) } : value));
+}
 /** A bind's parameters as a name for the address: a number however it is held, or the numbers of a tuple. */
 const addressKey = (value) => (Array.isArray(value) ? `(${value.map(addressKey).join(",")})` : String(value));
 /**
@@ -289,8 +298,8 @@ class GamePortSession {
     this.nextCallID = 1;
     /** machoNet's address cache: "service:bindParams" -> the node that address was said to live on. */
     this.nodeOfAddress = new Map();
-    /** The addresses being asked about now, each with the answer that is awaited. */
-    this.resolving = new Map();
+    /** The calls that are out now, by what makes each the call it is (callKey), each with the answer awaited. */
+    this.callsOut = new Map();
     /** Cached objects fetched so far, by object ID: {stamp, checksum, value}. */
     this.cachedObjects = new Map();
 
@@ -510,12 +519,8 @@ class GamePortSession {
     const address = `${service}:${addressKey(bindParams)}`;
     let nodeID = this.nodeOfAddress.get(address) ?? null;
     if (nodeID === null) {
-      // Asked once however many are waiting: machoNet shares the answer among the same call made twice at once.
-      if (!this.resolving.has(address)) {
-        const asking = this.call(service, "MachoResolveObject", [bindParams]).finally(() => this.resolving.delete(address));
-        this.resolving.set(address, asking);
-      }
-      nodeID = integer(await this.resolving.get(address));
+      // Asked once however many are waiting, as any call is (_call).
+      nodeID = integer(await this.call(service, "MachoResolveObject", [bindParams]));
       if (nodeID === null) throw new GamePortError("RESOLVE_FAILED", `${service} could not say where its object lives.`);
       this.nodeOfAddress.set(address, nodeID);
     }
@@ -538,7 +543,33 @@ class GamePortSession {
     return this._call({ destination: nodeAddress(long(nodeID)), boundObject: objectID, service: null, method, args, kwargs });
   }
 
-  _call({ destination, boundObject, service, method, args, kwargs }) {
+  /**
+   * A call, made as the client makes every call: one at a time of any one thing (machobase.ThrottledCall, from
+   * ServiceCallGPCS 697 and ObjectCallGPCS 616). The same call made again while it is out is not sent: it waits
+   * for the one that is out and takes its answer ("Sharing result for call ... for 1 waiting threads", in the
+   * client's log). A call that failed is no answer: the first of those waiting asks for itself, and the rest
+   * wait for that.
+   */
+  async _call(spec) {
+    const written = new Map(spec.kwargs && spec.kwargs.type === "dict" ? spec.kwargs.entries : Object.entries(spec.kwargs ?? {}));
+    const key = callKey(spec.boundObject ?? spec.service, spec.method, spec.args, written);
+    for (;;) {
+      const out = this.callsOut.get(key);
+      if (!out) break;
+      const shared = await out.then((answer) => ({ answer }), () => null);
+      if (shared) return shared.answer;
+    }
+    const asking = this._makeCall(spec, written);
+    this.callsOut.set(key, asking);
+    try {
+      return await asking;
+    } finally {
+      this.callsOut.delete(key);
+    }
+  }
+
+  /** The call itself: numbered, wrapped and sent, and its answer awaited. */
+  _makeCall({ destination, boundObject, service, method, args }, written) {
     if (!this.loggedIn || this.closed) {
       return Promise.reject(new GamePortError("NOT_CONNECTED", "The game connection is not logged in."));
     }
@@ -547,7 +578,6 @@ class GamePortSession {
     // Every call's keywords carry machoVersion, 1 unless a cached answer says
     // otherwise, and go out in the order the client's own dict would hold them:
     // a service's method and a bound object's method build that dict differently.
-    const written = new Map(kwargs && kwargs.type === "dict" ? kwargs.entries : Object.entries(kwargs ?? {}));
     written.set("machoVersion", 1);
     const names = [...written.keys()].filter((name) => name !== "machoVersion");
     const keywords = dict(keywordOrder(names, { via: boundObject === null ? "function" : "object" }).map((name) => [name, written.get(name)]));

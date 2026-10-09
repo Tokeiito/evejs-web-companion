@@ -942,3 +942,131 @@ test("a call given to a bind rides along with it: (method, arguments, keywords) 
   const bare = await carried("corpRegistry", 98000000, null, boundAs("N=65450:8"));
   assert.deepEqual(bare.sent.args, [98000000, null]);
 });
+
+// ── one call at a time of any one thing ──────────────────────────────────────
+//
+// machobase.ThrottledCall, which every call of the client's goes through (ServiceCallGPCS 697, ObjectCallGPCS 616):
+// the same call made again while it is out (the same service or object, method, str(args) and str(kwargs)) is not
+// sent. It waits for the one that is out and takes its answer. A recording of a pilot joining a fleet has it:
+// "Sharing result for call ('N=...', 'GetInitState', '()', '{}') ... for 1 waiting threads".
+
+/** Every call the session has sent since `from`, as [target, method, callID]. */
+const callsSince = (transport, from) => transport.sent.slice(from).map((bytes) => {
+  const packet = parsePacket(marshalDecodeExact(inflated(bytes)));
+  const [, pickle] = packet.body[0];
+  return [packet.destination.service ?? text(pickle.value[0]), text(pickle.value[1]), packet.source.callID];
+});
+
+test("the same call made again while it is out is not sent again: it waits, and takes the answer", { timeout: 5000 }, async (context) => {
+  const { session, transport } = await loggedIn(context);
+  const before = transport.sent.length;
+  const three = [1, 2, 3].map(() => session.call("account", "GetCashBalance", [false]));
+  // The first is on the wire at once, as every call is; the other two are not sent.
+  assert.equal(transport.sent.length, before + 1);
+  await settle();
+  assert.deepEqual(callsSince(transport, before).map(([service, method]) => [service, method]), [["account", "GetCashBalance"]]);
+  await answerLast(transport, 1500.5);
+  assert.deepEqual(await Promise.all(three), [1500.5, 1500.5, 1500.5]);
+  assert.deepEqual([transport.sent.length, session.pending.size], [before + 1, 0]);
+  // Once it is answered it is not out: the same call made now is made.
+  const again = session.call("account", "GetCashBalance", [false]);
+  assert.equal(transport.sent.length, before + 2);
+  await answerLast(transport, 7);
+  assert.equal(await again, 7);
+  // The call numbers went up by the calls sent, not by the calls made.
+  const [[, , firstID], [, , secondID]] = callsSince(transport, before);
+  assert.equal(secondID, firstID + 1);
+  // Another call's answer leaves this one out still.
+  const slow = session.call("config", "Slow", []);
+  const slowID = lastCall(transport).packet.source.callID;
+  const quick = session.call("config", "Quick", []);
+  await answerLast(transport, "quick");
+  assert.equal(text(await quick), "quick");
+  const sent = transport.sent.length;
+  const slowAgain = session.call("config", "Slow", []);
+  await settle();
+  assert.equal(transport.sent.length, sent);
+  transport.deliver(callResponse(slowID, "slow"));
+  assert.deepEqual([text(await slow), text(await slowAgain)], ["slow", "slow"]);
+});
+
+test("a call that differs in anything is another call, and is sent while the first is out", { timeout: 5000 }, async (context) => {
+  const { session, transport } = await loggedIn(context);
+  const out = () => transport.sent.length;
+  const start = out();
+  const made = [];
+  const make = (call) => { made.push(call().catch(() => {})); return out(); };
+  assert.equal(make(() => session.call("account", "GetCashBalance", [false])), start + 1);
+  // Another service, another method, another argument, one more argument, a keyword, another value for it.
+  for (const [index, other] of [
+    () => session.call("account2", "GetCashBalance", [false]),
+    () => session.call("account", "GetCashBalance2", [false]),
+    () => session.call("account", "GetCashBalance", [true]),
+    () => session.call("account", "GetCashBalance", [false, null]),
+    () => session.call("account", "GetCashBalance", [false], { accountKey: 1000 }),
+    () => session.call("account", "GetCashBalance", [false], { accountKey: 1001 }),
+    () => session.call("account", "GetCashBalance", [false], { walletKey: 1000 }),
+    // As str() would have it: an int is not a long, a str is not a unicode, 0 is not False or None.
+    () => session.call("account", "GetCashBalance", [0]),
+    () => session.call("account", "GetCashBalance", [0n]),
+    () => session.call("account", "GetCashBalance", [null]),
+    () => session.call("account", "GetCashBalance", ["0"]),
+    () => session.call("account", "GetCashBalance", [Buffer.from("0")]),
+    () => session.call("account", "GetCashBalance", [[false]]),
+    () => session.call("account", "GetCashBalance", [{ type: "list", items: [false] }]),
+    // A bound object's is its own, and each object's is its own.
+    () => session.callBound("N=65450:9", "GetCashBalance", [false]),
+    () => session.callBound("N=65450:10", "GetCashBalance", [false]),
+  ].entries()) assert.equal(make(other), start + 2 + index, `call ${index} is sent`);
+  const sent = out();
+  // Each of those again, the same: none is sent. Keywords are the same whatever order they were written in,
+  // and however they were handed over.
+  for (const same of [
+    () => session.call("account", "GetCashBalance", [false]),
+    () => session.call("account", "GetCashBalance", [false], null),
+    () => session.call("account", "GetCashBalance", [false], {}),
+    () => session.call("account", "GetCashBalance", [0n]),
+    () => session.call("account", "GetCashBalance", [Buffer.from("0")]),
+    () => session.call("account", "GetCashBalance", [false], { type: "dict", entries: [["accountKey", 1000]] }),
+    () => session.callBound("N=65450:9", "GetCashBalance", [false]),
+    // sm.ProxySvc's is the same service's call by another road: the key is the service's name.
+    () => session.proxyCall("account", "GetCashBalance", [false]),
+  ]) assert.equal(make(same), sent);
+  const both = { first: 1, second: 2 };
+  assert.equal(make(() => session.call("config", "Both", [], both)), sent + 1);
+  assert.equal(make(() => session.call("config", "Both", [], { second: 2, first: 1 })), sent + 1);
+  session.close();
+  await Promise.all(made);
+});
+
+test("a call that failed is no answer to share: the first of those waiting asks for itself, and the rest wait for that", { timeout: 5000 }, async (context) => {
+  const { session, transport } = await loggedIn(context);
+  const before = transport.sent.length;
+  const [one, two, three] = [1, 2, 3].map(() => session.call("config", "Fragile", [7]));
+  const firstID = lastCall(transport).packet.source.callID;
+  const refused = assert.rejects(one, (error) => error.code === "GAME_CALL_REFUSED");
+  transport.deliver(marshalEncode(buildPacket(TYPE.ERROR_RESPONSE, {
+    source: nodeAddress(65450, "config"),
+    destination: clientAddress(2065450, firstID),
+    userID: 2,
+    body: [TYPE.CALL_REQ, 2, [{ type: "substream", value: "TaxChanged" }]],
+  })));
+  await refused;
+  await settle();
+  // One more call is out, the second caller's own; the third waits for it.
+  assert.deepEqual(callsSince(transport, before).map(([service, method]) => `${service}.${method}`), ["config.Fragile", "config.Fragile"]);
+  await answerLast(transport, "fine");
+  assert.deepEqual([text(await two), text(await three), transport.sent.length], ["fine", "fine", before + 2]);
+});
+
+test("two binds of one address at once, carrying the same call, are one bind, and both hold its object", { timeout: 5000 }, async (context) => {
+  const { session, transport } = await loggedIn(context);
+  const before = transport.sent.length;
+  const binds = [1, 2].map(() => session.bind("fleetObjectHandler", 654500010000n, ["GetInitState", [], null]));
+  await settle();
+  await answerLast(transport, 65450);
+  await answerLast(transport, boundAs("N=65450:31", "the state"));
+  const [first, second] = await Promise.all(binds);
+  assert.deepEqual([first.objectID, second.objectID, text(first.result), text(second.result)], ["N=65450:31", "N=65450:31", "the state", "the state"]);
+  assert.deepEqual(callsSince(transport, before).map(([, method]) => method), ["MachoResolveObject", "MachoBindObject"]);
+});
