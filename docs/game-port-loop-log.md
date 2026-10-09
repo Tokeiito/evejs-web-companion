@@ -340,6 +340,14 @@ Decisions taken in your place, and anything waiting on you. Overrule any of thes
   20.5 seconds after a read whose composition lacked a member, which on the game port is
   one `GetFleetComposition` nobody clicked for. It is what a user looking at the
   composition again would cause, once for a roster. On the gateway that read is five calls.
+- **I left the rest of the fleet's list for later and took the login** (2026-10-09). What
+  is left around the fleet is calls no page of ours makes (broadcasts, the watchlist, the
+  fleet finder's adverts). The login is what every session does, and its calls are the
+  largest difference from a retail client that a server can see: 117 calls against our 12
+  (`docs/game-port-login-calls.md`). The plan's decision on those stands: they are matched
+  per feature, not replayed whole. What I mean to do next is each service's login calls
+  with that service, done as the fleet was (asked once, kept, kept right by notices), which
+  is that decision carried out and not another one.
 - **My scratch folder holds 33 older copies of the store, 1.9 GB**, from the checks of
   8 October, before I took to deleting each copy once the store was back. I have not
   deleted them: some are named "before-..." and I cannot say now that none is wanted. They
@@ -9294,3 +9302,155 @@ times in the last entry's run).
     client's own map is in.
 34. Jumps in the assets and contracts lists, the autopilot's way, where the page lists them.
 35. A wreck opened with its type said: no capacity, as the client has none for one.
+
+## 2026-10-09 — the login, measured beside the retail client's
+
+Commit `5090afc`, pushed. Item 2 of the last list, taken ahead of what is left of item 1 (the
+operator's section): its first unit, which is a measurement.
+
+**What the retail client does.** The server's own log of a retail client of this build
+logging in on this server on 2026-08-09
+(`eve.js/_local/logs/direct-tcp-real-client-20260809-163920.stdout.log`) has every call it
+made as a line. Between connecting and sitting docked in a station with nothing opened it
+made 117 calls of 100 kinds (a call made before a character is chosen and again after
+counts as two kinds): 35 before the character was chosen, 82 from the choosing on, the last
+of them nine seconds after it.
+
+**What the game port does.** A pilot chosen through the BFF on the game port and left alone
+for eight seconds, with no panel opened, made 12 calls of 7 kinds: `GetServiceInfo`, five
+`GetTime`, the three calls of choosing a character, and the dogma location's resolve and
+bind. Each is one the client makes. None is one it does not.
+
+**What was built.** `scripts/login-calls-report.js` reads a login out of a server's log, in
+either form the log has been written in, and writes `docs/game-port-login-calls.md`: each
+call of the retail client's login in the order it first made it, and how the game port
+stands on it.
+
+| The game port | Kinds | Calls |
+|---|---|---|
+| asks it at login too | 7 | 12 |
+| asks it later, for a feature, in a form read against the client's | 24 | 30 |
+| has only a route of the BFF's that can ask it | 16 | 17 |
+| never asks it | 53 | 58 |
+
+The older log does not say whose object a call on a bound object was. Fourteen kinds of
+such call are given the one service whose objects later logs show that method on, and the
+report marks them. None was left unnamed.
+
+**Proof.**
+
+- Tests: 5 new, on made-up logs in the two forms. They were written before the script and
+  passed the first time it ran, so what they are about was watched failing in the breakage
+  pass: 42 ways of breaking the script tried, four survived a first pass (one changed
+  nothing, one was a check that did nothing and is out, two led to cases added), and all
+  that change anything are caught now.
+- Suite: 9695 tests, 9671 pass, 0 fail, 0 cancelled, 24 skipped. No test process left behind.
+- The script's count of the retail login, 117, is the count of call lines in those lines of
+  the log taken by hand. The gaps in the client's call numbers there are its pings.
+- Nothing was staged: the game port's login was a pilot chosen and logged out again.
+
+**What the report says, for the units that follow.**
+
+- The plan's decision stands ("decided 2026-10-08": the startup calls are matched per
+  feature, not replayed whole). The report is the list to match from.
+- Of the 53 kinds nothing of ours asks, a handful were that session's user and not the
+  client's own (a login reward claimed, a portrait changed). Many belong to screens the web
+  client has none of (the character screen's paper dolls, login campaigns, the tutorial).
+  The rest are services starting: standings (`GetNPCNPCStandings`), the skill queue
+  (`GetSkillQueueAndFreePoints`, `CheckAndSendNotifications`), war and faction state, jump
+  timers, character settings, chat (`XmppChatMgr`, the chat token), the ship's kill counter
+  and cosmetics, market prices, client statistics.
+- The 40 kinds a feature or a route of ours asks later, the client asks at login: the
+  journal, the standings, the skills, the corporation registry's three, contacts,
+  notifications, the calendar's two months, the contracts' login figures, the station's
+  guests and services, the hangar's and the ship's lists. Ours asks each when its panel is
+  read, and again at each read. Whether the client keeps each answer, and what keeps it
+  right, is for each unit to read.
+
+**Not done.**
+
+- A retail client logging in in space: `eve.js/_local/logs/server.2026-10-06_15.log` has
+  one, in the log's present form.
+- The arguments of each call: the server's log has names only. The decompiled service that
+  makes each has them.
+
+### Next
+
+1. The login's calls, service by service, each done as the fleet was: what the client's
+   service asks when it starts is asked when the pilot is chosen, kept, kept right by the
+   server's notices, and the BFF's route answered from what is kept. In the order of what a
+   route of ours already asks at every read: the standings (`GetNPCNPCStandings`,
+   `GetCharStandings`); the skill handler's (`GetAllSkills`, `GetSkillQueueAndFreePoints`,
+   `GetBoosters`, `GetSkillHistory`, `CheckAndSendNotifications`); the agents' journal; the
+   corporation registry's three; contacts; notifications; the calendar; the contracts'
+   login figures; the station's guests and services; the hangar's and the ship's lists.
+   Each read in the decompiled service first, for its arguments and for what it keeps.
+2. The same report for a login in space, and for the game port with the page's panels open.
+3. Around the fleet, what is left: `SendBroadcast` and `MassInvite`; `fleetMgr`'s
+   watchlist and broadcasts (the watchlist's second argument first); `fleetProxy`'s
+   adverts and `GetAvailableFleetAds`, and with them a pilot applying to a fleet, for the
+   join requests seen live; an invite from a pilot in no fleet forming one first; the cost
+   of contacting; the pilot's own kicking as a leaving, and a disbanding refused here as
+   the client refuses it.
+4. What becomes of a bound object the client has done with (`moniker.py`
+   `__ClearBoundObject`: `DisconnectObject` after a delay): read in the client, looked for
+   in the recordings, and done so. The handles the BFF asks for and drops are among them.
+5. Around the contracts: "Offered to you" from the owner's list; the corporation's lists;
+   a rowset read where a server answers one; the search with something staged for each of
+   its filters, on both transports; what the sub-agent left in the server (the operator's
+   section). And the same fault elsewhere in the server: a search of its services for a
+   keyword read as a plain property, with no helper in the file, names two more
+   (`seasonManagerService.js`, `dungeonService.js`). Neither was read.
+6. Around a fitted module: the recording read past `SetModuleOnline`'s answer, and this
+   server's fit set beside it; the recording of ammunition loaded while docked, and charges
+   in slots as godma holds them; the Fitting panel's cargo figure after a module's state
+   changes; a refusal to put one online shown as the client shows it; the dogma route
+   answered from godma's priming instead of its own `GetAllInfo`.
+7. Something staged for every list route that has only been compared empty (the market's
+   orders, the mail, the calendar, the corporation's hangars), and the parity pass read
+   again.
+8. A ship with several modules fitted and a hold with a packaged ship in it, staged: the
+   Fitting window's figures and the client's sums, each set beside the server's.
+9. The walk in space: undocked, every panel and the space view, the store put aside first
+   and put back after; its unread pairs read; the ship's moniker seen kept; an agent
+   talked to and a ship boarded for the monikers the BFF asks for; a fleet formed there.
+10. The ledger counting what was sent, not what the BFF asked for: where a moniker is made
+    and not bound, and where a call is shared.
+11. The parity tool taking a duration the server measures for what it is (`searchTime`), as
+    it takes a clock.
+12. The routes that answer from the store, listed, and each set beside what the client asks.
+13. Phase 3's writes, feature by feature, each set beside what the client sends, each
+    looked for in every folder of the recordings first.
+14. The wallet's "Market Transactions", and the lines the client derives from a transaction.
+15. The avoidance list's own window, and a route plotted again when a setting changes under it.
+16. Around a place's name, the last of it: the outlaw's warning (the pilot's own security
+    status). The agent's own window's steps, if the client's say how far.
+17. The page's own read of the journal after an agent's button: gone, if nothing of the page's
+    own counts on it, with the push doing the work as it does for Remove Offer.
+18. The agent's cards above its own window, where the client's window has its own header.
+19. The scanner the client's way: results kept from the server's word, a probe's destination
+    and range kept here and sent with the scan.
+20. Small, around dialogs: the title for a dialog's kind, the "do not ask again" box, the typed
+    codes not done.
+21. Small, in space: an overview row's speed columns the client's way; the bar the client
+    fills while a ship lines up for a warp; a warp ordered at a bookmark or a fleet member.
+22. Small, before a character is chosen: selecting on the account's own connection; the count
+    of names checked.
+23. Small, in Ready Fit: the window following a change of pilot.
+24. Small, in words: an interval's `shortForm` and `writtenFormTwoPart`; the bonus's
+    countdown; a place's rating in its colour and its name as a link.
+25. In the park, if a server ever sends a ball that needs them: MISSILE, FORMATION, MUSHROOM;
+    a fixed ball's collision shapes and the partition's order.
+26. If a server ever sends one: a special interaction drawn as the client draws one; messages
+    inside messages.
+27. More of the client's built data as it is needed: one line in `TABLES` for each (dungeons
+    for ship restrictions); the client's own map, to set beside this server's.
+28. When there is a recording of it: a courier's agent talked to again where the pilot
+    accepted, before the package has gone anywhere (the operator's section); and a mission
+    paid in a system of the safest class, for whether its ISK is reduced.
+29. Other things asked once beside the store, and other panels' effects, looked at for the
+    faults of earlier entries.
+30. The pathfinder's ties: how the order of the map's jumps settles them, and the order the
+    client's own map is in.
+31. Jumps in the assets and contracts lists, the autopilot's way, where the page lists them.
+32. A wreck opened with its type said: no capacity, as the client has none for one.
