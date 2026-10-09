@@ -295,6 +295,36 @@ for them again each time it opens, which is the page's own way.
 The notifications' lists and the calendar's months are kept by one helper,
 `src/gamePort/keptReads.js`: answers kept until something changes them.
 
+**What the ship has locked, and a module's target, 2026-10-09.** The client's target service
+(`targetMgr.py`) asks the server for neither list while it flies. On undocking, or on logging in
+in space, godma asks the dogma location once for each (`RefreshTargets`, godma.py 2360):
+`GetTargets()` and `GetTargeters()`, after its own prime. A Tranquility recording of an undock has
+exactly that: the bind of the dogma location carrying `GetAllInfo`, then the two calls on the
+object, once each. From then on it goes by the server's `OnTarget(what, targetID, reason)`
+('add', 'lost', 'clear', and 'otheradd' and 'otherlost' for what has the ship locked) and
+`OnTargets`, a list of the same. It adds a target itself when `AddTarget` answers that the lock
+is made already, and drops one whose ball leaves the ballpark. Docked, or with its ballpark let
+go, it has none.
+
+The page reads the locked targets about once a second, and on the game port each reading was a
+`GetTargets` to the server: 395 of them in one short flight. The transport now keeps both lists
+as the client does (`src/gamePort/pilotTargets.js`) and answers the BFF's readings from them. A
+list that is not known is asked for, so a reading never answers from a guess. The gateway's
+reading is as it was.
+
+The client's module button gives an effect a target only when the effect is aimed at one
+(`effectCategory` 2, shipmodulebutton.py 1318); an afterburner's goes out with None. The page
+sends whatever is locked with every module it switches on, and the transport sent that on. It now
+sends a target for a target effect alone.
+
+Read against the client in the same walk, and the BFF's as the client's: `CmdFollowBall(targetID,
+range)` (the menu's approach, `movementFunctions.py` 302; recorded as `(itemID, 50)`),
+`CmdSetSpeedFraction(1.0)` (the autopilot's, before its approach), `Board(shipID, session.shipid
+or session.stationid)` on the ship's moniker (recorded in space with the bind carrying it), and
+`slash.SlashCmd(command)` by name. One thing is not the client's: the BFF's routes for the menu's
+approach, keep at range and orbit send `CmdSetSpeedFraction(1.0)` first, as the autopilot does,
+and the client's menu sends none.
+
 **The flight's calls and the scanner's sites, 2026-10-09.** Read against the client after a walk
 in space on the game port found them unread. The menu's warp is `bp.CmdWarpToStuff('item', itemID,
 minRange=...)` on the ballpark's object (`michelle.py`, from `movementFunctions.py`); the

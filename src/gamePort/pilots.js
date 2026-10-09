@@ -66,6 +66,7 @@ const { createPilotStandings } = require("./pilotStandings");
 const { createPilotSkills } = require("./pilotSkills");
 const { createPilotJournal } = require("./pilotJournal");
 const { createKeptReads } = require("./keptReads");
+const { TARGETS, TARGETERS, createPilotTargets } = require("./pilotTargets");
 const { buildSkillSheet } = require("./skillSheet");
 const { projectFlight, projectSpace } = require("./spaceProjection");
 const { MODE: BALL_MODE } = require("./destiny/state");
@@ -191,6 +192,8 @@ const KEPT_UNTIL_CHANGED = Object.freeze({
     writes: Object.freeze({ calendarMgr: new Set(["CreatePersonalEvent", "CreateCorporationEvent", "CreateAllianceEvent", "EditPersonalEvent", "EditCorporationEvent", "EditAllianceEvent", "DeleteEvent"]) }),
   }),
 });
+/** The dogma location's two reads the client's target service keeps the answers of, by what each is kept as (pilotTargets.js). */
+const TARGETS_KEPT = Object.freeze({ GetTargets: TARGETS, GetTargeters: TARGETERS });
 /** calendar.FetchNextEvents: the month of a time and the month after it, each as [month, year], December's next being January's (GetBrowsedMonth). */
 function monthAndNext(ms) {
   const now = new Date(ms);
@@ -947,6 +950,10 @@ function createGamePortPilots({
       ownersWork: Promise.resolve(),
       /** What the client's services keep until it changes, as the server answered it, by the service asked (KEPT_UNTIL_CHANGED). */
       kept: Object.fromEntries(Object.keys(KEPT_UNTIL_CHANGED).map((service) => [service, createKeptReads()])),
+      /** What the ship has locked and what has it locked, as the client's target service keeps them (pilotTargets.js); the askings of them, one after another; and whether godma has yet to ask for them. */
+      targets: createPilotTargets(),
+      targetsWork: Promise.resolve(),
+      targetsOwed: false,
       /** crimewatchSvc.corpAggressionSettings: the corporation's aggression settings as last answered or told, or null; and the askings of them, one after another. */
       aggression: null,
       corpWork: Promise.resolve(),
@@ -970,6 +977,7 @@ function createGamePortPilots({
       entry.standings.feed(notification);
       afterSkillNotice(entry, entry.skills.feed(notification));
       afterCorporationNotice(entry, notification);
+      entry.targets.feed(notification);
       for (const [service, keeper] of Object.entries(KEPT_UNTIL_CHANGED)) if (keeper.notices.has(notification.method)) entry.kept[service].forget();
       // A mission changed: what the client shows of its missions is drawn again from the journal, which reads it again.
       if (entry.journal.feed(notification)) journalUpToDate(entry);
@@ -1006,6 +1014,11 @@ function createGamePortPilots({
         if (changes.corpid[1] && sessions.has(entry.handle)) refreshStandings(entry);
       }
       if (LOCATION_ATTRIBUTES.some((name) => name in changes)) {
+        // targetMgr.ProcessSessionChange: docked, or its ballpark let go, it has no targets. Undocking, or logging in
+        // in space, godma asks what the ship has locked and what has it locked, once its dogma location is primed.
+        entry.targetsOwed = arrivingInSpace(entry, changes);
+        if (entry.targetsOwed) entry.targets.forget();
+        else entry.targets.emptied();
         forgetLocationObjects(entry);
         if (sessions.has(entry.handle)) syncSpace(entry);
       }
@@ -1133,6 +1146,15 @@ function createGamePortPilots({
       const kept = await run(entry, service, method, () => keptRead(entry, service, method, form));
       return { service, method, result: wireToBridgeJson(kept === undefined ? null : kept), notifications: drain(entry) };
     }
+    // What the ship has locked, and what has it locked, are the client's target service's to answer.
+    if (service === "dogmaIM" && Object.hasOwn(TARGETS_KEPT, method)) {
+      const kept = await run(entry, service, method, async () => {
+        // Asking for them is godma's own, and godma is primed first.
+        if (entry.targetsOwed && whereabouts(entry).shipID) await shipReadings(entry, whereabouts(entry));
+        return targetsRead(entry, method);
+      });
+      return { service, method, result: wireToBridgeJson(kept), notifications: drain(entry) };
+    }
     // Asked of the service by name and made on its moniker: the arguments may be the client's as they stand, the call was not.
     // What the client's skill services keep is noted where it is asked for, which is not every time it is wanted (skillRead).
     const keptByAService = (service === SKILL_HANDLER && Object.hasOwn(SKILL_KEPT, method)) || (service === CORP_REGISTRY && method === AGGRESSION_SETTINGS);
@@ -1150,12 +1172,52 @@ function createGamePortPilots({
         if (Object.hasOwn(keeper.writes, service) && keeper.writes[service].has(method)) entry.kept[reads].forget();
       }
     });
+    // targetMgr._LockTarget: (flag, targets) with no flag set says the lock is made already, and the client adds the target itself.
+    if (service === "dogmaIM" && method === "AddTarget" && itemsOf(result).length > 0 && !itemsOf(result)[0]) entry.targets.added(form.args[0]);
     return {
       service,
       method,
       result: wireToBridgeJson(result === undefined ? null : result),
       notifications: drain(entry),
     };
+  }
+
+  // ── what the ship has locked, as it is kept ──────────────────────────────
+
+  /**
+   * One of the dogma location's two reads the target service keeps (TARGETS_KEPT): answered from what is kept, and
+   * asked for, and noted, where the list is not known. One asking after another.
+   */
+  function targetsRead(entry, method) {
+    const which = TARGETS_KEPT[method];
+    const reading = entry.targetsWork.then(async () => {
+      const kept = entry.targets.read(which);
+      if (kept !== undefined) return kept;
+      const asked = entry.targets.asking();
+      ledger.note("dogmaIM", method, shape("dogmaIM", method, [], null, contextFor(entry)));
+      const answer = await monikerCall(entry, "dogmaIM", method, [], null);
+      entry.targets.keep(which, answer, asked);
+      return answer === undefined ? null : answer;
+    });
+    entry.targetsWork = reading.catch(() => {});
+    return reading;
+  }
+
+  /** godma.RefreshTargets (2360): what the ship has locked, then what has it locked, each asked for if it is not known. */
+  async function targetsRefreshed(entry) {
+    entry.targetsOwed = false;
+    for (const method of Object.keys(TARGETS_KEPT)) await targetsRead(entry, method);
+  }
+
+  /**
+   * Whether a change of the session's is one godma asks for the targets at (targetMgr.ProcessSessionChange 492):
+   * the session has a solar system where it had none, and is in no station. That is logging in in space, as the
+   * client calls it, and undocking from a station too: docked in one, a session has no solar system. (Docked in a
+   * structure it has one, so logging in there is the same change, and the client asks there as well.)
+   */
+  function arrivingInSpace(entry, changes) {
+    const system = changes.solarsystemid;
+    return Boolean(system) && positive(system[0]) === null && attribute(entry, "stationid") === null;
   }
 
   // ── the names of owners, as the client's cfg.eveowners has them ──────────
@@ -1368,6 +1430,7 @@ function createGamePortPilots({
         entry.dogma.clear();
         entry.dogma.loadAllInfo(allInfo);
         entry.dogmaLoaded = loadedFor;
+        if (entry.targetsOwed) targetsRefreshed(entry).catch(() => {});
         // The ship's own row, as the server gave it: what ShipGetInfo would answer, were it asked.
         const rows = keyValField(wireToBridgeJson(allInfo), "shipInfo");
         const own = rows && Array.isArray(rows.entries) ? rows.entries.find(([itemID]) => positive(itemID) === place.shipID) : null;
@@ -1399,6 +1462,8 @@ function createGamePortPilots({
       entry.space = createSpace({ session: entry.session, solarSystemID: wanted, sleep, simTime: entry.clock.simTime, onError: (error, what) => onSpaceError(error, what, entry.characterID) });
       // michelle.DoDestinyUpdate: the dogma messages riding with a ballpark update are scattered as OnMultiEvent, which is godma's.
       entry.space.park.onMultiEvent = (messages) => entry.dogma.multiEvent(messages);
+      // targetMgr.DoBallsRemove: a ball that goes is no target any more.
+      entry.space.park.onBallsRemoved = (gone) => entry.targets.ballsRemoved(gone.map((each) => each.id));
       // Nobody waits on this: the state arrives when the server has answered the bind.
       Promise.resolve(entry.space.start()).catch((error) => onSpaceError(error, "start", entry.characterID));
     }
@@ -1902,6 +1967,13 @@ function createGamePortPilots({
     return effect.durationAttributeID !== null && effect.durationAttributeID !== undefined && !typeAttribute(typeID, ATTRIBUTE_DISALLOW_REPEATING);
   }
 
+  /** shipmodulebutton.ActivateEffect (1318): the effect is one aimed at a target (effectCategory 2). Null when the effect is not one of the type's. */
+  function effectTargeted(typeID, effectName) {
+    if (typeID === null) return null;
+    const effect = typeEffects(typeID).find((each) => each.name === effectName);
+    return effect ? effect.effectCategoryID === EFFECT_CATEGORY.TARGET : null;
+  }
+
   /** What only the pilot's own client would know, for a call to be sent as that client sends it (retailCalls.js). */
   function contextFor(entry) {
     const typeOf = (itemID) => entry.dogma.typeOf(positive(itemID) ?? 0);
@@ -1915,6 +1987,7 @@ function createGamePortPilots({
         return entry.dogmaLoaded && shipID !== null ? entry.dogma.onlineModules(shipID) : null;
       },
       effectName: (itemID) => defaultEffectName(typeOf(itemID)),
+      effectTargeted: (itemID, effectName) => effectTargeted(typeOf(itemID), effectName),
       effectRepeats: (itemID, effectName) => effectRepeats(typeOf(itemID), effectName),
       // fleetSvc.GetMyShipTypeID: godma's word for the ship the pilot is in.
       shipTypeID: () => typeOf(attribute(entry, "shipid")),

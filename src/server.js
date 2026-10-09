@@ -18438,7 +18438,15 @@ function decodeTargetIDList(result) {
     .filter((value) => value > 0);
 }
 
-/** The itemIDs the server says are locked RIGHT NOW. The only authority. */
+/**
+ * The itemIDs the server says are locked RIGHT NOW. The only authority.
+ *
+ * Through the gateway that is a call each time. On the game port the pilot's
+ * transport answers it as the retail client's target service would: the list
+ * the server gave on arriving in space, kept right by the server's own OnTarget
+ * notices since (src/gamePort/pilotTargets.js). The server is still the only
+ * authority; it is not asked again for what it has already said.
+ */
 async function readLockedTargetIDs(held, webSessionID) {
   const outcome = await heldTopLevelCall(held, webSessionID, "dogmaIM", "GetTargets", [], null);
   const raw = outcome.result;

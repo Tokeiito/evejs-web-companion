@@ -250,6 +250,13 @@ test("a module is switched on with its effect named and its repeats the client's
   assert.match(RETAIL_CALLS["dogmaIM.Activate"].source, /shipmodulebutton\.py:1348$/);
   // An effect that cannot repeat is sent once, whatever was asked.
   assert.deepEqual(on([8, "fire", 4242, -1]).args, [8, "fire", 4242, 0]);
+  // Only an effect aimed at a target is sent one: the page sends what is locked with every module, and the client's
+  // button fills a target in for a target effect alone. Where that is not known the target goes as it came.
+  const aims = { ...knows, effectTargeted: (itemID, name) => (name === "fire" ? true : name === "burn" ? false : null) };
+  assert.deepEqual([on([7, "burn", 4242, -1], aims).args, on([7, "", 4242, -1], aims).args], [[7, "burn", null, 1000], [7, "burn", null, 1000]]);
+  assert.deepEqual([on([8, "fire", 4242, -1], aims).args, on([8, "fire", null, -1], aims).args], [[8, "fire", 4242, 0], [8, "fire", null, 0]]);
+  assert.deepEqual([on([9, "glow", 4242, 0], aims).args, on([9, "", 4242, -1], aims).args], [[9, "glow", 4242, 0], [9, "", 4242, -1]]);
+  assert.equal(on([7, "burn", 4242, -1], aims).status, "reshaped");
   // A count the caller gave is the caller's: once, or five times.
   assert.deepEqual([on([7, "burn", null, 0]).args[3], on([7, "burn", null, 5]).args[3], on([7, "burn", null, "0"]).args[3]], [0, 5, 0]);
   // No name given: the module's own, from what the pilot knows of it. A name on the wire may be bytes.
@@ -338,6 +345,20 @@ test("the alliance's registry is asked on the moniker for the session's alliance
   assert.deepEqual([retailForm("corpRegistry", "GetCorporation", [], null, {}).moniker, retailForm("ship", "Undock", [], null, {}).moniker], [true, true]);
 });
 
+test("an approach, the speed set before the autopilot's, and a GM's command are the client's calls as they stand", () => {
+  for (const [pair, args, where, moniker] of [
+    ["beyonce.CmdFollowBall", [9001, 50], /movementFunctions\.py:302$/, false],
+    ["beyonce.CmdSetSpeedFraction", [1.0], /autopilot\.py:434$/, false],
+    ["slash.SlashCmd", ["/giveskill me 3386 3"], /menusvc\.py:834$/, false],
+  ]) {
+    const answer = form(pair, args);
+    assert.deepEqual([answer.args, answer.kwargs, answer.status, answer.moniker], [args, null, "same", moniker], pair);
+    assert.match(answer.source, where, pair);
+  }
+  // Where the BFF sends a speed the client would not is said beside it.
+  assert.match(RETAIL_CALLS["beyonce.CmdSetSpeedFraction"].note, /send none before theirs, and the BFF's routes for those do/);
+});
+
 test("targeting, onlining, scooping and leaving a ship are the client's calls as they stand", () => {
   for (const [pair, args, where] of [
     ["dogmaIM.GetTargets", [], /godma\.py:2361$/],
@@ -348,6 +369,7 @@ test("targeting, onlining, scooping and leaving a ship are the client's calls as
     ["dogmaIM.TakeModuleOffline", [5000, 7], /clientDogmaLocation\.py:718$/],
     ["ship.ScoopDrone", [[11, 12]], /droneFunctions\.py:195$/],
     ["ship.LeaveShip", [5000], /ui\/station\/base\.py:248$/],
+    ["ship.Board", [5001, 5000], /menuFunctions\.py:209$/],
   ]) {
     const answer = form(pair, args);
     assert.deepEqual([answer.args, answer.kwargs, answer.status, answer.moniker], [args, null, "same", true], pair);

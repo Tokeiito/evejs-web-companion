@@ -90,7 +90,8 @@ function fakeSession({ answers = {}, userid = ACCOUNT, loginError = null, comesO
           const alliance = allianceid === null ? {} : { allianceid };
           Object.assign(session.attributes, { charid: BigInt(args[0]), corpid, solarsystemid2: SYSTEM, shipid: SHIP, ...alliance, ...place });
           // The server's session change for a character chosen names its corporation among the rest, and its alliance if it is in one.
-          session.change({ charid: [null, args[0]], corpid: [null, corpid], stationid: [null, STATION], ...(allianceid === null ? {} : { allianceid: [null, allianceid] }) });
+          // It names the place too: a solar system for a pilot in space, as the server names it for one who logs in there, and a station for one docked.
+          session.change({ charid: [null, args[0]], corpid: [null, corpid], ...(inSpace ? { solarsystemid: [null, SYSTEM] } : { stationid: [null, STATION] }), ...(allianceid === null ? {} : { allianceid: [null, allianceid] }) });
         }
         return null;
       }
@@ -2347,23 +2348,25 @@ test("a module is switched on and off as the client does it: on the dogma locati
   const { bridgeSessionID: handle } = await built.pilots.selectCharacter([PILOT, null, true], null, FIELDS);
   const { session } = built;
   const binds = () => session.binds.filter((bind) => bind.service === "dogmaIM");
+  // The last switching on or off: godma asks for the targets beside it, in its own time.
+  const switched = () => session.boundCalls.findLast((call) => call.method === "Activate" || call.method === "Deactivate");
   // The BFF's route: by the service's name, no effect named, -1 for "go on".
   await built.pilots.callMethod("dogmaIM", "Activate", [FITTED_MODULE, "", null, -1], null, WHOSE, handle);
   assert.equal(session.calls.some((call) => call.service === "dogmaIM" && call.method === "Activate"), false);
   assert.deepEqual(binds(), [{ service: "dogmaIM", params: [SYSTEM, 5] }]);
   const location = session.boundCalls.find((call) => call.method === "GetAllInfo").objectID;
-  assert.deepEqual(session.boundCalls.at(-1), { objectID: location, method: "Activate", args: [FITTED_MODULE, "moduleBonusAfterburner", null, 1000], kwargs: null });
-  // With a target, and a count of the caller's.
+  assert.deepEqual(switched(), { objectID: location, method: "Activate", args: [FITTED_MODULE, "moduleBonusAfterburner", null, 1000], kwargs: null });
+  // With a count of the caller's. An afterburner is aimed at nothing: the target that came with it is not sent.
   await built.pilots.callMethod("dogmaIM", "Activate", [FITTED_MODULE, "moduleBonusAfterburner", 4242, 0], null, WHOSE, handle);
-  assert.deepEqual(session.boundCalls.at(-1).args, [FITTED_MODULE, "moduleBonusAfterburner", 4242, 0]);
+  assert.deepEqual(switched().args, [FITTED_MODULE, "moduleBonusAfterburner", null, 0]);
   await built.pilots.callMethod("dogmaIM", "Deactivate", [FITTED_MODULE, ""], null, WHOSE, handle);
-  assert.deepEqual(session.boundCalls.at(-1), { objectID: location, method: "Deactivate", args: [FITTED_MODULE, "moduleBonusAfterburner"], kwargs: null });
+  assert.deepEqual(switched(), { objectID: location, method: "Deactivate", args: [FITTED_MODULE, "moduleBonusAfterburner"], kwargs: null });
   // One dogma location for all of it, godma's own.
   assert.equal(binds().length, 1);
   assert.equal(session.boundCalls.filter((call) => call.method === "GetAllInfo").length, 1);
   // A module godma was never told of: sent as it came, and counted as not the client's.
   await built.pilots.callMethod("dogmaIM", "Activate", [FITTED_MODULE + 50, "", null, -1], null, WHOSE, handle);
-  assert.deepEqual(session.boundCalls.at(-1).args, [FITTED_MODULE + 50, "", null, -1]);
+  assert.deepEqual(switched().args, [FITTED_MODULE + 50, "", null, -1]);
   const tally = Object.fromEntries(built.pilots.callLedger().map((row) => [row.pair, row.statuses]));
   assert.deepEqual([tally["dogmaIM.Activate"], tally["dogmaIM.Deactivate"]], [{ reshaped: 2, differs: 1 }, { reshaped: 1 }]);
 
@@ -2394,15 +2397,21 @@ test("which effect a module is switched on by, and whether it repeats, are the m
     const { bridgeSessionID: handle } = await built.pilots.selectCharacter([PILOT, null, true], null, FIELDS);
     return async (args) => {
       await built.pilots.callMethod("dogmaIM", "Activate", args, null, WHOSE, handle);
-      return built.session.boundCalls.at(-1).args;
+      return built.session.boundCalls.findLast((call) => call.method === "Activate").args;
     };
   };
   assert.deepEqual(await (await fits(21857))([FITTED_MODULE, "", null, -1]), [FITTED_MODULE, "moduleBonusAfterburner", null, 1000]);
   // Two candidates: unnamed. Named by the caller, it repeats by its own duration.
   assert.deepEqual(await (await fits(7001))([FITTED_MODULE, "", null, -1]), [FITTED_MODULE, "", null, -1]);
   assert.deepEqual(await (await fits(7001))([FITTED_MODULE, "useMissiles", null, -1]), [FITTED_MODULE, "useMissiles", null, 1000]);
-  // No duration: once.
+  // No duration: once. Its effect is aimed at a target, and the target goes with it.
   assert.deepEqual(await (await fits(7002))([FITTED_MODULE, "", 9, -1]), [FITTED_MODULE, "oneShot", 9, 0]);
+  // An effect that is not aimed at one is sent none, named by the caller or not: the client's button fills a target in for a target effect alone.
+  assert.deepEqual(await (await fits(21857))([FITTED_MODULE, "", 9, -1]), [FITTED_MODULE, "moduleBonusAfterburner", null, 1000]);
+  assert.deepEqual(await (await fits(7003))([FITTED_MODULE, "useMissiles", 9, 0]), [FITTED_MODULE, "useMissiles", null, 0]);
+  // Where the effect is not known, or is not one of the type's, the target goes as it came.
+  assert.deepEqual(await (await fits(7001))([FITTED_MODULE, "", 9, -1]), [FITTED_MODULE, "", 9, -1]);
+  assert.deepEqual(await (await fits(21857))([FITTED_MODULE, "somethingElse", 9, 0]), [FITTED_MODULE, "somethingElse", 9, 0]);
   // The module forbids repeating (attribute 1014): once, though the effect has a duration.
   const asked = [];
   const launcher = await fits(7003, { typeAttribute: (typeID, attributeID) => { asked.push([typeID, attributeID]); return 1; } });
@@ -2422,17 +2431,17 @@ test("a call on a handle the BFF bound itself is shaped with what the pilot know
 });
 
 test("whatever is asked of ship or dogmaIM by name is made on the moniker, read against the client or not", async () => {
-  const allowed = new Set(["dogmaIM.GetTargets", "dogmaIM.AddTarget", "dogmaIM.Overload", "dogmaIM.CreateNewbieShip", "ship.LeaveShip", "ship.GetShipConfiguration", "ship.LaunchDrones", "ship.GetShipFittingInfo", "station.GetGuests"]);
-  const { pilots, session, handle } = await selected({ answers: { "bound:GetTargets": { type: "list", items: [9001] } } }, { allowed });
+  const allowed = new Set(["dogmaIM.ItemGetInfo", "dogmaIM.AddTarget", "dogmaIM.Overload", "dogmaIM.CreateNewbieShip", "ship.LeaveShip", "ship.GetShipConfiguration", "ship.LaunchDrones", "ship.GetShipFittingInfo", "station.GetGuests"]);
+  const { pilots, session, handle } = await selected({ answers: { "bound:ItemGetInfo": { type: "list", items: [9001] } } }, { allowed });
   const made = () => session.boundCalls.at(-1);
   const chosen = session.calls.length;
   const byName = () => session.calls.slice(chosen).filter((call) => call.method !== "ShipGetInfo").map((call) => `${call.service}.${call.method}`);
 
   // A read, with the server's answer handed back as any call's is.
-  const targets = await pilots.callMethod("dogmaIM", "GetTargets", [], null, FIELDS, handle);
-  assert.deepEqual([targets.service, targets.method, targets.result], ["dogmaIM", "GetTargets", { type: "list", items: [9001] }]);
+  const targets = await pilots.callMethod("dogmaIM", "ItemGetInfo", [SHIP], null, FIELDS, handle);
+  assert.deepEqual([targets.service, targets.method, targets.result], ["dogmaIM", "ItemGetInfo", { type: "list", items: [9001] }]);
   assert.deepEqual(session.binds, [{ service: "dogmaIM", params: [STATION, 15] }]);
-  assert.deepEqual(made(), { objectID: "N=1:1", method: "GetTargets", args: [], kwargs: null });
+  assert.deepEqual(made(), { objectID: "N=1:1", method: "ItemGetInfo", args: [SHIP], kwargs: null });
   await pilots.callMethod("dogmaIM", "AddTarget", [9001], null, FIELDS, handle);
   assert.deepEqual(made(), { objectID: "N=1:1", method: "AddTarget", args: [9001], kwargs: null });
   // One nobody has read against the client: still on the moniker, with its arguments as the BFF spelt them.
@@ -2458,7 +2467,7 @@ test("whatever is asked of ship or dogmaIM by name is made on the moniker, read 
   // The tally: asked by name and made on the moniker is not the client's call as the BFF spelt it, even with the client's arguments.
   const tally = Object.fromEntries(pilots.callLedger().map((row) => [row.pair, row.statuses]));
   assert.deepEqual(
-    [tally["dogmaIM.GetTargets"], tally["dogmaIM.AddTarget"], tally["dogmaIM.Overload"], tally["ship.GetShipConfiguration"], tally["ship.LaunchDrones"], tally["ship.LeaveShip"], tally["dogmaIM.CreateNewbieShip"]],
+    [tally["dogmaIM.ItemGetInfo"], tally["dogmaIM.AddTarget"], tally["dogmaIM.Overload"], tally["ship.GetShipConfiguration"], tally["ship.LaunchDrones"], tally["ship.LeaveShip"], tally["dogmaIM.CreateNewbieShip"]],
     [{ reshaped: 1 }, { reshaped: 1 }, { unchecked: 1 }, { reshaped: 1 }, { reshaped: 1 }, { reshaped: 1 }, { unchecked: 1 }],
   );
 });
@@ -4581,7 +4590,7 @@ test("a moniker whose bind finds no object says so at the call that made it bind
 // in this server's log of a retail client (the moniker names skillHandler and no node; the bind carries GetSkills).
 
 const skillMoniker = (service, nodeID, characterID = PILOT) => ({ type: "object", name: Buffer.from("carbon.common.script.net.moniker.Moniker"), args: [Buffer.from(service), nodeID, characterID, null] });
-const SKILL_PAIRS = { allowed: new Set(["skillHandler.GetImplants", "skillHandler.GetBoosters", "skillHandler.GetSkills", "skillHandler.GetAllSkills", "skillHandler.GetAttributes", "skillHandler.GetSkillHistory", "skillHandler.GetFreeSkillPoints", "skillHandler.GetRespecInfo", "skillHandler.GetSkillPoints", "skillHandler.AbortTraining", "dogmaIM.GetTargets", "someService.GetSkills"]) };
+const SKILL_PAIRS = { allowed: new Set(["skillHandler.GetImplants", "skillHandler.GetBoosters", "skillHandler.GetSkills", "skillHandler.GetAllSkills", "skillHandler.GetAttributes", "skillHandler.GetSkillHistory", "skillHandler.GetFreeSkillPoints", "skillHandler.GetRespecInfo", "skillHandler.GetSkillPoints", "skillHandler.AbortTraining", "dogmaIM.ItemGetInfo", "someService.GetSkills"]) };
 const implantsOf = (...typeIDs) => ({ type: "dict", entries: typeIDs.map((typeID, index) => [index + 1, keyVal([["typeID", typeID]])]) });
 const skillOf = (typeID, level, points, rank = 1, virtualLevel = null) => ({ type: "objectex1", header: [{ type: "token", value: "characterskills.common.character_skill_entry.CharacterSkillEntry" }, [typeID, level, points, rank, virtualLevel]], list: [], dict: [] });
 const skillsOf = (...entries) => ({ type: "dict", entries: entries.map((entry) => [entry.header[1][0], entry]) });
@@ -4787,14 +4796,14 @@ test("with no skill handler answered there is nothing to ask, and the next read 
 });
 
 test("the skill handler's object is the character's wherever it is: kept when the pilot moves, and bound again only when the server lets it go", async () => {
-  const { pilots, session, handle } = await selected({ answers: handlerAnswers({ "bound:GetTargets": { type: "list", items: [] } }) }, SKILL_PAIRS);
-  await pilots.callMethod("dogmaIM", "GetTargets", [], null, FIELDS, handle);
+  const { pilots, session, handle } = await selected({ answers: handlerAnswers({ "bound:ItemGetInfo": { type: "list", items: [] } }) }, SKILL_PAIRS);
+  await pilots.callMethod("dogmaIM", "ItemGetInfo", [SHIP], null, FIELDS, handle);
   assert.deepEqual(session.binds.map((bind) => bind.service), ["skillHandler", "dogmaIM"]);
   // Another station: dogma's moniker is the old place's, and is bound again. The handler's is not.
   session.attributes.stationid = 60000004;
   session.change({ stationid: [STATION, 60000004], locationid: [STATION, 60000004] });
   await skillRead(pilots, handle, "GetSkillPoints");
-  await pilots.callMethod("dogmaIM", "GetTargets", [], null, FIELDS, handle);
+  await pilots.callMethod("dogmaIM", "ItemGetInfo", [SHIP], null, FIELDS, handle);
   assert.deepEqual([session.binds.map((bind) => bind.service), session.boundCalls.at(-2).objectID, session.calls.filter((call) => call.service === "skillMgr2").length], [["skillHandler", "dogmaIM", "dogmaIM"], "N=1:1", 1]);
   // The server lets the handler's object go: the moniker is the one the client has, and binds again by its next call.
   session.notify("OnMachoObjectDisconnect", [Buffer.from("N=1:1"), 1065450, null]);
@@ -5211,4 +5220,122 @@ test("the ship's entry has its capacitor as it has recharged to, as godma reckon
   session.attributes.shipid = 555;
   answers = false;
   assert.deepEqual(await pilots.shipInfo(FIELDS, handle), { shipID: 555, row: null, online: [] });
+});
+
+// ── what the ship has locked, kept as the client's target service keeps it ───
+//
+// The client asks for what its ship has locked and what has it locked once each, on undocking or on logging in in
+// space, after godma's prime (godma.RefreshTargets; recorded so on Tranquility after an undock), and from then on
+// goes by what the server tells it (targetMgr.OnTarget). The BFF's routes read the list each time they want it.
+
+const TARGET_PAIRS = new Set(["dogmaIM.GetTargets", "dogmaIM.GetTargeters", "dogmaIM.AddTarget", "dogmaIM.RemoveTarget"]);
+const idsOf = (...ids) => ({ type: "list", items: ids });
+/** A pilot chosen in space, the dogma location answering the two lists as given. */
+async function flying(answers = {}) {
+  const hand = handTicked();
+  const built = build({ ...IN_SPACE, answers: { ...IN_SPACE.answers, "bound:GetTargets": idsOf(9001), "bound:GetTargeters": idsOf(7001), ...answers } }, { ...hand.options, allowed: TARGET_PAIRS });
+  const { bridgeSessionID: handle } = await built.pilots.selectCharacter([PILOT, null, true], null, FIELDS);
+  const read = async (method = "GetTargets") => (await built.pilots.callMethod("dogmaIM", method, [], null, WHOSE, handle)).result.items;
+  /** What has been asked of the dogma location, of godma's prime and the two lists, in the order it was asked. */
+  const asked = () => built.session.boundCalls.map((call) => call.method).filter((method) => ["GetAllInfo", "GetTargets", "GetTargeters"].includes(method));
+  return { ...built, session: built.session, hand, handle, read, asked };
+}
+
+test("what the ship has locked, and what has it locked, are asked for once on arriving in space, after godma's prime, and kept by the server's word", async () => {
+  const { pilots, session, read, asked } = await flying();
+  assert.deepEqual(asked(), [], "nothing is asked of the dogma location before something wants it");
+  assert.deepEqual(await read(), [9001]);
+  // godma primed first, then RefreshTargets: the two lists, each once, both for the reading of one.
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(asked(), ["GetAllInfo", "GetTargets", "GetTargeters"]);
+  assert.deepEqual(await read("GetTargeters"), [7001]);
+  assert.deepEqual(asked(), ["GetAllInfo", "GetTargets", "GetTargeters"]);
+  assert.deepEqual(session.binds.filter((bind) => bind.service === "dogmaIM"), [{ service: "dogmaIM", params: [SYSTEM, 5] }]);
+  assert.equal(session.calls.some((call) => call.service === "dogmaIM" && call.method !== "ShipGetInfo"), false, "neither was asked by the service's name");
+
+  // The server's word, worked in as the client's OnTarget works it.
+  session.notify("OnTarget", [Buffer.from("add"), 9002]);
+  assert.deepEqual(await read(), [9001, 9002]);
+  session.notify("OnTarget", [Buffer.from("lost"), 9001, Buffer.from("Docking")]);
+  assert.deepEqual(await read(), [9002]);
+  session.notify("OnTargets", [[[133000000000000000n, Buffer.from("add"), 9003, null], [133000000000000000n, Buffer.from("lost"), 9002, Buffer.from("Exploding")]]]);
+  assert.deepEqual(await read(), [9003]);
+  session.notify("OnTarget", [Buffer.from("otheradd"), 7002]);
+  session.notify("OnTarget", [Buffer.from("otherlost"), 7001, null]);
+  assert.deepEqual(await read("GetTargeters"), [7002]);
+  session.notify("OnTarget", [Buffer.from("clear")]);
+  assert.deepEqual([await read(), await read("GetTargeters")], [[], [7002]]);
+
+  // Through all of it the server was asked each list once, and the ledger counts what was sent.
+  assert.deepEqual(asked(), ["GetAllInfo", "GetTargets", "GetTargeters"]);
+  const tally = Object.fromEntries(pilots.callLedger().map((row) => [row.pair, [row.calls, row.statuses]]));
+  assert.deepEqual([tally["dogmaIM.GetTargets"], tally["dogmaIM.GetTargeters"]], [[1, { same: 1 }], [1, { same: 1 }]]);
+});
+
+test("a lock the server says is made already is a target at once; one still being made is none until the server says so", async () => {
+  // AddTarget answers (flag, targets): the flag set while the lock is still being made.
+  let refused = false;
+  const { pilots, session, handle, read, asked } = await flying({ "bound:GetTargets": idsOf(), "bound:AddTarget": (args) => { if (refused) throw refusedBy("TargetNotWithinRangeGeneric"); return [args[0] === 9005 ? 0 : 1, idsOf()]; } });
+  assert.deepEqual(await read(), []);
+  await pilots.callMethod("dogmaIM", "AddTarget", [9004], null, WHOSE, handle);
+  assert.deepEqual(await read(), [], "being locked is not locked");
+  session.notify("OnTarget", [Buffer.from("add"), 9004]);
+  assert.deepEqual(await read(), [9004]);
+  await pilots.callMethod("dogmaIM", "AddTarget", [9005], null, WHOSE, handle);
+  assert.deepEqual(await read(), [9004, 9005]);
+  // A lock refused adds nothing.
+  refused = true;
+  await rejects(pilots.callMethod("dogmaIM", "AddTarget", [9006], null, WHOSE, handle), "CALL_REFUSED");
+  assert.deepEqual(await read(), [9004, 9005]);
+  assert.deepEqual(asked().filter((method) => method === "GetTargets"), ["GetTargets"]);
+});
+
+test("a ball that goes from the ballpark is no target any more, as the client's DoBallsRemove has it", async () => {
+  const { hand, read, asked } = await flying({ "bound:GetTargets": idsOf(9001, 9002) });
+  assert.deepEqual(await read(), [9001, 9002]);
+  hand.parks[0].space.park.onBallsRemoved([{ id: 9001, slim: null, terminal: false }, { id: 5, slim: null, terminal: true }]);
+  assert.deepEqual(await read(), [9002]);
+  assert.deepEqual(asked().filter((method) => method === "GetTargets"), ["GetTargets"]);
+});
+
+test("in another system or docked the ship has nothing locked and nothing is asked; undocked, both lists are asked for again", async () => {
+  const { session, read, asked } = await flying();
+  assert.deepEqual([await read(), await read("GetTargeters")], [[9001], [7001]]);
+  const moved = (attributes, changes) => { Object.assign(session.attributes, attributes); session.change(changes); };
+  // A jump: the old system's ballpark is let go, and the client asks nothing in the new one.
+  moved({ solarsystemid: SYSTEM + 1, solarsystemid2: SYSTEM + 1, locationid: SYSTEM + 1 }, { solarsystemid: [SYSTEM, SYSTEM + 1], solarsystemid2: [SYSTEM, SYSTEM + 1], locationid: [SYSTEM, SYSTEM + 1] });
+  assert.deepEqual([await read(), await read("GetTargeters")], [[], []]);
+  session.notify("OnTarget", [Buffer.from("add"), 9002]);
+  assert.deepEqual(await read(), [9002], "and what the server says there is kept");
+  // Docked.
+  moved({ solarsystemid: null, stationid: STATION, locationid: STATION }, { solarsystemid: [SYSTEM + 1, null], stationid: [null, STATION], locationid: [SYSTEM + 1, STATION] });
+  assert.deepEqual([await read(), await read("GetTargeters")], [[], []]);
+  assert.deepEqual(asked(), ["GetAllInfo", "GetTargets", "GetTargeters"], "nothing more was asked for either");
+  // Undocked: godma's prime for the new place, and then the two lists.
+  moved({ solarsystemid: SYSTEM + 1, stationid: null, locationid: SYSTEM + 1 }, { solarsystemid: [null, SYSTEM + 1], stationid: [STATION, null], locationid: [STATION, SYSTEM + 1] });
+  assert.deepEqual([await read(), await read("GetTargeters")], [[9001], [7001]]);
+  assert.deepEqual(asked(), ["GetAllInfo", "GetTargets", "GetTargeters", "GetAllInfo", "GetTargets", "GetTargeters"]);
+});
+
+test("a pilot chosen docked has nothing locked, and is asked nothing for it", async () => {
+  const { pilots, session, handle } = await selected({ answers: { "bound:GetTargets": idsOf(9001) } }, { allowed: TARGET_PAIRS });
+  assert.deepEqual((await pilots.callMethod("dogmaIM", "GetTargets", [], null, FIELDS, handle)).result, idsOf());
+  assert.deepEqual((await pilots.callMethod("dogmaIM", "GetTargeters", [], null, FIELDS, handle)).result, idsOf());
+  assert.deepEqual([session.binds, session.boundCalls], [[], []]);
+  // A solar system named to a session that is in a station is not an arrival in space.
+  session.attributes.solarsystemid = SYSTEM;
+  session.change({ solarsystemid: [null, SYSTEM] });
+  assert.deepEqual((await pilots.callMethod("dogmaIM", "GetTargets", [], null, FIELDS, handle)).result, idsOf());
+  assert.deepEqual(session.boundCalls.filter((call) => call.method === "GetTargets"), []);
+  assert.equal(pilots.callLedger().some((row) => row.pair.startsWith("dogmaIM.GetTarget")), false);
+});
+
+test("a list the server could not be asked for is not kept as empty: the next reading asks again", async () => {
+  let refuse = true;
+  const { read, asked } = await flying({ "bound:GetTargets": () => { if (refuse) throw refusedBy("NotNow"); return idsOf(9001); } });
+  await rejects(read(), "CALL_REFUSED");
+  const refusals = asked().filter((method) => method === "GetTargets").length;
+  refuse = false;
+  assert.deepEqual([await read(), await read()], [[9001], [9001]]);
+  assert.equal(asked().filter((method) => method === "GetTargets").length, refusals + 1, "asked once more, and that answer kept");
 });

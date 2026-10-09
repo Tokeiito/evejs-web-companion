@@ -281,7 +281,9 @@ const text = (value) => (Buffer.isBuffer(value) ? value.toString("utf8") : typeo
  * target or None, and how often to repeat. The BFF's routes say -1 for "go on
  * repeating" and leave the name empty when they do not know it; the client
  * sends 1000 for a module left to repeat, 0 for an effect that cannot, and
- * always the name.
+ * always the name. The page sends what the pilot has locked with every module;
+ * the client's button gives a target to an effect aimed at one (effectCategory
+ * 2) and None to any other, an afterburner's among them.
  */
 function activation(args, kwargs, context) {
   const [itemID, effectName, target, repeat] = args;
@@ -289,7 +291,9 @@ function activation(args, kwargs, context) {
   const canRepeat = named && context.effectRepeats ? context.effectRepeats(itemID, named) : null;
   const asked = Number(repeat);
   const repeats = asked >= 0 ? asked : canRepeat === null ? repeat : canRepeat ? REPEATS : 0;
-  const shaped = { args: [itemID, named, target ?? null, repeats], kwargs };
+  // Only an effect aimed at a target is given one: the button fills in the active target for those alone (1318).
+  const aimed = named && context.effectTargeted ? context.effectTargeted(itemID, named) : null;
+  const shaped = { args: [itemID, named, aimed === false ? null : target ?? null, repeats], kwargs };
   if (!named) return { ...shaped, status: "differs", note: "The client always names the module's default effect. This call names none, and what the module is was not known." };
   if (asked < 0 && canRepeat === null) return { ...shaped, status: "differs", note: "The client sends 1000 or 0 for the repeats. Whether this effect can repeat was not known, so the BFF's -1 went as it was." };
   return shaped;
@@ -468,6 +472,8 @@ const RETAIL_CALLS = Object.freeze({
   "beyonce.CmdWarpToStuffAutopilot": same("eve/client/script/parklife/autopilot.py:465", "GetRemotePark().CmdWarpToStuffAutopilot(destinationID): the autopilot's warp, on the ballpark's object. Recorded on Tranquility with the one ID."),
   "beyonce.CmdWarpToStuff": same("eve/client/script/remote/michelle.py:737", "bp.CmdWarpToStuff(subject, subjectID, minRange=...), on the ballpark's object: 'item' and the thing's ID from the menu (movementFunctions.py 452), 'char' for a fleet member, 'bookmark' for a bookmark. Recorded on Tranquility as ('item', itemID, minRange=0)."),
   "beyonce.CmdDock": same("eve/client/script/ui/services/menuSvcExtras/movementFunctions.py:517", "bp.CmdDock(itemID, session.shipid), on the ballpark's object, through sessionMgr.PerformSessionChange('dock', ...). Recorded on Tranquility with the two IDs."),
+  "beyonce.CmdFollowBall": same("eve/client/script/ui/services/menuSvcExtras/movementFunctions.py:302", "bp.CmdFollowBall(targetID, range), on the ballpark's object: the menu's approach with const.approachRange, keep at range with the pilot's distance (229), the autopilot's with 0.0 (autopilot.py 437). Recorded on Tranquility as (itemID, 50)."),
+  "beyonce.CmdSetSpeedFraction": same("eve/client/script/parklife/autopilot.py:434", "park.CmdSetSpeedFraction(1.0), on the ballpark's object, before the autopilot's approach; the ship's panel sends the pilot's own fraction (activeShipController.py 227). Recorded on Tranquility as (1.0). The menu's approach, keep at range and orbit send none before theirs, and the BFF's routes for those do."),
   "scanMgr.GetFullState": same("eve/client/script/parklife/sensorSuiteService.py:718", "scanSvc.GetScanMan().GetFullState(), no arguments, on the system's scan manager: the object GetSystemScanMgr() answers. Recorded on Tranquility on that object."),
   "scanMgr.GetSystemScanMgr": same(`${SCAN_SVC}:115`, "no arguments"),
   "scanMgr.RequestScans": reshaped(
@@ -721,6 +727,8 @@ const RETAIL_CALLS = Object.freeze({
   "ship.LaunchDrones": reshaped(`${EVE_MISC}:29`, launching, "GetShipAccess().LaunchDrones([(itemID, quantity), ...], whoseBehalfID, ignoreWarning): a list of pairs, and None for whose behalf when it is the pilot's own"),
   "ship.ScoopDrone": same(`${DRONE_FUNCTIONS}:195`, "GetShipAccess().ScoopDrone(droneIDs)"),
   "ship.LeaveShip": same(`${STATION_SVC}:248`, "GetShipAccess().LeaveShip(shipID)"),
+  "ship.Board": same("eve/client/script/ui/services/menuSvcExtras/menuFunctions.py:209", "GetShipAccess().Board(shipID, session.shipid or session.stationid), through sessionMgr.PerformSessionChange('board', ...). Recorded on Tranquility in space as (shipID, the ship left), the bind carrying it."),
+  "slash.SlashCmd": same("eve/client/script/ui/services/menusvc.py:834", "RemoteSvc('slash').SlashCmd(command), by name: what the client's GM menus send. No recording has one."),
   "ship.GetShipConfiguration": reshaped(`${SHIP_CONFIG}:51`, configuration, "GetShipAccess().GetShipConfiguration(shipID)"),
 });
 

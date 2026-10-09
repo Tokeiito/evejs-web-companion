@@ -187,9 +187,12 @@ const SERVER_REFUSALS: Readonly<Record<string, string>> = Object.freeze({
   NotEnoughCargoSpace:
     "There isn't enough room in that hold.",
   // dogma `_throwModuleActivationUserError` — TARGET_OUT_OF_RANGE for anything
-  // that is not a mining laser.
+  // that is not a mining laser — and `_throwTargetingUserError` for a lock on
+  // something beyond the ship's own targeting range. The sentence is true of
+  // both: seen live as "Lock refused: … out of the module's range" for a rock
+  // 22 km from a ship that locks to 16.5 km, with no module in it.
   TargetNotWithinRangeGeneric:
-    "That target is out of the module's range. Get closer and try again.",
+    "That target is out of range. Get closer and try again.",
   // dogma targeting / mining lasers / invbroker — TARGET_OUT_OF_RANGE.
   TargetTooFar:
     "That is too far away. Get closer and try again.",
