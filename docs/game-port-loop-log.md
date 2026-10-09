@@ -7305,3 +7305,119 @@ read `cancelled` beside `fail`: my earlier totals in this log did not print it.
 27. The pathfinder's ties: how the order of the map's jumps settles them, and the order the
     client's own map is in.
 28. Jumps in the assets and contracts lists, the autopilot's way, where the page lists them.
+
+## 2026-10-09 — a container's capacity, from its type
+
+Commit `d367a0c`, pushed. Item 1 of the last list, and the last `invbroker.GetCapacity` the
+BFF sent.
+
+**What the retail client does.** It opens a container by a controller that asks its
+inventory cache for a capacity with no flag (`invControllers.py` 418), and the cache reckons
+one (`invCache.py` 1224 on): the capacity of the container's type (`evetypes.GetCapacity`),
+and the volume of everything the container lists, summed flag by flag over the flags the
+list has. A plastic wrap is as big as what is in it. A wreck has no capacity at all
+(`invControllers.py` 1636). The client knows the type because it has the item it opens.
+
+**What the page did.** Opened a container by its ID alone, and the route asked the server for
+its list and its capacity. Six places in the page open one; only the Inventory window reads
+the capacity. The bots open cans and customs offices for what is in them.
+
+**What was built.**
+
+- The Inventory window says what the container is, from the row it was opened by (or, read
+  again after its row has gone from the lists, what it was opened as; never another
+  container's type).
+- On the game port the route reckons the capacity from that type and asks the server for the
+  list alone. A caller that does not say the type gets no capacity and costs the server none.
+  Where it cannot be reckoned (a type the static tables have not or with no capacity, a thing
+  of unknown volume in it, no client to read), and on the gateway, the server is asked as
+  before.
+
+**Proof.**
+
+- Tests: 5 new (3 on the route, 2 on the page), 2 of the page's changed for the request's new
+  form. 23 ways of breaking it tried; one survived a first pass (how the type is read from
+  the request), and a case was added. All are caught.
+- Suite: 9590 tests, 9566 pass, 0 fail, 0 cancelled, 24 skipped, 0 todo. No test process left
+  behind.
+- **A container, staged** (a Small Standard Container given, assembled, and 2,500 Tritanium
+  put in it, as Test Two; the store put aside first and put back after: one row in the hangar
+  and one in the cargo again, the journal `[1,0]`). Opened through both check BFFs with its
+  type said: 120 m³ with 25 used on both, the gateway's from the server and the game port's
+  reckoned. Opened on the game port with no type said: no capacity.
+- **In the browser, on the game port:** the Inventory window's item hangar listed the
+  container, "Open" asked the route with the container's type in the request, and the
+  container's own view drew "25 of 120 m³" over its one stack. Nothing failed. The item
+  hangar's own figure was 250,100 m³: the ship and the assembled container, each by its
+  type's volume.
+- **The server's own log** (eve.js `e066a81e9`, with another session's uncommitted edits in
+  the checkout): from the game port, through the script and the browser both, `List` calls
+  and no `GetCapacity`.
+- **On both transports, by script** (`scripts/bff-parity.js`): 11 identical, 7 tolerated,
+  2 moved, 2 divergent, as before.
+
+**Not seen working.**
+
+- A plastic wrap, and a container with a packaged ship in it: held by tests with made-up
+  numbers.
+- A can in space opened by a bot on the game port: no capacity is asked for there now, and no
+  bot was run.
+
+**Not done.**
+
+- A wreck has no capacity in the client. Nothing in the page opens one with its type said,
+  so the rule is not here.
+- The item hangar's figure with an assembled container in it was not set beside the server's.
+- The four calls the client never makes that the page still does.
+
+### Next
+
+1. The rest of the web client's own calls: `dogmaIM.ShipGetInfo` and `ShipOnlineModules`
+   (the flight status read), `contractProxy.GetMyCurrentContractList`
+   (`GetContractListForOwner`), `charMgr.GetCloneInfo` (`jumpCloneSvc.GetCloneState` on
+   its moniker, godma's implants).
+2. The Fleet panel asking nothing of a fleet's object while the pilot is in no fleet.
+3. A ship with modules fitted and a hold with a packaged ship in it, staged: the Fitting
+   window's figures and the client's sums, each set beside the server's.
+4. The walk in space: undocked, every panel and the space view, the store put aside first
+   and put back after; its unread pairs read.
+5. The routes that answer from the store, listed, and each set beside what the client asks.
+6. The standings the client's way: `GetNPCNPCStandings`, and asked once at the session's
+   change and kept, with the server's notices keeping them right.
+7. Two couriers staged, for the contract search's sort and filters; the corporation's
+   expired list beside the pilot's own; the summary asked once and kept.
+8. The corporation registry's other calls, each set beside the client's.
+9. Phase 3's writes, feature by feature, each set beside what the client sends.
+10. The wallet's "Market Transactions", and the lines the client derives from a transaction.
+11. The avoidance list's own window, and a route plotted again when a setting changes under it.
+12. Around a place's name, the last of it: the outlaw's warning (the pilot's own security
+    status). The agent's own window's steps, if the client's say how far.
+13. The page's own read of the journal after an agent's button: gone, if nothing of the page's
+    own counts on it, with the push doing the work as it does for Remove Offer.
+14. The agent's cards above its own window, where the client's window has its own header.
+15. The scanner the client's way: results kept from the server's word, a probe's destination
+    and range kept here and sent with the scan.
+16. Small, around dialogs: the title for a dialog's kind, the "do not ask again" box, the typed
+    codes not done.
+17. Small, in space: an overview row's speed columns the client's way; the bar the client
+    fills while a ship lines up for a warp; a warp ordered at a bookmark or a fleet member.
+18. Small, before a character is chosen: selecting on the account's own connection; the count
+    of names checked.
+19. Small, in Ready Fit: the window following a change of pilot.
+20. Small, in words: an interval's `shortForm` and `writtenFormTwoPart`; the bonus's
+    countdown; a place's rating in its colour and its name as a link.
+21. In the park, if a server ever sends a ball that needs them: MISSILE, FORMATION, MUSHROOM;
+    a fixed ball's collision shapes and the partition's order.
+22. If a server ever sends one: a special interaction drawn as the client draws one; messages
+    inside messages.
+23. More of the client's built data as it is needed: one line in `TABLES` for each (dungeons
+    for ship restrictions); the client's own map, to set beside this server's.
+24. When there is a recording of it: a courier's agent talked to again where the pilot
+    accepted, before the package has gone anywhere (the operator's section); and a mission
+    paid in a system of the safest class, for whether its ISK is reduced.
+25. Other things asked once beside the store, and other panels' effects, looked at for the
+    faults of earlier entries.
+26. The pathfinder's ties: how the order of the map's jumps settles them, and the order the
+    client's own map is in.
+27. Jumps in the assets and contracts lists, the autopilot's way, where the page lists them.
+28. A wreck opened with its type said: no capacity, as the client has none for one.
