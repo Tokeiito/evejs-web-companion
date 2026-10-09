@@ -565,24 +565,43 @@ function createGamePortPilots({
     return { shipID: place.shipID, typeID: entry.dogma.typeOf(place.shipID) };
   }
 
+  /** One call the client makes of its own accord on the dogma location, in the client's form and in the ledger. */
+  async function ownDogmaCall(entry, method, args) {
+    const location = await monikerObject(entry, "dogmaIM");
+    const form = shape("dogmaIM", method, args, null, contextFor(entry));
+    ledger.note("dogmaIM", method, form);
+    return entry.session.callBound(location, method, argumentsToWire(form.args), form.kwargs);
+  }
+
   /**
-   * clientDogmaLocation._OnlineModuleIfApplicable and OnlineModule: a module newly fitted to the pilot's ship is
-   * put online by the client itself, where its type can be online at all. The effect is running from that moment
+   * godma.UpdateItem, for a module the server says is in a slot of the ship the pilot is in: the client asks what
+   * dogma has of it, ItemGetInfo(itemID), and holds the answer. With no answer the module is held as it was.
+   */
+  function askAbout(entry, item) {
+    if (item.locationID !== attribute(entry, "shipid")) return;
+    entry.itemWork = entry.itemWork.then(async () => {
+      try {
+        entry.dogma.updateItem(item.itemID, await ownDogmaCall(entry, "ItemGetInfo", [item.itemID]));
+      } catch {
+        // The client's item change carries on to its dogma location whatever came of this.
+      }
+    });
+  }
+
+  /**
+   * clientDogmaLocation._OnlineModuleIfApplicable and OnlineModule: a module newly fitted to the ship the pilot is
+   * in is put online by the client itself, where its type can be online at all. The effect is running from then
    * and the server is told, SetModuleOnline(the ship, the module). A server that has it online already says so
    * (EffectAlreadyActive2), and that is no failure; refused for any other reason, or not answered, the effect is
-   * not running after all.
+   * not running after all. It comes after godma's asking, as it does on the client.
    */
   function onlineIfApplicable(entry, item) {
-    // clientDogmaIM.GodmaItemChanged: only what is in the ship the pilot is in now.
     if (item.locationID !== attribute(entry, "shipid")) return;
     if (!typeEffects(item.typeID).some((effect) => effect.effectID === EFFECT_ONLINE)) return;
-    entry.dogma.setEffect(item.itemID, EFFECT_ONLINE, true);
-    entry.onlining = entry.onlining.then(async () => {
+    entry.itemWork = entry.itemWork.then(async () => {
+      entry.dogma.setEffect(item.itemID, EFFECT_ONLINE, true);
       try {
-        const location = await monikerObject(entry, "dogmaIM");
-        const form = shape("dogmaIM", "SetModuleOnline", [item.locationID, item.itemID], null, contextFor(entry));
-        ledger.note("dogmaIM", "SetModuleOnline", form);
-        await entry.session.callBound(location, "SetModuleOnline", argumentsToWire(form.args), form.kwargs);
+        await ownDogmaCall(entry, "SetModuleOnline", [item.locationID, item.itemID]);
       } catch (error) {
         if (!error.refusal || error.refusal.key !== "EffectAlreadyActive2") entry.dogma.setEffect(item.itemID, EFFECT_ONLINE, false);
       }
@@ -599,8 +618,8 @@ function createGamePortPilots({
     const entry = held(bridgeSessionID, sessionFields);
     const place = whereabouts(entry);
     await shipReadings(entry, place);
-    // A module the client is putting online is one or it is not, once the server has answered.
-    await entry.onlining;
+    // A module just fitted is as the server has answered of it, once it has.
+    await entry.itemWork;
     // Only the row godma was primed with for this ship where it is now: never an earlier ship's, or this one's from
     // somewhere it has left, when the priming for here did not come.
     const kept = entry.dogmaLoaded === primedFor(entry, place) ? entry.shipRow : null;
@@ -718,10 +737,16 @@ function createGamePortPilots({
       /** The pilot's ballpark while it is in space (pilotSpace.js), else null. */
       space: null,
       /** The pilot's ship as dogma has it (pilotDogma.js), and which ship and place that was loaded for. */
-      dogma: createPilotDogma({ characterID, now: () => filetime(clock.simTime()), effectCategory, onFitted: (item) => onlineIfApplicable(entry, item) }),
+      dogma: createPilotDogma({
+        characterID,
+        now: () => filetime(clock.simTime()),
+        effectCategory,
+        onSlotted: (item) => askAbout(entry, item),
+        onFitted: (item) => onlineIfApplicable(entry, item),
+      }),
       dogmaLoaded: null,
-      /** The modules the client is putting online itself, one after another: over when the server has answered for each. */
-      onlining: Promise.resolve(),
+      /** What the client does of its own accord for an item the server says has moved, one call after another: over when each is answered. */
+      itemWork: Promise.resolve(),
       /** The pilot's scan probes as the client's scan service knows them (pilotScanner.js). */
       scanner: createPilotScanner({ typeAttribute }),
       /** Questions the server has asked and the user has not answered yet, by ID. */
@@ -835,8 +860,12 @@ function createGamePortPilots({
   async function callMethod(service, method, args = [], kwargs = null, sessionFields = {}, bridgeSessionID = undefined) {
     const entry = held(bridgeSessionID, sessionFields);
     assertAllowed(service, method);
-    // What the client has to hand before it makes this call: godma primed for the ship, which it is from the moment it has one.
-    if (retailNeeds(service, method) === "dogma") await shipReadings(entry, whereabouts(entry));
+    // What the client has to hand before it makes this call: godma primed for the ship, which it is from the moment it has one,
+    // and anything just fitted answered for.
+    if (retailNeeds(service, method) === "dogma") {
+      await shipReadings(entry, whereabouts(entry));
+      await entry.itemWork;
+    }
     const form = shape(service, method, args, kwargs, contextFor(entry));
     // Asked of the service by name and made on its moniker: the arguments may be the client's as they stand, the call was not.
     ledger.note(service, method, form.moniker && form.status === "same" ? { ...form, status: "reshaped" } : form);

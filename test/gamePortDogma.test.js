@@ -795,9 +795,17 @@ const EXPANDER = Object.freeze({ itemID: 7001, typeID: 1317, locationID: 5001, f
 const onlineNow = (itemID, active) => ({ method: "OnGodmaShipEffect", args: [BigInt(itemID), EFFECT_ONLINE, HEALTH_T, active, active, [BigInt(itemID), PILOT, 5001n, null, null, [], EFFECT_ONLINE, null], HEALTH_T, -1, 1, null] });
 function holding(rows = [shipRow(5001, HEALTHY)]) {
   const fitted = [];
-  const dogma = createPilotDogma({ characterID: PILOT, now: () => HEALTH_T, onFitted: (item) => fitted.push(item) });
+  const asked = [];
+  /** Both in the order the store said them: "ask 7001" for an item godma would ask the server about, "fit 7001" for one newly fitted. */
+  const said = [];
+  const dogma = createPilotDogma({
+    characterID: PILOT,
+    now: () => HEALTH_T,
+    onSlotted: (item) => { asked.push(item); said.push(`ask ${item.itemID}`); },
+    onFitted: (item) => { fitted.push(item); said.push(`fit ${item.itemID}`); },
+  });
   dogma.loadAllInfo(kv({ shipInfo: attrs(rows) }));
-  return { dogma, fitted };
+  return { dogma, fitted, asked, said };
 }
 
 test("a module fitted while the ship is held is the ship's from then on: what it is, where, and what the server says of it after", () => {
@@ -890,4 +898,54 @@ test("an effect the client starts or stops itself is running or not from then on
   assert.deepEqual([dogma.onlineModules(5001), dogma.effect(7001, EFFECT_ONLINE).isActive], [[], false]);
   // One that is not held has no effects to start.
   assert.deepEqual([dogma.setEffect(9999, EFFECT_ONLINE, true), dogma.effect(9999, EFFECT_ONLINE)], [false, null]);
+});
+
+// ── what godma asks of a module in a slot ────────────────────────────────────
+//
+// Told of an item in its ship, the client's godma asks the server what dogma has of it,
+// ItemGetInfo(itemID), and holds the answer: its attributes and the effects active on it (godma.OnItemChange,
+// UpdateItem 1629). Recorded on Tranquility for a module put in a slot: the item change, ItemGetInfo, and only
+// then the dogma location's own fitting of it. An item in the hold, the drone bay or a fighter tube is not asked
+// about (UpdateItem 1580).
+
+test("a module the server says is in a slot is one godma asks about: newly fitted, before it is fitted; moved, again", () => {
+  const { dogma, asked, said } = holding();
+  dogma.feed(itemsChanged([movedRow(EXPANDER)]));
+  assert.deepEqual([asked, said], [[{ itemID: 7001, typeID: 1317, flagID: 11, locationID: 5001 }], ["ask 7001", "fit 7001"]]);
+  dogma.feed(itemsChanged([movedRow({ ...EXPANDER, flagID: 12 })], [[4, 11]]));
+  assert.deepEqual([asked.map((item) => item.flagID), said], [[11, 12], ["ask 7001", "fit 7001", "ask 7001"]]);
+  // Taken out, there is nothing to ask.
+  dogma.feed(itemsChanged([movedRow({ ...EXPANDER, locationID: HANGAR, flagID: 4 })], [[3, 5001], [4, 12]]));
+  assert.equal(asked.length, 2);
+});
+
+test("what godma asks about: a module or a subsystem, in a slot or among the hidden modifiers; not a drone in its bay, a fighter in its tube, or a charge", () => {
+  const askedAt = (flagID, more = {}) => {
+    const { dogma, asked } = holding();
+    dogma.feed(itemsChanged([movedRow({ ...EXPANDER, flagID, ...more })]));
+    return asked.length === 1;
+  };
+  assert.deepEqual([11, 34, 92, 94, 125, 128, 164, 171, 156].filter((flagID) => !askedAt(flagID)), []);
+  // Fitted, as the dogma location has it, and not asked about.
+  assert.deepEqual([87, 159, 163].filter((flagID) => askedAt(flagID)), []);
+  // A subsystem is; a charge put in a slot as an item, a drone, or anything else is not.
+  assert.deepEqual([askedAt(125, { categoryID: 32 }), askedAt(27, { categoryID: 8 }), askedAt(27, { categoryID: 18 }), askedAt(27, { categoryID: 6 })], [true, false, false, false]);
+});
+
+test("what the server answers of an item that is held is held: its attributes and the effects active on it, in place of what was", () => {
+  const { dogma } = holding();
+  dogma.feed(itemsChanged([movedRow(EXPANDER)]));
+  dogma.setEffect(7001, EFFECT_ONLINE, true);
+  const online = [EFFECT_ONLINE, [0n, PILOT, 5001n, null, null, [], EFFECT_ONLINE, HEALTH_T, -1, 1]];
+  const row = (effects) => kv({ itemID: 7001n, invItem: row7({ itemID: 7001, typeID: 1317, locationID: 5001, flagID: 11, groupID: 765, categoryID: 7 }), time: HEALTH_T, attributes: attrs([[ATTRIBUTE.HP, 40], [ATTRIBUTE.IS_ONLINE, 1]]), activeEffects: attrs(effects) });
+  assert.equal(dogma.updateItem(7001, row([online])), true);
+  assert.deepEqual([dogma.attribute(7001, ATTRIBUTE.HP), dogma.attribute(7001, ATTRIBUTE.IS_ONLINE), dogma.onlineModules(5001)], [40, 1, [[11, 7001]]]);
+  // The server's word on its effects is the whole of it: one it does not list is not running.
+  assert.equal(dogma.updateItem(7001n, row([])), true);
+  assert.deepEqual(dogma.onlineModules(5001), []);
+  // An answer of nothing changes nothing, and an answer about an item that is no longer held is not taken.
+  assert.equal(dogma.updateItem(7001, null), false);
+  assert.equal(dogma.attribute(7001, ATTRIBUTE.HP), 40);
+  dogma.feed(itemsChanged([movedRow({ ...EXPANDER, locationID: HANGAR, flagID: 4 })], [[3, 5001], [4, 11]]));
+  assert.deepEqual([dogma.updateItem(7001, row([online])), dogma.has(7001), dogma.item(7001)], [false, false, null]);
 });

@@ -107,11 +107,15 @@
 //   OnItemsChanged(items, change, location)   invCache hands each on as
 //   OnItemChange(item, change, location)      one item's
 //
-// and the client's dogma location takes the ones in its ship, or that were
-// (clientDogmaIM.GodmaItemChanged, clientDogmaLocation.OnItemChange): one it
-// did not hold that is now in a slot is fitted, one it held that no longer is
-// is unloaded, and one that is in a slot still is where its row says. A module
-// newly fitted the client then puts online itself (see pilots.js).
+// Godma takes the ones in a ship it holds and asks the server what dogma has
+// of each, ItemGetInfo(itemID), whose answer is the item's row as GetAllInfo
+// lists one (godma.OnItemChange 1208, UpdateItem 1629); it does not ask about
+// what is in the hold, the drone bay or a fighter tube. The client's dogma
+// location then takes the same ones (clientDogmaIM.GodmaItemChanged,
+// clientDogmaLocation.OnItemChange): one it did not hold that is now in a slot
+// is fitted, one it held that no longer is is unloaded, and one that is in a
+// slot still is where its row says. A module newly fitted it puts online
+// itself. The asking and the putting online are the transport's (pilots.js).
 //
 // Only the ship's items are kept here, and only what the panel and the scanner need.
 
@@ -154,15 +158,18 @@ function calculateHeat(currentHeat, timeDiff, incomingHeat, dissipationRate, hea
   return heatCap - heatCap * kept + currentHeat * kept;
 }
 
-/** inventorycommon/const.py categoryModule. */
+/** inventorycommon/const.py categoryModule and categorySubSystem. */
 const CATEGORY_MODULE = 7;
+const CATEGORY_SUBSYSTEM = 32;
 /**
- * inventorycommon/const.py: where on a ship an item is fitted (fittingFlags and flagHiddenModifers) and where a
- * drone or a fighter is kept ready (flagDroneBay, the fighter tubes), each range by its two ends. It is what
- * clientDogmaLocation.IsFitted goes by.
+ * inventorycommon/const.py, each range by its two ends: a ship's slots (fittingFlags and flagHiddenModifers, which
+ * is IsShipFittingFlag), and where a drone or a fighter is kept ready (flagDroneBay, the fighter tubes). An item at
+ * any of them is fitted, as clientDogmaLocation.IsFitted has it.
  */
-const FITTED_AT = Object.freeze([[11, 34], [92, 94], [125, 128], [164, 171], [156, 156], [87, 87], [159, 163]]);
-const isFittedAt = (flagID) => FITTED_AT.some(([first, last]) => flagID >= first && flagID <= last);
+const SLOTS = Object.freeze([[11, 34], [92, 94], [125, 128], [164, 171], [156, 156]]);
+const KEPT_READY = Object.freeze([[87, 87], [159, 163]]);
+const within = (ranges, flagID) => ranges.some(([first, last]) => flagID >= first && flagID <= last);
+const isFittedAt = (flagID) => within(SLOTS, flagID) || within(KEPT_READY, flagID);
 /** godma.chargedAttributeTauCaps: a recharging attribute, the attribute that is its recharge time, and the one that is its capacity. */
 const CHARGED = new Map([
   [ATTRIBUTE.CHARGE, [ATTRIBUTE.RECHARGE_RATE, ATTRIBUTE.CAPACITOR_CAPACITY]],
@@ -225,10 +232,12 @@ function chargeValue(oldVal, oldTime, tau, Ec, newTime) {
  * `characterID` is whose items these are: a change for anyone else's is
  * refused, as godma refuses it. `now()` reads the clock. `effectCategory(effectID)`
  * says what kind an effect is, from the game's static data; without it no
- * module can be told to be running. `onFitted({ itemID, typeID, flagID, locationID })`
- * is told of each item that is fitted while its ship is held.
+ * module can be told to be running. Of an item the server says has moved, while
+ * its ship is held: `onSlotted({ itemID, typeID, flagID, locationID })` is told
+ * of each module in a slot, which godma asks the server about, and `onFitted`
+ * of each item newly fitted, after it.
  */
-function createPilotDogma({ characterID = null, now = filetimeNow, effectCategory = () => null, onFitted = () => {} } = {}) {
+function createPilotDogma({ characterID = null, now = filetimeNow, effectCategory = () => null, onSlotted = () => {}, onFitted = () => {} } = {}) {
   /** itemID -> Map(attributeID -> value). */
   const attributes = new Map();
   /** itemID -> Map(attributeID -> [value, time, tau, capacity]). */
@@ -412,13 +421,25 @@ function createPilotDogma({ characterID = null, now = filetimeNow, effectCategor
       return;
     }
     if (!is) return;
-    identity.set(id, { typeID: number(item.typeID), groupID: number(item.groupID), categoryID: number(item.categoryID), flagID: number(item.flagID), locationID: location });
-    if (was) return;
-    // FitItem. The client works the item's attributes out from its type; here nothing is known of them until the
-    // server says, and what it says from now on is taken.
-    attributes.set(id, new Map());
-    effects.set(id, new Map());
-    onFitted({ itemID: id, typeID: number(item.typeID), flagID: number(item.flagID), locationID: location });
+    const [flagID, categoryID] = [number(item.flagID), number(item.categoryID)];
+    const here = { itemID: id, typeID: number(item.typeID), flagID, locationID: location };
+    identity.set(id, { typeID: here.typeID, groupID: number(item.groupID), categoryID, flagID, locationID: location });
+    if (!was) {
+      // Held from here on, with nothing known of it until the server says.
+      attributes.set(id, new Map());
+      effects.set(id, new Map());
+    }
+    // godma.UpdateItem: a module or a subsystem in one of the ship's slots is asked about.
+    if (within(SLOTS, flagID) && (categoryID === CATEGORY_MODULE || categoryID === CATEGORY_SUBSYSTEM)) onSlotted(here);
+    // FitItem.
+    if (!was) onFitted(here);
+  }
+
+  /** godma.UpdateItem with what the server answered ItemGetInfo: the row of an item that is still held, in place of what was known of it. */
+  function updateItem(itemID, row) {
+    if (!row || !attributes.has(key(itemID))) return false;
+    loadRow(itemID, row);
+    return true;
   }
 
   /** clientDogmaLocation.Activate and StopEffect: an effect the client starts or stops itself, on an item that is held. */
@@ -756,6 +777,7 @@ function createPilotDogma({ characterID = null, now = filetimeNow, effectCategor
     item: (itemID) => identity.get(key(itemID)) ?? null,
     attributesOf,
     setEffect,
+    updateItem,
     setWeaponBanks,
     unlinkModule,
     weaponBanks,
