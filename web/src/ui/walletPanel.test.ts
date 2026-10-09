@@ -30,8 +30,6 @@ function visibleText(body: string): string {
 const NO_LEDGER = {
   journal: null,
   journalError: null,
-  transactions: null,
-  transactionsError: null,
 } as const;
 
 // --- formatIsk (companion proof for the panels' amount formatting) ----------
@@ -135,8 +133,6 @@ const REAL_LEDGER: readonly LedgerEntry[] = [
 function loadedWallet(over: Partial<{
   journal: readonly LedgerEntry[] | null;
   journalError: string | null;
-  transactions: readonly LedgerEntry[] | null;
-  transactionsError: string | null;
 }>): ReturnType<typeof createClientStore> {
   const store = createClientStore();
   store.apply({
@@ -147,15 +143,13 @@ function loadedWallet(over: Partial<{
     corpError: null,
     journal: null,
     journalError: null,
-    transactions: null,
-    transactionsError: null,
     ...over,
   });
   return store;
 }
 
 test("Wallet renders each ledger row as date + ref-type WORDS + signed ISK", () => {
-  const store = loadedWallet({ journal: REAL_LEDGER, transactions: [] });
+  const store = loadedWallet({ journal: REAL_LEDGER });
   const output = render(Wallet as never, { props: { store, flow: fakeFlow() } } as never);
   const text = visibleText(output.body);
   // R9a: the ref-type reads as words, never the entryTypeID code (17/2/98).
@@ -169,7 +163,7 @@ test("Wallet renders each ledger row as date + ref-type WORDS + signed ISK", () 
 
 // R7d SWEEP: no raw refID/ownerID/transactionID may appear in the rendered text.
 test("Wallet never renders a raw id from a ledger row (R7d)", () => {
-  const store = loadedWallet({ journal: REAL_LEDGER, transactions: REAL_LEDGER });
+  const store = loadedWallet({ journal: REAL_LEDGER });
   const output = render(Wallet as never, { props: { store, flow: fakeFlow() } } as never);
   const text = visibleText(output.body);
   // transactionID (kept only as a keyed-each key) and the ids the decoder drops.
@@ -185,7 +179,7 @@ test("Wallet never renders a raw id from a ledger row (R7d)", () => {
 // it — proving `includes` fires on rendered content, so the absences above mean
 // something.
 test("the Wallet id-sweep matcher actually inspects rendered text", () => {
-  const store = loadedWallet({ journal: REAL_LEDGER, transactions: [] });
+  const store = loadedWallet({ journal: REAL_LEDGER });
   const output = render(Wallet as never, { props: { store, flow: fakeFlow() } } as never);
   const text = visibleText(output.body);
   // "45,000" is the grouped amount of the -45000 debit; its digits are present.
@@ -193,18 +187,18 @@ test("the Wallet id-sweep matcher actually inspects rendered text", () => {
 });
 
 test("Wallet shows an honest empty message for a real 'no ledger entries'", () => {
-  const store = loadedWallet({ journal: [], transactions: [] });
+  const store = loadedWallet({ journal: [] });
   const output = render(Wallet as never, { props: { store, flow: fakeFlow() } } as never);
   const text = visibleText(output.body);
   assert.match(text, /No wallet activity yet/i);
-  assert.match(text, /No market transactions yet/i);
+  // The wallet's activity is one list. What the client calls market transactions is another read, on the Market page.
+  assert.doesNotMatch(text, /market transactions/i);
 });
 
 test("Wallet shows the ledger error, NOT the empty message, when the read failed", () => {
   const store = loadedWallet({
     journal: null,
-    journalError: "journal: READ_FAILED",
-    transactions: [],
+    journalError: "transactions: READ_FAILED",
   });
   const output = render(Wallet as never, { props: { store, flow: fakeFlow() } } as never);
   const text = visibleText(output.body);

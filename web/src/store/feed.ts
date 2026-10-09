@@ -523,8 +523,6 @@ export type FeedEvent =
       readonly corpError: string | null;
       readonly journal: readonly LedgerEntry[] | null;
       readonly journalError: string | null;
-      readonly transactions: readonly LedgerEntry[] | null;
-      readonly transactionsError: string | null;
     }
   // Drop the wallet readout (character offline / logged out).
   | { readonly type: "wallet/cleared" }

@@ -285,11 +285,14 @@ test("what a call needs the pilot to have first is said by the registry: godma p
   assert.deepEqual([retailNeeds("invbroker", "List"), retailNeeds("agentMgr", "DoAction"), retailNeeds("someService", "SomeMethod"), retailNeeds("dogmaIM", "GetTargets")], [null, null, null, null]);
 });
 
-test("everything of ship and dogmaIM is made on a moniker, read or not, but the three the client asks by name", () => {
+test("everything of ship, dogmaIM and corpRegistry is made on a moniker, read or not, but the three the client asks by name", () => {
   assert.deepEqual(Object.fromEntries(Object.entries(MONIKER_SERVICES).map(([service, named]) => [service, [...named].sort()])), {
     ship: ["GetShipFittingInfo"],
     dogmaIM: ["CreateNewbieShip", "GetRequiredSkillLevels"],
+    // The client never asks the corporation registry by name at all.
+    corpRegistry: [],
   });
+  assert.deepEqual([madeOnMoniker("corpRegistry", "GetCorporation"), madeOnMoniker("corpRegistry", "AddBulletin"), madeOnMoniker("corpRegistry", "MachoBindObject")], [true, true, false]);
   assert.deepEqual([madeOnMoniker("ship", "Undock"), madeOnMoniker("dogmaIM", "GetTargets"), madeOnMoniker("ship", "SomethingNobodyRead"), madeOnMoniker("dogmaIM", "Overload")], [true, true, true, true]);
   assert.deepEqual([madeOnMoniker("ship", "GetShipFittingInfo"), madeOnMoniker("dogmaIM", "CreateNewbieShip"), madeOnMoniker("dogmaIM", "GetRequiredSkillLevels")], [false, false, false]);
   // Other services are asked by name, whatever their methods are called; and a bind is a bind, not a call on what it makes.
@@ -300,7 +303,7 @@ test("everything of ship and dogmaIM is made on a moniker, read or not, but the 
   assert.equal(retailForm("dogmaIM", "CreateNewbieShip", [1, 2], null).moniker, false);
   for (const pair of Object.keys(RETAIL_CALLS)) {
     const [service, method] = pair.split(".");
-    assert.equal(retailForm(service, method, [], null).moniker, service === "ship" || service === "dogmaIM", pair);
+    assert.equal(retailForm(service, method, [], null).moniker, service === "ship" || service === "dogmaIM" || service === "corpRegistry", pair);
   }
 });
 
@@ -454,4 +457,23 @@ test("a mission's objectives are asked as the client asks them: with nothing, or
   assert.deepEqual(page.args, []);
   assert.deepEqual(page.kwargs, { ignoreLocateCheck: true });
   assert.match(page.note, /ignoreLocateCheck=True \(jobboard\/client\/features\/agent_missions\/job\.py:413\)/);
+});
+
+test("the wallet's reads: the balance, the entry types and the divisions as they stand; the transactions with a bool for whose they are", () => {
+  for (const [pair, args] of [["account.GetCashBalance", [0]], ["account.GetEntryTypes", []], ["account.GetWalletDivisionsInfo", []], ["officeManager.GetMyCorporationsOffices", []]]) {
+    const form = retailForm(...pair.split("."), args, null);
+    assert.deepEqual([form.status, form.args, form.kwargs, form.moniker], ["same", args, null, false], pair);
+  }
+  // GetTransactions(accountingKeyCash, year, month, False): as the client sends it, it is the client's.
+  const asClient = retailForm("account", "GetTransactions", [1000, null, null, false], null);
+  assert.deepEqual([asClient.status, asClient.args], ["same", [1000, null, null, false]]);
+  assert.deepEqual(retailForm("account", "GetTransactions", [1002, 2026, 9, true], null).args, [1002, 2026, 9, true]);
+  // Said with a number, or with less, it goes out as the client's and is counted as reshaped.
+  for (const [given, sent] of [[[1000, null, null, 0], [1000, null, null, false]], [[1002, 2026, 9, 1], [1002, 2026, 9, true]], [[1000], [1000, null, null, false]]]) {
+    const form = retailForm("account", "GetTransactions", given, null);
+    assert.deepEqual([form.status, form.args], [given.length === 4 ? "reshaped" : "same", sent], JSON.stringify(given));
+  }
+  // The corporation's own record is asked with nothing, of the registry's moniker.
+  const corporation = retailForm("corpRegistry", "GetCorporation", [], null);
+  assert.deepEqual([corporation.status, corporation.args, corporation.moniker], ["same", [], true]);
 });

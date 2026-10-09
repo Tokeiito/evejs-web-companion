@@ -481,8 +481,6 @@ const INITIAL_WALLET: WalletState = Object.freeze({
   corpError: null,
   journal: null,
   journalError: null,
-  transactions: null,
-  transactionsError: null,
   loaded: false,
 });
 
@@ -1810,8 +1808,6 @@ export function createClientStore(): ClientStore {
           corpError: event.corpError,
           journal: event.journal,
           journalError: event.journalError,
-          transactions: event.transactions,
-          transactionsError: event.transactionsError,
           loaded: true,
         });
         break;

@@ -89,7 +89,6 @@ import {
   decodeCashBalance as decodeWalletCash,
   decodeCorpDivisions,
   decodeEntryTypeLabels as decodeWalletEntryTypeLabels,
-  decodeJournal as decodeWalletJournal,
   decodeTransactions as decodeWalletTransactions,
   normalizeDivisionNames,
 } from "../bridge/wallet.ts";
@@ -4444,12 +4443,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     ]
       .filter((entry): entry is string => entry !== null)
       .join("; ");
-    // R54 ledger. A FAILED journal/transactions read leaves that list NULL (with
-    // its own error); a SUCCESSFUL read decodes to a list that may be []. The
-    // entry-types map is cosmetic — if it fails, rows label "Other", never a raw
-    // code, so a failed entryTypes read is NOT a ledger error.
+    // R54 ledger: the wallet's activity, which the client reads as account.GetTransactions
+    // and nothing else. A FAILED read leaves the list NULL (with its own error); a
+    // SUCCESSFUL read decodes to a list that may be []. The entry-types map is
+    // cosmetic — if it fails, rows label "Other", never a raw code, so a failed
+    // entryTypes read is NOT a ledger error.
     const labels = decodeWalletEntryTypeLabels(reads.entryTypes);
-    const journalFailed = reads.errors.journal !== null;
     const transactionsFailed = reads.errors.transactions !== null;
     store.apply({
       type: "wallet/loaded",
@@ -4459,14 +4458,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         ? null
         : decodeCorpDivisions(reads.divisions, normalizeDivisionNames(reads.divisionNames)),
       corpError: corpError === "" ? null : corpError,
-      journal: journalFailed ? null : decodeWalletJournal(reads.journal, labels),
-      journalError: reads.errors.journal ? `journal: ${reads.errors.journal}` : null,
-      transactions: transactionsFailed
-        ? null
-        : decodeWalletTransactions(reads.transactions, labels),
-      transactionsError: reads.errors.transactions
-        ? `transactions: ${reads.errors.transactions}`
-        : null,
+      journal: transactionsFailed ? null : decodeWalletTransactions(reads.transactions, labels),
+      journalError: reads.errors.transactions ? `transactions: ${reads.errors.transactions}` : null,
     });
   }
 

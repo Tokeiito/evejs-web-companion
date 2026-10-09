@@ -171,7 +171,7 @@ export function decodeEntryTypeLabels(result: JsonValue): Map<number, string> {
   return labels;
 }
 
-/** Decode ONE ledger row (journal packedrow view OR transactions KeyVal). */
+/** Decode ONE ledger row (a transactions KeyVal). */
 function decodeLedgerRow(
   row: JsonValue,
   labels: ReadonlyMap<number, string>,
@@ -184,36 +184,6 @@ function decodeLedgerRow(
     amount: toAmountString(readRowField(row, "amount")) ?? "0",
     refType: label ?? "Other",
   };
-}
-
-/**
- * Decode account.GetJournal — a util.Rowset. Each positional line is aligned to
- * the header and adapted into a packedrow view so the shared `readRowField`
- * reads it by name. Returns [] for a well-formed empty Rowset (a real "no
- * journal entries yet"); the FLOW tells that apart from a FAILED read.
- */
-export function decodeJournal(
-  result: JsonValue,
-  labels: ReadonlyMap<number, string>,
-): LedgerEntry[] {
-  if (!isRecord(result) || result.type !== "object") {
-    return [];
-  }
-  const args = result.args ?? null;
-  const headerValue = readDictEntry(args, "header");
-  const linesValue = readDictEntry(args, "lines");
-  const header = isListValue(headerValue)
-    ? headerValue.items.map((column) => String(column))
-    : [];
-  const lines = isListValue(linesValue) ? linesValue.items : [];
-  if (header.length === 0) {
-    return [];
-  }
-  return lines.map((line) => {
-    const values = isListValue(line) ? line.items : Array.isArray(line) ? line : [];
-    const packed: JsonValue = { type: "packedrow", columns: header, values };
-    return decodeLedgerRow(packed, labels);
-  });
 }
 
 /**

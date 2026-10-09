@@ -118,6 +118,12 @@ const CONTAINER_STRUCTURE = 10014;
  */
 const LOCATION_SERVICES = new Set(["invbroker", "ship", "dogmaIM", "crimewatch", "reprocessingSvc", "entity", "beyonce", "scanMgr"]);
 const LOCATION_ATTRIBUTES = ["stationid", "structureid", "solarsystemid", "locationid"];
+/**
+ * Services whose moniker is for the pilot's corporation, not for where the
+ * pilot is (eveMoniker.GetCorpRegistry: its session check is on corpid). It is
+ * kept through a move and bound afresh when the corporation changes.
+ */
+const CORPORATION_SERVICES = new Set(["corpRegistry"]);
 
 /**
  * How long a call waits once the server has said its answer will be late. The
@@ -670,6 +676,10 @@ function createGamePortPilots({
       if (LOCATION_ATTRIBUTES.some((name) => name in changes) || "shipid" in changes) entry.dogmaLoaded = null;
       // scanSvc.OnSessionChanged: another system, ship or structure, and the scanner knows of no probes.
       if (["solarsystemid", "shipid", "structureid"].some((name) => name in changes)) entry.scanner.flush();
+      // base_corporation.GetCorpRegistry: another corporation, another registry.
+      if ("corpid" in changes) {
+        for (const service of CORPORATION_SERVICES) entry.monikers.delete(service);
+      }
       if (LOCATION_ATTRIBUTES.some((name) => name in changes)) {
         forgetLocationObjects(entry);
         if (sessions.has(entry.handle)) syncSpace(entry);
@@ -1169,7 +1179,9 @@ function createGamePortPilots({
   /** The pilot moved: what was bound for the old place is the old place's. */
   function forgetLocationObjects(entry) {
     entry.inventoryManagers.clear();
-    entry.monikers.clear();
+    for (const service of [...entry.monikers.keys()]) {
+      if (!CORPORATION_SERVICES.has(service)) entry.monikers.delete(service);
+    }
     for (const [handle, object] of entry.bound) {
       if (LOCATION_SERVICES.has(object.service)) entry.bound.delete(handle);
     }
@@ -1214,6 +1226,8 @@ function createGamePortPilots({
         return attribute(entry, "solarsystemid") ?? undefined;
       case "reprocessingSvc": // GetReprocessingManager
         return attribute(entry, "structureid") ?? attribute(entry, "stationid") ?? undefined;
+      case "corpRegistry": // GetCorpRegistry: Moniker('corpRegistry', session.corpid)
+        return attribute(entry, "corpid") ?? undefined;
       case "fleetObjectHandler": // GetFleet: Moniker(fleetID or session.fleetid), which is None outside a fleet
         return positive(Array.isArray(given) ? given[0] : given) ?? attribute(entry, "fleetid");
       default: // agentMgr (agentID), planetMgr (planetID), charMgr ((charid, containerGlobal)): as given

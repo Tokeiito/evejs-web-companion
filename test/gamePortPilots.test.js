@@ -454,7 +454,8 @@ test("what goes wrong in a call is reported in the gateway's terms", async () =>
   const { pilots, handle } = await selected({ answers: {
     "station.GetGuests": () => { throw refusedBy("CustomNotify", "That industry job is not ready yet."); },
     "account.GetCashBalance": () => { throw sessionError("CALL_TIMEOUT", "account.GetCashBalance got no answer"); },
-    "corpRegistry.GetTitles": () => { throw new Error("Cannot marshal value: object {\"bare\":1}"); },
+    // Asked by the service's name, a call of the corporation registry is made on the registry's moniker.
+    "bound:GetTitles": () => { throw new Error("Cannot marshal value: object {\"bare\":1}"); },
     "dogmaIM.ShipGetInfo": () => { throw sessionError("GAME_CALL_REFUSED", "refused: RuntimeError", null); },
     // Asked by the service's name, a dogma call is made on the dogma location (below).
     "bound:ShipGetInfo": () => { throw sessionError("GAME_CALL_REFUSED", "refused: RuntimeError", null); },
@@ -2620,4 +2621,57 @@ test("saved fittings are asked with the owner the pilot's own client would name"
   assert.deepEqual(tally["charFittingMgr.GetFittings"], { reshaped: 1 });
   assert.deepEqual(tally["corpFittingMgr.GetFittings"], { reshaped: 1 });
   assert.deepEqual(tally["allianceFittingMgr.GetFittings"], { differs: 1, reshaped: 1 });
+});
+
+// ── the corporation registry ─────────────────────────────────────────────────
+
+const REGISTRY_PAIRS = { allowed: new Set(["corpRegistry.GetCorporation", "corpRegistry.GetShareholders", "ship.LeaveShip", "account.GetTransactions"]) };
+
+test("the corporation registry is asked on its moniker, bound for the pilot's corporation, as the client's corp service binds it", async () => {
+  const { pilots, session, handle } = await selected({}, REGISTRY_PAIRS);
+  session.calls.length = 0;
+  await pilots.callMethod("corpRegistry", "GetCorporation", [], null, FIELDS, handle);
+  await pilots.callMethod("corpRegistry", "GetShareholders", [98000001], null, FIELDS, handle);
+  // Moniker('corpRegistry', session.corpid): bound once, and both calls made on what it bound.
+  assert.deepEqual(session.binds, [{ service: "corpRegistry", params: 1000044 }]);
+  assert.deepEqual(session.boundCalls.map((call) => [call.objectID, call.method, call.args, call.kwargs]), [
+    [session.boundCalls[0].objectID, "GetCorporation", [], null],
+    [session.boundCalls[0].objectID, "GetShareholders", [98000001], null],
+  ]);
+  // Nothing was asked of the service by its name.
+  assert.deepEqual(session.calls.filter((call) => call.service === "corpRegistry"), []);
+  // Asked by name and made on the moniker: the ledger says the call was not the BFF's as it stood.
+  assert.deepEqual(pilots.callLedger().find((row) => row.pair === "corpRegistry.GetCorporation").statuses, { reshaped: 1 });
+});
+
+test("the registry's moniker is the corporation's: kept when the pilot moves, bound again when the corporation changes", async () => {
+  const { pilots, session, handle } = await selected({}, REGISTRY_PAIRS);
+  const ask = () => pilots.callMethod("corpRegistry", "GetCorporation", [], null, FIELDS, handle);
+  await ask();
+  // A ship's moniker is for the place, and goes with it; the registry's does not. (Another station, so the pilot stays docked.)
+  const leave = () => pilots.callMethod("ship", "LeaveShip", [SHIP], null, FIELDS, handle);
+  await leave();
+  await leave();
+  session.attributes.stationid = 60000004;
+  session.change({ stationid: [STATION, 60000004] });
+  await leave();
+  await ask();
+  assert.deepEqual(session.binds.map((bind) => [bind.service, bind.params]), [["corpRegistry", 1000044], ["ship", [STATION, 15]], ["ship", [60000004, 15]]]);
+  // Another corporation: another registry.
+  session.attributes.corpid = 98000001;
+  session.change({ corpid: [1000044, 98000001] });
+  await ask();
+  assert.deepEqual(session.binds.filter((bind) => bind.service === "corpRegistry"), [{ service: "corpRegistry", params: 1000044 }, { service: "corpRegistry", params: 98000001 }]);
+  const objects = session.boundCalls.filter((call) => call.method === "GetCorporation").map((call) => call.objectID);
+  assert.equal(objects[0], objects[1]);
+  assert.notEqual(objects[1], objects[2]);
+});
+
+test("the wallet's transactions go out with a bool for whose they are, however the BFF said it", async () => {
+  const { pilots, session, handle } = await selected({}, REGISTRY_PAIRS);
+  session.calls.length = 0;
+  await pilots.callMethod("account", "GetTransactions", [1000, null, null, 0], null, FIELDS, handle);
+  await pilots.callMethod("account", "GetTransactions", [1000, null, null, false], null, FIELDS, handle);
+  assert.deepEqual(session.calls.filter((call) => call.method === "GetTransactions").map((call) => call.args), [[1000, null, null, false], [1000, null, null, false]]);
+  assert.deepEqual(pilots.callLedger().find((row) => row.pair === "account.GetTransactions").statuses, { reshaped: 1, same: 1 });
 });

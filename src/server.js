@@ -12991,28 +12991,27 @@ app.get("/api/bridge/wallet", requireAuth, async (req, res, next) => {
     return;
   }
   try {
-    // R54 adds the PERSONAL ledger: GetJournal (a Rowset) + GetTransactions (a
-    // list<KeyVal>) + GetEntryTypes (the ref-type -> label static map). ⚠ The
-    // `account` corp-vs-personal branch is ARG-POSITION driven, not method
-    // driven: args[3]/isCorpWallet = 0 (and accountKey = 1000 CASH) reads THIS
-    // character's own wallet — the retail personal shape
-    // GetTransactions(accountingKeyCash, year=None, month=None, False). The corp
-    // branch (args[3] = 1) is DELIBERATELY never issued here (like R50's corp
-    // GetCashBalance). year/month are null so the server uses its recent-window
-    // default. Each read is independent; an empty ledger is a REAL answer, not a
-    // failure (worldHasNoContracts precedent), decoded browser-side.
-    const [cash, divisions, corporation, journal, transactions, entryTypes] =
+    // The PERSONAL ledger, as the retail client reads it (accountsvc.py 116):
+    // GetTransactions(accountingKeyCash, year, month, isCorp), with None for
+    // this month and False for the pilot's own wallet, a list of KeyVals; and
+    // GetEntryTypes, the ref-type -> label static map. The client has no other
+    // read of it: account.GetJournal, which this route asked as well until
+    // 2026-10-09, is a call the retail client never makes (the server's answer
+    // to it is the same entries as a Rowset). The corp branch (isCorp True) is
+    // DELIBERATELY never issued here (like R50's corp GetCashBalance). Each read
+    // is independent; an empty ledger is a REAL answer, not a failure
+    // (worldHasNoContracts precedent), decoded browser-side.
+    const [cash, divisions, corporation, transactions, entryTypes] =
       await Promise.allSettled([
         heldTopLevelCall(held, req.webSessionID, "account", "GetCashBalance", [0], null),
         heldTopLevelCall(held, req.webSessionID, "account", "GetWalletDivisionsInfo", [], null),
         heldTopLevelCall(held, req.webSessionID, "corpRegistry", "GetCorporation", [], null),
-        heldTopLevelCall(held, req.webSessionID, "account", "GetJournal", [1000, null, null, 0], null),
-        heldTopLevelCall(held, req.webSessionID, "account", "GetTransactions", [1000, null, null, 0], null),
+        heldTopLevelCall(held, req.webSessionID, "account", "GetTransactions", [1000, null, null, false], null),
         heldTopLevelCall(held, req.webSessionID, "account", "GetEntryTypes", [], null),
       ]);
     // A lost live session can't be recovered by any read; surface it so the page
     // returns to character select (as every held call does).
-    for (const settled of [cash, divisions, corporation, journal, transactions, entryTypes]) {
+    for (const settled of [cash, divisions, corporation, transactions, entryTypes]) {
       if (settled.status === "rejected" && settled.reason && settled.reason.code === "SESSION_NOT_FOUND") {
         next(settled.reason);
         return;
@@ -13036,14 +13035,12 @@ app.get("/api/bridge/wallet", requireAuth, async (req, res, next) => {
           ? decodeDivisionNames(corporation.value.result)
           : {},
       // R54 raw ledger shapes (decoded in web/src/bridge/wallet.ts).
-      journal: settledValue(journal),
       transactions: settledValue(transactions),
       entryTypes: settledValue(entryTypes),
       errors: {
         cash: settledCode(cash),
         divisions: settledCode(divisions),
         corp: settledCode(corporation),
-        journal: settledCode(journal),
         transactions: settledCode(transactions),
         entryTypes: settledCode(entryTypes),
       },

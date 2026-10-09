@@ -1336,10 +1336,9 @@ export interface WalletState {
   readonly cashError: string | null;
   readonly corpDivisions: readonly CorpWalletDivision[] | null;
   readonly corpError: string | null;
+  /** The wallet's activity, as the client reads it (account.GetTransactions): what it lists as "Transactions". */
   readonly journal: readonly LedgerEntry[] | null;
   readonly journalError: string | null;
-  readonly transactions: readonly LedgerEntry[] | null;
-  readonly transactionsError: string | null;
   /** True once a wallet read has populated the slice. */
   readonly loaded: boolean;
 }

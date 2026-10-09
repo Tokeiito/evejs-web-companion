@@ -1,15 +1,17 @@
 <script lang="ts">
   // Wallet page (goal R50, extended R54): the character's personal ISK balance
-  // (account.GetCashBalance) plus the personal LEDGER — the wallet journal
-  // (account.GetJournal, a Rowset) and market transactions
-  // (account.GetTransactions), ref-types labelled from account.GetEntryTypes. A
+  // (account.GetCashBalance) plus the personal LEDGER — the wallet's activity,
+  // which the retail client reads as account.GetTransactions and lists as
+  // "Transactions" — ref-types labelled from account.GetEntryTypes. (The client's
+  // "Market Transactions" are another read, marketProxy.CharGetTransactions, and
+  // are on the Market page here.) A
   // pure reader of the store; the read lives in app/flow.ts (loadWallet) and the
   // BFF holds the session. The Corp Wallet tab reads divisions from the SAME pull.
   //
   // ⚠ R7d: a ledger row shows only WHEN, WHAT (the human ref-type label) and the
   // ISK amount — never a raw refID/ownerID (those are dropped in the decoder) and
   // never the server's free-text description (it embeds typeIDs/systemIDs).
-  // ⚠ empty vs failed. `journal`/`transactions` are null while unread OR when the
+  // ⚠ empty vs failed. `journal` is null while unread OR when the
   // read FAILED (the reason is in the matching *Error); an empty list is the real
   // "no wallet activity yet" answer (worldHasNoContracts precedent).
   import { onMount } from "svelte";
@@ -149,9 +151,6 @@
 
   <h3>Recent activity</h3>
   {@render ledger($wallet.journal, $wallet.journalError, "No wallet activity yet.")}
-
-  <h3>Market transactions</h3>
-  {@render ledger($wallet.transactions, $wallet.transactionsError, "No market transactions yet.")}
 
 </section>
 

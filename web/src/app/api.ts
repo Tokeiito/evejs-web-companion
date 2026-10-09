@@ -2315,14 +2315,12 @@ export interface RawWalletReads {
   readonly divisionNames: JsonValue;
   // R54 — the personal ledger: the journal (a Rowset), the transactions (a
   // list<KeyVal>), and the ref-type -> label static map (a cached list). All raw.
-  readonly journal: JsonValue;
   readonly transactions: JsonValue;
   readonly entryTypes: JsonValue;
   readonly errors: {
     readonly cash: string | null;
     readonly divisions: string | null;
     readonly corp: string | null;
-    readonly journal: string | null;
     readonly transactions: string | null;
     readonly entryTypes: string | null;
   };
@@ -2338,14 +2336,12 @@ export async function loadWallet(options: ApiOptions = {}): Promise<RawWalletRea
     cash: data.cash ?? null,
     divisions: data.divisions ?? null,
     divisionNames: data.divisionNames ?? {},
-    journal: data.journal ?? null,
     transactions: data.transactions ?? null,
     entryTypes: data.entryTypes ?? null,
     errors: {
       cash: errorText("cash"),
       divisions: errorText("divisions"),
       corp: errorText("corp"),
-      journal: errorText("journal"),
       transactions: errorText("transactions"),
       entryTypes: errorText("entryTypes"),
     },

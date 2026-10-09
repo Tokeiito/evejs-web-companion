@@ -961,6 +961,36 @@ test("an agent's record is its row of the agents table, with its corporation's f
   assert.equal(calls.filter((call) => call.method === "GetAgents").length, 1);
 });
 
+// ── The wallet (GET /api/bridge/wallet) ──────────────────────────────────────
+
+test("the wallet reads what the retail client reads: no journal by any other call, and the transactions with False for the pilot's own", async () => {
+  const calls = [];
+  const gamePort = gamePortWithQuestions(() => ({ answered: true }));
+  gamePort.callMethod = async (service, method, args, kwargs) => {
+    calls.push({ service, method, args, kwargs });
+    if (method === "GetTransactions") return { service, method, result: { type: "list", items: [] }, notifications: [] };
+    return { service, method, result: method === "GetCashBalance" ? 42 : null, notifications: [] };
+  };
+  const { baseUrl } = await startTestServer({ gateway: fakeGateway(), gamePortPilots: gamePort, pilotTransportFor: () => "gameport" });
+  await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+  calls.length = 0;
+  const wallet = await apiRequest(baseUrl, "/api/bridge/wallet");
+  assert.equal(wallet.response.status, 200, JSON.stringify(wallet.payload));
+  assert.deepEqual(calls.map((call) => [`${call.service}.${call.method}`, call.args, call.kwargs]).sort((a, b) => a[0].localeCompare(b[0])), [
+    ["account.GetCashBalance", [0], null],
+    ["account.GetEntryTypes", [], null],
+    // accountsvc.py 116: GetTransactions(accountingKeyCash, year, month, False).
+    ["account.GetTransactions", [1000, null, null, false], null],
+    ["account.GetWalletDivisionsInfo", [], null],
+    ["corpRegistry.GetCorporation", [], null],
+  ]);
+  assert.equal(wallet.payload.cash, 42);
+  assert.deepEqual(wallet.payload.transactions, { type: "list", items: [] });
+  // The journal is not a read of its own any more, nor an error of its own.
+  assert.equal("journal" in wallet.payload, false);
+  assert.deepEqual(Object.keys(wallet.payload.errors).sort(), ["cash", "corp", "divisions", "entryTypes", "transactions"]);
+});
+
 // ── Where an agent is (GET /api/bridge/agents/:agentID/solar-system) ─────────
 
 test("which solar system an agent is in is asked of the server as the client asks it, and passed on as it came", async () => {

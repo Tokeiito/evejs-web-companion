@@ -130,26 +130,6 @@ test("loadWallet: a failed personal read carries its own error, corp unaffected"
 
 // --- R54 ledger ------------------------------------------------------------
 
-// A util.Rowset exactly like account.GetJournal (`buildJournalRowset`).
-function journalRowset(lines: ReadonlyArray<readonly JsonValue[]>): JsonValue {
-  const header = [
-    "transactionID", "transactionDate", "referenceID", "entryTypeID", "ownerID1",
-    "ownerID2", "accountKey", "amount", "balance", "description", "currency", "sortValue",
-  ];
-  return {
-    type: "object",
-    name: "util.Rowset",
-    args: {
-      type: "dict",
-      entries: [
-        ["header", { type: "list", items: header }],
-        ["RowClass", { type: "token", value: "util.Row" }],
-        ["lines", { type: "list", items: lines.map((items) => ({ type: "list", items })) }],
-      ],
-    },
-  };
-}
-
 // The GetEntryTypes cached envelope, trimmed to the ref-types under test.
 function entryTypes(pairs: ReadonlyArray<readonly [number, string]>): JsonValue {
   return {
@@ -170,7 +150,7 @@ function entryTypes(pairs: ReadonlyArray<readonly [number, string]>): JsonValue 
   };
 }
 
-test("loadWallet decodes the personal journal + transactions with ref-type labels", async () => {
+test("loadWallet decodes the wallet's activity, read as the client reads it, with ref-type labels", async () => {
   const store = createClientStore();
   const flow = createAppFlow(store, {
     fetch: walletFetch({
@@ -178,12 +158,13 @@ test("loadWallet decodes the personal journal + transactions with ref-type label
       cash: 115789452720,
       divisions: null,
       divisionNames: {},
-      journal: journalRowset([
-        [1784675859816261, { type: "long", value: "134291494598160000" }, 21980, 17, 140000005, 140000005, 1000, 10000, 115789452720.04, "NBL", 1, 1],
-      ]),
-      transactions: { type: "list", items: [] },
+      // account.GetTransactions answers a list of KeyVals, one for each entry.
+      transactions: { type: "list", items: [keyVal([
+        ["transactionID", 1784675859816261], ["transactionDate", { type: "long", value: "134291494598160000" }], ["referenceID", 21980], ["entryTypeID", 17],
+        ["ownerID1", 140000005], ["ownerID2", 140000005], ["accountKey", 1000], ["amount", 10000], ["balance", 115789452720.04], ["description", "NBL"], ["currency", 1], ["sortValue", 1],
+      ])] },
       entryTypes: entryTypes([[17, "BountyPrize"]]),
-      errors: { cash: null, divisions: "READ_FAILED", corp: "READ_FAILED", journal: null, transactions: null, entryTypes: null },
+      errors: { cash: null, divisions: "READ_FAILED", corp: "READ_FAILED", transactions: null, entryTypes: null },
     }),
   });
 
@@ -193,13 +174,24 @@ test("loadWallet decodes the personal journal + transactions with ref-type label
   assert.deepEqual(wallet.journal, [
     { id: "1784675859816261", date: 134291494598160000n, amount: "10000", refType: "Bounty Prize" },
   ]);
-  // ⚠ [] not null — a SUCCESSFUL empty transactions read is a real "none yet".
-  assert.deepEqual(wallet.transactions, []);
   assert.equal(wallet.journalError, null);
-  assert.equal(wallet.transactionsError, null);
 });
 
-test("loadWallet: a FAILED journal read leaves journal null and sets journalError", async () => {
+test("loadWallet: a wallet with no activity is an empty list, not a failed read", async () => {
+  const store = createClientStore();
+  const flow = createAppFlow(store, {
+    fetch: walletFetch({
+      ok: true, cash: 42, divisions: null, divisionNames: {}, transactions: { type: "list", items: [] }, entryTypes: null,
+      errors: { cash: null, divisions: null, corp: null, transactions: null, entryTypes: null },
+    }),
+  });
+  await flow.loadWallet();
+  // ⚠ [] not null — a SUCCESSFUL empty read is a real "none yet".
+  assert.deepEqual(store.wallet.get().journal, []);
+  assert.equal(store.wallet.get().journalError, null);
+});
+
+test("loadWallet: a FAILED read of the activity leaves it null and says why", async () => {
   const store = createClientStore();
   const flow = createAppFlow(store, {
     fetch: walletFetch({
@@ -207,10 +199,9 @@ test("loadWallet: a FAILED journal read leaves journal null and sets journalErro
       cash: 42,
       divisions: null,
       divisionNames: {},
-      journal: null,
-      transactions: { type: "list", items: [] },
+      transactions: null,
       entryTypes: null,
-      errors: { cash: null, divisions: null, corp: null, journal: "READ_FAILED", transactions: null, entryTypes: null },
+      errors: { cash: null, divisions: null, corp: null, transactions: "READ_FAILED", entryTypes: null },
     }),
   });
 
@@ -220,7 +211,6 @@ test("loadWallet: a FAILED journal read leaves journal null and sets journalErro
   // ⚠ null, NOT [] — a failed read must never look like an empty ledger.
   assert.equal(wallet.journal, null);
   assert.match(wallet.journalError ?? "", /READ_FAILED/);
-  // The personal balance and the other ledger read survived the journal failure.
+  // The personal balance survived the failure.
   assert.equal(wallet.cashBalance, "42");
-  assert.deepEqual(wallet.transactions, []);
 });

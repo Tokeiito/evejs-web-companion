@@ -30,6 +30,12 @@
 // the pilot binds that object as the client does and calls it there. An entry
 // may say the pilot must have something first (`needs`).
 //
+// A third the client asks on a moniker and never by name at all: the
+// corporation registry (eveMoniker.GetCorpRegistry, Moniker('corpRegistry',
+// session.corpid)). sm.RemoteSvc('corpRegistry') appears nowhere in the client.
+// Its moniker is the corporation's, not the place's: the corp service binds it
+// once and again when the pilot's corporation changes (base_corporation.py 137).
+//
 // A shape may need what only the pilot's own client would know: which of its
 // modules are online, what a module's effect is called. It is handed a
 // `context` of such answers (pilots.js makes it); each may be absent, and a
@@ -60,6 +66,7 @@ const needing = (entry, needs) => Object.freeze({ ...entry, needs });
 const MONIKER_SERVICES = Object.freeze({
   ship: new Set(["GetShipFittingInfo"]),
   dogmaIM: new Set(["CreateNewbieShip", "GetRequiredSkillLevels"]),
+  corpRegistry: new Set(),
 });
 /** Whether the retail client makes this call on the service's moniker for where the pilot is. */
 const madeOnMoniker = (service, method) => Object.hasOwn(MONIKER_SERVICES, service) && !MONIKER_SERVICES[service].has(method) && method !== "MachoBindObject";
@@ -81,6 +88,9 @@ const SHIP_CONFIG = "eve/client/script/ui/services/shipConfigSvc.py";
 const FITTING_SVC = "eve/client/script/environment/fittingSvc.py";
 const CC_SVC = "eve/client/script/ui/services/ccSvc.py";
 const CC_STEPS = "eve/client/script/ui/login/charcreation/steps";
+const ACCOUNT_SVC = "eve/client/script/ui/services/accountsvc.py";
+const WALLET_SVC = "eve/client/script/ui/shared/neocom/wallet/walletSvc.py";
+const CORP_SVC = "eve/client/script/ui/services/corporation";
 /** What the module button sends for a module left to repeat: settings.char.autorepeat unset, and an effect that can repeat. */
 const REPEATS = 1000;
 
@@ -297,6 +307,20 @@ const RETAIL_CALLS = Object.freeze({
   "scanMgr.SetProbeDestination": webOnly(`${SCAN_SVC}:169`, "The client keeps a probe's destination itself and sends it with the next RequestScans."),
   "scanMgr.SetProbeRangeStep": webOnly(`${SCAN_SVC}:173`, "The client keeps a probe's range step itself and sends it with the next RequestScans."),
   "scanMgr.ConeScan": same("eve/client/script/parklife/directionalScanSvc.py:47", "ConeScan(scanAngle, scanRange, x, y, z)"),
+  "account.GetCashBalance": same(`${WALLET_SVC}:41`, "RemoteSvc('account').GetCashBalance(0): nought for the pilot's own wallet"),
+  "account.GetEntryTypes": same(`${ACCOUNT_SVC}:101`, "GetAccountMgr().GetEntryTypes(), no arguments, once for the session"),
+  "account.GetWalletDivisionsInfo": same(`${ACCOUNT_SVC}:135`, "GetAccountMgr().GetWalletDivisionsInfo(), no arguments, kept five minutes"),
+  "account.GetTransactions": Object.freeze({
+    status: "same",
+    source: `${ACCOUNT_SVC}:116`,
+    note: "GetAccountMgr().GetTransactions(accountKey, year, month, isCorp): four positional, the last a bool (False for the pilot's own, with accountingKeyCash)",
+    // Whether it is the corporation's is a bool to the client; the BFF's routes have said it with a number.
+    shape: ([accountKey, year = null, month = null, isCorp = false], kwargs) => (typeof isCorp === "boolean"
+      ? { args: [accountKey, year, month, isCorp], kwargs }
+      : { args: [accountKey, year, month, Boolean(isCorp)], kwargs, status: "reshaped" }),
+  }),
+  "corpRegistry.GetCorporation": same(`${CORP_SVC}/bco_corporations.py:49`, "GetCorpRegistry().GetCorporation(), no arguments, on the corporation's moniker"),
+  "officeManager.GetMyCorporationsOffices": same(`${CORP_SVC}/officeManager.py:41`, "RemoteSvc('officeManager').GetMyCorporationsOffices(), no arguments"),
   "dogmaIM.LaunchProbes": same(`${SCAN_SVC}:494`, "LaunchProbes(moduleID, numProbes)"),
   "ship.Undock": needing(reshaped(`${STATION_SVC}:498`, undocking, "GetShipAccess().Undock(shipID, ignoreContraband, onlineModules={flagID: moduleID}), on the ship object bound for the station"), "dogma"),
   "dogmaIM.Activate": needing(reshaped(`${MODULE_BUTTON}:1348`, activation, "godma's GetDogmaLM().Activate(itemID, effectName, target, repeats) (godma.py 2062), on the dogma location bound for where the pilot is"), "dogma"),
