@@ -22460,6 +22460,20 @@ async function resolveRuntimeStructureNames(req, structureIDs, options = {}) {
 // the location it found an item at, and does not know the difference); the
 // explicit "structure" kind is for callers that do.
 const STRUCTURE_NAME_KINDS = new Set(["station", "structure"]);
+// The names of a player's corporation, alliance or character (the client's
+// cfg.eveowners). The static tables name the NPCs' owners. One they cannot
+// name, with a player owner's ID, is asked of the game server as the client
+// asks it, config.GetMultiOwnersEx, by the game-port transport, which keeps
+// every row it is answered (pilots.js ownersNamed). A row's type says what the
+// owner is: a corporation, an alliance, a faction, or a character's own type.
+const MIN_PLAYER_OWNER_ID = 90000000;
+const OWNER_TYPE = Object.freeze({ corporation: 2, alliance: 16159, faction: 30 });
+const OWNER_NAME_KINDS = Object.freeze({
+  corporation: (typeID) => typeID === OWNER_TYPE.corporation,
+  alliance: (typeID) => typeID === OWNER_TYPE.alliance,
+  character: (typeID) => typeID > 0 && !Object.values(OWNER_TYPE).includes(typeID),
+  owner: (typeID) => typeID > 0,
+});
 
 // The retail client's text for localisation labels, for messages by their
 // number and for dialogs by their name, as templates: the {parameters} are left in, for the browser to fill
@@ -22550,11 +22564,47 @@ app.post("/api/names", requireAuth, async (req, res, next) => {
       }
     }
 
+    // A player's corporation, alliance or character the static tables could
+    // not name. With no pilot online yet there is no one to ask as: that is
+    // not knowing, so the page asks again. A pilot on the gateway has no such
+    // call, and the name stays the static tables' "unknown", as it was.
+    const owners = [];
+    for (const [key, value] of Object.entries(names)) {
+      const separator = key.indexOf(":");
+      const kind = key.slice(0, separator);
+      const id = Number(key.slice(separator + 1)) || 0;
+      if (value === null && Object.hasOwn(OWNER_NAME_KINDS, kind) && id >= MIN_PLAYER_OWNER_ID) {
+        owners.push({ key, kind, id });
+      }
+    }
+    let ownersAsked = false;
+    if (owners.length > 0 && gamePortPilots) {
+      const held = bridgeSessions.get(req.webSessionID) || null;
+      if (!held) {
+        unresolved.push(...owners.map((owner) => owner.key));
+      } else if (isGamePortHandle(held.bridgeSessionID)) {
+        ownersAsked = true;
+        try {
+          const named = await heldRequest(held, req.webSessionID, false, () => gamePortPilots.ownersNamed(
+            owners.map((owner) => owner.id), { userid: held.accountID }, held.bridgeSessionID));
+          for (const owner of owners) {
+            const row = named.get(owner.id);
+            if (row && row.name && OWNER_NAME_KINDS[owner.kind](row.typeID)) {
+              names[owner.key] = row.name;
+            }
+          }
+        } catch (_error) {
+          // Refused, or the session gone: not known, and not cached as nameless.
+          unresolved.push(...owners.map((owner) => owner.key));
+        }
+      }
+    }
+
     res.json({
       ok: true,
       // Named on the wire so a consumer can see whether a live session was
       // involved at all, rather than inferring it.
-      source: runtimeUsed ? "static-data+runtime-structures" : "static-data",
+      source: ["static-data", ...(runtimeUsed ? ["runtime-structures"] : []), ...(ownersAsked ? ["game-server-owners"] : [])].join("+"),
       count: Object.keys(names).length,
       capped: result.capped,
       limit: result.limit,

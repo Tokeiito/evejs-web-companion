@@ -21,7 +21,7 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
-const { MONIKER_SERVICES, RETAIL_CALLS } = require("../src/gamePort/retailCalls");
+const { MONIKER_SERVICES, RETAIL_CALLS, TRANSPORT_OWN_CALLS } = require("../src/gamePort/retailCalls");
 const contract = require("../contracts/evejs-web-bridge-contract.json");
 
 /** The colours an older log was written with. */
@@ -153,7 +153,7 @@ function report({ retail, ours, known, what }) {
 function knownCalls() {
   const routed = new Set(contract.gatewayAllowlist.pairs);
   const bound = new Set([...Object.keys(MONIKER_SERVICES), ...[...routed].filter((pair) => pair.endsWith(".MachoBindObject")).map((pair) => pair.split(".")[0])]);
-  const read = new Set([...Object.keys(RETAIL_CALLS), ...[...bound].flatMap((service) => [`${service}.MachoResolveObject`, `${service}.MachoBindObject`])]);
+  const read = new Set([...Object.keys(RETAIL_CALLS), ...TRANSPORT_OWN_CALLS, ...[...bound].flatMap((service) => [`${service}.MachoResolveObject`, `${service}.MachoBindObject`])]);
   return { read, routed };
 }
 

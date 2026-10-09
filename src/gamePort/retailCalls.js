@@ -101,6 +101,13 @@ const PROXY_SERVICES = Object.freeze(new Set([
   "eventLog", "fleetProxy", "machoNet", "marketProxy", "pingService", "raffleProxy", "search",
 ]));
 
+/**
+ * Calls of the client's own that the transport makes when a feature wants them, and that no route of the BFF's
+ * may ask by name, so that they have no entry in the table below. Each is read against the client where the
+ * transport makes it (pilots.js): cfg.eveowners' priming, for the names of players' owners.
+ */
+const TRANSPORT_OWN_CALLS = Object.freeze(["config.GetMultiOwnersEx"]);
+
 /** Whether the retail client makes this call on the service's moniker for where the pilot is. */
 const madeOnMoniker = (service, method) => Object.hasOwn(MONIKER_SERVICES, service) && !MONIKER_SERVICES[service].has(method) && method !== "MachoBindObject";
 
@@ -761,4 +768,4 @@ function createCallLedger() {
   };
 }
 
-module.exports = { CONTRACT_SEARCH_KEYWORDS, MONIKER_SERVICES, PROXY_SERVICES, REPEATS, RETAIL_CALLS, createCallLedger, list, madeAfresh, madeOnMoniker, retailForm, retailNeeds };
+module.exports = { CONTRACT_SEARCH_KEYWORDS, MONIKER_SERVICES, PROXY_SERVICES, REPEATS, RETAIL_CALLS, TRANSPORT_OWN_CALLS, createCallLedger, list, madeAfresh, madeOnMoniker, retailForm, retailNeeds };

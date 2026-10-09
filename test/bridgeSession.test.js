@@ -2155,6 +2155,77 @@ test("where the transport cannot make a sheet, and on the gateway, the sheet is 
 
 // ── the agents' journal ──────────────────────────────────────────────────────
 //
+// cfg.eveowners names a player's corporation, alliance or character by asking the game server
+// (config.GetMultiOwnersEx). The game port asks as the client does and keeps the rows (pilots.js ownersNamed), and
+// the names route asks it for what the static tables cannot name.
+
+const [PLAYER_CORPORATION, PLAYER_ALLIANCE, PLAYER_CHARACTER] = [98000007, 99000007, 140000099];
+const OWNER_ROWS = { [PLAYER_CORPORATION]: { name: "Made-up Industries", typeID: 2 }, [PLAYER_ALLIANCE]: { name: "Made-up", typeID: 16159 }, [PLAYER_CHARACTER]: { name: "Someone Else", typeID: 1380 } };
+/** Static tables that name one NPC corporation and one player's character, and nothing else. */
+const [NPC_CORPORATION, CHARACTER_THE_TABLES_NAME] = [1000125, 140000098];
+const STATIC_NAMES = { [`corporation:${NPC_CORPORATION}`]: "CONCORD", [`character:${CHARACTER_THE_TABLES_NAME}`]: "Named By The Tables" };
+const staticNames = () => ({
+  ...fakeStaticData(),
+  resolveNames({ items }) {
+    return { names: Object.fromEntries(items.map((item) => [`${item.kind}:${item.id}`, STATIC_NAMES[`${item.kind}:${item.id}`] ?? null])), capped: false, limit: 500 };
+  },
+});
+
+/** Names asked of the names route; with a pilot held on the game port unless told otherwise. Says what the transport was asked. */
+async function namesRoute(items, { transport = "gameport", online = true, owners = (ownerIDs) => new Map(ownerIDs.map((ownerID) => [ownerID, OWNER_ROWS[ownerID] ?? null])), gamePortPilots = true } = {}) {
+  const gamePort = gamePortWithQuestions(() => ({ answered: true }));
+  const asked = [];
+  gamePort.ownersNamed = async (ownerIDs, sessionFields, bridgeSessionID) => { asked.push({ ownerIDs, sessionFields, bridgeSessionID }); return owners(ownerIDs); };
+  const { baseUrl } = await startTestServer({ gateway: fakeGateway(), gamePortPilots: gamePortPilots ? gamePort : undefined, pilotTransportFor: () => transport, staticData: staticNames() });
+  if (online) await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+  const answer = await apiRequest(baseUrl, "/api/names", { method: "POST", body: { items } });
+  return { answer, payload: answer.payload, asked };
+}
+const named = (kind, id) => ({ kind, id });
+
+test("a player's corporation, alliance or character the static tables cannot name is asked of the game server as the client asks", async () => {
+  const read = await namesRoute([named("corporation", PLAYER_CORPORATION), named("alliance", PLAYER_ALLIANCE), named("character", PLAYER_CHARACTER), named("owner", PLAYER_ALLIANCE), named("corporation", NPC_CORPORATION), named("type", 587)]);
+  assert.deepEqual(read.payload.names, {
+    [`corporation:${PLAYER_CORPORATION}`]: "Made-up Industries", [`alliance:${PLAYER_ALLIANCE}`]: "Made-up", [`character:${PLAYER_CHARACTER}`]: "Someone Else",
+    [`owner:${PLAYER_ALLIANCE}`]: "Made-up", [`corporation:${NPC_CORPORATION}`]: "CONCORD", "type:587": null,
+  });
+  // Asked once, for the players' owners only, as the pilot the page has online; what the static tables name is not asked about.
+  assert.deepEqual(read.asked, [{ ownerIDs: [PLAYER_CORPORATION, PLAYER_ALLIANCE, PLAYER_CHARACTER, PLAYER_ALLIANCE], sessionFields: { userid: 4 }, bridgeSessionID: GAME_PORT_SESSION_ID }]);
+  assert.deepEqual([read.payload.source, read.payload.unresolved], ["static-data+game-server-owners", []]);
+  // Nothing of a player's that the static tables cannot name: the game server is not asked.
+  // (The last of the NPCs' owners is one below 90,000,000, the first of the players': idCheckers.IsNPC.)
+  const npc = await namesRoute([named("corporation", NPC_CORPORATION), named("corporation", 1000126), named("type", 98000007), named("station", 60003760), named("character", CHARACTER_THE_TABLES_NAME), named("character", 3999999), named("owner", 89999999)]);
+  assert.deepEqual([npc.asked, npc.payload.source, npc.payload.names[`corporation:${NPC_CORPORATION}`], npc.payload.names["corporation:1000126"], npc.payload.names[`character:${CHARACTER_THE_TABLES_NAME}`]], [[], "static-data", "CONCORD", null, "Named By The Tables"]);
+});
+
+test("an owner is named only as the kind of thing it is, and one the server has no name for stays unknown", async () => {
+  // A character's ID asked about as a corporation, an alliance's as a character, a corporation's as an alliance: none is that.
+  const wrong = await namesRoute([named("corporation", PLAYER_CHARACTER), named("character", PLAYER_ALLIANCE), named("alliance", PLAYER_CORPORATION), named("character", PLAYER_CORPORATION), named("owner", PLAYER_CHARACTER)]);
+  assert.deepEqual(wrong.payload.names, {
+    [`corporation:${PLAYER_CHARACTER}`]: null, [`character:${PLAYER_ALLIANCE}`]: null, [`alliance:${PLAYER_CORPORATION}`]: null, [`character:${PLAYER_CORPORATION}`]: null, [`owner:${PLAYER_CHARACTER}`]: "Someone Else",
+  });
+  // No row, a row with no name, and this server's row for what is no owner (type nought): unknown, and known to be.
+  const none = await namesRoute([named("corporation", 98000050), named("corporation", 98000051), named("owner", 98000052), named("character", 98000052)], {
+    owners: () => new Map([[98000050, null], [98000051, { name: null, typeID: 2 }], [98000052, { name: "Item 98000052", typeID: 0 }]]),
+  });
+  assert.deepEqual([Object.values(none.payload.names), none.payload.unresolved], [[null, null, null, null], []]);
+});
+
+test("with no pilot online, or a refusal, a player's owner is not known rather than nameless; on the gateway it is as it was", async () => {
+  const items = [named("corporation", PLAYER_CORPORATION), named("corporation", NPC_CORPORATION)];
+  // No pilot online yet: nobody to ask as. The page is told to ask again.
+  const offline = await namesRoute(items, { online: false });
+  assert.deepEqual([offline.asked, offline.payload.names[`corporation:${PLAYER_CORPORATION}`], offline.payload.unresolved, offline.payload.source], [[], null, [`corporation:${PLAYER_CORPORATION}`], "static-data"]);
+  // The asking refused: the same.
+  const refused = await namesRoute(items, { owners: () => { throw Object.assign(new Error("NotNow"), { code: "CALL_REFUSED", statusCode: 409 }); } });
+  assert.deepEqual([refused.answer.response.status, refused.payload.names[`corporation:${PLAYER_CORPORATION}`], refused.payload.unresolved, refused.payload.names[`corporation:${NPC_CORPORATION}`]], [200, null, [`corporation:${PLAYER_CORPORATION}`], "CONCORD"]);
+  // A pilot on the gateway, and a BFF with no game port at all: the static tables' answer stands, as before.
+  for (const options of [{ transport: "gateway" }, { transport: "gateway", gamePortPilots: false }, { online: false, gamePortPilots: false }]) {
+    const before = await namesRoute(items, options);
+    assert.deepEqual([before.asked, before.payload.names[`corporation:${PLAYER_CORPORATION}`], before.payload.unresolved, before.payload.source], [[], null, [], "static-data"], JSON.stringify(options));
+  }
+});
+
 // journal.py reads the journal once, keeps it, and makes it right from each changed mission's own agent. The game
 // port keeps it the same way (pilots.js journalKept), and the Journal route answers from that.
 

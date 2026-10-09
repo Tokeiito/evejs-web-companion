@@ -3097,6 +3097,60 @@ test("the notifications that cannot be read at the choosing are asked for when t
   assert.deepEqual([built.session.sent.at(-1), built.pilots.size], ["GetAllNotifications", 0]);
 });
 
+// ── the names of owners ──────────────────────────────────────────────────────
+
+const [A_CORPORATION, AN_ALLIANCE, A_CHARACTER] = [98000001, 99000001, PILOT + 1];
+const OWNERS_KNOWN = { [A_CORPORATION]: ["Made-up Industries", 2], [AN_ALLIANCE]: ["Made-up", 16159], [A_CHARACTER]: ["Someone Else", 1380] };
+/**
+ * A config service that answers GetMultiOwnersEx in the form this server's answer comes off the wire in: the
+ * columns, the last of them a raw string, and a row for each owner it knows, each name a raw string.
+ */
+function ownerAnswers(more = {}) {
+  return {
+    "config.GetMultiOwnersEx": ([asked]) => [
+      ["ownerID", "ownerName", "typeID", "gender", Buffer.from("ownerNameID")],
+      asked.items.filter((ownerID) => ownerID in OWNERS_KNOWN).map((ownerID) => [ownerID, Buffer.from(OWNERS_KNOWN[ownerID][0]), OWNERS_KNOWN[ownerID][1], 0, null]),
+    ],
+    ...more,
+  };
+}
+const ownersAsked = (session) => session.calls.filter((call) => call.service === "config").map((call) => [call.method, call.args, call.kwargs]);
+
+test("owners are named as the client's cfg.eveowners names them: those not known asked for together, once, and kept", async () => {
+  const { pilots, session, handle } = await selected({ answers: ownerAnswers() }, { allowed: new Set(["station.GetGuests"]) });
+  // Nothing is asked until a name is wanted, and nothing for no one.
+  assert.deepEqual([ownersAsked(session), [...(await pilots.ownersNamed([], WHO, handle))]], [[], []]);
+  // cfg.eveowners.Prime: config.GetMultiOwnersEx(a list of the IDs), by name. The transport's own call: no route's pair.
+  const first = await pilots.ownersNamed([A_CORPORATION, AN_ALLIANCE], WHO, handle);
+  assert.deepEqual([...first], [[A_CORPORATION, { name: "Made-up Industries", typeID: 2 }], [AN_ALLIANCE, { name: "Made-up", typeID: 16159 }]]);
+  assert.deepEqual(ownersAsked(session), [["GetMultiOwnersEx", [{ type: "list", items: [A_CORPORATION, AN_ALLIANCE] }], null]]);
+  // Asked about again among others: only what is not known is asked for, each owner once however often it is named.
+  const second = await pilots.ownersNamed([AN_ALLIANCE, A_CHARACTER, A_CORPORATION, A_CHARACTER, 0, null, "nobody"], WHO, handle);
+  assert.deepEqual([...second], [[AN_ALLIANCE, { name: "Made-up", typeID: 16159 }], [A_CHARACTER, { name: "Someone Else", typeID: 1380 }], [A_CORPORATION, { name: "Made-up Industries", typeID: 2 }]]);
+  assert.deepEqual(ownersAsked(session).slice(1), [["GetMultiOwnersEx", [{ type: "list", items: [A_CHARACTER] }], null]]);
+  // One the server has no row for is no owner, and is not asked about again (the Recordset's knownLuzers).
+  assert.deepEqual([[...(await pilots.ownersNamed([77, A_CORPORATION], WHO, handle))], [...(await pilots.ownersNamed([77], WHO, handle))]], [[[77, null], [A_CORPORATION, { name: "Made-up Industries", typeID: 2 }]], [[77, null]]]);
+  assert.deepEqual(ownersAsked(session).slice(2), [["GetMultiOwnersEx", [{ type: "list", items: [77] }], null]]);
+  // Two askings at once of one not known ask once.
+  const [one, two] = await Promise.all([pilots.ownersNamed([78], WHO, handle), pilots.ownersNamed([78], WHO, handle)]);
+  assert.deepEqual([[...one], [...two], ownersAsked(session).length], [[[78, null]], [[78, null]], 4]);
+  // Each asking is in the ledger as the client's own call.
+  assert.deepEqual(ledgerOf(pilots, "config.GetMultiOwnersEx"), [{ same: 4 }, "carbon/common/script/sys/cfg.py:579"]);
+  // Another account's session is told nothing.
+  await assert.rejects(pilots.ownersNamed([A_CORPORATION], { userid: 9 }, handle), (error) => error.code === "SESSION_NOT_FOUND");
+});
+
+test("an asking for owners' names that fails fails for who asked, keeps nothing, and the next asks again", async () => {
+  let refuse = true;
+  const rows = { type: "list", items: [{ type: "list", items: [A_CORPORATION, "Made-up Industries", 2, 0, null] }, { type: "list", items: [79, null, 0, 0, null] }] };
+  const { pilots, session, handle } = await selected({ answers: { "config.GetMultiOwnersEx": () => { if (refuse) throw refusedBy("NotNow"); return [{ type: "list", items: ["ownerID", "ownerName", "typeID", "gender", "ownerNameID"] }, rows]; } } }, { allowed: new Set(["station.GetGuests"]) });
+  await rejects(pilots.ownersNamed([A_CORPORATION, 79], WHO, handle), "CALL_REFUSED");
+  refuse = false;
+  // Answered as lists, and with a plain string for a name, as any call's answer may be; a row with no name and no type is kept as that.
+  assert.deepEqual([...(await pilots.ownersNamed([A_CORPORATION, 79], WHO, handle))], [[A_CORPORATION, { name: "Made-up Industries", typeID: 2 }], [79, { name: null, typeID: 0 }]]);
+  assert.deepEqual([ownersAsked(session).length, [...(await pilots.ownersNamed([79], WHO, handle))], ownersAsked(session).length], [2, [[79, { name: null, typeID: 0 }]], 2]);
+});
+
 // ── the calendar's months, and the contracts' login figures ──────────────────
 
 /** The client's calendar's own writes that change an event, each with something to send; and two that change none. */

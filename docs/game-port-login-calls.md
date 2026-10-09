@@ -11,9 +11,9 @@ The retail client made 117 calls of 100 kinds (a call asked before a character i
 | The game port | Kinds | Calls | Meaning |
 |---|---|---|---|
 | at login | 29 | 35 | The game port asks this at login too. |
-| by a feature | 11 | 16 | A feature of the web client asks this when it is wanted, in a form read against the client's. |
+| by a feature | 13 | 19 | A feature of the web client asks this when it is wanted, in a form read against the client's. |
 | by a route | 10 | 11 | The BFF has a route that can ask this. It has not been read against the client's. |
-| never | 50 | 55 | Nothing of ours asks this. |
+| never | 48 | 52 | Nothing of ours asks this. |
 
 ## Before a character is chosen
 
@@ -28,7 +28,7 @@ The retail client made 117 calls of 100 kinds (a call asked before a character i
 | `raffleProxy.AmIBanned` | 1 | never |
 | `subscriptionMgr.GetCloneGrade` | 1 | never |
 | `charUnboundMgr.GetCharacterSelectionData` | 2 | at login |
-| `config.GetMultiOwnersEx` | 1 | never |
+| `config.GetMultiOwnersEx` | 1 | by a feature |
 | `loginCampaignManager.get_client_campaign_state` | 1 | never |
 | `seasonalLoginCampaignManager.get_active_campaign` | 1 | never |
 | `map.GetSecurityModifiedSystems` | 2 | by a route |
@@ -118,7 +118,7 @@ The retail client made 117 calls of 100 kinds (a call asked before a character i
 | `contractProxy.GetLoginInfo` | 1 | at login |
 | `skillHandler.GetSkillHistory` (inferred) | 1 | at login |
 | `notificationMgr.GetAllNotifications` | 1 | at login |
-| `config.GetMultiOwnersEx` | 2 | never |
+| `config.GetMultiOwnersEx` | 2 | by a feature |
 | `calendarProxy.GetEventList` | 2 | at login |
 | `insurgencySolarsystem.GetAllVisibleCampaigns` | 1 | never |
 | `eventLog.LogClientStats` | 1 | never |

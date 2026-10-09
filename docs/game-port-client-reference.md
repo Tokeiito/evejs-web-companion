@@ -295,6 +295,23 @@ for them again each time it opens, which is the page's own way.
 The notifications' lists and the calendar's months are kept by one helper,
 `src/gamePort/keptReads.js`: answers kept until something changes them.
 
+**The names of owners, 2026-10-09.** The client names a character, a corporation, an alliance or a
+faction from `cfg.eveowners`. NPCs' owners are in its own built data. For any other it asks the
+server, `config.GetMultiOwnersEx(a list of IDs)` by name (`carbon/common/script/sys/cfg.py`,
+`Recordset._Prime`), for every owner it does not have yet, in one call, and keeps each row it is
+answered, `(ownerID, ownerName, typeID, gender, ownerNameID)`. An owner it gets no row for it does
+not ask about again. The call is in 29 of the Tranquility recordings. This server answers a row
+for every ID asked about, with type nought and the name "Item <ID>" for what is no owner.
+
+The BFF's names route answered a player's corporation or alliance from its static tables, which
+did not have Test Two's, so the Character Sheet read "Unknown corporation". On the game port the
+route now asks the transport for a corporation, alliance or character that the static tables
+cannot name and whose ID is a player owner's (90,000,000 and up), and the transport asks as the
+client does and keeps the rows (`ownersNamed` in `pilots.js`). A row names an owner only as the
+kind of thing its type says it is, and a row of type nought names nothing. With no pilot online
+the route says it does not know, so that the page asks again. On the gateway nothing changed.
+The call is the transport's own: no route of the BFF's can ask it by name.
+
 **The customs export's call shape.** `src/piCustomsExport.js` binds `invbroker` with the office ID
 and calls `ImportExportWithPlanet` on that. The client goes through `invCache`: it binds the
 broker for a location, asks it for the office's inventory, and calls that. eve.js accepts both.

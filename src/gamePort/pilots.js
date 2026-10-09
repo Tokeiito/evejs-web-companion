@@ -571,6 +571,8 @@ function createGamePortPilots({
   const filetime = (ms) => (BigInt(Math.trunc(ms)) + 11644473600000n) * 10000n;
   /** standingsvc.__RefreshStandings: RemoteSvc('standingMgr').GetNPCNPCStandings(), no arguments. The web client never asks it. */
   const NPC_STANDINGS_AS_THE_CLIENT_ASKS = Object.freeze({ status: "same", source: "eve/client/script/ui/services/standingsvc.py:115", note: null });
+  /** cfg.eveowners' priming: config.GetMultiOwnersEx(list(keysToGet)), which no route of the BFF's may ask by name. */
+  const OWNERS_AS_THE_CLIENT_ASKS = Object.freeze({ status: "same", source: "carbon/common/script/sys/cfg.py:579", note: null });
   /**
    * agents.py __GetAllAgents: the whole table of agents, which every client asks its server for once and keeps for
    * as long as it runs. It is the same for every pilot and large (some eleven thousand rows), so here it is kept
@@ -940,6 +942,9 @@ function createGamePortPilots({
       agents: new Map(),
       /** agents.allAgents: this pilot's own asking for the table of agents, once it has asked; over when it is answered. */
       agentsAsked: null,
+      /** cfg.eveowners: each owner the server has been asked about, as { name, typeID }, or null for one it had no row for; and the askings, one after another. */
+      owners: new Map(),
+      ownersWork: Promise.resolve(),
       /** What the client's services keep until it changes, as the server answered it, by the service asked (KEPT_UNTIL_CHANGED). */
       kept: Object.fromEntries(Object.keys(KEPT_UNTIL_CHANGED).map((service) => [service, createKeptReads()])),
       /** crimewatchSvc.corpAggressionSettings: the corporation's aggression settings as last answered or told, or null; and the askings of them, one after another. */
@@ -1149,6 +1154,36 @@ function createGamePortPilots({
       result: wireToBridgeJson(result === undefined ? null : result),
       notifications: drain(entry),
     };
+  }
+
+  // ── the names of owners, as the client's cfg.eveowners has them ──────────
+
+  /**
+   * cfg.eveowners.Prime(keys) (carbon cfg.py, Recordset._Prime): of the owners asked about, those not known yet
+   * are asked for in one call, config.GetMultiOwnersEx(a list of their IDs), by name. Each row answered,
+   * (ownerID, ownerName, typeID, gender, ownerNameID), is kept for as long as the pilot is on. An owner the
+   * server answers no row for is not asked about again (the Recordset's knownLuzers). One asking after another.
+   *
+   * Answers a Map of each owner asked about to { name, typeID }, or to null for one with no row. The type says
+   * what the owner is. Fails as the call fails, with nothing kept of it.
+   */
+  async function ownersNamed(ownerIDs, sessionFields = {}, bridgeSessionID = undefined) {
+    const entry = held(bridgeSessionID, sessionFields);
+    const wanted = [...new Set((Array.isArray(ownerIDs) ? ownerIDs : []).map(positive).filter((ownerID) => ownerID !== null))];
+    const priming = entry.ownersWork.then(() => run(entry, "config", "GetMultiOwnersEx", async () => {
+      const unknown = wanted.filter((ownerID) => !entry.owners.has(ownerID));
+      if (unknown.length > 0) {
+        ledger.note("config", "GetMultiOwnersEx", OWNERS_AS_THE_CLIENT_ASKS);
+        const [header, rows] = itemsOf(await entry.session.call("config", "GetMultiOwnersEx", [{ type: "list", items: unknown }], null));
+        const columns = itemsOf(header).map(textOf);
+        const [ownerID, ownerName, typeID] = ["ownerID", "ownerName", "typeID"].map((column) => columns.indexOf(column));
+        for (const row of itemsOf(rows).map(itemsOf)) entry.owners.set(positive(row[ownerID]), { name: textOf(row[ownerName]), typeID: positive(row[typeID]) ?? 0 });
+        for (const each of unknown) if (!entry.owners.has(each)) entry.owners.set(each, null);
+      }
+      return new Map(wanted.map((each) => [each, entry.owners.get(each)]));
+    }));
+    entry.ownersWork = priming.catch(() => {});
+    return priming;
   }
 
   // ── what the client's services keep until it changes ──────────────────────
@@ -2397,6 +2432,7 @@ function createGamePortPilots({
     skillSheet,
     saveSkillQueue,
     journalKept,
+    ownersNamed,
     shipInfo,
     shipAttribute,
     shutdown,

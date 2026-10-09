@@ -146,6 +146,8 @@ test("what of ours can make a call: the registry's calls and the transport's own
   // A registry pair; and the resolving and binding of a service the transport binds as the client's Moniker does,
   // whether the registry names it a moniker's or the BFF may bind it.
   for (const pair of ["fleetObjectHandler.GetInitState", "skillHandler.MachoBindObject", "skillHandler.MachoResolveObject", "crimewatch.MachoBindObject", "fleetObjectHandler.MachoResolveObject", "invbroker.MachoBindObject"]) assert.equal(read.has(pair), true, pair);
+  // A call of the client's own that the transport makes for a feature and no route may ask: read, and not routed.
+  assert.deepEqual([read.has("config.GetMultiOwnersEx"), routed.has("config.GetMultiOwnersEx")], [true, false]);
   // The BFF's list has what a route can ask, read or not.
   for (const pair of ["charMgr.GetContactList", "fleetObjectHandler.GetInitState", "invbroker.MachoBindObject"]) assert.equal(routed.has(pair), true, pair);
   // A service nothing of ours binds is not read as bound, and a call nothing of ours makes is on neither.
