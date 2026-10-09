@@ -348,6 +348,11 @@ Decisions taken in your place, and anything waiting on you. Overrule any of thes
   per feature, not replayed whole. What I mean to do next is each service's login calls
   with that service, done as the fleet was (asked once, kept, kept right by notices), which
   is that decision carried out and not another one.
+- **On the game port a pilot's standings are now read when it is chosen** (2026-10-09), two
+  or three calls nobody in the page asked for, as the client's standing service makes
+  them, and the choosing is answered to the BFF once they are in. The Standings panel's two
+  lists then come from what is kept and the server's notices. See the entry "the
+  standings, read at login and kept".
 - **My scratch folder holds 33 older copies of the store, 1.9 GB**, from the checks of
   8 October, before I took to deleting each copy once the store was back. I have not
   deleted them: some are named "before-..." and I cannot say now that none is wanted. They
@@ -9454,3 +9459,183 @@ report marks them. None was left unnamed.
     client's own map is in.
 31. Jumps in the assets and contracts lists, the autopilot's way, where the page lists them.
 32. A wreck opened with its type said: no capacity, as the client has none for one.
+
+## 2026-10-09 — the standings, read at login and kept
+
+Commit `c613ba7`, pushed. The first service of item 1 of the last list.
+
+**What the retail client does** (`standingsvc.py`; the server's log of a real client here,
+which has the two calls at login; and the Tranquility recordings, searched after the build
+and not before it, which was the wrong way round: nine have the reads, 23 have
+`OnStandingsModified`, none has `OnStandingSet`).
+
+- When a character is chosen, and again when the session's corporation changes
+  (`__RefreshStandings`), it asks `standingMgr.GetNPCNPCStandings()`, then
+  `GetCharStandings()`, and beside that `GetCorpStandings()` unless the pilot's
+  corporation is an NPC one, whose standings it takes to be none.
+- From then it keeps them from the server's notices. `OnStandingSet(fromID, toID,
+  standing)`, for an NPC `fromID`, sets the character's or the corporation's standing, and
+  a standing of nothing takes the row away. `OnStandingsModified` carries raw changes, each
+  worked into a standing by `standingUtil.py`.
+- One with the corporation is worked from the character's standing with that owner. That
+  is the client's own code, and where the character has none its handler fails there.
+- In the recordings `OnStandingsModified` comes by `charid` with one argument, a list of
+  `[fromID, toID, rawChange, minAbs, maxAbs]`, which is how this server sends it and how it
+  is read here.
+- On Tranquility the three reads are cached calls. In the recording of a pilot joining a
+  corporation (`Archive/Applying and accepting a corp invite.txt`), the client's standing
+  service ran at the change: `GetNPCNPCStandings` was answered from its cache and not sent,
+  `GetCharStandings` went with the version it held (`machoVersion: [version, 1]`) and the
+  server answered that it was still good, and `GetCorpStandings` went plainly. This server
+  answers all three uncached, so a client on it has nothing to hold and asks each in full
+  each time, as the transport does. Asking with a held version is not built (the
+  reference's "Not done").
+
+**What the BFF did.** It asked nothing at login. The Standings route asked the server for
+the character's list, and the corporation's, at every read.
+
+**What was built.**
+
+- `src/gamePort/pilotStandings.js`: the three answers kept as they came, the two lists by
+  `fromID`, each notice doing what the client's handler does, the client's arithmetic and
+  its corporation quirk with it.
+- The transport reads them once the character is on the session, before the choosing is
+  answered to the BFF, and again at a change of corporation.
+- On the game port the route's two lists are answered from what is kept. One owner's
+  history and make-up are asked for as before.
+- `scripts/record-standings-session.js` and `test/fixtures/standingsSession.json`: a real
+  session against this server, with a GM's changes to the pilot's standings.
+
+**Proof.**
+
+- Tests: 10 new. The store's replay the recording and set what is kept beside the server's
+  own answer after each change (three of them: a standing given, changed with another
+  owner's, taken away): the same, line for line. The store's tests were written before it
+  and passed the first time it ran; the transport's and the route's were watched to fail
+  first. Six older tests now count the two readings among what a choosing sends, and the
+  stand-in session's change names the corporation, as the server's does.
+- 94 ways of breaking it tried. Thirteen survived a first pass: four were checks that did
+  nothing and are out, nine led to cases added. All are caught now.
+- Suite: 9705 tests, 9681 pass, 0 fail, 0 cancelled, 24 skipped. No test process left behind.
+- **Through the BFF, on the game port, by script, as Test Two, and the server's log for
+  it:** the login was the three calls of choosing, then `GetNPCNPCStandings`,
+  `GetCharStandings`, `GetCorpStandings`. Five reads of the route followed, around a GM
+  giving a standing with CONCORD of 3.5, changing it to -2.25 and taking it away. Each
+  read showed what the server had just said. Between the first read and the last the
+  server saw the three GM commands, sent `OnStandingSet` three times, and was asked for no
+  standings. One owner's detail then asked for its two.
+- **In the browser, on the game port, as Test Two:** the Standings window listed both
+  lists. A standing given from the Settings window's GM console showed as "CONCORD +3.50",
+  and still after Refresh; taken away, it was gone, and still after Refresh. The server was
+  asked for standings once, at login. No failure shown.
+- **On both transports, by script:** 12 identical, 6 tolerated, 2 moved (two clocks),
+  2 divergent. The Standings route is identical.
+- `docs/game-port-login-calls.md`, made again with the same character on the game port:
+  9 kinds of the client's 100 are asked at login now, 23 by a feature, 16 by a route only,
+  52 by nothing of ours.
+- The ledger: 54 pairs, none differing, three unchecked (the GM's command, and the two
+  reads of one owner's detail).
+- The store was put aside before each live check and put back after: Test Two's standings
+  as they were, hangar 1 row, cargo 1 row. The copies are deleted.
+
+**Seen and not repaired.**
+
+- **The client gives the character a standing of 0.0 with its own race's faction** where
+  the server says none. Not kept here, and not shown.
+- **One owner's history is asked for at every read of it.** The client keeps each owner's
+  and forgets it when a notice names that owner (`CheckInvalidateTransactionCache`).
+  Neither that read nor the make-up's has been set beside the client's.
+
+**Not seen working.**
+
+- `OnStandingsModified`, a standing with the corporation, a change of corporation, and a
+  pilot in an NPC corporation read through the route: tests only. A mission completed
+  would send the first.
+
+**Not done.**
+
+- The gateway's route asks the server at every read, as before.
+- The NPCs' standings with each other are kept and nothing of ours reads them yet.
+
+### Next
+
+1. The login's calls, service by service, each done as the fleet and the standings were.
+   Next in the order of what a route of ours asks at every read: the skill handler's
+   (`GetAllSkills`, `GetSkillQueueAndFreePoints`, `GetBoosters`, `GetSkillHistory`,
+   `CheckAndSendNotifications`); the agents' journal; the corporation registry's three;
+   contacts; notifications; the calendar; the contracts' login figures; the station's
+   guests and services; the hangar's and the ship's lists. Each read in the decompiled
+   service first, for its arguments and for what it keeps.
+2. The standings' rest: the character's own race's faction at 0.0; one owner's history
+   kept and forgotten as the client does, and its two reads set beside the client's;
+   `OnStandingsModified` seen live.
+3. The same login report for a login in space, and for the game port with the page's
+   panels open.
+4. Around the fleet, what is left: `SendBroadcast` and `MassInvite`; `fleetMgr`'s
+   watchlist and broadcasts (the watchlist's second argument first); `fleetProxy`'s
+   adverts and `GetAvailableFleetAds`, and with them a pilot applying to a fleet, for the
+   join requests seen live; an invite from a pilot in no fleet forming one first; the cost
+   of contacting; the pilot's own kicking as a leaving, and a disbanding refused here as
+   the client refuses it.
+5. What becomes of a bound object the client has done with (`moniker.py`
+   `__ClearBoundObject`: `DisconnectObject` after a delay): read in the client, looked for
+   in the recordings, and done so. The handles the BFF asks for and drops are among them.
+6. Around the contracts: "Offered to you" from the owner's list; the corporation's lists;
+   a rowset read where a server answers one; the search with something staged for each of
+   its filters, on both transports; what the sub-agent left in the server (the operator's
+   section). And the same fault elsewhere in the server: a search of its services for a
+   keyword read as a plain property, with no helper in the file, names two more
+   (`seasonManagerService.js`, `dungeonService.js`). Neither was read.
+7. Around a fitted module: the recording read past `SetModuleOnline`'s answer, and this
+   server's fit set beside it; the recording of ammunition loaded while docked, and charges
+   in slots as godma holds them; the Fitting panel's cargo figure after a module's state
+   changes; a refusal to put one online shown as the client shows it; the dogma route
+   answered from godma's priming instead of its own `GetAllInfo`.
+8. Something staged for every list route that has only been compared empty (the market's
+   orders, the mail, the calendar, the corporation's hangars), and the parity pass read
+   again.
+9. A ship with several modules fitted and a hold with a packaged ship in it, staged: the
+   Fitting window's figures and the client's sums, each set beside the server's.
+10. The walk in space: undocked, every panel and the space view, the store put aside first
+    and put back after; its unread pairs read; the ship's moniker seen kept; an agent
+    talked to and a ship boarded for the monikers the BFF asks for; a fleet formed there.
+11. The ledger counting what was sent, not what the BFF asked for: where a moniker is made
+    and not bound, and where a call is shared.
+12. The parity tool taking a duration the server measures for what it is (`searchTime`), as
+    it takes a clock.
+13. The routes that answer from the store, listed, and each set beside what the client asks.
+14. Phase 3's writes, feature by feature, each set beside what the client sends, each
+    looked for in every folder of the recordings first.
+15. The wallet's "Market Transactions", and the lines the client derives from a transaction.
+16. The avoidance list's own window, and a route plotted again when a setting changes under it.
+17. Around a place's name, the last of it: the outlaw's warning (the pilot's own security
+    status). The agent's own window's steps, if the client's say how far.
+18. The page's own read of the journal after an agent's button: gone, if nothing of the page's
+    own counts on it, with the push doing the work as it does for Remove Offer.
+19. The agent's cards above its own window, where the client's window has its own header.
+20. The scanner the client's way: results kept from the server's word, a probe's destination
+    and range kept here and sent with the scan.
+21. Small, around dialogs: the title for a dialog's kind, the "do not ask again" box, the typed
+    codes not done.
+22. Small, in space: an overview row's speed columns the client's way; the bar the client
+    fills while a ship lines up for a warp; a warp ordered at a bookmark or a fleet member.
+23. Small, before a character is chosen: selecting on the account's own connection; the count
+    of names checked.
+24. Small, in Ready Fit: the window following a change of pilot.
+25. Small, in words: an interval's `shortForm` and `writtenFormTwoPart`; the bonus's
+    countdown; a place's rating in its colour and its name as a link.
+26. In the park, if a server ever sends a ball that needs them: MISSILE, FORMATION, MUSHROOM;
+    a fixed ball's collision shapes and the partition's order.
+27. If a server ever sends one: a special interaction drawn as the client draws one; messages
+    inside messages.
+28. More of the client's built data as it is needed: one line in `TABLES` for each (dungeons
+    for ship restrictions); the client's own map, to set beside this server's.
+29. When there is a recording of it: a courier's agent talked to again where the pilot
+    accepted, before the package has gone anywhere (the operator's section); and a mission
+    paid in a system of the safest class, for whether its ISK is reduced.
+30. Other things asked once beside the store, and other panels' effects, looked at for the
+    faults of earlier entries.
+31. The pathfinder's ties: how the order of the map's jumps settles them, and the order the
+    client's own map is in.
+32. Jumps in the assets and contracts lists, the autopilot's way, where the page lists them.
+33. A wreck opened with its type said: no capacity, as the client has none for one.
