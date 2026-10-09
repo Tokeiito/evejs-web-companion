@@ -5380,3 +5380,99 @@ corporation takes its station's owner in the client; here it has no second card.
     for ship restrictions).
 16. When there is a recording of it: a courier's agent talked to again where the pilot
     accepted, before the package has gone anywhere (the operator's section).
+
+---
+
+## 2026-10-09 — the pilot's effective standing with an agent
+
+Commit `7a54707`, pushed. Item 1 of the last list.
+
+**What the retail client does.**
+
+- The corporation's card on a mission's page begins with the pilot's effective standing with
+  the agent (`page.py` 102, `standingsvc.GetEffectiveStandingWithAgent`, 200 to 214): three
+  standings towards the pilot, the agent's faction's, its corporation's and the agent's own,
+  each raised by a skill. The least of them counts when it is -2.0 or worse (the label
+  `UI/Agents/Dialogue/EffectiveStandingLow`); otherwise the greatest
+  (`UI/Agents/Dialogue/EffectiveStanding`). An owner the server does not list stands at nought.
+- The skill goes by the agent's faction for all three (`standingUtil.py` 15 to 37): none for
+  four factions no skill moves; Diplomacy for a standing below nought; Criminal Connections
+  from nought up with a pirate faction; Connections from nought up with anyone else. It is
+  worth 0.4 a level and closes that share of what is left to ten.
+- **It reads the pilot's standings once** and after that changes what it holds from what the
+  server says (`standingsvc.py` 41 to 90): `OnStandingSet` sets one outright, or drops it when
+  it is set to nothing; `OnStandingsModified` moves each by a share of what is left to the end
+  of the scale, or starts one for an owner not yet listed.
+
+**What the page had.** The pilot's standings and skills, each read by its own panel. Nothing
+that put them together, and nothing that heard the server change a standing.
+
+**What was built.**
+
+- `web/src/bridge/effectiveStanding.ts`: the rule.
+- `web/src/bridge/standingChanges.ts`: the two notifications applied to the standings held.
+- The page's corporation card says it, in the client's words, marked when it is a low one.
+  Opening a mission's page reads the pilot's standings and skills if they have not been read.
+
+**Proof.**
+
+- Tests: 19 new. 78 ways of breaking it. Seven got through at first: two tests of the ends of
+  the scale that the sums already answer (taken out), three notifications no test tried
+  (now tried), and two that cannot be told from the original (a change of nought taken as a
+  rise; a null the type checker needs and the code does not).
+- Suite: 9465 tests, 9441 pass, 0 fail, 24 skipped, 0 todo.
+- **In the browser, on the game port**, eve.js `e066a81e9`, as Test Two, the mission's page
+  of the station's courier agent:
+
+  | the pilot | the server lists | the card |
+  |---|---|---|
+  | as it is: none of the three skills | faction -3.978, corporation 1.069, agent -0.53 | "Effective Standing: -4.0", marked low |
+  | given Diplomacy IV by a game master's command, and the page loaded again | the same | "Effective Standing: 1.2" |
+  | every agent's standing set to ten by a game master's command, the page left open | 197 `OnStandingSet` in one answer | "Effective Standing: 10.0", and no read of the standings |
+
+  The second is the sum by hand: Diplomacy IV is 1.6, which lifts -3.978 to -1.74 and -0.53
+  to 1.15; nothing is at -2.0 or worse any more, and the greatest of -1.74, 1.069 and 1.15
+  is 1.15.
+- **The staging was undone**: the store was put back after each part.
+
+**A defect of this entry's own first version, found live.** It read the standings again on
+each of those notifications: 197 reads for one command. No test said so, because the test
+sent one notification and counted one read. The client does not read at all, and now neither
+does this; the test sends several and counts none.
+
+**Not done.** The skill's level is the one the pilot has trained; the client uses its
+"effective" level, which is lower for a clone that may not use all it has trained. The
+corporation's own standings are not kept from these notifications, as the client keeps them.
+The same cards above the agent's own window. The standings panel reads its own data and does
+not show these changes until it reads again.
+
+### Next
+
+1. The client's short written interval (`FormatTimeIntervalShortWritten`), for the journal's
+   line, the page's time left and the bonus's countdown.
+2. Around a place's name: the security rating before it, the low-security warning, how many
+   jumps away it is (the page has no route of its own yet), and the reduced-rewards banner.
+3. The page's own read of the journal after an agent's button: gone, if nothing of the page's
+   own counts on it, with the push doing the work as it does for Remove Offer.
+4. The agent's cards above its own window, where the client's window has its own header.
+5. The ledger's unread pairs, most called first: the inventory and wallet reads, then the
+   writes on `ship` and `dogmaIM`.
+6. The scanner the client's way: results kept from the server's word, a probe's destination
+   and range kept here and sent with the scan.
+7. Phase 3's writes, feature by feature, each set beside what the client sends.
+8. Small, around dialogs: the title for a dialog's kind, the "do not ask again" box, the typed
+   codes not done.
+9. Small, in space: an overview row's speed columns the client's way; the bar the client
+   fills while a ship lines up for a warp; a warp ordered at a bookmark or a fleet member.
+10. Small, before a character is chosen: selecting on the account's own connection; the count
+    of names checked.
+11. Small, in Ready Fit: the capacity the client never asks for; the window following a change
+    of pilot.
+12. In the park, if a server ever sends a ball that needs them: MISSILE, FORMATION, MUSHROOM;
+    a fixed ball's collision shapes and the partition's order.
+13. If a server ever sends one: a special interaction drawn as the client draws one; messages
+    inside messages.
+14. More of the client's built data as it is needed: one line in `TABLES` for each (dungeons
+    for ship restrictions).
+15. When there is a recording of it: a courier's agent talked to again where the pilot
+    accepted, before the package has gone anywhere (the operator's section).
