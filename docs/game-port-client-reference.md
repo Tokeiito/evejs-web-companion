@@ -137,6 +137,12 @@ absent. The recorded real session
 (`eve.js/_local/logs/direct-tcp-real-client-20260809-163920.stdout.log`) names the calls in order,
 and the decompiled service that issues each one gives its arguments.
 
+**Measured 2026-10-09** (`docs/game-port-login-calls.md`, from `scripts/login-calls-report.js`): that
+session's client made 117 calls of 100 kinds between connecting and sitting docked with nothing
+opened. A pilot chosen on the game port and left alone made 12 calls of 7 of those kinds, and none
+the client did not make. Of the other 93 kinds, 24 are asked later by a feature in a form read
+against the client's, 16 only by a route of the BFF's, and 53 by nothing of ours.
+
 **The customs export's call shape.** `src/piCustomsExport.js` binds `invbroker` with the office ID
 and calls `ImportExportWithPlanet` on that. The client goes through `invCache`: it binds the
 broker for a location, asks it for the office's inventory, and calls that. eve.js accepts both.
