@@ -60,9 +60,32 @@ function usedVolume(rows, flag, typeVolume, tables) {
   return used;
 }
 
+/**
+ * Whether a ship has the hold a flag names, as the client's inventory tree says it
+ * (eve/client/script/ui/shared/inventory/treeData.py 300 to 363): by its type's own attributes, asked of nobody.
+ *
+ *   the cargo                 every ship: it is the ship itself
+ *   a ship maintenance bay    the type says it has one (hasShipMaintenanceBay)
+ *   a fleet hangar            the type says it has them (hasFleetHangars)
+ *   a drone bay               the type's droneCapacity, or the ship is one built of parts
+ *   any other hold            the type has that hold's capacity
+ *
+ * `typeAttribute(attributeID)` answers the type's own value, or null where it has none. `holds` is the client's
+ * own table (src/clientData/clientConstants.js holdAttributes). Null for a flag that table has not.
+ */
+function shipHasHold(flag, typeAttribute, groupID, holds) {
+  if (flag === holds.cargoFlag) return true;
+  const attribute = holds.byFlag.get(flag);
+  if (attribute === undefined) return null;
+  if (flag === holds.shipHangarFlag) return Boolean(typeAttribute(holds.hasShipMaintenanceBay));
+  if (flag === holds.fleetHangarFlag) return Boolean(typeAttribute(holds.hasFleetHangars));
+  if (flag === holds.droneBayFlag && groupID === holds.strategicCruiserGroupID) return true;
+  return Boolean(typeAttribute(attribute));
+}
+
 /** The Row the client makes of the two, in the shape GetCapacity's answer comes in. */
 function capacityAnswer(capacity, used) {
   return { type: "object", name: "util.KeyVal", args: { type: "dict", entries: [["capacity", capacity], ["used", used]] } };
 }
 
-module.exports = { STATION_CAPACITY, capacityAnswer, itemVolume, packagedVolume, usedVolume };
+module.exports = { STATION_CAPACITY, capacityAnswer, itemVolume, packagedVolume, shipHasHold, usedVolume };

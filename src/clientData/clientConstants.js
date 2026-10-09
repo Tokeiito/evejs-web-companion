@@ -27,19 +27,37 @@ const RUN_TIMEOUT_MS = 60_000;
 const MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
 
 // What is read here: the name each set goes by, the module of the client's code it is in, and the names in it.
+// A module that imports others is `given` those it uses while it is run, from the same archive and in the
+// order they need each other, and has the ones it does not use stood in for (`stubs`).
 const CONSTANTS = Object.freeze({
   packagedVolumes: Object.freeze({
     module: "inventorycommon/const.pyj",
     names: Object.freeze(["packagedVolumeOverridesPerGroup", "packagedVolumeOverridesPerType", "typePlasticWrap"]),
   }),
+  // Each hold's flag and the attribute its capacity is (inventoryFlagsCommon.py), and what the client's
+  // inventory tree goes by to say which holds a ship has (treeData.py 300 to 363).
+  holdAttributes: Object.freeze({
+    module: "eve/common/script/util/inventoryFlagsCommon.pyj",
+    given: Object.freeze([Object.freeze(["inventorycommon.const", "inventorycommon/const.pyj"]), Object.freeze(["dogma.const", "dogma/const.pyj"])]),
+    stubs: Object.freeze(["evetypes", "eveexceptions.const"]),
+    names: Object.freeze([
+      "inventoryFlagData", "dogma.const.attributeHasShipMaintenanceBay", "dogma.const.attributeHasFleetHangars", "inventorycommon.const.groupStrategicCruiser",
+      "inventorycommon.const.flagCargo", "inventorycommon.const.flagDroneBay", "inventorycommon.const.flagShipHangar", "inventorycommon.const.flagFleetHangar",
+    ]),
+  }),
 });
 
+/** What scripts/client-constants.py is told, after the Python and the script itself. */
+function moduleArguments({ binFolder, archive, module, given, stubs, names }) {
+  return [binFolder, archive, module, ...given.flatMap(([name, path]) => ["--with", `${name}=${path}`]), ...stubs.flatMap((name) => ["--stub", name]), ...names];
+}
+
 /** Runs one module of the client's code and answers what it printed of the names asked for. */
-function runModule({ python, binFolder, archive, module, names, timeoutMs = RUN_TIMEOUT_MS }) {
+function runModule({ python, binFolder, archive, module, given, stubs, names, timeoutMs = RUN_TIMEOUT_MS }) {
   return new Promise((resolve, reject) => {
     childProcess.execFile(
       python,
-      [SCRIPT, binFolder, archive, module, ...names],
+      [SCRIPT, ...moduleArguments({ binFolder, archive, module, given, stubs, names })],
       { timeout: timeoutMs, maxBuffer: MAX_OUTPUT_BYTES, windowsHide: true, encoding: "utf8" },
       (error, stdout, stderr) => {
         if (error) {
@@ -53,9 +71,15 @@ function runModule({ python, binFolder, archive, module, names, timeoutMs = RUN_
   });
 }
 
+/** A printed table, or an error: an object that is not an array. */
+function tableOf(printed, what) {
+  if (!printed || typeof printed !== "object" || Array.isArray(printed)) throw new Error(`The client's ${what} is not a table.`);
+  return printed;
+}
+
 /** A printed table of numbers by ID, as a Map; anything else is not one. */
 function numbersByID(printed, what) {
-  if (!printed || typeof printed !== "object" || Array.isArray(printed)) throw new Error(`The client's ${what} is not a table.`);
+  tableOf(printed, what);
   const table = new Map();
   for (const [key, value] of Object.entries(printed)) {
     const id = Number(key);
@@ -89,6 +113,8 @@ function createClientConstants({ clientRoot = null, python = "python", run = run
       binFolder: path.join(clientRoot, "tq", "bin64"),
       archive: path.join(clientRoot, "tq", "code.ccp"),
       module: described.module,
+      given: (described.given ?? []).map((pair) => [...pair]),
+      stubs: [...(described.stubs ?? [])],
       names: [...described.names],
     });
     return JSON.parse(said);
@@ -123,6 +149,25 @@ function createClientConstants({ clientRoot = null, python = "python", run = run
         plasticWrapTypeID: values.typePlasticWrap,
       });
     }),
+    holdAttributes: () => read("holdAttributes", (values) => {
+      const id = (name) => {
+        const value = values[name];
+        if (!Number.isSafeInteger(value) || value <= 0) throw new Error(`The client's ${name} is not a number to go by.`);
+        return value;
+      };
+      // Of all the client says of a flag (what it is called, what may go in it), its capacity's attribute alone.
+      const attributes = Object.entries(tableOf(values.inventoryFlagData, "inventoryFlagData")).map(([flag, described]) => [flag, described.attribute]);
+      return Object.freeze({
+        byFlag: numbersByID(Object.fromEntries(attributes), "inventoryFlagData"),
+        hasShipMaintenanceBay: id("dogma.const.attributeHasShipMaintenanceBay"),
+        hasFleetHangars: id("dogma.const.attributeHasFleetHangars"),
+        strategicCruiserGroupID: id("inventorycommon.const.groupStrategicCruiser"),
+        cargoFlag: id("inventorycommon.const.flagCargo"),
+        droneBayFlag: id("inventorycommon.const.flagDroneBay"),
+        shipHangarFlag: id("inventorycommon.const.flagShipHangar"),
+        fleetHangarFlag: id("inventorycommon.const.flagFleetHangar"),
+      });
+    }),
     status() {
       const out = { available: available(), python };
       for (const name of Object.keys(CONSTANTS)) out[name] = state.get(name) || { loaded: false, error: null };
@@ -131,4 +176,4 @@ function createClientConstants({ clientRoot = null, python = "python", run = run
   };
 }
 
-module.exports = { CONSTANTS, createClientConstants, runModule };
+module.exports = { CONSTANTS, createClientConstants, moduleArguments, runModule };

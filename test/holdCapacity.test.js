@@ -5,7 +5,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { STATION_CAPACITY, capacityAnswer, itemVolume, packagedVolume, usedVolume } = require("../src/clientData/holdCapacity");
+const { STATION_CAPACITY, capacityAnswer, itemVolume, packagedVolume, shipHasHold, usedVolume } = require("../src/clientData/holdCapacity");
 
 const WRAP = 77099;
 const TABLES = { byGroup: new Map([[901, 2500], [902, 10000]]), byType: new Map([[77001, 50000]]), plasticWrapTypeID: WRAP };
@@ -63,4 +63,43 @@ test("the answer is the Row the client makes: capacity and used, as GetCapacity'
   assert.deepEqual(capacityAnswer(3900, 0.1), { type: "object", name: "util.KeyVal", args: { type: "dict", entries: [["capacity", 3900], ["used", 0.1]] } });
   // invCache.GetCapacity for a station: nine thousand million million, a number that has no end in sight.
   assert.equal(STATION_CAPACITY, 9000000000000000);
+});
+
+// ── which holds a ship has ───────────────────────────────────────────────────
+
+const HOLDS = {
+  byFlag: new Map([[5, 3801], [87, 3802], [90, 3803], [134, 3804], [155, 3805]]),
+  hasShipMaintenanceBay: 3901,
+  hasFleetHangars: 3902,
+  strategicCruiserGroupID: 963001,
+  cargoFlag: 5,
+  droneBayFlag: 87,
+  shipHangarFlag: 90,
+  fleetHangarFlag: 155,
+};
+/** A type's attributes, as the static data has them: only what the type has. */
+const attributesOf = (values) => (attributeID) => values[attributeID] ?? null;
+
+test("which holds a ship has is its type's own attributes, as the client's inventory tree reads them", () => {
+  // treeData.py 300 to 363. A hauler: a cargo hold and nothing else.
+  const hauler = attributesOf({ 3801: 3900 });
+  assert.deepEqual([5, 87, 90, 134, 155].map((flag) => shipHasHold(flag, hauler, 28, HOLDS)), [true, false, false, false, false]);
+  // The cargo is the ship itself: every ship has it, whatever its type says.
+  assert.equal(shipHasHold(5, attributesOf({}), 28, HOLDS), true);
+  // A hold whose capacity the type has: there. With nought or with none: not there.
+  assert.equal(shipHasHold(134, attributesOf({ 3804: 5000 }), 28, HOLDS), true);
+  assert.equal(shipHasHold(134, attributesOf({ 3804: 0 }), 28, HOLDS), false);
+  // A drone bay: by its capacity, or by the ship being one built of parts, which has one however small.
+  assert.equal(shipHasHold(87, attributesOf({ 3802: 25 }), 28, HOLDS), true);
+  assert.equal(shipHasHold(87, attributesOf({}), 963001, HOLDS), true);
+  assert.equal(shipHasHold(87, attributesOf({}), 28, HOLDS), false);
+  // Being built of parts gives a ship no other hold.
+  assert.equal(shipHasHold(134, attributesOf({}), 963001, HOLDS), false);
+  // A ship maintenance bay and a fleet hangar: by the type saying it has one, not by a capacity.
+  assert.equal(shipHasHold(90, attributesOf({ 3803: 1000000 }), 28, HOLDS), false);
+  assert.equal(shipHasHold(90, attributesOf({ 3901: 1 }), 28, HOLDS), true);
+  assert.equal(shipHasHold(155, attributesOf({ 3805: 10000 }), 28, HOLDS), false);
+  assert.equal(shipHasHold(155, attributesOf({ 3902: 1 }), 28, HOLDS), true);
+  // A flag the client's table has not: not known, and neither there nor not.
+  assert.equal(shipHasHold(151, attributesOf({ 3804: 5000 }), 28, HOLDS), null);
 });

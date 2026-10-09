@@ -2744,3 +2744,20 @@ test("with dogma not answering, a ship's attribute is not known", async () => {
   const { pilots, handle } = await selected({ answers: { "bound:GetAllInfo": () => { throw new Error("not now"); } } });
   assert.equal(await pilots.shipAttribute(38, FIELDS, handle), null);
 });
+
+test("the pilot's ship and its type are what the session and godma already hold", async () => {
+  const typed = keyVal([["shipInfo", { type: "dict", entries: [
+    [BigInt(SHIP), keyVal([["itemID", BigInt(SHIP)], ["time", DOGMA_T], ["invItem", { type: "packedrow", header: null, columns: [], fields: { itemID: SHIP, typeID: 77002, groupID: 901 }, values: [] }], ["attributes", { type: "dict", entries: [[38, 3900]] }]])],
+  ] }]]);
+  const { pilots, session, handle } = await selected({ answers: { "bound:GetAllInfo": typed } });
+  session.calls.length = 0;
+  assert.deepEqual(await pilots.ship(FIELDS, handle), { shipID: SHIP, typeID: 77002 });
+  assert.deepEqual(await pilots.ship(FIELDS, handle), { shipID: SHIP, typeID: 77002 });
+  // Godma primed once, and nothing asked of the server for it.
+  assert.equal(session.boundCalls.filter((call) => call.method === "GetAllInfo").length, 1);
+  assert.deepEqual(session.calls, []);
+  await rejects(pilots.ship({ userid: 9 }, handle), "SESSION_NOT_FOUND");
+  // With godma not answering, the ship is still the session's; its type is not known.
+  const dark = await selected({ answers: { "bound:GetAllInfo": () => { throw new Error("not now"); } } });
+  assert.deepEqual(await dark.pilots.ship(FIELDS, dark.handle), { shipID: SHIP, typeID: null });
+});

@@ -16,7 +16,7 @@ const staticDataModule = require("./staticData");
 const { createClientWords } = require("./clientData/clientWords");
 const { createClientBuiltData } = require("./clientData/clientBuiltData");
 const { createClientConstants } = require("./clientData/clientConstants");
-const { STATION_CAPACITY, capacityAnswer, usedVolume } = require("./clientData/holdCapacity");
+const { STATION_CAPACITY, capacityAnswer, shipHasHold, usedVolume } = require("./clientData/holdCapacity");
 const { readMinerPilot } = require("./pilotTrainingRead");
 const { createTrainingQueueService } = require("./pilotTrainingQueue");
 const { createFactorySessions } = require("./factorySessions");
@@ -1927,11 +1927,7 @@ function staticTypeVolume(typeID) {
  */
 function reckonedCapacity(settledList, flag, capacity, packaged) {
   if (settledList.status !== "fulfilled") return null;
-  const listed = settledList.value && settledList.value.result;
-  const rows = (listed && Array.isArray(listed.items) ? listed.items : [])
-    .map((row) => (row && row.type === "packedrow" && row.fields ? row.fields : null));
-  if (rows.includes(null)) return null;
-  const used = usedVolume(rows, flag, staticTypeVolume, packaged);
+  const used = usedOfListed(settledList.value.result, flag, packaged);
   return used === null ? null : capacityAnswer(capacity, used);
 }
 
@@ -3156,7 +3152,8 @@ function inventoryManagerBindSpec(held) {
 
 // Decode an invbroker List result to plain rows. Rows arrive as packedrows, or
 // (when empty and flag-scoped) a python set wrapping an empty list.
-function decodeInventoryRows(result) {
+/** What an inventory List answered, out of whichever envelope it came in. */
+function inventoryListItems(result) {
   let listValue = result;
   if (listValue && listValue.type === "objectex1" && Array.isArray(listValue.header)) {
     const token = listValue.header[0];
@@ -3166,10 +3163,23 @@ function decodeInventoryRows(result) {
   } else if (listValue && listValue.type === "object" && Array.isArray(listValue.args)) {
     listValue = listValue.args[0] ?? null;
   }
-  const items =
-    listValue && listValue.type === "list" && Array.isArray(listValue.items) ? listValue.items : [];
+  return listValue && listValue.type === "list" && Array.isArray(listValue.items) ? listValue.items : [];
+}
+
+/**
+ * What is used of a hold, summed from its List the client's way
+ * (src/clientData/holdCapacity.js). Null where it cannot be: something the
+ * List answered is not a row, or is a thing whose volume nobody here knows.
+ * Never a sum that leaves something out.
+ */
+function usedOfListed(result, flag, packaged) {
+  const rows = inventoryListItems(result).map((item) => (item && item.type === "packedrow" && item.fields ? item.fields : null));
+  return rows.includes(null) ? null : usedVolume(rows, flag, staticTypeVolume, packaged);
+}
+
+function decodeInventoryRows(result) {
   const rows = [];
-  for (const item of items) {
+  for (const item of inventoryListItems(result)) {
     const fields = item && item.type === "packedrow" && item.fields ? item.fields : item;
     if (!fields || typeof fields !== "object") {
       continue;
@@ -18992,6 +19002,61 @@ const SHIP_BAYS = Object.freeze([
   Object.freeze({ key: "expedition", flag: 188, label: "Expedition hold" }),
 ]);
 
+/** The type of a ship in the hangar the pilot is docked in, from the hangar's own list; 0 where it is not there. */
+async function hangarShipTypeID(held, webSessionID, shipID) {
+  let listed;
+  try {
+    listed = await boundCall(held, webSessionID, hangarBindSpec(held), "List", [ITEM_FLAG_HANGAR], null);
+  } catch (error) {
+    if (error && error.code === "SESSION_NOT_FOUND") throw error;
+    return 0;
+  }
+  const row = decodeInventoryRows(listed.result).find((entry) => entry.itemID === shipID);
+  return row ? row.typeID : 0;
+}
+
+/**
+ * What it takes to know a ship's bays as the retail client knows them, or null
+ * where that cannot be followed: off the game port, with no client to read its
+ * tables from, with static tables that know no type's attributes, or for a
+ * ship whose type cannot be found.
+ *
+ * ⚠ THE RETAIL CLIENT ASKS THE SERVER NONE OF THIS. Its inventory tree says
+ * which bays a ship has from the ship's TYPE (treeData.py 300 to 363), and a
+ * bay's size is godma's value of that bay's attribute for the ship being flown
+ * (godma.py 871) and the type's own for any other, which its dogma has not
+ * loaded (clientDogmaIM.GetCapacityForItem answers None; invCache.py 1268 on).
+ * The ship being flown and its type are the transport's to say, from the
+ * session and godma. A ship in the hangar has its type in the hangar's list,
+ * which the client holds and this reads.
+ */
+async function shipHoldsAsTheClient(held, webSessionID, shipID) {
+  if (!gamePortPilots || !isGamePortHandle(held.bridgeSessionID) || typeof gamePortPilots.ship !== "function") return null;
+  if (typeof staticData.getTypeDogmaAttributeOrDefault !== "function") return null;
+  const [holds, packaged] = await Promise.all([clientConstants.holdAttributes(), clientConstants.packagedVolumes()]);
+  if (!holds || !packaged) return null;
+  const sessionFields = { userid: held.accountID };
+  const flown = await gamePortPilots.ship(sessionFields, held.bridgeSessionID);
+  const active = Number(flown.shipID) === shipID;
+  const typeID = active ? Number(flown.typeID) || 0 : await hangarShipTypeID(held, webSessionID, shipID);
+  const type = typeID > 0 ? staticData.getType(typeID) : null;
+  if (!type) return null;
+  return {
+    packaged,
+    /** Whether the hull has the bay: true, false, or null for a flag the client's table has not. */
+    has: (flag) => shipHasHold(flag, (attributeID) => staticData.getTypeDogmaAttribute(typeID, attributeID, null), Number(type.groupID), holds),
+    /** How big the bay is, or null where neither godma nor the type says. */
+    async capacity(flag) {
+      const attributeID = holds.byFlag.get(flag);
+      const live = active ? await gamePortPilots.shipAttribute(attributeID, sessionFields, held.bridgeSessionID) : null;
+      if (live !== null) return live;
+      // evetypes.GetCapacity for the cargo; a type's attribute, or the attribute's own default, for any other.
+      const cargo = flag === holds.cargoFlag && type.capacity !== null && type.capacity !== undefined ? Number(type.capacity) : NaN;
+      return Number.isFinite(cargo) ? cargo : staticData.getTypeDogmaAttributeOrDefault(typeID, attributeID, null);
+    },
+  };
+}
+
 // Which bays a ship has, what each one holds, and how full it is.
 //
 // ABSENT IS NOT EMPTY, AND NEITHER IS UNKNOWN. Three states cross the wire,
@@ -19033,31 +19098,36 @@ app.get("/api/bridge/ship/:shipID/bays", requireAuth, async (req, res, next) => 
   // its own inventory, so there is no ship-specific bind method.
   const spec = containerBindSpec(shipID);
   try {
-    // One capacity read per candidate flag, all independent: a hull that
-    // refuses one bay must not blank the other twenty-six.
-    const settled = await Promise.allSettled(
-      wanted.map((bay) =>
-        boundCall(held, req.webSessionID, spec, "GetCapacity", [bay.flag], null),
-      ),
-    );
-    for (const entry of settled) {
-      if (entry.status === "rejected" && entry.reason && entry.reason.code === "SESSION_NOT_FOUND") {
-        next(entry.reason);
-        return;
-      }
-    }
-    const readings = wanted.map((bay, index) => {
-      const outcome = settled[index];
-      if (outcome.status !== "fulfilled") {
+    // A bay as the SERVER answers it: one capacity read for its flag. Each is
+    // independent: a hull that refuses one bay must not blank the others.
+    const asked = async (bay) => {
+      let outcome;
+      try {
+        outcome = await boundCall(held, req.webSessionID, spec, "GetCapacity", [bay.flag], null);
+      } catch (error) {
+        if (error && error.code === "SESSION_NOT_FOUND") throw error;
         // Could not look. NOT "the hull lacks this bay".
-        return { bay, capacity: null, present: null, error: String((outcome.reason && outcome.reason.code) || "READ_FAILED") };
+        return { bay, capacity: null, present: null, error: String((error && error.code) || "READ_FAILED") };
       }
-      const reading = decodeCapacityReading(outcome.value.result);
+      const reading = decodeCapacityReading(outcome.result);
       if (reading === null || reading.capacity === null) {
         return { bay, capacity: reading, present: null, error: "NO_CAPACITY_REPORTED" };
       }
       return { bay, capacity: reading, present: Number(reading.capacity) > 0, error: null };
-    });
+    };
+    // A bay as the CLIENT knows it (shipHoldsAsTheClient): there or not by the
+    // hull's type, its size by godma or the type. What is used of it comes with
+    // its contents, below. A bay that cannot be known so is asked about.
+    const own = await shipHoldsAsTheClient(held, req.webSessionID, shipID);
+    const reckoned = async (bay) => {
+      const has = own.has(bay.flag);
+      if (has === null) return asked(bay);
+      if (!has) return { bay, capacity: { capacity: 0, used: 0 }, present: false, error: null };
+      const capacity = await own.capacity(bay.flag);
+      if (capacity === null) return asked(bay);
+      return { bay, capacity: { capacity: Number(capacity), used: null }, present: true, error: null, reckoned: true };
+    };
+    const readings = await Promise.all(wanted.map((bay) => (own ? reckoned(bay) : asked(bay))));
 
     // Contents come from ONE ListByFlags over just the bays that exist, rather
     // than a List per bay: the rows carry their own flagID, so a single read
@@ -19075,6 +19145,14 @@ app.get("/api/bridge/ship/:shipID/bays", requireAuth, async (req, res, next) => 
           [presentReadings.map((entry) => entry.bay.flag)],
           null,
         );
+        // What is used of a bay the client's way: the volume of what this very list holds in its flag. A bay
+        // with something in it whose volume is not known here has the server say how full it is.
+        await Promise.all(readings.map(async (entry, index) => {
+          if (!entry.reckoned) return;
+          const used = usedOfListed(listed.result, entry.bay.flag, own.packaged);
+          if (used === null) readings[index] = await asked(entry.bay);
+          else entry.capacity.used = used;
+        }));
         byFlag = new Map(presentReadings.map((entry) => [entry.bay.flag, []]));
         for (const row of decodeInventoryRows(listed.result)) {
           const bucket = byFlag.get(row.flagID);

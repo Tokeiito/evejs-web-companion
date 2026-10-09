@@ -553,6 +553,18 @@ function createGamePortPilots({
     return entry.dogma.attribute(place.shipID, attributeID);
   }
 
+  /**
+   * The pilot's own ship and what type it is, as the session and godma hold them. The client's inventory tree
+   * goes by the type to say which bays a ship has (treeData.py 300 to 363). The type is null where godma was
+   * not told of the ship.
+   */
+  async function ship(sessionFields = {}, bridgeSessionID = undefined) {
+    const entry = held(bridgeSessionID, sessionFields);
+    const place = whereabouts(entry);
+    await shipReadings(entry, place);
+    return { shipID: place.shipID, typeID: entry.dogma.typeOf(place.shipID) };
+  }
+
   /** The user's answer to a question the server asked. */
   async function answerClientQuestion(bridgeSessionID, questionID, answer, sessionFields = {}) {
     const entry = held(bridgeSessionID, sessionFields);
@@ -1470,6 +1482,7 @@ function createGamePortPilots({
     openSessionEventStream,
     accountCall,
     answerClientQuestion,
+    ship,
     shipAttribute,
     shutdown,
     /** Every pair called since this transport was made, most called first, with how each compares with the retail client's. */
