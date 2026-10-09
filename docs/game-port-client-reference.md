@@ -254,6 +254,24 @@ at the choosing bind the moniker and ask its contacts, and what the BFF asks of 
 registry goes to the moniker or by name as the client's would. For a pilot in none, what the BFF
 asks all the same goes by name as before, and the ledger says it is the web's alone.
 
+**The notifications, 2026-10-09.** The client's notification service (`notificationSvc.py`) keeps
+three lists. All of a pilot's notifications are asked for as its character is chosen, by the
+notification window (`notificationUI._NotificationProvider`): `notificationMgr.GetAllNotifications`
+with the keyword `fromID`, which is the last notification the user cleared and nought in a
+recorded Tranquility login. The unread ones (`GetUnprocessed()`) and those of a group
+(`GetByGroupID(groupID)`) are asked for when first wanted. Each list is kept, and the client
+works the server's `OnNotificationReceived`, `OnNotificationDeleted` and `OnNotificationUndeleted`
+and its own marking and deleting into them itself.
+
+On the game port the transport asks for all of them, from nought, as a pilot is chosen, and waits
+for the answer. The three lists are kept as they were answered, and a read of one through the BFF
+is answered from what is kept. One thing is not the client's: at any of the three notices, and
+after any of the pilot's own six writes (`MarkAsProcessed`, `MarkGroupAsProcessed`,
+`MarkAllAsProcessed`, `DeleteNotifications`, `DeleteGroupNotifications`, `DeleteAllNotifications`),
+done or refused, all three lists are forgotten and asked for when next wanted, where the client
+changes its lists in place. An answer on its way when they are forgotten is handed on and not
+kept. All of them from a later notification is another list, asked each time.
+
 **The customs export's call shape.** `src/piCustomsExport.js` binds `invbroker` with the office ID
 and calls `ImportExportWithPlanet` on that. The client goes through `invCache`: it binds the
 broker for a location, asks it for the office's inventory, and calls that. eve.js accepts both.

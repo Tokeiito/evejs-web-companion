@@ -152,6 +152,26 @@ const AGGRESSION_SETTINGS = "GetAggressionSettings";
  * (moniker.py).
  */
 const BOUND_BEFORE_USE = new Set(["corpRegistry", "allianceRegistry"]);
+const NOTIFICATION_MGR = "notificationMgr";
+/**
+ * What changes the notifications the client's notification service keeps: the server's word of one received,
+ * deleted or brought back, and the pilot's own marking and deleting of them. The client works each into its three
+ * lists (notificationSvc.py). Here the lists are forgotten at any of them, and asked for when next wanted.
+ */
+const NOTIFICATION_NOTICES = new Set(["OnNotificationReceived", "OnNotificationDeleted", "OnNotificationUndeleted"]);
+const NOTIFICATION_WRITES = new Set(["MarkGroupAsProcessed", "MarkAllAsProcessed", "MarkAsProcessed", "DeleteGroupNotifications", "DeleteAllNotifications", "DeleteNotifications"]);
+/**
+ * What a read of the notification manager's is kept as, for the three the client's notification service keeps:
+ * all of them from the first (allNotifications: GetAllNotifications(fromID=0), as its notification window asks
+ * when a character is chosen), the unread ones (unreadNotifications: GetUnprocessed()), and those of a group
+ * (notifications[groupID]: GetByGroupID(groupID)). Null for any other read: all of them from a later one is asked
+ * each time.
+ */
+function notificationKeptAs(method, form) {
+  if (method === "GetAllNotifications") return form.kwargs && form.kwargs.fromID === 0 ? "all" : null;
+  if (method === "GetUnprocessed") return "unread";
+  return method === "GetByGroupID" ? `group:${form.args[0]}` : null;
+}
 /** The name the BFF asks the skill handler's reads by. What they are bound by is what the handler's own moniker says. */
 const SKILL_HANDLER = "skillHandler";
 /**
@@ -895,6 +915,14 @@ function createGamePortPilots({
       agents: new Map(),
       /** agents.allAgents: this pilot's own asking for the table of agents, once it has asked; over when it is answered. */
       agentsAsked: null,
+      /**
+       * notificationSvc's lists as the server answered them, by what each is kept as (notificationKeptAs); how many
+       * times they have been forgotten, so that an answer on its way when they were is not kept; and the reads of
+       * them, one after another.
+       */
+      notificationsKept: new Map(),
+      notificationsForgotten: 0,
+      notificationsWork: Promise.resolve(),
       /** crimewatchSvc.corpAggressionSettings: the corporation's aggression settings as last answered or told, or null; and the askings of them, one after another. */
       aggression: null,
       corpWork: Promise.resolve(),
@@ -918,6 +946,7 @@ function createGamePortPilots({
       entry.standings.feed(notification);
       afterSkillNotice(entry, entry.skills.feed(notification));
       afterCorporationNotice(entry, notification);
+      if (NOTIFICATION_NOTICES.has(notification.method)) forgetNotifications(entry);
       // A mission changed: what the client shows of its missions is drawn again from the journal, which reads it again.
       if (entry.journal.feed(notification)) journalUpToDate(entry);
       record(entry, notificationToBridgeJson(notification));
@@ -1003,6 +1032,8 @@ function createGamePortPilots({
       await addressBookRead(entry);
       // bco_applications: the pilot's own applications, which the client asks for once.
       await corporationAsk(entry, "GetMyApplications").catch(() => {});
+      // notificationUI._NotificationProvider: all the pilot's notifications, from the first, for the notification window.
+      await notificationRead(entry, "GetAllNotifications", shape(NOTIFICATION_MGR, "GetAllNotifications", [], { fromID: 0 }, contextFor(entry))).catch(() => {});
       // agents.__GetAllAgents: the table of agents is asked for as a character is chosen. The choosing does not wait
       // on it, so it is asked for last: a call sent right behind it was answered 50 to 80 ms late (2026-10-09).
       agentsKnown(entry);
@@ -1065,6 +1096,11 @@ function createGamePortPilots({
       return { service, method, result: agentsTable, notifications: drain(entry) };
     }
     const form = shape(service, method, args, kwargs, contextFor(entry));
+    // What the client's notification service keeps is its to answer, and is noted where it is asked for.
+    if (service === NOTIFICATION_MGR && notificationKeptAs(method, form) !== null) {
+      const kept = await run(entry, service, method, () => notificationRead(entry, method, form));
+      return { service, method, result: wireToBridgeJson(kept === undefined ? null : kept), notifications: drain(entry) };
+    }
     // Asked of the service by name and made on its moniker: the arguments may be the client's as they stand, the call was not.
     // What the client's skill services keep is noted where it is asked for, which is not every time it is wanted (skillRead).
     const keptByAService = (service === SKILL_HANDLER && Object.hasOwn(SKILL_KEPT, method)) || (service === CORP_REGISTRY && method === AGGRESSION_SETTINGS);
@@ -1074,13 +1110,42 @@ function createGamePortPilots({
     // A call the client makes on a service's moniker is made on the object bound for where the pilot is.
     const result = await run(entry, service, method, async () => (form.moniker
       ? monikerCall(entry, service, method, argumentsToWire(form.args), form.kwargs)
-      : byName(entry.session, service, method, form)));
+      : byName(entry.session, service, method, form))).finally(() => {
+      // The pilot's own marking or deleting of notifications, done or refused: what was kept of them may not be so.
+      if (service === NOTIFICATION_MGR && NOTIFICATION_WRITES.has(method)) forgetNotifications(entry);
+    });
     return {
       service,
       method,
       result: wireToBridgeJson(result === undefined ? null : result),
       notifications: drain(entry),
     };
+  }
+
+  // ── the notifications as they are kept ────────────────────────────────────
+
+  /**
+   * One of the notification service's three reads: answered from what is kept, and asked for where nothing is.
+   * The reads go one after another, so that two that find nothing kept ask once. An answer is kept unless the
+   * lists were forgotten while it was on its way: it may be from before what forgot them.
+   */
+  function notificationRead(entry, method, form) {
+    const keptAs = notificationKeptAs(method, form);
+    const reading = entry.notificationsWork.then(async () => {
+      if (entry.notificationsKept.has(keptAs)) return entry.notificationsKept.get(keptAs);
+      ledger.note(NOTIFICATION_MGR, method, form);
+      const forgotten = entry.notificationsForgotten;
+      const answer = await byName(entry.session, NOTIFICATION_MGR, method, form);
+      if (forgotten === entry.notificationsForgotten) entry.notificationsKept.set(keptAs, answer);
+      return answer;
+    });
+    entry.notificationsWork = reading.catch(() => {});
+    return reading;
+  }
+
+  function forgetNotifications(entry) {
+    entry.notificationsKept.clear();
+    entry.notificationsForgotten += 1;
   }
 
   /**

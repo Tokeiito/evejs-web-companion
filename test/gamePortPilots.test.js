@@ -40,6 +40,19 @@ const boundObject = (id) => ({ type: "substruct", value: { type: "substream", va
 const sessionError = (code, message = code, refusal = null) => Object.assign(new Error(message), { code, refusal });
 const refusedBy = (key, reason = key) => sessionError("GAME_CALL_REFUSED", `refused: ${reason}`, { className: "eveexceptions.UserError", key, values: {}, reason });
 
+/**
+ * What a choosing asks by name of a pilot in an NPC corporation and no alliance, in order, after the three of the
+ * choosing itself. The first test of a choosing spells the list out; the others hold a choosing to this.
+ */
+const CHOSEN_ASKS = [
+  "standingMgr.GetNPCNPCStandings", "standingMgr.GetCharStandings", "skillMgr2.GetMySkillHandler", "agentMgr.GetMyJournalDetails",
+  "charMgr.GetContactList", "onlineStatus.GetInitialState", "notificationMgr.GetAllNotifications", "agentMgr.GetAgents",
+];
+/** What a choosing sends last, by name or on an object, after the corporation's reads and the address book's. */
+const CHOSEN_LAST = ["GetMyApplications", "GetAllNotifications", "GetAgents"];
+/** The last `count` things a choosing sent before those, and those. */
+const sentLast = (session, count) => session.sent.slice(-(count + CHOSEN_LAST.length));
+
 /** The node the stand-in's corporation registries live on, and whether a call was made on one of them. */
 const REGISTRY_NODE = 2;
 const onRegistry = (call) => call.objectID.startsWith(`N=${REGISTRY_NODE}:`);
@@ -257,9 +270,12 @@ test("select logs in as the account and makes the retail client's three calls, i
     // are asked of the registry, and not at all of an NPC corporation, which the stand-in pilot's is.)
     "charMgr.GetContactList",
     "onlineStatus.GetInitialState",
+    // And all its notifications, as the client's notification window asks for them.
+    "notificationMgr.GetAllNotifications",
     // And the table of agents, as the client's agents service asks for it. The choosing does not wait on that one.
     "agentMgr.GetAgents",
   ]);
+  assert.deepEqual(session.calls.slice(3).map((call) => `${call.service}.${call.method}`), CHOSEN_ASKS);
   assert.deepEqual(session.calls[0].args, []);
   assert.deepEqual(session.calls[1].args, [PILOT]);
   assert.deepEqual(session.calls[2].args, [PILOT, null, true]);
@@ -352,7 +368,7 @@ test("a pilot left in space is selected in space and given a ballpark as the cli
   const first = await built.pilots.bindObject("beyonce", "MachoBindObject", [], null, WHOSE, outcome.bridgeSessionID);
   assert.deepEqual(session.calls.map((call) => `${call.service}.${call.method}`), [
     "charUnboundMgr.GetCharacterSelectionData", "charUnboundMgr.GetCharacterLockType", "charUnboundMgr.SelectCharacterID",
-    "standingMgr.GetNPCNPCStandings", "standingMgr.GetCharStandings", "skillMgr2.GetMySkillHandler", "agentMgr.GetMyJournalDetails", "charMgr.GetContactList", "onlineStatus.GetInitialState", "agentMgr.GetAgents", "beyonce.GetFormations",
+    ...CHOSEN_ASKS, "beyonce.GetFormations",
   ]);
   assert.deepEqual(session.binds, [{ service: "beyonce", params: SYSTEM }]);
   assert.deepEqual([hand.parks.length, typeof hand.parks[0].tick, hand.parks[0].stopped], [1, "function", false]);
@@ -508,11 +524,10 @@ test("the allowlist it ships with is the gateway's own list of pairs", async () 
     const [service, method] = pair.split(".");
     await pilots.callMethod(service, method, [], null, { userid: ACCOUNT }, bridgeSessionID);
   }
-  // The three of choosing a character, the two readings of its standings, the asking for its skill handler, the
-  // reading of its journal, the address book's two, the asking for the table of agents, and the forty but one:
-  // the table of agents is among the forty, and is not asked for twice.
+  // The three of choosing a character, what a choosing asks by name, and the forty but one: the table of agents
+  // is among the forty, and is not asked for twice.
   assert.equal(contract.gatewayAllowlist.pairs.slice(0, 40).includes("agentMgr.GetAgents"), true);
-  assert.equal(made[0].calls.length, 3 + 2 + 1 + 1 + 2 + 1 + 39);
+  assert.equal(made[0].calls.length, 3 + CHOSEN_ASKS.length + 39);
   assert.equal(contract.gatewayAllowlist.pairs.length, contract.gatewayAllowlist.count);
 });
 
@@ -1208,6 +1223,7 @@ test("the transport keeps a tally of what it called and how each compared with t
     "skillMgr2.GetMySkillHandler": { same: 1 },
     "agentMgr.GetMyJournalDetails": { same: 1 },
     "agentMgr.GetAgents": { same: 1 },
+    "notificationMgr.GetAllNotifications": { same: 1 },
     "charMgr.GetContactList": { same: 1 },
     "onlineStatus.GetInitialState": { same: 1 },
     "corpRegistry.GetAggressionSettings": { same: 1 },
@@ -2798,7 +2814,7 @@ test("a character chosen has its corporation's registry bound, and asked what th
   assert.deepEqual(boundCalls, REGISTRY_READS.map((method) => ({ objectID: "N=2:1", method, args: [], kwargs: null })));
   // The address book's come between the members' names and the applications, as in a recorded login. The
   // choosing waits for all of them, and not for the table of agents, which is asked for behind them.
-  assert.deepEqual(session.sent.slice(-6), ["GetAggressionSettings", "GetEveOwners", "GetContactList", "GetInitialState", "GetMyApplications", "GetAgents"]);
+  assert.deepEqual(sentLast(session, 4), ["GetAggressionSettings", "GetEveOwners", "GetContactList", "GetInitialState", ...CHOSEN_LAST]);
   // Nothing was asked of the service by its name, and each is in the ledger as the client's own call.
   assert.deepEqual(session.calls.filter((call) => call.service === "corpRegistry"), []);
   assert.deepEqual(REGISTRY_READS.map((method) => ledgerOf(pilots, `corpRegistry.${method}`)), [
@@ -2918,7 +2934,7 @@ test("a character chosen has its contacts, its corporation's and who of them is 
     ["N=2:1", "GetAggressionSettings", [], null], ["N=2:1", "GetEveOwners", [], null], ["N=2:1", "GetCorporateContacts", [], null], ["N=2:1", "GetMyApplications", [], null],
   ]]);
   // Side by side, in the order of a recorded login, after the members' names and before the applications.
-  assert.deepEqual(session.sent.slice(-7), ["GetAggressionSettings", "GetEveOwners", "GetContactList", "GetCorporateContacts", "GetInitialState", "GetMyApplications", "GetAgents"]);
+  assert.deepEqual(sentLast(session, 5), ["GetAggressionSettings", "GetEveOwners", "GetContactList", "GetCorporateContacts", "GetInitialState", ...CHOSEN_LAST]);
   // Each is in the ledger as the client's own call.
   assert.deepEqual(["charMgr.GetContactList", "corpRegistry.GetCorporateContacts", "onlineStatus.GetInitialState"].map((pair) => ledgerOf(pilots, pair)), [
     [{ same: 1 }, "eve/client/script/ui/shared/neocom/addressBook/addressbookService.py:207"],
@@ -2954,13 +2970,13 @@ test("nothing of the address book's is kept: a read of it through the BFF asks t
 test("each of the address book's reads fails for itself, and the choosing is none the worse", async () => {
   // The pilot's own refused: the corporation's and the online state are asked all the same, and what follows them.
   const refused = await selected({ corpid: 98000001, answers: { "charMgr.GetContactList": () => { throw refusedBy("NotNow"); } } }, ADDRESS_BOOK_PAIRS);
-  assert.deepEqual([refused.outcome.session.characterID, refused.session.sent.slice(-7)], [PILOT, ["GetAggressionSettings", "GetEveOwners", "GetContactList", "GetCorporateContacts", "GetInitialState", "GetMyApplications", "GetAgents"]]);
+  assert.deepEqual([refused.outcome.session.characterID, sentLast(refused.session, 5)], [PILOT, ["GetAggressionSettings", "GetEveOwners", "GetContactList", "GetCorporateContacts", "GetInitialState", ...CHOSEN_LAST]]);
   // The corporation's refused, and the online state.
   const others = await selected({ corpid: 98000001, answers: { "bound:GetCorporateContacts": () => { throw refusedBy("NotNow"); }, "onlineStatus.GetInitialState": () => { throw refusedBy("NotNow"); } } }, ADDRESS_BOOK_PAIRS);
-  assert.deepEqual([others.outcome.session.characterID, others.session.sent.slice(-2)], [PILOT, ["GetMyApplications", "GetAgents"]]);
+  assert.deepEqual([others.outcome.session.characterID, sentLast(others.session, 0)], [PILOT, CHOSEN_LAST]);
   // So does the asking for the applications that follows them.
   const unapplied = await selected({ answers: { "bound:GetMyApplications": () => { throw refusedBy("NotNow"); } } }, ADDRESS_BOOK_PAIRS);
-  assert.deepEqual([unapplied.outcome.session.characterID, unapplied.session.sent.slice(-2)], [PILOT, ["GetMyApplications", "GetAgents"]]);
+  assert.deepEqual([unapplied.outcome.session.characterID, sentLast(unapplied.session, 0)], [PILOT, CHOSEN_LAST]);
   // The choosing waits for the address book's answers: the applications are not asked for, nor a session handed out, before them.
   let release;
   const gate = new Promise((resolve) => { release = resolve; });
@@ -2971,11 +2987,111 @@ test("each of the address book's reads fails for itself, and the choosing is non
   assert.deepEqual([chosen, waiting.session.sent.at(-1)], [false, "GetInitialState"]);
   release(null);
   await choosing;
-  assert.deepEqual([chosen, waiting.session.sent.slice(-2)], [true, ["GetMyApplications", "GetAgents"]]);
+  assert.deepEqual([chosen, sentLast(waiting.session, 0)], [true, CHOSEN_LAST]);
   // A connection lost under them is the choosing lost, as one lost anywhere in it is: no session is handed out.
   const built = build({ answers: { "onlineStatus.GetInitialState": () => { built.session.drop(); throw sessionError("CONNECTION_CLOSED"); } } }, ADDRESS_BOOK_PAIRS);
   await rejects(built.pilots.selectCharacter([PILOT, null, true], null, FIELDS), "SESSION_SELECT_FAILED", /closed the connection/);
   assert.deepEqual([built.session.sent.at(-1), built.pilots.size], ["GetInitialState", 0]);
+});
+
+// ── the notifications ────────────────────────────────────────────────────────
+
+const NOTIFICATION_READS = ["GetAllNotifications", "GetUnprocessed", "GetByGroupID"];
+/** notificationSvc's own marking and deleting, each with what the BFF's route for it sends. */
+const NOTIFICATION_WRITES = [["MarkGroupAsProcessed", [3]], ["MarkAllAsProcessed", []], ["MarkAsProcessed", [[88]]], ["DeleteGroupNotifications", [3]], ["DeleteAllNotifications", []], ["DeleteNotifications", [[88]]]];
+const NOTIFICATION_PAIRS = { allowed: new Set([...NOTIFICATION_READS, ...NOTIFICATION_WRITES.map(([method]) => method), "LogNotificationInteraction"].map((method) => `notificationMgr.${method}`).concat("someService.GetUnprocessed", "station.GetGuests")) };
+/** A notification manager that answers each read with its name and the count of times that read was asked. */
+function notificationAnswers(more = {}) {
+  const times = {};
+  const counted = (method) => () => ({ type: "list", items: [method, times[method] = (times[method] || 0) + 1] });
+  return { ...Object.fromEntries(NOTIFICATION_READS.map((method) => [`notificationMgr.${method}`, counted(method)])), ...more };
+}
+const notified = (session) => session.calls.filter((call) => call.service === "notificationMgr").map((call) => [call.method, call.args, call.kwargs]);
+const answered = (method, time) => ({ type: "list", items: [method, time] });
+
+test("a character chosen has all its notifications asked for as the client's notification window asks, and the service's three lists are kept", async () => {
+  const { pilots, session, handle } = await selected({ answers: notificationAnswers() }, NOTIFICATION_PAIRS);
+  const read = async (method, args = [], kwargs = null) => (await pilots.callMethod("notificationMgr", method, args, kwargs, FIELDS, handle)).result;
+  // notificationUI._NotificationProvider: GetAllNotifications(fromID=0), a keyword, by name, as the client's own call.
+  assert.deepEqual([notified(session), ledgerOf(pilots, "notificationMgr.GetAllNotifications")], [
+    [["GetAllNotifications", [], { fromID: 0 }]], [{ same: 1 }, "eve/client/script/ui/services/mail/notificationSvc.py:93"],
+  ]);
+  // notificationSvc.allNotifications: read again, however the BFF spells it, it is what was answered then, with nothing asked.
+  assert.deepEqual([await read("GetAllNotifications", [0]), await read("GetAllNotifications", [], { fromID: 0 }), await read("GetAllNotifications")], [answered("GetAllNotifications", 1), answered("GetAllNotifications", 1), answered("GetAllNotifications", 1)]);
+  assert.deepEqual([notified(session).length, ledgerOf(pilots, "notificationMgr.GetAllNotifications")[0]], [1, { same: 1 }]);
+  // From a later one they are another list, which nothing keeps: asked each time, by the keyword.
+  assert.deepEqual([await read("GetAllNotifications", [7]), await read("GetAllNotifications", [7])], [answered("GetAllNotifications", 2), answered("GetAllNotifications", 3)]);
+  assert.deepEqual([notified(session).slice(1), ledgerOf(pilots, "notificationMgr.GetAllNotifications")[0]], [[["GetAllNotifications", [], { fromID: 7 }], ["GetAllNotifications", [], { fromID: 7 }]], { same: 1, reshaped: 2 }]);
+  // notificationSvc.unreadNotifications and notifications[groupID]: asked for when first wanted, and kept, a group at a time.
+  assert.deepEqual([await read("GetUnprocessed"), await read("GetUnprocessed")], [answered("GetUnprocessed", 1), answered("GetUnprocessed", 1)]);
+  assert.deepEqual([await read("GetByGroupID", [3]), await read("GetByGroupID", [3]), await read("GetByGroupID", [4]), await read("GetByGroupID", [3])], [answered("GetByGroupID", 1), answered("GetByGroupID", 1), answered("GetByGroupID", 2), answered("GetByGroupID", 1)]);
+  assert.deepEqual([notified(session).slice(3), ledgerOf(pilots, "notificationMgr.GetUnprocessed")[0], ledgerOf(pilots, "notificationMgr.GetByGroupID")[0]], [
+    [["GetUnprocessed", [], null], ["GetByGroupID", [3], null], ["GetByGroupID", [4], null]], { same: 1 }, { same: 2 },
+  ]);
+  // Two at once that find nothing kept ask once.
+  assert.deepEqual(await Promise.all([read("GetByGroupID", [9]), read("GetByGroupID", [9])]), [answered("GetByGroupID", 3), answered("GetByGroupID", 3)]);
+  // A read of the same name on another service is that service's own; another account's session reads nothing.
+  await pilots.callMethod("someService", "GetUnprocessed", [], null, FIELDS, handle);
+  assert.deepEqual([session.calls.at(-1).service, ledgerOf(pilots, "someService.GetUnprocessed")[0]], ["someService", { unchecked: 1 }]);
+  await assert.rejects(pilots.callMethod("notificationMgr", "GetUnprocessed", [], null, { userid: 9 }, handle), (error) => error.code === "SESSION_NOT_FOUND");
+});
+
+test("what is kept of the notifications is forgotten at the server's word of a change and at the pilot's own marking or deleting", async () => {
+  let refuse = false;
+  const { pilots, session, handle } = await selected({ answers: notificationAnswers({ "notificationMgr.DeleteNotifications": () => { if (refuse) throw refusedBy("NotNow"); return null; } }) }, NOTIFICATION_PAIRS);
+  const read = async (method, args = []) => (await pilots.callMethod("notificationMgr", method, args, null, FIELDS, handle)).result.items[1];
+  const all = () => Promise.all([read("GetAllNotifications", [0]), read("GetUnprocessed"), read("GetByGroupID", [3])]);
+  assert.deepEqual(await all(), [1, 1, 1]);
+  // A notice that is none of the notification service's leaves them kept.
+  session.notify("OnNotificationSomethingElse", [1]);
+  assert.deepEqual(await all(), [1, 1, 1]);
+  // notificationSvc's three notices: each forgets all three lists, which are asked for when next wanted and kept again.
+  let asked = 1;
+  for (const notice of ["OnNotificationReceived", "OnNotificationDeleted", "OnNotificationUndeleted"]) {
+    session.notify(notice, [[88]]);
+    asked += 1;
+    assert.deepEqual([await all(), await all()], [[asked, asked, asked], [asked, asked, asked]], notice);
+  }
+  // The pilot's own marking and deleting, each of the six: after it, done or refused. What only logs a look at one changes nothing.
+  for (const [write, args] of NOTIFICATION_WRITES) {
+    await pilots.callMethod("notificationMgr", write, args, null, FIELDS, handle);
+    asked += 1;
+    assert.deepEqual([await all(), await all()], [[asked, asked, asked], [asked, asked, asked]], write);
+  }
+  await pilots.callMethod("notificationMgr", "LogNotificationInteraction", [12], null, FIELDS, handle);
+  assert.deepEqual(await all(), [asked, asked, asked]);
+  refuse = true;
+  await rejects(pilots.callMethod("notificationMgr", "DeleteNotifications", [[88]], null, FIELDS, handle), "CALL_REFUSED");
+  assert.deepEqual(await all(), [asked + 1, asked + 1, asked + 1]);
+
+  // An answer on its way when the lists are forgotten may be from before what forgot them: it is handed on, and not kept.
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  let held = false;
+  const late = await selected({ answers: notificationAnswers({ "notificationMgr.GetUnprocessed": () => (held ? { type: "list", items: ["GetUnprocessed", "then"] } : gate) }) }, NOTIFICATION_PAIRS);
+  const unread = () => late.pilots.callMethod("notificationMgr", "GetUnprocessed", [], null, FIELDS, late.handle).then((answer) => answer.result.items[1]);
+  const first = unread();
+  await settled();
+  late.session.notify("OnNotificationReceived", [89]);
+  held = true;
+  release({ type: "list", items: ["GetUnprocessed", "before"] });
+  assert.deepEqual([await first, await unread(), await unread()], ["before", "then", "then"]);
+  assert.equal(notified(late.session).filter(([method]) => method === "GetUnprocessed").length, 2);
+});
+
+test("the notifications that cannot be read at the choosing are asked for when they are wanted, and the choosing is none the worse", async () => {
+  let refuse = true;
+  const { pilots, session, handle, outcome } = await selected({ answers: { "notificationMgr.GetAllNotifications": () => { if (refuse) throw refusedBy("NotNow"); return answered("GetAllNotifications", "now"); } } }, NOTIFICATION_PAIRS);
+  const read = async () => (await pilots.callMethod("notificationMgr", "GetAllNotifications", [0], null, FIELDS, handle)).result;
+  assert.deepEqual([outcome.session.characterID, sentLast(session, 0)], [PILOT, CHOSEN_LAST]);
+  // A refusal then is the caller's, and leaves nothing kept; an answer is kept.
+  await rejects(read(), "CALL_REFUSED");
+  refuse = false;
+  assert.deepEqual([await read(), await read(), notified(session).length], [answered("GetAllNotifications", "now"), answered("GetAllNotifications", "now"), 3]);
+  // A connection lost under it is the choosing lost, as one lost anywhere in it is: no session is handed out.
+  const built = build({ answers: { "notificationMgr.GetAllNotifications": () => { built.session.drop(); throw sessionError("CONNECTION_CLOSED"); } } }, NOTIFICATION_PAIRS);
+  await rejects(built.pilots.selectCharacter([PILOT, null, true], null, FIELDS), "SESSION_SELECT_FAILED", /closed the connection/);
+  assert.deepEqual([built.session.sent.at(-1), built.pilots.size], ["GetAllNotifications", 0]);
 });
 
 // ── the alliance's registry ──────────────────────────────────────────────────
@@ -2991,7 +3107,7 @@ test("a pilot in an alliance has the alliance's moniker made and bound, and its 
   assert.deepEqual([session.binds, session.carried], [[{ service: "allianceRegistry", params: [ALLIANCE, 1] }], [null]]);
   assert.deepEqual(session.boundCalls, [{ objectID: "N=1:1", method: "GetAllianceContacts", args: [], kwargs: null }]);
   // The address book asks its four side by side: the bind is on its way while the online state is asked for.
-  assert.deepEqual(session.sent.slice(-7), ["GetEveOwners", "GetContactList", "GetCorporateContacts", "GetInitialState", "GetAllianceContacts", "GetMyApplications", "GetAgents"]);
+  assert.deepEqual(sentLast(session, 5), ["GetEveOwners", "GetContactList", "GetCorporateContacts", "GetInitialState", "GetAllianceContacts", ...CHOSEN_LAST]);
   assert.deepEqual([session.calls.filter((call) => call.service === "allianceRegistry"), ledgerOf(pilots, "allianceRegistry.GetAllianceContacts")], [[], [{ same: 1 }, "eve/client/script/ui/services/alliances/all_cso.py:243"]]);
 
   // A pilot in no alliance has no such moniker: nothing of the alliance's is bound or asked.
@@ -3000,9 +3116,9 @@ test("a pilot in an alliance has the alliance's moniker made and bound, and its 
 
   // A registry that cannot be bound, or contacts refused: the choosing stands, and the rest are asked.
   const unbound = await selected({ ...IN_AN_ALLIANCE, answers: { "bind:allianceRegistry": () => { throw sessionError("RESOLVE_FAILED", "allianceRegistry could not say where its object lives."); } } }, ALLIANCE_PAIRS);
-  assert.deepEqual([unbound.outcome.session.characterID, unbound.session.binds.length, unbound.session.sent.slice(-3)], [PILOT, 1, ["GetInitialState", "GetMyApplications", "GetAgents"]]);
+  assert.deepEqual([unbound.outcome.session.characterID, unbound.session.binds.length, sentLast(unbound.session, 1)], [PILOT, 1, ["GetInitialState", ...CHOSEN_LAST]]);
   const refused = await selected({ ...IN_AN_ALLIANCE, answers: { "bound:GetAllianceContacts": () => { throw refusedBy("NotNow"); } } }, ALLIANCE_PAIRS);
-  assert.deepEqual([refused.outcome.session.characterID, refused.session.sent.slice(-3)], [PILOT, ["GetAllianceContacts", "GetMyApplications", "GetAgents"]]);
+  assert.deepEqual([refused.outcome.session.characterID, sentLast(refused.session, 1)], [PILOT, ["GetAllianceContacts", ...CHOSEN_LAST]]);
 });
 
 test("what the BFF asks of the alliance's registry is made on the moniker, or by name where the client asks by name", async () => {
@@ -4115,9 +4231,7 @@ test("a character chosen has its standings read as the client's standing service
   // The corporation's are none, and are not asked for (standingsvc.py 118).
   const { pilots, session, handle } = await selected({ answers: STANDING_ANSWERS });
   assert.deepEqual(session.calls.map((call) => `${call.service}.${call.method}`), [
-    "charUnboundMgr.GetCharacterSelectionData", "charUnboundMgr.GetCharacterLockType", "charUnboundMgr.SelectCharacterID",
-    "standingMgr.GetNPCNPCStandings", "standingMgr.GetCharStandings", "skillMgr2.GetMySkillHandler", "agentMgr.GetMyJournalDetails",
-    "charMgr.GetContactList", "onlineStatus.GetInitialState", "agentMgr.GetAgents",
+    "charUnboundMgr.GetCharacterSelectionData", "charUnboundMgr.GetCharacterLockType", "charUnboundMgr.SelectCharacterID", ...CHOSEN_ASKS,
   ]);
   assert.deepEqual(session.calls.slice(3, 5).map((call) => [call.args, call.kwargs]), [[[], null], [[], null]]);
   const kept = await pilots.standingsKept(WHO, handle);
@@ -4305,10 +4419,7 @@ test("a character chosen has its skill handler asked for and bound, and asked wh
   const { pilots, session, handle } = await selected({ answers: handlerAnswers() }, SKILL_PAIRS);
   // Asked of skillMgr2 by name, with nothing, after the standings; the moniker it answered is bound by the first read,
   // by the character, and the rest go to the object, in the order a real client asked this server.
-  assert.deepEqual(session.calls.slice(3).map((call) => [`${call.service}.${call.method}`, call.args, call.kwargs]), [
-    ["standingMgr.GetNPCNPCStandings", [], null], ["standingMgr.GetCharStandings", [], null], ["skillMgr2.GetMySkillHandler", [], null],
-    ["agentMgr.GetMyJournalDetails", [], null], ["charMgr.GetContactList", [], null], ["onlineStatus.GetInitialState", [], null], ["agentMgr.GetAgents", [], null],
-  ]);
+  assert.deepEqual(session.calls.slice(3).map((call) => [`${call.service}.${call.method}`, call.args, call.kwargs]), CHOSEN_ASKS.map((pair) => [pair, [], pair === "notificationMgr.GetAllNotifications" ? { fromID: 0 } : null]));
   assert.deepEqual([session.binds, session.carried, session.nodes], [[{ service: "skillHandler", params: PILOT }], ["GetSkills"], []]);
   assert.deepEqual(handlerCalls(session), LOGIN_READS);
   assert.deepEqual([...new Set(session.boundCalls.map((call) => call.objectID))], ["N=1:1"]);
