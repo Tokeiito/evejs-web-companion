@@ -590,12 +590,17 @@ export const STANDARD_BROKER_RATE = 0.03;
 export const MINIMUM_BROKER_FEE = 100;
 
 export interface BrokerFeeEstimate {
-  /** The estimated fee in ISK, as a decimal string. */
+  /** The fee in ISK, as a decimal string. */
   readonly amount: string;
-  /** True when the estimate is the server's floor rather than a percentage. */
+  /** True when the fee is the server's floor rather than a percentage. */
   readonly atMinimum: boolean;
-  /** The rate the estimate assumed, as a fraction. */
+  /** The rate the fee was worked out at, as a fraction. */
   readonly rate: number;
+  /**
+   * True at the standard rate, which is a guess; false at the pilot's own rate, which the BFF worked out as the
+   * game works it out and the server holds an order to.
+   */
+  readonly estimated: boolean;
 }
 
 /**
@@ -615,18 +620,39 @@ export interface BrokerFeeEstimate {
  *  - poor standings can make it slightly HIGHER (up to about 3.5%);
  *  - a player-owned structure can set it anywhere.
  *
- * So this is never presented as the cost. It is labelled an estimate, and the
- * ACTUAL charge is reported afterwards by re-reading the wallet — the only
- * authoritative source there is.
+ * So at the standard rate this is never presented as the cost. It is labelled
+ * an estimate, and the ACTUAL charge is reported afterwards by re-reading the
+ * wallet.
+ *
+ * WITH `rate` it is not an estimate. On the game port the BFF works the
+ * pilot's own rate out as the game client does, from the pilot's Broker
+ * Relations and the standings the station's owner and its faction have to it
+ * (the Market read's `brokersFeeRate`), and the server holds an order to that
+ * rate. The fee is then the order's value at that rate, with the same floor
+ * (BrokerFeeProvider.GetBrokerFeeInfo). What was charged is still reported
+ * afterwards from the wallet.
  */
-export function estimateBrokerFee(price: number, quantity: number): BrokerFeeEstimate {
+export function estimateBrokerFee(price: number, quantity: number, rate: number | null = null): BrokerFeeEstimate {
+  const known = typeof rate === "number" && Number.isFinite(rate) && rate >= 0;
+  const applied = known ? rate : STANDARD_BROKER_RATE;
   const value = roundPrice(price) * Math.max(0, Math.trunc(quantity));
-  const raw = roundPrice(value * STANDARD_BROKER_RATE);
+  const raw = roundPrice(value * applied);
   const atMinimum = raw <= MINIMUM_BROKER_FEE;
   return {
     amount: formatIskNumber(atMinimum ? MINIMUM_BROKER_FEE : raw),
     atMinimum,
-    rate: STANDARD_BROKER_RATE,
+    rate: applied,
+    estimated: !known,
+  };
+}
+
+/** The words that go beside a fee: its heading, what stands before the amount, and its rate as a percentage. */
+export function brokerFeeWords(fee: BrokerFeeEstimate | null): { heading: string; before: string; percent: string | null } {
+  const known = fee !== null && !fee.estimated;
+  return {
+    heading: known ? "Broker's fee" : "Broker's fee (estimate)",
+    before: known ? "" : "about ",
+    percent: fee === null ? null : (fee.rate * 100).toFixed(2),
   };
 }
 

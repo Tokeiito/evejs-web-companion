@@ -312,6 +312,8 @@ export type FeedEvent =
       readonly typeID: number | null;
       readonly stationID: number | null;
       readonly solarSystemID: number | null;
+      /** The broker's fee rate the pilot pays where it is docked; left out or null where it is not known. */
+      readonly brokersFeeRate?: number | null;
       readonly sells: readonly MarketOrderRow[];
       readonly buys: readonly MarketOrderRow[];
       readonly ownOrders: readonly MarketOwnOrderRow[];

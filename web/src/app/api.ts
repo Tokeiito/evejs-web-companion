@@ -1191,6 +1191,8 @@ export interface RawMarketReads {
   readonly characterID: number | null;
   readonly stationID: number | null;
   readonly solarSystemID: number | null;
+  /** The broker's fee rate the pilot pays where it is docked, as a fraction; null where the BFF cannot work it out. */
+  readonly brokersFeeRate: number | null;
   readonly book: RawMarketRead;
   readonly ownOrders: RawMarketRead;
   readonly orderHistory: RawMarketRead;
@@ -1226,6 +1228,7 @@ export async function loadMarket(
     characterID: asNumberOrNull(data.characterID),
     stationID: asNumberOrNull(data.stationID),
     solarSystemID: asNumberOrNull(data.solarSystemID),
+    brokersFeeRate: typeof data.brokersFeeRate === "number" && Number.isFinite(data.brokersFeeRate) && data.brokersFeeRate >= 0 ? data.brokersFeeRate : null,
     book: asMarketRead(data.book),
     ownOrders: asMarketRead(data.ownOrders),
     orderHistory: asMarketRead(data.orderHistory),

@@ -22,6 +22,7 @@
     checkPrice,
     checkQuantity,
     distanceLabel,
+    brokerFeeWords,
     estimateBrokerFee,
     filterByJumps,
     formatIsk,
@@ -189,13 +190,17 @@
     }
     return (draftPriceCheck.price * Number(draft.quantity)).toFixed(2);
   });
-  /** ⚠ AN ESTIMATE at the standard 3% rate — see bridge/market.ts. */
+  /**
+   * The fee at the pilot's own rate where the Market read has one (the BFF works it out as the game does, on the
+   * game port). Without one, ⚠ AN ESTIMATE at the standard 3% rate — see bridge/market.ts.
+   */
   const draftFee = $derived.by(() => {
     if (draft === null || !draftPriceCheck?.ok || !draftQuantityCheck?.ok) {
       return null;
     }
-    return estimateBrokerFee(draftPriceCheck.price, Number(draft.quantity));
+    return estimateBrokerFee(draftPriceCheck.price, Number(draft.quantity), $market.brokersFeeRate);
   });
+  const draftFeeWords = $derived(brokerFeeWords(draftFee));
   const draftReady = $derived.by(() => {
     if (draft === null || draftPriceCheck?.ok !== true || draftQuantityCheck?.ok !== true) {
       return false;
@@ -776,9 +781,9 @@
                 <td class="num" data-label="That comes to">{formatIsk(draftValue)}</td>
               </tr>
               <tr>
-                <th>Broker's fee (estimate)</th>
-                <td class="num" data-label="Broker's fee (estimate)">
-                  about {formatIsk(draftFee?.amount ?? null)}
+                <th>{draftFeeWords.heading}</th>
+                <td class="num" data-label={draftFeeWords.heading}>
+                  {draftFeeWords.before}{formatIsk(draftFee?.amount ?? null)}
                 </td>
               </tr>
               <tr>
@@ -788,13 +793,23 @@
             </tbody>
           </table>
         </div>
-        <p class="note">
-          The broker's fee above is an <strong>estimate</strong> worked out at the
-          standard rate. Your trading skills and your standing with this station's
-          owner change what you are really charged, and this app cannot see either
-          of them. Once the order goes through, the amount you were actually
-          charged is shown here.
-        </p>
+        {#if draftFee && !draftFee.estimated}
+          <p class="note">
+            The broker's fee above is worked out at your own rate, {draftFeeWords.percent}%,
+            from your Broker Relations skill and how this station's owner regards
+            you{draftFee.atMinimum ? "; this order is small enough that the smallest fee there is applies" : ""}.
+            Once the order goes through, the amount you were actually charged is
+            shown here.
+          </p>
+        {:else}
+          <p class="note">
+            The broker's fee above is an <strong>estimate</strong> worked out at the
+            standard rate. Your trading skills and your standing with this station's
+            owner change what you are really charged, and this app cannot see either
+            of them. Once the order goes through, the amount you were actually
+            charged is shown here.
+          </p>
+        {/if}
         <p class="controls">
           <button type="button" class="danger" disabled={busy} onclick={placeOrder}>
             {draft.side === "buy" ? "Yes, place this buy order" : "Yes, place this sell order"}

@@ -202,6 +202,12 @@ const CLIENT_RECKONED = Object.freeze({
     // invCache.GetCapacity: a station's hangar has the client's own figure for a place with no limit.
     own: /^\$\.hangar\.capacity\.args\.capacity$/,
   }),
+  "/api/bridge/market": Object.freeze({
+    under: /^\$\.brokersFeeRate(\.|$)/,
+    // marketsvc.GetBrokersFeeCommissionFromStationID: the game port works the rate out from the pilot's skills and
+    // standings; the gateway keeps neither and says none.
+    own: /^\$\.brokersFeeRate$/,
+  }),
 });
 
 /**

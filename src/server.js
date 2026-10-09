@@ -5291,12 +5291,20 @@ app.get("/api/bridge/market", requireAuth, async (req, res, next) => {
       (entry) => entry.status === "rejected" && isMarketUnavailable(entry.reason),
     );
 
+    // marketsvc.GetBrokersFeeCommissionFromStationID: the rate the pilot is charged where it is docked, worked out as
+    // the client works it out, so that the page can show the fee and not an estimate at the base rate. The game
+    // port has what it takes (pilots.js brokersFeeAt). Through the gateway nothing does, and the read says none.
+    const worked = gamePortPilots && isGamePortHandle(held.bridgeSessionID) && inventoryLocationID(held)
+      ? await gamePortPilots.brokersFeeRate(inventoryLocationID(held), { userid: held.accountID }, held.bridgeSessionID).catch(() => null)
+      : null;
+
     res.json({
       ok: true,
       typeID: typeID > 0 ? typeID : null,
       characterID: held.characterID,
       stationID: held.stationID,
       solarSystemID: held.solarSystemID ?? null,
+      brokersFeeRate: typeof worked === "number" && Number.isFinite(worked) && worked >= 0 ? worked : null,
       book: { result: valueOf(book), error: codeOf(book) },
       ownOrders: { result: valueOf(ownOrders), error: codeOf(ownOrders) },
       orderHistory: { result: valueOf(history), error: codeOf(history) },

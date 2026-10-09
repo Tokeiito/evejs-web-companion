@@ -204,3 +204,14 @@ test("a tuple spelt two ways is tolerated where the page's reader takes either, 
   assert.equal(moved.verdict, "tolerated");
   assert.match(moved.detail, /value ×1/);
 });
+
+// The Market read's broker's fee rate: the game port works it out as the client does and the gateway has none.
+
+test("the broker's fee rate the game port works out and the gateway cannot is the client's reckoning, and nothing else of the Market read is excused by it", () => {
+  const read = (rate, more = {}) => ok({ ok: true, stationID: 60003760, brokersFeeRate: rate, cashBalance: { result: 5, error: null }, ...more });
+  assert.equal(judge(read(null), read(0.0295803), "/api/bridge/market").verdict, "tolerated");
+  assert.equal(judge(read(null), read(null), "/api/bridge/market").verdict, "identical");
+  // Another route's field of that name is not excused, nor another field of this route's.
+  assert.equal(judge(read(null), read(0.0295803), "/api/bridge/wallet").verdict, "divergent");
+  assert.equal(judge(read(null, { stationID: null }), read(0.03, { stationID: 60003760 }), "/api/bridge/market").verdict, "divergent");
+});

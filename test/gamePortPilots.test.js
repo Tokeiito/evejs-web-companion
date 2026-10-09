@@ -5873,3 +5873,18 @@ test("another corporation: the session forgets the pilot's employment record, as
   session.change({ corpid: [1000044, 98000000] });
   assert.deepEqual(named, [["corporationSvc", "GetEmploymentRecord", [session.attributes.charid]]]);
 });
+
+// The rate for whoever wants to show it (the BFF's Market read): what an order placed at that station would name.
+
+test("the broker's fee rate at a station is answered for a pilot as an order there would name it, its skills read first where they are not kept", async () => {
+  let asked = 0;
+  const skills = () => { asked += 1; if (asked === 1) throw refusedBy("NotNow"); return skillsOf(skillOf(BROKER_RELATIONS, 2, 2829, 2)); };
+  const { pilots, handle } = await selected({ answers: { ...STANDING_ANSWERS, ...handlerAnswers({ "bound:GetSkills": skills }) } }, { allowed: FEE_PAIRS, stationOwner: ownedStation });
+  assert.equal(await pilots.brokersFeeRate(60003760, WHO, handle), brokersFeeRate({ brokerRelations: 2, factionToCharStanding: -3.978, corpToCharStanding: 1.069 }));
+  assert.equal(asked, 2, "the skills that could not be read at the choosing were asked for again");
+  // What is no station of the game's data: no rate.
+  assert.equal(await pilots.brokersFeeRate(1030000000001, WHO, handle), null);
+  assert.equal(await pilots.brokersFeeRate(null, WHO, handle), null);
+  // Not this pilot's session: the gateway's refusal.
+  await rejects(pilots.brokersFeeRate(60003760, WHO, "nobody"), "SESSION_NOT_FOUND");
+});

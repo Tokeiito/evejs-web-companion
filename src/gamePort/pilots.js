@@ -1328,6 +1328,13 @@ function createGamePortPilots({
     return Object.values(sums).every((value) => typeof value === "number") ? brokersFeeRate(sums) : null;
   }
 
+  /** The rate for whoever wants to show it: what an order placed at that station would name, or null. */
+  async function brokersFeeRateFor(stationID, sessionFields = {}, bridgeSessionID = undefined) {
+    const entry = held(bridgeSessionID, sessionFields);
+    await feeInputsRead(entry);
+    return brokersFeeAt(entry, stationID);
+  }
+
   /**
    * What the rate is worked out from, read where it is not kept: the pilot's skills, as its skill service has them
    * from the first thing that wants them, and its standings, which are read when it is chosen. Neither failing is
@@ -2764,6 +2771,7 @@ function createGamePortPilots({
     fleet,
     fleetKept,
     standingsKept,
+    brokersFeeRate: brokersFeeRateFor,
     skillSheet,
     saveSkillQueue,
     journalKept,

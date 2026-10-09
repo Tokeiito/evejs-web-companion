@@ -31,6 +31,7 @@ import {
   decodePriceHistory,
   decodeTransactions,
   distanceLabel,
+  brokerFeeWords,
   estimateBrokerFee,
   filterByJumps,
   formatIsk,
@@ -575,6 +576,30 @@ test("estimateBrokerFee is the STANDARD rate applied to price x quantity", () =>
   assert.equal(estimate.amount, "3000.00");
   assert.equal(estimate.atMinimum, false);
   assert.equal(estimate.rate, STANDARD_BROKER_RATE);
+});
+
+test("with the pilot's own rate the fee is the fee, not an estimate; with none it is the estimate at the standard rate", () => {
+  // The sale seen live: 987,654.32 ISK at the rate worked out for the pilot, 0.0295803, was charged 29,215.11.
+  const known = estimateBrokerFee(987654.32, 1, 0.0295803);
+  assert.deepEqual([known.amount, known.atMinimum, known.rate, known.estimated], ["29215.11", false, 0.0295803, false]);
+  const guessed = estimateBrokerFee(987654.32, 1);
+  assert.deepEqual([guessed.amount, guessed.rate, guessed.estimated], ["29629.63", STANDARD_BROKER_RATE, true]);
+  // No rate, or what is no rate, is the standard one, and said to be an estimate.
+  for (const none of [null, undefined, Number.NaN, -0.01, Number.POSITIVE_INFINITY]) {
+    const fee = estimateBrokerFee(1000, 100, none as number | null);
+    assert.deepEqual([fee.amount, fee.estimated], ["3000.00", true], String(none));
+  }
+  // A rate of nought is a rate: the fee is the floor, and known.
+  const free = estimateBrokerFee(1000, 100, 0);
+  assert.deepEqual([free.amount, free.atMinimum, free.estimated], [MINIMUM_BROKER_FEE.toFixed(2), true, false]);
+  // The floor holds with a known rate too.
+  assert.deepEqual([estimateBrokerFee(0.01, 1, 0.0295803).amount, estimateBrokerFee(0.01, 1, 0.0295803).atMinimum], [MINIMUM_BROKER_FEE.toFixed(2), true]);
+});
+
+test("the words beside the fee say whether it is the fee or an estimate", () => {
+  assert.deepEqual(brokerFeeWords(estimateBrokerFee(1000, 100, 0.0251)), { heading: "Broker's fee", before: "", percent: "2.51" });
+  assert.deepEqual(brokerFeeWords(estimateBrokerFee(1000, 100)), { heading: "Broker's fee (estimate)", before: "about ", percent: "3.00" });
+  assert.deepEqual(brokerFeeWords(null), { heading: "Broker's fee (estimate)", before: "about ", percent: null });
 });
 
 test("estimateBrokerFee floors at the server's MINIMUM, and says that it did", () => {

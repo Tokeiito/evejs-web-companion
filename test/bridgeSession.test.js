@@ -2403,3 +2403,37 @@ test("through the gateway an order is sent whether the ship is flying it already
   const sent = await flown("/api/bridge/flight/approach", { destinationID: FOLLOWED }, { transport: "gateway", alreadySo: () => true });
   assert.deepEqual([sent.status, sent.sent, sent.wondered, "alreadySo" in sent.payload], [200, [THROTTLE_OPENED, ["CmdFollowBall", [FOLLOWED, 50]]], [], false]);
 });
+
+// The Market read says the broker's fee rate the pilot will pay where it is docked, so that the page can show the
+// fee and not an estimate at the base rate. On the game port the transport works it out as the client does
+// (pilots.js brokersFeeAt). Through the gateway nothing does, and the read says none.
+
+async function marketRead({ transport = "gameport", rate = async () => 0.0295803 } = {}) {
+  const gamePort = gamePortWithQuestions(() => ({ answered: true }));
+  gamePort.readFlightStatus = async () => ({ flight: { docked: true, inSpace: false, stationID: SELECT_SESSION_ECHO.stationID, solarSystemID: SELECT_SESSION_ECHO.solarSystemID, shipID: SELECT_SESSION_ECHO.shipID }, notifications: [] });
+  gamePort.callMethod = async (service, method) => ({ service, method, result: null, notifications: [] });
+  const asked = [];
+  gamePort.brokersFeeRate = async (stationID, sessionFields, bridgeSessionID) => { asked.push({ stationID, sessionFields, bridgeSessionID }); return rate(); };
+  const { baseUrl } = await startTestServer({ gateway: fakeGateway(), gamePortPilots: gamePort, pilotTransportFor: () => transport });
+  await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+  const answer = await apiRequest(baseUrl, "/api/bridge/market");
+  assert.equal(answer.response.status, 200, JSON.stringify(answer.payload));
+  return { payload: answer.payload, asked };
+}
+
+test("on the game port the Market read says the broker's fee rate the pilot pays where it is docked", async () => {
+  const { payload, asked } = await marketRead();
+  assert.equal(payload.brokersFeeRate, 0.0295803);
+  assert.deepEqual(asked, [{ stationID: SELECT_SESSION_ECHO.stationID, sessionFields: { userid: 4 }, bridgeSessionID: GAME_PORT_SESSION_ID }]);
+  // A rate of nought is a rate; one that cannot be worked out, or the working out failing, is none, and the read stands.
+  assert.equal((await marketRead({ rate: async () => 0 })).payload.brokersFeeRate, 0);
+  assert.equal((await marketRead({ rate: async () => null })).payload.brokersFeeRate, null);
+  assert.equal((await marketRead({ rate: async () => { throw new Error("no"); } })).payload.brokersFeeRate, null);
+  assert.equal((await marketRead({ rate: async () => "0.03" })).payload.brokersFeeRate, null);
+});
+
+test("through the gateway the Market read says no broker's fee rate, and the game port is not asked for one", async () => {
+  const { payload, asked } = await marketRead({ transport: "gateway" });
+  assert.equal(payload.brokersFeeRate, null);
+  assert.deepEqual(asked, []);
+});

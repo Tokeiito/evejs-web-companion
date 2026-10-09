@@ -3168,6 +3168,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       typeID: reads.typeID,
       stationID: reads.stationID,
       solarSystemID: reads.solarSystemID,
+      brokersFeeRate: reads.brokersFeeRate,
       sells: book.sells,
       buys: book.buys,
       ownOrders,

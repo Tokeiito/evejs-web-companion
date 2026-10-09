@@ -281,6 +281,25 @@ test("the trade decoder is handed the character's OWN id, so sides are right", (
   })();
 });
 
+test("the broker's fee rate the Market read says is kept for the order form; a read that says none, or what is no rate, keeps none", async () => {
+  const rateOf = async (brokersFeeRate: unknown) => {
+    const { store, flow } = makeFlow(
+      respondOk((path) => (path.startsWith("/api/bridge/market") ? { status: 200, body: marketPanel({ brokersFeeRate }) } : null)),
+    );
+    await flow.loadMarket(TYPE_ID);
+    return store.get().market.brokersFeeRate;
+  };
+  assert.equal(await rateOf(0.0295803), 0.0295803);
+  assert.equal(await rateOf(0), 0);
+  for (const none of [null, undefined, "0.03", -0.01, Number.NaN]) assert.equal(await rateOf(none), null, String(none));
+  // A read that says a rate and then one that says none: the rate kept is not left standing.
+  const { store, flow } = makeFlow(respondOk());
+  store.apply({ ...({ type: "market/loaded", typeID: null, stationID: null, solarSystemID: null, sells: [], buys: [], ownOrders: [], orderHistory: [], transactions: [], escrow: null, priceHistory: [], cashBalance: null, bookError: null, ownOrdersError: null, transactionsError: null, marketUnavailable: null } as const), brokersFeeRate: 0.02 });
+  assert.equal(store.get().market.brokersFeeRate, 0.02);
+  await flow.loadMarket(TYPE_ID);
+  assert.equal(store.get().market.brokersFeeRate, null);
+});
+
 test("loadMarket(null) still reads the player's own market — no item needed", async () => {
   const { flow, requests } = makeFlow(
     respondOk((path) =>
