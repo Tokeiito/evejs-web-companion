@@ -360,10 +360,12 @@ marks some three dozen methods as cached. Read twice in one session, a docked pi
 
 Not as the client does it:
 
-- **One of the pilot's own writes forgets every answer kept.** The client's own code names the
-  cached calls a write of its changes, and the server names the rest.
-- A bound object's cached answers, and the server's naming of several calls by a part of their
-  arguments, are not kept or matched.
+- A bound object's cached answers are not kept.
+- Some of what the client's own code names is not named here. The paragraph after the next has
+  which.
+
+(This list had the server naming several calls by a part of their arguments. The client's
+object cache has a function for that, `__ListPartialMatch`, and nothing in the client calls it.)
 
 **The object cache's check with the server, 2026-10-09.** When an answer held is due a check,
 the client sends the call all the same, with the version it holds where every other call
@@ -410,6 +412,82 @@ The first build here made the same mistake from the other side. It read the resu
 version, and for a reference sent `[0, None]` at the very next asking. Every test passed, each
 on an answer I had made up with a version of its own. Recording the frames again from the real
 server showed it, and there is now a test on the server's own recorded bytes.
+
+**What the client's own code names, 2026-10-09.** Some cached answers are good for the whole
+run: this server answers a pilot's own market orders so (`versionCheck: run`, kept by
+`charid`). What makes the client ask again is a name: the server calling
+`InvalidateCachedMethodCall` on it, or the client's own code calling the same on its own cache.
+The client's code does so at 62 places. They are of three kinds.
+
+On a notice from the server:
+
+| Notice | Calls named | Client |
+|---|---|---|
+| `OnOwnOrdersChanged(orders, reason, isCorp)` | `marketProxy`: `GetCharOrders`; for each order `GetOrders(typeID)` and `GetPlexOrders`; `GetSystemAsks`, `GetStationAsks`, `GetMarketOrderHistory`, `GetPlexBest` | `marketsvc.py` 113 |
+| `OnCorporationMedalAdded` | `corporationSvc.GetAllCorpMedals(corpid)`, `GetRecipientsOfMedal(medalID)` | `medals.py` 120 |
+| `OnMedalIssued`, `OnMedalStatusChanged` | `corporationSvc.GetMedalsReceived(charid)` | `medals.py` 131, 139 |
+| `OnAssetSafetyCreated(ownerID, system, locationID)`, the corporation's | `corpmgr.GetAssetInventoryForLocation(corpid, locationID, 'offices')`, `structureAssetSafety.GetItemsInSafetyForCorp` | `assetSafetySvc.py` 58 |
+| `OnAssetSafetyDelivered(ownerID)` | `structureAssetSafety.GetItemsInSafetyForCorp`, or for the pilot's own `GetItemsInSafetyForCharacter` | `assetSafetySvc.py` 65 |
+| `OnStationInformationUpdated(stationID)` | `stationSvc.GetStation(stationID)` | `station/base.py` 589 |
+| `OnKillNotification` | `charMgr.GetRecentShipKillsAndLosses(25, None)` | `charactersheet.py` 90 |
+| `OnKillRightCreated`, `OnKillRightUsed`, `OnKillRightForYouSold` | `bountyProxy.GetMyKillRights` | `bountySvc.py` 154, 158, 171 |
+| `OnEditCalendarEvent`, where the event's time changed | `calendarMgr.GetResponsesToEvent(eventID, ownerID)` | `eveCalendarsvc.py` 352 |
+| `OnEventResponseByExternal(eventID, event, response)` | `calendarMgr.GetResponsesToEvent(eventID, the event's owner)` | `eveCalendarsvc.py` 409 |
+| `OnNPCStandingChange` | `facWarMgr.GetMyCharacterRankInfo`, `GetMyCharacterRankOverview` | `facWarSvc.py` 308 |
+| `OnCommunityFittingsUpdated` | `corpFittingMgr.GetCommunityFittings` | `fittingSvc.py` 1269 |
+| `OnBrowserLockdownChange`, `OnFlaggedListsChange` | `browserLockdownSvc`'s three | `sites.py` 335, 442 |
+
+On a change to the session: another corporation names
+`corporationSvc.GetEmploymentRecord(charid)` (`base_corporation_ui.py` 98); in or out of a
+militia names the two ranks above, `facWarMgr.GetCorpFactionalWarStatus` and the employment
+record (`facWarSvc.py` 57, 199).
+
+Beside one of its own calls, once the call is done:
+
+| Call | Calls named | Client |
+|---|---|---|
+| `bountyProxy.AddToBounty(ownerID, amount)` | `charMgr.GetPublicInfo3(ownerID)` | `bountyWindow.py` 447, 1007 |
+| `bountyProxy.SellKillRight`, `CancelSellKillRight` | `bountyProxy.GetMyKillRights` | `bountySvc.py` 255, 262 |
+| `calendarMgr.SendEventResponse(eventID, ownerID, response)` | `calendarMgr.GetResponsesToEvent(eventID, ownerID)` | `eveCalendarsvc.py` 296 |
+| `calendarMgr.UpdateEventParticipants(eventID, ...)` | `calendarMgr.GetResponsesToEvent(eventID, charid)` | `eveCalendarsvc.py` 196 |
+| `structureAssetSafety.MoveSafetyWrapToStructure` | `GetStructuresICanDeliverTo`, `GetItemsInSafetyForCharacter`, `GetItemsInSafetyForCorp` | `assetSafetyDeliverWindow.py` 147 |
+
+The transport forgot every cached answer at each of the pilot's own writes. It now names what
+the tables name, when they name it (`cachedCallsNamed.js`), and a write names nothing else.
+A row is a no-op where nothing is kept under the name, which on this server is most rows: of
+the thirty or so methods it marks as cached, the rows reach the market's, the corporation's
+medals, a station, and the corporation's assets and asset safety.
+
+Seen live on the game port, as Test Pilot at Jita, with the server's log counted between steps
+(the market's three cached calls: the type's book, the pilot's orders, the order history):
+
+| Step | Before | After |
+|---|---|---|
+| The market read twice | all three sent, then none | the same |
+| A buy order placed; the route reads the pilot's orders at once | sent, and the order is in it | the same: the notice had named it |
+| The market read again | the book and the history sent | the same, each named by the notice |
+| A write the client names nothing beside (`/giveitem`), and the market read again | all three sent | none sent |
+| The order taken down | refused: see below | done; the pilot's orders sent, and the order gone from them |
+
+Not named here, each for its reason:
+
+- **Calls the BFF cannot make**: the mailing lists' members, joining and leaving a militia, a
+  character's looks, an office let go and impounded items trashed, the access groups', the
+  development indices'. A row for a call nothing makes would be dead.
+- **Names that need an item's owner, flag and station**: items delivered to a corporation's
+  hangar or to a member, a stack split and items trashed at another station
+  (`invItemFunctions.py` 287).
+- **Names given on a refusal**: a kill right that was not there, a donation whose tax changed.
+- **Names that hang on what a window holds**, and the two a GM has.
+
+**An order taken down or repriced, 2026-10-09.** The client has an order's ID off the order's
+own row, a number: `CancelCharOrder(orderID, regionID)` and
+`ModifyCharOrder(order.orderID, newPrice, order.bid, order.stationID, order.solarSystemID,
+order.price, order.range, order.volRemaining, order.issueDate)` (`marketsvc.py` 281, 285). The
+BFF's routes have the ID as the text the page sent. On the wire that was a string, this server
+read it as order 0, and no order could be taken down on the game port. The registry now sends
+the number. Still not the client's: the route names no region for the first, and sends nought
+for the date of issue in the second. The server reads neither, and the ledger notes both.
 
 **The formations, asked for once, 2026-10-09.** `michelle.AddBallpark` asks
 `sm.RemoteSvc('beyonce').GetFormations()` each time it makes a ballpark (`michelle.py` 324). The

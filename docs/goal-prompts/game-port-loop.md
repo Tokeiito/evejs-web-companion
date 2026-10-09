@@ -307,6 +307,19 @@ Take these defaults, and list each under "For the operator" in the log so they c
   that said it was left out had it as an object's own field, a shape no answer has. Send the
   tool's output to a file and `grep -vE "^(identical|tolerated) "` it. And take a fixture's
   shape from an answer printed off the running BFF, not from the path the tool prints.
+- **The market.** Orders are kept by a daemon of its own (`externalservices/market-server`, ports
+  40110 and 40111), not in the store: `store.sh` does not put them back, so take down what you
+  placed. Its running binary knows the stations of its seed only. Test Two's station, 60000004,
+  is not one ("station 60000004 does not exist in market database", told to the pilot as "Market
+  is currently offline"); Test Pilot's, 60003760 at Jita, is. So a market check is as Test
+  Pilot. In the page: MARKET, type in "Search for an item to trade", Search, the item's button,
+  "Offer to buy…", the two number inputs and the select in `section.bulk`, "Check this order…",
+  "Yes, place this buy order"; then "Your orders", "Take it down…", "Yes, take this order
+  down". The pilot's "GO TO FIRST PILOT" dialog has to be answered first.
+- **The gateway BFF hands on the server's cached-answer envelope; the game-port BFF hands on
+  what was in it.** A script that reads a route's answer on both has to open the envelope for
+  the one (`orders-of.js` in the scratchpad does, for the pilot's orders): mine read "no orders"
+  through the gateway while an order stood open.
 - **A test that puts a pilot in space must use the park that moves by hand.** In
   `test/gamePortPilots.test.js`, `selected({ inSpace: true })` makes a real park with a real
   timer, and the test process then never ends: a run sat until its own time limit killed it
