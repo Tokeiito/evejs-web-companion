@@ -81,8 +81,10 @@ Consult in this order. When two disagree, a recording of the real thing settles 
    a dict entry's value is written BEFORE its key; `\x01` is None, `\x07` is -1, `/\x05`
    and five bytes is a long.
 
-Tools already built for this: `scripts/capture-game-frames.js` (record a conversation as a
-fixture), `scripts/record-game-port.js` (record any client), `scripts/parity-harness.js`,
+Tools already built for this: `scripts/recordings/` (read the Tranquility recordings: decode a
+file's lines, tally what agents offered, see `README.md` there), `scripts/capture-game-frames.js`
+(record a conversation as a fixture), `scripts/record-game-port.js` (record any client),
+`scripts/parity-harness.js`,
 `scripts/soak-game-session.js`, `scripts/py27-oracle.py` with `scripts/build-py27-fixture.js`,
 `scripts/vendor-marshal.js`.
 

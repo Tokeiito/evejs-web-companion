@@ -161,6 +161,15 @@ Decisions taken in your place, and anything waiting on you. Overrule any of thes
   unless you set it, nothing is read and the web client words things itself. I kept the text out
   of the repository because it is CCP's. Once a mission's text has been asked for, the BFF keeps
   the whole language file in memory, about 90 MB.
+- **A recording that would settle a question** (2026-10-09). On this server a courier's agent,
+  talked to again in its own station before the package has gone anywhere, offers Quit and
+  nothing else. On Tranquility every recorded talk to an agent about an accepted mission,
+  docked with that agent, offered Complete Mission and Quit (29 of 29, objective done or
+  not), but none of them is that case: a mission to carry something, the pilot docked where
+  the agent is and that not being the drop-off. If you record one (accept a courier whose
+  drop-off is another station, close the agent's window, open it again before undocking), the
+  answer's buttons decide whether the server's rule is right. I have not changed the server:
+  the recordings do not show it wrong.
 - **The BFF now starts a Python when it first needs one of the client's built data tables**
   (2026-10-09, default taken). The client's static data is laid out by loaders compiled into the
   client, so the client's own loader reads it, inside the client's own `python27.dll`, hosted
@@ -5171,3 +5180,104 @@ talk about an accepted mission the Tranquility recordings would say.
     inside messages.
 15. More of the client's built data as it is needed: one line in `TABLES` for each (dungeons
     for ship restrictions, divisions for an agent's card).
+
+---
+
+## 2026-10-09 — what an agent offers on a fresh talk about a mission already accepted
+
+Commit `20fc2c8`, pushed: tools and this entry, and no change to the client or the server.
+Item 1 of the last list. **The question is not settled, and the server was left alone.**
+
+**What was measured on this server** (eve.js `e066a81e9`, as Test Two, the station's courier
+agent, the pilot docked in the agent's station, which is the pick-up and not the drop-off):
+
+| the talk | the buttons |
+|---|---|
+| the first, mission on offer | Accept, Decline, Defer |
+| again, nothing pressed | the same |
+| Accept pressed | Complete Mission, Quit |
+| a fresh talk after that | Quit |
+| and another | Quit |
+
+The staging was undone.
+
+**Why this server says so** (`agentMissionRuntime.js` 7779 to 7832): Complete is offered in
+the answer to Accept itself; on a fresh talk it is offered when the mission can be completed
+remotely, or when the pilot is at the mission's "completion location". For a mission with a
+drop-off that is the drop-off's station; for any other it is where the agent is
+(`isCharacterAtMissionCompletionLocation`, 5583). Quit is offered where the agent is.
+
+**What Tranquility does**, from the recordings (176 agent `DoAction` calls in 23 files, read
+with the new `scripts/recordings/`):
+
+| a fresh talk about a mission already accepted | how often | the buttons |
+|---|---|---|
+| in space | 61 | none |
+| docked, to the mission's agent | 29 | Complete Mission and Quit, every time |
+| docked, to another agent whose window was also open | 7 | none; each went to another agent's object and was answered with that agent's "remote" greeting |
+| in a recording with no change of station in it, so where the pilot was is not known | 1 | Complete Mission and Quit |
+
+And the 29 by what the mission was when the pilot talked (its objectives as the client read
+them next):
+
+| the mission | how often |
+|---|---|
+| a dungeon, done | 6 |
+| a dungeon, not done | 1 |
+| something to fetch, docked at the drop-off, the thing held | 16 |
+| something to fetch, docked at the drop-off, the thing not held | 5 |
+| something to carry, docked at the drop-off, the cargo held | 1 |
+
+So on Tranquility Complete Mission does not wait for the objective: it was offered six times
+with the objective not met (and once more in the recording where the pilot's place is not
+known: a dungeon, not done). In all 29 the pilot was docked in one station through the talks,
+and wherever the mission had a drop-off, that station was it.
+
+**What that leaves open.** This server's Quit-alone comes from one situation, a mission with a
+drop-off and the pilot at the agent's station but not at the drop-off, and no recording has
+that situation. Tranquility never answered with Quit alone in 176 calls; but it was never
+asked in the one place this server does. The same goes for the mirror of it: docked at a
+drop-off that is not the agent's station, where this server offers Complete Mission without
+Quit.
+
+**What was not done, and why.** The server was not changed. This loop's rule for a server
+defect is evidence that the retail client is affected, and here there is a pattern that
+points one way and no recording of the case itself. What would settle it is in the operator's
+section.
+
+**Tools.** `scripts/recordings/`: the scripts this and two earlier entries read the recordings
+with, kept until now in a folder that does not outlast the session. They print numbers and
+states, and nothing of the recordings is in the repository.
+
+### Next
+
+1. The agent's cards: its level, its division's name (the client's built data), its
+   corporation and faction, the pilot's effective standing with it. They belong on the
+   mission's page and above the agent's window both.
+2. The client's short written interval (`FormatTimeIntervalShortWritten`), for the journal's
+   line, the page's time left and the bonus's countdown.
+3. Around a place's name: the security rating before it, the low-security warning, how many
+   jumps away it is (the page has no route of its own yet), and the reduced-rewards banner.
+4. The page's own read of the journal after an agent's button: gone, if nothing of the page's
+   own counts on it, with the push doing the work as it does for Remove Offer.
+5. The ledger's unread pairs, most called first: the inventory and wallet reads, then the
+   writes on `ship` and `dogmaIM`.
+6. The scanner the client's way: results kept from the server's word, a probe's destination
+   and range kept here and sent with the scan.
+7. Phase 3's writes, feature by feature, each set beside what the client sends.
+8. Small, around dialogs: the title for a dialog's kind, the "do not ask again" box, the typed
+   codes not done.
+9. Small, in space: an overview row's speed columns the client's way; the bar the client
+   fills while a ship lines up for a warp; a warp ordered at a bookmark or a fleet member.
+10. Small, before a character is chosen: selecting on the account's own connection; the count
+    of names checked.
+11. Small, in Ready Fit: the capacity the client never asks for; the window following a change
+    of pilot.
+12. In the park, if a server ever sends a ball that needs them: MISSILE, FORMATION, MUSHROOM;
+    a fixed ball's collision shapes and the partition's order.
+13. If a server ever sends one: a special interaction drawn as the client draws one; messages
+    inside messages.
+14. More of the client's built data as it is needed: one line in `TABLES` for each (dungeons
+    for ship restrictions, divisions for an agent's card).
+15. When there is a recording of it: a courier's agent talked to again where the pilot
+    accepted, before the package has gone anywhere (the operator's section).
