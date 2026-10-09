@@ -161,6 +161,14 @@ Decisions taken in your place, and anything waiting on you. Overrule any of thes
   unless you set it, nothing is read and the web client words things itself. I kept the text out
   of the repository because it is CCP's. Once a mission's text has been asked for, the BFF keeps
   the whole language file in memory, about 90 MB.
+- **The BFF now starts a Python when it first needs one of the client's built data tables**
+  (2026-10-09, default taken). The client's static data is laid out by loaders compiled into the
+  client, so the client's own loader reads it, inside the client's own `python27.dll`, hosted
+  by a 64-bit Python 3 on this machine (`python`, or what `EVEJS_PYTHON` names). It runs once
+  for each table, for under half a second, and only when `EVEJS_CLIENT_ROOT` is set. With no
+  Python the table is "not available" and the page does without. Nothing is written to disk.
+  The other way would have been to work out each table's layout by hand; say if you would
+  rather not have the BFF start a second program.
 - **The page's own automation undocks without asking about contraband** (default taken): the
   autopilot and the bots send `ignoreContraband`, as the client does once its warning is
   suppressed, so a bot carrying contraband is fined at the undock as before. Only the Undock
@@ -4788,3 +4796,115 @@ offer is removed was not looked at.
     a fixed ball's collision shapes and the partition's order.
 13. If a server ever sends one: a special interaction drawn as the client draws one; messages
     inside messages.
+
+---
+
+## 2026-10-09 — the client's built data, read by the client's own loader
+
+Commit `078cf0e`, pushed. The first half of the last list's item 1. Read Details needs it, and so
+will much else.
+
+**What the retail client does.** The journal's Read Details (and a double click) is
+`agents.PopupMission(agentID)` (`missionentry.py` 70 to 79). That opens the mission in the job
+board when two feature flags are on, and both are on unless a server turns them off
+(`agents.py` 726, `jobboard/client/feature_flag.py` 8 and 13). The old details window is only
+the other branch.
+
+- The job board's page asks the server for one thing as it opens,
+  `GetMissionObjectiveInfo(ignoreLocateCheck=True)` on the agent's bound object
+  (`agent_missions/job.py` 411). The recordings from Tranquility have the call: no arguments, and
+  `ignoreLocateCheck` in the keywords.
+- Everything it words comes from the client's own record of the mission,
+  `evemissions.client.data.get_mission(contentID)`: the name (`nameID`), the briefing
+  (`messages['messages.mission.briefing']`, or `messages.mission.offered.agentsays` while the
+  mission is on offer), and the extra information's header and body (`job.py` 126 to 157).
+- That record is in `res:/staticdata/missions.fsdbinary`, read by `missionsLoader`, a module
+  compiled into the client (`evemissions/client/data.py`). The file does not describe itself:
+  its layout is in the loader.
+
+So the client never asks the server for a mission's briefing here, and the page cannot word the
+mission's page the client's way without that record.
+
+**What the page had.** The client's words for a label or a message ID, and one table of the
+older kind that ships with its schema (the dialogs). No way to read a table of this kind.
+
+**What was built.**
+
+- `scripts/client-built-data.py`: runs the client's loader inside the client's own
+  `python27.dll` and prints the table as JSON. The client's Python has no `json` and no
+  codecs there, so the JSON is written by hand.
+- `src/clientData/clientBuiltData.js`: the BFF's reader. A table is read when first asked for,
+  once, and kept in memory. No client, no Python, no such file in the client's index or a
+  loader that fails: the table is "not available", the reason is kept, and nothing throws.
+- `GET /api/client-data/missions/:missionID`: a mission's record, or null for one the client
+  does not have.
+
+**Proof.**
+
+- Tests: 13 new (9 on the reader, 4 on the route). 29 ways of breaking them. Three got through
+  at first: a `.toLowerCase()` on a name that is already lower case (taken out), a reader with
+  no client that failed quietly where it should not try at all (now tested), and a breakage of
+  mine that could not be told from the original (replaced).
+- Suite: 9377 tests, 9353 pass, 0 fail, 24 skipped, 0 todo.
+- **The script, against the real client.** The whole table in 0.34 s: 2892 missions, 2885 with
+  a briefing, 1983 with what the agent says on offering, 582 with extra information. Its
+  nested parts read as objects, lists and numbers (tallied by shape).
+- **The script's own writer, inside the client's Python**, over twelve awkward values (quotes,
+  a backslash, control characters, UTF-8 bytes, Latin-1 bytes, unicode, a long, infinity, a
+  tuple, a dict keyed by numbers, an object with a hidden, a callable and a missing
+  attribute): all twelve read back as they should, and only ASCII was written.
+- **Through both check BFFs, live**, eve.js `e066a81e9`, as Test Two, for the mission in its
+  journal:
+
+  | what was read | value |
+  |---|---|
+  | the journal's entry | content ID 2156, name 57959 |
+  | the client's record, first asked | 200 in 464 ms (the loader's run) |
+  | asked again | 200 in 2 ms, the same answer |
+  | the record's `nameID` | 57959, the journal's name and the server's "Mission Title ID" |
+  | the record's `messages.mission.briefing` | 129931, the server's "Mission Briefing ID" |
+  | the client's texts for the record's four message IDs | all four found |
+  | a mission the client has not | 200, `mission: null` |
+  | not a number | 400 `INVALID_MISSION` |
+
+  The gateway BFF answered the same. With a Python that is not there, and with a client that
+  is not there, the reader said "not available" and why.
+
+- Nothing was staged.
+
+**A decision taken in the operator's absence**: the BFF starts a Python. It is in the
+operator's section.
+
+**Not done.** The page that uses it: Read Details itself.
+
+### Next
+
+1. The journal's Read Details: the mission's page as the job board lays it out. The one read
+   with `ignoreLocateCheck`; the name, the briefing and the extra information from the client's
+   record; objectives as `evemissions/client/mission.py` builds them (cargo, pick-up, drop-off,
+   the agent to talk to, the dungeon); rewards; when it expires.
+2. A push the page's own call caused, taken once: the stream's copy and the answer's told
+   apart.
+3. The agent's header: its division, its place (read already, and not shown), the pilot's
+   effective standing with it, and loyalty points.
+4. Around the pane: the security rating before a place's name and the low-security warning
+   (the page has no security for a system that is not its own); the reduced-payouts banner.
+5. The ledger's unread pairs, most called first: the inventory and wallet reads, then the
+   writes on `ship` and `dogmaIM`.
+6. The scanner the client's way: results kept from the server's word, a probe's destination
+   and range kept here and sent with the scan.
+7. Phase 3's writes, feature by feature, each set beside what the client sends.
+8. Small, around dialogs: the title for a dialog's kind, the "do not ask again" box, the typed
+   codes not done.
+9. Small, in space: an overview row's speed columns the client's way; the bar the client
+   fills while a ship lines up for a warp; a warp ordered at a bookmark or a fleet member.
+10. Small, before a character is chosen: selecting on the account's own connection; the count
+    of names checked.
+11. Small, in Ready Fit: the capacity the client never asks for; the window following a change
+    of pilot.
+12. In the park, if a server ever sends a ball that needs them: MISSILE, FORMATION, MUSHROOM;
+    a fixed ball's collision shapes and the partition's order.
+13. If a server ever sends one: a special interaction drawn as the client draws one; messages
+    inside messages.
+14. More of the client's built data as it is needed: one line in `TABLES` for each (dungeons
+    for ship restrictions, divisions for an agent's header).

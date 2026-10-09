@@ -200,6 +200,14 @@ Take these defaults, and list each under "For the operator" in the log so they c
   label or sending one's parameters; two guesses of mine on 2026-10-08 were wrong. The check
   BFFs get the client's folder through `EVEJS_CLIENT_ROOT`. Do not copy the client's text into
   the repository: fixtures use made-up text in the real shape.
+- **What the client knows without asking the server** is mostly in its built data
+  (`res:/staticdata/<name>.fsdbinary`), which only the client's own loader can read
+  (`bin64/<name>Loader.pyd`). `python scripts/client-built-data.py "<client>\tq\bin64" <name>Loader
+  "<the file under ResFiles>"` prints a whole table as JSON; the file's place is in
+  `tq/resfileindex.txt`. The BFF reads tables the same way (`src/clientData/clientBuiltData.js`,
+  one line in `TABLES` for each) and serves a mission's record at
+  `GET /api/client-data/missions/<contentID>`. Before asking the server for something the client
+  never asks for, look for it there. The tables hold IDs and numbers; do not commit a dump.
 - **Staging a pilot.** GM commands go through `POST /api/bridge/gm/slash {command, confirm:
   true}` with a pilot selected: `/tr me <stationID>` moves it, `/giveskill me <typeID> <level>`
   trains it, `/help` lists the rest. From the browser, send them with the page's own token
