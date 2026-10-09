@@ -800,3 +800,77 @@ test("what a walk through the page's panels asks, set beside the client's", () =
     assert.deepEqual([answer.status, answer.args], ["reshaped", sent], JSON.stringify(given));
   }
 });
+
+test("forming, joining and leaving a fleet, set beside the client's", () => {
+  // fleetSvc.GetMyShipTypeID: the type of the ship the pilot is in, which the client knows and sends of itself.
+  const aboard = { shipID: 9001, shipTypeID: () => 648 };
+  // CreateFleet: self.fleet.Init(self.GetMyShipTypeID(), setupName, adInfoData=adInfoData).
+  const init = withContext("fleetObjectHandler.Init", [null, null], null, aboard);
+  assert.deepEqual([init.status, init.args, init.kwargs], ["reshaped", [648, null], { adInfoData: null }]);
+  assert.match(init.source, /fleetSvc\.py:336$/);
+  // A setup and an advert the caller named go as named; the ship's type is the pilot's own whatever the caller said.
+  const advert = { type: "dict", entries: [["fleetName", "Ore"]] };
+  const named = withContext("fleetObjectHandler.Init", [11, "Mining"], { adInfoData: advert }, aboard);
+  assert.deepEqual([named.status, named.args, named.kwargs], ["reshaped", [648, "Mining"], { adInfoData: advert }]);
+  assert.deepEqual(withContext("fleetObjectHandler.Init", [], null, aboard).args, [648, null]);
+  // OnFleetInvite: GetFleet(fleetID).AcceptInvite(self.GetMyShipTypeID()); UpdateFleetInfo: self.fleet.UpdateMemberInfo(self.GetMyShipTypeID()).
+  for (const [pair, line] of [["fleetObjectHandler.AcceptInvite", 1194], ["fleetObjectHandler.UpdateMemberInfo", 1807]]) {
+    for (const given of [[null], [], [11], [11, 22]]) {
+      const answer = withContext(pair, given, null, aboard);
+      assert.deepEqual([answer.status, answer.args, answer.kwargs], ["reshaped", [648], null], `${pair} ${JSON.stringify(given)}`);
+      assert.match(answer.source, new RegExp(`fleetSvc\\.py:${line}$`), pair);
+    }
+  }
+  for (const pair of ["fleetObjectHandler.Init", "fleetObjectHandler.AcceptInvite", "fleetObjectHandler.UpdateMemberInfo"]) {
+    const rest = pair.endsWith(".Init") ? [null] : [];
+    // In no ship the client has no type, and sends None: that is its own call too.
+    const afoot = withContext(pair, [11, ...rest], null, { shipID: null, shipTypeID: () => 648 });
+    assert.deepEqual([afoot.status, afoot.args], ["reshaped", [null, ...rest]], pair);
+    // A ship whose type was not known, or nobody to say: the call goes as it was spelt, and is said to differ.
+    for (const context of [{ shipID: 9001, shipTypeID: () => null }, { shipID: 9001 }, {}]) {
+      const unknown = withContext(pair, [11, ...rest], null, context);
+      assert.deepEqual([unknown.status, unknown.args], ["differs", [11, ...rest]], `${pair} ${JSON.stringify(context)}`);
+      assert.match(unknown.note, /type of the ship/, pair);
+    }
+    // Each is shaped from godma's own word for the ship.
+    assert.equal(retailNeeds(...pair.split(".")), "dogma", pair);
+  }
+
+  // fleetSvc.LeaveFleet: self.fleet.LeaveFleet() on the fleet's object where it holds one; and where it holds none
+  // but the session is in a fleet, sm.RemoteSvc('fleetMgr').ForceLeaveFleet().
+  const holding = { holdsFleet: true, fleetID: 654500010000 };
+  const without = { holdsFleet: false, fleetID: 654500010000 };
+  const leave = withContext("fleetObjectHandler.LeaveFleet", [], null, holding);
+  assert.deepEqual([leave.status, leave.args, leave.kwargs], ["same", [], null]);
+  assert.match(leave.source, /fleetSvc\.py:369$/);
+  // The object is held from the moment CreateFleet answers, in a fleet or not yet.
+  assert.equal(withContext("fleetObjectHandler.LeaveFleet", [], null, { holdsFleet: true, fleetID: null }).status, "same");
+  for (const context of [without, { holdsFleet: false, fleetID: null }, {}]) {
+    const answer = withContext("fleetObjectHandler.LeaveFleet", [], null, context);
+    assert.deepEqual([answer.status, answer.args], ["differs", []], JSON.stringify(context));
+    assert.match(answer.note, /holds no object/);
+  }
+  const forced = withContext("fleetMgr.ForceLeaveFleet", [], null, without);
+  assert.deepEqual([forced.status, forced.args, forced.kwargs, forced.moniker], ["same", [], null, false]);
+  assert.match(forced.source, /fleetSvc\.py:367$/);
+  for (const context of [holding, { holdsFleet: false, fleetID: null }, { holdsFleet: false }, { holdsFleet: true, fleetID: null }, { fleetID: 654500010000 }, {}]) {
+    const answer = withContext("fleetMgr.ForceLeaveFleet", [], null, context);
+    assert.deepEqual([answer.status, answer.args], ["differs", []], JSON.stringify(context));
+    assert.match(answer.note, /only where it holds no object for a fleet the session is in/);
+  }
+
+  // Declining an invite, and coming back to a fleet the connection was lost in: as the BFF spells them.
+  for (const [pair, args, line] of [
+    ["fleetObjectHandler.RejectInvite", [], 1198],
+    ["fleetObjectHandler.RejectInvite", [true], 1198],
+    ["fleetObjectHandler.RejectInvite", [false], 1198],
+    ["fleetObjectHandler.Reconnect", [], 1714],
+    // Invite(charID, wingID, squadID, role): None for each of the three where the pilot is only asked into the fleet.
+    ["fleetObjectHandler.Invite", [140000002, null, null, null], 362],
+    ["fleetObjectHandler.Invite", [140000002, 654500040001, 654500050001, 4], 362],
+  ]) {
+    const answer = withContext(pair, args, null, {});
+    assert.deepEqual([answer.status, answer.args, answer.kwargs], ["same", args, null], `${pair} ${JSON.stringify(args)}`);
+    assert.match(answer.source, new RegExp(`fleetSvc\\.py:${line}$`), pair);
+  }
+});

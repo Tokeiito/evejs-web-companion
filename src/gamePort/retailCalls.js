@@ -56,7 +56,7 @@ const judged = (source, judge, note) => Object.freeze({
   status: "same",
   source,
   note,
-  shape: (args, kwargs) => ({ args, kwargs, ...judge(args, kwargs) }),
+  shape: (args, kwargs, context) => ({ args, kwargs, ...judge(args, kwargs, context) }),
 });
 const webOnly = (source, note) => Object.freeze({ status: "web-only", source, note });
 /** The same entry, with what the pilot must have before the call can be shaped: "dogma" is godma primed for the ship. */
@@ -163,6 +163,42 @@ function ownersContracts(args, kwargs) {
   const whole = args.length === 4 && Object.keys(kwargs).length === 2 && kwargs.num === CONTRACTS_PER_PAGE && "startContractID" in kwargs;
   return whole ? sent : { ...sent, status: "reshaped" };
 }
+/**
+ * fleetSvc.GetMyShipTypeID (1948): the type of the ship the pilot is in, godma's word for it in space and the dogma
+ * location's docked; None in no ship. Undefined where the ship's type was not known here.
+ */
+function ownShipType(context) {
+  if (context.shipID === null) return null;
+  return (context.shipTypeID ? context.shipTypeID() : null) ?? undefined;
+}
+const SHIP_TYPE_UNKNOWN = "The client sends the type of the ship the pilot is in. It was not known here, so the call went as the BFF spelt it.";
+
+/** AcceptInvite(shipTypeID), UpdateMemberInfo(shipTypeID): the pilot's own ship's type and nothing else, whatever the caller named. */
+function withOwnShipType(args, kwargs, context) {
+  const typeID = ownShipType(context);
+  return typeID === undefined ? { args, kwargs, status: "differs", note: SHIP_TYPE_UNKNOWN } : { args: [typeID], kwargs };
+}
+
+/** fleetSvc.CreateFleet's Init(shipTypeID, setupName, adInfoData=adInfoData): the advert always by keyword, None where there is none. */
+function fleetInit(args, kwargs, context) {
+  const typeID = ownShipType(context);
+  if (typeID === undefined) return { args, kwargs, status: "differs", note: SHIP_TYPE_UNKNOWN };
+  return { args: [typeID, args[1] ?? null], kwargs: { ...kwargs, adInfoData: kwargs.adInfoData ?? null } };
+}
+
+/**
+ * fleetSvc.LeaveFleet (365): on the fleet's own object where the client holds one, self.fleet; and of fleetMgr by
+ * name only where it holds none and the session is in a fleet. `context.holdsFleet` says whether one is held here.
+ */
+const leavingOnTheObject = (args, kwargs, context) => (context.holdsFleet === true ? {} : {
+  status: "differs",
+  note: "The client asks this of the fleet's object it holds. Here it holds no object for a fleet: it would ask fleetMgr.ForceLeaveFleet of a fleet the session is in, and nothing otherwise.",
+});
+const leavingByName = (args, kwargs, context) => (context.holdsFleet === false && context.fleetID !== null && context.fleetID !== undefined ? {} : {
+  status: "differs",
+  note: "The client asks this only where it holds no object for a fleet the session is in. With the object it asks LeaveFleet of that, and in no fleet it asks nothing.",
+});
+
 /** contractscommon.py: auctions and item exchanges searched together, and the sorts by date created and by price. */
 const CONTYPE_AUCTION_AND_ITEM_EXCHANGE = 10;
 const CONTRACT_SORT_ID = 0;
@@ -480,6 +516,15 @@ const RETAIL_CALLS = Object.freeze({
   "fleetObjectHandler.GetMotd": same(`${FLEET_SVC}:1967`, "self.fleet.GetMotd(), no arguments"),
   "fleetObjectHandler.GetJoinRequests": same(`${FLEET_SVC}:461`, "self.fleet.GetJoinRequests(), no arguments"),
   "fleetObjectHandler.GetFleetComposition": same(`${FLEET_SVC}:900`, "self.fleet.GetFleetComposition(), no arguments"),
+  // Forming one, joining one and leaving one.
+  "fleetObjectHandler.Init": needing(reshaped(`${FLEET_SVC}:336`, fleetInit, "self.fleet.Init(self.GetMyShipTypeID(), setupName, adInfoData=adInfoData), on the object CreateFleet answered"), "dogma"),
+  "fleetObjectHandler.AcceptInvite": needing(reshaped(`${FLEET_SVC}:1194`, withOwnShipType, "GetFleet(fleetID).AcceptInvite(self.GetMyShipTypeID()), on the invite's fleet's Moniker, which binds with it and is the fleet's object from then"), "dogma"),
+  "fleetObjectHandler.UpdateMemberInfo": needing(reshaped(`${FLEET_SVC}:1807`, withOwnShipType, "self.fleet.UpdateMemberInfo(self.GetMyShipTypeID())"), "dogma"),
+  "fleetObjectHandler.RejectInvite": same(`${FLEET_SVC}:1198`, "GetFleet(fleetID).RejectInvite(), and RejectInvite(True) from a pilot already in a fleet (1180), RejectInvite(False) where invitations are turned away unasked (1184)"),
+  "fleetObjectHandler.Invite": same(`${FLEET_SVC}:362`, "CSPAChargedAction('CSPAFleetCheck', self.fleet, 'Invite', charID, wingID, squadID, role): self.fleet.Invite(...) on the fleet's object, None for a wing, squad or role not named; asked again with approvedCost= where the server says the contact costs and the user agrees. A pilot in no fleet forms one first (352)"),
+  "fleetObjectHandler.Reconnect": same(`${FLEET_SVC}:1714`, "GetFleet(fleetID).Reconnect(), no arguments, on a Moniker for the fleet the connection was lost in"),
+  "fleetObjectHandler.LeaveFleet": judged(`${FLEET_SVC}:369`, leavingOnTheObject, "self.fleet.LeaveFleet(), no arguments, on the fleet's object"),
+  "fleetMgr.ForceLeaveFleet": judged(`${FLEET_SVC}:367`, leavingByName, "sm.RemoteSvc('fleetMgr').ForceLeaveFleet(), no arguments: asked only where the client holds no object for a fleet the session is in"),
 
   // ── contracts, the market and the calendar: the proxy's services ──────────
   "contractProxy.SearchContracts": Object.freeze({

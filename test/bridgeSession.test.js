@@ -1821,9 +1821,12 @@ async function fleetRoute({ transport = "gameport", own = { fleetID: null }, kno
   backend.bindObject = async (service, method, args) => { asked.push(`bind ${service}`); return { boundHandle: `${service}:${method}`, notifications: [] }; };
   backend.callBoundMethod = async (service, method) => {
     asked.push(`${service}.${method}`);
-    if (own.fleetID === null) throw Object.assign(new Error("FleetNotInFleet"), { code: "CALL_REFUSED" });
+    if (own.refuses === method) throw Object.assign(new Error("FleetNotAllowed"), { code: "CALL_REFUSED" });
+    if (own.fleetID === null && FLEET_READ_NAMES.includes(method)) throw Object.assign(new Error("FleetNotInFleet"), { code: "CALL_REFUSED" });
     return { service, method, result: method === "GetInitState" ? fleetState(own.fleetID) : null, notifications: [] };
   };
+  const byName = backend.callMethod;
+  backend.callMethod = async (service, method, ...rest) => { asked.push(service + "." + method); return byName(service, method, ...rest); };
   const given = [];
   if (knows) gamePort.fleet = (sessionFields, bridgeSessionID) => { given.push({ sessionFields, bridgeSessionID }); return own; };
   const { baseUrl } = await startTestServer({ gateway, gamePortPilots: gamePort, pilotTransportFor: () => transport });
@@ -1865,4 +1868,55 @@ test("on the game port a fleet the session has left is a fleet the BFF has forgo
   own.fleetID = null;
   assert.equal((await apiRequest(baseUrl, "/api/bridge/bound-fleet")).payload.membership, "none");
   assert.equal((await apiRequest(baseUrl, "/api/bots/squad-board")).payload.error, "FLEET_UNKNOWN");
+});
+
+// ── Leaving a fleet ──────────────────────────────────────────────────────────
+//
+// fleetSvc.LeaveFleet (365): self.fleet.LeaveFleet(), on the fleet's own object, where the client holds one; and
+// sm.RemoteSvc('fleetMgr').ForceLeaveFleet() only where it holds none for a fleet the session is in. The route
+// asked fleetMgr every time.
+
+const LEAVE = { method: "POST", body: { confirm: true } };
+
+/** The page's "Leave fleet", after a read of the Fleet panel. `log` is everything asked from then on, in order. */
+async function leaveFleet(options) {
+  const { baseUrl, asked: log } = await fleetRoute(options);
+  log.length = 0;
+  const unconfirmed = await apiRequest(baseUrl, "/api/bridge/fleet/leave", { method: "POST", body: {} });
+  assert.deepEqual([unconfirmed.response.status, log], [400, []]);
+  const answer = await apiRequest(baseUrl, "/api/bridge/fleet/leave", LEAVE);
+  return { answer, asked: [...log], log, baseUrl };
+}
+
+test("on the game port leaving is asked of the fleet's object where one is held, and of fleetMgr only where none is", async () => {
+  // Held, in the fleet: on the object the panel's read was made on.
+  const member = await leaveFleet({ own: { fleetID: 654500010000, holdsObject: true } });
+  assert.deepEqual([member.answer.response.status, member.answer.payload.ok, member.answer.payload.applied, member.asked], [200, true, true, ["fleetObjectHandler.LeaveFleet"]]);
+  // Held, with the session not in the fleet (CreateFleet answered, and no more): on the object all the same.
+  const early = await leaveFleet({ own: { fleetID: null, holdsObject: true } });
+  assert.deepEqual([early.answer.response.status, early.answer.payload.applied, early.asked], [200, true, ["bind fleetObjectHandler", "fleetObjectHandler.LeaveFleet"]]);
+  // None held: the client's ForceLeaveFleet, of the service by name, and nothing bound for it.
+  for (const options of [
+    { own: { fleetID: 654500010000, holdsObject: false } },
+    { own: { fleetID: null, holdsObject: false } },
+    { own: { fleetID: 654500010000 } },
+    { own: { fleetID: 654500010000, holdsObject: true }, knows: false },
+    { own: { fleetID: 654500010000, holdsObject: true }, transport: "gateway" },
+  ]) {
+    const { answer, asked } = await leaveFleet(options);
+    assert.deepEqual([answer.response.status, answer.payload.applied, asked], [200, true, ["fleetMgr.ForceLeaveFleet"]], JSON.stringify(options));
+  }
+});
+
+test("the fleet's handle is not kept across a leaving, refused or not", async () => {
+  const own = { fleetID: 654500010000, holdsObject: true, refuses: "LeaveFleet" };
+  const { answer, asked, log, baseUrl } = await leaveFleet({ own });
+  assert.deepEqual([answer.response.status >= 400, answer.payload.ok, asked], [true, false, ["fleetObjectHandler.LeaveFleet"]], JSON.stringify(answer.payload));
+  // A refusal is not proof that nothing changed: the next asking is of an object asked for afresh. And the one after.
+  delete own.refuses;
+  for (const time of ["after a refusal", "after a leaving"]) {
+    log.length = 0;
+    const next = await apiRequest(baseUrl, "/api/bridge/fleet/leave", LEAVE);
+    assert.deepEqual([next.response.status, next.payload.applied, log], [200, true, ["bind fleetObjectHandler", "fleetObjectHandler.LeaveFleet"]], time);
+  }
 });

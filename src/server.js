@@ -9186,7 +9186,9 @@ app.post("/api/bridge/fleet/advert/update", requireAuth, async (req, res, next) 
 
 // fleetMgr fleet-management WRITES -------------------------------------------
 
-// ForceLeaveFleet() — remove the session char from its fleet (no args).
+// Leave the session char's fleet (no args). fleetSvc.LeaveFleet (365): self.fleet.LeaveFleet(), on the fleet's
+// own object, where the client holds one; fleetMgr's ForceLeaveFleet only where it holds none. The game port says
+// whether the object is held (pilots.js fleet); the gateway's session cannot, and asks fleetMgr as it always did.
 app.post("/api/bridge/fleet/leave", requireAuth, async (req, res, next) => {
   if (!requireWriteConfirmation(req, res, "This removes you from your current fleet. Confirm to continue.")) {
     return;
@@ -9196,13 +9198,19 @@ app.post("/api/bridge/fleet/leave", requireAuth, async (req, res, next) => {
     return;
   }
   try {
-    const outcome = await heldTopLevelCall(held, req.webSessionID, "fleetMgr", "ForceLeaveFleet", [], null);
+    const own = gamePortPilots && isGamePortHandle(held.bridgeSessionID) && typeof gamePortPilots.fleet === "function"
+      ? gamePortPilots.fleet({ userid: held.accountID }, held.bridgeSessionID)
+      : null;
+    const outcome = own && own.holdsObject === true
+      ? await boundCall(held, req.webSessionID, fleetBindSpec(), "LeaveFleet", [], null)
+      : await heldTopLevelCall(held, req.webSessionID, "fleetMgr", "ForceLeaveFleet", [], null);
     invalidateFleetBoundHandles(held);
     res.json({ ok: true, applied: true, result: outcome.result ?? null, notifications: outcome.notifications });
   } catch (error) {
     // The remote write may have committed before transport failure; never retain a
     // membership-scoped handle across an uncertain outcome.
     invalidateFleetBoundHandles(held);
+    if (error && error.code === "SESSION_NOT_FOUND") forgetBridgeSession(req.webSessionID, held);
     next(error);
   }
 });

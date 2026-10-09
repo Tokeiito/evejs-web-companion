@@ -629,10 +629,13 @@ function createGamePortPilots({
 
   /**
    * The fleet the pilot is in, as the session says: session.fleetid, which the server sets with a session change
-   * and the client's fleet service goes by for everything it asks of a fleet (fleetSvc.py). Null in none.
+   * and the client's fleet service goes by for everything it asks of a fleet (fleetSvc.py). Null in none. And
+   * whether the fleet's own object is held, as that service holds one in self.fleet: what CreateFleet answered, or
+   * the Moniker that accepted an invite. It leaves by that object where it has it (LeaveFleet, 365).
    */
   function fleet(sessionFields = {}, bridgeSessionID = undefined) {
-    return { fleetID: attribute(held(bridgeSessionID, sessionFields), "fleetid") };
+    const entry = held(bridgeSessionID, sessionFields);
+    return { fleetID: attribute(entry, "fleetid"), holdsObject: entry.fleet !== null };
   }
 
   /**
@@ -755,6 +758,8 @@ function createGamePortPilots({
       ship: null,
       /** boundHandle -> { objectID, service }: what the BFF holds, and what it names here. */
       bound: new Map(),
+      /** fleetSvc's self.fleet: the one object the client keeps for the pilot's fleet, as it is held in `bound`; null with none. */
+      fleet: null,
       /** The two inventory managers invCache keeps, by which: the "N=..." of each. */
       inventoryManagers: new Map(),
       /** The monikers the client keeps for where the pilot is, by service: the "N=..." each is bound to (monikerCall). */
@@ -803,6 +808,8 @@ function createGamePortPilots({
       if (LOCATION_ATTRIBUTES.some((name) => name in changes) || "shipid" in changes) entry.dogmaLoaded = null;
       // gameui.GetShipAccess: the ship's moniker it keeps is for the ship the pilot is in.
       if ("shipid" in changes) entry.monikers.delete("ship");
+      // fleetSvc.ProcessSessionChange: in no fleet, there is no fleet's object.
+      if ("fleetid" in changes && changes.fleetid[1] === null) entry.fleet = null;
       // scanSvc.OnSessionChanged: another system, ship or structure, and the scanner knows of no probes.
       if (["solarsystemid", "shipid", "structureid"].some((name) => name in changes)) entry.scanner.flush();
       // base_corporation.GetCorpRegistry: another corporation, another registry.
@@ -1330,6 +1337,7 @@ function createGamePortPilots({
     for (const [handle, object] of entry.bound) {
       if (object.objectID === objectID) entry.bound.delete(handle);
     }
+    if (entry.fleet && entry.fleet.objectID === objectID) entry.fleet = null;
   }
 
   /** eveMoniker.GetLocationBindParams: the solar system when the session has one, else the station. */
@@ -1464,6 +1472,10 @@ function createGamePortPilots({
       },
       effectName: (itemID) => defaultEffectName(typeOf(itemID)),
       effectRepeats: (itemID, effectName) => effectRepeats(typeOf(itemID), effectName),
+      // fleetSvc.GetMyShipTypeID: godma's word for the ship the pilot is in.
+      shipTypeID: () => typeOf(attribute(entry, "shipid")),
+      fleetID: attribute(entry, "fleetid"),
+      holdsFleet: entry.fleet !== null,
     };
   }
 
@@ -1511,6 +1523,15 @@ function createGamePortPilots({
    * called, carrying that call, and the calls after go to the object it bound; and where the client makes a new
    * Moniker for a call, one is made here for it and not kept.
    */
+  /**
+   * fleetSvc keeps one object for the pilot's fleet, self.fleet. The Moniker that accepted an invite is it from
+   * then on (OnFleetInvite, 1195), and once LeaveFleet has answered on it there is none (LeaveFleet: self.Clear()).
+   */
+  function afterFleetCall(entry, object, method) {
+    if (method === "AcceptInvite") entry.fleet = object;
+    else if (method === "LeaveFleet" && entry.fleet === object) entry.fleet = null;
+  }
+
   function handleCall(entry, handle, object, method, args, kwargs) {
     if (madeAfresh(object.service, method, { dockedInStation: attribute(entry, "stationid") !== null })) {
       return entry.session.bind(object.service, object.params, [method, args, kwargs]).then((bound) => bound.result);
@@ -1526,10 +1547,15 @@ function createGamePortPilots({
     if (method === "MachoBindObject" && !(service === "beyonce" && entry.space)) {
       // A Moniker: what it is bound by is settled now, from what the client's own carries (eveMoniker.py), and
       // nothing is sent until it is called.
-      const params = monikerParams(entry, service, Array.isArray(args) ? args[0] : undefined);
+      const given = Array.isArray(args) ? args[0] : undefined;
+      // The pilot's own fleet (none named, or the session's named) is asked of the one object fleetSvc keeps for
+      // it, where it is held: no Moniker is made.
+      const named = positive(Array.isArray(given) ? given[0] : given);
+      const own = service === "fleetObjectHandler" && (named === null || named === attribute(entry, "fleetid")) ? entry.fleet : null;
+      const params = monikerParams(entry, service, given);
       if (params === undefined) throw fail("BOUND_NO_OBJECT", `${service}.${method} did not return a bound object.`);
       const made = randomBytes(24).toString("base64url");
-      entry.bound.set(made, { objectID: null, service, params });
+      entry.bound.set(made, own ?? { objectID: null, service, params });
       return { boundHandle: made, service, method, notifications: drain(entry) };
     }
     let objectID;
@@ -1542,7 +1568,10 @@ function createGamePortPilots({
     }
     if (!objectID) throw fail("BOUND_NO_OBJECT", `${service}.${method} did not return a bound object.`);
     const boundHandle = randomBytes(24).toString("base64url");
-    entry.bound.set(boundHandle, { objectID, service });
+    const object = { objectID, service };
+    entry.bound.set(boundHandle, object);
+    // fleetSvc.CreateFleet: self.fleet = sm.RemoteSvc('fleetObjectHandler').CreateFleet(), from the answer on.
+    if (method === "CreateFleet") entry.fleet = object;
     return { boundHandle, service, method, notifications: drain(entry) };
   }
 
@@ -1570,6 +1599,7 @@ function createGamePortPilots({
     if (service === "scanMgr") afterScanManagerCall(entry, method, form.args, result);
     if (service === "dogmaIM") afterGroupingCall(entry, method, form.args, result);
     if (service === "beyonce") afterMovementCall(entry, method, form.args, kwargs);
+    if (service === "fleetObjectHandler") afterFleetCall(entry, object, method);
     return {
       service,
       method,

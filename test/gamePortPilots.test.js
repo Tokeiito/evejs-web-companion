@@ -3105,16 +3105,176 @@ test("the fleet the pilot is in is the session's own word, as the client's fleet
   // fleetSvc.py: everything it asks of a fleet is behind session.fleetid, which the server sets with a session change.
   const { pilots, session, handle } = await selected();
   session.calls.length = 0;
-  assert.deepEqual(await pilots.fleet(FIELDS, handle), { fleetID: null });
+  assert.deepEqual(await pilots.fleet(FIELDS, handle), { fleetID: null, holdsObject: false });
   session.attributes.fleetid = 1099511627776n;
   session.change({ fleetid: [null, 1099511627776n] });
-  assert.deepEqual(await pilots.fleet(FIELDS, handle), { fleetID: 1099511627776 });
+  assert.deepEqual(await pilots.fleet(FIELDS, handle), { fleetID: 1099511627776, holdsObject: false });
   session.attributes.fleetid = null;
   session.change({ fleetid: [1099511627776n, null] });
-  assert.deepEqual(await pilots.fleet(FIELDS, handle), { fleetID: null });
+  assert.deepEqual(await pilots.fleet(FIELDS, handle), { fleetID: null, holdsObject: false });
   // Nothing is asked of the server for it, and a session is its account's own.
   assert.deepEqual([session.calls, session.binds], [[], []]);
   assert.throws(() => pilots.fleet({ userid: 9 }, handle), (error) => error.code === "SESSION_NOT_FOUND");
+});
+
+// ── the fleet's own object ───────────────────────────────────────────────────
+//
+// fleetSvc.py keeps one object for the fleet the pilot is in, self.fleet: what CreateFleet answered for a fleet the
+// pilot formed, or the invite's Moniker for one it joined. Everything it asks of the fleet it asks of that, until
+// the session leaves the fleet. It makes no other Moniker for its own fleet.
+
+const FLEET = 654500010000;
+const FLEET_PAIRS = { allowed: new Set([
+  "fleetObjectHandler.CreateFleet", "fleetObjectHandler.MachoBindObject", "fleetObjectHandler.Init", "fleetObjectHandler.GetInitState", "fleetObjectHandler.GetWings",
+  "fleetObjectHandler.LeaveFleet", "fleetObjectHandler.AcceptInvite", "fleetObjectHandler.RejectInvite", "fleetObjectHandler.UpdateMemberInfo",
+  "dogmaIM.MachoBindObject", "dogmaIM.GetAllInfo",
+]) };
+/** The binds made for a fleet, each with the call it carried; and the calls made on bound objects, by object. */
+const fleetBinds = (session) => session.binds.map((bind, index) => [bind.service, bind.params, session.carried[index]]).filter(([service]) => service === "fleetObjectHandler");
+const onObjects = (session, ...methods) => session.boundCalls.filter((call) => methods.includes(call.method)).map((call) => [call.objectID, call.method, call.args, call.kwargs]);
+/** The session comes into a fleet, or out of one, as the server's session change says. */
+const intoFleet = (session, fleetID) => {
+  const before = session.attributes.fleetid ?? null;
+  session.attributes.fleetid = fleetID;
+  session.change({ fleetid: [before, fleetID] });
+};
+
+/** A pilot that has formed a fleet through the BFF's two steps: `made` is the handle CreateFleet's object went by. */
+async function formed(answers = {}) {
+  const built = await selected({ answers: { "fleetObjectHandler.CreateFleet": boundObject("N=1:500"), "bound:GetInitState": "the state", "bound:GetWings": "the wings", ...answers } }, FLEET_PAIRS);
+  const made = await built.pilots.bindObject("fleetObjectHandler", "CreateFleet", [], null, WHO, built.handle);
+  await built.pilots.callBoundMethod("fleetObjectHandler", "Init", [null, null], null, WHO, built.handle, made.boundHandle);
+  intoFleet(built.session, FLEET);
+  return { ...built, made };
+}
+/** The BFF asks for "my fleet" and reads it: says the answer. */
+async function readOwnFleet({ pilots, handle }, method = "GetInitState") {
+  const own = await pilots.bindObject("fleetObjectHandler", "MachoBindObject", [], null, WHO, handle);
+  return { own, answer: await pilots.callBoundMethod("fleetObjectHandler", method, [], null, WHO, handle, own.boundHandle) };
+}
+
+test("a fleet the pilot forms is the object CreateFleet answered: Init goes on it with the ship's type, and everything after", async () => {
+  const built = await selected({ answers: { "fleetObjectHandler.CreateFleet": boundObject("N=1:500"), "bound:GetInitState": "the state", "bound:GetWings": "the wings" } }, FLEET_PAIRS);
+  const { pilots, session, handle } = built;
+  assert.deepEqual(pilots.fleet(FIELDS, handle), { fleetID: null, holdsObject: false });
+  const made = await pilots.bindObject("fleetObjectHandler", "CreateFleet", [], null, WHO, handle);
+  // fleetSvc.CreateFleet: self.fleet = sm.RemoteSvc('fleetObjectHandler').CreateFleet(), held from that answer on.
+  assert.deepEqual(pilots.fleet(FIELDS, handle), { fleetID: null, holdsObject: true });
+  await pilots.callBoundMethod("fleetObjectHandler", "Init", [null, null], null, WHO, handle, made.boundHandle);
+  // self.fleet.Init(self.GetMyShipTypeID(), setupName, adInfoData=adInfoData): the ship's type is godma's word for it.
+  assert.deepEqual(onObjects(session, "Init"), [["N=1:500", "Init", [588, null], { adInfoData: null }]]);
+  intoFleet(session, FLEET);
+  assert.deepEqual(pilots.fleet(FIELDS, handle), { fleetID: FLEET, holdsObject: true });
+  // "My fleet", asked for by the BFF, is that object: no Moniker is made for it, and nothing binds.
+  const { own, answer } = await readOwnFleet(built);
+  assert.equal(answer.result, "the state");
+  assert.equal((await pilots.callBoundMethod("fleetObjectHandler", "GetWings", [], null, WHO, handle, own.boundHandle)).result, "the wings");
+  // Another service's Moniker, asked for with nothing named, is that service's own for all that.
+  const dogma = await pilots.bindObject("dogmaIM", "MachoBindObject", [], null, WHO, handle);
+  await pilots.callBoundMethod("dogmaIM", "GetAllInfo", [true, true, null], null, WHO, handle, dogma.boundHandle);
+  // And asked for again, as the BFF asks at every read of the panel, it is that object again.
+  assert.equal((await readOwnFleet(built, "GetWings")).answer.result, "the wings");
+  // So is the session's own fleet asked for by its number, as the BFF asks where it means this fleet and no other.
+  const byNumber = await pilots.bindObject("fleetObjectHandler", "MachoBindObject", [[FLEET]], null, WHO, handle);
+  await pilots.callBoundMethod("fleetObjectHandler", "GetWings", [], null, WHO, handle, byNumber.boundHandle);
+  assert.deepEqual(fleetBinds(session), []);
+  assert.deepEqual(onObjects(session, "GetInitState", "GetWings").map(([objectID, method]) => [objectID, method]), [["N=1:500", "GetInitState"], ["N=1:500", "GetWings"], ["N=1:500", "GetWings"], ["N=1:500", "GetWings"]]);
+  // A fleet that is named is another fleet's Moniker, as an invite's is: bound for itself by its own first call.
+  const other = await pilots.bindObject("fleetObjectHandler", "MachoBindObject", [[FLEET + 1]], null, WHO, handle);
+  await pilots.callBoundMethod("fleetObjectHandler", "RejectInvite", [true], null, WHO, handle, other.boundHandle);
+  assert.deepEqual(fleetBinds(session), [["fleetObjectHandler", FLEET + 1, "RejectInvite"]]);
+  assert.deepEqual(pilots.fleet(FIELDS, handle), { fleetID: FLEET, holdsObject: true });
+  // Whatever is asked of that other fleet's, the pilot's own fleet's object is its own still.
+  await pilots.callBoundMethod("fleetObjectHandler", "LeaveFleet", [], null, WHO, handle, other.boundHandle);
+  assert.deepEqual(pilots.fleet(FIELDS, handle), { fleetID: FLEET, holdsObject: true });
+  // UpdateFleetInfo: self.fleet.UpdateMemberInfo(self.GetMyShipTypeID()), whatever the caller named.
+  await pilots.callBoundMethod("fleetObjectHandler", "UpdateMemberInfo", [11], null, WHO, handle, own.boundHandle);
+  assert.deepEqual(onObjects(session, "UpdateMemberInfo"), [["N=1:500", "UpdateMemberInfo", [588], null]]);
+});
+
+test("leaving is asked of the fleet's object, and the object is then forgotten as the client forgets it", async () => {
+  let refuse = true;
+  const built = await formed({ "bound:LeaveFleet": () => { if (refuse) throw refusedBy("FleetNotAllowed"); return null; } });
+  const { pilots, session, handle } = built;
+  const { own } = await readOwnFleet(built);
+  const leave = () => pilots.callBoundMethod("fleetObjectHandler", "LeaveFleet", [], null, WHO, handle, own.boundHandle);
+  // A leaving the server refused has left nothing: the object is the fleet's still.
+  await rejects(leave(), "CALL_REFUSED");
+  assert.deepEqual(pilots.fleet(FIELDS, handle), { fleetID: FLEET, holdsObject: true });
+  refuse = false;
+  await leave();
+  // fleetSvc.LeaveFleet: self.fleet.LeaveFleet(), then self.Clear(), before the session has said anything.
+  assert.deepEqual(onObjects(session, "LeaveFleet").map(([objectID]) => objectID), ["N=1:500", "N=1:500"]);
+  assert.deepEqual([pilots.fleet(FIELDS, handle), fleetBinds(session)], [{ fleetID: FLEET, holdsObject: false }, []]);
+  // Any other call on the fleet's object leaves it held.
+  const again = await formed();
+  await readOwnFleet(again, "GetWings");
+  assert.deepEqual(again.pilots.fleet(FIELDS, again.handle), { fleetID: FLEET, holdsObject: true });
+});
+
+test("the fleet's object is kept until the session is in no fleet, or the server lets the object go", async () => {
+  // ProcessSessionChange: a fleetid that changes to None forgets self.fleet. One that changes to a fleet does not.
+  const left = await formed();
+  intoFleet(left.session, FLEET + 5);
+  assert.deepEqual(left.pilots.fleet(FIELDS, left.handle), { fleetID: FLEET + 5, holdsObject: true });
+  intoFleet(left.session, null);
+  assert.deepEqual(left.pilots.fleet(FIELDS, left.handle), { fleetID: null, holdsObject: false });
+  // A session change that is about something else forgets nothing.
+  const elsewhere = await formed();
+  elsewhere.session.change({ fleetrole: [null, 1], wingid: [null, 7] });
+  assert.deepEqual(elsewhere.pilots.fleet(FIELDS, elsewhere.handle), { fleetID: FLEET, holdsObject: true });
+  // machoNet.OnMachoObjectDisconnect for the fleet's object: it is gone, and "my fleet" is a Moniker by the
+  // session's fleet from then on, bound by its first call. Another object's going is nothing to the fleet.
+  const dropped = await formed();
+  dropped.session.notify("OnMachoObjectDisconnect", ["N=1:499", 1, null]);
+  assert.deepEqual(dropped.pilots.fleet(FIELDS, dropped.handle), { fleetID: FLEET, holdsObject: true });
+  dropped.session.notify("OnMachoObjectDisconnect", [Buffer.from("N=1:500"), 1, null]);
+  assert.deepEqual(dropped.pilots.fleet(FIELDS, dropped.handle), { fleetID: FLEET, holdsObject: false });
+  assert.equal((await readOwnFleet(dropped)).answer.result, "the state");
+  assert.deepEqual(fleetBinds(dropped.session), [["fleetObjectHandler", FLEET, "GetInitState"]]);
+  // That Moniker is the BFF's own making, not one the client would hold: it is not the fleet's object.
+  assert.deepEqual(dropped.pilots.fleet(FIELDS, dropped.handle), { fleetID: FLEET, holdsObject: false });
+  // A CreateFleet that answered no object leaves nothing held.
+  const none = await selected({ answers: { "fleetObjectHandler.CreateFleet": null } }, FLEET_PAIRS);
+  await rejects(none.pilots.bindObject("fleetObjectHandler", "CreateFleet", [], null, WHO, none.handle), "BOUND_NO_OBJECT");
+  assert.deepEqual(none.pilots.fleet(FIELDS, none.handle), { fleetID: null, holdsObject: false });
+  // And another service's object, come by the same road, is not a fleet's.
+  const scan = await selected({ answers: { "scanMgr.GetSystemScanMgr": boundObject("N=1:77") } });
+  await scan.pilots.bindObject("scanMgr", "GetSystemScanMgr", [], null, WHO, scan.handle);
+  assert.deepEqual(scan.pilots.fleet(FIELDS, scan.handle), { fleetID: null, holdsObject: false });
+});
+
+test("a fleet the pilot joins by invite is the Moniker that accepted: bound by the acceptance, with the ship's type, and kept", async () => {
+  let refuse = true;
+  const built = await selected({ answers: { "bound:AcceptInvite": () => { if (refuse) throw refusedBy("FleetNotFound"); return true; }, "bound:GetInitState": "the state" } }, FLEET_PAIRS);
+  const { pilots, session, handle } = built;
+  // OnFleetInvite: GetFleet(fleetID), a Moniker for the fleet the invite names.
+  const declined = await pilots.bindObject("fleetObjectHandler", "MachoBindObject", [[FLEET + 1]], null, WHO, handle);
+  await pilots.callBoundMethod("fleetObjectHandler", "RejectInvite", [], null, WHO, handle, declined.boundHandle);
+  // A Moniker that declined is nobody's fleet.
+  assert.deepEqual(pilots.fleet(FIELDS, handle), { fleetID: null, holdsObject: false });
+  const invite = await pilots.bindObject("fleetObjectHandler", "MachoBindObject", [[FLEET]], null, WHO, handle);
+  const accept = () => pilots.callBoundMethod("fleetObjectHandler", "AcceptInvite", [null], null, WHO, handle, invite.boundHandle);
+  // An acceptance the server refused joined nothing.
+  await rejects(accept(), "CALL_REFUSED");
+  assert.deepEqual(pilots.fleet(FIELDS, handle), { fleetID: null, holdsObject: false });
+  refuse = false;
+  session.binds.length = 0;
+  session.carried.length = 0;
+  session.boundCalls.length = 0;
+  await accept();
+  // __fleetMoniker.AcceptInvite(self.GetMyShipTypeID()); self.fleet = __fleetMoniker.
+  assert.deepEqual(fleetBinds(session), [["fleetObjectHandler", FLEET, "AcceptInvite"]]);
+  assert.deepEqual(onObjects(session, "AcceptInvite").map(([, , args, kwargs]) => [args, kwargs]), [[[588], null]]);
+  assert.deepEqual(pilots.fleet(FIELDS, handle), { fleetID: null, holdsObject: true });
+  intoFleet(session, FLEET);
+  const accepted = onObjects(session, "AcceptInvite")[0][0];
+  session.binds.length = 0;
+  session.carried.length = 0;
+  // "My fleet" is that Moniker's object, and nothing binds for it.
+  const { answer } = await readOwnFleet(built);
+  assert.equal(answer.result, "the state");
+  assert.deepEqual([fleetBinds(session), onObjects(session, "GetInitState").map(([objectID]) => objectID)], [[], [accepted]]);
 });
 
 // ── the monikers the BFF asks for ────────────────────────────────────────────
