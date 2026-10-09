@@ -45,7 +45,7 @@
 // so the list of what still needs reading is measured rather than guessed.
 // `shape` may also decide the status from the arguments it is given.
 
-const { constructorKeywordOrder } = require("./py27");
+const { constructorKeywordOrder, dictOrder, orderEntries } = require("./py27");
 
 /** A Python list, from a JS array (which would go out as a tuple) or from one already wrapped. */
 const list = (value) => (Array.isArray(value) ? { type: "list", items: value } : value);
@@ -62,6 +62,52 @@ function orderNumber(value) {
   const number = Number(value);
   if (Number.isSafeInteger(number)) return number > 0 ? number : null;
   return BigInt(value);
+}
+
+const token = (value) => ({ type: "token", value });
+/** A whole number above nought, off a number or off the text a plain object's key is; else null. */
+const wholeKey = (value) => {
+  const number = typeof value === "string" && /^\d+$/.test(value) ? Number(value) : value;
+  return typeof number === "number" && Number.isSafeInteger(number) && number > 0 ? number : null;
+};
+/** A dict of whole numbers to whole numbers, in the order a Python dict filled with them in that order has them. Pairs that are not such are left out. */
+function numbersDict(pairs) {
+  const entries = pairs.map(([key, value]) => [wholeKey(key), wholeKey(value)]).filter(([key, value]) => key !== null && value !== null);
+  return { type: "dict", entries: orderEntries(entries) };
+}
+/** What a route gave for a dict: a plain object's own pairs; a dict of the wire's as it is (null). */
+const plainPairs = (given) => (given && typeof given === "object" && !Array.isArray(given) && given.type === undefined ? Object.entries(given) : null);
+
+/** cargoItemsByType, or one of a fitting's dicts: quantities by type. */
+const quantitiesByType = (given) => (plainPairs(given) === null ? given : numbersDict(plainPairs(given)));
+
+/**
+ * fittingSvc.LoadFitting's itemsToFit, a defaultdict(set): the hangar's items to fit from, by type. Python reduces
+ * a defaultdict to (collections.defaultdict, (set,)) with its items after, and a set to (set, ([...],)); so each
+ * goes to the wire as an object made by that call. A route gives a plain object of lists.
+ */
+function itemsToFit(given) {
+  const pairs = plainPairs(given);
+  if (pairs === null) return given;
+  const byType = pairs.map(([typeID, itemIDs]) => [wholeKey(typeID), (Array.isArray(itemIDs) ? itemIDs : []).map(wholeKey).filter((itemID) => itemID !== null)])
+    .filter(([typeID, itemIDs]) => typeID !== null && itemIDs.length > 0);
+  const setOf = (itemIDs) => ({ type: "objectex1", header: [token("__builtin__.set"), [{ type: "list", items: dictOrder(itemIDs) }]], list: [], dict: [] });
+  return { type: "objectex1", header: [token("collections.defaultdict"), [token("__builtin__.set")]], list: [], dict: orderEntries(byType.map(([typeID, itemIDs]) => [typeID, setOf(itemIDs)])) };
+}
+
+/** The six a fitting is applied by, in the order the client writes them (shipfitting/fitting.py 119). */
+const FITTING_PARTS = Object.freeze(["chargesByType", "dronesByType", "fightersByTypeID", "iceByType", "modulesByFlag", "implantsByTypeID"]);
+
+/**
+ * Fitting.GetKeyValForApplyingFit: a util.KeyVal of six dicts, the modules by slot and five kinds of thing by type.
+ * A route gives the modules by slot alone, as a plain object, or a plain object of the parts by those names; a
+ * part it has not is an empty dict, as it is in the client for a fitting with none of that kind.
+ */
+function fittingKeyVal(given) {
+  const pairs = plainPairs(given);
+  if (pairs === null) return given;
+  const parts = pairs.some(([name]) => FITTING_PARTS.includes(name)) ? given : { modulesByFlag: given };
+  return keyVal(constructorKeywordOrder(FITTING_PARTS).map((name) => [name, quantitiesByType(parts[name] ?? {})]));
 }
 
 /** The eight keywords a sale's item is made with, in the order the client's window writes them (sellMulti.py 501). */
@@ -516,6 +562,22 @@ const RETAIL_CALLS = Object.freeze({
     `${INV_CACHE}:1224`,
     "The client works a capacity out itself: the attribute from dogma or the type, and the volume of what List returned. It never asks the server.",
   ),
+  "invbroker.FitFitting": needing(Object.freeze({
+    status: "same",
+    source: `${FITTING_SVC}:618`,
+    note: "shipInv.FitFitting(activeShipID, shipTypeID, itemsToFit, session.stationid or session.structureid, fittingObjKeyVal, cargoItemsByType, fitRigs), on the ship's own inventory: the items a defaultdict(set) of the hangar's by type, the fitting a util.KeyVal of six dicts (shipfitting/fitting.py 119). The wire forms of the defaultdict and its sets are worked out from how Python reduces each and from what this server reads and sends: no recording has them.",
+    shape: (args, kwargs, context) => {
+      if (args.length !== 7) return { args, kwargs, status: "differs", note: "The client sends seven: the ship, its type, the items to fit, where the pilot is docked, the fitting, the cargo, and whether to fit rigs." };
+      const [shipID, givenType, items, locationID, fitting, cargo, fitRigs] = args;
+      const ownType = context && context.shipID === shipID && typeof context.shipTypeID === "function" ? context.shipTypeID() : null;
+      const shipTypeID = givenType ?? ownType ?? null;
+      const shaped = [shipID, shipTypeID, itemsToFit(items), locationID, fittingKeyVal(fitting), quantitiesByType(cargo), Boolean(fitRigs)];
+      if (shipTypeID === null) return { args: shaped, kwargs, status: "differs", note: "The client names the type of the ship it fits. This call names none, and the ship is not the one the pilot is in." };
+      const asGiven = shaped.every((value, at) => value === args[at]);
+      return asGiven ? { args, kwargs } : { args: shaped, kwargs, status: "reshaped" };
+    },
+    // The ship's type is godma's word for the ship the pilot is in.
+  }), "dogma"),
   "invbroker.Add": judged(
     `${INV_CONTROLLERS}:213`,
     // Add(itemID, sourceLocationID, qty=quantity, flag=self.locationFlag): both keywords, always. The quantity is

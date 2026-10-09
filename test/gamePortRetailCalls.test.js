@@ -1272,3 +1272,62 @@ test("a sale's item is given how far its price is from the type's average, and w
   assert.equal(withContext("marketProxy.PlaceMultiSellOrder", [[{ ...ROUTES_ITEM, typeID: 35 }], false, 1, null], null, averageKnown()).status, "differs");
   assert.equal(retailNeeds("marketProxy", "PlaceMultiSellOrder"), "sale");
 });
+
+// fittingSvc.LoadFitting (554): shipInv.FitFitting(activeShipID, shipTypeID, itemsToFit, session.stationid or
+// session.structureid, fittingObjKeyVal, cargoItemsByType, fitRigs). itemsToFit is a defaultdict(set) of the
+// hangar's items by type, the fitting a util.KeyVal of six dicts (shipfitting/fitting.py 119). The BFF's route gave
+// plain objects for the three, which cannot be put on the wire: no saved fitting could be applied on the game port.
+// The orders below are the client's own Python's, asked for these very names and numbers.
+
+const fitToken = (value) => ({ type: "token", value });
+const fitSet = (...ids) => ({ type: "objectex1", header: [fitToken("__builtin__.set"), [{ type: "list", items: ids }]], list: [], dict: [] });
+const fitItems = (...pairs) => ({ type: "objectex1", header: [fitToken("collections.defaultdict"), [fitToken("__builtin__.set")]], list: [], dict: pairs });
+const fitDict = (...entries) => ({ type: "dict", entries });
+const fitKeyVal = ({ modules = fitDict(), drones = fitDict(), charges = fitDict(), fighters = fitDict(), ice = fitDict(), implants = fitDict() } = {}) =>
+  saleKeyVal([["fightersByTypeID", fighters], ["dronesByType", drones], ["modulesByFlag", modules], ["iceByType", ice], ["chargesByType", charges], ["implantsByTypeID", implants]]);
+const FIT_SHIP = 9988400103291;
+const inThatShip = { shipID: FIT_SHIP, shipTypeID: () => 588 };
+
+test("a saved fitting goes out as the client applies it: the ship's type, the items a defaultdict of sets, the fitting a KeyVal of six dicts", () => {
+  // The BFF's route: no ship type, and a plain object for the items, for the modules by slot and for the cargo.
+  const routes = [FIT_SHIP, null, { 483: [9001], 92: [9988400109051, 9988400109052, 9988400109060, 9001] }, 60003760, { 27: 483, 28: 484, 11: 3, 19: 4, 92: 5, 125: 6, 12: 7 }, { 34: 100 }, false];
+  const fitted = withContext("invbroker.FitFitting", routes, null, inThatShip);
+  assert.equal(fitted.status, "reshaped");
+  assert.deepEqual(fitted.args, [
+    FIT_SHIP,
+    588,
+    // By type in the order a dict has them, each type's items in the order a set has them.
+    fitItems([483, fitSet(9001)], [92, fitSet(9988400109051, 9988400109052, 9001, 9988400109060)]),
+    60003760,
+    fitKeyVal({ modules: fitDict([92, 5], [11, 3], [12, 7], [19, 4], [27, 483], [28, 484], [125, 6]) }),
+    fitDict([34, 100]),
+    false,
+  ]);
+  assert.match(fitted.source, /fittingSvc\.py:618$/);
+  // A fitting given by its parts, and a ship's type named: both as given.
+  const whole = withContext("invbroker.FitFitting", [FIT_SHIP, 603, {}, 60003760, { modulesByFlag: { 27: 483 }, dronesByType: { 2488: 5 }, chargesByType: { 215: 200 } }, {}, 1], null, inThatShip);
+  assert.deepEqual(whole.args, [FIT_SHIP, 603, fitItems(), 60003760, fitKeyVal({ modules: fitDict([27, 483]), drones: fitDict([2488, 5]), charges: fitDict([215, 200]) }), fitDict(), true]);
+  // The ship's type is godma's to say: it is primed first.
+  assert.equal(retailNeeds("invbroker", "FitFitting"), "dogma");
+  // The client's own call is the client's call.
+  const clients = [FIT_SHIP, 588, fitItems([483, fitSet(9001)]), 60003760, fitKeyVal({ modules: fitDict([27, 483]) }), fitDict(), true];
+  assert.deepEqual([withContext("invbroker.FitFitting", clients, null, inThatShip).status, withContext("invbroker.FitFitting", clients, null, inThatShip).args], ["same", clients]);
+});
+
+test("a fitting for a ship whose type is not known, or that is no seven arguments, goes out noted", () => {
+  const routes = (shipID) => [shipID, null, { 483: [9001] }, 60003760, { 27: 483 }, {}, false];
+  // Another ship than the one the pilot is in: its type is not godma's to say.
+  const other = withContext("invbroker.FitFitting", routes(FIT_SHIP + 1), null, inThatShip);
+  assert.deepEqual([other.status, other.args[1], other.args[2]], ["differs", null, fitItems([483, fitSet(9001)])]);
+  assert.match(other.note, /type/);
+  for (const context of [{ shipID: FIT_SHIP, shipTypeID: () => null }, { shipID: FIT_SHIP }, {}, undefined]) assert.equal(withContext("invbroker.FitFitting", routes(FIT_SHIP), null, context).status, "differs");
+  // Not the client's seven: as it came.
+  for (const given of [[FIT_SHIP, null, {}, 60003760, {}, {}], [FIT_SHIP, null, {}, 60003760, {}, {}, false, 1], []]) {
+    const answer = withContext("invbroker.FitFitting", given, null, inThatShip);
+    assert.deepEqual([answer.status, answer.args], ["differs", given], JSON.stringify(given));
+    assert.match(answer.note, /seven/);
+  }
+  // What is no type, no item and no slot is left out of what is made.
+  const odd = withContext("invbroker.FitFitting", [FIT_SHIP, null, { x: [9001], 483: ["y", 9002, 0], 484: "z", 485: [] }, 60003760, { a: 483, 27: "b", 28: 484 }, { 34: 0, q: 5, 35: 2 }, false], null, inThatShip);
+  assert.deepEqual([odd.args[2], odd.args[4], odd.args[5]], [fitItems([483, fitSet(9002)]), fitKeyVal({ modules: fitDict([28, 484]) }), fitDict([35, 2])]);
+});

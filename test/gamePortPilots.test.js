@@ -5961,3 +5961,26 @@ test("the broker's fee rate at a station is answered for a pilot as an order the
   // Not this pilot's session: the gateway's refusal.
   await rejects(pilots.brokersFeeRate(60003760, WHO, "nobody"), "SESSION_NOT_FOUND");
 });
+
+// fittingSvc.LoadFitting (554): shipInv = invCache.GetInventoryFromId(activeShip), and the fitting is applied on
+// that: the ship's own inventory. The BFF's route applies it on the inventory manager of where the pilot is.
+
+test("a saved fitting is applied on the ship's own inventory, which the location's manager is asked for, with the client's arguments", async () => {
+  const { pilots, session, handle } = await selected({}, { allowed: new Set(["invbroker.MachoBindObject", "invbroker.FitFitting", "invbroker.GetInventoryFromId"]) });
+  const manager = (await pilots.bindObject("invbroker", "MachoBindObject", [[STATION, 15]], null, WHO, handle)).boundHandle;
+  session.boundCalls.length = 0;
+  const answer = await pilots.callBoundMethod("invbroker", "FitFitting", [SHIP, null, { 483: [9001] }, STATION, { 27: 483 }, {}, false], null, WHO, handle, manager);
+  assert.deepEqual(answer.result, null);
+  const [asked, fitted] = session.boundCalls.slice(-2);
+  // The ship's inventory, asked of the manager as invCache asks it: (itemID, passive).
+  assert.deepEqual([asked.method, asked.args], ["GetInventoryFromId", [SHIP, 0]]);
+  assert.equal(fitted.method, "FitFitting");
+  // Applied on the object the manager answered (the stand-in's newest), not on the manager, nor on the route's own bind.
+  assert.equal(fitted.objectID, `N=1:${session.objects}`);
+  assert.notEqual(fitted.objectID, asked.objectID);
+  assert.equal(fitted.args[0], SHIP);
+  assert.equal(fitted.args[2].header[0].value, "collections.defaultdict");
+  assert.equal(fitted.args[4].name, "util.KeyVal");
+  const ledger = Object.fromEntries(pilots.callLedger().filter((row) => /FitFitting|GetInventoryFromId/.test(row.pair)).map((row) => [row.pair, Object.keys(row.statuses)]));
+  assert.deepEqual(ledger, { "invbroker.GetInventoryFromId": ["reshaped"], "invbroker.FitFitting": ["reshaped"] });
+});
