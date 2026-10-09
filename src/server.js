@@ -13143,7 +13143,9 @@ app.get("/api/bridge/standings", requireAuth, async (req, res, next) => {
 //   • charMgr.GetPublicInfo3   -> {type:"list", items:[util.KeyVal{name, corp,
 //     alliance, security, ...}]} — public identity.
 //   • charMgr.GetCharacterDescription -> a plain STRING (the bio).
-//   • charMgr.GetHomeStation   -> util.KeyVal carrying the home stationID.
+//   • charMgr.GetHomeStationRow -> util.KeyVal carrying the home stationID: the
+//     read the client's character sheet makes (charactersheet.py 59). EveJS
+//     answers GetHomeStation, which the client never asks, with the same row.
 //   • charMgr.GetCloneInfo     -> util.KeyVal{clones(dict), implants(dict), ...}.
 // Every read is issued with NO ARGUMENT so the handler falls through to
 // session.characterID — there is no way for the browser to point one at another
@@ -13162,7 +13164,7 @@ app.get("/api/bridge/character-sheet", requireAuth, async (req, res, next) => {
     const [publicInfo, description, homeStation, cloneInfo] = await Promise.allSettled([
       heldTopLevelCall(held, req.webSessionID, "charMgr", "GetPublicInfo3", [], null),
       heldTopLevelCall(held, req.webSessionID, "charMgr", "GetCharacterDescription", [], null),
-      heldTopLevelCall(held, req.webSessionID, "charMgr", "GetHomeStation", [], null),
+      heldTopLevelCall(held, req.webSessionID, "charMgr", "GetHomeStationRow", [], null),
       heldTopLevelCall(held, req.webSessionID, "charMgr", "GetCloneInfo", [], null),
     ]);
     // A lost live session can't be recovered by any read; surface it so the page

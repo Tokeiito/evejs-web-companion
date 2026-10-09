@@ -114,6 +114,17 @@ const CONTRACT_SEARCH_KEYWORDS = Object.freeze([
   "minVolume", "maxVolume", "excludeTrade", "excludeMultiple", "excludeNoBuyout", "availability", "description",
   "searchHint", "sortBy", "sortDir", "startNum",
 ]);
+const INDUSTRY = "eve/client/script/industry";
+const MAIL_SERVICES = "eve/client/script/ui/services/mail";
+const FLEET_SVC = "eve/client/script/parklife/fleetSvc.py";
+/** A read of one character, which the client always names: the pilot's own, when the route named none. */
+const ofTheCharacter = (args, kwargs, context) => {
+  if (args[0] !== null && args[0] !== undefined) return { args, kwargs };
+  const characterID = context.characterID ?? null;
+  return characterID === null
+    ? { args, kwargs, status: "differs", note: "The client names the character it asks about. With no pilot known there is no one to name, and the call goes as it was given." }
+    : { args: [characterID], kwargs, status: "reshaped" };
+};
 /** The calendar's two reads of one event: the client has the event's row to hand, so its ID and its owner's both. */
 const ofAnOpenedEvent = (args) => (args[0] > 0 && args[1] !== null && args[1] !== undefined
   ? { status: "same" }
@@ -367,6 +378,51 @@ const RETAIL_CALLS = Object.freeze({
   "agentMgr.GetMyJournalDetails": same(`${JOURNAL_WINDOW}:312`, "RemoteSvc('agentMgr').GetMyJournalDetails(), no arguments"),
   "standingMgr.GetCharStandings": same(`${STANDING_SVC}:119`, "RemoteSvc('standingMgr').GetCharStandings(), no arguments"),
   "standingMgr.GetCorpStandings": same(`${STANDING_SVC}:126`, "RemoteSvc('standingMgr').GetCorpStandings(), no arguments, and only for a pilot whose corporation is not an NPC one (118)"),
+  // ── a character: its sheet, its stations ──────────────────────────────────
+  "charMgr.GetPublicInfo3": Object.freeze({
+    status: "same",
+    source: "eve/client/script/ui/shared/info/characterInfoWindow.py:194",
+    note: "RemoteSvc('charMgr').GetPublicInfo3(itemID): the character named, by the window that shows one. Asked with none, the pilot's own.",
+    shape: ofTheCharacter,
+  }),
+  "charMgr.GetCharacterDescription": Object.freeze({
+    status: "same",
+    source: "eve/client/script/ui/shared/neocom/charsheet/bioPanel.py:28",
+    note: "RemoteSvc('charMgr').GetCharacterDescription(session.charid): the character named. Asked with none, the pilot's own.",
+    shape: ofTheCharacter,
+  }),
+  "charMgr.GetHomeStationRow": same("eve/client/script/ui/shared/neocom/charactersheet.py:59", "RemoteSvc('charMgr').GetHomeStationRow(), no arguments, asked once and kept until the session is reset"),
+  "charMgr.GetHomeStation": webOnly("eve/client/script/ui/shared/neocom/charactersheet.py:59", "The client never asks this of charMgr: its character sheet's service asks GetHomeStationRow()."),
+  "charMgr.GetCloneInfo": webOnly("eve/client/script/ui/services/clonejumpsvc.py:76", "The client never asks this. Its jump clones, their implants and the time of the last jump come from GetCloneState() on the jumpCloneSvc moniker for where the pilot is; the implants in the pilot's head are godma's, from GetAllInfo."),
+  "charMgr.ListStations": same(`${INV_CACHE}:833`, "invCache's global container: self.moniker.ListStations(), no arguments, kept for five minutes"),
+
+  // ── industry ──────────────────────────────────────────────────────────────
+  "blueprintManager.GetBlueprintDataByOwner": same(`${INDUSTRY}/blueprintSvc.py:150`, "RemoteSvc('blueprintManager').GetBlueprintDataByOwner(ownerID, None), or with a facility's ID for the blueprints at one (137)"),
+  "industryManager.GetJobsByOwner": same(`${INDUSTRY}/industrySvc.py:73`, "RemoteSvc('industryManager').GetJobsByOwner(ownerID, includeCompleted)"),
+  "industryManager.GetJobCounts": same(`${INDUSTRY}/industrySvc.py:243`, "RemoteSvc('industryManager').GetJobCounts(session.charid)"),
+  "facilityManager.GetFacilities": same(`${INDUSTRY}/facilitySvc.py:133`, "RemoteSvc('facilityManager').GetFacilities(), no arguments"),
+  "facilityManager.GetMaxActivityModifiers": same(`${INDUSTRY}/facilitySvc.py:87`, "RemoteSvc('facilityManager').GetMaxActivityModifiers(), no arguments"),
+
+  // ── mail and notifications ────────────────────────────────────────────────
+  "mailMgr.SyncMail": same(`${MAIL_SERVICES}/mailSvc.py:157`, "RemoteSvc('mailMgr').SyncMail(firstID, lastID): the lowest and highest message IDs the client holds, (None, 0) when it holds none"),
+  "notificationMgr.GetByGroupID": same(`${MAIL_SERVICES}/notificationSvc.py:64`, "RemoteSvc('notificationMgr').GetByGroupID(groupID)"),
+  "notificationMgr.GetUnprocessed": same(`${MAIL_SERVICES}/notificationSvc.py:107`, "RemoteSvc('notificationMgr').GetUnprocessed(), no arguments"),
+  "notificationMgr.GetAllNotifications": Object.freeze({
+    status: "same",
+    source: `${MAIL_SERVICES}/notificationSvc.py:93`,
+    note: "RemoteSvc('notificationMgr').GetAllNotifications(fromID=fromID): a keyword, nought for all of them",
+    shape: (args, kwargs) => (args.length === 0 && "fromID" in kwargs
+      ? { args, kwargs }
+      : { args: [], kwargs: { ...kwargs, fromID: kwargs.fromID ?? args[0] ?? 0 }, status: "reshaped" }),
+  }),
+
+  // ── a fleet's own object: asked only by a pilot who is in the fleet ───────
+  "fleetObjectHandler.GetInitState": same(`${FLEET_SVC}:259`, "self.fleet.GetInitState(), no arguments, on the fleet's object"),
+  "fleetObjectHandler.GetWings": same(`${FLEET_SVC}:1165`, "self.fleet.GetWings(), no arguments"),
+  "fleetObjectHandler.GetMotd": same(`${FLEET_SVC}:1967`, "self.fleet.GetMotd(), no arguments"),
+  "fleetObjectHandler.GetJoinRequests": same(`${FLEET_SVC}:461`, "self.fleet.GetJoinRequests(), no arguments"),
+  "fleetObjectHandler.GetFleetComposition": same(`${FLEET_SVC}:900`, "self.fleet.GetFleetComposition(), no arguments"),
+
   // ── contracts, the market and the calendar: the proxy's services ──────────
   "contractProxy.SearchContracts": Object.freeze({
     status: "same",

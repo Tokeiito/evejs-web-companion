@@ -614,3 +614,72 @@ test("the contracts' own lists, the market's and the calendar's reads, set besid
   const dated = form("marketProxy.CharGetTransactions", [134359051855730000]);
   assert.deepEqual([dated.status, dated.args], ["differs", [134359051855730000]]);
 });
+
+test("the character's own reads name the character, as the client names it", () => {
+  const withPilot = (pair, args) => retailForm(...pair.split("."), args, null, { characterID: 140000002 });
+  // charMgr.GetPublicInfo3(itemID) and GetCharacterDescription(session.charid): asked with none, the pilot's own.
+  for (const pair of ["charMgr.GetPublicInfo3", "charMgr.GetCharacterDescription"]) {
+    assert.deepEqual([withPilot(pair, []).status, withPilot(pair, []).args], ["reshaped", [140000002]], pair);
+    assert.deepEqual([withPilot(pair, [null]).status, withPilot(pair, [null]).args], ["reshaped", [140000002]], pair);
+    // Another character's, as the info window asks, goes as it was given.
+    assert.deepEqual([withPilot(pair, [140000001]).status, withPilot(pair, [140000001]).args], ["same", [140000001]], pair);
+    // With no pilot known there is nothing to name: sent as it was, and said to differ.
+    const blind = retailForm(...pair.split("."), [], null, {});
+    assert.deepEqual([blind.status, blind.args], ["differs", []], pair);
+    assert.match(blind.note, /names the character/, pair);
+  }
+  // The row is the client's read of its home station; the other two it never makes.
+  assert.equal(form("charMgr.GetHomeStationRow", []).status, "same");
+  for (const pair of ["charMgr.GetHomeStation", "charMgr.GetCloneInfo"]) {
+    assert.equal(form(pair, []).status, "web-only", pair);
+    assert.ok(form(pair, []).note.length > 40, pair);
+  }
+  assert.match(form("charMgr.GetHomeStation", []).note, /GetHomeStationRow/);
+  assert.match(form("charMgr.GetCloneInfo", []).note, /jumpCloneSvc/);
+});
+
+test("industry's reads, mail's, the notifications' and the fleet's, set beside the client's", () => {
+  for (const [pair, args] of [
+    ["charMgr.ListStations", []],
+    ["blueprintManager.GetBlueprintDataByOwner", [140000002, null]],
+    ["blueprintManager.GetBlueprintDataByOwner", [140000002, 60000004]],
+    ["industryManager.GetJobsByOwner", [140000002, true]],
+    ["industryManager.GetJobsByOwner", [140000002, false]],
+    ["industryManager.GetJobCounts", [140000002]],
+    ["facilityManager.GetFacilities", []],
+    ["facilityManager.GetMaxActivityModifiers", []],
+    ["notificationMgr.GetByGroupID", [3]],
+    ["notificationMgr.GetUnprocessed", []],
+    ["mailMgr.SyncMail", [null, 0]],
+    ["mailMgr.SyncMail", [311, 340]],
+    ["fleetObjectHandler.GetInitState", []],
+    ["fleetObjectHandler.GetWings", []],
+    ["fleetObjectHandler.GetMotd", []],
+    ["fleetObjectHandler.GetJoinRequests", []],
+    ["fleetObjectHandler.GetFleetComposition", []],
+  ]) {
+    const answer = form(pair, args);
+    assert.deepEqual([answer.status, answer.args, answer.kwargs, answer.proxy], ["same", args, null, false], pair);
+    assert.match(answer.source, /\.py:\d+$/, pair);
+  }
+  // All of a pilot's notifications are asked for with the keyword: GetAllNotifications(fromID=fromID).
+  for (const given of [[[0], null], [[77], null], [[], null]]) {
+    const answer = form("notificationMgr.GetAllNotifications", ...given);
+    assert.deepEqual([answer.status, answer.args, answer.kwargs], ["reshaped", [], { fromID: given[0][0] ?? 0 }], JSON.stringify(given));
+  }
+  const spelt = form("notificationMgr.GetAllNotifications", [], { fromID: 77 });
+  assert.deepEqual([spelt.status, spelt.args, spelt.kwargs], ["same", [], { fromID: 77 }]);
+  // Said both ways, the keyword is the one that counts, and nothing goes positionally.
+  const both = form("notificationMgr.GetAllNotifications", [5], { fromID: 77 });
+  assert.deepEqual([both.status, both.args, both.kwargs], ["reshaped", [], { fromID: 77 }]);
+});
+
+test("the ledger's last pass left no pair unread", () => {
+  // Every pair of docs/game-port-call-ledger.md's pass (the docked routes, as Test Two) has an entry.
+  for (const pair of [
+    "blueprintManager.GetBlueprintDataByOwner", "charMgr.GetCharacterDescription", "charMgr.GetCloneInfo", "charMgr.GetHomeStation", "charMgr.GetPublicInfo3", "charMgr.ListStations",
+    "facilityManager.GetFacilities", "facilityManager.GetMaxActivityModifiers", "fleetObjectHandler.GetFleetComposition", "fleetObjectHandler.GetInitState", "fleetObjectHandler.GetJoinRequests",
+    "fleetObjectHandler.GetMotd", "fleetObjectHandler.GetWings", "industryManager.GetJobCounts", "industryManager.GetJobsByOwner", "mailMgr.SyncMail",
+    "notificationMgr.GetAllNotifications", "notificationMgr.GetByGroupID", "notificationMgr.GetUnprocessed",
+  ]) assert.ok(Object.hasOwn(RETAIL_CALLS, pair), pair);
+});

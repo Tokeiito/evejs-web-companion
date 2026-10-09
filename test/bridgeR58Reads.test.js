@@ -353,3 +353,33 @@ test("each read route requires a live session (409 NO_LIVE_SESSION with no chara
     assert.equal(payload.error, "NO_LIVE_SESSION", path);
   }
 });
+
+// ── The character sheet (GET /api/bridge/character-sheet) ────────────────────
+
+test("the character sheet asks for the home station as the client's sheet does: the row", async () => {
+  const gateway = fakeGateway();
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+
+  const { response, payload } = await apiRequest(baseUrl, "/api/bridge/character-sheet");
+  assert.equal(response.status, 200);
+  // charactersheet.py 59: sm.RemoteSvc('charMgr').GetHomeStationRow(). The client never asks GetHomeStation.
+  assert.deepEqual(gateway.calls.call.filter((c) => c.service === "charMgr").map((c) => c.method).sort(), ["GetCharacterDescription", "GetCloneInfo", "GetHomeStationRow", "GetPublicInfo3"]);
+  for (const read of gateway.calls.call.filter((c) => c.service === "charMgr")) assert.deepEqual([read.args, read.kwargs], [[], null], read.method);
+  // The answer keeps its place in the route's own answer.
+  assert.deepEqual(payload.homeStation, HOME_STATION_ROW);
+  assert.deepEqual(payload.errors, { publicInfo: null, description: null, homeStation: null, cloneInfo: null });
+});
+
+test("a failed home station read is its own failure on the sheet, and the rest still answer", async () => {
+  const gateway = fakeGateway({
+    async callMethod(service, method) {
+      if (method === "GetHomeStationRow") throw Object.assign(new Error("no row"), { code: "CALL_FAILED", statusCode: 502 });
+      return { service, method, result: method === "GetCharacterDescription" ? "a bio" : null, notifications: [] };
+    },
+  });
+  const { baseUrl } = await startTestServer({ gateway });
+  await selectOnServer(baseUrl);
+  const { payload } = await apiRequest(baseUrl, "/api/bridge/character-sheet");
+  assert.deepEqual([payload.homeStation, payload.errors.homeStation, payload.description, payload.errors.description], [null, "CALL_FAILED", "a bio", null]);
+});
