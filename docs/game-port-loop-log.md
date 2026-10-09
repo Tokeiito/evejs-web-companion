@@ -327,7 +327,8 @@ Decisions taken in your place, and anything waiting on you. Overrule any of thes
   gets a second one. Nothing in the page or the BFF calls the wing route today.
 - **A pilot moved within its fleet now takes its new wing and squad in its session on the
   game port** (2026-10-09): the transport answers the server's `OnFleetMove` with
-  `FinishMove`, as the client does. Before, such a pilot's session kept the old ones.
+  `FinishMove`, as the client does, and the session change was seen. By the server's code
+  such a pilot's session kept the old ones before; I did not measure that.
 - **My scratch folder holds 33 older copies of the store, 1.9 GB**, from the checks of
   8 October, before I took to deleting each copy once the store was back. I have not
   deleted them: some are named "before-..." and I cannot say now that none is wanted. They
@@ -8969,9 +8970,11 @@ one moved).
 - `SetOptions(options)` (444) sends a copy of the options the client keeps, a KeyVal as the
   server's is, with free move changed and nothing else.
 
-**What the BFF did.** It answered `OnFleetMove` with nothing, so a pilot moved on the game
-port kept its old wing and squad in its session. Its wing route made a wing with no squad.
-It sent the options as whatever the caller gave, a plain dict.
+**What the BFF did.** It answered `OnFleetMove` with nothing. By the server's code
+(`finishMove` is what applies the wing and squad it holds pending) a pilot moved on the
+game port then kept its old wing and squad in its session; that was read, not measured
+before the change. Its wing route made a wing with no squad. It sent the options as
+whatever the caller gave, a plain dict.
 
 **What was built.** The transport asks `FinishMove` at `OnFleetMove` and `CreateSquad` after
 a `CreateWing` that made a wing, both on the fleet's object and only where it is held. The
