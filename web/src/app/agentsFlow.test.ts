@@ -1481,12 +1481,20 @@ const pageAnswer = (missionState: number, contentID = 1382) => ({
 });
 const PAGE_RECORD = { contentTemplate: "agent.missionTemplatizedContent_BasicCourierMission", messages: { "messages.mission.briefing": 900954 }, nameID: 900260 };
 
+/** standingMgr.GetCharStandings as the server answers it: who the pilot stands with, and how. */
+const STANDINGS_ROWSET = {
+  type: "object",
+  name: "util.Rowset",
+  args: { type: "dict", entries: [["header", { type: "list", items: ["fromID", "standing"] }], ["lines", { type: "list", items: [{ type: "list", items: [1000002, 3.5] }, { type: "list", items: [3008416, -0.5] }] }]] },
+};
+
 /** A pilot with a mission's page to open: the objectives and the client's record are answered from `state`. */
 async function withMissionPage() {
-  const page: { objective: unknown; record: unknown; recordFails: boolean; objectiveFails: boolean; hold: Promise<void> | null; agent: unknown; agentFails: boolean } = {
+  const page: { objective: unknown; record: unknown; recordFails: boolean; objectiveFails: boolean; hold: Promise<void> | null; agent: unknown; agentFails: boolean; standingsFail: boolean } = {
     objective: pageAnswer(2), record: PAGE_RECORD, recordFails: false, objectiveFails: false, hold: null,
     agent: { agentID: 3008416, agentTypeID: 2, divisionID: 22, level: 1, stationID: 60000004, corporationID: 1000002, factionID: 500001, divisionNameID: 900109 },
     agentFails: false,
+    standingsFail: false,
   };
   const made = await listening({ null: ACCEPTED }, {
     routes: async (path) => {
@@ -1499,6 +1507,11 @@ async function withMissionPage() {
       }
       if (/\/keywords\?/.test(path)) return [200, { ok: true, keywords: { type: "dict", entries: [["objectiveQuantity", 1]] }, notifications: [] }];
       if (/\/record$/.test(path)) return page.agentFails ? [502, { ok: false, error: "UNREACHABLE", message: "No answer." }] : [200, { ok: true, agent: page.agent }];
+      if (path === "/api/bridge/standings") {
+        return page.standingsFail
+          ? [502, { ok: false, error: "UNREACHABLE", message: "No answer." }]
+          : [200, { ok: true, char: STANDINGS_ROWSET, corp: null, transactions: null, compositions: null, errors: { char: null, corp: null, transactions: null, compositions: null } }];
+      }
       return undefined;
     },
   });
@@ -1512,8 +1525,9 @@ test("Read Details opens the mission's page: one read of the agent's object, the
   await flow.openMissionDetails(3008416);
   await until(() => store.agents.get().missionPage?.record != null);
   assert.deepEqual(pageAsked().sort(), ["/api/bridge/agents/3008416/keywords?contentID=1382", "/api/bridge/agents/3008416/mission-objectives", "/api/client-data/missions/1382"]);
-  // Reads, all of them: nothing is asked of the agent that changes anything.
-  assert.deepEqual([...new Set(requests.map((request) => request.method))], ["GET"]);
+  // Reads, all of them: nothing is asked of the agent that changes anything. (Names are asked for by POST, and change nothing.)
+  assert.deepEqual([...new Set(requests.filter((request) => request.path !== "/api/names").map((request) => request.method))], ["GET"]);
+  assert.deepEqual(requests.filter((request) => request.method !== "GET").map((request) => request.path).filter((path) => path !== "/api/names"), []);
   // And what the client's agents service knows of the agent, for its card.
   assert.deepEqual(requests.map((request) => request.path).filter((path) => path.endsWith("/record")), ["/api/bridge/agents/3008416/record"]);
   const held = store.agents.get().missionPage;
@@ -1826,4 +1840,66 @@ test("what the client knows of an agent is asked for once, kept by its ID, and a
   // Nothing is asked for what is not an agent.
   for (const not of [0, -1, 1.5, Number.NaN]) flow.requestAgentRecord(not);
   assert.equal(asked().length, 4);
+});
+
+test("opening a mission's page reads the pilot's standings and skills if they have not been read, and not again once they have", async () => {
+  const { store, flow, requests } = await withMissionPage();
+  const reads = (path: string) => requests.filter((request) => request.path === path).length;
+  assert.equal(store.standings.get().loaded, false);
+  await flow.openMissionDetails(3008416);
+  await until(() => store.standings.get().loaded);
+  assert.equal(reads("/api/bridge/standings"), 1);
+  assert.equal(reads("/api/bridge/skills"), 1);
+  assert.deepEqual(store.standings.get().char, [{ fromID: 1000002, standing: 3.5 }, { fromID: 3008416, standing: -0.5 }]);
+  // Opened again: the standings are held, and are not read again.
+  flow.closeMissionDetails();
+  await flow.openMissionDetails(3008416);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(reads("/api/bridge/standings"), 1);
+});
+
+test("told the pilot's standings changed, the flow changes what it holds from what it was told, and reads nothing", async () => {
+  const { store, flow, requests, push } = await withMissionPage();
+  const reads = () => requests.filter((request) => request.path === "/api/bridge/standings").length;
+  // Before they have been read there is nothing to change.
+  await push("OnStandingSet", [1000002, LISTENING_PILOT, 4.0]);
+  assert.equal(store.standings.get().char, null);
+  assert.equal(store.standings.get().loaded, false);
+  await flow.openMissionDetails(3008416);
+  await until(() => store.standings.get().loaded);
+  assert.equal(reads(), 1);
+
+  // Set outright.
+  await push("OnStandingSet", [1000002, LISTENING_PILOT, 4.0]);
+  assert.deepEqual(store.standings.get().char, [{ fromID: 1000002, standing: 4.0 }, { fromID: 3008416, standing: -0.5 }]);
+  // Moved by a share: 4.0 rises a tenth of the way to ten, and a faction not yet listed starts at ten times its change.
+  await push("OnStandingsModified", [[[1000002, LISTENING_PILOT, 0.1, 0, 10], [500001, LISTENING_PILOT, -0.05, -10, 0]]]);
+  const held = store.standings.get().char ?? [];
+  assert.deepEqual(held.map((row) => row.fromID), [1000002, 3008416, 500001]);
+  assert.ok(Math.abs(held[0]!.standing - 4.6) < 1e-9);
+  assert.ok(Math.abs(held[2]!.standing - -0.5) < 1e-9);
+  // Another pilot's standing, and anything else the server says, change nothing.
+  await push("OnStandingSet", [1000002, 140000001, 9.0]);
+  await push("OnItemsChanged", [1, 2]);
+  assert.equal(store.standings.get().char, held);
+  // And none of it read the standings again: 197 of these come at once when a game master sets them all.
+  assert.equal(reads(), 1);
+  assert.equal(store.standings.get().loaded, true);
+});
+
+test("standings that could not be read leave the page as it is, and are tried again when it is next opened", async () => {
+  const { store, flow, requests, page } = await withMissionPage();
+  const reads = () => requests.filter((request) => request.path === "/api/bridge/standings").length;
+  page.standingsFail = true;
+  await flow.openMissionDetails(3008416);
+  await until(() => reads() === 1);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(store.standings.get().loaded, false);
+  assert.equal(store.agents.get().missionPage?.agentID, 3008416);
+  assert.equal(store.agents.get().actionError, null);
+  page.standingsFail = false;
+  flow.closeMissionDetails();
+  await flow.openMissionDetails(3008416);
+  await until(() => store.standings.get().loaded);
+  assert.equal(reads(), 2);
 });

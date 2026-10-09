@@ -76,6 +76,7 @@ import {
 } from "../bridge/agents.ts";
 import { sessionChangeNames } from "../bridge/sessionChange.ts";
 import { createPushLedger } from "../bridge/pushOnce.ts";
+import { standingsAfter } from "../bridge/standingChanges.ts";
 import { decodeMissionTimes } from "../bridge/missionTime.ts";
 import { decodeObjectives } from "../bridge/missionObjectives.ts";
 import { decodeClientMission, pageObjectives, pageOnMissionChange, type ClientMission } from "../bridge/missionPage.ts";
@@ -1964,6 +1965,19 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const missionChange = decodeMissionChange(method, args);
     if (missionChange !== null) {
       onMissionChange(missionChange);
+      return;
+    }
+    // standingsvc keeps the pilot's standings as the server changes them (OnStandingSet, OnStandingsModified),
+    // from what the notification itself says and without reading again. So does this, once they have been
+    // read at all: before that there is nothing to change, and the read will bring what the server has.
+    if (method === "OnStandingSet" || method === "OnStandingsModified") {
+      const held = store.standings.get().char;
+      if (held !== null) {
+        const after = standingsAfter(held, method, args, store.station.get().online?.characterID ?? null);
+        if (after !== held) {
+          store.apply({ type: "standings/char", char: after });
+        }
+      }
       return;
     }
     const sessionNames = sessionChangeNames(method, args);
@@ -4298,6 +4312,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     });
     // The agent's own card, and its corporation's (page.py _construct_agent_section).
     requestAgentRecord(agentID);
+    // The corporation's card says the pilot's effective standing with the agent. The client has had the
+    // pilot's standings and skills since it logged in; here they are read if they have not been.
+    if (!store.standings.get().loaded) {
+      void loadStandings().catch(() => {});
+    }
+    if (store.skills.get().skills === null) {
+      void loadSkills().catch(() => {});
+    }
     if (contentID !== null) {
       // What the page words the mission with: its keywords, from its agent (agents.PrimeMessageArguments),
       // and the client's own record of it. Neither holds the page up.

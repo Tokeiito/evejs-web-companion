@@ -20,15 +20,15 @@
 // This makes the same page as plain text, in the client's words, read from its install at run time (the
 // words store). What cannot be said is left out.
 //
-// Not done: the pilot's effective standing, which the client writes on the corporation's card; how many
-// jumps away a place is (the client plots the route), which leaves a place's distance blank unless the
-// pilot is there; the security rating before a place's name; "Objectives Complete" as the state (the client
+// Not done: how many jumps away a place is (the client plots the route), which leaves a place's distance
+// blank unless the pilot is there; the security rating before a place's name; "Objectives Complete" as the state (the client
 // has it from its own tracker); a ship's packaged size as cargo; the ship restrictions panel; the
 // reduced-rewards banner; the bonus's countdown; a blueprint's properties; what an alpha clone is paid.
 // The time left is written in this page's own short form: the client's short written interval is not done.
 
 import { formatTemplate, plainText, QUANTITY_AND_ITEM } from "./clientWords.ts";
 import type { AgentRecord } from "./agents.ts";
+import { effectiveStandingWithAgent } from "./effectiveStanding.ts";
 import { AGENT_MISSION_STATE_FAILED, TYPE_CREDITS, type MissionCargo, type MissionItem, type MissionLocation, type MissionMessage, type MissionObjectives } from "./missionObjectives.ts";
 import type { NameKind } from "../store/names.ts";
 
@@ -46,6 +46,9 @@ export const PAGE_LABELS = Object.freeze({
   importantStandings: `${FOLDER}ImportantStandingsWarning`,
   /** Takes level. */
   agentLevel: "UI/Agents/AgentEntry/Level",
+  /** Each takes effectiveStanding: the second when it is the least of the pilot's standings that counts. */
+  effectiveStanding: "UI/Agents/Dialogue/EffectiveStanding",
+  effectiveStandingLow: "UI/Agents/Dialogue/EffectiveStandingLow",
   briefingTitle: `${FOLDER}MissionBriefing`,
   objectivesTitle: `${FOLDER}Objectives`,
   agentLocation: `${FOLDER}AgentLocation`,
@@ -157,8 +160,12 @@ export interface PageAgent {
   readonly division: string | null;
 }
 
-/** Its corporation's card: the corporation, and the faction it belongs to. */
+/** Its corporation's card: the pilot's effective standing with the agent, the corporation, and the faction it belongs to. */
 export interface PageCorporation {
+  /** In the client's words; null until the pilot's standings and skills are both to hand. */
+  readonly standing: string | null;
+  /** Whether the standing is a low one (the client writes it in bold). */
+  readonly standingLow: boolean;
   readonly name: string;
   readonly faction: string | null;
 }
@@ -201,6 +208,10 @@ export interface MissionPageInput {
   readonly objectives: MissionObjectives | null;
   /** What the client's agents service knows of the mission's agent; null before it has answered, or when it does not know it. */
   readonly agent: AgentRecord | null;
+  /** The standings the server lists towards the pilot, by owner; null before they have been read. */
+  readonly standings: ReadonlyMap<number, number> | null;
+  /** The level the pilot has in a skill, nought for one it has not; null before its skills have been read. */
+  readonly skillLevel: ((typeID: number) => number) | null;
   readonly record: ClientMission | null;
 }
 
@@ -370,7 +381,11 @@ export function missionPage(input: MissionPageInput, context: PageContext): Miss
     name: context.nameOf("owner", known.agentID),
     division: known.divisionNameID === null ? null : context.messageText(known.divisionNameID),
   };
+  // standingsvc.GetEffectiveStandingWithAgent: said only when there is something to work it out from.
+  const effective = known === null || input.standings === null || input.skillLevel === null ? null : effectiveStandingWithAgent(known, input.standings, input.skillLevel);
   const corporation: PageCorporation | null = known === null || known.corporationID === null ? null : {
+    standing: effective === null ? null : words(effective.low ? PAGE_LABELS.effectiveStandingLow : PAGE_LABELS.effectiveStanding, { effectiveStanding: effective.value }),
+    standingLow: effective !== null && effective.low,
     name: context.nameOf("corporation", known.corporationID),
     faction: known.factionID === null ? null : context.nameOf("faction", known.factionID),
   };

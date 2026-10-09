@@ -538,6 +538,9 @@ export type FeedEvent =
       readonly corp: readonly CharStanding[] | null;
       readonly corpError: string | null;
     }
+  // The pilot's own standings as the server has just changed them (bridge/standingChanges.ts): the list
+  // alone, with everything else about the standings left as it is.
+  | { readonly type: "standings/char"; readonly char: readonly CharStanding[] }
   // A drill-down for one selected entity: a char row's standing HISTORY
   // (transactions) or a corp row's per-member breakdown (compositions). `scope`
   // says which section the row came from so a late read can't repaint the wrong

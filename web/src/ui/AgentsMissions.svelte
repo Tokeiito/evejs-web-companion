@@ -44,6 +44,10 @@
   const station = store.station;
   // svelte-ignore state_referenced_locally
   const flight = store.flight;
+  // svelte-ignore state_referenced_locally
+  const standings = store.standings;
+  // svelte-ignore state_referenced_locally
+  const skills = store.skills;
   // Where the pilot's session is now: the marks beside a mission's objectives go by it (bridge/sessionPlace.ts).
   const place = $derived(sessionPlace($flight.status, $station.online));
 
@@ -364,6 +368,8 @@
       objectives: held.objectives,
       record: held.record,
       agent: $agents.agentRecords[held.agentID] ?? null,
+      standings: $standings.char === null ? null : new Map($standings.char.map((row) => [row.fromID, row.standing])),
+      skillLevel: $skills.skills === null ? null : ((levels) => (typeID: number) => levels.get(typeID) ?? 0)(new Map($skills.skills.map((skill) => [skill.typeID, skill.level]))),
     };
   });
   // Everything said about a mission is filled with the mission's keywords and then its agent's own IDs
@@ -775,6 +781,7 @@
         </div>
         {#if page.corporation}
           <div class="mission-page-card corporation">
+            {#if page.corporation.standing}<span class="mission-page-card-line standing" class:low={page.corporation.standingLow}>{page.corporation.standing}</span>{/if}
             <strong class="mission-page-card-name">{page.corporation.name}</strong>
             {#if page.corporation.faction}<span class="mission-page-card-line minor">{page.corporation.faction}</span>{/if}
           </div>

@@ -77,6 +77,9 @@ function panel(options: {
   flight?: { docked: boolean; stationID: number | null; structureID: number | null; solarSystemID: number | null };
   /** What the client's agents service knows of the page's agent. */
   agentRecord?: Record<string, unknown> | null;
+  /** The pilot's standings and skills as read, each as [id, value] pairs. */
+  standings?: ReadonlyArray<readonly [number, number]>;
+  skillLevels?: ReadonlyArray<readonly [number, number]>;
   /** A mission's page held by the store, whether the client's words for it are to hand, and whether the BFF has a client at all. */
   page?: Record<string, unknown>;
   pageWords?: boolean;
@@ -140,6 +143,15 @@ function panel(options: {
   if (options.agentRecord !== undefined) {
     store.apply({ type: "agents/record", agentID: AGENT, record: options.agentRecord as never });
     store.apply({ type: "names/resolved", entries: { "corporation:1000002": "A Made-Up Company", "faction:500001": "A Made-Up State" } });
+  }
+  if (options.standings !== undefined) {
+    store.apply({ type: "standings/loaded", char: options.standings.map(([fromID, standing]) => ({ fromID, standing })), charError: null, corp: null, corpError: null });
+  }
+  if (options.skillLevels !== undefined) {
+    store.apply({
+      type: "skills/loaded", characterName: "Test Two", totalSkillPoints: 0, freeSkillPoints: 0, queue: null, clockOffsetMs: 0,
+      skills: options.skillLevels.map(([typeID, level]) => ({ typeID, name: `skill ${typeID}`, groupName: "Social", level, rank: 1, skillPoints: 0, levelSkillPoints: [], inTraining: false })),
+    } as never);
   }
   if (options.noClient) {
     store.apply({ type: "words/loaded", available: false, templates: {} });
@@ -319,6 +331,8 @@ const PAGE_TEMPLATES: Record<string, string> = {
   [PAGE_LABELS.quantityAndItem]: "{[numeric]quantity, useGrouping} x {[item]item.name}",
   [PAGE_LABELS.startConversation]: "Have a word",
   [PAGE_LABELS.agentLevel]: "Grade {level}",
+  [PAGE_LABELS.effectiveStanding]: "Stands at {[numeric]effectiveStanding, decimalPlaces=1}",
+  [PAGE_LABELS.effectiveStandingLow]: "Stands at <b>{[numeric]effectiveStanding, decimalPlaces=1}</b>, too low",
   "#900109": "Deliveries",
   [PAGE_LABELS.thisStation]: "Right here",
   [PAGE_LABELS.thisSolarSystem]: "In this system",
@@ -554,4 +568,26 @@ test("the mission's page has the agent's card and its corporation's, between the
   // Without the client's words the card has the names, and no level or division.
   const wordless = pageOf(panel({ words: false, talking: false, agentRecord: record, page: { missionState: 2, expirationTime: null } })) as string;
   assert.match(text(wordless), /Close Antaken Kamola A Made-Up Company A Made-Up State$/);
+});
+
+test("the corporation's card begins with the pilot's effective standing, from the standings and skills the store holds", () => {
+  const record = { agentID: AGENT, agentTypeID: 2, divisionID: 22, level: 1, stationID: 60000004, corporationID: 1000002, factionID: 500001, divisionNameID: 900109 };
+  const card = (options: { standings?: ReadonlyArray<readonly [number, number]>; skillLevels?: ReadonlyArray<readonly [number, number]> }) => {
+    const page = pageOf(panel({ words: true, pageWords: true, talking: false, agentRecord: record, ...options, page: { missionState: 2, expirationTime: null } })) as string;
+    return /<div class="mission-page-card corporation">([\s\S]*?)<\/div>/.exec(page)?.[1] ?? "";
+  };
+  // The corporation's 3.5, raised by Connections IV: (1 - 0.65 * 0.84) * 10 = 4.54.
+  const raised = card({ standings: [[1000002, 3.5], [AGENT, -0.5]], skillLevels: [[3359, 4]] });
+  assert.equal(text(raised), "Stands at 4.5 A Made-Up Company A Made-Up State");
+  assert.doesNotMatch(raised, /standing low/);
+  // With the skills read and none of the three trained, the standing as it is.
+  assert.equal(text(card({ standings: [[1000002, 3.5]], skillLevels: [] })), "Stands at 3.5 A Made-Up Company A Made-Up State");
+  // A low one is marked.
+  const low = card({ standings: [[500001, -4]], skillLevels: [] });
+  assert.equal(text(low), "Stands at -4.0, too low A Made-Up Company A Made-Up State");
+  assert.match(low, /class="mission-page-card-line standing[^"]* low/);
+  // Until both are held, the card has no standing line.
+  for (const options of [{ standings: [[1000002, 3.5]] as const }, { skillLevels: [[3359, 4]] as const }, {}]) {
+    assert.equal(text(card(options)), "A Made-Up Company A Made-Up State");
+  }
 });

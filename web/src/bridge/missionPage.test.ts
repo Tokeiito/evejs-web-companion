@@ -23,6 +23,8 @@ const TEMPLATES: Record<string, string> = {
   [L.missionDoesNotExpire]: "The mission stays",
   [L.importantStandings]: "<b><i>This one counts.</i></b>",
   [L.agentLevel]: "Grade {level}",
+  [L.effectiveStanding]: "Stands at {[numeric]effectiveStanding, decimalPlaces=1}",
+  [L.effectiveStandingLow]: "Stands at <b>{[numeric]effectiveStanding, decimalPlaces=1}</b>, too low",
   [L.briefingTitle]: "What it is",
   [L.objectivesTitle]: "To do",
   [L.agentLocation]: "Agent is at",
@@ -79,6 +81,8 @@ const input = (overrides: Partial<MissionPageInput> = {}): MissionPageInput => (
   objectives: null,
   record: null,
   agent: null,
+  standings: null,
+  skillLevel: null,
   ...overrides,
 });
 const AGENT = { agentID: 3008416, agentTypeID: 2, divisionID: 22, level: 1, stationID: 60000004, corporationID: 1000002, factionID: 500001, divisionNameID: 900109 };
@@ -127,6 +131,8 @@ test("every label the page uses is asked for", () => {
   assert.deepEqual([...PAGE_WORD_LABELS].sort(), Object.values(L).sort());
   assert.ok(PAGE_WORD_LABELS.includes("UI/Chat/StartConversationAgent"));
   assert.ok(PAGE_WORD_LABELS.includes("UI/Agents/AgentEntry/Level"));
+  assert.ok(PAGE_WORD_LABELS.includes("UI/Agents/Dialogue/EffectiveStanding"));
+  assert.ok(PAGE_WORD_LABELS.includes("UI/Agents/Dialogue/EffectiveStandingLow"));
   assert.ok(PAGE_WORD_LABELS.includes("UI/Journal/JournalWindow/Agents/OfferExpiresIn"));
 });
 
@@ -277,11 +283,11 @@ test("a mission that matters to standings says so, whether the journal or the ob
 test("the agent's card is its level, its name and its division; its corporation's, the corporation and its faction", () => {
   const page = missionPage(input({ agent: AGENT }), context());
   assert.deepEqual(page.agent, { level: "Grade 1", name: "owner#3008416", division: "Name 900109" });
-  assert.deepEqual(page.corporation, { name: "corporation#1000002", faction: "faction#500001" });
+  assert.deepEqual(page.corporation, { standing: null, standingLow: false, name: "corporation#1000002", faction: "faction#500001" });
   // What is not known is left off its card, and the card stays.
   const bare = missionPage(input({ agent: { ...AGENT, level: null, divisionNameID: null, factionID: null } }), context());
   assert.deepEqual(bare.agent, { level: null, name: "owner#3008416", division: null });
-  assert.deepEqual(bare.corporation, { name: "corporation#1000002", faction: null });
+  assert.deepEqual(bare.corporation, { standing: null, standingLow: false, name: "corporation#1000002", faction: null });
   // A division whose name the client has no text for.
   assert.equal(missionPage(input({ agent: AGENT }), context({ messageText: () => null })).agent?.division, null);
   // An agent with no corporation has no second card; one the client's agents service does not know has neither.
@@ -293,6 +299,29 @@ test("the agent's card is its level, its name and its division; its corporation'
   assert.equal(unknown.corporation, null);
   // Without the client's words the level is not said.
   assert.equal(missionPage(input({ agent: AGENT }), context({ templates: {} })).agent?.level, null);
+});
+
+test("the corporation's card says the pilot's effective standing with the agent, once its standings and skills are both to hand", () => {
+  const card = (overrides: Partial<MissionPageInput>, templates: Record<string, string> = TEMPLATES) => missionPage(input({ agent: AGENT, ...overrides }), context({ templates })).corporation;
+  const none = () => 0;
+  // The greatest of the three, to one decimal place, in the client's words.
+  const standings = new Map([[500001, 1.5], [1000002, 3.04], [3008416, -1.0]]);
+  assert.deepEqual(card({ standings, skillLevel: none }), { standing: "Stands at 3.0", standingLow: false, name: "corporation#1000002", faction: "faction#500001" });
+  // Raised by the pilot's skill: Connections IV takes 3.04 to 4.1536.
+  assert.equal(card({ standings, skillLevel: (typeID) => (typeID === 3359 ? 4 : 0) })?.standing, "Stands at 4.2");
+  // A low one is the least of them, in the client's other words, and marked.
+  const low = card({ standings: new Map([[500001, -3.5]]), skillLevel: none });
+  assert.equal(low?.standing, "Stands at -3.5, too low");
+  assert.equal(low?.standingLow, true);
+  // Nothing listed is a standing of nought.
+  assert.equal(card({ standings: new Map(), skillLevel: none })?.standing, "Stands at 0.0");
+  // Until both are read nothing is said, and it is not called low.
+  assert.deepEqual([card({ standings, skillLevel: null })?.standing, card({ standings: null, skillLevel: none })?.standing], [null, null]);
+  assert.equal(card({ standings: new Map([[500001, -3.5]]), skillLevel: null })?.standingLow, false);
+  // Without the client's words it is known and not said.
+  const wordless = card({ standings: new Map([[500001, -3.5]]), skillLevel: none }, {});
+  assert.equal(wordless?.standing, null);
+  assert.equal(wordless?.standingLow, true);
 });
 
 test("the briefing: the offer's words only while it is an offer and the mission has them; tidied, and shown plain", () => {

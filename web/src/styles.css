@@ -9449,3 +9449,4 @@
 .mission-page-cards { display: flex; flex-wrap: wrap; gap: 1.5rem; margin: 0.5rem 0 0.75rem; }
 .mission-page-card { display: flex; flex-direction: column; }
 .mission-page-card-line.minor { opacity: 0.7; }
+.mission-page-card-line.standing.low { color: var(--danger, #e3170d); font-weight: 600; }

@@ -1815,6 +1815,9 @@ export function createClientStore(): ClientStore {
       // `corp` stay NULL on a failed read (reason in the matching *Error); a
       // successful empty read sets [] — a real "no standings yet". A fresh load
       // drops any open drill-down: it described a row from the previous read.
+      case "standings/char":
+        standings.set({ ...standings.get(), char: event.char });
+        break;
       case "standings/loaded":
         standings.set({
           ...standings.get(),
