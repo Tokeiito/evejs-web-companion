@@ -780,3 +780,62 @@ test("POST /api/words says when there is no client to read, and needs a login", 
   const anonymous = await apiRequest(baseUrl, "/api/words", { method: "POST", body: { labels: ["UI/A/B"] }, authenticated: false });
   assert.equal(anonymous.response.status, 401);
 });
+
+// --- 4. GET /api/client-data/missions/:missionID: a mission as the client's own data has it -----
+
+function fakeClientBuiltData(rows, available = true) {
+  const asked = [];
+  return {
+    asked,
+    available: () => available,
+    async lookup(name, key) {
+      asked.push([name, key]);
+      return available ? { available: true, row: rows[key] ?? null } : { available: false, row: null };
+    },
+  };
+}
+
+test("GET /api/client-data/missions/:missionID answers the client's own record of a mission, and null for one it has not", async () => {
+  const record = { contentTemplate: "agent.missionTemplatizedContent_BasicCourierMission", messages: { "messages.mission.briefing": 900954 }, nameID: 900456 };
+  const clientBuiltData = fakeClientBuiltData({ 1381: record });
+  const { baseUrl } = await startTestServer({ clientBuiltData });
+
+  const found = await apiRequest(baseUrl, "/api/client-data/missions/1381");
+  assert.equal(found.response.status, 200);
+  assert.deepEqual(found.payload, { ok: true, available: true, mission: record });
+  const missing = await apiRequest(baseUrl, "/api/client-data/missions/999");
+  assert.deepEqual(missing.payload, { ok: true, available: true, mission: null });
+  // The missions table, by the mission's number.
+  assert.deepEqual(clientBuiltData.asked, [["missions", 1381], ["missions", 999]]);
+});
+
+test("GET /api/client-data/missions/:missionID takes a whole positive number, and asks the client for nothing else", async () => {
+  const clientBuiltData = fakeClientBuiltData({});
+  const { baseUrl } = await startTestServer({ clientBuiltData });
+  for (const missionID of ["0", "-3", "1.5", "abc", "__proto__", "9007199254740993"]) {
+    const refused = await apiRequest(baseUrl, `/api/client-data/missions/${missionID}`);
+    assert.equal(refused.response.status, 400, missionID);
+    assert.equal(refused.payload.error, "INVALID_MISSION", missionID);
+  }
+  assert.deepEqual(clientBuiltData.asked, []);
+  // And not for someone who is not signed in.
+  const stranger = await apiRequest(baseUrl, "/api/client-data/missions/1381", { authenticated: false });
+  assert.equal(stranger.response.status, 401);
+  assert.deepEqual(clientBuiltData.asked, []);
+});
+
+test("GET /api/client-data/missions/:missionID says so when the client's data cannot be read", async () => {
+  const { baseUrl } = await startTestServer({ clientBuiltData: fakeClientBuiltData({ 1381: { nameID: 1 } }, false) });
+  const answer = await apiRequest(baseUrl, "/api/client-data/missions/1381");
+  assert.equal(answer.response.status, 200);
+  assert.deepEqual(answer.payload, { ok: true, available: false, mission: null });
+});
+
+// The app's own reader, as it is made when EVEJS_CLIENT_ROOT is unset. On a machine where it is set, the app's
+// own reader would start the client's loader, which is the live check's business and not this suite's.
+const CLIENT_CONFIGURED = config.clientRoot ? "EVEJS_CLIENT_ROOT is set on this machine" : false;
+test("with no client configured the client's data is not available, and no loader is started", { skip: CLIENT_CONFIGURED }, async () => {
+  const { baseUrl } = await startTestServer();
+  const answer = await apiRequest(baseUrl, "/api/client-data/missions/1381");
+  assert.deepEqual(answer.payload, { ok: true, available: false, mission: null });
+});

@@ -14,6 +14,7 @@ const eveGatewayClient = require("./eveGatewayClient");
 const webAuth = require("./webAuth");
 const staticDataModule = require("./staticData");
 const { createClientWords } = require("./clientData/clientWords");
+const { createClientBuiltData } = require("./clientData/clientBuiltData");
 const { readMinerPilot } = require("./pilotTrainingRead");
 const { createTrainingQueueService } = require("./pilotTrainingQueue");
 const { createFactorySessions } = require("./factorySessions");
@@ -189,6 +190,13 @@ const staticData = options.staticData || staticDataModule;
 const clientWords = options.clientWords || createClientWords({
   clientRoot: config.clientRoot,
   onError: (error) => console.warn(`[client-words] the client's localisation could not be read: ${error && error.message}`),
+});
+// The retail client's built data, read by the client's own loaders from the
+// same install (src/clientData/clientBuiltData.js).
+const clientBuiltData = options.clientBuiltData || createClientBuiltData({
+  clientRoot: config.clientRoot,
+  python: config.clientPython,
+  onError: (error) => console.warn(`[client-data] a table of the client's built data could not be read: ${error && error.message}`),
 });
 // The game-port client the customs-export hop speaks. Injected so the route
 // is exercised in tests without a socket, exactly as the gateway client is.
@@ -21895,6 +21903,27 @@ app.post("/api/words", requireAuth, (req, res) => {
     messages: messageIDs.length > 0 ? clientWords.messages(messageIDs) : {},
     dialogs: dialogs.length > 0 ? clientWords.dialogs(dialogs) : {},
   });
+});
+
+// A mission as the retail client's own data has it (evemissions/client/data.py
+// get_mission): the message IDs of its name, its briefing and what its agent
+// says, its content template, and what else the record holds. The client's job
+// board words a mission's page from this and asks the server for none of it.
+// `available` is false when the table could not be read (no client install, or
+// no Python to host the client's loader); a mission the client does not have is
+// null.
+app.get("/api/client-data/missions/:missionID", requireAuth, async (req, res, next) => {
+  const missionID = Number(req.params.missionID);
+  if (!Number.isSafeInteger(missionID) || missionID <= 0) {
+    res.status(400).json({ ok: false, error: "INVALID_MISSION", message: "A positive missionID is required." });
+    return;
+  }
+  try {
+    const found = await clientBuiltData.lookup("missions", missionID);
+    res.json({ ok: true, available: found.available, mission: found.row });
+  } catch (error) {
+    next(error);
+  }
 });
 
 app.post("/api/names", requireAuth, async (req, res, next) => {

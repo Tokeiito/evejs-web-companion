@@ -53,6 +53,9 @@ module.exports = {
   // run time, for the text of the labels the server sends. Unset: no client's
   // words, and the web client words what it can itself.
   clientRoot: process.env.EVEJS_CLIENT_ROOT ? path.resolve(process.env.EVEJS_CLIENT_ROOT) : null,
+  // The 64-bit Python 3 that hosts the client's own Python when one of the
+  // client's built data tables is read (src/clientData/clientBuiltData.js).
+  clientPython: process.env.EVEJS_PYTHON || "python",
   host: process.env.HOST || "127.0.0.1",
   port: Number.parseInt(process.env.PORT || "26500", 10) || 26500,
   sessionCookieName: "evejs_web_poc",
