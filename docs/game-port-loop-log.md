@@ -379,6 +379,25 @@ Decisions taken in your place, and anything waiting on you. Overrule any of thes
   Tranquility's form** (a `CRowset` with other columns): the retail client reads only what both
   forms have, so I left that for the unit that builds the page's history, and it is second in
   the list of what is next. Say if you would rather it were not changed at all.
+- **On the game port the page's Skills window is now made from what the transport keeps**
+  (2026-10-09), and no longer from the web gateway's snapshot, which no retail client asks for.
+  Where the sheet cannot be made it is the gateway's as before, and the gateway transport is
+  unchanged. The queue's own write is still the page's (`skillMgr.SaveNewQueue` with a list);
+  the client's form of it is first in what is next. See the entry "the Skills window from what
+  is kept".
+- **One more server fix is on eve.js's local `main`, not pushed by me** (2026-10-09):
+  `16d95626a`, the skill in training is answered with the points its queue entry started from.
+  This server gave a client the points trained so far beside a queue entry that kept its first
+  start, and the client adds the time since that start itself, so any client that logged in
+  while a skill trained was shown too many points for it (33 for 17, half a minute in). Found
+  by the game port's own sheet disagreeing with the gateway's after a fresh login. A sub-agent
+  fixed it test first, and I checked it live after a restart. **What Tranquility's skill list
+  holds there is worked out, not read**: its recordings show the queue entry is not moved at a
+  login, and leave out the list itself, which is too large for them. Say if you want it held
+  back.
+- **`origin/main` of eve.js now has `603ae3d3d` and `6e2162cc5`, and I did not put them
+  there** (seen 2026-10-09, about 10:00 local). As before, I take it to be another session on
+  this machine pushing `main`. Local `main` is one commit ahead, the fix above.
 - **My scratch folder holds 33 older copies of the store, 1.9 GB**, from the checks of
   8 October, before I took to deleting each copy once the store was back. I have not
   deleted them: some are named "before-..." and I cannot say now that none is wanted. They
@@ -404,6 +423,7 @@ Decisions taken in your place, and anything waiting on you. Overrule any of thes
 | 2026-10-08 | Declining a mission pushes `OnAgentMissionChange('reset', agentID)`. The client closes the agent's window on `reset` (`agents.py` 688 to 696), so the agent's answer to the decline is never laid out | recordings of the retail client on Tranquility (`D:\SSDSync\EveBadStuff\LOGS`): both declines arrive as `'declined'`, and `reset` is nowhere in the tree | `c6e7e6672`, by a sub-agent: `'declined'` is pushed; a test in the server's suite watched to fail first | live in the browser on the game port: the window stays, with the agent's greeting, Request Mission and "Mission declined." |
 | 2026-10-08 | A briefing's "Decline Time" is the absolute time the decline cooldown ends. The client writes it out as an interval (`agentDialogueWindow.py` 326 to 337, `FmtTimeInterval`), which for a timestamp is about 425 years | the same recordings: None 110 times, -1 13 times, and otherwise the time remaining, never more than four hours of ticks | `e066a81e9`, by the same sub-agent | live in the browser on the game port: a new offer inside the decline window says 3 hours and 59 minutes are left |
 | 2026-10-09 | `skillHandler.GetSkillHistory(maxresults)` never read its count and answered every row of the history. The client always passes one (50 by default, 10 from its notifications at login, which make a notification of each row they get) | three Tranquility recordings of a login, decoded: `GetSkillHistory(10)` answered exactly 10 rows, newest first, each time. Here, asked for 2, the server answered Test Two's 5 | `6e2162cc5`, by a sub-agent, test first (6 of its 7 new cases watched to fail): at most the count, newest first by date, 50 where no count is given. The row's form is left as it was | live on a real game-port session after a restart: asked for 2, 2 rows; asked for 10, for none and for 0, the pilot's 5 |
+| 2026-10-09 | `skillHandler.GetSkills` and `GetAllSkills` answer the skill in training with the points trained so far, beside a queue whose first entry keeps its first start. The client adds the time since that start to the points in its entry, so a client that logs in while a skill trains counts the time before its login twice | here, 34 s into a level trained from none at 30 a minute, a session that logged in about 32 s after the start was answered 16 points beside an entry starting at none: the client's sum of the two is 33 where the skill had 17. On Tranquility a client that logged in at 18:01:05 was answered a first entry begun at 15:44:33 from 79,791 points (the entry is not moved at login); the list beside it is too large to be in the recording, so what it holds is worked out from the client's sum | `16d95626a`, by a sub-agent, test first (4 of 4 new cases watched to fail): the two calls answer that skill with the entry's own starting points, at the level below the one it trains to. The queue, the live total, the notices and the gateway's sheet are as they were | live on both transports after a restart: 25 s in, a fresh login's sheet said 12 points through the gateway and 13 through the game port 1.65 s later, the totals the same; in the browser on the game port, 28 of 750 points 57 s in |
 
 Withdrawn the same day: "after undocking the server's ship is a tick behind". It is not; that was
 the second row above, seen through a recorder that always asked at the same point in the second.
@@ -9934,3 +9954,258 @@ whole read. I have not looked at either.
     client's own map is in.
 36. Jumps in the assets and contracts lists, the autopilot's way, where the page lists them.
 37. A wreck opened with its type said: no capacity, as the client has none for one.
+
+## 2026-10-09 — the Skills window from what is kept
+
+Commit `23e12b5`, pushed. Item 1 of the last list, its reading half. The queue's write is not
+changed: it is first in what is next.
+
+**What the retail client does** (`skillQueueSvc.py`, `skillsvc.py`, `characterskills/util.py`,
+`characterskills/skill_training.py`; the Tranquility recordings searched first, for the queue's
+calls and notices).
+
+- Its skill windows are drawn from what its two services keep, not from a read of their own:
+  the skills and their levels from the kept list, each level's points worked from the skill's
+  rank (`GetSPForLevelRaw`), the queue as the server last said it.
+- The skill in training is the queue's first entry, where that has an end (`SkillInTraining`).
+- That skill's points are reckoned, not read: the points in its kept entry, plus the time since
+  the queue's first entry began at the pilot's rate (`GetEstimatedSkillPointsTrained`,
+  `get_skill_points_trained_at_sample_time`). The rate is the character's attributes for the
+  skill's two, the first and half the second (`GetSkillPointsPerMinute`), and reading the
+  attributes is `GetCharacterAttributes`: the boosters, the implants, the attributes.
+- The total is every skill's points, the lapsed with them, and the free points
+  (`GetTotalSkillPointsForCharacter`).
+
+**What the BFF did.** `/api/bridge/skills` and the answer to a queue saved were the web
+gateway's `/skills`, a snapshot the server builds for the gateway, on both transports. No
+retail client asks for it.
+
+**What was built.**
+
+- `src/gamePort/skillSheet.js`: the sheet in the form the gateway's is in, each figure made as
+  above from what `pilotSkills.js` keeps and from what the client knows of a type without asking
+  (its name, its group's, the two attributes it trains by: the BFF's static data).
+- The transport's `skillSheet`: what is not kept is asked for as the client's windows would ask.
+  The free points once (the queue's read at login keeps them only where there are some), and
+  the attributes' three once, when a skill is first found in training.
+- On the game port the Skills route and the answer to a queue saved are that sheet. Where it
+  cannot be made, and on the gateway, they are the gateway's as before.
+- The sheet's clock is the session's reading of the server's, taken after the types have been
+  looked up. Taken before, the first sheet with a skill in training was a tenth of a second
+  behind (the static data's first read from disk), which the page would have taken for the
+  server's clock.
+- `scripts/recordings/object-calls.js`: the calls a recording made on bound objects, and for
+  one method each call and what answered it, decoded.
+
+**Proof.**
+
+- Tests: 13 more. The builder's replay the recorded session to a point and make the sheet from
+  what is kept there. The figures set beside it are the server's own, read through the gateway
+  for the same pilot: a rank 1 skill's levels at 250, 1415, 8000, 45255 and 256000, a rank 3's
+  at 750, 4243, 24000, 135765 and 768000, 52 skills and 385,914 points, 30 points a minute.
+- The tests passed the first time they ran, bar two expectations of mine that were wrong about
+  the recording, so the breakages are what showed them failing. 81 ways of breaking the
+  builder, the transport's part and the route were tried. Nine survived a first pass. Two were
+  checks that did nothing and are out, five led to cases added, and two cannot change what is
+  answered (a rate of exactly nothing read as a rate or as none; a rate of none skipped or
+  multiplied in). The 78 left in the list are all caught.
+- Suite: 9738 tests, 9714 pass, 0 fail, 0 cancelled, 24 skipped. No test process left behind.
+- **Through each BFF, by script, as Test Two, the same steps on each:** the sheet before, a
+  skill given, queued, read four seconds on, two more queued behind it, and the queue emptied.
+  The game port's sheet said at every step what the gateway's had said at that step in its own
+  run: 54 skills; the queue's entries with their points, their times 25 minutes apart for 750
+  points, 30 a minute for the first and none said for the rest; the skill in training with 2
+  points four seconds on; the total 385,914 and then 385,916 once the queue was emptied.
+- **The server's log for the two runs:** the gateway's run read `/skills` eight times. The
+  game port's read it not once, and asked the server, after the login's reads, for the free
+  points once, the GM's two commands, the three saves, and the boosters, the implants and the
+  attributes once, when the skill first trained.
+- **After a fresh login with the skill already training the two sheets disagreed, and that was
+  the server's doing.** 33 seconds into the training the gateway's sheet said 16 points and a
+  total of 385,914; the game port's, 1.6 seconds later, said 33 and 385,930. The skill list this
+  server answered at
+  that login had the points trained so far (16), and the queue's first entry still said the
+  skill began from none at the first start, so the client's reckoning counted the time before
+  the login twice. A real client would have shown the same. The server is fixed (below).
+- **After the fix and a restart, the same check:** 25 seconds in, the gateway's sheet said 12
+  points and the game port's, read 1.65 seconds later, 13; both totals 385,914. Nothing else
+  in the two sheets differed but the clock.
+- **In the browser, on the game port, as Test Two, logging in while the skill trained:** the
+  Skills window said "Anchoring I, 24m 3s left, 28 of 750 skill points, at 30 a minute", 57
+  seconds after the queue began, with three entries and "3 of 150 places used". Eight seconds
+  on it said 39 where it had said 35. Remove on the third entry left two and "finishes 40m 20s
+  from now". Stop training left "Nothing is training", the queue empty, Anchoring at "45 of
+  750" and the total at 385,959. Queue I on Anchoring's row started it again from 46, with 23m
+  27s left. No failure shown.
+- **The server's log for that session:** the login's reads; the free points once and the
+  boosters, the implants and the attributes once, when the window first drew; then the three
+  saves. No list of skills and no queue was asked for again. The gateway's `/skills` was read
+  for each of the four pilots when the page listed them, before anyone was signed in, and not
+  while Test Two was.
+- **On both transports, by script, with the skill training:** 12 identical, 6 tolerated, 3
+  moved, 2 divergent. The Skills route moved by its clock and by the training skill's points
+  (77 and 78, a second apart); `bound-skills` by the server's live total. With nothing training
+  the count is the last entry's.
+- The ledger: 67 pairs, none differing, five unchecked. `skillMgr.SaveNewQueue` is one of the
+  five: the queue's write, as the page sends it.
+- The store was put aside before the checks and put back after: 52 skills, 385,914 points,
+  nothing queued, hangar 1 row, cargo 1 row. The copy is deleted.
+
+**A server defect, fixed by a sub-agent** (eve.js `16d95626a`, on its local `main`, not pushed).
+`GetSkills` and `GetAllSkills` answered the skill in training with the points trained so far,
+beside a queue whose first entry kept its first start. The client adds the time since that start
+to the points in its entry, so it was right only for a client that had been logged in since the
+training began. What Tranquility does was measured as far as the recordings go: a client that
+logged in at 18:01:05 was answered a first entry that had begun at 15:44:33 from 79,791 points,
+so that server does not move the entry at login either. The skill list beside it is not in the
+recording (an answer that large is not written out), so what it must hold is worked out from the
+client's sum and not read. The sub-agent wrote four cases first and watched all four fail (60
+points where the entry should have had none, two minutes in), then made the two calls answer the
+skill with the entry's own starting points, at the level below the one it trains to. It ran its
+file and six neighbours through the server's isolated runner, 49 tests, all passing, and eight
+more files, 53 of 54, the one red being a known one that fails the same with the change taken
+out. It touched none of the other sessions' files. `GetMySkillInfo`, which the retail client
+does not call, still answers the points so far, as its own test expects.
+
+The sub-agent also reported, and did not change:
+
+- **This server works a level's points two ways.** A level given outright is stored with the
+  points rounded (1414 for level 2 at rank 1); the queue, and the client, round up (1415). That
+  is why two of Test Two's skills are a point short of their level. The client's own sum of a
+  level from points would put such a skill a level lower.
+- **An implant or a booster changing while a skill trains moves the stored points and the
+  queue's first entry, and sends the queue and no skill.** A client logged in then holds the
+  old points against the new start and reckons short until it reads its skills again. Measured
+  by the sub-agent on the two runtime calls, not through the dogma handlers.
+- A stopped queue's first skill is still flagged as in training in its entry. The client does
+  not read that flag.
+
+**Seen and not repaired.**
+
+- **The sheet leaves out a skill lent by an expert system**, as the gateway's does. The client
+  lists it at its lent level.
+- **Two of this pilot's skills have a point less than their level takes** by the client's sum
+  (level 2 of a rank 2 skill at 2828 points, where the sum is 2829). Both sheets show what the
+  server has. The server's two ways of working a level's points are why (above).
+
+**Not seen working.**
+
+- A booster running out while a skill trains, and an alpha clone's half rate: not built (the
+  builder's header says so). Every pilot here trains at an omega's rate with no booster.
+- A level finishing by itself while the page is open: not seen. The store's tests have the
+  notices; no sheet was read across one.
+
+**Not done.**
+
+- **The queue's write is still `skillMgr.SaveNewQueue` by name, with a list.** The client
+  sends `SaveNewQueue({position: (typeID, toLevel)}, activate=...)` on the skill handler
+  (recorded on Tranquility in `Archive/Apply Skill Points Flow`, decoded: ten entries,
+  `activate=True`, answered None), asks for the queue again after it
+  (`skillQueuePanelNew.SaveChanges` and the new transaction after), and before it reads the
+  attributes to trim the queue to its longest (`TrimQueue`). First in what is next.
+- The page's own reckoning of the skill in training between reads is the page's
+  (`web/src/bridge/skills.ts`), from the same queue entry. It was not changed.
+- The gateway's routes read the gateway's sheet, as before, and so do the pages for pilots who
+  are not signed in.
+
+### Next
+
+1. **The queue's write as the client sends it**: `SaveNewQueue({position: (typeID, toLevel)},
+   activate=...)` on the skill handler (recorded on Tranquility, decoded), the queue asked for
+   again after it, the attributes read before it where the client trims the queue, and what the
+   page's "Stop training" should send (the client's is `AbortTraining` and then the queue saved
+   with `activate=False`; the page saves an empty queue). `skillHandler.SaveNewQueue` is not on
+   the list of pairs the page may call, so it is the transport's own call.
+2. The history in Tranquility's form: the server's rows as a `CRowset` of `(logDate, eventTypeID,
+   skillTypeID, relativePoints, absolutePoints)`, by a sub-agent, and this repository's reading of
+   them with it (`web/src/bridge/boundSkills.ts`, the fixture recorded again).
+3. Two more of the server's, each to be measured against Tranquility before anything is changed:
+   a level's points stored a point short of what the level takes; and no skill sent when an
+   implant or a booster moves the training skill's points.
+4. The login's calls, service by service, each done as the fleet, the standings and the skills
+   were. Next in the order of what a route of ours asks at every read: the agents' journal; the
+   corporation registry's three; contacts; notifications; the calendar; the contracts' login
+   figures; the station's guests and services; the hangar's and the ship's lists. Each looked for
+   in every folder of the recordings first, then read in the decompiled service.
+5. The skills' rest: a skill lent by an expert system shown at its lent level; a booster running
+   out while a skill trains, and an alpha clone's rate; the attributes' three at login, for what
+   makes a client ask them then; an implant plugged and a booster taken, for the readings after
+   them seen live; a level finishing by itself; `bound-skills`' three probes that are not the
+   client's calls as they stand.
+6. The standings' rest: the character's own race's faction at 0.0; one owner's history
+   kept and forgotten as the client does, and its two reads set beside the client's;
+   `OnStandingsModified` seen live.
+7. The same login report for a login in space, and for the game port with the page's
+   panels open.
+8. Around the fleet, what is left: `SendBroadcast` and `MassInvite`; `fleetMgr`'s
+   watchlist and broadcasts (the watchlist's second argument first); `fleetProxy`'s
+   adverts and `GetAvailableFleetAds`, and with them a pilot applying to a fleet, for the
+   join requests seen live; an invite from a pilot in no fleet forming one first; the cost
+   of contacting; the pilot's own kicking as a leaving, and a disbanding refused here as
+   the client refuses it.
+9. What becomes of a bound object the client has done with (`moniker.py`
+   `__ClearBoundObject`: `DisconnectObject` after a delay): read in the client, looked for
+   in the recordings, and done so. The handles the BFF asks for and drops are among them.
+10. A player's corporation and alliance named on the Character Sheet (Test Two's read "Unknown").
+11. Around the contracts: "Offered to you" from the owner's list; the corporation's lists;
+    a rowset read where a server answers one; the search with something staged for each of
+    its filters, on both transports; what the sub-agent left in the server (the operator's
+    section). And the same fault elsewhere in the server: a search of its services for a
+    keyword read as a plain property, with no helper in the file, names two more
+    (`seasonManagerService.js`, `dungeonService.js`). Neither was read.
+12. Around a fitted module: the recording read past `SetModuleOnline`'s answer, and this
+    server's fit set beside it; the recording of ammunition loaded while docked, and charges
+    in slots as godma holds them; the Fitting panel's cargo figure after a module's state
+    changes; a refusal to put one online shown as the client shows it; the dogma route
+    answered from godma's priming instead of its own `GetAllInfo`.
+13. Something staged for every list route that has only been compared empty (the market's
+    orders, the mail, the calendar, the corporation's hangars), and the parity pass read
+    again.
+14. A ship with several modules fitted and a hold with a packaged ship in it, staged: the
+    Fitting window's figures and the client's sums, each set beside the server's.
+15. The walk in space: undocked, every panel and the space view, the store put aside first
+    and put back after; its unread pairs read; the ship's moniker seen kept, and the skill
+    handler's; an agent talked to and a ship boarded for the monikers the BFF asks for; a
+    fleet formed there.
+16. The ledger counting what was sent, not what the BFF asked for: where a moniker is made
+    and not bound, and where a call is shared. (The skill handler's kept reads are counted as
+    sent already.)
+17. The parity tool taking a duration the server measures for what it is (`searchTime`), as
+    it takes a clock, and a read that takes what it reads (`GetSkillChangesForISIS`).
+18. The routes that answer from the store or the gateway's snapshot, listed, and each set
+    beside what the client asks. The pages for pilots who are not signed in are among them.
+19. Phase 3's writes, feature by feature, each set beside what the client sends, each
+    looked for in every folder of the recordings first.
+20. The wallet's "Market Transactions", and the lines the client derives from a transaction.
+21. The avoidance list's own window, and a route plotted again when a setting changes under it.
+22. Around a place's name, the last of it: the outlaw's warning (the pilot's own security
+    status). The agent's own window's steps, if the client's say how far.
+23. The page's own read of the journal after an agent's button: gone, if nothing of the page's
+    own counts on it, with the push doing the work as it does for Remove Offer.
+24. The agent's cards above its own window, where the client's window has its own header.
+25. The scanner the client's way: results kept from the server's word, a probe's destination
+    and range kept here and sent with the scan.
+26. Small, around dialogs: the title for a dialog's kind, the "do not ask again" box, the typed
+    codes not done.
+27. Small, in space: an overview row's speed columns the client's way; the bar the client
+    fills while a ship lines up for a warp; a warp ordered at a bookmark or a fleet member.
+28. Small, before a character is chosen: selecting on the account's own connection; the count
+    of names checked.
+29. Small, in Ready Fit: the window following a change of pilot.
+30. Small, in words: an interval's `shortForm` and `writtenFormTwoPart`; the bonus's
+    countdown; a place's rating in its colour and its name as a link.
+31. In the park, if a server ever sends a ball that needs them: MISSILE, FORMATION, MUSHROOM;
+    a fixed ball's collision shapes and the partition's order.
+32. If a server ever sends one: a special interaction drawn as the client draws one; messages
+    inside messages.
+33. More of the client's built data as it is needed: one line in `TABLES` for each (dungeons
+    for ship restrictions); the client's own map, to set beside this server's.
+34. When there is a recording of it: a courier's agent talked to again where the pilot
+    accepted, before the package has gone anywhere (the operator's section); and a mission
+    paid in a system of the safest class, for whether its ISK is reduced.
+35. Other things asked once beside the store, and other panels' effects, looked at for the
+    faults of earlier entries.
+36. The pathfinder's ties: how the order of the map's jumps settles them, and the order the
+    client's own map is in.
+37. Jumps in the assets and contracts lists, the autopilot's way, where the page lists them.
+38. A wreck opened with its type said: no capacity, as the client has none for one.
