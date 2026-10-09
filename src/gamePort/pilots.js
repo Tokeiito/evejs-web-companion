@@ -111,6 +111,8 @@ const GROUP_SCAN_PROBE_LAUNCHER = 481;
 const GROUP_SOLAR_SYSTEM = 5;
 const GROUP_STATION = 15;
 const CONTAINER_HANGAR = 10004;
+/** evefleet/const.py fleetCmdrRoles: a fleet's commander, a wing's, a squad's. */
+const FLEET_COMMANDER_ROLES = new Set([1, 2, 3]);
 const CONTAINER_STRUCTURE = 10014;
 /**
  * Services whose object is bound for where the pilot is. The retail client's
@@ -1616,9 +1618,13 @@ function createGamePortPilots({
   /**
    * The fleet as the client's fleet service has it kept, for a pilot whose fleet's object is held: its state as
    * GetInitState answered it when the pilot formed or joined the fleet, kept right since by the server's notices;
-   * its wings; its message of the day, asked for only where the server has said none (fleetSvc.GetMotd). Each in
-   * the gateway's form, under the name of the read it stands for. Null where no object is held or no state could
-   * be read: then nothing is kept, as the client keeps nothing.
+   * its wings; its message of the day, asked for only where the server has said none (fleetSvc.GetMotd). And what
+   * the two windows the client's main one offers to some would show, for a pilot who would have them
+   * (fleetwindow.py): the join requests, the boss's, asked for where none is kept the first time they are shown
+   * for a fleet; and the composition, a commander's or the boss's, asked for again when the kept one is twenty
+   * seconds old or the pilot's own record has changed (fleetSvc.GetFleetComposition). Anyone else is asked for
+   * neither, and has none. Each in the gateway's form, under the name of the read it stands for. Null where no
+   * object is held or no state could be read: then nothing is kept, as the client keeps nothing.
    */
   async function fleetKept(sessionFields = {}, bridgeSessionID = undefined) {
     const entry = held(bridgeSessionID, sessionFields);
@@ -1631,12 +1637,27 @@ function createGamePortPilots({
     if (entry.fleetKept.motd() === null) {
       await fleetDoes(entry, async () => entry.fleetKept.setMotd(await ownFleetCall(entry, object, "GetMotd")));
     }
+    if (entry.fleetKept.isBoss() && entry.fleetKept.openJoinRequests()) {
+      await fleetDoes(entry, async () => {
+        const requests = await ownFleetCall(entry, object, "GetJoinRequests");
+        if (entry.fleet === object) entry.fleetKept.setJoinRequests(requests);
+      });
+    }
+    const commands = () => entry.fleetKept.isBoss() || FLEET_COMMANDER_ROLES.has(attribute(entry, "fleetrole"));
+    if (commands() && entry.fleetKept.compositionDue(now())) {
+      await fleetDoes(entry, async () => {
+        const composition = await ownFleetCall(entry, object, "GetFleetComposition");
+        if (entry.fleet === object) entry.fleetKept.setComposition(composition, now());
+      });
+    }
     // Out of the fleet meanwhile, there is nothing kept.
     if (!entry.fleetKept.inited) return null;
     return {
       GetInitState: wireToBridgeJson(entry.fleetKept.read()),
       GetWings: wireToBridgeJson(entry.fleetKept.wings()),
       GetMotd: wireToBridgeJson(entry.fleetKept.motd()),
+      GetJoinRequests: wireToBridgeJson(entry.fleetKept.isBoss() ? entry.fleetKept.joinRequests() : { type: "dict", entries: [] }),
+      GetFleetComposition: wireToBridgeJson(commands() ? entry.fleetKept.composition() : null),
       notifications: drain(entry),
     };
   }

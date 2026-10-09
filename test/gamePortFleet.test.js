@@ -295,3 +295,81 @@ test("the options as they are kept, and whether the pilot is the fleet's boss, a
   member.clear();
   assert.deepEqual([member.isBoss(), member.options()], [false, null]);
 });
+
+test("the join requests are kept from the server's notices, and asked for once where none is kept", () => {
+  const { founder } = recording;
+  const fleet = createPilotFleet({ characterID: founder.characterID });
+  const empty = { type: "dict", entries: [] };
+  assert.deepEqual(fleet.joinRequests(), empty);
+  fleet.init(answersOf(founder, "GetInitState")[0]);
+  // fleetJoinRequestWnd.LoadJoinRequests: the window asks where the service keeps none (fleetSvc.GetJoinRequests).
+  // Shown once for a fleet: it is asked then, and not again however empty the answer.
+  assert.equal(fleet.openJoinRequests(), true);
+  assert.equal(fleet.openJoinRequests(), false);
+  fleet.setJoinRequests(empty);
+  assert.deepEqual([fleet.openJoinRequests(), fleet.joinRequests()], [false, empty]);
+  // OnFleetJoinRequest(info): self.joinRequests[info.charID] = info.
+  const request = (charID, corpID = 98000000) => keyVal([["charID", charID], ["corpID", corpID], ["allianceID", null], ["warFactionID", null], ["securityStatus", 0.5]]);
+  assert.deepEqual(fleet.feed({ method: "OnFleetJoinRequest", args: [request(140000003)] }), []);
+  fleet.feed({ method: "OnFleetJoinRequest", args: [request(140000004n)] });
+  assert.deepEqual(fleet.joinRequests().entries.map(([charID, info]) => [Number(charID), Number(field(info, "charID"))]), [[140000003, 140000003], [140000004, 140000004]]);
+  // The same pilot asking again is the request the server sends now, in its place.
+  fleet.feed({ method: "OnFleetJoinRequest", args: [request(140000003, 98000001)] });
+  assert.deepEqual(fleet.joinRequests().entries.map(([charID, info]) => [Number(charID), field(info, "corpID")]), [[140000003, 98000001], [140000004, 98000000]]);
+  // OnJoinRequestUpdate(joinRequests): self.joinRequests = joinRequests, whatever was kept.
+  const updated = { type: "dict", entries: [[140000005, request(140000005)]] };
+  fleet.feed({ method: "OnJoinRequestUpdate", args: [updated] });
+  assert.deepEqual(fleet.joinRequests(), updated);
+  fleet.feed({ method: "OnJoinRequestUpdate", args: [empty] });
+  assert.deepEqual(fleet.joinRequests(), empty);
+  // What the server answers when asked is kept the same way; an answer that is no dict leaves none.
+  fleet.setJoinRequests(updated);
+  assert.deepEqual(fleet.joinRequests(), updated);
+  fleet.setJoinRequests(null);
+  assert.deepEqual(fleet.joinRequests(), empty);
+  // A pilot is the same pilot whether the server writes its number as a long or not.
+  fleet.setJoinRequests({ type: "dict", entries: [[140000005n, request(140000005)]] });
+  fleet.feed({ method: "OnFleetJoinRequest", args: [request(140000005, 98000002)] });
+  assert.deepEqual(fleet.joinRequests().entries.map(([charID, info]) => [charID, field(info, "corpID")]), [[140000005n, 98000002]]);
+  // A request that comes before the window was ever shown is kept, and then nothing needs asking.
+  const early = createPilotFleet({ characterID: founder.characterID });
+  early.feed({ method: "OnFleetJoinRequest", args: [request(140000003)] });
+  assert.equal(early.openJoinRequests(), false);
+  // Out of the fleet none is kept, and the next fleet's are asked for afresh.
+  fleet.setJoinRequests(updated);
+  fleet.clear();
+  assert.deepEqual([fleet.joinRequests(), fleet.openJoinRequests(), fleet.openJoinRequests()], [empty, true, false]);
+});
+
+test("the composition is kept for twenty seconds, and for no time once the pilot's own record has changed", () => {
+  const { founder, joiner } = recording;
+  const fleet = createPilotFleet({ characterID: founder.characterID });
+  const composition = (shipTypeID) => ({ type: "list", items: [keyVal([["characterID", founder.characterID], ["shipTypeID", shipTypeID]])] });
+  // fleetSvc.GetFleetComposition: asked where fleetCompositionTimestamp < now, and then good for FLEETCOMPOSITION_CACHE_TIME.
+  const start = 1_800_000_000_000;
+  assert.deepEqual([fleet.composition(), fleet.compositionDue(start), fleet.compositionDue(0)], [null, true, false]);
+  fleet.setComposition(composition(588), start);
+  assert.deepEqual(fleet.composition(), composition(588));
+  assert.deepEqual([start, start + 1, start + 19_999, start + 20_000, start + 20_001].map((now) => fleet.compositionDue(now)), [false, false, false, false, true]);
+  // Asked again, it is good for twenty seconds from then.
+  fleet.setComposition(composition(648), start + 30_000);
+  assert.deepEqual([fleet.composition(), fleet.compositionDue(start + 49_000), fleet.compositionDue(start + 50_001)], [composition(648), false, true]);
+  // OnFleetMemberChanged for another member changes nothing of this; for the pilot's own, the kept one is good no longer.
+  fleet.init(answersOf(founder, "GetInitState")[1]);
+  const changed = (charID) => ({ method: "OnFleetMemberChanged", args: [charID, 1n, -1, -1, 1, 2, null, -1, -1, 1, 2, null, false] });
+  fleet.feed(changed(joiner.characterID));
+  assert.equal(fleet.compositionDue(start + 31_000), false);
+  fleet.feed(changed(founder.characterID));
+  assert.deepEqual([fleet.compositionDue(start + 31_000), fleet.composition()], [true, composition(648)]);
+  // Several changes in one notification, the pilot's own among them.
+  fleet.setComposition(composition(648), start + 40_000);
+  fleet.feed({ method: "__MultiEvent", args: [["OnFleetMemberChanged", changed(joiner.characterID).args], ["OnFleetMemberChanged", changed(founder.characterID).args]] });
+  assert.equal(fleet.compositionDue(start + 41_000), true);
+  // An answer that is nothing is kept as nothing, and is good for its time all the same.
+  fleet.setComposition(null, start + 50_000);
+  assert.deepEqual([fleet.composition(), fleet.compositionDue(start + 51_000)], [null, false]);
+  // Out of the fleet none is kept, and the next fleet's is due at once.
+  fleet.setComposition(composition(588), start + 60_000);
+  fleet.clear();
+  assert.deepEqual([fleet.composition(), fleet.compositionDue(start + 60_001)], [null, true]);
+});

@@ -599,3 +599,83 @@ test("the names a fleet's roster needs are asked for by the composition's word f
   }
   for (const stale of ["type:670", "station:60003760", "system:30000142"]) assert.equal(asked.includes(stale), false, stale);
 });
+
+test("a fleet whose composition has not caught up with its roster is read once more when the composition can be had again", async () => {
+  // fleetSvc.GetFleetComposition keeps what it was answered for twenty seconds: a member who joined since is not in it.
+  const record = (charID: number) => keyVal([["charID", charID], ["wingID", null], ["squadID", null], ["role", 1], ["job", 0]]);
+  const entry = (characterID: number) => keyVal([["characterID", characterID], ["shipTypeID", 587], ["stationID", null], ["solarSystemID", 30000144]]);
+  const fleetWith = (members: readonly number[], inComposition: readonly number[] | null) => {
+    const fleet = populatedFleet();
+    fleet.reads.GetInitState.result = keyVal([["motd", ""], ["fleetID", 654500010000], ["members", { type: "dict", entries: members.map((charID) => [charID, record(charID)]) }], ["wings", { type: "dict", entries: [] }]]) as never;
+    fleet.reads.GetFleetComposition.result = (inComposition === null ? null : { type: "list", items: inComposition.map(entry) }) as never;
+    return fleet;
+  };
+  const flowReading = (answers: readonly unknown[]) => {
+    const state = { reads: 0 };
+    const store = createClientStore();
+    const flow = createAppFlow(store, {
+      fleetCompositionRereadMs: 25,
+      fetch: async (input: unknown) => {
+        if (String(input) === "/api/names") return json({ ok: true, names: {} });
+        state.reads += 1;
+        return json(answers[Math.min(state.reads, answers.length) - 1]);
+      },
+    });
+    return { flow, state, store };
+  };
+  const settled = () => new Promise((resolve) => setTimeout(resolve, 150));
+  /** The re-read is on a real timer: wait for it by the clock, a second at most. */
+  const until = async (predicate: () => boolean, message: string): Promise<void> => {
+    for (let waited = 0; waited < 1000 && !predicate(); waited += 10) await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.ok(predicate(), message);
+  };
+  const both = [140000005, 140000002];
+
+  // One member is not in the composition yet: read again once it can be had, and then it is.
+  const caughtUp = flowReading([fleetWith(both, [140000005]), fleetWith(both, both)]);
+  await caughtUp.flow.loadFleet();
+  assert.equal(caughtUp.state.reads, 1);
+  await until(() => caughtUp.state.reads === 2, "the fleet was never read again for its composition");
+  await settled();
+  assert.equal(caughtUp.state.reads, 2);
+  assert.equal(caughtUp.store.get().fleet.fleet?.composition.value.length, 2);
+
+  // A composition that still has not the member is not asked after for ever: once for that roster.
+  const never = flowReading([fleetWith(both, [140000005])]);
+  await never.flow.loadFleet();
+  await until(() => never.state.reads === 2, "the fleet was never read again for its composition");
+  await settled();
+  assert.equal(never.state.reads, 2);
+  // Until the roster is another roster: then once more for that.
+  const grew = flowReading([fleetWith(both, [140000005]), fleetWith(both, [140000005]), fleetWith([...both, 140000003], [140000005])]);
+  await grew.flow.loadFleet();
+  await until(() => grew.state.reads === 2, "no second read");
+  await settled();
+  await grew.flow.loadFleet();
+  await until(() => grew.state.reads === 4, "the grown roster was not read again for");
+  await settled();
+  assert.equal(grew.state.reads, 4);
+
+  // A composition that catches up of itself before the time is up is not read for again.
+  const overtaken = flowReading([fleetWith(both, [140000005]), fleetWith(both, both)]);
+  await overtaken.flow.loadFleet();
+  await overtaken.flow.loadFleet();
+  await settled();
+  assert.equal(overtaken.state.reads, 2);
+  // Once it has caught up, the same roster falling behind again is read for again.
+  const again = flowReading([fleetWith(both, [140000005]), fleetWith(both, [140000005]), fleetWith(both, both), fleetWith(both, [140000005]), fleetWith(both, both)]);
+  await again.flow.loadFleet();
+  await until(() => again.state.reads === 2, "no second read");
+  await settled();
+  await again.flow.loadFleet();
+  await again.flow.loadFleet();
+  await until(() => again.state.reads === 5, "the roster that fell behind again was not read for again");
+
+  // Everyone is in it, or the pilot has no composition to be shown (it commands nothing): nothing is read again.
+  for (const [why, fleet] of [["all in it", fleetWith(both, both)], ["none to show", fleetWith(both, null)], ["an empty one", fleetWith(both, [])], ["no fleet", noFleet()]] as const) {
+    const quiet = flowReading([fleet]);
+    await quiet.flow.loadFleet();
+    await settled();
+    assert.equal(quiet.state.reads, 1, why);
+  }
+});

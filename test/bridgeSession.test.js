@@ -1992,3 +1992,14 @@ test("a session the game port has lost while the kept fleet is read is forgotten
   assert.equal(next.response.status >= 400, true);
   assert.notEqual(next.response.status, 404);
 });
+
+test("a fleet kept whole is read with nothing asked of the server, and what is not kept of it is not an error", async () => {
+  // pilots.js fleetKept answers all five where the fleet's object is held: the join requests and the composition
+  // as the client's own windows for them would have them, which for most pilots is none.
+  const kept = { ...keptFleet(654500010000), GetJoinRequests: { type: "dict", entries: [] }, GetFleetComposition: null };
+  const { payload, asked } = await fleetRoute({ own: { fleetID: 654500010000, holdsObject: true, kept: () => kept } });
+  assert.deepEqual(asked, []);
+  assert.deepEqual([payload.reads.GetJoinRequests, payload.reads.GetFleetComposition], [{ result: { type: "dict", entries: [] } }, { result: null }]);
+  assert.deepEqual(Object.keys(payload.reads).sort(), FLEET_READ_NAMES.slice().sort());
+  assert.equal(Object.values(payload.reads).some((read) => "error" in read), false);
+});

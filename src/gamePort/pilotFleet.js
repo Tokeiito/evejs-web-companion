@@ -25,6 +25,15 @@
 //   OnFleetMove()              the pilot has been moved: FinishMove is asked,
 //                              which is where the session's wing and squad
 //                              change
+//   OnFleetJoinRequest(info)   joinRequests[info.charID] = info
+//   OnJoinRequestUpdate(joinRequests)     joinRequests
+//
+// Two more things it keeps are asked for only when their own windows are shown,
+// which the main window's menu offers to some and not others (fleetwindow.py):
+// the join requests, the boss's, asked where none is kept
+// (fleetJoinRequestWnd.py); and the composition, a commander's or the boss's,
+// kept for twenty seconds and for no time once the pilot's own record has
+// changed (GetFleetComposition, fleetCompositionWnd.py).
 //
 // A session whose fleet changes has no members until the state is read again
 // (ProcessSessionChange). Several of these can come in one notification,
@@ -53,6 +62,8 @@ const WINGS_ASKED_AGAIN = new Set([
 ]);
 /** evefleet/const.py: the bit of a member's job that says it is the fleet's boss. */
 const FLEET_JOB_CREATOR = 2;
+/** fleetSvc.py FLEETCOMPOSITION_CACHE_TIME, in milliseconds. */
+const COMPOSITION_KEPT_MS = 20_000;
 /** What a member's record is made of after OnFleetMemberChanged, with where each comes in the notice. */
 const CHANGED_FIELDS = Object.freeze([["wingID", 7], ["squadID", 8], ["role", 9], ["job", 10], ["memberOptOuts", 11]]);
 
@@ -64,6 +75,12 @@ function createPilotFleet({ characterID }) {
   let wings = null;
   let options = null;
   let motd = null;
+  /** self.joinRequests: charID -> [the key it came under, the request]. And whether their window has been shown for this fleet. */
+  let joinRequests = new Map();
+  let joinRequestsShown = false;
+  /** self.fleetComposition, and the reading of the client's clock (ms) after which it is asked for again. */
+  let composition = null;
+  let compositionGoodUntil = 0;
 
   /** fleetSvc.Clear, as far as this goes. */
   function clear() {
@@ -72,7 +89,13 @@ function createPilotFleet({ characterID }) {
     wings = null;
     options = null;
     motd = null;
+    joinRequests = new Map();
+    joinRequestsShown = false;
+    composition = null;
+    compositionGoodUntil = 0;
   }
+
+  const requestsOf = (answer) => new Map((isDict(answer) ? answer.entries : []).map(([key, request]) => [number(key), [key, request]]));
 
   /** InitFleet: what GetInitState answered. False where it was not a fleet's state: what was kept is as it was. */
   function init(answer) {
@@ -113,6 +136,8 @@ function createPilotFleet({ characterID }) {
         const record = { type: "object", name: (isKeyVal(was) ? was : state ?? {}).name ?? "util.KeyVal", args: { type: "dict", entries: [["charID", args[0]], ...CHANGED_FIELDS.map(([name, index]) => [name, args[index]])] } };
         members.set(charID, [key, record]);
       }
+      // self.fleetCompositionTimestamp = 0, where it is the pilot's own record that changed.
+      if (charID === characterID) compositionGoodUntil = 0;
     } else if (method === "OnFleetOptionsChanged") {
       options = args[1] ?? null;
     } else if (method === "OnFleetMotdChanged") {
@@ -121,6 +146,11 @@ function createPilotFleet({ characterID }) {
       return "wings";
     } else if (method === "OnFleetMove") {
       return "move";
+    } else if (method === "OnFleetJoinRequest") {
+      const charID = number(field(args[0], "charID"));
+      if (charID !== null) joinRequests.set(charID, [(joinRequests.get(charID) ?? [charID])[0], args[0]]);
+    } else if (method === "OnJoinRequestUpdate") {
+      joinRequests = requestsOf(args[0]);
     }
     return null;
   }
@@ -158,6 +188,26 @@ function createPilotFleet({ characterID }) {
     /** self.motd: None until the server has said one. */
     motd: () => motd,
     setMotd(answer) { motd = answer ?? null; },
+    /** self.joinRequests, in the form GetJoinRequests answers them in. */
+    joinRequests: () => ({ type: "dict", entries: [...joinRequests.values()] }),
+    setJoinRequests(answer) { joinRequests = requestsOf(answer); },
+    /**
+     * The join requests' window is shown: the page shows them with the fleet, so once for a fleet. Answers whether
+     * the client asks the server for them then, which it does where it keeps none (fleetSvc.GetJoinRequests).
+     */
+    openJoinRequests() {
+      if (joinRequestsShown || joinRequests.size > 0) return false;
+      joinRequestsShown = true;
+      return true;
+    },
+    /** self.fleetComposition: null until it has been asked for. */
+    composition: () => composition,
+    /** fleetSvc.GetFleetComposition: asked for where fleetCompositionTimestamp < now. */
+    compositionDue: (now) => compositionGoodUntil < now,
+    setComposition(answer, now) {
+      composition = answer ?? null;
+      compositionGoodUntil = now + COMPOSITION_KEPT_MS;
+    },
     /** self.options, as the server last said them: null with none kept. */
     options: () => options,
     /** fleetSvc.IsBoss: the pilot's own record's job has the creator's bit. */

@@ -443,6 +443,11 @@ export interface AppFlowOptions {
    * write (AGENT_TALK_AGAIN_WAIT_MS). Tests shorten it.
    */
   readonly agentTalkAgainWaitMs?: number;
+  /**
+   * How long after a read of a fleet whose composition lacks a member the fleet is read again
+   * (FLEET_COMPOSITION_REREAD_MS). Tests shorten it.
+   */
+  readonly fleetCompositionRereadMs?: number;
   /** Hosted MCC assignment; an absent or different authority blocks target work. */
   readonly miningOperationID?: string | null;
   /**
@@ -3505,6 +3510,42 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   let fleetRefreshDirty = false;
   let fleetRefreshScheduled = false;
 
+  /**
+   * fleetSvc.py keeps the composition it was answered for twenty seconds (FLEETCOMPOSITION_CACHE_TIME), so a
+   * commander's fleet can be read with a composition older than its roster: a member who has joined or been
+   * changed since is not in it, and has no ship or place to show. A beat past the twenty seconds the fleet is read
+   * once more, as a user who looked at the composition again would see it. Once for a roster: a composition that
+   * still lacks the member is not asked after for ever.
+   */
+  const FLEET_COMPOSITION_REREAD_MS = 20_500;
+  const fleetCompositionRereadMs = options.fleetCompositionRereadMs ?? FLEET_COMPOSITION_REREAD_MS;
+  let fleetCompositionTimer: ReturnType<typeof setTimeout> | null = null;
+  let fleetCompositionReadFor: string | null = null;
+
+  function rereadForComposition(snapshot: ReturnType<typeof decodeFleetCenter>): void {
+    if (fleetCompositionTimer !== null) {
+      clearTimeout(fleetCompositionTimer);
+      fleetCompositionTimer = null;
+    }
+    const composition = snapshot.fleet.composition.value;
+    const members = snapshot.fleet.initState.value.members;
+    // No composition to show (the pilot commands nothing, or is in no fleet) is nothing to wait for.
+    const lacking = composition.length > 0 && members.some((member) => !composition.some((entry) => entry.characterID === member.charID));
+    const roster = lacking ? members.map((member) => String(member.charID)).join(",") : null;
+    if (roster === null || roster === fleetCompositionReadFor) {
+      if (roster === null) fleetCompositionReadFor = null;
+      return;
+    }
+    fleetCompositionTimer = setTimeout(() => {
+      fleetCompositionTimer = null;
+      fleetCompositionReadFor = roster;
+      scheduleFleetRefresh();
+    }, fleetCompositionRereadMs);
+    if (typeof fleetCompositionTimer === "object" && "unref" in fleetCompositionTimer) {
+      (fleetCompositionTimer as { unref(): void }).unref();
+    }
+  }
+
   function scheduleFleetRefresh(): void {
     if (fleetRefreshPromise !== null) {
       fleetRefreshDirty = true;
@@ -3555,6 +3596,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       readError,
       refreshedAtMs: Date.now(),
     });
+    rereadForComposition(snapshot);
 
     const refs: NameRef[] = [];
     for (const member of snapshot.fleet.initState.value.members) {

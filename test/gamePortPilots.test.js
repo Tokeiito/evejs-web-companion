@@ -3141,12 +3141,12 @@ const intoFleet = (session, fleetID) => {
 };
 
 /** A pilot that has formed a fleet through the BFF's two steps: `made` is the handle CreateFleet's object went by. */
-async function formed(answers = {}) {
+async function formed(answers = {}, pilotOptions = {}) {
   // The session comes into the fleet while Init is being answered, as the server's session change does.
   const built = await selected({ answers: {
     "fleetObjectHandler.CreateFleet": boundObject("N=1:500"), "bound:Init": () => { intoFleet(built.session, FLEET); return null; },
     "bound:GetInitState": "the state", "bound:GetWings": "the wings", ...answers,
-  } }, FLEET_PAIRS);
+  } }, { ...FLEET_PAIRS, ...pilotOptions });
   const made = await built.pilots.bindObject("fleetObjectHandler", "CreateFleet", [], null, WHO, built.handle);
   await built.pilots.callBoundMethod("fleetObjectHandler", "Init", [null, null], null, WHO, built.handle, made.boundHandle);
   return { ...built, made };
@@ -3301,7 +3301,9 @@ const keptShort = (kept) => {
   const entries = Object.fromEntries(kept.GetInitState.args.entries);
   return [entries.members.entries.map(([charID]) => Number(charID)), kept.GetWings.entries.length, kept.GetMotd];
 };
-const fleetCalls = (session) => session.boundCalls.filter((call) => call.method !== "GetAllInfo").map((call) => `${call.objectID} ${call.method}`);
+const everyFleetCall = (session) => session.boundCalls.filter((call) => call.method !== "GetAllInfo").map((call) => `${call.objectID} ${call.method}`);
+/** Those calls, but for the two windows' own reads, which have tests of their own (windowCalls). */
+const fleetCalls = (session) => everyFleetCall(session).filter((call) => !/ (GetJoinRequests|GetFleetComposition)$/.test(call));
 
 test("forming a fleet reads its state once and asks its number, and after that the fleet is read from what is kept", async () => {
   const built = await formed({ "bound:GetInitState": FOUNDED, "bound:GetFleetID": fleetRecording.fleetID });
@@ -3493,7 +3495,8 @@ test("a pilot who is moved finishes the move, and a wing the pilot makes is give
   // fleetSvc.OnFleetMove (1813): self.fleet.FinishMove(), on the fleet's object. The session's wing and squad change by it.
   session.notify("OnFleetMove", []);
   await pilots.fleetKept(WHO, handle);
-  assert.deepEqual([asked(), session.boundCalls.at(-1).args, session.boundCalls.at(-1).kwargs], [["N=1:500 FinishMove"], [], null]);
+  const finished = session.boundCalls.filter((call) => call.method === "FinishMove");
+  assert.deepEqual([asked(), finished.map((call) => [call.args, call.kwargs])], [["N=1:500 FinishMove"], [[[], null]]]);
   assert.deepEqual(ledgerOf(pilots, "fleetObjectHandler.FinishMove"), [{ same: 1 }, "eve/client/script/parklife/fleetSvc.py:1816"]);
 
   // fleetSvc.CreateWing (575): wingID = self.fleet.CreateWing(); if wingID: self.CreateSquad(wingID). Both before it is over.
@@ -3564,6 +3567,154 @@ test("the fleet's writes are judged and shaped by what is kept: who its boss is,
   const gone = await pilots.bindObject("fleetObjectHandler", "MachoBindObject", [[FLEET]], null, WHO, handle);
   await pilots.callBoundMethod("fleetObjectHandler", "SetOptions", [{ isFreeMove: true }], null, WHO, handle, gone.boundHandle);
   assert.deepEqual([session.boundCalls.at(-1).args, statuses("SetOptions")], [[{ isFreeMove: true }], { reshaped: 2, differs: 1 }]);
+});
+
+// ── the two windows the fleet's main one offers to some: join requests, composition ──
+//
+// fleetwindow.py offers the join requests' window to the boss, and the composition's to a commander or the boss.
+// Nobody else's client asks for either. The page shows both with the fleet, so a read of the fleet is those
+// windows shown, for those who would have them.
+
+const REQUESTS = { type: "dict", entries: [[140000003, keyVal([["charID", 140000003], ["corpID", 98000000]])]] };
+const compositionOf = (shipTypeID) => ({ type: "list", items: [keyVal([["characterID", PILOT], ["shipTypeID", shipTypeID]])] });
+/** The pilot's own record changed to this role and job, as the server's notice says it. */
+const ownChange = (role, job) => ["OnFleetMemberChanged", [PILOT, 1n, -1, -1, 1, 2, null, -1, -1, role, job, null, false]];
+const windowCalls = (session) => everyFleetCall(session).filter((call) => / (GetJoinRequests|GetFleetComposition)$/.test(call)).map((call) => call.split(" ")[1]);
+const requestIDs = (kept) => kept.GetJoinRequests.entries.map(([charID]) => Number(charID));
+const shipsOf = (kept) => (kept.GetFleetComposition === null ? null : kept.GetFleetComposition.items.map((entry) => Object.fromEntries(entry.args.entries).shipTypeID));
+
+test("the boss's fleet is read with its join requests, asked once, and its composition, kept twenty seconds", async () => {
+  const clock = { now: 1_800_000_000_000 };
+  let ship = 588;
+  const built = await formed({ "bound:GetInitState": WITH_TWO, "bound:GetJoinRequests": REQUESTS, "bound:GetFleetComposition": () => compositionOf(ship) }, { now: () => clock.now });
+  const { pilots, session, handle } = built;
+  const read = () => pilots.fleetKept(WHO, handle);
+  // The first read: both windows shown for the first time.
+  const first = await read();
+  assert.deepEqual([windowCalls(session), requestIDs(first), shipsOf(first)], [["GetJoinRequests", "GetFleetComposition"], [140000003], [588]]);
+  // Both in the gateway's form, as a read of each comes.
+  assert.deepEqual([first.GetJoinRequests.entries[0][1].name, first.GetFleetComposition.items[0].name, first.GetFleetComposition.items[0].args.entries[0][0]], ["util.KeyVal", "util.KeyVal", "characterID"]);
+  assert.deepEqual(session.boundCalls.slice(-2).map((call) => [call.objectID, call.args, call.kwargs]), [["N=1:500", [], null], ["N=1:500", [], null]]);
+  // Read again, at once and nineteen seconds on: neither is asked, and the answers are what is kept.
+  ship = 648;
+  for (const later of [0, 19_000, 20_000]) {
+    clock.now = 1_800_000_000_000 + later;
+    const again = await read();
+    assert.deepEqual([windowCalls(session).length, requestIDs(again), shipsOf(again)], [2, [140000003], [588]], String(later));
+  }
+  // After twenty seconds the composition is asked for again. The join requests are not.
+  clock.now += 1;
+  assert.deepEqual([shipsOf(await read()), windowCalls(session).slice(2)], [[648], ["GetFleetComposition"]]);
+  // The pilot's own record changing is the composition good no longer, however lately it was asked.
+  ship = 670;
+  session.notify(...ownChange(1, 2));
+  assert.deepEqual([shipsOf(await read()), windowCalls(session).slice(3)], [[670], ["GetFleetComposition"]]);
+  // The join requests are kept right by the server's notices.
+  session.notify("OnFleetJoinRequest", [keyVal([["charID", 140000004]])]);
+  assert.deepEqual(requestIDs(await read()), [140000003, 140000004]);
+  session.notify("OnJoinRequestUpdate", [{ type: "dict", entries: [] }]);
+  assert.deepEqual([requestIDs(await read()), windowCalls(session).length], [[], 4]);
+  // Each is in the ledger as the client's own call.
+  assert.deepEqual(["GetJoinRequests", "GetFleetComposition"].map((method) => ledgerOf(pilots, `fleetObjectHandler.${method}`)[0]), [{ same: 1 }, { same: 3 }]);
+});
+
+test("a member who commands nothing is asked for neither; a commander for the composition; whoever becomes the boss for the join requests", async () => {
+  const clock = { now: 1_800_000_000_000 };
+  const member = recorded("joiner", "GetInitState")[0];
+  // The stand-in pilot is the recording's founder; the joiner's view is made this pilot's by leaving the founder its job and taking a member's role in the session.
+  const asMember = { ...member, args: { ...member.args, entries: member.args.entries.map(([name, value]) => (String(name) === "members" ? [name, { type: "dict", entries: value.entries.map(([charID, record]) => [charID, { ...record, args: { ...record.args, entries: record.args.entries.map(([field, each]) => (String(field) === "job" ? [field, 0] : [field, each])) } }]) }] : [name, value])) } };
+  const built = await formed({ "bound:GetInitState": asMember, "bound:GetJoinRequests": REQUESTS, "bound:GetFleetComposition": compositionOf(588) }, { now: () => clock.now });
+  const { pilots, session, handle } = built;
+  const read = () => pilots.fleetKept(WHO, handle);
+  const role = (fleetrole) => { session.attributes.fleetrole = fleetrole; session.change({ fleetrole: [null, fleetrole] }); };
+  // evefleet.fleetRoleMember: nothing is asked, and nothing is kept to show.
+  role(4);
+  const plain = await read();
+  assert.deepEqual([windowCalls(session), requestIDs(plain), shipsOf(plain)], [[], [], null]);
+  // A squad commander, a wing commander and a fleet commander (fleetCmdrRoles) have the composition's window; not the boss's.
+  for (const [index, fleetrole] of [3, 2, 1].entries()) {
+    role(fleetrole);
+    clock.now += 20_001;
+    const commanding = await read();
+    assert.deepEqual([windowCalls(session), requestIDs(commanding), shipsOf(commanding)], [Array(index + 1).fill("GetFleetComposition"), [], [588]], String(fleetrole));
+  }
+  // The boss, whatever its role: the join requests, asked the once.
+  role(4);
+  session.notify(...ownChange(4, 2));
+  const boss = await read();
+  assert.deepEqual([windowCalls(session).slice(3), requestIDs(boss)], [["GetJoinRequests", "GetFleetComposition"], [140000003]]);
+  // No longer the boss, and a member again: nothing is asked, and neither window is the pilot's to be shown.
+  session.notify(...ownChange(4, 0));
+  clock.now += 20_001;
+  const after = await read();
+  assert.deepEqual([windowCalls(session).length, requestIDs(after), shipsOf(after)], [5, [], null]);
+  // The boss again: what was kept all along is shown, the join requests not asked for a second time.
+  session.notify(...ownChange(4, 2));
+  const back = await read();
+  assert.deepEqual([windowCalls(session).slice(5), requestIDs(back), shipsOf(back)], [["GetFleetComposition"], [140000003], [588]]);
+});
+
+test("join requests and a composition that came too late, or could not be had, are not kept for the next fleet", async () => {
+  const clock = { now: 1_800_000_000_000 };
+  const waiting = [];
+  let refuse = false;
+  const answers = {
+    "bound:GetInitState": WITH_TWO,
+    "bound:GetJoinRequests": () => { if (refuse) throw refusedBy("FleetNotCreator"); return new Promise((resolve) => waiting.push(["requests", resolve])); },
+    "bound:GetFleetComposition": () => { if (refuse) throw refusedBy("FleetNotFound"); return new Promise((resolve) => waiting.push(["composition", resolve])); },
+  };
+  const built = await formed(answers, { now: () => clock.now });
+  const { pilots, session, handle } = built;
+  const settle = async () => { for (let turns = 0; turns < 3; turns += 1) await new Promise((resolve) => setImmediate(resolve)); };
+  const asked = () => waiting.map(([what]) => what);
+  const formAgain = async () => {
+    const again = await pilots.bindObject("fleetObjectHandler", "CreateFleet", [], null, WHO, handle);
+    await pilots.callBoundMethod("fleetObjectHandler", "Init", [null, null], null, WHO, handle, again.boundHandle);
+    waiting.length = 0;
+  };
+  // The join requests are asked for, and the pilot is out of the fleet before they are answered: nothing to read.
+  const first = pilots.fleetKept(WHO, handle);
+  await settle();
+  assert.deepEqual(asked(), ["requests"]);
+  intoFleet(session, null);
+  waiting[0][1](REQUESTS);
+  assert.equal(await first, null);
+  // In the next fleet they are asked for afresh: the old fleet's were not kept for it.
+  await formAgain();
+  const second = pilots.fleetKept(WHO, handle);
+  await settle();
+  assert.deepEqual(asked(), ["requests"]);
+  waiting[0][1]({ type: "dict", entries: [] });
+  await settle();
+  assert.deepEqual(asked(), ["requests", "composition"]);
+  // The same of the composition.
+  intoFleet(session, null);
+  waiting[1][1](compositionOf(588));
+  assert.equal(await second, null);
+  await formAgain();
+  const third = pilots.fleetKept(WHO, handle);
+  await settle();
+  waiting[0][1](REQUESTS);
+  await settle();
+  assert.deepEqual(asked(), ["requests", "composition"]);
+  waiting[1][1](compositionOf(648));
+  const kept = await third;
+  assert.deepEqual([requestIDs(kept), shipsOf(kept)], [[140000003], [648]]);
+
+  // Refused: nothing is kept, and the fleet reads all the same.
+  intoFleet(session, null);
+  await formAgain();
+  refuse = true;
+  const before = windowCalls(session).length;
+  const refused = await pilots.fleetKept(WHO, handle);
+  assert.deepEqual([keptShort(refused)[0], requestIDs(refused), shipsOf(refused), windowCalls(session).slice(before)], [[PILOT, OTHER], [], null, ["GetJoinRequests", "GetFleetComposition"]]);
+  // At the next read the composition is asked for again, as the client asks where it has none that is good. The join requests' window has been shown.
+  refuse = false;
+  const again = pilots.fleetKept(WHO, handle);
+  await settle();
+  assert.deepEqual(asked(), ["composition"]);
+  waiting[0][1](compositionOf(670));
+  assert.deepEqual(shipsOf(await again), [670]);
 });
 
 // ── the monikers the BFF asks for ────────────────────────────────────────────
