@@ -5228,6 +5228,7 @@ test("the ship's entry has its capacitor as it has recharged to, as godma reckon
 // space, after godma's prime (godma.RefreshTargets; recorded so on Tranquility after an undock), and from then on
 // goes by what the server tells it (targetMgr.OnTarget). The BFF's routes read the list each time they want it.
 
+const { MODE: BALL_MODES } = require("../src/gamePort/destiny/state");
 const TARGET_PAIRS = new Set(["dogmaIM.GetTargets", "dogmaIM.GetTargeters", "dogmaIM.AddTarget", "dogmaIM.RemoveTarget"]);
 const idsOf = (...ids) => ({ type: "list", items: ids });
 /** A pilot chosen in space, the dogma location answering the two lists as given. */
@@ -5338,4 +5339,67 @@ test("a list the server could not be asked for is not kept as empty: the next re
   refuse = false;
   assert.deepEqual([await read(), await read()], [[9001], [9001]]);
   assert.equal(asked().filter((method) => method === "GetTargets").length, refusals + 1, "asked once more, and that answer kept");
+});
+
+// ── an order the ship is already flying ──────────────────────────────────────
+//
+// movementFunctions._IsAlreadyFollowingBallAtRange: the client's menu sends no approach, keep at range or orbit when
+// its own ball in its own ballpark is already in that mode, after that ball, at that range.
+
+test("the ship is already flying an order when its own ball says so, and the pilot's last order was not another one", async () => {
+  const hand = handTicked();
+  const built = build(IN_SPACE, { ...hand.options, allowed: new Set(["beyonce.MachoBindObject", "beyonce.CmdStop", "beyonce.CmdFollowBall", "beyonce.CmdOrbit"]) });
+  const { bridgeSessionID: handle } = await built.pilots.selectCharacter([PILOT, null, true], null, FIELDS);
+  const already = (...order) => built.pilots.alreadyFollowing(handle, WHOSE, ...order);
+  // Before the server's state has come there is no ball to go by, and nothing is held back.
+  assert.equal(already("CmdFollowBall", 9001, 50), false);
+  for (const update of recordedUpdates.slice(0, 5)) built.session.notify("DoDestinyUpdate", update.args);
+  hand.parks[0].tick();
+  const park = hand.parks[0].space.park;
+  const ship = park.ballpark.ball(park.ego);
+  /** The ship's ball as the server's word would leave it: the range a float, as the ballpark holds one. */
+  const flying = (mode, followId, followRange) => Object.assign(ship, { mode, followId, followRange: Math.fround(followRange) });
+  assert.equal(already("CmdFollowBall", 9001, 50), false, "the ship is doing something else");
+
+  flying(BALL_MODES.FOLLOW, 9001, 50);
+  assert.deepEqual([already("CmdFollowBall", 9001, 50), already("CmdFollowBall", 9002, 50), already("CmdFollowBall", 9001, 51), already("CmdOrbit", 9001, 50)], [true, false, false, false]);
+  flying(BALL_MODES.ORBIT, 9001, 5000);
+  assert.deepEqual([already("CmdOrbit", 9001, 5000), already("CmdOrbit", 9001, 2500), already("CmdFollowBall", 9001, 5000)], [true, false, false]);
+  // The range is compared as the client compares it, with the float the ballpark holds: one a float cannot hold exactly is never "already".
+  flying(BALL_MODES.FOLLOW, 9001, 1234.56);
+  assert.equal(already("CmdFollowBall", 9001, 1234.56), false);
+
+  // The pilot's last order was another one, which the ballpark has not heard of yet: the client would hold the
+  // approach back and leave the ship stopped. Here it is sent.
+  flying(BALL_MODES.FOLLOW, 9001, 50);
+  const parkHandle = (await built.pilots.bindObject("beyonce", "MachoBindObject", [], null, WHOSE, handle)).boundHandle;
+  await built.pilots.callBoundMethod("beyonce", "CmdStop", [], null, WHOSE, handle, parkHandle);
+  assert.equal(already("CmdFollowBall", 9001, 50), false);
+  // The order itself, sent, is the last order: held back from then on, for as long as the ball says so.
+  await built.pilots.callBoundMethod("beyonce", "CmdFollowBall", [9001, 50], null, WHOSE, handle, parkHandle);
+  assert.deepEqual([already("CmdFollowBall", 9001, 50), already("CmdFollowBall", 9001, 51)], [true, false]);
+  await built.pilots.callBoundMethod("beyonce", "CmdFollowBall", [9002, 50], null, WHOSE, handle, parkHandle);
+  assert.equal(already("CmdFollowBall", 9001, 50), false, "another ball was ordered followed since");
+  await built.pilots.callBoundMethod("beyonce", "CmdFollowBall", [9001, 3000], null, WHOSE, handle, parkHandle);
+  assert.equal(already("CmdFollowBall", 9001, 50), false, "another range was ordered since");
+  await built.pilots.callBoundMethod("beyonce", "CmdOrbit", [9001, 50], null, WHOSE, handle, parkHandle);
+  assert.equal(already("CmdFollowBall", 9001, 50), false, "an orbit was ordered since");
+  flying(BALL_MODES.ORBIT, 9001, 50);
+  assert.equal(already("CmdOrbit", 9001, 50), true);
+
+  // Docked, the pilot has no ballpark, and its last order is forgotten with it.
+  Object.assign(built.session.attributes, { solarsystemid: null, stationid: STATION, locationid: STATION });
+  built.session.change({ solarsystemid: [SYSTEM, null], stationid: [null, STATION], locationid: [SYSTEM, STATION] });
+  assert.equal(already("CmdOrbit", 9001, 50), false);
+  // Undocked into a new ballpark, the old one's last order (an orbit) is not held against what the new one's ball says.
+  Object.assign(built.session.attributes, { solarsystemid: SYSTEM, stationid: null, locationid: SYSTEM });
+  built.session.change({ solarsystemid: [null, SYSTEM], stationid: [STATION, null], locationid: [STATION, SYSTEM] });
+  // The new ballpark starts ticking once its formations are answered.
+  await new Promise((resolve) => setImmediate(resolve));
+  for (const update of recordedUpdates.slice(0, 5)) built.session.notify("DoDestinyUpdate", update.args);
+  hand.parks[1].tick();
+  const [newPark, oldPark] = [hand.parks[1].space.park, park];
+  assert.notEqual(newPark, oldPark);
+  Object.assign(newPark.ballpark.ball(newPark.ego), { mode: BALL_MODES.FOLLOW, followId: 9001, followRange: Math.fround(50) });
+  assert.equal(already("CmdFollowBall", 9001, 50), true);
 });

@@ -17000,6 +17000,20 @@ function throttleOpenedFirst(held, theAutopilotsOwn) {
   return !onGamePort || theAutopilotsOwn;
 }
 
+/**
+ * Whether an approach, keep at range or orbit is one the retail client's menu
+ * would not send: the ship is flying it already
+ * (movementFunctions._IsAlreadyFollowingBallAtRange). Only the pilot's own
+ * ballpark can say, so only a game-port pilot's transport is asked
+ * (pilots.js alreadyFollowing). Through the gateway the order is always sent.
+ */
+function alreadyFlying(held, method, targetID, range) {
+  if (!gamePortPilots || !isGamePortHandle(held.bridgeSessionID) || typeof gamePortPilots.alreadyFollowing !== "function") return false;
+  return gamePortPilots.alreadyFollowing(held.bridgeSessionID, { userid: held.accountID }, method, targetID, range) === true;
+}
+/** What a route answers for an order that was held back, in place of the call's outcome. */
+const HELD_BACK = Object.freeze({ result: null, notifications: Object.freeze([]) });
+
 function parkBindSpec(solarSystemID) {
   return {
     key: `park:${solarSystemID}`,
@@ -18059,13 +18073,17 @@ app.post("/api/bridge/flight/approach", requireAuth, async (req, res, next) => {
       return;
     }
     const spec = parkBindSpec(before.flight.solarSystemID);
+    // The autopilot's approach is sent whatever the ship is doing; the menu's is not sent twice. (An order held
+    // back is the menu's on the game port, which opens no throttle either.)
+    const alreadySo = range !== 0 && alreadyFlying(held, "CmdFollowBall", destinationID, range);
     if (throttleOpenedFirst(held, range === 0)) {
       await boundCall(held, req.webSessionID, spec, "CmdSetSpeedFraction", [1.0], null);
     }
-    const outcome = await boundCall(held, req.webSessionID, spec, "CmdFollowBall", [destinationID, range], null);
+    const outcome = alreadySo ? HELD_BACK : await boundCall(held, req.webSessionID, spec, "CmdFollowBall", [destinationID, range], null);
     const after = await readHeldFlightAfterCommand(held, req.webSessionID, before);
     res.json({
       ok: true,
+      ...(alreadySo ? { alreadySo: true } : {}),
       result: outcome.result,
       flight: after.flight,
       notifications: [...outcome.notifications, ...after.notifications],
@@ -18109,13 +18127,15 @@ app.post("/api/bridge/flight/keep-at-range", requireAuth, async (req, res, next)
       return;
     }
     const spec = parkBindSpec(before.flight.solarSystemID);
+    const alreadySo = alreadyFlying(held, "CmdFollowBall", targetID, range);
     if (throttleOpenedFirst(held, false)) {
       await boundCall(held, req.webSessionID, spec, "CmdSetSpeedFraction", [1.0], null);
     }
-    const outcome = await boundCall(held, req.webSessionID, spec, "CmdFollowBall", [targetID, range], null);
+    const outcome = alreadySo ? HELD_BACK : await boundCall(held, req.webSessionID, spec, "CmdFollowBall", [targetID, range], null);
     const after = await readHeldFlightAfterCommand(held, req.webSessionID, before);
     res.json({
       ok: true,
+      ...(alreadySo ? { alreadySo: true } : {}),
       result: outcome.result,
       flight: after.flight,
       notifications: [...outcome.notifications, ...after.notifications],
@@ -18156,13 +18176,15 @@ app.post("/api/bridge/flight/orbit", requireAuth, async (req, res, next) => {
       return;
     }
     const spec = parkBindSpec(before.flight.solarSystemID);
+    const alreadySo = alreadyFlying(held, "CmdOrbit", targetID, range);
     if (throttleOpenedFirst(held, false)) {
       await boundCall(held, req.webSessionID, spec, "CmdSetSpeedFraction", [1.0], null);
     }
-    const outcome = await boundCall(held, req.webSessionID, spec, "CmdOrbit", [targetID, range], null);
+    const outcome = alreadySo ? HELD_BACK : await boundCall(held, req.webSessionID, spec, "CmdOrbit", [targetID, range], null);
     const after = await readHeldFlightAfterCommand(held, req.webSessionID, before);
     res.json({
       ok: true,
+      ...(alreadySo ? { alreadySo: true } : {}),
       result: outcome.result,
       flight: after.flight,
       notifications: [...outcome.notifications, ...after.notifications],

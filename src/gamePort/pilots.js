@@ -950,6 +950,8 @@ function createGamePortPilots({
       ownersWork: Promise.resolve(),
       /** What the client's services keep until it changes, as the server answered it, by the service asked (KEPT_UNTIL_CHANGED). */
       kept: Object.fromEntries(Object.keys(KEPT_UNTIL_CHANGED).map((service) => [service, createKeptReads()])),
+      /** The pilot's last order to its ship in this ballpark, as { method, targetID, range }, or null (alreadyFollowing). */
+      lastMove: null,
       /** What the ship has locked and what has it locked, as the client's target service keeps them (pilotTargets.js); the askings of them, one after another; and whether godma has yet to ask for them. */
       targets: createPilotTargets(),
       targetsWork: Promise.resolve(),
@@ -1457,6 +1459,8 @@ function createGamePortPilots({
     if (entry.space && entry.space.solarSystemID !== wanted) {
       entry.space.release();
       entry.space = null;
+      // Its orders were to a ship in that ballpark.
+      entry.lastMove = null;
     }
     if (wanted !== null && !entry.space) {
       entry.space = createSpace({ session: entry.session, solarSystemID: wanted, sleep, simTime: entry.clock.simTime, onError: (error, what) => onSpaceError(error, what, entry.characterID) });
@@ -1604,6 +1608,8 @@ function createGamePortPilots({
    * if the server's warp then points there. A warp to anything else forgets it.
    */
   function afterMovementCall(entry, method, args, kwargs) {
+    // The pilot's last order to its ship, for alreadyFollowing: what was ordered, and after what, at what range.
+    if (method.startsWith("Cmd")) entry.lastMove = { method, targetID: positive(args[0]), range: typeof args[1] === "number" ? args[1] : null };
     if (method === "CmdWarpToStuffAutopilot") {
       entry.warpDestination = positive(args[0]);
     } else if (method === "CmdWarpToStuff") {
@@ -1619,6 +1625,27 @@ function createGamePortPilots({
       // Steered by hand: the client forgets what it had aligned to (cameraUtil, eveCommands: ClearAlignTargets).
       entry.alignTarget = null;
     }
+  }
+
+  /**
+   * movementFunctions._IsAlreadyFollowingBallAtRange: the pilot's own ball, in its own ballpark, is already in
+   * that mode (following, or orbiting for CmdOrbit), after that ball, at that range. The client's menu then sends
+   * no approach, keep at range or orbit. The range is compared as the client compares it, with the float the
+   * ballpark holds.
+   *
+   * Held to one thing more than the client is: the pilot's last order must have been this one, or none. The
+   * client goes by its ballpark alone, which has not yet heard of a stop sent a moment ago; it would hold back the
+   * approach that was to follow the stop, and leave the ship stopped.
+   */
+  function alreadyFollowing(bridgeSessionID, sessionFields, method, targetID, range) {
+    const entry = held(bridgeSessionID, sessionFields);
+    const park = entry.space ? entry.space.park : null;
+    const ball = park && park.ego !== null ? park.ballpark.ball(park.ego) : null;
+    if (!ball) return false;
+    const mode = method === "CmdOrbit" ? BALL_MODE.ORBIT : BALL_MODE.FOLLOW;
+    if (ball.mode !== mode || ball.followId !== targetID || ball.followRange !== range) return false;
+    const last = entry.lastMove;
+    return last === null || (last.method === method && last.targetID === targetID && last.range === range);
   }
 
   /** The tick of the pilot's park, or null when it has none. */
@@ -2493,6 +2520,7 @@ function createGamePortPilots({
     callMethod,
     bindObject,
     callBoundMethod,
+    alreadyFollowing,
     releaseBridgeSession,
     readFlightStatus,
     readScannerState,

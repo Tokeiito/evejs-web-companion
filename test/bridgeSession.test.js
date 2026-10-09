@@ -2320,11 +2320,16 @@ test("with no journal kept, and on the gateway, the server is asked for it as be
 const [FOLLOWED, PILOTS_SYSTEM] = [9001, 30000142];
 const THROTTLE_OPENED = ["CmdSetSpeedFraction", [1]];
 /** One of the flight's routes asked of a pilot in space; on the game port unless told otherwise. Says what was sent to the ballpark's object, in order. */
-async function flown(path, body, { transport = "gameport" } = {}) {
+async function flown(path, body, { transport = "gameport", alreadySo = null } = {}) {
   const gamePort = gamePortWithQuestions(() => ({ answered: true }));
   const gateway = fakeGateway();
   const backend = transport === "gameport" ? gamePort : gateway;
   const asked = [];
+  // Whether the ship is already flying an order is the pilot's transport's to say, where it can (pilots.js alreadyFollowing).
+  const wondered = [];
+  if (alreadySo !== null) {
+    for (const each of [gamePort, gateway]) each.alreadyFollowing = (bridgeSessionID, sessionFields, ...order) => { wondered.push({ sessionFields, order }); return alreadySo(...order); };
+  }
   backend.readFlightStatus = async () => ({ flight: { docked: false, inSpace: true, stationID: null, solarSystemID: PILOTS_SYSTEM, shipID: 9002 }, notifications: [] });
   backend.readSpaceSnapshot = async () => ({ space: { inSpace: true, solarSystemID: PILOTS_SYSTEM, ship: { itemID: 9002 }, entities: [] }, notifications: [] });
   backend.bindObject = async (service, method, args) => { asked.push({ bound: `${service}.${method}`, args }); return { boundHandle: "the-park", notifications: [] }; };
@@ -2340,7 +2345,7 @@ async function flown(path, body, { transport = "gameport" } = {}) {
   asked.length = 0;
   const answer = await apiRequest(baseUrl, path, { method: "POST", body });
   const sent = asked.filter((each) => each.sent);
-  return { status: answer.response.status, sent: sent.map((each) => each.sent), on: [...new Set(sent.map((each) => each.on.join(" ")))], bound: asked.filter((each) => each.bound).map((each) => each.bound) };
+  return { payload: answer.payload, wondered, status: answer.response.status, sent: sent.map((each) => each.sent), on: [...new Set(sent.map((each) => each.on.join(" ")))], bound: asked.filter((each) => each.bound).map((each) => each.bound) };
 }
 
 test("on the game port the throttle is opened only before the autopilot's approach: the menu's approach, keep at range and orbit go alone", async () => {
@@ -2367,4 +2372,34 @@ test("through the gateway an approach, keep at range and orbit each open the thr
     const { status, sent } = await flown(path, body, { transport: "gateway" });
     assert.deepEqual([status, sent], [200, [THROTTLE_OPENED, command]], `${path} ${JSON.stringify(body)}`);
   }
+});
+
+// The client's menu sends nothing for an approach, keep at range or orbit the ship is already flying
+// (movementFunctions._IsAlreadyFollowingBallAtRange). On the game port the routes ask the pilot's transport, which
+// has the ship's own ballpark, and hold the order back as the client does.
+
+test("on the game port an approach, keep at range or orbit the ship is already flying is not sent again, and the autopilot's always is", async () => {
+  const WHOSE_PILOT = { userid: 4 };
+  for (const [path, body, order] of [
+    ["/api/bridge/flight/approach", { destinationID: FOLLOWED }, ["CmdFollowBall", FOLLOWED, 50]],
+    ["/api/bridge/flight/approach", { destinationID: FOLLOWED, range: 3000 }, ["CmdFollowBall", FOLLOWED, 3000]],
+    ["/api/bridge/flight/keep-at-range", { targetID: FOLLOWED, range: 5000 }, ["CmdFollowBall", FOLLOWED, 5000]],
+    ["/api/bridge/flight/orbit", { targetID: FOLLOWED, range: 2500 }, ["CmdOrbit", FOLLOWED, 2500]],
+  ]) {
+    const held = await flown(path, body, { alreadySo: () => true });
+    assert.deepEqual([held.status, held.sent, held.wondered, held.payload.ok, held.payload.alreadySo, held.payload.result], [200, [], [{ sessionFields: WHOSE_PILOT, order }], true, true, null], path);
+    // Not already so: sent, and nothing said of it.
+    const sent = await flown(path, body, { alreadySo: () => false });
+    assert.deepEqual([sent.sent, sent.wondered.length, "alreadySo" in sent.payload], [[[order[0], order.slice(1)]], 1, false], path);
+  }
+  // The autopilot's approach is sent whatever the ship is doing: the client's autopilot does not look.
+  const autopilots = await flown("/api/bridge/flight/approach", { destinationID: FOLLOWED, range: 0 }, { alreadySo: () => true });
+  assert.deepEqual([autopilots.sent, autopilots.wondered, "alreadySo" in autopilots.payload], [[THROTTLE_OPENED, ["CmdFollowBall", [FOLLOWED, 0]]], [], false]);
+  // A transport that cannot say is not asked, and the order is sent.
+  assert.deepEqual((await flown("/api/bridge/flight/orbit", { targetID: FOLLOWED, range: 2500 })).sent, [["CmdOrbit", [FOLLOWED, 2500]]]);
+});
+
+test("through the gateway an order is sent whether the ship is flying it already or not, as before", async () => {
+  const sent = await flown("/api/bridge/flight/approach", { destinationID: FOLLOWED }, { transport: "gateway", alreadySo: () => true });
+  assert.deepEqual([sent.status, sent.sent, sent.wondered, "alreadySo" in sent.payload], [200, [THROTTLE_OPENED, ["CmdFollowBall", [FOLLOWED, 50]]], [], false]);
 });

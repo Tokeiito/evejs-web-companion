@@ -313,9 +313,20 @@ autopilot asks for. Through the gateway they are as they were. `CmdOrbit` and `C
 (`eveCommands.py` 1104) were read against the client in the same walk and are the client's as
 the BFF sends them.
 
-Not done as the client does it: its menu sends nothing when the ship is already following or
-orbiting that ball at that range (`_IsAlreadyFollowingBallAtRange`). The BFF sends the command
-each time it is asked.
+The client's menu sends nothing when the ship is already flying the order
+(`_IsAlreadyFollowingBallAtRange`, `movementFunctions.py` 192): its own ball, in its own
+ballpark, is in that mode, after that ball, at that range. The two recordings read for it agree:
+the same follow goes out three times within one second, and not again while the ship is flying
+it. On the game port the three routes now ask the pilot's transport, which
+has the ship's own ballpark, and hold such an order back (`pilots.js` `alreadyFollowing`); the
+route's answer then says `alreadySo`. The autopilot's approach is always sent, as the client's
+autopilot does not look. Through the gateway every order is sent, as before.
+
+One thing is held to more than the client holds it: the pilot's last order must have been this
+one, or none. The client goes by its ballpark alone, which has not yet heard of a stop sent a
+moment before. By its source it would hold back an approach sent straight behind a stop, and
+the ship would be left stopped; that has not been seen in a recording. Here such an approach is
+sent.
 
 **What the ship has locked, and a module's target, 2026-10-09.** The client's target service
 (`targetMgr.py`) asks the server for neither list while it flies. On undocking, or on logging in
