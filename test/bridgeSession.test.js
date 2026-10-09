@@ -2003,3 +2003,63 @@ test("a fleet kept whole is read with nothing asked of the server, and what is n
   assert.deepEqual(Object.keys(payload.reads).sort(), FLEET_READ_NAMES.slice().sort());
   assert.equal(Object.values(payload.reads).some((read) => "error" in read), false);
 });
+
+// ── The standings as they are kept ───────────────────────────────────────────
+//
+// standingsvc.py reads a character's standings when it is chosen and keeps them right from the server's notices.
+// The game port keeps them the same way (pilots.js standingsKept), and the Standings route's two lists are
+// answered from that. The route asked the server for both at every read.
+
+const standingsRowset = (rows) => ({ type: "object", name: "eve.common.script.sys.rowset.Rowset", args: { type: "dict", entries: [["header", { type: "list", items: ["fromID", "standing"] }], ["lines", { type: "list", items: rows.map((items) => ({ type: "list", items })) }]] } });
+
+/** A pilot reading its standings; on the game port unless told otherwise. Says what was asked of standingMgr and what the route answered. */
+async function standingsRoute({ transport = "gameport", kept, query = "" } = {}) {
+  const gamePort = gamePortWithQuestions(() => ({ answered: true }));
+  const gateway = fakeGateway();
+  const backend = transport === "gameport" ? gamePort : gateway;
+  const asked = [];
+  backend.callMethod = async (service, method, args) => {
+    asked.push([`${service}.${method}`, args]);
+    return { service, method, result: `asked ${method}`, notifications: [] };
+  };
+  const keptAsked = [];
+  if (kept !== undefined) gamePort.standingsKept = async (sessionFields, bridgeSessionID) => { keptAsked.push({ sessionFields, bridgeSessionID }); return kept(); };
+  const { baseUrl } = await startTestServer({ gateway, gamePortPilots: gamePort, pilotTransportFor: () => transport });
+  await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
+  asked.length = 0;
+  const answer = await apiRequest(baseUrl, `/api/bridge/standings${query}`);
+  return { answer, payload: answer.payload, asked, pairs: asked.map(([pair]) => pair), keptAsked, baseUrl };
+}
+
+test("on the game port a pilot's standings are read from what is kept, and the server is asked only for an owner's detail", async () => {
+  const kept = { char: standingsRowset([[500001, 1.5]]), corp: standingsRowset([[500001, -1.5]]) };
+  const lists = await standingsRoute({ kept: () => kept });
+  assert.deepEqual([lists.answer.response.status, lists.pairs, lists.payload.char, lists.payload.corp], [200, [], kept.char, kept.corp]);
+  assert.deepEqual(lists.payload.errors, { char: null, corp: null, transactions: null, compositions: null });
+  assert.deepEqual(lists.keptAsked, [{ sessionFields: { userid: 4 }, bridgeSessionID: GAME_PORT_SESSION_ID }]);
+  // A pilot in an NPC corporation has none kept for its corporation: that is the route's answer, as it was.
+  const npc = await standingsRoute({ kept: () => ({ char: kept.char, corp: null }) });
+  assert.deepEqual([npc.pairs, npc.payload.char, npc.payload.corp, npc.payload.errors.corp], [[], kept.char, null, null]);
+  // One owner's history and make-up are asked for as before, beside the kept lists.
+  const detail = await standingsRoute({ kept: () => kept, query: "?fromID=500001" });
+  assert.deepEqual(detail.asked, [["standingMgr.GetStandingTransactions", [500001, 7]], ["standingMgr.GetStandingCompositions", [500001, 98000000]]]);
+  assert.deepEqual([detail.payload.char, detail.payload.transactions, detail.payload.compositions], [kept.char, "asked GetStandingTransactions", "asked GetStandingCompositions"]);
+});
+
+test("with no standings kept, and on the gateway, the server is asked for them as before", async () => {
+  for (const [why, options, keptTimes] of [
+    ["none could be read", { kept: () => null }, 1],
+    ["the reading failed", { kept: () => { throw Object.assign(new Error("lost"), { code: "CALL_FAILED" }); } }, 1],
+    ["the transport keeps none", {}, 0],
+    ["the gateway", { kept: () => ({ char: standingsRowset([]), corp: null }), transport: "gateway" }, 0],
+  ]) {
+    const { payload, pairs, keptAsked } = await standingsRoute(options);
+    // The stand-in pilot's corporation is a player's: both lists.
+    assert.deepEqual([pairs, payload.char, payload.corp, keptAsked.length], [["standingMgr.GetCharStandings", "standingMgr.GetCorpStandings"], "asked GetCharStandings", "asked GetCorpStandings", keptTimes], why);
+  }
+  // A session the game port has lost while the kept standings are read is forgotten, and the route says so.
+  const lost = await standingsRoute({ kept: () => { throw Object.assign(new Error("gone"), { code: "SESSION_NOT_FOUND", statusCode: 404 }); } });
+  assert.deepEqual([lost.answer.response.status, lost.payload.ok, lost.pairs], [404, false, []]);
+  const next = await apiRequest(lost.baseUrl, "/api/bridge/standings");
+  assert.equal(next.response.status >= 400 && next.response.status !== 404, true);
+});

@@ -45,7 +45,7 @@ const refusedBy = (key, reason = key) => sessionError("GAME_CALL_REFUSED", `refu
  * a function of the arguments; a function may throw. Selecting puts the
  * character on the session as the server's session change does.
  */
-function fakeSession({ answers = {}, userid = ACCOUNT, loginError = null, comesOnline = true, inSpace = false, handshakeAnswer = null } = {}) {
+function fakeSession({ answers = {}, userid = ACCOUNT, loginError = null, comesOnline = true, inSpace = false, handshakeAnswer = null, corpid = 1000044 } = {}) {
   const listeners = { notification: new Set(), sessionChange: new Set(), close: new Set(), clientCall: new Set() };
   const session = {
     attributes: {},
@@ -69,8 +69,9 @@ function fakeSession({ answers = {}, userid = ACCOUNT, loginError = null, comesO
       if (key === "charUnboundMgr.SelectCharacterID" && !(key in answers)) {
         if (comesOnline) {
           const place = inSpace ? { solarsystemid: SYSTEM } : { stationid: STATION };
-          Object.assign(session.attributes, { charid: BigInt(args[0]), corpid: 1000044, solarsystemid2: SYSTEM, shipid: SHIP, ...place });
-          session.change({ charid: [null, args[0]], stationid: [null, STATION] });
+          Object.assign(session.attributes, { charid: BigInt(args[0]), corpid, solarsystemid2: SYSTEM, shipid: SHIP, ...place });
+          // The server's session change for a character chosen names its corporation among the rest.
+          session.change({ charid: [null, args[0]], corpid: [null, corpid], stationid: [null, STATION] });
         }
         return null;
       }
@@ -212,6 +213,9 @@ test("select logs in as the account and makes the retail client's three calls, i
     "charUnboundMgr.GetCharacterSelectionData",
     "charUnboundMgr.GetCharacterLockType",
     "charUnboundMgr.SelectCharacterID",
+    // The character is chosen: its standings are read, as the client's standing service reads them then.
+    "standingMgr.GetNPCNPCStandings",
+    "standingMgr.GetCharStandings",
   ]);
   assert.deepEqual(session.calls[0].args, []);
   assert.deepEqual(session.calls[1].args, [PILOT]);
@@ -242,7 +246,7 @@ test("select answers as the gateway's does: the call, the session echo, and what
   const { cursor, ...change } = outcome.notifications[0];
   assert.deepEqual(change, {
     kind: "sessionchange", service: null, method: "OnSessionChanged",
-    args: [{ charid: [null, PILOT], stationid: [null, STATION] }], kwargs: null,
+    args: [{ charid: [null, PILOT], corpid: [null, 1000044], stationid: [null, STATION] }], kwargs: null,
   });
   assert.equal(cursor.sequence, 1);
   assert.equal(typeof cursor.epoch === "string" && cursor.epoch.length > 0, true);
@@ -304,7 +308,8 @@ test("a pilot left in space is selected in space and given a ballpark as the cli
   // michelle.AddBallpark: the formations are asked for, the park starts to tick, and the ballpark is bound for the system.
   const first = await built.pilots.bindObject("beyonce", "MachoBindObject", [], null, WHOSE, outcome.bridgeSessionID);
   assert.deepEqual(session.calls.map((call) => `${call.service}.${call.method}`), [
-    "charUnboundMgr.GetCharacterSelectionData", "charUnboundMgr.GetCharacterLockType", "charUnboundMgr.SelectCharacterID", "beyonce.GetFormations",
+    "charUnboundMgr.GetCharacterSelectionData", "charUnboundMgr.GetCharacterLockType", "charUnboundMgr.SelectCharacterID",
+    "standingMgr.GetNPCNPCStandings", "standingMgr.GetCharStandings", "beyonce.GetFormations",
   ]);
   assert.deepEqual(session.binds, [{ service: "beyonce", params: SYSTEM }]);
   assert.deepEqual([hand.parks.length, typeof hand.parks[0].tick, hand.parks[0].stopped], [1, "function", false]);
@@ -460,7 +465,8 @@ test("the allowlist it ships with is the gateway's own list of pairs", async () 
     const [service, method] = pair.split(".");
     await pilots.callMethod(service, method, [], null, { userid: ACCOUNT }, bridgeSessionID);
   }
-  assert.equal(made[0].calls.length, 3 + 40);
+  // The three of choosing a character, the two readings of its standings, and the forty.
+  assert.equal(made[0].calls.length, 3 + 2 + 40);
   assert.equal(contract.gatewayAllowlist.pairs.length, contract.gatewayAllowlist.count);
 });
 
@@ -1150,6 +1156,8 @@ test("the transport keeps a tally of what it called and how each compared with t
     "charUnboundMgr.GetCharacterLockType": { same: 1 },
     "charUnboundMgr.GetCharacterSelectionData": { same: 1 },
     "charUnboundMgr.SelectCharacterID": { same: 1 },
+    "standingMgr.GetNPCNPCStandings": { same: 1 },
+    "standingMgr.GetCharStandings": { same: 1 },
     "invbroker.Add": { differs: 1 },
     "invbroker.GetInventory": { reshaped: 1 },
     "invbroker.List": { reshaped: 1 },
@@ -2310,7 +2318,7 @@ test("whatever is asked of ship or dogmaIM by name is made on the moniker, read 
   const allowed = new Set(["dogmaIM.GetTargets", "dogmaIM.AddTarget", "dogmaIM.Overload", "dogmaIM.CreateNewbieShip", "ship.LeaveShip", "ship.GetShipConfiguration", "ship.LaunchDrones", "ship.GetShipFittingInfo", "station.GetGuests"]);
   const { pilots, session, handle } = await selected({ answers: { "bound:GetTargets": { type: "list", items: [9001] } } }, { allowed });
   const made = () => session.boundCalls.at(-1);
-  const byName = () => session.calls.filter((call) => !call.service.startsWith("charUnboundMgr") && call.method !== "ShipGetInfo").map((call) => `${call.service}.${call.method}`);
+  const byName = () => session.calls.filter((call) => !call.service.startsWith("charUnboundMgr") && call.service !== "standingMgr" && call.method !== "ShipGetInfo").map((call) => `${call.service}.${call.method}`);
 
   // A read, with the server's answer handed back as any call's is.
   const targets = await pilots.callMethod("dogmaIM", "GetTargets", [], null, FIELDS, handle);
@@ -3715,6 +3723,108 @@ test("join requests and a composition that came too late, or could not be had, a
   assert.deepEqual(asked(), ["composition"]);
   waiting[0][1](compositionOf(670));
   assert.deepEqual(shipsOf(await again), [670]);
+});
+
+// ── the standings as they are kept ───────────────────────────────────────────
+//
+// standingsvc.py reads a character's standings when it is chosen, and again when its corporation changes
+// (__RefreshStandings), and keeps them right from the server's notices (src/gamePort/pilotStandings.js). The
+// answers here are a real server's (test/fixtures/standingsSession.json).
+
+const standingsRecording = JSON.parse(require("node:fs").readFileSync(require("node:path").join(__dirname, "fixtures", "standingsSession.json"), "utf8"),
+  (key, value) => (value && typeof value.$long === "string" ? BigInt(value.$long) : value && typeof value.$str === "string" ? Buffer.from(value.$str, "latin1") : value));
+const standingAnswer = (call) => standingsRecording.events.find((event) => event.kind === "answer" && event.call === call).value;
+const STANDING_ANSWERS = {
+  "standingMgr.GetNPCNPCStandings": standingAnswer("GetNPCNPCStandings"),
+  "standingMgr.GetCharStandings": standingAnswer("GetCharStandings"),
+  "standingMgr.GetCorpStandings": standingAnswer("GetCorpStandings"),
+};
+const PLAYER_CORP = 98000000;
+/** The standing calls a session has been asked, by name. */
+const standingCalls = (session) => session.calls.filter((call) => call.service === "standingMgr").map((call) => call.method);
+/** A kept answer's rows as [fromID, standing], out of the gateway's form. */
+const standingRows = (rowset) => (rowset === null ? null : Object.fromEntries(rowset.args.entries).lines.items.map((line) => [line.items[0], line.items[1]]));
+const CHAR_ROWS = [[500001, -3.978], [1000002, 1.069], [1000005, -1.107], [1000006, 1.107], [1000044, 1.25], [3008416, -0.53]];
+const CORP_ROWS = [[500001, -1.614], [1000002, 1.069], [1000005, -1.107], [1000006, 1.107], [1000044, 1.25], [3008416, -0.53]];
+
+test("a character chosen has its standings read as the client's standing service reads them, and they are kept", async () => {
+  // In an NPC corporation, as the stand-in pilot is: the NPCs' standings with each other, then the character's.
+  // The corporation's are none, and are not asked for (standingsvc.py 118).
+  const { pilots, session, handle } = await selected({ answers: STANDING_ANSWERS });
+  assert.deepEqual(session.calls.map((call) => `${call.service}.${call.method}`), [
+    "charUnboundMgr.GetCharacterSelectionData", "charUnboundMgr.GetCharacterLockType", "charUnboundMgr.SelectCharacterID",
+    "standingMgr.GetNPCNPCStandings", "standingMgr.GetCharStandings",
+  ]);
+  assert.deepEqual(session.calls.slice(3).map((call) => [call.args, call.kwargs]), [[[], null], [[], null]]);
+  const kept = await pilots.standingsKept(WHO, handle);
+  assert.deepEqual([standingRows(kept.char), kept.corp], [CHAR_ROWS, null]);
+  // In the gateway's form, as a read of GetCharStandings comes.
+  assert.deepEqual([kept.char.type, kept.char.name, Object.fromEntries(kept.char.args.entries).header.items], ["object", "eve.common.script.sys.rowset.Rowset", ["fromID", "standing"]]);
+  // Read again: nothing is asked. And each call the transport made is in the ledger as the client's own.
+  await pilots.standingsKept(WHO, handle);
+  assert.deepEqual(standingCalls(session), ["GetNPCNPCStandings", "GetCharStandings"]);
+  assert.deepEqual(["GetNPCNPCStandings", "GetCharStandings"].map((method) => ledgerOf(pilots, `standingMgr.${method}`)), [[{ same: 1 }, "eve/client/script/ui/services/standingsvc.py:115"], [{ same: 1 }, "eve/client/script/ui/services/standingsvc.py:119"]]);
+  assert.equal(ledgerOf(pilots, "standingMgr.GetCorpStandings"), null);
+  // Another account's session cannot read them.
+  await assert.rejects(pilots.standingsKept({ userid: 9 }, handle), (error) => error.code === "SESSION_NOT_FOUND");
+});
+
+test("a pilot in a player's corporation is asked for its corporation's standings too, and what the server says afterwards is kept without asking", async () => {
+  const { pilots, session, handle } = await selected({ answers: STANDING_ANSWERS, corpid: PLAYER_CORP });
+  assert.deepEqual(standingCalls(session), ["GetNPCNPCStandings", "GetCharStandings", "GetCorpStandings"]);
+  const kept = await pilots.standingsKept(WHO, handle);
+  assert.deepEqual([standingRows(kept.char), standingRows(kept.corp)], [CHAR_ROWS, CORP_ROWS]);
+  // OnStandingSet and OnStandingsModified, to the character and to its corporation.
+  session.notify("OnStandingSet", [1000125, PILOT, 3.5]);
+  session.notify("OnStandingSet", [500001, PLAYER_CORP, 0]);
+  session.notify("OnStandingsModified", [{ type: "list", items: [{ type: "list", items: [1000044, PILOT, 0.5, 0, 10] }] }]);
+  const after = await pilots.standingsKept(WHO, handle);
+  assert.deepEqual(new Map(standingRows(after.char)).get(1000125), 3.5);
+  assert.deepEqual(new Map(standingRows(after.char)).get(1000044), 10 * (1 - (1 - 0.125) * 0.5));
+  assert.deepEqual(standingRows(after.corp).map(([fromID]) => fromID), [1000002, 1000005, 1000006, 1000044, 3008416]);
+  assert.deepEqual(standingCalls(session).length, 3);
+  // idCheckers.IsNPC is above the system's items and below the players' owners: only there are a corporation's standings none.
+  for (const [corpid, calls] of [[10000, 3], [10001, 2], [89999999, 2], [90000000, 3]]) {
+    const edge = await selected({ answers: STANDING_ANSWERS, corpid });
+    assert.equal(standingCalls(edge.session).length, calls, String(corpid));
+  }
+});
+
+test("a change of corporation has the standings read again, and standings that could not be read are not kept", async () => {
+  // standingsvc.ProcessSessionChange: 'corpid' in change and change['corpid'][1].
+  const built = await selected({ answers: STANDING_ANSWERS });
+  const { pilots, session, handle } = built;
+  session.notify("OnStandingSet", [1000125, PILOT, 3.5]);
+  session.attributes.corpid = PLAYER_CORP;
+  session.change({ corpid: [1000044, PLAYER_CORP] });
+  const joined = await pilots.standingsKept(WHO, handle);
+  assert.deepEqual(standingCalls(session), ["GetNPCNPCStandings", "GetCharStandings", "GetNPCNPCStandings", "GetCharStandings", "GetCorpStandings"]);
+  // What is kept is what the server answered this time: the standing the notice had set is the old reading's.
+  assert.deepEqual([standingRows(joined.char), standingRows(joined.corp)], [CHAR_ROWS, CORP_ROWS]);
+  // A session change that is about something else, or a corporation left for none, reads nothing.
+  session.change({ fleetrole: [null, 1], wingid: [null, 7] });
+  session.attributes.corpid = null;
+  session.change({ corpid: [PLAYER_CORP, null] });
+  await pilots.standingsKept(WHO, handle);
+  assert.equal(standingCalls(session).length, 5);
+
+  // The character's standings cannot be read: the character is chosen all the same, and nothing is kept.
+  const refused = await selected({ answers: { ...STANDING_ANSWERS, "standingMgr.GetCharStandings": () => { throw refusedBy("NotNow"); } } });
+  assert.equal(typeof refused.handle, "string");
+  assert.equal(await refused.pilots.standingsKept(WHO, refused.handle), null);
+  // The NPCs' cannot: nothing more is asked, and nothing is kept.
+  const early = await selected({ answers: { ...STANDING_ANSWERS, "standingMgr.GetNPCNPCStandings": () => { throw refusedBy("NotNow"); } }, corpid: PLAYER_CORP });
+  assert.deepEqual([standingCalls(early.session), await early.pilots.standingsKept(WHO, early.handle)], [["GetNPCNPCStandings"], null]);
+  // An answer that is no standings is not kept either.
+  const odd = await selected({ answers: { ...STANDING_ANSWERS, "standingMgr.GetCharStandings": "the standings" } });
+  assert.equal(await odd.pilots.standingsKept(WHO, odd.handle), null);
+  // Later readings replace earlier ones; one that fails leaves what was kept.
+  let fail = false;
+  const kept = await selected({ answers: { ...STANDING_ANSWERS, "standingMgr.GetCharStandings": () => { if (fail) throw refusedBy("NotNow"); return STANDING_ANSWERS["standingMgr.GetCharStandings"]; } } });
+  fail = true;
+  kept.session.attributes.corpid = PLAYER_CORP;
+  kept.session.change({ corpid: [1000044, PLAYER_CORP] });
+  assert.deepEqual(standingRows((await kept.pilots.standingsKept(WHO, kept.handle)).char), CHAR_ROWS);
 });
 
 // ── the monikers the BFF asks for ────────────────────────────────────────────

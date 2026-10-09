@@ -62,6 +62,7 @@ const { createPilotClock } = require("./pilotClock");
 const { EFFECT_CATEGORY, EFFECT_ONLINE, createPilotDogma } = require("./pilotDogma");
 const { MAX_PROBES, createPilotScanner } = require("./pilotScanner");
 const { createPilotFleet } = require("./pilotFleet");
+const { createPilotStandings } = require("./pilotStandings");
 const { projectFlight, projectSpace } = require("./spaceProjection");
 const { MODE: BALL_MODE } = require("./destiny/state");
 const contract = require("../../contracts/evejs-web-bridge-contract.json");
@@ -113,6 +114,9 @@ const GROUP_STATION = 15;
 const CONTAINER_HANGAR = 10004;
 /** evefleet/const.py fleetCmdrRoles: a fleet's commander, a wing's, a squad's. */
 const FLEET_COMMANDER_ROLES = new Set([1, 2, 3]);
+/** idCheckers.IsNPC: maxSystemItem < ownerID < minPlayerOwner. */
+const MAX_SYSTEM_ITEM = 10000;
+const MIN_PLAYER_OWNER = 90000000;
 const CONTAINER_STRUCTURE = 10014;
 /**
  * Services whose object is bound for where the pilot is. The retail client's
@@ -465,6 +469,8 @@ function createGamePortPilots({
   const DOGMA_AS_GODMA_PRIMES = Object.freeze({ status: "same", source: "eve/client/script/environment/godma.py:2409", note: null });
   /** The server's clock (100 ns since 1601) for a reading of this machine's, in milliseconds. */
   const filetime = (ms) => (BigInt(Math.trunc(ms)) + 11644473600000n) * 10000n;
+  /** standingsvc.__RefreshStandings: RemoteSvc('standingMgr').GetNPCNPCStandings(), no arguments. The web client never asks it. */
+  const NPC_STANDINGS_AS_THE_CLIENT_ASKS = Object.freeze({ status: "same", source: "eve/client/script/ui/services/standingsvc.py:115", note: null });
   /** What the client's fleet service asks of its own accord that the web client never asks, and where each is asked. */
   const FLEET_OWN = Object.freeze({
     // CreateFleet: self.fleet.GetFleetID(), once the fleet it formed has been read.
@@ -799,6 +805,9 @@ function createGamePortPilots({
       fleetKept: createPilotFleet({ characterID }),
       /** What the client asks of a fleet of its own accord, one thing after another: over when each is answered. */
       fleetWork: Promise.resolve(),
+      /** The pilot's standings as the client's standing service keeps them (pilotStandings.js), and the reading of them that is under way. */
+      standings: createPilotStandings({ characterID, corporationID: () => attribute(entry, "corpid") }),
+      standingsWork: Promise.resolve(),
       /** Questions the server has asked and the user has not answered yet, by ID. */
       questions: new Map(),
       ended: false,
@@ -816,6 +825,7 @@ function createGamePortPilots({
       entry.dogma.feed(notification);
       entry.scanner.feed(notification);
       afterFleetNotice(entry, entry.fleetKept.feed(notification));
+      entry.standings.feed(notification);
       record(entry, notificationToBridgeJson(notification));
     });
     session.onSessionChange((changes) => {
@@ -833,6 +843,9 @@ function createGamePortPilots({
       // base_corporation.GetCorpRegistry: another corporation, another registry.
       if ("corpid" in changes) {
         for (const service of CORPORATION_SERVICES) entry.monikers.delete(service);
+        // standingsvc.ProcessSessionChange: in another corporation the standings are read again. (The choosing of
+        // the character reads them itself, once the character is on the session.)
+        if (changes.corpid[1] && sessions.has(entry.handle)) refreshStandings(entry);
       }
       if (LOCATION_ATTRIBUTES.some((name) => name in changes)) {
         forgetLocationObjects(entry);
@@ -874,6 +887,8 @@ function createGamePortPilots({
       if (positive(session.attributes.charid) !== characterID) {
         throw fail("SESSION_SELECT_FAILED", "charUnboundMgr.SelectCharacterID completed without bringing a character online.");
       }
+      // standingsvc.ProcessSessionChange: a character chosen has its standings read.
+      await refreshStandings(entry);
     } catch (error) {
       session.close();
       // The login failing is not the select call failing; say what the session said.
@@ -1539,6 +1554,42 @@ function createGamePortPilots({
     return boundObjectID(await session.call(service, method, argumentsToWire(args), kwargs ?? null));
   }
 
+  // ── the standings as they are kept ────────────────────────────────────────
+
+  /**
+   * standingsvc.__RefreshStandings: the NPCs' standings with each other, then the character's, and beside the
+   * character's its corporation's where that is not an NPC corporation, whose standings are none
+   * (idCheckers.IsNPC(session.corpid)). What is answered is kept; what cannot be read leaves what was kept as it
+   * was. Never fails.
+   */
+  function refreshStandings(entry) {
+    const ask = (method) => {
+      ledger.note("standingMgr", method, method === "GetNPCNPCStandings" ? NPC_STANDINGS_AS_THE_CLIENT_ASKS : shape("standingMgr", method, [], null, contextFor(entry)));
+      return entry.session.call("standingMgr", method, [], null);
+    };
+    entry.standingsWork = (async () => {
+      const npcNpc = await ask("GetNPCNPCStandings");
+      const corporationID = attribute(entry, "corpid");
+      const inNpcCorporation = corporationID > MAX_SYSTEM_ITEM && corporationID < MIN_PLAYER_OWNER;
+      const [char, corp] = inNpcCorporation ? [await ask("GetCharStandings")] : await Promise.all([ask("GetCharStandings"), ask("GetCorpStandings")]);
+      entry.standings.refreshed({ npcNpc, char, corp });
+    })().catch(() => {});
+    return entry.standingsWork;
+  }
+
+  /**
+   * The pilot's standings as the client's standing service has them kept: the character's and its corporation's,
+   * each as the server answered it when the character was chosen, kept right since by the server's notices, in
+   * the gateway's form. The corporation's is null where none is kept (an NPC corporation's are none). Null where
+   * the character's could not be read: then nothing is kept.
+   */
+  async function standingsKept(sessionFields = {}, bridgeSessionID = undefined) {
+    const entry = held(bridgeSessionID, sessionFields);
+    await entry.standingsWork;
+    if (!entry.standings.loaded) return null;
+    return { char: wireToBridgeJson(entry.standings.char()), corp: wireToBridgeJson(entry.standings.corp()) };
+  }
+
   // ── the fleet's own object, and the fleet as it is kept ───────────────────
 
   /** No fleet's object is held, and nothing of a fleet is kept (fleetSvc.Clear, and a session in no fleet). */
@@ -1827,6 +1878,7 @@ function createGamePortPilots({
     ship,
     fleet,
     fleetKept,
+    standingsKept,
     shipInfo,
     shipAttribute,
     shutdown,

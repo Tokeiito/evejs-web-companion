@@ -13324,11 +13324,28 @@ app.get("/api/bridge/standings", requireAuth, async (req, res, next) => {
     // corporation's are taken to be none (idCheckers.IsNPC: above the system's items, below the players').
     const corporationID = Number(held.corporationID) || 0;
     const inNpcCorporation = corporationID > 10000 && corporationID < 90000000;
+    // standingsvc.py reads both lists when the character is chosen and keeps them right from the server's
+    // notices. The game port keeps them the same way (pilots.js standingsKept), and the two are answered from
+    // that. With none kept they are asked for, as before.
+    let kept = null;
+    if (gamePortPilots && isGamePortHandle(held.bridgeSessionID)) {
+      try {
+        kept = await gamePortPilots.standingsKept({ userid: held.accountID }, held.bridgeSessionID);
+      } catch (error) {
+        if (error && error.code === "SESSION_NOT_FOUND") {
+          forgetBridgeSession(req.webSessionID, held);
+          next(error);
+          return;
+        }
+      }
+    }
     const [char, corp, transactions, compositions] = await Promise.allSettled([
-      heldTopLevelCall(held, req.webSessionID, "standingMgr", "GetCharStandings", [], null),
-      inNpcCorporation
-        ? Promise.resolve({ result: null })
-        : heldTopLevelCall(held, req.webSessionID, "standingMgr", "GetCorpStandings", [], null),
+      kept ? { result: kept.char } : heldTopLevelCall(held, req.webSessionID, "standingMgr", "GetCharStandings", [], null),
+      kept
+        ? { result: kept.corp }
+        : inNpcCorporation
+          ? Promise.resolve({ result: null })
+          : heldTopLevelCall(held, req.webSessionID, "standingMgr", "GetCorpStandings", [], null),
       wantDetail
         ? heldTopLevelCall(
             held,
