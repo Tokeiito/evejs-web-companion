@@ -72,12 +72,19 @@ const DOCKED_ROUTES = [
  * apart; `searchTime` is how long the server took over a search, which it answers beside what it found (the
  * contracts' search), and is 0 one time and a millisecond the next. Neither is data that moved: left in, the
  * first made two routes read "moved" on every pass, and the second a third route now and then.
+ *
+ * Such a field is an object's own in what the BFF builds, and a dict's entry in what the server answered and the
+ * BFF hands on ({type: "dict", entries: [[name, value], ...]}: a KeyVal's fields are so). Both are left out.
  */
 const VOLATILE = new Set(["droneRecoveryCheckID", "sampledAtMs", "serverTimeMs", "serverNowMs", "readAtMs", "checkedAtMs", "nowMs", "generatedAt", "searchTime"]);
 
 function withoutVolatile(value) {
   if (Array.isArray(value)) return value.map(withoutVolatile);
   if (value === null || typeof value !== "object") return value;
+  if (value.type === "dict" && Array.isArray(value.entries)) {
+    const kept = value.entries.filter((entry) => !(Array.isArray(entry) && typeof entry[0] === "string" && VOLATILE.has(entry[0])));
+    return { ...value, entries: kept.map((entry) => (Array.isArray(entry) ? entry.map(withoutVolatile) : withoutVolatile(entry))) };
+  }
   return Object.fromEntries(Object.entries(value).filter(([name]) => !VOLATILE.has(name)).map(([name, entry]) => [name, withoutVolatile(entry)]));
 }
 

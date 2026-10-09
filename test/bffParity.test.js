@@ -62,12 +62,23 @@ test("the server's clock at a read, and a time the server measured its own answe
   // Two reads a second apart read the clock a second apart.
   assert.equal(judge(ok({ skills: { serverNowMs: 1791572707422, total: 3 } }), ok({ skills: { serverNowMs: 1791572708614, total: 3 } })).verdict, "identical");
   assert.equal(judge(ok({ serverNowMs: 1 }), ok({ serverNowMs: 2 })).verdict, "identical");
-  // A search answers how long it took beside what it found.
-  const searched = (searchTime, found) => ok({ browse: { result: { type: "object", name: "util.KeyVal", args: { searchTime, contracts: found } } } });
-  assert.equal(judge(searched("0", [1]), searched("10000", [1])).verdict, "identical");
+  // A search answers how long it took beside what it found. The answer is the server's own KeyVal, whose fields
+  // are a dict's entries: the shape below is what both BFFs answered for a search that found nothing. (This test
+  // first had the fields as an object's own, which no answer has, and passed while the tool did nothing for the
+  // real one: a pass in which the server took a millisecond one time and none the other read "moved".)
+  const searched = (searchTime, found) => ok({ browse: { result: { type: "object", name: "util.KeyVal", args: { type: "dict", entries: [["contracts", { type: "list", items: found }], ["numFound", found.length], ["searchTime", searchTime], ["maxResults", 1000]] } } } });
+  assert.equal(judge(searched(0, []), searched(10000, [])).verdict, "identical");
+  assert.equal(judge(searched(0, [1]), searched(10000, [1])).verdict, "identical");
   // What it found is data all the same.
-  assert.equal(judge(searched("0", [1]), searched("10000", [2])).verdict, "moved");
+  assert.equal(judge(searched(0, [1]), searched(10000, [2])).verdict, "moved");
   assert.deepEqual(withoutVolatile({ serverNowMs: 5, browse: { searchTime: 7, found: 1 } }), { browse: { found: 1 } });
+  assert.deepEqual(withoutVolatile({ type: "dict", entries: [["searchTime", 7], ["found", { type: "dict", entries: [["serverNowMs", 1], ["kept", 2]] }]] }),
+    { type: "dict", entries: [["found", { type: "dict", entries: [["kept", 2]] }]] });
+  // A dict keyed by something that is not a name keeps every entry, and a list of pairs that is no dict keeps its own.
+  assert.deepEqual(withoutVolatile({ type: "dict", entries: [[7, "searchTime"], [["searchTime", 1], 2]] }), { type: "dict", entries: [[7, "searchTime"], [["searchTime", 1], 2]] });
+  assert.deepEqual(withoutVolatile({ type: "list", items: [["searchTime", 7]] }), { type: "list", items: [["searchTime", 7]] });
+  // Something of the BFF's own that has "entries" and is no dict is read as any object is.
+  assert.deepEqual(withoutVolatile({ entries: [["searchTime", 7]], sampledAtMs: 5, more: { nowMs: 1, kept: 2 } }), { entries: [["searchTime", 7]], more: { kept: 2 } });
 });
 
 test("fields that differ on every request by design are left out of the comparison", () => {
