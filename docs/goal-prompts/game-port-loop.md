@@ -201,7 +201,10 @@ Take these defaults, and list each under "For the operator" in the log so they c
   says whether the client has it and which parameters it takes. Look there before wording a
   label or sending one's parameters; two guesses of mine on 2026-10-08 were wrong. The check
   BFFs get the client's folder through `EVEJS_CLIENT_ROOT`. Do not copy the client's text into
-  the repository: fixtures use made-up text in the real shape.
+  the repository: fixtures use made-up text in the real shape. The shape includes the label's
+  markup, which the tool names too (its tags and its entities): a fixture of mine with a space
+  where the real label has `&nbsp;` passed every test and drew the entity on the page. The
+  client's label parser is CCP's own and open (`trinity/trinity/Tr2LabelTextParser.cpp`).
 - **What the client knows without asking the server** is mostly in its built data
   (`res:/staticdata/<name>.fsdbinary`), which only the client's own loader can read
   (`bin64/<name>Loader.pyd`). `python scripts/client-built-data.py "<client>\tq\bin64" <name>Loader

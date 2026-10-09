@@ -5554,3 +5554,125 @@ accepted time it takes from its own tracker, not followed through.
     for ship restrictions).
 15. When there is a recording of it: a courier's agent talked to again where the pilot
     accepted, before the package has gone anywhere (the operator's section).
+
+## 2026-10-09 — a place's security rating and its low-security warning
+
+Commits `8b5fa8f` and `105c616` (the tool), pushed. Item 1 of the last list, in part.
+
+**What the retail client does.** A mission's place is written by
+`agentDialogueUtil.LocationWrapper` (164 to 202) through one label,
+`UI/Agents/LocationWrapper`, which takes:
+
+- the system's security rating, in the colour of that security. The level is the system's own
+  from the client's static data, except that anything above nought and below 0.05 counts as
+  0.05 (`eveCfg.SolarSystem.pseudoSecurity`, 1092 to 1097); it is shown to one decimal place,
+  and never as "-0.0" (`eveformat/client/location.py` `round_security_status`);
+- an image, and the place's name as a link;
+- a warning: `UI/Agents/LowSecWarning` where the system is low security or lower, which is
+  nought or below, or below 0.45 (`eveuniverse/security.py` `SecurityClassFromLevel`); and
+  `UI/Agents/HighSecWarning` for a pilot whose own security status is -5.0 or worse, going
+  anywhere that is not.
+
+The label has an entity in it: `&nbsp;` between the image and the name. The client's label
+parser is CCP's own and its source is open (`trinity/trinity/Tr2LabelTextParser.cpp`, the
+state `STATE_GT_AMPSTART`). In text it turns four entities into the characters they stand
+for, in any letter case, and no others: `&amp;`, `&lt;`, `&gt;`, and `&nbsp;`, which it writes
+as an ordinary space.
+
+**What the page did.** A place was its name alone, on the agent's window and on the
+mission's page. And an entity in any of the client's texts was drawn as it is spelled.
+
+**What was built.**
+
+- `web/src/bridge/systemSecurity.ts`: the level the client works with, the rating it shows,
+  and its class.
+- `web/src/bridge/locationWrapper.ts`: the client's own label filled with the rating, the
+  name and the warning, as plain text (so no colour and no link). The name alone until the
+  system's security has been read, or where the client's words are not to hand.
+- `POST /api/map/security` on the BFF: the security solar systems were made with, by ID, from
+  the static reference data the BFF already holds; null for an ID that is no system's; 200 a
+  request. Not a call to the server: the client has this in its own static data.
+- The page asks once for each system, in one request for all that are wanted together, and
+  keeps the answers beside its names (`names.systemSecurity`). A request that fails is asked
+  again the next time the system is wanted.
+- `plainText` (`web/src/bridge/clientWords.ts`), which every one of the client's texts drawn
+  here goes through: the four entities become their characters, each read once and after the
+  tags have gone, so an entity never makes a tag nor another entity.
+- `scripts/client-words.js` now names a label's tags and entities with its parameters.
+
+**Found live, and what it says about fixtures.** The first look in the browser showed
+`0.7&nbsp;` before the name. Every test had passed: my fixture for the label had a space
+where the real one has the entity. The fixtures are now in the label's real shape, and the
+brief says to ask the tool for a label's markup before making one.
+
+**Proof.**
+
+- Tests: 17 new. 86 ways of breaking it tried. Four survived the first pass, each for a
+  reason now set right: three lines that did nothing (the level raised a second time before
+  its class is taken; a warning made plain before the whole line is; a check for a number
+  JSON would have written as null anyway) are gone, and a test whose made-up answer was the
+  same for every system now gives each its own. All are caught.
+- Suite: 9491 tests, 9467 pass, 0 fail, 24 skipped, 0 todo.
+- **By script, on both transports**, eve.js `e066a81e9`, as Test Two: the courier's two
+  places are in systems 30002780 and 30002778; the BFF answered 0.708087 and 0.830855 for
+  them and null for an ID that is no system's, in 3 ms; the client has both labels (132 and
+  18 characters).
+- **In the browser, on the game port:** the mission's page and the agent's window both read
+  "0.7 Muvolailen X - Moon 3 - CBD Corporation Storage" and "0.8 Tasabeshi VI - Moon 1 - CBD
+  Corporation Storage". One request carried both systems; opening the agent's window after
+  the page asked for nothing more.
+- **Staged, for the warning** (the store copied first and put back after; the journal is back
+  at one offer): standings raised with `/maxagentstandings`, and a level 1 courier agent in
+  low security (3008442) asked for a mission, which runs between systems of 0.438684 and
+  0.376794. Its page read "0.4" before each station's name and the client's warning, 18
+  characters, after each. A second request went out, for the two new systems only.
+
+**Not done.**
+
+- How many jumps away a place is. The client asks its own pathfinder
+  (`clientPathfinderService.GetAutopilotJumpCount`), whose route is the safe one unless the
+  pilot has set another: a penalty of 50 on low security, and the pilot's avoided systems.
+  The page's own route (`web/src/nav/routeSolver.ts`) is the shortest, so the two counts
+  would differ wherever the safe way is longer.
+- The banner about reduced rewards (`UI/Agents/StandardMission/SecurityTaxMessage`): for an
+  agent that is not a career agent, in a system of 0.95 or above (the client asks
+  `agentMgr.GetSolarSystemOfAgent`), when the mission pays ISK.
+- The second warning, for an outlaw: it needs the pilot's own security status.
+- A level the server has changed for a time (`security/client/securitySvc.py`
+  `modified_security_levels`) and the icon the client draws for one.
+- The rating's colour and the name's link: the line is plain text here.
+- The label parser's other habits (a tab becomes a space; what it does with runs of spaces).
+- A short interval written inside another label is made plain twice. Nothing in the
+  client's interval labels has an entity, so nothing shows; it is a thing to know.
+
+### Next
+
+1. Around a place's name, the rest: how many jumps away it is, by the client's safe route
+   (a route solver that takes the security penalty); the reduced-rewards banner; the
+   outlaw's warning.
+2. The page's own read of the journal after an agent's button: gone, if nothing of the page's
+   own counts on it, with the push doing the work as it does for Remove Offer.
+3. The agent's cards above its own window, where the client's window has its own header.
+4. The ledger's unread pairs, most called first: the inventory and wallet reads, then the
+   writes on `ship` and `dogmaIM`.
+5. The scanner the client's way: results kept from the server's word, a probe's destination
+   and range kept here and sent with the scan.
+6. Phase 3's writes, feature by feature, each set beside what the client sends.
+7. Small, around dialogs: the title for a dialog's kind, the "do not ask again" box, the typed
+   codes not done.
+8. Small, in space: an overview row's speed columns the client's way; the bar the client
+   fills while a ship lines up for a warp; a warp ordered at a bookmark or a fleet member.
+9. Small, before a character is chosen: selecting on the account's own connection; the count
+   of names checked.
+10. Small, in Ready Fit: the capacity the client never asks for; the window following a change
+    of pilot.
+11. Small, in words: an interval's `shortForm` and `writtenFormTwoPart`; the bonus's
+    countdown; a place's rating in its colour and its name as a link.
+12. In the park, if a server ever sends a ball that needs them: MISSILE, FORMATION, MUSHROOM;
+    a fixed ball's collision shapes and the partition's order.
+13. If a server ever sends one: a special interaction drawn as the client draws one; messages
+    inside messages.
+14. More of the client's built data as it is needed: one line in `TABLES` for each (dungeons
+    for ship restrictions).
+15. When there is a recording of it: a courier's agent talked to again where the pilot
+    accepted, before the package has gone anywhere (the operator's section).
