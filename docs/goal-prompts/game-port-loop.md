@@ -448,6 +448,10 @@ Take these defaults, and list each under "For the operator" in the log so they c
 - **A change to the page is in the browser only after `npm run build:web`**: the BFF serves the built
   page (`public/dist`, which git ignores). The build checks the page's types, its tests' too, and
   `npm test` does not: a test that passes can still fail the build.
+- **What asks a call may be the page, not the BFF.** The page's own code makes some calls through
+  `/api/bridge/call`, by name (`web/src/bridge/stationPanel.ts` asks the station's three so). A
+  search of `src/` alone said nothing of ours asked them, and that went into the log and had to
+  be taken back. Search `web/src` too, or read the server's log of a session in the browser.
 - **A fact offered in support of a decision is still a claim.** Two went into the log unchecked
   on 2026-10-08, in a paragraph arguing for a design, and both were wrong. One route call or one
   grep would have caught each.
