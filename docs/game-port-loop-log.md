@@ -270,6 +270,11 @@ Decisions taken in your place, and anything waiting on you. Overrule any of thes
   a list where Tranquility answered a rowset with `bids` beside it, and takes a status of
   None for "outstanding". Its test runner also swept 400 stale `evejs-*` folders (1.4 GB)
   from the temp folder.
+- **I took a unit out of turn** (2026-10-09). The next on the list was the last call the
+  client never makes (`charMgr.GetCloneInfo`). Reading the recordings for it showed that
+  every bind the transport makes went differently from the client's, the skill handler's
+  included, so that was done first. See the entry "a moniker binds as the client's Moniker
+  does".
 
 ## Server defects
 
@@ -7785,3 +7790,157 @@ After the server was restarted on it, both transports found none.
     client's own map is in.
 29. Jumps in the assets and contracts lists, the autopilot's way, where the page lists them.
 30. A wreck opened with its type said: no capacity, as the client has none for one.
+
+## 2026-10-09 — a moniker binds as the client's Moniker does
+
+Commit `52ac026`, pushed. Not the next on the list: found while reading for it.
+
+**What the retail client does.** A Moniker binds when it is first called, and the call goes
+with the bind (`moniker.py` 111 to 198): it finds the node its address lives on, from
+machoNet's address cache or by asking any node (`MachoResolveObject`, whose answer goes into
+that cache), and sends `MachoBindObject(params, (method, args, keywords))`, answered with the
+object and the call's own answer together. The keywords are built anew without the two the
+client keeps to itself. Calls after that go to the object. Bound for its own sake
+(`Bind()`) it sends `MachoBindObject(params, None)`.
+
+- **A recording of a login on Tranquility** ("Logging in then renaming ship", 2026-07-11) has
+  eleven binds, ten of them carrying a call: the dogma location's carries
+  `GetAllInfo(True, True, None)`, invCache's two managers' `GetInventoryFromId` and
+  `GetInventory`, the skill handler's `GetBoosters`. The eleventh is the corporation's
+  registry, with None, as `base_corporation.py` 141 binds it. It has one
+  `MachoResolveObject` in all, for an agent.
+- **This server's own log of a retail client** (2026-10-06) has one `MachoResolveObject`
+  before the first bind of each address, and no more: `crimewatch` asked for once and bound
+  four times. Its binds carry `GetInventoryFromId`, `GetSkills`, `Board`.
+- The same call made twice at once is sent once ("Sharing result for call ... for 2 waiting
+  threads", in the recording).
+
+**What the transport did.** Asked where the address lives before every bind, bound with
+None, and made the call after.
+
+**What was built.**
+
+- The session's bind carries a call, and asks where an address lives once: the answer is
+  kept, and two binds of one address at once share the one asking.
+- The order of a carried call's keywords is the client's own: the oracle now asks
+  python27.dll for the Moniker's path too, and all 406 cases agree with the emulation.
+- The transport's kept monikers bind by their first call: godma's dogma location by
+  `GetAllInfo`, each of invCache's managers by the first inventory asked of it, a service's
+  moniker by the first named call on it. The corporation's registry is bound with None and
+  then asked. One bind at a time for each: a call that finds its moniker binding waits for
+  the object, and after a bind that failed the next call binds for itself.
+
+**Proof.**
+
+- Tests: 7 new (1 on the keyword order, 3 on the session, 3 on the transport); the
+  transport's stand-in session now answers a call that comes with a bind. 46 ways of
+  breaking it tried. Three survived a first pass: one changes nothing (a node that was
+  not named is not remembered either way), one led to two addresses added to a test, and
+  one found a check that could not be reached, taken out with the branch beside it. The
+  rest are caught.
+- Suite: 9625 tests, 9601 pass, 0 fail, 0 cancelled, 24 skipped. No test process left behind.
+- **The server's own log** (eve.js `603ae3d3d`, with other sessions' uncommitted edits in
+  the checkout), for a game-port session after the change: `dogmaIM` asked for and bound
+  with `nestedCall` `GetAllInfo`, and no `GetAllInfo` of its own after; `invbroker` asked
+  for once and bound twice, "nested call: GetInventory" and "nested call:
+  GetInventoryFromId"; `corpRegistry` asked for and bound. The retail client's lines for
+  the dogma location and the first inventory manager, in that log of 2026-10-06, read the
+  same. Before the shared asking was built the same pass had `invbroker` asked for twice.
+- **On both transports, by script:** 11 identical, 7 tolerated, 2 moved (two clocks),
+  2 divergent, as before.
+- **In the browser, on the game port:** all 25 windows drew with no failure in any, every
+  bridge request answered 200, the Fitting panel drew the Badger from godma, the station
+  view listed the ship's bays and the hangars.
+- The ledger, from that pass and the browser's read: 55 pairs, none unchecked, none
+  differing, 1 the client never makes.
+
+**Not seen working.**
+
+- A call carried with more than one keyword, live: the order is the oracle's and the
+  tests'. A bind whose call the server refuses, live.
+- The ship's moniker bound by an undock, live: tests only.
+
+**Not done.**
+
+- **Which monikers the client keeps.** The recording and the server's log both have
+  `crimewatch` and `ship` bound again for each call, each bind carrying its call: the
+  client makes those monikers afresh each time. The transport keeps one of each.
+- **The BFF's own two-step binds** (the Fitting window's dogma route, `charMgr`,
+  `fleetObjectHandler`, the agents'): still bound with None and called after.
+- The ballpark's moniker, which the client binds for its own sake (`michelle.py` 1710): as
+  it was, with None, and not looked at.
+- **On Tranquility the client did not ask where its station's objects live** at login; on
+  this server a retail client did, once each. Why was not looked for.
+- The answer to a carried call is taken as it comes: a cached answer's reference would
+  not be fetched as a call's own is.
+- The skill handler, and `charMgr.GetCloneInfo`.
+
+### Next
+
+1. `charMgr.GetCloneInfo`, the last call the client never makes: the skill handler held by
+   the transport as the client holds it (`skillMgr2.GetMySkillHandler`'s moniker, bound by
+   its first call), the implants from `GetImplants` on it, and the BFF's other skill reads
+   made the same way.
+2. The monikers the client makes afresh for each call (`ship`, `crimewatch`): counted from
+   the recording and the server's log, read in `eveMoniker.py`'s callers, and bound so.
+3. The BFF's own two-step binds, each made when its first call comes and with it.
+4. Around the contracts: "Offered to you" from the owner's list; the corporation's lists;
+   a rowset read where a server answers one; the search with something staged for each of
+   its filters, on both transports; what the sub-agent left in the server (the operator's
+   section). And the same fault elsewhere in the server: a search of its services for a
+   keyword read as a plain property, with no helper in the file, names two more
+   (`seasonManagerService.js`, `dungeonService.js`). Neither was read.
+5. Around a fitted module: the recording read past `SetModuleOnline`'s answer, and this
+   server's fit set beside it; the recording of ammunition loaded while docked, and charges
+   in slots as godma holds them; the Fitting panel's cargo figure after a module's state
+   changes; a refusal to put one online shown as the client shows it; the dogma route
+   answered from godma's priming instead of its own `GetAllInfo`.
+6. Something staged for every list route that has only been compared empty (the market's
+   orders, the mail, the calendar, the fleet, the corporation's hangars), and the parity
+   pass read again.
+7. A login set beside the recording's, call by call: what the client asks before anything
+   is opened, and in what order.
+8. The Fleet panel asking nothing of a fleet's object while the pilot is in no fleet.
+9. A ship with several modules fitted and a hold with a packaged ship in it, staged: the
+   Fitting window's figures and the client's sums, each set beside the server's.
+10. The walk in space: undocked, every panel and the space view, the store put aside first
+    and put back after; its unread pairs read.
+11. The routes that answer from the store, listed, and each set beside what the client asks.
+12. The standings the client's way: `GetNPCNPCStandings`, and asked once at the session's
+    change and kept, with the server's notices keeping them right.
+13. The corporation registry's other calls, each set beside the client's.
+14. Phase 3's writes, feature by feature, each set beside what the client sends, each
+    looked for in every folder of the recordings first.
+15. The wallet's "Market Transactions", and the lines the client derives from a transaction.
+16. The avoidance list's own window, and a route plotted again when a setting changes under it.
+17. Around a place's name, the last of it: the outlaw's warning (the pilot's own security
+    status). The agent's own window's steps, if the client's say how far.
+18. The page's own read of the journal after an agent's button: gone, if nothing of the page's
+    own counts on it, with the push doing the work as it does for Remove Offer.
+19. The agent's cards above its own window, where the client's window has its own header.
+20. The scanner the client's way: results kept from the server's word, a probe's destination
+    and range kept here and sent with the scan.
+21. Small, around dialogs: the title for a dialog's kind, the "do not ask again" box, the typed
+    codes not done.
+22. Small, in space: an overview row's speed columns the client's way; the bar the client
+    fills while a ship lines up for a warp; a warp ordered at a bookmark or a fleet member.
+23. Small, before a character is chosen: selecting on the account's own connection; the count
+    of names checked.
+24. Small, in Ready Fit: the window following a change of pilot.
+25. Small, in words: an interval's `shortForm` and `writtenFormTwoPart`; the bonus's
+    countdown; a place's rating in its colour and its name as a link.
+26. In the park, if a server ever sends a ball that needs them: MISSILE, FORMATION, MUSHROOM;
+    a fixed ball's collision shapes and the partition's order.
+27. If a server ever sends one: a special interaction drawn as the client draws one; messages
+    inside messages.
+28. More of the client's built data as it is needed: one line in `TABLES` for each (dungeons
+    for ship restrictions); the client's own map, to set beside this server's.
+29. When there is a recording of it: a courier's agent talked to again where the pilot
+    accepted, before the package has gone anywhere (the operator's section); and a mission
+    paid in a system of the safest class, for whether its ISK is reduced.
+30. Other things asked once beside the store, and other panels' effects, looked at for the
+    faults of earlier entries.
+31. The pathfinder's ties: how the order of the map's jumps settles them, and the order the
+    client's own map is in.
+32. Jumps in the assets and contracts lists, the autopilot's way, where the page lists them.
+33. A wreck opened with its type said: no capacity, as the client has none for one.
