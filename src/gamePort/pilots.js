@@ -63,6 +63,7 @@ const { EFFECT_CATEGORY, EFFECT_ONLINE, createPilotDogma } = require("./pilotDog
 const { MAX_PROBES, createPilotScanner } = require("./pilotScanner");
 const { createPilotFleet } = require("./pilotFleet");
 const { createPilotStandings } = require("./pilotStandings");
+const { createPilotSkills } = require("./pilotSkills");
 const { projectFlight, projectSpace } = require("./spaceProjection");
 const { MODE: BALL_MODE } = require("./destiny/state");
 const contract = require("../../contracts/evejs-web-bridge-contract.json");
@@ -139,6 +140,39 @@ const CORPORATION_SERVICES = new Set(["corpRegistry"]);
 const BOUND_BEFORE_USE = new Set(["corpRegistry"]);
 /** The name the BFF asks the skill handler's reads by. What they are bound by is what the handler's own moniker says. */
 const SKILL_HANDLER = "skillHandler";
+/**
+ * The handler's reads the client's skill services keep the answers of, by what each is kept as (pilotSkills.js):
+ * asked for when first wanted, and from then on answered from what is kept (skillsvc.GetSkills,
+ * GetSkillsIncludingLapsed, GetBoosters, GetImplants, GetCharacterAttributes, GetSkillHistory, GetFreeSkillPoints,
+ * GetRespecInfo).
+ */
+const SKILL_KEPT = Object.freeze({
+  GetSkills: "skills",
+  GetAllSkills: "allSkills",
+  GetBoosters: "boosters",
+  GetImplants: "implants",
+  GetAttributes: "attributes",
+  GetSkillHistory: "history",
+  GetFreeSkillPoints: "freeSkillPoints",
+  GetRespecInfo: "respecInfo",
+});
+/**
+ * What a real client asked of its skill handler when its character was chosen, in the order it asked this server
+ * (the server's log of 2026-10-06, where the first went with the bind): the skill service's own list, the boosters,
+ * the queue (skillQueueSvc.PrimeSkillQueue), the list with the lapsed, and the notifications' two
+ * (skillHistoryProvider.py: CheckAndSendNotifications(), then GetSkillHistory(10), which is what the skill service
+ * then has kept as the history). Tranquility's recording of a login has the same six, the boosters with the bind,
+ * and after them the boosters again, the implants and the attributes (GetCharacterAttributes), which neither log
+ * of a real client on this server has at login: here those three are asked when something first wants them.
+ */
+const SKILL_LOGIN_READS = Object.freeze([
+  ["GetSkills", []],
+  ["GetBoosters", []],
+  ["GetSkillQueueAndFreePoints", []],
+  ["GetAllSkills", []],
+  ["CheckAndSendNotifications", []],
+  ["GetSkillHistory", [10]],
+]);
 const MONIKER_CLASS = "carbon.common.script.net.moniker.Moniker";
 
 /**
@@ -471,6 +505,11 @@ function createGamePortPilots({
   const filetime = (ms) => (BigInt(Math.trunc(ms)) + 11644473600000n) * 10000n;
   /** standingsvc.__RefreshStandings: RemoteSvc('standingMgr').GetNPCNPCStandings(), no arguments. The web client never asks it. */
   const NPC_STANDINGS_AS_THE_CLIENT_ASKS = Object.freeze({ status: "same", source: "eve/client/script/ui/services/standingsvc.py:115", note: null });
+  /** What the client asks of its skill handler of its own accord that the web client never asks, and where each is asked. */
+  const SKILL_OWN = Object.freeze({
+    GetSkillQueueAndFreePoints: Object.freeze({ status: "same", source: "eve/client/script/ui/services/skillQueueSvc.py:117", note: null }),
+    CheckAndSendNotifications: Object.freeze({ status: "same", source: "notifications/client/development/skillHistoryProvider.py:26", note: null }),
+  });
   /** What the client's fleet service asks of its own accord that the web client never asks, and where each is asked. */
   const FLEET_OWN = Object.freeze({
     // CreateFleet: self.fleet.GetFleetID(), once the fleet it formed has been read.
@@ -808,6 +847,9 @@ function createGamePortPilots({
       /** The pilot's standings as the client's standing service keeps them (pilotStandings.js), and the reading of them that is under way. */
       standings: createPilotStandings({ characterID, corporationID: () => attribute(entry, "corpid") }),
       standingsWork: Promise.resolve(),
+      /** The pilot's skills as the client's skill services keep them (pilotSkills.js), and what is being asked for them, one thing after another. */
+      skills: createPilotSkills(),
+      skillsWork: Promise.resolve(),
       /** Questions the server has asked and the user has not answered yet, by ID. */
       questions: new Map(),
       ended: false,
@@ -826,6 +868,7 @@ function createGamePortPilots({
       entry.scanner.feed(notification);
       afterFleetNotice(entry, entry.fleetKept.feed(notification));
       entry.standings.feed(notification);
+      afterSkillNotice(entry, entry.skills.feed(notification));
       record(entry, notificationToBridgeJson(notification));
     });
     session.onSessionChange((changes) => {
@@ -889,6 +932,8 @@ function createGamePortPilots({
       }
       // standingsvc.ProcessSessionChange: a character chosen has its standings read.
       await refreshStandings(entry);
+      // skillsvc, skillQueueSvc and the notifications: a character chosen has its skills, its queue and its history read.
+      await primeSkills(entry);
     } catch (error) {
       session.close();
       // The login failing is not the select call failing; say what the session said.
@@ -901,6 +946,8 @@ function createGamePortPilots({
         ? fail("SESSION_SELECT_FAILED", "The game server closed the connection during character selection.")
         : mapped;
     }
+    // The readings after the choosing fail quietly, each for itself. A connection lost under them is the choosing lost.
+    if (session.closed) throw fail("SESSION_SELECT_FAILED", "The game server closed the connection during character selection.");
 
     sessions.set(entry.handle, entry);
     session.onClose(() => end(entry, "connection_closed"));
@@ -941,7 +988,10 @@ function createGamePortPilots({
     }
     const form = shape(service, method, args, kwargs, contextFor(entry));
     // Asked of the service by name and made on its moniker: the arguments may be the client's as they stand, the call was not.
-    ledger.note(service, method, form.moniker && form.status === "same" ? { ...form, status: "reshaped" } : form);
+    // What the client's skill services keep is noted where it is asked for, which is not every time it is wanted (skillRead).
+    if (!(service === SKILL_HANDLER && Object.hasOwn(SKILL_KEPT, method))) {
+      ledger.note(service, method, form.moniker && form.status === "same" ? { ...form, status: "reshaped" } : form);
+    }
     // A call the client makes on a service's moniker is made on the object bound for where the pilot is.
     const result = await run(entry, service, method, async () => (form.moniker
       ? monikerCall(entry, service, method, argumentsToWire(form.args), form.kwargs)
@@ -1352,7 +1402,8 @@ function createGamePortPilots({
   function forgetLocationObjects(entry) {
     entry.inventoryManagers.clear();
     for (const service of [...entry.monikers.keys()]) {
-      if (!CORPORATION_SERVICES.has(service)) entry.monikers.delete(service);
+      // The skill handler is the character's, wherever it is: skillsvc keeps its moniker until it forgets everything.
+      if (!CORPORATION_SERVICES.has(service) && service !== SKILL_HANDLER) entry.monikers.delete(service);
     }
     for (const [handle, object] of entry.bound) {
       if (LOCATION_SERVICES.has(object.service)) entry.bound.delete(handle);
@@ -1466,8 +1517,77 @@ function createGamePortPilots({
     if (service !== SKILL_HANDLER) {
       return keptCall(entry, entry.monikers, service, service, () => monikerParams(entry, service, undefined), method, args, kwargs);
     }
+    // What the client's skill services keep is theirs to answer. Anything else of the handler's is asked of it.
+    if (Object.hasOwn(SKILL_KEPT, method)) return skillsDoes(entry, () => skillRead(entry, method, args));
+    return onSkillHandler(entry, method, args, kwargs);
+  }
+
+  // ── the skills as they are kept ───────────────────────────────────────────
+
+  /** A call on the skill handler: on the moniker skillMgr2 answered, bound by the first call made on it and kept. */
+  async function onSkillHandler(entry, method, args = [], kwargs = null) {
     const moniker = await skillHandlerMoniker(entry);
-    return keptCall(entry, entry.monikers, service, moniker.service, () => moniker.params, method, args, kwargs);
+    return keptCall(entry, entry.monikers, SKILL_HANDLER, moniker.service, () => moniker.params, method, args, kwargs);
+  }
+
+  /** One of the skill services' own askings of the handler: noted as it is sent, and what answers kept where the services keep it. */
+  async function skillAsk(entry, method, args = []) {
+    // With no handler to ask there is no call, and none is noted.
+    await skillHandlerMoniker(entry);
+    ledger.note(SKILL_HANDLER, method, SKILL_OWN[method] ?? shape(SKILL_HANDLER, method, args, null, contextFor(entry)));
+    const answer = await onSkillHandler(entry, method, args);
+    if (Object.hasOwn(SKILL_KEPT, method)) entry.skills.keep(SKILL_KEPT[method], answer);
+    else if (method === "GetSkillQueueAndFreePoints") entry.skills.keep("queue", answer);
+    return answer;
+  }
+
+  /**
+   * What the client's skill services keep of one of the handler's reads, asked for where none is kept. The
+   * attributes are asked for behind the boosters and the implants, each asked again whatever is kept
+   * (skillsvc.GetCharacterAttributes). The history is asked for by how many its asker wants (retailCalls.js); the
+   * others with nothing, whatever the asker passed. What answers is handed on as it came, kept or not.
+   */
+  async function skillRead(entry, method, args) {
+    const name = SKILL_KEPT[method];
+    if (entry.skills.has(name)) return entry.skills.read(name);
+    if (name === "attributes") {
+      await skillAsk(entry, "GetBoosters");
+      await skillAsk(entry, "GetImplants");
+    }
+    return skillAsk(entry, method, name === "history" ? args : []);
+  }
+
+  /** The skill services' askings one after another, so that what one keeps the next finds kept. Fails as `work` fails, for whoever waits on it; nobody need. */
+  function skillsDoes(entry, work) {
+    const doing = entry.skillsWork.then(work);
+    entry.skillsWork = doing.catch(() => {});
+    return doing;
+  }
+
+  /**
+   * What the client asks of its skill handler when a character is chosen (SKILL_LOGIN_READS). Never fails: at the
+   * first that cannot be read the rest are left, and each is asked for when it is next wanted.
+   */
+  function primeSkills(entry) {
+    return skillsDoes(entry, async () => {
+      for (const [method, args] of SKILL_LOGIN_READS) await skillAsk(entry, method, args);
+    }).catch(() => {});
+  }
+
+  /** What the client's skill service does after a notice that only the transport can do (pilotSkills.js feed). */
+  function afterSkillNotice(entry, next) {
+    for (const what of next) {
+      if (what === "reset") {
+        // skillsvc.Reset: self.skillHandler = None. Its next call asks skillMgr2 for the handler again, and binds it again.
+        entry.skillHandler = null;
+        entry.monikers.delete(SKILL_HANDLER);
+      } else {
+        // skillsvc.GetCharacterAttributes(True): the boosters, the implants and the attributes, read again at once.
+        skillsDoes(entry, async () => {
+          for (const method of ["GetBoosters", "GetImplants", "GetAttributes"]) await skillAsk(entry, method);
+        });
+      }
+    }
   }
 
   /**

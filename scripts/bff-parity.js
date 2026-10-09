@@ -37,6 +37,7 @@ const DOCKED_ROUTES = [
   "/api/bridge/fitting",
   "/api/bridge/bound-dogma",
   "/api/bridge/skills",
+  "/api/bridge/bound-skills",
   "/api/bridge/wallet",
   "/api/bridge/journal",
   "/api/bridge/market",

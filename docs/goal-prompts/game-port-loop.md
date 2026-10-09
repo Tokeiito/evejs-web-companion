@@ -90,7 +90,9 @@ file's lines, tally what agents offered, see `README.md` there), `scripts/captur
 (record a conversation as a fixture), `scripts/record-game-port.js` (record any client),
 `scripts/record-fleet-session.js` (two real sessions through a fleet's life, every notice and
 answer each got: the pattern for a fixture that sets what a store keeps beside the server's own
-later answer), `scripts/login-calls-report.js` (a login read out of the server's own log, the
+later answer), `scripts/record-standings-session.js` and `scripts/record-skills-session.js` (one
+session each, with a GM's changes: the same pattern for a store one pilot fills),
+`scripts/login-calls-report.js` (a login read out of the server's own log, the
 retail client's set beside the game port's: `docs/game-port-login-calls.md`; the logs of real
 clients on this server are `eve.js/_local/logs/direct-tcp-real-client-*.stdout.log`, docked, and
 `server.2026-10-06_15.log`, in space),
@@ -215,6 +217,8 @@ Take these defaults, and list each under "For the operator" in the log so they c
   first and put it back after.
 - **A route given to `scripts/bff-parity.js` on the command line is rewritten by the shell**
   (`/api/...` becomes a path under the Git folder). Put `MSYS_NO_PATHCONV=1` before the command.
+  The same for a GM command given to a script (`/giveskill ...`), and then the script's own path
+  has to be written `C:/...`.
 - **What a BFF really puts on the wire can be read**, where the server's log says too little
   (it gives a call's service, method, argument count and `dst=node` or `dst=any`, and none of
   its keywords). Start `scripts/record-game-port.js record 26007 26000 <file outside the
@@ -279,7 +283,9 @@ Take these defaults, and list each under "For the operator" in the log so they c
   a server defect was behind it. Stage what a list route lists before trusting a pass of it.
 - **What the parity tool calls moved is a reading, not a fact.** It prints a `moved?` line for
   each value it puts down to time passing between its two reads, with both values: read them.
-  A clock is a clock; a count of none against two is not.
+  A clock is a clock; a count of none against two is not. A read that takes what it reads
+  (`skillHandler.GetSkillChangesForISIS`) reads "moved" for whichever transport asks second:
+  run the pass again.
 - **A test that puts a pilot in space must use the park that moves by hand.** In
   `test/gamePortPilots.test.js`, `selected({ inSpace: true })` makes a real park with a real
   timer, and the test process then never ends: a run sat until its own time limit killed it
@@ -306,7 +312,9 @@ Take these defaults, and list each under "For the operator" in the log so they c
   never asks for, look for it there. The tables hold IDs and numbers; do not commit a dump.
 - **Staging a pilot.** GM commands go through `POST /api/bridge/gm/slash {command, confirm:
   true}` with a pilot selected: `/tr me <stationID>` moves it, `/giveskill me <typeID> <level>`
-  trains it, `/help` lists the rest. From the browser, send them with the page's own token
+  trains it (level 0 gives the skill untrained), `/removeskill me <typeID>` takes it away,
+  `/expertsystem add|remove <typeID> me` lends and takes back a skill held by a virtual level
+  (`/expertsystem list` names them), `/help` lists the rest. From the browser, send them with the page's own token
   (`sessionStorage.evejs_web_poc_session`), or a script's login takes the pilot away from the
   page. Server state the commands do not reach is in `_local/gameStore/gamestore.sqlite`, one
   table per store with `key` and `json` columns: stop the server, copy the file **and its

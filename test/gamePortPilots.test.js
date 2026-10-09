@@ -216,6 +216,8 @@ test("select logs in as the account and makes the retail client's three calls, i
     // The character is chosen: its standings are read, as the client's standing service reads them then.
     "standingMgr.GetNPCNPCStandings",
     "standingMgr.GetCharStandings",
+    // And its skill handler is asked for, as the client's skill service asks. This stand-in answers none, so nothing is asked of one.
+    "skillMgr2.GetMySkillHandler",
   ]);
   assert.deepEqual(session.calls[0].args, []);
   assert.deepEqual(session.calls[1].args, [PILOT]);
@@ -309,7 +311,7 @@ test("a pilot left in space is selected in space and given a ballpark as the cli
   const first = await built.pilots.bindObject("beyonce", "MachoBindObject", [], null, WHOSE, outcome.bridgeSessionID);
   assert.deepEqual(session.calls.map((call) => `${call.service}.${call.method}`), [
     "charUnboundMgr.GetCharacterSelectionData", "charUnboundMgr.GetCharacterLockType", "charUnboundMgr.SelectCharacterID",
-    "standingMgr.GetNPCNPCStandings", "standingMgr.GetCharStandings", "beyonce.GetFormations",
+    "standingMgr.GetNPCNPCStandings", "standingMgr.GetCharStandings", "skillMgr2.GetMySkillHandler", "beyonce.GetFormations",
   ]);
   assert.deepEqual(session.binds, [{ service: "beyonce", params: SYSTEM }]);
   assert.deepEqual([hand.parks.length, typeof hand.parks[0].tick, hand.parks[0].stopped], [1, "function", false]);
@@ -465,8 +467,8 @@ test("the allowlist it ships with is the gateway's own list of pairs", async () 
     const [service, method] = pair.split(".");
     await pilots.callMethod(service, method, [], null, { userid: ACCOUNT }, bridgeSessionID);
   }
-  // The three of choosing a character, the two readings of its standings, and the forty.
-  assert.equal(made[0].calls.length, 3 + 2 + 40);
+  // The three of choosing a character, the two readings of its standings, the asking for its skill handler, and the forty.
+  assert.equal(made[0].calls.length, 3 + 2 + 1 + 40);
   assert.equal(contract.gatewayAllowlist.pairs.length, contract.gatewayAllowlist.count);
 });
 
@@ -1158,6 +1160,8 @@ test("the transport keeps a tally of what it called and how each compared with t
     "charUnboundMgr.SelectCharacterID": { same: 1 },
     "standingMgr.GetNPCNPCStandings": { same: 1 },
     "standingMgr.GetCharStandings": { same: 1 },
+    // Asked for and not answered by this stand-in: nothing was asked of a handler, and nothing of one is tallied.
+    "skillMgr2.GetMySkillHandler": { same: 1 },
     "invbroker.Add": { differs: 1 },
     "invbroker.GetInventory": { reshaped: 1 },
     "invbroker.List": { reshaped: 1 },
@@ -2318,7 +2322,7 @@ test("whatever is asked of ship or dogmaIM by name is made on the moniker, read 
   const allowed = new Set(["dogmaIM.GetTargets", "dogmaIM.AddTarget", "dogmaIM.Overload", "dogmaIM.CreateNewbieShip", "ship.LeaveShip", "ship.GetShipConfiguration", "ship.LaunchDrones", "ship.GetShipFittingInfo", "station.GetGuests"]);
   const { pilots, session, handle } = await selected({ answers: { "bound:GetTargets": { type: "list", items: [9001] } } }, { allowed });
   const made = () => session.boundCalls.at(-1);
-  const byName = () => session.calls.filter((call) => !call.service.startsWith("charUnboundMgr") && call.service !== "standingMgr" && call.method !== "ShipGetInfo").map((call) => `${call.service}.${call.method}`);
+  const byName = () => session.calls.filter((call) => !call.service.startsWith("charUnboundMgr") && call.service !== "standingMgr" && call.service !== "skillMgr2" && call.method !== "ShipGetInfo").map((call) => `${call.service}.${call.method}`);
 
   // A read, with the server's answer handed back as any call's is.
   const targets = await pilots.callMethod("dogmaIM", "GetTargets", [], null, FIELDS, handle);
@@ -3753,9 +3757,9 @@ test("a character chosen has its standings read as the client's standing service
   const { pilots, session, handle } = await selected({ answers: STANDING_ANSWERS });
   assert.deepEqual(session.calls.map((call) => `${call.service}.${call.method}`), [
     "charUnboundMgr.GetCharacterSelectionData", "charUnboundMgr.GetCharacterLockType", "charUnboundMgr.SelectCharacterID",
-    "standingMgr.GetNPCNPCStandings", "standingMgr.GetCharStandings",
+    "standingMgr.GetNPCNPCStandings", "standingMgr.GetCharStandings", "skillMgr2.GetMySkillHandler",
   ]);
-  assert.deepEqual(session.calls.slice(3).map((call) => [call.args, call.kwargs]), [[[], null], [[], null]]);
+  assert.deepEqual(session.calls.slice(3, 5).map((call) => [call.args, call.kwargs]), [[[], null], [[], null]]);
   const kept = await pilots.standingsKept(WHO, handle);
   assert.deepEqual([standingRows(kept.char), kept.corp], [CHAR_ROWS, null]);
   // In the gateway's form, as a read of GetCharStandings comes.
@@ -3910,47 +3914,197 @@ test("a moniker whose bind finds no object says so at the call that made it bind
 // in this server's log of a retail client (the moniker names skillHandler and no node; the bind carries GetSkills).
 
 const skillMoniker = (service, nodeID, characterID = PILOT) => ({ type: "object", name: Buffer.from("carbon.common.script.net.moniker.Moniker"), args: [Buffer.from(service), nodeID, characterID, null] });
-const SKILL_PAIRS = { allowed: new Set(["skillHandler.GetImplants", "skillHandler.GetBoosters", "skillHandler.GetSkills"]) };
+const SKILL_PAIRS = { allowed: new Set(["skillHandler.GetImplants", "skillHandler.GetBoosters", "skillHandler.GetSkills", "skillHandler.GetAllSkills", "skillHandler.GetAttributes", "skillHandler.GetSkillHistory", "skillHandler.GetFreeSkillPoints", "skillHandler.GetRespecInfo", "skillHandler.GetSkillPoints", "skillHandler.AbortTraining", "dogmaIM.GetTargets", "someService.GetSkills"]) };
 const implantsOf = (...typeIDs) => ({ type: "dict", entries: typeIDs.map((typeID, index) => [index + 1, keyVal([["typeID", typeID]])]) });
+const skillOf = (typeID, level, points, rank = 1, virtualLevel = null) => ({ type: "objectex1", header: [{ type: "token", value: "characterskills.common.character_skill_entry.CharacterSkillEntry" }, [typeID, level, points, rank, virtualLevel]], list: [], dict: [] });
+const skillsOf = (...entries) => ({ type: "dict", entries: entries.map((entry) => [entry.header[1][0], entry]) });
+const historyOf = (...skillTypeIDs) => ({ type: "list", items: skillTypeIDs.map((skillTypeID) => keyVal([["skillTypeID", skillTypeID], ["level", 1]])) });
+/** What the handler of a stand-in server answers: a pilot with two skills, nothing queued, no free points. The reads asked after the choosing answer in their own way, so that what is kept can be told from what is asked. */
+const handlerAnswers = (more = {}) => ({
+  "skillMgr2.GetMySkillHandler": skillMoniker("skillHandler", null),
+  "bound:GetSkills": skillsOf(skillOf(3300, 4, 45255), skillOf(3327, 3, 8000, 2)),
+  "bound:GetAllSkills": skillsOf(skillOf(3300, 4, 45255), skillOf(3327, 3, 8000, 2), skillOf(3402, 1, 250)),
+  "bound:GetBoosters": { type: "dict", entries: [] },
+  "bound:GetSkillQueueAndFreePoints": [{ type: "list", items: [] }, 0],
+  "bound:CheckAndSendNotifications": { type: "list", items: [] },
+  "bound:GetSkillHistory": ([maxresults]) => historyOf(...Array(maxresults === 10 ? 2 : 3).fill(3300)),
+  "bound:GetImplants": implantsOf(9899),
+  "bound:GetAttributes": { type: "dict", entries: [[164, 20], [165, 21]] },
+  "bound:GetFreeSkillPoints": 0,
+  "bound:GetRespecInfo": keyVal([["freeRespecs", 3]]),
+  "bound:GetSkillPoints": 53505,
+  ...more,
+});
+/** What was asked of the handler's object since `from`: each method, with its arguments where it had any. */
+const handlerCalls = (session, from = 0) => session.boundCalls.slice(from).map((call) => (call.args.length ? [call.method, call.args] : call.method));
+const LOGIN_READS = ["GetSkills", "GetBoosters", "GetSkillQueueAndFreePoints", "GetAllSkills", "CheckAndSendNotifications", ["GetSkillHistory", [10]]];
+const skillRead = async (pilots, handle, method, args = []) => (await pilots.callMethod("skillHandler", method, args, null, FIELDS, handle)).result;
+const typesOf = (list) => list.entries.map(([typeID, entry]) => [typeID, entry.header[1][1]]);
 
-test("the skill handler is asked for once, and its reads are made on the object its moniker binds", async () => {
-  const { pilots, session, handle } = await selected({ answers: {
-    "skillMgr2.GetMySkillHandler": skillMoniker("skillHandler", null),
-    "bound:GetImplants": implantsOf(9899),
-    "bound:GetBoosters": { type: "dict", entries: [] },
-  } }, SKILL_PAIRS);
-  session.calls.length = 0;
-  const implants = await pilots.callMethod("skillHandler", "GetImplants", [], null, FIELDS, handle);
-  assert.deepEqual(implants.result.entries.map(([slot, row]) => [slot, new Map(row.args.entries).get("typeID")]), [[1, 9899]]);
-  // Asked of skillMgr2 by name, with nothing; then the moniker it answered is bound by this first read, by the character.
-  assert.deepEqual(session.calls, [{ service: "skillMgr2", method: "GetMySkillHandler", args: [], kwargs: null }]);
-  assert.deepEqual([session.binds, session.carried, session.nodes], [[{ service: "skillHandler", params: PILOT }], ["GetImplants"], []]);
-  // The next reads go to the object: the handler is not asked for again, and nothing is bound.
-  await pilots.callMethod("skillHandler", "GetBoosters", [], null, FIELDS, handle);
-  await pilots.callMethod("skillHandler", "GetImplants", [], null, FIELDS, handle);
-  assert.deepEqual([session.calls.length, session.binds.length], [1, 1]);
-  assert.deepEqual(session.boundCalls.map((call) => [call.objectID, call.method, call.args, call.kwargs]), [["N=1:1", "GetImplants", [], null], ["N=1:1", "GetBoosters", [], null], ["N=1:1", "GetImplants", [], null]]);
-  const noted = Object.fromEntries(pilots.callLedger().map((row) => [row.pair, row.statuses]));
-  assert.deepEqual([noted["skillMgr2.GetMySkillHandler"], noted["skillHandler.GetImplants"], noted["skillHandler.GetBoosters"]], [{ same: 1 }, { reshaped: 2 }, { reshaped: 1 }]);
+test("a character chosen has its skill handler asked for and bound, and asked what the client's skill services ask it then", async () => {
+  const { pilots, session, handle } = await selected({ answers: handlerAnswers() }, SKILL_PAIRS);
+  // Asked of skillMgr2 by name, with nothing, after the standings; the moniker it answered is bound by the first read,
+  // by the character, and the rest go to the object, in the order a real client asked this server.
+  assert.deepEqual(session.calls.slice(3).map((call) => [`${call.service}.${call.method}`, call.args, call.kwargs]), [
+    ["standingMgr.GetNPCNPCStandings", [], null], ["standingMgr.GetCharStandings", [], null], ["skillMgr2.GetMySkillHandler", [], null],
+  ]);
+  assert.deepEqual([session.binds, session.carried, session.nodes], [[{ service: "skillHandler", params: PILOT }], ["GetSkills"], []]);
+  assert.deepEqual(handlerCalls(session), LOGIN_READS);
+  assert.deepEqual([...new Set(session.boundCalls.map((call) => call.objectID))], ["N=1:1"]);
+  assert.deepEqual(session.boundCalls.map((call) => call.kwargs), LOGIN_READS.map(() => null));
+  // Each is in the ledger once, as the client's own call, with where the client makes it.
+  const sources = { GetSkills: "skillsvc.py:136", GetBoosters: "skillsvc.py:962", GetSkillQueueAndFreePoints: "skillQueueSvc.py:117", GetAllSkills: "skillsvc.py:142", CheckAndSendNotifications: "skillHistoryProvider.py:26", GetSkillHistory: "skillsvc.py:363" };
+  for (const [method, source] of Object.entries(sources)) {
+    const [statuses, noted] = ledgerOf(pilots, `skillHandler.${method}`);
+    assert.deepEqual([statuses, noted.endsWith(source)], [{ same: 1 }, true], method);
+  }
+  assert.deepEqual(ledgerOf(pilots, "skillMgr2.GetMySkillHandler")[0], { same: 1 });
+});
+
+test("what the client's skill services keep is answered from what is kept, and asked for once where it was not", async () => {
+  const { pilots, session, handle } = await selected({ answers: handlerAnswers() }, SKILL_PAIRS);
+  const asked = session.boundCalls.length;
+  // Read at the choosing: answered as the server answered then, in the gateway's form, with nothing asked.
+  assert.deepEqual(typesOf(await skillRead(pilots, handle, "GetSkills")), [[3300, 4], [3327, 3]]);
+  assert.deepEqual(typesOf(await skillRead(pilots, handle, "GetAllSkills")), [[3300, 4], [3327, 3], [3402, 1]]);
+  assert.deepEqual(await skillRead(pilots, handle, "GetBoosters"), { type: "dict", entries: [] });
+  // The history is the one the notifications asked for when the character was chosen, however many are asked for now.
+  assert.equal((await skillRead(pilots, handle, "GetSkillHistory")).items.length, 2);
+  assert.equal((await skillRead(pilots, handle, "GetSkillHistory", [50])).items.length, 2);
+  assert.deepEqual([handlerCalls(session, asked), session.binds.length], [[], 1]);
+  // And none of those is a call in the ledger: each was made once, at the choosing.
+  for (const method of ["GetSkills", "GetAllSkills", "GetBoosters", "GetSkillHistory"]) assert.deepEqual(ledgerOf(pilots, `skillHandler.${method}`)[0], { same: 1 }, method);
+
+  // Not read at the choosing: asked for when first wanted, with nothing whatever the asker passed, and kept from then.
+  const implants = await skillRead(pilots, handle, "GetImplants", [7]);
+  assert.deepEqual(implants.entries.map(([slot, row]) => [slot, new Map(row.args.entries).get("typeID")]), [[1, 9899]]);
+  assert.deepEqual(await skillRead(pilots, handle, "GetImplants"), implants);
+  assert.equal(new Map((await skillRead(pilots, handle, "GetRespecInfo")).args.entries).get("freeRespecs"), 3);
+  await skillRead(pilots, handle, "GetRespecInfo");
+  // The queue's read said no free points, which is nothing kept: they are asked for once (skillsvc.GetFreeSkillPoints).
+  assert.deepEqual([await skillRead(pilots, handle, "GetFreeSkillPoints"), await skillRead(pilots, handle, "GetFreeSkillPoints")], [0, 0]);
+  assert.deepEqual(handlerCalls(session, asked), ["GetImplants", "GetRespecInfo", "GetFreeSkillPoints"]);
+  // The attributes are asked for behind the boosters and the implants, each asked again though kept (GetCharacterAttributes).
+  const then = session.boundCalls.length;
+  assert.deepEqual(await skillRead(pilots, handle, "GetAttributes"), { type: "dict", entries: [[164, 20], [165, 21]] });
+  await skillRead(pilots, handle, "GetAttributes");
+  assert.deepEqual(handlerCalls(session, then), ["GetBoosters", "GetImplants", "GetAttributes"]);
+  assert.deepEqual(["GetImplants", "GetBoosters", "GetAttributes", "GetRespecInfo", "GetFreeSkillPoints"].map((method) => ledgerOf(pilots, `skillHandler.${method}`)[0]), [{ same: 2 }, { same: 2 }, { same: 1 }, { same: 1 }, { same: 1 }]);
+
+  // What the services do not keep is asked each time, on the same object, and is in the ledger as asked for by name.
+  assert.deepEqual([await skillRead(pilots, handle, "GetSkillPoints"), await skillRead(pilots, handle, "GetSkillPoints")], [53505, 53505]);
+  assert.deepEqual([handlerCalls(session, then).slice(3), ledgerOf(pilots, "skillHandler.GetSkillPoints")[0], session.binds.length, session.calls.filter((call) => call.service === "skillMgr2").length], [["GetSkillPoints", "GetSkillPoints"], { reshaped: 2 }, 1, 1]);
+  // A read of the same name on another service is that service's own, asked and noted as any call is.
+  await pilots.callMethod("someService", "GetSkills", [], null, FIELDS, handle);
+  assert.deepEqual([session.calls.at(-1).service, ledgerOf(pilots, "someService.GetSkills")[0]], ["someService", { unchecked: 1 }]);
+  // Two at once that are not kept are asked once.
+  const lost = await selected({ answers: handlerAnswers() }, SKILL_PAIRS);
+  const [one, two] = await Promise.all([skillRead(lost.pilots, lost.handle, "GetImplants"), skillRead(lost.pilots, lost.handle, "GetImplants")]);
+  assert.deepEqual([one, handlerCalls(lost.session, LOGIN_READS.length)], [two, ["GetImplants"]]);
+  // Another account's session reads nothing.
+  await assert.rejects(pilots.callMethod("skillHandler", "GetSkills", [], null, { userid: 9 }, handle), (error) => error.code === "SESSION_NOT_FOUND");
+});
+
+test("free points the queue's read came with are kept, and a history not kept is asked for by how many are wanted", async () => {
+  const { pilots, session, handle } = await selected({ answers: handlerAnswers({ "bound:GetSkillQueueAndFreePoints": [{ type: "list", items: [] }, 5000], "bound:GetFreeSkillPoints": 1 }) }, SKILL_PAIRS);
+  const asked = session.boundCalls.length;
+  assert.equal(await skillRead(pilots, handle, "GetFreeSkillPoints"), 5000);
+  // A skill changes: the history kept is forgotten, and the next asking of it asks, with the client's own count where none is named.
+  session.notify("OnServerSkillsChanged", [skillsOf(skillOf(3300, 5, 256000)), null, 7n]);
+  assert.equal((await skillRead(pilots, handle, "GetSkillHistory")).items.length, 3);
+  assert.equal((await skillRead(pilots, handle, "GetSkillHistory", [10])).items.length, 3);
+  assert.deepEqual(handlerCalls(session, asked), [["GetSkillHistory", [50]]]);
+  session.notify("OnServerSkillsChanged", [skillsOf(skillOf(3300, 5, 256001)), null, 8n]);
+  assert.equal((await skillRead(pilots, handle, "GetSkillHistory", [10])).items.length, 2);
+  assert.deepEqual(handlerCalls(session, asked), [["GetSkillHistory", [50]], ["GetSkillHistory", [10]]]);
+  assert.deepEqual(ledgerOf(pilots, "skillHandler.GetSkillHistory")[0], { same: 3 });
+});
+
+test("what the server says of the pilot's skills afterwards is kept without asking, and the client's own readings after a notice are made", async () => {
+  let implants = implantsOf(9899);
+  const { pilots, session, handle } = await selected({ answers: handlerAnswers({ "bound:GetImplants": () => implants }) }, SKILL_PAIRS);
+  const asked = session.boundCalls.length;
+  // A skill trained, one lent by its virtual level, and one taken away.
+  session.notify("OnServerSkillsChanged", [skillsOf(skillOf(3300, 5, 256000), skillOf(3336, null, null, 8, 1)), null, 7n]);
+  session.notify("OnServerSkillsRemoved", [skillsOf(skillOf(3327, 0, -1, 2)), 8n]);
+  assert.deepEqual(typesOf(await skillRead(pilots, handle, "GetSkills")), [[3300, 5], [3336, null]]);
+  assert.deepEqual(typesOf(await skillRead(pilots, handle, "GetAllSkills")), [[3300, 5], [3402, 1], [3336, null]]);
+  session.notify("OnFreeSkillPointsChanged", [1200]);
+  assert.equal(await skillRead(pilots, handle, "GetFreeSkillPoints"), 1200);
+  assert.deepEqual(handlerCalls(session, asked), []);
+
+  // An implant plugged in: the client reads its boosters, its implants and its attributes again, at once, and they are kept.
+  await skillRead(pilots, handle, "GetImplants");
+  implants = implantsOf(9899, 9941);
+  const then = session.boundCalls.length;
+  session.notify("OnServerImplantsChanged", []);
+  assert.equal((await skillRead(pilots, handle, "GetImplants")).entries.length, 2);
+  assert.deepEqual(await skillRead(pilots, handle, "GetAttributes"), { type: "dict", entries: [[164, 20], [165, 21]] });
+  assert.deepEqual(handlerCalls(session, then), ["GetBoosters", "GetImplants", "GetAttributes"]);
+  for (const method of ["OnServerBoostersChanged", "OnRespecInfoChanged"]) session.notify(method, []);
+  await skillRead(pilots, handle, "GetBoosters");
+  assert.deepEqual(handlerCalls(session, then).slice(3), ["GetBoosters", "GetImplants", "GetAttributes", "GetBoosters", "GetImplants", "GetAttributes"]);
+  // The respec was forgotten by its notice, and is asked for when next wanted.
+  const before = session.boundCalls.length;
+  await skillRead(pilots, handle, "GetRespecInfo");
+  assert.deepEqual(handlerCalls(session, before), ["GetRespecInfo"]);
+  // Readings after a notice that fail leave what was kept, and break nothing.
+  const failing = await selected({ answers: handlerAnswers({ "bound:GetImplants": () => { throw refusedBy("NotNow"); } }) }, SKILL_PAIRS);
+  failing.session.notify("OnServerBoostersChanged", []);
+  assert.deepEqual(await skillRead(failing.pilots, failing.handle, "GetBoosters"), { type: "dict", entries: [] });
+  assert.deepEqual(handlerCalls(failing.session, LOGIN_READS.length), ["GetBoosters", "GetImplants"]);
+});
+
+test("a forced refresh forgets all the skill service keeps, its handler too: the next read asks for the handler and binds it again", async () => {
+  const { pilots, session, handle } = await selected({ answers: handlerAnswers() }, SKILL_PAIRS);
+  const asked = session.boundCalls.length;
+  session.notify("OnSkillForcedRefresh", []);
+  assert.deepEqual(typesOf(await skillRead(pilots, handle, "GetSkills")), [[3300, 4], [3327, 3]]);
+  await skillRead(pilots, handle, "GetSkills");
+  assert.deepEqual([session.calls.filter((call) => call.service === "skillMgr2").length, session.binds, session.carried], [2, [{ service: "skillHandler", params: PILOT }, { service: "skillHandler", params: PILOT }], ["GetSkills", "GetSkills"]]);
+  assert.deepEqual(session.boundCalls.slice(asked).map((call) => [call.objectID, call.method]), [["N=1:2", "GetSkills"]]);
+});
+
+test("the handler's reads at the choosing stop at the first that cannot be made, and the choosing is none the worse", async () => {
+  let refuse = true;
+  const { pilots, session, handle, outcome } = await selected({ answers: handlerAnswers({ "bound:GetBoosters": () => { if (refuse) throw refusedBy("NotNow"); return { type: "dict", entries: [[1, 2]] }; } }) }, SKILL_PAIRS);
+  assert.deepEqual([outcome.session.characterID, handlerCalls(session)], [PILOT, ["GetSkills", "GetBoosters"]]);
+  // What was read is kept; what was not is asked for when it is wanted, and a refusal then is the caller's.
+  assert.deepEqual(typesOf(await skillRead(pilots, handle, "GetSkills")), [[3300, 4], [3327, 3]]);
+  await rejects(skillRead(pilots, handle, "GetBoosters"), "CALL_REFUSED");
+  refuse = false;
+  assert.deepEqual(await skillRead(pilots, handle, "GetBoosters"), { type: "dict", entries: [[1, 2]] });
+  assert.deepEqual(typesOf(await skillRead(pilots, handle, "GetAllSkills")), [[3300, 4], [3327, 3], [3402, 1]]);
+  assert.deepEqual(handlerCalls(session), ["GetSkills", "GetBoosters", "GetBoosters", "GetBoosters", "GetAllSkills"]);
+  // An answer that is no list of skills is handed on as it came, and is not kept: the next read asks again.
+  const odd = await selected({ answers: handlerAnswers({ "bound:GetSkills": 7 }) }, SKILL_PAIRS);
+  assert.deepEqual([await skillRead(odd.pilots, odd.handle, "GetSkills"), await skillRead(odd.pilots, odd.handle, "GetSkills")], [7, 7]);
+  assert.deepEqual(handlerCalls(odd.session, LOGIN_READS.length), ["GetSkills", "GetSkills"]);
+  // A connection lost in the middle of them is the choosing lost, as one lost anywhere in it is: no session is handed out.
+  const built = build({ answers: handlerAnswers({ "bound:GetAllSkills": () => { built.session.drop(); throw sessionError("CONNECTION_CLOSED"); } }) }, SKILL_PAIRS);
+  await rejects(built.pilots.selectCharacter([PILOT, null, true], null, FIELDS), "SESSION_SELECT_FAILED", /closed the connection/);
+  assert.deepEqual([handlerCalls(built.session), built.pilots.size], [["GetSkills", "GetBoosters", "GetSkillQueueAndFreePoints", "GetAllSkills"], 0]);
+  // And under the standings' readings before them.
+  const early = build({ answers: { "standingMgr.GetCharStandings": () => { early.session.drop(); throw sessionError("CONNECTION_CLOSED"); } } }, SKILL_PAIRS);
+  await rejects(early.pilots.selectCharacter([PILOT, null, true], null, FIELDS), "SESSION_SELECT_FAILED", /closed the connection/);
+  assert.deepEqual([early.session.calls.filter((call) => call.service === "skillMgr2").length, early.pilots.size], [0, 0]);
 });
 
 test("the skill handler's moniker is bound by what it says: its own service, and its node where it names one", async () => {
   // As Tranquility answers: service skillMgr2, on a node. The node is told to the session, which then has no need to ask.
-  const { pilots, session, handle } = await selected({ answers: { "skillMgr2.GetMySkillHandler": skillMoniker("skillMgr2", 2290655), "bound:GetSkills": "skills" } }, SKILL_PAIRS);
-  const [first, second] = await Promise.all([
-    pilots.callMethod("skillHandler", "GetSkills", [], null, FIELDS, handle),
-    pilots.callMethod("skillHandler", "GetSkills", [], null, FIELDS, handle),
-  ]);
-  assert.deepEqual([first.result, second.result], ["skills", "skills"]);
-  // Two at once: asked for once, bound once.
-  assert.deepEqual(session.calls.filter((call) => call.service === "skillMgr2").length, 1);
+  const { pilots, session, handle } = await selected({ answers: handlerAnswers({ "skillMgr2.GetMySkillHandler": skillMoniker("skillMgr2", 2290655) }) }, SKILL_PAIRS);
   assert.deepEqual([session.binds, session.carried, session.nodes], [[{ service: "skillMgr2", params: PILOT }], ["GetSkills"], [["skillMgr2", PILOT, 2290655]]]);
+  assert.deepEqual(handlerCalls(session), LOGIN_READS);
+  const [first, second] = await Promise.all([skillRead(pilots, handle, "GetSkillPoints"), skillRead(pilots, handle, "GetSkillPoints")]);
+  assert.deepEqual([first, second, session.calls.filter((call) => call.service === "skillMgr2").length, session.binds.length], [53505, 53505, 1, 1]);
 });
 
 test("with no skill handler answered there is nothing to ask, and the next read asks for one again", async () => {
   let answer = null;
   const { pilots, session, handle } = await selected({ answers: { "skillMgr2.GetMySkillHandler": () => { if (answer instanceof Error) throw answer; return answer; }, "bound:GetImplants": implantsOf() } }, SKILL_PAIRS);
   const read = () => pilots.callMethod("skillHandler", "GetImplants", [], null, FIELDS, handle);
+  // The choosing asked, and was answered nothing: no call on a handler was made, and none is in the ledger.
+  assert.deepEqual([session.calls.filter((call) => call.service === "skillMgr2").length, session.boundCalls, ledgerOf(pilots, "skillHandler.GetSkills")], [1, [], null]);
   // Nothing answered, something that is no moniker (one of them shaped like one), a moniker with no state, no service
   // or nothing to bind by, and a refusal.
   const likeOne = { ...skillMoniker("skillHandler", null), name: Buffer.from("something.Else") };
@@ -3961,10 +4115,30 @@ test("with no skill handler answered there is nothing to ask, and the next read 
   }
   answer = refusedBy("NotNow");
   await rejects(read(), "CALL_REFUSED");
-  assert.deepEqual([session.binds, session.calls.filter((call) => call.service === "skillMgr2").length], [[], 8]);
+  assert.deepEqual([session.binds, session.calls.filter((call) => call.service === "skillMgr2").length, ledgerOf(pilots, "skillHandler.GetImplants")], [[], 9, null]);
   answer = skillMoniker("skillHandler", null);
   assert.deepEqual((await read()).result, implantsOf());
-  assert.deepEqual(session.binds, [{ service: "skillHandler", params: PILOT }]);
+  assert.deepEqual([session.binds, session.carried, ledgerOf(pilots, "skillHandler.GetImplants")[0]], [[{ service: "skillHandler", params: PILOT }], ["GetImplants"], { same: 1 }]);
+});
+
+test("the skill handler's object is the character's wherever it is: kept when the pilot moves, and bound again only when the server lets it go", async () => {
+  const { pilots, session, handle } = await selected({ answers: handlerAnswers({ "bound:GetTargets": { type: "list", items: [] } }) }, SKILL_PAIRS);
+  await pilots.callMethod("dogmaIM", "GetTargets", [], null, FIELDS, handle);
+  assert.deepEqual(session.binds.map((bind) => bind.service), ["skillHandler", "dogmaIM"]);
+  // Another station: dogma's moniker is the old place's, and is bound again. The handler's is not.
+  session.attributes.stationid = 60000004;
+  session.change({ stationid: [STATION, 60000004], locationid: [STATION, 60000004] });
+  await skillRead(pilots, handle, "GetSkillPoints");
+  await pilots.callMethod("dogmaIM", "GetTargets", [], null, FIELDS, handle);
+  assert.deepEqual([session.binds.map((bind) => bind.service), session.boundCalls.at(-2).objectID, session.calls.filter((call) => call.service === "skillMgr2").length], [["skillHandler", "dogmaIM", "dogmaIM"], "N=1:1", 1]);
+  // The server lets the handler's object go: the moniker is the one the client has, and binds again by its next call.
+  session.notify("OnMachoObjectDisconnect", [Buffer.from("N=1:1"), 1065450, null]);
+  assert.equal(await skillRead(pilots, handle, "GetSkillPoints"), 53505);
+  assert.deepEqual([session.binds.at(-1), session.carried.at(-1), session.calls.filter((call) => call.service === "skillMgr2").length], [{ service: "skillHandler", params: PILOT }, "GetSkillPoints", 1]);
+  // What is kept was not the object's to take with it.
+  const asked = session.boundCalls.length;
+  assert.deepEqual(typesOf(await skillRead(pilots, handle, "GetSkills")), [[3300, 4], [3327, 3]]);
+  assert.equal(session.boundCalls.length, asked);
 });
 
 test("with godma not primed there is no entry to give, and the ship is still said", async () => {

@@ -10,10 +10,10 @@ The retail client made 117 calls of 100 kinds (a call asked before a character i
 
 | The game port | Kinds | Calls | Meaning |
 |---|---|---|---|
-| at login | 9 | 14 | The game port asks this at login too. |
-| by a feature | 23 | 29 | A feature of the web client asks this when it is wanted, in a form read against the client's. |
-| by a route | 16 | 17 | The BFF has a route that can ask this. It has not been read against the client's. |
-| never | 52 | 57 | Nothing of ours asks this. |
+| at login | 17 | 22 | The game port asks this at login too. |
+| by a feature | 18 | 24 | A feature of the web client asks this when it is wanted, in a form read against the client's. |
+| by a route | 15 | 16 | The BFF has a route that can ask this. It has not been read against the client's. |
+| never | 50 | 55 | Nothing of ours asks this. |
 
 ## Before a character is chosen
 
@@ -56,9 +56,9 @@ The retail client made 117 calls of 100 kinds (a call asked before a character i
 | `invbroker.MachoResolveObject` | 1 | by a feature |
 | `invbroker.MachoBindObject` | 2 | by a feature |
 | `invbroker.GetInventoryFromId` (inferred) | 1 | by a route |
-| `skillMgr2.GetMySkillHandler` | 1 | by a feature |
-| `skillHandler.MachoResolveObject` | 1 | by a feature |
-| `skillHandler.MachoBindObject` | 1 | by a feature |
+| `skillMgr2.GetMySkillHandler` | 1 | at login |
+| `skillHandler.MachoResolveObject` | 1 | at login |
+| `skillHandler.MachoBindObject` | 1 | at login |
 | `crimewatch.MachoResolveObject` | 1 | by a feature |
 | `crimewatch.MachoBindObject` | 2 | by a feature |
 | `corpRegistry.MachoResolveObject` | 1 | by a feature |
@@ -80,7 +80,7 @@ The retail client made 117 calls of 100 kinds (a call asked before a character i
 | `nonDiminishingInjectionMgr.GetAvailableNonDiminishingInjections` | 1 | never |
 | `XmppChatMgr.Hostname` | 1 | never |
 | `charMgr.GetCharacterSettings` | 1 | never |
-| `skillHandler.GetBoosters` (inferred) | 1 | by a feature |
+| `skillHandler.GetBoosters` (inferred) | 1 | at login |
 | `structureDirectory.GetMyDockableStructures` | 1 | by a route |
 | `XmppChatMgr.GetDeprecatedPrefsFallback` | 1 | never |
 | `fwWarzoneSolarsystem.GetLocalOccupationState` | 1 | never |
@@ -99,9 +99,9 @@ The retail client made 117 calls of 100 kinds (a call asked before a character i
 | `invbroker.GetSelfInvItem` (inferred) | 2 | never |
 | `invbroker.GetAvailableTurretSlots` (inferred) | 1 | by a route |
 | `invbroker.List` (inferred) | 3 | by a feature |
-| `skillHandler.GetAllSkills` (inferred) | 1 | by a feature |
+| `skillHandler.GetAllSkills` (inferred) | 1 | at login |
 | `dynamicBountyMgr.GetOutputForClientSolarSystem` | 1 | never |
-| `skillHandler.GetSkillQueueAndFreePoints` (inferred) | 1 | never |
+| `skillHandler.GetSkillQueueAndFreePoints` (inferred) | 1 | at login |
 | `XmppChatMgr.ResyncSystemChannelAccess` | 1 | never |
 | `browserLockdownSvc.GetFlaggedSitesHash` | 1 | never |
 | `map.GetStationInfo` | 1 | by a feature |
@@ -114,9 +114,9 @@ The retail client made 117 calls of 100 kinds (a call asked before a character i
 | `corpRegistry.GetMyApplications` (inferred) | 1 | by a route |
 | `userSvc.GetMultiCharactersTrainingSlots` | 1 | never |
 | `ProjectDiscovery.is_enabled` | 1 | never |
-| `skillHandler.CheckAndSendNotifications` (inferred) | 1 | never |
+| `skillHandler.CheckAndSendNotifications` (inferred) | 1 | at login |
 | `contractProxy.GetLoginInfo` | 1 | by a feature |
-| `skillHandler.GetSkillHistory` (inferred) | 1 | by a route |
+| `skillHandler.GetSkillHistory` (inferred) | 1 | at login |
 | `notificationMgr.GetAllNotifications` | 1 | by a feature |
 | `config.GetMultiOwnersEx` | 2 | never |
 | `calendarProxy.GetEventList` | 2 | by a feature |

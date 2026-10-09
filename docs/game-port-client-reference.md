@@ -144,6 +144,17 @@ the client did not make. Of the other 93 kinds, 24 are asked later by a feature 
 against the client's, 16 only by a route of the BFF's, and 53 by nothing of ours.
 The report is made again as services are done; the standings' two were the first.
 
+**The skill handler's, 2026-10-09.** The client's two skill services and its notifications ask the
+handler eight things when a character is chosen: `skillMgr2.GetMySkillHandler`, the bind of the
+moniker that answers (which carries the first read), `GetSkills`, `GetBoosters`,
+`GetSkillQueueAndFreePoints`, `GetAllSkills`, `CheckAndSendNotifications` and
+`GetSkillHistory(10)`. The transport asks them in the order a real client asked this server
+(`server.2026-10-06_15.log`), keeps what the services keep (`src/gamePort/pilotSkills.js`) and
+keeps it right from the server's notices. A read of the handler the BFF asks for is answered from
+what is kept where the client's service would answer from what it keeps, and asked for once where
+it would ask once. With those the report is 17 kinds of the client's 100 at login, 18 by a feature,
+15 by a route only, 50 by nothing of ours.
+
 **The customs export's call shape.** `src/piCustomsExport.js` binds `invbroker` with the office ID
 and calls `ImportExportWithPlanet` on that. The client goes through `invCache`: it binds the
 broker for a location, asks it for the office's inventory, and calls that. eve.js accepts both.

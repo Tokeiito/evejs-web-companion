@@ -642,8 +642,14 @@ test("the skill handler is asked for by name and its reads are made on what its 
     const read = form(`skillHandler.${method}`, []);
     assert.deepEqual([read.status, read.args, read.kwargs, read.moniker, read.source.endsWith(`skillsvc.py:${line}`)], ["same", [], null, true, true], method);
   }
+  // skillsvc.py 363: GetSkillHistory(maxresults=50), always with how many. Asked as the client asks, it is the client's;
+  // asked with nothing, or with something that is no count, it is made the client's own default.
+  for (const [args, status, sent] of [[[10], "same", [10]], [[50], "same", [50]], [[], "reshaped", [50]], [[0], "reshaped", [50]], [[10, 5], "reshaped", [50]]]) {
+    const history = form("skillHandler.GetSkillHistory", args);
+    assert.deepEqual([history.status, history.args, history.kwargs, history.moniker, history.source.endsWith("skillsvc.py:363")], [status, sent, null, true, true], JSON.stringify(args));
+  }
   // A read of it this registry has not set beside the client's is still made on the moniker.
-  const unread = form("skillHandler.GetSkillHistory", []);
+  const unread = form("skillHandler.GetSkillQueue", []);
   assert.deepEqual([unread.status, unread.moniker], ["unchecked", true]);
 });
 

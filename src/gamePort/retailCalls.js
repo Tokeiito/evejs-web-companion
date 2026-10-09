@@ -179,6 +179,9 @@ function withOwnShipType(args, kwargs, context) {
   return typeID === undefined ? { args, kwargs, status: "differs", note: SHIP_TYPE_UNKNOWN } : { args: [typeID], kwargs };
 }
 
+/** skillsvc.GetSkillHistory(maxresults=50). */
+const SKILL_HISTORY_ASKED = 50;
+
 /** fleetSvc.CreateFleet's Init(shipTypeID, setupName, adInfoData=adInfoData): the advert always by keyword, None where there is none. */
 function fleetInit(args, kwargs, context) {
   const typeID = ownShipType(context);
@@ -595,6 +598,11 @@ const RETAIL_CALLS = Object.freeze({
   "skillHandler.GetSkills": same(`${SKILL_SVC}:136`, "GetSkillHandler().GetSkills(), no arguments"),
   "skillHandler.GetAllSkills": same(`${SKILL_SVC}:142`, "GetSkillHandler().GetAllSkills(), no arguments"),
   "skillHandler.GetAttributes": same(`${SKILL_SVC}:224`, "GetSkillHandler().GetAttributes(), no arguments"),
+  "skillHandler.GetSkillHistory": reshaped(
+    `${SKILL_SVC}:363`,
+    (args, kwargs) => (args.length === 1 && args[0] > 0 ? { args, kwargs, status: "same" } : { args: [SKILL_HISTORY_ASKED], kwargs }),
+    "GetSkillHandler().GetSkillHistory(maxresults): always with how many, 50 where the asker does not say. Asked once and kept until a skill changes; the notifications ask first, for 10, when the character is chosen.",
+  ),
   "skillHandler.GetSkillChangesForISIS": same(`${SKILL_SVC}:379`, "GetSkillHandler().GetSkillChangesForISIS(), no arguments"),
   "skillHandler.GetRespecInfo": same(`${SKILL_SVC}:802`, "GetSkillHandler().GetRespecInfo(), no arguments"),
   "skillHandler.GetFreeSkillPoints": same(`${SKILL_SVC}:852`, "GetSkillHandler().GetFreeSkillPoints(), no arguments"),
